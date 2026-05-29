@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "anti-hall",
+  "owner": {
+    "name": "Mohammed Talas"
+  },
+  "description": "Anti-hallucination tooling for Claude Code — verify-first behavior, installable on any machine and any repo.",
+  "version": "0.1.0",
+  "plugins": [
+    {
+      "name": "anti-hall",
+      "source": "./plugins/anti-hall",
+      "description": "Injects a verify-first protocol into every turn: cite evidence before claiming, diagnose root cause before fixing, admit uncertainty, never fake completion.",
+      "version": "0.1.0",
+      "category": "quality",
+      "tags": ["verification", "anti-hallucination", "quality", "discipline"],
+      "author": { "name": "Mohammed Talas" }
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
+  "name": "anti-hall",
+  "displayName": "Anti-Hallucination Verify-First",
+  "version": "0.1.0",
+  "description": "Injects a verify-first protocol every turn: cite evidence before claiming, diagnose root cause before proposing a fix, admit uncertainty, and never fake completion.",
+  "author": {
+    "name": "Mohammed Talas",
+    "url": "https://github.com/talas9"
+  },
+  "homepage": "https://github.com/talas9/anti-hall",
+  "repository": "https://github.com/talas9/anti-hall",
+  "license": "MIT",
+  "keywords": ["verification", "anti-hallucination", "quality", "discipline"],
+  "hooks": "./hooks/hooks.json"
+}
