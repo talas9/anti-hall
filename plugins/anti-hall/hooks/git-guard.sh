@@ -35,7 +35,7 @@ fi
 
 # --- Rule 1: no self-credit trailers in commits -----------------------------
 # Match common AI self-credit patterns, case-insensitive.
-if printf '%s' "$CMD" | grep -qiE 'co-authored-by:.*(claude|anthropic|gpt|codex|openai|ai\b|assistant)'; then
+if printf '%s' "$CMD" | grep -qiE 'co-authored-by:.*(claude|anthropic|chatgpt|gpt-[0-9]|codex|openai|copilot|cursor|\bllm\b|\bai assistant\b|\bassistant\b)'; then
   echo "anti-hall git-guard: BLOCKED. Commit message contains a Co-Authored-By self-credit trailer. Remove it - commits carry no AI/assistant co-author credit. Re-run the commit without that trailer." >&2
   exit 2
 fi

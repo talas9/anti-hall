@@ -5,13 +5,13 @@
     "name": "Mohammed Talas"
   },
   "description": "Anti-hallucination tooling for Claude Code — verify-first behavior, installable on any machine and any repo.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "plugins": [
     {
       "name": "anti-hall",
       "source": "./plugins/anti-hall",
       "description": "Verify-first per-turn hook (no cause-no-fix, evidence before claims, no fake completion) + skills: root-cause debugging, orchestration (non-blocking swarm), plan-first deadly-loop-gated feature-launch. Optional graphify hooks (search-first + keep-updated) and a monorepo/simple statusline.",
-      "version": "0.2.0",
+      "version": "0.2.1",
       "category": "quality",
       "tags": ["verification", "anti-hallucination", "quality", "discipline", "debugging", "orchestration"],
       "author": { "name": "Mohammed Talas" }
