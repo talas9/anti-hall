@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // anti-hall :: full verify-first protocol + skill primer
-//             (SessionStart [startup/resume/compact] AND PreCompact)
+//             (SessionStart [startup/resume/clear/compact])
 //
 // Emits the FULL verify-first + root-cause protocol, restructured in the
 // Superpowers "ONE Iron Law + rationalization/excuse table" form, plus a short
@@ -15,18 +15,16 @@
 //   PreCompact, by contrast, does NOT inject context at all: per the official
 //   Claude Code hooks docs, additionalContext is delivered on exit 0 only for
 //   UserPromptSubmit, UserPromptExpansion, and SessionStart. A PreCompact hook's
-//   additionalContext is inert (not "summarized away" — never injected in the
-//   first place; PreCompact's only model-reaching field is decision/reason to
-//   block compaction). hooks.json therefore registers this script on:
+//   additionalContext would be inert (never injected; PreCompact's only
+//   model-reaching field is decision/reason to block compaction). This script is
+//   therefore registered ONLY on SessionStart (no matcher) in hooks.json:
 //     - SessionStart (no matcher) -> startup + resume primacy AND the
 //       survive-compaction re-inject (source="compact") -- the REAL mechanism.
-//     - PreCompact -> inert placeholder kept only so a future Claude Code that
-//       does support PreCompact context injection would pick it up; it delivers
-//       nothing today. Harmless (exit 0), but it does not survive compaction.
 //   A single no-matcher SessionStart registration covers compact, so there is no
-//   separate matcher-"compact" entry (it would double-inject the same protocol).
-//   The same script handles all events; it echoes back whichever hookEventName it
-//   was fired with, parsed from stdin (NOT a brittle substring match — F-20).
+//   separate matcher-"compact" entry (it would double-inject the same protocol),
+//   and no PreCompact registration (it would deliver nothing today).
+//   The script echoes back whichever hookEventName it was fired with, parsed from
+//   stdin (NOT a brittle substring match — F-20).
 //
 // Why this shape (KB-claude-codex.md):
 //   - §6.1 Superpowers: an Iron Law + a table naming the model's SPECIFIC bypass
@@ -91,18 +89,17 @@ function main() {
   }
 
   // Determine the firing event by PARSING the payload (F-20: no brittle
-  // whitespace-sensitive substring match). Default to SessionStart on any parse
-  // failure — that is the safe primacy event.
+  // whitespace-sensitive substring match). This script is registered ONLY on
+  // SessionStart, so SessionStart is both the expected and the safe default for
+  // any unrecognized / missing value or parse failure.
   let event = 'SessionStart';
   try {
     const payload = JSON.parse(raw);
     const name = payload && typeof payload.hook_event_name === 'string'
       ? payload.hook_event_name
       : '';
-    // Echo back exactly the recognized firing event so the consumer accepts it.
-    if (name === 'PreCompact') {
-      event = 'PreCompact';
-    } else if (name === 'SessionStart') {
+    // Echo back the recognized firing event so the consumer accepts it.
+    if (name === 'SessionStart') {
       event = 'SessionStart';
     }
     // Any other / missing value falls through to the SessionStart default.
@@ -110,6 +107,11 @@ function main() {
     event = 'SessionStart';
   }
 
+  // Official Claude Code schema: `hookEventName` is NESTED inside
+  // `hookSpecificOutput` (alongside `additionalContext`), not a top-level sibling.
+  // KB §1.4 confirms `hookSpecificOutput.additionalContext` for SessionStart and
+  // never names `hookEventName` as a peer; moving it to top level would break
+  // context injection. Nesting is intentional and correct.
   const out = {
     hookSpecificOutput: {
       hookEventName: event,

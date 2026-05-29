@@ -11,10 +11,14 @@
 //     middle / repeated identical reminders get habituated." Adherence is a
 //     function of placement and NOVELTY, not repetition. A byte-identical wall of
 //     text every turn is exactly what the model learns to skip.
-//   - We rotate among 5 one-liners chosen DETERMINISTICALLY from the incoming
-//     prompt text (crypto hash of the prompt bytes), so the nudge varies turn to
-//     turn but is still reproducible for a given prompt. No randomness, no
-//     external deps, no shelling out to cksum (OS-agnostic).
+//   - We rotate among 5 one-liners chosen DETERMINISTICALLY from a crypto hash of
+//     the ENTIRE raw stdin envelope (not just payload.prompt — see below), so the
+//     nudge varies turn to turn. It is reproducible for a given full envelope; it
+//     varies by the whole UserPromptSubmit payload (which includes session_id,
+//     transcript_path, cwd alongside the prompt), so the SAME prompt text in a
+//     different session/cwd intentionally yields a different facet — extra novelty
+//     that fights habituation. No randomness, no external deps, no shelling out to
+//     cksum (OS-agnostic).
 //
 // Contract (Claude Code UserPromptSubmit hook):
 //   stdin  : JSON { session_id, prompt, cwd, transcript_path, ... }
@@ -49,9 +53,11 @@ function main() {
     input = Buffer.alloc(0);
   }
 
-  // Deterministic index 0-4 from a SHA-1 of the raw prompt bytes. crypto is a
-  // Node built-in, present on every OS. Same input -> same nudge (reproducible);
-  // different inputs spread across the 5 facets.
+  // Deterministic index 0-4 from a SHA-1 of the raw stdin envelope bytes (the
+  // whole UserPromptSubmit payload, not just .prompt). crypto is a Node built-in,
+  // present on every OS. Same full envelope -> same nudge (reproducible); different
+  // envelopes (including the same prompt in a different session/cwd) spread across
+  // the 5 facets.
   let idx = 0;
   try {
     const digest = crypto.createHash('sha1').update(input).digest();
@@ -64,6 +70,10 @@ function main() {
 
   const nudge = NUDGES[idx] || NUDGES[0];
 
+  // Official schema: `hookEventName` is NESTED in `hookSpecificOutput` (a sibling
+  // of `additionalContext`), not a top-level field. KB §1.4 documents
+  // `hookSpecificOutput.additionalContext` for UserPromptSubmit context injection;
+  // nesting `hookEventName` here matches the harness contract.
   const out = {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',

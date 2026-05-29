@@ -29,6 +29,9 @@ const MESSAGE =
   'silently-dropped requests.';
 
 try {
+  // Official schema: `hookEventName` is NESTED in `hookSpecificOutput`, not a
+  // top-level sibling. KB §1.4 specifies `hookSpecificOutput.additionalContext`
+  // for UserPromptSubmit; nesting here is correct per the harness contract.
   const out = {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',

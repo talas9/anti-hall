@@ -91,6 +91,9 @@ function main() {
     "adds/moves/removes code or docs, and at the END of any session with " +
     "significant work, update it with '/graphify --obsidian'.";
 
+  // Official schema: `hookEventName` is NESTED in `hookSpecificOutput` alongside
+  // `additionalContext`, not a top-level sibling. KB §1.4 documents
+  // `hookSpecificOutput.additionalContext` for SessionStart; nesting is correct.
   const out = {
     hookSpecificOutput: {
       hookEventName: 'SessionStart',

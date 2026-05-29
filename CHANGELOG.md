@@ -6,6 +6,56 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.3.5
+
+Production-doc finalization + doc-vs-code reconciliation: rewrite the READMEs, add
+`llms.txt`, and remove the never-registered PreCompact claims.
+
+- **Production README rewrite:** both the top-level `README.md` and the plugin
+  `README.md` were rewritten for readability and structure — tagline, the four
+  failure modes, quickstart, requirements (with the honest Node-on-PATH no-op
+  caveat), a features table, plain-English how-it-works, the `/anti-hall:*` skills,
+  statusline install, configuration/tuning, troubleshooting/FAQ, contributing (the
+  3 MODEL-POLICY copies must stay in sync), and license. The top README is the
+  short overview; depth lives in the plugin README. Accurate to the real code
+  (7 Node hooks, 4 skills, Node statusline).
+- **`llms.txt` added:** an LLM-oriented index at the repo root (llms.txt standard) —
+  H1 title, blockquote summary, and linked sections for the README, plugin README,
+  CHANGELOG, AGENTS.md, KB doc, each skill SKILL.md, and each hook.
+- **Doc-accuracy fixes (4 × P2):**
+  - Top README "What's inside" now states the FULL protocol injects at SessionStart
+    (re-firing on compaction via `source=compact`) and a SHORT varying nudge per turn
+    at UserPromptSubmit — not "the full protocol every turn".
+  - `feature-launch/references/PRE-TOOL-USE-HOOK.md` no longer cites non-existent
+    "Phase A.5.5" / "A.5.3"; it now points to "Phase A.5 (AFK readiness gate)" to
+    match the prose (no sub-numbers) in `feature-launch/SKILL.md`.
+  - `verify-first.js` comments + plugin README now state the per-turn nudge is hashed
+    from the FULL stdin envelope (varies by session/cwd), not "reproducible for a
+    given prompt". Runtime behavior unchanged.
+  - `PRE-TOOL-USE-HOOK.md` example sentinel: added an explicit false-block/bypass
+    tradeoff caveat and a pointer to the shipped quote-aware `git-guard.js`
+    tokenizer; `--no-verify` / `--no-gpg-sign` patterns anchored to a flag boundary.
+- **PreCompact placeholder claims removed (P1):** `hooks.json` registers
+  `verify-first-full.js` ONLY on `SessionStart` — there is no `PreCompact`
+  registration block and never was in the shipped manifest. Every doc that
+  described an "inert PreCompact placeholder registration" was inaccurate. Removed
+  those claims from `verify-first-full.js` (banner + header + the dead
+  `name === 'PreCompact'` echo branch), the plugin `README.md`, and `AGENTS.md`.
+  Compaction survival is unchanged: it relies solely on the no-matcher
+  `SessionStart` re-fire with `source="compact"`, which IS registered. The earlier
+  0.3.0/0.3.1 notes below describing a kept PreCompact placeholder are superseded
+  by this entry.
+- **AGENTS.md scope clarified (P2):** `AGENTS.md` lives at the marketplace repo
+  root, not under `plugins/anti-hall/`, so it is NOT bundled by `/plugin install`
+  (the plugin `source` is `./plugins/anti-hall`). `plugin.json` description and the
+  plugin `README.md` now state it is a repo-root Codex mirror for clone-based use
+  that installed users must copy manually.
+- **0.3.0 marketplace-source note corrected (P2):** the 0.3.0 entry claimed the
+  marketplace plugin `source` switched to a GitHub source object; the file actually
+  uses the relative path `./plugins/anti-hall`. Corrected the 0.3.0 note to match
+  the file (the relative path resolves because `marketplace add talas9/anti-hall`
+  clones the whole repo).
+
 ## 0.3.4
 
 Close the quoted-flag force-push bypass in git-guard.
@@ -120,10 +170,11 @@ against the official Claude Code hooks docs.
   `hookSpecificOutput.additionalContext` (not flat); added an explicit note that
   context injection is event-gated to UserPromptSubmit / UserPromptExpansion /
   SessionStart, so `Stop`/`PreCompact` `additionalContext` is inert.
-- **PreCompact framing corrected (P2):** the `verify-first-full.js` PreCompact
-  registration is an inert placeholder (PreCompact never injects context), not
-  "summarized away"; SessionStart `source="compact"` is the sole survive-compaction
-  mechanism. Corrected the hook header, README, and the 0.3.0 note above.
+- **PreCompact framing corrected (P2):** clarified that PreCompact never injects
+  context (not "summarized away"); SessionStart `source="compact"` is the sole
+  survive-compaction mechanism. (Superseded in 0.3.5: the PreCompact registration
+  was never actually present in `hooks.json`, so all PreCompact-placeholder claims
+  were removed rather than reworded.)
 - **Two-Stop-hook coexistence noted (P2):** `graphify-reminder` + `task-guard` both
   emit the top-level Stop `decision`/`reason` schema; Claude Code does not merge
   reasons, but each is capped so neither is lost (they sequence across Stops).
@@ -153,13 +204,13 @@ plus a full OS-agnostic Node rewrite and the deadly-loop hardening pass.
 - **Survive compaction (P0-2):** the protocol persists across the compaction
   reset via the no-matcher `SessionStart` registration — Claude Code re-fires
   `SessionStart` after a compaction with `source="compact"`, and that injection
-  is fresh post-reset context. A `PreCompact` registration is kept as
-  an inert placeholder only: per the official docs, `additionalContext` is
-  injected on exit 0 for UserPromptSubmit / UserPromptExpansion / SessionStart
-  only, so a PreCompact hook delivers nothing today (kept in case a future Claude
-  Code adds PreCompact context injection). A duplicate
-  matcher-`"compact"` SessionStart entry was removed so the protocol is not
-  double-injected after a compaction.
+  is fresh post-reset context. (This note originally also described keeping a
+  `PreCompact` registration as an inert placeholder; superseded in 0.3.5 — no
+  PreCompact registration was ever present in `hooks.json`, and all such claims
+  were removed. Per the official docs `additionalContext` is injected on exit 0
+  for UserPromptSubmit / UserPromptExpansion / SessionStart only, so a PreCompact
+  hook would deliver nothing.) A duplicate matcher-`"compact"` SessionStart entry
+  was removed so the protocol is not double-injected after a compaction.
 - **git-guard force-push hardening (deadly-loop):** force-push detection now
   resists prefix/wrapper/subshell bypasses and `+refspec` variants — env-prefix
   (`FOO=bar git push --force`), wrappers (`command`/`exec`/`sudo`/`env`/`time`/
@@ -181,10 +232,11 @@ plus a full OS-agnostic Node rewrite and the deadly-loop hardening pass.
   added the `codex` CLI-alias-in-subprocess caveat (detect in the executing
   shell, try an absolute path); added an anti-sycophancy clause (user agreement
   != correctness).
-- **marketplace.json (P1-5, P1-6):** plugin `source` switched to an explicit
-  GitHub source object (`{ "source": "github", "repo": "talas9/anti-hall",
-  "path": "plugins/anti-hall" }`) so URL/marketplace installs resolve; removed the
-  per-plugin `version` duplication (version now lives only in `plugin.json`).
+- **marketplace.json (P1-5, P1-6):** plugin `source` is the relative path
+  `"./plugins/anti-hall"`, which resolves because `/plugin marketplace add
+  talas9/anti-hall` clones the whole repo (the relative path is taken from the
+  marketplace root inside that clone); removed the per-plugin `version`
+  duplication (version now lives only in `plugin.json`).
 - **KB (`docs/KB-claude-codex.md`):** added §9 "Anthropic Prompting 101" and §10
   "Claude Opus 4.8 features relevant to this plugin", plus their source URLs.
 - **CHANGELOG header:** corrected "bump both manifests" to "bump `plugin.json`

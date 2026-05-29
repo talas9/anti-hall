@@ -447,13 +447,19 @@ function inlineCommitMessages(rest) {
   const msgs = [];
   for (let i = 0; i < rest.length; i++) {
     const w = rest[i].text;
-    if (w === '-m' || w === '--message') {
+    if (w === '--message') {
       if (i + 1 < rest.length) { msgs.push(rest[i + 1].text); i++; }
-    } else if (w.startsWith('-m')) {
-      // -m"msg" form (already de-quoted by tokenizer into one token text).
-      msgs.push(w.slice(2));
     } else if (w.startsWith('--message=')) {
       msgs.push(w.slice('--message='.length));
+    } else if (/^-[A-Za-z]*m$/.test(w)) {
+      // Short-flag CLUSTER whose final char is `m` (e.g. `-m`, `-am`, `-sm`,
+      // `-asm`): the message is the NEXT token. Mirrors isForcePush's bundled
+      // short-cluster handling so `git commit -am "<trailer>"` is not bypassed.
+      if (i + 1 < rest.length) { msgs.push(rest[i + 1].text); i++; }
+    } else if (/^-[A-Za-z]*m./.test(w)) {
+      // Inline-value cluster `-amMSG` / `-mMSG`: other short flags precede the
+      // final `m`, and everything AFTER that `m` is the inline message value.
+      msgs.push(w.slice(w.indexOf('m', 1) + 1));
     }
   }
   return msgs;
@@ -548,4 +554,3 @@ try {
 } catch (_) {
   fail_open();
 }
-process.exit(0);

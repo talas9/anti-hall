@@ -3,9 +3,9 @@
 This file mirrors the anti-hall plugin's verify-first protocol in prose so that
 OpenAI Codex agents (and any tool that reads `AGENTS.md`) inherit the same
 discipline. Claude Code enforces this through `UserPromptSubmit` / `SessionStart`
-/ `PreCompact` hooks; Codex's `PreToolUse` cannot inject context the same way and
-does not intercept every shell call, so for Codex this prose mirror is the only
-channel. Treat Codex hooks as guardrails, not airtight gates.
+hooks; Codex's `PreToolUse` cannot inject context the same way and does not
+intercept every shell call, so for Codex this prose mirror is the only channel.
+Treat Codex hooks as guardrails, not airtight gates.
 
 Keep this file under 32 KiB (Codex per-file cap). Verify it is loaded with:
 

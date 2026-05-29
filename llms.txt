@@ -1,0 +1,67 @@
+# anti-hall
+
+> A Claude Code marketplace + plugin that makes Claude Code verify before it claims.
+> It injects a verify-first protocol at session start, a short rotating nudge every
+> turn, and mechanical guards (no AI commit self-credit, no silent force-push, no
+> dropped tasks), plus four workflow skills. All hooks are pure Node.js and the one
+> prerequisite is Node >= 18 on PATH.
+
+anti-hall targets four failure modes of coding assistants: eagerness (acting before
+investigating), hallucination (stating unverified facts as truth), fix-before-diagnosis
+(fixing before proving root cause), and fake completion (claiming done without running
+the check).
+
+## Install
+
+```
+/plugin marketplace add talas9/anti-hall
+/plugin install anti-hall@anti-hall
+```
+
+Requires Node.js >= 18 on PATH; without it the hooks silently no-op.
+
+## Overview
+
+- [README](README.md): top-level overview, problem statement, quickstart, layout.
+- [Plugin README](plugins/anti-hall/README.md): full component reference, how-it-works, configuration, troubleshooting, contributing.
+- [CHANGELOG](CHANGELOG.md): version history (current: 0.3.5).
+- [AGENTS.md](AGENTS.md): prose mirror of the verify-first Iron Law for Codex / cross-tool agents (repo root; not bundled by /plugin install).
+- [docs/KB-claude-codex.md](docs/KB-claude-codex.md): knowledge base on Claude Code hook contracts and prompting that the design relies on.
+
+## Hooks (plugins/anti-hall/hooks/)
+
+- [verify-first-full.js](plugins/anti-hall/hooks/verify-first-full.js): SessionStart — full Iron-Law + rationalization-table protocol + skill primer; re-fires after compaction (source=compact).
+- [verify-first.js](plugins/anti-hall/hooks/verify-first.js): UserPromptSubmit — short varying one-line nudge (hash of full stdin envelope).
+- [git-guard.js](plugins/anti-hall/hooks/git-guard.js): PreToolUse on Bash — quote-aware tokenizer blocks AI self-credit commit trailers and git push --force.
+- [task-tracker.js](plugins/anti-hall/hooks/task-tracker.js): UserPromptSubmit — task-list discipline directive.
+- [task-guard.js](plugins/anti-hall/hooks/task-guard.js): Stop (loop-safe) — blocks once when the session ends with open tasks.
+- [graphify-session.js](plugins/anti-hall/hooks/graphify-session.js): SessionStart — primes query-the-graph-first when a graph exists.
+- [graphify-reminder.js](plugins/anti-hall/hooks/graphify-reminder.js): Stop — one-time reminder to update the graph after real edits.
+- [hooks.json](plugins/anti-hall/hooks/hooks.json): hook registration manifest.
+
+## Skills (plugins/anti-hall/skills/)
+
+Invoke as /anti-hall:<name>.
+
+- [root-cause](plugins/anti-hall/skills/root-cause/SKILL.md): evidence-driven debugging to the original + root cause.
+- [orchestration](plugins/anti-hall/skills/orchestration/SKILL.md): non-blocking swarm; Claude+Codex load split; commands via Haiku.
+- [feature-launch](plugins/anti-hall/skills/feature-launch/SKILL.md): plan-first, deadly-loop-hardened, scenario-simulated feature protocol.
+- [deadly-loop](plugins/anti-hall/skills/deadly-loop/SKILL.md): iterative Reviewer + Critic debate + fix-waves until convergence.
+- [MODEL-POLICY.md](plugins/anti-hall/skills/MODEL-POLICY.md): shared model roster (triplicated across skill references; keep in sync).
+
+## Statusline (plugins/anti-hall/statusline/)
+
+- [STATUSLINE.md](plugins/anti-hall/statusline/STATUSLINE.md): install + revert.
+- [install-statusline.js](plugins/anti-hall/statusline/install-statusline.js): Node installer.
+- Dispatcher [statusline.js](plugins/anti-hall/statusline/statusline.js) selects [statusline-monorepo.js](plugins/anti-hall/statusline/statusline-monorepo.js) or [statusline-simple.js](plugins/anti-hall/statusline/statusline-simple.js).
+
+## Manifests
+
+- [plugins/anti-hall/.claude-plugin/plugin.json](plugins/anti-hall/.claude-plugin/plugin.json): plugin manifest; version is the sole authority.
+- [.claude-plugin/marketplace.json](.claude-plugin/marketplace.json): marketplace manifest.
+
+## Read more
+
+Start with [README.md](README.md), then [plugins/anti-hall/README.md](plugins/anti-hall/README.md)
+for depth. The design rationale (hook contracts, primacy/recency, anti-habituation)
+is in [docs/KB-claude-codex.md](docs/KB-claude-codex.md).

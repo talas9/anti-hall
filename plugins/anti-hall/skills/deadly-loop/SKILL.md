@@ -37,7 +37,7 @@ Before invoking the deadly loop, ensure:
 2. A **canonical handoff doc** exists or will be created (e.g., `docs/<date>-<feature>-session-handoff.md`).
 3. The owner has authorized at least one full iteration (each round is ~5-30 min of agent compute).
 4. A verification preamble + branch/SHA check is in effect for every spawned agent (see Phase A3).
-5. The debate roster from `references/MODEL-POLICY.md` is resolved — confirm whether Codex is available (`command -v codex`) so you know which Critic path to take.
+5. The debate roster from `references/MODEL-POLICY.md` is resolved — confirm whether Codex is available (use the OS-agnostic Node probe in `references/MODEL-POLICY.md`) so you know which Critic path to take.
 
 ## The pattern at a glance
 
@@ -132,7 +132,7 @@ Two parallel agents dispatched in the **same message** (roster + exact spawn syn
 - **Reviewer** — latest Opus at maximum thinking. Correctness / architecture auditor.
 - **Critic** — latest OpenAI Codex at maximum reasoning **when available**; otherwise a 2nd Opus with a divergent adversarial "failure-mode hunter" persona.
 
-See `references/MODEL-POLICY.md` for the `command -v codex` availability check and the concrete `Agent(...)` / Codex invocations. Dispatch both in ONE message so they run truly in parallel.
+See `references/MODEL-POLICY.md` for the OS-agnostic Node probe that checks Codex availability and the concrete `Agent(...)` / Codex invocations. Dispatch both in ONE message so they run truly in parallel.
 
 ### B1. Reviewer prompt skeleton
 

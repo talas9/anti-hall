@@ -1,8 +1,8 @@
 # PreToolUse hook — hard-gate sentinel for feature-launch autonomous mode
 
 This hook blocks destructive Bash commands **before** they execute. Required by
-Phase A.5.5 of the feature-launch skill. Without it, the AFK readiness gate (A.5.3)
-MUST refuse to emit "AFK ready."
+Phase A.5 (AFK readiness gate) of the feature-launch skill. Without it, the AFK
+readiness gate MUST refuse to emit "AFK ready."
 
 ## Why
 
@@ -65,9 +65,15 @@ const PATTERNS = [
   /git\s+push[^|;&]*-f(\s|$)/,
   /git\s+reset\s+--hard/,
 
-  // Hook / verification bypass
-  /--no-verify/,
-  /--no-gpg-sign/,
+  // Hook / verification bypass. Anchored to a flag boundary (preceding
+  // whitespace or start of line) so a benign string that merely CONTAINS
+  // "--no-verify" (a commit message, filename, grep argument, doc path) is not
+  // false-blocked. Tradeoff (accepted for this example sentinel): this is a naive
+  // whole-command regex, not the plugin's quote-aware tokenizer (hooks/git-guard.js),
+  // so an interpreter wrapper (sh -c "...") or alias can still bypass it. For a
+  // hardened gate, reuse git-guard's argv-position tokenizer instead.
+  /(^|\s)--no-verify(\s|=|$)/,
+  /(^|\s)--no-gpg-sign(\s|=|$)/,
 
   // Force deletions
   /(^|\s)rm\s+-rf\s+/,
@@ -89,7 +95,7 @@ for (const p of PATTERNS) {
       'Pattern matched: ' + p.toString() + '\n' +
       'Command:         ' + cmd + '\n\n' +
       'This command requires explicit human approval. See the project\'s hard\n' +
-      'rules and Phase A.5.5 of the feature-launch skill.\n\n' +
+      'rules and Phase A.5 (AFK readiness gate) of the feature-launch skill.\n\n' +
       'If you believe this is a false positive, refine the regex in\n' +
       '.claude/hooks/feature-launch-hard-gates.js and re-run.\n' +
       '========================================================================\n'
