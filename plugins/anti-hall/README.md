@@ -45,7 +45,7 @@ claude --plugin-dir /path/to/anti-hall
 
 | Component | Event | Purpose |
 |---|---|---|
-| `verify-first-full.js` | SessionStart | Full Iron-Law + rationalization-table protocol + skill primer; survives compaction. |
+| `verify-first-full.js` | SessionStart | Full Iron-Law + rationalization-table protocol, the always-on orchestration discipline, and the always-vs-conditional skill primer; survives compaction. |
 | `verify-first.js` | UserPromptSubmit | Short, varying one-line nudge each turn (anti-habituation). |
 | `git-guard.js` | PreToolUse (Bash) | Blocks AI self-credit commit trailers and `git push --force`. |
 | `task-tracker.js` | UserPromptSubmit | Injects task-list discipline (capture, prioritize, work in order). |
@@ -131,6 +131,22 @@ documented boundaries, not silent gaps.
   capped via `os.tmpdir` state so it never loops — stop again to dismiss.
 
 ## Skills
+
+**Always-on vs conditional.** The **root-cause** and **orchestration** disciplines are
+**enforced always-on via the hook layer** — their core fires every session/turn through
+`verify-first-full.js` (SessionStart) and `verify-first.js` (per-turn nudge), so they
+apply without being invoked. The full step-by-step playbooks below are still available as
+slash commands for when you want the deep version. **deadly-loop** and **feature-launch**
+are **conditional skills invoked on match** — they are not forced every turn. The
+always-on orchestration injection enforces a **bias toward delegation** — default to a
+subagent for any work that touches files/tools/commands/search/build/test or could
+balloon (to avoid the eager "I'll just do it inline" trap that pollutes the main thread),
+handling inline only genuinely atomic things (a direct answer, a single known-line read,
+the coordinator's own synthesis/decisions), and delegating immediately if a quick inline
+task balloons; parallel agents when independent; commands via Haiku off-thread. It also
+enforces **capture-every-request** task discipline (priority-sorted) and
+**anti-sycophancy** (challenge a wrong premise with evidence; user agreement is not
+correctness).
 
 Invoke via slash command:
 
@@ -240,6 +256,16 @@ claude --plugin-dir /path/to/anti-hall                                       # l
   users do not receive the update. Add a `CHANGELOG.md` entry.
 - **Keep hooks pure Node (built-ins only)** and fail-open, so they run unchanged on
   Windows, macOS, and Linux and never wedge a turn.
+
+### Recommended companion: graphify
+
+The `graphify-guard` and `graphify-session` hooks integrate with **graphify** — a
+user-global knowledge-graph skill/CLI (not a marketplace plugin) that builds a semantic
+graph of your codebase. When a `graphify-out/` or `.planning/graphs/` directory is
+present, the hooks enforce querying the graph before raw code searches and remind the
+model to keep it updated after significant edits. Both hooks no-op gracefully when
+graphify is not present — there is no hard dependency, and the plugin installs and runs
+identically with or without it.
 
 ### Codex / cross-tool
 

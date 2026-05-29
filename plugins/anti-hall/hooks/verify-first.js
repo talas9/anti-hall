@@ -34,14 +34,20 @@
 const fs = require('fs');
 const crypto = require('crypto');
 
-// Five short nudges. Each is a different facet of the same Iron Law so novelty
-// fights habituation without diluting the message.
+// Short nudges. Each is a different facet of the always-on disciplines (root-cause +
+// orchestration + anti-sycophancy) so novelty fights habituation without diluting the
+// message.
 const NUDGES = [
   "Verify before you claim: evidence from a tool, or say 'I haven't checked'. No guessed facts.",
   "Root cause before fix. The error you see is a symptom; trace it before you change anything.",
   "'Probably' / 'should work' / 'seems to' = STOP and verify. Show the output, don't assume.",
   "Done/fixed/passing only if you ran the check THIS turn and can paste the result.",
   "User agreement is not correctness. Challenge a wrong premise with evidence, not agreement.",
+  "COMMAND DELEGATION: never run build/test/deploy/push/pull/install inline in the coordinator - delegate to a cheap subagent; never fill main context with raw command output.",
+  "Bias toward delegation: default to a subagent for any file/tool/command/build/test work; inline only genuinely atomic things. If it balloons, delegate.",
+  "Run builds/tests/deploys via a Haiku subagent; never dump raw command output into the main thread.",
+  "Capture every request and interruption in a priority-sorted task list before acting; run independent work as parallel agents (up to concurrency cap ~min(16, cores-2)); actively drain the list - no neglected tasks.",
+  "Communicate concisely: enough to convey meaning, not pages; offer to expand if the user wants more detail.",
 ];
 
 function main() {

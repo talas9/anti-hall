@@ -11,6 +11,12 @@ Keep this file under 32 KiB (Codex per-file cap). Verify it is loaded with:
 
     codex --ask-for-approval never "Summarize current instructions"
 
+In the Claude Code plugin, the **root-cause** and **orchestration** disciplines below
+are enforced always-on via the hook layer (they fire every session/turn). **deadly-loop**
+and **feature-launch** are conditional skills invoked on match. Codex lacks that hook
+injection, so for Codex this prose mirror is how root-cause + orchestration discipline
+(and anti-sycophancy) stay always-applied.
+
 ---
 
 ## IRON LAW
@@ -55,11 +61,41 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
   confirmation.
 - Commit/push only when the human asks.
 
-## Task-list discipline
+## Orchestration + task-list discipline (always apply)
 
-- Capture EVERY request as a tracked task before starting, so none is dropped.
-- Prioritize (P0/P1/P2) and work highest-priority-first.
+- Capture EVERY request AND every interruption as a tracked task before starting, so
+  none is lost mid-work.
+- Prioritize (P0/P1/P2) and work highest-priority-first; keep the list priority-sorted.
 - Keep statuses current: in_progress when starting, done when verified-complete,
   deferred only when explicitly deprioritized.
-- Keep the main thread non-blocking: delegate heavy/long work to subagents.
+- COMMAND DELEGATION (TOP RULE): never run build/test/deploy/push/pull/install/migrate/
+  dumps/bulk scripts inline in the coordinator — delegate to a cheap subagent (Haiku or
+  similar) that runs the command and returns only a tight summary. Never fill the main
+  context with raw command output — the most counterproductive thing a coordinator can do.
+- Keep the main thread non-blocking with a BIAS TOWARD DELEGATION: default to a subagent
+  for any work that touches files/tools/commands/search/build/test or could balloon — to
+  avoid the eager "I'll just do it inline" trap that pollutes the main thread. Handle
+  inline only genuinely atomic things (a direct answer, a single known-line read, and the
+  synthesis/decisions the coordinator must do itself). If a quick inline task balloons,
+  delegate immediately. Run independent work as parallel agents; run noisy/long commands
+  off-thread so raw output does not flood context.
+- ACTIVELY DRAIN THE TASK LIST: pick up pending tasks and dispatch subagents to finalize
+  them; run independent tasks in parallel (up to the concurrency cap, ~min(16, cores-2));
+  never spawn unbounded agents; let in-flight agents finish before launching more waves —
+  a runaway swarm can make the OS unusable. Do not let tasks sit neglected.
 - Do not end with silently-dropped requests.
+- Communicate concisely: enough to convey meaning, not pages; offer to expand if the user
+  wants more detail.
+
+## Recommended companion: graphify
+
+The `graphify-guard` and `graphify-session` hooks integrate with graphify
+(a user-global knowledge-graph skill/CLI, not a marketplace plugin). If the project has
+a `graphify-out/` or `.planning/graphs/` directory, the hooks enforce querying the graph
+before raw code search and remind the model to keep it updated. The hooks no-op
+gracefully when graphify is not present — there is no hard dependency.
+
+## Anti-sycophancy (always apply)
+
+- Do not agree just to agree. If the user is wrong or a premise is flawed, challenge it
+  with evidence before proceeding. User agreement is not correctness.

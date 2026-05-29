@@ -19,6 +19,15 @@ It does this by injecting a verify-first protocol at session start, a short rota
 nudge every turn, and a set of mechanical guards (no AI self-credit in commits, no
 silent force-push, no silently-dropped tasks).
 
+Two disciplines are **enforced always-on via the hook layer** (they fire every
+session/turn, no invocation): **root-cause** (no claim without evidence; no fix without
+a proven root cause) and **orchestration** (non-blocking main thread; priority-sorted
+task list capturing every request; bias toward delegating any file/tool/command/build/test
+work to subagents, inline only genuinely atomic things) — alongside
+anti-sycophancy (challenge a wrong premise with evidence, never agree just to agree).
+Two skills stay **conditional**, invoked on match: **deadly-loop** (harden risky changes
+before merge) and **feature-launch** (non-trivial features).
+
 ## Quickstart
 
 ```bash

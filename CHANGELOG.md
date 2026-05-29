@@ -6,6 +6,89 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.3.7
+
+Consolidated enforcement wave: command-delegation as the top always-on rule, active
+task-draining, swarm-guard, graphify-guard, concise-communication note, and
+.graphifyignore.
+
+- **`command-guard.js` (PreToolUse Bash, coordinator-only):** new hook that BLOCKS
+  heavy/long/state-changing commands (build, test, deploy, push, pull, install,
+  migrate, dumps, bulk scripts) when running in a coordinator context, requiring the
+  model to delegate them to a subagent instead. Detection uses `CLAUDE_CODE_ENTRYPOINT`:
+  `agent_tool` = subagent (pass-through); `cli`/`vscode`/`jetbrains`/etc. = coordinator
+  (block). Fail-open on absent/unknown entrypoint. Registered in hooks.json.
+  COORDINATOR-VS-SUBAGENT INVESTIGATION: `CLAUDE_CODE_ENTRYPOINT` is a documented
+  Claude Code env var set to `agent_tool` when spawned via the Task tool, and inherited
+  by hook child processes — this is a reliable signal. The hook is SHIPPED.
+- **`swarm-guard.js` (PreToolUse Agent/Task):** new hook, OS-agnostic pure Node.
+  Tracks spawn timestamps under `os.tmpdir()/anti-hall/swarm-spawns.log`; prunes
+  entries older than 60s; blocks if spawns in last 60s >= 20 (CAP). Secondary check:
+  blocks if `os.freemem()/os.totalmem() < 4%` (critical memory pressure). Both
+  thresholds are conservative. Fail-open on any error. Registered for `Agent` and
+  `Task` matchers in hooks.json.
+- **`graphify-guard.js` (PreToolUse Grep/Glob/Bash):** new hook. If a graphify graph
+  exists (`graphify-out/` or `.planning/graphs/` at cwd or git toplevel), blocks the
+  FIRST code-navigation search of the session (Grep tool, Glob tool, or Bash with
+  grep/rg/ag/find/git-grep as first verb) and redirects to `/graphify query`. Blocks
+  ONCE per session per project (loop-safe via `os.tmpdir` marker); second call is
+  always allowed. Graphify-query Bash commands (`/graphify`) are explicitly excluded.
+  No-op when no graph is present. Fail-open. Registered for `Grep`, `Glob`, `Bash`.
+- **`.graphifyignore` (repo root):** new file — excludes `graphify-out/`,
+  `.planning/graphs/`, `node_modules/`, `dist/`, lock files, `.git/`, and common
+  generated/build patterns from graphify indexing.
+- **`verify-first-full.js` (SessionStart):** ORCHESTRATION DISCIPLINE block
+  restructured. Command-delegation moved to item A as the TOP RULE with explicit
+  wording: "NEVER run verbose/long/state-changing commands inline... ALWAYS delegate
+  to a subagent... never fill the main context with raw command output — the most
+  counterproductive thing a coordinator can do." Active task-draining added as item C:
+  "pick up pending tasks and dispatch subagents to finalize them; run INDEPENDENT
+  tasks in parallel (up to the concurrency cap, ~min(16, cores-2)); never spawn
+  unbounded agents... a runaway swarm can make the OS unusable." Concise-communication
+  added as item H: "Communicate concisely: enough to convey meaning, not pages; offer
+  to expand if the user wants more detail." Always-apply disciplines summary updated
+  to reflect command-delegation top rule, task-draining, concurrency cap, concise note.
+- **`verify-first.js` (per-turn nudge):** added two new nudges to the rotation —
+  explicit command-delegation top rule; concise-communication note. Concurrency-cap
+  language added to the task-list nudge. Hash-mod rotation auto-scales.
+- **`task-guard.js` (Stop):** block reason now includes active task-draining
+  instruction: "pick up pending tasks... run independent tasks in parallel (up to
+  the concurrency cap, ~min(16, cores-2)); do not let tasks sit neglected."
+- **`AGENTS.md` + plugin `README.md`:** command-delegation top rule added to
+  orchestration section; concurrency cap added; active task-draining added; concise-
+  communication added; "Recommended companion: graphify" section added (soft note —
+  hooks no-op without it, no hard dependency).
+- **Version bump 0.3.6 -> 0.3.7.**
+
+## 0.3.6
+
+Promote TWO disciplines to always-on ENFORCED via the hook layer, while keeping TWO
+skills conditional. Root-cause and orchestration now fire every session/turn; deadly-loop
+and feature-launch remain invoked-on-match.
+
+- **`verify-first-full.js` (SessionStart):** added an always-apply ORCHESTRATION
+  DISCIPLINE block framed as a BIAS TOWARD DELEGATION — non-blocking main thread;
+  priority-sorted task list capturing every request and interruption; default to
+  delegating any work that touches files/tools/commands/search/build/test or could balloon
+  (avoid the eager "I'll just do it inline" trap), handle inline only genuinely atomic
+  things (a direct answer, a single known-line read, the coordinator's own
+  synthesis/decisions), delegate immediately if a quick inline task balloons; parallel
+  agents when independent; noisy commands via a cheap-model subagent (Haiku/Codex)
+  off-thread; report/synthesize. Reframed the skill primer into "ALWAYS APPLY (enforced):
+  root-cause + orchestration + anti-sycophancy disciplines" vs "INVOKE WHEN IT MATCHES:
+  /anti-hall:deadly-loop, /anti-hall:feature-launch (plus the root-cause/orchestration full
+  playbooks on demand)". Anti-sycophancy named explicitly. Iron Law + rationalization table
+  kept intact.
+- **`verify-first.js` (per-turn nudge):** added three orchestration/anti-sycophancy
+  one-liners to the rotation (bias-toward-delegation default-to-subagent; noisy commands
+  via Haiku off-thread; capture every request/interruption in a priority-sorted list +
+  parallel independent agents). The hash-mod rotation auto-scales to the new count;
+  fail-open unchanged.
+- **READMEs + AGENTS.md:** note that root-cause + orchestration are enforced always-on via
+  hooks while deadly-loop + feature-launch are conditional skills invoked on match;
+  documented the bias-toward-delegation default, capture-every-request, and anti-sycophancy.
+- **Version bump 0.3.5 -> 0.3.6.**
+
 ## 0.3.5
 
 Production-doc finalization + doc-vs-code reconciliation: rewrite the READMEs, add

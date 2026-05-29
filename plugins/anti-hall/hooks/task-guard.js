@@ -150,6 +150,9 @@ function main() {
 
   const reason =
     'Open tasks remain and the session is stopping: ' + list + more + '. ' +
+    'Actively drain the task list: pick up pending tasks and dispatch subagents to ' +
+    'finalize them; run independent tasks in parallel (up to the concurrency cap, ' +
+    '~min(16, cores-2)); do not let tasks sit neglected. ' +
     'Continue them, mark them completed or deferred via TaskUpdate, or tell the user ' +
     'explicitly what is pending and why you are stopping.';
 
