@@ -2,8 +2,8 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "anti-hall",
   "displayName": "Anti-Hallucination Verify-First",
-  "version": "0.1.0",
-  "description": "Injects a verify-first protocol every turn: cite evidence before claiming, diagnose root cause before proposing a fix, admit uncertainty, and never fake completion.",
+  "version": "0.2.0",
+  "description": "Verify-first discipline for Claude Code. A per-turn hook (no jumping to conclusions, no cause-no-fix, evidence before claims, no fake completion) plus skills: root-cause debugging, orchestration (non-blocking swarm), and plan-first deadly-loop-gated feature-launch. Optional graphify hooks and a monorepo/simple statusline.",
   "author": {
     "name": "Mohammed Talas",
     "url": "https://github.com/talas9"
@@ -11,6 +11,6 @@
   "homepage": "https://github.com/talas9/anti-hall",
   "repository": "https://github.com/talas9/anti-hall",
   "license": "MIT",
-  "keywords": ["verification", "anti-hallucination", "quality", "discipline"],
+  "keywords": ["verification", "anti-hallucination", "quality", "discipline", "debugging", "root-cause", "orchestration", "deadly-loop", "feature-launch"],
   "hooks": "./hooks/hooks.json"
 }

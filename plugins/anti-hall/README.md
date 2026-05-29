@@ -1,58 +1,66 @@
 # anti-hall
 
-A Claude Code plugin that fights the four most common failure modes:
+A Claude Code plugin that enforces **verify-first** discipline and ships the
+workflow skills that go with it. It fights four failure modes:
 
 1. **Eagerness** — answering/acting before investigating.
 2. **Hallucination** — stating unverified facts (file contents, API behavior, values) as truth.
 3. **Solution-before-diagnosis** — proposing fixes before proving the root cause.
 4. **Fake completion** — claiming work is done/fixed/passing without running the check.
 
-## How it works
+## Components
 
-A `UserPromptSubmit` hook injects a compact **verify-first protocol** into the model's
-context at the start of *every* turn. This beats putting the same rules in `CLAUDE.md`,
-because instruction compliance decays with file length — rules buried near the bottom of a
-long config barely fire. Injecting the rules fresh each turn keeps them at the highest-
-attention position.
+### Hooks (always-on)
+- **`verify-first.sh`** (`UserPromptSubmit`) — injects the verify-first + root-cause
+  protocol into *every* turn: no jumping to conclusions, evidence before claims,
+  **no cause / no fix**, instrument-don't-guess when evidence is missing, no fake
+  completion, label non-obvious claims. Recency each turn beats burial in `CLAUDE.md`.
+- **`graphify-session.sh`** (`SessionStart`) — if the project has a graphify graph
+  (`graphify-out/` or `.planning/graphs/`), primes the model to **query the graph
+  first** for any issue/feature/function/code/doc lookup, and to keep it updated.
+  Silent no-op when graphify isn't used.
+- **`graphify-reminder.sh`** (`Stop`, non-blocking) — after a session with real edits
+  and a graph present, reminds to run `/graphify --obsidian`. Never blocks.
 
-No blocking `Stop` hook is used: those require semantic judgment that string matching can't
-do, produce false positives, and add latency on every turn.
+### Skills
+- **`root-cause`** — evidence-driven debugging: reproduce, collect evidence,
+  instrument when missing, trace the sequence to the original + root cause (not the
+  surface symptom), prove the hypothesis, fix at the root, verify.
+- **`orchestration`** — swarm with a non-blocking main thread: delegate heavy/long
+  work to background + parallel subagents, partition to avoid conflicts, distribute
+  load across Claude **and** Codex when available, run commands via Haiku so raw
+  output never pollutes the coordinator's context.
+- **`feature-launch`** — plan-first protocol: author the plan in **plan mode**
+  (blending superpowers planning + GSD, not GSD-dependent), enumerate edge cases and
+  simulate every scenario, then **harden the plan with the deadly-loop BEFORE any
+  code**, then build phase by phase running the **deadly-loop after each phase**.
+- **`deadly-loop`** — iterative parallel Reviewer + Critic debate + fix-waves until
+  convergence (zero NEW P0s). The debate engine used by feature-launch's gates.
+- **`MODEL-POLICY.md`** — shared roster: Reviewer = Opus latest max thinking;
+  Critic = Codex latest max reasoning when available, else a divergent 2nd Opus.
 
-No external dependencies (no `jq`) — runs unchanged on any machine.
-
-## What it injects
-
-> VERIFY-FIRST PROTOCOL (this turn): evidence before claims · uncertainty is allowed ·
-> cause before fix · no fake completion · no narrative padding · label non-obvious claims
-> as [verified] / [inference] / [assumption].
-
-See `hooks/verify-first.sh` for the full text. Edit that one file to tune the wording.
-
-## Files
-
-```
-anti-hall/
-├── .claude-plugin/plugin.json   # manifest
-└── hooks/
-    ├── hooks.json               # registers the UserPromptSubmit hook
-    └── verify-first.sh          # emits the additionalContext (edit to customize)
-```
-
-## Test locally before installing
+### Statusline (opt-in, one command)
+Claude Code plugins cannot auto-apply the main statusline, so this is activated by an
+installer. `statusline/` ships a dispatcher that shows a **rich** line in a monorepo
+(`.gitmodules` / `.gsd/` / `.planning/`) and a **simple** `model | branch | dir |
+context%` line otherwise — no emojis. Install:
 
 ```bash
-# 1. The hook emits valid JSON with additionalContext:
-echo '{"prompt":"x"}' | ./hooks/verify-first.sh
+bash "$(dirname "$(/bin/ls -d ~/.claude/plugins/*/anti-hall 2>/dev/null | head -1)")"/anti-hall/statusline/install-statusline.sh
+```
 
-# 2. Load the plugin in a throwaway session:
-claude --plugin-dir /path/to/anti-hall
+See `statusline/STATUSLINE.md` for details and how to revert.
+
+## Test locally
+```bash
+echo '{"prompt":"x"}' | ./hooks/verify-first.sh           # valid JSON + additionalContext
+claude --plugin-dir /path/to/anti-hall                     # load in a throwaway session
 ```
 
 ## Install (any machine, any repo)
-
 ```bash
 /plugin marketplace add talas9/anti-hall
 /plugin install anti-hall@anti-hall
 ```
-
-It applies globally once enabled — no per-repo `CLAUDE.md` edits needed.
+The hooks apply globally once enabled. The statusline needs the one-command installer
+above. Tune the injected protocol by editing `hooks/verify-first.sh`.
