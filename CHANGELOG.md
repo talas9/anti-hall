@@ -6,6 +6,92 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.3.4
+
+Close the quoted-flag force-push bypass in git-guard.
+
+- **git-guard: quoted force flags / refspecs / subcommand now BLOCK (P1):** the
+  force-push guard previously skipped any token that came entirely from inside quotes
+  (`quotedOnly`). For argument-level flag/refspec/subcommand detection that was wrong —
+  the POSIX shell strips quotes before git runs, so `git push "--force"`,
+  `git push '--force'`, `git push "-f"`, `git push origin '+main'`, and
+  `git "push" --force origin main` are byte-for-byte equivalent to their unquoted forms
+  and DO rewrite published history, yet all five were reported ALLOW. `isForcePush()`
+  now matches `--force`/`--force-with-lease`/bundled `-f`/`+refspec` regardless of
+  quoting, and `gitSubcommand()` resolves a quoted subcommand token (e.g. `"push"`)
+  instead of bailing to `sub=null` and leaving the command uninspected. Quoting still
+  only changes meaning for commit-message CONTENT (a `--force`/`+main` inside an `-m`
+  value), which is inspected separately on the `commit` path — never in a push arg
+  list — so `git commit -m "fix --force bug"` is not false-blocked. Verified against the
+  block/allow matrix (5 bypass cases now block; all prior blocks and legitimate pushes
+  unchanged).
+
+## 0.3.3
+
+Portability finalization pass — restore the all-pure-Node guarantee.
+
+- **Removed `node-preflight.sh` (P1):** the POSIX-shell preflight added in 0.3.2 could
+  not run on the platform it targeted. Claude Code executes a hook `command` via the
+  system shell, which on a stock Windows box is cmd.exe/PowerShell — neither has `sh`
+  on `PATH`. On the exact "fresh Windows box with no Node" case the preflight existed
+  to warn about, `sh` is also absent, so `sh node-preflight.sh` failed to launch and
+  the "anti-hall hooks are INACTIVE" warning never fired — the precise silent-off
+  failure it was meant to prevent. The plugin's single non-Node component was also its
+  least portable. Rather than ship a `.sh`/`.cmd`/`.ps1` matrix, the missing-Node case
+  is now handled the same way as git-guard's other fail-open boundaries: documented as
+  a hard, verify-before-relying prerequisite (README "Requirements" + install steps,
+  "verify with `node --version`"). With the `.sh` gone, the manifest/README "all hooks
+  pure Node, run unchanged on Windows/macOS/Linux given Node" claim is once again true.
+- **Manifest/CHANGELOG vs README reconciled (P2):** plugin.json's "All hooks and the
+  statusline are pure Node" description and the 0.3.0 "no `.sh`, no bash" note no longer
+  contradict the shipped hooks — there is no shell hook to contradict them. README,
+  manifest, and CHANGELOG now agree.
+
+## 0.3.2
+
+Deadly-loop finalization pass (round 1 + round 2 findings; 0 P0, converged).
+
+- **git-guard `--force-if-includes` false-block (P1):** `--force-if-includes` /
+  `--no-force-if-includes` is a safety modifier (a no-op on its own, only meaningful
+  alongside `--force-with-lease`), not a force push. It is no longer a force trigger,
+  so a bare `git push --force-if-includes origin main` is ALLOWED. `--force`, `-f`,
+  `--force-with-lease`, and `+refspec` still BLOCK.
+- **statusline installer cache-path discovery (P1):** the one-command installer glob
+  now covers the real install layout `~/.claude/plugins/cache/{marketplace}/{plugin}/{version}/`
+  (verified against an actual install) plus the KB's shallower documented forms, keeping
+  the existing marketplace globs and the `.claude-plugin/plugin.json` existence guard, so
+  it no longer prints "not found" on a correctly installed plugin.
+- **node-absent honest documentation (P1):** every hook launches as `node <hook>.js`;
+  if `node` is absent from the hook shell's `PATH`, all hooks (including the git-guard
+  safety) silently do not run. A POSIX-shell `node-preflight.sh` SessionStart hook now
+  emits a loud one-time warning when `node` is missing (a node-based preflight cannot
+  detect its own missing interpreter), and the README install steps state the Node >= 18
+  requirement prominently and tell users to verify `node --version` before relying on
+  the protections.
+- **git-guard ANSI-C inline self-credit bypass (P2):** a `git commit -m $'fix\n\nCo-authored-by: ...'`
+  kept its `\n` literal after tokenizing, slipping past the line-anchored trailer
+  regexes. Self-credit detection now also tests an escape-normalized copy of each inline
+  message (`\n`/`\r`/`\t` interpreted), so the ANSI-C inline form is blocked too.
+- **marketplace.json capability claim (P2):** changed "PreCompact re-injection" to
+  "SessionStart re-injection (fires with source=compact)" to match the code — PreCompact
+  context injection is inert (forward-compat placeholder), SessionStart `source=compact`
+  is the sole compaction-survival mechanism.
+- **install-statusline.js ungrounded field (P2):** dropped the undocumented `padding: 0`
+  field; the installer writes only the doc-grounded `{ type: "command", command }`.
+- **MODEL-POLICY triplication sync note (P2):** the three byte-identical MODEL-POLICY.md
+  copies (needed because skill bundling carries each skill's own `references/` copy and
+  symlinks are stripped on install) now each carry a SYNC NOTE header, plus a README
+  maintainer note, instructing that all three be updated together.
+- **Stop-hook precedence (P2):** `task-guard` is now registered before `graphify-reminder`
+  on `Stop` so the higher-stakes open-task discipline reason wins when both fire (Claude
+  Code does not merge Stop reasons); README caveat updated.
+- **statusline blink removed (P2):** the >=80% context tier in `statusline-monorepo.js`
+  no longer uses SGR 5 (blink, inconsistently supported); it uses bold bright-red
+  256-color, consistent with the other tiers.
+- **per-turn nudge wording (P2):** README clarified that the verify-first nudge varies
+  **by prompt** (deterministic SHA-1 of the prompt), not strictly per turn — an identical
+  repeated prompt reproduces the same facet.
+
 ## 0.3.1
 
 Deadly-loop finalization pass — applies the remaining open findings, all verified

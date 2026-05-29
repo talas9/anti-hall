@@ -99,7 +99,18 @@ function tokenize(segment) {
       i++;
       while (i < n && segment[i] !== '"') {
         if (segment[i] === '\\' && i + 1 < n) {
-          cur += segment[i + 1];
+          const nx = segment[i + 1];
+          // Inside double quotes, bash only treats a backslash as an escape for
+          // $ ` " \ and newline; before any other char (including n/r/t) the
+          // backslash is LITERAL. So `"...\n..."` yields a literal `\n`, NOT a
+          // newline. Preserve that literal backslash so the downstream self-credit
+          // normalization (\n -> real newline) can re-expand the escaped inline
+          // trailer form `git commit -m "feat: x\n\nCo-authored-by: Claude..."`.
+          if (nx === '$' || nx === '`' || nx === '"' || nx === '\\' || nx === '\n') {
+            cur += nx;
+          } else {
+            cur += '\\' + nx;
+          }
           i += 2;
         } else {
           cur += segment[i];
@@ -143,9 +154,28 @@ function splitSegments(cmd) {
   let inSingle = false;
   let inDouble = false;
 
+  // Sentinel injected into a segment when a command-substitution / backtick
+  // boundary is dropped from inside it. The shell expands the substitution's
+  // stdout into THIS segment's argv (e.g. `git push origin main $(printf %s
+  // --force)` expands to `git push origin main --force`), but splitSegments
+  // scans the substitution body as its own segment and would otherwise leave
+  // the outer `git push` segment with no force token. The sentinel lets the
+  // push handler conservatively detect "an argument is produced by an
+  // un-inspectable expansion" and block, instead of fail-opening on a force
+  // flag smuggled through `$( )`/backticks. Uses control chars so it can never
+  // collide with real argv text.
+  const CMDSUBST_SENTINEL = '\x00CMDSUBST\x00';
+
   function flush() {
     if (cur.trim().length) segments.push(cur);
     cur = '';
+  }
+
+  // Append the sentinel to the current (outer) segment, then flush it so the
+  // substitution body is still scanned as its own segment afterwards.
+  function flushWithSubst() {
+    cur += ' ' + CMDSUBST_SENTINEL + ' ';
+    flush();
   }
 
   while (i < n) {
@@ -159,8 +189,24 @@ function splitSegments(cmd) {
       continue;
     }
     if (inDouble) {
+      // Inside double quotes bash STILL expands command substitution and
+      // backticks (only single quotes suppress them). So `git push origin
+      // "$(echo --force)"` and the backtick form expand to `--force` and rewrite
+      // published history. The unquoted path below injects CMDSUBST_SENTINEL at a
+      // `$(`/backtick boundary so the push handler conservatively blocks; we must
+      // do the same here or the double-quoted form is a force-push guard bypass.
+      // The escape rule comes first: a backslash-escaped `$`/backtick (`\$(`,
+      // \`) is LITERAL in bash, not a substitution, so it must not trip the
+      // sentinel. We append the sentinel to the current segment (it is tolerated
+      // even inside a quoted token by hasCmdSubstArg, since the control-char
+      // sentinel can only be parser-injected, never user data).
+      if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+      if ((c === '$' && c2 === '(') || c === '`') {
+        cur += ' ' + CMDSUBST_SENTINEL + ' ';
+        i += (c === '$') ? 2 : 1;
+        continue;
+      }
       cur += c;
-      if (c === '\\' && c2) { cur += c2; i += 2; continue; }
       if (c === '"') inDouble = false;
       i++;
       continue;
@@ -193,9 +239,15 @@ function splitSegments(cmd) {
     // Subshell / grouping / command-substitution boundaries: treat as splits so
     // `(git push --force)` and `$(...)` / `{ ...; }` bodies are scanned as their
     // own segments. We drop the bracket char itself.
-    if (c === '(' || c === ')' || c === '{' || c === '}') { flush(); i++; continue; }
-    if (c === '$' && c2 === '(') { flush(); i += 2; continue; }
-    if (c === '`') { flush(); i++; continue; }
+    if (c === ')' || c === '{' || c === '}') { flush(); i++; continue; }
+    // `(` opens a plain subshell (its own command), while `$(` and backtick open
+    // a command substitution whose stdout is spliced into the SURROUNDING
+    // segment's argv. For substitutions, mark the outer segment so a force flag
+    // (or any arg) produced by the expansion is detected (P1: command-subst force
+    // bypass). A plain `(` is a grouping boundary with no value injection.
+    if (c === '(') { flush(); i++; continue; }
+    if (c === '$' && c2 === '(') { flushWithSubst(); i += 2; continue; }
+    if (c === '`') { flushWithSubst(); i++; continue; }
 
     cur += c;
     i++;
@@ -302,7 +354,10 @@ function gitSubcommand(args) {
   while (i < args.length) {
     const t = args[i];
     const w = t.text;
-    if (t.quotedOnly) { return { sub: null, rest: [] }; }
+    // A quoted subcommand is still the subcommand: the POSIX shell strips the
+    // quotes before git runs, so `git "push" ...` is byte-for-byte equivalent to
+    // `git push ...`. Resolve from t.text regardless of quoting (do NOT bail to
+    // sub=null, which would leave the whole command uninspected — F bypass).
     if (GIT_OPTS_WITH_VALUE.has(w)) { i += 2; continue; }
     if (w.startsWith('-')) { i += 1; continue; }
     return { sub: w, rest: args.slice(i + 1) };
@@ -315,22 +370,53 @@ function isForcePush(rest) {
   let endOfOptions = false; // set once a literal `--` separator is seen
   for (const t of rest) {
     const w = t.text;
-    // Only UNQUOTED tokens count as real flags / refspecs.
-    if (t.quotedOnly) continue;
+    // Match flags / refspecs regardless of quoting: the POSIX shell strips quotes
+    // before git runs, so `git push "--force"`, `'--force'`, `"-f"`, and
+    // `origin '+main'` are byte-for-byte equivalent to their unquoted forms and
+    // DO rewrite published history. Quoting only changes meaning for commit-message
+    // CONTENT (a `+1`/`--force` inside an `-m` value), which is handled separately
+    // in inlineCommitMessages — never in a push arg list. (F quoted-flag bypass.)
     // A bare `--` ends option parsing: everything after it is a literal operand
     // (pathspec/refspec), so a leading `+` after `--` is data, not a force
     // refspec, and no later token can be a force flag.
     if (!endOfOptions && w === '--') { endOfOptions = true; continue; }
     if (endOfOptions) continue;
     if (w === '--force' || w === '--force-with-lease') return true;
-    if (w.startsWith('--force-with-lease=') || w.startsWith('--force-if-includes')) return true;
+    if (w.startsWith('--force-with-lease=')) return true;
+    // `--force-if-includes` / `--no-force-if-includes` is a SAFETY MODIFIER, not a
+    // force flag: per git it only has effect alongside `--force-with-lease` and is
+    // a no-op on its own. Treating it as force would false-block a legitimate
+    // non-force push. The real force flags above already cover the cases where it
+    // would matter, so it is intentionally NOT a trigger here.
     // Short flags: a standalone `-f` or a bundled short cluster containing `f`
     // (e.g. `-fv`). Exclude long flags (already handled) and value-bearing ones.
     if (/^-[a-zA-Z0-9]+$/.test(w) && w.indexOf('f') !== -1) return true;
     // Force-via-refspec: a positional arg beginning with `+` (e.g. `+main`,
     // `+refs/heads/x`) BEFORE any `--`. Comments were already stripped by the
-    // tokenizer, and a `+1` inside a quoted message is quotedOnly (skipped above).
+    // tokenizer. A quoted `'+main'` still reaches git as `+main`, so it counts.
     if (w.startsWith('+') && w.length > 1) return true;
+  }
+  return false;
+}
+
+// Sentinel string splitSegments injects into a segment when a command
+// substitution / backtick expansion feeds argv into it. Must match the literal
+// used in splitSegments.flushWithSubst().
+const CMDSUBST_SENTINEL = '\x00CMDSUBST\x00';
+
+// Does this `git push` arg list contain an argument produced by a command
+// substitution / backtick expansion? Such expansions can inject `--force` (or a
+// `+refspec`) that the static tokenizer can never see, so for `git push` we
+// conservatively treat their presence as a potential force-flag bypass.
+function hasCmdSubstArg(rest) {
+  for (const t of rest) {
+    // The sentinel is a control-char marker our own parser injects at a `$(` /
+    // backtick boundary; it can never appear in genuine user data. Detect it
+    // regardless of t.quotedOnly: bash expands command substitution inside
+    // DOUBLE quotes too, so the sentinel can legitimately land in a quoted token
+    // (e.g. `git push origin "$(echo --force)"`). Only single-quoted `$(...)` is
+    // literal, and splitSegments never injects the sentinel for that case.
+    if (t.text.indexOf(CMDSUBST_SENTINEL) !== -1) return true;
   }
   return false;
 }
@@ -414,13 +500,36 @@ function main() {
           'owner confirmation, never from an automated push.'
         );
       }
+      if (hasCmdSubstArg(rest)) {
+        return block(
+          'anti-hall git-guard: BLOCKED. `git push` has an argument produced by a ' +
+          'command substitution / backtick expansion, which can smuggle a --force ' +
+          'flag past static inspection. Run the push with literal arguments (no ' +
+          '$( ) or backticks) so the force-push guard can verify it.'
+        );
+      }
     }
 
     // --- Rule 1: self-credit in an inline commit message ---
     if (sub === 'commit') {
       const msgs = inlineCommitMessages(rest);
       for (const m of msgs) {
-        if (SELF_CREDIT_COAUTHOR.test(m) || SELF_CREDIT_GENERATED.test(m)) {
+        // The self-credit trailer regexes are line-anchored (/im) and need a real
+        // newline to match a trailer line. A `$'...'` (ANSI-C quoted) -m value keeps
+        // its `\n` LITERAL after tokenizing, AND the double-quote tokenizer now
+        // preserves a literal backslash before n/r/t (matching bash, which does not
+        // interpret those in `"..."`), so a trailer hidden as `fix\n\nCo-authored-by:`
+        // in either the `$'...'` or the ordinary `"...\n..."` form survives to here.
+        // Test BOTH the raw message and a copy with the common C backslash escapes
+        // interpreted (\n, \r, \t) so both inline escaped forms are covered.
+        const normalized = m
+          .replace(/\\n/g, '\n')
+          .replace(/\\r/g, '\r')
+          .replace(/\\t/g, '\t');
+        if (
+          SELF_CREDIT_COAUTHOR.test(m) || SELF_CREDIT_GENERATED.test(m) ||
+          SELF_CREDIT_COAUTHOR.test(normalized) || SELF_CREDIT_GENERATED.test(normalized)
+        ) {
           return block(
             'anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant ' +
             'self-credit trailer (Co-Authored-By / "Generated with <AI>"). Remove it - ' +

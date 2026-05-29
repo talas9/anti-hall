@@ -95,22 +95,35 @@ Record these in the handoff. Compare every round to detect drift.
 
 ### A3. Lock the verification preamble
 
-Every spawned agent MUST run this before any read/write:
+Every spawned agent MUST run this before any read/write. It is pure Node
+(`child_process.execFileSync`), so it runs unchanged on Windows, macOS, and Linux —
+no POSIX shell, no `$(...)`, no `[ ... ]`. Save as `verify-branch.js` (or paste into
+`node -e`) and run `node verify-branch.js <expected_dir> <branch> <sha>`:
 
-```bash
-cd <expected_dir>
-ACTUAL_BRANCH=$(git branch --show-current)
-ACTUAL_SHA=$(git rev-parse --short HEAD)
-EXPECTED_BRANCH=<branch>
-EXPECTED_SHA=<sha>
-if [ "$ACTUAL_BRANCH" != "$EXPECTED_BRANCH" ] || [ "$ACTUAL_SHA" != "$EXPECTED_SHA" ]; then
-  echo "BRANCH/SHA MISMATCH: expected=$EXPECTED_BRANCH@$EXPECTED_SHA actual=$ACTUAL_BRANCH@$ACTUAL_SHA"
-  echo "STOP — surface to orchestrator before proceeding"
-  exit 1
-fi
+```js
+// verify-branch.js — exits 1 on branch/SHA drift, 0 when the worktree matches.
+'use strict';
+const { execFileSync } = require('child_process');
+const [dir, expBranch, expSha] = process.argv.slice(2);
+const git = (...a) => execFileSync('git', ['-C', dir, ...a], { encoding: 'utf8' }).trim();
+const actualBranch = git('branch', '--show-current');
+const actualSha = git('rev-parse', '--short', 'HEAD');
+if (actualBranch !== expBranch || actualSha !== expSha) {
+  console.error(`BRANCH/SHA MISMATCH: expected=${expBranch}@${expSha} actual=${actualBranch}@${actualSha}`);
+  console.error('STOP — surface to orchestrator before proceeding');
+  process.exit(1);
+}
+console.log(`OK ${actualBranch}@${actualSha}`);
 ```
 
 The orchestrator dispatching the agent fills `<expected_dir>`, `<branch>`, `<sha>` from the moment of dispatch.
+
+> POSIX-only equivalent (Linux/macOS shells), if a Node verifier is unavailable:
+> ```bash
+> cd <expected_dir>
+> [ "$(git branch --show-current)" = "<branch>" ] && [ "$(git rev-parse --short HEAD)" = "<sha>" ] \
+>   || { echo "BRANCH/SHA MISMATCH — STOP, surface to orchestrator"; exit 1; }
+> ```
 
 ## Phase B — Round N debate
 

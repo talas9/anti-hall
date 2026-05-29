@@ -241,7 +241,10 @@ function render(input) {
       } else if (used < 80) {
         ctx = ` \x1b[38;5;208m[${bar}] ${used}%\x1b[0m`;
       } else {
-        ctx = ` \x1b[5;31m[${bar}] ${used}%\x1b[0m`;
+        // Bold bright red (256-color) for the >=80% tier. Avoids SGR 5 (blink),
+        // which is inconsistently supported across terminals and can render as
+        // garbage or bleed attributes; consistent with the bold/256-color tiers above.
+        ctx = ` \x1b[1;38;5;196m[${bar}] ${used}%\x1b[0m`;
       }
     }
     // (Context-bridge temp-file write removed — no PostToolUse consumer ships.)

@@ -65,7 +65,6 @@ if (existing !== undefined) {
 const newStatusLine = {
   type: 'command',
   command: `node "${DISPATCHER}"`,
-  padding: 0,
 };
 
 settings.statusLine = newStatusLine;
@@ -75,7 +74,9 @@ try {
   fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n', 'utf8');
 } catch (e) {
   console.error(`ERROR: Could not write ${SETTINGS_PATH}: ${e.message}`);
-  console.error(`Restore from backup: cp "${BACKUP_PATH}" "${SETTINGS_PATH}"`);
+  // Cross-platform restore hint (no POSIX-only `cp`): use Node itself.
+  console.error('Restore from backup with:');
+  console.error(`  node -e "require('fs').copyFileSync('${BACKUP_PATH.replace(/\\/g, '\\\\')}','${SETTINGS_PATH.replace(/\\/g, '\\\\')}')"`);
   process.exit(1);
 }
 
@@ -84,6 +85,6 @@ console.log(JSON.stringify(newStatusLine, null, 2));
 console.log('');
 console.log(`Done. ${SETTINGS_PATH} updated.`);
 console.log('');
-console.log('To revert:');
-console.log(`  cp "${BACKUP_PATH}" "${SETTINGS_PATH}"`);
+console.log('To revert (cross-platform, no POSIX `cp` needed):');
+console.log(`  node -e "require('fs').copyFileSync('${BACKUP_PATH.replace(/\\/g, '\\\\')}','${SETTINGS_PATH.replace(/\\/g, '\\\\')}')"`);
 console.log('Or remove the "statusLine" key from settings.json manually.');

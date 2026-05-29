@@ -13,7 +13,7 @@
         "repo": "talas9/anti-hall",
         "path": "plugins/anti-hall"
       },
-      "description": "Verify-first discipline: SessionStart full Iron-Law protocol + skill primer, per-turn varying nudge, PreCompact re-injection, root-cause / orchestration / feature-launch / deadly-loop skills, git-guard + task discipline. Optional graphify hooks and a monorepo/simple statusline.",
+      "description": "Verify-first discipline: SessionStart full Iron-Law protocol + skill primer, per-turn varying nudge, SessionStart re-injection (fires with source=compact), root-cause / orchestration / feature-launch / deadly-loop skills, git-guard + task discipline. Optional graphify hooks and a monorepo/simple statusline.",
       "category": "quality",
       "tags": ["verification", "anti-hallucination", "quality", "discipline", "debugging", "orchestration"],
       "author": { "name": "Mohammed Talas" }

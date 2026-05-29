@@ -1,5 +1,12 @@
 # MODEL-POLICY — Debate Roster (shared by deadly-loop and feature-launch)
 
+<!-- SYNC NOTE: this file is duplicated in skills/MODEL-POLICY.md and the two
+     skills' references/ (deadly-loop/references/MODEL-POLICY.md,
+     feature-launch/references/MODEL-POLICY.md). The copies are intentional —
+     skill bundling requires each skill to carry its own references/ copy, and
+     symlinks are stripped on plugin install. Update ALL THREE copies together
+     so they stay byte-identical. -->
+
 This file defines the two-agent debate roster used by the `deadly-loop` and
 `feature-launch` skills. Both skills MUST read this before spawning any debate
 round so the model selection and spawn mechanics are correct and consistent.
@@ -46,24 +53,42 @@ adversarial persona** — never a weaker/cheaper model.
 
 Resolve the Critic path at runtime with this branch logic:
 
-```bash
-# 1. Is the Codex CLI installed AND resolvable IN THIS SHELL?
-if command -v codex >/dev/null 2>&1; then
-  CODEX_AVAILABLE=1
-else
-  CODEX_AVAILABLE=0
-fi
+Prefer this pure-Node probe — it is OS-agnostic (Windows, macOS, Linux), uses no
+`command -v` / `/dev/null` / POSIX-only paths, and walks `PATH` honoring Windows
+`PATHEXT` (`.cmd`/`.exe`) so it resolves a real on-`PATH` `codex` binary, not a shell
+alias. Exit 0 = available, 1 = unavailable:
+
+```js
+// codex-available.js — exit 0 if a real `codex` executable is on PATH, else 1.
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const isWin = process.platform === 'win32';
+const exts = isWin ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';') : [''];
+const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
+const found = dirs.some(d => exts.some(e => {
+  try { fs.accessSync(path.join(d, 'codex' + e.toLowerCase()), fs.constants.X_OK); return true; }
+  catch (_) { try { fs.accessSync(path.join(d, 'codex' + e), fs.constants.F_OK); return true; } catch (_) { return false; } }
+}));
+process.exit(found ? 0 : 1);
 ```
+
+OS-specific one-liners, if a Node probe is inconvenient:
+- POSIX (Linux/macOS): `command -v codex >/dev/null 2>&1 && echo yes || echo no`
+- Windows PowerShell: `if (Get-Command codex -ErrorAction SilentlyContinue) { 'yes' } else { 'no' }`
+- Windows cmd: `where codex >NUL 2>&1 && echo yes || echo no`
 
 > **CLI-alias-in-subprocess caveat:** `codex` may be a shell **alias/function**
 > defined only in an interactive profile. Aliases do NOT resolve in a
-> non-interactive hook or a spawned subprocess, so `command -v codex` can pass in
-> your interactive shell yet fail in the child that actually runs `codex exec`.
-> Detect in the SAME shell that will invoke it, and if the alias path fails, try
-> a resolved absolute path (e.g. `"$(command -v codex)"` captured up front, or a
-> known install location like `~/.codex/bin/codex` / `/usr/local/bin/codex`). If
-> none resolves in the executing shell, treat Codex as UNAVAILABLE and take the
-> 2nd-Opus fallback.
+> non-interactive hook or a spawned subprocess, so a bare `command -v codex` can
+> pass in your interactive shell yet fail in the child that actually runs
+> `codex exec`. The Node probe above only matches a real on-`PATH` executable
+> (never an alias), so it is the most reliable check. If you fall back to a shell
+> check, detect in the SAME shell that will invoke it, and if the alias path
+> fails, try a resolved absolute path (e.g. a known install location like
+> `~/.codex/bin/codex` / `/usr/local/bin/codex`, or on Windows
+> `%USERPROFILE%\.codex\bin\codex.exe`). If none resolves in the executing shell,
+> treat Codex as UNAVAILABLE and take the 2nd-Opus fallback.
 >
 > **Never** set `OPENAI_API_KEY` as a per-job env var (Codex issue #5038: the
 > extension can ignore `approval_policy: never` and prompt).
@@ -73,14 +98,14 @@ Also confirm the Codex plugin / skill layer is ready before relying on it:
 - The `codex` plugin should be installed, exposing the `codex:rescue` skill
   (delegate investigation / review to the Codex subagent) and the `codex:setup`
   skill (checks whether the local Codex CLI is ready, toggles the review gate).
-- Run the readiness check via the `codex:setup` skill (or `command -v codex`
+- Run the readiness check via the `codex:setup` skill (or the Node probe
   above). If `codex:setup` reports the CLI is not ready / not authenticated,
   treat Codex as UNAVAILABLE and take the fallback.
 
 **Branch logic:**
 
 ```
-if Codex CLI present (command -v codex) AND codex:setup reports ready:
+if Codex CLI present (codex-available.js exits 0) AND codex:setup reports ready:
     → Critic = OpenAI Codex (latest, max reasoning)  [cross-model debate]
 else:
     → Critic = 2nd Claude Opus (latest, max thinking, divergent adversarial persona)

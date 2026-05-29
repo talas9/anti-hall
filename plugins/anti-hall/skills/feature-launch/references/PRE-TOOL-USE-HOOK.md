@@ -12,87 +12,96 @@ destructive command has already run. The official pattern for command-level safe
 is the **PreToolUse hook**: regex-match the proposed command, exit code 2 on match
 -> block with a stderr message returned to the agent.
 
+The sentinel below is **pure Node** (no bash, no `jq`, no `chmod`), so it runs
+unchanged on Windows, macOS, and Linux — matching the rest of the anti-hall plugin.
+Node is the plugin's only runtime prerequisite (see README). There is intentionally
+no `.sh` variant: a shell script cannot run on a stock Windows shell, which would
+make this mandatory safety gate impossible to install for Windows AFK users.
+
 Reference:
 - https://code.claude.com/docs/en/hooks
 - https://github.com/anthropics/claude-code/blob/main/examples/hooks/bash_command_validator_example.py
 
 ## Drop-in script
 
-Save as `.claude/hooks/feature-launch-hard-gates.sh`:
+Save as `.claude/hooks/feature-launch-hard-gates.js`:
 
-```bash
-#!/usr/bin/env bash
-# Hard-gate sentinel for feature-launch autonomous mode.
-# Reads PreToolUse JSON from stdin; exits 2 (block) on hard-gate match, 0 otherwise.
+```js
+#!/usr/bin/env node
+// Hard-gate sentinel for feature-launch autonomous mode.
+// Reads PreToolUse JSON from stdin; exits 2 (block) on hard-gate match, 0 otherwise.
+// Pure Node: no bash, no jq, no chmod — runs unchanged on Windows, macOS, Linux.
+'use strict';
 
-set -euo pipefail
+const fs = require('fs');
 
-INPUT="$(cat)"
+let raw = '';
+try {
+  raw = fs.readFileSync(0, 'utf8');
+} catch (_) {
+  process.exit(0); // no input -> allow (fail-open, never wedge unrelated work)
+}
 
-# jq is the standard parser; fall through silently if absent (fail-open, won't block).
-if ! command -v jq >/dev/null 2>&1; then
-  exit 0
-fi
+let payload;
+try {
+  payload = JSON.parse(raw);
+} catch (_) {
+  process.exit(0); // unparseable envelope -> allow
+}
 
-TOOL="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty')"
-[ "$TOOL" != "Bash" ] && exit 0
+if (!payload || payload.tool_name !== 'Bash') process.exit(0);
 
-CMD="$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')"
-[ -z "$CMD" ] && exit 0
+const cmd = payload.tool_input && typeof payload.tool_input.command === 'string'
+  ? payload.tool_input.command
+  : '';
+if (!cmd) process.exit(0);
 
-# Hard-gate patterns. Match -> block with exit 2.
-# These are the UNIVERSAL gates. Add project-specific patterns (your deploy CLI,
-# your payment provider, your data-deletion commands) in the marked section below.
-declare -a PATTERNS=(
-  # Force operations
-  'git[[:space:]]+push[^|;&]*--force'
-  'git[[:space:]]+push[^|;&]*-f([[:space:]]|$)'
-  'git[[:space:]]+reset[[:space:]]+--hard'
+// Hard-gate patterns. Match -> block with exit 2.
+// These are the UNIVERSAL gates. Add project-specific patterns (your deploy CLI,
+// your payment provider, your data-deletion commands) in the marked section below.
+const PATTERNS = [
+  // Force operations
+  /git\s+push[^|;&]*--force/,
+  /git\s+push[^|;&]*-f(\s|$)/,
+  /git\s+reset\s+--hard/,
 
-  # Hook / verification bypass
-  '--no-verify'
-  '--no-gpg-sign'
+  // Hook / verification bypass
+  /--no-verify/,
+  /--no-gpg-sign/,
 
-  # Force deletions
-  '(^|[[:space:]])rm[[:space:]]+-rf[[:space:]]+'
-  'git[[:space:]]+branch[[:space:]]+-D'
+  // Force deletions
+  /(^|\s)rm\s+-rf\s+/,
+  /git\s+branch\s+-D/,
 
-  # ---- PROJECT-SPECIFIC GATES (customize) -------------------------------
-  # Examples — uncomment / adapt to your stack:
-  #   '<deploy-cli>[[:space:]]+deploy'            # production deploy command
-  #   '<payments-cli>[[:space:]]+.*refund'        # financial action
-  #   '<db-cli>[[:space:]]+.*delete[[:space:]]+--all'  # bulk data deletion
-  # -----------------------------------------------------------------------
-)
+  // ---- PROJECT-SPECIFIC GATES (customize) -------------------------------
+  // Examples — uncomment / adapt to your stack:
+  //   /<deploy-cli>\s+deploy/,            // production deploy command
+  //   /<payments-cli>\s+.*refund/,        // financial action
+  //   /<db-cli>\s+.*delete\s+--all/,      // bulk data deletion
+  // -----------------------------------------------------------------------
+];
 
-for p in "${PATTERNS[@]}"; do
-  if [[ "$CMD" =~ $p ]]; then
-    cat >&2 <<EOF
-========================================================================
-BLOCKED by feature-launch hard-gate sentinel.
+for (const p of PATTERNS) {
+  if (p.test(cmd)) {
+    process.stderr.write(
+      '========================================================================\n' +
+      'BLOCKED by feature-launch hard-gate sentinel.\n\n' +
+      'Pattern matched: ' + p.toString() + '\n' +
+      'Command:         ' + cmd + '\n\n' +
+      'This command requires explicit human approval. See the project\'s hard\n' +
+      'rules and Phase A.5.5 of the feature-launch skill.\n\n' +
+      'If you believe this is a false positive, refine the regex in\n' +
+      '.claude/hooks/feature-launch-hard-gates.js and re-run.\n' +
+      '========================================================================\n'
+    );
+    process.exit(2);
+  }
+}
 
-Pattern matched: $p
-Command:         $CMD
-
-This command requires explicit human approval. See the project's hard
-rules and Phase A.5.5 of the feature-launch skill.
-
-If you believe this is a false positive, refine the regex in
-.claude/hooks/feature-launch-hard-gates.sh and re-run.
-========================================================================
-EOF
-    exit 2
-  fi
-done
-
-exit 0
+process.exit(0);
 ```
 
-Make it executable:
-
-```bash
-chmod +x .claude/hooks/feature-launch-hard-gates.sh
-```
+No `chmod` is needed: the hook is invoked as `node <path>`, not executed directly.
 
 ## settings.json entry
 
@@ -108,7 +117,7 @@ Add to `.claude/settings.json` (project-level — checked in) or
         "hooks": [
           {
             "type": "command",
-            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/feature-launch-hard-gates.sh"
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/feature-launch-hard-gates.js\""
           }
         ]
       }
@@ -119,31 +128,38 @@ Add to `.claude/settings.json` (project-level — checked in) or
 
 If `hooks.PreToolUse` already exists, append to the array — don't replace.
 
+> Windows note: `$CLAUDE_PROJECT_DIR` is expanded by Claude Code itself before the
+> command runs, so the same `node "$CLAUDE_PROJECT_DIR/..."` entry works on Windows,
+> macOS, and Linux. No PowerShell/cmd-specific variant is required.
+
 ## Verification
 
-After installing, run these self-tests:
+After installing, run these self-tests (Node is cross-platform; the JSON is passed
+on stdin so no shell-specific quoting tricks are needed):
 
 ```bash
 # Should BLOCK (exit 2)
 echo '{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}' | \
-  .claude/hooks/feature-launch-hard-gates.sh
+  node .claude/hooks/feature-launch-hard-gates.js
 echo "exit: $?"   # expect 2
 
 # Should ALLOW (exit 0)
 echo '{"tool_name":"Bash","tool_input":{"command":"git status"}}' | \
-  .claude/hooks/feature-launch-hard-gates.sh
+  node .claude/hooks/feature-launch-hard-gates.js
 echo "exit: $?"   # expect 0
 
 # Should BLOCK (exit 2)
 echo '{"tool_name":"Bash","tool_input":{"command":"rm -rf build/"}}' | \
-  .claude/hooks/feature-launch-hard-gates.sh
+  node .claude/hooks/feature-launch-hard-gates.js
 echo "exit: $?"   # expect 2
 
 # Should ALLOW (exit 0)
 echo '{"tool_name":"Bash","tool_input":{"command":"git commit -m x"}}' | \
-  .claude/hooks/feature-launch-hard-gates.sh
+  node .claude/hooks/feature-launch-hard-gates.js
 echo "exit: $?"   # expect 0
 ```
+
+On Windows PowerShell, pipe the JSON the same way (`'{...}' | node .claude\hooks\feature-launch-hard-gates.js`).
 
 If any test fails, the hook is broken — DO NOT enter autonomous mode until fixed.
 Also add a verification case for every project-specific pattern you uncomment.
@@ -152,7 +168,8 @@ Also add a verification case for every project-specific pattern you uncomment.
 
 When the hard-gate list changes (new deploy target, new payment provider, new
 force-operation), update `PATTERNS` and add a verification case. The hook is
-intentionally fail-open if `jq` is missing — install `jq` on every machine that runs
-autonomous mode.
+intentionally fail-open on unparseable input so it never wedges unrelated work; the
+universal gates above always run as long as Node is present (the plugin's documented
+prerequisite).
 
-Hook ID: `feature-launch-hard-gates@v1`. Bump when patterns change.
+Hook ID: `feature-launch-hard-gates@v2` (pure-Node). Bump when patterns change.

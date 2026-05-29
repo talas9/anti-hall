@@ -102,7 +102,7 @@ the actual directory from Step 1.
 The installer:
 1. Backs up `~/.claude/settings.json` to `~/.claude/settings.json.bak-anti-hall`
 2. Prints the existing `statusLine` value (if any)
-3. Sets `statusLine` to `{ "type": "command", "command": "node \"<abs-path>/statusline.js\"", "padding": 0 }`
+3. Sets `statusLine` to `{ "type": "command", "command": "node \"<abs-path>/statusline.js\"" }`
    — the path is fully quoted, so spaces in the install directory are safe
 4. Prints the new value and revert instructions
 
@@ -113,9 +113,14 @@ same value (the backup is refreshed each time).
 
 ## Revert
 
+Cross-platform (Windows, macOS, Linux — no POSIX-only `cp`), restore the backup the
+installer wrote:
+
+```bash
+node -e "const os=require('os'),p=require('path'),s=p.join(os.homedir(),'.claude','settings.json');require('fs').copyFileSync(s+'.bak-anti-hall',s)"
 ```
-cp ~/.claude/settings.json.bak-anti-hall ~/.claude/settings.json
-```
+
+POSIX shells can equivalently run `cp ~/.claude/settings.json.bak-anti-hall ~/.claude/settings.json`.
 
 Or manually remove / replace the `statusLine` key in `~/.claude/settings.json`.
 
