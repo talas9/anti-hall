@@ -21,6 +21,9 @@ workflow skills that go with it. It fights four failure modes:
   Silent no-op when graphify isn't used.
 - **`graphify-reminder.sh`** (`Stop`, non-blocking) — after a session with real edits
   and a graph present, reminds to run `/graphify --obsidian`. Never blocks.
+- **`git-guard.sh`** (`PreToolUse` on Bash) — mechanically **blocks** commits that
+  carry a `Co-Authored-By`/self-credit trailer and blocks `git push --force`. Commits
+  take no AI credit; history rewrites are a deliberate human action.
 
 ### Skills
 - **`root-cause`** — evidence-driven debugging: reproduce, collect evidence,

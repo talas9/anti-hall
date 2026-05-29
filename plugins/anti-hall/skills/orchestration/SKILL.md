@@ -125,6 +125,18 @@ garbage for the main context window. NEVER run them inline in the main conversat
 - The main thread sees the conclusion, not the scrollback. This keeps the coordinator
   clean for actual thinking and decisions.
 
+## Commit and push hygiene (enforced)
+
+- **No self-credit in commits.** Commit messages carry NO `Co-Authored-By` trailer
+  and no "Generated with <AI>" line. The work is the owner's; the assistant takes no
+  authorship credit. The plugin's `git-guard` PreToolUse hook blocks commits that
+  include such trailers.
+- **Never force push.** Rewriting published history is a deliberate human action with
+  explicit owner confirmation — never an automated push. The `git-guard` hook blocks
+  `git push --force` / `-f` / `--force-with-lease`.
+- **Never push (or commit) unless asked.** Pushing is outward-facing; do it only on
+  explicit request.
+
 ## Relationship to other skills in this plugin
 - **feature-launch** runs its plan-hardening and per-phase deadly-loop gates as
   swarms dispatched from the main coordinator — the main thread orchestrates, the
