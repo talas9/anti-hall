@@ -1,19 +1,29 @@
 #!/usr/bin/env node
-// statusline.js — Dispatcher: routes stdin JSON to the right statusline renderer.
+// statusline.js — Two-line statusline dispatcher.
 //
-// Monorepo detection (checked at git toplevel, then cwd):
-//   .gitmodules exists   => monorepo (git submodules)
-//   .gsd/ dir exists     => monorepo (GSD project)
-//   .planning/ dir exists => monorepo (planning state present)
-// Otherwise => simple statusline.
+// LINE 1: monorepo or simple statusline (auto-detected).
+//   Monorepo detection (checked at git toplevel, then cwd):
+//     .gitmodules exists    => monorepo (git submodules)
+//     .gsd/ dir exists      => monorepo (GSD project)
+//     .planning/ dir exists => monorepo (planning state present)
+//   Otherwise => simple statusline.
 //
-// Pure Node. No bash, no grep/sed/cksum. Works on Windows, macOS, Linux.
+// LINE 2: phase bar (only printed when os.tmpdir()/anti-hall/phase-state.json
+//   exists and is valid). Omitted entirely when state file is absent/invalid.
+//
+// Fail-open: if line 1 errors, still attempt line 2. If line 2 errors, omit it.
+// Never crashes Claude Code. No emojis. Pure Node. OS-agnostic.
 
 'use strict';
 
 const fs   = require('fs');
 const path = require('path');
+const os   = require('os');
 const { execFileSync } = require('child_process');
+
+// ---------------------------------------------------------------------------
+// Monorepo detection
+// ---------------------------------------------------------------------------
 
 function gitToplevel(cwd) {
   try {
@@ -35,16 +45,55 @@ function isMonorepo(dir) {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// Phase bar (line 2)
+// ---------------------------------------------------------------------------
+
+const STATE_FILE = path.join(os.tmpdir(), 'anti-hall', 'phase-state.json');
+const BAR_WIDTH  = 10;
+const SPINNER    = ['|', '/', '-', '\\'];
+
+function spinner() {
+  return SPINNER[Math.floor(Date.now() / 250) % SPINNER.length];
+}
+
+function renderBar(done, total) {
+  const filled = total > 0 ? Math.round((done / total) * BAR_WIDTH) : 0;
+  const clamped = Math.max(0, Math.min(BAR_WIDTH, filled));
+  return '[' + '#'.repeat(clamped) + '-'.repeat(BAR_WIDTH - clamped) + ']';
+}
+
+function phaseBarLine() {
+  try {
+    const raw   = fs.readFileSync(STATE_FILE, 'utf8');
+    const state = JSON.parse(raw);
+    const code  = (state.code  || '').toString().trim();
+    const desc  = (state.desc  || '').toString().trim();
+    const done  = parseInt(state.done,  10);
+    const total = parseInt(state.total, 10);
+    if (!code || !desc || isNaN(done) || isNaN(total) || total <= 0) return null;
+    const bar = renderBar(done, total);
+    return `${spinner()} ${bar} ${code} ${desc} ${done}/${total}`;
+  } catch (e) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+
 function main() {
-  // Read all stdin first, then dispatch.
   let input = '';
   const timeout = setTimeout(() => process.exit(0), 3000);
   process.stdin.setEncoding('utf8');
   process.stdin.on('data', chunk => { input += chunk; });
   process.stdin.on('end', () => {
     clearTimeout(timeout);
+
+    // --- LINE 1: dispatch to the right renderer ---
+    let line1 = '';
     try {
-      // Parse to get cwd; fall back gracefully if JSON is malformed.
       let cwd = process.cwd();
       try {
         const data = JSON.parse(input);
@@ -55,32 +104,42 @@ function main() {
       const monorepo = isMonorepo(toplevel) || isMonorepo(cwd);
 
       const scriptDir = __dirname;
-      const renderer = monorepo
+      const renderer  = monorepo
         ? path.join(scriptDir, 'statusline-monorepo.js')
         : path.join(scriptDir, 'statusline-simple.js');
 
-      // Require the renderer module and call its exported run function,
-      // feeding it the already-buffered input via a fake stdin.
-      // Each renderer exports a runWithInput(input) function (or falls back
-      // to being require()'d and running if it detects non-main — we patch
-      // stdin to replay the buffer instead).
-      //
-      // Implementation: inline-require and call runWithInput if exported;
-      // otherwise replay by writing to a writable stream. The simplest
-      // cross-platform approach: just require() the renderer — it sets up
-      // its own stdin listener when require.main === module. Since we ARE
-      // require()'ing it (not running it as main), we drive it explicitly
-      // via its exported API. Both renderers export runWithInput().
-      const mod = require(renderer);
-      if (typeof mod.runWithInput === 'function') {
-        mod.runWithInput(input);
+      // Capture renderer output by temporarily overriding process.stdout.write.
+      const saved = process.stdout.write.bind(process.stdout);
+      const chunks = [];
+      process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+      try {
+        const mod = require(renderer);
+        if (typeof mod.runWithInput === 'function') mod.runWithInput(input);
+      } finally {
+        process.stdout.write = saved;
       }
-      // If export is missing (shouldn't happen), fail silently — statusline
-      // must never crash Claude Code.
+      line1 = chunks.join('');
     } catch (e) {
-      // Silent fail
+      // Line 1 failed — proceed to line 2 attempt anyway
+    }
+
+    // --- LINE 2: phase bar (optional) ---
+    const line2 = phaseBarLine();
+
+    // --- Emit ---
+    let out = line1;
+    if (line2) out += (line1 ? '\n' : '') + line2;
+    if (out) {
+      try {
+        process.stdout.write(out);
+      } catch (e) {
+        // EPIPE or other write error — ignore, never crash Claude Code
+      }
     }
   });
 }
+
+// Suppress EPIPE so a closed pipe on stdout never propagates as an unhandled error.
+process.stdout.on('error', (e) => { if (e.code !== 'EPIPE') throw e; });
 
 main();

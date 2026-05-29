@@ -8,140 +8,156 @@ Runs on **Windows, macOS, and Linux** via Node only (no bash, no grep/sed/python
 
 | Script | Purpose |
 |---|---|
-| `statusline.js` | Dispatcher — auto-selects the right renderer per repo type |
+| `statusline.js` | Dispatcher — auto-selects renderer, prints line 1 + optional line 2 |
 | `statusline-monorepo.js` | Rich statusline for monorepos and GSD projects |
 | `statusline-simple.js` | Minimal statusline for plain repos |
-| `install-statusline.js` | Cross-platform installer — wires `statusline.js` into your settings.json |
+| `phase-bar.js` | Standalone phase bar printer (also embedded in statusline.js) |
+| `install-statusline.js` | Idempotent installer — wires `statusline.js` into settings.json |
+| `uninstall-statusline.js` | Restores previous statusLine from backup, or removes the key |
 
 ---
 
-## What each script shows
+## Two-line output
 
-### statusline-monorepo.js
+`statusline.js` prints up to two lines on each Claude Code refresh:
+
+```
+<line 1>   — always printed
+<line 2>   — printed only when os.tmpdir()/anti-hall/phase-state.json exists and is valid
+```
+
+### Line 1 — monorepo or simple statusline
+
+**Monorepo** (any of `.gitmodules`, `.gsd/`, `.planning/` found at git toplevel or cwd):
 
 ```
 <model> | <current-task-or-gsd-state> | <dir-basename> [context-bar %]
 ```
 
-- **model** — `model.display_name` from the Claude Code stdin JSON (dim)
-- **current task** — in-progress todo `activeForm` from the session's todos file (bold)
-- **GSD state** — when no active todo: milestone, phase, progress bar, or next recommended
-  action parsed from `.planning/STATE.md` (dim). Omitted when `.planning/` is absent.
+**Simple** (any other repo or directory):
+
+```
+<model> | <branch> | <dir-basename> | <context%>
+```
+
+### Line 2 — phase bar (conditional)
+
+```
+| [####------] P2 build 2/5
+```
+
+The spinner character (`|`, `/`, `-`, `\`) time-cycles every 250 ms, giving a live
+feel between refreshes. Line 2 is omitted entirely when the phase-state file is
+absent or malformed — never an error.
+
+**Phase-state file:** `$TMPDIR/anti-hall/phase-state.json`
+
+```json
+{ "code": "P2", "desc": "build", "done": 2, "total": 5 }
+```
+
+Required fields: `code` (string), `desc` (string), `done` (integer), `total` (positive integer).
+
+---
+
+## Monorepo detection rule
+
+`statusline.js` checks the **git toplevel** of the current repo (falling back to cwd).
+It picks `statusline-monorepo.js` when **any** of these exist at the toplevel:
+
+- `.gitmodules` (git submodules present)
+- `.gsd/` directory (GSD project)
+- `.planning/` directory (planning state present)
+
+Otherwise picks `statusline-simple.js`.
+
+Detection uses `fs.existsSync` — no bash, no grep, fully cross-platform.
+
+---
+
+## statusline-monorepo.js details
+
+```
+<model> | <current-task-or-gsd-state> | <dir-basename> [context-bar %]
+```
+
+- **model** — `model.display_name` (dim)
+- **current task** — in-progress todo `activeForm` from the session todos file (bold)
+- **GSD state** — when no active todo: milestone, phase, progress bar, or next action
+  parsed from `.planning/STATE.md` (dim). Omitted when `.planning/` is absent.
 - **dir-basename** — `path.basename(workspace.current_dir)` (dim)
 - **context bar** — 10-char `[##########]` bar + % (green/yellow/orange/red; omitted when
-  context window data is absent or non-numeric)
+  context data is absent or non-numeric)
 
-Optional features (read from `.planning/config.json`):
+Optional config (read from `.planning/config.json`):
 
 | config key | type | effect |
 |---|---|---|
 | `statusline.show_last_command` | boolean | appends `last: /cmd` from transcript |
-| `statusline.context_position` | `"end"` / `"front"` | moves context bar before or after middle segment |
+| `statusline.context_position` | `"end"` / `"front"` | moves context bar position |
 
-### statusline-simple.js
+---
+
+## statusline-simple.js details
 
 ```
 <model> | <branch> | <dir-basename> | <context%>
 ```
 
 - **model** — `model.display_name` (dim)
-- **branch** — current git branch via `git rev-parse --abbrev-ref HEAD` (blue; omitted when not in a git repo)
+- **branch** — current git branch (blue; omitted when not a git repo)
 - **dir-basename** — project folder name (dim)
-- **context%** — `100 - remaining_percentage` (green/yellow/red; omitted when absent or non-numeric)
-
-No `.planning/`, no todos, no GSD-specific logic. Always safe to run on any project.
-
----
-
-## Monorepo detection rule (statusline.js)
-
-`statusline.js` checks the **git toplevel** of the current repo (falling back to cwd).
-It picks `statusline-monorepo.js` when **any** of these exist at the toplevel:
-
-- `.gitmodules` (git submodules present — primary generic signal)
-- `.gsd/` directory (GSD project — optional, degrades gracefully when absent)
-- `.planning/` directory (planning state present — optional, degrades gracefully when absent)
-
-Otherwise it picks `statusline-simple.js`.
-
-Detection uses Node `fs.existsSync` — no bash, no grep, fully cross-platform.
+- **context%** — `100 - remaining_percentage` (green/yellow/red; omitted when absent)
 
 ---
 
 ## Installation
 
 Plugins cannot auto-apply a main `statusLine` — Claude Code's plugin settings.json
-supports only `agent` and `subagentStatusLine`. The installer wires things up for
-you by editing your personal `~/.claude/settings.json`.
+supports only `agent` and `subagentStatusLine`. The installer wires things up by
+editing your personal `~/.claude/settings.json`.
 
-### Step 1 — find the installed plugin directory
-
-After `/plugin marketplace add talas9/anti-hall` or `/plugin install`, the plugin
-lives in your Claude Code plugins cache. The exact path appears in the install output.
-It typically looks like:
+### Run the installer
 
 ```
-~/.claude/plugins/anti-hall/
+node statusline/install-statusline.js
 ```
-
-or on Windows:
-
-```
-%USERPROFILE%\.claude\plugins\anti-hall\
-```
-
-### Step 2 — run the installer
-
-```
-node /path/to/anti-hall/statusline/install-statusline.js
-```
-
-The installer resolves all paths automatically. Replace `/path/to/anti-hall` with
-the actual directory from Step 1.
 
 The installer:
-1. Backs up `~/.claude/settings.json` to `~/.claude/settings.json.bak-anti-hall`
-2. Prints the existing `statusLine` value (if any)
-3. Sets `statusLine` to `{ "type": "command", "command": "node \"<abs-path>/statusline.js\"" }`
-   — the path is fully quoted, so spaces in the install directory are safe
-4. Prints the new value and revert instructions
+1. Checks if `statusLine` already points at this script — if so, prints "already
+   installed" and exits without making any changes (dedup).
+2. Backs up `~/.claude/settings.json` to `~/.claude/settings.json.bak-antihall-statusline`
+   — only on the first install; does not overwrite an existing backup.
+3. Prints the old `statusLine` value (if any).
+4. Sets `statusLine` to `{ "type": "command", "command": "node \"<abs-path>/statusline.js\"" }`.
+5. Prints the new value and uninstall instructions.
 
-The installer is idempotent — running it again just overwrites the statusLine with the
-same value (the backup is refreshed each time).
+**Restart Claude Code** (close and reopen) after running the installer for the
+changed `statusLine` to take effect.
 
 ---
 
-## Revert
+## Uninstall
 
-Cross-platform (Windows, macOS, Linux — no POSIX-only `cp`), restore the backup the
-installer wrote:
-
-```bash
-node -e "const os=require('os'),p=require('path'),s=p.join(os.homedir(),'.claude','settings.json');require('fs').copyFileSync(s+'.bak-anti-hall',s)"
+```
+node statusline/uninstall-statusline.js
 ```
 
-POSIX shells can equivalently run `cp ~/.claude/settings.json.bak-anti-hall ~/.claude/settings.json`.
+The uninstaller:
+1. If `~/.claude/settings.json.bak-antihall-statusline` exists, restores the entire
+   settings.json from that backup (reverting all changes the installer made).
+2. If no backup exists, removes only the `statusLine` key from the current settings.json.
+3. Reports what it did. Idempotent — safe to run multiple times.
 
-Or manually remove / replace the `statusLine` key in `~/.claude/settings.json`.
+**Restart Claude Code** after uninstalling.
 
 ---
 
 ## Cross-platform note
 
-All statusline scripts are pure Node (built-ins only: `fs`, `path`, `os`,
-`child_process`). No bash, grep, sed, cksum, or python3 required. Git branch
-detection uses `child_process.execFileSync('git', ...)` which works on every OS
-where git is installed; it degrades gracefully (omits the branch segment) when git
-is absent or the directory is not a git repo.
+All scripts are pure Node (built-ins only: `fs`, `path`, `os`, `child_process`).
+No bash, grep, sed, cksum, or python3 required. Git detection uses
+`child_process.execFileSync('git', ...)` and degrades gracefully when git is absent.
 
-Windows path separators are handled via `path.join`/`path.basename`. The installer
-resolves `~` via `os.homedir()` on all platforms.
-
----
-
-## Why an installer instead of auto-apply
-
-Claude Code evaluates `statusLine` from the user's `~/.claude/settings.json`. A
-plugin's own `settings.json` supports `agent` and `subagentStatusLine`, but the main
-`statusLine` (the bar shown in every session) must come from the user-level settings
-file. The installer is therefore the correct and only activation step.
+Windows path separators are handled via `path.join`/`path.basename`. Home directory
+is resolved via `os.homedir()` on all platforms.
