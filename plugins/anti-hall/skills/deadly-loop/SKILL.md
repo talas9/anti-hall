@@ -7,7 +7,7 @@ description: Iterative 2-agent debate + fix-wave protocol for hardening non-triv
 
 Spend 1-2 hours of agent compute to ship a clean change rather than 1-2 weeks of post-merge incident response.
 
-This skill uses a shared debate roster defined in `../MODEL-POLICY.md` (Reviewer = latest Opus at max thinking; Critic = latest OpenAI Codex at max reasoning, with a 2nd-Opus divergent-persona fallback). Read that file before dispatching any round so the model selection and spawn mechanics are correct.
+This skill uses a shared debate roster defined in `references/MODEL-POLICY.md` (Reviewer = latest Opus at max thinking; Critic = latest OpenAI Codex at max reasoning, with a 2nd-Opus divergent-persona fallback). Read that file before dispatching any round so the model selection and spawn mechanics are correct.
 
 ## When to use this skill
 
@@ -37,7 +37,7 @@ Before invoking the deadly loop, ensure:
 2. A **canonical handoff doc** exists or will be created (e.g., `docs/<date>-<feature>-session-handoff.md`).
 3. The owner has authorized at least one full iteration (each round is ~5-30 min of agent compute).
 4. A verification preamble + branch/SHA check is in effect for every spawned agent (see Phase A3).
-5. The debate roster from `../MODEL-POLICY.md` is resolved — confirm whether Codex is available (`command -v codex`) so you know which Critic path to take.
+5. The debate roster from `references/MODEL-POLICY.md` is resolved — confirm whether Codex is available (`command -v codex`) so you know which Critic path to take.
 
 ## The pattern at a glance
 
@@ -50,7 +50,7 @@ Round 1 (initial audit, Reviewer + Critic in parallel)
                                                             └─→ Round N (zero NEW P0s) → GO → owner merge
 ```
 
-Each round = 1 Reviewer agent + 1 Critic agent, dispatched **in parallel in the same message**. Roster + spawn details: `../MODEL-POLICY.md`.
+Each round = 1 Reviewer agent + 1 Critic agent, dispatched **in parallel in the same message**. Roster + spawn details: `references/MODEL-POLICY.md`.
 Each wave = 1 orchestrator agent + N parallel children for parallel-safe fixes, then serial children for fixes with dependencies.
 
 ## Phase A — Initialize the loop
@@ -114,12 +114,12 @@ The orchestrator dispatching the agent fills `<expected_dir>`, `<branch>`, `<sha
 
 ## Phase B — Round N debate
 
-Two parallel agents dispatched in the **same message** (roster + exact spawn syntax in `../MODEL-POLICY.md`):
+Two parallel agents dispatched in the **same message** (roster + exact spawn syntax in `references/MODEL-POLICY.md`):
 
 - **Reviewer** — latest Opus at maximum thinking. Correctness / architecture auditor.
 - **Critic** — latest OpenAI Codex at maximum reasoning **when available**; otherwise a 2nd Opus with a divergent adversarial "failure-mode hunter" persona.
 
-See `../MODEL-POLICY.md` for the `command -v codex` availability check and the concrete `Agent(...)` / Codex invocations. Dispatch both in ONE message so they run truly in parallel.
+See `references/MODEL-POLICY.md` for the `command -v codex` availability check and the concrete `Agent(...)` / Codex invocations. Dispatch both in ONE message so they run truly in parallel.
 
 ### B1. Reviewer prompt skeleton
 
@@ -238,7 +238,7 @@ Sequencing:
 Subagent prompt template:
 [ROLE / TARGET / FILE / PATCH / VERIFICATION PREAMBLE / VALIDATION / COMMIT+PUSH / REPORT]
 
-Use a fast/cheap model for execution-only fixes (apply specific patch, push). Use a stronger model for fixes requiring investigation, hand-merging, or rebase planning. (Round debate agents always use the full roster in ../MODEL-POLICY.md — never downgrade those.)
+Use a fast/cheap model for execution-only fixes (apply specific patch, push). Use a stronger model for fixes requiring investigation, hand-merging, or rebase planning. (Round debate agents always use the full roster in references/MODEL-POLICY.md — never downgrade those.)
 
 Final report (under 800 words):
 | Fix | status | commit SHA | branch | validation evidence (paste actual outputs) |
@@ -335,7 +335,7 @@ Avoid:
 - **Trusting agent claims without runtime validation** — a "merge rehearsal: Already up to date" line can look like proof while the rehearsal target was wrong. Verify the verification.
 - **Letting force-pushes happen without rehearsal** — proving the rebase is correct is mandatory.
 - **Sending Reviewer + Critic in separate messages** — they run sequentially that way, doubling wall time. Always dispatch BOTH in one message.
-- **Downgrading debate agents without checking availability** — if Codex is unavailable, fall back to a 2nd Opus with a divergent persona (per `../MODEL-POLICY.md`), NOT a weaker/cheaper model. A weaker model's debate depth is substantially shallower; use cheap models only for wave fix children, never for round debate agents. If Opus is also rate-limited, wait and retry rather than silently degrading.
+- **Downgrading debate agents without checking availability** — if Codex is unavailable, fall back to a 2nd Opus with a divergent persona (per `references/MODEL-POLICY.md`), NOT a weaker/cheaper model. A weaker model's debate depth is substantially shallower; use cheap models only for wave fix children, never for round debate agents. If Opus is also rate-limited, wait and retry rather than silently degrading.
 - **Stopping after Round 1 GO** — sometimes Round 1 misses things only Round 2 catches once you have a baseline. The first GO from BOTH agents is the gate, not Round 1.
 
 ## Telemetry to track
@@ -364,7 +364,7 @@ When the conditions in "When to use this skill" are met, proactively suggest:
 
 > "This change has [cross-PR coordination / hand-merges / security implications / serverless coupling / shell scripts / CI YAML]. I recommend running the **deadly-loop** skill before merge — it catches subtle bugs that single-pass review usually misses. ~30-90 min of agent compute, ~$5-15 in tokens."
 
-If the owner approves, execute Phase A → B → C → D as documented, using the roster in `../MODEL-POLICY.md`.
+If the owner approves, execute Phase A → B → C → D as documented, using the roster in `references/MODEL-POLICY.md`.
 
 ## Reference templates (optional, add incrementally)
 

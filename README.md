@@ -15,6 +15,17 @@ repo.
 - **graphify hooks** — query-the-graph-first on session start; keep-it-updated reminder.
 - **Statusline** — rich for monorepos, simple otherwise; activated by an installer.
 
+## Requirements
+- **Node.js (>= 18) on `PATH`.** Every hook and the statusline are launched as
+  `node "<plugin>/hooks/<name>.js"`. Claude Code does NOT guarantee a
+  user-installed `node` on the hook shell's `PATH`, and this plugin does not
+  bundle one. On a machine with no global Node install (common on a fresh Windows
+  box or for non-JS developers) the hooks fail to launch and the guards
+  (force-push / self-credit block, verify-first, task discipline) silently do not
+  run. Install Node from <https://nodejs.org> and verify with `node --version`
+  before relying on the protections. "Works on any machine / any repo" means
+  OS-portable *given Node* — Node is the one hard prerequisite.
+
 ## Install
 ```bash
 /plugin marketplace add talas9/anti-hall

@@ -137,6 +137,44 @@ garbage for the main context window. NEVER run them inline in the main conversat
 - **Never push (or commit) unless asked.** Pushing is outward-facing; do it only on
   explicit request.
 
+## Task-list discipline (enforced)
+
+The plugin enforces a non-negotiable task-list protocol via two hooks:
+
+**Rule: capture every request, sort by priority, work in order.**
+
+1. **Capture every user request as a task before acting.** Use `TaskCreate` for each
+   new request. Do this before starting any work so nothing is silently dropped. A
+   request that enters your head but not the task list does not exist.
+
+2. **Assign a priority to every task.** Use `metadata.priority`: `P0` (critical /
+   blocking), `P1` (important, do next), `P2` (normal / backlog). Maintain the list
+   sorted highest-priority-first. Work tasks from the top down — the most important
+   work first.
+
+3. **Keep statuses current as you work.**
+   - `in_progress` — the moment you start working on a task.
+   - `completed` — only when the work is fully done and verified.
+   - `deferred` — explicitly deprioritized; tell the user why.
+   Never leave a task in `pending` while you are actively working on it, and never
+   mark a task `completed` until the work is actually done.
+
+4. **Main thread stays non-blocking.** Delegate heavy/long work to background
+   subagents (see rules above) and keep the coordinator free to respond to the user
+   and pick up the next task immediately.
+
+5. **Report progress.** After dispatching subagents or completing a task, give the
+   user a brief status update. Don't go silent.
+
+**Plugin enforcement:**
+- `task-tracker.js` (`UserPromptSubmit`) — injects this discipline as `additionalContext`
+  on every turn so it stays at top-of-context where it has the highest salience.
+- `task-guard.js` (`Stop`, loop-safe) — when the session is about to stop with open
+  tasks still in `pending` or `in_progress`, blocks once to prompt the model to
+  continue, defer, or explicitly tell the user what is pending. Loop-safety: if the
+  exact same open-task set was already blocked on, the guard does not block again
+  (prevents infinite nudge loops). Fail-open on any parse/read error.
+
 ## Relationship to other skills in this plugin
 - **feature-launch** runs its plan-hardening and per-phase deadly-loop gates as
   swarms dispatched from the main coordinator — the main thread orchestrates, the

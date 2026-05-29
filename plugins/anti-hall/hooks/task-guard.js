@@ -1,0 +1,255 @@
+#!/usr/bin/env node
+// anti-hall :: task-guard (Stop hook, loop-safe)
+//
+// Fires on Stop. Checks whether the session's task list still has open tasks.
+// If so, blocks ONCE to prompt the model to continue or explicitly defer them.
+// Loop-safety: if the exact same open-task set was already blocked on last Stop,
+// we do NOT block again (prevents infinite back-and-forth loops).
+//
+// Contract (Claude Code Stop hook):
+//   stdin  : JSON { transcript_path, session_id?, cwd?, ... }
+//   stdout : JSON {"decision":"block","reason":"..."} to block, or nothing.
+//   exit 0 : always - fail-open on any error so a bug never hard-loops Claude.
+//
+// Design (OS-agnostic - pure Node built-ins, fd-0 stdin, os.tmpdir state):
+//   - Streams the transcript JSONL (no fixed byte window) so an early
+//     TodoWrite in a large transcript is never silently missed.
+//   - Discovers tasks from TodoWrite tool_use entries (input.todos[]) AND
+//     TaskCreate/TaskUpdate entries; replays in order, last state wins.
+//   - Loop-state file lives under os.tmpdir()/anti-hall keyed by session_id
+//     (F-07: never written into the user's project tree, so it does not pollute
+//     a stranger's repo or show as dirty git status, and dedupe survives `cd`).
+//     It stores JSON { hash, blocks } - a hash of the sorted open-task
+//     identifiers from the last block, plus a running count of how many times we
+//     have blocked this session.
+//   - HARD BLOCK CAP (loop-safety): the byte-identical-set dedupe only catches a
+//     frozen list. In the normal flow the model reacts to a block by completing
+//     or adding a task, so the set CHANGES every Stop and the hash dedupe never
+//     fires - re-blocking forever. So we also cap total blocks per session
+//     (MAX_BLOCKS); once reached we stay quiet regardless of set churn.
+//   - NEVER throws: all logic is wrapped in a top-level try/catch -> exit 0.
+
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const crypto = require('crypto');
+
+function main() {
+  // Read stdin synchronously (fd 0 - cross-platform; /dev/stdin is Windows-unsafe).
+  let raw = '';
+  try {
+    raw = fs.readFileSync(0, 'utf8');
+  } catch (_) {
+    process.exit(0);
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (_) {
+    process.exit(0);
+  }
+
+  const transcriptPath = payload && payload.transcript_path;
+  if (!transcriptPath || typeof transcriptPath !== 'string') {
+    process.exit(0);
+  }
+
+  // Loop-state under a per-user temp dir keyed by session_id (F-07). Fall back
+  // to a stable hash of the transcript path when session_id is absent so dedupe
+  // still works per-session without touching the project tree.
+  const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
+    crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
+  const safeSession = sessionId.replace(/[^A-Za-z0-9_.-]/g, '_');
+  const stateDir = path.join(os.tmpdir(), 'anti-hall');
+  const stateFile = path.join(stateDir, 'last-stop-taskset-' + safeSession);
+
+  // Parse tasks by streaming the transcript lines.
+  let taskMap;
+  try {
+    taskMap = parseTasksFromFile(transcriptPath);
+  } catch (_) {
+    process.exit(0);
+  }
+
+  // Compute open tasks.
+  const openTasks = [];
+  for (const task of taskMap.values()) {
+    const s = (task.status || '').toLowerCase();
+    if (s === 'pending' || s === 'in_progress' || s === 'in-progress') {
+      openTasks.push(task);
+    }
+  }
+
+  if (openTasks.length === 0) {
+    try { fs.unlinkSync(stateFile); } catch (_) {}
+    process.exit(0);
+  }
+
+  // Hash the sorted open-task identifiers.
+  const ids = openTasks.map(t => String(t.id || t.content || t.subject || '')).sort();
+  const hash = crypto.createHash('sha1').update(ids.join('\x00')).digest('hex');
+
+  // Load prior loop-state: { hash, blocks }. Tolerate the legacy plain-hash
+  // format (a bare hex string from an older version) so an upgrade in place does
+  // not lose dedupe.
+  let lastHash = '';
+  let blocks = 0;
+  try {
+    const rawState = fs.readFileSync(stateFile, 'utf8').trim();
+    if (rawState) {
+      try {
+        const parsed = JSON.parse(rawState);
+        if (parsed && typeof parsed === 'object') {
+          lastHash = typeof parsed.hash === 'string' ? parsed.hash : '';
+          blocks = Number.isFinite(parsed.blocks) ? parsed.blocks : 0;
+        } else {
+          lastHash = rawState; // legacy bare-hash file
+        }
+      } catch (_) {
+        lastHash = rawState; // legacy bare-hash file
+      }
+    }
+  } catch (_) {
+    // First time or cleared.
+  }
+
+  // Loop-safety 1: if we already blocked on this exact set, don't block again.
+  if (hash === lastHash) {
+    process.exit(0); // already nudged for this exact set; nothing changed
+  }
+
+  // Loop-safety 2: hard cap on total blocks this session. The set legitimately
+  // changes as the model works through tasks, which defeats the byte-identical
+  // dedupe; without a cap we would re-block on every Stop forever. After
+  // MAX_BLOCKS nudges we stay quiet regardless of churn.
+  const MAX_BLOCKS = 3;
+  if (blocks >= MAX_BLOCKS) {
+    process.exit(0);
+  }
+
+  // Write the new state before blocking (so a no-op next Stop won't re-block and
+  // the cap is enforced even if the set keeps changing).
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ hash, blocks: blocks + 1 }), 'utf8');
+  } catch (_) {
+    process.exit(0); // can't persist -> fail-open to avoid loops
+  }
+
+  // Build the block reason (list up to 5 subjects + status).
+  const cap = openTasks.slice(0, 5);
+  const list = cap.map(t => {
+    const subject = t.content || t.subject || t.id || '(unknown)';
+    const status = t.status || 'open';
+    return '"' + subject + '" [' + status + ']';
+  }).join('; ');
+  const more = openTasks.length > 5 ? ' (and ' + (openTasks.length - 5) + ' more)' : '';
+
+  const reason =
+    'Open tasks remain and the session is stopping: ' + list + more + '. ' +
+    'Continue them, mark them completed or deferred via TaskUpdate, or tell the user ' +
+    'explicitly what is pending and why you are stopping.';
+
+  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+  process.exit(0);
+}
+
+// Stream the whole transcript JSONL and build Map<id, {id, content, status}>
+// (last write wins). Reading the file fully then splitting is fine here: it is
+// a single synchronous read and we must not miss an early entry (no tail
+// window). Lines that fail to parse are skipped.
+function parseTasksFromFile(filePath) {
+  const taskMap = new Map();
+  let data;
+  try {
+    data = fs.readFileSync(filePath, 'utf8');
+  } catch (_) {
+    return taskMap;
+  }
+  const lines = data.split(/\r?\n/);
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let entry;
+    try {
+      entry = JSON.parse(trimmed);
+    } catch (_) {
+      continue;
+    }
+
+    const toolUses = collectToolUses(entry);
+    for (const tu of toolUses) {
+      const name = tu.name || '';
+
+      if (name === 'TodoWrite') {
+        const todos = tu.input && tu.input.todos;
+        if (Array.isArray(todos)) {
+          // TodoWrite replaces the entire list.
+          taskMap.clear();
+          for (const todo of todos) {
+            const id = todo.id || todo.content || String(taskMap.size);
+            taskMap.set(id, {
+              id,
+              content: todo.content || todo.activeForm || String(id),
+              status: todo.status || 'pending',
+            });
+          }
+        }
+        continue;
+      }
+
+      if (name === 'TaskCreate') {
+        const inp = tu.input || {};
+        const id = inp.id || inp.task_id || (String(Date.now()) + String(Math.random()));
+        const content = inp.title || inp.subject || inp.content || inp.description || String(id);
+        const status = inp.status || 'pending';
+        taskMap.set(id, { id, content, status });
+        continue;
+      }
+
+      if (name === 'TaskUpdate') {
+        const inp = tu.input || {};
+        const id = inp.id || inp.task_id;
+        if (id != null) {
+          const key = String(id);
+          const existing = taskMap.get(key) || { id: key, content: key };
+          taskMap.set(key, {
+            id: existing.id,
+            content: existing.content,
+            status: inp.status || existing.status || 'pending',
+          });
+        }
+        continue;
+      }
+    }
+  }
+
+  return taskMap;
+}
+
+function collectToolUses(node) {
+  if (!node || typeof node !== 'object') return [];
+  const results = [];
+  if (node.type === 'tool_use' && node.name) {
+    results.push(node);
+  }
+  for (const key of ['content', 'message', 'messages', 'tool_uses', 'parts']) {
+    const val = node[key];
+    if (Array.isArray(val)) {
+      for (const item of val) results.push(...collectToolUses(item));
+    } else if (val && typeof val === 'object') {
+      results.push(...collectToolUses(val));
+    }
+  }
+  return results;
+}
+
+try {
+  main();
+} catch (_) {
+  process.exit(0);
+}

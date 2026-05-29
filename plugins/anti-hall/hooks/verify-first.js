@@ -1,0 +1,82 @@
+#!/usr/bin/env node
+// anti-hall :: verify-first SHORT nudge (UserPromptSubmit)
+//
+// The FULL protocol lives in verify-first-full.js (SessionStart primacy slot +
+// SessionStart compact-matcher re-injection). This per-turn hook injects only a
+// SHORT, 1-line reminder so the per-turn slot stays high-salience instead of
+// being habituated and tuned out.
+//
+// Why short + VARYING (KB-claude-codex.md):
+//   - §6.2 recency bias + Design-implications "GETS IGNORED: Rules buried in the
+//     middle / repeated identical reminders get habituated." Adherence is a
+//     function of placement and NOVELTY, not repetition. A byte-identical wall of
+//     text every turn is exactly what the model learns to skip.
+//   - We rotate among 5 one-liners chosen DETERMINISTICALLY from the incoming
+//     prompt text (crypto hash of the prompt bytes), so the nudge varies turn to
+//     turn but is still reproducible for a given prompt. No randomness, no
+//     external deps, no shelling out to cksum (OS-agnostic).
+//
+// Contract (Claude Code UserPromptSubmit hook):
+//   stdin  : JSON { session_id, prompt, cwd, transcript_path, ... }
+//   stdout : JSON { hookSpecificOutput.additionalContext } added to the turn
+//   exit 0 : always - allow prompt, inject context
+//
+// stdin is read ONLY to derive a stable index from its bytes; nothing from the
+// input is echoed back into the injected text (no injection surface). Fail-open
+// on any error: a bug here must never wedge a turn.
+
+'use strict';
+
+const fs = require('fs');
+const crypto = require('crypto');
+
+// Five short nudges. Each is a different facet of the same Iron Law so novelty
+// fights habituation without diluting the message.
+const NUDGES = [
+  "Verify before you claim: evidence from a tool, or say 'I haven't checked'. No guessed facts.",
+  "Root cause before fix. The error you see is a symptom; trace it before you change anything.",
+  "'Probably' / 'should work' / 'seems to' = STOP and verify. Show the output, don't assume.",
+  "Done/fixed/passing only if you ran the check THIS turn and can paste the result.",
+  "User agreement is not correctness. Challenge a wrong premise with evidence, not agreement.",
+];
+
+function main() {
+  let input = '';
+  try {
+    // fd 0 is stdin on every platform; '/dev/stdin' does not exist on Windows.
+    input = fs.readFileSync(0);
+  } catch (_) {
+    input = Buffer.alloc(0);
+  }
+
+  // Deterministic index 0-4 from a SHA-1 of the raw prompt bytes. crypto is a
+  // Node built-in, present on every OS. Same input -> same nudge (reproducible);
+  // different inputs spread across the 5 facets.
+  let idx = 0;
+  try {
+    const digest = crypto.createHash('sha1').update(input).digest();
+    // Use the first 4 bytes as an unsigned int, mod 5.
+    const n = digest.readUInt32BE(0);
+    idx = n % NUDGES.length;
+  } catch (_) {
+    idx = 0;
+  }
+
+  const nudge = NUDGES[idx] || NUDGES[0];
+
+  const out = {
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: 'VERIFY-FIRST: ' + nudge,
+    },
+  };
+
+  process.stdout.write(JSON.stringify(out) + '\n');
+}
+
+try {
+  main();
+} catch (_) {
+  // Fail-open: never wedge the turn.
+}
+process.exit(0);

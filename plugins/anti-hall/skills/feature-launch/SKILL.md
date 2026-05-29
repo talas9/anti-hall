@@ -39,7 +39,7 @@ This skill orchestrates other skills. It is **not** tied to GSD.
 - **Plan + phase hardening** — it uses the **`deadly-loop`** skill (same plugin) as
   the debate engine, applied first to the PLAN and then after each execution phase.
 - **Model roster** — Reviewer/Critic roster is defined in
-  [`../MODEL-POLICY.md`](../MODEL-POLICY.md) (Opus latest max thinking + Codex latest
+  [`references/MODEL-POLICY.md`](references/MODEL-POLICY.md) (Opus latest max thinking + Codex latest
   max reasoning, fallback divergent 2x Opus). `deadly-loop` consumes the same roster.
 - **Knowledge graph (optional)** — a code graph + project graph if a graphing tool
   is available; used to ground the debate. Skip gracefully if absent.
@@ -174,7 +174,7 @@ Before the plan is considered done, on paper:
 
 ### P4. HARDEN THE PLAN WITH THE deadly-loop (mandatory gate, BEFORE any code)
 Invoke the **`deadly-loop`** skill with the PLAN as its target (not code). It runs
-parallel Reviewer + Critic auditors (roster per `../MODEL-POLICY.md`) and dispatches
+parallel Reviewer + Critic auditors (roster per `references/MODEL-POLICY.md`) and dispatches
 fix-waves, looping until convergence — **zero NEW P0 concerns**. Direct the auditors
 to attack the plan specifically for:
 - Narrow vision / missed blast radius — a touched module, caller, or contract the
@@ -280,13 +280,13 @@ Don't:
 - Plan only the happy-path file — map the full blast radius (P2) or the debate will find it the hard way
 - Skip edge-case enumeration / scenario simulation (P3) — unsimulated scenarios are where production breaks
 - Treat the plan as fixed after P4 — if execution reveals a planning hole, re-plan and re-harden, don't paper over it
-- Let two Opus instances collapse to the same opinion on the Codex-fallback path — the Critic's divergent persona keeps it adversarial (see `../MODEL-POLICY.md`)
+- Let two Opus instances collapse to the same opinion on the Codex-fallback path — the Critic's divergent persona keeps it adversarial (see `references/MODEL-POLICY.md`)
 - Run the code graph on a huge corpus with no ignore file — it burns tokens
 
 ---
 
 ## References
-- [`../MODEL-POLICY.md`](../MODEL-POLICY.md) — shared Reviewer/Critic roster (used by the deadly-loop gates)
+- [`references/MODEL-POLICY.md`](references/MODEL-POLICY.md) — shared Reviewer/Critic roster (used by the deadly-loop gates)
 - [`CONVERSATION-CONTEXT-template.md`](references/CONVERSATION-CONTEXT-template.md) — decision-history scaffolding
 - [`SKILLS_PROTOCOL-template.md`](references/SKILLS_PROTOCOL-template.md) — gate-matrix scaffolding
 - [`DEBATE-PROMPTS.md`](references/DEBATE-PROMPTS.md) — Reviewer/Critic prompt templates (plan, post-phase, UI/UX) + both Critic personas + anti-speculation + caching
