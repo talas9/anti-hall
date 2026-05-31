@@ -52,7 +52,8 @@ claude --plugin-dir /path/to/anti-hall
 | `task-guard.js` | Stop | Blocks once if the session ends with open tasks. |
 | `graphify-session.js` | SessionStart | Primes "query the graph first" when a graphify graph exists. |
 | `graphify-reminder.js` | Stop | One-time reminder to update the graph after real edits. |
-| `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. |
+| `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
+| `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
 | `root-cause` / `orchestration` / `feature-launch` / `deadly-loop` | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line for monorepos, simple line otherwise. |
 
@@ -112,14 +113,16 @@ documented boundaries, not silent gaps.
   set was already blocked on (nothing changed), it skips to prevent infinite loops.
   Fail-open on any parse/read/state error.
 
-> **Three Stop hooks coexist** (`task-guard`, `graphify-reminder`, `speculation-guard`),
-> all emitting the top-level `{"decision":"block","reason":...}` Stop schema. Claude Code
-> does not merge `reason` strings across Stop hooks: if multiple fire on the same Stop,
-> all block but only one reason is shown that turn. `task-guard` is registered **first**
-> because open-task discipline is higher-stakes, so its reason wins precedence. Each is
-> capped (graphify-reminder nudges once per session; task-guard caps at `MAX_BLOCKS`;
-> speculation-guard blocks once per distinct speculative message hash), so the others
-> surface on subsequent Stops. None is dropped — they are sequenced.
+> **Four Stop hooks are registered** (`task-guard`, `graphify-reminder`, `speculation-guard`,
+> `speculation-judge`), all emitting the top-level `{"decision":"block","reason":...}` Stop
+> schema. Claude Code does not merge `reason` strings across Stop hooks: if multiple fire on
+> the same Stop, all block but only one reason is shown that turn. `task-guard` is registered
+> **first** because open-task discipline is higher-stakes, so its reason wins precedence.
+> Each is capped (graphify-reminder nudges once per session; task-guard caps at `MAX_BLOCKS`;
+> speculation-guard blocks once per distinct speculative message hash; speculation-judge
+> blocks once per distinct message hash), so the others surface on subsequent Stops.
+> `speculation-judge` is a no-op unless `ANTIHALL_SEMANTIC_JUDGE=1` — it never blocks in
+> the default configuration.
 
 ### speculation-guard
 
@@ -150,13 +153,66 @@ Iron Law at the output boundary — after the model has already produced a reply
 **Known limit — confident inference without hedge words.** The guard is lexical: it
 catches hedged speculation (`probably`, `likely`, `I suspect`, etc.) but cannot catch a
 confidently-stated inference-as-fact that uses no hedge word at all ("the cause is the
-old build" with zero hedging). Catching that class requires semantic judgment about
-whether the claim is actually verified. A stronger **semantic tier** is architecturally
-possible as an `agent`-type Stop hook that calls an LLM judge to assess whether claims
-are grounded — but it adds meaningful latency (~1-3 s per Stop) and cost (~$0.002-0.01
-per turn at Haiku rates). That tier is documented here as an opt-in design path and is
-**not shipped by default**. The lexical guard catches the most common failure mode (hedge
-words used to soften unverified assertions) at zero cost and zero latency.
+old build" with zero hedging). That class requires semantic judgment — covered by the
+opt-in **Tier 3 semantic judge** described below.
+
+### Three tiers of anti-speculation enforcement
+
+| Tier | Component | On by default | Mechanism | Cost / latency |
+|---|---|---|---|---|
+| 1 | `verify-first-full.js` + `verify-first.js` | Always-on | Protocol injection (SessionStart + per-turn nudge): names every rationalization bypass including confident inference-as-fact and hedge-word speculation. | Zero (no API call; text injection only). |
+| 2 | `speculation-guard.js` | On by default | Lexical Stop hook: scans for 15 hedge-word markers, suppresses when acknowledgment present. Catches hedged speculation. Cannot catch confident inference-as-fact with no hedge word. | Zero (pure Node, no API call). |
+| 3 | `speculation-judge.js` | OPT-IN (off by default) | Semantic Stop hook: calls an LLM judge via the Anthropic API to assess whether the last message asserts an unverified fact with no hedge word and no acknowledgment. Catches the gap Tier 2 misses. | ~$0.0001-0.001 per turn + ~1-3 s latency. Requires `ANTHROPIC_API_KEY`. |
+
+### speculation-judge (Tier 3, OPT-IN)
+
+`speculation-judge.js` is registered in `hooks.json` but **exits 0 immediately** unless
+`ANTIHALL_SEMANTIC_JUDGE=1` is set. When unset (the default), it has zero cost, zero
+latency, and zero network activity — it is as if it were not registered at all.
+
+**To enable:**
+
+```bash
+# Add to ~/.zshrc / ~/.bashrc / ~/.profile, then restart Claude Code:
+export ANTIHALL_SEMANTIC_JUDGE=1
+export ANTHROPIC_API_KEY=sk-ant-...    # required; judge is fail-open if absent
+```
+
+Or set both variables in the `env` block of your `~/.claude/settings.json`:
+
+```json
+{
+  "env": {
+    "ANTIHALL_SEMANTIC_JUDGE": "1",
+    "ANTHROPIC_API_KEY": "sk-ant-..."
+  }
+}
+```
+
+**To disable:** unset `ANTIHALL_SEMANTIC_JUDGE` (or set it to any value other than `"1"`).
+
+**What it catches:** confidently-stated inference-as-fact with no hedge word — e.g.,
+"The cause is the old build artifact." with no tool verification and no uncertainty
+acknowledgment. The judge prompt instructs the model to ALLOW honest hedging, quoted
+text, hypotheticals, plans, and general software knowledge; it only blocks definitive
+unverified factual claims.
+
+**Fail-open:** any error (absent `ANTHROPIC_API_KEY`, API unavailable, timeout, bad
+JSON response) exits 0 without blocking. A failure here never wedges a session.
+
+**Loop-safe:** hashes the last message text (with a `":judge"` suffix to keep the
+namespace separate from `speculation-guard`'s hashes). If the same message hash was
+already blocked, skips — the model was nudged once and had a chance to respond.
+
+**Misfire caveat:** LLM judges are not perfect. The conservative judge prompt reduces
+false positives, but some misfires will occur — particularly on messages that describe
+what code does based on reading it (which IS verified by inspection). If misfires are
+frequent in your workflow, disable `ANTIHALL_SEMANTIC_JUDGE` and rely on Tiers 1 + 2.
+
+**Cost and latency detail:** one `claude-haiku-4-5` call per Stop event when enabled.
+At current Haiku pricing this is roughly $0.0001-0.001 per turn; latency is roughly
+1-3 s added to each Stop. For projects where confident inference-as-fact is the primary
+failure mode and the cost/latency is acceptable, Tier 3 closes the gap Tier 2 leaves open.
 
 ### graphify hooks (optional)
 

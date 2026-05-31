@@ -106,11 +106,26 @@ a `graphify-out/` or `.planning/graphs/` directory, the hooks enforce querying t
 before raw code search and remind the model to keep it updated. The hooks no-op
 gracefully when graphify is not present — there is no hard dependency.
 
-## speculation-guard (Stop hook — lexical enforcement)
+## Anti-speculation enforcement: three tiers
 
-The plugin ships `speculation-guard.js` as a Stop hook that scans the last assistant
-message for hedge-word speculation and blocks once if none of the evidence/uncertainty
-acknowledgments are present in the same message.
+The plugin enforces no-speculation discipline at three layers:
+
+**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full.js` (SessionStart)
+and `verify-first.js` (per-turn) inject the Iron Law including explicit bans on both
+confident inference-as-fact and hedge-word speculation.
+
+**Tier 2 — Lexical guard (on by default, zero cost):** `speculation-guard.js` (Stop)
+scans the last assistant message for hedge-word markers and blocks once if none of the
+evidence/uncertainty acknowledgments are present.
+
+**Tier 3 — Semantic judge (OPT-IN, LLM cost):** `speculation-judge.js` (Stop) calls
+an LLM judge to catch confident inference-as-fact with no hedge word — the gap Tier 2
+cannot cover. Off by default; requires `ANTIHALL_SEMANTIC_JUDGE=1` and `ANTHROPIC_API_KEY`.
+
+### Tier 2: speculation-guard (lexical, always-on)
+
+`speculation-guard.js` stops the session when the last assistant message contains
+hedge-word speculation without evidence or uncertainty acknowledgment.
 
 **Speculation markers it catches** (case-insensitive, word-boundary):
 `very plausibly`, `plausibly`, `presumably`, `I suspect`, `my guess`, `I'd guess`,
@@ -127,8 +142,28 @@ a `file.ext:line` citation, `running`, `per the data`, `the data shows`.
 exits 0 with no block.
 
 **Known limit**: catches hedged speculation (hedge word present) but cannot catch
-confident inference-as-fact that uses no hedge word at all. A semantic LLM-judge tier
-is possible but not shipped by default (cost/latency tradeoff).
+confident inference-as-fact that uses no hedge word at all ("The cause is X" with zero
+hedging). Tier 3 covers that gap.
+
+### Tier 3: speculation-judge (semantic, OPT-IN)
+
+`speculation-judge.js` is registered in hooks.json but exits 0 immediately unless
+`ANTIHALL_SEMANTIC_JUDGE=1` is set. In the default configuration it has zero cost and
+zero latency.
+
+When enabled, it reads the last assistant message from the transcript, sends it to
+`claude-haiku-4-5` via the Anthropic API, and blocks once if the judge finds a
+confidently-stated unverified factual claim with no hedge word and no acknowledgment.
+
+**To enable:** set `ANTIHALL_SEMANTIC_JUDGE=1` and `ANTHROPIC_API_KEY=sk-ant-...` in
+your shell profile or in `~/.claude/settings.json` `env` block.
+
+**Cost/latency caveat:** ~$0.0001-0.001 per turn + ~1-3 s latency per Stop event.
+**Misfire caveat:** LLM judges can false-positive on quoted text, hypotheticals, and
+plans. The judge prompt is conservative (fail-open on doubt), but misfires occur.
+**Fail-open:** absent API key, API errors, or timeout all exit 0 silently.
+**Loop-safe:** hashes message text with `":judge"` suffix; blocks at most once per
+distinct message, never wedges.
 
 ## Anti-sycophancy (always apply)
 

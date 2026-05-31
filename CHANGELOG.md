@@ -6,6 +6,46 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.4.2
+
+Opt-in semantic speculation judge (LLM-evaluated Stop hook, off by default) covering
+the confident-inference-as-fact gap that the lexical Tier 2 guard cannot catch.
+
+- **`speculation-judge.js` (Stop hook, new, OPT-IN):** semantic judgment tier that
+  calls `claude-haiku-4-5` via the Anthropic API to evaluate whether the last assistant
+  message asserts an unverified factual claim with no hedge word and no acknowledgment.
+  Covers the gap left by `speculation-guard.js` (Tier 2), which catches hedged
+  speculation but cannot catch a confidently-stated inference-as-fact that uses no hedge
+  word at all (e.g., "The cause is the old build artifact." with zero hedging).
+  Enabled ONLY when `ANTIHALL_SEMANTIC_JUDGE=1` is set in the environment; exits 0
+  immediately (zero cost, zero latency, zero network activity) when unset — the default.
+  Also requires `ANTHROPIC_API_KEY`; fails-open (exits 0) when the key is absent or the
+  API call fails for any reason. Judge prompt instructs conservative evaluation: allows
+  honest hedging, quoted text, hypotheticals, plans, and general software knowledge;
+  blocks only definitive unverified factual assertions. Loop-safe: hashes message text
+  with a `":judge"` namespace suffix (separate from Tier 2's hash space); blocks at most
+  once per distinct message, never wedges. Fail-open on any parse/read/write/API error.
+  Cost/latency when enabled: ~$0.0001-0.001 per turn at Haiku rates + ~1-3 s per Stop.
+  Misfire caveat: LLM judges can false-positive; the conservative prompt reduces this but
+  does not eliminate it — disable `ANTIHALL_SEMANTIC_JUDGE` if misfires are disruptive.
+- **`hooks.json`:** `speculation-judge.js` registered as the fourth Stop hook (timeout
+  30 s). It is a behavioral no-op in the default configuration (env var unset = exits 0
+  immediately). Stop hook order: `task-guard` (1st, highest-stakes), `graphify-reminder`
+  (2nd), `speculation-guard` (3rd, Tier 2 lexical), `speculation-judge` (4th, Tier 3
+  semantic opt-in).
+- **`plugin.json`:** version bumped 0.4.1 -> 0.4.2.
+- **`README.md`:** speculation-guard entry in features table updated to label it Tier 2;
+  `speculation-judge` entry added (OPT-IN). "Three Stop hooks coexist" note updated to
+  four. "Known limit" paragraph replaced with a three-tier enforcement table (Tier 1:
+  protocol/always-on/zero-cost; Tier 2: lexical/on-by-default/zero-cost; Tier 3:
+  semantic/opt-in/LLM-cost). New "speculation-judge (Tier 3, OPT-IN)" section documenting
+  enable instructions (shell profile and settings.json env block), what it catches, the
+  fail-open/loop-safe/misfire/cost-latency properties.
+- **`AGENTS.md`:** "speculation-guard (Stop hook)" section replaced with an "Anti-
+  speculation enforcement: three tiers" section covering all three tiers, then dedicated
+  subsections for Tier 2 (lexical, always-on) and Tier 3 (semantic, OPT-IN) with the
+  same enable/cost/misfire/fail-open/loop-safe notes as the README.
+
 ## 0.4.1
 
 Strengthened no-speculation Iron Law with inference-as-fact ban + hedged-speculation
