@@ -4,12 +4,20 @@
 // Limits agent spawn rate to prevent runaway swarms that can make the OS unusable.
 // Checks two conditions on every agent spawn:
 //   1. SPAWN RATE: if >= CAP spawns occurred in the last 60 seconds, BLOCK.
-//   2. MEMORY PRESSURE: if free RAM < 4% of total, BLOCK.
+//   2. MEMORY PRESSURE: if AVAILABLE RAM < 4% of total, BLOCK.
 //
 // Both checks are conservative. The spawn-rate cap (default 20 per 60s) is a
 // ceiling against runaway loops, not a parallelism budget — normal parallel
 // workflows rarely exceed it. The memory threshold (4%) is a last-resort OS
 // safety guard; at that level the system is already under extreme pressure.
+//
+// IMPORTANT: "available" RAM is NOT os.freemem(). On macOS and Linux, os.freemem()
+// reports only truly-free pages and EXCLUDES reclaimable cache (inactive / file-
+// backed / speculative), so it chronically reads near-zero on a healthy machine
+// (e.g. 2 GB "free" of 64 GB while 17 GB of cache is instantly reclaimable and
+// memory pressure is green). Using it caused false-positive blocks. We compute real
+// available memory per-platform (macOS vm_stat, Linux /proc/meminfo MemAvailable)
+// and fall back to os.freemem() only where it is accurate (Windows) or on error.
 //
 // Fail-open on ANY error: a bug here must never prevent legitimate agent spawns.
 //
@@ -24,10 +32,39 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execSync } = require('child_process');
 
 const SPAWN_CAP = 20;          // max spawns allowed in WINDOW_MS
 const WINDOW_MS = 60000;       // 60-second rolling window
-const MEM_FLOOR_RATIO = 0.04;  // block if freemem/totalmem < 4%
+const MEM_FLOOR_RATIO = 0.04;  // block if availableMem/totalMem < 4%
+
+// Real available memory (reclaimable cache included), per-platform. os.freemem()
+// undercounts on macOS/Linux because it excludes reclaimable pages — see header.
+// Fail-open: any parsing/exec error falls back to os.freemem().
+function availableBytes() {
+  try {
+    if (process.platform === 'darwin') {
+      // vm_stat: available ~= free + inactive + speculative pages (all reclaimable
+      // on demand). Inactive/speculative are what Activity Monitor counts as cache.
+      const out = execSync('vm_stat', { encoding: 'utf8', timeout: 1500 });
+      const psM = out.match(/page size of (\d+) bytes/);
+      const ps = psM ? parseInt(psM[1], 10) : 4096;
+      const pages = (label) => {
+        const m = out.match(new RegExp('Pages ' + label + ':\\s+(\\d+)'));
+        return m ? parseInt(m[1], 10) : 0;
+      };
+      const avail = pages('free') + pages('inactive') + pages('speculative');
+      if (avail > 0) return avail * ps;
+    } else if (process.platform === 'linux') {
+      // MemAvailable is the kernel's own reclaimable-aware estimate (kB).
+      const mi = fs.readFileSync('/proc/meminfo', 'utf8');
+      const m = mi.match(/MemAvailable:\s+(\d+)\s+kB/);
+      if (m) return parseInt(m[1], 10) * 1024;
+    }
+  } catch (_) { /* fall through to os.freemem() */ }
+  // Windows (os.freemem() is accurate there) + universal fallback.
+  return os.freemem();
+}
 
 const LOG_DIR = path.join(os.tmpdir(), 'anti-hall');
 const LOG_FILE = path.join(LOG_DIR, 'swarm-spawns.log');
@@ -58,22 +95,22 @@ function main() {
 
   const now = Date.now();
 
-  // --- Memory pressure check (fast, no I/O) ---
+  // --- Memory pressure check (real available memory, reclaimable cache included) ---
   try {
-    const free = os.freemem();
+    const avail = availableBytes();
     const total = os.totalmem();
-    if (total > 0 && (free / total) < MEM_FLOOR_RATIO) {
-      const freeMb = Math.round(free / 1024 / 1024);
+    if (total > 0 && (avail / total) < MEM_FLOOR_RATIO) {
+      const availMb = Math.round(avail / 1024 / 1024);
       const totalMb = Math.round(total / 1024 / 1024);
       const reason =
-        'anti-hall swarm-guard: memory pressure critical (' + freeMb + ' MB free of ' +
+        'anti-hall swarm-guard: memory pressure critical (' + availMb + ' MB available of ' +
         totalMb + ' MB total, < 4%). Blocking new agent spawn to protect OS stability. ' +
         'Let running agents finish and free memory before spawning more.';
       process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
       process.exit(2);
     }
   } catch (_) {
-    // Fail-open: if os.freemem()/os.totalmem() throw, skip this check
+    // Fail-open: if the availability check throws, skip it
   }
 
   // --- Spawn rate check ---

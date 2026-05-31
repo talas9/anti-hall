@@ -6,6 +6,23 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.4.7
+
+Fix swarm-guard false-positive memory-pressure block. The memory check used
+`os.freemem() / os.totalmem() < 4%`, but on macOS and Linux `os.freemem()` reports
+only truly-free pages and EXCLUDES reclaimable cache (inactive / speculative /
+file-backed). On a healthy 64 GB Mac it read ~2 GB "free" (< 4%) while ~24 GB was
+actually available and memory pressure was green with zero swap — so legitimate
+agent spawns were blocked, defeating delegation just like the 0.4.6 command-guard
+bug.
+
+Fix: compute REAL available memory per-platform — macOS via `vm_stat`
+(free + inactive + speculative pages, honoring the actual page size: 16384 on Apple
+Silicon, not a hardcoded 4096), Linux via `/proc/meminfo` MemAvailable, and
+`os.freemem()` as the fallback where it is accurate (Windows) or on any parse error.
+Verified on a 64 GB Apple Silicon Mac: old calc 6.5% (would block), corrected 36.5%
+(no block), matching Activity Monitor. Fail-open preserved.
+
 ## 0.4.6
 
 Fix command-guard blocking SUBAGENTS (not just the coordinator) under cmux and other
