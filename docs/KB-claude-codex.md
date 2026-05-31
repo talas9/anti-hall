@@ -510,6 +510,76 @@ Reversing the order wastes code-quality review on scope-drifted code. Stages are
 
 ---
 
+## 14. Claude Code environment internals (verified empirically)
+
+Captured by instrumenting real hook invocations and processes — not from docs. These
+hold under **cmux** (a terminal wrapper that launches `claude`); some differ from a
+vanilla CLI, so the reliable signals below are the cross-environment ones.
+
+### 14.1 Coordinator vs subagent detection — use the PAYLOAD, not the env var
+
+`CLAUDE_CODE_ENTRYPOINT` is **not** a reliable subagent signal. In a vanilla `claude`
+CLI a Task-tool subagent's process gets `CLAUDE_CODE_ENTRYPOINT=agent_tool`, but under
+cmux (and any wrapper that spawns subagents in-process) the subagent inherits the
+parent's exact environment: same `CLAUDE_CODE_ENTRYPOINT=cli`, same
+`CLAUDE_CODE_SESSION_ID`, even the same PID. No environment variable distinguishes them.
+
+**The reliable discriminator is the PreToolUse hook PAYLOAD.** Claude Code injects
+`agent_id` and `agent_type` into the payload for Task-tool subagents; the top-level
+coordinator's payload has neither. So a guard that must run only in the coordinator
+should: parse the payload first, treat it as a subagent (allow) if `agent_id` or
+`agent_type` is present, and use `entrypoint === "agent_tool"` only as a fallback. A
+guard relying on the env var alone blocks subagents too under cmux — which deadlocks any
+delegation-based design (nothing left to delegate TO).
+
+### 14.2 PreToolUse hook payload shape (observed)
+
+Common keys: `session_id`, `transcript_path`, `cwd`, `permission_mode`,
+`hook_event_name`, `tool_name`, `tool_input`, `tool_use_id`. Context-distinguishing
+keys: the **coordinator** payload additionally carries `effort` (e.g. `{level:"medium"}`)
+and has no agent fields; a **subagent** payload carries `agent_id` + `agent_type`
+(e.g. `"general-purpose"`) and no `effort`. `transcript_path` and `session_id` are the
+SAME for coordinator and subagent under cmux, so they are not usable discriminators.
+
+### 14.3 `os.freemem()` is the wrong memory metric on macOS/Linux
+
+`os.freemem()` counts only truly-free pages and **excludes reclaimable cache** (inactive
+/ speculative / file-backed). On a healthy 64 GB Mac it reads ~2 GB "free" (<4%) while
+~24 GB is actually available and memory pressure is green with zero swap. A guard that
+blocks on `os.freemem()/os.totalmem() < threshold` therefore false-positives constantly.
+Compute REAL available memory per-platform: macOS via `vm_stat`
+(`Pages free + inactive + speculative` × the actual page size — **16384 on Apple
+Silicon**, not a hardcoded 4096), Linux via `/proc/meminfo` `MemAvailable`,
+`os.freemem()` as the Windows/error fallback. The true OOM signal is memory
+pressure + swap usage, not free pages.
+
+### 14.4 Two-line statusline architecture (base wrap + phase bar)
+
+A wrapping statusline dispatcher (line 1 = an existing/base statusline, line 2 = a phase
+bar) is configured through two GLOBAL files under `~/.anti-hall/`:
+- `base-statusline.json` `{ "command": "..." }` — the line-1 command. A **relative**
+  command (e.g. `node .claude/helpers/statusline.cjs`) resolves against the per-project
+  cwd, so each project shows its own rich helper if present and falls back to the
+  plugin's simple renderer otherwise. Overwriting this file changes line 1 for EVERY
+  project whose statusLine points at the dispatcher (e.g. a project that set it via
+  `settings.local.json`) — do not assume it is project-local.
+- `phase-state.json` — read by the phase bar; written by the orchestrator. Must live in
+  **`os.homedir()`**, not `os.tmpdir()`: each process can see a different `TMPDIR`
+  (the statusline runner's differs from a hook's), so a tmpdir-written state file is
+  invisible to the live statusline, whereas homedir is identical for all processes.
+- Settings precedence that decides which statusLine actually renders:
+  `.claude/settings.local.json` > `.claude/settings.json` > `~/.claude/settings.json`.
+
+### 14.5 A command-string guard must parse the verb, not scan the whole string
+
+A PreToolUse Bash guard that regex-matches the entire `tool_input.command` will
+false-positive on quoted content — e.g. a `git commit -m "...node x.js..."` whose
+MESSAGE body mentions a heavy command gets blocked even though the actual verb is
+`git commit`. Match against the parsed command verb / pipeline segments, not the raw
+string including quoted argument bodies.
+
+---
+
 ## Sources
 
 > **Count: 67 unique sources** (≥20 requirement met). Kinds: official (Anthropic + OpenAI), peer-reviewed papers, community.
