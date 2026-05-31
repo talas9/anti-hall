@@ -106,6 +106,30 @@ a `graphify-out/` or `.planning/graphs/` directory, the hooks enforce querying t
 before raw code search and remind the model to keep it updated. The hooks no-op
 gracefully when graphify is not present — there is no hard dependency.
 
+## speculation-guard (Stop hook — lexical enforcement)
+
+The plugin ships `speculation-guard.js` as a Stop hook that scans the last assistant
+message for hedge-word speculation and blocks once if none of the evidence/uncertainty
+acknowledgments are present in the same message.
+
+**Speculation markers it catches** (case-insensitive, word-boundary):
+`very plausibly`, `plausibly`, `presumably`, `I suspect`, `my guess`, `I'd guess`,
+`I bet`, `likely`, `probably`, `must be`, `should be` (not `should I`), `seems to be`,
+`appears to be`, `I think it's`, `my hunch`.
+
+**Suppressed when acknowledgment is present** in the same message:
+`verified`, `I don't know`, `haven't checked`, `not verified`, `unverified`,
+`let me verify`, `I'll check`, `I will check`, `need to confirm`, `to confirm`,
+a `file.ext:line` citation, `running`, `per the data`, `the data shows`.
+
+**Block-once**: hashes the message text; if the same hash was already blocked, skips
+(nudges once per distinct speculative message, never wedges). **Fail-open**: any error
+exits 0 with no block.
+
+**Known limit**: catches hedged speculation (hedge word present) but cannot catch
+confident inference-as-fact that uses no hedge word at all. A semantic LLM-judge tier
+is possible but not shipped by default (cost/latency tradeoff).
+
 ## Anti-sycophancy (always apply)
 
 - Do not agree just to agree. If the user is wrong or a premise is flawed, challenge it

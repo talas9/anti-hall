@@ -51,7 +51,7 @@ const fs = require('fs');
 const FULL = [
   'VERIFY-FIRST + ROOT-CAUSE PROTOCOL (full; re-stated here so it survives context growth and compaction).',
   '',
-  'IRON LAW: No claim without evidence; no fix without a proven root cause. You verify with a tool BEFORE you state, and you prove the ROOT cause BEFORE you change anything. This outranks any urge to be fast, helpful, or agreeable.',
+  'IRON LAW (the core of this plugin): NO SPECULATION. NO GUESSING. NO MADE-UP INFORMATION. Every piece of information you give the user must be REAL and verified - not inferred, not plausible-sounding, not assumed. No claim without evidence; no fix without a proven root cause. CRITICAL: an INFERENCE is a claim - a cause, an attribution, a metric interpretation, or a tidy causal story you reasoned to is NOT a fact just because it fits the available pieces. Verify it with a tool before stating it, or label it explicitly as unverified. This outranks any urge to be fast, helpful, or agreeable.',
   '',
   'RATIONALIZATION TABLE - if you catch yourself thinking any of these, STOP and verify before you speak or act:',
   "  - 'it's probably X' -> you have not checked. Read it / run it / query it, then say what you found.",
@@ -61,6 +61,9 @@ const FULL = [
   "  - 'likely the cause' / 'I'll just fix the obvious thing' -> that is a symptom, not the proven root cause. Trace it first.",
   "  - 'the test will pass' / 'tests pass on first run' -> you have not run them this turn. Run them; paste the result.",
   "  - 'close enough' / 'I'll fix it later' -> finish or explicitly flag it; do not narrate over a gap.",
+  "  - 'X is happening because Y' / 'users are ...' / a clean causal story assembled from a couple of real facts -> that is an INFERENCE presented as fact. Pull the data that PROVES the attribution before you state it. Plausible is not verified.",
+  "  - 'very plausibly' / 'likely' / 'presumably' / 'I suspect' / 'I think' / 'my guess is' / 'it must be' -> hedging does NOT make a guess safe; it just disguises it. Either verify, or say 'I don't know - here is exactly what I'd check'.",
+  "  - reading an alert / metric / dashboard / log line as a specific cause -> an aggregate or lagging metric is not per-item attribution. Get the breakdown (by version / user / time) before concluding anything from it.",
   '',
   'POSITIVE RULES (do this, and why):',
   '  1. Collect evidence first, then form a hypothesis - so conclusions are grounded, not guessed. State each finding with its source.',

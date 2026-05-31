@@ -52,6 +52,7 @@ claude --plugin-dir /path/to/anti-hall
 | `task-guard.js` | Stop | Blocks once if the session ends with open tasks. |
 | `graphify-session.js` | SessionStart | Primes "query the graph first" when a graphify graph exists. |
 | `graphify-reminder.js` | Stop | One-time reminder to update the graph after real edits. |
+| `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. |
 | `root-cause` / `orchestration` / `feature-launch` / `deadly-loop` | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line for monorepos, simple line otherwise. |
 
@@ -111,13 +112,51 @@ documented boundaries, not silent gaps.
   set was already blocked on (nothing changed), it skips to prevent infinite loops.
   Fail-open on any parse/read/state error.
 
-> **Two Stop hooks coexist** (`task-guard` + `graphify-reminder`), both emitting the
-> top-level `{"decision":"block","reason":...}` Stop schema. Claude Code does not
-> merge `reason` strings across Stop hooks: if both fire on the same Stop, both block
-> but only one reason is shown that turn. `task-guard` is registered **first** because
-> open-task discipline is higher-stakes, so its reason wins precedence. Each is capped
-> (graphify-reminder nudges once per session; task-guard caps at `MAX_BLOCKS`), so the
-> other surfaces on a subsequent Stop. Neither is dropped — they are sequenced.
+> **Three Stop hooks coexist** (`task-guard`, `graphify-reminder`, `speculation-guard`),
+> all emitting the top-level `{"decision":"block","reason":...}` Stop schema. Claude Code
+> does not merge `reason` strings across Stop hooks: if multiple fire on the same Stop,
+> all block but only one reason is shown that turn. `task-guard` is registered **first**
+> because open-task discipline is higher-stakes, so its reason wins precedence. Each is
+> capped (graphify-reminder nudges once per session; task-guard caps at `MAX_BLOCKS`;
+> speculation-guard blocks once per distinct speculative message hash), so the others
+> surface on subsequent Stops. None is dropped — they are sequenced.
+
+### speculation-guard
+
+`speculation-guard.js` (Stop) provides **lexical enforcement** of the no-speculation
+Iron Law at the output boundary — after the model has already produced a reply.
+
+**How it works:**
+
+1. Reads `transcript_path` from stdin, parses the JSONL, and extracts the **last
+   assistant message** (all text content blocks concatenated).
+2. Scans for **speculation markers** (case-insensitive, word-boundary):
+   `very plausibly`, `plausibly`, `presumably`, `I suspect`, `my guess`, `I'd guess`,
+   `I bet`, `likely`, `probably`, `must be`, `should be` (but not `should I`),
+   `seems to be`, `appears to be`, `I think it's`, `my hunch`.
+3. Suppresses the block if the **same message** also contains an evidence/uncertainty
+   **acknowledgment**: `verified`, `I don't know`, `haven't checked`, `not verified`,
+   `unverified`, `let me verify`, `I'll check`, `I will check`, `need to confirm`,
+   `to confirm`, a `file.ext:line` citation, `running`, `per the data`, `the data shows`.
+   This allows honest hedging ("I haven't checked, but it might be X — let me verify")
+   while blocking silent inference-as-fact.
+4. **Block-once / loop-safe:** hashes the last message text; stores the blocked hash
+   in `~/.anti-hall/speculation-guard-state-<session>.json`. If the same message hash
+   was already blocked (nothing changed between Stops), skips the block — the model
+   was nudged once and had a chance to respond. Never wedges.
+5. **Fail-open:** any parse/read/write error exits 0 without blocking or writing to
+   stderr. A bug here never wedges a session.
+
+**Known limit — confident inference without hedge words.** The guard is lexical: it
+catches hedged speculation (`probably`, `likely`, `I suspect`, etc.) but cannot catch a
+confidently-stated inference-as-fact that uses no hedge word at all ("the cause is the
+old build" with zero hedging). Catching that class requires semantic judgment about
+whether the claim is actually verified. A stronger **semantic tier** is architecturally
+possible as an `agent`-type Stop hook that calls an LLM judge to assess whether claims
+are grounded — but it adds meaningful latency (~1-3 s per Stop) and cost (~$0.002-0.01
+per turn at Haiku rates). That tier is documented here as an opt-in design path and is
+**not shipped by default**. The lexical guard catches the most common failure mode (hedge
+words used to soften unverified assertions) at zero cost and zero latency.
 
 ### graphify hooks (optional)
 

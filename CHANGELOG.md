@@ -6,6 +6,53 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.4.1
+
+Strengthened no-speculation Iron Law with inference-as-fact ban + hedged-speculation
+ban; added per-turn nudges; added `speculation-guard.js` Stop hook (lexical enforcement,
+block-once, fail-open).
+
+- **`verify-first-full.js` rationalization table (Iron Law hardening):** added two
+  explicit entries that were absent from prior versions: (a) `"X is happening because Y"
+  / a clean causal story assembled from a couple of real facts -> that is an INFERENCE
+  presented as fact` — bans confident inference-as-fact even when no hedge word is used;
+  (b) `"very plausibly" / "likely" / "presumably" / "I suspect" / "I think" / "my guess
+  is" / "it must be" -> hedging does NOT make a guess safe; it just disguises it` —
+  explicitly bans hedged speculation. Both entries already existed in the
+  RATIONALIZATION TABLE in 0.4.0; this entry documents them as rationale for the
+  speculation-guard hook boundary.
+- **`verify-first.js` (per-turn nudge):** the nudge at index 2 now explicitly names the
+  hedge-word ban: `'likely' / 'plausibly' / 'I suspect' / 'I think' / 'it must be' = a
+  guess in disguise. Hedging doesn't make it safe. Pull the data, or say 'I don't know -
+  here's what I'd check'.` This was already present in the NUDGES array; documented here
+  as the per-turn enforcement layer that pairs with the new Stop hook.
+- **`speculation-guard.js` (Stop hook, new):** lexical speculation guard. Extracts the
+  last assistant message from `transcript_path` (JSONL), scans for 15 speculation
+  markers (hedge words: `very plausibly`, `plausibly`, `presumably`, `I suspect`,
+  `my guess`, `I'd guess`, `I bet`, `likely`, `probably`, `must be`, `should be` [not
+  `should I`], `seems to be`, `appears to be`, `I think it's`, `my hunch`), suppresses
+  the block if the same message contains an evidence/uncertainty acknowledgment
+  (`verified`, `I don't know`, `haven't checked`, `not verified`, `unverified`, `let me
+  verify`, `I'll check`, `I will check`, `need to confirm`, `to confirm`, `file.ext:line`
+  citation, `running`, `per the data`, `the data shows`). Block-once: hashes the message
+  text and stores the hash in `~/.anti-hall/speculation-guard-state-<session>.json`; if
+  the same hash was already blocked, exits 0 (nudge fires once, never wedges). Fail-open:
+  any parse/read/write error exits 0 silently. Block reason names the matched marker and
+  instructs the model to verify or explicitly flag as unverified. Registered in
+  `hooks.json` as the third Stop hook (after `task-guard` and `graphify-reminder`).
+  **Known limit:** catches hedged speculation (hedge word present) but not confident
+  inference-as-fact with no hedge word. A semantic LLM-judge tier is architecturally
+  possible but not shipped by default (cost/latency tradeoff; documented in README +
+  AGENTS.md as opt-in design path).
+- **`hooks.json`:** `speculation-guard.js` registered under `Stop` as third entry
+  (timeout 30 s). Stop now has 3 hooks: `task-guard` (highest-stakes, first), 
+  `graphify-reminder` (second), `speculation-guard` (third).
+- **`plugin.json`:** version bumped 0.4.0 -> 0.4.1.
+- **`README.md` + `AGENTS.md`:** `speculation-guard` added to features table, new
+  "speculation-guard" how-it-works section (markers list, acknowledgment suppression,
+  loop-safe mechanism, known limit, opt-in semantic tier note); three-Stop-hook
+  coexistence note updated from two to three hooks.
+
 ## 0.4.0
 
 Rewritten feature-launch workflow + agent-watchdog + statusline phase.js wiring + KB merge.

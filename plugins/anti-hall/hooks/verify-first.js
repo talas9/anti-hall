@@ -39,6 +39,8 @@ const crypto = require('crypto');
 // message.
 const NUDGES = [
   "Verify before you claim: evidence from a tool, or say 'I haven't checked'. No guessed facts.",
+  "NO SPECULATION: an inference - a cause, an attribution, a metric reading, a tidy 'because X' story - is a CLAIM. Verify it with data before stating it. Plausible is not verified.",
+  "'likely' / 'plausibly' / 'I suspect' / 'I think' / 'it must be' = a guess in disguise. Hedging doesn't make it safe. Pull the data, or say 'I don't know - here's what I'd check'.",
   "Root cause before fix. The error you see is a symptom; trace it before you change anything.",
   "'Probably' / 'should work' / 'seems to' = STOP and verify. Show the output, don't assume.",
   "Done/fixed/passing only if you ran the check THIS turn and can paste the result.",
