@@ -1,14 +1,20 @@
 #!/usr/bin/env node
 // statusline.js — Two-line statusline dispatcher.
 //
-// LINE 1: monorepo or simple statusline (auto-detected).
-//   Monorepo detection (checked at git toplevel, then cwd):
-//     .gitmodules exists    => monorepo (git submodules)
-//     .gsd/ dir exists      => monorepo (GSD project)
-//     .planning/ dir exists => monorepo (planning state present)
-//   Otherwise => simple statusline.
+// LINE 1: if ~/.anti-hall/base-statusline.json exists and has a "command"
+//   string, runs THAT command (passing the same stdin bytes) and uses its
+//   stdout as line 1.  ANSI / colors / emoji in the base command's output
+//   are preserved byte-for-byte.  Trailing newlines are trimmed to one.
+//   Fail-open: if the base command errors, falls through to own dispatch.
 //
-// LINE 2: phase bar (only printed when os.tmpdir()/anti-hall/phase-state.json
+//   Own dispatch (when no base config, or base command fails):
+//     Monorepo detection (checked at git toplevel, then cwd):
+//       .gitmodules exists    => monorepo (git submodules)
+//       .gsd/ dir exists      => monorepo (GSD project)
+//       .planning/ dir exists => monorepo (planning state present)
+//     Otherwise => simple statusline.
+//
+// LINE 2: phase bar (only printed when ~/.anti-hall/phase-state.json
 //   exists and is valid). Omitted entirely when state file is absent/invalid.
 //
 // Fail-open: if line 1 errors, still attempt line 2. If line 2 errors, omit it.
@@ -19,7 +25,52 @@
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
+
+// ---------------------------------------------------------------------------
+// Base-statusline config
+// ---------------------------------------------------------------------------
+
+const BASE_CONFIG_PATH = path.join(os.homedir(), '.anti-hall', 'base-statusline.json');
+
+function readBaseCommand() {
+  try {
+    const raw = fs.readFileSync(BASE_CONFIG_PATH, 'utf8');
+    const obj = JSON.parse(raw);
+    if (obj && typeof obj.command === 'string' && obj.command.trim()) {
+      return obj.command.trim();
+    }
+  } catch (e) { /* absent or malformed — fall through */ }
+  return null;
+}
+
+// Run the base statusline command, feeding stdinBytes to it.
+// Returns stdout string (trailing newlines trimmed to at most one), or null on error.
+function runBaseCommand(baseCmd, stdinBytes) {
+  try {
+    // Use the system shell so the command can contain pipes, env vars, etc.
+    // On Windows: cmd /c; elsewhere: sh -c.
+    const isWin = process.platform === 'win32';
+    const shell = isWin ? 'cmd' : 'sh';
+    const shellFlag = isWin ? '/c' : '-c';
+
+    const result = spawnSync(shell, [shellFlag, baseCmd], {
+      input: stdinBytes,
+      encoding: 'buffer',     // preserve raw bytes (ANSI / arbitrary encoding)
+      timeout: 3000,
+      maxBuffer: 256 * 1024,
+    });
+
+    if (result.error || result.status !== 0) return null;
+
+    let out = result.stdout.toString('utf8');
+    // Trim trailing newlines to exactly one (we will append line 2 after a single \n).
+    out = out.replace(/[\r\n]+$/, '');
+    return out;
+  } catch (e) {
+    return null;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Monorepo detection
@@ -46,36 +97,59 @@ function isMonorepo(dir) {
 }
 
 // ---------------------------------------------------------------------------
-// Phase bar (line 2)
+// Phase bar (line 2)  —  delegates to phase-bar.js for full rendering
 // ---------------------------------------------------------------------------
-
-const STATE_FILE = path.join(os.tmpdir(), 'anti-hall', 'phase-state.json');
-const BAR_WIDTH  = 10;
-const SPINNER    = ['|', '/', '-', '\\'];
-
-function spinner() {
-  return SPINNER[Math.floor(Date.now() / 250) % SPINNER.length];
-}
-
-function renderBar(done, total) {
-  const filled = total > 0 ? Math.round((done / total) * BAR_WIDTH) : 0;
-  const clamped = Math.max(0, Math.min(BAR_WIDTH, filled));
-  return '[' + '#'.repeat(clamped) + '-'.repeat(BAR_WIDTH - clamped) + ']';
-}
 
 function phaseBarLine() {
   try {
-    const raw   = fs.readFileSync(STATE_FILE, 'utf8');
-    const state = JSON.parse(raw);
-    const code  = (state.code  || '').toString().trim();
-    const desc  = (state.desc  || '').toString().trim();
-    const done  = parseInt(state.done,  10);
-    const total = parseInt(state.total, 10);
-    if (!code || !desc || isNaN(done) || isNaN(total) || total <= 0) return null;
-    const bar = renderBar(done, total);
-    return `${spinner()} ${bar} ${code} ${desc} ${done}/${total}`;
+    const phaseBarScript = path.join(__dirname, 'phase-bar.js');
+    const result = spawnSync(process.execPath, [phaseBarScript], {
+      encoding: 'utf8',
+      timeout: 2000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    if (result.error) return null;
+    const out = (result.stdout || '').replace(/[\r\n]+$/, '');
+    return out || null;
   } catch (e) {
     return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Own-dispatch line 1 (fallback when no base config)
+// ---------------------------------------------------------------------------
+
+function ownLine1(input) {
+  try {
+    let cwd = process.cwd();
+    try {
+      const data = JSON.parse(input);
+      cwd = data.workspace?.current_dir || data.cwd || cwd;
+    } catch (e) { /* use process.cwd() */ }
+
+    const toplevel = gitToplevel(cwd);
+    const monorepo = isMonorepo(toplevel) || isMonorepo(cwd);
+
+    const scriptDir = __dirname;
+    const renderer  = monorepo
+      ? path.join(scriptDir, 'statusline-monorepo.js')
+      : path.join(scriptDir, 'statusline-simple.js');
+
+    // Capture renderer output by temporarily overriding process.stdout.write.
+    const saved  = process.stdout.write.bind(process.stdout);
+    const chunks = [];
+    process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+    try {
+      const mod = require(renderer);
+      if (typeof mod.runWithInput === 'function') mod.runWithInput(input);
+    } finally {
+      process.stdout.write = saved;
+    }
+    const out = chunks.join('').replace(/[\r\n]+$/, '');
+    return out || '';
+  } catch (e) {
+    return '';
   }
 }
 
@@ -84,43 +158,34 @@ function phaseBarLine() {
 // ---------------------------------------------------------------------------
 
 function main() {
-  let input = '';
+  const inputChunks = [];
   const timeout = setTimeout(() => process.exit(0), 3000);
-  process.stdin.setEncoding('utf8');
-  process.stdin.on('data', chunk => { input += chunk; });
+
+  // Collect raw bytes from stdin so we can forward them intact to the base command.
+  process.stdin.on('data', chunk => { inputChunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); });
   process.stdin.on('end', () => {
     clearTimeout(timeout);
 
-    // --- LINE 1: dispatch to the right renderer ---
+    const stdinBytes  = Buffer.concat(inputChunks);
+    const inputString = stdinBytes.toString('utf8');
+
+    // --- LINE 1 ---
     let line1 = '';
     try {
-      let cwd = process.cwd();
-      try {
-        const data = JSON.parse(input);
-        cwd = data.workspace?.current_dir || data.cwd || cwd;
-      } catch (e) { /* use process.cwd() */ }
-
-      const toplevel = gitToplevel(cwd);
-      const monorepo = isMonorepo(toplevel) || isMonorepo(cwd);
-
-      const scriptDir = __dirname;
-      const renderer  = monorepo
-        ? path.join(scriptDir, 'statusline-monorepo.js')
-        : path.join(scriptDir, 'statusline-simple.js');
-
-      // Capture renderer output by temporarily overriding process.stdout.write.
-      const saved = process.stdout.write.bind(process.stdout);
-      const chunks = [];
-      process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
-      try {
-        const mod = require(renderer);
-        if (typeof mod.runWithInput === 'function') mod.runWithInput(input);
-      } finally {
-        process.stdout.write = saved;
+      const baseCmd = readBaseCommand();
+      if (baseCmd) {
+        const baseOut = runBaseCommand(baseCmd, stdinBytes);
+        if (baseOut !== null) {
+          line1 = baseOut;
+        } else {
+          // Base command failed — fall through to own dispatch
+          line1 = ownLine1(inputString);
+        }
+      } else {
+        line1 = ownLine1(inputString);
       }
-      line1 = chunks.join('');
     } catch (e) {
-      // Line 1 failed — proceed to line 2 attempt anyway
+      // Line 1 failed entirely — proceed to line 2 attempt anyway
     }
 
     // --- LINE 2: phase bar (optional) ---

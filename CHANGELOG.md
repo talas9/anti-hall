@@ -6,6 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.4.3
+
+Real statusline installer (wraps existing user statusline + scope-aware + uninstall).
+statusline.js now supports base-command wrap.
+
+- **`install-statusline.js` (new):** Interactive installer (--user/--project scope,
+  base-statusline.json config, backup + restore, dedup safety). Wraps the user's EXISTING
+  statusline.json / statusline command (if present) as line 1, adds anti-hall phase bar
+  as line 2. Scope-aware: --user writes to ~/.anti-hall/; --project writes to ./.anti-hall/.
+  Preserves .ai-generated-index, .claude-plugin, and other dotfiles on uninstall.
+- **`uninstall-statusline.js` (new):** Restores original statusline from backup, removes
+  anti-hall phase state.
+- **`statusline.js` (updated):** base-command wrap mode: reads ~/.anti-hall/base-statusline.json
+  (schema: `{command: "..."}`) and dispatches it to shell, captures line 1, appends phase
+  bar as line 2. Falls back to own dispatch (Claude | branch | repo) when config absent.
+- **`STATUSLINE.md` (updated):** usage examples for install/uninstall; wrap behavior and
+  base-statusline.json config schema.
+
 ## 0.4.2
 
 Opt-in semantic speculation judge (LLM-evaluated Stop hook, off by default) covering
