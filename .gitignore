@@ -3,3 +3,8 @@ plugins/anti-hall/statusline/demo-wrapper.sh
 # Local working notes / session handoff — never ship
 CONTINUE-HERE.md
 .anti-hall/
+
+# Per-project Claude settings — contain machine-absolute paths, never commit
+.claude/settings.json
+.claude/settings.local.json
+.claude/settings.json.bak-antihall

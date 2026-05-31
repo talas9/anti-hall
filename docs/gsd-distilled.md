@@ -71,7 +71,7 @@ project-specific overhead, not universally transferable value:
 | Multi-CLI external review (`--gemini`, `--codex`, `--qwen`, `--cursor` flags) | Good for convergence; optional, not core |
 | Wave numbering (`wave: 1`, `depends_on:` frontmatter) | Valuable at 5+ parallel plans; overhead for small features |
 | Autonomous mode with AUTONOMY-STATUS.md streaming | Useful for AFK multi-hour runs; not a first-class generic need |
-| Domain-specialist agent roles (skyflutter-mobile, skyfb-cloud, etc.) | Project-specific; generic plugin needs role-agnostic contracts |
+| Domain-specialist agent roles (e.g. `mobile-dev`, `cloud-backend`, etc.) | Project-specific; generic plugin needs role-agnostic contracts |
 | Hard gates specific to the project (Firestore rules, financial actions, app-store submissions) | Must be parameterized per project, not baked in |
 
 **What survives extraction:** the debate gate structure (parallel reviewer + adversarial critic, fix waves, convergence on NEW P0s), phase decomposition with goal + touched-files + verification, anti-speculation discipline, and model tiering.

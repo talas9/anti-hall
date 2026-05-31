@@ -245,10 +245,9 @@ F-16..F-19). Still-open: **13** (F-01b, F-05..F-12, F-20..F-22, F-11) + **3** ne
 ## 5. AGNOSTIC MANDATE (P0 — this is a public repo)
 
 **Forbidden in SHIPPED files** (anything under `plugins/`, plus `AGENTS.md`,
-`.claude-plugin/marketplace.json`, top READMEs/CHANGELOG): project codenames
-(`skycrew`, `toolfox`/`toolfox3`, `talas-ai`, `paperclip`, `sky-crew`), repo names
-(`skyflutter`, `skyfb`, `skyinform`, `skydart`, `skylog`), product nouns tied to one
-project (`revenuecat`, `airalo`, `codemagic`), personal names beyond the unavoidable
+`.claude-plugin/marketplace.json`, top READMEs/CHANGELOG): any private project
+codenames, internal repo names, product nouns tied to a single project, third-party
+vendor names tied to a single project, personal names beyond the unavoidable
 identity coordinate, any GSD-internal assumption baked as REQUIRED, and any absolute
 `/Users/...` or `/home/<name>/...` path.
 
@@ -256,17 +255,17 @@ identity coordinate, any GSD-internal assumption baked as REQUIRED, and any abso
 
 Command:
 ```
-grep -rniE 'skycrew|toolfox|talas-ai|paperclip|sky-crew|\.gsd\b|skyflutter|skyfb|skyinform|revenuecat|airalo' \
+grep -rniE '<private-project-codenames>|<internal-repo-names>|<project-vendor-nouns>|\.gsd\b' \
   plugins/ AGENTS.md .claude-plugin/marketplace.json
 grep -rniE '/Users/|/home/[a-z]' plugins/ AGENTS.md .claude-plugin/marketplace.json
-grep -rniE 'talas9|mohammed talas|marius'  plugins/ AGENTS.md .claude-plugin/marketplace.json
+grep -rniE '<personal-names-other-than-author>'  plugins/ AGENTS.md .claude-plugin/marketplace.json
 ```
 
 Hits found (all acceptable / not violations — analyzed):
 
 - **`.gsd` references (5):** `README.md:66`, `STATUSLINE.md:64`,
   `statusline-monorepo.js:4`, `statusline.sh:6` + `:32`. These are GENERIC monorepo/
-  GSD-project DETECTION (treat a repo as a monorepo if `.gsd/` exists), NOT a SkyCrew
+  GSD-project DETECTION (treat a repo as a monorepo if `.gsd/` exists), NOT a specific-project
   coupling. **Acceptable** — but the plan MUST keep `.gsd`/`.planning` strictly
   OPTIONAL: detection by `.gitmodules` is the generic primary signal; `.gsd`/`.planning`
   are bonus signals that must degrade gracefully (statusline already omits the GSD
@@ -281,8 +280,8 @@ Hits found (all acceptable / not violations — analyzed):
   Removing it breaks installation. **`author`/`owner` name is OPTIONAL** metadata; it
   may stay (it is the genuine author) or be reduced to the GitHub handle — recommend
   keeping as-is; it leaks no project secret.
-- **No `skycrew`/`toolfox`/`paperclip`/etc. project-name hits. No absolute
-  `/Users/` paths in shipped files. No `marius`.** (`/Users/...` appeared only in the
+- **No private project-name hits. No absolute
+  `/Users/` paths in shipped files. No non-author personal names.** (`/Users/...` appeared only in the
   deadly-loop RESULT file, which is not shipped.)
 
 **Verdict: the current shipped tree PASSES the agnostic mandate.** No scrub work is
@@ -290,7 +289,7 @@ required beyond keeping the OS rewrite from introducing absolute paths (the inst
 must use `os.homedir()`, never a literal `/Users/...`). The verification command to
 re-run after the rewrite (CI gate, F-23 below):
 ```
-grep -rniE 'skycrew|toolfox3?|talas-ai|paperclip|sky-crew|skyflutter|skyfb|skyinform|skydart|skylog|revenuecat|airalo|codemagic' \
+grep -rniE '<private-project-codenames>|<internal-repo-names>|<project-vendor-nouns>' \
   plugins/ AGENTS.md .claude-plugin/marketplace.json \
   && echo "AGNOSTIC FAIL" || echo "AGNOSTIC PASS"
 grep -rnE '/Users/|/home/[a-z]' plugins/ AGENTS.md .claude-plugin/marketplace.json \
