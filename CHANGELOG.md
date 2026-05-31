@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.3.9
+
+Phase-bar statusline enrichment: wider bar (20 chars), live percentage, longer description
+(cap 32 chars), and optional extras (elapsed time in yellow when >20m, active agent count,
+current step) rendered when present in phase-state.json.
+
+- **`phase-bar.js` (statusline):** expanded bar width from 16 to 20 chars; added percentage
+  render (e.g., "40%") in yellow after the bar; description cap increased from 16 to 32
+  chars with ellipsis on overflow; optional extras appended in dim text when phase-state
+  includes `elapsed`, `agents`, and `step` keys (e.g., "3m 3ag rendering bar"). Elapsed
+  times >20m highlighted in yellow (e.g., "\[33m23m\[0m") to signal long-running phases.
+  Backward-compatible: phase-state without these keys renders as before.
+
 ## 0.3.7
 
 Consolidated enforcement wave: command-delegation as the top always-on rule, active

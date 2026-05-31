@@ -25,7 +25,7 @@ function readState() {
   }
   return null;
 }
-const BAR_WIDTH  = 10;
+const BAR_WIDTH  = 20;
 const SPINNER    = ['|', '/', '-', '\\'];
 
 // Time-cycled spinner so the bar "spins" each statusline refresh (~every few
@@ -56,7 +56,7 @@ try {
   const state = JSON.parse(raw);
 
   const code  = (state.code  || '').toString().trim();
-  const desc  = (state.desc  || '').toString().trim();
+  let   desc  = (state.desc  || '').toString().trim();
   const done  = parseInt(state.done,  10);
   const total = parseInt(state.total, 10);
 
@@ -65,10 +65,41 @@ try {
     process.exit(0);
   }
 
+  // Allow a fuller description now that there is room; cap to keep the line sane.
+  if (desc.length > 32) desc = desc.slice(0, 31) + '...';
+
+  const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
   const bar = renderBar(done, total);
+
+  // Optional extras, rendered only if present in the state file. The orchestrator
+  // writes these as it works (see the watchdog/heartbeat design) so a long-running
+  // or stuck phase is visible right in the statusline.
+  const extras = [];
+  const started = parseInt(state.started, 10); // epoch ms when the phase began
+  if (!isNaN(started) && started > 0) {
+    const secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
+    const human = secs >= 3600 ? Math.floor(secs / 3600) + 'h' + Math.floor((secs % 3600) / 60) + 'm'
+                : secs >= 60   ? Math.floor(secs / 60) + 'm'
+                :                secs + 's';
+    // Yellow once the phase has run long (>20m) - a visible "is this stuck?" cue.
+    extras.push((secs > 1200 ? C.yellow : C.dim) + human + C.reset);
+  }
+  const agents = parseInt(state.agents, 10); // active subagent count
+  if (!isNaN(agents) && agents >= 0) {
+    extras.push(C.dim + agents + 'ag' + C.reset);
+  }
+  let step = (state.step || '').toString().trim(); // current step text
+  if (step) {
+    if (step.length > 28) step = step.slice(0, 27) + '...';
+    extras.push(C.dim + step + C.reset);
+  }
+  const extraStr = extras.length ? ` ${C.dim}|${C.reset} ` + extras.join(' ') : '';
+
   process.stdout.write(
     `${C.cyan}${spinner()}${C.reset} ${bar} ` +
-    `${C.bold}${code}${C.reset} ${desc} ${C.dim}${done}/${total}${C.reset}\n`
+    `${C.yellow}${pct}%${C.reset} ` +
+    `${C.bold}${code}${C.reset} ${desc} ` +
+    `${C.dim}${done}/${total}${C.reset}${extraStr}\n`
   );
 } catch (e) {
   // Missing file, JSON parse error, or any other failure -> print nothing
