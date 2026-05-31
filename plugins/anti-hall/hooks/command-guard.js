@@ -7,15 +7,18 @@
 //   delegate them to a subagent instead. Silent pass-through in subagent context.
 //
 // COORDINATOR vs SUBAGENT DETECTION
-//   Claude Code sets CLAUDE_CODE_ENTRYPOINT on the process it launches.
-//   Documented values: "cli" (interactive session), "agent_tool" (Task-tool subagent).
-//   A hook process inherits this env var from the Claude Code process that runs it.
-//   COORDINATOR: CLAUDE_CODE_ENTRYPOINT != "agent_tool" (typically "cli")
-//   SUBAGENT:    CLAUDE_CODE_ENTRYPOINT == "agent_tool"
+//   PRIMARY signal (works across environments — including cmux and other wrappers
+//   where a subagent inherits the parent's exact env): Claude Code injects `agent_id`
+//   and `agent_type` into the PreToolUse hook PAYLOAD for Task-tool subagents. The
+//   top-level coordinator's payload has NEITHER. This is the reliable discriminator.
+//   SECONDARY signal: CLAUDE_CODE_ENTRYPOINT === "agent_tool" — set on the subagent
+//   PROCESS in a vanilla `claude` CLI, but NOT reliable under cmux (stays "cli"), so
+//   it is only a fallback.
+//   A command is treated as SUBAGENT (allow) if EITHER signal indicates a subagent.
 //
-//   FAIL-OPEN POLICY: if the env var is absent, empty, or an unrecognized value,
-//   we DO NOT block — unknown contexts are treated as subagent (allow). This prevents
-//   deadlock in non-standard or future environments.
+//   FAIL-OPEN POLICY: if context is ambiguous (no agent markers in the payload AND an
+//   absent/unrecognized entrypoint), we DO NOT block — unknown contexts are treated as
+//   subagent (allow). This prevents deadlock in non-standard or future environments.
 //
 // HEAVY COMMAND HEURISTIC
 //   Checks the first verb and common heavy command patterns. Conservative: only blocks
@@ -103,12 +106,24 @@ function isHeavyCommand(command) {
   return false;
 }
 
-function isCoordinator() {
+// A Task-tool subagent is identified by agent markers in the hook payload
+// (reliable everywhere, incl. cmux) OR by the agent_tool entrypoint (vanilla CLI).
+function isSubagent(payload) {
+  if (payload && (payload.agent_id || payload.agent_type)) return true;
+  if (process.env.CLAUDE_CODE_ENTRYPOINT === 'agent_tool') return true;
+  return false;
+}
+
+// Coordinator = NOT a subagent, running under a recognized interactive entrypoint.
+// Takes the parsed hook payload so it can use the payload's agent markers.
+function isCoordinator(payload) {
+  // Subagents are never the coordinator — allow them (the whole point of the guard
+  // is to keep the MAIN thread clean by pushing heavy work down to subagents).
+  if (isSubagent(payload)) return false;
+
   const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
   // Fail-open: if absent or unknown, allow (treat as subagent)
   if (!entrypoint || typeof entrypoint !== 'string') return false;
-  // Only block when explicitly in a non-subagent context
-  if (entrypoint === 'agent_tool') return false;
   // cli, vscode, jetbrains, vim, emacs, terminal_ide_* = coordinator
   if (entrypoint === 'cli') return true;
   if (entrypoint.startsWith('terminal_ide_')) return true;
@@ -118,11 +133,8 @@ function isCoordinator() {
 }
 
 function main() {
-  // Only block in coordinator context.
-  if (!isCoordinator()) {
-    process.exit(0);
-  }
-
+  // Read + parse the payload FIRST — coordinator/subagent detection needs the
+  // payload's agent_id/agent_type markers (the only reliable signal under cmux).
   let raw = '';
   try {
     raw = fs.readFileSync(0, 'utf8');
@@ -134,6 +146,11 @@ function main() {
   try {
     payload = JSON.parse(raw);
   } catch (_) {
+    process.exit(0);
+  }
+
+  // Only block in coordinator context (subagents pass through).
+  if (!isCoordinator(payload)) {
     process.exit(0);
   }
 

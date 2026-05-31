@@ -6,6 +6,31 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.4.6
+
+Fix command-guard blocking SUBAGENTS (not just the coordinator) under cmux and other
+launchers that wrap `claude` — which crippled the orchestration plugin's entire purpose:
+if subagents are also blocked from running heavy commands, there is nothing left to
+delegate TO, and the swarm deadlocks.
+
+Root cause (verified empirically this session by capturing real PreToolUse payloads):
+the old `isCoordinator()` relied solely on `CLAUDE_CODE_ENTRYPOINT === "agent_tool"` to
+detect subagents. That env var is only set on the subagent PROCESS in a vanilla `claude`
+CLI. Under cmux, subagents inherit the parent's exact environment (same
+`CLAUDE_CODE_ENTRYPOINT=cli`, same `CLAUDE_CODE_SESSION_ID`, same PID), so every subagent
+looked like the coordinator and got blocked.
+
+Fix: detect subagents from the hook PAYLOAD instead of the process env. Claude Code
+injects `agent_id` and `agent_type` into the PreToolUse payload for Task-tool subagents;
+the top-level coordinator's payload has neither. `isCoordinator(payload)` now treats a
+command as a subagent (allow) if the payload carries `agent_id`/`agent_type` OR the
+entrypoint is `agent_tool` (vanilla-CLI fallback). `main()` parses the payload before the
+context check. This works in BOTH environments (cmux and vanilla CLI). Fail-open
+preserved on any ambiguity.
+
+Verified: coordinator `node x.js` -> still blocked; the SAME command from a Task-tool
+subagent -> runs (payload carried `agent_id`/`agent_type`, matching the spawned agent id).
+
 ## 0.4.5
 
 Fix task-guard false-block: completed tasks were over-counted as pending, causing the
