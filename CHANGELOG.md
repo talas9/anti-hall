@@ -6,6 +6,32 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.4.5
+
+Fix task-guard false-block: completed tasks were over-counted as pending, causing the
+Stop hook to block on sessions with zero genuinely-open tasks.
+
+Root cause (verified against real transcripts): two interacting key-mismatch bugs:
+
+1. `TaskCreate` input in the real harness has no `id` or `task_id` field — the harness
+   assigns a sequential numeric id (1, 2, 3...) but returns it only in the tool_result
+   string `"Task #N created successfully: <subject>"`. The old code fell back to
+   `Date.now() + random`, generating a different random key for each create.
+
+2. `TaskUpdate` input uses the field `taskId` (camelCase) — the old code read
+   `inp.id || inp.task_id`, both always `null`, so no update ever matched any create.
+   All 34 task creates stayed at status `pending` forever.
+
+Fix: parse tool_result strings to extract the harness-assigned numeric id, store
+TaskCreate provisionally under the tool_use wire id, then remap to the numeric id when
+the result is seen. Read `inp.taskId` first in TaskUpdate (fallback to `inp.id` and
+`inp.task_id` for alternate harnesses). Fail-open on any parse error. A cleared or
+all-completed task list yields zero open tasks and no block.
+
+Verified by 5 functional tests: 3-create-all-complete -> no block; 1-pending -> block
+with correct task name; TodoWrite all-completed -> no block; empty transcript -> no
+block; 34-creates-all-completed (exact real-scenario replay) -> no block.
+
 ## 0.4.4
 
 Fix plugin load error — removed redundant manifest `hooks` reference; hooks/hooks.json is auto-loaded by Claude Code, so referencing it explicitly caused a duplicate-hooks-file load error (per /doctor). Hooks unchanged and still active.

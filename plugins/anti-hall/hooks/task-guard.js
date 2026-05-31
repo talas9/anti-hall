@@ -16,6 +16,16 @@
 //     TodoWrite in a large transcript is never silently missed.
 //   - Discovers tasks from TodoWrite tool_use entries (input.todos[]) AND
 //     TaskCreate/TaskUpdate entries; replays in order, last state wins.
+//   - TaskCreate / TaskUpdate keying: the harness assigns a sequential numeric
+//     ID (1, 2, 3 ...) but does NOT include it in the tool_use input; it appears
+//     only in the tool_result text "Task #N created successfully: <subject>".
+//     TaskUpdate references this ID via the field "taskId" (not "id"/"task_id").
+//     The parser therefore:
+//       (a) parses tool_result strings to map tool_use_id -> numeric task id,
+//       (b) on TaskCreate uses the tool_use id as a provisional key until the
+//           result is seen, then remaps to the numeric key,
+//       (c) on TaskUpdate reads inp.taskId (plus inp.id / inp.task_id as
+//           fallbacks) so completions are correctly applied.
 //   - Loop-state file lives under os.tmpdir()/anti-hall keyed by session_id
 //     (F-07: never written into the user's project tree, so it does not pollute
 //     a stranger's repo or show as dirty git status, and dedupe survives `cd`).
@@ -162,17 +172,44 @@ function main() {
 
 // Stream the whole transcript JSONL and build Map<id, {id, content, status}>
 // (last write wins). Reading the file fully then splitting is fine here: it is
-// a single synchronous read and we must not miss an early entry (no tail
-// window). Lines that fail to parse are skipped.
+// a single synchronous read and we must not miss an early entry (no tail window).
+// Lines that fail to parse are skipped.
+//
+// Key insight (verified against real transcripts, 2026-05-31):
+//
+//   TaskCreate input has NO id / task_id field. The harness assigns a sequential
+//   numeric id (1, 2, 3 ...) and returns it only in the tool_result string:
+//     "Task #1 created successfully: <subject>"
+//   TaskUpdate uses the field "taskId" (camelCase) — NOT "id" or "task_id".
+//
+//   The old code keyed TaskCreate by Date.now()+random (id never present) and
+//   read TaskUpdate via inp.id||inp.task_id (both always null), so NO update ever
+//   matched ANY create, and ALL creates stayed pending forever. That caused the
+//   false-block of 34 "pending" tasks when the harness TaskList showed 0.
+//
+//   Fix: two-pass strategy within a single scan:
+//     1. Collect tool_result strings that say "Task #N created successfully" and
+//        map the tool_use_id (e.g. "toolu_01...") -> numeric key "N".
+//     2. On TaskCreate, store provisionally under the tool_use id.
+//     3. After the full scan, remap provisional keys to numeric keys using the
+//        result map (entries whose tool_use id appears in the result map get
+//        re-keyed; others stay as their tool_use id — still valid for dedup).
+//     4. On TaskUpdate, check inp.taskId first, then inp.id, then inp.task_id.
 function parseTasksFromFile(filePath) {
-  const taskMap = new Map();
   let data;
   try {
     data = fs.readFileSync(filePath, 'utf8');
   } catch (_) {
-    return taskMap;
+    return new Map();
   }
   const lines = data.split(/\r?\n/);
+
+  // provisional storage: tool_use_id -> task record
+  const provisionalMap = new Map(); // tool_use_id -> { toolUseId, content, status }
+  // final task map: numeric-or-fallback id -> task record
+  const taskMap = new Map();
+  // result map: tool_use_id -> numeric string id ("1", "2", ...)
+  const resultIdMap = new Map(); // tool_use_id -> "N"
 
   for (const line of lines) {
     const trimmed = line.trim();
@@ -184,6 +221,23 @@ function parseTasksFromFile(filePath) {
       continue;
     }
 
+    // Collect TaskCreate tool_results from user messages.
+    // Shape: { type:"user", message:{ content:[ { type:"tool_result",
+    //   tool_use_id:"toolu_...", content:"Task #N created successfully: ..." } ] } }
+    if (entry.type === 'user') {
+      const msg = entry.message;
+      const content = msg && Array.isArray(msg.content) ? msg.content : [];
+      for (const item of content) {
+        if (item && item.type === 'tool_result' && typeof item.tool_use_id === 'string') {
+          const resultText = typeof item.content === 'string' ? item.content : '';
+          const m = resultText.match(/^Task\s+#(\d+)\s+created\s+successfully/i);
+          if (m) {
+            resultIdMap.set(item.tool_use_id, m[1]);
+          }
+        }
+      }
+    }
+
     const toolUses = collectToolUses(entry);
     for (const tu of toolUses) {
       const name = tu.name || '';
@@ -191,12 +245,13 @@ function parseTasksFromFile(filePath) {
       if (name === 'TodoWrite') {
         const todos = tu.input && tu.input.todos;
         if (Array.isArray(todos)) {
-          // TodoWrite replaces the entire list.
+          // TodoWrite replaces the entire list — clear both maps.
           taskMap.clear();
+          provisionalMap.clear();
           for (const todo of todos) {
             const id = todo.id || todo.content || String(taskMap.size);
-            taskMap.set(id, {
-              id,
+            taskMap.set(String(id), {
+              id: String(id),
               content: todo.content || todo.activeForm || String(id),
               status: todo.status || 'pending',
             });
@@ -206,21 +261,28 @@ function parseTasksFromFile(filePath) {
       }
 
       if (name === 'TaskCreate') {
+        // The harness-assigned numeric id is NOT in input; it comes back via
+        // tool_result. Store provisionally under the tool_use wire id (tu.id).
         const inp = tu.input || {};
-        const id = inp.id || inp.task_id || (String(Date.now()) + String(Math.random()));
-        const content = inp.title || inp.subject || inp.content || inp.description || String(id);
+        const toolUseId = tu.id || '';
+        const content = inp.subject || inp.title || inp.content || inp.description || toolUseId;
         const status = inp.status || 'pending';
-        taskMap.set(id, { id, content, status });
+        if (toolUseId) {
+          provisionalMap.set(toolUseId, { toolUseId, content, status });
+        }
         continue;
       }
 
       if (name === 'TaskUpdate') {
         const inp = tu.input || {};
-        const id = inp.id || inp.task_id;
+        // Real harness uses "taskId"; also accept "id" and "task_id" as fallbacks.
+        const id = inp.taskId != null ? String(inp.taskId)
+                 : inp.id     != null ? String(inp.id)
+                 : inp.task_id != null ? String(inp.task_id)
+                 : null;
         if (id != null) {
-          const key = String(id);
-          const existing = taskMap.get(key) || { id: key, content: key };
-          taskMap.set(key, {
+          const existing = taskMap.get(id) || { id, content: id };
+          taskMap.set(id, {
             id: existing.id,
             content: existing.content,
             status: inp.status || existing.status || 'pending',
@@ -229,6 +291,24 @@ function parseTasksFromFile(filePath) {
         continue;
       }
     }
+  }
+
+  // Flush provisional TaskCreate entries into taskMap using the result id map.
+  // If the tool_result was seen, use the numeric key; otherwise fall back to the
+  // tool_use id (still unique per task, so dedup and open-task count are correct).
+  for (const [toolUseId, rec] of provisionalMap) {
+    const numericId = resultIdMap.get(toolUseId) || toolUseId;
+    const key = String(numericId);
+    // Merge: if taskMap already has this key (from a TaskUpdate that arrived
+    // before we flushed), keep its status; otherwise use the provisional status.
+    const existing = taskMap.get(key);
+    if (!existing) {
+      taskMap.set(key, { id: key, content: rec.content, status: rec.status });
+    } else if (!existing.content || existing.content === key) {
+      // Backfill subject from provisional record (update may have arrived first).
+      taskMap.set(key, { id: key, content: rec.content, status: existing.status });
+    }
+    // If existing already has a richer status from TaskUpdate, leave it.
   }
 
   return taskMap;
