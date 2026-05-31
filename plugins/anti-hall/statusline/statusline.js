@@ -19,6 +19,23 @@
 //
 // Fail-open: if line 1 errors, still attempt line 2. If line 2 errors, omit it.
 // Never crashes Claude Code. No emojis. Pure Node. OS-agnostic.
+//
+// LIFECYCLE GOTCHAS (learned empirically — see KB §14.4):
+//   1. Claude Code reads the `statusLine` setting ONLY at session startup; it does
+//      NOT hot-reload. So a per-project install (writing .claude/settings.json mid-
+//      session) shows NOTHING until Claude Code is RESTARTED in that repo. An already-
+//      running session keeps whatever statusLine it loaded at startup — which is why a
+//      freshly-installed project shows no bar while another, already-open project does.
+//   2. The line-1 base command (~/.anti-hall/base-statusline.json) is GLOBAL — shared
+//      by EVERY project whose statusLine points at this dispatcher (e.g. one that set it
+//      via settings.local.json). A RELATIVE base command resolves against the per-project
+//      cwd, so it renders that project's own helper where present and falls through to
+//      own-dispatch elsewhere. Overwriting this file changes line 1 for all such
+//      projects at once — never assume it is project-local.
+//   3. The line-2 phase state lives at os.homedir()/.anti-hall/phase-state.json, NOT
+//      os.tmpdir() (see phase-bar.js): homedir is identical for every process, but each
+//      process can see a different TMPDIR, so a tmpdir-written state file is invisible
+//      to the live statusline runner.
 
 'use strict';
 

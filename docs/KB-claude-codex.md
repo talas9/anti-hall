@@ -569,6 +569,12 @@ bar) is configured through two GLOBAL files under `~/.anti-hall/`:
   invisible to the live statusline, whereas homedir is identical for all processes.
 - Settings precedence that decides which statusLine actually renders:
   `.claude/settings.local.json` > `.claude/settings.json` > `~/.claude/settings.json`.
+- **`statusLine` is read ONLY at session startup — no hot-reload.** Installing the
+  statusline into a project mid-session (writing `.claude/settings.json`) shows nothing
+  until Claude Code is **restarted in that repo**; an already-running session keeps the
+  statusLine it loaded at startup. This is why a freshly-installed project shows no bar
+  while a separately-opened project (whose session loaded the dispatcher) shows it fine —
+  the global `phase-state.json` is shared, only the per-session load timing differs.
 
 ### 14.5 A command-string guard must parse the verb, not scan the whole string
 
