@@ -6,6 +6,23 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.4.0
+
+Rewritten feature-launch workflow + agent-watchdog + statusline phase.js wiring + KB merge.
+
+- **`feature-launch` workflow rewritten:** plan-mode → deadly-loop-the-plan → loopback → self-heal;
+  simpler phase loop; analyze-work fan-out; 4.8-fanout/synthesis/gate integration.
+- **`agent-watchdog.js`:** new hook for heartbeat enforcement, babysit/backoff/kill logic. Polls
+  `~/.anti-hall/agents/<id>.json` every 20 min; kills idle/hung agents; integrates with phase.js.
+- **`orchestration/SKILL.md` + `AGENTS.md`:** updated with new agent-watchdog semantics,
+  heartbeat convention (mtime update = alive signal), and agent supervisor responsibilities.
+- **`statusline/phase.js` wiring:** orchestrator-main integration; calls phase.js (set/advance/step/agents/clear)
+  from feature-launch as phases progress; terminal bar reflects real run state.
+- **`docs/KB-claude-codex.md`:** merged knowledge base (67 sources): GSD methodology, superpowers,
+  deadly-loop, 4.8-swarm patterns, orchestration discipline, graphify workflow. Consolidated
+  from `.gsd/` and `superpowers/` skill refs.
+- **Version bump 0.3.11 -> 0.4.0.**
+
 ## 0.3.11
 
 Phase.js writer (real data source for the phase bar) + colored line-2 palette + full agent label.

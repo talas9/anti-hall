@@ -82,6 +82,8 @@ const FULL = [
   '  F. Run agents in PARALLEL when independent (one per task, respecting the concurrency cap). Run builds/tests/deploys/dumps/noisy commands via a cheap model subagent (Haiku, or Codex when available) OFF the main thread, so raw output never pollutes the coordinator context.',
   '  G. Report progress back to the user; synthesize subagent results instead of pasting their raw output.',
   '  H. COMMUNICATE CONCISELY: enough to convey meaning, not pages; offer to expand if the user wants more detail.',
+  '  I. WATCH/BABYSIT spawned agents: poll TaskOutput on a regular interval (ScheduleWakeup or loop); if an agent has not updated its heartbeat (~/.anti-hall/agents/<id>.json) within 20 min, call TaskStop on it and re-dispatch with a tighter scope. Never wait forever for a subagent — bounded time horizon in every brief.',
+  '  J. UPDATE THE PHASE STATUSLINE as phases progress: call statusline/phase.js (set/advance/step/agents/clear) from the main coordinator so the terminal bar reflects the real run state. Never update from inside subagents — they report back and the coordinator writes phase state.',
   '',
   'DISCIPLINES vs SKILLS:',
   'ALWAYS APPLY (enforced every session, not invoked):',

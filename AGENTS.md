@@ -86,6 +86,17 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
 - Do not end with silently-dropped requests.
 - Communicate concisely: enough to convey meaning, not pages; offer to expand if the user
   wants more detail.
+- WATCH/BABYSIT spawned agents: poll TaskOutput on a regular interval; if an agent has not
+  updated its heartbeat file (~/.anti-hall/agents/<id>.json, field `ts`) within 20 minutes,
+  call TaskStop on it and re-dispatch with a tighter scope (fewer files, shorter time
+  horizon). Never wait forever — include a bounded time/scope cap in every agent brief.
+  Re-dispatch uses the SELF-HEAL pattern: halve the work unit, make the expected output
+  schema explicit, and add a partial-results clause ("return what you have if you hit
+  the cap").
+- UPDATE THE PHASE STATUSLINE as phases progress: from the main coordinator (not from
+  inside subagents), call `statusline/phase.js set/advance/step/agents/clear` so the
+  terminal bar reflects the real run state. Subagents report back; the coordinator writes
+  phase state to ~/.anti-hall/phase-state.json.
 
 ## Recommended companion: graphify
 

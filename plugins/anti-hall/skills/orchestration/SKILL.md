@@ -175,6 +175,123 @@ The plugin enforces a non-negotiable task-list protocol via two hooks:
   exact same open-task set was already blocked on, the guard does not block again
   (prevents infinite nudge loops). Fail-open on any parse/read error.
 
+## Watchdog & heartbeat
+
+### Heartbeat convention
+
+Long-running or background subagents MUST write a heartbeat file periodically
+while they work. File path: `~/.anti-hall/agents/<id>.json`. Format:
+
+```json
+{ "id": "my-agent-id", "ts": 1748000000000, "status": "running", "step": "compiling module X" }
+```
+
+- `id`     — stable identifier for this agent (string; unique per run).
+- `ts`     — `Date.now()` at the time of the write. Update at every meaningful
+             checkpoint (e.g. after each file processed, each sub-step done).
+- `status` — free-form: `"running"`, `"done"`, `"error"`, etc.
+- `step`   — current human-readable step description (optional but useful).
+
+Write the file with `fs.writeFileSync` from Node (built-ins only; no shell).
+Delete it on clean exit. Do not write to os.tmpdir() — use the home-dir path
+(`~/.anti-hall/agents/`) so it is consistent across hook runners, the
+statusline, and the orchestrator.
+
+### Detecting stuck agents (agent-watchdog.js)
+
+The orchestrator polls `hooks/agent-watchdog.js` on a scheduled interval
+(ScheduleWakeup or a BACKOFF poll loop) to detect agents that have stopped
+updating their heartbeat:
+
+```
+node hooks/agent-watchdog.js [threshold_ms]
+```
+
+Default threshold: **1 200 000 ms (20 min)**. Override by passing a number.
+
+Output: one `STALE <id> last=<iso> age=<ms>ms status=<status> step=<step>` line
+per stale agent, then a `summary: <stale>/<total> stale` line.
+
+### Orchestrator polling pattern
+
+```
+loop (every N minutes, via ScheduleWakeup or Agent-poll):
+  run agent-watchdog.js
+  for each STALE agent:
+    call TaskStop(<agent-id>)   # stop the stuck agent
+    re-dispatch with tighter scope (smaller file set / shorter time horizon)
+  if no new agents are needed:
+    break
+```
+
+**BACKOFF poll loop** — do not poll at a fixed interval without backoff. Start
+at 2 min, double on consecutive stale hits (cap at 10 min). If two consecutive
+polls show no stale agents, reduce the interval back toward the floor.
+
+**Never wait forever.** If an agent has been stale for more than 2x the
+threshold, stop it, log the failure, and re-dispatch or mark the task failed.
+Report to the user.
+
+### Tighter scope on re-dispatch
+
+Stuck agents usually stall on one large operation (too many files, too many
+network calls). Re-dispatch with:
+- A smaller file set (split the work in half).
+- A shorter time horizon (process a single step, not the whole chain).
+- An explicit timeout in the brief ("if you cannot complete in 15 min, return
+  partial results and mark status=partial").
+
+### SELF-HEAL: wrong or hallucinated output
+
+If a subagent returns an output that does not match the expected schema or
+contradicts verifiable facts:
+1. Do NOT propagate the output downstream.
+2. Log the discrepancy.
+3. Re-dispatch the same task to a fresh agent with the schema made explicit in
+   the brief and a counter-example showing what went wrong.
+4. If two re-dispatches fail, escalate to the user with the evidence.
+
+### Bounded task scoping (prevent hour-long runs)
+
+Every agent brief MUST include an explicit scope limit — a maximum time
+horizon, file count, or work unit cap. Examples:
+- "Process at most 50 files; stop and return partial results if you hit the cap."
+- "Complete within 10 minutes; return what you have if time runs out."
+- "Work on files A–F only; do not touch G–Z."
+
+This prevents a single agent from holding the swarm hostage.
+
+## Statusline wiring
+
+The orchestrator updates the phase statusline via `statusline/phase.js` so the
+terminal bar reflects the real run state. Call it from the main thread as phases
+progress (not from inside subagents — subagents report back, the coordinator
+writes state):
+
+```bash
+# Start a phase
+node statusline/phase.js set PLAN "Planning feature X" 0 3
+
+# Advance as sub-steps complete
+node statusline/phase.js advance
+
+# Set the current step label
+node statusline/phase.js step "running Reviewer+Critic debate"
+
+# Set active agent count
+node statusline/phase.js agents 4
+
+# Clear when done
+node statusline/phase.js clear
+```
+
+Path is relative to the plugin root (`CLAUDE_PLUGIN_ROOT`). Use an absolute
+path in practice: `path.join(pluginRoot, 'statusline', 'phase.js')`.
+
+The statusline reads `~/.anti-hall/phase-state.json`. Write from the main
+coordinator only; the file path is consistent across all runners because it
+uses the home directory (not os.tmpdir()).
+
 ## Relationship to other skills in this plugin
 - **feature-launch** runs its plan-hardening and per-phase deadly-loop gates as
   swarms dispatched from the main coordinator — the main thread orchestrates, the

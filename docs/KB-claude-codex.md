@@ -346,9 +346,173 @@ From the Opus 4.8 feature reference (released 2026-05-28, model ID `claude-opus-
 
 ---
 
+## 11. Opus 4.8 swarm & phased orchestration
+
+Sources: [Dynamic Workflows](https://code.claude.com/docs/en/workflows), [Agent Teams](https://code.claude.com/docs/en/agent-teams), [Subagents SDK](https://code.claude.com/docs/en/agent-sdk/subagents), [Managed Agents API](https://platform.claude.com/docs/en/managed-agents/multi-agent), [Managed Agents blog](https://www.anthropic.com/engineering/managed-agents), [Multi-Agent Research System](https://www.anthropic.com/engineering/multi-agent-research-system), [Building Effective Agents](https://www.anthropic.com/research/building-effective-agents).
+
+### 11.1 Three native primitives and their hard limits
+
+| Primitive | Status | Concurrency | Key limits |
+|---|---|---|---|
+| **Agent SDK subagents** | Stable | ~25 threads | No nesting (subagents cannot spawn); only channel = injected prompt string; context starts fresh |
+| **Agent Teams** | Experimental (`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`) | 3–5 recommended | No nested teams; one team at a time; token cost linear per active teammate; no session resumption |
+| **Dynamic Workflows** | Research preview (Claude Code v2.1.154+, paid plans) | 16 concurrent; 1,000 per run | Not production-ready; no mid-run user input; a 500-agent audit can shift the bill by an order of magnitude; practitioner tester reported 47-agent attempt, "several dumb mistakes in 5 hours" |
+| **Managed Agents API** | Beta (`managed-agents-2026-04-01` header) | 25 concurrent threads | 20 unique agents in roster; coordinator depth-1 only; archive threads to reclaim slots |
+
+Agent SDK subagents are the right choice when you control model selection and need deterministic nesting-free dispatch. Dynamic Workflows are for scale research/audit work where a stale result is recoverable. Agent Teams for adversarial debate with direct peer messaging. Managed Agents for server-side multi-agent pipelines.
+
+### 11.2 The 3-element phase primitive
+
+Every phase has exactly three elements:
+1. **Fan-out** — spawn N subagents (or workflow agents) with distinct, non-overlapping scopes simultaneously. SDK: `background: true` subagents. Dynamic Workflows: parallel script stages.
+2. **Synthesis** — coordinator collects final messages only (not intermediate tool calls), writes a canonical artifact (e.g., `.planning/PHASE-N-synthesis.md`).
+3. **Gate** — verification check against the synthesis. Automated (hook, test, exit code) or explicit human confirm. Blocks Phase N+1 until passed.
+
+**Rule**: parallelize analyzers and fix workers; serialize gates. The gate is the single synchronization point that prevents agents from building on an unvalidated foundation.
+
+### 11.3 Analyze-work mode (pre-planning fan-out)
+
+A dedicated pre-planning pass of parallel read-only subagents, no code output, converge on a diagnosis before any plan is written:
+
+```
+fan out in parallel (effort: medium, tools: Read/Grep/Glob only):
+  - architecture-analyzer  -> { touched_modules, api_contracts, callers }
+  - security-analyzer      -> { auth_paths, secret_access, data_flows }
+  - test-analyzer          -> { coverage_gaps, missing_edge_case_scenarios }
+  - contract-analyzer      -> { schema_deps, downstream_consumers }
+coordinator synthesizes -> .planning/ANALYSIS-<feature>.md ("blast radius map")
+gate: check for P0 blockers before advancing to PLAN phase
+```
+
+This replaces "graph-scout + codebase map" with native subagent fan-out. Cheaper than a full GSD spec cycle before you know the shape of the work. The blast radius map is then fed to both the planner and the debate agents so they attack with specificity.
+
+### 11.4 Effort routing for phased orchestration
+
+- **Orchestrator/coordinator**: `xhigh` (long-horizon planning, synthesis). Set `max_tokens` ≥ 64k at xhigh.
+- **Analysis subagents**: `medium` or `high` (focused scope, shorter output).
+- **Verification subagents**: `low` or `medium` (reading/checking, not deep reasoning).
+
+`xhigh` exists only on Opus 4.8 and 4.7; fall back to `high` on other models. `ultracode` (Claude Code UI) pairs `xhigh` with standing workflow-launch permission via mid-conversation system messages — to replicate via API, use `effort: xhigh` + a mid-conversation system message granting permission.
+
+### 11.5 Mid-conversation system messages as phase mode switches
+
+On Opus 4.8 (Claude API / Claude Platform on AWS only — not Bedrock/Vertex/Foundry): append `{"role":"system"}` after a user turn to switch mode mid-session without invalidating the prompt cache prefix. Key use: grant standing permission to launch multi-agent workflows at a phase boundary, or inject verified evidence with system-level authority after a `PostToolUse` hook completes. Limitations: cannot be first message; must follow a user turn; consecutive system messages must be merged.
+
+### 11.6 Practical pitfalls
+
+- **Vague prompts compound** through autonomous execution — errors propagate without check-ins. Include exact file paths, decisions, and errors in each subagent prompt.
+- **No nested agents** at any tier. Plan must fit within one delegation level.
+- **File conflicts**: two agents editing one file = silent overwrites. Decompose so each agent owns disjoint files.
+- **Thread slot exhaustion** (Managed Agents): archive completed threads to reclaim the 25-slot limit.
+- **Cost scales brutally**: token cost is linear per active teammate; Dynamic Workflows compound this at scale. Do not enable Dynamic Workflows or Agent Teams for routine single-repo features.
+- **Mythos withheld**: Anthropic is withholding its most advanced Mythos model for autonomous subagent coordination due to cybersecurity concerns ([Unite.AI](https://www.unite.ai/what-opus-4-8-changes-for-anyone-running-agents-on-claude/)).
+
+---
+
+## 12. GSD distilled: a simpler phase loop
+
+Sources: internal GSD skill files (`.gsd/TEAM-FORMATION.md`, `.gsd/DEBATE-WORKFLOW.md`, `~/.claude/skills/gsd-*/SKILL.md`). Full GSD is a production ops system for a multi-repo aviation app; the four portable primitives are distilled below. Source doc: `docs/gsd-distilled.md` in this repo.
+
+### 12.1 The four portable primitives
+
+1. **Phase decomposition with blast-radius mapping** — each phase declares: `goal` (one sentence), `files` (every module/contract/caller perturbed), `edge_cases` (enumerated: empty input, boundary, auth denied, partial failure, retry), `verify_cmd` (the command that proves the goal, not just "tasks done"). Forces blast-radius mapping before any code is written.
+2. **Parallel reviewer + adversarial critic, fix waves, convergence on NEW P0s** — Reviewer (strong reasoning, e.g. Opus) and Critic (cross-provider, e.g. Codex GPT-5.5) run in parallel and independently. Loop terminates on count of **new** (not rediscovered) P0/P1 reaching zero. If blocker count does not decrease between rounds, **escalate** rather than retry (stall detection).
+3. **Anti-speculation discipline** — every claim requires a citation: `file:line` or command output. No assertion without evidence.
+4. **Fan-out analyzers -> synthesis before planning** — gives debate agents concrete targets rather than generic heuristics (see §11.3).
+
+### 12.2 KEEP / SIMPLIFY / DROP
+
+| GSD concept | Decision | Why |
+|---|---|---|
+| Phase decomposition (goal, files, verify) | KEEP | Forces blast-radius mapping before coding |
+| Post-plan and post-execution debate (parallel Reviewer + Critic, fix waves, NEW-P0 convergence) | KEEP | Proven ROI; prevents narrow-vision tunneling |
+| Anti-speculation discipline | KEEP | Core anti-hallucination lever |
+| Model tiering (Haiku for cheap ops, Sonnet for implementation, Opus for gates) | KEEP | Cost-efficient without sacrificing gate quality |
+| Edge-case enumeration + scenario simulation | KEEP | Debate agents attack exactly the enumerated cases |
+| Fix-wave parallelism (non-overlapping files) | KEEP, simplified | Simplify: one-sentence grouping rule, no YAML frontmatter |
+| Discuss-phase questioning protocol | SIMPLIFY -> "gather intent" step | Keep output (list of locked decisions) without full protocol |
+| Per-phase file tree (CONTEXT.md, PLAN.md, SUMMARY.md, VERIFICATION.md, REVIEWS.md) | SIMPLIFY -> task-list entries | Goal + files + verify live in the task description, not separate files |
+| ROADMAP.md + STATE.md | SIMPLIFY -> running task list | Single append-only task list suffices |
+| gsd-sdk CLI / binary bootstrap | DROP | External binary dependency; not portable |
+| Per-phase codebase map (7 documents) | DROP | Replace with analyze-work fan-out (§11.3) |
+| Wave numbering YAML frontmatter | DROP | Natural-language grouping in plan is sufficient |
+| Domain specialist agent roles (project-specific) | DROP | Caller parameterizes per project |
+| Per-agent completion markers (`## PLANNING COMPLETE`) | DROP | Only needed for GSD's regex-driven workflow engine |
+
+### 12.3 The 7-step lite loop
+
+```
+1. ORIENT:  Load existing knowledge (graph/docs if present). List locked decisions.
+2. PLAN:    Decompose into phases (goal + exact files/modules + edge_cases + verify_cmd).
+            Enumerate edge cases; simulate each scenario on paper.
+3. HARDEN:  Debate the PLAN — parallel Reviewer (strong reasoning) + Critic (adversarial,
+            cross-provider when possible). Fix-wave on HOLD findings. Loop until zero NEW P0s.
+            Stall rule: if blocker count does not decrease, escalate instead of retrying.
+4. BUILD:   Execute each phase with TDD (test -> code -> verify, atomic commits).
+            Fan out independent sub-tasks in parallel (non-overlapping files only).
+5. HARDEN:  Debate each phase's diff — same Reviewer + Critic structure. Zero NEW P0s to advance.
+6. GATE:    Any irreversible action (deploy, migration, secret rotation, force-push) serializes
+            here for explicit human confirmation regardless of autonomy mode.
+7. ADVANCE: Update task state, re-read plan (catches phases inserted mid-execution), repeat from 4.
+```
+
+Tracking: one append-only task list (goal + files + verify per entry) + one `CONVERSATION-CONTEXT.md` with locked decisions, worktree assignments, and hard-gate log.
+
+---
+
+## 13. Superpowers planning patterns
+
+Sources: [superpowers framework writeup](https://blog.marcnuri.com/superpowers-claude-code-skills-framework), [obra/superpowers repo](https://github.com/obra/superpowers). Skills analyzed: brainstorming, writing-plans, executing-plans, subagent-driven-development, dispatching-parallel-agents, verification-before-completion, test-driven-development. Source doc: `docs/superpowers-planning.md` in this repo.
+
+### 13.1 The 5-stage pipeline
+
+```
+[GATE: brainstorm] -> [PLAN artifact] -> [EXECUTE: subagent-per-task] -> [REVIEW: two-stage] -> [VERIFY: gate function]
+```
+
+**Stage 1 — Brainstorm gate**: No implementation until design is approved. If scope > 1 file or > ~2 hours: require written intent (3–10 sentences: goal, constraints, success criteria, 1–2 approaches with recommendation) before writing any plan. One clarifying question at a time. Hard gate — no plan exists until intent is articulated and approved.
+
+**Stage 2 — Plan artifact**: Written to a committed file (`.planning/<date>-<feature>.md`). Header: goal (1 sentence), architecture (2–3 sentences), tech stack. Tasks: checkbox syntax, bite-sized (2–5 min each), exact file paths, exact commands with expected output. **No placeholders, no TBDs.** Inline self-review before handoff: placeholder scan, type consistency, spec coverage.
+
+**Stage 3 — Execute with subagent context injection**: Coordinator reads the full plan once and extracts all task text upfront. Each implementer subagent receives injected context (task text, relevant file snippets, constraints) — they do NOT read the plan file themselves. This keeps each agent's context budget focused on its task. Independent tasks dispatch in parallel (no shared file writes); dependent tasks are sequential. Each implementer follows TDD internally.
+
+**Stage 4 — Two-stage review per task (order is load-bearing)**:
+- Stage A: spec-compliance reviewer — does the code match the plan task? Any missing requirements, out-of-scope additions?
+- Stage B: code-quality reviewer — only after Stage A passes.
+Reversing the order wastes code-quality review on scope-drifted code. Stages are independent agents; safe to parallelize across independent tasks, but within a single task Stage A precedes Stage B.
+
+**Stage 5 — Verification iron law**: No completion claim without fresh evidence from the actual command output in the current message. Applies to: tests, builds, lint, requirements checklists, agent reports. "Should work" is not evidence. This applies at every phase boundary, not just at ship time.
+
+### 13.2 What to keep vs drop for a minimal loop
+
+**Keep:**
+- Brainstorm-before-plan gate (stops context-free implementation; one question at a time is fast)
+- Plan-as-artifact with no placeholders (checkpointable, auditable, resumable across sessions)
+- Context injection pattern (subagents receive injected text, never read plan file; keeps context budgets clean)
+- Two-stage review order: spec-compliance then code-quality (reversing wastes review on drifted code)
+- Verification-before-completion iron law at every phase boundary
+- TDD red-green-refactor (watching the test fail proves the test is meaningful)
+- Parallel dispatch only when no shared state (independence check is cheap insurance)
+
+**Drop for minimal loop:**
+- Visual companion during brainstorm (high token cost; not generic infrastructure)
+- Formal spec doc separate from plan (intent note + plan file suffices)
+- finishing-a-development-branch ceremony (coordinator handles merge decisions)
+- Sequential model tiering protocol (premature before the loop is proven; defer to §12.1 model tiering)
+
+### 13.3 Compositions with §11 (swarm) and §12 (GSD lite)
+
+- The **brainstorm gate** (§13.1 Stage 1) maps to GSD's ORIENT/gather-intent step (§12.3 step 1) — both enforce "locked decisions before planning."
+- **Context injection** (coordinator extracts, subagent receives) directly maps to §11.1's "only channel = injected prompt string."
+- **Two-stage review** slots between BUILD and the §12 HARDEN debate: spec compliance first ensures the debate agents are attacking a correctly-scoped implementation.
+- **Verification iron law** is the gate function that prevents false phase-complete reports from compounding. Complements §4.2's "give Claude a check it can run."
+- **Parallel dispatch independence check** is the coordinator's responsibility, not implementers' — identical to §11.6's file-conflict pitfall.
+
+---
+
 ## Sources
 
-> **Count: 28 unique sources** (≥20 requirement met). Kinds: official (Anthropic + OpenAI), peer-reviewed papers, community.
+> **Count: 67 unique sources** (≥20 requirement met). Kinds: official (Anthropic + OpenAI), peer-reviewed papers, community.
 
 **Official — Anthropic / Claude Code**
 1. [Claude Code Hooks Reference](https://code.claude.com/docs/en/hooks) — official
@@ -417,5 +581,16 @@ From the Opus 4.8 feature reference (released 2026-05-28, model ID `claude-opus-
 56. [Adaptive thinking (official)](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
 57. [Effort parameter (official)](https://platform.claude.com/docs/en/build-with-claude/effort)
 58. [Mid-conversation system messages (official)](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages)
+
+**Official — Anthropic multi-agent swarm (added for §11)**
+59. [Dynamic Workflows — code.claude.com](https://code.claude.com/docs/en/workflows) — official
+60. [Subagents in the SDK — code.claude.com](https://code.claude.com/docs/en/agent-sdk/subagents) — official
+61. [Scaling Managed Agents: Decoupling brain from execution — anthropic.com engineering](https://www.anthropic.com/engineering/managed-agents) — official engineering blog
+62. [Multi-Agent Research System — anthropic.com engineering](https://www.anthropic.com/engineering/multi-agent-research-system) — official engineering blog
+63. [Introducing Dynamic Workflows in Claude Code — claude.com blog](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code) — official
+64. [Anthropic Ships Opus 4.8 + Dynamic Workflows — MarkTechPost](https://www.marktechpost.com/2026/05/28/anthropic-ships-claude-opus-4-8-alongside-dynamic-workflows-and-cheaper-fast-mode-with-workflows-capped-at-1000-subagents/) — community
+65. [What Opus 4.8 Changes for Anyone Running Agents on Claude — Unite.AI](https://www.unite.ai/what-opus-4-8-changes-for-anyone-running-agents-on-claude/) — community
+66. [Claude Code Multi-Agent Orchestration — Shipyard blog](https://shipyard.build/blog/claude-code-multi-agent/) — community
+67. [Claude Opus 4.8 hands-on, ultracode, 47-agent attempt — aiwithmo.com](https://www.aiwithmo.com/prompts/claude-opus-4-8-release) — community practitioner test
 
 **Referenced but not standalone-fetched (noted for completeness):** GitHub Codex issues #19385 (PreToolUse `additionalContext` limitation) and #5038 (VS Code extension ignoring `approval_policy: never`) are cited within source #19/#22 findings but were not independently retrieved as full pages.
