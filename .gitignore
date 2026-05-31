@@ -1,1 +1,5 @@
 plugins/anti-hall/statusline/demo-wrapper.sh
+
+# Local working notes / session handoff — never ship
+CONTINUE-HERE.md
+.anti-hall/
