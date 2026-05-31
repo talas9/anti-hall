@@ -26,7 +26,10 @@ function readState() {
   return null;
 }
 const BAR_WIDTH  = 20;
-const SPINNER    = ['|', '/', '-', '\\'];
+// Rotating half-disc (Unicode geometric shapes, cross-OS: macOS/Linux/Windows
+// Terminal). Full-bodied so it aligns with the block fill and reads as a clear
+// "work head" at the progress frontier. 4 frames -> snappy even at a 1s refresh.
+const SPINNER    = ['◐', '◓', '◑', '◒'];
 
 // Time-cycled spinner so the bar "spins" each statusline refresh (~every few
 // hundred ms), giving a live/working feel even between activity.
@@ -43,11 +46,18 @@ const C = {
   dim: '\x1b[2m', bold: '\x1b[1m', yellow: '\x1b[33m',
 };
 
+// The spinner sits INSIDE the bar at the progress frontier (between filled and
+// empty) - it marks the current position / "work happening here" head.
 function renderBar(done, total) {
   const filled = total > 0 ? Math.round((done / total) * BAR_WIDTH) : 0;
   const clamped = Math.max(0, Math.min(BAR_WIDTH, filled));
-  return '[' + C.green + '#'.repeat(clamped) + C.reset +
-         C.dim + '-'.repeat(BAR_WIDTH - clamped) + C.reset + ']';
+  const empty   = BAR_WIDTH - clamped;
+  // Box-drawing glyphs (NOT emoji): full block for filled, light horizontal for
+  // empty - a clean continuous line. Same char class as the box chars already in
+  // typical statuslines. Falls back fine in any modern terminal.
+  return '[' + C.green + '█'.repeat(clamped) + C.reset +
+         C.cyan + spinner() + C.reset +
+         C.dim + '─'.repeat(empty) + C.reset + ']';
 }
 
 try {
@@ -69,7 +79,7 @@ try {
   if (desc.length > 32) desc = desc.slice(0, 31) + '...';
 
   const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
-  const bar = renderBar(done, total);
+  const bar = renderBar(done, total); // spinner now lives inside the bar
 
   // Optional extras, rendered only if present in the state file. The orchestrator
   // writes these as it works (see the watchdog/heartbeat design) so a long-running
@@ -96,9 +106,8 @@ try {
   const extraStr = extras.length ? ` ${C.dim}|${C.reset} ` + extras.join(' ') : '';
 
   process.stdout.write(
-    `${C.cyan}${spinner()}${C.reset} ${bar} ` +
-    `${C.yellow}${pct}%${C.reset} ` +
-    `${C.bold}${code}${C.reset} ${desc} ` +
+    `${bar} ${C.yellow}${pct}%${C.reset} ${C.dim}|${C.reset} ` +
+    `${C.bold}${code}${C.reset} ${C.dim}-${C.reset} ${desc} ` +
     `${C.dim}${done}/${total}${C.reset}${extraStr}\n`
   );
 } catch (e) {

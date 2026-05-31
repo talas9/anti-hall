@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.3.10
+
+Spinner repositioned inside the progress bar at the frontier. Phase-bar now uses box-drawing
+glyphs (█ for filled, ─ for empty) and a rotating half-disc spinner (◐◓◑◒) positioned at
+the progress frontier. Layout: `[████████◐────────────] 40% | P2 - Desc done/total | extras`.
+
+- **`phase-bar.js` (statusline):** spinner (◐◓◑◒) now rendered at the progress frontier
+  INSIDE the bar, not after. Filled segment uses █ (U+2588), empty segment uses ─ (U+2500).
+  Spinner is a rotating half-disc (◐◓◑◒ U+25D0-D2) that advances every 125ms. Layout remains
+  `[bar] NN% | CODE - Desc done/total | extras` with all styling preserved.
+
 ## 0.3.9
 
 Phase-bar statusline enrichment: wider bar (20 chars), live percentage, longer description
