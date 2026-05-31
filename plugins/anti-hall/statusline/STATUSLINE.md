@@ -43,20 +43,55 @@ Runs on **Windows, macOS, and Linux** via Node only (no bash, no grep/sed/python
 ### Line 2 — phase bar (conditional)
 
 ```
-| [####------] P2 build 2/5
+[███████████◓─────] 73% | BUILD - anti-hall plugin 11/15 | 2m verifying
 ```
 
-The spinner character (`|`, `/`, `-`, `\`) time-cycles every 250 ms, giving a live
-feel between refreshes. Line 2 is omitted entirely when the phase-state file is
+The spinner character (`◐`, `◓`, `◑`, `◒`) time-cycles every ~1 second, giving a live
+"work in progress" feel between statusline refreshes. Line 2 is omitted entirely when the phase-state file is
 absent or malformed — never an error.
 
-**Phase-state file:** `$TMPDIR/anti-hall/phase-state.json`
+**Phase-state file:** `~/.anti-hall/phase-state.json` (home directory, consistent across all processes)
 
 ```json
-{ "code": "P2", "desc": "build", "done": 2, "total": 5 }
+{ "code": "BUILD", "desc": "anti-hall plugin", "done": 11, "total": 15, "started": 1780222200000, "agents": 3, "step": "verifying" }
 ```
 
 Required fields: `code` (string), `desc` (string), `done` (integer), `total` (positive integer).
+Optional fields: `started` (epoch ms), `agents` (count), `step` (current step text).
+
+**Colors:** code (magenta), description (white), progress (cyan), timer (yellow if >20m, else dim), agents (blue), step (dim).
+
+---
+
+## phase.js — Phase state writer
+
+`phase.js` is the **data source** for the phase bar. The orchestrator and feature-launch skill
+call it as real work progresses. Writes to `~/.anti-hall/phase-state.json`.
+
+### Usage
+
+```bash
+node phase.js set <code> <desc> <done> <total>   # start/replace the phase
+node phase.js advance [n]                         # done += n (default 1)
+node phase.js step "<text>"                       # set current step text
+node phase.js agents <n>                          # set active subagent count
+node phase.js update key=value ...                # merge arbitrary fields
+node phase.js clear                               # remove state (bar hides)
+```
+
+### Example
+
+```bash
+node phase.js set BUILD "anti-hall plugin" 0 15
+node phase.js agents 3
+node phase.js step "verifying syntax"
+node phase.js advance 2
+node phase.js step "running tests"
+node phase.js advance 9
+node phase.js clear
+```
+
+Fail-open: any error exits 0 without throwing.
 
 ---
 

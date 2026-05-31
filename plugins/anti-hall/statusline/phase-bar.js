@@ -44,6 +44,7 @@ function spinner() {
 const C = {
   reset: '\x1b[0m', cyan: '\x1b[36m', green: '\x1b[32m',
   dim: '\x1b[2m', bold: '\x1b[1m', yellow: '\x1b[33m',
+  magenta: '\x1b[35m', white: '\x1b[97m', blue: '\x1b[34m',
 };
 
 // The spinner sits INSIDE the bar at the progress frontier (between filled and
@@ -96,7 +97,7 @@ try {
   }
   const agents = parseInt(state.agents, 10); // active subagent count
   if (!isNaN(agents) && agents >= 0) {
-    extras.push(C.dim + agents + 'ag' + C.reset);
+    extras.push(C.blue + agents + (agents === 1 ? ' agent' : ' agents') + C.reset);
   }
   let step = (state.step || '').toString().trim(); // current step text
   if (step) {
@@ -107,8 +108,8 @@ try {
 
   process.stdout.write(
     `${bar} ${C.yellow}${pct}%${C.reset} ${C.dim}|${C.reset} ` +
-    `${C.bold}${code}${C.reset} ${C.dim}-${C.reset} ${desc} ` +
-    `${C.dim}${done}/${total}${C.reset}${extraStr}\n`
+    `${C.bold}${C.magenta}${code}${C.reset} ${C.dim}-${C.reset} ${C.white}${desc}${C.reset} ` +
+    `${C.cyan}${done}/${total}${C.reset}${extraStr}\n`
   );
 } catch (e) {
   // Missing file, JSON parse error, or any other failure -> print nothing

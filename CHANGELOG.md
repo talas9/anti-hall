@@ -6,6 +6,22 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.3.11
+
+Phase.js writer (real data source for the phase bar) + colored line-2 palette + full agent label.
+
+- **`phase.js` (statusline writer):** new executable that writes phase-state.json as the
+  orchestrator / feature-launch skill progresses. Commands: `set` (start phase), `advance`/`step`/`agents`
+  (update in-flight), `clear` (hide bar). Writes to `~/.anti-hall/phase-state.json` (home dir,
+  consistent across all processes). Fail-open: any error exits 0 without throwing.
+- **`statusline/STATUSLINE.md`:** new "phase.js — Phase state writer" section documenting
+  the data source, all 6 commands (set, advance, step, agents, update, clear), usage examples,
+  and state-file schema (required + optional fields).
+- **`phase-bar.js` (colored palette):** code (magenta/cyan), description (white),
+  count (cyan), timer (yellow >20m, else dim), agents (blue "N agents"), step (dim).
+  Renders as: `[bar] NN% | CODE - Desc done/total | timer agents step`.
+- **Version bump 0.3.10 -> 0.3.11.**
+
 ## 0.3.10
 
 Spinner repositioned inside the progress bar at the frontier. Phase-bar now uses box-drawing
