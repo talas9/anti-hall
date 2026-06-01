@@ -41,27 +41,36 @@ argued with.
 
 - **Verify-first** — injects the full Iron-Law + rationalization-table protocol at
   `SessionStart` (re-fires after compaction so it survives long sessions), plus a varying
-  one-line nudge on every prompt.
+  one-line nudge on every prompt (`task-tracker` is **throttled**: full directive only on
+  the first turn, a one-liner after — cutting per-turn injection ~68%).
 - **Guards that can't be talked around:**
-  - `git-guard` — blocks AI self-credit commit trailers and silent `--force` pushes (quote-aware, won't false-block).
-  - `command-guard` — keeps the **main thread** clean by blocking heavy commands in the coordinator and pushing them to subagents. *Subagent-aware even under terminal wrappers like cmux* (detects via the hook payload, not just env).
-  - `swarm-guard` — anti-fork-bomb: caps spawn rate and refuses new agents under **real** memory pressure (measures reclaimable memory correctly on macOS/Linux, not the misleading `os.freemem()`).
-  - `task-guard` / `task-tracker` — capture every request as a task; don't let work be silently dropped.
-  - `speculation-guard` / `speculation-judge` — catch inference-stated-as-fact at stop time.
-  - `phase-tracker` — records subagent spawns so the statusline can show live swarm activity automatically.
-  - `graphify` hooks — nudge "query the knowledge graph first" when one exists.
+
+| Hook | Event | What it enforces |
+|------|-------|-----------------|
+| `git-guard` | PreToolUse/Bash | Blocks AI self-credit trailers and `--force` pushes (quote-aware, alias-resolving, won't false-block legit pushes) |
+| `command-guard` | PreToolUse/Bash | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload (`agent_id`), not env — works correctly under cmux and other wrappers. Per-segment (quote-aware split on `; && \|\| \|`), so `cd app && npm test` is not a bypass |
+| `swarm-guard` | PreToolUse/Agent+Task | Anti-fork-bomb: caps spawn rate (20/60 s) and refuses new agents under **real** memory pressure — measures reclaimable memory correctly on macOS (`vm_stat` free+inactive+speculative, correct 16 KB page size on Apple Silicon) and Linux (`/proc/meminfo` MemAvailable), not the misleading `os.freemem()` |
+| `task-guard` | Stop | Blocks stop when open tasks remain; counts only currently-open tasks (completed/cleared don't count); fail-open |
+| `task-tracker` | UserPromptSubmit | Captures every request as a task; throttled to avoid growing context |
+| `speculation-guard` | Stop (Tier 2) | Lexical: catches 15 hedge-word speculation markers; suppressed when the message contains evidence/uncertainty acknowledgment; block-once (never wedges) |
+| `speculation-judge` | Stop (Tier 3, **OPT-IN**) | Semantic: calls an LLM to catch confident inference-as-fact with *no* hedge word — the gap Tier 2 can't close. Enable: `ANTIHALL_SEMANTIC_JUDGE=1` + `ANTHROPIC_API_KEY`. Zero cost/latency when unset (the default). Fail-open |
+| `phase-tracker` | PreToolUse/Agent+Task | Records every subagent spawn so line 2 shows live swarm activity with zero coordinator effort |
+| `agent-watchdog` | PostToolUse | Heartbeat enforcer: polls agent state files; kills idle/hung agents; integrates with `phase.js` |
+| `graphify-session` | SessionStart | Reminds to query the graph first when a `graphify-out/` graph exists |
+| `graphify-guard` | PreToolUse/Grep+Glob+Bash | Blocks the *first* code-navigation search of a session and redirects to `/graphify query` when a graph exists. Segment/verb-aware — a substring like `echo /graphify && rg secret` doesn't exempt the search. Block-once per session; second call always allowed |
+| `graphify-reminder` | Stop | One-time soft block reminding to keep the graph updated |
 
 **🔵 On-demand (the skills).** Invoke as `/anti-hall:<name>`:
 
 | Skill | Use it when | What it does |
 |-------|-------------|--------------|
-| **root-cause** | any bug, crash, flaky test, alert | evidence → hypothesis → instrument → prove the *original* and root cause → fix → verify |
+| **root-cause** | any bug, crash, flaky test, alert | evidence → hypothesis → instrument → prove the *original* root cause → fix → verify |
 | **orchestration** | heavy/parallel/long work | non-blocking coordinator; fan out to subagents; watchdog + heartbeat; live phase statusline |
 | **deadly-loop** | before merging anything risky | parallel **Reviewer + Critic** debate + fix-waves, looping until zero *new* P0s |
-| **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N Reviewer + N Critic pairs with diversified lenses, then dedup + synthesize |
-| **feature-launch** | a non-trivial feature (multi-file / multi-phase) | plan-first, deadly-loop-hardened *before* code, executed phase-by-phase — with **AFK mode** |
-| **install-statusline** | "install the statusline / add the bar" | writes the statusLine setting (global or per-repo) + reminds you to restart |
-| **doctor** | "is anti-hall working?" / after install/update | confirms Node found, all hooks present + syntax-valid, guards actually fire (live behavioral tests) |
+| **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N Reviewer + N Critic pairs (half latest Opus, half latest Codex) with diversified lenses, then dedup + synthesize into one report |
+| **feature-launch** | a non-trivial feature (multi-file / multi-phase) | plan-first, deadly-loop-hardened *before* code, executed phase-by-phase — with **AFK mode** and goal-anchor drift watcher |
+| **install-statusline** | "install the statusline / add the bar" | writes the `statusLine` setting (global or per-repo), wraps an existing statusline as line 1 + adds anti-hall bar as line 2, with backup + restore |
+| **doctor** | "is anti-hall working?" / after install/update | confirms Node ≥ 18, all hooks present + syntax-valid, **runs live behavioral self-tests** (spawns real guards with crafted payloads and asserts exit codes), reports context footprint in bytes + estimated tokens |
 
 > **root-cause** and **orchestration** are also enforced *always-on* as disciplines via the hook layer, alongside anti-sycophancy (challenge a wrong premise with evidence — never agree just to agree). **deadly-loop** and **feature-launch** stay conditional, invoked on match.
 
@@ -74,7 +83,25 @@ argued with.
 (force-push, prod deploy, data/branch/file deletion, financial action, secret/access
 change). For everything else it **collects data instead of pausing**, and when it's
 genuinely confused it runs a **deadly-loop** to resolve the decision adversarially rather
-than waking you. You leave; it ships phases and only surfaces what truly needs a human.
+than waking you. A **goal-anchor drift watcher** re-checks work against the locked goal
+each cycle and course-corrects on scope drift, only deviating when you explicitly redirect.
+You leave; it ships phases and only surfaces what truly needs a human.
+
+---
+
+## 🧹 Context-protection discipline
+
+A bloated orchestrator context degrades the model and induces the hallucination the plugin
+is meant to prevent. anti-hall enforces this at two levels:
+
+**For your agents:** the SessionStart protocol + per-turn nudges enforce:
+- Delegate not just heavy *commands* but also **broad reads, Grep, Glob, and code-navigation searches** to subagents — inline only a specific known-file read.
+- **Graphify-first:** query the graph before raw search and before feature-launch analysis.
+
+**For itself:** the plugin minimizes its own footprint in your conversation:
+- `task-tracker` is **throttled** — full directive once per ~6h window, one-liner after (~68% per-turn reduction, ≈693 B → ≈223 B steady-state).
+- `verify-first-full.js` (SessionStart) was tightened ~13% with no rule removed.
+- `/anti-hall:doctor` **measures** the context footprint — reports SessionStart / per-turn / per-Stop injection sizes in bytes + estimated tokens, so the cost is visible and auditable.
 
 ---
 
@@ -90,13 +117,15 @@ A live **two-line** statusline the plugin renders itself — installable globall
 - **Line 1 — rich & dynamic:** project, git (branch / worktree / stash / staged-modified-untracked / ahead-behind), model, effort, subagent count, session duration, context-window %, cost, and the GSD `.planning` phase when present.
 - **Line 2 — always-on, three smart tiers:**
   1. **During an orchestration run** → live phase progress bar (`P2 · build api 2/5 · 3 agents`)
-  2. **While a swarm is active** (auto, no setup) → animated `orchestrating · N agents`
-  3. **Idle** → context-window gauge
+  2. **While a swarm is active** (auto, zero setup) → animated `orchestrating · N agents` (powered by `phase-tracker` recording every spawn)
+  3. **Idle** → context-window gauge, color-coded green/yellow/red at ≤70/70-89/≥90%
+- **`phase.js` — the progress writer:** the orchestrator calls `phase.js set/advance/step/agents/clear` as phases progress; the file writes `~/.anti-hall/phase-state.json`, which line 2 reads. Stale state (>30 min old) auto-hides so orphaned bars never linger.
 
 Install it the easy way — just ask Claude **"install the statusline"** (the
-`install-statusline` skill writes the setting, global or per-repo) — or run the installer
-directly. See [STATUSLINE.md](plugins/anti-hall/statusline/STATUSLINE.md). *Claude Code
-reads `statusLine` only at startup, so restart once after installing.*
+`install-statusline` skill writes the setting, wraps any existing statusline as line 1 +
+adds the anti-hall bar as line 2, with backup/restore) — or run the installer directly.
+See [STATUSLINE.md](plugins/anti-hall/statusline/STATUSLINE.md). *Claude Code reads
+`statusLine` only at startup, so restart once after installing.*
 
 ---
 
