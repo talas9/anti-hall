@@ -188,7 +188,56 @@ for (const h of ['graphify-guard.js', 'graphify-session.js', 'graphify-reminder.
 }
 warnl('graphify staleness is NOT auto-detected — re-run `/graphify --obsidian` after significant edits to keep the graph current');
 
-// --- 6. Summary --------------------------------------------------------------
+// --- 6. Context footprint ----------------------------------------------------
+// The plugin injects text into the model's context. Measure it so the cost of
+// the guardrail is visible (bloated context is the exact failure it warns of).
+head('Context footprint (injected text)');
+function ctxBytes(file, payload, picker) {
+  const r = runHook(file, payload || {});
+  let txt = '';
+  try {
+    const o = JSON.parse((r.out || '').split('\n').find(Boolean) || '{}');
+    txt = (picker ? picker(o) : (o.hookSpecificOutput && o.hookSpecificOutput.additionalContext)) || '';
+  } catch (_) { txt = ''; }
+  return Buffer.byteLength(String(txt), 'utf8');
+}
+const tok = (b) => Math.round(b / 4);
+// SessionStart one-time cost.
+const ssB = ctxBytes('verify-first-full.js', { hook_event_name: 'SessionStart', source: 'startup' });
+// Per-turn cost = sum of UserPromptSubmit injections (verify-first + task-tracker).
+const upPayload = { hook_event_name: 'UserPromptSubmit', prompt: 'x', session_id: 'doctor-ctx', cwd };
+const vfB = ctxBytes('verify-first.js', upPayload);
+// task-tracker is throttled: measure its FULL (first-turn) injection by using a
+// fresh session id so state has not been written yet this run.
+const ttPayload = { hook_event_name: 'UserPromptSubmit', prompt: 'x', session_id: 'doctor-ctx-' + Date.now(), cwd };
+const ttB = ctxBytes('task-tracker.js', ttPayload);
+const perTurnB = vfB + ttB;
+// Per-Stop cost: the block reason text a Stop hook surfaces (decision.reason).
+function stopReasonBytes(file, payload) {
+  const r = runHook(file, payload || {});
+  let txt = '';
+  try {
+    const o = JSON.parse((r.out || '').split('\n').find(Boolean) || '{}');
+    txt = (o.decision === 'block' && o.reason) || '';
+  } catch (_) { txt = ''; }
+  return Buffer.byteLength(String(txt), 'utf8');
+}
+let stopB = 0;
+try {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-ctx-'));
+  const tp = path.join(tdir, 't.jsonl');
+  fs.writeFileSync(tp, JSON.stringify({
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'text', text: 'That change should be fine.' }] },
+  }) + '\n');
+  stopB = stopReasonBytes('speculation-guard.js', { transcript_path: tp, session_id: 'doctor-ctx-stop-' + Date.now() });
+  try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+} catch (_) { stopB = 0; }
+ok(`SessionStart (one-time): ${ssB} B ~${tok(ssB)} tok`);
+ok(`Per-TURN (every UserPromptSubmit): ${perTurnB} B ~${tok(perTurnB)} tok  (verify-first ${vfB} B + task-tracker ${ttB} B; task-tracker throttles to a short line after the first turn)`);
+ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
+
+// --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
   : `${C.r}${C.b}anti-hall has ${fail} FAILURE(S)${C.x} — ${pass} passed, ${warn} warning(s)`;

@@ -6,6 +6,27 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.11.0
+
+Cut the plugin's OWN context footprint (it was growing the conversation every turn — the
+exact thing the plugin warns against). Root cause (researched): Claude Code injects
+`UserPromptSubmit` additionalContext into the transcript EVERY turn and it accumulates
+(see anthropics/claude-code#40216), so a long, repeated per-turn directive is a real token
+drain.
+
+- **`task-tracker.js` throttled:** injects the FULL task-discipline directive only on the
+  first turn of a session (and once per ~6h window), then a SHORT one-line reminder after,
+  via `~/.anti-hall/task-tracker-<session>.json` state. Fail-open to full on any state error.
+  Steady-state per-turn injection dropped ~68% (≈693 B → ≈223 B).
+- **`verify-first-full.js` (SessionStart) tightened** ~13% with no rule removed (Iron Law,
+  full rationalization table, orchestration A–J, anti-speculation tiers, anti-sycophancy all
+  intact). `verify-first.js` per-turn nudge was already one short line.
+- **`doctor.js` adds a "Context footprint" section** reporting the SessionStart / per-turn /
+  per-Stop injection sizes in bytes + estimated tokens, so the cost is measurable.
+
+Future levers (noted, not yet done): move the static protocol to CLAUDE.md / SessionStart-only
+and merge the four Stop hooks into one to further shrink per-turn overhead.
+
 ## 0.10.0
 
 Audit-fix batch (from a 2-Opus + 2-Codex review) + context-protection discipline.
