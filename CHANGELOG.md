@@ -6,6 +6,27 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.8.0
+
+Doctor (health check + live guard self-tests) + documentation refresh.
+
+Addresses external-review feedback: a guardrail plugin needs a way to prove it is
+actually running and that the guards actually fire — not just that files exist.
+
+- **New `hooks/doctor.js` + `/anti-hall:doctor` skill.** Reports Node version (flags
+  < 18, which makes the hooks silently no-op), plugin version, every registered hook's
+  presence + syntax, and the statusline install status. Crucially it runs LIVE
+  behavioral self-tests: it spawns the real guards with crafted payloads and asserts
+  exit codes — git-guard blocks force-push + AI self-credit and allows `git status`;
+  command-guard blocks heavy commands in the coordinator but ALLOWS them in a subagent
+  (payload `agent_id`); swarm-guard allows a normal spawn. Exits non-zero on any
+  critical failure (CI-friendly); `--quiet` prints just the verdict.
+- **Docs synced to the current feature set.** README rewritten (modern, explained, with
+  the two-layer model, the statusline, and AFK mode), `llms.txt` updated to list ALL
+  hooks/skills (it and the README previously undercounted — e.g. omitted command-guard,
+  swarm-guard, graphify-guard, phase-tracker), and AGENTS.md gained the AFK autonomy
+  contract.
+
 ## 0.7.0
 
 Automatic swarm-progress tracking + AFK-mode autonomous driver.

@@ -97,6 +97,15 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
   inside subagents), call `statusline/phase.js set/advance/step/agents/clear` so the
   terminal bar reflects the real run state. Subagents report back; the coordinator writes
   phase state to ~/.anti-hall/phase-state.json.
+- AFK MODE (only when the user has explicitly authorized full/autonomous "AFK" operation):
+  do NOT return to the user or stop, except for an ABSOLUTELY-DESTRUCTIVE hard gate
+  (force-push, prod deploy, data/branch/file deletion, financial action, secret/access
+  change) — surface those and wait. For everything else: never bounce a non-destructive,
+  reversible decision to the (away) user — pick the safe default and log it. Collect data
+  instead of pausing for missing context. If genuinely confused after gathering data, run
+  a deadly-loop to resolve the decision adversarially — that is the escalation path, not
+  the user. Failures route around (retry once → deadly-loop → mark BLOCKED and continue),
+  they do not halt the run.
 
 ## Recommended companion: graphify
 
