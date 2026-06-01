@@ -6,6 +6,26 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.9.0
+
+New `deadly-loop-multi` skill — double / triple / quadruple deadly loop.
+
+Scales the standard 1+1 deadly-loop to N parallel reviewers + N parallel critics with
+diversified lenses, then reconciles + validates into ONE consolidated report.
+
+- **double** = 2 Opus + 2 Codex, **triple** = 3+3, **quadruple** = 4+4. The tier is named
+  by the user or auto-selected by job complexity × sensitivity (higher tier for
+  security/schema/cross-repo/release work).
+- **Always half-and-half cross-model:** half the auditors are the latest Codex (a
+  different model finds different bugs); if Codex is unavailable, substitute the latest
+  Opus with a divergent persona — never drop below the full 2N. Model versions are
+  deliberately NOT pinned ("latest Opus / latest Codex") so the skill survives new releases.
+- **Runs as a swarm** via the Opus Dynamic-Workflow primitives (KB §11 /
+  docs/opus-4-8-swarm.md): a parallel fan-out of the 2N auditors feeding a reconcile +
+  validate synthesis stage. The coordinator validates each finding against the code itself
+  (agreement raises confidence, but evidence decides) and reconciles conflicts — so a
+  single agent's false positive does not make it into the report.
+
 ## 0.8.1
 
 Doctor: add a behavioral statusline check. Beyond confirming a statusLine is configured,
