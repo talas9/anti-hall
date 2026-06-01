@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.8.1
+
+Doctor: add a behavioral statusline check. Beyond confirming a statusLine is configured,
+the doctor now spawns the dispatcher with a sample payload and asserts it actually
+RENDERS (reports the line count — line 1 + live line 2), and validates that
+`statusline-rich.js` (the line-1 renderer) is present and syntax-valid. So a broken or
+missing renderer is caught, not just a missing setting.
+
 ## 0.8.0
 
 Doctor (health check + live guard self-tests) + documentation refresh.

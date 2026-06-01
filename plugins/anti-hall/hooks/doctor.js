@@ -120,6 +120,32 @@ for (const [label, p] of scopes) {
 }
 if (!slFound) warnl('no statusLine configured — run the install-statusline skill (then restart)');
 
+// Behavioral: does the statusline actually RENDER? Spawn the dispatcher with a
+// sample session payload and assert it produces output (line 1 = rich, line 2 =
+// context gauge when idle).
+const slScript = path.join(ROOT, 'statusline', 'statusline.js');
+if (!fs.existsSync(slScript)) {
+  bad('statusline.js dispatcher missing');
+} else {
+  const sample = JSON.stringify({
+    workspace: { current_dir: cwd }, cwd,
+    model: { display_name: 'doctor-test' },
+    context_window: { used_percentage: 50 },
+  });
+  const res = cp.spawnSync(process.execPath, [slScript], { input: sample, encoding: 'utf8', timeout: 5000 });
+  const out = (res.stdout || '').replace(/\s+$/, '');
+  const nlines = out ? out.split('\n').length : 0;
+  if (res.status === 0 && nlines >= 1) ok(`statusline renders (${nlines} line${nlines > 1 ? 's' : ''}: line 1 + ${nlines > 1 ? 'live line 2' : 'no line 2'})`);
+  else bad(`statusline.js produced no output (exit ${res.status})`);
+  // Verify the rich line-1 renderer is present + valid (the own-dispatch default).
+  const rich = path.join(ROOT, 'statusline', 'statusline-rich.js');
+  if (fs.existsSync(rich) && cp.spawnSync(process.execPath, ['--check', rich], { encoding: 'utf8' }).status === 0) {
+    ok('statusline-rich.js (line-1 renderer) present, syntax valid');
+  } else {
+    warnl('statusline-rich.js missing/invalid — line 1 falls back to the simple renderer');
+  }
+}
+
 // --- 5. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
