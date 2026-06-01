@@ -117,10 +117,11 @@ function isMonorepo(dir) {
 // Phase bar (line 2)  —  delegates to phase-bar.js for full rendering
 // ---------------------------------------------------------------------------
 
-function phaseBarLine() {
+function phaseBarLine(stdinBytes) {
   try {
     const phaseBarScript = path.join(__dirname, 'phase-bar.js');
     const result = spawnSync(process.execPath, [phaseBarScript], {
+      input: stdinBytes,            // pass the session JSON so the context bar has data
       encoding: 'utf8',
       timeout: 2000,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -216,8 +217,8 @@ function main() {
       // Line 1 failed entirely — proceed to line 2 attempt anyway
     }
 
-    // --- LINE 2: phase bar (optional) ---
-    const line2 = phaseBarLine();
+    // --- LINE 2: always-on hybrid (phase bar during a run, else context bar) ---
+    const line2 = phaseBarLine(stdinBytes);
 
     // --- Emit ---
     let out = line1;

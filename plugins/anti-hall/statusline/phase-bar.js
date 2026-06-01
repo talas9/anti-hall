@@ -1,9 +1,16 @@
 #!/usr/bin/env node
-// phase-bar.js — anti-hall phase progress bar renderer.
-// Reads os.tmpdir()/anti-hall/phase-state.json and prints ONE line:
-//   [####------] P2 build 2/5
-// If the state file is missing or invalid -> prints nothing and exits 0.
-// Fail-open: any error is silently swallowed. No emoji. OS-agnostic.
+// phase-bar.js — anti-hall line-2 renderer (ALWAYS ON, hybrid).
+//
+//   - If a FRESH orchestration phase-state exists -> phase progress bar:
+//       [████◐──────────] 40% | P2 - build api 2/5 | 12m | 3 agents | step
+//   - Otherwise -> context-window usage bar, from the session JSON on stdin:
+//       [███████████◐────────] 56% context · 128k/230k tokens
+//
+// The dispatcher (statusline.js) passes the same session JSON it received on its
+// own stdin to this script's stdin, so the context bar has real data. This makes
+// line 2 ALWAYS present (the plugin ships both lines), never blank, never stale.
+//
+// Fail-open: any error prints nothing and exits 0. No emoji. OS-agnostic. Pure Node.
 
 'use strict';
 
@@ -11,6 +18,7 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
+// --- Phase state (line-2 primary source) ------------------------------------
 // Read state from a location consistent across ALL processes. os.tmpdir() is
 // NOT reliable here: the statusline runner's TMPDIR can differ from a hook's or
 // a tool's, so a state file written under one tmpdir is invisible to another.
@@ -23,8 +31,8 @@ const STATE_CANDIDATES = [
 // orchestration rewrites phase-state.json on every set/advance/step/agents call
 // (and the watchdog heartbeat is well under this window), so a fresh run always
 // renders. A run that ended without calling `phase.js clear` leaves an ORPHAN
-// state file; once its mtime ages past STALE_MS we treat it as absent so the bar
-// does not show a frozen, stale phase indefinitely.
+// state file; once its mtime ages past STALE_MS we treat it as absent (and fall
+// through to the context bar) so the bar never shows a frozen, stale phase.
 const STALE_MS = 30 * 60 * 1000; // 30 minutes
 
 function readState() {
@@ -37,93 +45,135 @@ function readState() {
   }
   return null;
 }
-const BAR_WIDTH  = 20;
+
+function readStdin() {
+  try { return fs.readFileSync(0, 'utf8'); } catch (e) { return ''; }
+}
+
+const BAR_WIDTH = 20;
 // Rotating half-disc (Unicode geometric shapes, cross-OS: macOS/Linux/Windows
 // Terminal). Full-bodied so it aligns with the block fill and reads as a clear
 // "work head" at the progress frontier. 4 frames -> snappy even at a 1s refresh.
-const SPINNER    = ['◐', '◓', '◑', '◒'];
+const SPINNER = ['◐', '◓', '◑', '◒'];
 
-// Time-cycled spinner so the bar "spins" each statusline refresh (~every few
-// hundred ms), giving a live/working feel even between activity.
+// Time-cycled spinner so the bar "spins" each statusline refresh, giving a
+// live/working feel even between activity.
 function spinner() {
-  // Divide by 1000 so that with refreshInterval:1 (a re-run every ~1000ms) the
-  // index advances by ~1 each refresh and the stick actually rotates. A smaller
-  // divisor (e.g. 250) advances by 4 per second -> %4 is constant -> looks frozen.
   return SPINNER[Math.floor(Date.now() / 1000) % SPINNER.length];
 }
 
 // ANSI colors (not emojis). Statusline output is rendered with ANSI by Claude Code.
 const C = {
-  reset: '\x1b[0m', cyan: '\x1b[36m', green: '\x1b[32m',
+  reset: '\x1b[0m', cyan: '\x1b[36m', green: '\x1b[32m', red: '\x1b[31m',
   dim: '\x1b[2m', bold: '\x1b[1m', yellow: '\x1b[33m',
   magenta: '\x1b[35m', white: '\x1b[97m', blue: '\x1b[34m',
 };
 
-// The spinner sits INSIDE the bar at the progress frontier (between filled and
-// empty) - it marks the current position / "work happening here" head.
-function renderBar(done, total) {
+// Progress bar with a moving spinner head at the fill frontier (for the phase bar).
+function renderBar(done, total, color) {
   const filled = total > 0 ? Math.round((done / total) * BAR_WIDTH) : 0;
   const clamped = Math.max(0, Math.min(BAR_WIDTH, filled));
   const empty   = BAR_WIDTH - clamped;
-  // Box-drawing glyphs (NOT emoji): full block for filled, light horizontal for
-  // empty - a clean continuous line. Same char class as the box chars already in
-  // typical statuslines. Falls back fine in any modern terminal.
-  return '[' + C.green + '█'.repeat(clamped) + C.reset +
+  return '[' + (color || C.green) + '█'.repeat(clamped) + C.reset +
          C.cyan + spinner() + C.reset +
          C.dim + '─'.repeat(empty) + C.reset + ']';
 }
 
-try {
-  const raw = readState();
-  if (raw === null) process.exit(0);
-  const state = JSON.parse(raw);
+// Static level bar (no spinner) for the context gauge — it is a level, not motion.
+function renderLevelBar(pct, color) {
+  const filled = Math.round((Math.max(0, Math.min(100, pct)) / 100) * BAR_WIDTH);
+  const clamped = Math.max(0, Math.min(BAR_WIDTH, filled));
+  const empty   = BAR_WIDTH - clamped;
+  return '[' + color + '█'.repeat(clamped) + C.reset +
+         C.dim + '─'.repeat(empty) + C.reset + ']';
+}
 
-  const code  = (state.code  || '').toString().trim();
-  let   desc  = (state.desc  || '').toString().trim();
+function levelColor(pct) {
+  return pct >= 90 ? C.red : pct >= 70 ? C.yellow : C.green;
+}
+
+function kfmt(n) {
+  return Math.abs(n) >= 1000 ? Math.round(n / 1000) + 'k' : String(Math.round(n));
+}
+
+// --- Line 2 case A: orchestration phase bar ---------------------------------
+function phaseBarLine() {
+  const raw = readState();
+  if (raw === null) return null;
+  let state;
+  try { state = JSON.parse(raw); } catch (e) { return null; }
+
+  const code  = (state.code || '').toString().trim();
+  let   desc  = (state.desc || '').toString().trim();
   const done  = parseInt(state.done,  10);
   const total = parseInt(state.total, 10);
+  if (!code || !desc || isNaN(done) || isNaN(total) || total <= 0) return null;
 
-  // Require all four fields to be present and valid
-  if (!code || !desc || isNaN(done) || isNaN(total) || total <= 0) {
-    process.exit(0);
-  }
-
-  // Allow a fuller description now that there is room; cap to keep the line sane.
   if (desc.length > 32) desc = desc.slice(0, 31) + '...';
-
   const pct = Math.max(0, Math.min(100, Math.round((done / total) * 100)));
-  const bar = renderBar(done, total); // spinner now lives inside the bar
+  const bar = renderBar(done, total, C.green);
 
-  // Optional extras, rendered only if present in the state file. The orchestrator
-  // writes these as it works (see the watchdog/heartbeat design) so a long-running
-  // or stuck phase is visible right in the statusline.
   const extras = [];
-  const started = parseInt(state.started, 10); // epoch ms when the phase began
+  const started = parseInt(state.started, 10);
   if (!isNaN(started) && started > 0) {
     const secs = Math.max(0, Math.floor((Date.now() - started) / 1000));
     const human = secs >= 3600 ? Math.floor(secs / 3600) + 'h' + Math.floor((secs % 3600) / 60) + 'm'
                 : secs >= 60   ? Math.floor(secs / 60) + 'm'
                 :                secs + 's';
-    // Yellow once the phase has run long (>20m) - a visible "is this stuck?" cue.
     extras.push((secs > 1200 ? C.yellow : C.dim) + human + C.reset);
   }
-  const agents = parseInt(state.agents, 10); // active subagent count
+  const agents = parseInt(state.agents, 10);
   if (!isNaN(agents) && agents >= 0) {
     extras.push(C.blue + agents + (agents === 1 ? ' agent' : ' agents') + C.reset);
   }
-  let step = (state.step || '').toString().trim(); // current step text
+  let step = (state.step || '').toString().trim();
   if (step) {
     if (step.length > 28) step = step.slice(0, 27) + '...';
     extras.push(C.dim + step + C.reset);
   }
   const extraStr = extras.length ? ` ${C.dim}|${C.reset} ` + extras.join(' ') : '';
 
-  process.stdout.write(
-    `${bar} ${C.yellow}${pct}%${C.reset} ${C.dim}|${C.reset} ` +
-    `${C.bold}${C.magenta}${code}${C.reset} ${C.dim}-${C.reset} ${C.white}${desc}${C.reset} ` +
-    `${C.cyan}${done}/${total}${C.reset}${extraStr}\n`
-  );
+  return `${bar} ${C.yellow}${pct}%${C.reset} ${C.dim}|${C.reset} ` +
+         `${C.bold}${C.magenta}${code}${C.reset} ${C.dim}-${C.reset} ${C.white}${desc}${C.reset} ` +
+         `${C.cyan}${done}/${total}${C.reset}${extraStr}`;
+}
+
+// --- Line 2 case B (fallback): context-window usage bar ----------------------
+function contextLine(input) {
+  let data;
+  try { data = JSON.parse(input); } catch (e) { return null; }
+  const cw = data && data.context_window;
+  if (!cw || typeof cw !== 'object') return null;
+
+  let pct = cw.used_percentage;
+  if (typeof pct !== 'number') {
+    if (typeof cw.remaining_percentage === 'number') pct = 100 - cw.remaining_percentage;
+    else return null;
+  }
+  pct = Math.max(0, Math.min(100, Math.round(pct)));
+  const col = levelColor(pct);
+  const bar = renderLevelBar(pct, col);
+
+  // Optional token counts — only if the harness actually provides them.
+  let tokens = '';
+  const used = (typeof cw.used_tokens === 'number') ? cw.used_tokens
+             : (typeof cw.tokens === 'number') ? cw.tokens : null;
+  const max  = (typeof cw.max_tokens === 'number') ? cw.max_tokens
+             : (typeof cw.total_tokens === 'number') ? cw.total_tokens
+             : (typeof cw.context_size === 'number') ? cw.context_size : null;
+  if (used != null && max != null && max > 0) {
+    tokens = ` ${C.dim}·${C.reset} ${C.dim}${kfmt(used)}/${kfmt(max)} tokens${C.reset}`;
+  }
+
+  return `${bar} ${col}${pct}%${C.reset} ${C.dim}context${C.reset}${tokens}`;
+}
+
+// --- Main: phase bar if a run is active, else the context bar -----------------
+try {
+  const input = readStdin();
+  let line = phaseBarLine();
+  if (line === null) line = contextLine(input);
+  if (line) process.stdout.write(line + '\n');
 } catch (e) {
-  // Missing file, JSON parse error, or any other failure -> print nothing
-  process.exit(0);
+  process.exit(0); // fail-open
 }

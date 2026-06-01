@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.6.0
+
+Always-on line 2 (hybrid bar). The plugin's statusline now ships BOTH lines as a
+complete two-line statusline, and line 2 is always present (never blank):
+- During an active orchestration run -> the live phase progress bar (as before).
+- When idle -> a context-window usage bar rendered from the session JSON:
+  `[███████████◐────────] 56% context` (· `used/max tokens` when the harness
+  provides counts), color-coded green/yellow/red at <=70/70-89/>=90.
+
+`statusline.js` now passes the session stdin through to the line-2 renderer
+(`phase-bar.js`) so the context bar has real data; `phase-bar.js` renders the phase
+bar when a fresh phase-state exists and the context bar otherwise. Fail-open: if
+neither source is available, line 2 is simply omitted.
+
 ## 0.5.1
 
 Phase bar auto-hides stale state. The line-2 phase bar reads `~/.anti-hall/phase-state.json`;
