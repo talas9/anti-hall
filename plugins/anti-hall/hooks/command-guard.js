@@ -167,7 +167,18 @@ function effectiveVerb(segment) {
     const word = basename(tokens[idx]).toLowerCase();
     if (!WRAPPERS.has(word)) break;
     idx++;
-    if (word === 'env') {
+    if (word === 'sudo') {
+      // sudo [-flags [value]] command...   Skip option flags so
+      // `sudo -u deploy npm install` resolves to `npm`, not `-u`.
+      const SUDO_VAL = new Set(['-u', '-g', '-p', '-C', '-r', '-t', '-U', '-h',
+        '--user', '--group', '--prompt', '--close-from', '--role', '--type',
+        '--other-user', '--host']);
+      while (idx < tokens.length && tokens[idx].startsWith('-')) {
+        const f = tokens[idx]; idx++;
+        if (f === '--') break;
+        if (SUDO_VAL.has(f) && idx < tokens.length && !tokens[idx].startsWith('-')) idx++;
+      }
+    } else if (word === 'env') {
       while (idx < tokens.length &&
              (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx]) || tokens[idx].startsWith('-'))) idx++;
     } else if (word === 'timeout') {

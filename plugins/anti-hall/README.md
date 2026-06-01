@@ -54,7 +54,7 @@ claude --plugin-dir /path/to/anti-hall
 | `graphify-reminder.js` | Stop | One-time reminder to update the graph after real edits. |
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
 | `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
-| `root-cause` / `orchestration` / `feature-launch` / `deadly-loop` | Skills | Slash commands (see [Skills](#skills)). |
+| `root-cause` / `orchestration` / `feature-launch` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line for monorepos, simple line otherwise. |
 
 ## How it works
@@ -65,7 +65,8 @@ claude --plugin-dir /path/to/anti-hall
   verify-first + root-cause protocol in the Superpowers **Iron Law +
   rationalization-table** form. It names the specific bypass excuses ("probably",
   "should work", "seems to", "I'll just assume", "looks done", "tests pass on first
-  run") and includes a skill primer listing each of the 7 skills and when to reach for it.
+  run") and includes a skill primer listing the core 4 skills (root-cause, orchestration,
+  deadly-loop, feature-launch) and when to reach for each.
   SessionStart is the primacy slot.
 - **Surviving compaction** — SessionStart re-fires after a compaction with
   `source="compact"`. The no-matcher SessionStart registration therefore re-injects

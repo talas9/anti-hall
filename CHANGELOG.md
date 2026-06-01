@@ -6,6 +6,21 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.11.2
+
+Double-deadly-loop (4-auditor) final-gate fixes. `git-guard` and `command-guard`: `sudo`
+with option flags no longer leaks — `sudo -u deploy git push --force` and `sudo -u deploy
+npm install` previously resolved their effective verb to `-u` and slipped past the guards;
+both now block (flag/operand-skip mirrors the env/timeout/nice handling). `git-guard`:
+a force form baked into an inline alias BODY (`git -c alias.p='push --force origin main' p`)
+was dropped — now the alias body's tokens are force-checked. `graphify-guard`: `segmentVerb`
+now skips wrapper words so `sudo rg secret` is still detected for the (non-blocking) graph-
+first nudge. Docs: corrected the skill count (llms.txt "five" → "seven workflow skills";
+plugins README primer "7 skills" → "core 4 skills" to match verify-first-full.js; Features
+table notes deadly-loop-multi/install-statusline/doctor). See docs/AUDIT-REPORT-2.md for the
+reconciled findings, rejected false-positives, and deferred needs-review items. Fail-open and
+subagent-allow preserved; doctor green (36 checks).
+
 ## 0.11.1
 
 Fix `deadly-loop-multi` SKILL.md YAML frontmatter: the `description` contained an unquoted

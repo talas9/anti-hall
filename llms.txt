@@ -3,7 +3,7 @@
 > A Claude Code marketplace + plugin that makes Claude Code verify before it claims.
 > It injects a verify-first protocol at session start (re-firing after compaction), a
 > short rotating nudge every turn, mechanical guards (no AI commit self-credit, no silent
-> force-push, command-delegation, anti-fork-bomb, anti-speculation), five workflow skills,
+> force-push, command-delegation, anti-fork-bomb, anti-speculation), seven workflow skills,
 > and a live two-line statusline. All hooks are pure Node.js (built-ins only) and run on
 > macOS, Linux, and Windows; the one prerequisite is Node >= 18 on PATH.
 

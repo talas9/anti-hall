@@ -115,10 +115,26 @@ function splitSegments(cmd) {
 // The effective verb of one segment: skip leading VAR=value assignments, return
 // the first real token (with its leading path stripped, e.g. /usr/bin/grep -> grep).
 // Keeps a leading `/` for the `/graphify` slash-command case (it is the literal verb).
+const GRAPHIFY_WRAPPERS = new Set(['command', 'builtin', 'exec', 'sudo', 'env',
+  'nice', 'nohup', 'time', 'timeout', 'then', 'do', 'else']);
+
 function segmentVerb(segment) {
   const tokens = segment.trim().split(/\s+/).filter(Boolean);
   let i = 0;
   while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+  // Skip wrapper words so `sudo rg secret` / `time grep x` are still detected as
+  // code-nav. Best-effort: skip a wrapper and any immediately following -flags;
+  // for env, skip VAR=value operands too. Keep the leading `/` for /graphify.
+  while (i < tokens.length) {
+    const word = tokens[i].replace(/^.*\//, '').toLowerCase();
+    if (!GRAPHIFY_WRAPPERS.has(word)) break;
+    i++;
+    while (i < tokens.length &&
+           (tokens[i].startsWith('-') ||
+            (word === 'env' && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])))) i++;
+    // timeout/nice carry a non-flag operand (duration / niceness); skip one.
+    if ((word === 'timeout') && i < tokens.length && !tokens[i].startsWith('/')) i++;
+  }
   return tokens[i] || '';
 }
 

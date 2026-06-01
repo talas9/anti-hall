@@ -290,7 +290,24 @@ function effectiveVerb(tokens) {
     const word = t.text;
     if (!t.quotedOnly && WRAPPERS.has(word)) {
       idx++;
-      if (word === 'env') {
+      if (word === 'sudo') {
+        // sudo [-flags [value]] command...   Skip leading option flags so
+        // `sudo -u deploy git push --force` resolves to `git`, not `-u`.
+        // Value-taking sudo flags: -u/-g/-p/-C/-r/-t/-U/-h(host)/--user/--group/...
+        const SUDO_VAL = new Set(['-u', '-g', '-p', '-C', '-r', '-t', '-U', '-h',
+          '--user', '--group', '--prompt', '--close-from', '--role', '--type',
+          '--other-user', '--host']);
+        while (idx < tokens.length && !tokens[idx].quotedOnly && tokens[idx].text.startsWith('-')) {
+          const f = tokens[idx].text;
+          idx++;
+          // `--` ends sudo option parsing; the next token is the command.
+          if (f === '--') break;
+          if (SUDO_VAL.has(f) && idx < tokens.length && !tokens[idx].quotedOnly &&
+              !tokens[idx].text.startsWith('-')) {
+            idx++;
+          }
+        }
+      } else if (word === 'env') {
         // env: skip VAR=value operands and -flags.
         while (idx < tokens.length) {
           const e = tokens[idx];
@@ -357,6 +374,7 @@ function gitSubcommand(args) {
   // lets the push handler see through an inline-alias force push
   // (`git -c alias.p=push p ... --force`), which only literal `push` would miss.
   const aliasMap = new Map(); // alias name -> expanded subcommand (first word)
+  const aliasBodyTokens = new Map(); // alias name -> remaining body tokens (after first word)
   for (let j = 0; j + 1 < args.length; j++) {
     if (args[j].text === '-c') {
       const cfg = args[j + 1] ? args[j + 1].text : '';
@@ -368,7 +386,15 @@ function gitSubcommand(args) {
         // a sentinel so the resolver below treats the alias as non-static (and the
         // push handler conservatively force-checks it).
         const firstWord = val.startsWith('!') ? '!' : (val.split(/\s+/)[0] || '');
-        if (name) aliasMap.set(name, firstWord);
+        if (name) {
+          aliasMap.set(name, firstWord);
+          // Capture the rest of the alias body so a force form baked INTO the body
+          // (`-c alias.p='push --force origin main' p`) is force-checked, not just
+          // flags at the call site. Tokens are shaped like the tokenizer output so
+          // isForcePush can consume them.
+          const parts = val.split(/\s+/).slice(1).filter(Boolean);
+          aliasBodyTokens.set(name, parts.map(p => ({ text: p, quotedOnly: false })));
+        }
       }
     }
   }
@@ -390,7 +416,11 @@ function gitSubcommand(args) {
     if (aliasMap.has(w)) {
       const expanded = aliasMap.get(w);
       if (expanded === 'push' || expanded === '!') {
-        return { sub: 'push', rest };
+        // Prepend the alias body's remaining tokens (e.g. the `--force` in
+        // `alias.p='push --force ...'`) so isForcePush sees force forms baked into
+        // the alias definition, not only flags supplied at the call site.
+        const body = aliasBodyTokens.get(w) || [];
+        return { sub: 'push', rest: body.concat(rest) };
       }
       return { sub: expanded || w, rest };
     }
