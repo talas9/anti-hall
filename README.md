@@ -1,8 +1,12 @@
 <div align="center">
 
+<img src="assets/anti-hall-logo.png" alt="anti-hall logo" width="200">
+
 # 🛡️ anti-hall
 
 ### Make Claude Code *verify before it claims* — and ship the workflow skills that enforce it.
+
+<sub>(yes, that's HAL from *Malcolm in the Middle* — anti-**hal**lucination, with a wink)</sub>
 
 A Claude Code **marketplace + plugin** that installs always-on hooks, evidence-driven
 workflow skills, and a live two-line statusline. Pure Node.js, no dependencies, runs on
