@@ -155,7 +155,7 @@ Key compositions:
 ## 4. Recommended Minimal Plan-First Loop
 
 This is the minimal loop that captures the superpowers' best disciplines, compatible
-with a simplified GSD phase model and an Opus 4.8 swarm (see docs/gsd-distilled.md,
+with a simplified GSD phase model and a latest-Opus swarm (see docs/gsd-distilled.md,
 docs/opus-4-8-swarm.md when written).
 
 ```

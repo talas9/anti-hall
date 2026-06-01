@@ -1,26 +1,26 @@
-# Claude Opus 4.8 Swarm / Multi-Agent Orchestration: Research Report
+# Latest Opus Swarm / Multi-Agent Orchestration: Research Report
 
-**Date:** 2026-05-29  
-**Purpose:** Inform an extension to the `feature-launch` skill — simpler 4.8-native phase model + analyze-work mode  
-**Status of primary subject:** Opus 4.8 released 2026-05-28 (41 days after 4.7). Dynamic Workflows = research preview. Managed Agents API = beta.
+**Date:** 2026-05-29 (research captured at Opus 4.8 release)  
+**Purpose:** Inform an extension to the `feature-launch` skill — simpler latest-Opus-native phase model + analyze-work mode  
+**Status of primary subject:** Opus 4.8 was the latest at time of writing (released 2026-05-28, 41 days after 4.7); always use the newest available. Dynamic Workflows = research preview. Managed Agents API = beta.
 
 ---
 
-## 1. What Is Actually New in Opus 4.8 for Multi-Agent Work
+## 1. What Is Actually New in the Latest Opus for Multi-Agent Work
 
 ### 1.1 Model improvements (verified from official release notes)
 
-Source: [platform.claude.com — What's New in Claude 4.8](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8) **[OFFICIAL]**
+Source: [platform.claude.com — What's New in the latest Claude Opus](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8) **[OFFICIAL]**
 
 - **Long-horizon agentic coding**: better long-context handling, fewer compactions mid-session, better recovery after compaction. Direct improvement for multi-phase work.
 - **Reasoning effort calibration**: more reliable behavior at each effort level across domains. Previously, effort levels were inconsistently honored.
 - **Better tool triggering**: fewer cases of Claude skipping a tool call the task required — a real bug in 4.7.
 - **Adaptive thinking**: triggers reasoning only when the turn needs it. On short agentic steps it responds directly; on complex multi-step problems it reasons before answering. Reduces wasted tokens on bimodal workloads.
-- **Mid-conversation system messages**: `role: "system"` messages can now be appended mid-conversation (after user turns) without invalidating the prompt cache prefix. Opus 4.8 only; no beta header needed. This enables mode switches and standing permission grants during long-running agentic sessions without cache-miss cost.
+- **Mid-conversation system messages**: `role: "system"` messages can now be appended mid-conversation (after user turns) without invalidating the prompt cache prefix. Latest Opus only (Claude API / Claude Platform on AWS); no beta header needed. This enables mode switches and standing permission grants during long-running agentic sessions without cache-miss cost.
 - **Lower prompt cache minimum**: 1,024 tokens (down from 4.7's minimum). More turns qualify for caching.
 - **Fast mode** (research preview on API): `speed: "fast"` — up to 2.5x higher output token speed, premium pricing. Useful for parallelizing many short subagent calls.
 - **No extended thinking budgets**: `budget_tokens` returns a 400 error. Use `thinking: {type: "adaptive"}` plus the `effort` parameter.
-- **Sampling params not supported**: `temperature`, `top_p`, `top_k` → 400 error on 4.8 (same as 4.7).
+- **Sampling params not supported**: `temperature`, `top_p`, `top_k` → 400 error on recent Opus generations.
 
 ### 1.2 Effort parameter (verified official)
 
@@ -28,7 +28,7 @@ Source: [platform.claude.com — Effort](https://platform.claude.com/docs/en/bui
 
 Five API levels (bottom to top): `low`, `medium`, `high` (default), `xhigh`, `max`.
 
-| Level | Key guidance for 4.8 / agentic work |
+| Level | Key guidance for the latest Opus / agentic work |
 |---|---|
 | `low` | Fast, cheap. Recommended for subagents doing simple tasks. |
 | `medium` | Balanced. Good for subagents doing moderate work, cost-sensitive pipelines. |
@@ -40,7 +40,7 @@ Five API levels (bottom to top): `low`, `medium`, `high` (default), `xhigh`, `ma
 
 Setting effort affects all tokens: text, tool calls, and thinking. Lower effort = fewer/combined tool calls, direct action without preamble. Higher effort = more tool calls, detailed plans, comprehensive summaries.
 
-### 1.3 Mid-conversation system messages (Opus 4.8 only, verified official)
+### 1.3 Mid-conversation system messages (latest Opus only, verified official)
 
 Source: [platform.claude.com — Mid-conversation system messages](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages) **[OFFICIAL]**
 
@@ -224,7 +224,7 @@ The event log (`getEvents()`) stores durable external state — not just Claude'
 
 4. **No nested agents**: In Agent Teams, teammates cannot spawn subteams. In Managed Agents, depth > 1 is ignored. In the SDK, subagents cannot spawn subagents. Planning must fit within one level of delegation.
 
-5. **Context limit of coordinator**: 1M token context, but in long-running sessions the coordinator still compacts. 4.8's better compaction recovery is a direct fix for this, but it is not guaranteed to be lossless.
+5. **Context limit of coordinator**: 1M token context, but in long-running sessions the coordinator still compacts. The latest Opus's better compaction recovery is a direct fix for this, but it is not guaranteed to be lossless.
 
 6. **File conflicts**: Two agents editing the same file leads to overwrites. Work must be decomposed so each agent owns disjoint files.
 
@@ -247,14 +247,14 @@ The current `feature-launch` skill uses a heavy GSD spec/plan/execute/verify loo
 - Parallel investigation before planning begins
 - Verification passes that are independent subsets
 
-### 7.2 A simpler 4.8-native phase model
+### 7.2 A simpler latest-Opus-native phase model
 
 **Phase = parallel fan-out + gate.** Each phase has three elements:
 1. **Fan-out**: spawn N subagents (or workflow agents) with distinct scopes, all starting simultaneously
 2. **Synthesis**: coordinator collects results (final messages only, not intermediate tool calls), synthesizes into a canonical artifact (e.g., `.planning/PHASE-N-synthesis.md`)
 3. **Gate**: a verification check against the synthesis; either automated (hook, test) or human approval; blocks Phase N+1 until passed
 
-This maps directly to 4.8's primitives:
+This maps directly to the latest Opus's primitives:
 - Fan-out = Agent SDK `background: true` subagents OR Dynamic Workflow phases
 - Synthesis = orchestrator turn after all subagents complete
 - Gate = `TaskCompleted` hook (Agent Teams), mid-conversation system message mode switch (API), or explicit human confirm prompt
@@ -297,7 +297,7 @@ This replaces the current "graph-scout → gsd-pattern-mapper" pattern with nati
 
 ### Official (Anthropic)
 
-1. **[OFFICIAL]** [What's New in Claude Opus 4.8 — platform.claude.com](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8)
+1. **[OFFICIAL]** [What's New in the latest Claude Opus — platform.claude.com](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8)
 2. **[OFFICIAL]** [Effort parameter — platform.claude.com](https://platform.claude.com/docs/en/build-with-claude/effort)
 3. **[OFFICIAL]** [Mid-conversation system messages — platform.claude.com](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages)
 4. **[OFFICIAL]** [Orchestrate teams of Claude Code sessions (Agent Teams) — code.claude.com](https://code.claude.com/docs/en/agent-teams)
@@ -311,9 +311,9 @@ This replaces the current "graph-scout → gsd-pattern-mapper" pattern with nati
 
 ### Community / Practitioner
 
-12. **[COMMUNITY]** [Anthropic Ships Claude Opus 4.8 + Dynamic Workflows (1,000 subagent cap details) — MarkTechPost](https://www.marktechpost.com/2026/05/28/anthropic-ships-claude-opus-4-8-alongside-dynamic-workflows-and-cheaper-fast-mode-with-workflows-capped-at-1000-subagents/)
-13. **[COMMUNITY]** [What Opus 4.8 Changes for Anyone Running Agents on Claude — Unite.AI](https://www.unite.ai/what-opus-4-8-changes-for-anyone-running-agents-on-claude/)
+12. **[COMMUNITY]** [Anthropic Ships latest Opus + Dynamic Workflows (1,000 subagent cap details) — MarkTechPost](https://www.marktechpost.com/2026/05/28/anthropic-ships-claude-opus-4-8-alongside-dynamic-workflows-and-cheaper-fast-mode-with-workflows-capped-at-1000-subagents/)
+13. **[COMMUNITY]** [What the latest Opus Changes for Anyone Running Agents on Claude — Unite.AI](https://www.unite.ai/what-opus-4-8-changes-for-anyone-running-agents-on-claude/)
 14. **[COMMUNITY]** [Claude Code Multi-Agent Orchestration — Shipyard blog](https://shipyard.build/blog/claude-code-multi-agent/)
-15. **[COMMUNITY — PRACTITIONER TEST]** [Claude Opus 4.8 hands-on, ultracode, 47-agent attempt — aiwithmo.com](https://www.aiwithmo.com/prompts/claude-opus-4-8-release)
-16. **[COMMUNITY]** [Anthropic releases Opus 4.8 with dynamic workflows — TechCrunch](https://techcrunch.com/2026/05/28/anthropic-releases-opus-4-8-with-new-dynamic-workflow-tool/)
+15. **[COMMUNITY — PRACTITIONER TEST]** [Latest Claude Opus hands-on, ultracode, 47-agent attempt — aiwithmo.com](https://www.aiwithmo.com/prompts/claude-opus-4-8-release)
+16. **[COMMUNITY]** [Anthropic releases latest Opus with dynamic workflows — TechCrunch](https://techcrunch.com/2026/05/28/anthropic-releases-opus-4-8-with-new-dynamic-workflow-tool/)
 

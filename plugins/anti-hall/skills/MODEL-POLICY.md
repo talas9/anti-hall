@@ -21,14 +21,14 @@ adversarial persona** — never a weaker/cheaper model.
 
 ### Reviewer — correctness / architecture auditor
 
-- **Model:** latest Claude Opus. As of 2026-05 the latest is `claude-opus-4-8`;
-  always resolve "latest" at runtime and use the newest Opus available to you.
+- **Model:** the latest Opus. Always resolve "latest" at runtime and use the
+  newest Opus available to you.
 - **Thinking:** MAXIMUM. Adaptive thinking ON, effort `xhigh`. `effort`
   defaults to `high` on all surfaces (including Claude Code); `xhigh` is the
   recommended max for agentic/review work. `xhigh` may be unavailable on some
   surfaces/models — if the resolved model does not support it, fall back to
-  `high` (never silently degrade below `high` for review). Note: on Opus 4.7/4.8
-  manual `budget_tokens` is rejected; use adaptive mode + `effort`.
+  `high` (never silently degrade below `high` for review). Note: on recent Opus
+  generations manual `budget_tokens` is rejected; use adaptive mode + `effort`.
 - **Persona:** rigorous correctness and architecture auditor. Verifies that
   changes do what they claim, that fixes resolve their parent findings without
   regression, that merge order is sound, and that every claim is backed by
@@ -151,15 +151,16 @@ Skill({ skill: "codex:rescue",
 Or via the CLI directly (when scripting), at maximum reasoning:
 
 ```bash
-codex exec --model gpt-5-codex --config model_reasoning_effort=xhigh \
+codex exec --model <latest-openai-codex> --config model_reasoning_effort=xhigh \
   "<CRITIC_PROMPT: adversarial failure-mode hunt over the round delta>"
 ```
 
-(Resolve the newest Codex model at runtime; `gpt-5-codex` shown as an example.
+(Resolve the newest OpenAI Codex model at runtime; `<latest-openai-codex>` is a
+placeholder — use whatever the installed CLI reports as current.
 Request the highest reasoning effort, but note `xhigh` is NOT available on every
-backend — `gpt-5.4-mini` has no `xhigh` and Bedrock `gpt-5.4-cmb` caps at
-`high`. If the resolved model/backend rejects `xhigh`, fall back to `high`;
-never let an unsupported `xhigh` silently degrade the run.)
+backend — some compact Codex variants have no `xhigh` and some Bedrock
+deployments cap at `high`. If the resolved model/backend rejects `xhigh`, fall
+back to `high`; never let an unsupported `xhigh` silently degrade the run.)
 
 ### Critic — fallback path (2nd Opus, divergent persona)
 
@@ -206,8 +207,8 @@ cross-model debate. This is strictly a fallback, not the preferred configuration
 ## "Latest" resolution reminder
 
 "Latest" means the newest available model at runtime, not a hardcoded version:
-- Reviewer / Opus-fallback-Critic: newest Claude Opus (`claude-opus-4-8` is the
-  current latest as of 2026-05 — use a newer one if it exists).
+- Reviewer / Opus-fallback-Critic: newest Claude Opus available at runtime
+  (always resolve "latest"; never hardcode a version).
 - Codex Critic: newest OpenAI Codex model the installed CLI supports.
 
 Always prefer the newest model; treat the version names in this doc as examples

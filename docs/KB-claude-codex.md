@@ -120,8 +120,8 @@ Sources: [prompting best-practices](https://platform.claude.com/docs/en/build-wi
 - **XML tags** (`<instructions>`, `<context>`, `<documents>`) reduce misinterpretation.
 - **Single-sentence role** in system prompt focuses behavior (system-prompt-only feature). Vague roles ("helpful assistant") don't reduce hallucination; specific roles do.
 
-### 3.3 Claude 4.8 literalness (load-bearing for plugin design)
-- Claude 4.8 "takes you literally and does exactly what you ask, nothing more." It does **not** generalize — formatting one example doesn't imply the rest. State scope: "Apply to EVERY section."
+### 3.3 Claude literalness (load-bearing for plugin design)
+- The latest Opus "takes you literally and does exactly what you ask, nothing more." It does **not** generalize — formatting one example doesn't imply the rest. State scope: "Apply to EVERY section."
 - **Tell what to DO, not what NOT to do** — explain *why* ("read aloud by TTS, so no ellipses") so Claude generalizes from reasoning.
 - **Tool use is not automatic** — newer models favor reasoning; use imperative ("Change this function") + `<default_to_action>` system prompt to force action.
 - **Code-review tuning trap**: "only report high-severity" → Claude reports fewer bugs than it found. Use "Report EVERY issue; a separate step filters."
@@ -164,7 +164,7 @@ Sources: [config-reference](https://developers.openai.com/codex/config-reference
 ### 5.1 config.toml
 - `approval_policy`: `untrusted` | `on-request` | `never` | `granular`. `on-failure` deprecated.
 - `sandbox`: `:read-only` | `:workspace` | `:danger-full-access`.
-- `model_reasoning_effort`: minimal/low/medium(default)/high/xhigh. **`xhigh` not on gpt-5.4-mini; Bedrock gpt-5.4-cmb caps at high.** xhigh is "noticeably slower and more expensive" — async/proof-bound work only.
+- `model_reasoning_effort`: minimal/low/medium(default)/high/xhigh. **`xhigh` not available on all Codex variants; some Bedrock deployments cap at high.** xhigh is "noticeably slower and more expensive" — async/proof-bound work only.
 - **Project-local config cannot override machine-owned settings** (auth, telemetry, notifications) — enforced boundary; attempts silently ignored.
 - Protected paths `.git`, `.agents`, `.codex` stay read-only even in writable modes.
 
@@ -182,7 +182,7 @@ Discovery (first match wins): `~/.codex/AGENTS.override.md` → `~/.codex/AGENTS
 Explicit spawning only ("Codex only spawns a new agent when you explicitly ask"). Built-ins: `default`, `worker`, `explorer`. `max_threads` default 6, `max_depth` default 1 (prevents costly nesting), `job_max_runtime_seconds`. Subagent workflows cost **more** tokens than single-agent — use only for true parallelism.
 
 ### 5.5 Non-interactive & prompting
-`codex exec "task"` (progress→stderr, output→stdout); `--json` JSON Lines; `--output-schema` for structured output. CI-safe combo: `approval_policy: "never"` + explicit `--sandbox`. **Never** set `OPENAI_API_KEY` as job env var (issue #5038: VS Code extension can ignore `never` and prompt). Codex prompting: "produces higher-quality outputs when it can verify its work" — include reproduce/validate/lint steps; decompose; goal mode with measurable outcomes. `gpt-5.3-codex` `phase` field ("commentary"/"final_answer") must be preserved in history.
+`codex exec "task"` (progress→stderr, output→stdout); `--json` JSON Lines; `--output-schema` for structured output. CI-safe combo: `approval_policy: "never"` + explicit `--sandbox`. **Never** set `OPENAI_API_KEY` as job env var (issue #5038: VS Code extension can ignore `never` and prompt). Codex prompting: "produces higher-quality outputs when it can verify its work" — include reproduce/validate/lint steps; decompose; goal mode with measurable outcomes. The latest OpenAI Codex `phase` field ("commentary"/"final_answer") must be preserved in history.
 
 > **Cross-tool consensus:** Both Claude and Codex official docs independently state verification-driven work produces higher quality, and both make `PreToolUse` the primary preventive enforcement point. Strong convergence.
 
@@ -322,23 +322,23 @@ Anthropic's recommended scaffold for any production prompt:
 
 ---
 
-## 10. Claude Opus 4.8 — features relevant to this plugin
+## 10. The latest Opus — features relevant to this plugin
 
-From the Opus 4.8 feature reference (released 2026-05-28, model ID `claude-opus-4-8`). Only the features that bear on this anti-hallucination plugin are summarized; see the source for the full set (fast mode, refusal stop_details, lower cache minimum, etc.).
+From the Opus feature reference (as of 2026-05-28, the latest is `claude-opus-4-8`; always use the newest available). Only the features that bear on this anti-hallucination plugin are summarized; see the source for the full set (fast mode, refusal stop_details, lower cache minimum, etc.).
 
 ### 10.1 Adaptive thinking is the only thinking mode
-- On Opus 4.7 and 4.8, manual `thinking: {type:"enabled", budget_tokens:N}` returns a **400 error**. The only supported mode is `thinking: {type:"adaptive"}`, and thinking is **off by default** — you must enable it explicitly.
+- On the latest Opus generations, manual `thinking: {type:"enabled", budget_tokens:N}` returns a **400 error**. The only supported mode is `thinking: {type:"adaptive"}`, and thinking is **off by default** — you must enable it explicitly.
 - When enabled, Claude decides per turn whether/how much to think; **interleaved thinking between tool calls is automatic** in adaptive mode (strong for agentic loops). At `high`/`xhigh`/`max` Claude almost always thinks; at `medium`/`low` it may skip simple turns.
-- On 4.8/4.7 `thinking.display` defaults to `"omitted"` (silent change from 4.6's `"summarized"`); you are still billed for the full thinking tokens. Thinking ≠ verification still holds (§3.3): adaptive thinking is reasoning, not a factual guarantee.
+- On recent Opus generations `thinking.display` defaults to `"omitted"` (silent change from earlier versions' `"summarized"`); you are still billed for the full thinking tokens. Thinking ≠ verification still holds (§3.3): adaptive thinking is reasoning, not a factual guarantee.
 
 ### 10.2 Effort defaults to `high`; `xhigh` is the recommended max for agentic/coding work
 - **Default effort on all surfaces including Claude Code is `high`** (setting `high` == omitting the parameter). Pass via `output_config.effort`; it affects **all tokens** (text, tool args, thinking). `budget_tokens` is deprecated/rejected.
 - Anthropic's guidance: **start at `xhigh`** for coding/agentic use; use `high` as the minimum for intelligence-sensitive work; step down to `medium` only after measuring on evals; at `xhigh`/`max` set a large `max_tokens` (start ~64k).
-- **Availability caveat:** `xhigh` exists **only on Opus 4.8 and Opus 4.7**; `low/medium/high/max` are broader. (This is the API-side analog of the Codex §5.1 `xhigh` caveat — request `xhigh`, but fall back to `high` where the surface/model doesn't support it.)
-- 4.8 improves **tool triggering** (fewer skipped required tool calls) and **effort calibration** — directly relevant to hooks that depend on Claude actually running a verification tool.
+- **Availability caveat:** `xhigh` exists only on the latest Opus generations; `low/medium/high/max` are broader. (This is the API-side analog of the Codex §5.1 `xhigh` caveat — request `xhigh`, but fall back to `high` where the surface/model doesn't support it.)
+- The latest Opus improves **tool triggering** (fewer skipped required tool calls) and **effort calibration** — directly relevant to hooks that depend on Claude actually running a verification tool.
 
 ### 10.3 Mid-conversation system messages
-- `role: "system"` messages can now appear **inside** the `messages` array (not just the top-level `system` field), placed immediately after a user turn. **Only on Opus 4.8** (and Claude API / Claude Platform on AWS only — not Bedrock/Vertex/Foundry); no beta header.
+- `role: "system"` messages can now appear **inside** the `messages` array (not just the top-level `system` field), placed immediately after a user turn. **Only on the latest Opus** (Claude API / Claude Platform on AWS only — not Bedrock/Vertex/Foundry); no beta header.
 - Why it matters here: a `PostToolUse` hook can append `{role:"system", content:"Verified: <evidence>"}` to inject verified facts with **system-level authority** mid-session **without invalidating the prompt cache** on the stable prefix. This is the cleanest mechanism for grounding subsequent turns against tool output — a future enhancement path for this plugin's hooks beyond `additionalContext`.
 
 ### 10.4 "ultracode" in Claude Code
@@ -346,7 +346,7 @@ From the Opus 4.8 feature reference (released 2026-05-28, model ID `claude-opus-
 
 ---
 
-## 11. Opus 4.8 swarm & phased orchestration
+## 11. Latest Opus swarm & phased orchestration
 
 Sources: [Dynamic Workflows](https://code.claude.com/docs/en/workflows), [Agent Teams](https://code.claude.com/docs/en/agent-teams), [Subagents SDK](https://code.claude.com/docs/en/agent-sdk/subagents), [Managed Agents API](https://platform.claude.com/docs/en/managed-agents/multi-agent), [Managed Agents blog](https://www.anthropic.com/engineering/managed-agents), [Multi-Agent Research System](https://www.anthropic.com/engineering/multi-agent-research-system), [Building Effective Agents](https://www.anthropic.com/research/building-effective-agents).
 
@@ -392,11 +392,11 @@ This replaces "graph-scout + codebase map" with native subagent fan-out. Cheaper
 - **Analysis subagents**: `medium` or `high` (focused scope, shorter output).
 - **Verification subagents**: `low` or `medium` (reading/checking, not deep reasoning).
 
-`xhigh` exists only on Opus 4.8 and 4.7; fall back to `high` on other models. `ultracode` (Claude Code UI) pairs `xhigh` with standing workflow-launch permission via mid-conversation system messages — to replicate via API, use `effort: xhigh` + a mid-conversation system message granting permission.
+`xhigh` exists only on the latest Opus generations; fall back to `high` on other models. `ultracode` (Claude Code UI) pairs `xhigh` with standing workflow-launch permission via mid-conversation system messages — to replicate via API, use `effort: xhigh` + a mid-conversation system message granting permission.
 
 ### 11.5 Mid-conversation system messages as phase mode switches
 
-On Opus 4.8 (Claude API / Claude Platform on AWS only — not Bedrock/Vertex/Foundry): append `{"role":"system"}` after a user turn to switch mode mid-session without invalidating the prompt cache prefix. Key use: grant standing permission to launch multi-agent workflows at a phase boundary, or inject verified evidence with system-level authority after a `PostToolUse` hook completes. Limitations: cannot be first message; must follow a user turn; consecutive system messages must be merged.
+On the latest Opus (Claude API / Claude Platform on AWS only — not Bedrock/Vertex/Foundry): append `{"role":"system"}` after a user turn to switch mode mid-session without invalidating the prompt cache prefix. Key use: grant standing permission to launch multi-agent workflows at a phase boundary, or inject verified evidence with system-level authority after a `PostToolUse` hook completes. Limitations: cannot be first message; must follow a user turn; consecutive system messages must be merged.
 
 ### 11.6 Practical pitfalls
 
@@ -648,12 +648,12 @@ string including quoted argument bodies.
 49. [Parallel Coding Agents oh-my-codex (Particula)](https://particula.tech/blog/parallel-coding-agents-worktree-pattern-oh-my-codex) — community
 50. [AI Jailbreak Prompts (Repello AI)](https://repello.ai/blog/understanding-ai-jailbreaking-techniques-and-safeguards-against-prompt-exploits) — community
 
-**Official — Anthropic prompting keynotes & Opus 4.8 (added for §9–§10)**
+**Official — Anthropic prompting keynotes & latest Opus (added for §9–§10)**
 51. [Prompting 101 | Code w/ Claude 2025 (YouTube)](https://www.youtube.com/watch?v=ysPbXH0LpIE) — Hannah Moran & Christian Ryan, Applied AI
 52. [Building with Anthropic's Claude: The Prompt Doctor Is In (YouTube)](https://www.youtube.com/watch?v=hkhDdcM5V94) — Zack Witten workshop
 53. [Prompting for Agents | Code w/ Claude (YouTube)](https://www.youtube.com/watch?v=XSZP9GhhuAc) — recommended follow-on
 54. [Effective Context Engineering for AI Agents (Anthropic Engineering)](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents)
-55. [What's new in Claude Opus 4.8 (official)](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8)
+55. [What's new in the latest Claude Opus (official)](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8)
 56. [Adaptive thinking (official)](https://platform.claude.com/docs/en/build-with-claude/adaptive-thinking)
 57. [Effort parameter (official)](https://platform.claude.com/docs/en/build-with-claude/effort)
 58. [Mid-conversation system messages (official)](https://platform.claude.com/docs/en/build-with-claude/mid-conversation-system-messages)
@@ -664,9 +664,9 @@ string including quoted argument bodies.
 61. [Scaling Managed Agents: Decoupling brain from execution — anthropic.com engineering](https://www.anthropic.com/engineering/managed-agents) — official engineering blog
 62. [Multi-Agent Research System — anthropic.com engineering](https://www.anthropic.com/engineering/multi-agent-research-system) — official engineering blog
 63. [Introducing Dynamic Workflows in Claude Code — claude.com blog](https://claude.com/blog/introducing-dynamic-workflows-in-claude-code) — official
-64. [Anthropic Ships Opus 4.8 + Dynamic Workflows — MarkTechPost](https://www.marktechpost.com/2026/05/28/anthropic-ships-claude-opus-4-8-alongside-dynamic-workflows-and-cheaper-fast-mode-with-workflows-capped-at-1000-subagents/) — community
-65. [What Opus 4.8 Changes for Anyone Running Agents on Claude — Unite.AI](https://www.unite.ai/what-opus-4-8-changes-for-anyone-running-agents-on-claude/) — community
+64. [Anthropic Ships the latest Opus + Dynamic Workflows — MarkTechPost](https://www.marktechpost.com/2026/05/28/anthropic-ships-claude-opus-4-8-alongside-dynamic-workflows-and-cheaper-fast-mode-with-workflows-capped-at-1000-subagents/) — community
+65. [What the latest Opus Changes for Anyone Running Agents on Claude — Unite.AI](https://www.unite.ai/what-opus-4-8-changes-for-anyone-running-agents-on-claude/) — community
 66. [Claude Code Multi-Agent Orchestration — Shipyard blog](https://shipyard.build/blog/claude-code-multi-agent/) — community
-67. [Claude Opus 4.8 hands-on, ultracode, 47-agent attempt — aiwithmo.com](https://www.aiwithmo.com/prompts/claude-opus-4-8-release) — community practitioner test
+67. [The latest Claude Opus hands-on, ultracode, 47-agent attempt — aiwithmo.com](https://www.aiwithmo.com/prompts/claude-opus-4-8-release) — community practitioner test
 
 **Referenced but not standalone-fetched (noted for completeness):** GitHub Codex issues #19385 (PreToolUse `additionalContext` limitation) and #5038 (VS Code extension ignoring `approval_policy: never`) are cited within source #19/#22 findings but were not independently retrieved as full pages.

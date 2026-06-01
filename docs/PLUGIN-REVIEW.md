@@ -17,7 +17,7 @@ Legend: each item gives priority, exact file, the concrete change, and the KB ev
   1. **SessionStart**: inject the FULL protocol once (nested `hookSpecificOutput.additionalContext` — note the SessionStart schema, KB §1.4). This is the primacy slot.
   2. **UserPromptSubmit**: inject only a **short, varying nudge** (1–3 lines, e.g. "Verify before you claim — evidence or 'I haven't checked'. Root cause before fix."), NOT the full block. Optionally rotate among 2–3 short phrasings to fight habituation.
   3. **PreCompact**: re-inject the full protocol (compaction drops the SessionStart context; the rules must survive the reset).
-- **KB evidence:** §6.2 "Inject `<system-reminder>`-tagged rule refreshes every 40–80K new tokens" + "Place critical rules at start AND end"; §8.1 Lost-in-the-Middle (primacy+recency, 30% drop when buried); Design-implications "GETS IGNORED: Rules buried in the middle of a long prompt"; §3.3 Claude 4.8 literalness (state scope, keep it tight). The every-turn static repeat is the anti-pattern these three converged sources warn against.
+- **KB evidence:** §6.2 "Inject `<system-reminder>`-tagged rule refreshes every 40–80K new tokens" + "Place critical rules at start AND end"; §8.1 Lost-in-the-Middle (primacy+recency, 30% drop when buried); Design-implications "GETS IGNORED: Rules buried in the middle of a long prompt"; §3.3 latest Opus literalness (state scope, keep it tight). The every-turn static repeat is the anti-pattern these three converged sources warn against.
 
 ### P0-2. No PreCompact re-injection — protocol dies at the first compaction
 - **File:** `hooks/hooks.json` (add `PreCompact` entry) + a new `hooks/verify-first-full.sh` (or reuse the full text).
@@ -49,7 +49,7 @@ Legend: each item gives priority, exact file, the concrete change, and the KB ev
 
 ### P1-2. MODEL-POLICY omits the xhigh availability caveat + the Codex CLI-alias-in-subprocess caveat
 - **File:** `skills/MODEL-POLICY.md`.
-- **Problem A (xhigh):** The doc says "max reasoning effort" / `xhigh` unconditionally. KB §5.1 states **`xhigh` is NOT available on gpt-5.4-mini, and Bedrock gpt-5.4-cmb caps at `high`** — so a blind `model_reasoning_effort=xhigh` fails or silently caps on those backends. **Problem B (alias in subprocess):** The `codex exec --model gpt-5-codex …` example assumes a `codex` binary on PATH; in a spawned subagent/subprocess the `codex` alias/shim may not resolve, and `command -v codex` in the agent's shell ≠ availability in a child Bash. The KB also warns **never to set `OPENAI_API_KEY` as a job env var** (issue #5038: extension can ignore `never`).
+- **Problem A (xhigh):** The doc says "max reasoning effort" / `xhigh` unconditionally. KB §5.1 states **`xhigh` is NOT available on gpt-5.4-mini, and Bedrock gpt-5.4-cmb caps at `high`** — so a blind `model_reasoning_effort=xhigh` fails or silently caps on those backends. **Problem B (alias in subprocess):** The `codex exec --model <latest-openai-codex> …` example assumes a `codex` binary on PATH; in a spawned subagent/subprocess the `codex` alias/shim may not resolve, and `command -v codex` in the agent's shell ≠ availability in a child Bash. The KB also warns **never to set `OPENAI_API_KEY` as a job env var** (issue #5038: extension can ignore `never`).
 - **Change:** (a) Add: "Request `xhigh` but fall back to `high` if the resolved Codex model/backend doesn't support it (gpt-5.4-mini has no xhigh; Bedrock gpt-5.4-cmb caps at high) — never let an unsupported `xhigh` silently degrade the run." (b) Add a note that the `codex` CLI must be resolvable *in the subprocess that runs it*; verify with `command -v codex` inside the same shell that will `codex exec`, and do not inject `OPENAI_API_KEY` as a per-job env var.
 - **KB evidence:** §5.1 (`xhigh` not on gpt-5.4-mini; Bedrock cmb caps at high; xhigh slower/costlier → async/proof-bound only); §5.5 ("Never set `OPENAI_API_KEY` as a job env var", issue #5038); §5.2 ("doesn't intercept all shell calls").
 
@@ -111,8 +111,8 @@ Legend: each item gives priority, exact file, the concrete change, and the KB ev
 
 ### P2-6. Document the "literalness / state scope" rationale inside the injected protocol
 - **File:** `hooks/verify-first.sh`.
-- **Problem:** KB §3.3: Claude 4.8 takes instructions literally and "tell what to DO, not what NOT to do — explain *why* so it generalizes." Several current points are phrased as negatives ("NO JUMPING", "NO FAKE COMPLETION"). They include some rationale, which is good, but a couple are bare prohibitions.
-- **Change:** Ensure each rule pairs the prohibition with a positive action + a one-clause *why* (e.g. "Never claim done without running the check **so the user can trust 'done' means verified** — run it and show output"). Minor, but it's the documented way to make 4.8 generalize.
+- **Problem:** KB §3.3: the latest Opus takes instructions literally and "tell what to DO, not what NOT to do — explain *why* so it generalizes." Several current points are phrased as negatives ("NO JUMPING", "NO FAKE COMPLETION"). They include some rationale, which is good, but a couple are bare prohibitions.
+- **Change:** Ensure each rule pairs the prohibition with a positive action + a one-clause *why* (e.g. "Never claim done without running the check **so the user can trust 'done' means verified** — run it and show output"). Minor, but it's the documented way to make the latest Opus generalize.
 - **KB evidence:** §3.3 "Tell what to DO, not what NOT to do — explain why"; §8.6 "format > content > stylistic compliance; decompose compound rules into atomic constraints" (the 8-pointer mixes compound clauses — atomic is more reliably followed).
 
 ### P2-7. CHANGELOG instruction "bump both" contradicts the version-precedence fix

@@ -126,7 +126,7 @@ Tracking lives in the existing task list (one entry per phase, updated in place)
 
 ---
 
-## 4. Composition with the Opus 4.8 Swarm
+## 4. Composition with the Latest Opus Swarm
 
 The swarm model (documented in `docs/opus-4-8-swarm.md`) fans out parallel analyzers.
 Phase boundaries are where the two concepts interact:
