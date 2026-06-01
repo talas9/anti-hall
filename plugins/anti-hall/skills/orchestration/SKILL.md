@@ -35,10 +35,16 @@ a long operation.
 
 ## Foreground vs background
 
-- **Foreground (main thread does it):** quick decisions, small edits, reading a
-  specific known file, short git commits, talking to the user.
+- **Foreground (main thread does it):** quick decisions, small targeted edits,
+  reading a **specific known file at a known path**, short git commits, talking to
+  the user. That is the complete list.
 - **Background subagent:** builds, full test runs, deploys, migrations, dumps/exports,
-  bulk or long scripts, web research, broad codebase exploration, anything verbose.
+  bulk or long scripts, web research, **broad codebase exploration, Grep/Glob/Bash
+  code-nav searches (git grep, find, rg, ag), and any multi-file read sweep**,
+  anything verbose.
+  > **Why this matters:** a bloated orchestrator context **degrades model quality and
+  > directly induces hallucination** — the exact failure this plugin prevents. Keep
+  > the coordinator lean.
 - **Parallel subagents (one message, many `Agent` calls):** independent investigations
   or transforms across non-overlapping targets.
 
@@ -115,15 +121,28 @@ unavailable, fall back to Claude-only (divergent personas for adversarial roles)
 
 ## Keep command output OFF the main thread
 
-Builds, test runs, deploys, pushes, migrations, dumps, installs — their raw output is
-garbage for the main context window. NEVER run them inline in the main conversation.
+Builds, test runs, deploys, pushes, migrations, dumps, installs, **and all broad
+reads/greps/searches** — their raw output is garbage for the main context window.
+NEVER run them inline in the main conversation.
 - Dispatch them to a **Haiku** subagent (cheap, fast for mechanical execution), or to
   **Codex** when available and it fits.
 - The subagent runs the command, reads the verbose output itself, and returns ONLY a
   tight summary: pass/fail, the few lines that matter, and any error. The raw log
   stays in the subagent's context and dies there.
 - The main thread sees the conclusion, not the scrollback. This keeps the coordinator
-  clean for actual thinking and decisions.
+  clean for actual thinking and decisions. **A bloated main context degrades model
+  quality and induces hallucination — the exact failure this plugin exists to prevent.**
+
+## Query the graph before searching
+
+When a graphify knowledge graph exists (`graphify-out/` or `.planning/graphs/`):
+1. Ensure it is fresh: `/graphify --obsidian` (rebuild / update) before analysis.
+2. Query it first: `/graphify query "..."` before dispatching any Grep/Glob/raw
+   code-nav search or before starting a feature-launch analysis.
+
+A graph query is O(1) for the coordinator; a raw grep sweep handed to a subagent
+is still cheaper than an inline sweep, but redundant if the graph already has the
+answer. Graph-first, search-second.
 
 ## Commit and push hygiene (enforced)
 

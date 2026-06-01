@@ -33,7 +33,7 @@ context-load (graph-scout / graphify-first)
 `{N}-CONTEXT.md`, `{N}-{plan}.PLAN.md` (with YAML frontmatter: wave, depends_on, files_modified), `{N}-{plan}.SUMMARY.md`, `VERIFICATION.md`, `REVIEWS.md`
 
 ### Gates
-- **Post-plan debate:** Reviewer (Opus) + Critic (cross-provider, e.g. Codex GPT-5.5) in parallel. Both independent; different platforms preferred. Outcome: GO / HOLD / ESCALATE.
+- **Post-plan debate:** Reviewer (Opus) + Critic (cross-provider, e.g. the latest OpenAI Codex) in parallel. Both independent; different platforms preferred. Outcome: GO / HOLD / ESCALATE.
 - **Post-execution debate:** Same structure; verifies implementation matches plan and tests are real.
 - **Fix-wave loop:** Groups independent fixes, runs them in parallel, re-debates until no NEW P0/P1. "New" is the termination signal — rediscovered old findings don't count.
 - **Graphify update:** Required before final execution debate and after code/config fix waves.
@@ -49,7 +49,7 @@ Loop terminates when the count of **NEW** (not rediscovered) P0/P1 blockers reac
 - Cheap workers (graph queries, logs, docs, git): Haiku / Codex Spark
 - Orchestration, normal implementation: Sonnet
 - Planning, debate gates: Opus (or equivalent high-reasoning)
-- Cross-provider critic: a different platform (Codex GPT-5.5 when Opus is reviewer)
+- Cross-provider critic: a different platform (the latest OpenAI Codex when Opus is reviewer)
 
 ---
 

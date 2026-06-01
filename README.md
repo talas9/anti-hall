@@ -58,8 +58,10 @@ argued with.
 | **root-cause** | any bug, crash, flaky test, alert | evidence → hypothesis → instrument → prove the *original* and root cause → fix → verify |
 | **orchestration** | heavy/parallel/long work | non-blocking coordinator; fan out to subagents; watchdog + heartbeat; live phase statusline |
 | **deadly-loop** | before merging anything risky | parallel **Reviewer + Critic** debate + fix-waves, looping until zero *new* P0s |
+| **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N Reviewer + N Critic pairs with diversified lenses, then dedup + synthesize |
 | **feature-launch** | a non-trivial feature (multi-file / multi-phase) | plan-first, deadly-loop-hardened *before* code, executed phase-by-phase — with **AFK mode** |
 | **install-statusline** | "install the statusline / add the bar" | writes the statusLine setting (global or per-repo) + reminds you to restart |
+| **doctor** | "is anti-hall working?" / after install/update | confirms Node found, all hooks present + syntax-valid, guards actually fire (live behavioral tests) |
 
 > **root-cause** and **orchestration** are also enforced *always-on* as disciplines via the hook layer, alongside anti-sycophancy (challenge a wrong premise with evidence — never agree just to agree). **deadly-loop** and **feature-launch** stay conditional, invoked on match.
 
@@ -115,7 +117,7 @@ anti-hall/
 ├── plugins/anti-hall/
 │   ├── .claude-plugin/plugin.json      # plugin manifest — version is the sole authority
 │   ├── hooks/                          # always-on Node hooks (+ hooks.json registration)
-│   ├── skills/                         # root-cause · orchestration · deadly-loop · feature-launch · install-statusline
+│   ├── skills/                         # root-cause · orchestration · deadly-loop · deadly-loop-multi · feature-launch · install-statusline · doctor
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
 ├── docs/                               # KB + design notes (incl. Claude Code internals)
@@ -133,9 +135,8 @@ reference, configuration, troubleshooting, and local testing.
 
 ## Updating
 
-The marketplace entry has `autoUpdate` on, so a **restart** pulls the latest. To update
-right now, use the `/plugin` manager (optionally `/plugin marketplace update anti-hall`
-first).
+Updates pull on restart if autoUpdate is enabled (or via the `/plugin` manager —
+optionally `/plugin marketplace update anti-hall` first).
 
 ---
 

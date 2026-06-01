@@ -84,25 +84,137 @@ const LIGHT_EXCEPTIONS = [
   /\bdocker\s+(?:ps|images|inspect|logs|stats)\b/i,
 ];
 
+// Split a full command line into logical segments on the shell operators
+// ; && || | (and newlines), honoring single/double quotes so an operator inside
+// a quoted string does not create a spurious segment. Mirrors git-guard.js's
+// splitter (kept self-contained — hooks are standalone scripts). This is what
+// makes per-segment heuristics work: `cd app && npm test` is two segments, and
+// `npm test` is correctly seen as heavy even though the FIRST verb is `cd`.
+function splitSegments(cmd) {
+  const segments = [];
+  let cur = '';
+  let i = 0;
+  const n = cmd.length;
+  let inSingle = false;
+  let inDouble = false;
+
+  function flush() {
+    if (cur.trim().length) segments.push(cur);
+    cur = '';
+  }
+
+  while (i < n) {
+    const c = cmd[i];
+    const c2 = i + 1 < n ? cmd[i + 1] : '';
+
+    if (inSingle) { cur += c; if (c === "'") inSingle = false; i++; continue; }
+    if (inDouble) {
+      if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+      cur += c; if (c === '"') inDouble = false; i++; continue;
+    }
+    if (c === "'") { inSingle = true; cur += c; i++; continue; }
+    if (c === '"') { inDouble = true; cur += c; i++; continue; }
+
+    // Line continuation: backslash-newline joins lines.
+    if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) {
+      cur += ' '; i += (c2 === '\r') ? 3 : 2; continue;
+    }
+
+    if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
+    if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
+    if (c === '|') { flush(); i++; continue; }
+    if (c === ';') { flush(); i++; continue; }
+    if (c === '&') { flush(); i++; continue; }
+    if (c === '\n') { flush(); i++; continue; }
+    // Subshell / grouping / command-substitution boundaries -> segment splits.
+    if (c === ')' || c === '(' || c === '{' || c === '}') { flush(); i++; continue; }
+    if (c === '$' && c2 === '(') { flush(); i += 2; continue; }
+    if (c === '`') { flush(); i++; continue; }
+
+    cur += c;
+    i++;
+  }
+  flush();
+  return segments;
+}
+
+// Cross-platform basename: handle both / and \ path separators so /usr/bin/npm
+// and \npm resolve to npm (mirrors git-guard.js).
+function basename(p) {
+  if (!p) return p;
+  const parts = p.split(/[\\/]/);
+  return parts[parts.length - 1];
+}
+
+// Wrapper words to skip when finding a segment's effective verb (mirrors
+// git-guard.js WRAPPERS, plus the shell control keywords that can lead a segment).
+const WRAPPERS = new Set([
+  'command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout',
+  'then', 'do', 'else', 'if', 'while', 'until',
+]);
+
+// Find the effective command verb of one segment: skip leading VAR=value
+// assignment prefixes and wrapper words (command/builtin/exec/sudo/env/...).
+// Returns the lowercased cross-platform basename of the verb, or '' if none.
+function effectiveVerb(segment) {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  let idx = 0;
+  // Skip leading VAR=value assignments (FOO=1 docker build .).
+  while (idx < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx])) idx++;
+  // Skip wrapper words; for env/timeout/nice, skip their leading operands too so
+  // the wrapped verb is found (e.g. `timeout 5 npm test` -> npm).
+  while (idx < tokens.length) {
+    const word = basename(tokens[idx]).toLowerCase();
+    if (!WRAPPERS.has(word)) break;
+    idx++;
+    if (word === 'env') {
+      while (idx < tokens.length &&
+             (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[idx]) || tokens[idx].startsWith('-'))) idx++;
+    } else if (word === 'timeout') {
+      while (idx < tokens.length && tokens[idx].startsWith('-')) {
+        const f = tokens[idx]; idx++;
+        if ((f === '-s' || f === '--signal' || f === '-k' || f === '--kill-after') &&
+            idx < tokens.length && !tokens[idx].startsWith('-')) idx++;
+      }
+      if (idx < tokens.length) idx++; // DURATION operand
+    } else if (word === 'nice') {
+      while (idx < tokens.length && tokens[idx].startsWith('-')) {
+        const f = tokens[idx]; idx++;
+        if ((f === '-n' || f === '--adjustment') &&
+            idx < tokens.length && !tokens[idx].startsWith('-')) idx++;
+      }
+    }
+  }
+  if (idx >= tokens.length) return '';
+  // Strip Windows/Unix path separators on the verb (/usr/bin/npm, \git -> npm/git).
+  return basename(tokens[idx]).toLowerCase();
+}
+
+// Evaluate one segment: heavy if (its effective verb is a HEAVY_VERB) OR (it
+// matches a HEAVY_PATTERN), AND it is NOT itself a LIGHT_EXCEPTION. Light
+// exceptions are checked PER SEGMENT so `git status && npm run build` blocks on
+// the build segment instead of being exempted by the whole-string status match.
+function isHeavySegment(segment) {
+  for (const re of LIGHT_EXCEPTIONS) {
+    if (re.test(segment)) return false;
+  }
+  const verb = effectiveVerb(segment);
+  if (verb && HEAVY_VERBS.has(verb)) return true;
+  for (const re of HEAVY_PATTERNS) {
+    if (re.test(segment)) return true;
+  }
+  return false;
+}
+
+// A command is heavy if ANY of its segments is heavy. This fixes the core bug:
+// the old code only inspected the first verb of the whole unsegmented string and
+// short-circuited LIGHT_EXCEPTIONS on the whole string, so `cd app && npm test`,
+// `git status && npm run build`, and `FOO=1 docker build .` all bypassed.
 function isHeavyCommand(command) {
   if (typeof command !== 'string' || !command.trim()) return false;
-
-  // Check light exceptions first (bail-out: if it matches, NOT heavy)
-  for (const re of LIGHT_EXCEPTIONS) {
-    if (re.test(command)) return false;
+  for (const seg of splitSegments(command)) {
+    if (isHeavySegment(seg)) return true;
   }
-
-  // Check first verb
-  const firstToken = command.trim().split(/\s+/)[0] || '';
-  // Strip path prefix (e.g. /usr/bin/npm -> npm)
-  const verb = firstToken.replace(/^.*\//, '').toLowerCase();
-  if (HEAVY_VERBS.has(verb)) return true;
-
-  // Check heavy patterns
-  for (const re of HEAVY_PATTERNS) {
-    if (re.test(command)) return true;
-  }
-
   return false;
 }
 

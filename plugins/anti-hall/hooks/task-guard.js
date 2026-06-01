@@ -26,7 +26,7 @@
 //           result is seen, then remaps to the numeric key,
 //       (c) on TaskUpdate reads inp.taskId (plus inp.id / inp.task_id as
 //           fallbacks) so completions are correctly applied.
-//   - Loop-state file lives under os.tmpdir()/anti-hall keyed by session_id
+//   - Loop-state file lives under ~/.anti-hall/ keyed by session_id
 //     (F-07: never written into the user's project tree, so it does not pollute
 //     a stranger's repo or show as dirty git status, and dedupe survives `cd`).
 //     It stores JSON { hash, blocks } - a hash of the sorted open-task
@@ -73,7 +73,9 @@ function main() {
   const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
     crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
   const safeSession = sessionId.replace(/[^A-Za-z0-9_.-]/g, '_');
-  const stateDir = path.join(os.tmpdir(), 'anti-hall');
+  // Session-scoped loop-state under ~/.anti-hall/ (not os.tmpdir) for consistency
+  // and cross-runner visibility; still keyed by session_id so dedupe is per-session.
+  const stateDir = path.join(os.homedir(), '.anti-hall');
   const stateFile = path.join(stateDir, 'last-stop-taskset-' + safeSession);
 
   // Parse tasks by streaming the transcript lines.

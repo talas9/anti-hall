@@ -61,15 +61,15 @@ function main() {
     input = Buffer.alloc(0);
   }
 
-  // Deterministic index 0-4 from a SHA-1 of the raw stdin envelope bytes (the
-  // whole UserPromptSubmit payload, not just .prompt). crypto is a Node built-in,
-  // present on every OS. Same full envelope -> same nudge (reproducible); different
-  // envelopes (including the same prompt in a different session/cwd) spread across
-  // the 5 facets.
+  // Deterministic index 0..NUDGES.length-1 from a SHA-1 of the raw stdin envelope
+  // bytes (the whole UserPromptSubmit payload, not just .prompt). crypto is a Node
+  // built-in, present on every OS. Same full envelope -> same nudge (reproducible);
+  // different envelopes (including the same prompt in a different session/cwd) spread
+  // across all facets.
   let idx = 0;
   try {
     const digest = crypto.createHash('sha1').update(input).digest();
-    // Use the first 4 bytes as an unsigned int, mod 5.
+    // Use the first 4 bytes as an unsigned int, mod NUDGES.length.
     const n = digest.readUInt32BE(0);
     idx = n % NUDGES.length;
   } catch (_) {

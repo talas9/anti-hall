@@ -351,6 +351,27 @@ const GIT_OPTS_WITH_VALUE = new Set(['-c', '-C', '--git-dir', '--work-tree', '--
 
 function gitSubcommand(args) {
   let i = 0;
+  // Collect inline alias definitions from `-c alias.<name>=<value>` (and the
+  // `--config-env`-less `-c` form). The value's FIRST word is the real git
+  // subcommand the alias expands to, so `-c alias.p=push` maps p -> push. This
+  // lets the push handler see through an inline-alias force push
+  // (`git -c alias.p=push p ... --force`), which only literal `push` would miss.
+  const aliasMap = new Map(); // alias name -> expanded subcommand (first word)
+  for (let j = 0; j + 1 < args.length; j++) {
+    if (args[j].text === '-c') {
+      const cfg = args[j + 1] ? args[j + 1].text : '';
+      const m = /^alias\.([^=]+)=(.*)$/s.exec(cfg);
+      if (m) {
+        const name = m[1];
+        let val = m[2].trim();
+        // A `!shell` alias is arbitrary shell, not a git subcommand; leave it as
+        // a sentinel so the resolver below treats the alias as non-static (and the
+        // push handler conservatively force-checks it).
+        const firstWord = val.startsWith('!') ? '!' : (val.split(/\s+/)[0] || '');
+        if (name) aliasMap.set(name, firstWord);
+      }
+    }
+  }
   while (i < args.length) {
     const t = args[i];
     const w = t.text;
@@ -360,7 +381,20 @@ function gitSubcommand(args) {
     // sub=null, which would leave the whole command uninspected — F bypass).
     if (GIT_OPTS_WITH_VALUE.has(w)) { i += 2; continue; }
     if (w.startsWith('-')) { i += 1; continue; }
-    return { sub: w, rest: args.slice(i + 1) };
+    const rest = args.slice(i + 1);
+    // Resolve through an inline alias if the subcommand IS a defined alias name.
+    // If it expands to `push`, report `push` so the force check runs. If it
+    // expands to a `!shell` alias (sentinel '!'), report 'push' too — we cannot
+    // statically know what the shell does, so conservatively force-check rather
+    // than fail-open on a possible push bypass. Otherwise report the literal verb.
+    if (aliasMap.has(w)) {
+      const expanded = aliasMap.get(w);
+      if (expanded === 'push' || expanded === '!') {
+        return { sub: 'push', rest };
+      }
+      return { sub: expanded || w, rest };
+    }
+    return { sub: w, rest };
   }
   return { sub: null, rest: [] };
 }

@@ -72,6 +72,9 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
   dumps/bulk scripts inline in the coordinator — delegate to a cheap subagent (Haiku or
   similar) that runs the command and returns only a tight summary. Never fill the main
   context with raw command output — the most counterproductive thing a coordinator can do.
+  **This includes broad reads, Grep/Glob/Bash code-nav (git grep, find, rg, ag), and
+  multi-file sweeps** — all go to subagents. A bloated main-thread context degrades model
+  quality and directly induces hallucination, which is the exact failure this plugin prevents.
 - Keep the main thread non-blocking with a BIAS TOWARD DELEGATION: default to a subagent
   for any work that touches files/tools/commands/search/build/test or could balloon — to
   avoid the eager "I'll just do it inline" trap that pollutes the main thread. Handle
@@ -106,6 +109,10 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
   a deadly-loop to resolve the decision adversarially — that is the escalation path, not
   the user. Failures route around (retry once → deadly-loop → mark BLOCKED and continue),
   they do not halt the run.
+  - GOAL-ANCHOR (drift watcher): hold the locked GOAL explicit and, at each cycle/phase
+    boundary, re-check the work against it; if you have drifted (scope creep, a tangent, an
+    unrequested change), course-correct back toward the goal. Only deviate from the locked
+    goal when the user explicitly redirects — otherwise the final aim stays on target.
 
 ## Recommended companion: graphify
 
@@ -114,6 +121,12 @@ The `graphify-guard` and `graphify-session` hooks integrate with graphify
 a `graphify-out/` or `.planning/graphs/` directory, the hooks enforce querying the graph
 before raw code search and remind the model to keep it updated. The hooks no-op
 gracefully when graphify is not present — there is no hard dependency.
+
+- **GRAPHIFY-FIRST:** When a graphify graph exists, ensure it is fresh (`/graphify
+  --obsidian`) then query it (`/graphify query "..."`) BEFORE any Grep/Glob/Bash
+  code-nav search and BEFORE starting a feature-launch analysis. A graph query costs
+  zero main-thread context bloat; a raw search sweep fills context and invites
+  hallucination.
 
 ## Anti-speculation enforcement: three tiers
 

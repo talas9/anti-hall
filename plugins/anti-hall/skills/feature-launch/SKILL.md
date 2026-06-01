@@ -106,8 +106,12 @@ Synthesize all five reports into the **Blast Radius Map** section of
 schema, caller, config, and downstream consumer the feature perturbs. This is the input
 both the planner (P2) and debate agents (P4, B2) attack.
 
-If a code graph tool exists, build/refresh it first and prime the analyzers with graph
-output. If no graph tool is installed, skip that step -- do not block.
+**Graphify-first (mandatory when graph exists):** if `graphify-out/` or
+`.planning/graphs/` exists, run `/graphify --obsidian` to ensure the graph is fresh,
+then run `/graphify query "<feature description>"` BEFORE dispatching any analyzer
+subagent or reading raw files. Pass the graph output as context to each analyzer — this
+replaces broad grep sweeps and keeps the orchestrator context lean. If no graphify graph
+exists, skip this step and proceed with raw analyzer subagents.
 
 **Statusline:** on entering Phase A, set the statusline:
 
@@ -131,7 +135,9 @@ Detect, in order, and use the richest available:
 4. **Neither** -- fall back to plan mode + the lightweight phase loop below + templates
    in `references/`.
 
-Record the chosen system in `CONVERSATION-CONTEXT.md`.
+Record the chosen system in `CONVERSATION-CONTEXT.md`. Note: if the graphify graph
+was queried in A1, include key graph findings in `CONVERSATION-CONTEXT.md` so
+subsequent phases and debate agents do not re-run raw searches.
 
 **Lightweight phase loop (fallback when no planning system is installed):**
 

@@ -21,13 +21,13 @@ protocol injection, per-turn nudges, and mechanical hooks that cannot be argued 
 ```
 
 Requires Node.js >= 18 on PATH; without it the hooks silently no-op. Updates via the
-`/plugin` manager or a restart (marketplace entry has autoUpdate on).
+`/plugin` manager; updates pull on restart if autoUpdate is enabled (or via the /plugin manager).
 
 ## Overview
 
 - [README](README.md): overview, the four failure modes, two-layer design, statusline, AFK mode, quickstart.
 - [Plugin README](plugins/anti-hall/README.md): full component reference, how-it-works, configuration, troubleshooting, contributing.
-- [CHANGELOG](CHANGELOG.md): version history (current: 0.7.0).
+- [CHANGELOG](CHANGELOG.md): version history (current: see plugin.json).
 - [AGENTS.md](AGENTS.md): prose mirror of the verify-first Iron Law for Codex / cross-tool agents (repo root; not bundled by /plugin install).
 - [docs/KB-claude-codex.md](docs/KB-claude-codex.md): knowledge base on Claude Code hook contracts, prompting, and verified Claude Code internals (cmux subagent detection, macOS memory, statusline architecture).
 
@@ -43,7 +43,7 @@ All pure Node, fail-open. Registered in hooks.json.
 - [phase-tracker.js](plugins/anti-hall/hooks/phase-tracker.js): PreToolUse Agent/Task — records subagent spawns to a homedir log so the statusline shows live swarm activity automatically. Never blocks.
 - [task-tracker.js](plugins/anti-hall/hooks/task-tracker.js): UserPromptSubmit — task-list discipline directive.
 - [task-guard.js](plugins/anti-hall/hooks/task-guard.js): Stop (loop-safe) — blocks once when the session ends with genuinely-open tasks.
-- [speculation-guard.js](plugins/anti-hall/hooks/speculation-guard.js): Stop — flags inference-stated-as-fact.
+- [speculation-guard.js](plugins/anti-hall/hooks/speculation-guard.js): Stop — flags hedge-word speculation; confident inference-as-fact is the opt-in speculation-judge (Tier 3).
 - [speculation-judge.js](plugins/anti-hall/hooks/speculation-judge.js): Stop — opt-in LLM-evaluated speculation check (off by default).
 - [graphify-session.js](plugins/anti-hall/hooks/graphify-session.js) / [graphify-reminder.js](plugins/anti-hall/hooks/graphify-reminder.js) / [graphify-guard.js](plugins/anti-hall/hooks/graphify-guard.js): query-the-graph-first priming, update reminder, and search guard (no-op without a graph).
 - [hooks.json](plugins/anti-hall/hooks/hooks.json): hook registration manifest.
@@ -57,6 +57,8 @@ Invoke as /anti-hall:<name>.
 - [deadly-loop](plugins/anti-hall/skills/deadly-loop/SKILL.md): iterative Reviewer + Critic debate + fix-waves until zero new P0s.
 - [feature-launch](plugins/anti-hall/skills/feature-launch/SKILL.md): plan-first, deadly-loop-hardened, phase-by-phase feature protocol — includes AFK mode (autonomous driver that never stops except on absolutely-destructive hard gates; collects data and runs a deadly-loop instead of pausing).
 - [install-statusline](plugins/anti-hall/skills/install-statusline/SKILL.md): installs the statusLine entry on demand (global by default, per-project on request) + restart reminder.
+- [doctor](plugins/anti-hall/skills/doctor/SKILL.md): health-check — confirms Node is found, every hook is present + syntax-valid, and the guards actually fire (live behavioral self-tests).
+- [deadly-loop-multi](plugins/anti-hall/skills/deadly-loop-multi/SKILL.md): scaled-up deadly-loop — N parallel Reviewer + Critic pairs with diversified lenses, then deduplicate + synthesize (double / triple / quadruple).
 - [MODEL-POLICY.md](plugins/anti-hall/skills/MODEL-POLICY.md): shared Reviewer/Critic roster (Opus + Codex), triplicated across skill references; keep in sync.
 
 ## Statusline (plugins/anti-hall/statusline/)

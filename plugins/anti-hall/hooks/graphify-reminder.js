@@ -156,7 +156,7 @@ function main() {
   const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
     crypto.createHash('sha1').update(String(transcriptPath)).digest('hex').slice(0, 16);
   const safeSession = sessionId.replace(/[^A-Za-z0-9_.-]/g, '_');
-  const stateDir = path.join(os.tmpdir(), 'anti-hall');
+  const stateDir = path.join(os.homedir(), '.anti-hall');
   const stateFile = path.join(stateDir, 'graphify-reminder-' + safeSession);
 
   // Already nudged this session? Stay quiet (single, non-looping reminder).

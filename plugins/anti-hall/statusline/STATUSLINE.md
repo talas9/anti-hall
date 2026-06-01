@@ -1,7 +1,10 @@
 # anti-hall Statusline
 
 Portable Claude Code statusline plugin — wraps your existing statusline as
-line 1 and adds an anti-hall phase progress bar as line 2.
+line 1 and adds a smart 3-tier line 2.  Line 2 behavior (3 tiers, highest
+priority first): **phase progress bar** when an orchestration run is active →
+**"orchestrating · N agents" activity bar** when recent subagent spawns are
+detected (auto, no setup) → **context-window gauge** when idle.
 No emojis, no project-specific fields, degrades gracefully when optional files
 are absent.  Runs on **Windows, macOS, and Linux** via Node only
 (no bash, no grep/sed/python3).
@@ -11,9 +14,10 @@ are absent.  Runs on **Windows, macOS, and Linux** via Node only
 | Script | Purpose |
 |---|---|
 | `statusline.js` | Dispatcher — wraps base command or own render; prints line 1 + optional line 2 |
+| `statusline-rich.js` | Rich line-1 renderer (project · git · model · effort · subagents · duration · ctx% · cost · GSD phase) |
 | `statusline-monorepo.js` | Rich statusline for monorepos and GSD projects (own-dispatch fallback) |
 | `statusline-simple.js` | Minimal statusline for plain repos (own-dispatch fallback) |
-| `phase-bar.js` | Standalone phase bar printer (line 2 renderer) |
+| `phase-bar.js` | Standalone phase bar printer (line 2 renderer, 3-tier) |
 | `phase.js` | Phase state writer — called by orchestrators to update the progress bar |
 | `install-statusline.js` | Idempotent installer — wraps your existing statusline + wires settings.json |
 | `uninstall-statusline.js` | Restores original statusLine from base config or backup |

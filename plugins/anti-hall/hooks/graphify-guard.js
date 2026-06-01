@@ -76,25 +76,75 @@ function findGraphRoot(cwd) {
   return null;
 }
 
+// Split a command on the shell sequencing operators ; && || | (and newlines) so
+// each segment can be inspected for its OWN effective verb. Quote-aware so an
+// operator inside a quoted string is not a split point.
+function splitSegments(cmd) {
+  const segments = [];
+  let cur = '';
+  let i = 0;
+  const n = cmd.length;
+  let inSingle = false;
+  let inDouble = false;
+  function flush() { if (cur.trim().length) segments.push(cur); cur = ''; }
+  while (i < n) {
+    const c = cmd[i];
+    const c2 = i + 1 < n ? cmd[i + 1] : '';
+    if (inSingle) { cur += c; if (c === "'") inSingle = false; i++; continue; }
+    if (inDouble) {
+      if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+      cur += c; if (c === '"') inDouble = false; i++; continue;
+    }
+    if (c === "'") { inSingle = true; cur += c; i++; continue; }
+    if (c === '"') { inDouble = true; cur += c; i++; continue; }
+    if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
+    if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
+    if (c === '|') { flush(); i++; continue; }
+    if (c === ';') { flush(); i++; continue; }
+    if (c === '&') { flush(); i++; continue; }
+    if (c === '\n') { flush(); i++; continue; }
+    if (c === ')' || c === '(' || c === '{' || c === '}') { flush(); i++; continue; }
+    if (c === '$' && c2 === '(') { flush(); i += 2; continue; }
+    if (c === '`') { flush(); i++; continue; }
+    cur += c; i++;
+  }
+  flush();
+  return segments;
+}
+
+// The effective verb of one segment: skip leading VAR=value assignments, return
+// the first real token (with its leading path stripped, e.g. /usr/bin/grep -> grep).
+// Keeps a leading `/` for the `/graphify` slash-command case (it is the literal verb).
+function segmentVerb(segment) {
+  const tokens = segment.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+  return tokens[i] || '';
+}
+
 function isGraphifyBashCommand(command) {
-  if (typeof command !== 'string') return false;
-  // If the command contains /graphify, it IS a graphify query — do not block.
-  return /\/graphify\b/.test(command);
+  if (typeof command !== 'string' || !command.trim()) return false;
+  // Exempt ONLY when /graphify is the EFFECTIVE command verb of a segment, not
+  // merely a substring (so `echo /graphify && rg secret` is NOT exempted and the
+  // rg segment is still subject to the graph-first nudge). The slash-command verb
+  // is literally `/graphify`.
+  for (const seg of splitSegments(command)) {
+    const verb = segmentVerb(seg);
+    if (/^\/graphify\b/.test(verb) || verb === '/graphify') return true;
+  }
+  return false;
 }
 
 function isCodeNavBashCommand(command) {
   if (typeof command !== 'string' || !command.trim()) return false;
-  // Strip env prefix (FOO=bar grep ...) by finding first non-assignment token
-  const tokens = command.trim().split(/\s+/);
-  let verbIndex = 0;
-  while (verbIndex < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[verbIndex])) {
-    verbIndex++;
+  // Per-segment: a command is code-nav if ANY segment's effective verb is a
+  // search tool (so `cd app && rg foo` is caught, not just first-verb commands).
+  for (const seg of splitSegments(command)) {
+    const rawVerb = segmentVerb(seg);
+    const verb = rawVerb.replace(/^.*\//, '').toLowerCase();
+    if (SEARCH_VERBS.has(verb)) return true;
+    if (GIT_SEARCH_RE.test(seg)) return true;
   }
-  const rawVerb = tokens[verbIndex] || '';
-  const verb = rawVerb.replace(/^.*\//, '').toLowerCase();
-
-  if (SEARCH_VERBS.has(verb)) return true;
-  if (GIT_SEARCH_RE.test(command)) return true;
   return false;
 }
 
@@ -159,7 +209,7 @@ function main() {
     crypto.createHash('sha1').update(String(cwd)).digest('hex').slice(0, 16);
   const key = getSessionGraphKey(sessionId, graphRoot);
 
-  const stateDir = path.join(os.tmpdir(), 'anti-hall');
+  const stateDir = path.join(os.homedir(), '.anti-hall');
   const markerFile = path.join(stateDir, 'graphify-guard-' + key);
 
   // Already blocked this session for this project -> allow (model tried the graph).

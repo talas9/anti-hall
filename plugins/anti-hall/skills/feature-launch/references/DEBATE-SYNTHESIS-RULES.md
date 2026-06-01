@@ -10,7 +10,7 @@ skill, that's a duplication bug — update this file and the pointer.
 
 Roster context: Reviewer = Claude Opus latest (max thinking); Critic = OpenAI Codex
 latest (max reasoning) when available, else a second divergent Opus latest. See
-[`../MODEL-POLICY.md`](../MODEL-POLICY.md) and [`DEBATE-PROMPTS.md`](DEBATE-PROMPTS.md).
+[`MODEL-POLICY.md`](MODEL-POLICY.md) and [`DEBATE-PROMPTS.md`](DEBATE-PROMPTS.md).
 
 ---
 

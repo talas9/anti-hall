@@ -5,7 +5,7 @@ a different model criticizing) catches classes of bugs that same-model debate
 misses; the fallback keeps an adversarial edge even when only one model is
 available.
 
-**Model roster** (canonical source: [`../MODEL-POLICY.md`](../MODEL-POLICY.md)):
+**Model roster** (canonical source: [`MODEL-POLICY.md`](MODEL-POLICY.md)):
 
 - **Reviewer** = **Claude Opus latest (`claude-opus-4-8`)** at MAXIMUM thinking
   (extended thinking ON, effort `xhigh`). Persona: correctness / architecture

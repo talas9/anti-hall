@@ -66,7 +66,9 @@ function availableBytes() {
   return os.freemem();
 }
 
-const LOG_DIR = path.join(os.tmpdir(), 'anti-hall');
+// Cross-process state under ~/.anti-hall/ (not os.tmpdir) so the spawn log is
+// visible across runners and survives tmpdir variation between processes.
+const LOG_DIR = path.join(os.homedir(), '.anti-hall');
 const LOG_FILE = path.join(LOG_DIR, 'swarm-spawns.log');
 
 function readTimestamps() {
@@ -125,25 +127,27 @@ function main() {
   const cutoff = now - WINDOW_MS;
   const recent = timestamps.filter(t => t > cutoff);
 
-  // Append current spawn timestamp (before the cap check, so it counts)
-  recent.push(now);
-  try {
-    writeTimestamps(recent);
-  } catch (_) {
-    // Fail-open: can't persist -> allow
-    process.exit(0);
-  }
-
-  const count = recent.length;
-  if (count > SPAWN_CAP) {
+  // Cap check BEFORE appending/persisting `now`: a blocked spawn must NOT be
+  // logged, otherwise repeated blocked retries keep extending the window and the
+  // guard can never recover. Only an ALLOWED spawn is recorded (below).
+  if (recent.length >= SPAWN_CAP) {
     const reason =
-      'anti-hall swarm-guard: agent spawn-rate ceiling reached (' + (count - 1) +
+      'anti-hall swarm-guard: agent spawn-rate ceiling reached (' + recent.length +
       ' spawns in the last 60s, cap is ' + SPAWN_CAP + '). Pause new agents to avoid ' +
       'a runaway swarm that can make the OS unusable. Let running agents finish, ' +
       'then continue. Respect the concurrency cap (~min(16, cores-2)): never spawn ' +
       'unbounded agents; let in-flight agents finish before launching more waves.';
     process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
     process.exit(2);
+  }
+
+  // Spawn is allowed: NOW record its timestamp (only allowed spawns count toward
+  // the window). A persist failure is fail-open (allow without recording).
+  recent.push(now);
+  try {
+    writeTimestamps(recent);
+  } catch (_) {
+    process.exit(0); // can't persist -> allow
   }
 
   process.exit(0);

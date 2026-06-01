@@ -65,7 +65,7 @@ claude --plugin-dir /path/to/anti-hall
   verify-first + root-cause protocol in the Superpowers **Iron Law +
   rationalization-table** form. It names the specific bypass excuses ("probably",
   "should work", "seems to", "I'll just assume", "looks done", "tests pass on first
-  run") and includes a skill primer listing each skill and when to reach for it.
+  run") and includes a skill primer listing each of the 7 skills and when to reach for it.
   SessionStart is the primacy slot.
 - **Surviving compaction** — SessionStart re-fires after a compaction with
   `source="compact"`. The no-matcher SessionStart registration therefore re-injects
@@ -259,6 +259,13 @@ Invoke via slash command:
 - **`/anti-hall:deadly-loop`** — iterative parallel Reviewer + Critic debate +
   fix-waves until convergence (zero NEW P0s). The debate engine behind
   feature-launch's gates.
+- **`/anti-hall:deadly-loop-multi`** — scaled-up deadly-loop: N Reviewer + N Critic
+  pairs with diversified lenses, then dedup + synthesize (double / triple / quadruple).
+- **`/anti-hall:install-statusline`** — writes the statusLine setting (global by
+  default, per-project on request) and reminds you to restart.
+- **`/anti-hall:doctor`** — health-check: confirms Node is found, every hook is
+  present + syntax-valid, and the guards actually fire (live behavioral self-tests on
+  git-guard / command-guard / swarm-guard).
 
 `MODEL-POLICY.md` is the shared roster (Reviewer = Opus latest max thinking;
 Critic = Codex latest max reasoning when available, else a divergent 2nd Opus). It is

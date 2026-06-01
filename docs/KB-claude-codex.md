@@ -416,7 +416,7 @@ Sources: internal GSD skill files (`.gsd/TEAM-FORMATION.md`, `.gsd/DEBATE-WORKFL
 ### 12.1 The four portable primitives
 
 1. **Phase decomposition with blast-radius mapping** — each phase declares: `goal` (one sentence), `files` (every module/contract/caller perturbed), `edge_cases` (enumerated: empty input, boundary, auth denied, partial failure, retry), `verify_cmd` (the command that proves the goal, not just "tasks done"). Forces blast-radius mapping before any code is written.
-2. **Parallel reviewer + adversarial critic, fix waves, convergence on NEW P0s** — Reviewer (strong reasoning, e.g. Opus) and Critic (cross-provider, e.g. Codex GPT-5.5) run in parallel and independently. Loop terminates on count of **new** (not rediscovered) P0/P1 reaching zero. If blocker count does not decrease between rounds, **escalate** rather than retry (stall detection).
+2. **Parallel reviewer + adversarial critic, fix waves, convergence on NEW P0s** — Reviewer (strong reasoning, e.g. Opus) and Critic (cross-provider, e.g. the latest OpenAI Codex) run in parallel and independently. Loop terminates on count of **new** (not rediscovered) P0/P1 reaching zero. If blocker count does not decrease between rounds, **escalate** rather than retry (stall detection).
 3. **Anti-speculation discipline** — every claim requires a citation: `file:line` or command output. No assertion without evidence.
 4. **Fan-out analyzers -> synthesis before planning** — gives debate agents concrete targets rather than generic heuristics (see §11.3).
 

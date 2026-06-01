@@ -6,6 +6,40 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.10.0
+
+Audit-fix batch (from a 2-Opus + 2-Codex review) + context-protection discipline.
+
+Guards:
+- **command-guard** now evaluates PER SEGMENT (quote-aware split on `; && || |`, env-prefix
+  + wrapper skip, cross-platform basename). Fixes real false-negatives where heavy commands
+  bypassed: `cd app && npm test`, `git status && npm run build`, `FOO=1 docker build .`.
+- **swarm-guard** checks the spawn-rate cap BEFORE appending/persisting the timestamp, so
+  blocked retries no longer extend the block window; state moved to `~/.anti-hall/`.
+- **speculation-guard** regex now catches "should be fine" (was excluded by a lookahead).
+- **graphify-guard** `/graphify` exemption is now segment/verb-aware (a substring like
+  `echo /graphify && rg secret` no longer exempts the search); state → `~/.anti-hall/`.
+- **git-guard** resolves inline `-c alias.x=push` so aliased force-push is caught.
+- **task-guard / graphify-reminder** state relocated to `~/.anti-hall/` for cross-runner
+  consistency.
+
+Doctor: added a Graphify health section + self-tests proving the command-guard per-segment
+fix and the speculation-guard "should be fine" catch.
+
+Discipline (protect the orchestrator's context — a bloated main thread degrades the model
+and induces the very hallucination this plugin prevents):
+- Delegate not just heavy commands but **broad reads / Grep / Glob / code-nav searches** to
+  subagents; inline only a specific known-file read. Added to orchestration, AGENTS.md,
+  verify-first-full.js.
+- **Graphify-first:** ensure the graph is fresh then QUERY it before raw search and before
+  feature-launch analysis.
+- **AFK goal-anchor (drift watcher):** re-check work against the locked goal each cycle and
+  course-correct on drift; only deviate when the user explicitly redirects.
+
+Docs synced (version drift, autoUpdate wording, 7-skill count, STATUSLINE 3-tier line 2,
+"latest OpenAI Codex" not a pinned version, broken MODEL-POLICY links) and a consolidated
+`docs/AUDIT-REPORT.md` written (includes the reconciled demo-wrapper.sh false-positive).
+
 ## 0.9.0
 
 New `deadly-loop-multi` skill — double / triple / quadruple deadly loop.

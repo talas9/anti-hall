@@ -93,6 +93,29 @@ function cg(cmd, extra) { return runHook('command-guard.js', Object.assign({ too
 BLOCKED(cg('npm run build')) ? ok('command-guard blocks heavy cmd in coordinator') : bad('command-guard did NOT block heavy cmd in coordinator');
 ALLOWED(cg('npm run build', { agent_id: 'test-agent', agent_type: 'general-purpose' })) ? ok('command-guard ALLOWS heavy cmd in subagent (payload agent_id)') : bad('command-guard wrongly blocked a subagent — delegation would deadlock');
 ALLOWED(cg('git status')) ? ok('command-guard allows light cmd in coordinator') : bad('command-guard wrongly blocked a light cmd');
+// Per-segment fix: a heavy verb after a light-exception segment / non-heavy first
+// verb must still block (the old code only inspected the first whole-string verb).
+BLOCKED(cg('git status && npm run build')) ? ok('command-guard blocks heavy SECOND segment (`git status && npm run build`)') : bad('command-guard MISSED heavy second segment — per-segment fix regressed');
+BLOCKED(cg('cd app && npm test')) ? ok('command-guard blocks heavy cmd after `cd` (`cd app && npm test`)') : bad('command-guard MISSED heavy cmd after cd — per-segment fix regressed');
+
+// speculation-guard: a Stop-hook block on hedged-without-evidence text. Build a
+// throwaway transcript whose last assistant message says "should be fine".
+function specTest() {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-'));
+  const tp = path.join(tdir, 't.jsonl');
+  try {
+    fs.writeFileSync(tp, JSON.stringify({
+      type: 'assistant',
+      message: { role: 'assistant', content: [{ type: 'text', text: 'That change should be fine.' }] },
+    }) + '\n');
+    const r = runHook('speculation-guard.js', { transcript_path: tp, session_id: 'doctor-spec-' + Date.now() });
+    // Stop-hook block is signalled by the decision field (exit 0), not exit 2.
+    return /"decision"\s*:\s*"block"/.test(r.out);
+  } finally {
+    try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+specTest() ? ok('speculation-guard flags "should be fine" (hedge w/o evidence)') : bad('speculation-guard did NOT flag "should be fine"');
 
 // swarm-guard: must allow a normal spawn on a healthy machine (fail-open, real mem calc)
 const sg = runHook('swarm-guard.js', { tool_name: 'Agent', tool_input: {} });
@@ -146,7 +169,26 @@ if (!fs.existsSync(slScript)) {
   }
 }
 
-// --- 5. Summary --------------------------------------------------------------
+// --- 5. Graphify -------------------------------------------------------------
+head('Graphify');
+function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch (e) { return false; } }
+const graphOut = path.join(cwd, 'graphify-out');
+const graphPlanning = path.join(cwd, '.planning', 'graphs');
+const graphPresent = isDir(graphOut) || isDir(graphPlanning);
+if (graphPresent) {
+  const where = isDir(graphOut) ? graphOut : graphPlanning;
+  ok(`knowledge graph present in cwd (${where})`);
+} else {
+  warnl('no knowledge graph in cwd (graphify-out/ or .planning/graphs/) — graph-first guards are silent no-ops here');
+}
+// Are the graphify hooks registered in hooks.json?
+for (const h of ['graphify-guard.js', 'graphify-session.js', 'graphify-reminder.js']) {
+  if (registered.includes(h)) ok(`${h} registered in hooks.json`);
+  else warnl(`${h} NOT registered in hooks.json`);
+}
+warnl('graphify staleness is NOT auto-detected — re-run `/graphify --obsidian` after significant edits to keep the graph current');
+
+// --- 6. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
   : `${C.r}${C.b}anti-hall has ${fail} FAILURE(S)${C.x} — ${pass} passed, ${warn} warning(s)`;

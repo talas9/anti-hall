@@ -46,8 +46,11 @@ const SPECULATION_PATTERNS = [
   /\blikely\b/i,
   /\bprobably\b/i,
   /\bmust be\b/i,
-  // "should be" but not "should I" (a question, not a guess)
-  /\bshould be\b(?!\s+\w)/i,
+  // "should be" (a guess about state). "should I" is a question and already does
+  // not match this phrase. The prior negative-lookahead `(?!\s+\w)` wrongly
+  // skipped "should be fine"/"should be X" — exactly the speculative cases we
+  // want to catch — so it is removed.
+  /\bshould be\b/i,
   /\bseems to be\b/i,
   /\bappears to be\b/i,
   /\bi think it'?s\b/i,
