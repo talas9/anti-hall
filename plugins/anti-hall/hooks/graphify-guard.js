@@ -151,8 +151,74 @@ function isGraphifyBashCommand(command) {
   return false;
 }
 
-function isCodeNavBashCommand(command) {
+// Shell verbs whose `-c '<payload>'` argument is itself command(s) to recurse into.
+const SHELL_VERBS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash']);
+
+// Extract command strings hidden in command substitution `$(...)` / backticks.
+// Quote-aware: single quotes suppress $(...) expansion; backticks stay active
+// inside double quotes. Balances nested parens so $(a $(b)) is captured whole.
+function extractSubstitutions(s) {
+  const found = [];
+  let i = 0;
+  const n = s.length;
+  let inSingle = false;
+  let inDouble = false;
+  while (i < n) {
+    const c = s[i];
+    const c2 = i + 1 < n ? s[i + 1] : '';
+    if (inSingle) { if (c === "'") inSingle = false; i++; continue; }
+    if (!inDouble && c === "'") { inSingle = true; i++; continue; }
+    if (c === '"') { inDouble = !inDouble; i++; continue; }
+    if (c === '$' && c2 === '(') {
+      let depth = 1; let j = i + 2; let inner = '';
+      while (j < n && depth > 0) {
+        const cj = s[j];
+        if (cj === '(') depth++;
+        else if (cj === ')') { depth--; if (depth === 0) break; }
+        inner += cj; j++;
+      }
+      if (inner.trim()) found.push(inner);
+      i = j + 1; continue;
+    }
+    if (c === '`') {
+      let j = i + 1; let inner = '';
+      while (j < n && s[j] !== '`') { inner += s[j]; j++; }
+      if (inner.trim()) found.push(inner);
+      i = j + 1; continue;
+    }
+    i++;
+  }
+  return found;
+}
+
+// If a segment is `bash -c '<payload>'` (or sh/zsh/dash -c "..."), return the
+// unquoted payload command string, else ''. Best-effort quote-aware tokenizer.
+function extractShellCPayload(segment) {
+  const verb = segmentVerb(segment).replace(/^.*\//, '').toLowerCase();
+  if (!verb || !SHELL_VERBS.has(verb)) return '';
+  const tokens = [];
+  let cur = ''; let q = ''; let any = false;
+  const str = segment.trim();
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (q) { if (c === q) { q = ''; } else cur += c; any = true; continue; }
+    if (c === "'" || c === '"') { q = c; any = true; continue; }
+    if (/\s/.test(c)) { if (any) { tokens.push(cur); cur = ''; any = false; } continue; }
+    cur += c; any = true;
+  }
+  if (any) tokens.push(cur);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === '-c' || t === '--command' || /^-[a-z]*c$/.test(t)) {
+      return i + 1 < tokens.length ? tokens[i + 1] : '';
+    }
+  }
+  return '';
+}
+
+function isCodeNavBashCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
+  const d = typeof depth === 'number' ? depth : 0;
   // Per-segment: a command is code-nav if ANY segment's effective verb is a
   // search tool (so `cd app && rg foo` is caught, not just first-verb commands).
   for (const seg of splitSegments(command)) {
@@ -160,6 +226,17 @@ function isCodeNavBashCommand(command) {
     const verb = rawVerb.replace(/^.*\//, '').toLowerCase();
     if (SEARCH_VERBS.has(verb)) return true;
     if (GIT_SEARCH_RE.test(seg)) return true;
+    if (d < 3) {
+      // bash -c "rg foo" payload — unwrap and check the inner command(s).
+      const payload = extractShellCPayload(seg);
+      if (payload && isCodeNavBashCommand(payload, d + 1)) return true;
+    }
+  }
+  // Command substitution: `echo "$(rg foo)"` hides the search in $(...).
+  if (d < 3) {
+    for (const inner of extractSubstitutions(command)) {
+      if (isCodeNavBashCommand(inner, d + 1)) return true;
+    }
   }
   return false;
 }

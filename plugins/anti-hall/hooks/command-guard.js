@@ -217,14 +217,110 @@ function isHeavySegment(segment) {
   return false;
 }
 
+// Extract nested command strings hidden inside a segment so they are evaluated
+// too (the original splitter treats $(...) / backticks as plain boundaries and
+// never inspects their CONTENTS, and never unwraps `bash -c '...'` payloads).
+//   (a) command substitution: $( ... ) and ` ... ` -> the inner command text.
+//   (b) shell -c payloads: when the effective verb is bash/sh/zsh/dash and a
+//       -c flag is present, the QUOTED argument after -c is itself command(s).
+// Returns an array of inner command strings (possibly empty). Quote-aware for the
+// substitution scan; depth bounding is handled by the recursive caller below.
+const SHELL_VERBS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash']);
+
+function extractSubstitutions(s) {
+  const found = [];
+  let i = 0;
+  const n = s.length;
+  let inSingle = false;
+  let inDouble = false;
+  while (i < n) {
+    const c = s[i];
+    const c2 = i + 1 < n ? s[i + 1] : '';
+    // Single quotes suppress $(...) but NOT — by POSIX — they also suppress
+    // backticks; inside single quotes nothing expands, so skip the whole span.
+    if (inSingle) { if (c === "'") inSingle = false; i++; continue; }
+    if (!inDouble && c === "'") { inSingle = true; i++; continue; }
+    if (c === '"') { inDouble = !inDouble; i++; continue; }
+    // $( ... ) — balance nested parens so $(echo $(date)) is captured whole.
+    if (c === '$' && c2 === '(') {
+      let depth = 1; let j = i + 2; let inner = '';
+      while (j < n && depth > 0) {
+        const cj = s[j];
+        if (cj === '(') depth++;
+        else if (cj === ')') { depth--; if (depth === 0) break; }
+        inner += cj; j++;
+      }
+      if (inner.trim()) found.push(inner);
+      i = j + 1; continue;
+    }
+    // ` ... ` backtick command substitution (active inside double quotes too).
+    if (c === '`') {
+      let j = i + 1; let inner = '';
+      while (j < n && s[j] !== '`') { inner += s[j]; j++; }
+      if (inner.trim()) found.push(inner);
+      i = j + 1; continue;
+    }
+    i++;
+  }
+  return found;
+}
+
+// If a segment is `bash -c '<payload>'` (or sh/zsh/dash -c "..."), return the
+// unquoted payload command string, else ''. Best-effort tokenization.
+function extractShellCPayload(segment) {
+  const verb = effectiveVerb(segment);
+  if (!verb || !SHELL_VERBS.has(verb)) return '';
+  // Tokenize respecting quotes so the payload (which contains spaces) stays whole.
+  const tokens = [];
+  let cur = ''; let q = ''; let any = false;
+  const str = segment.trim();
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (q) { if (c === q) { q = ''; } else cur += c; any = true; continue; }
+    if (c === "'" || c === '"') { q = c; any = true; continue; }
+    if (/\s/.test(c)) { if (any) { tokens.push(cur); cur = ''; any = false; } continue; }
+    cur += c; any = true;
+  }
+  if (any) tokens.push(cur);
+  // Find the -c flag; the NEXT token is the command payload.
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t === '-c' || t === '--command') {
+      return i + 1 < tokens.length ? tokens[i + 1] : '';
+    }
+    // Bundled short flags like -lc / -xc also carry a payload in the next token.
+    if (/^-[a-z]*c$/.test(t)) {
+      return i + 1 < tokens.length ? tokens[i + 1] : '';
+    }
+  }
+  return '';
+}
+
 // A command is heavy if ANY of its segments is heavy. This fixes the core bug:
 // the old code only inspected the first verb of the whole unsegmented string and
 // short-circuited LIGHT_EXCEPTIONS on the whole string, so `cd app && npm test`,
 // `git status && npm run build`, and `FOO=1 docker build .` all bypassed.
-function isHeavyCommand(command) {
+//
+// RECURSION: also evaluates commands hidden in command substitution `$(...)` /
+// backticks and in `bash -c '...'` payloads, so `echo "$(npm run build)"` and
+// `bash -c "npm run build"` are caught. Depth-bounded to avoid pathological input.
+function isHeavyCommand(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return false;
+  const d = typeof depth === 'number' ? depth : 0;
   for (const seg of splitSegments(command)) {
     if (isHeavySegment(seg)) return true;
+    if (d < 3) {
+      // (b) shell -c payload: unwrap and evaluate as command(s).
+      const payload = extractShellCPayload(seg);
+      if (payload && isHeavyCommand(payload, d + 1)) return true;
+    }
+  }
+  // (a) command substitution: scan the WHOLE command (substitutions can span
+  // segment boundaries / quotes) and recurse into each captured inner command.
+  if (d < 3) {
+    for (const inner of extractSubstitutions(command)) {
+      if (isHeavyCommand(inner, d + 1)) return true;
+    }
   }
   return false;
 }

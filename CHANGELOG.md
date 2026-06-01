@@ -6,6 +6,34 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.12.0
+
+Closes three deferred AUDIT-REPORT-2 needs-review gaps (external reviewer + codex).
+
+- **Recursive shell parsing (`command-guard` + `graphify-guard`).** The segment
+  splitter previously treated `$(...)` / backticks as plain boundaries and never
+  inspected their CONTENTS, and never unwrapped `bash -c '...'` / `sh -c` / `zsh -c`
+  payloads — so `echo "$(npm run build)"` and `bash -c "npm run build"` bypassed the
+  coordinator block (and the graph-first nudge). Both guards now extract nested
+  commands from command substitution and from shell `-c` payloads and re-apply the
+  full heuristic (HEAVY_VERBS/HEAVY_PATTERNS/LIGHT_EXCEPTIONS for command-guard, the
+  code-nav check for graphify-guard) to the inner commands, depth-bounded to 3 to
+  avoid pathological input. Benign substitutions stay allowed (`echo "$(date)"` —
+  `date` is not heavy). Fail-open preserved.
+- **Atomic swarm-guard spawn cap.** The prune→count→cap-check→append was a
+  non-atomic read-modify-write, so concurrent spawns each read a stale pre-cap log
+  and raced past the ceiling. It now runs inside a best-effort cross-process O_EXCL
+  lock (`~/.anti-hall/swarm-spawns.lock`) with stale-lock steal (mtime > ~5s),
+  bounded spin, re-read + cap-check INSIDE the lock, and release in `finally`.
+  FAIL-OPEN if the lock can't be acquired — never deadlocks a spawn. The
+  cap-before-append fix is retained.
+- **Doctor 2-line assertion + new tests.** The statusline self-test now requires
+  >= 2 lines for the sample payload (which carries `context_window`, so the live
+  context gauge on line 2 MUST render) and reports a FAILURE if only line 1 renders.
+  Added self-tests proving the recursive-parse fix: command-guard now BLOCKS (in
+  coordinator) `echo "$(npm run build)"` and `bash -c "npm run build"`, and still
+  ALLOWS the benign `echo "$(date)"`.
+
 ## 0.11.3
 
 Precedence-aware install-statusline. Per-project install now writes `.claude/settings.local.json` (highest precedence + gitignored) instead of `settings.json`, so a committed project statusLine can no longer shadow it. The installer checks the statusLine across user/project/local scopes and reports shadowing or already-installed; resolves a STABLE marketplace dispatcher path (never the versioned cache path, which breaks on update); and auto-gitignores `.claude/settings.local.json`.

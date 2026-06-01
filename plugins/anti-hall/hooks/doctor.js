@@ -97,6 +97,11 @@ ALLOWED(cg('git status')) ? ok('command-guard allows light cmd in coordinator') 
 // verb must still block (the old code only inspected the first whole-string verb).
 BLOCKED(cg('git status && npm run build')) ? ok('command-guard blocks heavy SECOND segment (`git status && npm run build`)') : bad('command-guard MISSED heavy second segment — per-segment fix regressed');
 BLOCKED(cg('cd app && npm test')) ? ok('command-guard blocks heavy cmd after `cd` (`cd app && npm test`)') : bad('command-guard MISSED heavy cmd after cd — per-segment fix regressed');
+// Recursive shell parsing (v0.12.0): heavy commands hidden in command
+// substitution and in `bash -c '...'` payloads must also block in coordinator.
+BLOCKED(cg('echo "$(npm run build)"')) ? ok('command-guard blocks heavy cmd in $(...) substitution (`echo "$(npm run build)"`)') : bad('command-guard MISSED heavy cmd in command substitution — recursive-parse fix regressed');
+BLOCKED(cg('bash -c "npm run build"')) ? ok('command-guard blocks heavy `bash -c "npm run build"` payload') : bad('command-guard MISSED heavy bash -c payload — recursive-parse fix regressed');
+ALLOWED(cg('echo "$(date)"')) ? ok('command-guard allows benign substitution (`echo "$(date)"` — date is not heavy)') : bad('command-guard wrongly blocked benign `echo "$(date)"` — over-blocking substitutions');
 
 // speculation-guard: a Stop-hook block on hedged-without-evidence text. Build a
 // throwaway transcript whose last assistant message says "should be fine".
@@ -158,7 +163,11 @@ if (!fs.existsSync(slScript)) {
   const res = cp.spawnSync(process.execPath, [slScript], { input: sample, encoding: 'utf8', timeout: 5000 });
   const out = (res.stdout || '').replace(/\s+$/, '');
   const nlines = out ? out.split('\n').length : 0;
-  if (res.status === 0 && nlines >= 1) ok(`statusline renders (${nlines} line${nlines > 1 ? 's' : ''}: line 1 + ${nlines > 1 ? 'live line 2' : 'no line 2'})`);
+  // The product is a TWO-line statusline. The sample payload carries
+  // context_window, so line 2 (the live context gauge) MUST render. Require >= 2
+  // lines — a single line means line 2 (the context gauge) failed to render.
+  if (res.status === 0 && nlines >= 2) ok(`statusline renders ${nlines} lines (line 1 + live context gauge on line 2)`);
+  else if (res.status === 0 && nlines === 1) bad('statusline rendered only 1 line — line 2 (context gauge) did NOT render despite context_window in the payload');
   else bad(`statusline.js produced no output (exit ${res.status})`);
   // Verify the rich line-1 renderer is present + valid (the own-dispatch default).
   const rich = path.join(ROOT, 'statusline', 'statusline-rich.js');

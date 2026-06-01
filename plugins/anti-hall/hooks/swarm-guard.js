@@ -70,6 +70,45 @@ function availableBytes() {
 // visible across runners and survives tmpdir variation between processes.
 const LOG_DIR = path.join(os.homedir(), '.anti-hall');
 const LOG_FILE = path.join(LOG_DIR, 'swarm-spawns.log');
+const LOCK_FILE = path.join(LOG_DIR, 'swarm-spawns.lock');
+const LOCK_STALE_MS = 5000;    // steal a lock whose mtime is older than this
+const LOCK_RETRY_MS = 50;      // bounded total spin time trying to acquire
+const LOCK_SPIN_STEP_MS = 5;   // busy-wait granularity (no async in a sync hook)
+
+// Best-effort cross-process mutex via O_EXCL lock file. Returns a file
+// descriptor on success, or null if it could not be acquired (caller fails open).
+// Steals a stale lock (mtime older than LOCK_STALE_MS) so a crashed holder cannot
+// wedge spawns forever. Bounded spin — never blocks long, never deadlocks.
+function acquireLock() {
+  try { fs.mkdirSync(LOG_DIR, { recursive: true }); } catch (_) {}
+  const deadline = Date.now() + LOCK_RETRY_MS;
+  for (;;) {
+    try {
+      return fs.openSync(LOCK_FILE, 'wx'); // O_CREAT | O_EXCL
+    } catch (e) {
+      if (e && e.code === 'EEXIST') {
+        // Held by someone else — steal if stale, else spin briefly.
+        try {
+          const st = fs.statSync(LOCK_FILE);
+          if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
+            try { fs.unlinkSync(LOCK_FILE); } catch (_) {}
+            continue; // retry the O_EXCL create immediately
+          }
+        } catch (_) { /* lock vanished between calls — retry */ }
+        if (Date.now() >= deadline) return null; // give up -> fail-open
+        const until = Date.now() + LOCK_SPIN_STEP_MS;
+        while (Date.now() < until) { /* short busy-wait */ }
+        continue;
+      }
+      return null; // any other error -> fail-open (no lock)
+    }
+  }
+}
+
+function releaseLock(fd) {
+  try { if (fd !== null && fd !== undefined) fs.closeSync(fd); } catch (_) {}
+  try { fs.unlinkSync(LOCK_FILE); } catch (_) {}
+}
 
 function readTimestamps() {
   try {
@@ -115,39 +154,54 @@ function main() {
     // Fail-open: if the availability check throws, skip it
   }
 
-  // --- Spawn rate check ---
-  let timestamps;
-  try {
-    timestamps = readTimestamps();
-  } catch (_) {
-    process.exit(0); // fail-open
+  // --- Spawn rate check (atomic across concurrent hook invocations) ---
+  // The prune -> count -> cap-check -> append must be a single critical section,
+  // or concurrent spawns each read a stale pre-cap log and race past the ceiling.
+  // We serialize it with a best-effort O_EXCL lock. FAIL-OPEN: if the lock can't
+  // be acquired, proceed WITHOUT blocking (never deadlock a spawn). The cap check
+  // happens INSIDE the lock on a FRESH read so it sees concurrent appends.
+  const lockFd = acquireLock();
+  if (lockFd === null) {
+    // Could not lock -> fail-open: allow without recording (don't risk a deadlock).
+    process.exit(0);
   }
 
-  // Prune entries older than WINDOW_MS
-  const cutoff = now - WINDOW_MS;
-  const recent = timestamps.filter(t => t > cutoff);
+  let blockReason = null;
+  try {
+    let timestamps;
+    try {
+      timestamps = readTimestamps();
+    } catch (_) {
+      process.exit(0); // fail-open (finally releases the lock)
+    }
 
-  // Cap check BEFORE appending/persisting `now`: a blocked spawn must NOT be
-  // logged, otherwise repeated blocked retries keep extending the window and the
-  // guard can never recover. Only an ALLOWED spawn is recorded (below).
-  if (recent.length >= SPAWN_CAP) {
-    const reason =
-      'anti-hall swarm-guard: agent spawn-rate ceiling reached (' + recent.length +
-      ' spawns in the last 60s, cap is ' + SPAWN_CAP + '). Pause new agents to avoid ' +
-      'a runaway swarm that can make the OS unusable. Let running agents finish, ' +
-      'then continue. Respect the concurrency cap (~min(16, cores-2)): never spawn ' +
-      'unbounded agents; let in-flight agents finish before launching more waves.';
-    process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+    // Prune entries older than WINDOW_MS (re-read INSIDE the lock).
+    const cutoff = now - WINDOW_MS;
+    const recent = timestamps.filter(t => t > cutoff);
+
+    // Cap check BEFORE appending/persisting `now`: a blocked spawn must NOT be
+    // logged, otherwise repeated blocked retries keep extending the window and the
+    // guard can never recover. Only an ALLOWED spawn is recorded (below).
+    if (recent.length >= SPAWN_CAP) {
+      blockReason =
+        'anti-hall swarm-guard: agent spawn-rate ceiling reached (' + recent.length +
+        ' spawns in the last 60s, cap is ' + SPAWN_CAP + '). Pause new agents to avoid ' +
+        'a runaway swarm that can make the OS unusable. Let running agents finish, ' +
+        'then continue. Respect the concurrency cap (~min(16, cores-2)): never spawn ' +
+        'unbounded agents; let in-flight agents finish before launching more waves.';
+    } else {
+      // Spawn is allowed: record its timestamp INSIDE the lock so concurrent
+      // spawns observe it. A persist failure is fail-open (allow without recording).
+      recent.push(now);
+      writeTimestamps(recent);
+    }
+  } finally {
+    releaseLock(lockFd);
+  }
+
+  if (blockReason !== null) {
+    process.stdout.write(JSON.stringify({ decision: 'block', reason: blockReason }) + '\n');
     process.exit(2);
-  }
-
-  // Spawn is allowed: NOW record its timestamp (only allowed spawns count toward
-  // the window). A persist failure is fail-open (allow without recording).
-  recent.push(now);
-  try {
-    writeTimestamps(recent);
-  } catch (_) {
-    process.exit(0); // can't persist -> allow
   }
 
   process.exit(0);
