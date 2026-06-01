@@ -55,7 +55,7 @@ argued with.
 | `speculation-guard` | Stop (Tier 2) | Lexical: catches 15 hedge-word speculation markers; suppressed when the message contains evidence/uncertainty acknowledgment; block-once (never wedges) |
 | `speculation-judge` | Stop (Tier 3, **OPT-IN**) | Semantic: calls an LLM to catch confident inference-as-fact with *no* hedge word — the gap Tier 2 can't close. Enable: `ANTIHALL_SEMANTIC_JUDGE=1` + `ANTHROPIC_API_KEY`. Zero cost/latency when unset (the default). Fail-open |
 | `phase-tracker` | PreToolUse/Agent+Task | Records every subagent spawn so line 2 shows live swarm activity with zero coordinator effort |
-| `agent-watchdog` | PostToolUse | Heartbeat enforcer: polls agent state files; kills idle/hung agents; integrates with `phase.js` |
+| `agent-watchdog` | CLI helper | Heartbeat enforcer: manually invoked by orchestration skill; polls agent state files; kills idle/hung agents; integrates with `phase.js` |
 | `graphify-session` | SessionStart | Reminds to query the graph first when a `graphify-out/` graph exists |
 | `graphify-guard` | PreToolUse/Grep+Glob+Bash | Blocks the *first* code-navigation search of a session and redirects to `/graphify query` when a graph exists. Segment/verb-aware — a substring like `echo /graphify && rg secret` doesn't exempt the search. Block-once per session; second call always allowed |
 | `graphify-reminder` | Stop | One-time soft block reminding to keep the graph updated |
