@@ -19,9 +19,21 @@ const STATE_CANDIDATES = [
   path.join(os.homedir(), '.anti-hall', 'phase-state.json'),
   path.join(os.tmpdir(),  'anti-hall', 'phase-state.json'),
 ];
+// Hide a phase bar whose state file has not been touched recently. An active
+// orchestration rewrites phase-state.json on every set/advance/step/agents call
+// (and the watchdog heartbeat is well under this window), so a fresh run always
+// renders. A run that ended without calling `phase.js clear` leaves an ORPHAN
+// state file; once its mtime ages past STALE_MS we treat it as absent so the bar
+// does not show a frozen, stale phase indefinitely.
+const STALE_MS = 30 * 60 * 1000; // 30 minutes
+
 function readState() {
   for (const f of STATE_CANDIDATES) {
-    try { return fs.readFileSync(f, 'utf8'); } catch (e) { /* try next */ }
+    try {
+      const st = fs.statSync(f);
+      if (Date.now() - st.mtimeMs > STALE_MS) continue; // stale orphan -> treat as absent
+      return fs.readFileSync(f, 'utf8');
+    } catch (e) { /* missing/unreadable -> try next */ }
   }
   return null;
 }

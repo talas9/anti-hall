@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.5.1
+
+Phase bar auto-hides stale state. The line-2 phase bar reads `~/.anti-hall/phase-state.json`;
+an orchestration run that ended without calling `phase.js clear` left an ORPHAN state file,
+so the bar showed a frozen, stale phase indefinitely (e.g. a "22h" phase that never moved).
+`phase-bar.js` now treats a state file whose mtime is older than 30 minutes as absent —
+active runs rewrite the file on every set/advance/step/agents call (well under the window),
+so live runs always render, but orphaned leftovers no longer linger. Fail-open preserved.
+
 ## 0.5.0
 
 Rich statusline + on-demand install skill.
