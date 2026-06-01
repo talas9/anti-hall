@@ -116,8 +116,16 @@ if (existingCmd && existingCmd.includes(DISPATCHER)) {
 // Record existing statusLine as the base to wrap (if present and not ours)
 // ---------------------------------------------------------------------------
 
-if (existingCmd) {
-  // Save existing command as base so statusline.js can delegate line 1 to it.
+if (existingCmd && fs.existsSync(BASE_CFG)) {
+  // base-statusline.json is GLOBAL (shared by every project whose statusLine points
+  // at the dispatcher). NEVER clobber an existing one — doing so would change line 1
+  // for OTHER projects that already rely on it. Leave it; line 1 uses the existing base.
+  console.log('Existing base-statusline.json kept (global, shared) — not overwritten:');
+  console.log('  ' + BASE_CFG);
+  console.log('  Line 1 for repos without their own helper falls back to the rich renderer.');
+  console.log('');
+} else if (existingCmd) {
+  // No global base yet — record this scope's existing statusLine as the line-1 base.
   try {
     fs.mkdirSync(BASE_CFG_DIR, { recursive: true });
     fs.writeFileSync(BASE_CFG, JSON.stringify({ command: existingCmd }, null, 2) + '\n', 'utf8');

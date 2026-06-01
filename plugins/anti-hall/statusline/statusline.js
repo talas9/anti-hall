@@ -149,22 +149,33 @@ function ownLine1(input) {
     const monorepo = isMonorepo(toplevel) || isMonorepo(cwd);
 
     const scriptDir = __dirname;
-    const renderer  = monorepo
-      ? path.join(scriptDir, 'statusline-monorepo.js')
-      : path.join(scriptDir, 'statusline-simple.js');
+    // Primary own-dispatch renderer is the RICH statusline (project name, git,
+    // model, context%, cost, duration, subagents, optional GSD phase) — it works
+    // for both monorepo and plain repos. If it yields nothing (fail-open), fall
+    // back to the monorepo/simple renderer.
+    const renderers = [
+      path.join(scriptDir, 'statusline-rich.js'),
+      monorepo ? path.join(scriptDir, 'statusline-monorepo.js')
+               : path.join(scriptDir, 'statusline-simple.js'),
+    ];
 
-    // Capture renderer output by temporarily overriding process.stdout.write.
-    const saved  = process.stdout.write.bind(process.stdout);
-    const chunks = [];
-    process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
-    try {
-      const mod = require(renderer);
-      if (typeof mod.runWithInput === 'function') mod.runWithInput(input);
-    } finally {
-      process.stdout.write = saved;
+    for (const renderer of renderers) {
+      // Capture renderer output by temporarily overriding process.stdout.write.
+      const saved  = process.stdout.write.bind(process.stdout);
+      const chunks = [];
+      process.stdout.write = (chunk) => { chunks.push(String(chunk)); return true; };
+      try {
+        const mod = require(renderer);
+        if (typeof mod.runWithInput === 'function') mod.runWithInput(input);
+      } catch (e) {
+        /* try next renderer */
+      } finally {
+        process.stdout.write = saved;
+      }
+      const out = chunks.join('').replace(/[\r\n]+$/, '');
+      if (out) return out;
     }
-    const out = chunks.join('').replace(/[\r\n]+$/, '');
-    return out || '';
+    return '';
   } catch (e) {
     return '';
   }

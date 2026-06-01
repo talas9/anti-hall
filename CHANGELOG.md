@@ -6,6 +6,23 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.5.0
+
+Rich statusline + on-demand install skill.
+
+- New `statusline/statusline-rich.js` — a generic, project-agnostic rich line-1
+  renderer (project name from cwd, git branch/worktree/stash/staged-modified-untracked,
+  ahead/behind, model, effort, subagent count, session duration, context-window %, cost,
+  and the GSD `.planning` phase when present). Pure Node, fail-open, no project/user
+  specifics. The dispatcher (`statusline.js`) now uses it as the primary own-dispatch
+  line-1 renderer, falling back to the monorepo/simple renderers if it yields nothing.
+- New `install-statusline` skill — installs the statusLine entry on demand (user scope by
+  default for a global bar, `--project` for the current repo only), with a reminder that
+  Claude Code reads `statusLine` only at startup so a restart is required.
+- `install-statusline.js` no longer clobbers an existing GLOBAL `base-statusline.json`
+  (overwriting it changed line 1 for OTHER projects that rely on it). Existing base is
+  kept; repos without their own helper fall through to the rich renderer.
+
 ## 0.4.7
 
 Fix swarm-guard false-positive memory-pressure block. The memory check used
