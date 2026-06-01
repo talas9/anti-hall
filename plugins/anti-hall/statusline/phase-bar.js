@@ -168,11 +168,46 @@ function contextLine(input) {
   return `${bar} ${col}${pct}%${C.reset} ${C.dim}context${C.reset}${tokens}`;
 }
 
-// --- Main: phase bar if a run is active, else the context bar -----------------
+// --- Line 2 case A2: auto-tracked live swarm activity ------------------------
+// When no semantic phase-state was set by the coordinator but subagents are
+// actively spawning (recorded by the phase-tracker hook in a HOMEDIR log), show
+// an animated "orchestrating" bar so a running swarm is visible with ZERO
+// coordinator effort.
+const SPAWN_LOG   = path.join(os.homedir(), '.anti-hall', 'agent-spawns.log');
+const ACTIVITY_MS = 2 * 60 * 1000; // "active" if a subagent spawned in the last 2 min
+
+function recentSpawns() {
+  try {
+    const now = Date.now();
+    return fs.readFileSync(SPAWN_LOG, 'utf8').trim().split(/\r?\n/)
+      .map(n => parseInt(n, 10))
+      .filter(n => Number.isFinite(n) && (now - n) < ACTIVITY_MS).length;
+  } catch (e) { return 0; }
+}
+
+// Indeterminate "working" bar: a lit cell sweeps across (no known done/total).
+function renderSweep() {
+  const pos = Math.floor(Date.now() / 400) % BAR_WIDTH;
+  let cells = '';
+  for (let i = 0; i < BAR_WIDTH; i++) {
+    cells += (i === pos) ? (C.cyan + '█' + C.reset) : (C.dim + '─' + C.reset);
+  }
+  return '[' + cells + ']';
+}
+
+function activityLine() {
+  const n = recentSpawns();
+  if (n <= 0) return null;
+  return `${renderSweep()} ${C.cyan}orchestrating${C.reset} ${C.dim}·${C.reset} ` +
+         `${C.blue}${n} agent${n === 1 ? '' : 's'}${C.reset} ${C.dim}active${C.reset}`;
+}
+
+// --- Main: phase bar (coordinator) > live activity (auto) > context gauge -----
 try {
   const input = readStdin();
-  let line = phaseBarLine();
-  if (line === null) line = contextLine(input);
+  let line = phaseBarLine();                 // 1. semantic phase set via phase.js
+  if (line === null) line = activityLine();  // 2. auto-tracked live swarm activity
+  if (line === null) line = contextLine(input); // 3. idle context-window gauge
   if (line) process.stdout.write(line + '\n');
 } catch (e) {
   process.exit(0); // fail-open

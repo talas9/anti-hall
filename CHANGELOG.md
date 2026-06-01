@@ -6,6 +6,27 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.7.0
+
+Automatic swarm-progress tracking + AFK-mode autonomous driver.
+
+Problem: the phase bar only updated if the coordinator manually called `phase.js`, and
+the autonomous-driver template never called it — so a running swarm/feature-launch
+showed no progress (verified gap; `CONTINUE-HERE.md` listed it as a TODO).
+
+- **New `phase-tracker.js` hook** (PreToolUse Agent/Task) — records every subagent
+  spawn to a HOMEDIR log (`~/.anti-hall/agent-spawns.log`), never blocks, fail-open.
+  Registered after swarm-guard so it logs only real spawns.
+- **`phase-bar.js` now has 3 tiers** for line 2: (1) coordinator-set semantic phase ->
+  rich phase bar; (2) recent spawns (auto) -> animated `orchestrating · N agents active`
+  bar; (3) idle -> context-window gauge. So a swarm is visible with ZERO coordinator
+  effort. (A registered hook needs a session restart to activate.)
+- **AFK mode** (`AUTONOMOUS-DRIVER-PROMPT.md`): wired the `phase.js set/step/agents/
+  advance/clear` calls into the per-phase loop, and added the AFK autonomy contract —
+  the driver never returns to the owner or stops except for an ABSOLUTELY-DESTRUCTIVE
+  hard gate; it collects data instead of pausing, and resolves confusion with a
+  deadly-loop rather than asking the (away) owner.
+
 ## 0.6.0
 
 Always-on line 2 (hybrid bar). The plugin's statusline now ships BOTH lines as a
