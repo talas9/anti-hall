@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.11.1
+
+Fix `deadly-loop-multi` SKILL.md YAML frontmatter: the `description` contained an unquoted
+inner `Multiplier:` (colon-space), which YAML parses as a mapping value — the skill failed
+to load ("mapping values are not allowed in this context"). Replaced the colon with a dash.
+
 ## 0.11.0
 
 Cut the plugin's OWN context footprint (it was growing the conversation every turn — the

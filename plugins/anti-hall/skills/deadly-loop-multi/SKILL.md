@@ -1,6 +1,6 @@
 ---
 name: deadly-loop-multi
-description: Run a DOUBLE / TRIPLE / QUADRUPLE deadly loop — N parallel Opus reviewers + N parallel Codex critics auditing a target (whole repo, a diff, or named files) with diversified lenses, then dedup + synthesize, optionally fix-wave and re-converge. Use when the user says "double deadly loop", "triple deadly loop", "quadruple deadly loop", "deep multi-agent review", "have 2 opus and 2 codex review everything", or wants a heavier review than the standard 1+1 deadly-loop. Multiplier: double=2, triple=3, quadruple=4 reviewer+critic PAIRS.
+description: Run a DOUBLE / TRIPLE / QUADRUPLE deadly loop — N parallel Opus reviewers + N parallel Codex critics auditing a target (whole repo, a diff, or named files) with diversified lenses, then dedup + synthesize, optionally fix-wave and re-converge. Use when the user says "double deadly loop", "triple deadly loop", "quadruple deadly loop", "deep multi-agent review", "have 2 opus and 2 codex review everything", or wants a heavier review than the standard 1+1 deadly-loop. Multiplier — double=2, triple=3, quadruple=4 reviewer+critic PAIRS.
 ---
 
 # Multi Deadly Loop
