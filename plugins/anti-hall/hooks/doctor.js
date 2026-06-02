@@ -122,6 +122,29 @@ function specTest() {
 }
 specTest() ? ok('speculation-guard flags "should be fine" (hedge w/o evidence)') : bad('speculation-guard did NOT flag "should be fine"');
 
+// tasklist-guard: blocks at Stop when >= threshold file-mutating actions were
+// done with NO task activity and no fresh progress file. Build a throwaway
+// transcript of 4 Edit tool_uses, point cwd at a dir with no progress file.
+function tasklistTest() {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-tl-'));
+  const tp = path.join(tdir, 't.jsonl');
+  try {
+    const edits = [];
+    for (let i = 0; i < 4; i++) {
+      edits.push(JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', id: 'toolu_e' + i, input: { file_path: '/x/f' + i } }] },
+      }));
+    }
+    fs.writeFileSync(tp, edits.join('\n') + '\n');
+    const r = runHook('tasklist-guard.js', { transcript_path: tp, cwd: tdir, session_id: 'doctor-tl-' + Date.now() });
+    return /"decision"\s*:\s*"block"/.test(r.out);
+  } finally {
+    try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+tasklistTest() ? ok('tasklist-guard blocks untracked work (4 edits, no tasks, no progress file)') : bad('tasklist-guard did NOT block untracked work');
+
 // swarm-guard: must allow a normal spawn on a healthy machine (fail-open, real mem calc)
 const sg = runHook('swarm-guard.js', { tool_name: 'Agent', tool_input: {} });
 ALLOWED(sg) ? ok('swarm-guard allows a spawn under normal memory') : warnl(`swarm-guard returned exit ${sg.code} (blocked) — check memory pressure`);

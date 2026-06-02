@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.20.0
+
+New `tasklist-guard.js` Stop hook + a per-turn freshness note (in `task-tracker.js`) that enforce live task-list + fresh `.anti-hall-progress.md` discipline for non-trivial work, so real work is tracked and never silently dropped or declared-done by a later agent. It **coexists with `task-guard`** (which drains declared tasks); each keeps an independent block cap so the two never compound.
+
+- **When it blocks (Stop):** ≥ `ANTIHALL_TASKLIST_WORK_THRESHOLD` (default 3) file-mutating actions (`Edit`/`Write`/`MultiEdit`/`NotebookEdit` + mutating `Bash`) AND (no task activity for it, OR more than one task `in_progress`, OR no fresh `.anti-hall-progress.md`). Blocks via `{decision:"block"}` (never exit 2 — plugin Stop hooks don't reliably continue on it), capped at `MAX_BLOCKS=3` cumulative per session, fully fail-open.
+- **Progress file:** `<cwd>/.anti-hall-progress.md` (done/in-progress/next), must be updated this session to count fresh (window `ANTIHALL_PROGRESS_FRESH_MS`, default 30 min). Gitignored, never ships; the hook never creates it.
+- **Per-turn freshness note:** when open/stale tasks exist, `task-tracker` injects a one-line reminder (open-task count + oldest `in_progress` subject).
+- **Escape hatch:** `~/.anti-hall/skip.json` `{"tasklist-guard": <unix-ms expiry>}` (or `"all"`) via the shared skip-guard, or ask the agent to skip.
+- **Hardened via 2 deadly-loop passes (Opus + Codex):** multi-`in_progress`-only staleness (a single `in_progress` — the healthy flow — never false-blocks), emit-before-persist (a state-write failure can't retract an emitted block), `lstat` + `isFile` progress check (rejects a dir/symlink named like the file), cwd-missing fail-open, command-position-aware + broadened `Bash` work regex (ReDoS-safe), task-subject injection neutralized via `JSON.stringify`.
+- **Coverage:** 120-test E2E suite incl. 21 `Bash`-regex cases; `doctor` gains a tasklist-guard self-test (4 edits, no tasks, no progress file ⇒ block).
+- **Accepted deferrals (fail-open by design):** cumulative work counters vs the 512 KB transcript tail-clip (work before the window is unseen, can only *suppress* a block — the safe direction); sync-I/O stall on a network-mounted cwd (the 30 s hook timeout makes a non-block the outcome).
+- New doc [`docs/TASKLIST-GUARD.md`](docs/TASKLIST-GUARD.md) (usage); README + `docs/KB.md` pointers added.
+
 ## 0.19.0
 
 Strengthened deadly-loop auditor instructions with explicit depth requirements to prevent surface-skimming and ensure genuine issue discovery. Both `deadly-loop` and `deadly-loop-multi` skills now mandate:

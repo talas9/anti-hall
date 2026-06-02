@@ -87,6 +87,12 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
   never spawn unbounded agents; let in-flight agents finish before launching more waves —
   a runaway swarm can make the OS unusable. Do not let tasks sit neglected.
 - Do not end with silently-dropped requests.
+- DEDUP + RELATE before creating tasks: check TaskList FIRST so you never duplicate an
+  existing open task — refine the existing one instead, and link related tasks via
+  addBlockedBy (prereq) / addBlocks (this gates that); supersede a true duplicate with a
+  single replacement rather than piling on. Keep a fresh `.anti-hall-progress.md`
+  (done/in-progress/next) so freshness survives compaction — it is gitignored, never ships.
+  See `docs/TASK-WORK.md` for the dedup/relate ladder and staleness signals.
 - USER OVERRIDE (escape hatch): if the user EXPLICITLY and CLEARLY asks to skip a guard or
   rule, honor it — record consent by writing `~/.anti-hall/skip.json` as
   `{"<guard>": <unix-ms expiry>}` (per-guard; the broad key `"all"` covers the noisy guards

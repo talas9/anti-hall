@@ -86,6 +86,7 @@ into the `KB-claude-codex.md` synthesis (kept standalone for provenance + depth)
 |---|---|---|---|---|---|
 | [`KB-claude-codex.md`](./KB-claude-codex.md) | **Backbone synthesis** — hooks, plugins, prompting, Codex, orchestration, anti-hallucination evidence (§1–§14) | 672 ln | **Living — primary** | (compiled 2026-05) | 8 parallel research streams; cited inline + Sources §15 |
 | [`TASK-WORK.md`](./TASK-WORK.md) | Task discipline (`TaskCreate`/`TaskUpdate` vs legacy `TodoWrite`); event-driven, no-timer freshness; basis for the tasklist-guard feature | 241 ln | **Living** | (date unknown; references Claude Code v2.1.142 / SDK 0.3.142) | Anthropic long-running-agent guidance + hook model; Sources at doc end |
+| [`TASKLIST-GUARD.md`](./TASKLIST-GUARD.md) | **Usage guide** for the `tasklist-guard` Stop hook + per-turn freshness note: when it blocks, the `.anti-hall-progress.md` file, env knobs, escape hatch, good workflow | — | **Living** | 2026-06-02 | this repo (`tasklist-guard.js` / `task-tracker.js`); design in `TASK-WORK.md` |
 | [`E2E-TESTING.md`](./E2E-TESTING.md) | How the zero-dep `node:test` hook suite works; I/O contract per event; env-isolation gotcha | 129 ln | **Living** | 2026-06-02 (mtime) | [Claude Code hooks contract](https://code.claude.com/docs/en/hooks) |
 | [`opus-4-8-features.md`](./opus-4-8-features.md) | Latest-Opus feature reference (context window, effort param, thinking, pricing) | 299 ln | **Living — snapshot** | Released 2026-05-28; research 2026-05-29 | [platform.claude.com whats-new-claude-4-8](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8) |
 | [`opus-4-8-swarm.md`](./opus-4-8-swarm.md) | Multi-agent orchestration on the latest Opus; Dynamic Workflows (research preview), Managed Agents (beta) | 319 ln | **Living — snapshot** | 2026-05-29 | Official release notes + community (cited inline) |
@@ -110,7 +111,7 @@ docs are background; their actionable content is already in the synthesis.
 | **Codex / AGENTS.md** governance | KB-claude-codex §5; `AGENTS.md` at root |
 | **Orchestration / swarm / subagents** | KB-claude-codex §7, §11; opus-4-8-swarm |
 | **deadly-loop / feature-launch** phase model + debate roster | KB-claude-codex §12, §13; gsd-distilled; superpowers-planning; `skills/MODEL-POLICY.md` |
-| **Task discipline** (tasklist-guard) | TASK-WORK |
+| **Task discipline** (tasklist-guard) | TASKLIST-GUARD (usage); TASK-WORK (design/research) |
 | **Testing** the hooks | E2E-TESTING |
 | **Model selection / effort / thinking** | opus-4-8-features; opus-4-8-swarm; `skills/MODEL-POLICY.md` |
 | Anti-hallucination **evidence base** (peer-reviewed) | KB-claude-codex §8 + "Design implications" |

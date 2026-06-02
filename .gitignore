@@ -3,6 +3,8 @@ plugins/anti-hall/statusline/demo-wrapper.sh
 # Local working notes / session handoff — never ship
 CONTINUE-HERE.md
 .anti-hall/
+# anti-hall task-work progress file (tasklist-guard) — local state, never ship
+.anti-hall-progress.md
 
 # Generated knowledge graph (large, machine-specific paths in metadata) — never commit
 graphify-out/
