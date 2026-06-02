@@ -81,18 +81,53 @@ const ACKNOWLEDGMENT_PATTERNS = [
 ];
 
 // --------------------------------------------------------------------------
+// Bounded tail read: load only the last `windowBytes` of a (possibly multi-GB)
+// transcript instead of the whole file, so a huge transcript can never OOM or
+// stall this hook. The last assistant message lives at the end of the JSONL, so
+// the trailing window is sufficient. If the file is smaller than the window we
+// read it all. The first line of a mid-file window is almost certainly a partial
+// (truncated) JSON line; we drop it so the JSONL parser never trips on it (it
+// would be skipped anyway, but dropping it is explicit and avoids ambiguity).
+// Any error -> null (caller fails open).
+// --------------------------------------------------------------------------
+function readTranscriptTail(transcriptPath, windowBytes) {
+  const WINDOW = windowBytes || 512 * 1024; // 512 KB default
+  let fd = null;
+  try {
+    const size = fs.statSync(transcriptPath).size;
+    if (size <= WINDOW) {
+      return { data: fs.readFileSync(transcriptPath, 'utf8'), truncated: false };
+    }
+    const start = size - WINDOW;
+    const buf = Buffer.alloc(WINDOW);
+    fd = fs.openSync(transcriptPath, 'r');
+    const bytesRead = fs.readSync(fd, buf, 0, WINDOW, start);
+    return { data: buf.toString('utf8', 0, bytesRead), truncated: true };
+  } catch (_) {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+}
+
+// --------------------------------------------------------------------------
 // Extract the last assistant message text from a transcript JSONL file.
 // Returns null if nothing is found or any error occurs.
 // --------------------------------------------------------------------------
 function extractLastAssistantText(transcriptPath) {
-  let data;
-  try {
-    data = fs.readFileSync(transcriptPath, 'utf8');
-  } catch (_) {
+  const tail = readTranscriptTail(transcriptPath);
+  if (!tail) {
     return null;
   }
 
-  const lines = data.split(/\r?\n/);
+  const lines = tail.data.split(/\r?\n/);
+  // When the window starts mid-file, the first line is a possibly-truncated
+  // partial JSON line; drop it so we never parse a fragment.
+  if (tail.truncated && lines.length > 0) {
+    lines.shift();
+  }
   let lastText = null;
 
   for (const line of lines) {

@@ -80,6 +80,10 @@ const LIGHT_EXCEPTIONS = [
   /\bflutter\s+--version\b/i,
   /\bgo\s+version\b/i,
   /\bcargo\s+(?:--version|version)\b/i,
+  // go env (read-only) — but NOT `go env -w KEY=VAL` which mutates config.
+  /\bgo\s+env\b(?![^\n]*\s-w\b)/i,
+  // git push/pull/fetch with --dry-run is non-mutating (no refs/objects change).
+  /\bgit\s+(?:push|pull|fetch)\b[^\n]*\s--dry-run\b/i,
   // docker ps/images/inspect (read-only)
   /\bdocker\s+(?:ps|images|inspect|logs|stats)\b/i,
 ];
@@ -325,6 +329,37 @@ function isHeavyCommand(command, depth) {
   return false;
 }
 
+// Produce a SAFE classification label for the block reason — describes WHY the
+// command was flagged WITHOUT reflecting any arbitrary user/command text back into
+// the model-visible reason (injection hygiene). Returns either a detected heavy
+// verb drawn from the fixed HEAVY_VERBS allowlist, or a fixed category name.
+// Every returned value is from a closed, code-defined set — never raw input.
+function classifyHeavy(command, depth) {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  const d = typeof depth === 'number' ? depth : 0;
+  for (const seg of splitSegments(command)) {
+    if (isHeavySegment(seg)) {
+      const verb = effectiveVerb(seg);
+      if (verb && HEAVY_VERBS.has(verb)) return { kind: 'verb', label: verb };
+      return { kind: 'category', label: 'heavy-pattern' };
+    }
+    if (d < 3) {
+      const payload = extractShellCPayload(seg);
+      if (payload) {
+        const inner = classifyHeavy(payload, d + 1);
+        if (inner) return inner;
+      }
+    }
+  }
+  if (d < 3) {
+    for (const inner of extractSubstitutions(command)) {
+      const c = classifyHeavy(inner, d + 1);
+      if (c) return c;
+    }
+  }
+  return null;
+}
+
 // A Task-tool subagent is identified by agent markers in the hook payload
 // (reliable everywhere, incl. cmux) OR by the agent_tool entrypoint (vanilla CLI).
 function isSubagent(payload) {
@@ -383,6 +418,16 @@ function main() {
     process.exit(0);
   }
 
+  // Classification label is derived from a closed, code-defined set (heavy verb
+  // allowlist or a fixed category name) — NEVER raw command/stdin text — so no
+  // attacker-controlled content is reflected into the model-visible reason.
+  const cls = classifyHeavy(command);
+  const detail = cls
+    ? (cls.kind === 'verb'
+        ? '(verb: ' + cls.label + ')'
+        : '(category: ' + cls.label + ')')
+    : '(category: heavy)';
+
   const reason =
     'COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
     'inline in the main coordinator context — they fill the main thread with raw ' +
@@ -390,7 +435,8 @@ function main() {
     'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
     'spawn a subagent, pass the command, let it run and return only a tight ' +
     'summary. The coordinator synthesizes the summary; raw output never reaches ' +
-    'the main thread. Heavy command detected: ' + command.slice(0, 120);
+    'the main thread. Heavy command detected ' + detail +
+    ' — delegate to a subagent.';
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(2);

@@ -6,6 +6,46 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.16.0
+
+Round-2 Tier-A guard hardening, surfaced by the double deadly-loop on the round-1 changes.
+Closes the fail-closed and OOM cases that could wedge or crash a guard, and seals two guard
+evasion paths the round-1 hardening missed.
+
+- **swarm-guard memory gate fails OPEN, not closed.** The free-memory parser previously fell
+  back to `os.freemem()` on a parse failure, which on some platforms reports near-zero and
+  could block every spawn (fail-closed safety guard left silently disabled is the opposite of
+  what a coordinator wants). It now SKIPS the memory gate entirely when the platform memory
+  read can't be parsed, so a spawn is never blocked on bad telemetry.
+- **swarm-guard lock uses an owner token — no blind `unlink`.** The advisory spawn lock now
+  writes an owner token and only releases a lock it actually owns, instead of blindly
+  `unlink`-ing whatever lock file is present (which could stomp a concurrent holder).
+- **Bounded transcript tail-reads (512 KB) — OOM guard.** `speculation-guard.js`,
+  `speculation-judge.js`, `task-guard.js`, and `graphify-reminder.js` previously
+  `readFileSync`'d the entire transcript; a long session could grow that to hundreds of MB and
+  OOM the hook. They now tail-read only the last 512 KB, which is more than enough for the
+  recent-turn inspection each performs.
+- **task-guard subject sanitization.** The task subject is now sanitized before it is echoed
+  into the block reason, closing a reflected-content path.
+- **graphify rev-parse timeouts (2000 ms) + non-echoing block reason.** `graphify-session.js`
+  and `graphify-guard.js` now bound their `git rev-parse` calls at 2000 ms so a wedged git
+  can't hang the hook; `graphify-guard.js` no longer echoes the raw command into its block
+  reason (label only).
+- **git-guard seals two evasion paths.** It now catches a `+refspec` force-push smuggled
+  AFTER a `--` end-of-options marker (`git push origin -- +main:main`), and blocks
+  `git --config-env alias.*` config smuggling that could alias a benign verb to `push
+  --force`. Normal pushes and literal `--`-separated operands are unaffected.
+- **command-guard light exceptions + non-echoing reason.** Read-only `git push --dry-run`
+  and read-only `go env` (without `-w`) are now treated as light and allowed in the
+  coordinator; the heavy-command block reason no longer echoes the raw command (label/verb
+  only), removing a reflected-injection surface.
+- **Windows-safe installer.** `statusline/install-statusline.js` now uses a shell-free
+  `execFileSync` for the git-tracked check, so the install path no longer depends on a POSIX
+  shell.
+
+Tier B remains pending: the command-guard quote-aware false-positive and the
+`eval`/base64/process-substitution evasion cluster are not addressed here.
+
 ## 0.15.0
 
 Adds a user-override escape hatch across all guards, hardens the speculation hooks against

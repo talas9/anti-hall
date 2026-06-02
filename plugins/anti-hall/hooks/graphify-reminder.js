@@ -71,18 +71,50 @@ function hasGraph(root) {
          safeIsDir(path.join(root, '.planning', 'graphs'));
 }
 
+// Bounded tail read: load only the last `windowBytes` (default 512 KB) of a
+// possibly multi-GB transcript instead of the whole file, so a huge transcript
+// can never OOM or stall this hook. Any error -> null (caller treats as 0 edits,
+// i.e. stays quiet — fail-open). If the file is smaller than the window we read
+// it all.
+function readTranscriptTail(transcriptPath, windowBytes) {
+  const WINDOW = windowBytes || 512 * 1024;
+  let fd = null;
+  try {
+    const size = fs.statSync(transcriptPath).size;
+    if (size <= WINDOW) {
+      return { data: fs.readFileSync(transcriptPath, 'utf8'), truncated: false };
+    }
+    const start = size - WINDOW;
+    const buf = Buffer.alloc(WINDOW);
+    fd = fs.openSync(transcriptPath, 'r');
+    const bytesRead = fs.readSync(fd, buf, 0, WINDOW, start);
+    return { data: buf.toString('utf8', 0, bytesRead), truncated: true };
+  } catch (_) {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+}
+
 // Count Edit/Write/MultiEdit/NotebookEdit tool_use entries in the transcript.
-// Read the file fully then split into lines (JSONL) so we never miss an early
-// entry. Walk each parsed entry for tool_use blocks by name.
+// Reads only a bounded trailing window of the JSONL (see readTranscriptTail) so
+// a multi-GB transcript cannot OOM/stall the hook. This counts edits within the
+// window only; on a very large transcript an early edit outside the window is
+// not counted, which can only make the reminder stay quiet (fail-open — it never
+// causes a false block). Walk each parsed entry for tool_use blocks by name.
 function countEdits(transcriptPath) {
   let count = 0;
-  let data;
-  try {
-    data = fs.readFileSync(transcriptPath, 'utf8');
-  } catch (_) {
+  const tail = readTranscriptTail(transcriptPath);
+  if (!tail) {
     return 0;
   }
-  const lines = data.split(/\r?\n/);
+  const lines = tail.data.split(/\r?\n/);
+  // The first line of a mid-file window may be a truncated partial; drop it.
+  if (tail.truncated && lines.length > 0) {
+    lines.shift();
+  }
   const EDIT_NAMES = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
   for (const line of lines) {

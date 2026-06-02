@@ -375,6 +375,26 @@ function gitSubcommand(args) {
   // (`git -c alias.p=push p ... --force`), which only literal `push` would miss.
   const aliasMap = new Map(); // alias name -> expanded subcommand (first word)
   const aliasBodyTokens = new Map(); // alias name -> remaining body tokens (after first word)
+  // Alias-smuggling via `--config-env`: `git --config-env alias.<name>=<ENVVAR>`
+  // (or `--config-env=alias.<name>=<ENVVAR>`) defines a git alias whose VALUE is
+  // pulled from an environment variable at runtime. The `-c alias=` resolver above
+  // cannot see that value (it lives in the env, not the command line), so the alias
+  // could expand to `push --force` invisibly. Rather than try to read the env var,
+  // we treat ANY `--config-env` that names an `alias.*` key as a disallowed
+  // smuggling form and force a destructive verdict (synthetic `--force` push).
+  // Non-alias `--config-env` keys remain allowed.
+  for (let j = 0; j < args.length; j++) {
+    const a = args[j].text;
+    let cfgVal = null;
+    if (a === '--config-env') {
+      cfgVal = j + 1 < args.length ? args[j + 1].text : '';
+    } else if (a.startsWith('--config-env=')) {
+      cfgVal = a.slice('--config-env='.length);
+    }
+    if (cfgVal !== null && /^alias\./i.test(cfgVal)) {
+      return { sub: 'push', rest: [{ text: '--force', quotedOnly: false }] };
+    }
+  }
   for (let j = 0; j + 1 < args.length; j++) {
     if (args[j].text === '-c') {
       const cfg = args[j + 1] ? args[j + 1].text : '';
@@ -440,11 +460,18 @@ function isForcePush(rest) {
     // DO rewrite published history. Quoting only changes meaning for commit-message
     // CONTENT (a `+1`/`--force` inside an `-m` value), which is handled separately
     // in inlineCommitMessages — never in a push arg list. (F quoted-flag bypass.)
-    // A bare `--` ends option parsing: everything after it is a literal operand
-    // (pathspec/refspec), so a leading `+` after `--` is data, not a force
-    // refspec, and no later token can be a force flag.
+    // A bare `--` ends OPTION parsing only: a later `--force` is then a literal
+    // operand, not a flag, so we stop checking force FLAGS after `--`. But the
+    // `--` does NOT disarm refspec grammar: a `+<src>:<dst>` (or `+main`) operand
+    // STILL force-updates the ref even after `--` (the `+` is part of the refspec
+    // syntax, not an option). So after `--` we keep inspecting positional operands
+    // for a leading `+` force-refspec, and only skip the force-FLAG checks below.
     if (!endOfOptions && w === '--') { endOfOptions = true; continue; }
-    if (endOfOptions) continue;
+    if (endOfOptions) {
+      // Force-via-refspec still applies to operands after `--`.
+      if (w.startsWith('+') && w.length > 1) return true;
+      continue;
+    }
     if (w === '--force' || w === '--force-with-lease') return true;
     if (w.startsWith('--force-with-lease=')) return true;
     // `--force-if-includes` / `--no-force-if-includes` is a SAFETY MODIFIER, not a

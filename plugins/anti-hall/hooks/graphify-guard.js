@@ -52,6 +52,7 @@ function gitToplevel(cwd) {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
     });
     const top = (out || '').split(/\r?\n/)[0].trim();
     return top || null;
@@ -331,7 +332,7 @@ function main() {
     : path.join(graphRoot, '.planning', 'graphs');
 
   const toolLabel = toolName === 'Bash'
-    ? ('Bash: ' + String((toolInput.command || '').slice(0, 80)))
+    ? 'Bash search/command'
     : toolName;
 
   const reason =

@@ -12,8 +12,10 @@
 //   exit 0 : always - fail-open on any error so a bug never hard-loops Claude.
 //
 // Design (OS-agnostic - pure Node built-ins, fd-0 stdin, os.tmpdir state):
-//   - Streams the transcript JSONL (no fixed byte window) so an early
-//     TodoWrite in a large transcript is never silently missed.
+//   - Reads a bounded trailing window of the transcript JSONL (512 KB by
+//     default) so a multi-GB transcript can never OOM/stall the hook. A task
+//     that lives entirely before the window is not seen, which can only suppress
+//     a block (fail-open), never cause a false one.
 //   - Discovers tasks from TodoWrite tool_use entries (input.todos[]) AND
 //     TaskCreate/TaskUpdate entries; replays in order, last state wins.
 //   - TaskCreate / TaskUpdate keying: the harness assigns a sequential numeric
@@ -158,8 +160,12 @@ function main() {
   // Build the block reason (list up to 5 subjects + status).
   const cap = openTasks.slice(0, 5);
   const list = cap.map(t => {
-    const subject = t.content || t.subject || t.id || '(unknown)';
-    const status = t.status || 'open';
+    const rawSubject = t.content || t.subject || t.id || '(unknown)';
+    // Sanitize: strip control chars/newlines and truncate to ~60 chars so a
+    // TodoWrite item's text cannot inject instruction-like content into the Stop
+    // reason. Does not change which tasks are listed, only how the subject reads.
+    const subject = sanitizeSubject(rawSubject) || '(unknown)';
+    const status = sanitizeSubject(t.status || 'open', 24) || 'open';
     return '"' + subject + '" [' + status + ']';
   }).join('; ');
   const more = openTasks.length > 5 ? ' (and ' + (openTasks.length - 5) + ' more)' : '';
@@ -176,10 +182,12 @@ function main() {
   process.exit(0);
 }
 
-// Read the whole transcript JSONL fully and build Map<id, {id, content, status}>
-// (last write wins). Reading the file fully then splitting is fine here: it is
-// a single synchronous read and we must not miss an early entry (no tail window).
-// Lines that fail to parse are skipped.
+// Read a bounded trailing window of the transcript JSONL (see readTranscriptTail)
+// and build Map<id, {id, content, status}> (last write wins). The window keeps a
+// multi-GB transcript from OOM-ing/stalling the hook. Tradeoff: a TaskCreate that
+// occurred before the window and was never updated within it is not seen — which
+// can only suppress a block (fail-open), never cause a false one. Lines that fail
+// to parse are skipped.
 //
 // Key insight (verified against real transcripts, 2026-05-31):
 //
@@ -201,14 +209,58 @@ function main() {
 //        result map (entries whose tool_use id appears in the result map get
 //        re-keyed; others stay as their tool_use id — still valid for dedup).
 //     4. On TaskUpdate, check inp.taskId first, then inp.id, then inp.task_id.
-function parseTasksFromFile(filePath) {
-  let data;
+// Bounded tail read: load only the last `windowBytes` of a possibly multi-GB
+// transcript instead of the whole file, so a huge transcript can never OOM or
+// stall this hook. If the file is smaller than the window we read it all. Any
+// error -> null (caller returns an empty task map -> no block, fail-open).
+function readTranscriptTail(transcriptPath, windowBytes) {
+  const WINDOW = windowBytes || 512 * 1024;
+  let fd = null;
   try {
-    data = fs.readFileSync(filePath, 'utf8');
+    const size = fs.statSync(transcriptPath).size;
+    if (size <= WINDOW) {
+      return { data: fs.readFileSync(transcriptPath, 'utf8'), truncated: false };
+    }
+    const start = size - WINDOW;
+    const buf = Buffer.alloc(WINDOW);
+    fd = fs.openSync(transcriptPath, 'r');
+    const bytesRead = fs.readSync(fd, buf, 0, WINDOW, start);
+    return { data: buf.toString('utf8', 0, bytesRead), truncated: true };
   } catch (_) {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch (_) {}
+    }
+  }
+}
+
+// Strip control chars + newlines and truncate to keep a task subject from
+// injecting instruction-like content (or breaking JSON layout) when embedded in
+// the Stop reason. Does NOT change which tasks are listed — only the rendered
+// string. Non-string input collapses to ''.
+function sanitizeSubject(s, maxLen) {
+  const cap = maxLen || 60;
+  if (typeof s !== 'string') return '';
+  // Replace control chars (C0 0x00-0x1F, DEL 0x7F, C1 0x80-0x9F) — including
+  // newlines/tabs — with spaces, then collapse whitespace runs so nothing in a
+  // task subject can reshape the Stop reason or inject instruction-like lines.
+  let out = s.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (out.length > cap) out = out.slice(0, cap).trimEnd() + '…';
+  return out;
+}
+
+function parseTasksFromFile(filePath) {
+  const tail = readTranscriptTail(filePath);
+  if (!tail) {
     return new Map();
   }
-  const lines = data.split(/\r?\n/);
+  const lines = tail.data.split(/\r?\n/);
+  // The first line of a mid-file window may be a truncated partial JSON line;
+  // drop it so the parser never sees a fragment.
+  if (tail.truncated && lines.length > 0) {
+    lines.shift();
+  }
 
   // provisional storage: tool_use_id -> task record
   const provisionalMap = new Map(); // tool_use_id -> { toolUseId, content, status }

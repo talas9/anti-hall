@@ -259,10 +259,11 @@ if (scope === 'project') {
 
   // Warn if settings.local.json is git-tracked (would leak machine-absolute path)
   try {
-    const { execSync } = require('child_process');
-    const tracked = execSync(
-      'git ls-files --error-unmatch .claude/settings.local.json 2>/dev/null || true',
-      { cwd: process.cwd(), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] }
+    const { execFileSync } = require('child_process');
+    const tracked = execFileSync(
+      'git',
+      ['ls-files', '--error-unmatch', '.claude/settings.local.json'],
+      { cwd: process.cwd(), encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], timeout: 2000 }
     ).trim();
     if (tracked) {
       console.log('');
