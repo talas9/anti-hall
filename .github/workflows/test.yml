@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: node:test (${{ matrix.os }} / node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [18.x, 20.x, 22.x, 24.x]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # Bare `node --test` auto-discovers test files (**/*.test.js, plus a tests/
+      # subtree) from the working directory. No shell glob is expanded, so it
+      # behaves identically on bash, zsh, and PowerShell — unlike `node --test
+      # 'tests/**/*.test.js'` (PowerShell does not expand the glob) or
+      # `node --test tests/` (Node >=22 treats a directory arg as a module path).
+      - run: node --test
