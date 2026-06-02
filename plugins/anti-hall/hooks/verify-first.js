@@ -2,7 +2,7 @@
 // anti-hall :: verify-first SHORT nudge (UserPromptSubmit)
 //
 // The FULL protocol lives in verify-first-full.js (SessionStart primacy slot +
-// SessionStart compact-matcher re-injection). This per-turn hook injects only a
+// SessionStart source="compact" re-injection via the no-matcher SessionStart registration). This per-turn hook injects only a
 // SHORT, 1-line reminder so the per-turn slot stays high-salience instead of
 // being habituated and tuned out.
 //

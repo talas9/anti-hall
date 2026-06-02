@@ -6,6 +6,18 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.18.0
+
+Performance: trimmed the always-on SessionStart protocol (`verify-first-full.js`) footprint by
+condensing VERBOSE PROSE ONLY — every rule, every rationalization trigger phrase, all orchestration
+labels A-K, the USER OVERRIDE mechanism, and the DISCIPLINES section are preserved verbatim. The
+SessionStart injection dropped from 8074 B to 7474 B (~7.4 KB, ~160-180 tokens saved) with zero
+efficacy loss. Hardened by a new 77-test zero-dep E2E net that asserts every marker is present (so a
+dropped rule fails the build), plus TWO deadly-loop passes (Opus reviewer + Codex critic) that caught
+8 semantic nuances the trim over-cut and restored them. Also fixed a stale "compact-matcher" comment
+in `verify-first.js` to match the verified no-matcher SessionStart mechanism. Net: smaller one-time
+injection, identical protocol.
+
 ## 0.17.1
 
 Bug fix: task-tracker self-heals corrupted or future throttle state. A future or non-finite
