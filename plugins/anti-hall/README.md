@@ -48,8 +48,14 @@ claude --plugin-dir /path/to/anti-hall
 | `verify-first-full.js` | SessionStart | Full Iron-Law + rationalization-table protocol, the always-on orchestration discipline, and the always-vs-conditional skill primer; survives compaction. |
 | `verify-first.js` | UserPromptSubmit | Short, varying one-line nudge each turn (anti-habituation). |
 | `git-guard.js` | PreToolUse (Bash) | Blocks AI self-credit commit trailers and `git push --force`. |
-| `task-tracker.js` | UserPromptSubmit | Injects task-list discipline (capture, prioritize, work in order). |
+| `command-guard.js` | PreToolUse (Bash) | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload, per-segment (quote-aware). |
+| `swarm-guard.js` | PreToolUse (Agent/Task) | Anti-fork-bomb — spawn-rate cap + real reclaimable-memory check (`vm_stat` / `MemAvailable`, not `os.freemem()`). |
+| `phase-tracker.js` | PreToolUse (Agent/Task) | Records every subagent spawn so the statusline shows live swarm activity. Never blocks. |
+| `agent-watchdog.js` | CLI helper (not a hook) | Heartbeat enforcer — scans `~/.anti-hall/agents/*.json` and reports stale/hung subagents; run manually by the orchestration skill. |
+| `task-tracker.js` | UserPromptSubmit | Injects task-list discipline (capture, prioritize, work in order) + a one-line freshness note when open/stale tasks exist. |
 | `task-guard.js` | Stop | Blocks once if the session ends with open tasks. |
+| `tasklist-guard.js` | Stop | Blocks when non-trivial work (≥ threshold file-mutating actions) wasn't tracked as tasks or lacks a fresh `.anti-hall-progress.md`; coexists with `task-guard` with its own independent block cap; capped + fail-open. |
+| `skip-guard.js` | Escape hatch (shared primitive) | TTL'd `~/.anti-hall/skip.json` user-override read by the guards; granular per-guard, and a broad `all` skip excludes the destructive git-guard (must be named explicitly). |
 | `graphify-session.js` | SessionStart | Primes "query the graph first" when a graphify graph exists. |
 | `graphify-reminder.js` | Stop | One-time reminder to update the graph after real edits. |
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
@@ -66,7 +72,11 @@ claude --plugin-dir /path/to/anti-hall
   rationalization-table** form. It names the specific bypass excuses ("probably",
   "should work", "seems to", "I'll just assume", "looks done", "tests pass on first
   run") and includes a skill primer listing the core 4 skills (root-cause, orchestration,
-  deadly-loop, feature-launch) and when to reach for each.
+  deadly-loop, feature-launch) and when to reach for each. It also carries the always-on
+  **output-presentation rule K** ("PRESENT FOR SCANNABILITY"): organize output with
+  GitHub-flavored markdown — tables for comparisons/status, **bold** verdicts, `code` for
+  flags/paths/commands, fenced blocks for output, emoji as a leading status glyph (signal,
+  not decoration), and avoid renderer-dropped syntax. Styling organizes, never pads.
   SessionStart is the primacy slot.
 - **Surviving compaction** — SessionStart re-fires after a compaction with
   `source="compact"`. The no-matcher SessionStart registration therefore re-injects
@@ -113,15 +123,43 @@ documented boundaries, not silent gaps.
   model to continue, complete, or explicitly defer them. If the exact same open-task
   set was already blocked on (nothing changed), it skips to prevent infinite loops.
   Fail-open on any parse/read/state error.
+- `tasklist-guard.js` (Stop) blocks when **non-trivial work** — ≥
+  `ANTIHALL_TASKLIST_WORK_THRESHOLD` (default 3) file-mutating actions — happened without
+  task tracking (or with more than one task `in_progress`, or without a fresh
+  `<cwd>/.anti-hall-progress.md`). It coexists with `task-guard` (which drains declared
+  tasks) and keeps an **independent block cap** (`MAX_BLOCKS=3` cumulative/session) so the
+  two never compound. The progress file is gitignored, never created by the hook, and must
+  be updated this session (default 30 min freshness window) to count. Fully fail-open.
+  See [`docs/TASKLIST-GUARD.md`](../../docs/TASKLIST-GUARD.md).
 
-> **Four Stop hooks are registered** (`task-guard`, `graphify-reminder`, `speculation-guard`,
-> `speculation-judge`), all emitting the top-level `{"decision":"block","reason":...}` Stop
-> schema. Claude Code does not merge `reason` strings across Stop hooks: if multiple fire on
+### User-override escape hatch (skip-guard)
+
+The user's explicit instruction outranks any guard. When the user **clearly and directly**
+asks the agent to skip a guard, the agent records that consent via the shared `skip-guard.js`
+primitive — a TTL'd JSON marker at `~/.anti-hall/skip.json`, e.g.
+`{ "tasklist-guard": <unix-ms expiry>, "all": <unix-ms expiry> }`. Every guard checks it at
+startup and fail-opens while it is in effect; the marker auto-expires (default 15 min) so a
+safety guard is never left silently disabled.
+
+- **Granular:** name a single guard (`"speculation-guard"`, `"tasklist-guard"`, …) or use
+  `"all"` to cover the noisy guards at once.
+- **Safe default:** a broad `"all"` skip does **not** cover the destructive `git-guard`
+  (force-push / AI-credit trailer) — to skip that, the agent must name `"git-guard"`
+  explicitly.
+- **Fail direction is inverted from the hooks:** a missing/corrupt skip file makes
+  `isSkipped` return false, so the guard stays **active**. A broken skip file must never
+  silently disable protection.
+
+> **Five Stop hooks are registered** (`task-guard`, `graphify-reminder`, `speculation-guard`,
+> `speculation-judge`, `tasklist-guard`), all emitting the top-level `{"decision":"block","reason":...}`
+> Stop schema. Claude Code does not merge `reason` strings across Stop hooks: if multiple fire on
 > the same Stop, all block but only one reason is shown that turn. `task-guard` is registered
 > **first** because open-task discipline is higher-stakes, so its reason wins precedence.
 > Each is capped (graphify-reminder nudges once per session; task-guard caps at `MAX_BLOCKS`;
 > speculation-guard blocks once per distinct speculative message hash; speculation-judge
-> blocks once per distinct message hash), so the others surface on subsequent Stops.
+> blocks once per distinct message hash; `tasklist-guard` has its own independent block cap
+> — `MAX_BLOCKS=3` cumulative per session — so it never compounds with `task-guard`), so the
+> others surface on subsequent Stops.
 > `speculation-judge` is a no-op unless `ANTIHALL_SEMANTIC_JUDGE=1` — it never blocks in
 > the default configuration.
 
@@ -341,6 +379,10 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 ## Test locally
 
 ```bash
+# Full zero-dependency E2E suite (node:test, run from the repo root):
+node --test                                                                  # 120 tests; CI runs the same on push/PR (.github/workflows/test.yml)
+
+# Quick smoke-checks of individual hooks:
 echo '{"hook_event_name":"SessionStart"}' | node hooks/verify-first-full.js  # full Iron-Law protocol + skill primer
 echo '{"prompt":"x"}' | node hooks/verify-first.js                           # short varying nudge (varies by full stdin envelope)
 echo '{"prompt":"y"}' | node hooks/verify-first.js                           # different envelope -> different nudge

@@ -45,6 +45,10 @@ argued with.
   `SessionStart` (re-fires after compaction so it survives long sessions), plus a varying
   one-line nudge on every prompt (`task-tracker` is **throttled**: full directive only on
   the first turn, a one-liner after — cutting per-turn injection ~68%).
+- **Output-presentation (rule K)** — an always-on "present for scannability" rule in the
+  SessionStart protocol: organize output with GitHub-flavored markdown (tables, **bold**
+  verdicts, `code` for flags/paths, fenced blocks), emoji as signal not decoration, and
+  avoid renderer-dropped syntax. Styling organizes, never pads.
 - **Guards that can't be talked around:**
 
 | Hook | Event | What it enforces |
@@ -62,6 +66,7 @@ argued with.
 | `graphify-session` | SessionStart | Reminds to query the graph first when a `graphify-out/` graph exists |
 | `graphify-guard` | PreToolUse/Grep+Glob+Bash | Blocks the *first* code-navigation search of a session and redirects to `/graphify query` when a graph exists. Segment/verb-aware — a substring like `echo /graphify && rg secret` doesn't exempt the search. Block-once per session; second call always allowed |
 | `graphify-reminder` | Stop | One-time soft block reminding to keep the graph updated |
+| `skip-guard` | Escape hatch (shared) | TTL'd `~/.anti-hall/skip.json` user-override read by the guards; granular per-guard, and a broad `all` skip excludes the destructive `git-guard` (must be named explicitly) |
 
 **🔵 On-demand (the skills).** Invoke as `/anti-hall:<name>`:
 
@@ -152,13 +157,18 @@ anti-hall/
 │   ├── skills/                         # root-cause · orchestration · deadly-loop · deadly-loop-multi · feature-launch · install-statusline · doctor
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
-├── docs/                               # KB + design notes (incl. Claude Code internals)
+├── docs/                               # KB + design notes — CONTEXT-PRESERVATION-KB · KB · TASKLIST-GUARD · TASK-WORK · E2E-TESTING (+ Claude Code internals)
+├── tests/                              # zero-dependency node:test E2E suite (120 tests) — `node --test`
+├── .github/workflows/test.yml          # CI: runs the suite on push/PR
 └── CHANGELOG.md
 ```
 
 **AGENTS.md** is a self-contained mirror of the discipline for tools that read
 `AGENTS.md` (e.g. Codex). It lives at the repo root and is **not** bundled by
 `/plugin install` — copy it into your own repo if you want cross-tool coverage.
+
+A zero-dependency **`node --test` E2E suite** (`tests/`, 120 tests) covers the hooks and
+runs in **CI** on every push/PR ([`.github/workflows/test.yml`](.github/workflows/test.yml)).
 
 See [`plugins/anti-hall/README.md`](plugins/anti-hall/README.md) for the full component
 reference, configuration, troubleshooting, and local testing.

@@ -3,9 +3,11 @@
 > A Claude Code marketplace + plugin that makes Claude Code verify before it claims.
 > It injects a verify-first protocol at session start (re-firing after compaction), a
 > short rotating nudge every turn, mechanical guards (no AI commit self-credit, no silent
-> force-push, command-delegation, anti-fork-bomb, anti-speculation), seven workflow skills,
-> and a live two-line statusline. All hooks are pure Node.js (built-ins only) and run on
-> macOS, Linux, and Windows; the one prerequisite is Node >= 18 on PATH.
+> force-push, command-delegation, anti-fork-bomb, anti-speculation, task-list discipline via
+> tasklist-guard), an always-on output-presentation rule (rule K: present for scannability),
+> a TTL'd user-override escape hatch (~/.anti-hall/skip.json), seven workflow skills, and a
+> live two-line statusline. All hooks are pure Node.js (built-ins only) and run on macOS,
+> Linux, and Windows; the one prerequisite is Node >= 18 on PATH.
 
 anti-hall targets four failure modes of coding assistants: eagerness (acting before
 investigating), hallucination (stating unverified facts as truth), fix-before-diagnosis
@@ -30,6 +32,11 @@ Requires Node.js >= 18 on PATH; without it the hooks silently no-op. Updates via
 - [CHANGELOG](CHANGELOG.md): version history (current: see plugin.json).
 - [AGENTS.md](AGENTS.md): prose mirror of the verify-first Iron Law for Codex / cross-tool agents (repo root; not bundled by /plugin install).
 - [docs/KB-claude-codex.md](docs/KB-claude-codex.md): knowledge base on Claude Code hook contracts, prompting, and verified Claude Code internals (cmux subagent detection, macOS memory, statusline architecture).
+- [docs/KB.md](docs/KB.md): plugin knowledge base index (hooks, skills, design decisions).
+- [docs/CONTEXT-PRESERVATION-KB.md](docs/CONTEXT-PRESERVATION-KB.md): swarm-researched context-discipline KB (findings-externalization, compaction cadence, context-rot sweet spot).
+- [docs/TASK-WORK.md](docs/TASK-WORK.md): task-list + `.anti-hall-progress.md` work-tracking discipline.
+- [docs/TASKLIST-GUARD.md](docs/TASKLIST-GUARD.md): tasklist-guard usage, thresholds, and escape hatch.
+- [docs/E2E-TESTING.md](docs/E2E-TESTING.md): the zero-dependency `node:test` E2E suite and how to run it.
 
 ## Hooks (plugins/anti-hall/hooks/)
 
@@ -41,8 +48,11 @@ All pure Node, fail-open. Registered in hooks.json.
 - [command-guard.js](plugins/anti-hall/hooks/command-guard.js): PreToolUse Bash — blocks heavy commands in the COORDINATOR (pushes them to subagents); subagent-aware via the hook payload (works under cmux where the entrypoint env is unreliable).
 - [swarm-guard.js](plugins/anti-hall/hooks/swarm-guard.js): PreToolUse Agent/Task — anti-fork-bomb: spawn-rate cap + real available-memory check (vm_stat / MemAvailable, not os.freemem()).
 - [phase-tracker.js](plugins/anti-hall/hooks/phase-tracker.js): PreToolUse Agent/Task — records subagent spawns to a homedir log so the statusline shows live swarm activity automatically. Never blocks.
-- [task-tracker.js](plugins/anti-hall/hooks/task-tracker.js): UserPromptSubmit — task-list discipline directive.
+- [agent-watchdog.js](plugins/anti-hall/hooks/agent-watchdog.js): CLI heartbeat helper (NOT a hook) — scans `~/.anti-hall/agents/*.json` heartbeats and reports stale/hung subagents; run manually by the orchestration skill.
+- [task-tracker.js](plugins/anti-hall/hooks/task-tracker.js): UserPromptSubmit — task-list discipline directive (+ a one-line freshness note when open/stale tasks exist).
 - [task-guard.js](plugins/anti-hall/hooks/task-guard.js): Stop (loop-safe) — blocks once when the session ends with genuinely-open tasks.
+- [tasklist-guard.js](plugins/anti-hall/hooks/tasklist-guard.js): Stop — enforces a live task-list + fresh `.anti-hall-progress.md` for non-trivial work (≥ threshold file-mutating actions); coexists with task-guard with its own independent block cap.
+- [skip-guard.js](plugins/anti-hall/hooks/skip-guard.js): shared user-override escape-hatch primitive read by the guards — a TTL'd, granular `~/.anti-hall/skip.json` marker; a broad `all` skip excludes the destructive git-guard (it must be named explicitly).
 - [speculation-guard.js](plugins/anti-hall/hooks/speculation-guard.js): Stop — flags hedge-word speculation; confident inference-as-fact is the opt-in speculation-judge (Tier 3).
 - [speculation-judge.js](plugins/anti-hall/hooks/speculation-judge.js): Stop — opt-in LLM-evaluated speculation check (off by default).
 - [graphify-session.js](plugins/anti-hall/hooks/graphify-session.js) / [graphify-reminder.js](plugins/anti-hall/hooks/graphify-reminder.js) / [graphify-guard.js](plugins/anti-hall/hooks/graphify-guard.js): query-the-graph-first priming, update reminder, and search guard (no-op without a graph).
@@ -78,6 +88,11 @@ Two-line statusline the plugin renders itself.
 
 - [plugins/anti-hall/.claude-plugin/plugin.json](plugins/anti-hall/.claude-plugin/plugin.json): plugin manifest; version is the sole authority.
 - [.claude-plugin/marketplace.json](.claude-plugin/marketplace.json): marketplace manifest.
+
+## Tests
+
+- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 120 tests covering the hooks (guards, speculation, tasklist-guard Bash-regex cases, etc.). Run with `node --test`.
+- [.github/workflows/test.yml](.github/workflows/test.yml): CI runs the suite on push/PR.
 
 ## Read more
 
