@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.17.1
+
+Bug fix: task-tracker self-heals corrupted or future throttle state. A future or non-finite
+`lastFull` timestamp (from clock skew, manual edit, or corruption) previously left the throttle
+window permanently "within window", so the full task directive never re-showed. The throttle now
+detects a future-beyond-tolerance (5 min) or non-finite value as window-expired and rewrites
+the state to now, allowing the full task output to surface again on the next turn.
+
 ## 0.17.0
 
 Tier-B guard hardening. Tightens the static command analysis so a quoted data literal is no

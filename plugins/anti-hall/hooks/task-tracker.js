@@ -48,6 +48,11 @@ const SHORT =
 // primer fresh across a long session without repeating it every turn.
 const WINDOW_MS = 6 * 60 * 60 * 1000;
 
+// Tolerance for a stored timestamp slightly ahead of `now` (benign clock skew
+// between writes/reads). Anything beyond this in the future is treated as
+// corrupt and self-healed. See the future/garbage-timestamp guard below.
+const FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+
 // Decide which message to inject. Returns FULL on the first turn of a session or
 // when the window has expired; SHORT otherwise. FAIL-OPEN to FULL on any error
 // so task discipline is never weakened by a state-file problem.
@@ -66,14 +71,25 @@ function pickMessage(payload) {
       const raw = fs.readFileSync(stateFile, 'utf8').trim();
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && Number.isFinite(parsed.lastFull)) lastFull = parsed.lastFull;
+        // FUTURE/GARBAGE-TIMESTAMP GUARD: only trust a stored timestamp that is a
+        // finite number AND not in the future (allowing a small clock-skew
+        // tolerance). A future or non-finite value (clock skew, timezone error,
+        // manual edit, corrupted state) would make `now - lastFull` negative, so
+        // `now - lastFull < WINDOW_MS` stays true forever and the FULL directive
+        // would NEVER re-show. We reject such values (leave lastFull = 0) so the
+        // window is treated as EXPIRED below -> FULL directive + state rewritten
+        // to `now`, self-healing the bad value rather than trusting it.
+        if (parsed && Number.isFinite(parsed.lastFull) &&
+            parsed.lastFull <= now + FUTURE_TOLERANCE_MS) {
+          lastFull = parsed.lastFull;
+        }
       }
     } catch (_) {
       // No prior state -> first turn -> FULL below.
     }
 
     if (now - lastFull < WINDOW_MS) {
-      // Within the window: short reminder, no state write needed.
+      // Within a valid past window: short reminder, no state write needed.
       return SHORT;
     }
 
