@@ -89,6 +89,12 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
 - Do not end with silently-dropped requests.
 - Communicate concisely: enough to convey meaning, not pages; offer to expand if the user
   wants more detail.
+- Present for scannability (do not overdo it): organize terminal output with GitHub-flavored
+  markdown - tables for comparisons/status, **bold** verdicts, *italic* caveats, `code` for
+  flags/paths/commands, fenced blocks for output, at most a leading status glyph (emoji =
+  signal, not decoration). Styling organizes, never pads. Avoid renderer-dropped syntax
+  (strikethrough, [label](url) labels - paste the bare URL, nested blockquotes, task
+  checkboxes); underline and per-word color do not exist.
 - WATCH/BABYSIT spawned agents: poll TaskOutput on a regular interval; if an agent has not
   updated its heartbeat file (~/.anti-hall/agents/<id>.json, field `ts`) within 20 minutes,
   call TaskStop on it and re-dispatch with a tighter scope (fewer files, shorter time

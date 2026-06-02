@@ -6,6 +6,27 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.13.0
+
+Adds an always-on output-presentation discipline so chat output is structured and
+scannable without becoming noisy.
+
+- **New SessionStart rule K — "PRESENT FOR SCANNABILITY (do not overdo it)".** Appended
+  to the orchestration block in `verify-first-full.js` (and mirrored as a bullet in
+  `AGENTS.md`). Encodes the conservative, renderer-verified subset of GitHub-flavored
+  markdown that Claude Code's terminal actually renders: tables for comparisons/status,
+  **bold** verdicts, *italic* caveats, `code` for flags/paths/commands, fenced blocks for
+  output, at most a leading status glyph (emoji = signal, not decoration). Explicitly
+  steers AWAY from syntax the terminal renderer drops or mangles — strikethrough,
+  `[label](url)` link labels (paste the bare URL), nested blockquotes, task-list
+  checkboxes — and notes that underline and per-word color do not exist in the renderer.
+  Subset confirmed against Claude Code terminal-rendering issue reports + docs. Styling
+  organizes, never pads: rule H (concise) still governs. Appended as rule K so existing
+  letters A-J do not renumber. SessionStart footprint grows by ~0.5 KB.
+- **Doc accuracy:** corrected the stale "5 nudges" comments in `verify-first.js` (the
+  `NUDGES` array has 12 entries, not 5) and refreshed the root README SessionStart
+  footprint figure to the doctor-measured value.
+
 ## 0.12.1
 
 Fixes AUDIT-REPORT-2 item #7(a): the shared global statusline base was deleted on

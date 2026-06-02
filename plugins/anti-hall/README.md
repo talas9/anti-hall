@@ -76,7 +76,7 @@ claude --plugin-dir /path/to/anti-hall
   UserPromptSubmit / UserPromptExpansion / SessionStart can inject
   `additionalContext`, so a PreCompact hook would deliver nothing.
 - **Per-turn nudge** — `verify-first.js` injects ONE short one-liner per turn
-  (one of 5 facets of the Iron Law), so the per-turn slot stays high-salience
+  (one of 12 facets of the Iron Law), so the per-turn slot stays high-salience
   instead of being habituated and tuned out. The facet is chosen deterministically
   by a SHA-1 hash of the **entire UserPromptSubmit stdin envelope** — which carries
   `session_id` / `transcript_path` / `cwd` alongside the prompt. So the nudge is

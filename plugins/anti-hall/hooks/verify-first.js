@@ -11,7 +11,7 @@
 //     middle / repeated identical reminders get habituated." Adherence is a
 //     function of placement and NOVELTY, not repetition. A byte-identical wall of
 //     text every turn is exactly what the model learns to skip.
-//   - We rotate among 5 one-liners chosen DETERMINISTICALLY from a crypto hash of
+//   - We rotate among 12 one-liners chosen DETERMINISTICALLY from a crypto hash of
 //     the ENTIRE raw stdin envelope (not just payload.prompt — see below), so the
 //     nudge varies turn to turn. It is reproducible for a given full envelope; it
 //     varies by the whole UserPromptSubmit payload (which includes session_id,

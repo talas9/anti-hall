@@ -104,7 +104,7 @@ is meant to prevent. anti-hall enforces this at two levels:
 
 **For itself:** the plugin minimizes its own footprint in your conversation:
 - `task-tracker` is **throttled** — full directive once per ~6h window, one-liner after (~68% per-turn reduction, ≈693 B → ≈223 B steady-state).
-- `verify-first-full.js` (SessionStart) was tightened ~13% with no rule removed.
+- `verify-first-full.js` (SessionStart) carries the full Iron-Law + orchestration protocol; `/anti-hall:doctor` reports its exact byte size, so any change to the footprint stays visible and auditable rather than hidden behind a fixed claim.
 - `/anti-hall:doctor` **measures** the context footprint — reports SessionStart / per-turn / per-Stop injection sizes in bytes + estimated tokens, so the cost is visible and auditable.
 
 ---

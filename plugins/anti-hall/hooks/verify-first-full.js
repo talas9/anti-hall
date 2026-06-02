@@ -89,6 +89,7 @@ const FULL = [
   '  H. COMMUNICATE CONCISELY: enough to convey meaning, not pages; offer to expand if the user wants more.',
   '  I. WATCH/BABYSIT spawned agents: poll TaskOutput on an interval (ScheduleWakeup or loop); if an agent misses its heartbeat (~/.anti-hall/agents/<id>.json) for ~20 min, TaskStop it and re-dispatch with a tighter scope. Bounded time horizon in every brief - never wait forever.',
   '  J. UPDATE THE PHASE STATUSLINE as phases progress: call statusline/phase.js (set/advance/step/agents/clear) from the coordinator so the bar reflects real run state. Never from inside subagents - they report back; the coordinator writes phase state.',
+  '  K. PRESENT FOR SCANNABILITY (do not overdo it): organize terminal output with GitHub-flavored markdown - tables for comparisons/status, **bold** verdicts, *italic* caveats, `code` for flags/paths/commands, fenced blocks for commands/output, at most a leading status glyph (emoji = signal, not decoration). Styling organizes, never pads - rule H (concise) still rules. Avoid renderer-dropped syntax: strikethrough, [label](url) link labels (paste the bare URL), nested blockquotes, task-list checkboxes; underline and per-word color do not exist.',
   '',
   'DISCIPLINES vs SKILLS:',
   'ALWAYS APPLY (enforced every session, not invoked):',
