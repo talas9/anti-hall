@@ -227,6 +227,20 @@ function getGsdPhase() {
   }
 }
 
+// Claude account email chip — OPT-IN via the ANTIHALL_STATUSLINE_EMAIL env var.
+// Reads the signed-in account email from ~/.claude.json
+// (oauthAccount.emailAddress). OFF by default on purpose: the plugin must never
+// surface a user's email on their statusline without explicit consent.
+function getClaudeEmail() {
+  try {
+    const cfg = readJSON(path.join(os.homedir(), '.claude.json'));
+    const email = cfg && cfg.oauthAccount && cfg.oauthAccount.emailAddress;
+    return (typeof email === 'string' && email.trim()) ? email.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Git info ───────────────────────────────────────────────────
 
 // Get all git info via shell-free execFileSync calls.
@@ -532,6 +546,15 @@ function generateStatusline() {
     if (gsd.pct != null) parts.push(gsd.pct + '%');
     if (parts.length) {
       header += '  ' + c.dim + '│' + c.reset + '  ' + c.cyan + '▸ ' + parts.join(' · ') + c.reset;
+    }
+  }
+  // Claude account email chip — OPT-IN (set ANTIHALL_STATUSLINE_EMAIL=1). Dim,
+  // last segment. Off by default so the plugin never shows an email unasked.
+  const emailFlag = process.env.ANTIHALL_STATUSLINE_EMAIL;
+  if (emailFlag && emailFlag !== '0' && emailFlag !== 'false') {
+    const email = getClaudeEmail();
+    if (email) {
+      header += '  ' + c.dim + '│' + c.reset + '  ' + c.dim + '✉ ' + email + c.reset;
     }
   }
   lines.push(header);

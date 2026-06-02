@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.14.0
+
+Adds an opt-in account-email chip to the rich statusline.
+
+- **`statusline-rich.js` can now show a `✉ <email>` chip** as the last line-1 segment,
+  reading the signed-in Claude account email from `~/.claude.json`
+  (`oauthAccount.emailAddress`). **OFF by default** and gated behind the
+  `ANTIHALL_STATUSLINE_EMAIL` env var (set to `1`/any non-`0`/`false` value to enable) —
+  the plugin must never surface a user's email on their statusline without explicit
+  consent. New `getClaudeEmail()` helper; pure file read, fail-open (no chip on any error).
+  This brings the plugin's own renderer to parity with custom `.claude/helpers/`
+  statuslines that already show the email, without making it a privacy-leaking default.
+
 ## 0.13.0
 
 Adds an always-on output-presentation discipline so chat output is structured and
