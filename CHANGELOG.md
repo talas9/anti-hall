@@ -6,6 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.12.1
+
+Fixes AUDIT-REPORT-2 item #7(a): the shared global statusline base was deleted on
+every uninstall.
+
+- **`uninstall-statusline` no longer deletes the shared global base by default.**
+  `~/.anti-hall/base-statusline.json` is GLOBAL — every project whose statusLine points
+  at the dispatcher wraps it as line 1. The uninstaller's Strategy A unconditionally
+  `unlink`ed it after restoring the original command, so uninstalling in ONE project
+  (even `--project` scope) silently stripped line 1 for EVERY other project still
+  relying on it. A reference count is infeasible (no way to enumerate all projects'
+  settings files), so the safe default is now: restore this scope's original command
+  and LEAVE the shared base in place. An orphaned JSON is harmless; a deleted shared
+  one is not. New opt-in `--purge-base` flag explicitly removes it for the
+  "done with anti-hall on this whole machine" case (use only after uninstalling
+  everywhere). Verified with a fake-HOME behavioral test: default keeps base + restores
+  original command; `--purge-base` deletes it.
+
 ## 0.12.0
 
 Closes three deferred AUDIT-REPORT-2 needs-review gaps (external reviewer + codex).

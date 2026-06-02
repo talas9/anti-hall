@@ -7,12 +7,22 @@
 //   2. Else if the backup (settings.json.bak-antihall) exists, restore it entirely.
 //   3. Else remove the statusLine key from the current settings.json.
 //
-// Also removes ~/.anti-hall/base-statusline.json once the original is restored.
+// IMPORTANT — the shared global base is NOT deleted by default:
+//   ~/.anti-hall/base-statusline.json is GLOBAL: every project whose statusLine
+//   points at the dispatcher wraps it as line 1. Deleting it during a single
+//   project's uninstall would silently break line 1 for EVERY other project that
+//   still relies on it. We cannot reference-count (no way to enumerate all
+//   projects' settings files), so the safe default is to leave it in place. An
+//   orphaned JSON is harmless; a deleted shared one is not.
+//   Pass --purge-base to explicitly remove it ("I'm done with anti-hall on this
+//   whole machine"). Only do that after uninstalling from every project.
+//
 // Idempotent: safe to run multiple times.
 //
 // Scope:
-//   --user    (default)  ~/.claude/settings.json
-//   --project            ./.claude/settings.json
+//   --user        (default)  ~/.claude/settings.json
+//   --project                ./.claude/settings.json
+//   --purge-base             also delete the shared global base-statusline.json
 
 'use strict';
 
@@ -20,8 +30,9 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
-const args  = process.argv.slice(2);
-const scope = args.includes('--project') ? 'project' : 'user';
+const args      = process.argv.slice(2);
+const scope     = args.includes('--project') ? 'project' : 'user';
+const purgeBase = args.includes('--purge-base');
 
 let SETTINGS_PATH;
 if (scope === 'user') {
@@ -37,6 +48,19 @@ const BASE_CFG     = path.join(BASE_CFG_DIR, 'base-statusline.json');
 console.log('Scope:    ' + scope);
 console.log('Settings: ' + SETTINGS_PATH);
 console.log('');
+
+// Delete the shared global base ONLY when --purge-base is given. Used by the
+// fall-through strategies (B/C) where the base wasn't consumed for a restore
+// (e.g. missing or corrupt). Strategy A handles its own purge messaging inline.
+function purgeBaseIfRequested() {
+  if (!purgeBase) return;
+  if (!fs.existsSync(BASE_CFG)) return;
+  try {
+    fs.unlinkSync(BASE_CFG);
+    console.log('Purged shared base config (--purge-base): ' + BASE_CFG);
+    console.log('');
+  } catch (e) { /* already gone */ }
+}
 
 // Settings file must exist.
 if (!fs.existsSync(SETTINGS_PATH)) {
@@ -77,13 +101,23 @@ if (fs.existsSync(BASE_CFG)) {
       process.exit(1);
     }
 
-    // Remove the base config now that it has been restored.
-    try { fs.unlinkSync(BASE_CFG); } catch (e) { /* already gone */ }
-
     console.log('Restored original statusLine from: ' + BASE_CFG);
     console.log('  command: ' + restoredCmd);
     console.log('');
-    console.log('Removed base config: ' + BASE_CFG);
+
+    // The base config is GLOBAL/shared — other projects wrap it as line 1.
+    // Only delete it when the user explicitly opts in via --purge-base.
+    if (purgeBase) {
+      try {
+        fs.unlinkSync(BASE_CFG);
+        console.log('Purged shared base config (--purge-base): ' + BASE_CFG);
+        console.log('  NOTE: any OTHER project still pointing at the anti-hall dispatcher');
+        console.log('  will lose its line-1 wrapper and fall back to the rich renderer.');
+      } catch (e) { /* already gone */ }
+    } else {
+      console.log('Kept shared base config (global, used by other projects): ' + BASE_CFG);
+      console.log('  Pass --purge-base to remove it once anti-hall is uninstalled everywhere.');
+    }
     console.log('');
     console.log('Restart Claude Code (close and reopen) for the change to take effect.');
     process.exit(0);
@@ -121,6 +155,7 @@ if (fs.existsSync(BACKUP_PATH)) {
       console.log('Backup had no statusLine key — statusLine removed.');
     }
     console.log('');
+    purgeBaseIfRequested();
     console.log('Restart Claude Code (close and reopen) for the change to take effect.');
     process.exit(0);
   }
@@ -158,4 +193,5 @@ console.log(JSON.stringify(removed, null, 2));
 console.log('');
 console.log('(No backup or base config was available; key deleted directly.)');
 console.log('');
+purgeBaseIfRequested();
 console.log('Restart Claude Code (close and reopen) for the change to take effect.');
