@@ -60,6 +60,7 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
 - Do not delete data (files, branches, DB rows, remote state) without explicit
   confirmation.
 - Commit/push only when the human asks.
+- **Releases:** follow the [RELEASING.md](RELEASING.md) checklist for every shipped version.
 
 ## Orchestration + task-list discipline (always apply)
 

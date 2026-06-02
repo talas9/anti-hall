@@ -6,6 +6,10 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.20.3
+
+Add RELEASING.md — the ordered release + doc-currency checklist the agent follows on every ship (manual tagging by agent, no CD); pointer from AGENTS.md.
+
 ## 0.20.2
 
 Doc currency sync — `llms.txt` + `plugins/anti-hall/README.md` were stale (predated tasklist-guard / skip-guard / rule K); added the missing hooks (`tasklist-guard`, `skip-guard`, `command-guard`, `swarm-guard`, `phase-tracker`, `agent-watchdog`), the user-override escape hatch, rule K output-presentation, the E2E test suite + CI, and the new docs (`CONTEXT-PRESERVATION-KB`, `TASK-WORK`, `TASKLIST-GUARD`, `KB`, `E2E-TESTING`). Fixed "four Stop hooks" → five. CHANGELOG + tests were already current.
