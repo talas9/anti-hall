@@ -20,7 +20,7 @@
 //
 // LOOP SAFETY (per-session, per-project)
 //   Blocks ONCE per session per project-root. After the first block, a marker under
-//   os.tmpdir()/anti-hall/ is written, and subsequent calls exit 0 (allow). This
+//   os.homedir()/.anti-hall is written, and subsequent calls exit 0 (allow). This
 //   means the model is nudged once, then allowed to proceed without repeated friction.
 //
 // Fail-open on ANY error (exit 0). Never blocks when uncertain.
@@ -242,6 +242,22 @@ function isCodeNavBashCommand(command, depth) {
   return false;
 }
 
+// sanitizePath — a graph dir / project path is reflected into the block reason
+// (which the model reads). A crafted directory name could carry control chars /
+// newlines to inject instruction-like lines into the reason. Strip C0/C1 control
+// chars + newlines and truncate so the path can't reshape the message. Mirrors
+// command-guard's closed-set / task-guard's sanitizeSubject hygiene.
+function sanitizePath(p) {
+  if (typeof p !== 'string') return '';
+  let out = p.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
+    // Unicode bidi overrides (U+202A–U+202E) + isolates (U+2066–U+2069): strip
+    // entirely so they cannot visually reorder the reflected reason.
+    .replace(/[‪-‮⁦-⁩]/g, '')
+    .replace(/\s+/g, ' ').trim();
+  if (out.length > 80) out = out.slice(0, 80).trimEnd() + '…';
+  return out;
+}
+
 function getSessionGraphKey(sessionId, graphRoot) {
   const combined = String(sessionId) + '|' + String(graphRoot);
   return crypto.createHash('sha1').update(combined).digest('hex').slice(0, 20);
@@ -335,10 +351,12 @@ function main() {
     ? 'Bash search/command'
     : toolName;
 
+  const safeGraphDir = sanitizePath(graphDir);
+  const safeWikiIndex = sanitizePath(path.join(graphDir, 'wiki', 'index.md'));
   const reason =
-    'GRAPHIFY-FIRST: this project has a knowledge graph at "' + graphDir + '". ' +
+    'GRAPHIFY-FIRST: this project has a knowledge graph at "' + safeGraphDir + '". ' +
     'Query it FIRST before raw code search: run `/graphify query "<question>"` ' +
-    'or read the wiki index at "' + path.join(graphDir, 'wiki', 'index.md') + '". ' +
+    'or read the wiki index at "' + safeWikiIndex + '". ' +
     'Raw search (' + toolLabel + ') is allowed after the graph has been consulted ' +
     'or lacks the answer (this block fires only once per session). ' +
     'Stop. Query the graph. Then come back to search if needed.';

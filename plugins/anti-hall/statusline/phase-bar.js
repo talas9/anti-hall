@@ -50,6 +50,29 @@ function readStdin() {
   try { return fs.readFileSync(0, 'utf8'); } catch (e) { return ''; }
 }
 
+// safeLabel — strip terminal-escape injection from dynamic text rendered into
+// the statusline. A crafted phase desc / code / step (written to phase-state by
+// a tool) or a branch name could carry ANSI/OSC/C0/C1 control sequences that
+// move the cursor, recolor the whole line, set the window title (OSC), or smuggle
+// hidden text. We render with our OWN ANSI codes, so any escape from DATA is an
+// injection. Drop: ESC-introduced sequences (CSI/OSC/other), bare C0 (except none
+// kept), DEL, and C1 control bytes. Cheap (linear) + fail-open (returns '' on a
+// non-string). Apply to every field rendered from cwd/git/phase-state.
+function safeLabel(s) {
+  if (typeof s !== 'string') return '';
+  return s
+    // OSC: ESC ] ... (BEL | ESC \) — window-title / hyperlink injection.
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, '')
+    // CSI and other ESC-introduced sequences.
+    .replace(/\x1b[@-_][0-?]*[ -/]*[@-~]?/g, '')
+    .replace(/\x1b./g, '')
+    // Bare C0 control chars (incl. newlines/tabs) + DEL + C1 range.
+    .replace(/[\x00-\x1F\x7F-\x9F]/g, '')
+    // Unicode bidi overrides (U+202A–U+202E) + isolates (U+2066–U+2069):
+    // survive the C0/C1 strip but visually reorder terminal output.
+    .replace(/[‪-‮⁦-⁩]/g, '');
+}
+
 const BAR_WIDTH = 20;
 // Rotating half-disc (Unicode geometric shapes, cross-OS: macOS/Linux/Windows
 // Terminal). Full-bodied so it aligns with the block fill and reads as a clear
@@ -103,8 +126,8 @@ function phaseBarLine() {
   let state;
   try { state = JSON.parse(raw); } catch (e) { return null; }
 
-  const code  = (state.code || '').toString().trim();
-  let   desc  = (state.desc || '').toString().trim();
+  const code  = safeLabel((state.code || '').toString()).trim();
+  let   desc  = safeLabel((state.desc || '').toString()).trim();
   const done  = parseInt(state.done,  10);
   const total = parseInt(state.total, 10);
   if (!code || !desc || isNaN(done) || isNaN(total) || total <= 0) return null;
@@ -126,7 +149,7 @@ function phaseBarLine() {
   if (!isNaN(agents) && agents >= 0) {
     extras.push(C.blue + agents + (agents === 1 ? ' agent' : ' agents') + C.reset);
   }
-  let step = (state.step || '').toString().trim();
+  let step = safeLabel((state.step || '').toString()).trim();
   if (step) {
     if (step.length > 28) step = step.slice(0, 27) + '...';
     extras.push(C.dim + step + C.reset);

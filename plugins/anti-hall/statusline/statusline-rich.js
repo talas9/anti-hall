@@ -63,6 +63,25 @@ const c = {
 
 // ─── Safe helpers ───────────────────────────────────────────────
 
+// safeLabel — strip terminal-escape injection from dynamic text rendered into
+// the statusline. A crafted branch name / project dir name (which we read from
+// git / the filesystem) could carry ANSI/OSC/C0/C1 control sequences that move
+// the cursor, recolor the whole line, set the window title (OSC), or smuggle
+// hidden text. We emit our OWN ANSI codes, so any escape from DATA is injection.
+// Drop ESC-introduced sequences (CSI/OSC/other), bare C0, DEL, and C1 bytes.
+// Cheap (linear) + fail-open (returns '' on a non-string).
+function safeLabel(s) {
+  if (typeof s !== 'string') return '';
+  return s
+    .replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?/g, '') // OSC (title/hyperlink)
+    .replace(/\x1b[@-_][0-?]*[ -/]*[@-~]?/g, '')        // CSI + other ESC seqs
+    .replace(/\x1b./g, '')
+    .replace(/[\x00-\x1F\x7F-\x9F]/g, '')               // C0 + DEL + C1
+    // Unicode bidi overrides (U+202A–U+202E) + isolates (U+2066–U+2069):
+    // they survive the C0/C1 strip but visually reorder terminal output.
+    .replace(/[‪-‮⁦-⁩]/g, '');
+}
+
 // Safe execSync with strict timeout (returns empty string on failure)
 function safeExec(cmd, timeoutMs = 2000) {
   try {
@@ -478,21 +497,21 @@ function generateStatusline() {
 
   // Header — project name = basename of the git toplevel (or cwd).
   const cwdInfo = getCwdInfo();
-  const projectName = path.basename(getProjectRoot()) || 'project';
+  const projectName = safeLabel(path.basename(getProjectRoot())) || 'project';
   let header = c.bold + c.brightPurple + '▊ ' + projectName + c.reset;
   if (cwdInfo.submodule) {
-    header += c.dim + '/' + c.reset + c.bold + c.brightPurple + cwdInfo.submodule + c.reset;
+    header += c.dim + '/' + c.reset + c.bold + c.brightPurple + safeLabel(cwdInfo.submodule) + c.reset;
   }
   header += ' ' + c.dim + '● ' + c.brightCyan + git.name + c.reset;
   if (cwdInfo.subPath) {
-    header += '  ' + c.dim + '│' + c.reset + '  ' + c.dim + '📂 ' + cwdInfo.subPath + c.reset;
+    header += '  ' + c.dim + '│' + c.reset + '  ' + c.dim + '📂 ' + safeLabel(cwdInfo.subPath) + c.reset;
   }
   if (git.gitBranch) {
     // 🌳 worktree (linked checkout) · 🌿 plain branch in main checkout
     const refIcon = git.isWorktree ? '🌳' : '🌿';
     const refLabel = git.isWorktree && git.worktreeName
-      ? git.worktreeName + '@' + git.gitBranch
-      : git.gitBranch;
+      ? safeLabel(git.worktreeName) + '@' + safeLabel(git.gitBranch)
+      : safeLabel(git.gitBranch);
     header += '  ' + c.dim + '│' + c.reset + '  ' + c.brightBlue + refIcon + ' ' + refLabel + c.reset;
     const changes = git.modified + git.staged + git.untracked;
     if (changes > 0) {
@@ -580,6 +599,6 @@ function runStatusline() {
   } catch { /* fail-open */ }
 }
 
-module.exports = { runWithInput };
+module.exports = { runWithInput, safeLabel };
 
 if (require.main === module) runStatusline();

@@ -519,7 +519,10 @@ function hasCmdSubstArg(rest) {
 // co-author named "Assistant" or a doc that mentions "GPT-3"):
 // Anchored to the start of a line: a real `Co-authored-by:` trailer, not a
 // mid-sentence mention of the phrase in prose.
-const SELF_CREDIT_COAUTHOR = /^[ \t]*co-authored-by:[^\n]*(claude|anthropic\.com|@openai\.com|chatgpt|gpt-[45][^a-z0-9]|gpt-[45]$|codex <|cursor <|github copilot)/im;
+// Accept BOTH the `:` and `=` separators: git's `--trailer` honors a
+// `key=value` form as well as `key: value`, so `Co-Authored-By=Claude <...>`
+// is a real self-credit trailer that must block exactly like the `:` form.
+const SELF_CREDIT_COAUTHOR = /^[ \t]*co-authored-by[ \t]*[:=][^\n]*(claude|anthropic\.com|@openai\.com|chatgpt|gpt-[45][^a-z0-9]|gpt-[45]$|codex <|cursor <|github copilot)/im;
 // Anchored to the START of a line (a real trailer/signature line), not free
 // prose, so a sentence that merely MENTIONS the phrase (e.g. a changelog entry
 // "docs: explain output generated with claude code") is not false-blocked. Only
@@ -530,6 +533,38 @@ const SELF_CREDIT_COAUTHOR = /^[ \t]*co-authored-by:[^\n]*(claude|anthropic\.com
 // non-space, non-letter chars before the word, so a tight allowance for them
 // keeps the match anchored to a signature line without false-blocking prose.
 const SELF_CREDIT_GENERATED = /^[ \t]*[^A-Za-z0-9 \t]{0,2}[ \t]*generated with \[?(claude code|claude|chatgpt|codex|copilot)\b/im;
+
+// Self-credit signature tokens used to flag a `-c trailer.<name>.key=<value>`
+// remap. `git -c trailer.ai.key=Co-Authored-By commit --trailer "ai: Claude
+// <...>"` makes a custom `ai:` token EMIT a `Co-Authored-By` trailer, so the
+// value scan (which only sees `ai: Claude`) never matches the canonical
+// signature. We mirror the conservative `--config-env alias.*` block: if any
+// `-c trailer.*.key=<value>` (or `-c trailer.*.key <value>`) names a self-credit
+// signature as its emitted key, BLOCK. Non-self-credit trailer keys stay allowed.
+const SELF_CREDIT_TRAILER_KEY = /^(co-authored-by|generated-with|generated with)$/i;
+
+// Detect a `-c trailer.<name>.key=<value>` (or space-separated `-c
+// trailer.<name>.key <value>`) global-config option whose <value> is a
+// self-credit signature key. `args` is the full git arg list (ev.args), where
+// `-c` global options precede the subcommand.
+function hasSelfCreditTrailerKeyRemap(args) {
+  for (let j = 0; j < args.length; j++) {
+    if (args[j].text !== '-c') continue;
+    const cfg = j + 1 < args.length ? args[j + 1].text : '';
+    // Form A: `-c trailer.<name>.key=<value>`
+    const mEq = /^trailer\.[^=]*\.key=(.*)$/is.exec(cfg);
+    if (mEq) {
+      if (SELF_CREDIT_TRAILER_KEY.test(mEq[1].trim())) return true;
+      continue;
+    }
+    // Form B: `-c trailer.<name>.key <value>` (key and value in separate tokens).
+    if (/^trailer\.[^=]*\.key$/i.test(cfg)) {
+      const val = j + 2 < args.length ? args[j + 2].text : '';
+      if (SELF_CREDIT_TRAILER_KEY.test(val.trim())) return true;
+    }
+  }
+  return false;
+}
 
 // Extract inline commit message text from a `git commit` arg list: the values of
 // -m / --message (separate token or `=value` form), repeated. We only inspect
@@ -551,6 +586,14 @@ function inlineCommitMessages(rest) {
       // Inline-value cluster `-amMSG` / `-mMSG`: other short flags precede the
       // final `m`, and everything AFTER that `m` is the inline message value.
       msgs.push(w.slice(w.indexOf('m', 1) + 1));
+    } else if (w === '--trailer') {
+      // `git commit --trailer "Co-Authored-By: Claude <...>"` appends a trailer
+      // to the message body. The value lives on the command line (unlike -F /
+      // editor), so it MUST be scanned through the same SELF_CREDIT checks — an
+      // AI co-author trailer slipped in this way is exactly the case rule 1 blocks.
+      if (i + 1 < rest.length) { msgs.push(rest[i + 1].text); i++; }
+    } else if (w.startsWith('--trailer=')) {
+      msgs.push(w.slice('--trailer='.length));
     }
   }
   return msgs;
@@ -627,6 +670,17 @@ function scanCommand(cmd, depth) {
 
     // --- Rule 1: self-credit in an inline commit message ---
     if (sub === 'commit') {
+      // Conservative block on a `-c trailer.<name>.key=<self-credit>` remap that
+      // would emit a Co-Authored-By / Generated-with trailer from a benign-looking
+      // custom token, dodging the value scan below.
+      if (hasSelfCreditTrailerKeyRemap(ev.args)) {
+        return (
+          'anti-hall git-guard: BLOCKED. `-c trailer.*.key=` remaps a custom ' +
+          'trailer token to an AI/assistant self-credit key (Co-Authored-By / ' +
+          'Generated-with). Remove the trailer remap - commits carry no AI ' +
+          'co-author credit.'
+        );
+      }
       const msgs = inlineCommitMessages(rest);
       for (const m of msgs) {
         const normalized = m

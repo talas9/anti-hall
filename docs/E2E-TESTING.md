@@ -123,7 +123,7 @@ Node, not a discovery root.)
 the full matrix:
 
 - **OS:** `ubuntu-latest`, `macos-latest`, `windows-latest`
-- **Node:** `18.x`, `20.x`, `22.x`
+- **Node:** `18.x`, `20.x`, `22.x`, `24.x`
 
 with `fail-fast: false` so one cell's failure does not mask the others. Each cell
 checks out, sets up Node, and runs `node --test`.

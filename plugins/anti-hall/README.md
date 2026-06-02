@@ -61,7 +61,7 @@ claude --plugin-dir /path/to/anti-hall
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
 | `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
 | `root-cause` / `orchestration` / `feature-launch` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`) | Skills | Slash commands (see [Skills](#skills)). |
-| `statusline/` | Statusline | Rich line for monorepos, simple line otherwise. |
+| `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
 
 ## How it works
 
@@ -304,7 +304,7 @@ Invoke via slash command:
   default, per-project on request) and reminds you to restart.
 - **`/anti-hall:doctor`** — health-check: confirms Node is found, every hook is
   present + syntax-valid, and the guards actually fire (live behavioral self-tests on
-  git-guard / command-guard / swarm-guard).
+  e.g. git-guard / command-guard / swarm-guard / speculation-guard / tasklist-guard).
 
 `MODEL-POLICY.md` is the shared roster (Reviewer = Opus latest max thinking;
 Critic = Codex latest max reasoning when available, else a divergent 2nd Opus). It is
@@ -313,9 +313,11 @@ Critic = Codex latest max reasoning when available, else a divergent 2nd Opus). 
 ## Statusline (opt-in, one command)
 
 Claude Code plugins cannot auto-apply the main statusline, so this is activated by an
-installer. `statusline/` ships a dispatcher that shows a **rich** line in a monorepo
-(`.gitmodules` / `.gsd/` / `.planning/`) and a **simple** `model | branch | dir |
-context%` line otherwise. No emojis.
+installer. `statusline/` ships a dispatcher whose **line 1 is the rich renderer for
+ANY repo** (project name, git, model, context%, cost, duration, subagents, optional
+GSD phase). Only if the rich renderer yields nothing does it fall back to a
+monorepo-aware renderer (`.gitmodules` / `.gsd/` / `.planning/`) or a **simple**
+`model | branch | dir | context%` line. Line 2 is an always-on phase/context bar. No emojis.
 
 ```bash
 # Find the installed plugin dir and run the Node installer. Claude Code installs a

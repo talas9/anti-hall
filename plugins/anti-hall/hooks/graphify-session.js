@@ -56,6 +56,21 @@ function safeIsDir(p) {
   }
 }
 
+// sanitizePath — the graph dir / wiki index path is reflected into the injected
+// additionalContext (which the model reads). A crafted directory name could
+// carry control chars / newlines to inject instruction-like lines. Strip C0/C1
+// control chars + newlines and truncate so the path can't reshape the primer.
+function sanitizePath(p) {
+  if (typeof p !== 'string') return '';
+  let out = p.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
+    // Unicode bidi overrides (U+202A–U+202E) + isolates (U+2066–U+2069): strip
+    // entirely so they cannot visually reorder the reflected primer.
+    .replace(/[‪-‮⁦-⁩]/g, '')
+    .replace(/\s+/g, ' ').trim();
+  if (out.length > 80) out = out.slice(0, 80).trimEnd() + '…';
+  return out;
+}
+
 function main() {
   // cwd: prefer the payload's cwd if present, else process.cwd().
   let cwd = process.cwd();
@@ -79,10 +94,11 @@ function main() {
     process.exit(0);
   }
 
-  const wikiIndex = path.join(graphDir, 'wiki', 'index.md');
+  const wikiIndex = sanitizePath(path.join(graphDir, 'wiki', 'index.md'));
+  const safeGraphDir = sanitizePath(graphDir);
   const additionalContext =
     "GRAPHIFY-FIRST PROTOCOL: this project has a graphify knowledge graph at '" +
-    graphDir + "'. ALWAYS query the graph FIRST when looking up ANY issue, " +
+    safeGraphDir + "'. ALWAYS query the graph FIRST when looking up ANY issue, " +
     "feature, function, class, code path, configuration, document, or " +
     "'where/why/how does X work' / 'what connects to Y' question - BEFORE grep / " +
     "find / glob or broad file reads. Run '/graphify query \"<question>\"' (or " +

@@ -56,7 +56,10 @@ function availableBytes() {
     if (process.platform === 'darwin') {
       // vm_stat: available ~= free + inactive + speculative pages (all reclaimable
       // on demand). Inactive/speculative are what Activity Monitor counts as cache.
-      const out = execSync('vm_stat', { encoding: 'utf8', timeout: 1500 });
+      // Absolute path so a manipulated PATH can't shadow vm_stat with a stub
+      // that returns garbage (which would parse to null and silently SKIP the
+      // memory gate). /usr/bin/vm_stat is the fixed macOS system location.
+      const out = execSync('/usr/bin/vm_stat', { encoding: 'utf8', timeout: 1500 });
       const psM = out.match(/page size of (\d+) bytes/);
       const ps = psM ? parseInt(psM[1], 10) : 4096;
       const pages = (label) => {
@@ -139,12 +142,24 @@ function acquireLock() {
           const st = fs.statSync(LOCK_FILE);
           if (Date.now() - st.mtimeMs > LOCK_STALE_MS) {
             const tok1 = readLockToken();
-            // Re-stat: confirm still present, still stale, same token. If any of
-            // these shifted, someone else is acting on it — back off and retry.
+            // Re-stat: confirm still present, still stale, and that the FILE has
+            // not changed under us (same inode + same mtime). If anything shifted,
+            // someone else is acting on it — back off and retry.
             const st2 = fs.statSync(LOCK_FILE);
             const tok2 = readLockToken();
-            if (Date.now() - st2.mtimeMs > LOCK_STALE_MS &&
-                tok1 !== null && tok1 === tok2) {
+            const unchanged = st.ino === st2.ino && st.mtimeMs === st2.mtimeMs;
+            // A token-bearing lock: steal only when the token is unchanged across
+            // the re-stat (the original owner-TOCTOU protection).
+            // A NULL/unreadable token (zero-byte or corrupt lock): readLockToken()
+            // returns null, so the token equality could NEVER fire and a corrupt
+            // stale lock would permanently disable the rate limiter (spawns then
+            // run un-capped). Reconcile: when the token is null AND the lock is
+            // confirmed unchanged + still stale via the inode/mtime re-stat, steal
+            // it too — the inode/mtime check stands in for the missing token to
+            // prove no fresh holder re-created the lock under us.
+            const tokenSafe = (tok1 !== null && tok1 === tok2) ||
+                              (tok1 === null && tok2 === null);
+            if (Date.now() - st2.mtimeMs > LOCK_STALE_MS && unchanged && tokenSafe) {
               try { fs.unlinkSync(LOCK_FILE); } catch (_) {}
             }
             continue; // retry the O_EXCL create immediately

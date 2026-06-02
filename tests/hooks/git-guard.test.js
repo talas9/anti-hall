@@ -32,6 +32,14 @@ const BLOCK = [
   'git push origin "$(echo --force)"',
   'eval "git push -f"',
   'git commit -m "x\\n\\nCo-Authored-By: Claude <noreply@anthropic.com>"',
+  // FIX 1: --trailer carries the AI co-author trailer on the command line.
+  'git commit -m x --trailer "Co-Authored-By: Claude <noreply@anthropic.com>"',
+  'git commit -m x --trailer="Co-Authored-By: Claude <noreply@anthropic.com>"',
+  // FIX A.1: git accepts the `key=value` trailer separator too.
+  'git commit -m x --trailer "Co-Authored-By=Claude <noreply@anthropic.com>"',
+  // FIX A.2: `-c trailer.<name>.key=<self-credit>` remaps a benign token to emit
+  // a Co-Authored-By trailer, dodging the value scan.
+  'git -c trailer.ai.key=Co-Authored-By commit -m x --trailer "ai: Claude <noreply@anthropic.com>"',
 ];
 
 const ALLOW = [
@@ -40,6 +48,12 @@ const ALLOW = [
   'git status',
   'git commit -m "feat: x"',
   'eval "git status"',
+  // FIX 1: a benign trailer (human reviewer) must NOT be blocked.
+  'git commit -m x --trailer "Reviewed-by: Alice"',
+  // FIX A.1: a benign `=`-form trailer must still ALLOW.
+  'git commit -m x --trailer "Reviewed-by=Alice"',
+  // FIX A.2: a non-self-credit `-c trailer.*.key=` remap stays allowed.
+  'git -c trailer.sob.key=Signed-off-by commit -m x --trailer "sob: Alice"',
 ];
 
 for (const cmd of BLOCK) {

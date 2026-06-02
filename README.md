@@ -6,6 +6,8 @@
 
 ### Make Claude Code *verify before it claims* — and ship the workflow skills that enforce it.
 
+[![tests](https://github.com/talas9/anti-hall/actions/workflows/test.yml/badge.svg)](https://github.com/talas9/anti-hall/actions/workflows/test.yml) [![version](https://img.shields.io/github/v/tag/talas9/anti-hall?label=version)](https://github.com/talas9/anti-hall/releases) [![license](https://img.shields.io/github/license/talas9/anti-hall)](LICENSE) ![node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen) ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2)
+
 A Claude Code **marketplace + plugin** that installs always-on hooks, evidence-driven
 workflow skills, and a live two-line statusline. Pure Node.js, no dependencies, runs on
 **macOS · Linux · Windows**. The only prerequisite is Node ≥ 18 on `PATH`.

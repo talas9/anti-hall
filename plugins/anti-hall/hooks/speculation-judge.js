@@ -257,6 +257,22 @@ function callAnthropicAPI(messageText, apiKey, timeoutMs) {
   });
 }
 
+// sanitizeClaim — the judge's echoed claim is model-produced and reflected into
+// the block reason the model reads next turn. Strip C0/C1 control chars +
+// newlines, collapse whitespace, and truncate so it can't inject instruction-like
+// lines into the reason. Mirrors tasklist-guard.sanitizeReason.
+function sanitizeClaim(s) {
+  if (typeof s !== 'string') return 'an unverified factual claim';
+  let out = s.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ')
+    // Unicode bidi overrides (U+202A–U+202E) + isolates (U+2066–U+2069): strip
+    // entirely so they cannot visually reorder the reflected reason.
+    .replace(/[‪-‮⁦-⁩]/g, '')
+    .replace(/\s+/g, ' ').trim();
+  if (!out) return 'an unverified factual claim';
+  if (out.length > 120) out = out.slice(0, 120).trimEnd() + '…';
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -363,9 +379,16 @@ async function main() {
     process.exit(0);
   }
 
-  const claim = (decision.claim && typeof decision.claim === 'string')
-    ? decision.claim.trim()
-    : 'an unverified factual claim';
+  // Sanitize the judge's echoed claim before reflecting it into the reason: it
+  // originates from a model and could carry control chars / newlines that inject
+  // instruction-like lines. Strip C0/C1 controls + newlines, collapse whitespace,
+  // and truncate. Mirrors tasklist-guard's sanitizeReason / task-guard's
+  // sanitizeSubject hygiene.
+  const claim = sanitizeClaim(
+    (decision.claim && typeof decision.claim === 'string')
+      ? decision.claim
+      : 'an unverified factual claim'
+  );
 
   const reason =
     'anti-hall semantic judge: the reply asserts ' + claim + ' ' +

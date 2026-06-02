@@ -251,19 +251,23 @@ function main() {
       '(done/in-progress/next) — gitignore it so it never ships.'
   );
 
-  // FIX 3: emit the block BEFORE persisting state. A state-write failure must
-  // never suppress an already-decided block, so we write stdout first, then
-  // best-effort persist in its own try/catch (swallowed — the cap/dedup it feeds
-  // is loop-safety, not correctness; the worst case of a missed write is one
-  // extra nudge, still bounded by MAX_BLOCKS once a later write succeeds).
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
-
+  // RECONCILED: persist state FIRST, emit the block only if the write SUCCEEDED.
+  // The earlier ordering emitted the block before persisting, reasoning that a
+  // missed write costs "one extra nudge". That is WRONG when the state dir is
+  // unwritable: every Stop re-derives the same (block-causing) signal, the
+  // blocks-counter never accumulates (each write fails), so MAX_BLOCKS never
+  // caps and the block recurs forever — an infinite Stop loop with no escape.
+  // Without a working cap, blocking is unsafe, so we fail-OPEN: if the persist
+  // throws/fails, exit 0 WITHOUT emitting a block. We only block when the cap
+  // state was durably written (so the dedup + MAX_BLOCKS cap can actually fire).
   try {
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(stateFile, JSON.stringify({ hash, blocks: blocks + 1 }), 'utf8');
   } catch (_) {
-    // best-effort: a persist failure must NOT retract the emitted block.
+    process.exit(0); // can't persist the cap -> fail-open, do not block (no loop)
   }
+
+  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(0);
 }
 

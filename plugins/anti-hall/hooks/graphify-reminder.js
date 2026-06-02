@@ -53,6 +53,7 @@ function gitToplevel(cwd) {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000, // 0.16.0 timeout fix: don't hang a Stop hook on a stalled mount
     });
     const top = (out || '').split(/\r?\n/)[0].trim();
     return top || null;

@@ -289,6 +289,24 @@ test('FAIL-OPEN: cwd points at a nonexistent dir -> progressFresh, no progress-c
   } finally { h.cleanup(); }
 });
 
+test('FAIL-OPEN: unwritable state dir -> exit 0, no block (FIX: persist-first) — cap safety', () => {
+  // Point HOME at a regular FILE so ~/.anti-hall can never be created/written.
+  // Without a durable cap state, blocking would loop forever, so the reconciled
+  // ordering must fail-OPEN: persist first, and if it throws, emit no block.
+  const h = makeHome();
+  const fakeHome = path.join(h.home, 'home-is-a-file');
+  fs.writeFileSync(fakeHome, 'not a dir', 'utf8');
+  try {
+    // Build a transcript that WOULD block (4 edits, no tasks, no progress file).
+    // The progress-file lookup uses cwd (the real fixture home), not HOME, so the
+    // block cause is reached; only the state PERSIST fails (HOME is a file).
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: fakeHome });
+    assert.strictEqual(r.status, 0, `expected exit 0; stderr: ${r.stderr}`);
+    assert.ok(!isBlock(r), `unwritable state dir must fail-open (no block); stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
 test('FAIL-OPEN: empty stdin -> exit 0, no block', () => {
   const h = makeHome();
   try {

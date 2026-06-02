@@ -192,7 +192,9 @@ treated as a feature launch.
      `available` tasks, and any uncaptured request from the just-submitted prompt
      — and run the dedup/relate check on that prompt against the live list.
    - **`Stop` tasklist-guard:** if there's unverified or in-flight work
-     (≥1 `in_progress`, available-but-ignored tasks, or completed-without-evidence),
+     (>1 `in_progress` — multiple-in-progress at once is the smell; a single
+     `in_progress` is the healthy invariant and never triggers this cause —
+     plus available-but-ignored tasks, or completed-without-evidence),
      return `{"decision":"block","reason":"<specific next action>"}`. Always
      short-circuit when `stop_hook_active` is true.
 
@@ -204,9 +206,12 @@ treated as a feature launch.
    ⇒ point at existing id; related ⇒ suggest `addBlockedBy`/`addBlocks` link;
    new ⇒ allow.
 
-4. **State file as ground truth:** keep an anti-hall-managed progress file
-   refreshed each sweep so freshness survives compaction and cold starts (mirrors
-   Anthropic's `claude-progress.txt`). Tasks themselves already persist under
+4. **State file as ground truth:** keep a `.anti-hall-progress.md` progress file
+   refreshed so freshness survives compaction and cold starts (mirrors
+   Anthropic's `claude-progress.txt`). NOTE: the hook only **checks** this file's
+   freshness (its mtime, relative to the session cwd) — it never writes or refreshes
+   it. The agent/user maintains the file each sweep; the guard just nudges when it's
+   missing or stale. Tasks themselves already persist under
    `~/.claude/tasks/<TASK_LIST_ID>/` — read that as the authoritative store when
    `CLAUDE_CODE_TASK_LIST_ID` is known.
 

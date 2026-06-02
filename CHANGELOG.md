@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.21.0
+
+Pre-publish **triple-deadly-loop** hardening pass (3 Opus reviewers + 3 Codex critics, two re-converge passes) before the first public release. Closes a cluster of deliberate-evasion gaps in the always-on guards and the reflected-text sanitizers:
+
+- **git-guard** — now blocks AI/assistant self-credit trailers slipped in via `git commit --trailer`, including the `key=value` separator form (`Co-Authored-By=Claude <…>`) alongside the `key: value` form, and a `-c trailer.<name>.key=<self-credit>` remap that would emit a `Co-Authored-By` / `Generated-with` trailer from a benign-looking custom token. Benign trailers (`Reviewed-by=Alice`, `-c trailer.sob.key=Signed-off-by`) still pass.
+- **tasklist-guard** — fail-open when the state dir is unwritable instead of wedging.
+- **swarm-guard** — steals a zero-byte / corrupt lock instead of deadlocking, and resolves `vm_stat` by absolute path.
+- **graphify-reminder** — bounds the `git rev-parse` probe with a timeout.
+- **sanitizers** — reflected-text + terminal-control + **Unicode bidi** hygiene across `graphify-guard`, `graphify-session`, `speculation-judge`, and both statuslines: bidi overrides (U+202A–U+202E) and isolates (U+2066–U+2069) are now stripped so a crafted path/claim can't visually reorder terminal/model output. Regexes stay linear (no ReDoS); legit UTF-8 and branch names are preserved.
+- **docs** — accuracy fixes (`KB.md` → `0.21.0`, `TASK-WORK` >1/checks wording, README statusline + doctor list, E2E +24.x); README badges (tests / version / license / node / plugin).
+
+Accepted residuals (deliberate evasion of a safety net, documented not closed): `base64 | sh`, pipe-to-shell, process-substitution, deeply-nested `eval`, `commit -F <file>` / editor commits, and Unicode-confusable token swaps. These require an adversary actively defeating their own guardrail and are out of scope for a fail-open static hook.
+
 ## 0.20.3
 
 Add RELEASING.md — the ordered release + doc-currency checklist the agent follows on every ship (manual tagging by agent, no CD); pointer from AGENTS.md.
