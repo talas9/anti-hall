@@ -78,8 +78,17 @@ concurrency cap (~min(16, cores-2)); quadruple = 8 auditors fits in one wave.
    | 3 | security + fail-open + input handling | injection / ReDoS / path / resource edge cases |
    | 4 | cross-platform + API/contract correctness | portability + concurrency / race conditions |
 
-   Every brief ends with: *severity (P0/P1/P2/EASY-WIN), file:line, evidence, fix; verify
-   against actual code — no speculation; no rewrites; also list 3–5 easy wins.*
+   Every brief ends with this mandatory footer:
+   - *severity (P0/P1/P2/EASY-WIN), file:line, evidence, fix; verify against actual code —
+     no speculation; no rewrites; also list 3–5 easy wins.* (Keep these 3 heat tiers + easy
+     wins and the no-speculation / no-rewrites rules — they are non-negotiable.)
+   - *DIG DEEP: read the real implementation end-to-end, trace control/data flow across
+     files, follow every branch and error path; never judge from names/signatures/diff hunks
+     alone — cite the `file:line` ranges you actually read.*
+   - *SIMULATE EDGE CASES: enumerate boundary/empty/malformed/huge/unicode/concurrent/
+     missing-file/permission-denied/clock-skew/truncated/injection-shaped inputs for each
+     changed unit and mentally execute (or write a quick harness); report predicted outcomes
+     and flag any wrong/unsafe/unbounded/fail-CLOSED result.*
 3. **Launch all 2N agents in parallel** (background). Keep the main thread free; do not
    block. (Codex `--fresh` avoids a resume prompt.)
 4. **Collect.** As each of the 2N agents reports, gather all findings. Do not present
@@ -98,6 +107,10 @@ concurrency cap (~min(16, cores-2)); quadruple = 8 auditors fits in one wave.
 6. **(Optional) fix-wave + reconverge.** If the user wants fixes, dispatch fix agents
    (one per cluster, worktree-isolated if they touch the same files), then re-run a
    lighter loop to confirm zero NEW P0s — the convergence rule from the base deadly-loop.
+   The reconverge agents are given the PRIOR round's findings + the exact fixes applied,
+   and must **verify-then-hunt-new (carry-forward)**: first confirm each prior finding's fix
+   actually resolved it without regression, then hunt genuinely NEW issues — distinguishing
+   NEW from REDISCOVERED, consistent with the base deadly-loop.
    The same iteration caps apply to this reconverge loop: **soft cap = 10 rounds** (stop and
    checkpoint with the user via AskUserQuestion — continue / stop / change scope) and
    **hard cap = 15 rounds** (force-stop unconditionally and report, even if not converged).

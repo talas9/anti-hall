@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.19.0
+
+Strengthened deadly-loop auditor instructions with explicit depth requirements to prevent surface-skimming and ensure genuine issue discovery. Both `deadly-loop` and `deadly-loop-multi` skills now mandate:
+
+- **DIG DEEP.** Read full implementations end-to-end, trace control and data flow across files, follow every branch and error path. Never judge from names, signatures, or diff hunks. Cite file:line ranges actually read.
+- **ENUMERATE & SIMULATE EDGE CASES.** Systematically exercise boundary conditions, empty/malformed/oversized/unicode/concurrent inputs, missing files, permission denials, clock skew, truncation, and injection-shaped data. Mentally execute or write throwaway harnesses; report predicted outcomes.
+- **REAFFIRMED 3-TIER SEVERITY.** P0/P1/P2 categories (plus EASY-WIN) ranked by heat — correctness > reliability > ergonomics.
+- **CARRY-FORWARD DISCIPLINE.** Verify each prior finding's fix resolved without regression before hunting genuinely NEW issues. Distinguish new discoveries from re-reported findings.
+
+For `deadly-loop/SKILL.md`: added new "B0. Auditor depth requirements" section with B1/B2 forward pointers. For `deadly-loop-multi/SKILL.md`: expanded the mandatory brief-footer and step-6 reconverge to enforce carry-forward discipline across iterations. Auditor reviews now drill into implementation to surface root causes instead of polish-layer issues.
+
 ## 0.18.0
 
 Performance: trimmed the always-on SessionStart protocol (`verify-first-full.js`) footprint by

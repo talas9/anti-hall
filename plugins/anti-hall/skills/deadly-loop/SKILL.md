@@ -134,7 +134,26 @@ Two parallel agents dispatched in the **same message** (roster + exact spawn syn
 
 See `references/MODEL-POLICY.md` for the OS-agnostic Node probe that checks Codex availability and the concrete `Agent(...)` / Codex invocations. Dispatch both in ONE message so they run truly in parallel.
 
+### B0. Auditor depth requirements (both agents)
+
+These four requirements bind **both** the Reviewer and the Critic. A round that skips them is wasted compute — surface-skimming is exactly how the 30+ bugs in the origin session slipped past solo review.
+
+1. **DIG DEEP, DO NOT SURFACE-SKIM.** Read the ACTUAL implementation of each changed/affected function end to end. Trace control flow and data flow across file boundaries; follow every branch, every error path, every early return. Never judge correctness from a name, a signature, a comment, or a diff hunk alone — open the code it calls and the code that calls it. State what you actually read (`file:line` ranges), not what you inferred.
+
+2. **ENUMERATE & SIMULATE EDGE CASES.** For each changed unit, list the boundary/adversarial inputs — empty, null/undefined, malformed, max-size/huge, unicode, concurrent/interleaved, missing file, permission-denied, clock-skew/future-timestamp, partial/truncated, injection-shaped — and MENTALLY EXECUTE the code for each (or write a quick throwaway harness). Report the predicted outcome per input. Flag any input that produces a wrong/unsafe result, a throw on a fail-open path, or an unbounded operation.
+
+3. **THREE-TIER SEVERITY (heat).** Tag every finding:
+   - **P0** — critical/blocker: silent failure, security, data loss, fail-CLOSED, breaks a guard.
+   - **P1** — high: wrong behavior on a real path, regression.
+   - **P2** — medium: robustness, clarity, perf.
+   - **EASY-WIN** — cheap, high-value cleanups worth doing while you're in there.
+   Sort by heat, P0 first.
+
+4. **CARRY-FORWARD.** You are given the full prior-round history (handoff doc) + the exact fixes applied since. FIRST verify each prior finding's fix actually resolved it WITHOUT regression; THEN hunt genuinely NEW issues. Always distinguish NEW from REDISCOVERED.
+
 ### B1. Reviewer prompt skeleton
+
+(Apply the B0 depth requirements: dig deep, simulate edge cases, P0/P1/P2 + EASY-WIN, carry-forward.)
 
 ```
 You are the Round N Reviewer for <feature>. Verify Wave-(N-1) commits resolve their parent Round-(N-1) findings without regression.
@@ -173,6 +192,8 @@ Run independently of the Critic agent.
 ```
 
 ### B2. Critic prompt skeleton
+
+(Apply the B0 depth requirements: dig deep, simulate edge cases, P0/P1/P2 + EASY-WIN, carry-forward.)
 
 ```
 You are the Round N Critic for <feature>. Adversarial role: hunt where Wave-(N-1) fixes BROKE something or HID a different bug.
