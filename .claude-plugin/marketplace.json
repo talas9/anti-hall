@@ -9,7 +9,7 @@
     {
       "name": "anti-hall",
       "source": "./plugins/anti-hall",
-      "description": "Verify-first discipline: SessionStart full Iron-Law protocol + skill primer, per-turn varying nudge, SessionStart re-injection (fires with source=compact), root-cause / orchestration / feature-launch / deadly-loop skills, git-guard + task discipline. Optional graphify hooks and a monorepo/simple statusline.",
+      "description": "Verify-first discipline for Claude Code. SessionStart injects the full Iron-Law protocol (rationalization table + rule K output-presentation) and a skill primer, re-injecting after compaction; a per-turn nudge keeps it salient. Always-on guards: git-guard (blocks force-push + AI/assistant self-credit trailers), command-guard (delegate heavy commands off the coordinator), swarm-guard (anti-fork-bomb), speculation guards, and task-guard + tasklist-guard (task-list + progress-file discipline) — all with a user-override escape hatch. Skills: root-cause debugging, orchestration, deadly-loop + deadly-loop-multi review, feature-launch, install-statusline, and doctor. Pure Node, zero dependencies, runs unchanged on Windows/macOS/Linux, Node >= 18.",
       "category": "quality",
       "tags": ["verification", "anti-hallucination", "quality", "discipline", "debugging", "orchestration"],
       "author": { "name": "Mohammed Talas" }

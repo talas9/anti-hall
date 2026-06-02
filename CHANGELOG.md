@@ -6,6 +6,10 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.21.1
+
+Refresh marketplace.json plugin description to current capability set (tasklist-guard, skip-guard, deadly-loop-multi, speculation guards, rule K, escape hatch) for the public listing; add assets/demo/ (VHS .tape + storyboard) to generate a demo GIF.
+
 ## 0.21.0
 
 Pre-publish **triple-deadly-loop** hardening pass (3 Opus reviewers + 3 Codex critics, two re-converge passes) before the first public release. Closes a cluster of deliberate-evasion gaps in the always-on guards and the reflected-text sanitizers:

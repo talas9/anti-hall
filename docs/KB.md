@@ -49,15 +49,16 @@ debates reference the living docs for evidence; the *current* state and the
 ## 1. Current plugin ground truth
 
 > Verified against the working tree on **2026-06-02** (commit context: post
-> `0.21.0`; `0.20.0` shipped the tasklist-guard + skip-guard, `0.20.1`–`0.20.3`
-> follow-ups, and `0.21.0` the pre-publish triple-deadly-loop hardening are all in
+> `0.21.1`; `0.20.0` shipped the tasklist-guard + skip-guard, `0.20.1`–`0.20.3`
+> follow-ups, `0.21.0` the pre-publish triple-deadly-loop hardening, and `0.21.1`
+> the marketplace description refresh + demo assets are all in
 > ground truth). This block is the canonical snapshot — update it on every
 > significant change. Ref: `plugins/anti-hall/.claude-plugin/plugin.json`,
 > `plugins/anti-hall/hooks/`, `plugins/anti-hall/skills/`, `CHANGELOG.md`.
 
 | Fact | Value | Source / verify |
 |---|---|---|
-| **Version** | `0.21.0` | `plugin.json` `version` — the single authority. Marketplace entry carries NO `version` (avoids the silent-precedence trap). |
+| **Version** | `0.21.1` | `plugin.json` `version` — the single authority. Marketplace entry carries NO `version` (avoids the silent-precedence trap). |
 | **Runtime** | Pure Node, built-ins only; requires Node.js ≥ 18 on PATH | `plugin.json` description; hooks launched as `node <hook>.js` |
 | **Hook language** | All hooks are `.js` (NOT `.sh`) | `ls plugins/anti-hall/hooks/` |
 | **Hooks shipped (18 files)** | `agent-watchdog`, `command-guard`, `doctor`, `git-guard`, `graphify-guard`, `graphify-reminder`, `graphify-session`, `phase-tracker`, `skip-guard`, `speculation-guard`, `speculation-judge`, `swarm-guard`, `task-guard`, `task-tracker`, `tasklist-guard`, `verify-first-full`, `verify-first`, plus `hooks.json` | `plugins/anti-hall/hooks/` |
