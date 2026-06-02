@@ -227,10 +227,9 @@ function getGsdPhase() {
   }
 }
 
-// Claude account email chip — OPT-IN via the ANTIHALL_STATUSLINE_EMAIL env var.
-// Reads the signed-in account email from ~/.claude.json
-// (oauthAccount.emailAddress). OFF by default on purpose: the plugin must never
-// surface a user's email on their statusline without explicit consent.
+// Claude account email — read the signed-in account email from ~/.claude.json
+// (oauthAccount.emailAddress). Returns null when unavailable. The chip shows it
+// only when available, and can be suppressed via ANTIHALL_STATUSLINE_NO_EMAIL.
 function getClaudeEmail() {
   try {
     const cfg = readJSON(path.join(os.homedir(), '.claude.json'));
@@ -548,10 +547,11 @@ function generateStatusline() {
       header += '  ' + c.dim + '│' + c.reset + '  ' + c.cyan + '▸ ' + parts.join(' · ') + c.reset;
     }
   }
-  // Claude account email chip — OPT-IN (set ANTIHALL_STATUSLINE_EMAIL=1). Dim,
-  // last segment. Off by default so the plugin never shows an email unasked.
-  const emailFlag = process.env.ANTIHALL_STATUSLINE_EMAIL;
-  if (emailFlag && emailFlag !== '0' && emailFlag !== 'false') {
+  // Account email chip — shows the signed-in email WHEN AVAILABLE (read from
+  // ~/.claude.json). Dim, last segment. Opt-out: set ANTIHALL_STATUSLINE_NO_EMAIL=1
+  // (or any non-'0'/'false' value) to hide it, e.g. for screenshots/screen-shares.
+  const noEmail = process.env.ANTIHALL_STATUSLINE_NO_EMAIL;
+  if (!(noEmail && noEmail !== '0' && noEmail !== 'false')) {
     const email = getClaudeEmail();
     if (email) {
       header += '  ' + c.dim + '│' + c.reset + '  ' + c.dim + '✉ ' + email + c.reset;

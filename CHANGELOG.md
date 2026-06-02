@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.14.1
+
+Refines the 0.14.0 email chip: show-when-available with an opt-OUT, instead of opt-in.
+
+- **The `✉ <email>` chip now renders whenever the account email is available**
+  (read from `~/.claude.json`), rather than requiring `ANTIHALL_STATUSLINE_EMAIL=1`.
+  Since a signed-in user almost always has an email, the opt-in gate was effectively
+  "never shows unless you know the flag." Inverted to a privacy opt-OUT:
+  set **`ANTIHALL_STATUSLINE_NO_EMAIL=1`** (or any non-`0`/`false` value) to hide it —
+  e.g. for screenshots or screen-shares. Fail-open: no chip when the email can't be read.
+
 ## 0.14.0
 
 Adds an opt-in account-email chip to the rich statusline.
