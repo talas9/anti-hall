@@ -311,6 +311,35 @@ The statusline reads `~/.anti-hall/phase-state.json`. Write from the main
 coordinator only; the file path is consistent across all runners because it
 uses the home directory (not os.tmpdir()).
 
+## References & context guardrails
+
+- **Delegate exploration; bring back TIGHT summaries, not raw output.** The
+  exploration tokens stay in the throwaway subagent window — only the conclusion
+  enters the coordinator (reinforces the core rules above).
+- **Externalize findings by TYPE.** Durable, reusable patterns -> Claude Code Auto
+  Memory / `CLAUDE.md`. Case-specific findings + current state -> the repo-local
+  progress file `.anti-hall-progress.md` (enforced by the tasklist-guard `Stop`
+  hook). Do NOT dump transient case facts into `MEMORY.md` — that is the
+  reusable-patterns layer; keep it clean.
+- **Compact early.** Once findings are externalized, prefer compacting before a long
+  context rots; the statusline context gauge (green->yellow->red at ~70/90%) is the
+  visual cue.
+- **Graph-first.** Query the knowledge graph before broad search (already enforced
+  above; named here for completeness).
+- **The "sweet spot" is a CADENCE, not a length.** delegate -> externalize ->
+  compact early -> retrieve on demand. There is no fixed ideal context length,
+  because the detail lives outside the window.
+
+References (docs in this source repo — `docs/` ships with a repo clone, NOT with the
+`/plugin install` bundle, so the runtime cannot open them):
+- `docs/CONTEXT-PRESERVATION-KB.md` — consolidated, source-backed evidence base for
+  context-window discipline (caching, delegation, compaction, retrieval, memory,
+  output discipline).
+- `docs/TASKLIST-GUARD.md` (usage) + `docs/TASK-WORK.md` (design rationale) — the
+  task-list + progress-file discipline. NOTE: `TASK-WORK.md` contains some
+  version-pinned facts flagged historical in `docs/KB.md` — treat versions as
+  historical.
+
 ## Relationship to other skills in this plugin
 - **feature-launch** runs its plan-hardening and per-phase deadly-loop gates as
   swarms dispatched from the main coordinator — the main thread orchestrates, the

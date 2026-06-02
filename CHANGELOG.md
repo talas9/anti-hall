@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.20.1
+
+- orchestration skill gains a concise "References & context guardrails" section —
+  points to `docs/CONTEXT-PRESERVATION-KB.md` (the swarm-researched context-discipline
+  KB) and the findings-discipline (externalize durable findings to memory, case
+  findings to `.anti-hall-progress.md`; compact early once externalized; context-rot
+  sweet spot is a cadence not a length). Outcome of a deadly-loop on 3 candidate
+  context enhancements: the other two (an always-on findings protocol line, a
+  statusline pressure cue) were DROPPED as footprint regression / redundant with the
+  existing color gradient + native Auto Memory; only the skill-reference survived.
+
 ## 0.20.0
 
 New `tasklist-guard.js` Stop hook + a per-turn freshness note (in `task-tracker.js`) that enforce live task-list + fresh `.anti-hall-progress.md` discipline for non-trivial work, so real work is tracked and never silently dropped or declared-done by a later agent. It **coexists with `task-guard`** (which drains declared tasks); each keeps an independent block cap so the two never compound.
