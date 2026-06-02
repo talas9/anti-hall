@@ -72,8 +72,8 @@ function hasGraph(root) {
 }
 
 // Count Edit/Write/MultiEdit/NotebookEdit tool_use entries in the transcript.
-// Stream line-by-line (JSONL) so a large transcript is cheap and we never miss
-// an early entry. Walk each parsed entry for tool_use blocks by name.
+// Read the file fully then split into lines (JSONL) so we never miss an early
+// entry. Walk each parsed entry for tool_use blocks by name.
 function countEdits(transcriptPath) {
   let count = 0;
   let data;

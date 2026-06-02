@@ -98,6 +98,10 @@ concurrency cap (~min(16, cores-2)); quadruple = 8 auditors fits in one wave.
 6. **(Optional) fix-wave + reconverge.** If the user wants fixes, dispatch fix agents
    (one per cluster, worktree-isolated if they touch the same files), then re-run a
    lighter loop to confirm zero NEW P0s — the convergence rule from the base deadly-loop.
+   The same iteration caps apply to this reconverge loop: **soft cap = 10 rounds** (stop and
+   checkpoint with the user via AskUserQuestion — continue / stop / change scope) and
+   **hard cap = 15 rounds** (force-stop unconditionally and report, even if not converged).
+   See the base deadly-loop "Iteration caps (soft 10 / hard 15)" rule.
 7. **Report** the deduped issue list + easy wins, with the agent that raised each.
 
 ## Notes

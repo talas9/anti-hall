@@ -55,6 +55,10 @@ function main() {
     process.exit(0);
   }
 
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  const { isSkipped } = require('./skip-guard.js');
+  if (isSkipped('task-guard')) process.exit(0);
+
   let payload;
   try {
     payload = JSON.parse(raw);
@@ -172,7 +176,7 @@ function main() {
   process.exit(0);
 }
 
-// Stream the whole transcript JSONL and build Map<id, {id, content, status}>
+// Read the whole transcript JSONL fully and build Map<id, {id, content, status}>
 // (last write wins). Reading the file fully then splitting is fine here: it is
 // a single synchronous read and we must not miss an early entry (no tail window).
 // Lines that fail to parse are skipped.

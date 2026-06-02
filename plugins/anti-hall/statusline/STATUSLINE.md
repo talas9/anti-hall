@@ -30,7 +30,7 @@ are absent.  Runs on **Windows, macOS, and Linux** via Node only
 
 ```
 <line 1>   — your existing statusline (or own dispatch)
-<line 2>   — anti-hall phase bar (only when a phase is active)
+<line 2>   — anti-hall line 2 (always on, 3-tier): phase bar → "orchestrating · N agents" → idle context gauge
 ```
 
 ### Line 1 — your existing statusline (wrapped)
@@ -55,14 +55,29 @@ back to its own monorepo/simple dispatch:
 <model> | <branch> | <dir-basename> | <context%>
 ```
 
-### Line 2 — phase bar (conditional)
+### Line 2 — always-on, 3-tier
 
-```
-[█████████◓──────────] 60% | BUILD - anti-hall plugin 9/15
-```
+Line 2 always renders something, picking the highest-priority tier that applies
+(matching the top summary and `phase-bar.js`):
 
-The spinner character (`◐`, `◓`, `◑`, `◒`) time-cycles each refresh.
-Line 2 is omitted entirely when the phase-state file is absent or malformed.
+1. **Phase progress bar** — when a fresh orchestration phase-state exists:
+
+   ```
+   [█████████◓──────────] 60% | BUILD - anti-hall plugin 9/15
+   ```
+
+2. **"orchestrating · N agents" activity bar** — when no phase-state is set but
+   recent subagent spawns are detected (auto, no setup).
+
+3. **Context-window gauge** — when idle (no phase, no recent spawns):
+
+   ```
+   [███████████◐────────] 56% context · 128k/230k tokens
+   ```
+
+The spinner character (`◐`, `◓`, `◑`, `◒`) time-cycles each refresh. The phase
+bar appears only when the phase-state file is present and well-formed; otherwise
+line 2 falls through to the activity bar or the context gauge.
 
 **Phase-state file:** `~/.anti-hall/phase-state.json`
 

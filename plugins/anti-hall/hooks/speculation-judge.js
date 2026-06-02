@@ -240,6 +240,10 @@ async function main() {
     process.exit(0);
   }
 
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  const { isSkipped } = require('./skip-guard.js');
+  if (isSkipped('speculation-judge')) process.exit(0);
+
   let payload;
   try {
     payload = JSON.parse(raw);
@@ -277,18 +281,32 @@ async function main() {
   // block granularity).
   const msgHash = crypto.createHash('sha1').update(lastText + ':judge').digest('hex');
 
-  // Load prior state — skip if already blocked on this exact message.
+  // Load prior state — skip if already blocked on this exact message. Also read
+  // a running block count (default 0); tolerate a legacy bare-hash string.
+  let blocks = 0;
   try {
     const stateRaw = fs.readFileSync(stateFile, 'utf8').trim();
     if (stateRaw) {
       const parsed = JSON.parse(stateRaw);
       const lastBlockedHash = (parsed && typeof parsed.hash === 'string') ? parsed.hash : '';
+      if (parsed && typeof parsed === 'object' && Number.isFinite(parsed.blocks)) {
+        blocks = parsed.blocks;
+      }
       if (msgHash === lastBlockedHash) {
         process.exit(0);
       }
     }
   } catch (_) {
     // No prior state — first time.
+  }
+
+  // Loop-safety 2: hard cap on total blocks this session. The message text
+  // legitimately changes as the model reworks its reply, which defeats the
+  // byte-identical hash dedupe; without a cap we could re-block on every Stop.
+  // After MAX_BLOCKS nudges we stay quiet regardless of churn.
+  const MAX_BLOCKS = 3;
+  if (blocks >= MAX_BLOCKS) {
+    process.exit(0);
   }
 
   // Call the judge API (20 s timeout — hook budget is 30 s).
@@ -307,10 +325,10 @@ async function main() {
     process.exit(0);
   }
 
-  // Persist the blocked hash before emitting the block decision.
+  // Persist the blocked hash + incremented count before emitting the decision.
   try {
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ hash: msgHash }), 'utf8');
+    fs.writeFileSync(stateFile, JSON.stringify({ hash: msgHash, blocks: blocks + 1 }), 'utf8');
   } catch (_) {
     // Cannot persist state — fail-open to avoid a potential loop.
     process.exit(0);

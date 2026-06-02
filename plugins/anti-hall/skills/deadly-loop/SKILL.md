@@ -294,6 +294,15 @@ When Round N returns GO from BOTH agents:
 - If Round N finds NEW P0s genuinely introduced by Wave-(N-1), keep iterating (Wave N → Round N+1).
 - If Round N finds REDISCOVERED issues, narrow scope (process bug) — re-emphasize delta-focus discipline in the next prompt.
 
+### Iteration caps (soft 10 / hard 15)
+
+The convergence loop (Reviewer + Critic debate → fix wave → re-converge, "until zero NEW P0s") MUST be bounded — a loop that never converges is itself a failure signal, not a reason to keep grinding silently.
+
+- **SOFT CAP = 10 rounds.** When you reach round 10 without convergence, STOP and checkpoint with the user via `AskUserQuestion` — present the choice: **continue** (keep iterating), **stop** (accept current state and report outstanding P0s), or **change scope** (narrow the target / split the work). Do NOT keep looping silently past this point.
+- **HARD CAP = 15 rounds.** At round 15, force-stop unconditionally — even if not converged. Report the remaining NEW P0s, the per-round trend, and why convergence was not reached. No further automatic rounds.
+
+Soft = ask the user what to do; hard = force-stop regardless. If the trend is not monotonically decreasing well before the soft cap, treat that as a process bug (rediscovery / scope too broad) and fix the process rather than burning rounds.
+
 ### D2. Owner-action checklist (for the owner, not the agent)
 
 Document in the handoff what the owner must do MANUALLY before / during / after merge — these are explicitly OUT-OF-SCOPE for the agent. Common examples:

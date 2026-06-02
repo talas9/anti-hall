@@ -134,6 +134,10 @@ function main() {
   // Read stdin (not strictly needed for logic but required by hook protocol)
   try { fs.readFileSync(0, 'utf8'); } catch (_) {}
 
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  const { isSkipped } = require('./skip-guard.js');
+  if (isSkipped('swarm-guard')) process.exit(0);
+
   const now = Date.now();
 
   // --- Memory pressure check (real available memory, reclaimable cache included) ---

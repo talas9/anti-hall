@@ -254,6 +254,10 @@ function main() {
     process.exit(0);
   }
 
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  const { isSkipped } = require('./skip-guard.js');
+  if (isSkipped('graphify-guard')) process.exit(0);
+
   let payload;
   try {
     payload = JSON.parse(raw);

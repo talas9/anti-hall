@@ -537,6 +537,10 @@ function main() {
     return fail_open();
   }
 
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  const { isSkipped } = require('./skip-guard.js');
+  if (isSkipped('git-guard')) process.exit(0);
+
   let cmd = '';
   try {
     const payload = JSON.parse(raw);
