@@ -94,6 +94,7 @@ into the `KB-claude-codex.md` synthesis (kept standalone for provenance + depth)
 | [`superpowers-planning.md`](./superpowers-planning.md) | Distillation of 7 superpowers skills; Iron-Law + rationalization-table pattern; minimal plan-first loop | 234 ln | **Living — folded** (KB-claude-codex §13) | (date unknown) | superpowers skill set (read-only study) |
 | [`keynote-prompting-claude.md`](./keynote-prompting-claude.md) | Distilled notes from two Anthropic prompting talks (Prompting 101 + Prompting for Agents) | 267 ln | **Living — folded** (KB-claude-codex §9) | Captured 2026-05-29; talks dated 2025-05-22 | [youtube ysPbXH0LpIE](https://www.youtube.com/watch?v=ysPbXH0LpIE) |
 | [`keynote-transcript.md`](./keynote-transcript.md) | Best-available reconstruction of the Prompting 101 talk (no verbatim transcript exists — explicitly flagged) | 342 ln | **Living — reference** | Talk 2025-05-22 (published 2025-07-31) | DEV recap + youtubesummary + sinyblog (cited) |
+| [`CONTEXT-PRESERVATION-KB.md`](./CONTEXT-PRESERVATION-KB.md) | **Consolidated research KB** on slowing main-agent context growth — caching, sub-agent isolation, compaction, pruning, JIT retrieval, memory externalization (12 technique families) | ~640 ln | **Living — research** | Swarm-synthesized 2026-06-02 | 130 selected sources (123 read) across Anthropic/OpenAI/Google docs + arXiv + practitioner sources |
 
 **Reading order for a new contributor:** `KB.md` → `KB-claude-codex.md` (the
 synthesis) → the topic doc you need. The `keynote-*` and `superpowers`/`gsd`
@@ -110,6 +111,7 @@ docs are background; their actionable content is already in the synthesis.
 | **Prompting** the protocol text / nudges | KB-claude-codex §3, §6, §9; keynote-prompting-claude; superpowers-planning (Iron-Law form) |
 | **Codex / AGENTS.md** governance | KB-claude-codex §5; `AGENTS.md` at root |
 | **Orchestration / swarm / subagents** | KB-claude-codex §7, §11; opus-4-8-swarm |
+| **Slowing main-agent context growth** (caching, sub-agent isolation, compaction, pruning, JIT retrieval, memory externalization) | [`CONTEXT-PRESERVATION-KB.md`](./CONTEXT-PRESERVATION-KB.md) — consolidated research KB |
 | **deadly-loop / feature-launch** phase model + debate roster | KB-claude-codex §12, §13; gsd-distilled; superpowers-planning; `skills/MODEL-POLICY.md` |
 | **Task discipline** (tasklist-guard) | TASKLIST-GUARD (usage); TASK-WORK (design/research) |
 | **Testing** the hooks | E2E-TESTING |
