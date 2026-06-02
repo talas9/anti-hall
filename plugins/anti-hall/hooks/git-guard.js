@@ -556,6 +556,99 @@ function inlineCommitMessages(rest) {
   return msgs;
 }
 
+// Extract the payload of an `eval <payload>` segment as a COMMAND string to be
+// re-parsed for git force/trailer detection. `eval` runs its argument(s) as a
+// shell command, so `eval "git push -f"` would otherwise bypass the guard (eval
+// is not a recognized wrapper). We collect every token AFTER the `eval` verb,
+// honoring quotes so a quoted payload stays whole, strip the quote delimiters so
+// the payload is the raw command text, and join with spaces. Returns '' if the
+// segment's effective verb is not `eval` or there is no payload.
+function extractEvalPayload(segment) {
+  const tokens = tokenize(segment);
+  const ev = effectiveVerb(tokens);
+  if (!ev || ev.verb !== 'eval') return '';
+  // ev.args are the tokens AFTER the eval verb. Re-join their (quote-stripped)
+  // text into a single command string for re-parsing.
+  const parts = ev.args.map(t => t.text).filter(s => s.length);
+  return parts.join(' ');
+}
+
+// Run the git force/trailer detection on every segment of a command string.
+// Returns a block message string if a violation is found, else null. Recurses
+// into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
+// behind eval are still caught. Mirrors the wrapper-unwrapping already done for
+// command/sudo/env/timeout in effectiveVerb.
+function scanCommand(cmd, depth) {
+  const d = typeof depth === 'number' ? depth : 0;
+  const segments = splitSegments(cmd);
+
+  for (const seg of segments) {
+    const tokens = tokenize(seg);
+    if (!tokens.length) continue;
+
+    const ev = effectiveVerb(tokens);
+    if (!ev) continue;
+
+    // Unwrap `eval <payload>`: re-parse its argument as a command string.
+    if (ev.verb === 'eval') {
+      if (d < 3) {
+        const payload = extractEvalPayload(seg);
+        if (payload) {
+          const nested = scanCommand(payload, d + 1);
+          if (nested) return nested;
+        }
+      }
+      continue;
+    }
+
+    if (ev.verb !== 'git') continue;
+
+    const { sub, rest } = gitSubcommand(ev.args);
+    if (sub === null) continue;
+
+    // --- Rule 2: force push ---
+    if (sub === 'push') {
+      if (isForcePush(rest)) {
+        return (
+          'anti-hall git-guard: BLOCKED. Force push detected. Rewriting published ' +
+          'history is a deliberate human action - do it manually with explicit ' +
+          'owner confirmation, never from an automated push.'
+        );
+      }
+      if (hasCmdSubstArg(rest)) {
+        return (
+          'anti-hall git-guard: BLOCKED. `git push` has an argument produced by a ' +
+          'command substitution / backtick expansion, which can smuggle a --force ' +
+          'flag past static inspection. Run the push with literal arguments (no ' +
+          '$( ) or backticks) so the force-push guard can verify it.'
+        );
+      }
+    }
+
+    // --- Rule 1: self-credit in an inline commit message ---
+    if (sub === 'commit') {
+      const msgs = inlineCommitMessages(rest);
+      for (const m of msgs) {
+        const normalized = m
+          .replace(/\\n/g, '\n')
+          .replace(/\\r/g, '\r')
+          .replace(/\\t/g, '\t');
+        if (
+          SELF_CREDIT_COAUTHOR.test(m) || SELF_CREDIT_GENERATED.test(m) ||
+          SELF_CREDIT_COAUTHOR.test(normalized) || SELF_CREDIT_GENERATED.test(normalized)
+        ) {
+          return (
+            'anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant ' +
+            'self-credit trailer (Co-Authored-By / "Generated with <AI>"). Remove it - ' +
+            'commits carry no AI co-author credit. Re-run the commit without that trailer.'
+          );
+        }
+      }
+    }
+  }
+  return null;
+}
+
 function main() {
   let raw = '';
   try {
@@ -580,66 +673,8 @@ function main() {
   }
   if (!cmd) return fail_open();
 
-  const segments = splitSegments(cmd);
-
-  for (const seg of segments) {
-    const tokens = tokenize(seg);
-    if (!tokens.length) continue;
-
-    const ev = effectiveVerb(tokens);
-    if (!ev || ev.verb !== 'git') continue;
-
-    const { sub, rest } = gitSubcommand(ev.args);
-    if (sub === null) continue;
-
-    // --- Rule 2: force push ---
-    if (sub === 'push') {
-      if (isForcePush(rest)) {
-        return block(
-          'anti-hall git-guard: BLOCKED. Force push detected. Rewriting published ' +
-          'history is a deliberate human action - do it manually with explicit ' +
-          'owner confirmation, never from an automated push.'
-        );
-      }
-      if (hasCmdSubstArg(rest)) {
-        return block(
-          'anti-hall git-guard: BLOCKED. `git push` has an argument produced by a ' +
-          'command substitution / backtick expansion, which can smuggle a --force ' +
-          'flag past static inspection. Run the push with literal arguments (no ' +
-          '$( ) or backticks) so the force-push guard can verify it.'
-        );
-      }
-    }
-
-    // --- Rule 1: self-credit in an inline commit message ---
-    if (sub === 'commit') {
-      const msgs = inlineCommitMessages(rest);
-      for (const m of msgs) {
-        // The self-credit trailer regexes are line-anchored (/im) and need a real
-        // newline to match a trailer line. A `$'...'` (ANSI-C quoted) -m value keeps
-        // its `\n` LITERAL after tokenizing, AND the double-quote tokenizer now
-        // preserves a literal backslash before n/r/t (matching bash, which does not
-        // interpret those in `"..."`), so a trailer hidden as `fix\n\nCo-authored-by:`
-        // in either the `$'...'` or the ordinary `"...\n..."` form survives to here.
-        // Test BOTH the raw message and a copy with the common C backslash escapes
-        // interpreted (\n, \r, \t) so both inline escaped forms are covered.
-        const normalized = m
-          .replace(/\\n/g, '\n')
-          .replace(/\\r/g, '\r')
-          .replace(/\\t/g, '\t');
-        if (
-          SELF_CREDIT_COAUTHOR.test(m) || SELF_CREDIT_GENERATED.test(m) ||
-          SELF_CREDIT_COAUTHOR.test(normalized) || SELF_CREDIT_GENERATED.test(normalized)
-        ) {
-          return block(
-            'anti-hall git-guard: BLOCKED. Commit message contains an AI/assistant ' +
-            'self-credit trailer (Co-Authored-By / "Generated with <AI>"). Remove it - ' +
-            'commits carry no AI co-author credit. Re-run the commit without that trailer.'
-          );
-        }
-      }
-    }
-  }
+  const msg = scanCommand(cmd, 0);
+  if (msg) return block(msg);
 
   process.exit(0);
 }

@@ -205,6 +205,36 @@ function effectiveVerb(segment) {
   return basename(tokens[idx]).toLowerCase();
 }
 
+// Neutralize the CONTENTS of single- and double-quoted string literals in a
+// segment, replacing each quoted char with a space so a HEAVY_PATTERN cannot
+// match text that is merely a quoted DATA argument (e.g. `echo "npm run build"`).
+// The quote delimiters themselves are also turned into spaces; unquoted text is
+// left intact so a real unquoted `npm run build` still matches. This is used FOR
+// THE PATTERN TEST ONLY — the effective-verb check and the $(...)/backtick/`-c`/
+// `eval` extraction all run against the ORIGINAL segment, so command
+// substitutions and shell payloads are still extracted and recursed BEFORE this
+// neutralization can affect anything (extraction order preserved).
+function neutralizeQuotedContents(segment) {
+  let out = '';
+  let i = 0;
+  const n = segment.length;
+  let inSingle = false;
+  let inDouble = false;
+  while (i < n) {
+    const c = segment[i];
+    const c2 = i + 1 < n ? segment[i + 1] : '';
+    if (inSingle) { out += ' '; if (c === "'") inSingle = false; i++; continue; }
+    if (inDouble) {
+      if (c === '\\' && c2) { out += '  '; i += 2; continue; }
+      out += ' '; if (c === '"') inDouble = false; i++; continue;
+    }
+    if (c === "'") { inSingle = true; out += ' '; i++; continue; }
+    if (c === '"') { inDouble = true; out += ' '; i++; continue; }
+    out += c; i++;
+  }
+  return out;
+}
+
 // Evaluate one segment: heavy if (its effective verb is a HEAVY_VERB) OR (it
 // matches a HEAVY_PATTERN), AND it is NOT itself a LIGHT_EXCEPTION. Light
 // exceptions are checked PER SEGMENT so `git status && npm run build` blocks on
@@ -215,8 +245,13 @@ function isHeavySegment(segment) {
   }
   const verb = effectiveVerb(segment);
   if (verb && HEAVY_VERBS.has(verb)) return true;
+  // For PATTERN matching only, neutralize quoted string contents so a benign
+  // command whose only heavy-looking text is inside a quoted DATA arg
+  // (`echo "npm run build"`, `printf 'go test ./...'`) is NOT flagged. Real
+  // unquoted heavy commands survive neutralization and still match.
+  const forPatterns = neutralizeQuotedContents(segment);
   for (const re of HEAVY_PATTERNS) {
-    if (re.test(segment)) return true;
+    if (re.test(forPatterns)) return true;
   }
   return false;
 }
@@ -300,6 +335,41 @@ function extractShellCPayload(segment) {
   return '';
 }
 
+// If a segment is `eval <payload>`, return the payload as a COMMAND string to be
+// re-parsed (NOT treated as a quoted data literal). `eval` runs its argument(s)
+// as a shell command, so heavy commands can hide behind it (`eval "npm test"`,
+// `eval npm test`). We collect every token AFTER the `eval` verb, honoring quotes
+// so a quoted multi-word payload (`eval "npm run build"`) stays a single command
+// string, and join them with spaces. The quote delimiters are stripped so the
+// payload is the COMMAND text itself — this is what makes `eval "npm test"` parse
+// as `npm test` (heavy) rather than a benign quoted data arg. Returns '' if the
+// effective verb is not `eval` or there is no payload. Best-effort tokenization,
+// mirroring extractShellCPayload.
+function extractEvalPayload(segment) {
+  const verb = effectiveVerb(segment);
+  if (verb !== 'eval') return '';
+  // Tokenize respecting quotes; strip quote delimiters so the payload is raw cmd.
+  const tokens = [];
+  let cur = ''; let q = ''; let any = false;
+  const str = segment.trim();
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (q) { if (c === q) { q = ''; } else cur += c; any = true; continue; }
+    if (c === "'" || c === '"') { q = c; any = true; continue; }
+    if (/\s/.test(c)) { if (any) { tokens.push(cur); cur = ''; any = false; } continue; }
+    cur += c; any = true;
+  }
+  if (any) tokens.push(cur);
+  // Drop everything up to and including the `eval` verb token (basename-aware:
+  // a path like /usr/bin/eval still resolves to eval). Leading wrapper/assignment
+  // prefixes are already accounted for because effectiveVerb confirmed `eval`.
+  let idx = 0;
+  while (idx < tokens.length && basename(tokens[idx]).toLowerCase() !== 'eval') idx++;
+  idx++; // skip the eval token itself
+  const payloadTokens = tokens.slice(idx).filter(t => t.length);
+  return payloadTokens.join(' ');
+}
+
 // A command is heavy if ANY of its segments is heavy. This fixes the core bug:
 // the old code only inspected the first verb of the whole unsegmented string and
 // short-circuited LIGHT_EXCEPTIONS on the whole string, so `cd app && npm test`,
@@ -317,6 +387,9 @@ function isHeavyCommand(command, depth) {
       // (b) shell -c payload: unwrap and evaluate as command(s).
       const payload = extractShellCPayload(seg);
       if (payload && isHeavyCommand(payload, d + 1)) return true;
+      // (c) eval payload: unwrap eval's argument(s) and evaluate as command(s).
+      const evalPayload = extractEvalPayload(seg);
+      if (evalPayload && isHeavyCommand(evalPayload, d + 1)) return true;
     }
   }
   // (a) command substitution: scan the WHOLE command (substitutions can span
@@ -347,6 +420,11 @@ function classifyHeavy(command, depth) {
       const payload = extractShellCPayload(seg);
       if (payload) {
         const inner = classifyHeavy(payload, d + 1);
+        if (inner) return inner;
+      }
+      const evalPayload = extractEvalPayload(seg);
+      if (evalPayload) {
+        const inner = classifyHeavy(evalPayload, d + 1);
         if (inner) return inner;
       }
     }

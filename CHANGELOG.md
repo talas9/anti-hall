@@ -6,6 +6,27 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.17.0
+
+Tier-B guard hardening. Tightens the static command analysis so a quoted data literal is no
+longer mistaken for a heavy command, and unwraps a single `eval` payload so a guard sees the
+real command it would run — in both command-guard and git-guard.
+
+- **command-guard is quote-aware.** Heavy-pattern matching now distinguishes a heavy command
+  from a heavy-looking string literal: `echo "npm run build"` / `printf 'go test ./...'` pass a
+  quoted data argument and are no longer false-blocked in the coordinator, while an unquoted
+  heavy command (`npm run build`), a command-substitution payload (`echo "$(npm run build)"`),
+  and a `bash -c "npm run build"` wrapper still block. The intent is to stop flagging strings
+  that merely *contain* a heavy verb without losing any real execution path.
+- **`eval` payload unwrapping in BOTH command-guard and git-guard.** A single `eval "…"` is now
+  unwrapped and its inner command re-scanned, so `eval "npm test"` blocks in the coordinator and
+  `eval "git push -f"` is caught by git-guard, instead of slipping past as an opaque `eval`
+  argument. `eval "echo hi"` / `eval "git status"` still pass.
+- **Known residual gaps (accepted, by design).** `base64 | sh`, process-substitution
+  (`<(…)`), and `git commit -F <file>` trailer smuggling remain accepted defense-in-depth gaps:
+  they cannot be closed by static inspection without over-blocking legitimate use. The guards are
+  a safety net against the common slip, not a sandbox — a determined evasion is out of scope.
+
 ## 0.16.0
 
 Round-2 Tier-A guard hardening, surfaced by the double deadly-loop on the round-1 changes.
