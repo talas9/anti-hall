@@ -14,6 +14,25 @@ const path = require('node:path');
 // Hooks live in plugins/anti-hall/hooks, resolved absolutely from this file.
 const HOOKS_DIR = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks');
 
+// isolatedEnv(home) — build the env object that points a child hook at a fake
+// HOME, cross-platform. Node's os.homedir() does NOT read $HOME on Windows: it
+// reads USERPROFILE first, then HOMEDRIVE+HOMEPATH. So on win32 we must set all
+// three or the hook escapes the fixture and hits the real CI home (the bug that
+// made the 3 windows matrix legs fail 9/77). PATH is preserved from the parent.
+function isolatedEnv(home) {
+  const env = {
+    PATH: process.env.PATH,
+    HOME: home,
+  };
+  if (process.platform === 'win32') {
+    const root = path.parse(home).root; // e.g. "C:\\"
+    env.USERPROFILE = home;
+    env.HOMEDRIVE = root;
+    env.HOMEPATH = home.slice(root.length);
+  }
+  return env;
+}
+
 // testHook(hookRelPathOrAbs, payloadObj, opts={}):
 //   - hookRelPathOrAbs: a bare hook filename (e.g. 'git-guard.js'), a path under
 //     the hooks dir, or an absolute path.
@@ -27,8 +46,7 @@ function testHook(hookRelPathOrAbs, payloadObj, opts = {}) {
     : path.join(HOOKS_DIR, hookRelPathOrAbs);
 
   const env = {
-    PATH: process.env.PATH,
-    HOME: opts.home || process.env.HOME,
+    ...isolatedEnv(opts.home || process.env.HOME),
     ...(opts.env || {}),
   };
 
@@ -61,8 +79,7 @@ function testHookRaw(hookRelPathOrAbs, rawStdin, opts = {}) {
     ? hookRelPathOrAbs
     : path.join(HOOKS_DIR, hookRelPathOrAbs);
   const env = {
-    PATH: process.env.PATH,
-    HOME: opts.home || process.env.HOME,
+    ...isolatedEnv(opts.home || process.env.HOME),
     ...(opts.env || {}),
   };
   const res = spawnSync(process.execPath, [hookAbs], {
