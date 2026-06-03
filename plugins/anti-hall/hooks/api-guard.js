@@ -42,15 +42,17 @@ const MAX_CHECKS = 12;        // bound the number of interpreter spawns
 const SPAWN_TIMEOUT_MS = 1500; // worst case MAX_CHECKS*this stays under the hook timeout
 const MAX_CODE_BYTES = 600000; // skip absurdly large chunks (regex walks are linear, but bound anyway)
 
-// Probe interpreters run with a MINIMAL env so a poisoned parent environment
-// (NODE_OPTIONS=--require evil, PYTHONSTARTUP, PYTHONPATH) cannot influence the
-// existence check. PATH only (plus the bits Windows needs to spawn at all).
+// Probe interpreters run with a SANITIZED env: the full parent environment MINUS
+// the interpreter-injection vectors, so a poisoned env (NODE_OPTIONS=--require
+// evil, PYTHONSTARTUP, PYTHONPATH redirecting imports) cannot influence the
+// existence check — while keeping everything Windows needs to spawn Python at all
+// (APPDATA/LOCALAPPDATA/TEMP/SystemRoot/...). An earlier PATH-only allowlist was
+// secure but broke Python spawning on Windows (→ fail-open → missed catches), so
+// we denylist the dangerous keys instead of allowlisting one safe key.
 const SAFE_ENV = (() => {
-  const e = { PATH: process.env.PATH || '' };
-  if (process.platform === 'win32') {
-    if (process.env.SystemRoot) e.SystemRoot = process.env.SystemRoot;
-    if (process.env.PATHEXT) e.PATHEXT = process.env.PATHEXT;
-  }
+  const e = { ...process.env };
+  const DANGER = /^(NODE_OPTIONS|NODE_PATH|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PYTHONINSPECT|PYTHONEXECUTABLE)$/i;
+  for (const k of Object.keys(e)) { if (DANGER.test(k)) delete e[k]; }
   return e;
 })();
 

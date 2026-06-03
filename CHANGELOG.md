@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.22.1
+
+**Fix: api-guard now works on Windows (CI was red on the windows-latest matrix legs).**
+
+The probe env was a PATH-only allowlist, which is secure but too minimal for Windows —
+Python could not spawn without `APPDATA`/`LOCALAPPDATA`/`TEMP`/etc., so `pyBin()` returned
+null and the hook fail-opened (Python fabrications silently allowed) on Windows. Changed
+`SAFE_ENV` to a **denylist**: the full parent environment minus the interpreter-injection
+vectors (`NODE_OPTIONS`, `NODE_PATH`, `PYTHONSTARTUP`, `PYTHONPATH`, `PYTHONHOME`,
+`PYTHONINSPECT`, `PYTHONEXECUTABLE`). Keeps the security property (a poisoned env can't
+influence the existence check) while letting Python spawn on every OS. Suite 159/159;
+the exact failing case (`asyncio.run_all`) now blocks. Doc-only follow-up `547e184`
+(corrected stale test counts to 159) also rolled up here.
+
 ## 0.22.0
 
 **`api-guard` — a mechanical guard against API hallucination, built on eval evidence.**
