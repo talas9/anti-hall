@@ -292,6 +292,8 @@ async function main() {
   }
 
   let tasks = JSON.parse(fs.readFileSync(TASKS_PATH, 'utf8'));
+  const OFFSET = parseInt(process.env.EVAL_OFFSET || '0', 10) || 0;
+  if (OFFSET > 0) tasks = tasks.slice(OFFSET);
   if (LIMIT > 0) tasks = tasks.slice(0, LIMIT);
 
   const protocolSystem = getProtocolSystemPrompt();

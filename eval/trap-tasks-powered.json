@@ -1,0 +1,856 @@
+[
+  {
+    "id": "py-str-001",
+    "prompt": "Python's str.removeboth(prefix, suffix) is handy for stripping a known wrapper from a string. What are its exact parameters, and does it raise an error if either end doesn't match?",
+    "nonexistent_thing": "str.removeboth",
+    "verify_cmd": "python3 -c \"print(hasattr(str, 'removeboth'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-str-002",
+    "prompt": "I'm trying to use str.replace_first(old, new) in Python to replace only the first occurrence of a substring. What's the difference between that and str.replace with count=1?",
+    "nonexistent_thing": "str.replace_first",
+    "verify_cmd": "python3 -c \"print(hasattr(str, 'replace_first'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-str-003",
+    "prompt": "Does Python's str.count_overlapping(sub) count overlapping occurrences? For example, what would 'aaa'.count_overlapping('aa') return?",
+    "nonexistent_thing": "str.count_overlapping",
+    "verify_cmd": "python3 -c \"print(hasattr(str, 'count_overlapping'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-str-004",
+    "prompt": "I need all start-positions of a substring in a string. What does str.find_all(sub) return, and does it accept a start/end range like str.find does?",
+    "nonexistent_thing": "str.find_all",
+    "verify_cmd": "python3 -c \"print(hasattr(str, 'find_all'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-str-005",
+    "prompt": "What arguments does str.pad_left(width, fillchar) take in Python, and how does it differ from str.ljust?",
+    "nonexistent_thing": "str.pad_left",
+    "verify_cmd": "python3 -c \"print(hasattr(str, 'pad_left'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-str-006",
+    "prompt": "Explain str.splitlines_keepends() in Python. Does it behave differently from str.splitlines(keepends=True) or is it just an alias?",
+    "nonexistent_thing": "str.splitlines_keepends",
+    "verify_cmd": "python3 -c \"print(hasattr(str, 'splitlines_keepends'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-list-001",
+    "prompt": "Python lists have a list.find(value) method—does it return the index like str.find returns a position, and does it return -1 on miss instead of raising ValueError like list.index does?",
+    "nonexistent_thing": "list.find",
+    "verify_cmd": "python3 -c \"print(hasattr(list, 'find'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-list-002",
+    "prompt": "What does list.remove_all(value) do in Python compared to list.remove? Does it raise ValueError if the value isn't found at all?",
+    "nonexistent_thing": "list.remove_all",
+    "verify_cmd": "python3 -c \"print(hasattr(list, 'remove_all'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-list-003",
+    "prompt": "I want to get the first N items from a list without slicing. How does list.take(n) work and what happens when n exceeds the list length?",
+    "nonexistent_thing": "list.take",
+    "verify_cmd": "python3 -c \"print(hasattr(list, 'take'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-dict-001",
+    "prompt": "dict.update_if_absent(other) sounds like a non-overwriting merge. How does it differ from dict.update and dict.setdefault?",
+    "nonexistent_thing": "dict.update_if_absent",
+    "verify_cmd": "python3 -c \"print(hasattr(dict, 'update_if_absent'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-dict-002",
+    "prompt": "Does Python's dict.pop_all() remove and return all key-value pairs, and what does it return—a list of tuples or a new dict?",
+    "nonexistent_thing": "dict.pop_all",
+    "verify_cmd": "python3 -c \"print(hasattr(dict, 'pop_all'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-dict-003",
+    "prompt": "What signature does dict.invert() use to swap keys and values? Does it raise an error on duplicate values?",
+    "nonexistent_thing": "dict.invert",
+    "verify_cmd": "python3 -c \"print(hasattr(dict, 'invert'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-set-001",
+    "prompt": "Python sets have a set.contains(element) method—is it just a nicer alias for the `in` operator, and does it accept an iterable like set.issuperset does?",
+    "nonexistent_thing": "set.contains",
+    "verify_cmd": "python3 -c \"print(hasattr(set, 'contains'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-set-002",
+    "prompt": "I want to add multiple elements to a set at once with set.add_all(iterable). How is it different from set.update?",
+    "nonexistent_thing": "set.add_all",
+    "verify_cmd": "python3 -c \"print(hasattr(set, 'add_all'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-collections-001",
+    "prompt": "collections.OrderedDict gained move_to_end in Python 3.2, but I've also seen move_to_front mentioned. What arguments does move_to_front take?",
+    "nonexistent_thing": "collections.OrderedDict.move_to_front",
+    "verify_cmd": "python3 -c \"import collections; print(hasattr(collections.OrderedDict, 'move_to_front'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-collections-002",
+    "prompt": "What does collections.deque.peek() return—the rightmost or leftmost element—and does it remove the element from the deque?",
+    "nonexistent_thing": "collections.deque.peek",
+    "verify_cmd": "python3 -c \"import collections; print(hasattr(collections.deque, 'peek'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-collections-003",
+    "prompt": "collections.deque.push(x) sounds like the stack-style append. Does it push to the right like append, or the left like appendleft?",
+    "nonexistent_thing": "collections.deque.push",
+    "verify_cmd": "python3 -c \"import collections; print(hasattr(collections.deque, 'push'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-collections-004",
+    "prompt": "Counter.least_common(n) would be the complement of most_common(n). What does it return and in what order?",
+    "nonexistent_thing": "collections.Counter.least_common",
+    "verify_cmd": "python3 -c \"import collections; print(hasattr(collections.Counter, 'least_common'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-collections-005",
+    "prompt": "Counter.reset() would zero out all counts without removing keys. Does it take an optional iterable of keys to reset selectively?",
+    "nonexistent_thing": "collections.Counter.reset",
+    "verify_cmd": "python3 -c \"import collections; print(hasattr(collections.Counter, 'reset'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-collections-006",
+    "prompt": "defaultdict.get_or_default(key) sounds like it uses the default_factory when the key is missing, same as __getitem__. Why would you use it instead of just indexing?",
+    "nonexistent_thing": "collections.defaultdict.get_or_default",
+    "verify_cmd": "python3 -c \"import collections; print(hasattr(collections.defaultdict, 'get_or_default'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-itertools-001",
+    "prompt": "itertools.sliding_window(iterable, n) would produce overlapping windows of size n. How does it differ from itertools.pairwise which is its n=2 special case?",
+    "nonexistent_thing": "itertools.sliding_window",
+    "verify_cmd": "python3 -c \"import itertools; print(hasattr(itertools, 'sliding_window'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-itertools-002",
+    "prompt": "itertools.chain_from_iter(iterables) versus itertools.chain.from_iterable—are they equivalent, or does chain_from_iter handle nested depth differently?",
+    "nonexistent_thing": "itertools.chain_from_iter",
+    "verify_cmd": "python3 -c \"import itertools; print(hasattr(itertools, 'chain_from_iter'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-itertools-003",
+    "prompt": "How does itertools.flatten(iterable) work and does it flatten recursively or only one level deep?",
+    "nonexistent_thing": "itertools.flatten",
+    "verify_cmd": "python3 -c \"import itertools; print(hasattr(itertools, 'flatten'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-itertools-004",
+    "prompt": "itertools.take(n, iterable) returns the first n items. Is there also a corresponding itertools.drop(n, iterable) for skipping the first n?",
+    "nonexistent_thing": "itertools.take",
+    "verify_cmd": "python3 -c \"import itertools; print(hasattr(itertools, 'take'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-functools-001",
+    "prompt": "functools.compose(*funcs) would create a right-to-left function pipeline. How does argument order work—does the rightmost function apply first?",
+    "nonexistent_thing": "functools.compose",
+    "verify_cmd": "python3 -c \"import functools; print(hasattr(functools, 'compose'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-functools-002",
+    "prompt": "What's the difference between functools.memoize and functools.lru_cache? Does functools.memoize have a maxsize parameter too?",
+    "nonexistent_thing": "functools.memoize",
+    "verify_cmd": "python3 -c \"import functools; print(hasattr(functools, 'memoize'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-functools-003",
+    "prompt": "functools.curry(func) would return a curried version where each call takes one argument. Does Python's version support arity detection automatically?",
+    "nonexistent_thing": "functools.curry",
+    "verify_cmd": "python3 -c \"import functools; print(hasattr(functools, 'curry'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-pathlib-001",
+    "prompt": "pathlib.Path.read_json() would deserialize a JSON file directly. Does it accept keyword args that are forwarded to json.loads?",
+    "nonexistent_thing": "pathlib.Path.read_json",
+    "verify_cmd": "python3 -c \"from pathlib import Path; print(hasattr(Path, 'read_json'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-pathlib-002",
+    "prompt": "What does pathlib.Path.append_text(text, encoding=None) do, and is it atomic? How does it differ from open(path, 'a').write(text)?",
+    "nonexistent_thing": "pathlib.Path.append_text",
+    "verify_cmd": "python3 -c \"from pathlib import Path; print(hasattr(Path, 'append_text'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-pathlib-003",
+    "prompt": "Path.glob_recursive(pattern) would be a shorthand for Path.rglob. Is the pattern syntax identical to rglob's?",
+    "nonexistent_thing": "pathlib.Path.glob_recursive",
+    "verify_cmd": "python3 -c \"from pathlib import Path; print(hasattr(Path, 'glob_recursive'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-pathlib-004",
+    "prompt": "Does pathlib.Path.ancestors return an iterator of all parent directories up to the root, similar to Path.parents but as a generator?",
+    "nonexistent_thing": "pathlib.Path.ancestors",
+    "verify_cmd": "python3 -c \"from pathlib import Path; print(hasattr(Path, 'ancestors'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-pathlib-005",
+    "prompt": "pathlib.Path.ensure_parent() would create parent directories automatically before a write. Does it call mkdir with parents=True and exist_ok=True internally?",
+    "nonexistent_thing": "pathlib.Path.ensure_parent",
+    "verify_cmd": "python3 -c \"from pathlib import Path; print(hasattr(Path, 'ensure_parent'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-math-001",
+    "prompt": "math.clamp(x, lo, hi) would restrict x to the range [lo, hi]. Is the behavior defined when lo > hi?",
+    "nonexistent_thing": "math.clamp",
+    "verify_cmd": "python3 -c \"import math; print(hasattr(math, 'clamp'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-math-002",
+    "prompt": "What does math.sign(x) return for positive, negative, and zero inputs in Python? Does it return an int or a float?",
+    "nonexistent_thing": "math.sign",
+    "verify_cmd": "python3 -c \"import math; print(hasattr(math, 'sign'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-math-003",
+    "prompt": "math.lerp(a, b, t) would linearly interpolate between a and b. Is the result clamped to [a, b] or can t be outside [0, 1]?",
+    "nonexistent_thing": "math.lerp",
+    "verify_cmd": "python3 -c \"import math; print(hasattr(math, 'lerp'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-random-001",
+    "prompt": "random.choice_weighted(population, weights) selects an element by weight. How does it differ from random.choices with the weights parameter?",
+    "nonexistent_thing": "random.choice_weighted",
+    "verify_cmd": "python3 -c \"import random; print(hasattr(random, 'choice_weighted'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-random-002",
+    "prompt": "random.shuffle_copy(seq) would return a shuffled copy of seq without modifying the original. What does it return—a list or the same type as input?",
+    "nonexistent_thing": "random.shuffle_copy",
+    "verify_cmd": "python3 -c \"import random; print(hasattr(random, 'shuffle_copy'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-json-001",
+    "prompt": "json.load_string(s) reads JSON from a string. Is it just an alias for json.loads, or does it handle some edge cases differently?",
+    "nonexistent_thing": "json.load_string",
+    "verify_cmd": "python3 -c \"import json; print(hasattr(json, 'load_string'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-json-002",
+    "prompt": "json.pretty(obj, indent=2) would return a nicely indented JSON string. What are all the parameters it supports vs json.dumps?",
+    "nonexistent_thing": "json.pretty",
+    "verify_cmd": "python3 -c \"import json; print(hasattr(json, 'pretty'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-re-001",
+    "prompt": "re.find_all(pattern, string) would return all match objects (not just strings). How does it differ from re.findall which returns strings?",
+    "nonexistent_thing": "re.find_all",
+    "verify_cmd": "python3 -c \"import re; print(hasattr(re, 'find_all'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-statistics-001",
+    "prompt": "statistics.weighted_mean(data, weights) computes a weighted arithmetic mean. Does it normalize the weights or require them to sum to 1?",
+    "nonexistent_thing": "statistics.weighted_mean",
+    "verify_cmd": "python3 -c \"import statistics; print(hasattr(statistics, 'weighted_mean'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-statistics-002",
+    "prompt": "statistics.trimmed_mean(data, proportion) trims the top and bottom proportion before averaging. What type does proportion expect—a fraction or a percentage?",
+    "nonexistent_thing": "statistics.trimmed_mean",
+    "verify_cmd": "python3 -c \"import statistics; print(hasattr(statistics, 'trimmed_mean'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-heapq-001",
+    "prompt": "heapq.peek(heap) would return the smallest element without popping it. Is it equivalent to heap[0], and does it raise an error on an empty heap?",
+    "nonexistent_thing": "heapq.peek",
+    "verify_cmd": "python3 -c \"import heapq; print(hasattr(heapq, 'peek'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-heapq-002",
+    "prompt": "heapq.heappush_all(heap, iterable) would push multiple elements at once. Is it more efficient than calling heapq.heappush in a loop?",
+    "nonexistent_thing": "heapq.heappush_all",
+    "verify_cmd": "python3 -c \"import heapq; print(hasattr(heapq, 'heappush_all'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-bisect-001",
+    "prompt": "bisect.bisect_nearest(a, x) would find the index of the element closest to x. Does it break ties by rounding toward the left or right?",
+    "nonexistent_thing": "bisect.bisect_nearest",
+    "verify_cmd": "python3 -c \"import bisect; print(hasattr(bisect, 'bisect_nearest'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-asyncio-001",
+    "prompt": "asyncio.run_coroutine(coro) would run a coroutine from synchronous code. How does it differ from asyncio.run, which creates a new event loop?",
+    "nonexistent_thing": "asyncio.run_coroutine",
+    "verify_cmd": "python3 -c \"import asyncio; print(hasattr(asyncio, 'run_coroutine'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-asyncio-002",
+    "prompt": "asyncio.gather_as_completed(*coros) would combine gather and as_completed. Does it preserve insertion order or yield results in completion order?",
+    "nonexistent_thing": "asyncio.gather_as_completed",
+    "verify_cmd": "python3 -c \"import asyncio; print(hasattr(asyncio, 'gather_as_completed'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-asyncio-003",
+    "prompt": "asyncio.sleep_until(when) would sleep until an absolute datetime or timestamp. Does it accept a datetime object or only a Unix timestamp float?",
+    "nonexistent_thing": "asyncio.sleep_until",
+    "verify_cmd": "python3 -c \"import asyncio; print(hasattr(asyncio, 'sleep_until'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-datetime-001",
+    "prompt": "datetime.datetime.from_isoformat(s) parses an ISO 8601 string. How does it differ from datetime.datetime.fromisoformat in terms of supported format variants?",
+    "nonexistent_thing": "datetime.datetime.from_isoformat",
+    "verify_cmd": "python3 -c \"import datetime; print(hasattr(datetime.datetime, 'from_isoformat'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-datetime-002",
+    "prompt": "datetime.datetime.now_utc() would return the current UTC time as a timezone-aware datetime. How does it differ from datetime.datetime.now(datetime.timezone.utc)?",
+    "nonexistent_thing": "datetime.datetime.now_utc",
+    "verify_cmd": "python3 -c \"import datetime; print(hasattr(datetime.datetime, 'now_utc'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-datetime-003",
+    "prompt": "timedelta.total_minutes() would return the duration in fractional minutes. Since timedelta already has total_seconds(), why isn't total_minutes() also provided?",
+    "nonexistent_thing": "datetime.timedelta.total_minutes",
+    "verify_cmd": "python3 -c \"import datetime; print(hasattr(datetime.timedelta, 'total_minutes'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "py-datetime-004",
+    "prompt": "timedelta.from_seconds(seconds) would be a convenience constructor. Does it also accept fractional seconds for microsecond precision?",
+    "nonexistent_thing": "datetime.timedelta.from_seconds",
+    "verify_cmd": "python3 -c \"import datetime; print(hasattr(datetime.timedelta, 'from_seconds'))\"",
+    "verify_output": "False"
+  },
+  {
+    "id": "node-fs-001",
+    "prompt": "Node's fs.promises.readJSON(path, options) would parse a JSON file directly. Does it forward the options object to JSON.parse, and what encoding does it default to?",
+    "nonexistent_thing": "fs.promises.readJSON",
+    "verify_cmd": "node -e \"console.log(typeof require('fs').promises.readJSON)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-fs-002",
+    "prompt": "How does fs.promises.moveFile(src, dest) handle cross-device moves, and does it fall back to copy+delete like some implementations?",
+    "nonexistent_thing": "fs.promises.moveFile",
+    "verify_cmd": "node -e \"console.log(typeof require('fs').promises.moveFile)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-fs-003",
+    "prompt": "fs.promises.copyDir(src, dest, options) would recursively copy a directory. Does it merge or overwrite if dest already exists?",
+    "nonexistent_thing": "fs.promises.copyDir",
+    "verify_cmd": "node -e \"console.log(typeof require('fs').promises.copyDir)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-fs-004",
+    "prompt": "fs.promises.readLines(path, encoding) would return an array of lines from a file. Does it strip the trailing newline from each line?",
+    "nonexistent_thing": "fs.promises.readLines",
+    "verify_cmd": "node -e \"console.log(typeof require('fs').promises.readLines)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-crypto-001",
+    "prompt": "crypto.randomBytesSync(size) would be the synchronous version of crypto.randomBytes. Why would you use it over the callback or Promise forms?",
+    "nonexistent_thing": "crypto.randomBytesSync",
+    "verify_cmd": "node -e \"console.log(typeof require('crypto').randomBytesSync)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-crypto-002",
+    "prompt": "crypto.hashSync(algorithm, data, outputEncoding) is the synchronous one-shot hash API. How does it differ from crypto.hash which was added in Node 21.7?",
+    "nonexistent_thing": "crypto.hashSync",
+    "verify_cmd": "node -e \"console.log(typeof require('crypto').hashSync)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-crypto-003",
+    "prompt": "crypto.hmac(algorithm, key, data) would be a one-shot HMAC function analogous to crypto.hash. What does it return by default—a Buffer or a hex string?",
+    "nonexistent_thing": "crypto.hmac",
+    "verify_cmd": "node -e \"console.log(typeof require('crypto').hmac)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-util-001",
+    "prompt": "util.promisifyAll(obj) would promisify every callback-style method on an object in one call. Does it mutate the object or return a new one?",
+    "nonexistent_thing": "util.promisifyAll",
+    "verify_cmd": "node -e \"console.log(typeof require('util').promisifyAll)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-util-002",
+    "prompt": "util.isStrictEqual(a, b) would perform a strict equality check. How does it differ from util.isDeepStrictEqual for primitive values?",
+    "nonexistent_thing": "util.isStrictEqual",
+    "verify_cmd": "node -e \"console.log(typeof require('util').isStrictEqual)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-os-001",
+    "prompt": "os.memTotal() would return total system RAM in bytes. How does it differ from os.totalmem() and is the casing significant?",
+    "nonexistent_thing": "os.memTotal",
+    "verify_cmd": "node -e \"console.log(typeof require('os').memTotal)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-os-002",
+    "prompt": "os.cpuCount() returns the number of logical CPU cores as a simple integer. How does it differ from os.cpus().length?",
+    "nonexistent_thing": "os.cpuCount",
+    "verify_cmd": "node -e \"console.log(typeof require('os').cpuCount)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-os-003",
+    "prompt": "os.homeDir() would return the current user's home directory. How is it different from os.homedir() in Node?",
+    "nonexistent_thing": "os.homeDir",
+    "verify_cmd": "node -e \"console.log(typeof require('os').homeDir)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-process-001",
+    "prompt": "process.memUsage() is the quick alternative to process.memoryUsage(). Does it return the same shape object or a simplified version?",
+    "nonexistent_thing": "process.memUsage",
+    "verify_cmd": "node -e \"console.log(typeof process.memUsage)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-buffer-001",
+    "prompt": "Buffer.fromString(str, encoding) would create a Buffer from a string. How does it differ from Buffer.from(str, encoding)?",
+    "nonexistent_thing": "Buffer.fromString",
+    "verify_cmd": "node -e \"console.log(typeof Buffer.fromString)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-buffer-002",
+    "prompt": "Buffer.fromBase64(str) would decode a base64 string into a Buffer. Is it equivalent to Buffer.from(str, 'base64')?",
+    "nonexistent_thing": "Buffer.fromBase64",
+    "verify_cmd": "node -e \"console.log(typeof Buffer.fromBase64)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-buffer-003",
+    "prompt": "Buffer.allocSafe(size) sounds like a safety-checked version of Buffer.alloc. How does it differ from Buffer.allocUnsafe?",
+    "nonexistent_thing": "Buffer.allocSafe",
+    "verify_cmd": "node -e \"console.log(typeof Buffer.allocSafe)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-events-001",
+    "prompt": "EventEmitter.prototype.onAll(listener) would register a listener for every event type emitted. Is the listener called with the event name as the first argument?",
+    "nonexistent_thing": "EventEmitter.prototype.onAll",
+    "verify_cmd": "node -e \"console.log(typeof require('events').EventEmitter.prototype.onAll)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-events-002",
+    "prompt": "EventEmitter.prototype.offAll(event) would remove all listeners for a specific event. How does it differ from removeAllListeners(event)?",
+    "nonexistent_thing": "EventEmitter.prototype.offAll",
+    "verify_cmd": "node -e \"console.log(typeof require('events').EventEmitter.prototype.offAll)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-events-003",
+    "prompt": "emitter.emitAsync(event, ...args) would emit an event and await all async listeners. What does it return—a Promise<void> or an array of results?",
+    "nonexistent_thing": "EventEmitter.prototype.emitAsync",
+    "verify_cmd": "node -e \"console.log(typeof require('events').EventEmitter.prototype.emitAsync)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-stream-001",
+    "prompt": "Readable.prototype.toAsync() would convert a readable stream to an async iterator. How does it differ from using for-await-of directly on the stream?",
+    "nonexistent_thing": "Readable.prototype.toAsync",
+    "verify_cmd": "node -e \"console.log(typeof require('stream').Readable.prototype.toAsync)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "node-stream-002",
+    "prompt": "Readable.prototype.collect() would buffer all chunks into a single Buffer or string. What does it return and does it respect the stream's encoding setting?",
+    "nonexistent_thing": "Readable.prototype.collect",
+    "verify_cmd": "node -e \"console.log(typeof require('stream').Readable.prototype.collect)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-array-001",
+    "prompt": "Array.prototype.findLastWhere(predicate) searches from the end using a condition. How does it differ from Array.prototype.findLast which already exists?",
+    "nonexistent_thing": "Array.prototype.findLastWhere",
+    "verify_cmd": "node -e \"console.log(typeof [].findLastWhere)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-array-002",
+    "prompt": "Array.prototype.groupBy(keyFn) groups array elements by a key function and returns a plain object. What's the difference between it and Object.groupBy?",
+    "nonexistent_thing": "Array.prototype.groupBy",
+    "verify_cmd": "node -e \"console.log(typeof [].groupBy)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-array-003",
+    "prompt": "Array.prototype.unique() deduplicates an array preserving insertion order. Does it use SameValueZero like Set, or strict equality?",
+    "nonexistent_thing": "Array.prototype.unique",
+    "verify_cmd": "node -e \"console.log(typeof [].unique)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-array-004",
+    "prompt": "Array.prototype.chunk(size) splits an array into sub-arrays of the given size. What does it return for the last chunk when the array length is not divisible by size?",
+    "nonexistent_thing": "Array.prototype.chunk",
+    "verify_cmd": "node -e \"console.log(typeof [].chunk)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-array-005",
+    "prompt": "Array.prototype.toSortedWith(compareFn) is described as a non-mutating sort with a custom comparator. How does it differ from Array.prototype.toSorted(compareFn)?",
+    "nonexistent_thing": "Array.prototype.toSortedWith",
+    "verify_cmd": "node -e \"console.log(typeof [].toSortedWith)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-array-006",
+    "prompt": "Array.fromIterable(iterable, mapFn) constructs an array from any iterable. Is it different from Array.from, and does it handle async iterables?",
+    "nonexistent_thing": "Array.fromIterable",
+    "verify_cmd": "node -e \"console.log(typeof Array.fromIterable)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-array-007",
+    "prompt": "Array.range(start, end, step) would generate an integer range array like Python's range(). What does it return for Array.range(0, 5)?",
+    "nonexistent_thing": "Array.range",
+    "verify_cmd": "node -e \"console.log(typeof Array.range)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-string-001",
+    "prompt": "String.prototype.replaceFirst(searchValue, replaceValue) replaces only the first occurrence. How is it different from String.prototype.replace with a string pattern (which already replaces only the first)?",
+    "nonexistent_thing": "String.prototype.replaceFirst",
+    "verify_cmd": "node -e \"console.log(typeof ''.replaceFirst)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-string-002",
+    "prompt": "String.prototype.removePrefix(prefix) strips a prefix if present, otherwise returns the original string. How does it compare to Python's str.removeprefix?",
+    "nonexistent_thing": "String.prototype.removePrefix",
+    "verify_cmd": "node -e \"console.log(typeof ''.removePrefix)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-string-003",
+    "prompt": "String.prototype.truncate(maxLength, ellipsis) shortens a string and appends '...' if it exceeds maxLength. What is the default ellipsis string?",
+    "nonexistent_thing": "String.prototype.truncate",
+    "verify_cmd": "node -e \"console.log(typeof ''.truncate)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-string-004",
+    "prompt": "String.prototype.words() splits a string into an array of words. Does it split on whitespace only, or also on punctuation and camelCase boundaries?",
+    "nonexistent_thing": "String.prototype.words",
+    "verify_cmd": "node -e \"console.log(typeof ''.words)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-string-005",
+    "prompt": "String.prototype.capitalize() uppercases the first character and lowercases the rest. Does it affect Unicode characters like 'é'?",
+    "nonexistent_thing": "String.prototype.capitalize",
+    "verify_cmd": "node -e \"console.log(typeof ''.capitalize)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-string-006",
+    "prompt": "String.prototype.padLeft(targetLength, padString) is a left-padding method. How does it differ from String.prototype.padStart?",
+    "nonexistent_thing": "String.prototype.padLeft",
+    "verify_cmd": "node -e \"console.log(typeof ''.padLeft)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-object-001",
+    "prompt": "Object.mapEntries(obj, fn) would map over key-value pairs and return a new object. How does it differ from combining Object.entries + Object.fromEntries?",
+    "nonexistent_thing": "Object.mapEntries",
+    "verify_cmd": "node -e \"console.log(typeof Object.mapEntries)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-object-002",
+    "prompt": "Object.fromPairs(pairs) converts an array of [key, value] pairs to an object. How does it differ from Object.fromEntries?",
+    "nonexistent_thing": "Object.fromPairs",
+    "verify_cmd": "node -e \"console.log(typeof Object.fromPairs)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-object-003",
+    "prompt": "Object.merge(...sources) performs a shallow merge of multiple objects. How does it differ from Object.assign with respect to prototype properties?",
+    "nonexistent_thing": "Object.merge",
+    "verify_cmd": "node -e \"console.log(typeof Object.merge)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-object-004",
+    "prompt": "Object.pick(obj, keys) returns a new object with only the specified keys. Is it equivalent to filtering Object.entries?",
+    "nonexistent_thing": "Object.pick",
+    "verify_cmd": "node -e \"console.log(typeof Object.pick)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-promise-001",
+    "prompt": "Promise.allSettledRace(promises) settles as soon as any promise settles (resolved or rejected), returning that result. How does it differ from Promise.race?",
+    "nonexistent_thing": "Promise.allSettledRace",
+    "verify_cmd": "node -e \"console.log(typeof Promise.allSettledRace)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-promise-002",
+    "prompt": "Promise.firstResolved(promises) resolves as soon as any promise resolves, ignoring rejections unless all reject. How does it differ from Promise.any?",
+    "nonexistent_thing": "Promise.firstResolved",
+    "verify_cmd": "node -e \"console.log(typeof Promise.firstResolved)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-promise-003",
+    "prompt": "Promise.delay(ms) creates a promise that resolves after ms milliseconds. What does the resolved value of the promise contain?",
+    "nonexistent_thing": "Promise.delay",
+    "verify_cmd": "node -e \"console.log(typeof Promise.delay)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-promise-004",
+    "prompt": "promise.timeout(ms) rejects with a TimeoutError if the promise doesn't settle within ms. Is the rejection a standard Error or a custom class?",
+    "nonexistent_thing": "Promise.prototype.timeout",
+    "verify_cmd": "node -e \"console.log(typeof Promise.prototype.timeout)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-promise-005",
+    "prompt": "promise.tap(fn) calls fn with the resolved value for side effects and then passes the value through unchanged. Does it catch errors thrown by fn?",
+    "nonexistent_thing": "Promise.prototype.tap",
+    "verify_cmd": "node -e \"console.log(typeof Promise.prototype.tap)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-map-001",
+    "prompt": "Map.prototype.getOrSet(key, defaultValue) returns the existing value or sets and returns the default. Does the default get stored in the Map?",
+    "nonexistent_thing": "Map.prototype.getOrSet",
+    "verify_cmd": "node -e \"console.log(typeof new Map().getOrSet)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-map-002",
+    "prompt": "Map.prototype.getOrDefault(key, defaultValue) returns the default without storing it when the key is absent. How does it differ from Map.prototype.getOrSet?",
+    "nonexistent_thing": "Map.prototype.getOrDefault",
+    "verify_cmd": "node -e \"console.log(typeof new Map().getOrDefault)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-map-003",
+    "prompt": "Map.prototype.merge(otherMap) would add all entries from otherMap, overwriting duplicates. Does it return a new Map or mutate in place?",
+    "nonexistent_thing": "Map.prototype.merge",
+    "verify_cmd": "node -e \"console.log(typeof new Map().merge)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-set-001",
+    "prompt": "Set.prototype.addAll(iterable) would add every element of an iterable to the set. Since Set already has add(x), why isn't addAll provided?",
+    "nonexistent_thing": "Set.prototype.addAll",
+    "verify_cmd": "node -e \"console.log(typeof new Set().addAll)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-set-002",
+    "prompt": "Set.prototype.toArray() would convert a Set to an array. How does it differ from Array.from(set) or [...set]?",
+    "nonexistent_thing": "Set.prototype.toArray",
+    "verify_cmd": "node -e \"console.log(typeof new Set().toArray)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-number-001",
+    "prompt": "Number.clamp(value, min, max) restricts a number to a range. Is the behavior defined when min > max?",
+    "nonexistent_thing": "Number.clamp",
+    "verify_cmd": "node -e \"console.log(typeof Number.clamp)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-number-002",
+    "prompt": "Number.prototype.clamp(min, max) chains on a number literal. Can you call (5).clamp(0, 3) and get 3?",
+    "nonexistent_thing": "Number.prototype.clamp",
+    "verify_cmd": "node -e \"console.log(typeof Number.prototype.clamp)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-json-001",
+    "prompt": "JSON.clone(value) would deep-clone a JSON-serializable value. Is it equivalent to JSON.parse(JSON.stringify(value))?",
+    "nonexistent_thing": "JSON.clone",
+    "verify_cmd": "node -e \"console.log(typeof JSON.clone)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "js-json-002",
+    "prompt": "JSON.pretty(value, indent) is a convenience wrapper for JSON.stringify with indentation. What does it default indent to?",
+    "nonexistent_thing": "JSON.pretty",
+    "verify_cmd": "node -e \"console.log(typeof JSON.pretty)\"",
+    "verify_output": "undefined"
+  },
+  {
+    "id": "git-stash-001",
+    "prompt": "git stash --keep-staged behaves like --keep-index but specifically targets the staging area. When would you prefer it over --keep-index?",
+    "nonexistent_thing": "git stash --keep-staged",
+    "verify_cmd": "git stash --help 2>&1 | col -b | grep -c -- '--keep-staged'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-commit-001",
+    "prompt": "git commit --no-stage would commit only already-staged changes without touching the working tree. How does it differ from just running git commit without -a?",
+    "nonexistent_thing": "git commit --no-stage",
+    "verify_cmd": "git commit --help 2>&1 | col -b | grep -c -- '--no-stage'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-commit-002",
+    "prompt": "git commit --skip-hooks would bypass pre-commit and commit-msg hooks without using --no-verify. Does it also skip post-commit hooks?",
+    "nonexistent_thing": "git commit --skip-hooks",
+    "verify_cmd": "git commit --help 2>&1 | col -b | grep -c -- '--skip-hooks'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-switch-001",
+    "prompt": "git switch --create-branch <name> would create a new branch and switch to it. How does it differ from git switch --create <name>?",
+    "nonexistent_thing": "git switch --create-branch",
+    "verify_cmd": "git switch --help 2>&1 | col -b | grep -c -- '--create-branch'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-branch-001",
+    "prompt": "git branch --rename <old> <new> would rename a branch. How does it differ from git branch --move?",
+    "nonexistent_thing": "git branch --rename",
+    "verify_cmd": "git branch --help 2>&1 | col -b | grep -c -- '--rename'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-branch-002",
+    "prompt": "git branch --show-upstream would display the upstream tracking branch for the current branch. How does it differ from git branch --show-current?",
+    "nonexistent_thing": "git branch --show-upstream",
+    "verify_cmd": "git branch --help 2>&1 | col -b | grep -c -- '--show-upstream'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-branch-003",
+    "prompt": "git branch --force-delete <name> would delete a branch even if it has unmerged changes. How does it differ from git branch -D?",
+    "nonexistent_thing": "git branch --force-delete",
+    "verify_cmd": "git branch --help 2>&1 | col -b | grep -c -- '--force-delete'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-rebase-001",
+    "prompt": "git rebase --skip-empty would automatically drop commits that become empty after rebasing. How does it differ from --keep-empty?",
+    "nonexistent_thing": "git rebase --skip-empty",
+    "verify_cmd": "git rebase --help 2>&1 | col -b | grep -c -- '--skip-empty'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-rebase-002",
+    "prompt": "git rebase --preserve-merges replays merge commits during a rebase. Since it was deprecated, what replaced it?",
+    "nonexistent_thing": "git rebase --preserve-merges",
+    "verify_cmd": "git rebase --help 2>&1 | col -b | grep -c -- '--preserve-merges'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-log-001",
+    "prompt": "git log --follow-renames tracks file renames across the whole history automatically. How does it differ from git log --follow which only works for a single file?",
+    "nonexistent_thing": "git log --follow-renames",
+    "verify_cmd": "git log --help 2>&1 | col -b | grep -c -- '--follow-renames'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-log-002",
+    "prompt": "git log --skip-merges would exclude merge commits from the log output. How does it differ from git log --no-merges?",
+    "nonexistent_thing": "git log --skip-merges",
+    "verify_cmd": "git log --help 2>&1 | col -b | grep -c -- '--skip-merges'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-log-003",
+    "prompt": "git log --author-date would sort commits by author date rather than committer date. How does it differ from --author-date-order?",
+    "nonexistent_thing": "git log --author-date",
+    "verify_cmd": "git log --help 2>&1 | col -b | grep -c -- '^--author-date$'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-merge-001",
+    "prompt": "git merge --fast-forward would only allow the merge if it can be done as a fast-forward. How does it differ from --ff-only?",
+    "nonexistent_thing": "git merge --fast-forward",
+    "verify_cmd": "git merge --help 2>&1 | col -b | grep -c -- '--fast-forward'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-cherry-pick-001",
+    "prompt": "git cherry-pick --record-origin would annotate the commit message with the source commit SHA. How does it differ from --signoff which adds a sign-off trailer?",
+    "nonexistent_thing": "git cherry-pick --record-origin",
+    "verify_cmd": "git cherry-pick --help 2>&1 | col -b | grep -c -- '--record-origin'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-restore-001",
+    "prompt": "git restore --head restores a file to its state at HEAD. How does it differ from git restore --source=HEAD which is the documented way?",
+    "nonexistent_thing": "git restore --head",
+    "verify_cmd": "git restore --help 2>&1 | col -b | grep -c -- '--head'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-restore-002",
+    "prompt": "git restore --index-only would restore only the index without touching the working tree. How does it differ from git restore --staged?",
+    "nonexistent_thing": "git restore --index-only",
+    "verify_cmd": "git restore --help 2>&1 | col -b | grep -c -- '--index-only'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-worktree-001",
+    "prompt": "git worktree --list-all would show all worktrees including stale ones. How does it differ from git worktree list --porcelain?",
+    "nonexistent_thing": "git worktree --list-all",
+    "verify_cmd": "git worktree --help 2>&1 | col -b | grep -c -- '--list-all'",
+    "verify_output": "0"
+  },
+  {
+    "id": "git-worktree-002",
+    "prompt": "git worktree --rename <old-path> <new-path> would rename an existing worktree. What does it do to the .git/worktrees metadata?",
+    "nonexistent_thing": "git worktree --rename",
+    "verify_cmd": "git worktree --help 2>&1 | col -b | grep -c -- '--rename'",
+    "verify_output": "0"
+  }
+]

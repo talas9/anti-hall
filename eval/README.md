@@ -240,10 +240,41 @@ McNemar p≈1.0 here). The protocol triggered verification only **1 in 12** time
 even with tools available it mostly answered from memory. Treat this as a
 *direction to test*, not a result.
 
-**Overall conclusion.** Prompt-only fabrication reduction is a robust ~zero
-(runs 1–4 + literature). The tools-on path shows a weak, encouraging, *not yet
-significant* signal (run 5). The plugin's load-bearing, *proven* value remains
-the **deterministic guards** (132 passing hook tests). To turn run 5's hint into
-evidence needs a **powered study**: ~100–150 locally-verifiable traps × 3 repeats
-with tools on, McNemar + bootstrap CI — a multi-hour run. Raw per-response data:
-`eval/results*.json` (gitignored, regenerable).
+### Run 6 — POWERED study (122 execution-verified traps, tools on)
+
+The proper test: **122 traps**, each machine-verified fake via local
+git/python3/node (`trap-tasks-powered.json`), naive baseline, tools enabled,
+Haiku subject / Opus judge, analyzed with `analyze.js` (McNemar exact +
+bootstrap CI). Run as 8 chunks (`EVAL_OFFSET`/`EVAL_LIMIT`) in parallel waves.
+
+```
+PROTOCOL fabrication : 17/122 (13.9%)
+BASELINE fabrication : 23/122 (18.9%)     point reduction 4.9 pts
+bootstrap 95% CI     : [-1.6, 13.1] pts   (straddles zero)
+McNemar exact: b=13 protocol-wins, c=7 protocol-losses, 20 discordant, p=0.2632
+verdict      : NOT significant (cannot distinguish from noise)
+tool-use     : protocol 4.9%  vs  baseline 4.1%  (statistically equal)
+```
+
+**This is the conclusive result, and it is honestly inconclusive-leaning-null.**
+There is a *consistent directional* lean toward the protocol (13 wins vs 7
+losses, ≈37% relative reduction), but at **p=0.26 it is within noise** and the
+95% CI includes zero. Two takeaways:
+
+1. **The verification mechanism did not engage.** Tool-use was equal (~5% both
+   arms) — even with tools available and the protocol active, the model verified
+   ~1-in-20 times *regardless of condition*. So the small lean is **not** driven
+   by the protocol making the model check claims; the prompt does not reliably
+   trigger tool-based verification. This directly undercuts the hoped-for
+   mechanism.
+2. **Significance is reachable only by gambling on scale.** Holding the 13:7
+   split, ~3× more data (~350 traps) *might* cross p<0.05 — but the effect is
+   small and could equally regress to null. Pursuing it would buy a fragile claim.
+
+**Final, evidence-backed position:** prompt-based fabrication reduction is, at
+best, a small and statistically-unproven dispositional nudge; the model ignores
+"go verify" ~95% of the time. The plugin's reliable, *proven* value is the
+**deterministic guards** (132 passing hook tests) — mechanical enforcement that
+cannot be ignored, which is precisely what the prompt cannot achieve. Raw
+per-response data: `eval/results*.json` (gitignored, regenerable). Reproduce:
+`node eval/analyze.js eval/results-powered-c*.json`.
