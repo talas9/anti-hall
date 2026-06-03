@@ -38,8 +38,11 @@
 const fs = require('fs');
 const { spawnSync } = require('child_process');
 
-const MAX_CHECKS = 12;        // bound the number of interpreter spawns
-const SPAWN_TIMEOUT_MS = 1500; // worst case MAX_CHECKS*this stays under the hook timeout
+const MAX_CHECKS = 6;          // bound the number of interpreter spawns (× timeout < hook timeout)
+// A CEILING, not added latency: a normal spawn returns in <300ms; this only stops
+// us from giving up too early on a COLD python/node start on a loaded CI runner
+// (the Windows/node flake where the probe timed out → fail-open → missed block).
+const SPAWN_TIMEOUT_MS = 5000;
 const MAX_CODE_BYTES = 600000; // skip absurdly large chunks (regex walks are linear, but bound anyway)
 
 // Probe interpreters run with a SANITIZED env: the full parent environment MINUS

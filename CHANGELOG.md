@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.22.2
+
+**Fix: api-guard CI flake on Windows/node (probe timeout too tight).**
+
+After 0.22.1 the windows-latest leg still flaked intermittently (same commit green on
+`main`, red on the tag run): a COLD `python`/`node` spawn on a loaded Windows runner
+occasionally exceeded the `1500ms` probe timeout → the check timed out → fail-open →
+the `asyncio.run_all` test expecting a block got an allow. Raised `SPAWN_TIMEOUT_MS` to
+`5000ms` (a CEILING, not added latency — a normal spawn returns in <300ms; this just
+stops us giving up too early on a cold start), lowered `MAX_CHECKS` 12→6 to keep the
+worst case bounded, and bumped the hook's outer timeout 30→45s for headroom. Suite
+159/159.
+
 ## 0.22.1
 
 **Fix: api-guard now works on Windows (CI was red on the windows-latest matrix legs).**
