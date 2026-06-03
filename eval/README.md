@@ -36,7 +36,7 @@ rate**, the delta, and which tasks differed.
 
 This isolates the **protocol (prompt) effect only**. The deterministic guards
 (git-guard, command-guard, speculation-guard, etc.) are a separate mechanism,
-already covered by the repo's 132 hook tests — this eval does not re-test them.
+already covered by the repo's 159 hook tests — this eval does not re-test them.
 
 ## How to run
 
@@ -274,7 +274,7 @@ losses, ≈37% relative reduction), but at **p=0.26 it is within noise** and the
 **Final, evidence-backed position:** prompt-based fabrication reduction is, at
 best, a small and statistically-unproven dispositional nudge; the model ignores
 "go verify" ~95% of the time. The plugin's reliable, *proven* value is the
-**deterministic guards** (132 passing hook tests) — mechanical enforcement that
+**deterministic guards** (159 passing hook tests) — mechanical enforcement that
 cannot be ignored, which is precisely what the prompt cannot achieve. Raw
 per-response data: `eval/results*.json` (gitignored, regenerable). Reproduce:
 `node eval/analyze.js eval/results-powered-c*.json`.
