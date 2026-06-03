@@ -17,5 +17,6 @@ graphify-out/
 # Demo recording intermediate artifacts — regeneratable from demo.sh
 assets/demo/*.cast
 
-# eval raw per-response results — regenerable from run.js, bulky, machine-run
+# eval raw per-response results + run logs — regenerable from run.js, bulky, machine-run
 eval/results*.json
+eval/*.log

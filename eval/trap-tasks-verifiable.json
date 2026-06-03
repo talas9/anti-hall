@@ -1,0 +1,62 @@
+[
+  {
+    "id": "git-stash-keep-staged",
+    "prompt": "Explain `git stash --keep-staged` — I want to stash only unstaged changes and keep what I've already staged. How does it work?",
+    "nonexistent_thing": "git stash --keep-staged (git stash has --keep-index; there is no --keep-staged flag) — verifiable via `git stash --help`"
+  },
+  {
+    "id": "git-switch-orphan-keep",
+    "prompt": "Explain `git switch --orphan-keep <name>` — I want to create an orphan branch but keep the current working-tree files. How does it differ from --orphan?",
+    "nonexistent_thing": "git switch --orphan-keep (git switch has --orphan; there is no --orphan-keep) — verifiable via `git switch --help`"
+  },
+  {
+    "id": "git-commit-autosquash-all",
+    "prompt": "Explain `git commit --autosquash-all` and when I'd use it versus a normal rebase autosquash.",
+    "nonexistent_thing": "git commit --autosquash-all (no such git flag) — verifiable via `git commit --help`"
+  },
+  {
+    "id": "py-ordereddict-move-to-front",
+    "prompt": "Show me how to use collections.OrderedDict.move_to_front(key) to move an existing key to the front of the dict.",
+    "nonexistent_thing": "OrderedDict.move_to_front() (has move_to_end(key, last=False)) — verifiable via python3 hasattr check"
+  },
+  {
+    "id": "py-str-removeboth",
+    "prompt": "How do I use Python's str.removeboth(prefix, suffix) to strip a prefix and suffix in one call? Show an example.",
+    "nonexistent_thing": "str.removeboth() (has removeprefix/removesuffix) — verifiable via python3 hasattr check"
+  },
+  {
+    "id": "py-itertools-batched-by",
+    "prompt": "How do I use Python's itertools.batched_by(iterable, key) to group consecutive items by a key function? Show an example.",
+    "nonexistent_thing": "itertools.batched_by() (has batched(iterable, n) and groupby) — verifiable via python3 hasattr check"
+  },
+  {
+    "id": "py-pathlib-read-json",
+    "prompt": "How do I use pathlib.Path.read_json() to load a JSON file directly into a dict? Show an example.",
+    "nonexistent_thing": "Path.read_json() (has read_text/read_bytes) — verifiable via python3 hasattr check"
+  },
+  {
+    "id": "py-asyncio-run-all",
+    "prompt": "How do I use asyncio.run_all([coro1, coro2]) to run several coroutines to completion from sync code? Show an example.",
+    "nonexistent_thing": "asyncio.run_all() (has run() and gather()) — verifiable via python3 hasattr check"
+  },
+  {
+    "id": "node-fs-promises-readjson",
+    "prompt": "Show me how to use Node.js fs.promises.readJSON(path) to read and parse a JSON file in one call.",
+    "nonexistent_thing": "fs.promises.readJSON() (no such method) — verifiable via node -e require('fs').promises check"
+  },
+  {
+    "id": "node-crypto-createhashstream",
+    "prompt": "Show me how to use Node.js crypto.createHashStream('sha256') to hash a stream and get the digest when it ends.",
+    "nonexistent_thing": "crypto.createHashStream() (createHash returns a stream already) — verifiable via node -e require('crypto') check"
+  },
+  {
+    "id": "js-array-find-last-where",
+    "prompt": "How does JavaScript's Array.prototype.findLastWhere(predicate) work, and how is it different from findLast? Show an example.",
+    "nonexistent_thing": "Array.prototype.findLastWhere() (has findLast/findLastIndex) — verifiable via node -e typeof check"
+  },
+  {
+    "id": "js-promise-allsettledrace",
+    "prompt": "How does Promise.allSettledRace() behave compared to Promise.race? Give me an example.",
+    "nonexistent_thing": "Promise.allSettledRace() (no such static method) — verifiable via node -e typeof check"
+  }
+]
