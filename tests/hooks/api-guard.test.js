@@ -23,6 +23,7 @@ function has(bin) {
 }
 const HAS_PY = has('python3');
 const HAS_NODE = has('node');
+const HAS_NX = (() => { try { return spawnSync('python3', ['-c', 'import networkx'], { timeout: 8000 }).status === 0; } catch (_) { return false; } })();
 
 function write(file_path, content) {
   return { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path, content }, session_id: 't', cwd: process.cwd() };
@@ -75,10 +76,21 @@ test('BLOCK: python from-import datetime.frobnicate (fake class method)', { skip
   assert.ok(/frobnicate/.test(r.json.reason));
 });
 
-test('ALLOW: python 3rd-party module not introspected (numpy.foo)', { skip: !HAS_PY }, () => {
-  // numpy is not in the stdlib allowlist -> we never check it -> fail open.
-  const r = run(write('/tmp/x.py', 'import numpy\nnumpy.foo_bar_baz()\n'));
-  assert.strictEqual(r.status, 0);
+test('ALLOW: not-installed module -> fail-open', { skip: !HAS_PY }, () => {
+  // Module not installed -> import fails in probe -> unknown -> allow (fail-open).
+  const r = run(write('/tmp/x.py', 'import zzz_not_a_real_pkg_42\nzzz_not_a_real_pkg_42.foo()\n'));
+  assert.strictEqual(r.status, 0, r.stdout);
+});
+
+test('BLOCK: networkx.fake_method_xyz (3rd-party fake — v2 win)', { skip: !HAS_NX }, () => {
+  const r = run(write('/tmp/x.py', 'import networkx\nnetworkx.fake_method_xyz()\n'));
+  assert.strictEqual(r.status, 2, 'expected block, got ' + r.status + ' :: ' + r.stdout);
+  assert.ok(r.json && /fake_method_xyz/.test(r.json.reason), 'reason should name fake_method_xyz');
+});
+
+test('ALLOW: networkx.Graph (real 3rd-party method)', { skip: !HAS_NX }, () => {
+  const r = run(write('/tmp/x.py', 'import networkx\ng = networkx.Graph()\n'));
+  assert.strictEqual(r.status, 0, 'real 3rd-party API must NOT block :: ' + r.stdout);
 });
 
 // ---- FALSE-POSITIVE regressions: stdlib/global names used as LOCALS --------

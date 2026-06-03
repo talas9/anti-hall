@@ -2,56 +2,59 @@
 'use strict';
 // api-guard.js — PreToolUse hook on Write/Edit/MultiEdit.
 //
-// THE MECHANICAL ANSWER TO API HALLUCINATION. The eval (eval/) showed that the
-// verify-first *prompt* does not reliably stop a model from inventing
-// non-existent APIs — the model ignores "go verify" ~95% of the time. So this
-// guard does the verification ITSELF, deterministically, on the code the model
-// is about to write: it resolves `module.attribute` references against the
-// ACTUALLY-INSTALLED runtime (python3 / node) and BLOCKS the write when a real
-// stdlib/builtin module is missing the referenced attribute (i.e. the model
-// fabricated it). A prompt can be ignored; a blocked Write cannot.
+// THE MECHANICAL ANSWER TO API HALLUCINATION. The eval (eval/) showed the
+// verify-first *prompt* does not reliably stop a model inventing non-existent
+// APIs — the model ignores "go verify" ~95% of the time. So this guard does the
+// verification ITSELF, deterministically, on the code about to be written: it
+// resolves `module.attribute` references against the ACTUALLY-INSTALLED runtime
+// (python3 / node) and BLOCKS the write when a real module is missing the
+// referenced attribute (i.e. the model fabricated it). A prompt can be ignored;
+// a blocked Write cannot.
 //
 // CONTRACT (matches command-guard.js):
 //   stdin  : PreToolUse payload JSON
 //   stdout : JSON { decision: "block", reason } when blocking, else nothing
 //   exit 2 : block ; exit 0 : allow
-//   FAIL-OPEN: any error / ambiguity / missing interpreter -> exit 0. A guard
+//   FAIL-OPEN: any error / ambiguity / not-installed / timeout -> exit 0. A guard
 //   that blocks valid code is worse than useless, so we block ONLY when we have
-//   POSITIVELY verified (clean import + attribute absent) that the symbol is fake.
+//   POSITIVELY verified (module imports cleanly + attribute absent) that it's fake.
 //
-// SCOPE (v1, high-confidence only):
-//   - Python: `mod.attr` where mod is a known stdlib module; and `Name.attr`
-//     where Name came from `from mod import Name`. Verified via python3 hasattr.
-//   - JS/Node: `require('mod').attr` / `const X = require('mod'); X.attr` for
-//     node builtins; and global builtins (Array/String/Object/Promise/Map/Set/
-//     Number/Math/JSON/Reflect, incl. `.prototype.attr`). Verified via node.
-//   Receiver-typed instance methods (e.g. someStr.removeboth()) are NOT checked
-//   in v1 — the receiver type isn't known statically. Fail-open, not false-block.
+// SCOPE (v2):
+//   - Python: `mod.attr` for ANY module imported in the chunk, and `Name.attr`
+//     where Name came from `from mod import Name` (incl. 3rd-party — pandas,
+//     numpy, …). Verified by importing the module and checking hasattr.
+//   - JS/Node: `require('mod').attr` / `const X = require('mod'); X.attr` for ANY
+//     module (builtin OR an installed node_modules package — lodash, …); and JS
+//     global builtins (Array/Promise/Object/…, incl. `.prototype.attr`).
+//   A module that does NOT import/require cleanly (not installed, wrong env)
+//   yields "unknown" -> allow. Locally-shadowed names and receiver-typed instance
+//   methods are NOT checked (fail-open, never false-block).
 //
-// VERSION SKEW: verification is against the LOCAL runtime. If code legitimately
-// targets a NEWER runtime than installed, a real-but-future attr can read as
-// missing. That is the one false-positive path; it is rare (local >= target
-// usually), the block message says which runtime version it checked, and the
-// user can override with `~/.anti-hall/skip.json` (api-guard). Documented, not
-// hidden.
+// WHY this is safe even for 3rd-party: if a module imports cleanly it IS installed,
+// so hasattr/typeof is authoritative for that exact installed version. Probes are
+// BATCHED (one import per module, not per attribute) to bound cost + side effects,
+// run under a generous per-spawn timeout (a slow/heavy/cold import just times out
+// -> fail-open), and never block on uncertainty.
+//
+// VERSION SKEW: verified against the LOCAL installed version. Code targeting a
+// NEWER version where the attr exists can read as missing (rare; local >= target
+// usually). The block message names the runtime; override with the skip-hatch.
 
 const fs = require('fs');
 const { spawnSync } = require('child_process');
 
-const MAX_CHECKS = 6;          // bound the number of interpreter spawns (× timeout < hook timeout)
-// A CEILING, not added latency: a normal spawn returns in <300ms; this only stops
-// us from giving up too early on a COLD python/node start on a loaded CI runner
-// (the Windows/node flake where the probe timed out → fail-open → missed block).
+const MAX_MODULES = 8;        // bound interpreter spawns (one per module group)
+// A CEILING, not added latency: a normal spawn returns in <300ms; the generous
+// timeout only stops us giving up too early on a COLD or heavy import on a loaded
+// runner (the Windows/node flake where the probe timed out -> fail-open -> miss).
 const SPAWN_TIMEOUT_MS = 5000;
 const MAX_CODE_BYTES = 600000; // skip absurdly large chunks (regex walks are linear, but bound anyway)
 
 // Probe interpreters run with a SANITIZED env: the full parent environment MINUS
 // the interpreter-injection vectors, so a poisoned env (NODE_OPTIONS=--require
 // evil, PYTHONSTARTUP, PYTHONPATH redirecting imports) cannot influence the
-// existence check — while keeping everything Windows needs to spawn Python at all
-// (APPDATA/LOCALAPPDATA/TEMP/SystemRoot/...). An earlier PATH-only allowlist was
-// secure but broke Python spawning on Windows (→ fail-open → missed catches), so
-// we denylist the dangerous keys instead of allowlisting one safe key.
+// existence check — while keeping everything Windows needs to spawn at all
+// (APPDATA/LOCALAPPDATA/TEMP/SystemRoot/...).
 const SAFE_ENV = (() => {
   const e = { ...process.env };
   const DANGER = /^(NODE_OPTIONS|NODE_PATH|PYTHONSTARTUP|PYTHONPATH|PYTHONHOME|PYTHONINSPECT|PYTHONEXECUTABLE)$/i;
@@ -59,30 +62,10 @@ const SAFE_ENV = (() => {
   return e;
 })();
 
-// Curated Python stdlib modules safe to introspect (import is cheap + side-effect
-// free). Kept conservative: only modules we are confident are stdlib, so a
-// missing attr means a fabrication, not a 3rd-party/version surprise.
-const PY_STDLIB = new Set([
-  'os', 'sys', 'math', 'cmath', 'random', 'json', 're', 'collections', 'itertools',
-  'functools', 'pathlib', 'asyncio', 'datetime', 'time', 'statistics', 'heapq',
-  'bisect', 'string', 'textwrap', 'shutil', 'glob', 'csv', 'sqlite3', 'decimal',
-  'fractions', 'secrets', 'uuid', 'contextlib', 'operator', 'inspect', 'abc',
-  'numbers', 'array', 'enum', 'dataclasses', 'typing', 'io', 'struct', 'hashlib',
-  'base64', 'binascii', 'copy', 'pprint', 'queue', 'threading', 'socket',
-]);
-
-// Node builtin modules safe to require + introspect.
-const NODE_BUILTINS = new Set([
-  'fs', 'path', 'os', 'crypto', 'util', 'stream', 'buffer', 'events', 'url',
-  'querystring', 'http', 'https', 'net', 'dns', 'zlib', 'readline', 'child_process',
-  'assert', 'timers', 'string_decoder', 'tls', 'dgram', 'process',
-]);
-
-// JS global builtins whose static members we can verify.
+// JS global builtins whose static / prototype members we can verify.
 const JS_GLOBALS = new Set([
   'Array', 'String', 'Object', 'Promise', 'Map', 'Set', 'WeakMap', 'WeakSet',
-  'Number', 'Math', 'JSON', 'Reflect', 'Symbol', 'Date', 'RegExp', 'BigInt',
-  'Buffer',
+  'Number', 'Math', 'JSON', 'Reflect', 'Symbol', 'Date', 'RegExp', 'BigInt', 'Buffer',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -115,9 +98,8 @@ function langFor(fp) {
   return null;
 }
 
-// Strip the cheap stuff that produces false matches: line comments and string
-// literals (best-effort, not a full parser — we only need to reduce noise, and
-// any miss just fails open).
+// Strip line comments + string literals (best-effort, not a full parser — any
+// miss just fails open).
 function stripPy(code) {
   return code
     .replace(/#.*$/gm, '')
@@ -131,41 +113,11 @@ function stripJs(code) {
     .replace(/`(?:\\.|[^`\\])*`|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*"/g, ' ');
 }
 
-// ---------------------------------------------------------------------------
-// Candidate extraction → list of {probe, label} where probe is a tiny program
-// that exits 7 iff the symbol is MISSING (and 0 if present). De-duplicated.
-// ---------------------------------------------------------------------------
-function pyCandidates(code) {
-  const PB = pyBin();
-  if (!PB) return []; // no Python 3 interpreter -> skip Python checks (fail-open)
-  const src = stripPy(code);
-  const cands = new Map(); // label -> {mod, expr, attr}
-  // `from mod import Name [as Alias]` -> Alias/Name bound to mod.Name
-  const fromImports = {}; // localName -> "mod.Name"
-  let m;
-  const reFrom = /^[ \t]*from[ \t]+([a-zA-Z_][\w.]*)[ \t]+import[ \t]+(.+)$/gm;
-  while ((m = reFrom.exec(src))) {
-    const mod = m[1].split('.')[0];
-    if (!PY_STDLIB.has(mod)) continue;
-    for (const part of m[2].split(',')) {
-      const mm = /([A-Za-z_]\w*)(?:[ \t]+as[ \t]+([A-Za-z_]\w*))?/.exec(part.trim());
-      if (mm) fromImports[(mm[2] || mm[1])] = m[1] + '.' + mm[1];
-    }
-  }
-  const reImport = /^[ \t]*import[ \t]+([a-zA-Z_][\w.]*)(?:[ \t]+as[ \t]+([A-Za-z_]\w*))?/gm;
-  const aliasToMod = {};
-  const imported = new Set(); // bare `import X` module names actually present in this chunk
-  while ((m = reImport.exec(src))) {
-    const mod = m[1].split('.')[0];
-    if (!PY_STDLIB.has(mod)) continue;
-    if (m[2]) aliasToMod[m[2]] = m[1];
-    else imported.add(mod);
-  }
-  // Names bound LOCALLY in this chunk (assignment / def / class / for-target). A
-  // locally-bound token is NOT the stdlib module/class, so resolving it as one is
-  // the dominant false-positive class: `array = [1,2]; array.append(3)`,
-  // `time = elapsed(); time.total_seconds()`, `datetime = wrap()` after a
-  // from-import, `def json(): ...`. Any such name is excluded from checking.
+// Names bound LOCALLY in a Python chunk (assignment / def / class / for-target).
+// A locally-bound token is NOT the module/class it shares a name with, so
+// resolving it as one is the dominant false-positive class
+// (`array = [1,2]; array.append(3)`, `datetime = wrap()` after a from-import).
+function pyBoundNames(src) {
   const bound = new Set();
   let b;
   const reAssign = /^[ \t]*([A-Za-z_]\w*)[ \t]*=(?!=)/gm;
@@ -174,80 +126,102 @@ function pyCandidates(code) {
   while ((b = reDef.exec(src))) bound.add(b[1]);
   const reFor = /\bfor[ \t]+([A-Za-z_]\w*)[ \t]+in\b/g;
   while ((b = reFor.exec(src))) bound.add(b[1]);
+  return bound;
+}
+
+// ---------------------------------------------------------------------------
+// Python candidate extraction. Returns [{baseMod, receiverPath, attr, label}].
+//   baseMod      : the top-level module to import (e.g. "pandas", "collections")
+//   receiverPath : dotted path to the object to hasattr on, rooted at baseMod
+//                  (e.g. "pandas" or "collections.OrderedDict")
+// Covers ANY module imported in the chunk (stdlib AND 3rd-party); a module that
+// is not installed will fail to import in the probe -> unknown -> allow.
+// ---------------------------------------------------------------------------
+function pyCandidates(code) {
+  const src = stripPy(code);
+  const cands = new Map(); // label -> {baseMod, receiverPath, attr}
+
+  // `from mod import Name [as Alias]` -> local name bound to "mod.Name"
+  const fromImports = {};
+  let m;
+  const reFrom = /^[ \t]*from[ \t]+([a-zA-Z_][\w.]*)[ \t]+import[ \t]+(.+)$/gm;
+  while ((m = reFrom.exec(src))) {
+    const mod = m[1];
+    for (const part of m[2].split(',')) {
+      const mm = /([A-Za-z_]\w*)(?:[ \t]+as[ \t]+([A-Za-z_]\w*))?/.exec(part.trim());
+      if (mm && mm[1] !== '*') fromImports[(mm[2] || mm[1])] = mod + '.' + mm[1];
+    }
+  }
+  // `import mod [as alias]` (any module)
+  const aliasToMod = {};
+  const imported = new Set();
+  const reImport = /^[ \t]*import[ \t]+([a-zA-Z_][\w.]*)(?:[ \t]+as[ \t]+([A-Za-z_]\w*))?/gm;
+  while ((m = reImport.exec(src))) {
+    if (m[2]) aliasToMod[m[2]] = m[1];
+    else imported.add(m[1]); // bare `import a.b.c` -> local name is `a`
+  }
+  const bound = pyBoundNames(src);
 
   // Resolve `recv.attr`. Precedence: from-import binding (the local name IS the
-  // imported class/fn — e.g. `from datetime import datetime`) wins over the bare
-  // module name; then `import mod as recv`; then a bare stdlib module — but ONLY
-  // when an actual `import recv` is present in THIS chunk. Without a visible
-  // import we have NOT verified that `recv` is the module (it is far more likely
-  // a local variable), so we do not check it — fail-open over false-block.
+  // imported class/fn) > `import mod as recv` alias > bare imported module.
+  // ONLY check names that were actually imported in THIS chunk — without a
+  // visible import, recv is far more likely a local variable (fail-open).
   const reAttr = /\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g;
   while ((m = reAttr.exec(src))) {
     const recv = m[1], attr = m[2];
     if (attr.startsWith('__')) continue;
-    if (bound.has(recv)) continue;      // locally rebound/shadowed -> not the module/class
-    let expr = null, baseMod = null;
-    if (fromImports[recv]) {            // `from mod import recv` -> recv is the bound class/fn
-      expr = fromImports[recv]; baseMod = expr.split('.')[0];
-    } else if (aliasToMod[recv]) {      // `import mod as recv`
-      expr = aliasToMod[recv]; baseMod = expr.split('.')[0];
-    } else if (PY_STDLIB.has(recv) && imported.has(recv)) { // bare module, actually imported here
-      expr = recv; baseMod = recv;
-    }
-    if (expr) cands.set(expr + '.' + attr, { importStmt: 'import ' + baseMod, expr, attr });
+    if (bound.has(recv)) continue; // locally rebound/shadowed -> not the module/class
+    let receiverPath = null;
+    if (fromImports[recv]) receiverPath = fromImports[recv];        // e.g. collections.OrderedDict
+    else if (aliasToMod[recv]) receiverPath = aliasToMod[recv];     // import mod as recv
+    else if (imported.has(recv)) receiverPath = recv;               // bare `import recv`
+    else if ([...imported].some((mod) => mod.split('.')[0] === recv)) receiverPath = recv; // `import a.b` -> `a`
+    if (!receiverPath) continue;
+    const baseMod = receiverPath.split('.')[0];
+    cands.set(receiverPath + '.' + attr, { baseMod, receiverPath, attr });
   }
-  return [...cands.entries()].map(([label, c]) => ({
-    label,
-    argv: ['-c', c.importStmt + '\nimport sys\nsys.exit(0 if hasattr(' + c.expr + ', ' + JSON.stringify(c.attr) + ') else 7)'],
-    bin: PB,
-  }));
+  return [...cands.entries()].map(([label, c]) => ({ ...c, label }));
 }
 
+// ---------------------------------------------------------------------------
+// JS candidate extraction. Two kinds:
+//   require-based: {kind:'require', mod, attr, label}  (any builtin or pkg)
+//   global:        {kind:'global', path, label}        (Array.prototype.x, …)
+// ---------------------------------------------------------------------------
 function jsCandidates(code) {
-  // IMPORTANT: extract require-patterns BEFORE stripping, since stripJs removes
-  // the quoted module names that are essential to the require() pattern.
-  const cands = new Map();
+  const out = [];
+  const seen = new Set();
+  const push = (o) => { if (!seen.has(o.label)) { seen.add(o.label); out.push(o); } };
   let m;
 
-  // const X = require('mod')   /   var X = require("mod")
-  // Extract from UNSTRIPPED code to preserve quoted module names.
+  // require bindings (from UNSTRIPPED code — stripJs removes quoted module names)
   const reqVar = {};
   const reReqVar = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*['"]([^'"]+)['"]\s*\)/g;
-  while ((m = reReqVar.exec(code))) {
-    if (NODE_BUILTINS.has(m[2])) reqVar[m[1]] = m[2];
-  }
-  // Drop any require-bound var that is REASSIGNED later (more than one `var =`):
-  // `let fs = require('fs'); fs = require('fs-extra'); fs.copySync()` must NOT be
-  // checked against builtin fs. One assignment == the decl; >1 == rebound.
+  while ((m = reReqVar.exec(code))) reqVar[m[1]] = m[2];
+  // drop any require-bound var reassigned later (`fs = require('fs-extra')`)
   for (const v of Object.keys(reqVar)) {
     const re = new RegExp('\\b' + v.replace(/\$/g, '\\$') + '\\s*=(?!=)', 'g');
     if ((code.match(re) || []).length > 1) delete reqVar[v];
   }
-
-  // require('mod').attr  (inline)
-  // Extract from UNSTRIPPED code.
+  // inline require('mod').attr
   const reReqInline = /require\(\s*['"]([^'"]+)['"]\s*\)\.([A-Za-z_$][\w$]*)/g;
   while ((m = reReqInline.exec(code))) {
-    if (!NODE_BUILTINS.has(m[1])) continue;
-    const label = "require('" + m[1] + "')." + m[2];
-    cands.set(label, { expr: "require(" + JSON.stringify(m[1]) + ")." + m[2] });
+    if (m[2].startsWith('__')) continue;
+    push({ kind: 'require', mod: m[1], attr: m[2], label: "require('" + m[1] + "')." + m[2] });
   }
 
-  // X.attr where X is a require-bound builtin
-  // Can now match on stripped code since X is an identifier.
   const src = stripJs(code);
+  // X.attr where X is a require-bound module var
   for (const [varName, mod] of Object.entries(reqVar)) {
     const re = new RegExp('\\b' + varName.replace(/\$/g, '\\$') + '\\.([A-Za-z_$][\\w$]*)', 'g');
     while ((m = re.exec(src))) {
       if (m[1].startsWith('__')) continue;
-      const label = mod + '(' + varName + ').' + m[1];
-      cands.set(label, { expr: "require(" + JSON.stringify(mod) + ")." + m[1] });
+      push({ kind: 'require', mod, attr: m[1], label: mod + '(' + varName + ').' + m[1] });
     }
   }
 
-  // Names declared/rebound locally — a global builtin name that is shadowed
-  // (`const Math = myLib`, `let JSON = json5`, `Set = MyOrderedSet`) is NOT the
-  // builtin, so it must not be checked against it (false-positive class P0-2).
+  // locally declared / rebound names — a global builtin name shadowed locally
+  // (`const Math = myLib`) is NOT the builtin.
   const jsBound = new Set();
   let g;
   const reDecl = /\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g;
@@ -256,39 +230,109 @@ function jsCandidates(code) {
   while ((g = reReassign.exec(src))) jsBound.add(g[1]);
 
   // global builtins: Glob.attr and Glob.prototype.attr
-  // Can match on stripped code (no quoted strings involved).
   const reGlobal = /\b([A-Za-z]\w*)\.(?:(prototype)\.)?([A-Za-z_$][\w$]*)/g;
   while ((m = reGlobal.exec(src))) {
     const obj = m[1], proto = m[2], attr = m[3];
     if (!JS_GLOBALS.has(obj)) continue;
-    if (jsBound.has(obj)) continue;     // locally shadowed -> not the builtin
+    if (jsBound.has(obj)) continue;
     if (attr.startsWith('__') || attr === 'prototype') continue;
-    const expr = proto ? (obj + '.prototype.' + attr) : (obj + '.' + attr);
-    cands.set(expr, { expr });
+    const path = proto ? (obj + '.prototype.' + attr) : (obj + '.' + attr);
+    push({ kind: 'global', path, label: path });
   }
-
-  return [...cands.entries()].map(([label, c]) => ({
-    label,
-    argv: ['-e', 'process.exit(typeof (' + c.expr + ') === "undefined" ? 7 : 0)'],
-    bin: 'node',
-  }));
+  return out;
 }
 
 // ---------------------------------------------------------------------------
-// Verify a candidate. Returns 'missing' | 'present' | 'unknown'. Any spawn
-// problem (no interpreter, import error, timeout, signal) -> 'unknown' (open).
+// BATCHED verification. One interpreter spawn per MODULE (not per attribute),
+// so a heavy 3rd-party import happens at most once. Returns the subset of the
+// given candidates that are POSITIVELY missing (present/unknown -> not returned,
+// i.e. fail-open). `bin` problems / timeouts / non-zero exit -> [] (all open).
 // ---------------------------------------------------------------------------
-function verify(cand) {
+function spawnJSON(bin, argv) {
   let res;
   try {
-    res = spawnSync(cand.bin, cand.argv, { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
-  } catch (_) {
-    return 'unknown';
+    res = spawnSync(bin, argv, { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 262144 });
+  } catch (_) { return null; }
+  if (!res || res.error || res.signal || res.status !== 0) return null;
+  try { return JSON.parse((res.stdout || '').trim()); } catch (_) { return null; }
+}
+
+// Python: import baseMod once, traverse receiverPath, hasattr(obj, attr).
+// codes: 1=present, 0=missing, 2=unknown(any error). Only 0 -> fake.
+const PY_PROBE =
+  'import sys, json\n' +
+  'checks = json.loads(sys.argv[1])\n' +
+  'out = []\n' +
+  'for r, a in checks:\n' +
+  '    try:\n' +
+  '        parts = r.split(".")\n' +
+  '        obj = __import__(parts[0])\n' +
+  '        for p in parts[1:]:\n' +
+  '            obj = getattr(obj, p)\n' +
+  '        out.append(0 if not hasattr(obj, a) else 1)\n' +
+  '    except Exception:\n' +
+  '        out.append(2)\n' +
+  'sys.stdout.write(json.dumps(out))\n';
+
+function verifyPython(cands, bin) {
+  const byMod = new Map();
+  for (const c of cands) {
+    if (!byMod.has(c.baseMod)) byMod.set(c.baseMod, []);
+    byMod.get(c.baseMod).push(c);
   }
-  if (!res || res.error || res.signal) return 'unknown';
-  if (res.status === 7) return 'missing';
-  if (res.status === 0) return 'present';
-  return 'unknown'; // import error, syntax error, anything else -> open
+  const fakes = [];
+  let spawns = 0;
+  for (const [, group] of byMod) {
+    if (spawns++ >= MAX_MODULES) break;
+    const checks = group.map((c) => [c.receiverPath, c.attr]);
+    const codes = spawnJSON(bin, ['-c', PY_PROBE, JSON.stringify(checks)]);
+    if (!Array.isArray(codes)) continue; // probe failed -> fail-open for this module
+    group.forEach((c, i) => { if (codes[i] === 0) fakes.push(c); });
+  }
+  return fakes;
+}
+
+// Node require: require(mod) once, typeof m[attr]. Plus globals in one pass.
+const JS_PROBE =
+  'const mods = JSON.parse(process.argv[1]);\n' +     // { "<mod>": ["attr", ...], ... }
+  'const globals = JSON.parse(process.argv[2]);\n' +  // ["Array.prototype.x", ...]
+  'const res = { req: {}, glob: [] };\n' +
+  'for (const mod of Object.keys(mods)) {\n' +
+  '  let m; try { m = require(mod); } catch (e) { res.req[mod] = mods[mod].map(() => 2); continue; }\n' +
+  '  res.req[mod] = mods[mod].map((a) => { try { return typeof m[a] === "undefined" ? 0 : 1; } catch (e) { return 2; } });\n' +
+  '}\n' +
+  'function resolve(p) { let o = globalThis; for (const k of p.split(".")) { if (o == null) return undefined; o = o[k]; } return o; }\n' +
+  'res.glob = globals.map((p) => { try { return typeof resolve(p) === "undefined" ? 0 : 1; } catch (e) { return 2; } });\n' +
+  'process.stdout.write(JSON.stringify(res));\n';
+
+function verifyJs(cands) {
+  const reqByMod = new Map();
+  const globals = [];
+  for (const c of cands) {
+    if (c.kind === 'require') {
+      if (!reqByMod.has(c.mod)) reqByMod.set(c.mod, []);
+      reqByMod.get(c.mod).push(c);
+    } else { globals.push(c); }
+  }
+  // bound the number of modules
+  const modsObj = {};
+  const groups = [];
+  let n = 0;
+  for (const [mod, group] of reqByMod) {
+    if (n++ >= MAX_MODULES) break;
+    modsObj[mod] = group.map((c) => c.attr);
+    groups.push([mod, group]);
+  }
+  const globalPaths = globals.map((c) => c.path);
+  const res = spawnJSON('node', ['-e', JS_PROBE, JSON.stringify(modsObj), JSON.stringify(globalPaths)]);
+  if (!res || typeof res !== 'object') return [];
+  const fakes = [];
+  for (const [mod, group] of groups) {
+    const codes = res.req && res.req[mod];
+    if (Array.isArray(codes)) group.forEach((c, i) => { if (codes[i] === 0) fakes.push(c); });
+  }
+  if (Array.isArray(res.glob)) globals.forEach((c, i) => { if (res.glob[i] === 0) fakes.push(c); });
+  return fakes;
 }
 
 function runtimeVersion(bin) {
@@ -298,22 +342,17 @@ function runtimeVersion(bin) {
   } catch (_) { return bin; }
 }
 
-// Resolve the Python interpreter LAZILY (only when a .py chunk is seen, so a
-// .js-only Write never pays for it). Prefer `python3`; fall back to a `python`
-// that is actually 3.x (never python2 — its stdlib differs and would mis-judge).
-// Returns the bin name, or null when no Python 3 is available (→ Python checks
-// are skipped entirely = fail-open, not false-block). Addresses the Windows /
-// `python`-only-distro coverage gap.
-let _pyBin; // undefined = unresolved, null = none, string = bin name
+// Resolve the Python interpreter LAZILY (only when a .py chunk is seen). Prefer
+// `python3`; fall back to a `python` that is actually 3.x (never python2). null
+// when no Python 3 -> Python checks skipped entirely (fail-open).
+let _pyBin;
 function pyBin() {
   if (_pyBin !== undefined) return _pyBin;
   _pyBin = null;
   for (const bin of ['python3', 'python']) {
     try {
       const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
-      if (r && !r.error && r.status === 0 && /Python 3\./.test((r.stdout || '') + (r.stderr || ''))) {
-        _pyBin = bin; break;
-      }
+      if (r && !r.error && r.status === 0 && /Python 3\./.test((r.stdout || '') + (r.stderr || ''))) { _pyBin = bin; break; }
     } catch (_) { /* try next */ }
   }
   return _pyBin;
@@ -333,41 +372,39 @@ function main() {
   const chunks = newCodeChunks(payload);
   if (!chunks.length) process.exit(0);
 
-  const candidates = [];
+  const pyCands = [];
+  const jsCands = [];
   for (const ch of chunks) {
     if (typeof ch.code !== 'string' || ch.code.length > MAX_CODE_BYTES) continue;
     const lang = langFor(ch.file_path);
-    if (lang === 'py') candidates.push(...pyCandidates(ch.code));
-    else if (lang === 'js') candidates.push(...jsCandidates(ch.code));
+    if (lang === 'py') pyCands.push(...pyCandidates(ch.code));
+    else if (lang === 'js') jsCands.push(...jsCandidates(ch.code));
   }
-  if (!candidates.length) process.exit(0);
-
-  // De-dup by label, cap total checks.
-  const seen = new Set();
-  const unique = [];
-  for (const c of candidates) {
-    if (seen.has(c.label)) continue;
-    seen.add(c.label);
-    unique.push(c);
-    if (unique.length >= MAX_CHECKS) break;
-  }
+  if (!pyCands.length && !jsCands.length) process.exit(0);
 
   const fakes = [];
-  for (const c of unique) {
-    if (verify(c) === 'missing') fakes.push(c);
+  const binsUsed = new Set();
+  if (pyCands.length) {
+    const PB = pyBin();
+    if (PB) { binsUsed.add(PB); fakes.push(...verifyPython(pyCands, PB)); }
   }
+  if (jsCands.length) { binsUsed.add('node'); fakes.push(...verifyJs(jsCands)); }
+
   if (!fakes.length) process.exit(0);
 
-  const bins = [...new Set(fakes.map((f) => f.bin))];
-  const vers = bins.map((b) => runtimeVersion(b)).join(', ');
-  const list = fakes.map((f) => '  • ' + f.label).join('\n');
+  // de-dup by label
+  const seen = new Set();
+  const uniq = fakes.filter((f) => (seen.has(f.label) ? false : (seen.add(f.label), true)));
+
+  const vers = [...binsUsed].map((b) => runtimeVersion(b)).join(', ');
+  const list = uniq.map((f) => '  • ' + f.label).join('\n');
   const reason =
     'anti-hall api-guard: this code references API(s) that DO NOT EXIST in your ' +
     'installed runtime (' + vers + '):\n' + list + '\n\n' +
-    'These attributes are absent from the real module/object — they look like ' +
-    'fabrications. Verify the correct name (check the docs / run a quick ' +
+    'These attributes are absent from the real (installed) module/object — they ' +
+    'look like fabrications. Verify the correct name (check the docs / run a quick ' +
     '`hasattr` / `typeof` probe) and fix the reference before writing.\n' +
-    'If you are intentionally targeting a NEWER runtime where this exists, ' +
+    'If you are intentionally targeting a NEWER version where this exists, ' +
     'override once: write ~/.anti-hall/skip.json {"api-guard": <unix-ms-expiry>}.';
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
