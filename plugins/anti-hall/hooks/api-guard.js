@@ -40,6 +40,19 @@ const { spawnSync } = require('child_process');
 
 const MAX_CHECKS = 12;        // bound the number of interpreter spawns
 const SPAWN_TIMEOUT_MS = 1500; // worst case MAX_CHECKS*this stays under the hook timeout
+const MAX_CODE_BYTES = 600000; // skip absurdly large chunks (regex walks are linear, but bound anyway)
+
+// Probe interpreters run with a MINIMAL env so a poisoned parent environment
+// (NODE_OPTIONS=--require evil, PYTHONSTARTUP, PYTHONPATH) cannot influence the
+// existence check. PATH only (plus the bits Windows needs to spawn at all).
+const SAFE_ENV = (() => {
+  const e = { PATH: process.env.PATH || '' };
+  if (process.platform === 'win32') {
+    if (process.env.SystemRoot) e.SystemRoot = process.env.SystemRoot;
+    if (process.env.PATHEXT) e.PATHEXT = process.env.PATHEXT;
+  }
+  return e;
+})();
 
 // Curated Python stdlib modules safe to introspect (import is cheap + side-effect
 // free). Kept conservative: only modules we are confident are stdlib, so a
@@ -64,6 +77,7 @@ const NODE_BUILTINS = new Set([
 const JS_GLOBALS = new Set([
   'Array', 'String', 'Object', 'Promise', 'Map', 'Set', 'WeakMap', 'WeakSet',
   'Number', 'Math', 'JSON', 'Reflect', 'Symbol', 'Date', 'RegExp', 'BigInt',
+  'Buffer',
 ]);
 
 // ---------------------------------------------------------------------------
@@ -133,26 +147,44 @@ function pyCandidates(code) {
   }
   const reImport = /^[ \t]*import[ \t]+([a-zA-Z_][\w.]*)(?:[ \t]+as[ \t]+([A-Za-z_]\w*))?/gm;
   const aliasToMod = {};
+  const imported = new Set(); // bare `import X` module names actually present in this chunk
   while ((m = reImport.exec(src))) {
     const mod = m[1].split('.')[0];
     if (!PY_STDLIB.has(mod)) continue;
     if (m[2]) aliasToMod[m[2]] = m[1];
+    else imported.add(mod);
   }
-  // Resolve `recv.attr`. Precedence matters: a token like `datetime` can be BOTH
-  // a stdlib module name AND a `from datetime import datetime` class binding. The
-  // binding is the linguistically-correct meaning of the LOCAL name, so it WINS —
-  // otherwise we'd probe hasattr(<module>, ...) for a method that lives on the
-  // class and false-block valid code (the datetime.fromisoformat bug).
+  // Names bound LOCALLY in this chunk (assignment / def / class / for-target). A
+  // locally-bound token is NOT the stdlib module/class, so resolving it as one is
+  // the dominant false-positive class: `array = [1,2]; array.append(3)`,
+  // `time = elapsed(); time.total_seconds()`, `datetime = wrap()` after a
+  // from-import, `def json(): ...`. Any such name is excluded from checking.
+  const bound = new Set();
+  let b;
+  const reAssign = /^[ \t]*([A-Za-z_]\w*)[ \t]*=(?!=)/gm;
+  while ((b = reAssign.exec(src))) bound.add(b[1]);
+  const reDef = /\b(?:def|class)[ \t]+([A-Za-z_]\w*)/g;
+  while ((b = reDef.exec(src))) bound.add(b[1]);
+  const reFor = /\bfor[ \t]+([A-Za-z_]\w*)[ \t]+in\b/g;
+  while ((b = reFor.exec(src))) bound.add(b[1]);
+
+  // Resolve `recv.attr`. Precedence: from-import binding (the local name IS the
+  // imported class/fn — e.g. `from datetime import datetime`) wins over the bare
+  // module name; then `import mod as recv`; then a bare stdlib module — but ONLY
+  // when an actual `import recv` is present in THIS chunk. Without a visible
+  // import we have NOT verified that `recv` is the module (it is far more likely
+  // a local variable), so we do not check it — fail-open over false-block.
   const reAttr = /\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g;
   while ((m = reAttr.exec(src))) {
     const recv = m[1], attr = m[2];
     if (attr.startsWith('__')) continue;
+    if (bound.has(recv)) continue;      // locally rebound/shadowed -> not the module/class
     let expr = null, baseMod = null;
     if (fromImports[recv]) {            // `from mod import recv` -> recv is the bound class/fn
       expr = fromImports[recv]; baseMod = expr.split('.')[0];
     } else if (aliasToMod[recv]) {      // `import mod as recv`
       expr = aliasToMod[recv]; baseMod = expr.split('.')[0];
-    } else if (PY_STDLIB.has(recv)) {   // bare stdlib module (assume module even if the import is outside this edit chunk)
+    } else if (PY_STDLIB.has(recv) && imported.has(recv)) { // bare module, actually imported here
       expr = recv; baseMod = recv;
     }
     if (expr) cands.set(expr + '.' + attr, { importStmt: 'import ' + baseMod, expr, attr });
@@ -177,6 +209,13 @@ function jsCandidates(code) {
   while ((m = reReqVar.exec(code))) {
     if (NODE_BUILTINS.has(m[2])) reqVar[m[1]] = m[2];
   }
+  // Drop any require-bound var that is REASSIGNED later (more than one `var =`):
+  // `let fs = require('fs'); fs = require('fs-extra'); fs.copySync()` must NOT be
+  // checked against builtin fs. One assignment == the decl; >1 == rebound.
+  for (const v of Object.keys(reqVar)) {
+    const re = new RegExp('\\b' + v.replace(/\$/g, '\\$') + '\\s*=(?!=)', 'g');
+    if ((code.match(re) || []).length > 1) delete reqVar[v];
+  }
 
   // require('mod').attr  (inline)
   // Extract from UNSTRIPPED code.
@@ -199,12 +238,23 @@ function jsCandidates(code) {
     }
   }
 
+  // Names declared/rebound locally — a global builtin name that is shadowed
+  // (`const Math = myLib`, `let JSON = json5`, `Set = MyOrderedSet`) is NOT the
+  // builtin, so it must not be checked against it (false-positive class P0-2).
+  const jsBound = new Set();
+  let g;
+  const reDecl = /\b(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)/g;
+  while ((g = reDecl.exec(src))) jsBound.add(g[1]);
+  const reReassign = /^[ \t]*([A-Za-z_$][\w$]*)[ \t]*=(?!=)/gm;
+  while ((g = reReassign.exec(src))) jsBound.add(g[1]);
+
   // global builtins: Glob.attr and Glob.prototype.attr
   // Can match on stripped code (no quoted strings involved).
   const reGlobal = /\b([A-Za-z]\w*)\.(?:(prototype)\.)?([A-Za-z_$][\w$]*)/g;
   while ((m = reGlobal.exec(src))) {
     const obj = m[1], proto = m[2], attr = m[3];
     if (!JS_GLOBALS.has(obj)) continue;
+    if (jsBound.has(obj)) continue;     // locally shadowed -> not the builtin
     if (attr.startsWith('__') || attr === 'prototype') continue;
     const expr = proto ? (obj + '.prototype.' + attr) : (obj + '.' + attr);
     cands.set(expr, { expr });
@@ -224,7 +274,7 @@ function jsCandidates(code) {
 function verify(cand) {
   let res;
   try {
-    res = spawnSync(cand.bin, cand.argv, { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8' });
+    res = spawnSync(cand.bin, cand.argv, { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
   } catch (_) {
     return 'unknown';
   }
@@ -236,7 +286,7 @@ function verify(cand) {
 
 function runtimeVersion(bin) {
   try {
-    const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8' });
+    const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
     return ((r && (r.stdout || r.stderr)) || '').trim().split('\n')[0] || bin;
   } catch (_) { return bin; }
 }
@@ -257,6 +307,7 @@ function main() {
 
   const candidates = [];
   for (const ch of chunks) {
+    if (typeof ch.code !== 'string' || ch.code.length > MAX_CODE_BYTES) continue;
     const lang = langFor(ch.file_path);
     if (lang === 'py') candidates.push(...pyCandidates(ch.code));
     else if (lang === 'js') candidates.push(...jsCandidates(ch.code));

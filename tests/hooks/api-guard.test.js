@@ -81,6 +81,50 @@ test('ALLOW: python 3rd-party module not introspected (numpy.foo)', { skip: !HAS
   assert.strictEqual(r.status, 0);
 });
 
+// ---- FALSE-POSITIVE regressions: stdlib/global names used as LOCALS --------
+test('ALLOW: python stdlib name as a local var (array = [...]; array.append)', { skip: !HAS_PY }, () => {
+  // `array` is a stdlib module name; as a list local it must NOT be checked.
+  const r = run(write('/tmp/x.py', 'array = [1, 2, 3]\narray.append(4)\nstring = "hi"\nprint(string.upper())\n'));
+  assert.strictEqual(r.status, 0, 'stdlib-named local must NOT block :: ' + r.stdout);
+});
+
+test('ALLOW: python stdlib name local, no import (time = elapsed(); time.total_seconds())', { skip: !HAS_PY }, () => {
+  const r = run(write('/tmp/x.py', 'time = get_elapsed()\nprint(time.total_seconds())\n'));
+  assert.strictEqual(r.status, 0, r.stdout);
+});
+
+test('ALLOW: python from-import name reassigned then used (no false block)', { skip: !HAS_PY }, () => {
+  const r = run(write('/tmp/x.py', 'from datetime import datetime\ndatetime = make_wrapper()\ndatetime.custom_method()\n'));
+  assert.strictEqual(r.status, 0, r.stdout);
+});
+
+test('BLOCK: python bare module IS imported (import array; array.fancy_op — real catch held)', { skip: !HAS_PY }, () => {
+  const r = run(write('/tmp/x.py', 'import array\narray.fancy_op()\n'));
+  assert.strictEqual(r.status, 2, 'imported bare module fabrication must still block :: ' + r.stdout);
+});
+
+test('ALLOW: js global shadowed locally (const Math = myLib; Math.clamp)', { skip: !HAS_NODE }, () => {
+  const r = run(write('/tmp/x.js', 'const Math = myLib;\nMath.clampValue(1, 0, 2);\n'));
+  assert.strictEqual(r.status, 0, 'shadowed global must NOT block :: ' + r.stdout);
+});
+
+test('ALLOW: js require-bound var reassigned to 3rd-party (fs = require(fs-extra))', { skip: !HAS_NODE }, () => {
+  const r = run(write('/tmp/x.js', "let fs = require('fs');\nfs = require('fs-extra');\nfs.copySync(a, b);\n"));
+  assert.strictEqual(r.status, 0, 'reassigned require var must NOT block :: ' + r.stdout);
+});
+
+// ---- Buffer catch (was missing from JS_GLOBALS) ---------------------------
+test('BLOCK: node Buffer.fromString (fake global static)', { skip: !HAS_NODE }, () => {
+  const r = run(write('/tmp/x.js', "const b = Buffer.fromString('x');\n"));
+  assert.strictEqual(r.status, 2, r.stdout);
+  assert.ok(/fromString/.test(r.json.reason));
+});
+
+test('ALLOW: node Buffer.from (real)', { skip: !HAS_NODE }, () => {
+  const r = run(write('/tmp/x.js', "const b = Buffer.from('x');\n"));
+  assert.strictEqual(r.status, 0, r.stdout);
+});
+
 // ---- JS/Node BLOCK -------------------------------------------------------
 test('BLOCK: node crypto.createHashStream (fake builtin method)', { skip: !HAS_NODE }, () => {
   const r = run(write('/tmp/x.js', "const crypto = require('crypto');\ncrypto.createHashStream('sha256');\n"));
