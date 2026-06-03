@@ -22,11 +22,6 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const HAS_NX = (() => {
-  try { return spawnSync('python3', ['-c', 'import networkx'], { timeout: 8000, encoding: 'utf8' }).status === 0; }
-  catch (_) { return false; }
-})();
-
 const HOOK = path.join(__dirname, '..', 'plugins', 'anti-hall', 'hooks', 'api-guard.js');
 
 function runHook(file_path, content) {
@@ -86,12 +81,6 @@ const CASES = [
   ['js', 'real', 'const Math = myLib;\nMath.clampValue(1, 0, 2);\n'],
   ['js', 'real', "let fs = require('fs');\nfs = require('fs-extra');\nfs.copySync(a, b);\n"],
   ['js', 'real', 'const Set = MyOrderedSet;\nSet.fromArray([1]);\n'],
-
-  // ---- 3rd-party (networkx) — only included when networkx is installed ----
-  ...(HAS_NX ? [
-    ['py', 'catch', 'import networkx\nnetworkx.fake_method_xyz()\n'],
-    ['py', 'real',  'import networkx\ng = networkx.Graph()\n'],
-  ] : []),
 
   // ---- out-of-scope fabrications (v1 does not check -> expect ALLOW) ----
   ['py', 'oos', 's = "x"\ns.removeboth("a", "b")\n'],            // receiver-typed instance method

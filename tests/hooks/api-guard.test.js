@@ -36,6 +36,11 @@ function run(payload) {
   try { return testHook(HOOK, payload, { home: h.home }); }
   finally { h.cleanup(); }
 }
+function runTP(payload) {
+  const h = makeHome();
+  try { return testHook(HOOK, payload, { home: h.home, env: { ANTIHALL_API_GUARD_THIRDPARTY: '1' } }); }
+  finally { h.cleanup(); }
+}
 
 // ---- Python BLOCK (fabricated stdlib APIs) -------------------------------
 test('BLOCK: python os.quantum_fork (fake module fn)', { skip: !HAS_PY }, () => {
@@ -82,15 +87,20 @@ test('ALLOW: not-installed module -> fail-open', { skip: !HAS_PY }, () => {
   assert.strictEqual(r.status, 0, r.stdout);
 });
 
-test('BLOCK: networkx.fake_method_xyz (3rd-party fake — v2 win)', { skip: !HAS_NX }, () => {
-  const r = run(write('/tmp/x.py', 'import networkx\nnetworkx.fake_method_xyz()\n'));
+test('BLOCK: networkx.fake_method_xyz (3rd-party, opt-in)', { skip: !HAS_NX }, () => {
+  const r = runTP(write('/tmp/x.py', 'import networkx\nnetworkx.fake_method_xyz()\n'));
   assert.strictEqual(r.status, 2, 'expected block, got ' + r.status + ' :: ' + r.stdout);
   assert.ok(r.json && /fake_method_xyz/.test(r.json.reason), 'reason should name fake_method_xyz');
 });
 
-test('ALLOW: networkx.Graph (real 3rd-party method)', { skip: !HAS_NX }, () => {
-  const r = run(write('/tmp/x.py', 'import networkx\ng = networkx.Graph()\n'));
+test('ALLOW: networkx.Graph (real 3rd-party, opt-in)', { skip: !HAS_NX }, () => {
+  const r = runTP(write('/tmp/x.py', 'import networkx\ng = networkx.Graph()\n'));
   assert.strictEqual(r.status, 0, 'real 3rd-party API must NOT block :: ' + r.stdout);
+});
+
+test('ALLOW: 3rd-party NOT checked by default (no flag)', { skip: !HAS_NX }, () => {
+  const r = run(write('/tmp/x.py', 'import networkx\nnetworkx.fake_method_xyz()\n'));
+  assert.strictEqual(r.status, 0, 'default mode must not check 3rd-party :: ' + r.stdout);
 });
 
 // ---- FALSE-POSITIVE regressions: stdlib/global names used as LOCALS --------
@@ -204,6 +214,38 @@ test('SCOPE: non-Write/Edit tool (Bash) -> allow', () => {
 test('SCOPE: python code with no stdlib refs -> allow', { skip: !HAS_PY }, () => {
   const r = run(write('/tmp/x.py', 'def add(a, b):\n    return a + b\n'));
   assert.strictEqual(r.status, 0);
+});
+
+// ---- SECURITY: RCE closed — local/relative imports never probed ---------------
+test('ALLOW+NO-RCE: require of a local path is refused, not executed', { skip: !HAS_NODE }, () => {
+  // The evil module writes a marker file if executed. The hook must ALLOW the
+  // write (path-spec: fail-open) without ever importing /tmp/ah_evil.js.
+  // Run with opt-in flag to ensure path-reject + cwd protect hold EVEN in 3rd-party mode.
+  const nodeFs = require('node:fs');
+  const MARKER = '/tmp/ah-rce-js-marker';
+  // (Re)create the evil module; it may or may not exist from a prior run.
+  nodeFs.writeFileSync('/tmp/ah_evil.js', "require('fs').writeFileSync('" + MARKER + "','pwned');module.exports={};\n");
+  nodeFs.rmSync(MARKER, { force: true });
+  const r = runTP(write('/tmp/victim.js', "const x = require('/tmp/ah_evil.js');\nx.foo();\n"));
+  assert.strictEqual(r.status, 0, 'path-spec require must fail-open (allow), got ' + r.status);
+  assert.strictEqual(nodeFs.existsSync(MARKER), false, 'RCE: /tmp/ah_evil.js was executed by the hook!');
+  nodeFs.rmSync('/tmp/ah_evil.js', { force: true });
+  nodeFs.rmSync(MARKER, { force: true });
+});
+
+test('ALLOW: import-alias shadowed by function param (def use(nx))', { skip: !HAS_NX }, () => {
+  // nx is imported as alias for networkx, then re-used as a param name.
+  // The hook must NOT probe nx.totally_fake_attr — nx is bound as a local param.
+  // Run with opt-in flag so networkx IS checked; the param-shadow must still protect.
+  const r = runTP(write('/tmp/x.py', 'import networkx as nx\ndef use(nx):\n    return nx.totally_fake_attr()\n'));
+  assert.strictEqual(r.status, 0, 'function param shadowing import must NOT block :: ' + r.stdout);
+});
+
+test('ALLOW: path-spec require not probed (./x)', { skip: !HAS_NODE }, () => {
+  // A relative require must never be probed (fail-open), even if it would fail.
+  // Run with opt-in flag to confirm cwd protect holds in 3rd-party mode too.
+  const r = runTP(write('/tmp/x.js', "const x = require('./nope').y();\n"));
+  assert.strictEqual(r.status, 0, 'relative require must fail-open (allow), got ' + r.status);
 });
 
 test('SKIP HATCH: api-guard skipped -> allow even with fake API', { skip: !HAS_PY }, () => {
