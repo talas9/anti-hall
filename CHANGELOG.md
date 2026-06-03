@@ -23,14 +23,22 @@ mechanically:
   import Name; Name.attr` (via `hasattr`), Node builtins `require('mod').attr`, and JS
   global builtins incl. `.prototype.attr` (via `typeof`). If a real module/object is missing
   the referenced attribute, the write is **blocked** — the symbol was fabricated.
-  - **Measured: ~95% catch on fabricated APIs, ~0% false-positive on real APIs** (40-snippet
-    bench). Contrast the prompt's unproven ~18%.
+  - **Substantiated: 100% in-scope catch, 0 false positives** on a committed, reproducible
+    bench — `node eval/api-guard-bench.js` (labeled corpus + a sweep of every `plugins/**.js`).
+    Contrast the prompt's unproven ~18%.
   - **Fail-open by construction:** blocks ONLY on a positively-verified missing attribute;
     any uncertainty (no interpreter, import error, 3rd-party package, receiver-typed instance
     method, version skew) → allow. From-import bindings resolve before module names so
     `datetime.fromisoformat` (class method) is not mistaken for a module attribute.
-  - Skip-hatch via `~/.anti-hall/skip.json` (`api-guard`); 16 tests (block/allow/fail-open/
-    scope/skip/regression), `python3`-gated for Windows CI. Full suite **148/148**.
+  - **Hardened by a double deadly-loop (2 Opus + 2 Codex) + empirical sweep.** Security review
+    found injection/ReDoS/resource genuinely closed. Correctness review found and fixed a P0
+    false-positive cluster: stdlib/global names used as **local variables** (`array = [1,2];
+    array.append(3)`, `const Math = myLib; Math.x`), require-vars **reassigned** to a 3rd-party
+    (`fs = require('fs-extra')`), and from-import names rebound — now all resolve correctly
+    (require a real `import`; exclude locally-bound names). Added `Buffer` to JS globals;
+    `python` (3.x) fallback for non-`python3` systems; probe env pinned to PATH-only.
+  - Skip-hatch via `~/.anti-hall/skip.json` (`api-guard`); 27 tests (block/allow/fail-open/
+    scope/skip/regression/shadowing/portability), `python3`-gated for Windows CI. Full suite **159/159**.
 - **eval/** harness added: `claude -p` subscription backend (no API key), naive-baseline +
   tools-on knobs, 122 execution-verified traps, `analyze.js` (McNemar exact + bootstrap CI).
   Documents the honest finding that prompt-only fabrication reduction is unproven.

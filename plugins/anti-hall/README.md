@@ -48,6 +48,7 @@ claude --plugin-dir /path/to/anti-hall
 | `verify-first-full.js` | SessionStart | Full Iron-Law + rationalization-table protocol, the always-on orchestration discipline, and the always-vs-conditional skill primer; survives compaction. |
 | `verify-first.js` | UserPromptSubmit | Short, varying one-line nudge each turn (anti-habituation). |
 | `git-guard.js` | PreToolUse (Bash) | Blocks AI self-credit commit trailers and `git push --force`. |
+| `api-guard.js` | PreToolUse (Write/Edit/MultiEdit) | Blocks code that references a **non-existent** stdlib/builtin API — resolves `module.attr` in the code-to-be-written against the installed `python3`/`node` (Python stdlib + `from`-imports via `hasattr`; Node builtins + JS globals via `typeof`) and refuses the write when the attribute is fabricated. The mechanical answer to API hallucination. 0 false positives + full in-scope catch on `eval/api-guard-bench.js`; fail-open on any uncertainty (no interpreter, 3rd-party, locally-shadowed name, version skew); skip-hatch. |
 | `command-guard.js` | PreToolUse (Bash) | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload, per-segment (quote-aware). |
 | `swarm-guard.js` | PreToolUse (Agent/Task) | Anti-fork-bomb — spawn-rate cap + real reclaimable-memory check (`vm_stat` / `MemAvailable`, not `os.freemem()`). |
 | `phase-tracker.js` | PreToolUse (Agent/Task) | Records every subagent spawn so the statusline shows live swarm activity. Never blocks. |
