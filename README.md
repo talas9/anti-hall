@@ -47,7 +47,10 @@ argued with.
 > another, netting zero). That test deliberately disables tools, so it does not measure the
 > protocol's *verification* half (running code / reading files to check a claim), which is
 > plausibly where its value lies. Treat anti-hall as **guardrails + enforced discipline**, not
-> a magic anti-hallucination switch.
+> a magic anti-hallucination switch. **Acting on that finding,** anti-hall ships `api-guard` —
+> a mechanical hook that *does* verify, blocking fabricated stdlib/builtin APIs in code at a
+> measured **~95% catch / ~0% false-positive** (vs the prompt's unproven ~18%). The lesson the
+> eval taught, applied: **enforce mechanically, don't exhort.**
 
 ---
 
@@ -68,6 +71,7 @@ argued with.
 | Hook | Event | What it enforces |
 |------|-------|-----------------|
 | `git-guard` | PreToolUse/Bash | Blocks AI self-credit trailers and `--force` pushes (quote-aware, alias-resolving, won't false-block legit pushes) |
+| `api-guard` | PreToolUse/Write+Edit+MultiEdit | **The mechanical answer to API hallucination.** Resolves `module.attribute` references in the code-to-be-written against the *installed* `python3`/`node` and blocks the write when a real stdlib/builtin module is missing the attribute (a fabrication). Measured **~95% catch, ~0% false-positive**. A prompt can be ignored; a blocked Write cannot. Fail-open on any uncertainty (no interpreter, 3rd-party pkg, version skew); skip-hatch supported |
 | `command-guard` | PreToolUse/Bash | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload (`agent_id`), not env — works correctly under cmux and other wrappers. Per-segment (quote-aware split on `; && \|\| \|`), so `cd app && npm test` is not a bypass |
 | `swarm-guard` | PreToolUse/Agent+Task | Anti-fork-bomb: caps spawn rate (20/60 s) and refuses new agents under **real** memory pressure — measures reclaimable memory correctly on macOS (`vm_stat` free+inactive+speculative, correct 16 KB page size on Apple Silicon) and Linux (`/proc/meminfo` MemAvailable), not the misleading `os.freemem()` |
 | `task-guard` | Stop | Blocks stop when open tasks remain; counts only currently-open tasks (completed/cleared don't count); fail-open |

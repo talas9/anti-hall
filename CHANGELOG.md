@@ -6,6 +6,35 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.22.0
+
+**`api-guard` — a mechanical guard against API hallucination, built on eval evidence.**
+
+A controlled A/B eval (see [`eval/`](eval/)) established that the verify-first *prompt*
+does not reliably reduce API fabrication: across four rounds (incl. a powered 122-trap,
+tools-on run with a naive baseline) the protocol netted **no statistically-significant
+reduction** (McNemar p=0.26), and the model ran a verification tool only ~5% of the time —
+*the same as baseline*. The model ignores "go verify." So this release does the verifying
+mechanically:
+
+- **`api-guard`** (new) — a `PreToolUse` hook on `Write`/`Edit`/`MultiEdit`. It extracts
+  `module.attribute` references from the code about to be written and resolves them against
+  the **installed** runtime (`python3` / `node`): Python stdlib `mod.attr` and `from mod
+  import Name; Name.attr` (via `hasattr`), Node builtins `require('mod').attr`, and JS
+  global builtins incl. `.prototype.attr` (via `typeof`). If a real module/object is missing
+  the referenced attribute, the write is **blocked** — the symbol was fabricated.
+  - **Measured: ~95% catch on fabricated APIs, ~0% false-positive on real APIs** (40-snippet
+    bench). Contrast the prompt's unproven ~18%.
+  - **Fail-open by construction:** blocks ONLY on a positively-verified missing attribute;
+    any uncertainty (no interpreter, import error, 3rd-party package, receiver-typed instance
+    method, version skew) → allow. From-import bindings resolve before module names so
+    `datetime.fromisoformat` (class method) is not mistaken for a module attribute.
+  - Skip-hatch via `~/.anti-hall/skip.json` (`api-guard`); 16 tests (block/allow/fail-open/
+    scope/skip/regression), `python3`-gated for Windows CI. Full suite **148/148**.
+- **eval/** harness added: `claude -p` subscription backend (no API key), naive-baseline +
+  tools-on knobs, 122 execution-verified traps, `analyze.js` (McNemar exact + bootstrap CI).
+  Documents the honest finding that prompt-only fabrication reduction is unproven.
+
 ## 0.21.1
 
 Refresh marketplace.json plugin description to current capability set (tasklist-guard, skip-guard, deadly-loop-multi, speculation guards, rule K, escape hatch) for the public listing; add assets/demo/ (VHS .tape + storyboard) to generate a demo GIF.
