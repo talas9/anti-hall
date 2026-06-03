@@ -56,6 +56,22 @@ const ALLOW = [
   'git -c trailer.sob.key=Signed-off-by commit -m x --trailer "sob: Alice"',
 ];
 
+// gh self-credit BLOCK cases
+const GH_BLOCK = [
+  'gh pr create --title x --body "Done.\\n\\n🤖 Generated with [Claude Code](https://claude.com/claude-code)"',
+  'gh issue create --body "Co-Authored-By: Claude <noreply@anthropic.com>"',
+  'gh pr edit 5 --body "see claude.com/claude-code"',
+  'gh pr create --body="🤖 Generated with Claude Code"',
+];
+
+// gh self-credit ALLOW cases
+const GH_ALLOW = [
+  'gh pr create --title x --body "Fixes the parser bug"',
+  'gh pr create --body-file /tmp/body.md',
+  'gh release view',
+  'gh pr list',
+];
+
 for (const cmd of BLOCK) {
   test(`BLOCK: ${cmd}`, () => {
     const r = run(cmd);
@@ -65,6 +81,20 @@ for (const cmd of BLOCK) {
 
 for (const cmd of ALLOW) {
   test(`ALLOW: ${cmd}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 0, `expected allow (exit 0) for: ${cmd}\nstderr: ${r.stderr}`);
+  });
+}
+
+for (const cmd of GH_BLOCK) {
+  test(`BLOCK gh: ${cmd}`, () => {
+    const r = run(cmd);
+    assert.strictEqual(r.status, 2, `expected block (exit 2) for: ${cmd}\nstderr: ${r.stderr}`);
+  });
+}
+
+for (const cmd of GH_ALLOW) {
+  test(`ALLOW gh: ${cmd}`, () => {
     const r = run(cmd);
     assert.strictEqual(r.status, 0, `expected allow (exit 0) for: ${cmd}\nstderr: ${r.stderr}`);
   });

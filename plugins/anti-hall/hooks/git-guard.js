@@ -533,6 +533,11 @@ const SELF_CREDIT_COAUTHOR = /^[ \t]*co-authored-by[ \t]*[:=][^\n]*(claude|anthr
 // non-space, non-letter chars before the word, so a tight allowance for them
 // keeps the match anchored to a signature line without false-blocking prose.
 const SELF_CREDIT_GENERATED = /^[ \t]*[^A-Za-z0-9 \t]{0,2}[ \t]*generated with \[?(claude code|claude|chatgpt|codex|copilot)\b/im;
+// A bare AI-tool attribution LINK / handle in a PR or issue body (the canonical
+// "🤖 Generated with [Claude Code](https://claude.com/claude-code)" footer ends
+// in this link even when the "Generated with" text is reworded). Not line-
+// anchored — the URL/handle is itself the signature and is implausible in prose.
+const SELF_CREDIT_GH_BODY = /claude\.com\/claude-code|chatgpt\.com\/codex|<noreply@anthropic\.com>/i;
 
 // Self-credit signature tokens used to flag a `-c trailer.<name>.key=<value>`
 // remap. `git -c trailer.ai.key=Co-Authored-By commit --trailer "ai: Claude
@@ -599,6 +604,42 @@ function inlineCommitMessages(rest) {
   return msgs;
 }
 
+// gh pr/issue/release create|edit|comment bodies & titles carry author-facing
+// text. Block AI self-credit there exactly like a commit trailer — the repo
+// mandate is that PRs and issues carry no AI attribution. Reuses the commit
+// markers (which already match the "🤖 Generated with [Claude Code](...)" footer
+// and Co-Authored-By trailers) plus the bare-link marker. INLINE values only:
+// `--body-file` / `-F <path>` and heredoc/command-substitution bodies put the
+// literal text off the command line and are a documented fail-open limitation.
+const GH_BODY_FLAGS = new Set(['--body', '-b', '--title', '-t', '--notes', '-n']);
+function ghSelfCreditMessage(args) {
+  const words = args.map((a) => a.text);
+  const guardedSub = words.includes('pr') || words.includes('issue') || words.includes('release');
+  const guardedAct = words.includes('create') || words.includes('edit') || words.includes('comment');
+  if (!guardedSub || !guardedAct) return null;
+  const vals = [];
+  for (let i = 0; i < args.length; i++) {
+    const w = args[i].text;
+    if (GH_BODY_FLAGS.has(w)) { if (i + 1 < args.length) { vals.push(args[i + 1].text); i++; } continue; }
+    const mEq = /^(?:--body|--title|--notes)=([\s\S]*)$/.exec(w);
+    if (mEq) vals.push(mEq[1]);
+  }
+  for (const v of vals) {
+    const normalized = v.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t');
+    for (const text of [v, normalized]) {
+      if (SELF_CREDIT_COAUTHOR.test(text) || SELF_CREDIT_GENERATED.test(text) || SELF_CREDIT_GH_BODY.test(text)) {
+        return (
+          'anti-hall git-guard: BLOCKED. A gh pr/issue/release body or title carries ' +
+          'AI/assistant self-credit ("Generated with Claude Code" / the 🤖 footer / ' +
+          'Co-Authored-By / a claude.com/claude-code link). Remove it — PRs and issues ' +
+          'carry no AI attribution. (Note: --body-file content is not inspected.)'
+        );
+      }
+    }
+  }
+  return null;
+}
+
 // Extract the payload of an `eval <payload>` segment as a COMMAND string to be
 // re-parsed for git force/trailer detection. `eval` runs its argument(s) as a
 // shell command, so `eval "git push -f"` would otherwise bypass the guard (eval
@@ -641,6 +682,13 @@ function scanCommand(cmd, depth) {
           if (nested) return nested;
         }
       }
+      continue;
+    }
+
+    // --- Rule 1 (gh): self-credit in a PR/issue/release body or title ---
+    if (ev.verb === 'gh') {
+      const ghMsg = ghSelfCreditMessage(ev.args);
+      if (ghMsg) return ghMsg;
       continue;
     }
 

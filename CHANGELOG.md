@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.24.0
+
+**git-guard now also blocks AI self-credit in `gh` PR / issue / release bodies.**
+
+Previously git-guard blocked AI co-author trailers in `git commit` only; PRs created
+with `gh pr create --body "… 🤖 Generated with Claude Code …"` slipped through. Now the
+same self-credit markers (the `🤖 Generated with [Claude Code](…)` footer, `Co-Authored-By:
+Claude`, `noreply@anthropic.com`, a bare `claude.com/claude-code` link) are blocked in the
+inline `--body`/`--title`/`--notes` of `gh pr|issue|release create|edit|comment`. Reuses the
+existing commit markers + a bare-link marker; quote/segment-aware via git-guard's tokenizer.
+Inline values only — `--body-file`/`-F` and heredoc/command-substitution bodies put the text
+off the command line and are a documented fail-open limitation. +8 gh tests; suite 173/173.
+
 ## 0.23.0
 
 **api-guard v2 — opt-in 3rd-party API verification + security hardening.**
