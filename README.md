@@ -41,11 +41,13 @@ argued with.
 > are verified by 132 passing tests — they deterministically block force-pushes, AI-credit
 > trailers, un-delegated heavy commands, and stale task state regardless of what the model
 > "feels" like doing. The **prompt layer** (verify-first protocol + nudges) is a *discipline*,
-> not a benchmark-validated hallucination cure: a small A/B eval ([`eval/`](eval/)) found **no
-> measurable fabrication reduction from the prompt alone** on current models with tools
-> disabled — partly because modern models rarely fabricate blatant fakes at baseline, and
-> partly because that test can't isolate the protocol's tool-verification half. Treat anti-hall
-> as **guardrails + enforced discipline**, not a magic anti-hallucination switch.
+> not a benchmark-validated hallucination cure: a four-round A/B eval ([`eval/`](eval/)) —
+> including a fair run with a *naive* baseline that genuinely fabricates ~13% of the time —
+> found **no net fabrication reduction from the prompt alone** (it fixed one trap and induced
+> another, netting zero). That test deliberately disables tools, so it does not measure the
+> protocol's *verification* half (running code / reading files to check a claim), which is
+> plausibly where its value lies. Treat anti-hall as **guardrails + enforced discipline**, not
+> a magic anti-hallucination switch.
 
 ---
 

@@ -55,6 +55,18 @@ const JUDGE_MODEL = process.env.EVAL_JUDGE_MODEL || MODEL;
 const REPEATS = Math.max(1, parseInt(process.env.EVAL_REPEATS || '1', 10) || 1);
 const OUT_PATH = process.env.EVAL_OUT || path.join(__dirname, 'results.json');
 const LIMIT = parseInt(process.env.EVAL_LIMIT || '0', 10) || 0;
+// EVAL_SYS_MODE: how the per-arm system prompt is applied to the cli backend.
+//   append  (default) — `--append-system-prompt` (adds ON TOP of Claude Code's
+//                       own honesty-tuned base prompt → baseline is NOT naive).
+//   replace           — `--system-prompt` (REPLACES the base prompt → the
+//                       baseline arm is a genuinely naive prompt, a fairer A/B).
+const SYS_MODE = (process.env.EVAL_SYS_MODE || 'append').toLowerCase();
+// EVAL_TOOLS: ""/"none" (default) disables all tools (dispositional test only);
+// "default" (or a tool list) ENABLES tools so the protocol's verify-by-running
+// mechanism is actually exercised. Tools run with bypassPermissions so a
+// headless -p run never blocks on a permission prompt.
+const TOOLS = (process.env.EVAL_TOOLS === undefined ? '' : process.env.EVAL_TOOLS);
+const TOOLS_ENABLED = !!(TOOLS && TOOLS.toLowerCase() !== 'none');
 
 // ---------------------------------------------------------------------------
 // Obtain the real anti-hall protocol text by running the SessionStart hook,
@@ -175,8 +187,16 @@ function extractCliText(out) {
 
 function claudeCli({ model, system, user, timeoutMs }) {
   const args = ['-p', '--model', model, '--output-format', 'json'];
-  if (system) args.push('--append-system-prompt', system);
-  args.push('--tools', ''); // disable ALL tools — keep this last (variadic)
+  if (system) {
+    args.push(SYS_MODE === 'replace' ? '--system-prompt' : '--append-system-prompt', system);
+  }
+  if (TOOLS_ENABLED) {
+    // enable tools + never block on a permission prompt in headless mode
+    args.push('--permission-mode', 'bypassPermissions');
+    args.push('--tools', TOOLS); // variadic — keep last
+  } else {
+    args.push('--tools', ''); // disable ALL tools — keep this last (variadic)
+  }
   let out;
   try {
     out = execFileSync('claude', args, {

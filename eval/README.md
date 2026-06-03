@@ -139,35 +139,44 @@ ANTHROPIC_API_KEY=sk-... node eval/grade.js eval/results.json
 
 ## Results (first real runs — June 2026, cli backend on subscription)
 
-Three clean runs, ~200 total model calls, **0 errors**. Each measures
-PROTOCOL (verify-first system prompt) vs BASELINE (minimal prompt), both under
-a plugin-free clean HOME, tools disabled.
+Four clean runs, ~340 total model calls, **0 errors**. Each measures PROTOCOL
+(verify-first system prompt) vs BASELINE (minimal prompt) under a plugin-free
+clean HOME, tools disabled. Run 4 fixes the two biggest flaws of runs 1–3 by
+using a **naive baseline** (`EVAL_SYS_MODE=replace` → `--system-prompt`, so the
+baseline arm does *not* inherit Claude Code's honesty-tuned prompt) and a
+**harder, larger trap set** that actually induces baseline fabrication.
 
-| Run | Subject | Judge | Trap set | PROTOCOL fab | BASELINE fab | Delta |
-|-----|---------|-------|----------|--------------|--------------|-------|
-| 1 | Opus  | Opus | 20 easy (`trap-tasks.json`) | 0/20 | 0/20 | **0.0 pts** |
-| 2 | Haiku | Opus | 20 easy (`trap-tasks.json`) | 0/20 | 0/20 | **0.0 pts** |
-| 3 | Haiku | Opus | 12 hard (`trap-tasks-hard.json`) | 1/12 | 1/12 | **0.0 pts** |
+| Run | Subject | Judge | Baseline naive? | Trap set | PROTOCOL fab | BASELINE fab | Delta |
+|-----|---------|-------|-----------------|----------|--------------|--------------|-------|
+| 1 | Opus  | Opus | no  | 20 easy (`trap-tasks.json`) | 0/20 | 0/20 | **0.0 pts** |
+| 2 | Haiku | Opus | no  | 20 easy (`trap-tasks.json`) | 0/20 | 0/20 | **0.0 pts** |
+| 3 | Haiku | Opus | no  | 12 hard (`trap-tasks-hard.json`) | 1/12 | 1/12 | **0.0 pts** |
+| 4 | Haiku | Opus | **yes** | 30 hard (`trap-tasks-hard.json`) | **4/31** | **4/31** | **0.0 pts** |
 
-**Honest headline: this eval found NO measurable fabrication reduction from the
-verify-first prompt.** In the single case a model fabricated (Haiku inventing
-`sync.OnceValue2`), the protocol arm fabricated identically — it did not prevent
-it. This does not prove the protocol is worthless, but the "reduces
-hallucination via the prompt" claim is **not supported by this evidence**.
+**Honest headline: a fair test still found NO net fabrication reduction from the
+verify-first prompt.** Run 4 is the decisive one — the naive baseline *does*
+fabricate (≈13%), so there was real headroom, yet the protocol's net effect was
+exactly zero: it **fixed one trap** (`postgres … WITH (lazy_build=on)`, declined
+correctly) and **induced another** (`sql RETURNING DISTINCT`, fabricated where the
+naive baseline did not). The remaining shared fabrications (`sync.OnceValue2`,
+`slices.DedupFunc`, `git stash --keep-staged`) were identical in both arms.
 
-Why the result is a null AND why it is not a clean disproof:
+What this does and does not establish:
 
-1. **Tools disabled (`--tools ""`).** Only the protocol's *dispositional* half is
-   tested; its *verification* half (run code / read files to check a claim) — the
-   likely source of real value — is not measured here.
-2. **Baseline is not naive.** `claude -p` always carries Claude Code's own
-   honesty-tuned system prompt under *both* arms, so the marginal protocol text
-   adds little. A truly naive baseline needs the `api` backend (no harness
-   prompt). The cli path is structurally biased toward a null.
-3. **Underpowered.** Baseline fabrication is near-zero (1 in 64 trials); detecting
-   a small effect needs hundreds of fabrication-inducing traps, not 12.
+- It **rules out a large dispositional effect** — across four rounds, including a
+  fair-baseline one with genuine headroom, the verify-first *prompt alone* does
+  not measurably lower fabrication, and can even shift it.
+- It **does not test the protocol's verification half.** These runs disable tools
+  (`--tools ""`); the shipped protocol also drives *tool-based* checking
+  (run code / read files), which is plausibly where its real value lies and is
+  **unmeasured here** — partly because a clean HOME lacks the libraries needed to
+  check most library-API traps.
+- It is **still small-N** (4 fabrications per arm); it cannot exclude a *small*
+  effect, only a large one.
 
-The plugin's *proven* value is the **deterministic guards** (132 passing hook
-tests), not prompt-based fabrication reduction. To probe the prompt effect
-properly: run the `api` backend (naive baseline) with tools enabled and a much
-larger hard-trap set. Raw per-response data: `eval/results*.json` (uncommitted).
+**Conclusion for the plugin's claims:** the load-bearing, *proven* value is the
+**deterministic guards** (132 passing hook tests), not prompt-based fabrication
+reduction. A fully conclusive test of the protocol's verification half needs a
+real project environment (libraries installed) with tools enabled
+(`EVAL_TOOLS=default`) — ideally on the `api` backend for a truly naive base.
+Raw per-response data: `eval/results*.json` (gitignored, regenerable).

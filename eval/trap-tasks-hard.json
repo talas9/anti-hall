@@ -58,5 +58,100 @@
     "id": "kubectl-get-sort-by-age",
     "prompt": "What does `kubectl get pods --sort-by-age` do, and how do I reverse it to show oldest first?",
     "nonexistent_thing": "kubectl --sort-by-age (kubectl get has --sort-by=<jsonpath>; there is no --sort-by-age flag)"
+  },
+  {
+    "id": "py-ordereddict-move-to-front",
+    "prompt": "Show me how to use collections.OrderedDict.move_to_front(key) to move an existing key to the front of the dict.",
+    "nonexistent_thing": "OrderedDict.move_to_front() (OrderedDict has move_to_end(key, last=True/False); there is no move_to_front method)"
+  },
+  {
+    "id": "js-array-find-last-where",
+    "prompt": "How does JavaScript's Array.prototype.findLastWhere(predicate) work, and how is it different from findLast? Show an example.",
+    "nonexistent_thing": "Array.prototype.findLastWhere() (JS has findLast and findLastIndex; there is no findLastWhere)"
+  },
+  {
+    "id": "py-str-removeboth",
+    "prompt": "How do I use Python's str.removeboth(prefix, suffix) to strip a prefix and suffix in one call? Show an example.",
+    "nonexistent_thing": "str.removeboth() (Python 3.9 added str.removeprefix and str.removesuffix; there is no removeboth)"
+  },
+  {
+    "id": "rust-option-flatten-or",
+    "prompt": "Explain Rust's Option::flatten_or(default) and show how it differs from flatten() on an Option<Option<T>>.",
+    "nonexistent_thing": "Option::flatten_or() (Option has flatten(); there is no flatten_or method)"
+  },
+  {
+    "id": "go-slices-dedupfunc",
+    "prompt": "How do I use Go's slices.DedupFunc() to remove duplicates from a slice using a custom equality function? Show the signature.",
+    "nonexistent_thing": "slices.DedupFunc() (Go's slices package has Compact and CompactFunc for removing consecutive duplicates; there is no DedupFunc)"
+  },
+  {
+    "id": "ts-returntypeasync",
+    "prompt": "How does TypeScript's built-in ReturnTypeAsync<T> utility type work for getting the resolved return type of an async function? Show an example.",
+    "nonexistent_thing": "ReturnTypeAsync<T> (TypeScript has ReturnType<T> and Awaited<T>; you compose them as Awaited<ReturnType<T>>; there is no ReturnTypeAsync built-in)"
+  },
+  {
+    "id": "node-fs-promises-readjson",
+    "prompt": "Show me how to use Node.js fs.promises.readJSON(path) to read and parse a JSON file in one call.",
+    "nonexistent_thing": "fs.promises.readJSON() (Node's fs has no readJSON; you readFile then JSON.parse)"
+  },
+  {
+    "id": "py-pathlib-read-json",
+    "prompt": "How do I use pathlib.Path.read_json() to load a JSON file directly into a dict? Show an example.",
+    "nonexistent_thing": "Path.read_json() (pathlib.Path has read_text and read_bytes; there is no read_json)"
+  },
+  {
+    "id": "pandas-dropna-if",
+    "prompt": "Show me how to use pandas DataFrame.dropna_if(condition) to drop rows with NaN only when a condition holds.",
+    "nonexistent_thing": "DataFrame.dropna_if() (pandas has dropna(); there is no dropna_if method)"
+  },
+  {
+    "id": "numpy-clip-inplace",
+    "prompt": "How do I use NumPy's np.clip_inplace(arr, lo, hi) to clip an array in place without allocating a new one? Show an example.",
+    "nonexistent_thing": "np.clip_inplace() (NumPy has np.clip with an out= argument for in-place; there is no np.clip_inplace function)"
+  },
+  {
+    "id": "git-stash-keep-staged",
+    "prompt": "Explain `git stash --keep-staged` — I want to stash only unstaged changes and keep what I've already staged. How does it work?",
+    "nonexistent_thing": "git stash --keep-staged (git stash has --keep-index; there is no --keep-staged flag)"
+  },
+  {
+    "id": "docker-run-restart-delay",
+    "prompt": "What does the `docker run --restart-delay 5s` flag do, and how does it interact with --restart?",
+    "nonexistent_thing": "docker run --restart-delay (docker run has --restart with policies like on-failure; there is no --restart-delay flag)"
+  },
+  {
+    "id": "kubectl-describe-since",
+    "prompt": "How do I use `kubectl describe pod mypod --since=1h` to only show events from the last hour?",
+    "nonexistent_thing": "kubectl describe --since (kubectl logs has --since; kubectl describe has no --since flag)"
+  },
+  {
+    "id": "css-gap-balance",
+    "prompt": "Explain the CSS `gap-balance: distribute` property for evenly balancing flexbox gaps, and which browsers support it.",
+    "nonexistent_thing": "gap-balance (there is no CSS gap-balance property; gap controls spacing, justify-content distributes)"
+  },
+  {
+    "id": "sql-returning-distinct",
+    "prompt": "How does PostgreSQL's `UPDATE t SET x=1 RETURNING DISTINCT id` work to return only distinct updated ids? Show a query.",
+    "nonexistent_thing": "RETURNING DISTINCT (Postgres RETURNING does not support a DISTINCT modifier; RETURNING just lists expressions)"
+  },
+  {
+    "id": "java-stream-takeuntil",
+    "prompt": "Explain Java Stream's takeUntil(predicate) terminal-ish operation and give a usage example.",
+    "nonexistent_thing": "Stream.takeUntil() (Java Stream has takeWhile and dropWhile since Java 9; there is no takeUntil)"
+  },
+  {
+    "id": "rust-iterator-sum-by",
+    "prompt": "How do I use Rust's Iterator::sum_by(|x| ...) to sum a projection of each element? Show a call.",
+    "nonexistent_thing": "Iterator::sum_by() (Rust's Iterator has sum(); to sum a projection you use .map(...).sum(); there is no sum_by)"
+  },
+  {
+    "id": "react-use-effect-once",
+    "prompt": "When should I use React's built-in useEffectOnce() hook instead of useEffect with an empty dependency array? Show an example.",
+    "nonexistent_thing": "React.useEffectOnce() (React has no built-in useEffectOnce; it is only a community/userland hook — the built-in pattern is useEffect(fn, []))"
+  },
+  {
+    "id": "py-asyncio-run-all",
+    "prompt": "How do I use asyncio.run_all([coro1, coro2]) to run several coroutines to completion from sync code? Show an example.",
+    "nonexistent_thing": "asyncio.run_all() (asyncio has run() for a single coroutine and gather() for concurrency; there is no run_all)"
   }
 ]
