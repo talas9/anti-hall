@@ -12,10 +12,18 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
+const os = require('node:os');
+const path = require('node:path');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'api-guard.js';
+const TMP = os.tmpdir();
+
+// Cross-platform helper: expand /tmp/ paths to os.tmpdir()
+function xplatPath(filePath) {
+  return filePath.startsWith('/tmp/') ? path.join(TMP, filePath.slice(5)) : filePath;
+}
 
 function has(bin) {
   try { return spawnSync(bin, ['--version'], { timeout: 4000 }).status === 0; }
@@ -26,10 +34,10 @@ const HAS_NODE = has('node');
 const HAS_NX = (() => { try { return spawnSync('python3', ['-c', 'import networkx'], { timeout: 8000 }).status === 0; } catch (_) { return false; } })();
 
 function write(file_path, content) {
-  return { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path, content }, session_id: 't', cwd: process.cwd() };
+  return { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: xplatPath(file_path), content }, session_id: 't', cwd: process.cwd() };
 }
 function edit(file_path, new_string) {
-  return { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path, old_string: 'x', new_string }, session_id: 't', cwd: process.cwd() };
+  return { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: xplatPath(file_path), old_string: 'x', new_string }, session_id: 't', cwd: process.cwd() };
 }
 function run(payload) {
   const h = makeHome();
@@ -219,17 +227,19 @@ test('SCOPE: python code with no stdlib refs -> allow', { skip: !HAS_PY }, () =>
 // ---- SECURITY: RCE closed — local/relative imports never probed ---------------
 test('ALLOW+NO-RCE: require of a local path is refused, not executed', { skip: !HAS_NODE }, () => {
   // The evil module writes a marker file if executed. The hook must ALLOW the
-  // write (path-spec: fail-open) without ever importing /tmp/ah_evil.js.
+  // write (path-spec: fail-open) without ever importing tmp/ah_evil.js.
   // Run with opt-in flag to ensure path-reject + cwd protect hold EVEN in 3rd-party mode.
   const nodeFs = require('node:fs');
-  const MARKER = '/tmp/ah-rce-js-marker';
+  const MARKER = xplatPath('/tmp/ah-rce-js-marker');
+  const EVIL_JS = xplatPath('/tmp/ah_evil.js');
+  const VICTIM_JS = xplatPath('/tmp/victim.js');
   // (Re)create the evil module; it may or may not exist from a prior run.
-  nodeFs.writeFileSync('/tmp/ah_evil.js', "require('fs').writeFileSync('" + MARKER + "','pwned');module.exports={};\n");
+  nodeFs.writeFileSync(EVIL_JS, "require('fs').writeFileSync('" + MARKER + "','pwned');module.exports={};\n");
   nodeFs.rmSync(MARKER, { force: true });
-  const r = runTP(write('/tmp/victim.js', "const x = require('/tmp/ah_evil.js');\nx.foo();\n"));
+  const r = runTP(write(VICTIM_JS, "const x = require('" + EVIL_JS + "');\nx.foo();\n"));
   assert.strictEqual(r.status, 0, 'path-spec require must fail-open (allow), got ' + r.status);
-  assert.strictEqual(nodeFs.existsSync(MARKER), false, 'RCE: /tmp/ah_evil.js was executed by the hook!');
-  nodeFs.rmSync('/tmp/ah_evil.js', { force: true });
+  assert.strictEqual(nodeFs.existsSync(MARKER), false, 'RCE: ' + EVIL_JS + ' was executed by the hook!');
+  nodeFs.rmSync(EVIL_JS, { force: true });
   nodeFs.rmSync(MARKER, { force: true });
 });
 
