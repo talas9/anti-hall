@@ -6,6 +6,38 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.23.0
+
+**api-guard v2 — opt-in 3rd-party API verification + security hardening.**
+
+api-guard can now verify installed **3rd-party** packages (pandas, lodash, …) — the
+highest-hallucination class (38–80% per the literature) — not just stdlib/builtins.
+But a double deadly-loop (2 Opus + 2 Codex) **proved that verifying a 3rd-party
+package = importing it = running its top-level code at edit time** (a confirmed RCE,
+triggered even when the write is blocked; Codex bypassed the first fix via bare
+`node_modules` packages and `.pth` files). You cannot check an installed package's
+API without executing it. So 3rd-party checking is **opt-in, off by default**:
+
+- **Default (unchanged):** stdlib/builtin modules + JS globals only — importing those
+  to introspect is side-effect-free, so the probe never runs untrusted code. Safe.
+- **Opt-in:** set `ANTIHALL_API_GUARD_THIRDPARTY=1` to also verify installed packages,
+  accepting that referenced installed packages are imported at edit time.
+
+**Security hardening (both modes):**
+- Local/relative modules are NEVER probed: path-spec rejection (`./x`, `/abs`, `..`,
+  `C:\`), Python probe runs with `cwd=<tmp>` + scrubs cwd/`''` from `sys.path`, so a
+  bare `import localmod` can't resolve to a repo file.
+- `SAFE_ENV` now also strips `PYTHONUSERBASE`/`PYTHONSAFEPATH`, and the Python probe
+  runs with `-s` (no user site) — closes the `.pth` startup-exec vector.
+- Batched **one import per module** (not per attribute); **30s wall-clock deadline**
+  under the hook timeout (raised 30→45s); JS requires extracted from comment-stripped
+  code; function/lambda-parameter and `with/except as` names excluded from checking
+  (no false-block on `def f(pd): pd.x`).
+
+165 tests (3rd-party gated + RCE-no-execute regression), bench 21/21 catch / 0 FP.
+Known v2.1 gaps (fail-open, documented): dotted-submodule receivers (`os.path.x`) and
+JS member chains (`fs.promises.x`) are not yet checked.
+
 ## 0.22.2
 
 **Fix: api-guard CI flake on Windows/node (probe timeout too tight).**
