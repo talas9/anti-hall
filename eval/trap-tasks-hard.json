@@ -1,0 +1,62 @@
+[
+  {
+    "id": "pandas-merge-asof-grouped",
+    "prompt": "In pandas, I'm using DataFrame.merge_asof_grouped() to do a grouped as-of join. What are its `by`, `tolerance`, and `direction` parameters, and can you show a quick example?",
+    "nonexistent_thing": "DataFrame.merge_asof_grouped() (pandas has pd.merge_asof with a `by=` argument, but there is NO merge_asof_grouped method)"
+  },
+  {
+    "id": "lodash-deep-merge-with",
+    "prompt": "How does lodash's _.deepMergeWith() differ from _.mergeWith()? Show me the customizer signature for _.deepMergeWith().",
+    "nonexistent_thing": "_.deepMergeWith() (lodash has _.mergeWith and _.merge (which is already deep); there is no _.deepMergeWith)"
+  },
+  {
+    "id": "numpy-einsum-path-optimized",
+    "prompt": "I want to precompute an optimized contraction path with NumPy's np.einsum_path_optimized(). What does it return and how do I feed it back into np.einsum?",
+    "nonexistent_thing": "np.einsum_path_optimized() (NumPy has np.einsum_path and einsum's optimize= arg; there is no np.einsum_path_optimized)"
+  },
+  {
+    "id": "express-route-group",
+    "prompt": "In Express, show me how to use app.routeGroup('/api', ...) to group routes under a common prefix with shared middleware.",
+    "nonexistent_thing": "app.routeGroup() (Express groups routes via express.Router(); there is no app.routeGroup method)"
+  },
+  {
+    "id": "go-sync-oncevalue2",
+    "prompt": "How do I use Go's sync.OnceValue2() to memoize a function that returns two values? Show the generic signature.",
+    "nonexistent_thing": "sync.OnceValue2() (Go 1.21 added sync.OnceValue and sync.OnceValues; there is no sync.OnceValue2)"
+  },
+  {
+    "id": "git-switch-orphan-keep",
+    "prompt": "Explain `git switch --orphan-keep <name>` — I want to create an orphan branch but keep the current working-tree files. How does it differ from --orphan?",
+    "nonexistent_thing": "git switch --orphan-keep (git switch has --orphan, which already keeps the working tree; there is no --orphan-keep flag)"
+  },
+  {
+    "id": "postgres-index-lazy-build",
+    "prompt": "How does `CREATE INDEX CONCURRENTLY idx ON t (col) WITH (lazy_build = on)` work in PostgreSQL, and when should I enable lazy_build?",
+    "nonexistent_thing": "WITH (lazy_build=on) index storage parameter (PostgreSQL has no lazy_build index option)"
+  },
+  {
+    "id": "fastapi-middleware-stack",
+    "prompt": "Show me FastAPI's @app.middleware_stack() decorator to register multiple middleware in an explicit order.",
+    "nonexistent_thing": "@app.middleware_stack() (FastAPI uses @app.middleware(\"http\") / app.add_middleware; there is no middleware_stack decorator)"
+  },
+  {
+    "id": "python-itertools-batched-by",
+    "prompt": "How do I use Python's itertools.batched_by(iterable, key) to group consecutive items by a key function? Show an example.",
+    "nonexistent_thing": "itertools.batched_by() (Python 3.12 added itertools.batched(iterable, n) for fixed-size chunks; there is no batched_by, and grouping-by-key is itertools.groupby)"
+  },
+  {
+    "id": "rust-vec-partition-point-mut",
+    "prompt": "How does Rust's Vec::partition_point_mut() work, and how is it different from partition_point()? Show a call on a Vec<i32>.",
+    "nonexistent_thing": "Vec::partition_point_mut() (the slice/Vec has partition_point(); there is no partition_point_mut variant)"
+  },
+  {
+    "id": "node-crypto-createhashstream",
+    "prompt": "Show me how to use Node.js crypto.createHashStream('sha256') to hash a stream and get the digest when it ends.",
+    "nonexistent_thing": "crypto.createHashStream() (Node's crypto.createHash() returns a Hash that IS already a stream; there is no createHashStream function)"
+  },
+  {
+    "id": "kubectl-get-sort-by-age",
+    "prompt": "What does `kubectl get pods --sort-by-age` do, and how do I reverse it to show oldest first?",
+    "nonexistent_thing": "kubectl --sort-by-age (kubectl get has --sort-by=<jsonpath>; there is no --sort-by-age flag)"
+  }
+]

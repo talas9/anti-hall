@@ -37,6 +37,16 @@ discipline alive with a **layered defense**: protocol at session start (and agai
 compaction), a short rotating reminder every turn, and **mechanical hooks** that can't be
 argued with.
 
+> **What's proven, and what isn't.** The **mechanical hooks** are the load-bearing part and
+> are verified by 132 passing tests — they deterministically block force-pushes, AI-credit
+> trailers, un-delegated heavy commands, and stale task state regardless of what the model
+> "feels" like doing. The **prompt layer** (verify-first protocol + nudges) is a *discipline*,
+> not a benchmark-validated hallucination cure: a small A/B eval ([`eval/`](eval/)) found **no
+> measurable fabrication reduction from the prompt alone** on current models with tools
+> disabled — partly because modern models rarely fabricate blatant fakes at baseline, and
+> partly because that test can't isolate the protocol's tool-verification half. Treat anti-hall
+> as **guardrails + enforced discipline**, not a magic anti-hallucination switch.
+
 ---
 
 ## How it works — two layers
