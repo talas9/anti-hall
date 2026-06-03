@@ -121,7 +121,6 @@ function pyCandidates(code) {
   const cands = new Map(); // label -> {mod, expr, attr}
   // `from mod import Name [as Alias]` -> Alias/Name bound to mod.Name
   const fromImports = {}; // localName -> "mod.Name"
-  const importedMods = new Set();
   let m;
   const reFrom = /^[ \t]*from[ \t]+([a-zA-Z_][\w.]*)[ \t]+import[ \t]+(.+)$/gm;
   while ((m = reFrom.exec(src))) {
@@ -137,30 +136,26 @@ function pyCandidates(code) {
   while ((m = reImport.exec(src))) {
     const mod = m[1].split('.')[0];
     if (!PY_STDLIB.has(mod)) continue;
-    importedMods.add(m[1]);
     if (m[2]) aliasToMod[m[2]] = m[1];
   }
-  // direct module attribute access: mod.attr  (mod a known stdlib, imported)
+  // Resolve `recv.attr`. Precedence matters: a token like `datetime` can be BOTH
+  // a stdlib module name AND a `from datetime import datetime` class binding. The
+  // binding is the linguistically-correct meaning of the LOCAL name, so it WINS —
+  // otherwise we'd probe hasattr(<module>, ...) for a method that lives on the
+  // class and false-block valid code (the datetime.fromisoformat bug).
   const reAttr = /\b([A-Za-z_]\w*)\.([A-Za-z_]\w*)/g;
   while ((m = reAttr.exec(src))) {
     const recv = m[1], attr = m[2];
     if (attr.startsWith('__')) continue;
-    let modExpr = null;
-    if (PY_STDLIB.has(recv) && (importedMods.has(recv) || true)) modExpr = recv;
-    else if (aliasToMod[recv]) modExpr = aliasToMod[recv];
-    if (modExpr) {
-      const baseMod = modExpr.split('.')[0];
-      const label = modExpr + '.' + attr;
-      cands.set(label, { importStmt: 'import ' + baseMod, expr: modExpr, attr });
-      continue;
+    let expr = null, baseMod = null;
+    if (fromImports[recv]) {            // `from mod import recv` -> recv is the bound class/fn
+      expr = fromImports[recv]; baseMod = expr.split('.')[0];
+    } else if (aliasToMod[recv]) {      // `import mod as recv`
+      expr = aliasToMod[recv]; baseMod = expr.split('.')[0];
+    } else if (PY_STDLIB.has(recv)) {   // bare stdlib module (assume module even if the import is outside this edit chunk)
+      expr = recv; baseMod = recv;
     }
-    // from-import binding: Name.attr where Name => mod.Name
-    if (fromImports[recv]) {
-      const bound = fromImports[recv]; // e.g. collections.OrderedDict
-      const baseMod = bound.split('.')[0];
-      const label = bound + '.' + attr;
-      cands.set(label, { importStmt: 'import ' + baseMod, expr: bound, attr });
-    }
+    if (expr) cands.set(expr + '.' + attr, { importStmt: 'import ' + baseMod, expr, attr });
   }
   return [...cands.entries()].map(([label, c]) => ({
     label,

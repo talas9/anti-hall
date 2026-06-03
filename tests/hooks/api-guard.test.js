@@ -62,6 +62,19 @@ test('ALLOW: python os.getpid + OrderedDict.move_to_end (real)', { skip: !HAS_PY
   assert.strictEqual(r.status, 0, 'real APIs must NOT block :: ' + r.stdout);
 });
 
+test('ALLOW: python from-import datetime.fromisoformat (real class method, regression)', { skip: !HAS_PY }, () => {
+  // Regression: `datetime` is BOTH a stdlib module name and the imported class.
+  // fromisoformat lives on the CLASS — must resolve to the binding, not the module.
+  const r = run(write('/tmp/x.py', "from datetime import datetime\nd = datetime.fromisoformat('2020-01-01')\n"));
+  assert.strictEqual(r.status, 0, 'real class method must NOT block :: ' + r.stdout);
+});
+
+test('BLOCK: python from-import datetime.frobnicate (fake class method)', { skip: !HAS_PY }, () => {
+  const r = run(write('/tmp/x.py', "from datetime import datetime\nd = datetime.frobnicate('x')\n"));
+  assert.strictEqual(r.status, 2, r.stdout);
+  assert.ok(/frobnicate/.test(r.json.reason));
+});
+
 test('ALLOW: python 3rd-party module not introspected (numpy.foo)', { skip: !HAS_PY }, () => {
   // numpy is not in the stdlib allowlist -> we never check it -> fail open.
   const r = run(write('/tmp/x.py', 'import numpy\nnumpy.foo_bar_baz()\n'));
