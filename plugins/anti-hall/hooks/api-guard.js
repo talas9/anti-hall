@@ -131,6 +131,8 @@ function stripJs(code) {
 // that exits 7 iff the symbol is MISSING (and 0 if present). De-duplicated.
 // ---------------------------------------------------------------------------
 function pyCandidates(code) {
+  const PB = pyBin();
+  if (!PB) return []; // no Python 3 interpreter -> skip Python checks (fail-open)
   const src = stripPy(code);
   const cands = new Map(); // label -> {mod, expr, attr}
   // `from mod import Name [as Alias]` -> Alias/Name bound to mod.Name
@@ -192,7 +194,7 @@ function pyCandidates(code) {
   return [...cands.entries()].map(([label, c]) => ({
     label,
     argv: ['-c', c.importStmt + '\nimport sys\nsys.exit(0 if hasattr(' + c.expr + ', ' + JSON.stringify(c.attr) + ') else 7)'],
-    bin: 'python3',
+    bin: PB,
   }));
 }
 
@@ -289,6 +291,27 @@ function runtimeVersion(bin) {
     const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
     return ((r && (r.stdout || r.stderr)) || '').trim().split('\n')[0] || bin;
   } catch (_) { return bin; }
+}
+
+// Resolve the Python interpreter LAZILY (only when a .py chunk is seen, so a
+// .js-only Write never pays for it). Prefer `python3`; fall back to a `python`
+// that is actually 3.x (never python2 — its stdlib differs and would mis-judge).
+// Returns the bin name, or null when no Python 3 is available (→ Python checks
+// are skipped entirely = fail-open, not false-block). Addresses the Windows /
+// `python`-only-distro coverage gap.
+let _pyBin; // undefined = unresolved, null = none, string = bin name
+function pyBin() {
+  if (_pyBin !== undefined) return _pyBin;
+  _pyBin = null;
+  for (const bin of ['python3', 'python']) {
+    try {
+      const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
+      if (r && !r.error && r.status === 0 && /Python 3\./.test((r.stdout || '') + (r.stderr || ''))) {
+        _pyBin = bin; break;
+      }
+    } catch (_) { /* try next */ }
+  }
+  return _pyBin;
 }
 
 function main() {

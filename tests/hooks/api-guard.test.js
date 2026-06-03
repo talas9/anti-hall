@@ -144,6 +144,28 @@ test('ALLOW: node crypto.createHash + Promise.allSettled (real)', { skip: !HAS_N
   assert.strictEqual(r.status, 0, 'real APIs must NOT block :: ' + r.stdout);
 });
 
+// ---- Portability / .tsx / interpreter-absent -----------------------------
+test('TSX: fabricated global blocks (Promise.allSettledRace in .tsx)', { skip: !HAS_NODE }, () => {
+  const r = run(write('/tmp/c.tsx', 'const x: number = 1 satisfies number;\nawait Promise.allSettledRace([a, b]);\n'));
+  assert.strictEqual(r.status, 2, r.stdout);
+});
+
+test('TSX: TypeScript-only syntax + real API allows', { skip: !HAS_NODE }, () => {
+  const r = run(write('/tmp/c.tsx', 'type T = { a: number };\nconst x = { a: 1 } satisfies T;\nPromise.allSettled([a]);\n'));
+  assert.strictEqual(r.status, 0, 'real API in .tsx must NOT block :: ' + r.stdout);
+});
+
+test('FAIL-OPEN: no python3/python on PATH -> Python fake is ALLOWED', () => {
+  // Simulate an environment with no Python interpreter: the hook must skip
+  // Python checks (fail-open), never crash or block. node still runs the hook
+  // via process.execPath (absolute), independent of PATH.
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, write('/tmp/x.py', 'import os\nos.quantum_fork()\n'), { home: h.home, env: { PATH: '/nonexistent-bin-dir' } });
+    assert.strictEqual(r.status, 0, 'no Python interpreter must fail open (allow), got ' + r.status);
+  } finally { h.cleanup(); }
+});
+
 // ---- Fail-open / scope ---------------------------------------------------
 test('FAIL-OPEN: empty stdin -> allow', () => {
   const h = makeHome();
