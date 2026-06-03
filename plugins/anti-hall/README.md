@@ -383,7 +383,7 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 
 ```bash
 # Full zero-dependency E2E suite (node:test, run from the repo root):
-node --test                                                                  # 159 tests; CI runs the same on push/PR (.github/workflows/test.yml)
+node --test                                                                  # 173 tests; CI runs the same on push/PR (.github/workflows/test.yml)
 
 # Quick smoke-checks of individual hooks:
 echo '{"hook_event_name":"SessionStart"}' | node hooks/verify-first-full.js  # full Iron-Law protocol + skill primer

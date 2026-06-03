@@ -92,7 +92,7 @@ Two-line statusline the plugin renders itself.
 
 ## Tests
 
-- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 159 tests covering the hooks (guards, api-guard stdlib/builtin checks + shadowing/portability, speculation, tasklist-guard Bash-regex cases, etc.). Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
+- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 173 tests covering the hooks (guards, api-guard stdlib/builtin/3rd-party checks + shadowing/portability/RCE-no-execute, git-guard gh-PR self-credit, speculation, tasklist-guard Bash-regex cases, etc.). Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
 - [.github/workflows/test.yml](.github/workflows/test.yml): CI runs the suite on push/PR.
 
 ## Read more

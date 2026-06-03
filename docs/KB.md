@@ -48,10 +48,11 @@ debates reference the living docs for evidence; the *current* state and the
 
 ## 1. Current plugin ground truth
 
-> Verified against the working tree on **2026-06-02** (commit context: post
-> `0.21.1`; `0.20.0` shipped the tasklist-guard + skip-guard, `0.20.1`–`0.20.3`
-> follow-ups, `0.21.0` the pre-publish triple-deadly-loop hardening, and `0.21.1`
-> the marketplace description refresh + demo assets are all in
+> Verified against the working tree on **2026-06-03** (commit context: post
+> `0.24.0`; `0.22.0` shipped api-guard (mechanical API-hallucination guard) + the
+> eval harness, `0.22.1`/`0.22.2` Windows-CI fixes, `0.23.0` api-guard v2 (opt-in
+> 3rd-party after a deadly-loop proved default-on = edit-time RCE), `0.24.0`
+> extended git-guard to block AI self-credit in gh pr/issue/release bodies — all in
 > ground truth). This block is the canonical snapshot — update it on every
 > significant change. Ref: `plugins/anti-hall/.claude-plugin/plugin.json`,
 > `plugins/anti-hall/hooks/`, `plugins/anti-hall/skills/`, `CHANGELOG.md`.
@@ -69,7 +70,7 @@ debates reference the living docs for evidence; the *current* state and the
 | **SessionStart injection footprint** | **~7474 B** of `additionalContext` (trimmed from 8074 B in `0.18.0`, prose-only, zero rule loss). Distinct from the `verify-first-full.js` file size (~11.4 KB incl. comments). | CHANGELOG `0.18.0` |
 | **AGENTS.md mirror** | Present at repo root (Codex/clone-based governance). NOT bundled by `/plugin install`. | `AGENTS.md` |
 | **Model policy** | Cross-model debate roster: latest Opus (Reviewer) + latest OpenAI Codex (Critic); fallback = second divergent Opus. **"Latest" is resolved at runtime** — no model ID is hardcoded as policy. | `skills/MODEL-POLICY.md` (duplicated into both skills' `references/`, kept byte-identical by design) |
-| **Test net** | Zero-dependency `node:test` E2E suite (black-box, process-level). 77-test marker net asserts every protocol rule is present. | `tests/`, [`E2E-TESTING.md`](./E2E-TESTING.md), CHANGELOG `0.18.0` |
+| **Test net** | Zero-dependency `node:test` E2E suite (black-box, process-level), **173 tests** — guards, api-guard (stdlib/builtin/3rd-party + shadowing/portability/RCE-no-execute), git-guard gh-PR self-credit, speculation, tasklist-guard, etc. | `tests/`, [`E2E-TESTING.md`](./E2E-TESTING.md), CHANGELOG |
 
 **Why these matter:** the historical docs ([PLUGIN-REVIEW.md](./PLUGIN-REVIEW.md),
 [ULTRAPLAN.md](./ULTRAPLAN.md)) describe the plugin *before* the cadence redesign —

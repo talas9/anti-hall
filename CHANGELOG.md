@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.24.1
+
+**Doc-currency pass — descriptions + test counts brought to current reality.**
+
+No behavioral change. The `plugin.json` and `marketplace.json` descriptions predated
+api-guard and the v0.24.0 gh-PR guard — both now name the two signature mechanical guards
+(api-guard: fabricated-API blocking, opt-in 3rd-party; git-guard: AI self-credit in commits
+**and** gh pr/issue/release bodies). Test-count references corrected to **173** across
+README (root + plugin), `llms.txt`, and `docs/KB.md`; KB snapshot provenance refreshed to
+post-0.24.0.
+
 ## 0.24.0
 
 **git-guard now also blocks AI self-credit in `gh` PR / issue / release bodies.**
