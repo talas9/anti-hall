@@ -47,17 +47,21 @@ test('INJECT: graph exists -> additionalContext present (JSON parses) and names 
   const h = makeHome();
   const proj = makeProject({ graph: true });
   try {
-    const r = testHook(HOOK, sessionPayload(proj.dir), { home: h.home });
+    const r = testHook(HOOK, sessionPayload(proj.dir), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.ok(r.json, `stdout must be valid JSON; stdout=${r.stdout}`);
     assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'SessionStart', 'echoes SessionStart event');
     const c = ctx(r);
     assert.ok(c.length > 0, 'additionalContext must be non-empty');
     assert.ok(c.includes('GRAPHIFY-FIRST PROTOCOL'), 'mentions the GRAPHIFY-FIRST protocol');
-    // Names the graph dir (graphify-out under the project). sanitizePath may
-    // truncate long paths to 80 chars + ellipsis, so assert on the stable
-    // 'graphify-out' segment rather than the full absolute path.
-    assert.ok(c.includes('graphify-out'), `additionalContext must name the graph dir; ctx=${c}`);
+    // Names the graph dir. sanitizePath truncates the reflected path to 80 chars
+    // + ellipsis (a deliberate cap), so on hosts with a long os.tmpdir() (e.g.
+    // macOS CI's /var/folders/.../T) the trailing 'graphify-out' leaf is cut off.
+    // Assert on the project BASE dir name instead — it always lands within the
+    // first 80 chars (the mkdtemp prefix sits well before the cap) and proves the
+    // graph dir is reflected without depending on the host's tmpdir length.
+    const baseName = path.basename(proj.dir);
+    assert.ok(c.includes(baseName), `additionalContext must name the graph dir; ctx=${c}`);
   } finally {
     proj.cleanup();
     h.cleanup();
@@ -82,6 +86,11 @@ test('F-10: graph path with a quote (") -> output is still valid JSON (no corrup
   const h = makeHome();
   // Embed a literal double-quote in the project dir name. JSON.stringify must
   // escape it so stdout parses; a naive string concat would corrupt the JSON.
+  // win32: a double-quote is an ILLEGAL filename char (mkdir throws ENOENT), so
+  // this path-with-a-quote scenario cannot exist on Windows — skip there. The
+  // JSON-escaping guarantee is still exercised on POSIX by this test and by the
+  // backslash test below.
+  if (process.platform === 'win32') return;
   const proj = makeProject({ graph: true, suffix: 'q"uote' });
   try {
     const r = testHook(HOOK, sessionPayload(proj.dir), { home: h.home });

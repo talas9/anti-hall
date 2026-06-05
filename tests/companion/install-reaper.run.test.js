@@ -46,6 +46,15 @@ function runInstall(args, { cwd, home } = {}) {
 test('install --dry-run prints a plan, writes nothing, runs no scheduler, exit 0', () => {
   const { status, stdout, tmpHome } = runInstall(['--dry-run']);
   assert.strictEqual(status, 0, 'dry-run must exit 0');
+  // On win32 the installer short-circuits to the unsupported no-op BEFORE any
+  // platform plan (it exits 0 without ever reading --dry-run). Assert that
+  // correct behavior here; the LaunchAgent/systemd plan is a Unix-only path.
+  if (process.platform === 'win32') {
+    assert.match(stdout, /Windows is unsupported/i, 'win32 must print the unsupported message');
+    assert.match(stdout, /No scheduler installed/i);
+    assert.ok(!/\[dry-run\]/.test(stdout), 'win32 no-ops before any dry-run plan');
+    return;
+  }
   // Every action is a "[dry-run] would ..." line — proof nothing was executed.
   assert.match(stdout, /\[dry-run\] would (write|run|remove)/,
     'dry-run must announce intended actions');
@@ -71,6 +80,12 @@ test('install --dry-run prints a plan, writes nothing, runs no scheduler, exit 0
 test('uninstall --dry-run prints a removal plan, removes nothing, exit 0', () => {
   const { status, stdout } = runInstall(['--dry-run', '--uninstall']);
   assert.strictEqual(status, 0, 'dry-run uninstall must exit 0');
+  // win32 no-ops before the removal plan (see install dry-run test for rationale).
+  if (process.platform === 'win32') {
+    assert.match(stdout, /Windows is unsupported/i, 'win32 must print the unsupported message');
+    assert.ok(!/\[dry-run\]/.test(stdout), 'win32 no-ops before any dry-run removal plan');
+    return;
+  }
   assert.match(stdout, /\[dry-run\] would (run|remove)/, 'must announce removal actions');
   assert.match(stdout, /uninstalled/i);
   assert.ok(!/^removed /m.test(stdout), 'dry-run must not actually remove');

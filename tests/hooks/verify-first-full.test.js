@@ -142,7 +142,7 @@ test('SessionStart startup -> full protocol present, EVERY section/rule intact (
     const r = testHook(
       HOOK,
       { hook_event_name: 'SessionStart', source: 'startup', session_id: 't', cwd: process.cwd() },
-      { home: h.home },
+      { home: h.home, expectJson: true },
     );
     assert.strictEqual(r.status, 0, 'hook must exit 0');
     assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'SessionStart', 'echoes SessionStart event');
@@ -188,7 +188,7 @@ for (const source of ['compact', 'resume']) {
       const r = testHook(
         HOOK,
         { hook_event_name: 'SessionStart', source, session_id: 't', cwd: process.cwd() },
-        { home: h.home },
+        { home: h.home, expectJson: true },
       );
       assert.strictEqual(r.status, 0, `source=${source} must exit 0`);
       assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'SessionStart');
@@ -204,7 +204,7 @@ for (const source of ['compact', 'resume']) {
 test('FAIL-OPEN: empty stdin -> exit 0 (defaults to SessionStart)', () => {
   const h = makeHome();
   try {
-    const r = testHookRaw(HOOK, '', { home: h.home });
+    const r = testHookRaw(HOOK, '', { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
     assert.ok(ctx(r).includes('IRON LAW'));
   } finally {

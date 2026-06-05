@@ -39,7 +39,42 @@ function isolatedEnv(home) {
 //   - payloadObj: the JSON object piped to the hook on stdin.
 //   - opts.home: HOME for the child (fake home). Defaults to process.env.HOME.
 //   - opts.env: extra env vars merged onto the controlled base.
+//   - opts.expectJson: when true, retry once on the macOS spawnSync empty-stdout
+//     flake (see spawnHook). Only set this for hooks that MUST emit JSON and have
+//     no per-run side effects — NOT for stateful/allow-empty hooks.
 // Returns { status, stdout, stderr, json } where json is JSON.parse(stdout) or null.
+// spawnHook — spawn the hook once. Centralizes the spawnSync call so both
+// testHook and testHookRaw share the same flake-resistant invocation.
+//
+// FLAKE GUARD (macOS node 18/20), OPT-IN via opts.expectJson:
+// spawnSync, when given `input` AND a child that writes a multi-KB stdout,
+// intermittently returns exit 0 with EMPTY/truncated stdout on slower macOS
+// runners (a known stdin/stdout pipe race in older Node; node 22/24 don't exhibit
+// it). That surfaced as `r.json === null` on hooks that reliably emit ~10KB of
+// valid JSON (verify-first-full, graphify-session inject). When the CALLER knows
+// the hook MUST emit JSON (expectJson:true) and we got exit 0 + empty stdout, we
+// retry ONCE. This is opt-in because many hooks legitimately emit EMPTY stdout on
+// exit 0 (allow paths) AND mutate state (e.g. swarm-guard appends a spawn-log
+// entry per run) — blindly re-spawning those would double their side effects and
+// corrupt stateful assertions. A genuinely broken JSON-emitting hook still fails
+// both attempts (deterministically empty/non-JSON), so no coverage is lost.
+function spawnHook(hookAbs, input, env, expectJson) {
+  let res = spawnSync(process.execPath, [hookAbs], {
+    input, encoding: 'utf8', env, timeout: 10000,
+  });
+  let json = null;
+  try { json = JSON.parse(res.stdout); } catch (_) { json = null; }
+  if (expectJson && json === null && res.status === 0 && (res.stdout || '').trim() === '') {
+    const res2 = spawnSync(process.execPath, [hookAbs], {
+      input, encoding: 'utf8', env, timeout: 10000,
+    });
+    let json2 = null;
+    try { json2 = JSON.parse(res2.stdout); } catch (_) { json2 = null; }
+    if (json2 !== null) { res = res2; json = json2; }
+  }
+  return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '', json };
+}
+
 function testHook(hookRelPathOrAbs, payloadObj, opts = {}) {
   const hookAbs = path.isAbsolute(hookRelPathOrAbs)
     ? hookRelPathOrAbs
@@ -50,26 +85,7 @@ function testHook(hookRelPathOrAbs, payloadObj, opts = {}) {
     ...(opts.env || {}),
   };
 
-  const res = spawnSync(process.execPath, [hookAbs], {
-    input: JSON.stringify(payloadObj),
-    encoding: 'utf8',
-    env,
-    timeout: 10000,
-  });
-
-  let json = null;
-  try {
-    json = JSON.parse(res.stdout);
-  } catch (_) {
-    json = null;
-  }
-
-  return {
-    status: res.status,
-    stdout: res.stdout || '',
-    stderr: res.stderr || '',
-    json,
-  };
+  return spawnHook(hookAbs, JSON.stringify(payloadObj), env, opts.expectJson === true);
 }
 
 // testHookRaw(hookRelPathOrAbs, rawStdin, opts={}): like testHook but pipes a
@@ -82,15 +98,7 @@ function testHookRaw(hookRelPathOrAbs, rawStdin, opts = {}) {
     ...isolatedEnv(opts.home || process.env.HOME),
     ...(opts.env || {}),
   };
-  const res = spawnSync(process.execPath, [hookAbs], {
-    input: rawStdin,
-    encoding: 'utf8',
-    env,
-    timeout: 10000,
-  });
-  let json = null;
-  try { json = JSON.parse(res.stdout); } catch (_) { json = null; }
-  return { status: res.status, stdout: res.stdout || '', stderr: res.stderr || '', json };
+  return spawnHook(hookAbs, rawStdin, env, opts.expectJson === true);
 }
 
 // Build a PreToolUse Bash payload. When agentId is supplied it lands in the

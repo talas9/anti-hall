@@ -46,8 +46,14 @@ test('dispatcher uses a base-statusline.json command as line 1 when present', ()
   const h = makeStatusHome();
   const proj = makeProjectDir();
   try {
-    // Cross-platform echo: `node -e` prints a fixed marker as the base line-1.
-    const baseCmd = `node -e "process.stdout.write('BASELINE-X')"`;
+    // Cross-platform base line-1: a tiny .js file run via `node "<path>"`. We do
+    // NOT use `node -e "..."` because cmd /c (the Windows shell the dispatcher
+    // uses) mangles the nested quotes, so the JS never reaches node — the cause
+    // of the original Windows CI failure. A single quoted path arg survives both
+    // sh -c and cmd /c. JSON.stringify escapes the Windows backslashes in the path.
+    const baseScript = path.join(h.antiHall, 'baseline.js');
+    fs.writeFileSync(baseScript, "process.stdout.write('BASELINE-X');\n", 'utf8');
+    const baseCmd = `node "${baseScript}"`;
     fs.writeFileSync(path.join(h.antiHall, 'base-statusline.json'), JSON.stringify({ command: baseCmd }), 'utf8');
     const r = run({ model: { display_name: 'Opus' }, context_window: { used_percentage: 20 } }, h.home, proj.dir);
     const lines = stripAnsi(r.stdout).split('\n');
@@ -61,8 +67,12 @@ test('dispatcher falls through to own-dispatch when the base command fails', () 
   const proj = makeProjectDir();
   try {
     // A command that exits non-zero -> runBaseCommand returns null -> own-dispatch.
+    // Use a quoted script path (not `node -e "..."`) so it works under cmd /c on
+    // Windows too — see the base-command test above for the quote-mangling rationale.
+    const failScript = path.join(h.antiHall, 'fail3.js');
+    fs.writeFileSync(failScript, 'process.exit(3);\n', 'utf8');
     fs.writeFileSync(path.join(h.antiHall, 'base-statusline.json'),
-      JSON.stringify({ command: 'node -e "process.exit(3)"' }), 'utf8');
+      JSON.stringify({ command: `node "${failScript}"` }), 'utf8');
     const r = run({ model: { display_name: 'Opus' } }, h.home, proj.dir);
     const lines = stripAnsi(r.stdout).split('\n');
     assert.match(lines[0], new RegExp(path.basename(proj.dir)), 'fell back to own rich header');

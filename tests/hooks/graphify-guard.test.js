@@ -186,6 +186,11 @@ test('reflected graph path with control + bidi chars: reason is sanitized (no ra
   // Root name carries a C0 control char (\x07 bell) and a bidi override (U+202E).
   // sanitizePath replaces C0/C1 with space and strips bidi entirely, so the
   // reflected reason must contain NEITHER the raw control char NOR the bidi char.
+  // win32: control chars and U+202x are ILLEGAL in filenames (mkdir throws
+  // ENOENT), so a directory whose NAME carries them cannot exist on Windows —
+  // skip there. The sanitize-on-reflect logic is OS-independent and fully
+  // exercised on POSIX.
+  if (process.platform === 'win32') return;
   const rootName = 'proj\x07x‮evil';
   const r = run('Grep', { pattern: 'x' }, { rootName });
   assert.strictEqual(r.status, 2, `should still block; stdout=${r.stdout}`);

@@ -6,6 +6,27 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.25.1
+
+**CI fix — cross-platform test gating. No plugin behavior change from 0.25.0.**
+
+The 0.25.0 test suite passed locally but failed on CI macOS + Windows: all failures were
+test-side environment assumptions, not plugin bugs (source behavior is correct on every
+platform). Fixed test-side only:
+
+- **macOS:** a graphify reflected-path test asserted a substring (`graphify-out`) that the
+  hook's 80-char `sanitizePath` cap truncates under CI's long `/var/folders/.../T/` tmpdir
+  (passed locally only because the dev tmpdir is short) — now asserts the always-in-cap
+  base-dir name. Added an opt-in single retry for a macOS `spawnSync` empty-stdout pipe
+  flake on the large-JSON SessionStart hook (node 18/20).
+- **Windows:** install-reaper `--dry-run` tests now assert the `win32` no-op message
+  (the installer correctly short-circuits before reading flags); tests that `mkdir` a
+  directory whose name contains characters illegal in Windows filenames (`"`, control,
+  bidi) are `win32`-skipped; statusline base-command tests invoke `node "<abspath>"`
+  (survives both `sh -c` and `cmd /c`) instead of a nested-quote `node -e`.
+
+Net: `node --test` green on Ubuntu, macOS, and Windows × Node 18/20/22/24.
+
 ## 0.25.0
 
 **Always-on SCOPE & FIDELITY discipline + an opt-in mcp-reaper companion (macOS + Linux).**
