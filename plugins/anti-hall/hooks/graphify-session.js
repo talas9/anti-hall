@@ -117,7 +117,12 @@ function main() {
       additionalContext,
     },
   };
-  process.stdout.write(JSON.stringify(out) + '\n');
+  // SYNCHRONOUS write to fd 1 (see verify-first-full.js for the full rationale):
+  // process.stdout.write on a pipe is async for payloads over the pipe buffer, and
+  // the trailing process.exit(0) can tear down before the buffer flushes, yielding
+  // empty/partial stdout with exit 0 on macOS node 18/20. fs.writeSync blocks until
+  // every byte is delivered, so the JSON is never truncated.
+  fs.writeSync(1, JSON.stringify(out) + '\n');
 }
 
 try {

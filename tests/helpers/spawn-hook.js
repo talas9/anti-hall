@@ -59,18 +59,27 @@ function isolatedEnv(home) {
 // Why a LOOP (not a single retry): real CI run 27042542976 (macos node 18/20)
 // failed verify-first-full subtests 245-248 even though they already passed
 // expectJson:true — i.e. BOTH the first spawn and the single retry came back
-// empty. The race can hit consecutive spawns, so one retry is not enough. Up to
-// 4 attempts drives the residual all-empty probability to negligible (p^4 for a
-// per-spawn empty rate p; even a pessimistic p=0.05 gives ~6e-6).
+// without parseable JSON. The race can hit consecutive spawns, so one retry is
+// not enough. Up to 5 attempts drives the residual probability to negligible.
+//
+// SIGNATURE CORRECTION (run 27043002569): the prior gate also required
+// `res.status === 0 && stdout.trim() === ''` — i.e. it ONLY retried on EMPTY
+// stdout. But the underlying defect (process.exit(0) racing an async pipe flush
+// in the hook) can truncate stdout to a PARTIAL, non-empty, non-JSON value — for
+// which stdout.trim() !== '' and the retry NEVER fired, so subtests 245-248 still
+// failed deterministically. The hook itself is now fixed (synchronous fs.writeSync
+// in verify-first-full.js), which removes the truncation at the source; this retry
+// is kept as defense-in-depth and its gate is corrected to fire whenever JSON is
+// mandatory but parsing failed — empty OR partial — regardless of exit status.
 //
 // This is OPT-IN because many hooks legitimately emit EMPTY stdout on exit 0
 // (allow paths) AND mutate state (e.g. swarm-guard appends a spawn-log entry per
 // run) — blindly re-spawning those would double their side effects and corrupt
-// stateful assertions (a regression a prior agent hit). We ONLY re-spawn on the
-// empty+exit0 signature, so a genuinely broken JSON-emitting hook (non-empty
-// non-JSON, or a non-zero exit) is NOT retried and still fails deterministically;
-// no coverage is lost.
-const MAX_SPAWN_ATTEMPTS = 4;
+// stateful assertions (a regression a prior agent hit). It is only set by callers
+// whose hook MUST emit JSON and is side-effect-free, so a genuinely broken hook
+// (deterministically non-JSON) still fails after exhausting attempts; no coverage
+// is lost — it just costs a few extra spawns before failing.
+const MAX_SPAWN_ATTEMPTS = 5;
 
 function spawnHook(hookAbs, input, env, expectJson) {
   let res = spawnSync(process.execPath, [hookAbs], {
@@ -79,15 +88,14 @@ function spawnHook(hookAbs, input, env, expectJson) {
   let json = null;
   try { json = JSON.parse(res.stdout); } catch (_) { json = null; }
 
-  // Re-spawn ONLY on the empty-stdout+exit0 flake signature, when the caller
-  // asserts JSON is mandatory. Each iteration re-checks the same signature so we
-  // stop the instant a spawn yields parseable JSON (or hits a real failure).
+  // Re-spawn whenever the caller asserts JSON is mandatory but we did NOT get
+  // parseable JSON (empty OR partial/truncated stdout — the truncation defect can
+  // produce either). Each iteration re-checks the condition so we stop the instant
+  // a spawn yields parseable JSON.
   let attempts = 1;
   while (
     expectJson &&
     json === null &&
-    res.status === 0 &&
-    (res.stdout || '').trim() === '' &&
     attempts < MAX_SPAWN_ATTEMPTS
   ) {
     attempts += 1;

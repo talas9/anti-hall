@@ -6,6 +6,29 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.25.2
+
+**CI green on all platforms — root-cause fixes for the macOS stdout race and Windows base-command env.**
+
+0.25.1's test-gating fixes were incomplete; CI stayed red on macOS node 18/20 and all
+Windows legs. Root-caused properly (from real CI logs) and fixed at the source:
+
+- **macOS (hook source fix):** `verify-first-full.js` and `graphify-session.js` emit a
+  ~10 KB JSON payload, then `process.exit(0)`. On a pipe, `process.stdout.write` is async
+  once the payload exceeds the OS pipe buffer, so `exit(0)` could race the flush and the
+  reader saw empty/partial stdout (intermittent on macOS node 18/20). Switched both to a
+  blocking `fs.writeSync(1, …)` so every byte is handed to the pipe before exit. The
+  test-side `expectJson` retry is kept as defense-in-depth and corrected to re-spawn on
+  any parse failure (empty OR partial), not just empty.
+- **Windows (test harness fix):** the statusline base-command test starved `cmd.exe` with
+  a stripped env (a hand-picked `SystemRoot/ComSpec/PATHEXT` allowlist was insufficient),
+  so the base command failed and the dispatcher fell back. The statusline test harness now
+  inherits the full parent env and overrides only the HOME-pointing vars (statusline
+  scripts read no Claude Code markers, so only HOME needs isolating).
+
+No user-facing behavior change beyond more reliable hook stdout. `node --test` green on
+Ubuntu, macOS, and Windows × Node 18/20/22/24.
+
 ## 0.25.1
 
 **CI fix — cross-platform test gating. No plugin behavior change from 0.25.0.**

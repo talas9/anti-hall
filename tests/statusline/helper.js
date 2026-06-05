@@ -21,26 +21,34 @@ const SL_DIR = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'statusl
 // platform. os.homedir() reads USERPROFILE/HOMEDRIVE+HOMEPATH on win32, $HOME
 // elsewhere — set all of them so the child never escapes the fixture.
 function isolatedEnv(home) {
-  const env = { PATH: process.env.PATH, HOME: home };
   if (process.platform === 'win32') {
+    // WINDOWS: the statusline dispatcher's line-1 base command runs via
+    // `spawnSync('cmd', ['/c', <cmd>])` inside statusline.js. cmd.exe needs a
+    // working system environment (SystemRoot/ComSpec/PATHEXT and friends) to even
+    // start AND to resolve `node` on PATH; a hand-picked allowlist proved
+    // insufficient on the Windows runners — the base command kept yielding null and
+    // the dispatcher fell back to its own line 1, failing the base-command test on
+    // every Windows leg even after SystemRoot/ComSpec/PATHEXT were forwarded.
+    //
+    // Unlike the HOOK harness (spawn-hook.js), the statusline scripts read NO Claude
+    // Code markers (CLAUDE_CODE_ENTRYPOINT / agent ids) — those only drive the
+    // hooks' coordinator-vs-subagent detection. The ONLY thing the statusline must
+    // have isolated is HOME, so it reads the fixture's ~/.anti-hall state. So on
+    // win32 we inherit the FULL parent env (giving cmd.exe exactly what it has in
+    // production, where the statusline is spawned with the real shell env) and only
+    // OVERRIDE the home-pointing vars. This exercises the real base-command SUCCESS
+    // path instead of starving cmd.exe with a stripped env. (POSIX `sh -c` needs
+    // none of this, so there we keep the minimal controlled base below.)
     const root = path.parse(home).root;
-    env.USERPROFILE = home;
-    env.HOMEDRIVE = root;
-    env.HOMEPATH = home.slice(root.length);
-    // The statusline dispatcher's line-1 base command runs via `cmd /c <cmd>`
-    // (child_process in statusline.js). cmd.exe itself REFUSES to start without
-    // SystemRoot/ComSpec, and won't resolve `node` without PATHEXT — so a base
-    // command silently yields empty stdout and the dispatcher falls back to its
-    // own line 1. In production the statusline inherits the real shell env (which
-    // has these); this controlled fixture stripped them, which is why ONLY this
-    // base-command test failed on every Windows matrix leg. Forward the standard
-    // Windows system vars cmd.exe needs. None carry Claude Code markers, so HOME/
-    // marker isolation is preserved. (POSIX `sh -c` needs none of this.)
-    for (const k of ['SystemRoot', 'windir', 'ComSpec', 'PATHEXT', 'SystemDrive', 'TEMP', 'TMP']) {
-      if (process.env[k] !== undefined) env[k] = process.env[k];
-    }
+    return {
+      ...process.env,
+      HOME: home,
+      USERPROFILE: home,
+      HOMEDRIVE: root,
+      HOMEPATH: home.slice(root.length),
+    };
   }
-  return env;
+  return { PATH: process.env.PATH, HOME: home };
 }
 
 // runSL(scriptName, { stdin, args, home, cwd, env }) -> { status, stdout, stderr }

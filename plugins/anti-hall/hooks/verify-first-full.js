@@ -141,7 +141,16 @@ function main() {
     },
   };
 
-  process.stdout.write(JSON.stringify(out) + '\n');
+  // SYNCHRONOUS write to fd 1. Why not process.stdout.write: when stdout is a
+  // pipe (Claude Code, and spawnSync in the tests both capture it) and the payload
+  // (~10KB) exceeds the OS pipe buffer, process.stdout.write becomes ASYNC — it
+  // buffers the tail and returns false. The trailing process.exit(0) then tears
+  // the process down BEFORE that buffer flushes, so the consumer reads EMPTY or
+  // PARTIAL stdout with exit 0. This is the macOS node 18/20 truncation that made
+  // verify-first-full subtests flake (node 22/24 changed exit-flush timing, hence
+  // they passed). fs.writeSync blocks until every byte is handed to the pipe, so
+  // the full JSON is guaranteed delivered regardless of node version / load.
+  fs.writeSync(1, JSON.stringify(out) + '\n');
 }
 
 try {

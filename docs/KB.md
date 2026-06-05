@@ -61,7 +61,7 @@ debates reference the living docs for evidence; the *current* state and the
 
 | Fact | Value | Source / verify |
 |---|---|---|
-| **Version** | `0.25.0` | `plugin.json` `version` — the single authority. Marketplace entry carries NO `version` (avoids the silent-precedence trap). |
+| **Version** | `0.25.2` | `plugin.json` `version` — the single authority. Marketplace entry carries NO `version` (avoids the silent-precedence trap). |
 | **Runtime** | Pure Node, built-ins only; requires Node.js ≥ 18 on PATH | `plugin.json` description; hooks launched as `node <hook>.js` |
 | **Hook language** | All hooks are `.js` (NOT `.sh`) | `ls plugins/anti-hall/hooks/` |
 | **Hooks shipped (19 files)** | `agent-watchdog`, `api-guard`, `command-guard`, `doctor`, `git-guard`, `graphify-guard`, `graphify-reminder`, `graphify-session`, `phase-tracker`, `skip-guard`, `speculation-guard`, `speculation-judge`, `swarm-guard`, `task-guard`, `task-tracker`, `tasklist-guard`, `verify-first-full`, `verify-first`, plus `hooks.json`. `api-guard` (0.22.0) = PreToolUse Write/Edit/MultiEdit, blocks fabricated stdlib/builtin APIs in code (verified against installed python3/node); bench `eval/api-guard-bench.js`. | `plugins/anti-hall/hooks/` |
