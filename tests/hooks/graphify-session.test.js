@@ -93,7 +93,7 @@ test('F-10: graph path with a quote (") -> output is still valid JSON (no corrup
   if (process.platform === 'win32') return;
   const proj = makeProject({ graph: true, suffix: 'q"uote' });
   try {
-    const r = testHook(HOOK, sessionPayload(proj.dir), { home: h.home });
+    const r = testHook(HOOK, sessionPayload(proj.dir), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0, 'must exit 0');
     // The load-bearing assertion: stdout PARSES (testHook sets json only if so).
     assert.ok(r.json, `stdout must be valid JSON despite a quote in the path; stdout=${r.stdout}`);
@@ -113,7 +113,7 @@ test('F-10: graph path with a backslash (\\) -> output is still valid JSON (no c
   if (process.platform === 'win32') return;
   const proj = makeProject({ graph: true, suffix: 'back\\slash' });
   try {
-    const r = testHook(HOOK, sessionPayload(proj.dir), { home: h.home });
+    const r = testHook(HOOK, sessionPayload(proj.dir), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.ok(r.json, `stdout must be valid JSON despite a backslash in the path; stdout=${r.stdout}`);
     assert.ok(ctx(r).length > 0, 'additionalContext present');

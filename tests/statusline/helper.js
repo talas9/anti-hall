@@ -27,6 +27,18 @@ function isolatedEnv(home) {
     env.USERPROFILE = home;
     env.HOMEDRIVE = root;
     env.HOMEPATH = home.slice(root.length);
+    // The statusline dispatcher's line-1 base command runs via `cmd /c <cmd>`
+    // (child_process in statusline.js). cmd.exe itself REFUSES to start without
+    // SystemRoot/ComSpec, and won't resolve `node` without PATHEXT — so a base
+    // command silently yields empty stdout and the dispatcher falls back to its
+    // own line 1. In production the statusline inherits the real shell env (which
+    // has these); this controlled fixture stripped them, which is why ONLY this
+    // base-command test failed on every Windows matrix leg. Forward the standard
+    // Windows system vars cmd.exe needs. None carry Claude Code markers, so HOME/
+    // marker isolation is preserved. (POSIX `sh -c` needs none of this.)
+    for (const k of ['SystemRoot', 'windir', 'ComSpec', 'PATHEXT', 'SystemDrive', 'TEMP', 'TMP']) {
+      if (process.env[k] !== undefined) env[k] = process.env[k];
+    }
   }
   return env;
 }
