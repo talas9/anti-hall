@@ -78,6 +78,15 @@ const USER_OVERRIDE = [
   ['only a direct user instruction', 'USER OVERRIDE guardrail (only a direct user instruction)'],
 ];
 
+// SCOPE & FIDELITY block: section header + its load-bearing rules.
+const SCOPE_FIDELITY = [
+  ['SCOPE & FIDELITY', 'SCOPE & FIDELITY section header'],
+  ['SIMPLEST solution', 'scope-fidelity: simplest sufficient solution'],
+  ['Intent over letter', 'scope-fidelity: intent over letter'],
+  ['EXPANDING scope', 'scope-fidelity: confirm before expanding scope'],
+  ['blast radius', 'scope-fidelity: match rigor to blast radius'],
+];
+
 // ORCHESTRATION DISCIPLINE: header + each letter label A..K (including E2), plus
 // a keyword for the load-bearing ones.
 const ORCHESTRATION_HEADER = ['ORCHESTRATION DISCIPLINE', 'orchestration discipline header'];
@@ -89,11 +98,19 @@ const ORCHESTRATION_LABELS = [
   ['  E.', 'rule E (inline only atomic)'],
   ['  E2. GRAPHIFY-FIRST', 'rule E2 (GRAPHIFY-FIRST)'],
   ['  F.', 'rule F (parallel agents / noisy off main thread)'],
-  ['  G.', 'rule G (synthesize, not raw output)'],
+  ['run_in_background', 'rule F keyword (DEFAULT delegated work to BACKGROUND via run_in_background)'],
+  ['to the BACKGROUND', 'rule F keyword (default heavy/long/parallel work to the BACKGROUND)'],
+  ['fire-and-forget', 'rule F keyword (never fire-and-forget: drain + verify the backgrounded task)'],
+  ['  G. SYNTHESIZE, NEVER RELAY', 'rule G (synthesize, never relay raw subagent output)'],
+  ['OUTPUT BUDGET', 'rule G keyword (subagents return tight summaries under an OUTPUT BUDGET)'],
+  ['message-context bloat', 'rule G keyword (raw relay is the #1 cause of message-context bloat)'],
   ['  H.', 'rule H (communicate concisely)'],
   ['  I.', 'rule I (watch/babysit agents)'],
   ['  J.', 'rule J (phase statusline)'],
   ['  K. PRESENT FOR SCANNABILITY', 'rule K (PRESENT FOR SCANNABILITY)'],
+  ['  L. VERIFY DELEGATED WORK', 'rule L (VERIFY DELEGATED WORK)'],
+  ['UNVERIFIED CLAIM', 'rule L keyword (a subagent report is an UNVERIFIED CLAIM)'],
+  ['GROUND TRUTH', 'rule L keyword (reconcile against GROUND TRUTH)'],
 ];
 
 // DISCIPLINES vs SKILLS: ALWAYS APPLY trio + INVOKE-WHEN-IT-MATCHES skills.
@@ -102,7 +119,10 @@ const DISCIPLINES = [
   ['ALWAYS APPLY', 'ALWAYS APPLY sub-header'],
   ['- root-cause:', 'ALWAYS APPLY: root-cause discipline'],
   ['- orchestration:', 'ALWAYS APPLY: orchestration discipline'],
+  ['VERIFY delegated work', 'ALWAYS APPLY orchestration summary: VERIFY delegated work appended'],
+  ['against ground truth', 'ALWAYS APPLY orchestration summary: re-check against ground truth'],
   ['- anti-sycophancy:', 'ALWAYS APPLY: anti-sycophancy discipline'],
+  ['- scope-fidelity:', 'ALWAYS APPLY: scope-fidelity discipline'],
   ['INVOKE WHEN IT MATCHES', 'INVOKE WHEN IT MATCHES sub-header'],
   ['/anti-hall:root-cause', 'INVOKE skill: root-cause'],
   ['/anti-hall:orchestration', 'INVOKE skill: orchestration'],
@@ -144,6 +164,9 @@ test('SessionStart startup -> full protocol present, EVERY section/rule intact (
 
     // USER OVERRIDE line.
     assertAll(c, USER_OVERRIDE);
+
+    // SCOPE & FIDELITY block.
+    assertAll(c, SCOPE_FIDELITY);
 
     // ORCHESTRATION DISCIPLINE (header + every label A..K incl E2).
     assert.ok(c.includes(ORCHESTRATION_HEADER[0]), `DROPPED: ${ORCHESTRATION_HEADER[1]}`);

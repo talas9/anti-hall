@@ -5,8 +5,11 @@
 > short rotating nudge every turn, mechanical guards (no AI commit self-credit, no silent
 > force-push, command-delegation, anti-fork-bomb, anti-speculation, task-list discipline via
 > tasklist-guard), an always-on output-presentation rule (rule K: present for scannability),
-> a TTL'd user-override escape hatch (~/.anti-hall/skip.json), seven workflow skills, and a
-> live two-line statusline. All hooks are pure Node.js (built-ins only) and run on macOS,
+> an always-on scope & fidelity discipline (simplest sufficient solution; intent over letter;
+> confirm before expanding scope; match rigor to blast radius; finish what was asked / drop
+> nothing), a TTL'd user-override escape hatch (~/.anti-hall/skip.json), seven workflow skills,
+> a live two-line statusline, and an opt-in mcp-reaper companion (macOS + Linux) that kills
+> orphaned MCP-server processes. All hooks are pure Node.js (built-ins only) and run on macOS,
 > Linux, and Windows; the one prerequisite is Node >= 18 on PATH.
 
 anti-hall targets four failure modes of coding assistants: eagerness (acting before
@@ -42,7 +45,7 @@ Requires Node.js >= 18 on PATH; without it the hooks silently no-op. Updates via
 
 All pure Node, fail-open. Registered in hooks.json.
 
-- [verify-first-full.js](plugins/anti-hall/hooks/verify-first-full.js): SessionStart — full Iron-Law + rationalization-table protocol + skill primer; re-fires after compaction (source=compact).
+- [verify-first-full.js](plugins/anti-hall/hooks/verify-first-full.js): SessionStart — full Iron-Law + rationalization-table protocol, the always-on scope & fidelity discipline (simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish what was asked / drop nothing), and skill primer; re-fires after compaction (source=compact).
 - [verify-first.js](plugins/anti-hall/hooks/verify-first.js): UserPromptSubmit — short varying one-line nudge.
 - [git-guard.js](plugins/anti-hall/hooks/git-guard.js): PreToolUse Bash — quote-aware tokenizer blocks AI self-credit attribution in git commit trailers AND in `gh pr/issue/release create|edit|comment` --body/--title (🤖 footer, Co-Authored-By, claude.com/claude-code link; inline values only, --body-file fail-open), plus git push --force.
 - [api-guard.js](plugins/anti-hall/hooks/api-guard.js): PreToolUse Write/Edit/MultiEdit — the mechanical answer to API hallucination: resolves module.attribute references in code-to-be-written against the installed python3/node and BLOCKS the write when a real module is missing the attribute. Default scope = stdlib/builtins (import-safe, no untrusted code); opt-in ANTIHALL_API_GUARD_THIRDPARTY=1 also verifies installed 3rd-party packages (off by default — a deadly-loop proved that verifying a package = importing it = running its code at edit time). Never probes local/relative modules; 0 FP + full in-scope catch on eval/api-guard-bench.js; fail-open.
@@ -64,7 +67,7 @@ All pure Node, fail-open. Registered in hooks.json.
 Invoke as /anti-hall:<name>.
 
 - [root-cause](plugins/anti-hall/skills/root-cause/SKILL.md): evidence-driven debugging to the original + root cause (also enforced always-on as a discipline).
-- [orchestration](plugins/anti-hall/skills/orchestration/SKILL.md): non-blocking swarm; coordinator/worker hierarchy; watchdog + heartbeat; live phase statusline (also always-on).
+- [orchestration](plugins/anti-hall/skills/orchestration/SKILL.md): non-blocking swarm; coordinator/worker hierarchy; watchdog + heartbeat; live phase statusline; verify delegated work — a subagent's "done/passing" is an unverified claim re-checked against ground truth before marking complete; defaults delegated heavy/parallel work to the background (coordinator passes run_in_background so the user needn't background it manually) while still verifying each on completion (also always-on).
 - [deadly-loop](plugins/anti-hall/skills/deadly-loop/SKILL.md): iterative Reviewer + Critic debate + fix-waves until zero new P0s.
 - [feature-launch](plugins/anti-hall/skills/feature-launch/SKILL.md): plan-first, deadly-loop-hardened, phase-by-phase feature protocol — includes AFK mode (autonomous driver that never stops except on absolutely-destructive hard gates; collects data and runs a deadly-loop instead of pausing).
 - [install-statusline](plugins/anti-hall/skills/install-statusline/SKILL.md): installs the statusLine entry on demand (global by default, per-project on request) + restart reminder.
@@ -85,6 +88,14 @@ Two-line statusline the plugin renders itself.
 - [phase.js](plugins/anti-hall/statusline/phase.js): the orchestrator's progress writer (set/advance/step/agents/clear).
 - [install-statusline.js](plugins/anti-hall/statusline/install-statusline.js) / [uninstall-statusline.js](plugins/anti-hall/statusline/uninstall-statusline.js): installer / uninstaller.
 
+## Companion (plugins/anti-hall/companion/)
+
+Opt-in, NOT a hook. macOS + Linux interval job; Windows is a documented no-op (no parent-death reparenting + PID recycling make external orphan detection unsafe — the correct fix there is Job Objects set by the spawner).
+
+- [mcp-reaper.js](plugins/anti-hall/companion/mcp-reaper.js): kills ONLY orphaned MCP-server processes (parent already died). Safety invariant: reaps a process only if it matches a generic MCP signature AND its parent is a reaper/init (launchd / init / `systemd --user`); since Unix reparents a dead process's children, a live MCP always has a live spawner as parent, so killing an in-use server is impossible by construction. Recognizes Python MCPs too (uvx/uv + underscore mcp_server_* forms). Limitation: an MCP run as a LaunchAgent / `systemd --user` unit / OS service shares init as a parent (like a leaked orphan) and can be reaped — exclude it via ANTIHALL_REAPER_EXCLUDE='name|name'. Env: MCP_REAP_DRYRUN=1, MCP_REAP_GRACE, ANTIHALL_REAPER_MATCH, ANTIHALL_REAPER_EXCLUDE.
+- [install-reaper.js](plugins/anti-hall/companion/install-reaper.js): `node install-reaper.js` installs (macOS LaunchAgent / Linux systemd --user timer, cron fallback); `--uninstall` removes; `--dry-run` previews.
+- [companion/README.md](plugins/anti-hall/companion/README.md): full reference + safety rationale.
+
 ## Manifests
 
 - [plugins/anti-hall/.claude-plugin/plugin.json](plugins/anti-hall/.claude-plugin/plugin.json): plugin manifest; version is the sole authority.
@@ -92,7 +103,7 @@ Two-line statusline the plugin renders itself.
 
 ## Tests
 
-- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 173 tests covering the hooks (guards, api-guard stdlib/builtin/3rd-party checks + shadowing/portability/RCE-no-execute, git-guard gh-PR self-credit, speculation, tasklist-guard Bash-regex cases, etc.). Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
+- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 316 passing (+2 platform-skipped), 318 total, covering the hooks (guards, api-guard stdlib/builtin/3rd-party checks + shadowing/portability/RCE-no-execute, git-guard gh-PR self-credit, speculation, tasklist-guard Bash-regex cases + history-ledger reminder, synthesize-never-relay nudge, etc.). Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
 - [.github/workflows/test.yml](.github/workflows/test.yml): CI runs the suite on push/PR.
 
 ## Read more

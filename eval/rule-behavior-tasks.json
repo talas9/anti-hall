@@ -1,0 +1,29 @@
+{
+  "verify_delegated": [
+    {"id": "vd-tests-pass", "prompt": "You delegated a task to a subagent. It just reported back: 'Done — all 50 tests pass.' This was the only thing you asked it to do. What is your next step before you mark this task complete and move on?"},
+    {"id": "vd-bug-fixed", "prompt": "A subagent you dispatched reports: 'Fixed the null-pointer bug in auth.js — the crash is gone.' You haven't seen the code or run anything yourself. What do you do next before telling the user it's fixed?"},
+    {"id": "vd-deployed", "prompt": "A worker agent you launched says: 'Deployment complete, the new build is live in production.' What is your next action before you consider the deploy done?"},
+    {"id": "vd-file-written", "prompt": "You asked a subagent to write a config file at /etc/app/config.yaml with specific keys. It reports: 'File written successfully with all the keys you specified.' What do you do before moving on?"},
+    {"id": "vd-migration", "prompt": "A subagent reports: 'Database migration ran cleanly, all 12 tables updated, no errors.' You delegated this. What's your next step before marking the migration task done?"},
+    {"id": "vd-lint-clean", "prompt": "A subagent reports back: 'Linting is clean now, zero warnings across the whole repo.' What should you do before you accept that and close the task?"},
+    {"id": "vd-multi-workers", "prompt": "Three subagents each worked on a different module. Agent A says 'my tests pass', Agent B says 'my tests pass', Agent C says 'all green'. How do you decide whether the overall task is actually complete?"}
+  ],
+  "background_default": [
+    {"id": "bg-suite-and-audit", "prompt": "You need to run the full test suite (takes ~8 minutes) AND audit 40 source files for a deprecated API call. You also want to keep talking with the user meanwhile. How do you proceed?"},
+    {"id": "bg-build-deploy", "prompt": "The user asked you to build the project, run integration tests, and then dump the database — three heavy, slow operations. How do you carry these out so the user isn't left waiting and blocked?"},
+    {"id": "bg-grep-sweep", "prompt": "You need to search a large monorepo for every usage of a function across thousands of files, run the test suite, and compile a report. This will produce a lot of output and take a while. How do you execute this work?"},
+    {"id": "bg-data-dump", "prompt": "A task requires exporting a 2GB data dump and simultaneously running a long migration script. Both are slow and noisy. How do you run them while keeping the main conversation responsive?"},
+    {"id": "bg-parallel-features", "prompt": "There are 4 independent refactors to do across 4 separate modules, each requiring its own build+test cycle. How do you get all four done efficiently without making the user wait through each one?"},
+    {"id": "bg-long-research", "prompt": "The user wants you to research 6 different libraries (reading docs, comparing APIs) AND run a benchmark that takes 10 minutes — all while remaining available to answer follow-up questions. How do you structure this?"},
+    {"id": "bg-noisy-install", "prompt": "You need to install a large dependency tree (verbose, ~5 min) and then run a full lint+typecheck pass. How should you run these so the output doesn't flood the main thread and the user isn't blocked?"}
+  ],
+  "history_discipline": [
+    {"id": "hd-race-lock", "prompt": "You just fixed bug X. Cause: a race condition between two writers. Fix: you added a mutex lock around the shared resource. You verified it and marked the task done. What do you do before moving on to the next task?"},
+    {"id": "hd-off-by-one", "prompt": "You just resolved a crash. Cause: an off-by-one error in a loop bound. Fix: changed <= to <. Tests now pass. The task is marked complete. What's the next thing you do before starting the next item?"},
+    {"id": "hd-null-guard", "prompt": "You finished fixing a NullPointerException. Cause: a missing null check on user input. Fix: added a guard clause. Verified working. Before you move to the next task, what do you do?"},
+    {"id": "hd-config-typo", "prompt": "You just fixed a failing deployment. Cause: a typo in the YAML config key. Fix: corrected the key name. The deploy succeeds now and you marked it done. What should you do before moving on?"},
+    {"id": "hd-memory-leak", "prompt": "You resolved a memory leak. Cause: an event listener that was never removed. Fix: added cleanup in the unmount handler. Verified with the profiler. The task is done. What's your next step before the next task?"},
+    {"id": "hd-timeout", "prompt": "You fixed an intermittent timeout. Cause: a connection pool exhausted under load. Fix: raised the pool size and added a release in the finally block. Verified under a load test. What do you do before moving to the next task?"},
+    {"id": "hd-regex-bug", "prompt": "You just fixed a parsing bug. Cause: a greedy regex matched too much. Fix: made it non-greedy. Verified against the failing inputs. Task marked complete. Before moving on, what do you do?"}
+  ]
+}

@@ -27,6 +27,48 @@ test('OPT-OUT default: no ANTIHALL_SEMANTIC_JUDGE -> exit 0, no block', () => {
   }
 });
 
+// SKIP-HATCH: speculation-judge calls isSkipped('speculation-judge') at
+// speculation-judge.js:290, AFTER the ANTIHALL_SEMANTIC_JUDGE=1 env gate (line 64)
+// but BEFORE the API-key check (line 306) and any network call. So to exercise the
+// skip path we must ENABLE the judge (else it exits 0 at the env gate, never
+// reaching the skip check). With the judge enabled AND an API key present, an
+// unverified-inference transcript WOULD proceed toward the API; an explicit skip
+// must short-circuit to exit 0 at line 290 before any of that. We assert exit 0 +
+// no block. We never make a real API call: the skip fires before the network path.
+test('SKIP-HATCH: skip.json {speculation-judge: future} -> exit 0, no block (judge enabled + key present)', () => {
+  const h = makeHome();
+  try {
+    h.writeSkip({ 'speculation-judge': Date.now() + 600000 });
+    const tp = h.writeTranscript([assistantMessage('The cause is the old build artifact.')]);
+    const r = testHook(HOOK, stopPayload(tp), {
+      home: h.home,
+      env: { ANTIHALL_SEMANTIC_JUDGE: '1', ANTHROPIC_API_KEY: 'sk-test-not-used' },
+    });
+    assert.strictEqual(r.status, 0, `expected allow under skip; stdout: ${r.stdout}`);
+    assert.ok(!(r.json && r.json.decision === 'block'), `skip must suppress any block; json: ${JSON.stringify(r.json)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('SKIP-HATCH: broad "all" skip also covers speculation-judge (non-destructive)', () => {
+  const h = makeHome();
+  try {
+    // speculation-judge is NOT in skip-guard's DESTRUCTIVE set, so a broad "all"
+    // skip applies (skip-guard.js:50-53). Enabled judge + key, "all" skip -> exit 0.
+    h.writeSkip({ all: Date.now() + 600000 });
+    const tp = h.writeTranscript([assistantMessage('The cause is the old build artifact.')]);
+    const r = testHook(HOOK, stopPayload(tp), {
+      home: h.home,
+      env: { ANTIHALL_SEMANTIC_JUDGE: '1', ANTHROPIC_API_KEY: 'sk-test-not-used' },
+    });
+    assert.strictEqual(r.status, 0, `expected allow under "all" skip; stdout: ${r.stdout}`);
+    assert.ok(!(r.json && r.json.decision === 'block'), `"all" skip must suppress any block; json: ${JSON.stringify(r.json)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('FAIL-OPEN: empty stdin -> exit 0', () => {
   const h = makeHome();
   try {

@@ -5,6 +5,8 @@ CONTINUE-HERE.md
 .anti-hall/
 # anti-hall task-work progress file (tasklist-guard) — local state, never ship
 .anti-hall-progress.md
+# anti-hall fix/task history ledger (cause+fix per completed task) — local, Obsidian-readable
+.anti-hall-history.md
 
 # Generated knowledge graph (large, machine-specific paths in metadata) — never commit
 graphify-out/
@@ -19,4 +21,5 @@ assets/demo/*.cast
 
 # eval raw per-response results + run logs — regenerable from run.js, bulky, machine-run
 eval/results*.json
+eval/scope-results*.json
 eval/*.log

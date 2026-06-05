@@ -48,29 +48,33 @@ debates reference the living docs for evidence; the *current* state and the
 
 ## 1. Current plugin ground truth
 
-> Verified against the working tree on **2026-06-03** (commit context: post
-> `0.24.0`; `0.22.0` shipped api-guard (mechanical API-hallucination guard) + the
+> Verified against the working tree on **2026-06-04** (commit context: post
+> `0.24.1`; `0.22.0` shipped api-guard (mechanical API-hallucination guard) + the
 > eval harness, `0.22.1`/`0.22.2` Windows-CI fixes, `0.23.0` api-guard v2 (opt-in
 > 3rd-party after a deadly-loop proved default-on = edit-time RCE), `0.24.0`
-> extended git-guard to block AI self-credit in gh pr/issue/release bodies — all in
+> extended git-guard to block AI self-credit in gh pr/issue/release bodies, `0.25.0`
+> added the always-on SCOPE & FIDELITY discipline + the opt-in mcp-reaper companion
+> (macOS + Linux) — all in
 > ground truth). This block is the canonical snapshot — update it on every
 > significant change. Ref: `plugins/anti-hall/.claude-plugin/plugin.json`,
 > `plugins/anti-hall/hooks/`, `plugins/anti-hall/skills/`, `CHANGELOG.md`.
 
 | Fact | Value | Source / verify |
 |---|---|---|
-| **Version** | `0.24.0` | `plugin.json` `version` — the single authority. Marketplace entry carries NO `version` (avoids the silent-precedence trap). |
+| **Version** | `0.25.0` | `plugin.json` `version` — the single authority. Marketplace entry carries NO `version` (avoids the silent-precedence trap). |
 | **Runtime** | Pure Node, built-ins only; requires Node.js ≥ 18 on PATH | `plugin.json` description; hooks launched as `node <hook>.js` |
 | **Hook language** | All hooks are `.js` (NOT `.sh`) | `ls plugins/anti-hall/hooks/` |
 | **Hooks shipped (19 files)** | `agent-watchdog`, `api-guard`, `command-guard`, `doctor`, `git-guard`, `graphify-guard`, `graphify-reminder`, `graphify-session`, `phase-tracker`, `skip-guard`, `speculation-guard`, `speculation-judge`, `swarm-guard`, `task-guard`, `task-tracker`, `tasklist-guard`, `verify-first-full`, `verify-first`, plus `hooks.json`. `api-guard` (0.22.0) = PreToolUse Write/Edit/MultiEdit, blocks fabricated stdlib/builtin APIs in code (verified against installed python3/node); bench `eval/api-guard-bench.js`. | `plugins/anti-hall/hooks/` |
 | **Skills shipped (7)** | `root-cause`, `orchestration`, `feature-launch`, `deadly-loop`, `deadly-loop-multi`, `doctor`, `install-statusline` (+ shared `MODEL-POLICY.md`) | `plugins/anti-hall/skills/` |
-| **Cadence — full protocol** | Injected at **SessionStart** via `verify-first-full.js`. SessionStart **re-fires after compaction** with `source="compact"`, so the same no-matcher entry covers the post-compact reset. **There is no `PreCompact` hook** (its `additionalContext` would be inert — see KB-claude-codex §1.2). | `hooks/hooks.json`, `hooks/verify-first-full.js` |
+| **Cadence — full protocol** | Injected at **SessionStart** via `verify-first-full.js` — includes the always-on **SCOPE & FIDELITY** discipline (0.25.0: simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish what was asked / drop nothing), named in the "ALWAYS APPLY" disciplines list alongside root-cause/orchestration/anti-sycophancy. Orchestration (0.25.0) also requires the coordinator to **independently verify delegated work** — a subagent's "done/passing" is an unverified claim re-checked against ground truth before marking complete (rule L), and now **defaults delegated heavy/parallel work to the background** (the coordinator passes `run_in_background` so the user needn't background it manually) while still verifying each on completion — never fire-and-forget (rule F). SessionStart **re-fires after compaction** with `source="compact"`, so the same no-matcher entry covers the post-compact reset. **There is no `PreCompact` hook** (its `additionalContext` would be inert — see KB-claude-codex §1.2). | `hooks/hooks.json`, `hooks/verify-first-full.js` |
+| **Message-bloat prevention (#45, 0.25.0)** | Rule G is **SYNTHESIZE, NEVER RELAY**: the coordinator never pastes a subagent's raw return into the user thread (verbatim relay = the **#1 cause of message-context bloat**); subagents return tight summaries under an **OUTPUT BUDGET** (compact `{claim, evidence:"file:line", verdict}` schema only when >~5 claims / >~200 tokens, else one prose line). **Pilot finding:** the compact schema is only **~1.43× denser than prose on average** (worse for tiny outputs), so schema enforcement is a MINOR lever — the real levers are the output budget + no-raw-relay rule, shipped as prompt discipline (rule G + 1 nudge), not a schema-enforcement system. A `PostToolUse`-on-`Task` size-flag hook was evaluated and is **NOT feasible**: per KB-claude-codex §1.4 `PostToolUse` stdout/`additionalContext` never reaches the model and it cannot block, so it can't inject a reminder back — no hook was faked. | `hooks/verify-first-full.js` (rule G), `hooks/verify-first.js` |
 | **Cadence — per-turn nudge** | `verify-first.js` on **UserPromptSubmit** emits ONE short nudge, deterministically chosen by SHA-1 of the stdin envelope `mod NUDGES.length`. | `hooks/verify-first.js` |
-| **Nudge count** | **12** rotating one-liners (NOT "5") | `NUDGES` array in `verify-first.js` (`% NUDGES.length`) |
+| **Nudge count** | **17** rotating one-liners (0.25.0 added 2 scope-fidelity nudges + verify-delegated-work + background-default + synthesize-never-relay nudges; NOT "5") | `NUDGES` array in `verify-first.js` (`% NUDGES.length`) |
 | **SessionStart injection footprint** | **~7474 B** of `additionalContext` (trimmed from 8074 B in `0.18.0`, prose-only, zero rule loss). Distinct from the `verify-first-full.js` file size (~11.4 KB incl. comments). | CHANGELOG `0.18.0` |
 | **AGENTS.md mirror** | Present at repo root (Codex/clone-based governance). NOT bundled by `/plugin install`. | `AGENTS.md` |
 | **Model policy** | Cross-model debate roster: latest Opus (Reviewer) + latest OpenAI Codex (Critic); fallback = second divergent Opus. **"Latest" is resolved at runtime** — no model ID is hardcoded as policy. | `skills/MODEL-POLICY.md` (duplicated into both skills' `references/`, kept byte-identical by design) |
-| **Test net** | Zero-dependency `node:test` E2E suite (black-box, process-level), **173 tests** — guards, api-guard (stdlib/builtin/3rd-party + shadowing/portability/RCE-no-execute), git-guard gh-PR self-credit, speculation, tasklist-guard, etc. | `tests/`, [`E2E-TESTING.md`](./E2E-TESTING.md), CHANGELOG |
+| **Test net** | Zero-dependency `node:test` E2E suite (black-box, process-level), **316 passing (+2 platform-skipped), 318 total** — guards, api-guard (stdlib/builtin/3rd-party + shadowing/portability/RCE-no-execute), git-guard gh-PR self-credit, speculation, tasklist-guard (+ history-ledger reminder), scope-fidelity + verify-delegated-work + background-default + synthesize-never-relay protocol/nudge regression, etc. | `tests/`, [`E2E-TESTING.md`](./E2E-TESTING.md), CHANGELOG |
+| **Companion (opt-in)** | `companion/mcp-reaper.js` (+ `install-reaper.js`) — NOT a hook; an interval job (macOS LaunchAgent / Linux `systemd --user` timer) that kills ONLY orphaned MCP-server processes (parent already died). Safety invariant: reaps only when the command matches a generic MCP signature AND the parent is a reaper/init (launchd / init / `systemd --user`), so a live MCP (live spawner parent) can never be killed. **Windows = documented no-op** (no parent-death reparenting + PID recycling → external orphan detection unsafe; correct fix is Job Objects spawner-side). Recognizes Python MCPs too (`uvx`/`uv` + underscore `mcp_server_*` forms). **Limitation:** an MCP run as a LaunchAgent / `systemd --user` unit / OS service shares init as a parent (like a leaked orphan) and can be reaped — exclude it via `ANTIHALL_REAPER_EXCLUDE='name|name'`. Install: `node companion/install-reaper.js` (`--uninstall`). Env: `MCP_REAP_DRYRUN=1`, `MCP_REAP_GRACE`, `ANTIHALL_REAPER_MATCH`, `ANTIHALL_REAPER_EXCLUDE`. | `plugins/anti-hall/companion/` |
 
 **Why these matter:** the historical docs ([PLUGIN-REVIEW.md](./PLUGIN-REVIEW.md),
 [ULTRAPLAN.md](./ULTRAPLAN.md)) describe the plugin *before* the cadence redesign —
@@ -90,7 +94,7 @@ into the `KB-claude-codex.md` synthesis (kept standalone for provenance + depth)
 |---|---|---|---|---|---|
 | [`KB-claude-codex.md`](./KB-claude-codex.md) | **Backbone synthesis** — hooks, plugins, prompting, Codex, orchestration, anti-hallucination evidence (§1–§14) | 672 ln | **Living — primary** | (compiled 2026-05) | 8 parallel research streams; cited inline + Sources §15 |
 | [`TASK-WORK.md`](./TASK-WORK.md) | Task discipline (`TaskCreate`/`TaskUpdate` vs legacy `TodoWrite`); event-driven, no-timer freshness; basis for the tasklist-guard feature | 241 ln | **Living** | (date unknown; references Claude Code v2.1.142 / SDK 0.3.142) | Anthropic long-running-agent guidance + hook model; Sources at doc end |
-| [`TASKLIST-GUARD.md`](./TASKLIST-GUARD.md) | **Usage guide** for the `tasklist-guard` Stop hook + per-turn freshness note: when it blocks, the `.anti-hall-progress.md` file, env knobs, escape hatch, good workflow | — | **Living** | 2026-06-02 | this repo (`tasklist-guard.js` / `task-tracker.js`); design in `TASK-WORK.md` |
+| [`TASKLIST-GUARD.md`](./TASKLIST-GUARD.md) | **Usage guide** for the `tasklist-guard` Stop hook + per-turn freshness note: when it blocks, the `.anti-hall-progress.md` file, the `.anti-hall-history.md` fix-ledger reminder (append each completed task with Cause/Fix/Verified), env knobs, escape hatch, good workflow | — | **Living** | 2026-06-02 | this repo (`tasklist-guard.js` / `task-tracker.js`); design in `TASK-WORK.md` |
 | [`E2E-TESTING.md`](./E2E-TESTING.md) | How the zero-dep `node:test` hook suite works; I/O contract per event; env-isolation gotcha | 129 ln | **Living** | 2026-06-02 (mtime) | [Claude Code hooks contract](https://code.claude.com/docs/en/hooks) |
 | [`opus-4-8-features.md`](./opus-4-8-features.md) | Latest-Opus feature reference (context window, effort param, thinking, pricing) | 299 ln | **Living — snapshot** | Released 2026-05-28; research 2026-05-29 | [platform.claude.com whats-new-claude-4-8](https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-8) |
 | [`opus-4-8-swarm.md`](./opus-4-8-swarm.md) | Multi-agent orchestration on the latest Opus; Dynamic Workflows (research preview), Managed Agents (beta) | 319 ln | **Living — snapshot** | 2026-05-29 | Official release notes + community (cited inline) |
@@ -173,7 +177,7 @@ stale. Listed here so no one mistakes them for current spec.
   **Current:** `AGENTS.md` exists at repo root.
 - `PLUGIN-REVIEW.md:46` — "ships five strong skills." **Current:** 7 skills.
 - `ULTRAPLAN.md:71,316,341` — "rotates 5 one-liners" / "spread across the 5
-  nudges." **Current:** 12 nudges (`% NUDGES.length`).
+  nudges." **Current:** 17 nudges (`% NUDGES.length`).
 - `ULTRAPLAN.md:184` — `version: 0.3.0`, bump to `0.4.0`. **Current:** `0.21.0`.
 - `AUDIT-REPORT.md:123,129,132` / `AUDIT-REPORT-2.md` — version `0.7.0`,
   `0.11.x`, "Codex GPT-5.5" pin. **Current:** all superseded; these record the

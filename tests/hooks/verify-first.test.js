@@ -43,6 +43,88 @@ test('deterministic: same full envelope -> same nudge', () => {
   }
 });
 
+test('the new "Intent over letter" nudge is reachable across inputs', () => {
+  const h = makeHome();
+  try {
+    // The nudge is a deterministic SHA-1(stdin) % NUDGES.length pick, so sweep
+    // distinct envelopes until the emitted additionalContext carries the new
+    // scope-fidelity facet. If the string were dropped from NUDGES this never hits.
+    let found = false;
+    for (let i = 0; i < 5000 && !found; i++) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 't' + i, prompt: 'x' });
+      const r = testHookRaw(HOOK, raw, { home: h.home });
+      assert.strictEqual(r.status, 0);
+      if (ctx(r).includes('Intent over letter')) found = true;
+    }
+    assert.ok(found, 'expected some input to emit the "Intent over letter" nudge');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('the new "VERIFY DELEGATED WORK" nudge is reachable across inputs', () => {
+  const h = makeHome();
+  try {
+    // Same deterministic SHA-1(stdin) % NUDGES.length pick: sweep distinct
+    // envelopes until the emitted additionalContext carries the new
+    // verify-delegated-work facet (coordinator re-checks a subagent's report).
+    // If the string were dropped from NUDGES this never hits.
+    let found = false;
+    for (let i = 0; i < 5000 && !found; i++) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 't' + i, prompt: 'x' });
+      const r = testHookRaw(HOOK, raw, { home: h.home });
+      assert.strictEqual(r.status, 0);
+      const c = ctx(r);
+      if (c.includes('VERIFY DELEGATED WORK') && c.includes('reconcile multiple workers')) found = true;
+    }
+    assert.ok(found, 'expected some input to emit the "VERIFY DELEGATED WORK" nudge');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('the new "Default delegated ... BACKGROUND" nudge is reachable across inputs', () => {
+  const h = makeHome();
+  try {
+    // Same deterministic SHA-1(stdin) % NUDGES.length pick: sweep distinct
+    // envelopes until the emitted additionalContext carries the new
+    // background-default facet (coordinator passes run_in_background itself).
+    // If the string were dropped from NUDGES this never hits.
+    let found = false;
+    for (let i = 0; i < 5000 && !found; i++) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 't' + i, prompt: 'x' });
+      const r = testHookRaw(HOOK, raw, { home: h.home });
+      assert.strictEqual(r.status, 0);
+      const c = ctx(r);
+      if (c.includes('Default delegated') && c.includes('run_in_background')) found = true;
+    }
+    assert.ok(found, 'expected some input to emit the "Default delegated ... BACKGROUND" nudge');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('the new "SYNTHESIZE, NEVER RELAY" nudge is reachable across inputs', () => {
+  const h = makeHome();
+  try {
+    // Same deterministic SHA-1(stdin) % NUDGES.length pick: sweep distinct
+    // envelopes until the emitted additionalContext carries the new
+    // no-raw-relay / output-budget facet (message-bloat prevention, #45).
+    // If the string were dropped from NUDGES this never hits.
+    let found = false;
+    for (let i = 0; i < 5000 && !found; i++) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 't' + i, prompt: 'x' });
+      const r = testHookRaw(HOOK, raw, { home: h.home });
+      assert.strictEqual(r.status, 0);
+      const c = ctx(r);
+      if (c.includes('SYNTHESIZE, NEVER RELAY') && c.includes('output budget')) found = true;
+    }
+    assert.ok(found, 'expected some input to emit the "SYNTHESIZE, NEVER RELAY" nudge');
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('FAIL-OPEN: empty stdin -> exit 0', () => {
   const h = makeHome();
   try {

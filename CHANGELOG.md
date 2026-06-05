@@ -6,6 +6,89 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.25.0
+
+**Always-on SCOPE & FIDELITY discipline + an opt-in mcp-reaper companion (macOS + Linux).**
+
+**A — SCOPE & FIDELITY discipline (prompt layer).** A new always-on discipline injected by
+the SessionStart protocol (`verify-first-full.js`) and reinforced by 2 new per-turn nudges
+(`verify-first.js`, NUDGES 12 → 14; later 14 → 15 with the verify-delegated-work nudge in
+section C). It enforces: solve the ACTUAL problem with the
+**simplest sufficient solution** (over-engineering is confabulating work the user never asked
+for); **intent over letter** (serve what the user means; do the small reading and say what you
+skipped rather than guess-big); **confirm before expanding scope** (new platform / file /
+dependency / phase / abstraction); **match rigor to blast radius** (heavy process is for risky
+or large work, not a reflex on small asks); and **finish what was asked / drop nothing
+silently**. It is now named in the "ALWAYS APPLY" disciplines list alongside
+root-cause / orchestration / anti-sycophancy, and mirrored in `AGENTS.md` for Codex.
+
+**B — mcp-reaper companion (OPT-IN, macOS + Linux).** A new pure-Node background **companion**
+(NOT a hook — an interval job via a macOS LaunchAgent / Linux `systemd --user` timer, cron
+fallback) that kills **orphaned** MCP-server processes — ones leaked when their spawner (a
+Claude / codex / npm / node session) exits without cleaning them up (on macOS these reparent
+to launchd and pile up over a workday). Files: `companion/mcp-reaper.js`,
+`companion/install-reaper.js`, `companion/README.md`. Install with
+`node plugins/anti-hall/companion/install-reaper.js` (`--uninstall` to remove). Env knobs:
+`MCP_REAP_DRYRUN=1`, `MCP_REAP_GRACE`, `ANTIHALL_REAPER_MATCH`, `ANTIHALL_REAPER_EXCLUDE`
+(regex of cmd substrings to NEVER reap). Also recognizes **Python MCPs** (`uvx`/`uv` +
+underscore `mcp_server_*` forms), not just Node.
+
+- **Safety invariant:** a process is reaped only if its command matches a generic MCP
+  signature **and** its parent is a reaper/init (pid1 / launchd / `systemd --user` / WSL
+  `Relay()`). Because Unix always reparents a dead process's children, a *live* MCP's parent
+  is always a live spawner — never a reaper — so "parent is a reaper" means the spawner died,
+  i.e. the MCP is a true orphan. Killing an in-use server is impossible by construction.
+- **Limitation — service-managed MCPs:** an MCP run as a macOS LaunchAgent / `systemd --user`
+  unit / other OS service shares init (ppid 1) as a parent **while alive** — indistinguishable
+  from a leaked orphan — so it could be reaped. Exclude it via
+  `ANTIHALL_REAPER_EXCLUDE='your-service-name|another'` (case-insensitive regex of cmd
+  substrings that are never reaped).
+- **Windows is a documented no-op (rescope rationale):** Windows has no parent-death
+  reparenting **and** recycles PIDs, so external orphan detection is unsafe there — a matched
+  signature on a recycled PID with an `init`-ish parent could kill an unrelated live process.
+  The correct fix on Windows is **Job Objects set by the spawner**, which a companion cannot
+  do. So the installer prints why and installs no scheduler.
+
+**C — VERIFY DELEGATED WORK discipline (prompt layer).** Orchestration now requires the
+coordinator to **independently verify delegated work** — a subagent's "done / fixed / tests
+pass / N passing" is an UNVERIFIED CLAIM, never a fact. Before marking any delegated task
+complete, the coordinator RE-RUNS the authoritative check (or dispatches a separate verifier)
+and reconciles multiple workers against GROUND TRUTH, not against each other. Added as rule L
+in `verify-first-full.js`, folded into the "ALWAYS APPLY" orchestration summary, mirrored in
+`AGENTS.md`, and reinforced by 1 new per-turn nudge (`verify-first.js`, NUDGES 14 → **15**).
+
+**D — Background-default orchestration (prompt layer).** Orchestration now defaults delegated
+heavy/parallel/long work to the **background** (the coordinator passes `run_in_background`
+itself) so the user needn't background it manually, while still verifying each on completion —
+never fire-and-forget. Extended into rule F in `verify-first-full.js`, mirrored in `AGENTS.md`,
+and reinforced by 1 new per-turn nudge (`verify-first.js`, NUDGES 15 → **16**).
+
+**E — Fix-history ledger discipline (prompt layer).** The `tasklist-guard` Stop reminder now
+also prompts appending each **completed task** to `.anti-hall-history.md` — an append-only fix
+ledger (one entry per task: **Cause / Fix / Verified**) so the fix history persists for the
+knowledge layer. Same reminder, enriched (no new hard Stop-block condition), fully fail-open.
+Mirrored as full-protocol text in rule B of `verify-first-full.js` and documented in
+`docs/TASKLIST-GUARD.md` / `docs/KB.md`. The hook never creates the file — it is gitignored,
+local session state.
+
+**F — Message-context bloat prevention (#45, prompt layer).** Orchestration rule G is rewritten
+from "synthesize, don't paste raw output" into **SYNTHESIZE, NEVER RELAY**: the coordinator
+reports findings in its own words and NEVER pastes a subagent's raw return into the user thread
+(that verbatim relay is the **#1 cause of message-context bloat**), and subagents must return
+TIGHT summaries under an explicit **OUTPUT BUDGET** (findings only; a compact
+`{claim, evidence:"file:line", verdict}` schema only when >~5 claims or >~200 tokens, else one
+prose line). Reinforced by 1 new per-turn nudge (`verify-first.js`, NUDGES 16 → **17**).
+**Pilot finding:** a
+compact JSON return schema is only **~1.43× denser than prose on average** (and *worse* for
+tiny outputs), so schema enforcement is a MINOR lever — the real levers are the output budget +
+the no-raw-relay rule, which is why this ships as prompt discipline, not a schema-enforcement
+system. A `PostToolUse`-on-`Task` hook to flag oversized subagent returns was evaluated and is
+**NOT feasible**: per the Claude Code hook contract (KB-claude-codex §1.4), `PostToolUse` stdout
+/`additionalContext` never reaches the model and `PostToolUse` cannot block — so it cannot
+inject a reminder back. No hook was faked; the discipline is the mechanism.
+
+Suite 318 total, **316 passing** (+2 platform-skipped).
+
 ## 0.24.1
 
 **Doc-currency pass — descriptions + test counts brought to current reality.**

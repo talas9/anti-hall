@@ -248,7 +248,10 @@ function main() {
       '(check TaskList FIRST to dedup/relate — do not duplicate an existing task; ' +
       'link related ones with addBlockedBy/addBlocks), set statuses ' +
       '(in_progress/completed), and update .anti-hall-progress.md ' +
-      '(done/in-progress/next) — gitignore it so it never ships.'
+      '(done/in-progress/next) — gitignore it so it never ships. ' +
+      'Also append each COMPLETED task to .anti-hall-history.md (append-only ' +
+      'ledger, one entry per task: Cause / Fix / Verified) so the fix history ' +
+      'persists for the knowledge layer — gitignore it too.'
   );
 
   // RECONCILED: persist state FIRST, emit the block only if the write SUCCEEDED.

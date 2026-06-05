@@ -97,6 +97,19 @@ test('BLOCK: no tasklist (4 edits, no task activity, no progress file)', () => {
   } finally { h.cleanup(); }
 });
 
+test('REMINDER mentions the .anti-hall-history.md fix-ledger discipline when it fires', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /\.anti-hall-history\.md/);
+    assert.match(r.json.reason, /Cause/);
+    assert.match(r.json.reason, /Fix/);
+    assert.match(r.json.reason, /Verified/);
+  } finally { h.cleanup(); }
+});
+
 test('ALLOW: tracked + fresh progress (4 edits + TaskCreate completed + fresh progress)', () => {
   const h = makeHome();
   try {

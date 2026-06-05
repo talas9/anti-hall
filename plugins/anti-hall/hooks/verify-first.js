@@ -50,6 +50,11 @@ const NUDGES = [
   "Run builds/tests/deploys via a Haiku subagent; never dump raw command output into the main thread.",
   "Capture every request and interruption in a priority-sorted task list before acting; run independent work as parallel agents (up to concurrency cap ~min(16, cores-2)); actively drain the list - no neglected tasks.",
   "Communicate concisely: enough to convey meaning, not pages; offer to expand if the user wants more detail.",
+  "SCOPE & FIDELITY: solve the ACTUAL ask with the SIMPLEST sufficient solution - add no scope/platform/abstraction/dependency the user didn't request. Confirm before expanding scope.",
+  "Intent over letter: don't take wording hyper-literally or inflate a small ask into a big build. Match rigor to blast radius - heavy process is for risky/large work, not a reflex.",
+  "VERIFY DELEGATED WORK: a subagent's 'done / tests pass' is an UNVERIFIED CLAIM. Re-run the authoritative check yourself before marking a delegated task complete; reconcile multiple workers against ground truth, not against each other.",
+  "Default delegated heavy/long/parallel work to the BACKGROUND yourself (pass run_in_background) so the main thread stays free and the user never has to background it manually; then drain each on its completion notification and verify it - never fire-and-forget.",
+  "SYNTHESIZE, NEVER RELAY: never paste a subagent's raw return into the user thread - that relay is the #1 cause of message-context bloat. Subagents return TIGHT summaries under an output budget; the coordinator reports findings in its own words.",
 ];
 
 function main() {

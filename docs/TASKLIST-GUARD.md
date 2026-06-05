@@ -75,6 +75,22 @@ Rules:
 - It is **gitignored** and **never shipped**. It is local session state, not a
   deliverable.
 
+## The fix ledger: `.anti-hall-history.md`
+
+An append-only companion to the progress file, also at the **root of your working
+directory** (`<cwd>/.anti-hall-history.md`). When the Stop reminder fires it also
+prompts you to append **each completed task** as one entry with three fields:
+
+- **Cause** — what was actually wrong / why the task existed;
+- **Fix** — what you changed to resolve it;
+- **Verified** — how you proved it (the authoritative check you ran).
+
+Unlike the progress file (a rolling done/in-progress/next snapshot), this is a
+**durable, append-only** record so the fix history persists for the knowledge layer.
+It is **gitignored and never shipped**, and the hook **never creates it** — the
+discipline is yours; the reminder only nudges. It is referenced from
+`.anti-hall-progress.md` and `CONTINUE-HERE` so a later agent can find the history.
+
 ## Per-turn freshness note
 
 On each `UserPromptSubmit`, when the reconstructed task state shows open or stale
@@ -119,6 +135,8 @@ skip it**, and it will record your consent by writing this file.
    `completed` only when fully done and verified.
 3. **Update `.anti-hall-progress.md` as you go** — done / in-progress / next — so
    freshness survives compaction and cold starts.
+4. **Append each completed task to `.anti-hall-history.md`** — Cause / Fix / Verified —
+   so the fix history persists for the knowledge layer.
 
 Do that and neither the Stop block nor the freshness note will ever fire — they only
 appear when the discipline has slipped.

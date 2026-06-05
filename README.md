@@ -38,7 +38,7 @@ compaction), a short rotating reminder every turn, and **mechanical hooks** that
 argued with.
 
 > **What's proven, and what isn't.** The **mechanical hooks** are the load-bearing part and
-> are verified by 173 passing tests — they deterministically block force-pushes, AI-credit
+> are verified by 316 passing tests (+2 platform-skipped, 318 total) — they deterministically block force-pushes, AI-credit
 > trailers, un-delegated heavy commands, and stale task state regardless of what the model
 > "feels" like doing. The **prompt layer** (verify-first protocol + nudges) is a *discipline*,
 > not a benchmark-validated hallucination cure: a four-round A/B eval ([`eval/`](eval/)) —
@@ -92,14 +92,14 @@ argued with.
 | Skill | Use it when | What it does |
 |-------|-------------|--------------|
 | **root-cause** | any bug, crash, flaky test, alert | evidence → hypothesis → instrument → prove the *original* root cause → fix → verify |
-| **orchestration** | heavy/parallel/long work | non-blocking coordinator; fan out to subagents; watchdog + heartbeat; live phase statusline |
+| **orchestration** | heavy/parallel/long work | non-blocking coordinator; fan out to subagents; watchdog + heartbeat; live phase statusline; **verify delegated work** (a subagent's "done/passing" is an unverified claim — re-check it against ground truth before marking complete) |
 | **deadly-loop** | before merging anything risky | parallel **Reviewer + Critic** debate + fix-waves, looping until zero *new* P0s |
 | **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N Reviewer + N Critic pairs (half latest Opus, half latest Codex) with diversified lenses, then dedup + synthesize into one report |
 | **feature-launch** | a non-trivial feature (multi-file / multi-phase) | plan-first, deadly-loop-hardened *before* code, executed phase-by-phase — with **AFK mode** and goal-anchor drift watcher |
 | **install-statusline** | "install the statusline / add the bar" | writes the `statusLine` setting (global or per-repo), wraps an existing statusline as line 1 + adds anti-hall bar as line 2, with backup + restore |
 | **doctor** | "is anti-hall working?" / after install/update | confirms Node ≥ 18, all hooks present + syntax-valid, **runs live behavioral self-tests** (spawns real guards with crafted payloads and asserts exit codes), reports context footprint in bytes + estimated tokens |
 
-> **root-cause** and **orchestration** are also enforced *always-on* as disciplines via the hook layer, alongside anti-sycophancy (challenge a wrong premise with evidence — never agree just to agree). **deadly-loop** and **feature-launch** stay conditional, invoked on match.
+> **root-cause** and **orchestration** are also enforced *always-on* as disciplines via the hook layer, alongside anti-sycophancy (challenge a wrong premise with evidence — never agree just to agree) and **scope & fidelity** (solve the actual problem with the simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish what was asked and drop nothing). Orchestration now also requires the coordinator to **independently verify delegated work** — a subagent's "done/passing" is an unverified claim, re-checked against ground truth before marking complete — and **defaults delegated heavy/parallel work to the background** (the coordinator passes `run_in_background` so the user needn't background it manually), while still verifying each on completion. **deadly-loop** and **feature-launch** stay conditional, invoked on match.
 
 ---
 
@@ -156,6 +156,32 @@ See [STATUSLINE.md](plugins/anti-hall/statusline/STATUSLINE.md). *Claude Code re
 
 ---
 
+## 🧟 MCP orphan reaper (companion, opt-in, macOS + Linux)
+
+A separate **interval companion** (not a hook) that kills **orphaned** MCP-server
+processes leaked when their spawner (a Claude / codex / npm / node session) exits without
+cleaning them up — on macOS these reparent to launchd and pile up over a workday.
+
+```bash
+node plugins/anti-hall/companion/install-reaper.js              # install (auto-detects OS)
+node plugins/anti-hall/companion/install-reaper.js --uninstall  # remove
+```
+
+macOS installs a 60 s LaunchAgent; Linux a `systemd --user` timer (cron fallback).
+**Safety invariant:** a process is reaped only if its command matches a generic MCP
+signature **and** its parent is a reaper/init (launchd / init / `systemd --user`) — since
+Unix reparents a dead process's children, a *live* MCP always has a live spawner as
+parent, so killing an in-use server is impossible by construction. Env knobs:
+`MCP_REAP_DRYRUN=1`, `MCP_REAP_GRACE`, `ANTIHALL_REAPER_MATCH`, `ANTIHALL_REAPER_EXCLUDE`.
+Python MCPs (`uvx`/`uv` + underscore `mcp_server_*` forms) are recognized too.
+**Limitation:** an MCP run as a LaunchAgent / `systemd --user` unit / OS service shares
+init as a parent (just like a leaked orphan) and can be reaped — exclude it with
+`ANTIHALL_REAPER_EXCLUDE='name|name'`. **Windows is unsupported**
+(documented no-op): it has no parent-death reparenting and recycles PIDs, so external
+orphan detection is unsafe — the correct fix there is Job Objects set by the spawner.
+
+---
+
 ## Requirements
 
 - **Node.js ≥ 18** on `PATH`. The hooks launch as `node <hook>.js`; without Node they
@@ -174,10 +200,11 @@ anti-hall/
 │   ├── .claude-plugin/plugin.json      # plugin manifest — version is the sole authority
 │   ├── hooks/                          # always-on Node hooks (+ hooks.json registration)
 │   ├── skills/                         # root-cause · orchestration · deadly-loop · deadly-loop-multi · feature-launch · install-statusline · doctor
+│   ├── companion/                      # opt-in mcp-reaper (macOS+Linux) — kills orphaned MCP processes; not a hook
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
 ├── docs/                               # KB + design notes — CONTEXT-PRESERVATION-KB · KB · TASKLIST-GUARD · TASK-WORK · E2E-TESTING (+ Claude Code internals)
-├── tests/                              # zero-dependency node:test E2E suite (173 tests) — `node --test`
+├── tests/                              # zero-dependency node:test E2E suite (318 tests, 316 pass +2 platform-skip) — `node --test`
 ├── .github/workflows/test.yml          # CI: runs the suite on push/PR
 └── CHANGELOG.md
 ```
@@ -186,7 +213,7 @@ anti-hall/
 `AGENTS.md` (e.g. Codex). It lives at the repo root and is **not** bundled by
 `/plugin install` — copy it into your own repo if you want cross-tool coverage.
 
-A zero-dependency **`node --test` E2E suite** (`tests/`, 173 tests) covers the hooks and
+A zero-dependency **`node --test` E2E suite** (`tests/`, 316 passing +2 platform-skipped, 318 total) covers the hooks and
 runs in **CI** on every push/PR ([`.github/workflows/test.yml`](.github/workflows/test.yml)).
 
 See [`plugins/anti-hall/README.md`](plugins/anti-hall/README.md) for the full component

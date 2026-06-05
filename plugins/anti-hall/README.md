@@ -45,7 +45,7 @@ claude --plugin-dir /path/to/anti-hall
 
 | Component | Event | Purpose |
 |---|---|---|
-| `verify-first-full.js` | SessionStart | Full Iron-Law + rationalization-table protocol, the always-on orchestration discipline, and the always-vs-conditional skill primer; survives compaction. |
+| `verify-first-full.js` | SessionStart | Full Iron-Law + rationalization-table protocol, the always-on orchestration and **scope & fidelity** disciplines (simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish what was asked / drop nothing), and the always-vs-conditional skill primer; survives compaction. |
 | `verify-first.js` | UserPromptSubmit | Short, varying one-line nudge each turn (anti-habituation). |
 | `git-guard.js` | PreToolUse (Bash) | Blocks AI self-credit attribution — in `git commit` trailers AND in `gh pr/issue/release create\|edit\|comment` `--body`/`--title` (the 🤖 footer, Co-Authored-By, claude.com/claude-code link) — plus `git push --force`. Inline values only (`--body-file` is fail-open). |
 | `api-guard.js` | PreToolUse (Write/Edit/MultiEdit) | Blocks code that references a **non-existent** stdlib/builtin API — resolves `module.attr` in the code-to-be-written against the installed `python3`/`node` and refuses the write when the attribute is fabricated. The mechanical answer to API hallucination. Default = stdlib/builtins (import-safe); opt-in `ANTIHALL_API_GUARD_THIRDPARTY=1` also checks installed 3rd-party packages (off by default — verifying a package imports it, running its code at edit time). 0 FP + full in-scope catch on `eval/api-guard-bench.js`; never probes local/relative modules; fail-open; skip-hatch. |
@@ -63,6 +63,7 @@ claude --plugin-dir /path/to/anti-hall
 | `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
 | `root-cause` / `orchestration` / `feature-launch` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
+| `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`companion/README.md`](companion/README.md). |
 
 ## How it works
 
@@ -87,7 +88,7 @@ claude --plugin-dir /path/to/anti-hall
   UserPromptSubmit / UserPromptExpansion / SessionStart can inject
   `additionalContext`, so a PreCompact hook would deliver nothing.
 - **Per-turn nudge** — `verify-first.js` injects ONE short one-liner per turn
-  (one of 12 facets of the Iron Law), so the per-turn slot stays high-salience
+  (one of 17 facets of the Iron Law), so the per-turn slot stays high-salience
   instead of being habituated and tuned out. The facet is chosen deterministically
   by a SHA-1 hash of the **entire UserPromptSubmit stdin envelope** — which carries
   `session_id` / `transcript_path` / `cwd` alongside the prompt. So the nudge is
@@ -278,10 +279,18 @@ subagent for any work that touches files/tools/commands/search/build/test or cou
 balloon (to avoid the eager "I'll just do it inline" trap that pollutes the main thread),
 handling inline only genuinely atomic things (a direct answer, a single known-line read,
 the coordinator's own synthesis/decisions), and delegating immediately if a quick inline
-task balloons; parallel agents when independent; commands via Haiku off-thread. It also
-enforces **capture-every-request** task discipline (priority-sorted) and
+task balloons; parallel agents when independent; commands via Haiku off-thread. It now
+also **defaults delegated heavy/parallel work to the background** — the coordinator passes
+`run_in_background` itself so the user needn't background it manually, while still
+verifying each on completion (never fire-and-forget). It also
+enforces **verify delegated work** — a subagent's "done/passing" is an unverified claim
+re-checked against ground truth (re-run the authoritative check, or use a separate
+verifier, reconciling multiple workers against ground truth) before marking complete —
+**capture-every-request** task discipline (priority-sorted),
 **anti-sycophancy** (challenge a wrong premise with evidence; user agreement is not
-correctness).
+correctness), and **scope & fidelity** (solve the actual problem with the simplest
+sufficient solution; intent over letter; confirm before expanding scope; match rigor to
+blast radius; finish what was asked and drop nothing).
 
 Invoke via slash command:
 
@@ -383,7 +392,7 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 
 ```bash
 # Full zero-dependency E2E suite (node:test, run from the repo root):
-node --test                                                                  # 173 tests; CI runs the same on push/PR (.github/workflows/test.yml)
+node --test                                                                  # 316 pass +2 platform-skip (318 total); CI runs the same on push/PR (.github/workflows/test.yml)
 
 # Quick smoke-checks of individual hooks:
 echo '{"hook_event_name":"SessionStart"}' | node hooks/verify-first-full.js  # full Iron-Law protocol + skill primer
@@ -414,6 +423,25 @@ present, the hooks enforce querying the graph before raw code searches and remin
 model to keep it updated after significant edits. Both hooks no-op gracefully when
 graphify is not present — there is no hard dependency, and the plugin installs and runs
 identically with or without it.
+
+### Opt-in companion: mcp-reaper (macOS + Linux)
+
+`companion/mcp-reaper.js` is an **opt-in interval companion** (not a hook) that kills
+**orphaned** MCP-server processes — ones leaked when their spawner (a Claude / codex /
+npm / node session) exited without cleaning them up. Install with
+`node companion/install-reaper.js` (macOS → 60 s LaunchAgent; Linux → `systemd --user`
+timer, cron fallback); remove with `--uninstall`. **Safety invariant:** a process is
+reaped only if its command matches a generic MCP signature **and** its parent is a
+reaper/init (launchd / init / `systemd --user`) — because Unix reparents a dead process's
+children, a *live* MCP always has a live spawner as parent, so killing an in-use server is
+impossible by construction. Recognizes Python MCPs too (`uvx`/`uv` + underscore
+`mcp_server_*` forms). **Limitation:** an MCP run as a LaunchAgent / `systemd --user`
+unit / OS service shares init as a parent (like a leaked orphan) and can be reaped —
+exclude it via `ANTIHALL_REAPER_EXCLUDE='name|name'`. Env knobs: `MCP_REAP_DRYRUN=1`,
+`MCP_REAP_GRACE`, `ANTIHALL_REAPER_MATCH`, `ANTIHALL_REAPER_EXCLUDE`.
+**Windows is a documented no-op** — it has no parent-death
+reparenting and recycles PIDs, so external orphan detection is unsafe there; the correct
+fix is Job Objects set by the spawner. See [`companion/README.md`](companion/README.md).
 
 ### Codex / cross-tool
 
