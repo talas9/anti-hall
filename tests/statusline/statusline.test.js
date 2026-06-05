@@ -46,14 +46,13 @@ test('dispatcher uses a base-statusline.json command as line 1 when present', ()
   const h = makeStatusHome();
   const proj = makeProjectDir();
   try {
-    // Cross-platform base line-1: a tiny .js file run via `node "<path>"`. We do
-    // NOT use `node -e "..."` because cmd /c (the Windows shell the dispatcher
-    // uses) mangles the nested quotes, so the JS never reaches node — the cause
-    // of the original Windows CI failure. A single quoted path arg survives both
-    // sh -c and cmd /c. JSON.stringify escapes the Windows backslashes in the path.
-    const baseScript = path.join(h.antiHall, 'baseline.js');
-    fs.writeFileSync(baseScript, "process.stdout.write('BASELINE-X');\n", 'utf8');
-    const baseCmd = `node "${baseScript}"`;
+    // Cross-platform base line-1: the dispatcher runs the base command via the
+    // system shell (`cmd /c` on Windows, `sh -c` elsewhere). `echo BASELINE-X` is
+    // a builtin of BOTH shells, needs no PATH/PATHEXT resolution and no quoted
+    // path, so it sidesteps the `cmd /c node "<abspath>"` arg-escaping that failed
+    // on the Windows runners. cmd appends CRLF / sh appends LF; runBaseCommand
+    // trims trailing newlines, leaving exactly 'BASELINE-X' on every platform.
+    const baseCmd = 'echo BASELINE-X';
     fs.writeFileSync(path.join(h.antiHall, 'base-statusline.json'), JSON.stringify({ command: baseCmd }), 'utf8');
     const r = run({ model: { display_name: 'Opus' }, context_window: { used_percentage: 20 } }, h.home, proj.dir);
     const lines = stripAnsi(r.stdout).split('\n');
