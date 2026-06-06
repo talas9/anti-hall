@@ -6,6 +6,41 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.28.0
+
+**`ship-it` v2 — 2-phase tier-sizing, an OPT-IN enforcement gate, and a copyable `/ship-it` workflow template.**
+
+This release hardens the `ship-it` workflow with a thin mechanical backstop and a reusable
+execution script, without changing its default behavior (the new gate is OFF by default).
+
+- **2-phase tier-sizing (skill).** Step 0 now decides the S/M/L tier **twice**: a PROVISIONAL
+  tier from the initial prompt (sets how much exploration to do), then a CONFIRMED/REVISED tier
+  at the blast-radius map after the Step-2 graphify-first research reveals the true blast radius.
+  A deceptively-large "simple" ask (one-liner that touches auth, or fans out to many callers)
+  gets upgraded; an over-estimate gets downgraded — re-decided **before** plan mode locks rigor.
+- **`ship-it-guard` hook (new; OPT-IN, default OFF).** PreToolUse on `Write|Edit|MultiEdit`.
+  A pure no-op (exit 0) unless `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}. When ON: blocks
+  (exit 2) a CODE edit on a **hard-risk path** (migration / auth / `.github/workflows` /
+  security/crypto) when **no `PLAN.md`** exists (repo root or `.planning/PLAN.md`) — nudging
+  the agent to plan first. **Honest limits (in the hook header):** enforces artifact-EXISTENCE
+  only, NOT plan quality (a stub `# Plan` satisfies it); bypassable via a `Bash` heredoc write
+  (PreToolUse sees Edit/Write/MultiEdit only); **conservative** — never gates ordinary
+  single edits, docs, or tests; **fail-open** on any error; honors the shared
+  `isSkipped('ship-it-guard')` escape-hatch. Registered in `hooks.json` (timeout 10).
+- **Copyable `/ship-it` workflow template (new).** Investigated feasibility: per the official
+  [Dynamic Workflows docs](https://code.claude.com/docs/en/workflows), a plugin **cannot ship**
+  a workflow command — there is no `workflows` field in `plugin.json`, and a workflow only
+  becomes a `/command` by saving a *live run's* script via `/workflows` → `s` into
+  `.claude/workflows/` (project) or `~/.claude/workflows/` (user). So `ship-it` ships a
+  **copyable template** at `skills/ship-it/references/ship-it.workflow.js` (deterministic — no
+  `Date.now`/`Math.random`/`new Date`; inputs via `args`) that automates the L-tier Step-4
+  build fan-out (`parallel([...])` over disjoint phases) + the Step-5 per-phase deadly-loop
+  (Reviewer + Codex Critic via `agentType: "codex:codex-rescue"`), plus a one-line pointer in
+  the skill telling the user to save it as `/ship-it`.
+- **Tests:** `tests/hooks/ship-it-guard.test.js` (13 cases — default-off no-op, ON+L-risk+no-PLAN
+  ⇒ exit 2 + reason, PLAN.md present ⇒ allow, ordinary/doc/test file ⇒ allow, env-value parsing,
+  fail-open on malformed/empty stdin, skip-hatch). Full suite: 331 tests, 0 fail.
+
 ## 0.27.0
 
 **`ship-it` workflow replaces `feature-launch`. deadly-loop gains a D1.5 verification gate.**

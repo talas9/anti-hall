@@ -125,6 +125,11 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/api-guard.js\"",
             "timeout": 45
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/ship-it-guard.js\"",
+            "timeout": 10
           }
         ]
       },

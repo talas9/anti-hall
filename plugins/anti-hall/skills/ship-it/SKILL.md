@@ -23,7 +23,18 @@ the repo's own conventions where the text says "the repo's own policy."
 
 ---
 
-## Step 0 — Size the change (match rigor to blast radius)
+## Step 0 — Size the change (TWO phases: provisional → confirmed)
+
+Tier-sizing is decided **twice**, because the initial prompt rarely reveals the true blast radius:
+
+- **(a) PROVISIONAL tier — from the initial prompt.** Pick a *starting posture* (S/M/L)
+  from the ask alone. This only sets how much exploration to do next, not the final rigor.
+- **(b) CONFIRMED / REVISED tier — at the blast-radius map (after Step 2 research).** The
+  graphify-first query + code exploration reveal the *real* blast radius, so the tier is
+  **re-decided there, before plan mode locks in the rigor.** A deceptively-large "simple" ask
+  (e.g. a one-liner that touches an auth path or fans out to 12 callers) gets **upgraded**;
+  an over-estimate that turns out isolated gets **downgraded**. Reuse anti-hall's
+  graphify-first discipline (query the graph before broad greps) to map blast radius cheaply.
 
 Classify the work first. This decides how much of the protocol applies. **Do not
 over-process a one-line fix; do not under-process a schema migration.**
@@ -182,6 +193,13 @@ Use the **`Workflow` tool / Dynamic Workflows** to fan out at L. Primitives:
 - **Caps:** ~`min(16, cores-2)` in-flight agents; 1000 total per run. **Cost: many tokens —
   test on a small slice first.** Determinism: no `Date.now()` / `Math.random()` / argless
   `new Date()` in the workflow script; pass seeds/timestamps via `args`.
+
+> **Want this as a reusable `/ship-it` command?** A copyable Dynamic-Workflow template
+> lives at `references/ship-it.workflow.js` (it automates the Step-4 build fan-out + the
+> Step-5 per-phase deadly-loop with a Codex Critic). Plugins can't *ship* a workflow command
+> (no `workflows` field in plugin.json; saving is a live-run action), so save the template to
+> `.claude/workflows/ship-it.js` (project) or `~/.claude/workflows/ship-it.js` (user) — then
+> invoke `/ship-it` with the plan passed via `args`. Plan mode (Steps 1-3) still runs first.
 
 **Build workflow structure:**
 1. Group phases by `parallel_group` (from PLAN.md).
