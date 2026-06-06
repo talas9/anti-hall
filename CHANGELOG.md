@@ -6,6 +6,35 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.26.0
+
+**Structured-return discipline (rule G) made concrete + measured.**
+
+Rule G (SYNTHESIZE, NEVER RELAY) already required subagents to return tight summaries
+under an OUTPUT BUDGET. This release makes the SUBSTANTIAL-return case concrete and grounds
+it in measurement, with no mechanical or behavioral change to any guard.
+
+- **Schema now specified.** For a SUBSTANTIAL return (a review/audit/research dump, many
+  claims), rule G now names the exact compact shape to require:
+  `{claim, evidence:"file:line", verdict, blockers/uncertainty, next}`.
+- **Measured, not asserted.** A deadly-loop-hardened study (S4) measured these structured
+  subagent returns at **~5× smaller than verbose prose with zero decision-relevant loss**,
+  judged on a claim/evidence/uncertainty/blockers/next rubric (N=8, directional). Rule G
+  cites the figure inline.
+- **Reconciles the earlier ~1.4× number.** The prior pilot's ~1.43× density figure measured
+  *small, already-summarized* content (where a schema is a minor lever, and JSON overhead can
+  make tiny outputs LARGER). The ~5× figure is for *verbose* returns. Both hold; they measure
+  different inputs. The **prose-for-tiny caveat is kept** — a single prose line still wins for
+  a SMALL result; do not impose JSON there.
+- **Enforce, don't just request.** Rule G notes that passing a **schema to the Agent/Task
+  tool** validates the structured return rather than merely asking for it. The biggest levers
+  remain the output budget + no-raw-relay rule; the schema is the multiplier on large returns.
+- The per-turn SYNTHESIZE nudge (#57) was updated in place to carry the schema + the ~5×
+  figure. Nudge count unchanged (**17**).
+
+No guard mechanics or hook behavior changed — this is prompt discipline (rule G text + one
+nudge) only. `node --test` green: 316 passing (+2 platform-skipped), 318 total.
+
 ## 0.25.2
 
 **CI green on all platforms — root-cause fixes for the macOS stdout race and Windows base-command env.**
