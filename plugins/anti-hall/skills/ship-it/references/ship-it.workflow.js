@@ -15,11 +15,18 @@
 //   via the `args` global (see below). Requires Dynamic Workflows enabled
 //   (Claude Code v2.1.154+, toggle in /config on Pro).
 //
-// SCOPE: this template automates ONLY the L-tier mechanical fan-out — the Step-4
-//   parallel build over disjoint phases and the Step-5 per-phase deadly-loop
-//   (Reviewer + Codex Critic). It does NOT replace plan mode (Steps 1-3): author
-//   and harden PLAN.md interactively FIRST, then run /ship-it to execute it. S/M
-//   tiers do not use this — they build inline.
+// SCOPE: this template is a SINGLE-PASS SCAFFOLD that shows the L-tier fan-out SHAPE —
+//   the Step-4 parallel build over disjoint phases and ONE Step-5 per-phase audit pass
+//   (Reviewer + Codex Critic). It does NOT itself converge to zero P0s: the full
+//   fix-wave -> re-converge LOOP (soft-10 / hard-15 caps, the D1.5 fresh-evidence gate)
+//   is run by invoking the `deadly-loop` skill itself — this script only demonstrates the
+//   barrier/fan-out structure each round uses. It also does NOT replace plan mode
+//   (Steps 1-3): author and harden PLAN.md interactively FIRST, then run /ship-it to
+//   execute it. S/M tiers do not use this — they build inline.
+//
+// COMMITS: this script NEVER commits. Agents RETURN results; the COORDINATOR (the main
+//   thread) commits passing phases serially and drives the fix-wave loop. No git writes
+//   happen inside the workflow.
 //
 // DETERMINISM: no Date.now() / Math.random() / argless new Date(). All run-varying
 //   inputs (the plan, phase definitions, seeds) come from `args`.
@@ -27,11 +34,13 @@
 // INPUT (`args`): an object describing the approved plan, e.g.
 //   {
 //     parallelGroups: [
-//       // each group is a list of DISJOINT phases that run as one parallel barrier
-//       [ { label: "phase1", prompt: "<full task + file excerpts>", diff: "<paths>" },
-//         { label: "phase2", prompt: "...", diff: "..." } ],
+//       // each group is a list of DISJOINT phases that run as one parallel barrier.
+//       // `files` is the EXACT list of paths the phase touches (used to PROVE the
+//       // group is conflict-free before any parallel fan-out — see validateGroup).
+//       [ { label: "phase1", prompt: "<full task + file excerpts>", files: ["a.js"] },
+//         { label: "phase2", prompt: "...", files: ["b.js"] } ],
 //       // later groups depend on earlier ones (run sequentially)
-//       [ { label: "phase3", prompt: "...", diff: "..." } ],
+//       [ { label: "phase3", prompt: "...", files: ["c.js"] } ],
 //     ],
 //   }
 //   If `args` is undefined the workflow exits with a usage note (no guessing).
@@ -80,7 +89,7 @@ function reviewerBrief(phase) {
     'You are the deadly-loop REVIEWER (latest Opus, max thinking) for phase ' + phase.label + '.',
     'Audit this phase diff for: correctness vs the plan, edge cases actually handled,',
     'regressions, security on security-relevant phases, full blast radius.',
-    'Phase diff paths: ' + (phase.diff || '(unspecified)') + '.',
+    'Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
     'Count only NEW P0 blockers (not rediscovered ones). Return the verdict schema.',
   ].join('\n');
 }
@@ -88,9 +97,46 @@ function criticBrief(phase) {
   return [
     'You are the deadly-loop CRITIC (Codex, max reasoning) for phase ' + phase.label + '.',
     'Same lenses as the Reviewer but a DIFFERENT mental model — find blindspots the',
-    'Reviewer would miss. Phase diff paths: ' + (phase.diff || '(unspecified)') + '.',
+    'Reviewer would miss. Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
     'Count only NEW P0 blockers. Return the verdict schema.',
   ].join('\n');
+}
+
+// FAIL-CLOSED safety check: a parallel group must be conflict-free before fan-out.
+// Phases run concurrently and commit serially, so within a group they must have
+// UNIQUE labels, DISJOINT files (no two phases touch the same path), and NO declared
+// intra-group dependency. Any violation throws — we never fan out an unsafe group.
+function validateGroup(group, g) {
+  const where = 'parallel group ' + (g + 1);
+  if (!Array.isArray(group) || group.length === 0) {
+    throw new Error('ship-it: ' + where + ' is empty or not an array.');
+  }
+  const seenLabels = new Set();
+  const seenFiles = new Map(); // path -> first label that claimed it
+  for (const p of group) {
+    if (!p || typeof p.label !== 'string' || !p.label) {
+      throw new Error('ship-it: ' + where + ' has a phase with no label.');
+    }
+    if (seenLabels.has(p.label)) {
+      throw new Error('ship-it: ' + where + ' has duplicate label "' + p.label + '".');
+    }
+    seenLabels.add(p.label);
+    if (!Array.isArray(p.files) || p.files.length === 0) {
+      throw new Error('ship-it: phase "' + p.label + '" in ' + where + ' must declare a non-empty files[].');
+    }
+    // No intra-group dependency allowed (group members run concurrently).
+    if (p.depends_on != null && (!Array.isArray(p.depends_on) || p.depends_on.length > 0)) {
+      throw new Error('ship-it: phase "' + p.label + '" declares depends_on inside a parallel group; ' +
+        'dependent phases must go in a LATER group.');
+    }
+    for (const f of p.files) {
+      if (seenFiles.has(f)) {
+        throw new Error('ship-it: file "' + f + '" is touched by both "' + seenFiles.get(f) +
+          '" and "' + p.label + '" in ' + where + ' — parallel phases must have DISJOINT files.');
+      }
+      seenFiles.set(f, p.label);
+    }
+  }
 }
 
 async function main() {
@@ -105,6 +151,7 @@ async function main() {
 
   for (let g = 0; g < plan.parallelGroups.length; g++) {
     const group = plan.parallelGroups[g];
+    validateGroup(group, g); // FAIL CLOSED before any fan-out (disjoint files, unique labels, no intra-dep)
     phase('build: parallel group ' + (g + 1) + ' (' + group.length + ' disjoint phase(s))');
 
     // A group of 1 is a plain inline build (no parallel wrapper, no swarm overhead).
@@ -121,8 +168,10 @@ async function main() {
     }
     group.forEach((p, i) => { results[p.label] = { build: built[i] }; });
 
-    // Step 5: per-phase deadly-loop gate, ONE phase at a time (do NOT nest concurrent
-    // deadly-loops past depth-1). Each gate is its own Reviewer+Critic BARRIER.
+    // Step 5: per-phase audit pass, ONE phase at a time (do NOT nest concurrent
+    // deadly-loops past depth-1). Each gate is its own Reviewer+Critic BARRIER. This is a
+    // SINGLE pass that shows the fan-out shape; if it returns newP0 > 0 the COORDINATOR
+    // runs the real deadly-loop skill fix-wave -> re-converge loop (this script does not).
     for (const p of group) {
       phase('deadly-loop gate: ' + p.label);
       const audit = await parallel([
@@ -133,9 +182,10 @@ async function main() {
     }
   }
 
-  // Coordinator (the main thread) reads `results`, commits passing phases serially,
-  // and loops fix-waves on any phase with newP0 > 0 until zero NEW P0s. Only the
-  // synthesized verdict is returned here.
+  // This script does NOT commit and does NOT loop. It returns the single-pass results;
+  // the COORDINATOR (main thread) reads `results`, commits passing phases serially
+  // (manual git on the main thread — never the script), and runs the deadly-loop skill's
+  // fix-wave -> re-converge loop on any phase with newP0 > 0 until zero NEW P0s.
   return { phases: results };
 }
 

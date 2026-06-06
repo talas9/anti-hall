@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.28.1
+
+**Loose-end closeout — cross-model (Codex) review fixes for `ship-it` + a full doc-currency pass. No new features.**
+
+A cross-model Codex review of the shipped `ship-it` skill + its workflow template caught five real correctness/honesty gaps, all fixed:
+
+- **Plan-mode write claim corrected.** Plan mode is read-only *for the repo* (it writes only to `~/.claude/plans/`), so `ship-it` no longer claims it can write the repo `PLAN.md` inside plan mode — the plan is drafted + presented via `ExitPlanMode`, and `PLAN.md` is written as the first action *after* approval.
+- **Two-phase tier-sizing closed a gap.** Even an S-classified change now does a ~30-second blast-radius sanity glance before the tier is locked, so a deceptively-large "simple" ask can't skip the re-tier (S stays lean otherwise).
+- **Workflow template hardened.** Takes `files[]` (not a diff string) and `validateGroup()` fails closed unless a fan-out group is conflict-free (disjoint files, unique labels, no intra-group dependency) before any `parallel()`.
+- **Template honesty.** The template is now labelled a SINGLE-PASS audit *scaffold* (shows the fan-out shape); the full iterate-to-zero-NEW-P0 fix-wave + D1.5 gate is run by invoking the `deadly-loop` skill — no false convergence claim.
+- **Commit ownership clarified.** The template never commits; agents return results and the coordinator commits serially on the main thread.
+
+Plus a thorough doc-currency pass: test counts reconciled to **329 pass / 331 total / 2 platform-skip**, and `ship-it-guard` added to every user-facing hook inventory (it was only in the KB).
+
 ## 0.28.0
 
 **`ship-it` v2 — 2-phase tier-sizing, an OPT-IN enforcement gate, and a copyable `/ship-it` workflow template.**

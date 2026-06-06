@@ -29,12 +29,20 @@ Tier-sizing is decided **twice**, because the initial prompt rarely reveals the 
 
 - **(a) PROVISIONAL tier — from the initial prompt.** Pick a *starting posture* (S/M/L)
   from the ask alone. This only sets how much exploration to do next, not the final rigor.
-- **(b) CONFIRMED / REVISED tier — at the blast-radius map (after Step 2 research).** The
-  graphify-first query + code exploration reveal the *real* blast radius, so the tier is
-  **re-decided there, before plan mode locks in the rigor.** A deceptively-large "simple" ask
-  (e.g. a one-liner that touches an auth path or fans out to 12 callers) gets **upgraded**;
-  an over-estimate that turns out isolated gets **downgraded**. Reuse anti-hall's
-  graphify-first discipline (query the graph before broad greps) to map blast radius cheaply.
+- **(b) CONFIRMED / REVISED tier — never final until a blast-radius glance.** The provisional
+  tier is **always provisional** until you actually look at the touched area. The depth of the
+  look scales, but the glance itself is **mandatory for every tier, including S**:
+  - **S/M:** a ~30-second **sanity glance** *before locking the tier* — one graphify query (or
+    a quick grep) on the area you're about to touch. The only question: *is this secretly
+    bigger than the prompt implied?* If it fans out to extra callers, an auth path, a schema,
+    or any hard-risk trigger, **upgrade** the tier. This is cheap by design — do **not** turn
+    S into full Step-2 research; keep S lean. But an S is never locked sight-unseen.
+  - **L:** the full Step-2 research + blast-radius map re-decides the tier **before plan mode
+    locks in the rigor.** A deceptively-large "simple" ask (a one-liner touching an auth path
+    or fanning out to 12 callers) gets **upgraded**; an over-estimate that turns out isolated
+    gets **downgraded**.
+  Reuse anti-hall's graphify-first discipline (query the graph before broad greps) to map
+  blast radius cheaply.
 
 Classify the work first. This decides how much of the protocol applies. **Do not
 over-process a one-line fix; do not under-process a schema migration.**
@@ -59,9 +67,11 @@ subset (no plan mode required, no swarm); **S** is a single edit that exits afte
 
 ## Step 1 — Brainstorm IN PLAN MODE (HARD GATE; L only)
 
-**Enter plan mode now** via `EnterPlanMode`. Plan mode is **read-only**: you may read,
-explore with bash, web-research, write the plan file, and ask the owner questions — but
-**nothing is edited or built**. No code is written until the plan is approved.
+**Enter plan mode now** via `EnterPlanMode`. Plan mode is **read-only for the repo**: you may
+read, explore with bash, web-research, and ask the owner questions — but **nothing in the repo
+is edited or built**. You DRAFT the plan in this mode and present it via `ExitPlanMode`; the
+durable repo `PLAN.md` is written right after approval (see Step 2). No code is written until
+the plan is approved.
 
 - Surface the real intent, not the literal request: what problem, for whom, the success
   criterion, and what is explicitly **out of scope**.
@@ -74,15 +84,16 @@ explore with bash, web-research, write the plan file, and ask the owner question
 
 ---
 
-## Step 2 — Author the plan file (still IN PLAN MODE; ONE durable artifact; L only)
+## Step 2 — Capture the plan as ONE durable artifact (L only)
 
 > **M:** plan mode optional — keep the same fields as task-list entries; skip the file.
 
-Still inside plan mode, write **one** file: `PLAN.md` in `.planning/` if that convention
-exists, else the repo root. (Writing PLAN.md is the plan artifact itself, not "editing the
-codebase" — it is the one write plan mode allows, and it carries the design through
-`ExitPlanMode`, `/clear`, and compaction.) This single file is the durable memory — **not**
-an artifact graph, not a file per phase.
+**Draft the plan content while still in plan mode** (it's the body you present via
+`ExitPlanMode`). The repo `PLAN.md` itself is **written as the first action right after
+`ExitPlanMode` approval** — plan mode is read-only for the repo, so the file lands the moment
+the gate clears, before any code. Write **one** file: `PLAN.md` in `.planning/` if that
+convention exists, else the repo root. It carries the design through `/clear` and compaction.
+This single file is the durable memory — **not** an artifact graph, not a file per phase.
 
 ```markdown
 # <Feature> — Plan
@@ -168,8 +179,9 @@ isn't falling well before soft-10, escalate to the owner (redesign scope / accep
 narrow).
 
 **Convergence gate:** once the plan survives with zero NEW P0s, present it via `ExitPlanMode`.
-Owner approval of the plan unlocks building. **Do not write a line of code before
-`ExitPlanMode` approval** — that is the single plan → build transition.
+Owner approval of the plan unlocks building. **The first post-approval action is writing the
+durable `PLAN.md` (Step 2); do not write a line of feature code before that.** `ExitPlanMode`
+approval is the single plan → build transition.
 
 ---
 
@@ -195,8 +207,10 @@ Use the **`Workflow` tool / Dynamic Workflows** to fan out at L. Primitives:
   `new Date()` in the workflow script; pass seeds/timestamps via `args`.
 
 > **Want this as a reusable `/ship-it` command?** A copyable Dynamic-Workflow template
-> lives at `references/ship-it.workflow.js` (it automates the Step-4 build fan-out + the
-> Step-5 per-phase deadly-loop with a Codex Critic). Plugins can't *ship* a workflow command
+> lives at `references/ship-it.workflow.js`. It is a **single-pass scaffold** showing the
+> Step-4 build fan-out + the *shape* of one Step-5 Reviewer+Critic audit pass — it does NOT
+> commit and does NOT run the full fix-wave→re-converge loop (the coordinator invokes the
+> `deadly-loop` skill for that, and commits serially on the main thread). Plugins can't *ship* a workflow command
 > (no `workflows` field in plugin.json; saving is a live-run action), so save the template to
 > `.claude/workflows/ship-it.js` (project) or `~/.claude/workflows/ship-it.js` (user) — then
 > invoke `/ship-it` with the plan passed via `args`. Plan mode (Steps 1-3) still runs first.

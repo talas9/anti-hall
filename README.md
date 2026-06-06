@@ -38,7 +38,7 @@ compaction), a short rotating reminder every turn, and **mechanical hooks** that
 argued with.
 
 > **What's proven, and what isn't.** The **mechanical hooks** are the load-bearing part and
-> are verified by 316 passing tests (+2 platform-skipped, 318 total) — they deterministically block force-pushes, AI-credit
+> are verified by 329 passing tests (+2 platform-skipped, 331 total) — they deterministically block force-pushes, AI-credit
 > trailers, un-delegated heavy commands, and stale task state regardless of what the model
 > "feels" like doing. The **prompt layer** (verify-first protocol + nudges) is a *discipline*,
 > not a benchmark-validated hallucination cure: a four-round A/B eval ([`eval/`](eval/)) —
@@ -80,6 +80,7 @@ argued with.
 | `task-tracker` | UserPromptSubmit | Captures every request as a task; throttled to avoid growing context; adds a one-line freshness note when open/stale tasks exist |
 | `speculation-guard` | Stop (Tier 2) | Lexical: catches 15 hedge-word speculation markers; suppressed when the message contains evidence/uncertainty acknowledgment; block-once (never wedges) |
 | `speculation-judge` | Stop (Tier 3, **OPT-IN**) | Semantic: calls an LLM to catch confident inference-as-fact with *no* hedge word — the gap Tier 2 can't close. Enable: `ANTIHALL_SEMANTIC_JUDGE=1` + `ANTHROPIC_API_KEY`. Zero cost/latency when unset (the default). Fail-open |
+| `ship-it-guard` | PreToolUse/Write+Edit+MultiEdit (**OPT-IN**, default OFF) | The only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root or `.planning/PLAN.md`) — nudging the ship-it plan-first workflow. Enforces artifact *existence* only (not plan quality), conservative (never gates ordinary edits), fail-open. Zero effect when unset (the default) |
 | `phase-tracker` | PreToolUse/Agent+Task | Records every subagent spawn so line 2 shows live swarm activity with zero coordinator effort |
 | `agent-watchdog` | CLI helper | Heartbeat enforcer: manually invoked by orchestration skill; polls agent state files; kills idle/hung agents; integrates with `phase.js` |
 | `graphify-session` | SessionStart | Reminds to query the graph first when a `graphify-out/` graph exists |
@@ -205,7 +206,7 @@ anti-hall/
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
 ├── docs/                               # KB + design notes — CONTEXT-PRESERVATION-KB · KB · TASKLIST-GUARD · TASK-WORK · E2E-TESTING (+ Claude Code internals)
-├── tests/                              # zero-dependency node:test E2E suite (318 tests, 316 pass +2 platform-skip) — `node --test`
+├── tests/                              # zero-dependency node:test E2E suite (331 tests, 329 pass +2 platform-skip) — `node --test`
 ├── .github/workflows/test.yml          # CI: runs the suite on push/PR
 └── CHANGELOG.md
 ```
@@ -214,7 +215,7 @@ anti-hall/
 `AGENTS.md` (e.g. Codex). It lives at the repo root and is **not** bundled by
 `/plugin install` — copy it into your own repo if you want cross-tool coverage.
 
-A zero-dependency **`node --test` E2E suite** (`tests/`, 316 passing +2 platform-skipped, 318 total) covers the hooks and
+A zero-dependency **`node --test` E2E suite** (`tests/`, 329 passing +2 platform-skipped, 331 total) covers the hooks and
 runs in **CI** on every push/PR ([`.github/workflows/test.yml`](.github/workflows/test.yml)).
 
 See [`plugins/anti-hall/README.md`](plugins/anti-hall/README.md) for the full component

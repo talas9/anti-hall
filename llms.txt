@@ -59,6 +59,7 @@ All pure Node, fail-open. Registered in hooks.json.
 - [skip-guard.js](plugins/anti-hall/hooks/skip-guard.js): shared user-override escape-hatch primitive read by the guards — a TTL'd, granular `~/.anti-hall/skip.json` marker; a broad `all` skip excludes the destructive git-guard (it must be named explicitly).
 - [speculation-guard.js](plugins/anti-hall/hooks/speculation-guard.js): Stop — flags hedge-word speculation; confident inference-as-fact is the opt-in speculation-judge (Tier 3).
 - [speculation-judge.js](plugins/anti-hall/hooks/speculation-judge.js): Stop — opt-in LLM-evaluated speculation check (off by default).
+- [ship-it-guard.js](plugins/anti-hall/hooks/ship-it-guard.js): PreToolUse Write/Edit/MultiEdit — OPT-IN, default OFF (the only opt-in code-edit gate). With ANTIHALL_SHIPIT_GATE ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration/auth/.github/workflows/security) when no PLAN.md exists (repo root or .planning/PLAN.md). Enforces artifact existence only, conservative, fail-open; no effect when unset.
 - [graphify-session.js](plugins/anti-hall/hooks/graphify-session.js) / [graphify-reminder.js](plugins/anti-hall/hooks/graphify-reminder.js) / [graphify-guard.js](plugins/anti-hall/hooks/graphify-guard.js): query-the-graph-first priming, update reminder, and search guard (no-op without a graph).
 - [hooks.json](plugins/anti-hall/hooks/hooks.json): hook registration manifest.
 
@@ -103,7 +104,7 @@ Opt-in, NOT a hook. macOS + Linux interval job; Windows is a documented no-op (n
 
 ## Tests
 
-- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 316 passing (+2 platform-skipped), 318 total, covering the hooks (guards, api-guard stdlib/builtin/3rd-party checks + shadowing/portability/RCE-no-execute, git-guard gh-PR self-credit, speculation, tasklist-guard Bash-regex cases + history-ledger reminder, synthesize-never-relay nudge, etc.). Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
+- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 329 passing (+2 platform-skipped), 331 total, covering the hooks (guards, api-guard stdlib/builtin/3rd-party checks + shadowing/portability/RCE-no-execute, git-guard gh-PR self-credit, speculation, tasklist-guard Bash-regex cases + history-ledger reminder, synthesize-never-relay nudge, etc.). Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
 - [.github/workflows/test.yml](.github/workflows/test.yml): CI runs the suite on push/PR.
 
 ## Read more
