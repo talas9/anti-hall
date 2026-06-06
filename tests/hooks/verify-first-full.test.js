@@ -130,7 +130,7 @@ const DISCIPLINES = [
   ['/anti-hall:root-cause', 'INVOKE skill: root-cause'],
   ['/anti-hall:orchestration', 'INVOKE skill: orchestration'],
   ['/anti-hall:deadly-loop', 'INVOKE skill: deadly-loop'],
-  ['/anti-hall:feature-launch', 'INVOKE skill: feature-launch'],
+  ['/anti-hall:ship-it', 'INVOKE skill: ship-it'],
 ];
 
 function assertAll(c, table) {

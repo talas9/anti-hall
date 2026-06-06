@@ -190,7 +190,7 @@ specific base command without going through the installer.
 ## phase.js — Phase state writer
 
 `phase.js` is the **data source** for the phase bar.  The orchestrator and
-feature-launch skill call it as real work progresses.  Writes to
+ship-it skill call it as real work progresses.  Writes to
 `~/.anti-hall/phase-state.json`.
 
 ### Usage

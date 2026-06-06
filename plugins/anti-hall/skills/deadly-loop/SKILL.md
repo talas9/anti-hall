@@ -315,6 +315,23 @@ When Round N returns GO from BOTH agents:
 - If Round N finds NEW P0s genuinely introduced by Wave-(N-1), keep iterating (Wave N → Round N+1).
 - If Round N finds REDISCOVERED issues, narrow scope (process bug) — re-emphasize delta-focus discipline in the next prompt.
 
+### D1.5 — Verification gate (a GO is NOT valid without it)
+
+Zero NEW P0s is necessary but NOT sufficient. Before declaring GO, the orchestrator
+must independently confirm — with FRESH evidence in the current round, not an agent's
+say-so — that every "fixed / passing" claim is real. A clean debate over unverified
+fixes is a false GO. This makes the verify-first discipline a hard convergence
+requirement, inherited by every workflow that uses the deadly-loop.
+
+For each fix claimed resolved this loop:
+1. **IDENTIFY** the exact command/test that proves the claim.
+2. **RUN** it fresh THIS round (re-run yourself or via a separate verifier — never trust the fix agent's report; rule L).
+3. **READ** the full output + exit code.
+4. **VERIFY** the output actually confirms the claim (a green suite ≠ the bug is fixed — check the bug's own assertion).
+5. **VACUOUS-TEST GUARD:** any test added/changed to prove a fix MUST be shown to FAIL when the fix is reverted (revert → run → confirm red → restore). A test that passes with the fix removed proves nothing and does not count as resolution.
+
+If any claim fails its check, the issue is NOT resolved — keep it open and iterate, regardless of the debate verdict. GO requires zero NEW P0s **and** every resolution verified by fresh evidence here.
+
 ### Iteration caps (soft 10 / hard 15)
 
 The convergence loop (Reviewer + Critic debate → fix wave → re-converge, "until zero NEW P0s") MUST be bounded — a loop that never converges is itself a failure signal, not a reason to keep grinding silently.

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // phase.js — write/update the anti-hall phase-state that the statusline reads.
 //
-// This is the DATA SOURCE for the phase bar. The orchestrator / feature-launch
+// This is the DATA SOURCE for the phase bar. The orchestrator / ship-it
 // skill calls it as real work progresses (NOT a fake file). The statusline's
 // phase-bar.js reads the same file and renders it.
 //

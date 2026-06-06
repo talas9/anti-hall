@@ -6,6 +6,36 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.27.0
+
+**`ship-it` workflow replaces `feature-launch`. deadly-loop gains a D1.5 verification gate.**
+
+This release retires the `feature-launch` skill and ships `ship-it` in its place — one lean,
+anti-hall-native workflow for shipping any change correctly, from a one-line fix to a
+multi-phase feature.
+
+- **`ship-it` (new, replaces `feature-launch`).** A tier-scaled (S / M / L) fusion of the
+  best of superpowers-planning + the GSD phase loop + the deadly-loop, with the bloat removed.
+  Brainstorm + plan happen **in plan mode** (`ExitPlanMode` is the build-unlock approval gate;
+  no code before approval); the plan is hardened with the deadly-loop **before** any code; on
+  large (L) work the disjoint build phases and the per-phase deadly-loop fan out as a **Workflow
+  swarm**; each phase is verified with fresh evidence and a vacuous-test guard, then hardened
+  until zero NEW P0s. Wired to real Claude Code primitives (plan mode + the Workflow tool) plus
+  anti-hall's own deadly-loop and always-on guards — **standalone**, no GSD/superpowers
+  dependency. Hard safety boundaries (force-push, prod deploy, destructive/financial actions)
+  never autonomy-bypass and are enforced by the always-on guards, which swarm agents inherit.
+- **`feature-launch` removed.** Its bespoke `references/` (including the per-project
+  `PRE-TOOL-USE-HOOK.md` template) are gone; `ship-it` relies on the always-on guards instead
+  of a bespoke per-feature sentinel, and reuses the deadly-loop's `MODEL-POLICY.md`, A3
+  branch/SHA verification preamble, validation table, and D1.5 gate. The shared
+  `MODEL-POLICY.md` is now duplicated in 2 places (canonical + `deadly-loop/references/`)
+  instead of 3.
+- **deadly-loop D1.5 verification gate.** A GO verdict is no longer valid without a D1.5
+  check — fresh evidence (re-run the authoritative check this round, not a stale prior result)
+  plus a vacuous-test guard (a passing test that asserts nothing, or never exercises the
+  changed path, does not count). Inherited by **all** deadly-loop-driven workflows, including
+  `ship-it`'s per-phase gates and `deadly-loop-multi`.
+
 ## 0.26.0
 
 **Structured-return discipline (rule G) made concrete + measured.**

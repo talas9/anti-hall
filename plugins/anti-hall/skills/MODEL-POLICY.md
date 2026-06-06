@@ -1,14 +1,13 @@
-# MODEL-POLICY — Debate Roster (shared by deadly-loop and feature-launch)
+# MODEL-POLICY — Debate Roster (shared by deadly-loop and ship-it)
 
-<!-- SYNC NOTE: this file is duplicated in skills/MODEL-POLICY.md and the two
-     skills' references/ (deadly-loop/references/MODEL-POLICY.md,
-     feature-launch/references/MODEL-POLICY.md). The copies are intentional —
-     skill bundling requires each skill to carry its own references/ copy, and
-     symlinks are stripped on plugin install. Update ALL THREE copies together
-     so they stay byte-identical. -->
+<!-- SYNC NOTE: this file is duplicated in skills/MODEL-POLICY.md and the
+     deadly-loop skill's references/ (deadly-loop/references/MODEL-POLICY.md).
+     The copies are intentional — skill bundling requires the skill to carry its
+     own references/ copy, and symlinks are stripped on plugin install. Update
+     BOTH copies together so they stay byte-identical. -->
 
 This file defines the two-agent debate roster used by the `deadly-loop` and
-`feature-launch` skills. Both skills MUST read this before spawning any debate
+`ship-it` skills. Both skills MUST read this before spawning any debate
 round so the model selection and spawn mechanics are correct and consistent.
 
 The roster is deliberately **cross-model**: one Claude Opus and one OpenAI Codex.

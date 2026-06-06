@@ -61,7 +61,7 @@ claude --plugin-dir /path/to/anti-hall
 | `graphify-reminder.js` | Stop | One-time reminder to update the graph after real edits. |
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
 | `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
-| `root-cause` / `orchestration` / `feature-launch` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`) | Skills | Slash commands (see [Skills](#skills)). |
+| `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
 | `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`companion/README.md`](companion/README.md). |
 
@@ -74,7 +74,7 @@ claude --plugin-dir /path/to/anti-hall
   rationalization-table** form. It names the specific bypass excuses ("probably",
   "should work", "seems to", "I'll just assume", "looks done", "tests pass on first
   run") and includes a skill primer listing the core 4 skills (root-cause, orchestration,
-  deadly-loop, feature-launch) and when to reach for each. It also carries the always-on
+  deadly-loop, ship-it) and when to reach for each. It also carries the always-on
   **output-presentation rule K** ("PRESENT FOR SCANNABILITY"): organize output with
   GitHub-flavored markdown — tables for comparisons/status, **bold** verdicts, `code` for
   flags/paths/commands, fenced blocks for output, emoji as a leading status glyph (signal,
@@ -272,7 +272,7 @@ failure mode and the cost/latency is acceptable, Tier 3 closes the gap Tier 2 le
 **enforced always-on via the hook layer** — their core fires every session/turn through
 `verify-first-full.js` (SessionStart) and `verify-first.js` (per-turn nudge), so they
 apply without being invoked. The full step-by-step playbooks below are still available as
-slash commands for when you want the deep version. **deadly-loop** and **feature-launch**
+slash commands for when you want the deep version. **deadly-loop** and **ship-it**
 are **conditional skills invoked on match** — they are not forced every turn. The
 always-on orchestration injection enforces a **bias toward delegation** — default to a
 subagent for any work that touches files/tools/commands/search/build/test or could
@@ -301,13 +301,15 @@ Invoke via slash command:
   heavy/long work to background + parallel subagents, partition to avoid conflicts,
   distribute load across Claude **and** Codex when available, run commands via Haiku
   so raw output never pollutes the coordinator's context.
-- **`/anti-hall:feature-launch`** — plan-first protocol: author the plan in plan
-  mode (blending superpowers planning + GSD, not GSD-dependent), enumerate edge
-  cases and simulate every scenario, harden the plan with the deadly-loop BEFORE any
-  code, then build phase by phase running the deadly-loop after each phase.
+- **`/anti-hall:ship-it`** — one lean workflow for shipping any change, scaled S/M/L
+  to blast radius: brainstorm + plan in plan mode (ExitPlanMode is the approval gate;
+  blends superpowers planning + GSD, not GSD-dependent), enumerate edge cases, harden
+  the plan with the deadly-loop BEFORE any code, fan large work out as a Workflow swarm,
+  and verify each phase with fresh evidence + a vacuous-test guard, running the
+  deadly-loop after each phase until zero NEW P0s.
 - **`/anti-hall:deadly-loop`** — iterative parallel Reviewer + Critic debate +
   fix-waves until convergence (zero NEW P0s). The debate engine behind
-  feature-launch's gates.
+  ship-it's gates.
 - **`/anti-hall:deadly-loop-multi`** — scaled-up deadly-loop: N Reviewer + N Critic
   pairs with diversified lenses, then dedup + synthesize (double / triple / quadruple).
 - **`/anti-hall:install-statusline`** — writes the statusLine setting (global by
@@ -367,9 +369,10 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 - **Verify-first wording** — edit `hooks/verify-first-full.js` (the full SessionStart
   protocol) and the `NUDGES` array in `hooks/verify-first.js` (the per-turn one-liners).
 - **Hard gates / force patterns** — `hooks/git-guard.js` holds the commit-trailer and
-  force-push logic. For a project-specific PreToolUse hard-gate sentinel (deploy CLIs,
-  payment commands, bulk deletes), see
-  `skills/feature-launch/references/PRE-TOOL-USE-HOOK.md`.
+  force-push logic; `command-guard.js` and the other always-on guards cover deploy CLIs,
+  payment commands, and bulk deletes at command dispatch. `ship-it` relies on these
+  always-on guards for its hard safety boundaries rather than a bespoke per-project
+  sentinel.
 - **Task discipline / graphify** — edit the respective `hooks/*.js`. All hooks are
   fail-open: a bug in a hook must never wedge a turn.
 
@@ -403,11 +406,10 @@ claude --plugin-dir /path/to/anti-hall                                       # l
 
 ## Contributing
 
-- **Keep the 3 MODEL-POLICY.md copies in sync.** The roster file is triplicated
-  (`skills/MODEL-POLICY.md` plus a copy under each of `skills/deadly-loop/references/`
-  and `skills/feature-launch/references/`) because skill bundling requires each skill
-  to carry its own `references/` copy and symlinks are stripped on install. Update
-  **all three** together — they must stay byte-identical.
+- **Keep the 2 MODEL-POLICY.md copies in sync.** The roster file is duplicated
+  (`skills/MODEL-POLICY.md` plus a copy under `skills/deadly-loop/references/`) because
+  skill bundling requires the skill to carry its own `references/` copy and symlinks are
+  stripped on install. Update **both** together — they must stay byte-identical.
 - **Bump the version on any behavioral change.** `plugin.json` `version` is the sole
   authority (the marketplace entry carries no `version`); without a bump, installed
   users do not receive the update. Add a `CHANGELOG.md` entry.

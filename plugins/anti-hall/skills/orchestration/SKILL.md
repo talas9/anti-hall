@@ -55,7 +55,7 @@ Match the model to the job (resolve to the newest in each tier at runtime):
   fetches, repetitive bulk operations.
 - **Sonnet (floor)** — code authoring, analysis, code review, most subagent work.
 - **Opus** — planning, architecture, and adversarial debate roles (see the
-  feature-launch and deadly-loop skills' roster in `../MODEL-POLICY.md`).
+  ship-it and deadly-loop skills' roster in `../MODEL-POLICY.md`).
 
 Don't send a planning problem to Haiku, or a log-tail to Opus.
 
@@ -138,7 +138,7 @@ NEVER run them inline in the main conversation.
 When a graphify knowledge graph exists (`graphify-out/` or `.planning/graphs/`):
 1. Ensure it is fresh: `/graphify --obsidian` (rebuild / update) before analysis.
 2. Query it first: `/graphify query "..."` before dispatching any Grep/Glob/raw
-   code-nav search or before starting a feature-launch analysis.
+   code-nav search or before starting a ship-it analysis.
 
 A graph query is O(1) for the coordinator; a raw grep sweep handed to a subagent
 is still cheaper than an inline sweep, but redundant if the graph already has the
@@ -341,7 +341,7 @@ References (docs in this source repo — `docs/` ships with a repo clone, NOT wi
   historical.
 
 ## Relationship to other skills in this plugin
-- **feature-launch** runs its plan-hardening and per-phase deadly-loop gates as
+- **ship-it** runs its plan-hardening and per-phase deadly-loop gates as
   swarms dispatched from the main coordinator — the main thread orchestrates, the
   Reviewer/Critic run as (often background) subagents.
 - **deadly-loop** is itself a swarm: parallel Reviewer + Critic auditors and parallel

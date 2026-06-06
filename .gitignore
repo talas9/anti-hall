@@ -23,3 +23,5 @@ assets/demo/*.cast
 eval/results*.json
 eval/scope-results*.json
 eval/*.log
+# local project working notes — never ship to the public repo
+CLAUDE.md

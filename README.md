@@ -95,24 +95,25 @@ argued with.
 | **orchestration** | heavy/parallel/long work | non-blocking coordinator; fan out to subagents; watchdog + heartbeat; live phase statusline; **verify delegated work** (a subagent's "done/passing" is an unverified claim — re-check it against ground truth before marking complete) |
 | **deadly-loop** | before merging anything risky | parallel **Reviewer + Critic** debate + fix-waves, looping until zero *new* P0s |
 | **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N Reviewer + N Critic pairs (half latest Opus, half latest Codex) with diversified lenses, then dedup + synthesize into one report |
-| **feature-launch** | a non-trivial feature (multi-file / multi-phase) | plan-first, deadly-loop-hardened *before* code, executed phase-by-phase — with **AFK mode** and goal-anchor drift watcher |
+| **ship-it** | any change, from a one-line fix to a multi-phase feature | one lean workflow scaled S/M/L to blast radius — brainstorm + plan **in plan mode** (ExitPlanMode is the gate), deadly-loop-hardened *before* code, large work fanned out as a Workflow swarm, each phase verified with fresh evidence + a vacuous-test guard until zero *new* P0s |
 | **install-statusline** | "install the statusline / add the bar" | writes the `statusLine` setting (global or per-repo), wraps an existing statusline as line 1 + adds anti-hall bar as line 2, with backup + restore |
 | **doctor** | "is anti-hall working?" / after install/update | confirms Node ≥ 18, all hooks present + syntax-valid, **runs live behavioral self-tests** (spawns real guards with crafted payloads and asserts exit codes), reports context footprint in bytes + estimated tokens |
 
-> **root-cause** and **orchestration** are also enforced *always-on* as disciplines via the hook layer, alongside anti-sycophancy (challenge a wrong premise with evidence — never agree just to agree) and **scope & fidelity** (solve the actual problem with the simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish what was asked and drop nothing). Orchestration now also requires the coordinator to **independently verify delegated work** — a subagent's "done/passing" is an unverified claim, re-checked against ground truth before marking complete — and **defaults delegated heavy/parallel work to the background** (the coordinator passes `run_in_background` so the user needn't background it manually), while still verifying each on completion. **deadly-loop** and **feature-launch** stay conditional, invoked on match.
+> **root-cause** and **orchestration** are also enforced *always-on* as disciplines via the hook layer, alongside anti-sycophancy (challenge a wrong premise with evidence — never agree just to agree) and **scope & fidelity** (solve the actual problem with the simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish what was asked and drop nothing). Orchestration now also requires the coordinator to **independently verify delegated work** — a subagent's "done/passing" is an unverified claim, re-checked against ground truth before marking complete — and **defaults delegated heavy/parallel work to the background** (the coordinator passes `run_in_background` so the user needn't background it manually), while still verifying each on completion. **deadly-loop** and **ship-it** stay conditional, invoked on match.
 
 ---
 
-## 🤖 AFK mode
+## 🤖 Autonomous execution
 
-`feature-launch` ships an **autonomous driver** for hands-off runs. The contract: it
-**never returns to you or stops** — except for an *absolutely-destructive* hard gate
-(force-push, prod deploy, data/branch/file deletion, financial action, secret/access
-change). For everything else it **collects data instead of pausing**, and when it's
-genuinely confused it runs a **deadly-loop** to resolve the decision adversarially rather
-than waking you. A **goal-anchor drift watcher** re-checks work against the locked goal
-each cycle and course-corrects on scope drift, only deviating when you explicitly redirect.
-You leave; it ships phases and only surfaces what truly needs a human.
+`ship-it` runs autonomously once the plan is approved at the **ExitPlanMode** gate — it
+builds phase by phase, verifies each with fresh evidence, and hardens with the deadly-loop
+without waking you for routine decisions. The one hard stop: **absolutely-destructive** hard
+gates (force-push, prod deploy, data/branch/file deletion, financial action, secret/access
+change) **never** autonomy-bypass — the run STOPS and surfaces options to you. These
+boundaries are enforced at command dispatch by anti-hall's always-on guards (git-guard /
+command-guard), and swarm agents inherit them: a background agent cannot bypass a gate the
+main thread couldn't. For everything else it keeps shipping and only surfaces what truly
+needs a human.
 
 ---
 
@@ -123,7 +124,7 @@ is meant to prevent. anti-hall enforces this at two levels:
 
 **For your agents:** the SessionStart protocol + per-turn nudges enforce:
 - Delegate not just heavy *commands* but also **broad reads, Grep, Glob, and code-navigation searches** to subagents — inline only a specific known-file read.
-- **Graphify-first:** query the graph before raw search and before feature-launch analysis.
+- **Graphify-first:** query the graph before raw search and before ship-it analysis.
 
 **For itself:** the plugin minimizes its own footprint in your conversation:
 - `task-tracker` is **throttled** — full directive once per ~6h window, one-liner after (~68% per-turn reduction, ≈693 B → ≈223 B steady-state).
@@ -199,7 +200,7 @@ anti-hall/
 ├── plugins/anti-hall/
 │   ├── .claude-plugin/plugin.json      # plugin manifest — version is the sole authority
 │   ├── hooks/                          # always-on Node hooks (+ hooks.json registration)
-│   ├── skills/                         # root-cause · orchestration · deadly-loop · deadly-loop-multi · feature-launch · install-statusline · doctor
+│   ├── skills/                         # root-cause · orchestration · deadly-loop · deadly-loop-multi · ship-it · install-statusline · doctor
 │   ├── companion/                      # opt-in mcp-reaper (macOS+Linux) — kills orphaned MCP processes; not a hook
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)

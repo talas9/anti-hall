@@ -13,7 +13,7 @@ Keep this file under 32 KiB (Codex per-file cap). Verify it is loaded with:
 
 In the Claude Code plugin, the **root-cause** and **orchestration** disciplines below
 are enforced always-on via the hook layer (they fire every session/turn). **deadly-loop**
-and **feature-launch** are conditional skills invoked on match. Codex lacks that hook
+and **ship-it** are conditional skills invoked on match. Codex lacks that hook
 injection, so for Codex this prose mirror is how root-cause + orchestration discipline
 (plus anti-sycophancy and scope-fidelity) stay always-applied.
 
@@ -157,7 +157,7 @@ gracefully when graphify is not present — there is no hard dependency.
 
 - **GRAPHIFY-FIRST:** When a graphify graph exists, ensure it is fresh (`/graphify
   --obsidian`) then query it (`/graphify query "..."`) BEFORE any Grep/Glob/Bash
-  code-nav search and BEFORE starting a feature-launch analysis. A graph query costs
+  code-nav search and BEFORE starting a ship-it analysis. A graph query costs
   zero main-thread context bloat; a raw search sweep fills context and invites
   hallucination.
 
