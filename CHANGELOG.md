@@ -62,7 +62,12 @@ agents-running → generic not idle-neglect; all-blocked → generic; owned-pend
 actionable; idle-neglect dedupe; churn-cap loop-safety). +5 task-tracker cases
 (actionable-now → review line names tasks + says parallel; 0 actionable → generic only;
 owned/blocked → not listed; fresh agent → no review line; malformed transcript →
-fail-open). Suite **340 passing / 342 total**.
+fail-open). +E2E system test for the task-neglect enforcement (`tests/hooks/task-neglect-e2e.test.js`):
+one realistic 3-pending-task transcript driving BOTH real hooks together against shared,
+real fs heartbeat state — no-agents → tracker review line + guard idle-neglect block naming
+only the actionable task; fresh heartbeat planted → both back off; actionable in_progress →
+neither flags; loop-safety end-to-end (dedupe once, churn capped at MAX_BLOCKS). Suite
+**340 passing / 342 total**.
 
 ## 0.28.2
 
