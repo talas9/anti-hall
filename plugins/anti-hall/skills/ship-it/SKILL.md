@@ -65,7 +65,7 @@ subset (no plan mode required, no swarm); **S** is a single edit that exits afte
 
 ---
 
-## Step 1 — Brainstorm IN PLAN MODE (HARD GATE; L only)
+## Step 1 — Brainstorm IN PLAN MODE (gate — hard interactively, SOFT under granted autonomy; L only)
 
 **Enter plan mode now** via `EnterPlanMode`. Plan mode is **read-only for the repo**: you may
 read, explore with bash, web-research, and ask the owner questions — but **nothing in the repo
@@ -79,6 +79,12 @@ the plan is approved.
   possible. One good answer at a time forces real decisions; a dumped questionnaire doesn't.
 - Output a short **intent note** (3-10 sentences): goal, constraints, 1-2 approaches with
   trade-offs, and a recommendation.
+
+**Under granted autonomy (AFK / "full autonomy" / "build it"):** the gate is satisfied by
+*forming and recording* the design — make the call yourself, write the intent note + chosen
+approach into the plan, and proceed. Ask the owner ONLY for a genuine blocker the plan can't
+resolve or a hard-safety decision — do NOT wait for design sign-off you were already told to
+proceed without. Interactively (no autonomy granted), present the intent note and wait.
 
 *(Optional: if `superpowers:brainstorming` is installed, use it — the gate is the point, not the tool.)*
 
@@ -179,9 +185,22 @@ isn't falling well before soft-10, escalate to the owner (redesign scope / accep
 narrow).
 
 **Convergence gate:** once the plan survives with zero NEW P0s, present it via `ExitPlanMode`.
-Owner approval of the plan unlocks building. **The first post-approval action is writing the
-durable `PLAN.md` (Step 2); do not write a line of feature code before that.** `ExitPlanMode`
-approval is the single plan → build transition.
+`ExitPlanMode` is the single plan → build transition; the first post-approval action is
+writing the durable `PLAN.md` (Step 2) — **do not write a line of feature code before that.**
+
+**Who approves — interactive vs autonomous (this is a SOFT gate, not a hard stop):**
+- **Interactive:** present the plan and wait for the owner's approval, as normal.
+- **Autonomy ALREADY granted** (the owner said "AFK" / "full autonomy" / "build it" / "go
+  autonomous" / approved this plan): **the deadly-loop convergence to zero NEW P0s IS the
+  approval — self-approve and PROCEED to build. Do NOT re-stop for a "go" the owner already
+  gave.** Record the plan in `PLAN.md` and continue. Stopping here for human sign-off you
+  already have is the failure mode this rule exists to prevent (a converged, green-lit plan
+  must not sit idle waiting on a redundant gate).
+- The ONLY things that still stop an autonomous run are the **hard safety boundaries** below
+  (destructive / irreversible / financial / secret / prod-deploy / force-push) and a
+  **genuine ambiguity** the plan can't resolve — never the plan-approval gate itself once
+  autonomy is granted. (Anti-hall convention: "AFK" = run autonomously; stop only at the
+  destructive gate.)
 
 ---
 
@@ -312,6 +331,23 @@ assumption it'll be fixed later.
   wrap-up.
 
 ---
+
+## Autonomous mode (AFK / "full autonomy" / "build it")
+
+When the owner has granted autonomy, **run the whole S/M/L flow to completion without
+stopping for approvals you already have.** The two human gates in this skill — the brainstorm
+gate (Step 1) and the plan-approval gate (Step 3 `ExitPlanMode`) — are **SOFT**: under
+granted autonomy they are satisfied by *forming/recording the design* and *converging the
+plan via the deadly-loop to zero NEW P0s*, then **proceeding straight into the build**. Do
+NOT re-stop at `ExitPlanMode` for a "go" already given — a converged, green-lit plan sitting
+idle waiting on a redundant gate is the #1 autonomy failure (it can waste hours/overnight).
+
+Stop an autonomous run ONLY for: (a) a **hard safety boundary** below, or (b) a **genuine
+ambiguity / missing input** the plan cannot resolve (a real blocker, not design preference).
+Otherwise: plan → harden → build → per-phase harden → ship, continuously. Stream status to a
+durable file (e.g. `.planning/AUTONOMY-STATUS.md`) so the owner can follow; silence ≠ stop.
+Re-read each granted instruction literally: "build it / merge / full autonomy" means *do it*,
+not *plan it and wait*.
 
 ## Hard safety boundaries (NEVER bypass, even autonomous)
 

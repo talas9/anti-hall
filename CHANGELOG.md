@@ -6,6 +6,25 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.28.2
+
+**Fix (P0): `ship-it` plan-approval gate now honors granted autonomy — no more blocking for a "go" already given.**
+
+Reported in the field: an autonomous run sat idle for hours at `ship-it`'s `ExitPlanMode`
+plan-approval gate, waiting on approval the owner had already granted ("full autonomy / build
+it / AFK"). Root cause: when the lean `ship-it` replaced feature-launch, it dropped
+feature-launch's autonomous-mode handling, so the plan-approval and brainstorm gates became
+**unconditional human stops** with no autonomy carve-out.
+
+Fix — the two human gates (Step 1 brainstorm, Step 3 `ExitPlanMode`) are now explicitly
+**SOFT**: under granted autonomy they are satisfied by *forming/recording the design* and
+*converging the plan via the deadly-loop to zero NEW P0s*, then the run **proceeds straight
+into the build** — it does not re-stop for an already-given go. A new **Autonomous mode**
+section makes this the rule: stop only at a **hard safety boundary** (destructive /
+irreversible / financial / secret / prod-deploy / force-push — these still NEVER
+autonomy-bypass) or a **genuine ambiguity**, never the plan-approval gate itself. Interactive
+behavior is unchanged (present plan, wait for approval).
+
 ## 0.28.1
 
 **Loose-end closeout — cross-model (Codex) review fixes for `ship-it` + a full doc-currency pass. No new features.**
