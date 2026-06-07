@@ -112,9 +112,16 @@ function pickMessage(payload) {
 }
 
 // freshnessNote(payload) — cheap, bounded transcript tail-scan that returns a
-// SHORT one-line note ONLY when there are open/stale tasks (an in_progress or
-// pending task in the reconstructed state). Returns '' otherwise, so the per-turn
-// baseline is NOT bloated when nothing is stale. Fail-open: any error → ''.
+// per-turn note built from the reconstructed task state. Two layers:
+//   (a) ACTIONABLE-NOW (every turn): when >=1 pending+unowned+unblocked task
+//       exists AND no subagent is in flight, emit a SPECIFIC review line that
+//       NAMES up to 4 tasks and demands one parallel background agent per task.
+//       This is the per-turn complement to the Stop-hook idle-neglect block — it
+//       nudges BEFORE the turn instead of only at Stop.
+//   (b) open-tasks freshness note: when there are open (pending/in_progress)
+//       tasks, append the legacy "open tasks: N (oldest in_progress …)" line.
+// Returns '' when there are no open tasks at all (baseline stays lean).
+// Fail-open: any error → ''.
 function freshnessNote(payload) {
   try {
     const tp = payload && payload.transcript_path;
@@ -124,16 +131,66 @@ function freshnessNote(payload) {
     const state = reconstructTasks(tail);
     const open = state.open;
     if (open.length === 0) return '';
+
+    let out = '';
+
+    // (a) ACTIONABLE-NOW per-turn review line. agentsRunning() is reused from
+    // task-guard (fail-open to "no agents"); if work is genuinely in flight we
+    // skip the dispatch nudge (don't nag real parallel work). Cheap: one small
+    // readdir of ~/.anti-hall/agents.
+    const actionable = classifyOpen(open, state.taskMap);
+    if (actionable.length >= 1 && !agentsRunning()) {
+      // Name up to 4 actionable tasks. Sanitize via oneLine + JSON.stringify so a
+      // task-supplied subject is an inert quoted string (no prompt injection).
+      const names = actionable.slice(0, 4)
+        .map((t) => JSON.stringify(oneLine(t.content || t.id, 50)))
+        .join(', ');
+      out += 'TASK REVIEW (every turn): ' + actionable.length +
+        ' non-blocked, unassigned pending task(s) — dispatch a background agent ' +
+        'for EACH now, in parallel (cap ~min(16, cores-2)), unless already ' +
+        'in-flight: ' + names + '. Do not leave them idle; only hold one if it ' +
+        'truly needs the user.';
+    }
+
+    // (b) freshness note about open tasks (in_progress subject if any).
     const inProg = open.find((t) => /in[-_]?progress/i.test(t.status || ''));
     // FIX 7: control-char strip (oneLine) THEN JSON.stringify so the task-supplied
     // subject is rendered as an inert quoted string and can never inject
     // instruction-shaped content into the UserPromptSubmit additionalContext.
     const subj = inProg ? oneLine(inProg.content || inProg.id, 50) : '';
     const tail2 = inProg && subj ? ' (oldest in_progress subject: ' + JSON.stringify(subj) + ')' : '';
-    return 'open tasks: ' + open.length + tail2 + ' — update or close them.';
+    const freshLine = 'open tasks: ' + open.length + tail2 + ' — update or close them.';
+
+    return out ? out + ' ' + freshLine : freshLine;
   } catch (_) {
     return '';
   }
+}
+
+// agentsRunning() — true if ~/.anti-hall/agents/ holds a FRESH heartbeat (mirror
+// task-guard). Absent/unreadable dir => false. Fail-open toward "not running",
+// which can only permit the per-turn review nudge, never falsely silence it.
+function agentsRunning(freshMs) {
+  const FRESH = freshMs || 20 * 60 * 1000;
+  const dir = path.join(os.homedir(), '.anti-hall', 'agents');
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch (_) {
+    return false;
+  }
+  const now = Date.now();
+  for (const f of files) {
+    const full = path.join(dir, f);
+    let ts = 0;
+    try {
+      const data = JSON.parse(fs.readFileSync(full, 'utf8'));
+      if (data && typeof data.ts === 'number') ts = data.ts;
+    } catch (_) { /* fall back to mtime */ }
+    if (!ts) { try { ts = fs.statSync(full).mtimeMs; } catch (_) { ts = 0; } }
+    if (ts && (now - ts) < FRESH) return true;
+  }
+  return false;
 }
 
 function readTail(transcriptPath, windowBytes) {
@@ -155,7 +212,10 @@ function readTail(transcriptPath, windowBytes) {
 }
 
 // Mode-agnostic task reconstruction (mirrors task-guard / tasklist-guard) → the
-// set of OPEN tasks (pending | in_progress). Tolerant + best-effort.
+// set of OPEN tasks (pending | in_progress) PLUS the full taskMap (so blocker
+// resolution can see completed tasks). Each task carries owner + blockedBy so the
+// ACTIONABLE-NOW classification below matches task-guard exactly. Tolerant +
+// best-effort; a status-only TaskUpdate must NOT clear owner/blockedBy.
 function reconstructTasks(tail) {
   const lines = tail.data.split(/\r?\n/);
   if (tail.truncated && lines.length > 0) lines.shift();
@@ -185,19 +245,38 @@ function reconstructTasks(tail) {
           taskMap.clear(); provisional.clear();
           for (const todo of todos) {
             const id = todo.id || todo.content || String(taskMap.size);
-            taskMap.set(String(id), { id: String(id), content: todo.content || todo.activeForm || String(id), status: todo.status || 'pending' });
+            taskMap.set(String(id), {
+              id: String(id),
+              content: todo.content || todo.activeForm || String(id),
+              status: todo.status || 'pending',
+              owner: normOwner(todo.owner),
+              blockedBy: normBlockedBy(todo.blockedBy),
+            });
           }
         }
       } else if (name === 'TaskCreate') {
         const inp = tu.input || {};
         const tid = tu.id || '';
-        if (tid) provisional.set(tid, { content: inp.subject || inp.title || inp.content || inp.description || tid, status: inp.status || 'pending' });
+        if (tid) provisional.set(tid, {
+          content: inp.subject || inp.title || inp.content || inp.description || tid,
+          status: inp.status || 'pending',
+          owner: normOwner(inp.owner),
+          blockedBy: normBlockedBy(inp.blockedBy),
+        });
       } else if (name === 'TaskUpdate') {
         const inp = tu.input || {};
         const id = inp.taskId != null ? String(inp.taskId) : inp.id != null ? String(inp.id) : inp.task_id != null ? String(inp.task_id) : null;
         if (id != null) {
           const ex = taskMap.get(id) || { id, content: id };
-          taskMap.set(id, { id: ex.id, content: ex.content, status: inp.status || ex.status || 'pending' });
+          taskMap.set(id, {
+            id: ex.id,
+            content: ex.content,
+            status: inp.status || ex.status || 'pending',
+            // Only overwrite owner/blockedBy when the update carries the field; a
+            // status-only update must not clear them (mirror task-guard).
+            owner: inp.owner !== undefined ? normOwner(inp.owner) : (ex.owner || ''),
+            blockedBy: inp.blockedBy !== undefined ? normBlockedBy(inp.blockedBy) : (ex.blockedBy || []),
+          });
         }
       }
     }
@@ -205,15 +284,58 @@ function reconstructTasks(tail) {
   for (const [tid, rec] of provisional) {
     const key = String(resultIds.get(tid) || tid);
     const ex = taskMap.get(key);
-    if (!ex) taskMap.set(key, { id: key, content: rec.content, status: rec.status });
-    else if (!ex.content || ex.content === key) taskMap.set(key, { id: key, content: rec.content, status: ex.status });
+    if (!ex) taskMap.set(key, { id: key, content: rec.content, status: rec.status, owner: rec.owner || '', blockedBy: rec.blockedBy || [] });
+    else if (!ex.content || ex.content === key) taskMap.set(key, {
+      id: key, content: rec.content, status: ex.status,
+      owner: ex.owner || rec.owner || '',
+      blockedBy: (ex.blockedBy && ex.blockedBy.length) ? ex.blockedBy : (rec.blockedBy || []),
+    });
   }
   const open = [];
   for (const task of taskMap.values()) {
     const s = (task.status || '').toLowerCase();
     if (s === 'pending' || s === 'in_progress' || s === 'in-progress') open.push(task);
   }
-  return { open };
+  return { open, taskMap };
+}
+
+// Normalize an owner field to a trimmed string ('' = unowned). Mirror task-guard.
+function normOwner(o) {
+  return typeof o === 'string' ? o.trim() : '';
+}
+
+// Normalize a blockedBy field to an array of string ids. Mirror task-guard.
+function normBlockedBy(b) {
+  if (Array.isArray(b)) return b.filter(x => x != null).map(x => String(x));
+  if (b != null && (typeof b === 'string' || typeof b === 'number')) return [String(b)];
+  return [];
+}
+
+// classifyOpen(open, taskMap) — ACTIONABLE-NOW set (mirror task-guard exactly):
+// status pending AND unowned (or owner main/orchestrator/coordinator) AND no OPEN
+// blocker (every blockedBy id absent or in a done/completed/cancelled state).
+function classifyOpen(open, taskMap) {
+  // A blocker whose id is NOT in the map (dangling/unknown) is the SAFER default
+  // treated as STILL OPEN — cannot prove resolved, so the task is blocked (NOT
+  // actionable). Mirror task-guard exactly.
+  const known = new Set();
+  const notDone = new Set();
+  for (const t of taskMap.values()) {
+    known.add(String(t.id));
+    const s = (t.status || '').toLowerCase();
+    if (s !== 'completed' && s !== 'done' && s !== 'cancelled' && s !== 'canceled') notDone.add(String(t.id));
+  }
+  const actionable = [];
+  for (const t of open) {
+    const s = (t.status || '').toLowerCase();
+    if (s !== 'pending') continue;
+    const owner = normOwner(t.owner);
+    if (owner && !/^(main|orchestrator|coordinator)$/i.test(owner)) continue;
+    const blockers = normBlockedBy(t.blockedBy);
+    if (blockers.some(id => { const k = String(id); return notDone.has(k) || !known.has(k); })) continue;
+    actionable.push(t);
+  }
+  return actionable;
 }
 
 function collectTU(node) {

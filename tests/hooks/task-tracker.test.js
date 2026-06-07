@@ -131,6 +131,146 @@ test('FIX 7: injection-shaped in_progress subject is rendered as an inert JSON s
   }
 });
 
+// --- ACTIONABLE-NOW per-turn review line ------------------------------------
+
+// A TodoWrite line with full task records (id/content/status/owner/blockedBy) —
+// the simplest way to exercise classifyOpen (mirrors task-guard's fixture shape).
+function todoWrite(todos) {
+  return {
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'tool_use', name: 'TodoWrite', id: 'toolu_tw', input: { todos } }] },
+  };
+}
+
+function turnPayload(tp) {
+  return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: process.cwd(), transcript_path: tp };
+}
+
+test('ACTIONABLE-NOW: pending unowned unblocked tasks -> review line NAMES them + says parallel', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'build the parser', status: 'pending' },
+        { id: '2', content: 'write the docs', status: 'pending' },
+      ]),
+    ]);
+    const r = testHook(HOOK, turnPayload(tp), { home: h.home });
+    const c = ctx(r);
+    assert.match(c, /TASK REVIEW \(every turn\): 2 non-blocked, unassigned pending task/, c);
+    assert.match(c, /parallel/, c);
+    assert.match(c, /dispatch a background agent/, c);
+    assert.match(c, /"build the parser"/, c);
+    assert.match(c, /"write the docs"/, c);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ACTIONABLE-NOW: 0 actionable (all completed) -> generic only, no review line', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([{ id: '1', content: 'done thing', status: 'completed' }]),
+    ]);
+    const r = testHook(HOOK, turnPayload(tp), { home: h.home });
+    const c = ctx(r);
+    assert.doesNotMatch(c, /TASK REVIEW/, c);
+    // Generic discipline text still present (FIRST turn -> FULL).
+    assert.ok(c.startsWith(FULL_MARKER), c);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ACTIONABLE-NOW: owned + blocked tasks are NOT listed as actionable', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'blocker still open', status: 'pending' },
+        { id: '2', content: 'owned by worker', status: 'pending', owner: 'worker-7' },
+        { id: '3', content: 'depends on 1', status: 'pending', blockedBy: ['1'] },
+      ]),
+    ]);
+    const r = testHook(HOOK, turnPayload(tp), { home: h.home });
+    const c = ctx(r);
+    // Only task 1 is actionable; 2 (owned) and 3 (blocked by open 1) are not.
+    assert.match(c, /TASK REVIEW \(every turn\): 1 non-blocked/, c);
+    assert.match(c, /"blocker still open"/, c);
+    assert.doesNotMatch(c, /"owned by worker"/, c);
+    assert.doesNotMatch(c, /"depends on 1"/, c);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ACTIONABLE-NOW: blocker FREED on completion -> dependent task IS listed', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'foundation', status: 'completed' },
+        { id: '2', content: 'dependent task', status: 'pending', blockedBy: ['1'] },
+      ]),
+    ]);
+    const r = testHook(HOOK, turnPayload(tp), { home: h.home });
+    const c = ctx(r);
+    assert.match(c, /TASK REVIEW \(every turn\): 1 non-blocked/, c);
+    assert.match(c, /"dependent task"/, c);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ACTIONABLE-NOW: DANGLING blocker id (unknown) -> task NOT listed (safer default)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '2', content: 'depends on missing 999', status: 'pending', blockedBy: ['999'] },
+      ]),
+    ]);
+    const r = testHook(HOOK, turnPayload(tp), { home: h.home });
+    const c = ctx(r);
+    assert.doesNotMatch(c, /TASK REVIEW/, `dangling blocker -> not actionable; got: ${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ACTIONABLE-NOW: fresh agent heartbeat -> no review line (work in flight)', () => {
+  const h = makeHome();
+  try {
+    const fsm = require('node:fs'); const pth = require('node:path');
+    const dir = pth.join(h.antiHall, 'agents');
+    fsm.mkdirSync(dir, { recursive: true });
+    fsm.writeFileSync(pth.join(dir, 'a.json'), JSON.stringify({ id: 'a', ts: Date.now() }), 'utf8');
+    const tp = h.writeTranscript([
+      todoWrite([{ id: '1', content: 'pending work', status: 'pending' }]),
+    ]);
+    const r = testHook(HOOK, turnPayload(tp), { home: h.home });
+    assert.doesNotMatch(ctx(r), /TASK REVIEW/, ctx(r));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FAIL-OPEN: malformed transcript JSON lines -> no throw, generic context', () => {
+  const h = makeHome();
+  try {
+    const pth = require('node:path'); const fsm = require('node:fs');
+    const tp = pth.join(h.home, 'bad.jsonl');
+    fsm.writeFileSync(tp, '{not json\n}}}garbage\n', 'utf8');
+    const r = testHook(HOOK, turnPayload(tp), { home: h.home });
+    assert.strictEqual(r.status, 0);
+    assert.ok(ctx(r).startsWith(FULL_MARKER), ctx(r));
+    assert.doesNotMatch(ctx(r), /TASK REVIEW/, ctx(r));
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('ESCAPE HATCH: skip.json {task-tracker: future} -> empty context', () => {
   const h = makeHome();
   try {

@@ -2,9 +2,21 @@
 // anti-hall :: task-guard (Stop hook, loop-safe)
 //
 // Fires on Stop. Checks whether the session's task list still has open tasks.
-// If so, blocks ONCE to prompt the model to continue or explicitly defer them.
-// Loop-safety: if the exact same open-task set was already blocked on last Stop,
-// we do NOT block again (prevents infinite back-and-forth loops).
+// If so, blocks to prompt the model to continue or explicitly defer them.
+//
+// SHARP MODE — IDLE NEGLECT (the orchestrator's #1 failure): if there is at
+// least one ACTIONABLE-NOW task (status pending, unowned, no OPEN blocker) AND no
+// subagent is currently in flight (no FRESH ~/.anti-hall/agents/<id>.json
+// heartbeat), the orchestrator is sitting on dispatchable work — we block with a
+// SPECIFIC reason naming those tasks and demanding parallel dispatch. If agents
+// ARE running, or the only open tasks are blocked/owned/in_progress, we fall back
+// to the gentler generic nudge (don't nag genuine parallel work or genuine
+// waiting on real blockers).
+//
+// Loop-safety: if the exact same set was already blocked on last Stop, we do NOT
+// block again; the idle-neglect block dedupes on (actionable-set + "no-agents")
+// so it re-fires only when that set changes, and an absolute MAX_BLOCKS cap
+// (counting BOTH modes) guarantees no hard loop even when the set keeps churning.
 //
 // Contract (Claude Code Stop hook):
 //   stdin  : JSON { transcript_path, session_id?, cwd?, ... }
@@ -106,9 +118,29 @@ function main() {
     process.exit(0);
   }
 
-  // Hash the sorted open-task identifiers.
-  const ids = openTasks.map(t => String(t.id || t.content || t.subject || '')).sort();
-  const hash = crypto.createHash('sha1').update(ids.join('\x00')).digest('hex');
+  // Classify: which open tasks are ACTIONABLE NOW (pending, unowned, no open
+  // blocker) and is any subagent in flight? These drive the SHARP idle-neglect
+  // block vs the gentler generic nudge.
+  const actionable = classifyOpen(openTasks, taskMap);
+  const haveAgents = agentsRunning();
+  // IDLE NEGLECT = there is dispatchable work AND nothing is running. If agents
+  // are in flight, or the only open tasks are blocked/owned/in_progress, this is
+  // false (don't nag genuine parallel work or genuine waiting on blockers).
+  const idleNeglect = actionable.length >= 1 && !haveAgents;
+
+  // Hash basis differs per mode so the two block types dedupe independently:
+  //  - idle-neglect: hash of the ACTIONABLE set + a "no-agents" tag, so it
+  //    re-fires only when the actionable set changes (still capped, see below).
+  //  - generic: hash of the full open-task set (legacy behavior).
+  let hash;
+  if (idleNeglect) {
+    const aids = actionable.map(t => String(t.id || t.content || t.subject || '')).sort();
+    hash = crypto.createHash('sha1')
+      .update('idle\x00no-agents\x00' + aids.join('\x00')).digest('hex');
+  } else {
+    const ids = openTasks.map(t => String(t.id || t.content || t.subject || '')).sort();
+    hash = crypto.createHash('sha1').update(ids.join('\x00')).digest('hex');
+  }
 
   // Load prior loop-state: { hash, blocks }. Tolerate the legacy plain-hash
   // format (a bare hex string from an older version) so an upgrade in place does
@@ -142,8 +174,10 @@ function main() {
   // Loop-safety 2: hard cap on total blocks this session. The set legitimately
   // changes as the model works through tasks, which defeats the byte-identical
   // dedupe; without a cap we would re-block on every Stop forever. After
-  // MAX_BLOCKS nudges we stay quiet regardless of churn.
-  const MAX_BLOCKS = 3;
+  // MAX_BLOCKS nudges we stay quiet regardless of churn. Modestly raised to 5 so
+  // a genuinely-stuck actionable set can still re-nudge a few times when it
+  // changes, but can NEVER hard-loop (cap is absolute, counts both modes).
+  const MAX_BLOCKS = 5;
   if (blocks >= MAX_BLOCKS) {
     process.exit(0);
   }
@@ -157,26 +191,46 @@ function main() {
     process.exit(0); // can't persist -> fail-open to avoid loops
   }
 
-  // Build the block reason (list up to 5 subjects + status).
-  const cap = openTasks.slice(0, 5);
-  const list = cap.map(t => {
+  // Build the block reason. Two modes:
+  //  - IDLE NEGLECT (sharp): name the ACTIONABLE-NOW tasks and demand parallel
+  //    dispatch — the user's #1 pain is the orchestrator sitting on dispatchable
+  //    work with no agents running.
+  //  - GENERIC (gentle): work is in flight or the only open tasks are
+  //    blocked/owned/in_progress — nudge to drain but don't accuse of neglect.
+  const renderList = (arr) => arr.slice(0, 5).map(t => {
     const rawSubject = t.content || t.subject || t.id || '(unknown)';
     // Sanitize: strip control chars/newlines and truncate to ~60 chars so a
     // TodoWrite item's text cannot inject instruction-like content into the Stop
     // reason. Does not change which tasks are listed, only how the subject reads.
     const subject = sanitizeSubject(rawSubject) || '(unknown)';
     const status = sanitizeSubject(t.status || 'open', 24) || 'open';
-    return '"' + subject + '" [' + status + ']';
+    // JSON.stringify the subject (and status) so a subject containing a literal
+    // " renders cleanly and matches task-tracker.js's approach (symmetry). The
+    // whole reason is JSON.stringify'd anyway, so this is cleanliness, not safety.
+    return JSON.stringify(subject) + ' [' + JSON.stringify(status) + ']';
   }).join('; ');
-  const more = openTasks.length > 5 ? ' (and ' + (openTasks.length - 5) + ' more)' : '';
 
-  const reason =
-    'Open tasks remain and the session is stopping: ' + list + more + '. ' +
-    'Actively drain the task list: pick up pending tasks and dispatch subagents to ' +
-    'finalize them; run independent tasks in parallel (up to the concurrency cap, ' +
-    '~min(16, cores-2)); do not let tasks sit neglected. ' +
-    'Continue them, mark them completed or deferred via TaskUpdate, or tell the user ' +
-    'explicitly what is pending and why you are stopping.';
+  let reason;
+  if (idleNeglect) {
+    const list = renderList(actionable);
+    const more = actionable.length > 5 ? ' (and ' + (actionable.length - 5) + ' more)' : '';
+    reason =
+      'IDLE NEGLECT: ' + actionable.length + ' non-blocked, unassigned task(s) and ' +
+      'NO agents running — dispatch them in PARALLEL NOW (one background agent ' +
+      'each, cap ~min(16, cores-2)): ' + list + more + '. ' +
+      'Do not end the turn idle; only stop if a task truly needs the user (then ' +
+      'say which + why).';
+  } else {
+    const list = renderList(openTasks);
+    const more = openTasks.length > 5 ? ' (and ' + (openTasks.length - 5) + ' more)' : '';
+    reason =
+      'Open tasks remain and the session is stopping: ' + list + more + '. ' +
+      'Actively drain the task list: pick up pending tasks and dispatch subagents to ' +
+      'finalize them; run independent tasks in parallel (up to the concurrency cap, ' +
+      '~min(16, cores-2)); do not let tasks sit neglected. ' +
+      'Continue them, mark them completed or deferred via TaskUpdate, or tell the user ' +
+      'explicitly what is pending and why you are stopping.';
+  }
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(0);
@@ -250,6 +304,93 @@ function sanitizeSubject(s, maxLen) {
   return out;
 }
 
+// Normalize an owner field to a trimmed string ('' = unowned). The harness owner
+// is an agent id string; anything non-string collapses to ''.
+function normOwner(o) {
+  return typeof o === 'string' ? o.trim() : '';
+}
+
+// Normalize a blockedBy field to an array of string task ids. The harness sends a
+// list of open task ids that must resolve first; tolerate a single id or junk.
+function normBlockedBy(b) {
+  if (Array.isArray(b)) return b.filter(x => x != null).map(x => String(x));
+  if (b != null && (typeof b === 'string' || typeof b === 'number')) return [String(b)];
+  return [];
+}
+
+// agentsRunning() — true if ~/.anti-hall/agents/ holds at least one FRESH
+// heartbeat (an in-flight subagent). Matches how agent-watchdog.js reads them:
+// each file is <id>.json with a numeric `ts` (epoch ms). Fresh = ts within
+// FRESH_MS; we also accept file mtime as a fallback when ts is missing/old, so a
+// just-touched heartbeat still counts. Absent/unreadable dir => false (no agents)
+// — fail-open toward "not running", which can only PERMIT an idle-neglect nudge,
+// never silence one falsely while work is genuinely in flight (the dir IS written
+// when agents run). Any error => false.
+function agentsRunning(freshMs) {
+  const FRESH = freshMs || 20 * 60 * 1000; // ~20 min, matches agent-watchdog
+  const dir = path.join(os.homedir(), '.anti-hall', 'agents');
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+  } catch (_) {
+    return false; // no dir / unreadable => no agents
+  }
+  const now = Date.now();
+  for (const f of files) {
+    const full = path.join(dir, f);
+    let ts = 0;
+    try {
+      const data = JSON.parse(fs.readFileSync(full, 'utf8'));
+      if (data && typeof data.ts === 'number') ts = data.ts;
+    } catch (_) { /* fall back to mtime */ }
+    if (!ts) {
+      try { ts = fs.statSync(full).mtimeMs; } catch (_) { ts = 0; }
+    }
+    if (ts && (now - ts) < FRESH) return true;
+  }
+  return false;
+}
+
+// classifyOpen(openTasks) — split open tasks into ACTIONABLE-NOW vs the rest.
+// ACTIONABLE NOW = status pending AND unowned (no owner, or owner is the main
+// thread) AND no OPEN blocker (every blockedBy id is either absent from the map
+// or already in a done/completed state). in_progress / owned / blocked tasks are
+// NOT actionable — the orchestrator is either working them or genuinely waiting.
+function classifyOpen(openTasks, taskMap) {
+  // Build sets of (a) ids present in the map and (b) ids that are NOT done (so a
+  // blocker pointing at them is "open"). A blocker whose id is NOT in the map at
+  // all (dangling/unknown) is the SAFER default treated as STILL OPEN — we cannot
+  // prove it resolved, so the task is considered blocked (NOT actionable),
+  // suppressing a possible false block rather than risking one.
+  const known = new Set();
+  const notDone = new Set();
+  for (const t of taskMap.values()) {
+    known.add(String(t.id));
+    const s = (t.status || '').toLowerCase();
+    if (s !== 'completed' && s !== 'done' && s !== 'cancelled' && s !== 'canceled') {
+      notDone.add(String(t.id));
+    }
+  }
+  const actionable = [];
+  for (const t of openTasks) {
+    const s = (t.status || '').toLowerCase();
+    if (s !== 'pending') continue; // in_progress => already being worked
+    const owner = normOwner(t.owner);
+    // Owned by a subagent => not the main thread's to dispatch. Treat "main"/
+    // "orchestrator"/"coordinator" owner labels as the main thread (still ours).
+    if (owner && !/^(main|orchestrator|coordinator)$/i.test(owner)) continue;
+    const blockers = normBlockedBy(t.blockedBy);
+    // A blocker is OPEN if it is not-done OR unknown (dangling id => assume open).
+    const hasOpenBlocker = blockers.some(id => {
+      const k = String(id);
+      return notDone.has(k) || !known.has(k);
+    });
+    if (hasOpenBlocker) continue;
+    actionable.push(t);
+  }
+  return actionable;
+}
+
 function parseTasksFromFile(filePath) {
   const tail = readTranscriptTail(filePath);
   if (!tail) {
@@ -312,6 +453,11 @@ function parseTasksFromFile(filePath) {
               id: String(id),
               content: todo.content || todo.activeForm || String(id),
               status: todo.status || 'pending',
+              // TodoWrite items have no owner/dependency model — they are the
+              // main thread's own list, so they count as unowned + unblocked
+              // (i.e. always actionable when pending).
+              owner: normOwner(todo.owner),
+              blockedBy: normBlockedBy(todo.blockedBy),
             });
           }
         }
@@ -325,8 +471,13 @@ function parseTasksFromFile(filePath) {
         const toolUseId = tu.id || '';
         const content = inp.subject || inp.title || inp.content || inp.description || toolUseId;
         const status = inp.status || 'pending';
+        // owner / blockedBy may be absent at create-time (set later via
+        // TaskUpdate) — capture if present so a single-shot create with deps is
+        // still classified correctly.
+        const owner = normOwner(inp.owner);
+        const blockedBy = normBlockedBy(inp.blockedBy);
         if (toolUseId) {
-          provisionalMap.set(toolUseId, { toolUseId, content, status });
+          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy });
         }
         continue;
       }
@@ -344,6 +495,11 @@ function parseTasksFromFile(filePath) {
             id: existing.id,
             content: existing.content,
             status: inp.status || existing.status || 'pending',
+            // Only overwrite owner/blockedBy when the update actually carries the
+            // field; an unrelated status-only update must not clear them.
+            owner: inp.owner !== undefined ? normOwner(inp.owner) : (existing.owner || ''),
+            blockedBy: inp.blockedBy !== undefined ? normBlockedBy(inp.blockedBy)
+                                                    : (existing.blockedBy || []),
           });
         }
         continue;
@@ -361,10 +517,17 @@ function parseTasksFromFile(filePath) {
     // before we flushed), keep its status; otherwise use the provisional status.
     const existing = taskMap.get(key);
     if (!existing) {
-      taskMap.set(key, { id: key, content: rec.content, status: rec.status });
+      taskMap.set(key, {
+        id: key, content: rec.content, status: rec.status,
+        owner: rec.owner || '', blockedBy: rec.blockedBy || [],
+      });
     } else if (!existing.content || existing.content === key) {
       // Backfill subject from provisional record (update may have arrived first).
-      taskMap.set(key, { id: key, content: rec.content, status: existing.status });
+      taskMap.set(key, {
+        id: key, content: rec.content, status: existing.status,
+        owner: existing.owner || rec.owner || '',
+        blockedBy: (existing.blockedBy && existing.blockedBy.length) ? existing.blockedBy : (rec.blockedBy || []),
+      });
     }
     // If existing already has a richer status from TaskUpdate, leave it.
   }

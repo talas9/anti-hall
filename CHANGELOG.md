@@ -6,6 +6,64 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.29.0
+
+**Feature (P0): `task-guard` now catches IDLE NEGLECT — the orchestrator sitting on dispatchable work instead of spinning parallel agents.**
+
+The #1 field pain: an autonomous run ends a turn with non-blocked, unassigned tasks
+pending and NO subagents running — it just stops instead of fanning out. The old Stop
+hook only knew "open tasks exist → generic nudge", which the model learned to ignore.
+
+`task-guard` now **classifies** open tasks into **ACTIONABLE NOW** = status `pending`
+AND unowned (no `owner`, or owner is the main thread) AND no **OPEN** `blockedBy` (every
+blocker already in a done state). It also **detects in-flight agents** by scanning
+`~/.anti-hall/agents/*.json` for a FRESH heartbeat (numeric `ts`, or file mtime fallback,
+within ~20 min — same format `agent-watchdog.js` writes; absent dir = no agents).
+
+- **Sharp block (the new condition):** if ≥1 actionable-now task AND no agents running →
+  **IDLE NEGLECT** → block naming those tasks: *"IDLE NEGLECT: N non-blocked, unassigned
+  task(s) and NO agents running — dispatch them in PARALLEL NOW (one background agent each,
+  cap ~min(16, cores-2)): &lt;names&gt;. Do not end the turn idle; only stop if a task truly
+  needs the user (then say which + why)."*
+- **Gentle path (no nagging real work):** if agents ARE in flight, or the only open tasks
+  are blocked/owned/in_progress, it falls back to the existing generic drain nudge.
+
+**Loop-safety (cannot hard-loop):** the idle-neglect block dedupes on a hash of
+(actionable-set + `"no-agents"`) so it re-fires only when that set actually changes; an
+absolute `MAX_BLOCKS` cap — raised modestly **3 → 5**, counting BOTH modes — guarantees a
+genuinely-stuck set goes quiet after a few nudges. All existing safety kept (top-level
+try/catch → exit 0, skip-hatch, per-session state under `~/.anti-hall/`, fail-open on any
+error, bounded transcript tail-read).
+
+Also: **orchestration rule C** (`verify-first-full.js` SessionStart protocol) reworded to
+demand **PROACTIVE** parallel dispatch — fire a background agent for a pending, unblocked,
+unassigned task the moment it exists, *without being asked*; ending a turn with such tasks
+and no agents running is explicitly named IDLE NEGLECT.
+
+**Complementary per-turn layer — `task-tracker` (UserPromptSubmit) now nudges BEFORE the
+turn, not only at Stop.** The Stop-hook idle-neglect block fires after the model already
+decided to stop; `task-tracker` now reviews the actionable-now set on *every* prompt and,
+when ≥1 pending+unowned+unblocked task exists AND no agents are in flight, injects a
+SPECIFIC review line into `additionalContext`:
+*"TASK REVIEW (every turn): N non-blocked, unassigned pending task(s) — dispatch a
+background agent for EACH now, in parallel (cap ~min(16, cores-2)), unless already
+in-flight: &lt;up to 4 names&gt;. Do not leave them idle; only hold one if it truly needs
+the user."* It reuses task-guard's exact definitions — `normOwner` / `normBlockedBy` /
+`classifyOpen` (owner main/orchestrator/coordinator = ours; blocker open unless its task
+is done/completed/cancelled) and the `~/.anti-hall/agents/*.json` fresh-heartbeat check.
+Task subjects are control-char-stripped then `JSON.stringify`'d (inert quoted strings — no
+prompt injection). When 0 actionable, the existing generic discipline + open-tasks
+freshness note are unchanged. Reconstruction now also captures `owner`/`blockedBy` per
+task (status-only `TaskUpdate` does not clear them). Bounded (same 256 KB tail read) and
+fully fail-open — any error → existing generic text or nothing, never wedges the turn.
+
+Tests: +6 task-guard cases (actionable-now + no-agents → idle-neglect naming tasks;
+agents-running → generic not idle-neglect; all-blocked → generic; owned-pending → not
+actionable; idle-neglect dedupe; churn-cap loop-safety). +5 task-tracker cases
+(actionable-now → review line names tasks + says parallel; 0 actionable → generic only;
+owned/blocked → not listed; fresh agent → no review line; malformed transcript →
+fail-open). Suite **340 passing / 342 total**.
+
 ## 0.28.2
 
 **Fix (P0): `ship-it` plan-approval gate now honors granted autonomy — no more blocking for a "go" already given.**
