@@ -55,6 +55,7 @@ const NUDGES = [
   "VERIFY DELEGATED WORK: a subagent's 'done / tests pass' is an UNVERIFIED CLAIM. Re-run the authoritative check yourself before marking a delegated task complete; reconcile multiple workers against ground truth, not against each other.",
   "Default delegated heavy/long/parallel work to the BACKGROUND yourself (pass run_in_background) so the main thread stays free and the user never has to background it manually; then drain each on its completion notification and verify it - never fire-and-forget.",
   "SYNTHESIZE, NEVER RELAY: never paste a subagent's raw return into the user thread - the #1 cause of message-context bloat. Subagents return TIGHT summaries under an output budget; for a big result require a structured {claim, evidence:file:line, verdict, blockers, next} schema (measured ~5x smaller, lossless); coordinator reports findings in its own words.",
+  "DONE = verified against the AGREED acceptance criteria, not 'tests pass' (tests prove behavior, not that it matches what was agreed) and not a subagent's 'per-spec/done'. Fidelity you can't verify mechanically (does the UI match the agreed mockup?) is 'built, PENDING OWNER REVIEW' - an open item, never a hidden follow-up. Autonomy doesn't lower this bar.",
 ];
 
 function main() {

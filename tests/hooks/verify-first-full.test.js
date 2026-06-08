@@ -70,6 +70,18 @@ const POSITIVE_RULES = [
   ['User agreement is not correctness', 'positive rule 9 keyword (user agreement is not correctness)'],
 ];
 
+// RULE 6 ACCEPTANCE-CRITERIA clause ("false done" P0, 0.30.0). The injected
+// protocol's positive-rule 6 must carry the AGREED-acceptance done-bar and the
+// PENDING OWNER VERIFICATION escape hatch. Asserted on the REAL spawned-hook
+// output below (true injection E2E, not a static source check).
+const RULE6_ACCEPTANCE = [
+  ['AGREED ACCEPTANCE CRITERIA', 'rule 6: DONE = verified against the AGREED ACCEPTANCE CRITERIA'],
+  ['PENDING OWNER VERIFICATION', 'rule 6: un-mechanically-verifiable fidelity is PENDING OWNER VERIFICATION'],
+  ['SELF-ISSUED HEDGE', 'rule 6: SELF-ISSUED HEDGE hard-blocks done + auto-merge'],
+  ['hard-blocks both its', 'rule 6: hedge phrase hard-blocks both "done" status AND auto-merge'],
+  ['do not merge', 'rule 6: hedge state = "pending owner review, do not merge"'],
+];
+
 // USER OVERRIDE line: the skip.json / ~/.anti-hall mechanism + the guardrail.
 const USER_OVERRIDE = [
   ['USER OVERRIDE', 'USER OVERRIDE label'],
@@ -164,6 +176,13 @@ test('SessionStart startup -> full protocol present, EVERY section/rule intact (
     // POSITIVE RULES 1-9 (header, all nine numbers, a keyword each).
     assert.ok(c.includes(POSITIVE_HEADER[0]), `DROPPED: ${POSITIVE_HEADER[1]}`);
     assertAll(c, POSITIVE_RULES);
+
+    // RULE 6 acceptance-criteria clause ("false done" P0 fix, 0.30.0) — asserted
+    // here on the REAL spawned-hook additionalContext (true injection E2E).
+    // Includes: AGREED ACCEPTANCE CRITERIA standard, PENDING OWNER VERIFICATION
+    // escape hatch, and SELF-ISSUED HEDGE hard-block (a self-caveat blocks 'done' +
+    // auto-merge, state = 'pending owner review, do not merge').
+    assertAll(c, RULE6_ACCEPTANCE);
 
     // USER OVERRIDE line.
     assertAll(c, USER_OVERRIDE);

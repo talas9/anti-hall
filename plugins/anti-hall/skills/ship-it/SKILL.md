@@ -275,9 +275,29 @@ For each phase (swarmed at L, or inline at S/M):
    no speculation — cite the file:line you actually changed.**
 
 3. **Verification-before-completion (Iron Law).** Do NOT claim a phase done without **fresh
-   command output in this message**: run the phase's `acceptance` command, read the full
-   output, check the exit code. "Should pass" / "looks correct" is not done. Evidence before
-   assertion — always.
+   first-hand evidence in this message** that it meets the phase's **acceptance criteria** —
+   not just that code ran. Where acceptance is a command/test: run it, read the full output,
+   check the exit code. "Should pass" / "looks correct" is not done.
+   - **Acceptance is NOT only a runnable command.** When the agreed criterion is *fidelity to
+     an artifact* — a UI matching an agreed design/mockup, output matching a spec, behavior
+     matching a worked example — **a green test suite does NOT prove it** (behavior/logic
+     tests don't look at pixels or compare to the mockup). Verify it the way it can actually
+     be checked: open the agreed artifact (the design file / spec / checklist) and compare the
+     real output to it, item by item, citing what you checked.
+   - **Fidelity you CANNOT verify mechanically (visual/UX/design-match) is NOT "done" — it is
+     "built, PENDING OWNER VERIFICATION."** Report it that way and surface it as a blocker on
+     completion. **Never demote an unverified agreed-acceptance criterion to a post-hoc
+     "follow-up" while calling the work done/shipped/merged** — that is the exact "false done"
+     this rule prevents. If owner sign-off is the only way to confirm fidelity, the phase is
+     not done until that sign-off.
+
+3b. **The coordinator verifies delegated acceptance (rule L, applied here).** A build/swarm
+   agent reporting "implemented per the spec / per the HTML / matches the design / done" is an
+   **UNVERIFIED CLAIM**, not completion. Before marking the phase done, the coordinator checks
+   the agent's actual output against the acceptance criteria with its **own** evidence (read
+   the produced code/diff; compare to the agreed artifact). Never relay a subagent's
+   self-reported "done" as the phase's completion — that is how a whole feature ships looking
+   nothing like what was agreed.
 
 4. **Vacuous-test guard.** A green suite is not proof if the tests don't exercise the change.
    Before trusting "tests pass," run the full cycle (matches deadly-loop D1.5): **revert the
@@ -322,9 +342,24 @@ assumption it'll be fixed later.
 
 ## Step 6 — Wrap up
 
-- **All tiers:** confirm the final result proves the **goal** (goal-backward), not just
-  "all tasks done," and list any **owner actions** (deploys, secrets, migrations) explicitly
-  — these never autonomy-bypass.
+- **All tiers — goal-backward against the AGREED criteria.** Before reporting done/shipped,
+  restate each **agreed acceptance criterion** (the goal/design/spec the owner actually agreed
+  to) and cite the **first-hand evidence** it is met. "All tasks done" / "all tests pass" /
+  "the build agents said it matches" is **NOT** acceptance — tests prove behavior, not that
+  the result is what was agreed. Any criterion you could not verify first-hand (especially
+  visual/UX/design fidelity) is reported as **"built, PENDING OWNER VERIFICATION,"** listed as
+  an open item — **never folded into "done" with the gap hidden as a follow-up.** A truthful
+  "done with these 2 items pending your review" beats a false "done."
+- **A self-issued hedge IS "not done" (hard rule).** If you find yourself writing
+  *"first-pass"*, *"not pixel-perfect yet"*, *"pending review"*, *"needs your eyes"*,
+  *"review it in the build"*, or any caveat that the deliverable isn't confirmed against its
+  agreed criterion — **that phrase hard-blocks both the "done" status and any auto-merge for
+  that deliverable.** You cannot write a review-caveat and "merged/live" about the same item
+  in the same breath; the caveat wins and the state is **"pending owner review — do not
+  merge."** Your own doubt, written down, is a verification signal — honor it, don't override
+  it with "tests pass."
+- **List any owner actions** (deploys, secrets, migrations) explicitly — these never
+  autonomy-bypass.
 - **L (and M when it produced a release-worthy change):** version bump / changelog per the
   repo's own policy.
 - **S / trivial M:** no release ceremony — the verified edit plus a one-line summary is the
@@ -348,6 +383,19 @@ Otherwise: plan → harden → build → per-phase harden → ship, continuously
 durable file (e.g. `.planning/AUTONOMY-STATUS.md`) so the owner can follow; silence ≠ stop.
 Re-read each granted instruction literally: "build it / merge / full autonomy" means *do it*,
 not *plan it and wait*.
+
+**Autonomy does NOT lower the acceptance bar (Step 6).** Running hands-off lets you skip the
+approval *gate* — it does NOT let you call something "done/shipped" you have not verified
+against the agreed acceptance criteria. A criterion you cannot verify first-hand without the
+owner (visual/UX/design fidelity, "looks like the mockup") is reported in `AUTONOMY-STATUS.md`
+as **"built, PENDING OWNER VERIFICATION,"** an explicit open item — never as "done," and
+never silently relegated to a follow-up. Autonomous "done" must be *truthful* done, or it is
+labelled pending. Reporting a green test suite as if it proved design fidelity is the "false
+done" failure this protocol forbids. **And a self-issued hedge hard-blocks the AUTO-MERGE
+too:** if your status note carries any "first-pass / pending review / not pixel-perfect"
+caveat about a deliverable, that deliverable does NOT auto-merge under autonomy — it parks in
+`AUTONOMY-STATUS.md` as "pending owner review, not merged." Never auto-merge something you
+yourself flagged as unconfirmed.
 
 ## Hard safety boundaries (NEVER bypass, even autonomous)
 

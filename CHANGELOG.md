@@ -6,6 +6,18 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.30.0
+
+**Fix (P0): "false done" — DONE now requires verification against the AGREED acceptance criteria, not tests-pass or a subagent "per-spec" report.**
+
+Fidelity that can't be mechanically verified (UI vs agreed mockup) is reported
+PENDING OWNER VERIFICATION, never folded into done as a hidden follow-up;
+coordinator verifies delegated acceptance (rule L); autonomy doesn't lower the bar.
+Grounded in a real field failure (UI shipped "done" off green behavior-tests +
+subagent self-reports, never compared to the agreed design HTML). Touches ship-it
+Step 4/6 + Autonomous-mode, always-on protocol rule 6, +1 per-turn nudge (17 → 18).
+A self-issued hedge (e.g., "first-pass / not pixel-perfect / pending review / needs your eyes") about a deliverable hard-blocks both its "done" status and any auto-merge; the coordinator's own written doubt is a verification signal.
+
 ## 0.29.0
 
 **Feature (P0): `task-guard` now catches IDLE NEGLECT — the orchestrator sitting on dispatchable work instead of spinning parallel agents.**

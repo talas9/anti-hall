@@ -125,6 +125,43 @@ test('the new "SYNTHESIZE, NEVER RELAY" nudge is reachable across inputs', () =>
   }
 });
 
+test('the new "DONE = verified against the AGREED acceptance" nudge is reachable across inputs', () => {
+  const h = makeHome();
+  try {
+    // Same deterministic SHA-1(stdin) % NUDGES.length pick: sweep distinct
+    // envelopes until the emitted additionalContext carries the new
+    // done-bar / acceptance-criteria facet ("false done" P0 fix, #79).
+    // If the string were dropped from NUDGES this never hits.
+    let found = false;
+    for (let i = 0; i < 5000 && !found; i++) {
+      const raw = JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 't' + i, prompt: 'x' });
+      const r = testHookRaw(HOOK, raw, { home: h.home });
+      assert.strictEqual(r.status, 0);
+      const c = ctx(r);
+      if (c.includes('AGREED acceptance criteria') && c.includes('PENDING OWNER REVIEW')) found = true;
+    }
+    assert.ok(found, 'expected some input to emit the "DONE = verified against the AGREED acceptance" nudge');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('NUDGES array has exactly 18 entries (count asserted via the source)', () => {
+  // Lock the rotation size: the per-turn pick is SHA-1(stdin) % NUDGES.length,
+  // so the count is load-bearing. 0.30.0 added the done-bar/acceptance nudge -> 18.
+  const path = require('node:path');
+  const fs = require('node:fs');
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'verify-first.js'),
+    'utf8',
+  );
+  const arr = src.match(/const NUDGES = \[([\s\S]*?)\n\];/);
+  assert.ok(arr, 'NUDGES array literal not found in verify-first.js');
+  // Count the quoted string entries (each nudge is a "..." line ending in a comma).
+  const entries = arr[1].split('\n').filter((l) => /^\s*"/.test(l.trim()) || /^\s*"/.test(l));
+  assert.strictEqual(entries.length, 18, `expected 18 nudges, found ${entries.length}`);
+});
+
 test('FAIL-OPEN: empty stdin -> exit 0', () => {
   const h = makeHome();
   try {
