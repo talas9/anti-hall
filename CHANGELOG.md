@@ -6,6 +6,29 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.31.0
+
+**Feature (OPT-IN, default OFF): `merge-gate` — a mechanical backstop for the v0.30.0 "false done" discipline.**
+
+Mechanizes the one *checkable* part of the false-done failure: the agent wrote a
+self-hedge ("first-pass" / "pending review" / "do not merge" / "needs your eyes")
+in its OWN recent output, then auto-merged anyway. `merge-gate` is a PreToolUse
+(Bash) hook that, **only when `ANTIHALL_MERGE_GATE` ∈ {1,true,yes,on}**, detects an
+auto-merge intent (`gh pr merge` incl. `--auto`, `gh pr review --approve`, `git
+merge --no-ff/--ff` into `main`/`master`/`develop`) and does a bounded (128 KB)
+tail-scan of the recent **assistant** transcript text for an UNRESOLVED hedge. A
+hedge is RESOLVED (and the merge allowed) when a resolution token follows it
+("owner approved", "owner signed off", "fidelity verified", "verified against",
+"resolved:", "sign-off received"). Unresolved hedge + auto-merge → block (exit 2)
+with a verify-or-get-sign-off reason.
+
+HONEST limits (in the header): keyword-heuristic, bypassable (alternate merge
+syntax / heredoc / GitHub UI / API), **default-OFF**, fail-open on every error (no
+transcript, parse error, fs error, bad stdin). Cannot hard-loop — PreToolUse is
+single-shot and holds no state. A backstop on the v0.30.0 discipline, NOT a
+guarantee. Honors the `merge-gate` skip-hatch. Hooks shipped 19 → 20 (+`hooks.json`
+= 20 → 21 files); +18 tests.
+
 ## 0.30.0
 
 **Fix (P0): "false done" — DONE now requires verification against the AGREED acceptance criteria, not tests-pass or a subagent "per-spec" report.**

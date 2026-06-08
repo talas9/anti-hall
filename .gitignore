@@ -25,3 +25,6 @@ eval/scope-results*.json
 eval/*.log
 # local project working notes — never ship to the public repo
 CLAUDE.md
+
+# macOS Finder metadata — never commit
+.DS_Store
