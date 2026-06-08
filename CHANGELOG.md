@@ -6,6 +6,29 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.31.1
+
+**Fix: statusline swarm-activity count is now per-session — no more cross-session/cross-project bleed.**
+
+The line-2 "orchestrating · N agents active" bar counted EVERY recent subagent
+spawn from EVERY Claude Code session on the machine, so a swarm running in one
+project showed its count on every other open project's statusline. Root cause:
+`phase-tracker.js` wrote bare `Date.now()` timestamps to the GLOBAL
+`~/.anti-hall/agent-spawns.log` with no session identity, and `phase-bar.js`
+`activityLine()` counted lines by TIME ONLY.
+
+Fix (per-session isolation):
+- `phase-tracker.js` now tags each spawn line as `"<ms> <tag>"`, where `<tag>`
+  is the PreToolUse `session_id` (sanitized to `[A-Za-z0-9_-]`), falling back to
+  `cwd-<sha1(cwd)[:12]>`, else `unknown`. Retention prune (5 min) and fail-open /
+  never-block behavior are unchanged; other sessions' fresh lines are preserved.
+- `phase-bar.js` `activityLine()` now derives THIS session's tag from the
+  statusline's own session JSON (stdin: `session_id`, else `cwd`-hash) and counts
+  ONLY entries whose tag matches AND fall within the 2-min activity window. LEGACY
+  untagged lines belong to no session and are never counted (they age out). When
+  no session identity is available, NO activity line is rendered (safer than a
+  wrong count). Fail-open intact.
+
 ## 0.31.0
 
 **Feature (OPT-IN, default OFF): `merge-gate` — a mechanical backstop for the v0.30.0 "false done" discipline.**

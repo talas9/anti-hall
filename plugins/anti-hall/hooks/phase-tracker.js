@@ -18,26 +18,57 @@ const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
 
+const crypto = require('crypto');
+
 const DIR       = path.join(os.homedir(), '.anti-hall');
 const LOG       = path.join(DIR, 'agent-spawns.log');
 const KEEP_MS   = 5 * 60 * 1000; // retain spawn timestamps for 5 minutes
 
+// sessionTag — a per-session token written alongside each spawn timestamp so the
+// statusline can count ONLY the spawns of the session it is rendering for, never
+// another session's (cross-session/cross-project bleed). Prefer the harness
+// session_id; fall back to a short stable hash of the cwd; else 'unknown'. The
+// token is sanitized to [A-Za-z0-9_-] so a line is always "<ms> <token>" with a
+// single space and no embedded newline/whitespace that could corrupt parsing.
+function sessionTag(payload) {
+  let raw = '';
+  try {
+    const data = JSON.parse(payload);
+    if (data && typeof data.session_id === 'string' && data.session_id.trim()) {
+      raw = data.session_id.trim();
+    } else {
+      const cwd = (data && (data.cwd || (data.workspace && data.workspace.current_dir))) || '';
+      if (cwd) raw = 'cwd-' + crypto.createHash('sha1').update(String(cwd)).digest('hex').slice(0, 12);
+    }
+  } catch (e) { /* malformed/empty -> unknown */ }
+  const clean = raw.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64);
+  return clean || 'unknown';
+}
+
 try {
-  // Drain stdin (hook protocol gives us the tool payload; we don't need it).
-  try { fs.readFileSync(0, 'utf8'); } catch (e) { /* ignore */ }
+  // Read stdin (the PreToolUse payload carries session_id / cwd we tag with).
+  let payload = '';
+  try { payload = fs.readFileSync(0, 'utf8'); } catch (e) { /* ignore */ }
+  const tag = sessionTag(payload);
 
   const now = Date.now();
-  let ts = [];
+  // Keep every recent line REGARDLESS of session tag (retention prune only): the
+  // log is global, but we preserve other sessions' fresh entries so each session's
+  // own statusline can still find its lines. A line is "<ms>" (legacy) or
+  // "<ms> <tag>"; parse the leading integer for the prune.
+  let lines = [];
   try {
-    ts = fs.readFileSync(LOG, 'utf8').trim().split(/\r?\n/)
-      .map(n => parseInt(n, 10))
-      .filter(n => Number.isFinite(n) && (now - n) < KEEP_MS);
+    lines = fs.readFileSync(LOG, 'utf8').trim().split(/\r?\n/)
+      .filter(l => {
+        const ms = parseInt(l, 10);
+        return Number.isFinite(ms) && (now - ms) < KEEP_MS;
+      });
   } catch (e) { /* no log yet */ }
 
-  ts.push(now);
+  lines.push(now + ' ' + tag);
   try {
     fs.mkdirSync(DIR, { recursive: true });
-    fs.writeFileSync(LOG, ts.join('\n') + '\n', 'utf8');
+    fs.writeFileSync(LOG, lines.join('\n') + '\n', 'utf8');
   } catch (e) { /* fail-open: can't persist -> just don't track */ }
 } catch (e) {
   /* never throw */

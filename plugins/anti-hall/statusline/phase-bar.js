@@ -198,13 +198,40 @@ function contextLine(input) {
 // coordinator effort.
 const SPAWN_LOG   = path.join(os.homedir(), '.anti-hall', 'agent-spawns.log');
 const ACTIVITY_MS = 2 * 60 * 1000; // "active" if a subagent spawned in the last 2 min
+const crypto = require('crypto');
 
-function recentSpawns() {
+// currentSessionTag(input) — derive THIS session's tag from the statusline's own
+// session JSON (stdin), using the SAME scheme phase-tracker.js writes: prefer
+// session_id, else a cwd-hash, else null. Returning null means "no identity" — we
+// then render NO activity line (safer than counting another session's spawns).
+function currentSessionTag(input) {
+  let data;
+  try { data = JSON.parse(input); } catch (e) { return null; }
+  if (!data || typeof data !== 'object') return null;
+  if (typeof data.session_id === 'string' && data.session_id.trim()) {
+    return data.session_id.trim().replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64) || null;
+  }
+  const cwd = data.cwd || (data.workspace && data.workspace.current_dir) || '';
+  if (cwd) return 'cwd-' + crypto.createHash('sha1').update(String(cwd)).digest('hex').slice(0, 12);
+  return null;
+}
+
+// recentSpawns(tag) — count spawn-log entries within ACTIVITY_MS whose session
+// tag matches `tag`. Each line is "<ms> <tag>"; LEGACY untagged lines ("<ms>")
+// have no owner and are NEVER attributed to any session (they age out via the
+// tracker's prune) so they can't bleed across sessions/projects.
+function recentSpawns(tag) {
+  if (!tag) return 0;
   try {
     const now = Date.now();
     return fs.readFileSync(SPAWN_LOG, 'utf8').trim().split(/\r?\n/)
-      .map(n => parseInt(n, 10))
-      .filter(n => Number.isFinite(n) && (now - n) < ACTIVITY_MS).length;
+      .filter(l => {
+        const sp = l.indexOf(' ');
+        if (sp < 0) return false; // legacy untagged -> ignore
+        const ms = parseInt(l.slice(0, sp), 10);
+        const lineTag = l.slice(sp + 1).trim();
+        return Number.isFinite(ms) && (now - ms) < ACTIVITY_MS && lineTag === tag;
+      }).length;
   } catch (e) { return 0; }
 }
 
@@ -218,8 +245,8 @@ function renderSweep() {
   return '[' + cells + ']';
 }
 
-function activityLine() {
-  const n = recentSpawns();
+function activityLine(input) {
+  const n = recentSpawns(currentSessionTag(input));
   if (n <= 0) return null;
   return `${renderSweep()} ${C.cyan}orchestrating${C.reset} ${C.dim}·${C.reset} ` +
          `${C.blue}${n} agent${n === 1 ? '' : 's'}${C.reset} ${C.dim}active${C.reset}`;
@@ -229,7 +256,7 @@ function activityLine() {
 try {
   const input = readStdin();
   let line = phaseBarLine();                 // 1. semantic phase set via phase.js
-  if (line === null) line = activityLine();  // 2. auto-tracked live swarm activity
+  if (line === null) line = activityLine(input);  // 2. auto-tracked live swarm activity (per-session)
   if (line === null) line = contextLine(input); // 3. idle context-window gauge
   if (line) process.stdout.write(line + '\n');
 } catch (e) {

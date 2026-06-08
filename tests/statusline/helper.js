@@ -103,9 +103,17 @@ function makeStatusHome() {
     const t = Date.now() / 1000 - secondsAgo;
     fs.utimesSync(p, t, t);
   }
-  function writeSpawnLog(timestampsMs) {
+  // writeSpawnLog(entries) — write the agent-spawns.log.
+  //   - number          -> a LEGACY untagged line "<ms>"
+  //   - [ms, tag]        -> a tagged line "<ms> <tag>"
+  //   - "raw string"     -> written verbatim (for malformed-line tests)
+  function writeSpawnLog(entries) {
     const p = path.join(antiHall, 'agent-spawns.log');
-    fs.writeFileSync(p, timestampsMs.join('\n') + '\n', 'utf8');
+    const lines = entries.map(e => {
+      if (Array.isArray(e)) return `${e[0]} ${e[1]}`;
+      return String(e);
+    });
+    fs.writeFileSync(p, lines.join('\n') + '\n', 'utf8');
     return p;
   }
   function writeClaudeSettings(obj) {

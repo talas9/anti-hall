@@ -92,12 +92,12 @@ test('phase-bar treats a stale (old-mtime) state file as absent', () => {
 
 // --- Case A2: live activity from agent-spawns.log -------------------------
 
-test('phase-bar shows live "orchestrating" with a recent-spawn count', () => {
+test('phase-bar shows live "orchestrating" with a recent-spawn count (own session only)', () => {
   const h = makeStatusHome();
   try {
     const now = Date.now();
-    h.writeSpawnLog([now, now - 1000, now - 5000]); // all within the 2-min window
-    const out = render(h, '{}');
+    h.writeSpawnLog([[now, 'sessA'], [now - 1000, 'sessA'], [now - 5000, 'sessA']]);
+    const out = render(h, '{"session_id":"sessA"}');
     assert.match(out, /orchestrating/);
     assert.match(out, /3 agents active/);
   } finally { h.cleanup(); }
@@ -107,9 +107,85 @@ test('phase-bar ignores spawn-log entries older than the 2-min activity window',
   const h = makeStatusHome();
   try {
     const old = Date.now() - 5 * 60 * 1000; // 5 min ago
-    h.writeSpawnLog([old, old - 1000]);
-    const out = render(h, '{}');
+    h.writeSpawnLog([[old, 'sessA'], [old - 1000, 'sessA']]);
+    const out = render(h, '{"session_id":"sessA"}');
     assert.strictEqual(out, '', 'no recent spawns -> no activity line, no context -> empty');
+  } finally { h.cleanup(); }
+});
+
+// --- Case A2: PER-SESSION isolation (no cross-session/cross-project bleed) --
+
+test('phase-bar counts ONLY the current session\'s spawns, not another session\'s', () => {
+  const h = makeStatusHome();
+  try {
+    const now = Date.now();
+    // sessB has a busy swarm; sessA has 2 recent spawns. Rendering for sessA must
+    // see exactly 2 — never sessB's count (the cross-session bleed bug).
+    h.writeSpawnLog([
+      [now, 'sessA'], [now - 1000, 'sessA'],
+      [now, 'sessB'], [now - 500, 'sessB'], [now - 800, 'sessB'], [now - 900, 'sessB'],
+    ]);
+    const out = render(h, '{"session_id":"sessA"}');
+    assert.match(out, /2 agents active/, 'sessA sees only its own 2 spawns');
+    assert.doesNotMatch(out, /4 agents/, 'sessB count must not bleed in');
+  } finally { h.cleanup(); }
+});
+
+test('phase-bar: session B sees its own swarm independently', () => {
+  const h = makeStatusHome();
+  try {
+    const now = Date.now();
+    h.writeSpawnLog([
+      [now, 'sessA'], [now - 1000, 'sessA'],
+      [now, 'sessB'], [now - 500, 'sessB'], [now - 800, 'sessB'], [now - 900, 'sessB'],
+    ]);
+    const out = render(h, '{"session_id":"sessB"}');
+    assert.match(out, /4 agents active/, 'sessB sees only its own 4 spawns');
+  } finally { h.cleanup(); }
+});
+
+test('phase-bar ignores LEGACY untagged spawn lines (no bleed, they age out)', () => {
+  const h = makeStatusHome();
+  try {
+    const now = Date.now();
+    // Bare timestamps (old format) belong to no session -> never counted.
+    h.writeSpawnLog([now, now - 1000, now - 2000]);
+    const out = render(h, '{"session_id":"sessA"}');
+    assert.strictEqual(out, '', 'legacy untagged lines are not attributed to any session');
+  } finally { h.cleanup(); }
+});
+
+test('phase-bar falls back to cwd-hash when no session_id is present', () => {
+  const h = makeStatusHome();
+  try {
+    const now = Date.now();
+    const crypto = require('node:crypto');
+    const cwd = '/some/project/path';
+    const tag = 'cwd-' + crypto.createHash('sha1').update(cwd).digest('hex').slice(0, 12);
+    h.writeSpawnLog([[now, tag], [now - 1000, tag]]);
+    const out = render(h, JSON.stringify({ cwd }));
+    assert.match(out, /2 agents active/, 'cwd-hash identity matches the tracker tag');
+  } finally { h.cleanup(); }
+});
+
+test('phase-bar renders NO activity line when session identity is unavailable', () => {
+  const h = makeStatusHome();
+  try {
+    const now = Date.now();
+    h.writeSpawnLog([[now, 'sessA'], [now, 'sessB']]);
+    // stdin has neither session_id nor cwd -> no identity -> safer to show nothing.
+    const out = render(h, '{}');
+    assert.strictEqual(out, '', 'no identity -> no (possibly-wrong) activity count');
+  } finally { h.cleanup(); }
+});
+
+test('phase-bar tolerates a malformed spawn-log line (fail-open count)', () => {
+  const h = makeStatusHome();
+  try {
+    const now = Date.now();
+    h.writeSpawnLog(['garbage-no-number', `${now} sessA`, 'sessA-only-no-ts']);
+    const out = render(h, '{"session_id":"sessA"}');
+    assert.match(out, /1 agent active/, 'only the one valid sessA line counts');
   } finally { h.cleanup(); }
 });
 
