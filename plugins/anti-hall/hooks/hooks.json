@@ -168,6 +168,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"",
+            "timeout": 10
+          },
+          {
+            "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"",
             "timeout": 10
           },
@@ -181,6 +186,11 @@
       {
         "matcher": "Task",
         "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/model-routing-guard.js\"",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/swarm-guard.js\"",

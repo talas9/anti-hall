@@ -121,6 +121,23 @@ function makeStatusHome() {
     fs.writeFileSync(p, typeof obj === 'string' ? obj : JSON.stringify(obj), 'utf8');
     return p;
   }
+  // writeClaudeJson(projectsMap) — write ~/.claude.json with a `projects` map.
+  // Each key is a project dir path; value must include lastModelUsage if desired.
+  // Shape verified P6: { projects: { "<dir>": { lastModelUsage: { "<model-id>": {...} } } } }
+  function writeClaudeJson(projectsMap) {
+    const p = path.join(home, '.claude.json');
+    fs.writeFileSync(p, JSON.stringify({ projects: projectsMap }), 'utf8');
+    return p;
+  }
+  // writeProjectSettings(projDir, obj) — write <projDir>/.claude/settings.json,
+  // which is where getSettings() in statusline-rich.js reads from (CWD/.claude/settings.json).
+  function writeProjectSettings(projDir, obj) {
+    const d = path.join(projDir, '.claude');
+    fs.mkdirSync(d, { recursive: true });
+    const p = path.join(d, 'settings.json');
+    fs.writeFileSync(p, typeof obj === 'string' ? obj : JSON.stringify(obj), 'utf8');
+    return p;
+  }
   function readJSON(p) {
     return JSON.parse(fs.readFileSync(p, 'utf8'));
   }
@@ -134,6 +151,7 @@ function makeStatusHome() {
   return {
     home, antiHall, claude,
     writePhaseState, agePhaseState, writeSpawnLog, writeClaudeSettings,
+    writeClaudeJson, writeProjectSettings,
     readJSON, exists, cleanup,
   };
 }

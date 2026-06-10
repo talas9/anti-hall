@@ -145,6 +145,33 @@ function tasklistTest() {
 }
 tasklistTest() ? ok('tasklist-guard blocks untracked work (4 edits, no tasks, no progress file)') : bad('tasklist-guard did NOT block untracked work');
 
+// model-routing-guard: blocks a mechanical task pinned to a flagship model (row 1);
+// allows a benign spawn with no model specified and no mechanical signals (row 5).
+function mrg(payload) {
+  return runHook('model-routing-guard.js', Object.assign({ tool_name: 'Agent' }, payload));
+}
+const mrgBlock = mrg({ tool_input: {
+  model: 'opus',
+  subagent_type: 'general-purpose',
+  description: 'fetch and download the build artifacts',
+  prompt: 'fetch and download the build artifacts from the CI bucket',
+} });
+const mrgAllow = mrg({ tool_input: {
+  description: 'summarise the findings from the last round',
+  prompt: 'summarise the findings from the last round',
+} });
+BLOCKED(mrgBlock) ? ok('model-routing-guard blocks mechanical task pinned to flagship model (opus + fetch/download)') : bad('model-routing-guard did NOT block mechanical+flagship spawn — routing guard not firing');
+ALLOWED(mrgAllow) ? ok('model-routing-guard allows benign spawn with no model and no mechanical signals') : bad('model-routing-guard wrongly blocked a benign spawn');
+
+// omc-detect: presence and syntax check (shared helper, not a hook).
+const omcDetectPath = path.join(HOOKS, 'omc-detect.js');
+if (fs.existsSync(omcDetectPath)) {
+  const omcChk = cp.spawnSync(process.execPath, ['--check', omcDetectPath], { encoding: 'utf8' });
+  omcChk.status === 0 ? ok('omc-detect.js present and syntax-valid') : bad('omc-detect.js present but SYNTAX ERROR: ' + (omcChk.stderr || '').trim());
+} else {
+  bad('omc-detect.js MISSING — OMC-deference will not work in task-guard / tasklist-guard');
+}
+
 // swarm-guard: must allow a normal spawn on a healthy machine (fail-open, real mem calc)
 const sg = runHook('swarm-guard.js', { tool_name: 'Agent', tool_input: {} });
 ALLOWED(sg) ? ok('swarm-guard allows a spawn under normal memory') : warnl(`swarm-guard returned exit ${sg.code} (blocked) — check memory pressure`);

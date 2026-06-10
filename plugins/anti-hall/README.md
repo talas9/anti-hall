@@ -50,6 +50,8 @@ claude --plugin-dir /path/to/anti-hall
 | `git-guard.js` | PreToolUse (Bash) | Blocks AI self-credit attribution — in `git commit` trailers AND in `gh pr/issue/release create\|edit\|comment` `--body`/`--title` (the 🤖 footer, Co-Authored-By, claude.com/claude-code link) — plus `git push --force`. Inline values only (`--body-file` is fail-open). |
 | `api-guard.js` | PreToolUse (Write/Edit/MultiEdit) | Blocks code that references a **non-existent** stdlib/builtin API — resolves `module.attr` in the code-to-be-written against the installed `python3`/`node` and refuses the write when the attribute is fabricated. The mechanical answer to API hallucination. Default = stdlib/builtins (import-safe); opt-in `ANTIHALL_API_GUARD_THIRDPARTY=1` also checks installed 3rd-party packages (off by default — verifying a package imports it, running its code at edit time). 0 FP + full in-scope catch on `eval/api-guard-bench.js`; never probes local/relative modules; fail-open; skip-hatch. |
 | `command-guard.js` | PreToolUse (Bash) | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload, per-segment (quote-aware). |
+| `model-routing-guard.js` | PreToolUse (Agent/Task) | Anti-waste routing — classifies spawn descriptions (mechanical vs complex) and blocks/advises toward the cheapest fitting model. Default: advisory for explicit flagship + mechanical, or omitted model on mechanical task. Strict mode (`ANTIHALL_MODEL_ROUTING=strict`, **project-scoped env** — global-export blast-radius warning): unconditional block on omitted-model mechanical spawns. Debate role-words in spawn description downgrade row-1 block to advisory. Fail-open; unknown model tokens always allowed. |
+| `omc-detect.js` | Shared helper (not a hook) | Detects whether an oh-my-claudecode autonomous loop is active + fresh. Consumed by `task-guard` / `tasklist-guard` to suppress Stop-blocks to advisory when an OMC loop is running, preventing deadlock. Fail-open = NOT deferring. Kill-switches: `DISABLE_OMC=1` or `OMC_SKIP_HOOKS` including `persistent-mode`. |
 | `swarm-guard.js` | PreToolUse (Agent/Task) | Anti-fork-bomb — spawn-rate cap + real reclaimable-memory check (`vm_stat` / `MemAvailable`, not `os.freemem()`). |
 | `phase-tracker.js` | PreToolUse (Agent/Task) | Records every subagent spawn so the statusline shows live swarm activity. Never blocks. |
 | `agent-watchdog.js` | CLI helper (not a hook) | Heartbeat enforcer — scans `~/.anti-hall/agents/*.json` and reports stale/hung subagents; run manually by the orchestration skill. |
@@ -319,9 +321,10 @@ Invoke via slash command:
   present + syntax-valid, and the guards actually fire (live behavioral self-tests on
   e.g. git-guard / command-guard / swarm-guard / speculation-guard / tasklist-guard).
 
-`MODEL-POLICY.md` is the shared roster (Reviewer = Opus latest max thinking;
-Critic = Codex latest max reasoning when available, else a divergent 2nd Opus). It is
-**triplicated** — see [Contributing](#contributing).
+`MODEL-POLICY.md` is the shared TRIO roster (Reviewer = latest flagship Claude `model:"fable"` max thinking;
+Auditor = latest Opus `model:"opus"` divergent regression/coupling lens;
+Critic = Codex latest max reasoning when available, else a divergent Opus adversarial persona). It is
+**duplicated** — see [Contributing](#contributing).
 
 ## Statusline (opt-in, one command)
 
@@ -396,7 +399,7 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 
 ```bash
 # Full zero-dependency E2E suite (node:test, run from the repo root):
-node --test                                                                  # 329 pass +2 platform-skip (331 total); CI runs the same on push/PR (.github/workflows/test.yml)
+node --test                                                                  # 447 pass +2 platform-skip (449 total); CI runs the same on push/PR (.github/workflows/test.yml)
 
 # Quick smoke-checks of individual hooks:
 echo '{"hook_event_name":"SessionStart"}' | node hooks/verify-first-full.js  # full Iron-Law protocol + skill primer
@@ -407,7 +410,7 @@ claude --plugin-dir /path/to/anti-hall                                       # l
 
 ## Contributing
 
-- **Keep the 2 MODEL-POLICY.md copies in sync.** The roster file is duplicated
+- **Keep the 2 MODEL-POLICY.md copies in sync.** The TRIO roster file is duplicated
   (`skills/MODEL-POLICY.md` plus a copy under `skills/deadly-loop/references/`) because
   skill bundling requires the skill to carry its own `references/` copy and symlinks are
   stripped on install. Update **both** together — they must stay byte-identical.

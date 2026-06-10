@@ -1,19 +1,20 @@
 ---
 name: deadly-loop-multi
-description: Run a DOUBLE / TRIPLE / QUADRUPLE deadly loop — N parallel Opus reviewers + N parallel Codex critics auditing a target (whole repo, a diff, or named files) with diversified lenses, then dedup + synthesize, optionally fix-wave and re-converge. Use when the user says "double deadly loop", "triple deadly loop", "quadruple deadly loop", "deep multi-agent review", "have 2 opus and 2 codex review everything", or wants a heavier review than the standard 1+1 deadly-loop. Multiplier — double=2, triple=3, quadruple=4 reviewer+critic PAIRS.
+description: Run a DOUBLE / TRIPLE / QUADRUPLE deadly loop — the deadly-loop TRIO (Fable Reviewer + Opus Auditor + Codex Critic) multiplied N× in parallel, auditing a target (whole repo, a diff, or named files) with diversified lenses, then dedup + synthesize, optionally fix-wave and re-converge. Use when the user says "double deadly loop", "triple deadly loop", "quadruple deadly loop", "deep multi-agent review", "have multiple flagship + codex agents review everything", or wants a heavier review than the standard 1× deadly-loop. Multiplier — double=2× the trio (6 agents), triple=3× (9), quadruple=4× (12).
 ---
 
 # Multi Deadly Loop
 
-A scaled-up [`deadly-loop`](../deadly-loop/SKILL.md): instead of 1 Reviewer + 1 Critic,
-run **N of each in parallel** with *different lenses*, then synthesize. Catches more
-because diverse perspectives find non-overlapping problems.
+A scaled-up [`deadly-loop`](../deadly-loop/SKILL.md): instead of 1× the
+Reviewer + Auditor + Critic TRIO, run **N× the trio in parallel** with *different
+lenses*, then synthesize. Catches more because diverse perspectives find
+non-overlapping problems.
 
-| Phrase | Reviewers (Opus) | Critics (Codex) | Total agents |
-|--------|------------------|-----------------|--------------|
-| **double deadly loop** | 2 | 2 | 4 |
-| **triple deadly loop** | 3 | 3 | 6 |
-| **quadruple deadly loop** | 4 | 4 | 8 |
+| Phrase | Multiplier | Reviewers (Fable) | Auditors (Opus) | Critics (Codex) | Total agents |
+|--------|-----------|-------------------|-----------------|-----------------|--------------|
+| **double deadly loop** | 2× | 2 | 2 | 2 | **6** |
+| **triple deadly loop** | 3× | 3 | 3 | 3 | **9** |
+| **quadruple deadly loop** | 4× | 4 | 4 | 4 | **12** |
 
 > This is **token-heavy** (each agent reads the target). It is opt-in — only run it when
 > the user explicitly asks. State the agent count before launching.
@@ -25,58 +26,73 @@ by the job's complexity and blast-radius/sensitivity — pick the higher tier wh
 
 | Job profile | Tier |
 |-------------|------|
-| Small/localized change, low blast radius, reversible | **double** (2+2) |
-| Multi-file feature, cross-module, moderate risk | **triple** (3+3) |
-| Security-sensitive (auth/signing/redaction/prompt-injection), schema/prod-data, cross-repo, release, or "audit everything" | **quadruple** (4+4) |
+| Small/localized change, low blast radius, reversible | **double** (2× trio = 6) |
+| Multi-file feature, cross-module, moderate risk | **triple** (3× trio = 9) |
+| Security-sensitive (auth/signing/redaction/prompt-injection), schema/prod-data, cross-repo, release, or "audit everything" | **quadruple** (4× trio = 12) |
 
 The point of fixing the agent count up front: run ONE bounded debate among exactly that many
 agents and converge on a single consolidated answer — not an open-ended loop.
 
-## Roster — always half Codex, half Opus (see [MODEL-POLICY.md](../MODEL-POLICY.md))
+## Roster — N× the TRIO, split in thirds (see [MODEL-POLICY.md](../MODEL-POLICY.md))
 
-The 2N auditors are split **exactly in half**:
+The 3N auditors are split **exactly in thirds** — one third per trio seat:
 
-- **N Reviewers = the latest Opus, at max thinking.**
+- **N Reviewers = the latest flagship Claude (`model:"fable"`), at max thinking** —
+  correctness / architecture lens.
+- **N Auditors = the latest Opus (`model:"opus"`), at max thinking** — divergent
+  regression & coupling lens (a different Claude generation, orthogonal lens).
 - **N Critics = the latest OpenAI Codex** when available — a genuinely different model
-  finds different bugs. **Check availability once** (`command -v codex`, or the codex
-  companion's status / `/codex:setup`). **If Codex is missing or unauthenticated,
-  substitute the latest Opus** with a divergent adversarial persona so you still launch N
-  critics. Never silently drop to fewer agents — always run the full 2N, half cross-model
-  when possible.
+  finds different bugs. **Check availability once** via the OS-agnostic Node probe in
+  [MODEL-POLICY.md](../MODEL-POLICY.md) (or the codex companion's status / `/codex:setup`).
+  Walk the availability fallback matrix there: if `fable` is missing, the Reviewer third
+  falls back to Opus; if Codex is missing or unauthenticated, substitute Opus with a
+  divergent adversarial persona for the Critic third. Floor for every seat is Opus. Never
+  silently drop to fewer agents — always run the full 3N, maximally cross-model.
 
-> Always say "the latest Opus" / "the latest Codex" — never pin a version number here, so
-> this skill keeps working as newer models ship. (The MODEL-POLICY follows the same rule.)
+> Always say "the latest flagship" / "the latest Opus" / "the latest Codex" — never pin a
+> version number here, so this skill keeps working as newer models ship. (MODEL-POLICY
+> follows the same "resolve latest at runtime; version names are examples, not pins" rule.)
 
-Spawn mechanics:
-- Opus: `Agent({ subagent_type: "general-purpose", model: "opus", run_in_background: true, prompt: <lens brief> })`
-- Codex: `Agent({ subagent_type: "codex:codex-rescue", run_in_background: true, prompt: "--background --fresh <lens brief>" })`
+Spawn mechanics (canonical forms + availability matrix live in [MODEL-POLICY.md](../MODEL-POLICY.md)):
+- Reviewer (Fable): `Agent({ description: "<lens> Reviewer", subagent_type: "general-purpose", model: "fable", run_in_background: true, prompt: <lens brief> })`
+- Auditor (Opus): `Agent({ description: "<lens> Auditor", subagent_type: "general-purpose", model: "opus", run_in_background: true, prompt: <lens brief> })`
+- Critic (Codex): `Agent({ description: "<lens> Critic", subagent_type: "codex:codex-rescue", run_in_background: true, prompt: "--background --fresh <lens brief>" })`
 
 ## Orchestrate as a SWARM (Dynamic Workflows), not hand-rolled calls
 
-Run this as a real swarm using the latest Opus's multi-agent / Dynamic-Workflow
-primitives — see
-[docs/opus-4-8-swarm.md](../../../../docs/opus-4-8-swarm.md) and KB §11 (Dynamic
-Workflows / Agent Teams). Prefer the **Workflow** tool: author a script with a **parallel
-fan-out stage** (the 2N diversified auditors) feeding a **reconcile + validate synthesis
-stage** — deterministic fan-out, a single shared concurrency cap, and one consolidated
-result. The main thread stays a coordinator (orchestration discipline): it dispatches the
-swarm, keeps itself free, and synthesizes — it does not do the auditing itself. Respect the
-concurrency cap (~min(16, cores-2)); quadruple = 8 auditors fits in one wave.
+Run this as a real swarm using the flagship multi-agent / Dynamic-Workflow primitives.
+Prefer the **Workflow** tool: author a script with a **parallel fan-out stage** (the 3N
+diversified auditors) feeding a **reconcile + validate synthesis stage** — deterministic
+fan-out, a single shared concurrency cap, and one consolidated result. This is the same
+`deadly-loop.workflow.js` swarm with `multiplier > 1` (see the deadly-loop "Swarm mode"
+section). The main thread stays a coordinator (orchestration discipline): it dispatches the
+swarm, keeps itself free, and synthesizes — it does not do the auditing itself.
+
+**Capacity math (the DISPATCH wave):** respect the concurrency cap
+(~`min(16, cores-2)`) AND the swarm-guard spawn cap (≤ 20 spawns / 60 s). At quadruple
+the dispatch is **12 auditors** (4 Reviewers + 4 Auditors + 4 Critics) — 12 ≤ `min(16,
+cores-2)` on an 8-core+ host and 12 ≤ 20/60 s, so the whole trio fan-out fits in ONE
+wave. **Retry arithmetic:** the one-retry-per-seat rule can add up to 12 more spawns in
+the same 60 s window (12 + 12 = 24 > the 20-cap), so at multiplier **≥ triple, retries
+are SEQUENTIAL after the wave settles** (or accept the documented +1-entry
+blocked-retry cost). **Wave children** (the fix-wave executors, if you fix-and-reconverge)
+land in a LATER 60 s window than the audit dispatch, so they do not stack against the
+audit spawns — state this explicitly when you dispatch.
 
 ## Protocol
 
 1. **Scope the target.** Whole repo → inventory the files (e.g. `git ls-files`). A diff →
    `git diff`. Named files → just those. Tell each agent EXACTLY what to read.
-2. **Assign diverse lenses** — never give 2N agents the same brief; spread them across the
-   table below so coverage is non-overlapping. With N=2 use lenses 1–2 per side; N=3 use
+2. **Assign diverse lenses** — never give 3N agents the same brief; spread them across the
+   table below so coverage is non-overlapping. With N=2 use lenses 1–2 per column; N=3 use
    1–3; N=4 use 1–4.
 
-   | # | Reviewer (Opus) lens | Critic (Codex) lens |
-   |---|----------------------|---------------------|
-   | 1 | correctness / logic bugs | adversarial "try to break it" bug hunt |
-   | 2 | docs-vs-code accuracy + consistency | verify every doc/CHANGELOG claim against code |
-   | 3 | security + fail-open + input handling | injection / ReDoS / path / resource edge cases |
-   | 4 | cross-platform + API/contract correctness | portability + concurrency / race conditions |
+   | # | Reviewer (Fable) lens | Auditor (Opus) lens | Critic (Codex) lens |
+   |---|------------------------|---------------------|---------------------|
+   | 1 | correctness / logic bugs | regressions in dependent unchanged code | adversarial "try to break it" bug hunt |
+   | 2 | docs-vs-code accuracy + consistency | cross-module / cross-PR coupling drift | verify every doc/CHANGELOG claim against code |
+   | 3 | security + fail-open + input handling | fix-vs-fix regressions (did a fix undo a fix?) | injection / ReDoS / path / resource edge cases |
+   | 4 | cross-platform + API/contract correctness | merge-order cross-reference breaks | portability + concurrency / race conditions |
 
    Every brief ends with this mandatory footer:
    - *severity (P0/P1/P2/EASY-WIN), file:line, evidence, fix; verify against actual code —
@@ -89,16 +105,17 @@ concurrency cap (~min(16, cores-2)); quadruple = 8 auditors fits in one wave.
      missing-file/permission-denied/clock-skew/truncated/injection-shaped inputs for each
      changed unit and mentally execute (or write a quick harness); report predicted outcomes
      and flag any wrong/unsafe/unbounded/fail-CLOSED result.*
-3. **Launch all 2N agents in parallel** (background). Keep the main thread free; do not
+3. **Launch all 3N agents in parallel** (background) — see the capacity math above (12 fits
+   one wave at quadruple; retries sequential at ≥ triple). Keep the main thread free; do not
    block. (Codex `--fresh` avoids a resume prompt.)
-4. **Collect.** As each of the 2N agents reports, gather all findings. Do not present
-   them raw — the deliverable is ONE reconciled report, not 2N dumps.
+4. **Collect.** As each of the 3N agents reports, gather all findings. Do not present
+   them raw — the deliverable is ONE reconciled report, not 3N dumps.
 5. **Reconcile + validate (the core value).** Produce a single consolidated report:
    - **Dedup** by file:line + claim.
    - **Validate each finding against the actual code yourself** before including it —
      agreement between agents raises confidence, but a finding is only "confirmed" if the
      evidence holds when you check it (anti-speculation; agents can be wrong too).
-   - **Cross-validate:** tag each finding with how many of the 2N agents raised it
+   - **Cross-validate:** tag each finding with how many of the 3N agents raised it
      (≥2 = corroborated; 1 = include only if you verified it).
    - **Reconcile conflicts:** when agents disagree (one flags a bug, another says it's
      fine), inspect the code and rule — state the resolution and why.
@@ -118,7 +135,9 @@ concurrency cap (~min(16, cores-2)); quadruple = 8 auditors fits in one wave.
 7. **Report** the deduped issue list + easy wins, with the agent that raised each.
 
 ## Notes
-- Respect the swarm concurrency cap (~min(16, cores-2)); quadruple = 8 agents is fine, but
-  don't stack it with other large fan-outs.
+- Respect the swarm concurrency cap (~min(16, cores-2)) AND the swarm-guard spawn cap
+  (≤ 20 / 60 s); quadruple = 12 agents fits one wave (12 ≤ min(16, cores-2) on 8+ cores,
+  12 ≤ 20/60 s), but don't stack it with other large fan-outs, and keep retries sequential
+  at ≥ triple so 12 + retries doesn't blow the 20-cap.
 - The phase-tracker hook will surface "orchestrating · N agents" on the statusline while
   this runs — a free progress signal.

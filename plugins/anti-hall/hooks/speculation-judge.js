@@ -191,7 +191,7 @@ function extractLastAssistantText(transcriptPath) {
 function callAnthropicAPI(messageText, apiKey, timeoutMs) {
   return new Promise((resolve) => {
     const body = JSON.stringify({
-      model: 'claude-haiku-4-5',
+      model: process.env.ANTIHALL_JUDGE_MODEL || 'claude-haiku-4-5',
       max_tokens: 128,
       system: JUDGE_SYSTEM,
       messages: [

@@ -38,7 +38,7 @@ compaction), a short rotating reminder every turn, and **mechanical hooks** that
 argued with.
 
 > **What's proven, and what isn't.** The **mechanical hooks** are the load-bearing part and
-> are verified by 329 passing tests (+2 platform-skipped, 331 total) — they deterministically block force-pushes, AI-credit
+> are verified by 447 passing tests (+2 platform-skipped, 449 total) — they deterministically block force-pushes, AI-credit
 > trailers, un-delegated heavy commands, and stale task state regardless of what the model
 > "feels" like doing. The **prompt layer** (verify-first protocol + nudges) is a *discipline*,
 > not a benchmark-validated hallucination cure: a four-round A/B eval ([`eval/`](eval/)) —
@@ -74,12 +74,13 @@ argued with.
 | `git-guard` | PreToolUse/Bash | Blocks AI self-credit trailers (in `git commit` **and** in `gh pr/issue/release` `--body`/`--title`) and `--force` pushes (quote-aware, alias-resolving, won't false-block legit pushes) |
 | `api-guard` | PreToolUse/Write+Edit+MultiEdit | **The mechanical answer to API hallucination.** Resolves `module.attribute` references in the code-to-be-written against the *installed* `python3`/`node` and blocks the write when a real stdlib/builtin module is missing the attribute (a fabrication). Default scope is **stdlib/builtins** (import-safe). **100% in-scope catch, 0 false positives** on a committed, reproducible bench (`node eval/api-guard-bench.js`). Opt-in `ANTIHALL_API_GUARD_THIRDPARTY=1` also verifies installed **3rd-party** packages (off by default — verifying a package means importing it, which runs its code at edit time). A prompt can be ignored; a blocked Write cannot. Fail-open on any uncertainty; never probes local/relative modules; skip-hatch supported |
 | `command-guard` | PreToolUse/Bash | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload (`agent_id`), not env — works correctly under cmux and other wrappers. Per-segment (quote-aware split on `; && \|\| \|`), so `cd app && npm test` is not a bypass |
+| `model-routing-guard` | PreToolUse/Agent+Task | **Anti-waste routing.** Classifies spawn descriptions by keyword signals (mechanical vs complex) and nudges toward the cheapest model that fits the task shape. Default (advisory) mode emits an `additionalContext` advisory when an explicit flagship model (`opus`/`fable`) is paired with a purely mechanical task (fetch, grep, build, deploy, etc.), or when `model` is omitted (a missing model inherits the orchestrator's — on a flagship orchestrator that silently produces an all-flagship swarm). **Strict mode** (`ANTIHALL_MODEL_ROUTING=strict`) upgrades omitted-model mechanical spawns from advisory to an unconditional **block** — opt-in because a globally-exported strict blocks ALL projects including genuinely-cheap-orchestrator ones (blast-radius warning; remedy: set an explicit cheap model on the spawn, or unset strict). Enable strict only via the PROJECT's `.claude/settings.json` env block, not a global shell profile. Row-1 blocks (explicit flagship + mechanical) are downgraded to advisory when a debate role-word (`reviewer`/`auditor`/`critic`/`debate`/`deadly-loop`) appears in the spawn description — TRIO debate seats need flagship models. Fail-open on any error; never blocks unknown model tokens (forward-compat) |
 | `swarm-guard` | PreToolUse/Agent+Task | Anti-fork-bomb: caps spawn rate (20/60 s) and refuses new agents under **real** memory pressure — measures reclaimable memory correctly on macOS (`vm_stat` free+inactive+speculative, correct 16 KB page size on Apple Silicon) and Linux (`/proc/meminfo` MemAvailable), not the misleading `os.freemem()` |
-| `task-guard` | Stop | Blocks stop when open tasks remain; counts only currently-open tasks (completed/cleared don't count); fail-open |
+| `task-guard` | Stop | Blocks stop when open tasks remain; counts only currently-open tasks (completed/cleared don't count); fail-open. **OMC-deference:** when `omc-detect.js` reports an oh-my-claudecode autonomous loop (ralph, ultrawork, autopilot, etc.) is active and fresh, the block is suppressed to an advisory — preventing a deadlock where the guard stops the loop it was meant to coexist with |
 | `tasklist-guard` | Stop | Blocks stop when non-trivial work (≥ threshold file-mutating actions) wasn't tracked as tasks or lacks a fresh `.anti-hall-progress.md`; coexists with `task-guard`; capped + fail-open — see [`docs/TASKLIST-GUARD.md`](./docs/TASKLIST-GUARD.md) |
 | `task-tracker` | UserPromptSubmit | Captures every request as a task; throttled to avoid growing context; adds a one-line freshness note when open/stale tasks exist |
 | `speculation-guard` | Stop (Tier 2) | Lexical: catches 15 hedge-word speculation markers; suppressed when the message contains evidence/uncertainty acknowledgment; block-once (never wedges) |
-| `speculation-judge` | Stop (Tier 3, **OPT-IN**) | Semantic: calls an LLM to catch confident inference-as-fact with *no* hedge word — the gap Tier 2 can't close. Enable: `ANTIHALL_SEMANTIC_JUDGE=1` + `ANTHROPIC_API_KEY`. Zero cost/latency when unset (the default). Fail-open |
+| `speculation-judge` | Stop (Tier 3, **OPT-IN**) | Semantic: calls an LLM to catch confident inference-as-fact with *no* hedge word — the gap Tier 2 can't close. Enable: `ANTIHALL_SEMANTIC_JUDGE=1` + `ANTHROPIC_API_KEY`. Model override: `ANTIHALL_JUDGE_MODEL=<alias-form id>` (default `claude-haiku-4-5`; use alias-form, not versioned snapshot IDs). Zero cost/latency when unset (the default). Fail-open |
 | `ship-it-guard` | PreToolUse/Write+Edit+MultiEdit (**OPT-IN**, default OFF) | The only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root or `.planning/PLAN.md`) — nudging the ship-it plan-first workflow. Enforces artifact *existence* only (not plan quality), conservative (never gates ordinary edits), fail-open. Zero effect when unset (the default) |
 | `merge-gate` | PreToolUse/Bash (**OPT-IN**, default OFF) | Backstops the "false done" discipline. With `ANTIHALL_MERGE_GATE` ∈ {1,true,yes,on}, blocks an auto-merge (`gh pr merge` incl. `--auto`, `gh pr review --approve`, `git merge --no-ff/--ff` into main/master/develop) when the agent's own recent output carries an UNRESOLVED self-hedge ("pending review" / "first-pass" / "do not merge" / "needs your eyes" / …) not followed by a resolution token ("owner signed off" / "verified against" / …). Keyword-heuristic, bypassable (alt syntax / heredoc / UI / API), fail-open, cannot hard-loop. A backstop, not a guarantee. Zero effect when unset (the default) |
 | `phase-tracker` | PreToolUse/Agent+Task | Records every subagent spawn so line 2 shows live swarm activity with zero coordinator effort |
@@ -95,13 +96,15 @@ argued with.
 |-------|-------------|--------------|
 | **root-cause** | any bug, crash, flaky test, alert | evidence → hypothesis → instrument → prove the *original* root cause → fix → verify |
 | **orchestration** | heavy/parallel/long work | non-blocking coordinator; fan out to subagents; watchdog + heartbeat; live phase statusline; **verify delegated work** (a subagent's "done/passing" is an unverified claim — re-check it against ground truth before marking complete) |
-| **deadly-loop** | before merging anything risky | parallel **Reviewer + Critic** debate + fix-waves, looping until zero *new* P0s |
-| **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N Reviewer + N Critic pairs (half latest Opus, half latest Codex) with diversified lenses, then dedup + synthesize into one report |
+| **deadly-loop** | before merging anything risky | parallel **Reviewer + Auditor + Critic TRIO** debate + fix-waves, looping until zero *new* P0s. Three-phase swarm mode (Context → Duel → Converge) via `deadly-loop.workflow.js`; plain Agent-tool path available for no-consent sessions |
+| **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N TRIO sets (Reviewer + Auditor + Critic per slot) with diversified lenses, then dedup + synthesize into one report |
 | **ship-it** | any change, from a one-line fix to a multi-phase feature | one lean workflow scaled S/M/L to blast radius — brainstorm + plan **in plan mode** (ExitPlanMode is the gate), deadly-loop-hardened *before* code, large work fanned out as a Workflow swarm, each phase verified with fresh evidence + a vacuous-test guard until zero *new* P0s |
 | **install-statusline** | "install the statusline / add the bar" | writes the `statusLine` setting (global or per-repo), wraps an existing statusline as line 1 + adds anti-hall bar as line 2, with backup + restore |
 | **doctor** | "is anti-hall working?" / after install/update | confirms Node ≥ 18, all hooks present + syntax-valid, **runs live behavioral self-tests** (spawns real guards with crafted payloads and asserts exit codes), reports context footprint in bytes + estimated tokens |
 
 > **root-cause** and **orchestration** are also enforced *always-on* as disciplines via the hook layer, alongside anti-sycophancy (challenge a wrong premise with evidence — never agree just to agree) and **scope & fidelity** (solve the actual problem with the simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish what was asked and drop nothing). Orchestration now also requires the coordinator to **independently verify delegated work** — a subagent's "done/passing" is an unverified claim, re-checked against ground truth before marking complete — and **defaults delegated heavy/parallel work to the background** (the coordinator passes `run_in_background` so the user needn't background it manually), while still verifying each on completion. **deadly-loop** and **ship-it** stay conditional, invoked on match.
+>
+> **Debate roster (TRIO):** Reviewer = latest flagship Claude (`model:"fable"`, max thinking); Auditor = latest Claude Opus (`model:"opus"`, divergent regression/coupling lens); Critic = latest OpenAI Codex at max reasoning (Opus adversarial-persona fallback when Codex unavailable). All three dispatched in the same message for true parallelism. Model floor for every seat = Opus; never a cheaper model. Spawns use **tier tokens only** (`fable`/`opus`/`sonnet`/`haiku`) — resolved to the newest available build at call time, never hardcoded version IDs. See `plugins/anti-hall/skills/MODEL-POLICY.md`.
 
 ---
 
@@ -140,7 +143,7 @@ is meant to prevent. anti-hall enforces this at two levels:
 A live **two-line** statusline the plugin renders itself — installable globally or per-repo.
 
 ```
-▊ my-repo · git-user · 🌿 main ~4 ?2 · Opus 4.8 (1M context) · ⏱ 71m · ● 56% ctx · $1.23
+▊ my-repo · git-user · 🌿 main ~4 ?2 · Fable 5 (1M context) · ⏱ 71m · ● 56% ctx · $1.23
 [███████████◐────────] 56% context
 ```
 
@@ -216,7 +219,7 @@ anti-hall/
 `AGENTS.md` (e.g. Codex). It lives at the repo root and is **not** bundled by
 `/plugin install` — copy it into your own repo if you want cross-tool coverage.
 
-A zero-dependency **`node --test` E2E suite** (`tests/`, 329 passing +2 platform-skipped, 331 total) covers the hooks and
+A zero-dependency **`node --test` E2E suite** (`tests/`, 447 passing +2 platform-skipped, 449 total) covers the hooks and
 runs in **CI** on every push/PR ([`.github/workflows/test.yml`](.github/workflows/test.yml)).
 
 See [`plugins/anti-hall/README.md`](plugins/anti-hall/README.md) for the full component

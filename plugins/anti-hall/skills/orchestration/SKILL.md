@@ -50,14 +50,27 @@ a long operation.
 
 ## Model floors (cost-aware)
 
-Match the model to the job (resolve to the newest in each tier at runtime):
-- **Haiku** — mechanical execution: deploys, git ops, builds, data dumps, log
-  fetches, repetitive bulk operations.
-- **Sonnet (floor)** — code authoring, analysis, code review, most subagent work.
-- **Opus** — planning, architecture, and adversarial debate roles (see the
-  ship-it and deadly-loop skills' roster in `../MODEL-POLICY.md`).
+Match the model to the job (resolve to the newest in each tier at runtime — use the tier
+tokens `haiku`/`sonnet`/`opus`/`fable`, never a versioned model id):
+- **Haiku** — mechanical execution: web fetch, grep/search, file listing, running
+  commands, builds, test runs, data dumps, log tails, git push, deploys, repetitive bulk
+  operations. **~10× cheaper than Fable on both input and output** (`docs/KB-fable-5.md`)
+  — keep all execution-shaped work here.
+- **Sonnet (floor for code)** — code authoring, analysis, standard code review, most
+  subagent work.
+- **Opus** — deep analysis; flagship-tier work when Fable is unavailable (the Opus floor
+  for debate seats — see the availability fallback matrix in `../MODEL-POLICY.md`).
+- **Fable (flagship)** — planning, plan review / validation, design mockups, logic
+  creation & checking, workflow analysis, simulations, and debate roles (the Reviewer seat
+  of the ship-it / deadly-loop trio — roster in `../MODEL-POLICY.md`).
 
-Don't send a planning problem to Haiku, or a log-tail to Opus.
+Don't send a planning problem to Haiku, or a log-tail to Fable/Opus.
+
+> **Inheritance warning.** A spawn that OMITS `model` inherits the orchestrator's model.
+> On a flagship orchestrator (Fable/Opus), an omitted `model` silently produces an
+> all-flagship swarm — expensive and wasteful for mechanical children. **ALWAYS set
+> `model` explicitly per spawn** (especially on flagship orchestrators); never rely on
+> inheritance to land a child in the right tier.
 
 ## Swarm topology for larger work
 
@@ -113,8 +126,8 @@ fallback. Split independent slices between Claude subagents and Codex so they ru
 concurrently and you get cross-model diversity (different training, different blind
 spots). Good splits:
 - Implementation slices: some files to Claude agents, others to Codex.
-- Review/debate: Reviewer on one model, Critic on the other (this is exactly the
-  `../MODEL-POLICY.md` roster — Opus + Codex).
+- Review/debate: spread the seats across models (this is exactly the
+  `../MODEL-POLICY.md` trio roster — Fable Reviewer + Opus Auditor + Codex Critic).
 - A second opinion on a hard diagnosis: ask both, compare.
 Balance by load (don't pile everything on one pool) and by fit. If Codex is
 unavailable, fall back to Claude-only (divergent personas for adversarial roles).

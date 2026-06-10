@@ -358,15 +358,16 @@ function getModelName() {
           if (usage) {
             const ids = Object.keys(usage);
             if (ids.length > 0) {
-              let modelId = ids[ids.length - 1];
-              let latest = 0;
-              for (const id of ids) {
-                const ts = usage[id] && usage[id].lastUsedAt ? new Date(usage[id].lastUsedAt).getTime() : 0;
-                if (ts > latest) { latest = ts; modelId = id; }
-              }
-              if (modelId.includes('opus')) return 'Opus';
-              if (modelId.includes('sonnet')) return 'Sonnet';
-              if (modelId.includes('haiku')) return 'Haiku';
+              // Real lastModelUsage shape (verified 2026-06-10, P6): cumulative
+              // token/cost counters only — NO lastUsedAt / timestamps. Use the
+              // last object key as the current effective model (matches prior
+              // behavior; now explicit rather than relying on ts always === 0).
+              const modelId = ids[ids.length - 1];
+              const segs = modelId.toLowerCase().split('-');
+              if (segs.includes('fable'))  return 'Fable';
+              if (segs.includes('opus'))   return 'Opus';
+              if (segs.includes('sonnet')) return 'Sonnet';
+              if (segs.includes('haiku'))  return 'Haiku';
               return modelId.split('-').slice(1, 3).join(' ');
             }
           }
@@ -379,10 +380,11 @@ function getModelName() {
   // Fallback: settings.json model field
   const settings = getSettings();
   if (settings && settings.model) {
-    const m = settings.model;
-    if (m.includes('opus')) return 'Opus';
-    if (m.includes('sonnet')) return 'Sonnet';
-    if (m.includes('haiku')) return 'Haiku';
+    const segs = settings.model.toLowerCase().split('-');
+    if (segs.includes('fable'))  return 'Fable';
+    if (segs.includes('opus'))   return 'Opus';
+    if (segs.includes('sonnet')) return 'Sonnet';
+    if (segs.includes('haiku'))  return 'Haiku';
   }
   return 'Claude Code';
 }

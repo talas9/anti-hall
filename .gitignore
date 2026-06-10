@@ -28,3 +28,5 @@ CLAUDE.md
 
 # macOS Finder metadata — never commit
 .DS_Store
+.omc/
+docs/*-session-handoff.md

@@ -9,6 +9,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
 const path = require('node:path');
 const { runSL, makeStatusHome, makeProjectDir } = require('./helper.js');
 
@@ -115,5 +116,105 @@ test('rich line fail-open: garbage stdin still produces a (header) line, never c
     });
     assert.strictEqual(r.status, 0);
     assert.match(r.stdout, new RegExp(path.basename(proj.dir)), 'header still renders project name');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+// --- getModelName() fallback branches: Fable detection -------------------
+
+// lastModelUsage path: fable model id → 'Fable'
+test('getModelName returns Fable from lastModelUsage when model id contains fable segment', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    // Write ~/.claude.json keyed to the realpath of proj.dir so it matches
+    // process.cwd() in the subprocess (macOS /var -> /private/var symlink).
+    h.writeClaudeJson({
+      [fs.realpathSync(proj.dir)]: {
+        lastModelUsage: {
+          'claude-fable-5': { inputTokens: 100, outputTokens: 50, costUSD: 0.1 },
+        },
+      },
+    });
+    // No stdin model — forces file-fallback path
+    const out = renderRich('', h.home, proj.dir);
+    assert.match(out, /Fable/, 'Fable label rendered via lastModelUsage path');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+// settings path: fable model id → 'Fable'
+test('getModelName returns Fable from settings.json when model field contains fable segment', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    // Write <proj.dir>/.claude/settings.json — the path getSettings() reads
+    h.writeProjectSettings(proj.dir, { model: 'claude-fable-5' });
+    const out = renderRich('', h.home, proj.dir);
+    assert.match(out, /Fable/, 'Fable label rendered via settings.json path');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+// Collision negative: 'confable-local' must NOT produce 'Fable'
+test('getModelName does NOT match fable for a model id where fable is a substring not a segment (confable-local)', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    h.writeClaudeJson({
+      [fs.realpathSync(proj.dir)]: {
+        lastModelUsage: {
+          'confable-local': { inputTokens: 1, outputTokens: 1, costUSD: 0 },
+        },
+      },
+    });
+    const out = renderRich('', h.home, proj.dir);
+    assert.doesNotMatch(out, /\bFable\b/, 'confable-local must NOT render as Fable');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+// Existing tier segments still pass via lastModelUsage
+test('getModelName segment matching: opus segment → Opus', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    h.writeClaudeJson({
+      [fs.realpathSync(proj.dir)]: {
+        lastModelUsage: {
+          'claude-opus-4-8': { inputTokens: 1, outputTokens: 1, costUSD: 0 },
+        },
+      },
+    });
+    const out = renderRich('', h.home, proj.dir);
+    assert.match(out, /Opus/);
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+test('getModelName segment matching: sonnet segment → Sonnet', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    h.writeClaudeJson({
+      [fs.realpathSync(proj.dir)]: {
+        lastModelUsage: {
+          'claude-sonnet-4-6': { inputTokens: 1, outputTokens: 1, costUSD: 0 },
+        },
+      },
+    });
+    const out = renderRich('', h.home, proj.dir);
+    assert.match(out, /Sonnet/);
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+test('getModelName segment matching: haiku segment → Haiku', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    h.writeClaudeJson({
+      [fs.realpathSync(proj.dir)]: {
+        lastModelUsage: {
+          'claude-haiku-4-5-20251001': { inputTokens: 1, outputTokens: 1, costUSD: 0 },
+        },
+      },
+    });
+    const out = renderRich('', h.home, proj.dir);
+    assert.match(out, /Haiku/);
   } finally { h.cleanup(); proj.cleanup(); }
 });

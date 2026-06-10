@@ -254,6 +254,25 @@ function main() {
       'persists for the knowledge layer — gitignore it too.'
   );
 
+  // OMC-awareness: if an autonomous OMC loop (ralph, ultrawork, autopilot, etc.)
+  // is active, SUPPRESS the Stop block — emit a one-line advisory and exit 0.
+  // Not counted against the block budget (no state write). Detection errors fall
+  // through to the normal block path (fail-open = guard stays active).
+  try {
+    const { isOmcLoopActive } = require('./omc-detect.js');
+    const sid = (payload && payload.session_id && String(payload.session_id)) || undefined;
+    if (isOmcLoopActive({ cwd: cwd || undefined, sessionId: sid })) {
+      // fs.writeSync(1): process.stdout.write races the async pipe flush with
+      // exit() on macOS node 18/20 (repo-wide rule for hook output).
+      fs.writeSync(1,
+        '[tasklist-guard] OMC autonomous loop active — deferring Stop block to avoid deadlock.\n'
+      );
+      process.exit(0);
+    }
+  } catch (_) {
+    // detection error → fall through to normal block
+  }
+
   // RECONCILED: persist state FIRST, emit the block only if the write SUCCEEDED.
   // The earlier ordering emitted the block before persisting, reasoning that a
   // missed write costs "one extra nudge". That is WRONG when the state dir is
@@ -270,7 +289,9 @@ function main() {
     process.exit(0); // can't persist the cap -> fail-open, do not block (no loop)
   }
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+  // fs.writeSync(1): stdout.write races the async pipe flush with exit() on
+  // macOS node 18/20 (repo-wide hook-output rule; R2-N1).
+  try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
   process.exit(0);
 }
 

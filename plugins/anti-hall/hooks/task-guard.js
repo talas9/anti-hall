@@ -182,6 +182,28 @@ function main() {
     process.exit(0);
   }
 
+  // OMC-awareness: if an autonomous OMC loop (ralph, ultrawork, autopilot, etc.)
+  // is active, SUPPRESS the Stop block entirely — emit a one-line advisory and
+  // exit 0 instead. This prevents task-guard from deadlocking against the loop.
+  // The block is NOT counted against the budget (no state write). If detection
+  // fails for any reason, we fall through to the normal block (fail-open = guard
+  // stays active, never silent).
+  try {
+    const { isOmcLoopActive } = require('./omc-detect.js');
+    const cwd = payload && payload.cwd;
+    const sid = (payload && payload.session_id && String(payload.session_id)) || undefined;
+    if (isOmcLoopActive({ cwd, sessionId: sid })) {
+      // fs.writeSync(1): process.stdout.write races the async pipe flush with
+      // exit() on macOS node 18/20 (repo-wide rule for hook output).
+      fs.writeSync(1,
+        '[task-guard] OMC autonomous loop active — deferring Stop block to avoid deadlock.\n'
+      );
+      process.exit(0);
+    }
+  } catch (_) {
+    // detection error → fall through to normal block
+  }
+
   // Write the new state before blocking (so a no-op next Stop won't re-block and
   // the cap is enforced even if the set keeps changing).
   try {
@@ -232,7 +254,9 @@ function main() {
       'explicitly what is pending and why you are stopping.';
   }
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+  // fs.writeSync(1): stdout.write races the async pipe flush with exit() on
+  // macOS node 18/20 (repo-wide hook-output rule; R2-N1).
+  try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
   process.exit(0);
 }
 

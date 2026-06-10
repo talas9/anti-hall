@@ -236,6 +236,28 @@ Detection uses `fs.existsSync` — no bash, no grep, fully cross-platform.
 
 ---
 
+## Model label detection
+
+`statusline-rich.js` resolves a short label from the model id or display name
+using **token-segment matching** (split on `-`, compare lowercase segments).
+Recognised labels and their segment triggers:
+
+| Label | Trigger segment | Example model ids |
+|---|---|---|
+| `Fable` | `fable` | `claude-fable-5` |
+| `Opus` | `opus` | `claude-opus-4-8` |
+| `Sonnet` | `sonnet` | `claude-sonnet-4-6` |
+| `Haiku` | `haiku` | `claude-haiku-4-5-20251001` |
+
+`Fable` is checked first so future `claude-fable-*` ids resolve correctly.
+Any model id where the tier word is a **substring of another segment** (e.g.
+`confable-local`) does **not** match — segment boundaries prevent false hits.
+When no segment matches, the id mid-portion is used as-is.
+
+The stdin `model.display_name` path is unchanged and passes through directly.
+
+---
+
 ## Cross-platform note
 
 All scripts are pure Node (built-ins only: `fs`, `path`, `os`,

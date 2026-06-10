@@ -6,6 +6,103 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.32.0
+
+**Fable 5 awareness, model-routing guard, OMC-deference, TRIO debate roster, 3-phase deadly-swarm workflow, statusline segment-matching + latent-bug fix, `ANTIHALL_JUDGE_MODEL`.**
+
+### model-routing-guard (new hook)
+
+`model-routing-guard.js` — PreToolUse Agent/Task, always-on anti-waste net. Classifies
+spawn descriptions by keyword signals (mechanical vs complex) and nudges toward the
+cheapest model that fits the task shape:
+
+- **Default (advisory):** emits a `hookSpecificOutput.additionalContext` advisory when
+  an explicit flagship model (`opus`/`fable`) is paired with a purely mechanical task
+  (fetch, grep, build, deploy, run tests, etc.), or when `model` is omitted on a
+  mechanical spawn (omitted model inherits the orchestrator's — on a flagship
+  orchestrator that silently produces an all-flagship swarm).
+- **Strict mode** (`ANTIHALL_MODEL_ROUTING=strict`): upgrades omitted-model mechanical
+  spawns to an unconditional block (exit 2). Opt-in and **project-scoped** — enable via
+  the PROJECT's `.claude/settings.json` env block, NOT a global shell profile. A
+  globally-exported strict blocks omitted-model mechanical spawns in EVERY project,
+  including genuinely-cheap-orchestrator ones. Remedy: set an explicit cheap model on the
+  spawn, or unset strict.
+- **Debate-role exemption:** row-1 blocks (explicit flagship + mechanical) are downgraded
+  to advisory when a role-word (`reviewer`/`auditor`/`critic`/`debate`/`deadly-loop`)
+  appears in the spawn `description` — TRIO debate seats legitimately need flagship
+  models. The exemption does NOT apply to strict row-2 (role words must not defeat the
+  user's explicit strict opt-in).
+- Fail-open on any error; never blocks unknown model tokens (forward-compat).
+- Hooks shipped: 21 → 23 (+`model-routing-guard.js`, +`omc-detect.js`).
+
+### omc-detect (new shared helper)
+
+`omc-detect.js` — shared pure-Node helper (not a hook) exported as
+`isOmcLoopActive({ cwd, sessionId })`. Returns `true` when an oh-my-claudecode
+autonomous loop (ralph, ultrawork, autopilot, ultraqa, team, ultrapilot, pipeline,
+omc-teams) is currently active AND fresh (any of `last_checked_at`/`updated_at`/`started_at`
+within 2 h, per OMC's own staleness rule) AND session-affinity-matched. Consumed by
+`task-guard` and `tasklist-guard` to suppress Stop-blocks to an advisory when an OMC
+loop is running — preventing the deadlock where the guard stops the loop it was meant to
+coexist with. Fail-open direction = NOT deferring (false): missing/malformed state = not
+active. Kill-switches: `DISABLE_OMC=1` or `OMC_SKIP_HOOKS` including `persistent-mode`.
+Version fragility documented in-file (state filenames stable since OMC 4.14.6).
+
+### TRIO debate roster (Workstream C)
+
+`MODEL-POLICY.md` (both copies) rewritten to a **three-agent TRIO**:
+
+| Role | Model | Thinking | Persona |
+|---|---|---|---|
+| **Reviewer** | latest flagship Claude (`model:"fable"`) | adaptive, effort `xhigh` (→ `high`) | correctness / architecture auditor |
+| **Auditor** | latest Claude Opus (`model:"opus"`) | `xhigh` | divergent: regression & coupling hunter |
+| **Critic** | latest OpenAI Codex | max reasoning (`xhigh` → `high`) | adversarial failure-mode hunter |
+
+Floor for every seat = Opus. Availability fallback matrix covers all four availability
+combinations. Round governance: DEGRADED round (seat dead after retry) may iterate but
+cannot grant final GO. Dissent adjudication: single-seat re-run for evidence only (no
+code change); any fix wave → full TRIO next round.
+
+**Latest-model policy (owner directive):** all spawn paths use harness tier tokens only
+(`fable`/`opus`/`sonnet`/`haiku`; Codex = latest the installed CLI reports) — resolved
+latest-at-call-time. NO versioned IDs in executable snippets. API call sites are the
+sole exception (no evergreen tier alias; `claude-haiku-4-5` is the alias-form for its
+tier).
+
+### deadly-loop skill + workflow (Workstream E / E.1)
+
+`skills/deadly-loop/SKILL.md` updated:
+- Phase B header + B0-B2 skeletons now describe the full TRIO (Reviewer + Auditor + Critic).
+- New **Swarm mode** section documents `references/deadly-loop.workflow.js` as the
+  swarm-first path (plain Agent-tool path stays fully supported for no-consent sessions).
+- **Three-phase architecture per round:** (1) CONTEXT AGENT (`model:"sonnet"`, shared
+  pack, graphify freshness check round-1 only); (2) THE DUEL (2a independent
+  investigation + 2b structured argument); (3) CONVERGE & CONFIRM (VERDICT_SCHEMA dedup,
+  RESPAWN-ON-DRIFT with objective criteria only).
+- Workflow consent friction, guard-coverage boundary, no cross-round caching — all stated
+  honestly.
+
+`references/deadly-loop.workflow.js` — new Workflow template (args contract): accepts
+`{round, multiplier, targetSHA, branch, scope, handoffPath, prevPackPath, findings,
+fixesApplied, contextMode, argue, respawnQuota, seats, codexAvailable}`. MODEL INVARIANT
+in file header: tier tokens only, never versioned IDs. DETERMINISM: no `Date.now()` /
+`Math.random()` / argless `new Date()`.
+
+### statusline (Workstream A2)
+
+`statusline-rich.js` `getModelName()`: token-segment matching (split model id on `-`,
+compare segments) for fable/opus/sonnet/haiku, fable-first. Fixes `confable`-class
+false-positive collisions. Latent bug fixed: the `:361-366` "pick max lastUsedAt" loop
+read a phantom field absent in real `~/.claude.json` (ts always 0, masked by last-key
+fall-through — P6 probe); simplified to explicit last-key with a comment stating the
+verified data shape (cumulative counters only, no timestamps).
+
+### ANTIHALL_JUDGE_MODEL
+
+`speculation-judge.js:194` now honors `ANTIHALL_JUDGE_MODEL` env override (house
+convention for all anti-hall LLM call sites). Default remains `claude-haiku-4-5`
+(alias-form, auto-tracking). `eval/run.js` / `eval/grade.js` were already env-overridable.
+
 ## 0.31.1
 
 **Fix: statusline swarm-activity count is now per-session — no more cross-session/cross-project bleed.**

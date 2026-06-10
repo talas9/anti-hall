@@ -45,7 +45,12 @@
 //   }
 //   If `args` is undefined the workflow exits with a usage note (no guessing).
 
-const plan = (typeof args === 'object' && args) ? args : null;
+// args may arrive as an OBJECT or a JSON STRING depending on harness build
+// (live-verified 2026-06-10 — see tests/fixtures/step0-probe-record.md P8).
+const plan = (typeof args === 'object' && args) ? args
+  : (typeof args === 'string'
+    ? (() => { try { const v = JSON.parse(args); return (v && typeof v === 'object') ? v : null; } catch (_) { return null; } })()
+    : null);
 
 const RESULT_SCHEMA = {
   type: 'object',
@@ -83,21 +88,34 @@ function buildBrief(phase) {
   ].join('\n\n');
 }
 
-// deadly-loop per-phase gate: Reviewer (Opus) + Critic (Codex) in a BARRIER parallel.
+// deadly-loop per-phase gate: Reviewer (Fable) + Auditor (Opus) + Critic (Codex) in a
+// BARRIER parallel. The roster, availability fallback matrix, and canonical Codex spawn
+// form live in deadly-loop/references/MODEL-POLICY.md. Model tokens are tier tokens
+// (fable/opus) resolved to the latest of that tier at call time — never versioned ids.
 function reviewerBrief(phase) {
   return [
-    'You are the deadly-loop REVIEWER (latest Opus, max thinking) for phase ' + phase.label + '.',
+    'You are the deadly-loop REVIEWER (latest flagship Claude, max thinking) for phase ' + phase.label + '.',
     'Audit this phase diff for: correctness vs the plan, edge cases actually handled,',
     'regressions, security on security-relevant phases, full blast radius.',
     'Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
     'Count only NEW P0 blockers (not rediscovered ones). Return the verdict schema.',
   ].join('\n');
 }
+function auditorBrief(phase) {
+  return [
+    'You are the deadly-loop AUDITOR (latest Opus, max thinking) for phase ' + phase.label + '.',
+    'DIVERGENT lens — regression & coupling hunter; do NOT duplicate the Reviewer. Trace',
+    'OUTWARD: regressions in unchanged dependent code, wrong cross-module/cross-PR coupling,',
+    'fixes that undid earlier fixes, merge-order cross-reference breaks.',
+    'Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
+    'Count only NEW P0 blockers. Return the verdict schema.',
+  ].join('\n');
+}
 function criticBrief(phase) {
   return [
     'You are the deadly-loop CRITIC (Codex, max reasoning) for phase ' + phase.label + '.',
-    'Same lenses as the Reviewer but a DIFFERENT mental model — find blindspots the',
-    'Reviewer would miss. Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
+    'Adversarial lens — DIFFERENT mental model; find blindspots the Reviewer and Auditor',
+    'would miss; try to BREAK the change. Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
     'Count only NEW P0 blockers. Return the verdict schema.',
   ].join('\n');
 }
@@ -169,16 +187,20 @@ async function main() {
     group.forEach((p, i) => { results[p.label] = { build: built[i] }; });
 
     // Step 5: per-phase audit pass, ONE phase at a time (do NOT nest concurrent
-    // deadly-loops past depth-1). Each gate is its own Reviewer+Critic BARRIER. This is a
-    // SINGLE pass that shows the fan-out shape; if it returns newP0 > 0 the COORDINATOR
-    // runs the real deadly-loop skill fix-wave -> re-converge loop (this script does not).
+    // deadly-loops past depth-1). Each gate is its own Reviewer+Auditor+Critic TRIO BARRIER.
+    // Models are set EXPLICITLY per seat (an omitted model inherits the orchestrator's model;
+    // on a flagship orchestrator that would silently produce an all-flagship swarm). Tier
+    // tokens only — resolved to the latest of that tier at call time, never versioned ids.
+    // This is a SINGLE pass that shows the fan-out shape; if it returns newP0 > 0 the
+    // COORDINATOR runs the real deadly-loop skill fix-wave -> re-converge loop (not this script).
     for (const p of group) {
       phase('deadly-loop gate: ' + p.label);
       const audit = await parallel([
-        () => agent(reviewerBrief(p), { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':reviewer' }),
+        () => agent(reviewerBrief(p), { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':reviewer', model: 'fable' }),
+        () => agent(auditorBrief(p),  { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':auditor', model: 'opus' }),
         () => agent(criticBrief(p),   { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':critic', agentType: 'codex:codex-rescue' }),
       ]);
-      results[p.label].review = { reviewer: audit[0], critic: audit[1] };
+      results[p.label].review = { reviewer: audit[0], auditor: audit[1], critic: audit[2] };
     }
   }
 

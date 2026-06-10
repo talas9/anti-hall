@@ -1,13 +1,13 @@
 ---
 name: deadly-loop
-description: Iterative 2-agent debate + fix-wave protocol for hardening non-trivial PRs and changes before merge. Spawns parallel Reviewer + Critic auditors, dispatches fix waves, loops until convergence (zero NEW P0 blockers). Use before merging anything with cross-file risk, cross-PR coordination, security-sensitive changes (auth, signing, redaction, prompt-injection defense), schema migrations, production-data touches, shell scripts, CI/workflow YAML, cross-repo coordination, or LLM prompt work — anywhere a silent failure would be expensive. Born from a real project where 7 iteration rounds caught 30+ bugs that solo review would have missed.
+description: Iterative TRIO-debate + fix-wave protocol for hardening non-trivial PRs and changes before merge. Spawns a parallel Reviewer + Auditor + Critic trio, dispatches fix waves, loops until convergence (zero NEW P0 blockers). Use before merging anything with cross-file risk, cross-PR coordination, security-sensitive changes (auth, signing, redaction, prompt-injection defense), schema migrations, production-data touches, shell scripts, CI/workflow YAML, cross-repo coordination, or LLM prompt work — anywhere a silent failure would be expensive. Born from a real project where 7 iteration rounds caught 30+ bugs that solo review would have missed.
 ---
 
 # Deadly Loop — Iterative Debate Until Clean
 
 Spend 1-2 hours of agent compute to ship a clean change rather than 1-2 weeks of post-merge incident response.
 
-This skill uses a shared debate roster defined in `references/MODEL-POLICY.md` (Reviewer = latest Opus at max thinking; Critic = latest OpenAI Codex at max reasoning, with a 2nd-Opus divergent-persona fallback). Read that file before dispatching any round so the model selection and spawn mechanics are correct.
+This skill uses a shared TRIO debate roster defined in `references/MODEL-POLICY.md` (Reviewer = latest flagship Claude `model:"fable"` at max thinking; Auditor = latest Opus `model:"opus"`, divergent regression/coupling lens; Critic = latest OpenAI Codex at max reasoning, with an Opus divergent-persona fallback). Read that file before dispatching any round so the model selection, the availability fallback matrix, the round governance, and the spawn mechanics are correct.
 
 ## When to use this skill
 
@@ -37,12 +37,12 @@ Before invoking the deadly loop, ensure:
 2. A **canonical handoff doc** exists or will be created (e.g., `docs/<date>-<feature>-session-handoff.md`).
 3. The owner has authorized at least one full iteration (each round is ~5-30 min of agent compute).
 4. A verification preamble + branch/SHA check is in effect for every spawned agent (see Phase A3).
-5. The debate roster from `references/MODEL-POLICY.md` is resolved — confirm whether Codex is available (use the OS-agnostic Node probe in `references/MODEL-POLICY.md`) so you know which Critic path to take.
+5. The debate roster from `references/MODEL-POLICY.md` is resolved — confirm whether the `fable` token and Codex are available (use the OS-agnostic Node probe in `references/MODEL-POLICY.md`) so you know which row of the availability fallback matrix applies.
 
 ## The pattern at a glance
 
 ```
-Round 1 (initial audit, Reviewer + Critic in parallel)
+Round 1 (initial audit, Reviewer + Auditor + Critic trio in parallel)
   └─→ findings → Wave 1 (orchestrator + parallel children)
                   └─→ commits pushed → Round 2 (post-Wave-1 audit)
                                         └─→ findings → Wave 2
@@ -50,7 +50,7 @@ Round 1 (initial audit, Reviewer + Critic in parallel)
                                                             └─→ Round N (zero NEW P0s) → GO → owner merge
 ```
 
-Each round = 1 Reviewer agent + 1 Critic agent, dispatched **in parallel in the same message**. Roster + spawn details: `references/MODEL-POLICY.md`.
+Each round = a Reviewer + Auditor + Critic TRIO (3 agents), dispatched **in parallel in the same message**. Roster, availability fallback matrix, round governance + spawn details: `references/MODEL-POLICY.md`.
 Each wave = 1 orchestrator agent + N parallel children for parallel-safe fixes, then serial children for fixes with dependencies.
 
 ## Phase A — Initialize the loop
@@ -127,16 +127,17 @@ The orchestrator dispatching the agent fills `<expected_dir>`, `<branch>`, `<sha
 
 ## Phase B — Round N debate
 
-Two parallel agents dispatched in the **same message** (roster + exact spawn syntax in `references/MODEL-POLICY.md`):
+A TRIO of three parallel agents dispatched in the **same message** (roster + availability fallback matrix + exact spawn syntax in `references/MODEL-POLICY.md`):
 
-- **Reviewer** — latest Opus at maximum thinking. Correctness / architecture auditor.
-- **Critic** — latest OpenAI Codex at maximum reasoning **when available**; otherwise a 2nd Opus with a divergent adversarial "failure-mode hunter" persona.
+- **Reviewer** — latest flagship Claude (`model:"fable"`) at maximum thinking. Correctness / architecture auditor.
+- **Auditor** — latest Opus (`model:"opus"`) at maximum thinking. Divergent: regression & coupling hunter (hunts what broke ELSEWHERE — regressions in unchanged code, wrong cross-module/cross-PR coupling, fixes that undid earlier fixes, merge-order cross-reference breaks).
+- **Critic** — latest OpenAI Codex at maximum reasoning **when available** (canonical Codex spawn form in `references/MODEL-POLICY.md`); otherwise an Opus with a divergent adversarial "failure-mode hunter" persona.
 
-See `references/MODEL-POLICY.md` for the OS-agnostic Node probe that checks Codex availability and the concrete `Agent(...)` / Codex invocations. Dispatch both in ONE message so they run truly in parallel.
+See `references/MODEL-POLICY.md` for the OS-agnostic Node probe that checks `fable`/Codex availability and the concrete `Agent(...)` / Codex invocations. Dispatch all three in ONE message so they run truly in parallel.
 
-### B0. Auditor depth requirements (both agents)
+### B0. Auditor depth requirements (all three seats)
 
-These four requirements bind **both** the Reviewer and the Critic. A round that skips them is wasted compute — surface-skimming is exactly how the 30+ bugs in the origin session slipped past solo review.
+These four requirements bind **all three** seats — the Reviewer, the Auditor, and the Critic. A round that skips them is wasted compute — surface-skimming is exactly how the 30+ bugs in the origin session slipped past solo review.
 
 1. **DIG DEEP, DO NOT SURFACE-SKIM.** Read the ACTUAL implementation of each changed/affected function end to end. Trace control flow and data flow across file boundaries; follow every branch, every error path, every early return. Never judge correctness from a name, a signature, a comment, or a diff hunk alone — open the code it calls and the code that calls it. State what you actually read (`file:line` ranges), not what you inferred.
 
@@ -188,7 +189,34 @@ Hard rules:
 - Cite file:line for every claim
 - If you can't verify due to limited tooling, say so — don't pass blindly
 
-Run independently of the Critic agent.
+Run independently of the Auditor and Critic agents.
+```
+
+### B1.5. Auditor prompt skeleton (divergent regression & coupling lens)
+
+(Apply the B0 depth requirements: dig deep, simulate edge cases, P0/P1/P2 + EASY-WIN, carry-forward.)
+
+The Auditor (latest Opus, `model:"opus"`) runs a DIFFERENT Claude generation from the Reviewer, with an orthogonal lens: it does not re-verify the diff the way the Reviewer does — it traces the blast radius OUTWARD to find what the change broke elsewhere.
+
+```
+You are the Round N Auditor for <feature>. DIVERGENT lens: regression & coupling hunter. Do NOT duplicate the Reviewer's diff-verification — trace OUTWARD from the change.
+
+CRITICAL READING: same as Reviewer (handoff doc + PR diffs / working-tree diff).
+
+Wave-(N-1) commits to trace the blast radius of:
+[same list as Reviewer]
+
+Hunt specifically for:
+- Regressions in UNCHANGED code that depends on the changed code (callers, importers, downstream consumers) — open the call sites, do not infer.
+- Wrong coupling: a contract / schema / shared constant / message shape that the change perturbs but a sibling module/PR still assumes the old form.
+- Fix-vs-fix regressions: did a Wave-(N-1) fix silently undo an earlier fix (Fix-K, K<N-1)?
+- Merge-order cross-reference breaks: after the documented merge order, does every cross-PR reference still resolve?
+
+Output: P0/P1/P2 + EASY-WIN with file:line citations. Distinguish NEW from REDISCOVERED.
+
+Verdict format same as Reviewer.
+
+Run independently of the Reviewer and Critic agents.
 ```
 
 ### B2. Critic prompt skeleton
@@ -217,18 +245,20 @@ Output: P0/P1/P2 with file:line citations. Distinguish NEW issues from previousl
 
 Verdict format same as Reviewer.
 
-Run independently.
+Run independently of the Reviewer and Auditor agents.
 ```
 
-**Critical: dispatch both agents in the SAME message** so they run truly in parallel. Don't sequentially.
+**Critical: dispatch all three seats in the SAME message** so they run truly in parallel. Don't sequentially.
 
 ### B3. Synthesis (you do this on receipt)
 
-Both agents return → dedup their findings → categorize:
-- **GO from both** → proceed to Phase D (merge)
-- **HOLD from either** → write Wave N work list, dispatch Phase C
-- Issues that BOTH agents flag → highest priority, definitely real
-- Issues only ONE flags → either a deeper bug one missed OR a false positive — adjudicate
+All three seats return → dedup their findings → categorize, applying the **round governance** in `references/MODEL-POLICY.md`:
+- **GO from all three (a non-degraded round)** → proceed to Phase D (merge). A GO requires zero un-adjudicated HOLD blockers AND a full, non-degraded round — a **DEGRADED round (a seat dead after its one retry) can NEVER grant a final GO**; the missing seat must sit in a full follow-up round first.
+- **HOLD from any seat** → write Wave N work list, dispatch Phase C.
+- **≥2-of-3 agreement on a finding = confirmed-real** → highest priority, definitely real.
+- Issues only ONE seat flags → either a deeper bug the other two missed OR a false positive — adjudicate against the actual code.
+
+**Argument outcomes (dissent adjudication):** a **single-seat re-run** is allowed ONLY for evidence-adjudication with NO code/plan change in between (re-run the one dissenting seat to confirm/refute against the current state). **ANY fix wave ⇒ the FULL TRIO re-runs next round** — never a single-seat re-audit after code changed (preserves the anti-pattern below). Evidence-refuted dissent may be overridden, documented in the handoff.
 
 **Apply the round-discipline rules:**
 1. Each round has full history (handoff doc) AND focuses NEW analysis on the latest delta.
@@ -306,7 +336,7 @@ If validation fails → child agent STOPS, does NOT commit, reports error to orc
 
 ## Phase D — Convergence + merge sequence
 
-When Round N returns GO from BOTH agents:
+When Round N returns GO from ALL THREE seats (a non-degraded round — see the round governance in `references/MODEL-POLICY.md`):
 
 ### D1. Confirm convergence
 
@@ -334,7 +364,7 @@ If any claim fails its check, the issue is NOT resolved — keep it open and ite
 
 ### Iteration caps (soft 10 / hard 15)
 
-The convergence loop (Reviewer + Critic debate → fix wave → re-converge, "until zero NEW P0s") MUST be bounded — a loop that never converges is itself a failure signal, not a reason to keep grinding silently.
+The convergence loop (Reviewer + Auditor + Critic trio debate → fix wave → re-converge, "until zero NEW P0s") MUST be bounded — a loop that never converges is itself a failure signal, not a reason to keep grinding silently.
 
 - **SOFT CAP = 10 rounds.** When you reach round 10 without convergence, STOP and checkpoint with the user via `AskUserQuestion` — present the choice: **continue** (keep iterating), **stop** (accept current state and report outstanding P0s), or **change scope** (narrow the target / split the work). Do NOT keep looping silently past this point.
 - **HARD CAP = 15 rounds.** At round 15, force-stop unconditionally — even if not converged. Report the remaining NEW P0s, the per-round trend, and why convergence was not reached. No further automatic rounds.
@@ -394,9 +424,11 @@ Avoid:
 - **Dispatching the next wave before updating the handoff** — always: handoff update → commit → push → THEN dispatch.
 - **Trusting agent claims without runtime validation** — a "merge rehearsal: Already up to date" line can look like proof while the rehearsal target was wrong. Verify the verification.
 - **Letting force-pushes happen without rehearsal** — proving the rebase is correct is mandatory.
-- **Sending Reviewer + Critic in separate messages** — they run sequentially that way, doubling wall time. Always dispatch BOTH in one message.
-- **Downgrading debate agents without checking availability** — if Codex is unavailable, fall back to a 2nd Opus with a divergent persona (per `references/MODEL-POLICY.md`), NOT a weaker/cheaper model. A weaker model's debate depth is substantially shallower; use cheap models only for wave fix children, never for round debate agents. If Opus is also rate-limited, wait and retry rather than silently degrading.
-- **Stopping after Round 1 GO** — sometimes Round 1 misses things only Round 2 catches once you have a baseline. The first GO from BOTH agents is the gate, not Round 1.
+- **Sending the trio (Reviewer + Auditor + Critic) in separate messages** — they run sequentially that way, tripling wall time. Always dispatch ALL THREE in one message.
+- **Single-seat re-audit after a fix wave** — a single-seat re-run is allowed ONLY for evidence-adjudication with no code/plan change in between; ANY fix wave ⇒ the FULL TRIO re-runs next round (per the round governance in `references/MODEL-POLICY.md`).
+- **Granting a final GO on a DEGRADED round** — a round where a seat stayed dead after its one retry can drive a fix wave but NEVER grants a final GO; the missing seat must sit in a full follow-up round first.
+- **Downgrading debate agents without checking availability** — walk the availability fallback matrix in `references/MODEL-POLICY.md`: if `fable` is unavailable the Reviewer falls back to Opus; if Codex is unavailable the Critic becomes an Opus with a divergent adversarial persona — NOT a weaker/cheaper model. The floor for every seat is Opus. A weaker model's debate depth is substantially shallower; use cheap models only for wave fix children, never for round debate agents. If a flagship seat is rate-limited, wait and retry rather than silently degrading.
+- **Stopping after Round 1 GO** — sometimes Round 1 misses things only Round 2 catches once you have a baseline. The first GO from ALL THREE seats (non-degraded) is the gate, not Round 1.
 
 ## Telemetry to track
 
@@ -426,10 +458,78 @@ When the conditions in "When to use this skill" are met, proactively suggest:
 
 If the owner approves, execute Phase A → B → C → D as documented, using the roster in `references/MODEL-POLICY.md`.
 
+## Swarm mode — the deadly swarm (Workflow execution; swarm-first)
+
+The loop runs **swarm-first** as a Dynamic Workflow via
+`references/deadly-loop.workflow.js`. The plain Agent-tool path (Phases A–D
+above) stays **fully supported as the documented fallback** for sessions without
+Workflow consent — it is not deprecated. Pick swarm mode for multi-round /
+multi-roster runs; pick the inline Agent-tool path for small one-off audits or
+when Workflow consent is unavailable.
+
+**One workflow run = ONE round + its fix wave.** The COORDINATOR loops: run the
+workflow → read the verdicts → update the handoff doc (durable state lives in the
+handoff, NOT in workflow memory — there is NO cross-round caching) → decide →
+next run. Each round is a fresh workflow process. The soft-cap-10 checkpoint
+happens at the coordinator level via `AskUserQuestion` BETWEEN runs (a workflow
+cannot prompt mid-run); the hard-15 cap is enforced by the coordinator and
+double-guarded by a round-counter arg the script refuses past 15.
+
+**Three-phase architecture (per round):**
+
+1. **CONTEXT AGENT** (`agent(contextBrief, {model:"sonnet"})`, first call) —
+   builds the shared context pack so the seats don't each re-read the target. On
+   round 1 it assembles a comprehensive pack (target files, prior history via the
+   handoff path passed in `args`, scope declaration, line anchors) and does the
+   graphify freshness check HERE ONLY (never per-round). On round >1 it builds an
+   INCREMENTAL pack (prior pack + findings + fixes applied + reinvestigation
+   instructions) without re-reading targets in full. Output = a context-pack FILE
+   (path in the structured output) — the seats' shared source. The prior pack is
+   an INPUT, not a cache (no cross-round caching preserved).
+
+2. **THE DUEL** — *2a independent investigation*: the TRIO runs in parallel over
+   the context pack ONLY (`parallel([...])`), each seat anchored to its lens but
+   investigating independently (independence is load-bearing — non-anchored
+   divergent seats are what catch the late-round P0s). *2b structured argument*:
+   each seat receives the other seats' finding arrays and responds per finding
+   with `refute` (file:line counter-evidence) / `corroborate` / `escalate`. Two
+   `parallel()` waves; Codex participates identically via staged file I/O (no
+   live channel).
+
+3. **CONVERGE & CONFIRM** — VERDICT_SCHEMA dedup; the 2b responses feed
+   adjudication (≥2-of-3 + argument outcomes, per the round governance).
+   **RESPAWN-ON-DRIFT — OBJECTIVE criteria ONLY** (dissent is NEVER drift;
+   dissents go to 2b): (1) branch/SHA mismatch vs the `targetSHA` arg; (2) wrong
+   scope audited; (3) schema-required `file:line` evidence missing; (4)
+   VERDICT_SCHEMA parse failure. A respawned seat gets the corrected pack + a
+   drift-reason code + its offending output — NOT peer findings (contamination).
+   A respawn counts against the one-retry-per-seat quota.
+
+**Dynamic-formation args** the workflow accepts: `{seats, multiplier,
+contextMode, argue, respawnQuota}` (seats = the roster from the availability
+matrix; multiplier = 1 for the base loop, ≥2 for deadly-loop-multi; contextMode
+= initial|incremental; argue = run phase 2b; respawnQuota = the per-seat retry
+budget). deadly-loop-multi is the same script with `multiplier > 1`.
+
+**Trio seats** are spawned per the canonical forms in `references/MODEL-POLICY.md`:
+`agent(brief, {model:"fable"})` / `agent(brief, {model:"opus"})` /
+`agent(brief, {agentType:"codex:codex-rescue"})`. The script begins with the
+codex availability probe (the MODEL-POLICY Node probe) and seats the Opus
+adversarial fallback if Codex is absent.
+
+**Workflow consent friction (stated honestly):** each Workflow call may require
+harness consent unless pre-allowed — a 7-round loop can mean up to 7 prompts. Use
+the skill-invocation opt-in path to pre-allow if running many rounds. If Workflow
+consent is unavailable, take the plain Agent-tool path (Phases A–D) — the
+coordinator spawns the trio directly and passes the context-pack path in the
+briefs. Guard-coverage boundary: whether Workflow-internal `agent()` spawns fire
+the Agent/Task PreToolUse hooks is environment-dependent; the script ships
+explicit `model` OPTIONS on every brief so routing is correct regardless.
+
 ## Reference templates (optional, add incrementally)
 
 A `references/` directory can hold fillable templates as the protocol matures:
-- `ROUND-PROMPT-TEMPLATE.md` — fillable Reviewer + Critic skeletons
+- `ROUND-PROMPT-TEMPLATE.md` — fillable Reviewer + Auditor + Critic skeletons
 - `WAVE-ORCHESTRATOR-TEMPLATE.md` — fillable orchestrator prompt
 - `HANDOFF-DOC-TEMPLATE.md` — initial handoff doc structure
 - `VALIDATION-CHECKLIST.md` — by file type

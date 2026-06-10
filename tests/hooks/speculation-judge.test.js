@@ -69,6 +69,42 @@ test('SKIP-HATCH: broad "all" skip also covers speculation-judge (non-destructiv
   }
 });
 
+test('ANTIHALL_JUDGE_MODEL default: no override -> hook reaches API path, fails open (fake key)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('The cause is the old build artifact.')]);
+    const r = testHook(HOOK, stopPayload(tp), {
+      home: h.home,
+      env: { ANTIHALL_SEMANTIC_JUDGE: '1', ANTHROPIC_API_KEY: 'sk-ant-fake-default' },
+    });
+    // Network will fail (fake key) -> fail-open -> exit 0, no block
+    assert.strictEqual(r.status, 0, `expected fail-open exit 0; stdout: ${r.stdout}`);
+    assert.ok(!(r.json && r.json.decision === 'block'), `fail-open must not block; json: ${JSON.stringify(r.json)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ANTIHALL_JUDGE_MODEL override: custom model env var -> hook accepts override, fails open (fake key)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('The cause is the old build artifact.')]);
+    const r = testHook(HOOK, stopPayload(tp), {
+      home: h.home,
+      env: {
+        ANTIHALL_SEMANTIC_JUDGE: '1',
+        ANTHROPIC_API_KEY: 'sk-ant-fake-override',
+        ANTIHALL_JUDGE_MODEL: 'claude-test-model-override',
+      },
+    });
+    // Network will fail (fake key) -> fail-open -> exit 0, no block
+    assert.strictEqual(r.status, 0, `expected fail-open exit 0 with model override; stdout: ${r.stdout}`);
+    assert.ok(!(r.json && r.json.decision === 'block'), `fail-open must not block; json: ${JSON.stringify(r.json)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('FAIL-OPEN: empty stdin -> exit 0', () => {
   const h = makeHome();
   try {

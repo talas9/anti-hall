@@ -156,28 +156,35 @@ describe the behavior for a scenario, that's the hole the deadly-loop will find 
 
 **Still in plan mode.** The plan itself is the target, not code. **Invoke `deadly-loop` on
 PLAN.md** using the Workflow tool to fan out a parallel `parallel([...])` barrier stage with
-two concurrent auditors:
+the three concurrent TRIO seats:
 
-- **Reviewer agent** (latest Opus, max thinking): read `PLAN.md`, audit for narrow vision /
-  missed blast radius, unsound phase decomposition or sequencing, schema/migration/rollback
-  gaps, and assumptions stated as fact without evidence.
-- **Critic agent** (latest Codex if available, else divergent 2nd Opus, max reasoning): same
-  lenses, different mental model, find blindspots.
+- **Reviewer agent** (latest flagship Claude `model:"fable"`, max thinking): read `PLAN.md`,
+  audit for narrow vision / missed blast radius, unsound phase decomposition or sequencing,
+  schema/migration/rollback gaps, and assumptions stated as fact without evidence.
+- **Auditor agent** (latest Opus `model:"opus"`, max thinking): divergent regression &
+  coupling lens — hunt where the plan's phases couple wrongly, where a later phase regresses
+  an earlier one, where the blast-radius map misses a dependent consumer.
+- **Critic agent** (latest Codex if available, else divergent Opus, max reasoning): same
+  target, different mental model, find blindspots.
 
-Both run **concurrently** via a **BARRIER** `parallel([...])` — both finish before the
+All three run **concurrently** via a **BARRIER** `parallel([...])` — all finish before the
 coordinator receives their reports. Spawn the Critic with `agentType` so the cross-model
-Codex critic is preserved:
+Codex critic is preserved (canonical Codex form + availability fallback matrix in
+`deadly-loop/references/MODEL-POLICY.md`):
 
 ```js
 parallel([
-  () => agent(reviewerBrief, { model: "opus", run_in_background: true, label: "reviewer" }),
+  () => agent(reviewerBrief, { model: "fable", run_in_background: true, label: "reviewer" }),
+  () => agent(auditorBrief,  { model: "opus",  run_in_background: true, label: "auditor" }),
   () => agent(criticBrief,   { agentType: "codex:codex-rescue", run_in_background: true, label: "critic" }),
 ])
 ```
 
-Note: spawning both as plain Claude agents would silently drop the cross-model Codex critic
-(= 2-Opus fallback); use `agentType` for the Critic. The main thread **stays coordinator**:
-it synthesizes their findings, dispatches fix-waves, and loops to re-debate.
+Note: spawning all three as plain Claude agents would silently drop the cross-model Codex
+critic (collapsing to the all-Opus fallback), and an omitted `model` inherits the
+orchestrator's model — so set `model` EXPLICITLY on the Reviewer and Auditor and use
+`agentType` for the Critic. The main thread **stays coordinator**: it synthesizes their
+findings, dispatches fix-waves, and loops to re-debate.
 
 **Loop fix-waves → re-debate until zero NEW P0s** (count NEW issues, not rediscovered ones;
 the trend must fall to 0). Same deadly-loop caps: soft-10 / hard-15 rounds. If the trend
@@ -218,9 +225,9 @@ Use the **`Workflow` tool / Dynamic Workflows** to fan out at L. Primitives:
   one background auditor or builder with the given options. `schema` returns a typed result.
 - **`parallel([() => agent(...), () => agent(...), ...])`** — BARRIER fan-out; all agents
   finish before return. Used for:
-  - Step 3 auditors (Reviewer + Critic, disjoint lenses).
+  - Step 3 auditors (Reviewer + Auditor + Critic trio, disjoint lenses).
   - Step 4 phases in the same `parallel_group` (disjoint files, no dependency).
-  - Step 5 per-phase deadly-loops (Reviewer + Critic, same phase diff).
+  - Step 5 per-phase deadly-loops (Reviewer + Auditor + Critic trio, same phase diff).
 - **Caps:** ~`min(16, cores-2)` in-flight agents; 1000 total per run. **Cost: many tokens —
   test on a small slice first.** Determinism: no `Date.now()` / `Math.random()` / argless
   `new Date()` in the workflow script; pass seeds/timestamps via `args`.
@@ -317,7 +324,7 @@ For each phase (swarmed at L, or inline at S/M):
 ## Step 5 — Harden each phase with the deadly-loop (GATE)
 
 After a phase is committed, **invoke `deadly-loop` on that phase's diff** — using Workflow
-`parallel([...])` again to fan out Reviewer + Critic concurrently, coordinator synthesizing.
+`parallel([...])` again to fan out the Reviewer + Auditor + Critic trio concurrently, coordinator synthesizing.
 Iterate fix-waves to **zero NEW P0s**: correctness vs the plan, edge cases actually handled,
 regressions, security on security-relevant phases, and full blast radius.
 
@@ -327,7 +334,7 @@ Same soft-10 / hard-15 caps from Step 3 apply.
 
 - **L:** one gate after **each** phase. Per-phase deadly-loops run **sequentially** from the
   coordinator — the coordinator invokes the deadly-loop once per phase, and each loop manages
-  its own single-level Reviewer + Critic agents. Do **not** run per-phase deadly-loops
+  its own single-level Reviewer + Auditor + Critic trio agents. Do **not** run per-phase deadly-loops
   concurrently: that would nest agent trees past depth-1 and bust the concurrency cap.
 - **M:** one gate total, before merge, **only if** a hard-risk trigger applies; otherwise
   Step 4 verification is sufficient.
@@ -417,7 +424,7 @@ inherit these guards; a background agent cannot bypass a gate the main thread co
   Main thread coordinates; concurrency capped at ~`min(16, cores-2)`. Determinism: no
   `Date.now()` / `Math.random()` / argless `new Date()`; pass seeds via `args`. Cost: many
   tokens — test on a small slice first. S/M don't use it.
-- **`deadly-loop`** (same plugin) — the debate engine for Steps 3 & 5 (Reviewer + Critic per
+- **`deadly-loop`** (same plugin) — the debate engine for Steps 3 & 5 (Reviewer + Auditor + Critic trio per
   its `references/MODEL-POLICY.md`), the A3 branch/SHA verification preamble (Step 4.2), the
   validation table (Step 4.5), and the D1.5 fresh-evidence + vacuous-test convergence gate.
   **Required at L** (and at M only when a hard-risk trigger fires). This skill orchestrates
