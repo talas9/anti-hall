@@ -6,6 +6,10 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.32.1
+
+Docs: refresh test counts (459 pass / 461 total) across README (root+plugin), llms.txt, KB.md; index KB-fable-5.md and the v0.32.0 design plan in llms.txt + KB.md. No behavioral changes.
+
 ## 0.32.0
 
 **Fable 5 awareness, model-routing guard, OMC-deference, TRIO debate roster, 3-phase deadly-swarm workflow, statusline segment-matching + latent-bug fix, `ANTIHALL_JUDGE_MODEL`.**
