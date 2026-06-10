@@ -75,6 +75,7 @@ Invoke as /anti-hall:<name>.
 - [ship-it](plugins/anti-hall/skills/ship-it/SKILL.md): one lean workflow for shipping any change correctly, scaled S/M/L to blast radius — brainstorm + plan IN PLAN MODE (ExitPlanMode is the approval gate), harden the plan with the deadly-loop BEFORE code, fan large work out as a Workflow swarm, verify each phase with fresh evidence + a vacuous-test guard until zero NEW P0s. Replaces feature-launch.
 - [install-statusline](plugins/anti-hall/skills/install-statusline/SKILL.md): installs the statusLine entry on demand (global by default, per-project on request) + restart reminder.
 - [doctor](plugins/anti-hall/skills/doctor/SKILL.md): health-check — confirms Node is found, every hook is present + syntax-valid, and the guards actually fire (live behavioral self-tests).
+- [update](plugins/anti-hall/skills/update/SKILL.md): in-session self-update — git pull --ff-only, semver-anchored traversal-proof cache sync, changelog delta, /reload-plugins in-session reload.
 - [deadly-loop-multi](plugins/anti-hall/skills/deadly-loop-multi/SKILL.md): scaled-up deadly-loop — N parallel Reviewer + Critic pairs with diversified lenses, then deduplicate + synthesize (double / triple / quadruple).
 - [MODEL-POLICY.md](plugins/anti-hall/skills/MODEL-POLICY.md): shared TRIO debate roster (Reviewer = latest flagship Claude `model:"fable"`; Auditor = latest Opus `model:"opus"`, divergent regression/coupling lens; Critic = latest OpenAI Codex at max reasoning, Opus adversarial-persona fallback). **Duplicated** across two locations (skills/MODEL-POLICY.md + skills/deadly-loop/references/MODEL-POLICY.md) — keep both copies byte-identical; symlinks are stripped on install.
 
@@ -106,7 +107,7 @@ Opt-in, NOT a hook. macOS + Linux interval job; Windows is a documented no-op (n
 
 ## Tests
 
-- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 459 passing (+2 platform-skipped), 461 total, covering the hooks (guards, api-guard stdlib/builtin/3rd-party checks + shadowing/portability/RCE-no-execute, git-guard gh-PR self-credit, speculation, tasklist-guard Bash-regex cases + history-ledger reminder, synthesize-never-relay nudge, etc.). Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
+- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 506 passing (+2 platform-skipped), 508 total, covering the hooks (guards, api-guard stdlib/builtin/3rd-party checks + shadowing/portability/RCE-no-execute, git-guard gh-PR self-credit, speculation, tasklist-guard Bash-regex cases + history-ledger reminder, synthesize-never-relay nudge, etc.). Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
 - [docs/KB-fable-5.md](docs/KB-fable-5.md): Fable 5 knowledge base — identity, pricing, context window, features, tier-token routing; 14 sources, compiled 2026-06-10.
 - [docs/2026-06-10-v0.32.0-fable5-model-routing-plan.md](docs/2026-06-10-v0.32.0-fable5-model-routing-plan.md): v0.32.0 design plan — Fable 5 support, model-routing guard, TRIO roster update, deadly-swarm-converged; 2026-06-10.
 - [.github/workflows/test.yml](.github/workflows/test.yml): CI runs the suite on push/PR.

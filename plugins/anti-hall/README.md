@@ -64,7 +64,7 @@ claude --plugin-dir /path/to/anti-hall
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
 | `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
 | `ship-it-guard.js` | PreToolUse (Write/Edit/MultiEdit) | **OPT-IN, default OFF** — the only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root or `.planning/PLAN.md`). Enforces artifact existence only (not plan quality), conservative, fail-open. No effect when unset. |
-| `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`) | Skills | Slash commands (see [Skills](#skills)). |
+| `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `update`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
 | `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`companion/README.md`](companion/README.md). |
 
@@ -320,6 +320,12 @@ Invoke via slash command:
 - **`/anti-hall:doctor`** — health-check: confirms Node is found, every hook is
   present + syntax-valid, and the guards actually fire (live behavioral self-tests on
   e.g. git-guard / command-guard / swarm-guard / speculation-guard / tasklist-guard).
+- **`/anti-hall:update`** — updates anti-hall in place: `git pull --ff-only` the
+  marketplace clone, syncs the version-pinned cache (semver-anchored, traversal-proof),
+  prints the changelog delta between installed and latest, then instructs
+  `/reload-plugins` for in-session reload. Hooks and statusline pick up from disk
+  immediately; `/reload-plugins` refreshes the skill list and version label. `--check`
+  mode answers "is anti-hall up to date?" without pulling or writing.
 
 `MODEL-POLICY.md` is the shared TRIO roster (Reviewer = latest flagship Claude `model:"fable"` max thinking;
 Auditor = latest Opus `model:"opus"` divergent regression/coupling lens;
@@ -399,7 +405,7 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 
 ```bash
 # Full zero-dependency E2E suite (node:test, run from the repo root):
-node --test                                                                  # 459 pass +2 platform-skip (461 total); CI runs the same on push/PR (.github/workflows/test.yml)
+node --test                                                                  # 506 pass +2 platform-skip (508 total); CI runs the same on push/PR (.github/workflows/test.yml)
 
 # Quick smoke-checks of individual hooks:
 echo '{"hook_event_name":"SessionStart"}' | node hooks/verify-first-full.js  # full Iron-Law protocol + skill primer

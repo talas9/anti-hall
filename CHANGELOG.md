@@ -6,6 +6,33 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.33.0
+
+**New skill: `/anti-hall:update`** — in-session self-update with cache sync and changelog delta.
+
+`scripts/update.js` (pure Node ≥ 18, cross-platform including Windows) implements the
+full update lifecycle: resolves the installed version from `installed_plugins.json` (v2
+schema, harness-owned — read-only), `git pull --ff-only` the marketplace clone (fail-closed on
+dirty tree or non-fast-forward divergence — hard STOP with a clear message, no merge/rebase/force),
+mirrors the new version into the version-pinned cache so `/reload-plugins` can resolve it
+(semver-anchored, traversal-proof path join — no writes outside the clone dir + cache),
+extracts the CHANGELOG delta between installed and latest, and emits a JSON status +
+human summary. `--check` mode: `git fetch` + local-vs-remote version compare, no pull,
+no writes. Unknown failures are fail-closed (exit 1 with message) per a conservative
+posture; offline/no-git is reported and exits 0.
+
+Hardened by a 2-round deadly-swarm: a path-traversal P1 (unsanitized cache path join) and a
+live E2E registry-shape bug (v2 `installed_plugins.json` parsing) were caught and fixed before
+ship. 47 dedicated tests cover both modes, all STOP / fail-open / offline / already-up-to-date
+branches, traversal-proof cache sync, changelog extraction, and JSON status output.
+
+On a successful update the skill instructs the user to run `/reload-plugins` to load the new
+version in-session (hooks and statusline pick up changes from disk automatically; `/reload-plugins`
+refreshes the skill list and version label). Rarely, a harness build may require a restart instead —
+the skill says so when relevant and does not over-promise.
+
+Skills shipped: 7 → 8.
+
 ## 0.32.1
 
 Docs: refresh test counts (459 pass / 461 total) across README (root+plugin), llms.txt, KB.md; index KB-fable-5.md and the v0.32.0 design plan in llms.txt + KB.md. No behavioral changes.
