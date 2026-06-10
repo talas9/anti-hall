@@ -60,6 +60,15 @@ function pathsFor(t) {
   return U.resolvePaths({ ANTIHALL_MARKETPLACE_DIR: t.marketplaceDir }, t.root);
 }
 
+// Platform-correct fake HOME (CI regression: Windows). A posix literal like
+// '/home/fake' is NOT fully absolute on Windows — the production code's
+// path.resolve() prepends the drive letter ('D:\home\fake\...') while a
+// path.join('/home/fake', ...) expectation stays drive-less ('\home\fake\...'),
+// so a literal expectation can never match there. Resolving the fake home FIRST
+// and feeding the SAME value to both the code under test and the expectation
+// makes both sides go through identical path semantics on every platform.
+const FAKE_HOME = path.resolve('/home/fake');
+
 // ---------------------------------------------------------------------------
 // parseVersion / compareVersions
 // ---------------------------------------------------------------------------
@@ -98,9 +107,9 @@ test('resolvePaths: override derives cache/installed two levels up', () => {
 });
 
 test('resolvePaths: default (no override) lands under ~/.claude/plugins', () => {
-  const p = U.resolvePaths({}, '/home/fake');
-  assert.strictEqual(p.marketplaceDir, path.join('/home/fake', '.claude', 'plugins', 'marketplaces', 'anti-hall'));
-  assert.strictEqual(p.cacheRoot, path.join('/home/fake', '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall'));
+  const p = U.resolvePaths({}, FAKE_HOME);
+  assert.strictEqual(p.marketplaceDir, path.join(FAKE_HOME, '.claude', 'plugins', 'marketplaces', 'anti-hall'));
+  assert.strictEqual(p.cacheRoot, path.join(FAKE_HOME, '.claude', 'plugins', 'cache', 'anti-hall', 'anti-hall'));
 });
 
 // ---------------------------------------------------------------------------
@@ -688,15 +697,15 @@ test('full flow: git runs in the marketplace cwd, --ff-only pinned, no destructi
 
 // --- R1-A-01: ANTIHALL_MARKETPLACE_DIR override validation ------------------
 test('resolvePaths: relative override → ignored, default used, reported', () => {
-  const p = U.resolvePaths({ ANTIHALL_MARKETPLACE_DIR: 'relative/clone' }, '/home/fake');
-  assert.strictEqual(p.marketplaceDir, path.join('/home/fake', '.claude', 'plugins', 'marketplaces', 'anti-hall'));
+  const p = U.resolvePaths({ ANTIHALL_MARKETPLACE_DIR: 'relative/clone' }, FAKE_HOME);
+  assert.strictEqual(p.marketplaceDir, path.join(FAKE_HOME, '.claude', 'plugins', 'marketplaces', 'anti-hall'));
   assert.match(p.overrideIgnored, /ANTIHALL_MARKETPLACE_DIR ignored/);
 });
 
 test('resolvePaths: absolute but nonexistent override → ignored, default used, reported', () => {
   const missing = path.join(os.tmpdir(), 'antihall-definitely-missing-' + Date.now());
-  const p = U.resolvePaths({ ANTIHALL_MARKETPLACE_DIR: missing }, '/home/fake');
-  assert.strictEqual(p.marketplaceDir, path.join('/home/fake', '.claude', 'plugins', 'marketplaces', 'anti-hall'));
+  const p = U.resolvePaths({ ANTIHALL_MARKETPLACE_DIR: missing }, FAKE_HOME);
+  assert.strictEqual(p.marketplaceDir, path.join(FAKE_HOME, '.claude', 'plugins', 'marketplaces', 'anti-hall'));
   assert.match(p.overrideIgnored, /ANTIHALL_MARKETPLACE_DIR ignored/);
 });
 
