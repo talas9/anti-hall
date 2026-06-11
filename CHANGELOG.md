@@ -6,6 +6,65 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.34.0
+
+**New agent + skill: `/anti-hall:flutter-debug`** — drive a Flutter app in debug mode, close the fix loop via agent-controlled hot reload + visually verified UI changes.
+
+### Workstream A — Agent + Skill architecture
+
+**`agents/flutter-debug.md`** — anti-hall's first shipped agent. Self-contained executor persona carries the full debug-loop protocol (reproduce → read error → root-cause → fix → hot reload → **visually re-verify**), so direct spawns work without the skill. Frontmatter: `{name: flutter-debug, description: <>, model: sonnet}` (sonnet is the code-authoring floor — never haiku). **No `tools` allowlist** — MCP tool names vary by alias; a wrong allowlist bricks the agent (FP5 validates MCP reachability).
+
+**`skills/flutter-debug/SKILL.md`** — user-facing workflow: setup orchestration, zero-setup MCP registration (scope-aware atomic `claude mcp add` per FP9/FP10), app-side marionette integration, capability tier degradation table, and escalation-report trigger. Loop protocol lives ONCE in the agent; the skill delegates to it (non-blocking coordinator).
+
+### Workstream B — MCP strategy: zero-setup via scope-aware `claude mcp add`
+
+**NO bundled `.mcp.json` for external servers** (owner directive; duplicated processes when user already has dart/marionette registered). Each of dart + marionette is registered idempotently via FP9 flow: `claude mcp get <name>` → absent everywhere ⇒ `claude mcp add --scope <chosen>` (scope question asked once in main context; non-interactive = default local) → present in ANY scope ⇒ SKIP (user entries win by precedence).
+
+**Composition:** official Dart MCP (reload/reload/get_runtime_errors/widget_inspector/vm_service/analyze_files) **REQUIRED** [2]; marionette_mcp ≥ 0.4.0 (semantic tap/enter_text/scroll_to + screenshots + logs) **PRIMARY** [5]; joshuayoes/ios-simulator-mcp (coordinate taps + screenshots, fallback, Flutter reliability UNVERIFIED [10]). Auto-apply: marionette `pubspec.yaml` dependency + upstream-verbatim kDebugMode init (FP6 verified; app-side, invisible to release builds).
+
+### Workstream C — Preflight + doctor integration
+
+**`scripts/preflight.js`** — pure Node ≥ 18, cross-platform, fail-open. **ONE implementation, TWO entry points:** exports its checks; `doctor.js` require()s and CALLS them in-process (not subprocess — matches the G test contract). Runs ONLY on Flutter projects (pubspec.yaml or flutter-debug in use). **Checks:** (1) `dart --version` ≥ 3.12 FULL / 3.9–3.11 WARN / <3.9 FAIL [1][3]; (2) FP9 idempotent MCP registration; (3) marionette host on PATH ≥ 0.4.0, auto-fix via `dart pub global activate marionette_mcp`; (4) iOS booted simulator + idb reachable [9][10]; (5) **Android SDK explicit-path resolution** (BINDING LESSON — bare-PATH probe once falsely reported "no tooling" on a machine with SDK 36 + AVD; now explicit env/path checks + `flutter doctor` cross-check [FP7]); (6) project sanity (pubspec.yaml present). Degradation table per missing capability. Honest on Android visual status (taps/screenshots PENDING FP7, now ACTIVE).
+
+**doctor.js § 6b:** conditional flutter-debug section (silent in non-Flutter cwd). Calls preflight exports in-process (skipRegistration:true = read-only mode). Scope context inherited from the user's current work. Fail-open on any probe error.
+
+### Workstream D — The debug loop (agent body; mirrors KB §5 + root-cause discipline)
+
+Agent executes: (0) preflight + announce tier; (1) run + DTD connect; (2) reproduce (marionette/coordinate/fallback semantic/coordinate/coordinate taps); **screenshot BEFORE** [5][10]; (3) read error routed by kind (exceptions → get_runtime_errors; layout → widget_inspector; prints → marionette get_logs / get_app_logs **double-gated: launch_app-enabled path only** [2]); (4) **NO CAUSE NO FIX** — root-cause with evidence (error + widget tree + code); (5) edit + verify with analyze_files [2]; (6) reload (hot_reload state-preserved, hot_restart for const/init/reset [2]); (7) **MANDATORY re-verify:** re-run get_runtime_errors until clean (matches official demo [1]); on visual tier, BEFORE/AFTER screenshot compare (visual MCP required for "verified", else "error-clear but visually unverified"); (8) **escalation trigger:** after 2 full iterations without proven root cause OR fix needs redesign → report `escalate: opus` with collected evidence (agent never respawns itself); (9) loop until clean. Report = tier + per-fix evidence (errors, screenshots).
+
+### Workstream E — Step-0 probes (tests/fixtures/step0-probe-record-v0.34.0.md)
+
+- **FP1 DONE:** `flutter_driver_command` exposes tap + screenshot + semantic finders (ByValueKey/ByText/BySemanticsLabel…) IN-SCHEMA [2]; schema forbids guessing (widget_inspector first).
+- **FP1b RESIDUAL:** runtime vs plain debug app (no enableFlutterDriverExtension()). Gates no-package degradation. No shipped promise pre-FP1b.
+- **FP2 UNVERIFIED:** Flutter widgets in iOS a11y trees [10][9]. Grades SUPPLEMENT tier only.
+- **FP3 EXCLUDED:** mcp_flutter untested-merge warning [6]. Revisit gate = stable tag (tracked in KB staleness ledger).
+- **FP4 CONFIRMED:** lifecycle tools ABSENT from default list (disabled by default [2]). Manual `flutter run --print-dtd` stays the path. get_app_logs correction = double-gate logic.
+- **FP5 GENERIC PASS:** subagent spawns surface mcp__ tools via ToolSearch and invoke live. Architecture viable; skill-only fallback retained as contingency (executable spec: SKILL.md → CI test omitted, AC1/AC3 branches, CHANGELOG note).
+- **FP6 DONE MATCH:** regular dep, upstream-verbatim kDebugMode if/else (quoted in B). Release-safe per upstream (LogCollector optional, non-fatal).
+- **FP7 UN-DEFERRED ACTIVE:** bare-PATH false-negative corrected (SDK 36 at ~/Library/Android/sdk; AVD Pixel_9_Pro_XL; adb + emulator functional). Probe = boot AVD → marionette → tap/screenshot. Upstream silent on Android ⇒ no promise pre-FP7. Binding baked into preflight check 5.
+- **FP9 CAPTURED:** `claude mcp add` scope/precedence/atomicity semantics (full consequences in B registration flow; B2 shims dropped).
+- **FP10 CAPTURED:** ecosystem precedent (OMC bundles only its own server; ecc bundles 6 externals REJECTED for duplicate-server hazard). Directs decision to FP9 registration flow.
+
+### Workstream F — Model routing + escalation
+
+Agent default **`model: sonnet`** (code-authoring floor). Escalation split: TRIGGER in agent body (D step 8, `escalate: opus`); RESPAWN via caller. SKILL.md instructs coordinator to respawn at `model: opus` on signal. Tier tokens only (v0.32.0 policy).
+
+### Workstream G — Tests
+
+**41 new tests** (≥19 required): agent frontmatter parse (1); SKILL.md lint (1); preflight dart full/warn/fail (3), degradation rows (7), malformed-output fail-open (2), Windows `.cmd` best-effort (1); FP9 registration flow (≥4): get-absent → add, get-present → SKIP, get-unparsable → no add, add hard-error surfaced; Android SDK-path units (2); doctor shared-checks (1); repo-agnostic lint (1). All 535 tests pass (2 skip unrelated).
+
+### Workstream H — Documentation
+
+**`docs/KB-flutter-claude-debug.md`** — 13 sources synthesized (KB + probe evidence cited via `[n]` = KB numbering + FP-ids). Drives every capability claim in the agent/skill/preflight (honesty contract: every promise traces to KB or probe).
+
+**`docs/2026-06-10-v0.34.0-flutter-debug-plan.md`** — development log (rounds 1–3 converged GO×3, v5 baseline + 2026-06-11 amendments for FP9/FP10 MCP strategy + FP7 Android binding). For future context.
+
+**`tests/fixtures/step0-probe-record-v0.34.0.md`** — raw probe captures (FP1–FP10 with dates + tooling inventory). Supports KB staleness tracking.
+
+**README / llms.txt:** new agent listed; 8 skills → 9 skills (including flutter-debug); test count 461 → 535; total checks 49; doctor integration noted.
+
+Skills shipped: 8 → 9.
+
 ## 0.33.0
 
 **New skill: `/anti-hall:update`** — in-session self-update with cache sync and changelog delta.

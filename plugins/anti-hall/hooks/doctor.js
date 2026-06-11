@@ -296,6 +296,38 @@ ok(`SessionStart (one-time): ${ssB} B ~${tok(ssB)} tok`);
 ok(`Per-TURN (every UserPromptSubmit): ${perTurnB} B ~${tok(perTurnB)} tok  (verify-first ${vfB} B + task-tracker ${ttB} B; task-tracker throttles to a short line after the first turn)`);
 ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
 
+// --- 6b. flutter-debug (CONDITIONAL: Flutter cwd or skill/agent in use) -------
+// ONE implementation, two entry points: preflight.js EXPORTS its checks; doctor
+// require()s and CALLS them IN-PROCESS (not a subprocess spawn) as a read-only
+// section. Runs ONLY when a pubspec.yaml is in cwd or the flutter-debug skill/
+// agent is present — silent in a non-Flutter repo. skipRegistration:true keeps
+// it read-only (no MCP add, no marionette auto-provision).
+(function flutterDebugSection() {
+  const hasPubspec = (() => { try { return fs.statSync(path.join(cwd, 'pubspec.yaml')).isFile(); } catch (_) { return false; } })();
+  const skillPath = path.join(ROOT, 'skills', 'flutter-debug', 'scripts', 'preflight.js');
+  const skillPresent = fs.existsSync(skillPath);
+  // Condition: a Flutter project in cwd, OR the user explicitly invoked it.
+  const inUse = /flutter-debug/i.test((process.env.ANTIHALL_DOCTOR_CONTEXT || '') + ' ' + process.argv.join(' '));
+  if (!hasPubspec && !inUse) return; // not a Flutter context → stay silent
+  head('flutter-debug (Flutter project detected)');
+  if (!skillPresent) { warnl('flutter-debug preflight.js not found — skill not installed?'); return; }
+  let preflight;
+  try { preflight = require(skillPath); }
+  catch (e) { bad('flutter-debug preflight.js present but failed to load: ' + (e && e.message)); return; }
+  try {
+    const report = preflight.runAllChecks({ projectDir: cwd, skipRegistration: true });
+    for (const r of report.results) {
+      const msg = '[' + r.id + '] ' + String(r.message).split('\n')[0];
+      if (r.status === preflight.FAIL) bad(msg);
+      else if (r.status === preflight.WARN) warnl(msg);
+      else ok(msg);
+    }
+    ok('capability tier: ' + report.tier.tier + ' — ' + report.tier.summary);
+  } catch (e) {
+    warnl('flutter-debug checks raised (fail-open): ' + (e && e.message));
+  }
+})();
+
 // --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
