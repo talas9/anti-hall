@@ -6,6 +6,34 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.34.1
+
+**Honest-fix wave on the shipped `flutter-debug` agent/skill** (retroactive hardening of v0.34.0).
+
+- **FP1b resolution (NEGATIVE verdict, now stated honestly).** The step-0 probe captured `flutter_driver_command` tap/screenshot FAILING against a plain debug app — they REQUIRE an in-app `enableFlutterDriverExtension()` before `runApp` (same invasiveness class as marionette, which is strictly richer — the only semantic input/screenshot route). The shipped degradation row, SKILL.md honest-scope, and the agent's honesty discipline now say so; the previous "tap + screenshot with NO app package" claim is removed. The `widget_inspector` tree-inspection-without-extension nuance is retained.
+- **Private-identifier scrub + lint extension.** Owner-private identifiers (the owner's Flutter app name, a configured AVD name) were scrubbed from the public probe record, the plan doc, and this CHANGELOG. The repo-agnostic lint test is extended to a denylist constant (no `/Users/` home paths, no private app/device names) and now covers the probe record, the plan doc, and the CHANGELOG 0.34.x sections — future names add one denylist entry.
+- **doctor-conditionality + Windows-path test hardening.** A subprocess test asserts the doctor's `flutter-debug` section is silent without a `pubspec.yaml` and present with one; a platform-monkeypatched test asserts BOTH `claude` CLI candidates failing on Windows ⇒ `cli-unavailable` (a manual-verify WARN), never a false FAIL.
+- **Auto-apply pre-write safety checks.** SKILL.md app-integration now skips when `MarionetteBinding` is already present, locates the entrypoint via `lib/main.dart`, and WARN-AND-STOPs (never guess-edits) on non-standard layouts or multiple `runApp()` call sites. The applied-diff visibility stays.
+- **marionette PATH-resolution warning.** After a successful `dart pub global activate marionette_mcp`, preflight now verifies the wrapper actually resolves (`$PUB_CACHE/bin` ~ `~/.pub-cache/bin` or `$PATH`); if not, it WARNs with the exact manual `export PATH` fix line (fail-open).
+
+- **Android support VERIFIED via live FP7 (marionette taps/screenshots on emulator).** The
+  live FP7 probe (2026-06-11) confirmed all 15 `ext.flutter.marionette.*` extensions
+  registered on android_arm64; semantic tap drove a counter 0→1; screenshots returned valid
+  PNG. Scope: one AVD / android_arm64 arch — physical device and other architectures not yet
+  probed. All shipped Android-pending text updated to reflect the verified status with honest
+  scope boundaries.
+- **Full E2E debug loop validated live (plant→reproduce→read→fix→hot-reload→verify).** A
+  `StateError` was planted in the scratch app, reproduced via marionette tap,
+  `get_runtime_errors` captured "Bad state: planted bug", the fix was applied, `hot_reload`
+  succeeded, 3 taps past the old throw point produced zero new errors, and the screenshot was
+  verified. Closes the loop on every agent-loop step being exercised against a real AVD.
+- **`get_runtime_errors` timestamp guidance added.** The tool accumulates errors since DTD
+  connection — it does NOT reset on `hot_reload`. The agent's mandatory re-verify step now
+  requires comparing each error's timestamp against the `hot_reload` time; only post-reload
+  errors count as new failures. Added to the agent loop (step 7) and SKILL.md MCP-usage notes.
+
+**Transparency (house rules):** v0.34.0 was tagged against a RED CI run; the corrective fix landed in commit `31a7451`. This 0.34.1 wave addresses the substance flagged in the retroactive review.
+
 ## 0.34.0
 
 **New agent + skill: `/anti-hall:flutter-debug`** — drive a Flutter app in debug mode, close the fix loop via agent-controlled hot reload + visually verified UI changes.
@@ -41,7 +69,7 @@ Agent executes: (0) preflight + announce tier; (1) run + DTD connect; (2) reprod
 - **FP4 CONFIRMED:** lifecycle tools ABSENT from default list (disabled by default [2]). Manual `flutter run --print-dtd` stays the path. get_app_logs correction = double-gate logic.
 - **FP5 GENERIC PASS:** subagent spawns surface mcp__ tools via ToolSearch and invoke live. Architecture viable; skill-only fallback retained as contingency (executable spec: SKILL.md → CI test omitted, AC1/AC3 branches, CHANGELOG note).
 - **FP6 DONE MATCH:** regular dep, upstream-verbatim kDebugMode if/else (quoted in B). Release-safe per upstream (LogCollector optional, non-fatal).
-- **FP7 UN-DEFERRED ACTIVE:** bare-PATH false-negative corrected (SDK 36 at ~/Library/Android/sdk; AVD Pixel_9_Pro_XL; adb + emulator functional). Probe = boot AVD → marionette → tap/screenshot. Upstream silent on Android ⇒ no promise pre-FP7. Binding baked into preflight check 5.
+- **FP7 UN-DEFERRED ACTIVE:** bare-PATH false-negative corrected (SDK 36 at ~/Library/Android/sdk; a configured AVD; adb + emulator functional). Probe = boot AVD → marionette → tap/screenshot. Upstream silent on Android ⇒ no promise pre-FP7. Binding baked into preflight check 5.
 - **FP9 CAPTURED:** `claude mcp add` scope/precedence/atomicity semantics (full consequences in B registration flow; B2 shims dropped).
 - **FP10 CAPTURED:** ecosystem precedent (OMC bundles only its own server; ecc bundles 6 externals REJECTED for duplicate-server hazard). Directs decision to FP9 registration flow.
 

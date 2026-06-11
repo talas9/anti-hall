@@ -20,10 +20,42 @@ const os = require('node:os');
 const P = require('../../plugins/anti-hall/skills/flutter-debug/scripts/preflight.js');
 
 const PLUGIN = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
+const REPO = path.join(__dirname, '..', '..');
 const AGENT_MD = path.join(PLUGIN, 'agents', 'flutter-debug.md');
 const SKILL_MD = path.join(PLUGIN, 'skills', 'flutter-debug', 'SKILL.md');
 const DOCTOR_JS = path.join(PLUGIN, 'hooks', 'doctor.js');
 const PREFLIGHT_JS = path.join(PLUGIN, 'skills', 'flutter-debug', 'scripts', 'preflight.js');
+const PROBE_RECORD = path.join(REPO, 'tests', 'fixtures', 'step0-probe-record-v0.34.0.md');
+const PLAN_DOC = path.join(REPO, 'docs', '2026-06-10-v0.34.0-flutter-debug-plan.md');
+const CHANGELOG = path.join(REPO, 'CHANGELOG.md');
+
+// Owner-private identifier denylist for PUBLIC files. Generic patterns +
+// specific names; add future leaked names here. /Users/ home paths and the
+// owner's private app/device names must never ship.
+const OWNER_IDENTIFIER_DENYLIST = [
+  { re: /\/Users\/[a-z0-9._-]+/i, label: '/Users/<home> path' },
+  { re: /\btalas9\b/, label: 'owner username (talas9)' },
+  { re: /\bskylog\b/i, label: 'owner app name (skylog)' },
+  { re: /Pixel_9_Pro_XL/, label: 'owner AVD name (Pixel_9_Pro_XL)' },
+];
+
+/** Extract only the 0.34.x sections from CHANGELOG (## 0.34.x … next ##). */
+function changelog034Sections(text) {
+  const out = [];
+  const re = /^##\s+0\.34\.[0-9]+[^\n]*$/gm;
+  let m;
+  const starts = [];
+  while ((m = re.exec(text)) !== null) starts.push(m.index);
+  for (let i = 0; i < starts.length; i++) {
+    const from = starts[i];
+    // next top-level "## " heading (any version) ends this slice
+    const rest = text.slice(from + 3);
+    const nextRel = rest.search(/\n##\s+/);
+    const to = nextRel === -1 ? text.length : from + 3 + nextRel;
+    out.push(text.slice(from, to));
+  }
+  return out.join('\n');
+}
 
 // ---------------------------------------------------------------------------
 // run-stub: map { dart: out|Error|fn, claude: …, flutter: …, xcrun: …, idb: … }
@@ -186,6 +218,33 @@ test('runClaude: falls through claude → claude.cmd on Windows-style ENOENT', (
   }
 });
 
+// F-WIN-01 — on Windows BOTH candidates (claude, claude.cmd) failing with a
+// spawn error ⇒ cli-unavailable (a manual-verify WARN), never a false FAIL or a
+// blind add. Monkeypatch platform so claudeCandidates() returns the win32 pair.
+test('F-WIN-01: Windows — both claude + claude.cmd ENOENT ⇒ cli-unavailable (not a false FAIL)', () => {
+  const calls = [];
+  const run = runStub({
+    claude: new Error('spawn claude ENOENT'),
+    'claude.cmd': new Error('spawn claude.cmd ENOENT'),
+  }, calls);
+  const realPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+  try {
+    // Both candidates must actually be attempted.
+    const r = P.registerServer('dart', ['x'], 'local', run);
+    assert.strictEqual(r.action, 'cli-unavailable');
+    assert.strictEqual(r.status, P.WARN, 'cli-unavailable is a WARN, never a FAIL');
+    assert.ok(calls.some(c => c.file === 'claude'), 'tried claude');
+    assert.ok(calls.some(c => c.file === 'claude.cmd'), 'tried claude.cmd (win32 candidate)');
+    assert.ok(!calls.some(c => c.args[1] === 'add'), 'no blind add when CLI is unreachable');
+    // The aggregate must NOT collapse to FAIL on a cli-unavailable dart result.
+    const agg = P.checkMcpRegistration('local', run);
+    assert.notStrictEqual(agg.status, P.FAIL, 'cli-unavailable dart ⇒ WARN aggregate, not FAIL');
+  } finally {
+    Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Android SDK-path resolution (2): env-var + default path; bare-PATH never used
 // ---------------------------------------------------------------------------
@@ -232,7 +291,7 @@ test('marionette host: present & >= 0.4.0 → FULL, no activate', () => {
   assert.ok(!calls.some(c => c.args.includes('activate')), 'no auto-provision when present');
 });
 
-test('marionette host: absent → auto-provision via dart pub global activate', () => {
+test('marionette host: absent → auto-provision via dart pub global activate (wrapper on PATH ⇒ provisioned)', () => {
   const calls = [];
   const run = runStub({
     dart: (f, a) => {
@@ -241,9 +300,51 @@ test('marionette host: absent → auto-provision via dart pub global activate', 
       return { ok: true, out: '', err: '' };
     },
   }, calls);
-  const r = P.checkMarionetteHost(run);
+  // Inject env+fs so the post-activate wrapper resolves under $PUB_CACHE/bin.
+  const env = { PUB_CACHE: '/pc', PATH: '' };
+  const fsImpl = { statSync: (p) => {
+    if (/[\\/]pc[\\/]bin[\\/]marionette_mcp/.test(p)) return { isFile: () => true };
+    throw new Error('ENOENT');
+  } };
+  const r = P.checkMarionetteHost(run, { env, fsImpl });
   assert.strictEqual(r.action, 'provisioned');
   assert.ok(calls.some(c => c.args.includes('activate')), 'auto-fix runs activate');
+});
+
+// F-PATH-01 — a successful activate whose wrapper is NOT on PATH ⇒ WARN with the
+// exact manual PATH fix line (fail-open, never a hard FAIL).
+test('F-PATH-01: activate succeeds but wrapper not on PATH ⇒ WARN + manual export PATH fix', () => {
+  const run = runStub({
+    dart: (f, a) => {
+      if (a.includes('list')) return { ok: true, out: 'no packages', err: '' };
+      if (a.includes('activate')) return { ok: true, out: 'Activated marionette_mcp', err: '' };
+      return { ok: true, out: '', err: '' };
+    },
+  });
+  // No PUB_CACHE wrapper file exists and PATH is empty ⇒ nothing resolves.
+  const env = { PUB_CACHE: '/pc', PATH: '' };
+  const fsImpl = { statSync: () => { throw new Error('ENOENT'); } };
+  const r = P.checkMarionetteHost(run, { env, fsImpl });
+  assert.strictEqual(r.action, 'provisioned-not-on-path');
+  assert.strictEqual(r.status, P.WARN, 'fail-open WARN, never a FAIL');
+  assert.match(r.message, /not on PATH/);
+  // Build the expectation the same way the code does (path.join) so the
+  // assertion holds on Windows ('\pc\bin') and POSIX ('/pc/bin') alike —
+  // R2-REV1-01: a hardcoded forward-slash regex here went red on Windows CI.
+  const expectedBin = path.join('/pc', 'bin');
+  assert.ok(r.message.includes(expectedBin), 'cites the exact pub-cache bin dir to add');
+});
+
+test('pubCacheBinDir + marionetteBinResolves: $PUB_CACHE/bin honored; PATH fallback works', () => {
+  assert.strictEqual(P.pubCacheBinDir({ env: { PUB_CACHE: '/pc' } }), path.join('/pc', 'bin'));
+  // resolves when the wrapper sits on a PATH dir even if pub-cache bin is empty.
+  const env = { PATH: ['/somewhere', '/binx'].join(path.delimiter) };
+  const fsImpl = { statSync: (p) => {
+    if (/[\\/]binx[\\/]marionette_mcp/.test(p)) return { isFile: () => true };
+    throw new Error('ENOENT');
+  } };
+  assert.strictEqual(P.marionetteBinResolves(fsImpl, { env }), true);
+  assert.strictEqual(P.marionetteBinResolves({ statSync: () => { throw new Error('ENOENT'); } }, { env: { PATH: '' } }), false);
 });
 
 // ---------------------------------------------------------------------------
@@ -256,16 +357,17 @@ test('degradation table: all 7 rows present with their verbatim "skill says" tex
   assert.ok(says.some(s => /refuse to claim debug-loop capability/.test(s)), 'Dart MCP row');
   assert.ok(says.some(s => /WARN \+ upgrade recommendation/.test(s)), 'dart 3.9–3.11 row');
   assert.ok(says.some(s => /semantic taps unavailable — coordinate fallback/.test(s)), 'marionette row');
-  assert.ok(says.some(s => /official-server driver path/.test(s)), 'FP1b-gated row');
+  assert.ok(says.some(s => /marionette is the only semantic input\/screenshot path/.test(s)), 'FP1b-gated row');
   assert.ok(says.some(s => /evidence is runtime-error state only/.test(s)), 'both-visual-missing row');
   assert.ok(says.some(s => /get_app_logs unavailable on this path/.test(s)), 'lifecycle row');
-  assert.ok(says.some(s => /Android visual status = FP7 outcome/.test(s)), 'Android row');
+  assert.ok(says.some(s => /Android visual status = FP7 VERIFIED/.test(s)), 'Android row');
   // The FP1b row is explicitly gated.
-  const fp1b = rows.find(r => /FP1b-true/.test(r.missing));
+  const fp1b = rows.find(r => r.gated === 'FP1b');
+  assert.ok(fp1b, 'FP1b-gated row present');
   assert.strictEqual(fp1b.gated, 'FP1b');
-  // The Android row carries the pending-FP7 phrasing.
+  // The Android row carries the FP7 outcome phrasing (VERIFIED as of FP7 2026-06-11).
   const android = rows.find(r => /Android target/.test(r.missing));
-  assert.match(android.degradesTo, /PENDING FP7/);
+  assert.match(android.degradesTo, /FP7 2026-06-11/);
 });
 
 test('renderDegradationTable: prints every row + its skill-says line', () => {
@@ -273,6 +375,22 @@ test('renderDegradationTable: prints every row + its skill-says line', () => {
   for (const row of P.DEGRADATION_ROWS) {
     assert.ok(out.includes(row.skillSays), 'row "' + row.missing + '" rendered');
   }
+});
+
+// F-FP1B-TEST-01 — FP1b is NEGATIVE: the gated row must NOT claim a no-package /
+// no-modification driver path, and MUST state the in-app extension requirement.
+test('FP1b row honors the NEGATIVE verdict: no no-package claim; cites the extension requirement', () => {
+  const fp1b = P.DEGRADATION_ROWS.find(r => r.gated === 'FP1b');
+  assert.ok(fp1b, 'FP1b-gated row present');
+  const blob = (fp1b.degradesTo + ' ' + fp1b.skillSays);
+  // Must NOT promise a no-package / no-modification driver tap+screenshot path.
+  assert.ok(!/no app package/i.test(blob), 'no "no app package" claim (FP1b NEGATIVE)');
+  assert.ok(!/no[- ]modification/i.test(blob), 'no "no-modification" claim');
+  // Must state the extension requirement.
+  assert.match(fp1b.degradesTo, /enableFlutterDriverExtension/, 'cites enableFlutterDriverExtension requirement');
+  assert.match(blob, /marionette is the only semantic input\/screenshot/i, 'marionette is the only semantic route');
+  // The inspection-without-extension nuance survives.
+  assert.match(blob, /widget_inspector|inspection/i, 'inspection-without-extension nuance retained');
 });
 
 // ---------------------------------------------------------------------------
@@ -317,6 +435,48 @@ test('runAllChecks: skipRegistration → never adds MCP, never activates marione
     assert.ok(!calls.some(c => c.file === 'claude' && c.args[1] === 'add'), 'read-only: no mcp add');
     assert.ok(!calls.some(c => c.file === 'dart' && c.args.includes('activate')), 'read-only: no marionette activate');
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// F-TEST-01 — doctor conditionality: the flutter-debug section appears ONLY in a
+// Flutter context (pubspec.yaml in cwd or the skill explicitly in use), and is
+// SILENT otherwise. Runs doctor.js as a subprocess with a controlled cwd so the
+// real `process.cwd()` gate is exercised end-to-end.
+// ---------------------------------------------------------------------------
+const { execFileSync } = require('node:child_process');
+function runDoctor(cwd, extraEnv) {
+  // --quiet still computes every section; it just suppresses the banner print.
+  // doctor.js exits non-zero when other anti-hall checks fail in a bare tmpdir,
+  // so capture stdout regardless of exit status.
+  try {
+    return execFileSync(process.execPath, [DOCTOR_JS], {
+      cwd,
+      encoding: 'utf8',
+      env: Object.assign({}, process.env, { ANTIHALL_DOCTOR_CONTEXT: '' }, extraEnv || {}),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  } catch (e) {
+    return (e && e.stdout ? String(e.stdout) : '') + (e && e.stderr ? String(e.stderr) : '');
+  }
+}
+
+test('doctor conditionality: NO flutter-debug section without pubspec.yaml; section present with it', () => {
+  // (a) bare tmpdir, no pubspec → the flutter-debug section must be ABSENT.
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'fd-doctor-bare-'));
+  // (b) tmpdir WITH pubspec → the flutter-debug section must be PRESENT.
+  const flut = fs.mkdtempSync(path.join(os.tmpdir(), 'fd-doctor-flutter-'));
+  try {
+    fs.writeFileSync(path.join(flut, 'pubspec.yaml'), 'name: demo\n');
+    const outBare = runDoctor(bare);
+    const outFlut = runDoctor(flut);
+    assert.ok(!/flutter-debug \(Flutter project detected\)/.test(outBare),
+      'flutter-debug section is silent in a non-Flutter cwd');
+    assert.match(outFlut, /flutter-debug \(Flutter project detected\)/,
+      'flutter-debug section appears when a pubspec.yaml is in cwd');
+  } finally {
+    fs.rmSync(bare, { recursive: true, force: true });
+    fs.rmSync(flut, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -392,11 +552,28 @@ test('SKILL.md: scope question, own claude-mcp-get pre-check, delegated prefligh
 // ---------------------------------------------------------------------------
 // repo-agnostic: shipped flutter-debug files name no owner paths / app names
 // ---------------------------------------------------------------------------
-test('shipped files are public-repo agnostic (no owner paths / app names)', () => {
+test('shipped flutter-debug files are public-repo agnostic (denylist: no owner paths / app / device names)', () => {
   for (const f of [AGENT_MD, SKILL_MD, PREFLIGHT_JS]) {
     const text = fs.readFileSync(f, 'utf8');
-    assert.ok(!/skylog/i.test(text), 'no owner app name in ' + path.basename(f));
-    assert.ok(!/\/Users\/talas9/.test(text), 'no owner home path in ' + path.basename(f));
-    assert.ok(!/Pixel_9_Pro_XL/.test(text), 'no owner-specific AVD name in ' + path.basename(f));
+    for (const { re, label } of OWNER_IDENTIFIER_DENYLIST) {
+      assert.ok(!re.test(text), label + ' must not appear in ' + path.basename(f));
+    }
+  }
+});
+
+test('public docs/fixtures carry no owner identifiers (probe record + plan doc + CHANGELOG 0.34.x)', () => {
+  // Probe record + plan doc: scrub app + device names + /Users/ paths (the
+  // standard `~/Library/Android/sdk` path carries no username and is allowed).
+  for (const f of [PROBE_RECORD, PLAN_DOC]) {
+    const text = fs.readFileSync(f, 'utf8');
+    for (const { re, label } of OWNER_IDENTIFIER_DENYLIST) {
+      assert.ok(!re.test(text), label + ' must not appear in ' + path.basename(f));
+    }
+  }
+  // CHANGELOG: only the 0.34.x sections are in scope for this scrub.
+  const sections = changelog034Sections(fs.readFileSync(CHANGELOG, 'utf8'));
+  assert.ok(sections.length > 0, 'CHANGELOG 0.34.x sections found');
+  for (const { re, label } of OWNER_IDENTIFIER_DENYLIST) {
+    assert.ok(!re.test(sections), label + ' must not appear in CHANGELOG 0.34.x sections');
   }
 });

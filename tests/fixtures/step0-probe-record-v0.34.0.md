@@ -39,8 +39,35 @@ status, evidence, what gates on it.
 - NOT present: dart/simulator MCP registration in Claude Code (gates FP1/FP4/
   FP5; both registered later 2026-06-11); idb/idb-companion (gates the
   ios-simulator-mcp supplement only); ~~Android emulator/adb~~ **(CORRECTED
-  2026-06-11 — bare-PATH false-negative; SDK 36 + AVD Pixel_9_Pro_XL exist —
+  2026-06-11 — bare-PATH false-negative; SDK 36 + a configured AVD exist —
   see FP7, which is ACTIVE, not deferred)**.
+
+## FP1b — flutter_driver_command at RUNTIME against a PLAIN debug app
+- **Status:** CAPTURED 2026-06-11 (live: real Flutter app on booted iOS sim,
+  `flutter run --print-dtd`, dart mcp-server driven via stdio).
+  **VERDICT: FAILS without the driver extension — definitively.** All three
+  commands (get_health, screenshot, tap with a verified real widget) return
+  isError with the same verbatim message: "The flutter driver extension is not
+  enabled. You need to import \"package:flutter_driver/driver_extension.dart\"
+  and then add a call to `enableFlutterDriverExtension();` before calling
+  `runApp`…".
+- **Nuance that survives:** `widget_inspector get_widget_tree` WORKS on the
+  plain app (60K-char tree returned) — inspection uses VM-service extensions,
+  not the driver extension. So: inspection without app changes ✓; driver
+  INTERACTION (tap/screenshot) requires an app-side entrypoint change ✗.
+- **CONSEQUENCE:** the "no-package input/screenshot fallback via
+  flutter_driver_command" degradation row is DEAD as a no-modification path —
+  it requires an app edit of the same invasiveness class as marionette (which
+  is strictly richer). Shipped FP1b-gated text must resolve to: marionette is
+  the ONLY semantic input/screenshot path; driver-command documented as
+  requires-extension.
+- Mechanics captured: newline-delimited JSON framing (NOT Content-Length);
+  dtd connect args {command:"connect", uri:<ws-dtd-uri>}; apps auto-attach;
+  numerics passed as strings per schema.
+- Probe hygiene: app repo untouched; a GLOBAL `flutter config
+  --no-enable-swift-package-manager` was toggled to work around an unrelated
+  SPM/Firebase iOS-15 build issue and restored after (verify at next
+  preflight run); all probe processes cleaned up.
 
 ## FP1 — flutter_driver_command actual surface
 - **Status:** IN-SCHEMA CAPTURED 2026-06-11 (direct stdio JSON-RPC tools/list
@@ -109,12 +136,20 @@ captured reference only; the launcher-shim design below is DROPPED.]**
   `claude mcp list` = Connected ×2, user scope).
 
 ## FP7 — marionette on Android emulator
-- **Status:** UN-DEFERRED 2026-06-11 — the "no Android tooling" inventory line
-  was a PATH FALSE-NEGATIVE (owner challenged it; corrected probe confirms):
-  SDK complete at `~/Library/Android/sdk` (SDK 36.0.0), AVD **Pixel_9_Pro_XL**
-  defined (`~/.android/avd/*.ini`), adb + emulator functional via DIRECT
-  paths, `flutter doctor` Android toolchain green. FP7 RUNS in the probe gate
-  (boot AVD → marionette connect → tap/screenshot).
+- **Status:** POSITIVE, CAPTURED 2026-06-11 — live run on a real AVD
+  (Dart VM 3.12.0 / android_arm64): all 15 `ext.flutter.marionette.*`
+  extensions registered; `get_interactive_elements` returned correct widget
+  tree; `tap` drove the counter 0→1; screenshots returned valid PNG (~79 KB).
+  **E2E loop validated:** planted StateError reproduced via tap →
+  `get_runtime_errors` captured "Bad state: planted bug" → fix applied →
+  `hot_reload` succeeded → 3 taps past the old throw point, zero new errors,
+  screenshot verified. Verified on one AVD / android_arm64 arch; see probe
+  notes below for scope.
+- **Probe preceded by un-defer (2026-06-11):** the "no Android tooling"
+  inventory line was a PATH FALSE-NEGATIVE (owner challenged it; corrected
+  probe confirms): SDK complete at `~/Library/Android/sdk` (SDK 36.0.0),
+  a configured AVD defined (`~/.android/avd/*.ini`), adb + emulator
+  functional via DIRECT paths, `flutter doctor` Android toolchain green.
 - **LESSON (binding for preflight.js + doctor):** never bare-PATH-probe
   Android tooling — resolve `$ANDROID_HOME`/`$ANDROID_SDK_ROOT`/
   `~/Library/Android/sdk` explicitly; `flutter doctor` is the authoritative

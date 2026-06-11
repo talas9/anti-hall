@@ -290,13 +290,62 @@ function checkMcpRegistration(scope, run) {
 // CHECK 3 — marionette host CLI + app-side integration
 // ===========================================================================
 /**
- * checkMarionetteHost(run) → { id, status, version, action, message }
- * Host CLI on PATH + version >= 0.4.0 (lenient parse). AUTO-FIX: if missing, run
- * `dart pub global activate marionette_mcp`. A failed activate degrades to a
- * note (loop still runs via the official-server / coordinate fallback).
+ * pubCacheBinDir(opts) → the `bin` dir Dart drops global-package wrappers into.
+ * `$PUB_CACHE/bin` if set, else `~/.pub-cache/bin` (POSIX) / `%LOCALAPPDATA%\Pub\
+ * Cache\bin` (Windows, best-effort). Used for the F-PATH-01 PATH-resolution warn.
  */
-function checkMarionetteHost(run) {
+function pubCacheBinDir(opts) {
+  opts = opts || {};
+  const env = opts.env || process.env;
+  const home = opts.homedir || os.homedir();
+  if (env.PUB_CACHE) return path.join(env.PUB_CACHE, 'bin');
+  if (process.platform === 'win32') {
+    const base = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    return path.join(base, 'Pub', 'Cache', 'bin');
+  }
+  return path.join(home, '.pub-cache', 'bin');
+}
+
+/**
+ * marionetteBinResolves(f, opts) → bool. True if the freshly-activated
+ * marionette wrapper actually resolves — either as a file under the pub-cache
+ * bin dir, OR somewhere on $PATH. A successful `dart pub global activate` does
+ * NOT imply either (the pub-cache bin dir is often not on PATH), so we check.
+ */
+function marionetteBinResolves(f, opts) {
+  opts = opts || {};
+  const fimpl = f || fs;
+  const env = opts.env || process.env;
+  const exe = process.platform === 'win32' ? ['.bat', '.exe', ''] : [''];
+  // 1) the canonical pub-cache bin dir.
+  const binDir = pubCacheBinDir(opts);
+  for (const ext of exe) {
+    try { if (fimpl.statSync(path.join(binDir, 'marionette_mcp' + ext)).isFile()) return true; } catch (_) {}
+  }
+  // 2) anywhere on $PATH.
+  const sep = process.platform === 'win32' ? ';' : ':';
+  for (const dir of String(env.PATH || '').split(sep).filter(Boolean)) {
+    for (const ext of exe) {
+      try { if (fimpl.statSync(path.join(dir, 'marionette_mcp' + ext)).isFile()) return true; } catch (_) {}
+    }
+  }
+  return false;
+}
+
+/** fsImplFor(opts) → the injected fs (tests) or the real fs. */
+function fsImplFor(opts) { return (opts && opts.fsImpl) || fs; }
+
+/**
+ * checkMarionetteHost(run, opts) → { id, status, version, action, message }
+ * Host CLI on PATH + version >= 0.4.0 (lenient parse). AUTO-FIX: if missing, run
+ * `dart pub global activate marionette_mcp`. After a successful activate, VERIFY
+ * the wrapper actually resolves (F-PATH-01) — WARN with the manual PATH fix if
+ * not. A failed activate degrades to a note (loop still runs via coordinate
+ * fallback). opts carries fsImpl/env/homedir (injectable for tests).
+ */
+function checkMarionetteHost(run, opts) {
   const r = run || defaultRun;
+  opts = opts || {};
   // `dart pub global list` is the authoritative version source (FP6 note in the
   // probe record: a stale wrapper-file reading is NOT authoritative).
   const list = r('dart', ['pub', 'global', 'list']);
@@ -318,6 +367,24 @@ function checkMarionetteHost(run) {
   // Auto-fix: self-provision the host CLI.
   const act = r('dart', ['pub', 'global', 'activate', 'marionette_mcp']);
   if (act.ok) {
+    // F-PATH-01: a successful `activate` does NOT guarantee the binary is on
+    // PATH — `~/.pub-cache/bin` is frequently absent from PATH on a fresh setup,
+    // so the freshly-activated `marionette_mcp` won't resolve and the MCP server
+    // launch would silently fail. Verify the wrapper actually resolves; if not,
+    // WARN with the exact manual PATH fix line (fail-open — never hard-fail).
+    const resolved = marionetteBinResolves(fsImplFor(opts), opts);
+    if (!resolved) {
+      const binDir = pubCacheBinDir(opts);
+      return {
+        id: 'marionette-host',
+        status: WARN,
+        version: null,
+        action: 'provisioned-not-on-path',
+        message: 'marionette_mcp activated but its wrapper is not on PATH (expected in ' + binDir + ') — '
+          + 'add it: export PATH="$PATH":"' + binDir + '" (or set $PUB_CACHE/bin); '
+          + 'then re-run the flutter-debug skill [5]',
+      };
+    }
     return { id: 'marionette-host', status: FULL, version: null, action: 'provisioned', message: 'marionette_mcp host CLI auto-provisioned (dart pub global activate marionette_mcp) [5]' };
   }
   return {
@@ -443,8 +510,9 @@ function checkAndroid(opts) {
       parts.push('flutter doctor: Android toolchain ' + (green ? 'green' : 'present (see flutter doctor for detail)'));
     }
   }
-  // Honesty: taps/screenshots on Android are PENDING FP7 — never promised here.
-  parts.push('run/reload/error-reading work on Android today [2]; taps/screenshots PENDING FP7');
+  // Honesty: marionette taps/screenshots VERIFIED on Android emulator (FP7 2026-06-11).
+  // Scope boundary: one AVD / android_arm64; physical device / other arch not yet probed.
+  parts.push('run/reload/error-reading + marionette taps/screenshots VERIFIED on Android emulator [2] (FP7 2026-06-11 — one AVD / android_arm64; physical device unprobed)');
   return { id: 'android', status, sdkRoot, message: parts.join('; ') };
 }
 
@@ -482,9 +550,9 @@ const DEGRADATION_ROWS = [
     skillSays: 'semantic taps unavailable — coordinate fallback',
   },
   {
-    missing: 'marionette missing AND FP1b-true',
-    degradesTo: 'flutter_driver_command path: semantic finders (ByValueKey/ByText/BySemanticsLabel…), widget_inspector first (schema forbids guessing finder values), tap + screenshot with NO app package',
-    skillSays: 'using official-server driver path (only ships if FP1b passes)',
+    missing: 'marionette missing AND flutter_driver_command considered',
+    degradesTo: 'flutter_driver_command path REQUIRES an in-app `enableFlutterDriverExtension()` before runApp (FP1b NEGATIVE — probe record): same invasiveness class as marionette, which is strictly richer (the only semantic input/screenshot route). widget_inspector tree inspection still works WITHOUT the extension; driver tap/screenshot do NOT',
+    skillSays: 'driver-command tap/screenshot needs an app-side extension edit — marionette is the only semantic input/screenshot path; inspection-only works without it',
     gated: 'FP1b',
   },
   {
@@ -499,8 +567,8 @@ const DEGRADATION_ROWS = [
   },
   {
     missing: 'Android target',
-    degradesTo: 'run/reload/errors work today [2]; taps/screenshots PENDING FP7 (probe ACTIVE — AVD available; not "no tooling")',
-    skillSays: 'Android visual status = FP7 outcome, stated verbatim',
+    degradesTo: 'run/reload/errors/taps/screenshots work today [2]; marionette taps + screenshots VERIFIED on Android emulator (FP7 2026-06-11 — one AVD / android_arm64; physical device / other arch not yet probed)',
+    skillSays: 'Android visual status = FP7 VERIFIED (emulator; one arch); physical device unprobed',
   },
 ];
 
@@ -546,7 +614,7 @@ function runAllChecks(opts) {
   } else {
     results.push(checkMcpRegistration(opts.scope, run));
   }
-  results.push(checkMarionetteHost(opts.skipRegistration ? readOnlyRun(run) : run));
+  results.push(checkMarionetteHost(opts.skipRegistration ? readOnlyRun(run) : run, { fsImpl, env: opts.env, homedir: opts.homedir }));
   results.push(checkMarionetteApp(projectDir, fsImpl));
   results.push(checkIos(run));
   results.push(checkAndroid({ run, fsImpl, env: opts.env, homedir: opts.homedir }));
@@ -659,6 +727,7 @@ module.exports = {
   checkDart,
   registerServer, checkMcpRegistration,
   checkMarionetteHost, checkMarionetteApp,
+  pubCacheBinDir, marionetteBinResolves,
   checkIos,
   resolveAndroidSdk, checkAndroid,
   checkProject,

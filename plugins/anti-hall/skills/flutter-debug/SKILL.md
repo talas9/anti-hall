@@ -1,6 +1,6 @@
 ---
 name: flutter-debug
-description: Drive a Flutter app in debug mode and close the fix loop — run with agent-controlled hot reload, drive the UI with semantic taps + agent-visible screenshots, watch runtime errors / logs / VM service, then reproduce → read error → root-cause → fix → hot reload → visually re-verify. Use when the user says "debug my Flutter app", "drive the simulator/emulator", "reproduce this bug in the app", "fix this and verify it in the UI", "hot reload and check", or wants an end-to-end Flutter debug loop. iOS fully; Android run/reload/errors today, taps/screenshots pending FP7.
+description: Drive a Flutter app in debug mode and close the fix loop — run with agent-controlled hot reload, drive the UI with semantic taps + agent-visible screenshots, watch runtime errors / logs / VM service, then reproduce → read error → root-cause → fix → hot reload → visually re-verify. Use when the user says "debug my Flutter app", "drive the simulator/emulator", "reproduce this bug in the app", "fix this and verify it in the UI", "hot reload and check", or wants an end-to-end Flutter debug loop. iOS fully; Android taps/screenshots VERIFIED on emulator (FP7 2026-06-11).
 ---
 
 # flutter-debug
@@ -22,12 +22,19 @@ check the screen", "watch the Flutter runtime errors", "run the app and close th
 ## Honest scope (state this verbatim to the user)
 
 - **iOS:** full loop today (booted simulator).
-- **Android:** run / reload / runtime-error reading work today — the Dart MCP DTD tools
-  (`hot_reload`/`hot_restart`/`get_runtime_errors`/`widget_inspector`) are device-agnostic
-  [2]. **Taps + screenshots on Android are PENDING probe FP7** — not promised yet (the AVD
-  exists; the probe is active, not "no tooling"). `flutter_driver_command` (official server)
-  carries tap + screenshot + semantic finders IN-SCHEMA (FP1) but its runtime against a
-  plain debug app is UNVERIFIED pending **FP1b** — no promise from that path until FP1b passes.
+- **Android:** full loop today — the Dart MCP DTD tools (`hot_reload`/`hot_restart`/
+  `get_runtime_errors`/`widget_inspector`) are device-agnostic [2], and **marionette
+  taps + screenshots are VERIFIED on Android emulator** (FP7 2026-06-11: all 15
+  `ext.flutter.marionette.*` extensions registered on android_arm64; tap + screenshot
+  confirmed; full E2E plant→reproduce→fix→hot-reload→verify loop validated — see probe
+  record). Verified on one AVD / android_arm64 arch; physical device and other
+  architectures not yet probed. `flutter_driver_command` (official server) carries tap
+  + screenshot + semantic finders IN-SCHEMA (FP1) but **FP1b is NEGATIVE** (probe
+  record): driver tap/screenshot FAIL against a plain debug app — they require an in-app
+  `enableFlutterDriverExtension()` before `runApp` (same invasiveness class as marionette,
+  which is strictly richer — the only semantic input/screenshot route). `widget_inspector`
+  tree inspection works WITHOUT that extension; driver INTERACTION does not. We ship no
+  driver-command tap/screenshot promise as a no-modification path.
 - **No screenshot tool present ⇒ NO visual verification.** The loop reports "error-clear but
   visually unverified", never "verified".
 - The official **Dart MCP server is experimental** [1]; tool names may drift — the preflight
@@ -101,7 +108,26 @@ at owner E2E; stay conservative until then).
 ### 3. App integration — AUTO-APPLY on first use (git diff is the visibility)
 
 If the target `pubspec.yaml` does not list `marionette_flutter`, auto-apply it (no ask-first
-prompt — `git diff` is the trivially-revertable visibility mechanism, shown AFTER writing):
+prompt — `git diff` is the trivially-revertable visibility mechanism, shown AFTER writing).
+
+**MANDATORY pre-write checks (never guess-edit a user's app):**
+
+1. **Already integrated?** If `MarionetteBinding` (or `MarionetteBinding.ensureInitialized()`)
+   is already present anywhere under `lib/`, **SKIP the init edit entirely** — only add the
+   `pubspec.yaml` dependency if it's missing. Never write a second binding.
+2. **Locate the entrypoint deterministically.** The entrypoint is the `main()` in
+   `lib/main.dart` (the standard Flutter layout). Confirm `lib/main.dart` exists and contains
+   exactly **one** top-level `main(` and exactly **one** `runApp(` call site.
+3. **WARN-AND-STOP on a non-standard layout.** Do NOT auto-edit — surface the snippet for the
+   user to apply manually — when ANY of these hold:
+   - `lib/main.dart` is absent, or the entrypoint lives elsewhere (custom `--target`);
+   - **multiple `runApp()` call sites** exist (flavors / multi-entry — guessing the wrong one
+     is worse than not editing);
+   - the init is already wrapped in a non-`kDebugMode` conditional you can't safely merge.
+   In every WARN-AND-STOP case, still print the exact diff to apply and continue with the
+   coordinate fallback if the user declines.
+
+Only when checks 1–3 pass do you write:
 
 - Add `marionette_flutter` as a **regular dependency** (NOT `dev_dependencies` — it is invoked
   from `main.dart`, which `dev_dependencies` cannot reach).
@@ -166,16 +192,46 @@ The agent never respawns itself. Diff review goes to the deadly-loop, not this a
 | Dart MCP | STOP — no reload/error reading; print install step | refuse to claim debug-loop capability |
 | dart 3.9–3.11 | loop works; DTD URI may need manual copy [4][3] | WARN + upgrade recommendation |
 | marionette (host or app-side) | ios-simulator-mcp fallback: coordinate taps + screenshots [10], FP2 caveat (marionette = PRIMARY per owner directive, overriding KB §5) | semantic taps unavailable — coordinate fallback |
-| marionette missing AND FP1b-true | flutter_driver_command path: semantic finders (ByValueKey/ByText/BySemanticsLabel…), widget_inspector first (schema forbids guessing finder values), tap + screenshot with NO app package | using official-server driver path — only ships if FP1b passes |
+| marionette missing AND flutter_driver_command considered | flutter_driver_command tap/screenshot REQUIRES an in-app `enableFlutterDriverExtension()` before `runApp` (FP1b NEGATIVE) — same invasiveness class as marionette, which is strictly richer (the ONLY semantic input/screenshot route). `widget_inspector` tree inspection still works WITHOUT the extension; driver INTERACTION does not | driver-command tap/screenshot needs an app-side extension edit — marionette is the only semantic input/screenshot path; inspection-only works without it |
 | both visual MCPs (and FP1b false/unprobed) | error-driven loop only (get_runtime_errors/widget_inspector [2]); NO visual verification | cannot visually verify — evidence is runtime-error state only |
 | lifecycle tools (disabled by default [2]) | user runs `flutter run --print-dtd`; agent connects dtd→listDtdUris→connect [2] | get_app_logs unavailable on this path (loop step 3) |
-| Android target | run/reload/errors work today [2]; taps/screenshots PENDING FP7 (probe ACTIVE — AVD available; not "no tooling") | Android visual status = FP7 outcome, stated verbatim |
+| Android target | run/reload/errors/taps/screenshots work today [2]; marionette taps + screenshots VERIFIED on Android emulator (FP7 2026-06-11 — one AVD / android_arm64; physical device / other arch not yet probed) | Android visual status = FP7 VERIFIED (emulator; one arch); physical device unprobed |
+
+## MCP usage notes (from live E2E — FP7 2026-06-11)
+
+These are binding lessons from the validated run; the agent loop enforces them.
+
+1. **`get_runtime_errors` is an accumulating buffer** since the DTD connection was
+   opened — it does NOT reset on `hot_reload`. In the mandatory re-verify step (loop
+   step 7) always compare each error's timestamp against the `hot_reload` time: errors
+   timestamped **before** the reload are pre-fix artifacts; only errors **after** the
+   reload count as new failures. Never report "errors cleared" based on a stale buffer.
+
+2. **Raw VM-service `reloadSources` is NOT a substitute for `hot_reload`** — calling
+   it directly fails with a Kernel-isolate error. Always use the Dart MCP
+   `hot_reload` tool (or `hot_restart`); never bypass it with `call_vm_service_method`.
+
+3. **`flutter run --print-dtd` must be redirected to a file when backgrounded** or the
+   DTD URI line is lost in the terminal scroll / consumed by the shell. Exact pattern:
+   ```
+   flutter run --print-dtd > /tmp/flutter-dtd.log 2>&1 &
+   # then: grep 'dtd' /tmp/flutter-dtd.log
+   ```
+   The DTD URI appears only once at startup; missing it means the agent cannot connect.
+
+4. **The `dtd` tool requires `command:"connect"` alongside `uri`** — passing `uri`
+   alone is rejected. The correct call shape is `{command:"connect", uri:<ws-dtd-uri>}`.
+
+5. **`take_screenshots` returns `{screenshots:[{image:<base64 PNG>}]}`** — the image
+   is base64-encoded PNG under the `image` key inside the first array element. Decode
+   before writing to disk or comparing.
 
 ## Limitations & follow-ups
 
-- Android adb-level visual control is gated on **FP7** (active probe); no vetted adb-level
-  Android MCP is in the evidence base (KB §3/§6) — a follow-up Android MCP sweep is tracked in
-  `docs/KB.md` staleness ledger.
+- **Android marionette taps + screenshots are VERIFIED** on emulator / android_arm64 (FP7
+  2026-06-11). Physical-device and other-arch coverage is not yet probed — the probe record
+  is the honest scope boundary. No separate adb-level Android MCP is needed for the
+  marionette path; the KB staleness ledger Android-MCP-sweep item is superseded.
 - `mcp_flutter` is excluded until its untested-merge warning lifts in a stable tag (**FP3**
   gate, KB.md staleness ledger).
 - Citations: `[n]` → `docs/KB-flutter-claude-debug.md`; FP-ids → `tests/fixtures/step0-probe-record-v0.34.0.md`.

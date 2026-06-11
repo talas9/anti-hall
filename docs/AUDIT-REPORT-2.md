@@ -77,7 +77,7 @@ Auditors:
 ---
 
 ## False-positives / no-action (rejected or downgraded after verification)
-1. **demo-wrapper.sh `/Users/talas9` path leak** (opus-docs P2, self-downgraded).
+1. **demo-wrapper.sh absolute home-path leak** (opus-docs P2, self-downgraded).
    Re-verified: untracked AND git-ignored (`git ls-files` empty, `git check-ignore`
    matches) → never ships via /plugin install or clone. No action.
 2. **"graphify exemption allows chained non-graphify search"** (codex-code HIGH) —

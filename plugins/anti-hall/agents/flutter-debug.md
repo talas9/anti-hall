@@ -1,6 +1,6 @@
 ---
 name: flutter-debug
-description: Drive a Flutter app in debug mode and close the fix loop — run with agent-controlled hot reload, drive the UI with semantic taps + agent-visible screenshots, watch runtime errors / logs / VM service, then reproduce → read error → root-cause → fix → hot reload → visually re-verify. Use when asked to debug, reproduce, or fix a bug in a running Flutter app, drive a Flutter simulator/emulator, or verify a Flutter UI change end-to-end. iOS fully; Android run/reload/errors today, taps/screenshots pending FP7.
+description: Drive a Flutter app in debug mode and close the fix loop — run with agent-controlled hot reload, drive the UI with semantic taps + agent-visible screenshots, watch runtime errors / logs / VM service, then reproduce → read error → root-cause → fix → hot reload → visually re-verify. Use when asked to debug, reproduce, or fix a bug in a running Flutter app, drive a Flutter simulator/emulator, or verify a Flutter UI change end-to-end. iOS fully; Android taps/screenshots VERIFIED on emulator (FP7 2026-06-11).
 model: sonnet
 ---
 
@@ -69,6 +69,24 @@ the debug loop is unavailable — do not pretend.
    MANDATORY. With NO visual MCP, report "error-clear but visually unverified", never
    "verified".
 
+   **MANDATORY timestamp check (FP7 lesson — binding):** `get_runtime_errors` is an
+   **accumulating buffer** since the DTD connection was opened — it does NOT reset on
+   `hot_reload`. Compare each error's `timestamp` against the `hot_reload` call time.
+   Errors timestamped **before** the reload are pre-fix artifacts and do not count.
+   Only errors timestamped **after** the reload are new failures. Never report "errors
+   cleared" without confirming the buffer contains no post-reload errors.
+
+   **MCP call notes (FP7 lessons):**
+   - `hot_reload` ONLY via the Dart MCP tool — raw VM-service `reloadSources` fails
+     with a Kernel-isolate error; never bypass the tool.
+   - `dtd` connect shape: `{command:"connect", uri:<ws-dtd-uri>}` — `uri` alone is
+     rejected.
+   - `take_screenshots` returns `{screenshots:[{image:<base64 PNG>}]}` — decode the
+     `image` field before writing or comparing.
+   - When backgrounding `flutter run --print-dtd`, redirect output to a file
+     (`> /tmp/flutter-dtd.log 2>&1 &`) — the DTD URI appears once at startup and is
+     lost if not captured.
+
 8. **Escalation report-back.** After **2 full loop iterations without a proven root
    cause**, or when the fix needs an architecture redesign, **STOP and report
    `escalate: opus`** with all evidence collected so far (errors before/after, widget
@@ -82,10 +100,17 @@ the debug loop is unavailable — do not pretend.
 
 - Every capability claim traces to a KB citation (`[n]` in `docs/KB-flutter-claude-debug.md`)
   or a probe id (FP-id in `tests/fixtures/step0-probe-record-v0.34.0.md`). State gaps.
-- **Android:** run / reload / error-reading work today (DTD tools are device-agnostic
-  [2]); taps/screenshots are PENDING **FP7** — do not promise Android visual control.
+- **Android:** full loop today — DTD tools are device-agnostic [2] and **marionette
+  taps + screenshots are VERIFIED on Android emulator** (FP7 2026-06-11: all 15
+  `ext.flutter.marionette.*` extensions registered on android_arm64; full E2E loop
+  validated). Verified on one AVD / android_arm64 arch; physical device / other arch
+  not yet probed — state this scope boundary when asked.
 - The official server's `flutter_driver_command` exposes tap + screenshot + semantic
-  finders IN-SCHEMA (FP1), but its runtime against a plain debug app is UNVERIFIED
-  pending **FP1b** — ship no promise from that path until FP1b passes.
+  finders IN-SCHEMA (FP1), but **FP1b is NEGATIVE** (probe record): against a plain debug
+  app the driver tap/screenshot FAIL — they require an in-app `enableFlutterDriverExtension()`
+  before `runApp` (the same invasiveness class as marionette, which is strictly richer — the
+  only semantic input/screenshot route). `widget_inspector` tree inspection works WITHOUT the
+  extension; driver INTERACTION does not. Ship no driver-command tap/screenshot promise as a
+  no-modification path.
 - `flutter_mcp_server` (thecentinol) is a trap: despite the name it has no hot reload,
   no device control, no VM service [7]. Never reach for it.

@@ -114,7 +114,7 @@ Opt-in, NOT a hook. macOS + Linux interval job; Windows is a documented no-op (n
 
 ## Tests
 
-- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 533 passing (+2 platform-skipped), 535 total, covering the hooks (guards, api-guard stdlib/builtin/3rd-party checks + shadowing/portability/RCE-no-execute, git-guard gh-PR self-credit, speculation, tasklist-guard Bash-regex cases + history-ledger reminder, synthesize-never-relay nudge, etc.) and the new flutter-debug preflight. Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
+- [tests/](tests/): zero-dependency `node --test` (node:test) E2E suite — 539 passing (+2 platform-skipped), 541 total, covering the hooks (guards, api-guard stdlib/builtin/3rd-party checks + shadowing/portability/RCE-no-execute, git-guard gh-PR self-credit, speculation, tasklist-guard Bash-regex cases + history-ledger reminder, synthesize-never-relay nudge, etc.) and the new flutter-debug preflight. Run with `node --test`. api-guard's catch/FP bench: `node eval/api-guard-bench.js`.
 - [docs/KB-fable-5.md](docs/KB-fable-5.md): Fable 5 knowledge base — identity, pricing, context window, features, tier-token routing; 14 sources, compiled 2026-06-10.
 - [docs/2026-06-10-v0.32.0-fable5-model-routing-plan.md](docs/2026-06-10-v0.32.0-fable5-model-routing-plan.md): v0.32.0 design plan — Fable 5 support, model-routing guard, TRIO roster update, deadly-swarm-converged; 2026-06-10.
 - [.github/workflows/test.yml](.github/workflows/test.yml): CI runs the suite on push/PR.
