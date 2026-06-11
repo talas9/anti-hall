@@ -134,7 +134,11 @@ test('FP9: add hard-error (same-scope duplicate) surfaced, not crashed', () => {
 
 test('FP9: claude CLI unavailable → manual note, never a false FAIL/blind add', () => {
   const calls = [];
-  const run = runStub({ claude: new Error('spawn claude ENOENT') }, calls);
+  // On Windows, claudeCandidates returns ['claude', 'claude.cmd']; both must fail for cli-unavailable.
+  const run = runStub({
+    claude: new Error('spawn claude ENOENT'),
+    'claude.cmd': new Error('spawn claude.cmd ENOENT'),
+  }, calls);
   const r = P.registerServer('dart', ['x'], 'local', run);
   assert.strictEqual(r.action, 'cli-unavailable');
   assert.strictEqual(r.status, P.WARN);
@@ -335,10 +339,12 @@ test('doctor no-duplication: hooks/doctor.js require()s preflight.js and calls i
 // ---------------------------------------------------------------------------
 function parseFrontmatter(file) {
   const text = fs.readFileSync(file, 'utf8');
-  const m = text.match(/^---\n([\s\S]*?)\n---/);
+  // Handle both Unix (\n) and Windows (\r\n) line endings
+  const m = text.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   assert.ok(m, 'frontmatter block present in ' + path.basename(file));
   const fm = {};
-  for (const line of m[1].split('\n')) {
+  // Split on both \n and \r\n, then normalize
+  for (const line of m[1].split(/\r?\n/)) {
     const kv = line.match(/^([a-zA-Z_]+):\s*(.*)$/);
     if (kv) fm[kv[1]] = kv[2].trim();
   }
