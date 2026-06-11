@@ -30,3 +30,4 @@ CLAUDE.md
 .DS_Store
 .omc/
 docs/*-session-handoff.md
+build/

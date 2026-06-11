@@ -192,3 +192,22 @@ captured reference only; the launcher-shim design below is DROPPED.]**
   marionette via the OMC-style `claude mcp add` path, hardened with FP9's
   idempotent flow (get-check → add-if-absent in user-chosen scope → skip if
   present anywhere) — never bundles externals, never removes/overwrites.
+
+## FP-iOS — full marionette E2E loop on the iOS SIMULATOR (closes the platform gap)
+- **Status:** CAPTURED 2026-06-11 — **FULL LOOP WORKS** on the booted iOS sim
+  (iOS 26.5). connect → 4 interactive elements → screenshot (67,871-byte PNG)
+  → tap FAB (counter 0→1) → planted StateError at counter==2 → hot_reload →
+  reproduced → get_runtime_errors captured it (ts 1781179026005) → revert →
+  hot_reload #2 (epoch 1781179307570) → tap past 2 (counter 3, no throw) →
+  NO error newer than reload #2 (the shipped timestamp lesson, applied live)
+  → final screenshot verified. Cleanup pgrep-verified; scratch app removed.
+- **iOS-specific lessons (SKILL-note candidates for v0.35):**
+  1. SHARED-SIMULATOR interference: another app taking the sim foreground
+     suspends the backgrounded probe app and KILLS its VM service ("Lost
+     connection to device") — relaunch fixes; agents should expect this on
+     shared sims and treat it as retryable, not a failure.
+  2. Element query ~50ms after a tap can read the PRE-rebuild tree (stale
+     counter) — short delay/re-query before asserting (likely
+     platform-agnostic).
+- Tool behavior otherwise identical to Android (same schemas, connect shape,
+  accumulating error buffer).
