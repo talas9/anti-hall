@@ -110,39 +110,57 @@ test('EXEMPTION SCOPE: role word in prompt (no complex token) does NOT exempt ->
 
 // --------------------------------------------------------- Row 2 (omitted model)
 
-test('ROW 2 default: mechanical-only + OMITTED model + generic -> advisory', () => {
+// ROW 2: strict is now the DEFAULT (v0.35.0+). Advisory is the opt-out.
+
+test('ROW 2 default (strict): mechanical-only + OMITTED model + generic -> BLOCK (default, no env needed)', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, payload({
       subagent_type: 'general-purpose',
       prompt: 'fetch and download the dump, tail the logs, git push',
     }), { home: h.home });
-    assertAdvisory(r, /omitted model inherits/);
+    // Strict is now the default — no env var needed to get a block.
+    assertBlock(r, /strict.*default|default.*strict/);
+    assert.match(r.json.reason, /haiku/);
   } finally { h.cleanup(); }
 });
 
-test('ROW 2 strict: OMITTED model + mechanical -> BLOCK unconditionally', () => {
+test('ROW 2 advisory opt-out: ANTIHALL_MODEL_ROUTING=advisory -> advisory (not a block)', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, payload({
       subagent_type: 'general-purpose',
       prompt: 'fetch and grep and tail the logs, run the build',
-    }), { home: h.home, env: { ANTIHALL_MODEL_ROUTING: 'strict' } });
-    assertBlock(r, /strict/);
-    assert.match(r.json.reason, /haiku/);
+    }), { home: h.home, env: { ANTIHALL_MODEL_ROUTING: 'advisory' } });
+    // advisory opt-out reverts omitted-model mechanical spawn to advisory-only.
+    assertAdvisory(r, /omitted model inherits/);
   } finally { h.cleanup(); }
 });
 
-test('ROW 2 strict: role words do NOT downgrade strict block (C5-2)', () => {
+test('ROW 2 strict default: role words do NOT downgrade strict block (C5-2)', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, payload({
       subagent_type: 'general-purpose',
       description: 'Reviewer auditor critic',  // role words present
       prompt: 'fetch and download and tail the logs',
-    }), { home: h.home, env: { ANTIHALL_MODEL_ROUTING: 'strict' } });
+    }), { home: h.home });
     // 'review'/'audit'/'critique' are complex signals, but these exact role tokens
     // (reviewer/auditor/critic) are NOT in the complex list, so no complex veto.
+    // Strict is now the default — block applies without any env var.
+    assertBlock(r, /strict/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 2 strict-is-default: no env var set -> BLOCK (variable absent = strict)', () => {
+  const h = makeHome();
+  try {
+    // The spawn-hook helper gives an isolated env without ANTIHALL_MODEL_ROUTING —
+    // verifies that strict fires without any explicit opt-in env var.
+    const r = testHook(HOOK, payload({
+      subagent_type: 'general-purpose',
+      prompt: 'fetch and tail the logs, run the build',
+    }), { home: h.home });
     assertBlock(r, /strict/);
   } finally { h.cleanup(); }
 });
@@ -163,8 +181,8 @@ test('NO PARENT INFERENCE: strict block never opens ~/.claude.json (sentinel unt
     const r = testHook(HOOK, payload({
       subagent_type: 'general-purpose',
       prompt: 'fetch and download and tail the logs',
-    }), { home: h.home, env: { ANTIHALL_MODEL_ROUTING: 'strict' } });
-
+    }), { home: h.home });
+    // Strict is the default — no env var needed.
     assertBlock(r, /strict/);
     // Content unchanged (never written) and present (never deleted).
     assert.strictEqual(fs.readFileSync(claudeJson, 'utf8'), sentinel);
@@ -392,14 +410,15 @@ test('TASK tool_name: row-1 case blocks identically to Agent', () => {
   } finally { h.cleanup(); }
 });
 
-test('AGENT tool_name: row-2 default advisory', () => {
+test('AGENT tool_name: row-2 default strict -> BLOCK (strict is now default)', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, payload({
       subagent_type: 'general-purpose',
       prompt: 'fetch and download and tail the logs',
     }, { toolName: 'Agent' }), { home: h.home });
-    assertAdvisory(r, /omitted model inherits/);
+    // Strict is now the default — omitted-model mechanical spawn on Agent tool -> BLOCK.
+    assertBlock(r, /strict/);
   } finally { h.cleanup(); }
 });
 

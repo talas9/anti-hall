@@ -10,22 +10,24 @@
 // signals in the spawn's description/prompt; keyword stuffing trivially evades it
 // (an accepted waste-ALLOW). The block path only fires on the unambiguous
 // expensive-misroute case (mechanical-only task pinned to a flagship model on a
-// generic agent), and even then a debate-role exemption or strict opt-out applies.
+// generic agent), and even then a debate-role exemption applies.
 //
 // PARENT-MODEL BLINDNESS: the hook CANNOT see the orchestrator's own model — it
-// is not in PreToolUse stdin. A spawn that OMITS `model` inherits the parent, so
-// the omitted-model case is advisory by default (a cheap orchestrator must not be
-// false-blocked). Users who routinely orchestrate on a flagship opt into
-// ANTIHALL_MODEL_ROUTING=strict, which blocks omitted-model mechanical spawns
-// UNCONDITIONALLY. The hook NEVER reads ~/.claude.json or otherwise infers the
-// parent model (the live lastModelUsage sample carries only cumulative counters,
-// no timestamps — no reliable parent-model signal; see probe record P6).
+// is not in PreToolUse stdin. A spawn that OMITS `model` inherits the parent.
+// STRICT MODE IS NOW THE DEFAULT: omitted-model mechanical spawns are BLOCKED
+// unconditionally unless ANTIHALL_MODEL_ROUTING=advisory is set. Set
+// ANTIHALL_MODEL_ROUTING=advisory to revert to the old advisory-only behavior.
+// The hook NEVER reads ~/.claude.json or otherwise infers the parent model (the
+// live lastModelUsage sample carries only cumulative counters, no timestamps — no
+// reliable parent-model signal; see probe record P6).
 //
-// STRICT-MODE BLAST RADIUS: enable ANTIHALL_MODEL_ROUTING=strict via the PROJECT's
-// .claude/settings.json env block (or a per-session export) — NOT a global shell
-// profile. A globally-exported strict blocks omitted-model mechanical spawns in
-// EVERY project, including genuinely-cheap-orchestrator ones. Remedies when a
-// strict block is wrong: set an explicit cheap model on the spawn, or unset strict.
+// ADVISORY MODE (opt-out): set ANTIHALL_MODEL_ROUTING=advisory via the PROJECT's
+// .claude/settings.json env block (or a per-session export) to downgrade
+// omitted-model mechanical spawn blocks back to advisories. Use this only on
+// projects where the orchestrator is reliably cheap-modeled and you want advisory
+// nudges instead of blocks. Remedies when a strict block is wrong: set an explicit
+// cheap model on the spawn (model:'haiku' or 'sonnet'), or set
+// ANTIHALL_MODEL_ROUTING=advisory.
 //
 // ADVISORY DELIVERY: advisories ride PreToolUse additionalContext. On a harness
 // that does not deliver it, advisories are inert no-ops (fail-open, nothing
@@ -165,8 +167,9 @@ function main() {
   // COMPLEX-ANYWHERE veto: any planning signal => never block (rows 1-3 can't fire).
   const isMechanicalOnly = mechanical > 0 && complex === 0;
 
-  // Strict mode (opt-in). Env-driven; never inferred.
-  const strict = process.env.ANTIHALL_MODEL_ROUTING === 'strict';
+  // Strict mode (now the default). Env-driven; never inferred.
+  // Set ANTIHALL_MODEL_ROUTING=advisory to revert to advisory-only behavior.
+  const strict = process.env.ANTIHALL_MODEL_ROUTING !== 'advisory';
 
   // Exemption: role word against DESCRIPTION ONLY (description tokens, not prompt).
   // INTENTIONAL ASYMMETRY (R1-8): the role-word test runs on the RAW description
@@ -204,17 +207,19 @@ function main() {
   }
 
   // Row 2: mechanical-only ∧ flagship-or-not but model OMITTED ∧ generic agent.
-  //   default  : advisory (omitted model inherits the orchestrator's).
-  //   strict   : BLOCK UNCONDITIONALLY — no heuristic, NO exemption downgrade,
-  //              NO ~/.claude.json read ever.
+  //   default (strict) : BLOCK UNCONDITIONALLY — no heuristic, NO exemption downgrade,
+  //                      NO ~/.claude.json read ever.
+  //   advisory opt-out : set ANTIHALL_MODEL_ROUTING=advisory to downgrade to advisory.
   if (isMechanicalOnly && modelOmitted && isGenericAgent) {
     if (strict) {
       block(
-        'anti-hall model-routing-guard (strict): execution-shaped spawn with no ' +
-        "explicit model. Set model:'haiku' (or 'sonnet' for code). Strict mode " +
-        'blocks every omitted-model mechanical spawn because an omitted model ' +
-        "inherits the orchestrator's model and cannot be verified here. Remedies: " +
-        'set an explicit cheap model, or unset ANTIHALL_MODEL_ROUTING.'
+        'anti-hall model-routing-guard (strict, default): execution-shaped spawn ' +
+        "with no explicit model. Set model:'haiku' (or 'sonnet' for code). Strict " +
+        'is the default because an omitted model inherits the orchestrator\'s model ' +
+        'and cannot be verified here — an omitted model on a flagship orchestrator ' +
+        'silently produces an all-flagship swarm. Remedies: set an explicit cheap ' +
+        "model on the spawn, or set ANTIHALL_MODEL_ROUTING=advisory to opt out of " +
+        'blocking.'
       );
     }
     advise(
