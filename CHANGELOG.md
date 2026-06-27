@@ -6,6 +6,56 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.35.0
+
+**Strict-by-default model routing + `anti-hall:activate` first-run setup skill.**
+
+### model-routing-guard: strict is now the default
+
+`model-routing-guard.js` row-2 behavior flipped: **strict mode is the default** as of
+v0.35.0. Previously strict was opt-in (`ANTIHALL_MODEL_ROUTING=strict`); now advisory
+is the opt-out (`ANTIHALL_MODEL_ROUTING=advisory`).
+
+- **Before (≤ 0.34.1):** omitted-model mechanical spawns → advisory by default; set
+  `ANTIHALL_MODEL_ROUTING=strict` to block.
+- **After (≥ 0.35.0):** omitted-model mechanical spawns → **blocked unconditionally**
+  by default; set `ANTIHALL_MODEL_ROUTING=advisory` to revert to advisory-only.
+
+Rationale: an omitted model silently inherits the orchestrator's model. On a flagship
+orchestrator this produces an all-flagship swarm with no warning and no signal — the
+most common and most expensive misroute. Strict is the right default; advisory opt-out
+covers projects where the orchestrator is verifiably cheap-modeled.
+
+The row-1 behavior (explicit flagship + mechanical task → block, debate-role exemption
+downgrades to advisory) is unchanged. The row-2 strict block message now says "default"
+and names `ANTIHALL_MODEL_ROUTING=advisory` as the remedy. All existing tests updated.
+
+### New skill: `anti-hall:activate`
+
+`skills/activate/SKILL.md` — one-shot, idempotent first-run setup. User-invoked only;
+**never** auto-runs as a SessionStart side-effect (the always-on hooks need no
+activation). What it does:
+
+- Checks `~/.claude/settings.json` for an existing `statusLine`. If none → installs
+  the anti-hall statusline at user scope (delegates to `install-statusline.js --user`).
+  If one exists (conflict) → reports it and lets the user choose: wrap as line 1
+  (global), install at project scope, or skip.
+- Reports model-routing state: strict (default, unset) or advisory (opt-out set).
+  No action taken — informational only.
+- Writes `~/.anti-hall/activated.json` sentinel so re-runs report "already activated"
+  and exit 0 immediately (idempotent).
+- Prints a "restart Claude Code" note only when the statusline was actually changed.
+
+Reuses `install-statusline.js` — no reimplemented logic.
+
+### What stays opt-in (unchanged)
+
+`mcp-reaper`, `ANTIHALL_API_GUARD_THIRDPARTY`, `ANTIHALL_SHIPIT_GATE`,
+`ANTIHALL_MERGE_GATE`, `ANTIHALL_SEMANTIC_JUDGE` — all remain off by default; activate
+does not touch them. On-demand skills (deadly-loop, ship-it, etc.) unchanged.
+
+Skills shipped: 9 → 10.
+
 ## 0.34.1
 
 **Honest-fix wave on the shipped `flutter-debug` agent/skill** (retroactive hardening of v0.34.0).
