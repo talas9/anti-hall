@@ -167,9 +167,10 @@ test('one full round runs Context->Investigate->Argue->Converge and returns the 
   assert.ok(calls.phases.some((p) => /Investigate:/.test(p)));
   assert.ok(calls.phases.some((p) => /Argue:/.test(p)));
   assert.ok(calls.phases.some((p) => /Converge:/.test(p)));
-  // Context = sonnet; trio = fable + opus + codex.
+  // Context = sonnet; trio = opus + opus + codex (reviewer seat was fable, now opus).
   assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'sonnet'));
-  assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'fable'));
+  // TEMP(fable-disabled 2026-06-29): reviewer is Opus until Fable re-enabled; revert this assertion to 'fable' then.
+  assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'opus'));
   assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'opus'));
   assert.ok(calls.agents.some((c) => c.opts && c.opts.agentType === 'codex:codex-rescue'));
 });

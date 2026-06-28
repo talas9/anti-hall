@@ -7,7 +7,7 @@
 > tasklist-guard), an always-on output-presentation rule (rule K: present for scannability),
 > an always-on scope & fidelity discipline (simplest sufficient solution; intent over letter;
 > confirm before expanding scope; match rigor to blast radius; finish what was asked / drop
-> nothing), a TTL'd user-override escape hatch (~/.anti-hall/skip.json), nine workflow skills,
+> nothing), a TTL'd user-override escape hatch (~/.anti-hall/skip.json), ten workflow skills,
 > a live two-line statusline, and an opt-in mcp-reaper companion (macOS + Linux) that kills
 > orphaned MCP-server processes. All hooks are pure Node.js (built-ins only) and run on macOS,
 > Linux, and Windows; the one prerequisite is Node >= 18 on PATH.
@@ -61,6 +61,8 @@ All pure Node, fail-open. Registered in hooks.json.
 - [phase-tracker.js](plugins/anti-hall/hooks/phase-tracker.js): PreToolUse Agent/Task — records subagent spawns to a homedir log so the statusline shows live swarm activity automatically. Never blocks.
 - [agent-watchdog.js](plugins/anti-hall/hooks/agent-watchdog.js): CLI heartbeat helper (NOT a hook) — scans `~/.anti-hall/agents/*.json` heartbeats and reports stale/hung subagents; run manually by the orchestration skill.
 - [task-tracker.js](plugins/anti-hall/hooks/task-tracker.js): UserPromptSubmit — task-list discipline directive (+ a one-line freshness note when open/stale tasks exist).
+- [limit-conserve-inject.js](plugins/anti-hall/hooks/limit-conserve-inject.js): UserPromptSubmit — limit-conservation mode: injects a token-conservation nudge when context usage reaches ANTIHALL_LIMIT_THRESHOLD (default 85%). ANTIHALL_LIMIT_CONSERVE: auto (default, reads OMC usage cache) / on / off. Auto requires OMC; without it, manual on/off only. Skip-guard hatch: limit-conserve.
+- [limit-conserve.js](plugins/anti-hall/hooks/limit-conserve.js): shared helper (not a hook) — reads the OMC usage cache and applies threshold logic; consumed by limit-conserve-inject.js.
 - [task-guard.js](plugins/anti-hall/hooks/task-guard.js): Stop (loop-safe) — blocks once when the session ends with genuinely-open tasks.
 - [tasklist-guard.js](plugins/anti-hall/hooks/tasklist-guard.js): Stop — enforces a live task-list + fresh `.anti-hall-progress.md` for non-trivial work (≥ threshold file-mutating actions); coexists with task-guard with its own independent block cap.
 - [skip-guard.js](plugins/anti-hall/hooks/skip-guard.js): shared user-override escape-hatch primitive read by the guards — a TTL'd, granular `~/.anti-hall/skip.json` marker; a broad `all` skip excludes the destructive git-guard (it must be named explicitly).
@@ -79,7 +81,7 @@ Invoke as /anti-hall:<name>.
 - [orchestration](plugins/anti-hall/skills/orchestration/SKILL.md): non-blocking swarm; coordinator/worker hierarchy; watchdog + heartbeat; live phase statusline; verify delegated work — a subagent's "done/passing" is an unverified claim re-checked against ground truth before marking complete; defaults delegated heavy/parallel work to the background (coordinator passes run_in_background so the user needn't background it manually) while still verifying each on completion (also always-on).
 - [deadly-loop](plugins/anti-hall/skills/deadly-loop/SKILL.md): iterative Reviewer + Critic debate + fix-waves until zero new P0s.
 - [ship-it](plugins/anti-hall/skills/ship-it/SKILL.md): one lean workflow for shipping any change correctly, scaled S/M/L to blast radius — brainstorm + plan IN PLAN MODE (ExitPlanMode is the approval gate), harden the plan with the deadly-loop BEFORE code, fan large work out as a Workflow swarm, verify each phase with fresh evidence + a vacuous-test guard until zero NEW P0s. Replaces feature-launch.
-- [install-statusline](plugins/anti-hall/skills/install-statusline/SKILL.md): installs the statusLine entry on demand (global by default, per-project on request) + restart reminder.
+- [install-statusline](plugins/anti-hall/skills/install-statusline/SKILL.md): installs the statusLine entry on demand (global by default, per-project on request) + restart reminder. --consolidate merges with an existing statusline (e.g., OMC HUD) instead of replacing it; base persisted to ~/.anti-hall/consolidated-base.json. Env: ANTIHALL_STATUSLINE_BASE pins the base expression explicitly.
 - [doctor](plugins/anti-hall/skills/doctor/SKILL.md): health-check — confirms Node is found, every hook is present + syntax-valid, and the guards actually fire (live behavioral self-tests).
 - [update](plugins/anti-hall/skills/update/SKILL.md): in-session self-update — git pull --ff-only, semver-anchored traversal-proof cache sync, changelog delta, /reload-plugins in-session reload.
 - [deadly-loop-multi](plugins/anti-hall/skills/deadly-loop-multi/SKILL.md): scaled-up deadly-loop — N parallel Reviewer + Critic pairs with diversified lenses, then deduplicate + synthesize (double / triple / quadruple).

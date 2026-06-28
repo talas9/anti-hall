@@ -63,6 +63,7 @@ tokens `haiku`/`sonnet`/`opus`/`fable`, never a versioned model id):
 - **Fable (flagship)** — planning, plan review / validation, design mockups, logic
   creation & checking, workflow analysis, simulations, and debate roles (the Reviewer seat
   of the ship-it / deadly-loop trio — roster in `../MODEL-POLICY.md`).
+  > **TEMPORARY (2026-06-29): Fable is disabled by Anthropic — use Opus for all Fable roles until re-enabled. Spawn sites are marked `TEMP(fable-disabled 2026-06-29)` for easy revert.**
 
 Don't send a planning problem to Haiku, or a log-tail to Fable/Opus.
 

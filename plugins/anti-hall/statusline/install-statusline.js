@@ -72,8 +72,9 @@ console.log('Dispatcher: ' + DISPATCHER +
 // Scope / settings file selection
 // ---------------------------------------------------------------------------
 
-const args  = process.argv.slice(2);
-const scope = args.includes('--project') ? 'project' : 'user';
+const args         = process.argv.slice(2);
+const scope        = args.includes('--project') ? 'project' : 'user';
+const isConsolidate = args.includes('--consolidate');
 
 let SETTINGS_PATH;
 if (scope === 'user') {
@@ -157,6 +158,15 @@ if (effectiveCmd && effectiveCmd.includes('statusline.js') &&
   } else {
     console.log('  Source: ~/.claude/settings.json (user/global)');
   }
+  // Advisory: --consolidate on an existing non-consolidated install silently no-ops
+  // because we exit before reaching the consolidate logic. Tell the user what to do.
+  if (isConsolidate && !fs.existsSync(CONSOLIDATED_CFG)) {
+    console.log('');
+    console.log('ADVISORY: --consolidate was requested but this install is not yet in consolidated mode.');
+    console.log('  To switch modes, uninstall first, then re-run with --consolidate:');
+    console.log('    node statusline/install-statusline.js --uninstall   # or remove statusLine from settings manually');
+    console.log('    node statusline/install-statusline.js --consolidate');
+  }
   console.log('No changes made.');
   process.exit(0);
 }
@@ -200,7 +210,31 @@ try {
 const existing    = settings.statusLine;
 const existingCmd = (existing && typeof existing.command === 'string') ? existing.command : null;
 
-if (existingCmd && fs.existsSync(BASE_CFG)) {
+// ---------------------------------------------------------------------------
+// Consolidated mode: save the existing command to consolidated-base.json so
+// statusline-rich.js appends the AH chip to the base output (single merged line).
+// Separate from base-statusline.json (which is the line-1 wrap / two-line mode).
+// ---------------------------------------------------------------------------
+
+const CONSOLIDATED_CFG = path.join(BASE_CFG_DIR, 'consolidated-base.json');
+
+if (isConsolidate && existingCmd) {
+  try {
+    fs.mkdirSync(BASE_CFG_DIR, { recursive: true });
+    fs.writeFileSync(CONSOLIDATED_CFG, JSON.stringify({ command: existingCmd }, null, 2) + '\n', 'utf8');
+    console.log('CONSOLIDATED MODE: saved existing statusLine as passthrough base:');
+    console.log('  ' + CONSOLIDATED_CFG);
+    console.log('  command: ' + existingCmd);
+    console.log('  The anti-hall statusline will run this base command, capture its output,');
+    console.log('  and APPEND the AH version chip (AH: Vx.x.x / ★) as a single merged line.');
+    console.log('  Fail-open: if the base command errors, the full rich anti-hall line is shown.');
+    console.log('');
+  } catch (e) {
+    console.error('WARNING: Could not write ' + CONSOLIDATED_CFG + ': ' + e.message);
+    console.error('Consolidated mode will not be active. Run without --consolidate to install normally.');
+    console.log('');
+  }
+} else if (existingCmd && fs.existsSync(BASE_CFG)) {
   // base-statusline.json is GLOBAL (shared by every project whose statusLine points
   // at the dispatcher). NEVER clobber an existing one — doing so would change line 1
   // for OTHER projects that already rely on it. Leave it as-is.
@@ -222,6 +256,12 @@ if (existingCmd && fs.existsSync(BASE_CFG)) {
     console.error('The statusline will still work but your previous statusline will not be line 1.');
     console.log('');
   }
+} else if (isConsolidate) {
+  console.log('NOTE: --consolidate requested but no existing statusLine found to wrap.');
+  console.log('  Installing anti-hall statusline directly (no consolidated base).');
+  console.log('  You can set ANTIHALL_STATUSLINE_BASE="<cmd>" env var in the statusLine command,');
+  console.log('  or write ~/.anti-hall/consolidated-base.json manually later.');
+  console.log('');
 } else if (existing !== undefined) {
   console.log('Existing statusLine has no command string (type: ' +
     (typeof existing === 'object' ? JSON.stringify(existing) : existing) + ')');

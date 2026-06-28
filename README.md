@@ -79,6 +79,7 @@ argued with.
 | `task-guard` | Stop | Blocks stop when open tasks remain; counts only currently-open tasks (completed/cleared don't count); fail-open. **OMC-deference:** when `omc-detect.js` reports an oh-my-claudecode autonomous loop (ralph, ultrawork, autopilot, etc.) is active and fresh, the block is suppressed to an advisory — preventing a deadlock where the guard stops the loop it was meant to coexist with |
 | `tasklist-guard` | Stop | Blocks stop when non-trivial work (≥ threshold file-mutating actions) wasn't tracked as tasks or lacks a fresh `.anti-hall-progress.md`; coexists with `task-guard`; capped + fail-open — see [`docs/TASKLIST-GUARD.md`](./docs/TASKLIST-GUARD.md) |
 | `task-tracker` | UserPromptSubmit | Captures every request as a task; throttled to avoid growing context; adds a one-line freshness note when open/stale tasks exist |
+| `limit-conserve-inject` | UserPromptSubmit | **Limit-conservation mode.** Injects a token-conservation nudge when context usage reaches `ANTIHALL_LIMIT_THRESHOLD` (default 85%). `ANTIHALL_LIMIT_CONSERVE`: `auto` (default) reads the OMC usage cache; `on` forces the nudge; `off` disables. Auto requires OMC; without it, manual on/off only. Skip-guard hatch: `limit-conserve` |
 | `speculation-guard` | Stop (Tier 2) | Lexical: catches 15 hedge-word speculation markers; suppressed when the message contains evidence/uncertainty acknowledgment; block-once (never wedges) |
 | `speculation-judge` | Stop (Tier 3, **OPT-IN**) | Semantic: calls an LLM to catch confident inference-as-fact with *no* hedge word — the gap Tier 2 can't close. Enable: `ANTIHALL_SEMANTIC_JUDGE=1` + `ANTHROPIC_API_KEY`. Model override: `ANTIHALL_JUDGE_MODEL=<alias-form id>` (default `claude-haiku-4-5`; use alias-form, not versioned snapshot IDs). Zero cost/latency when unset (the default). Fail-open |
 | `ship-it-guard` | PreToolUse/Write+Edit+MultiEdit (**OPT-IN**, default OFF) | The only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root or `.planning/PLAN.md`) — nudging the ship-it plan-first workflow. Enforces artifact *existence* only (not plan quality), conservative (never gates ordinary edits), fail-open. Zero effect when unset (the default) |
@@ -101,7 +102,7 @@ argued with.
 | **deadly-loop** | before merging anything risky | parallel **Reviewer + Auditor + Critic TRIO** debate + fix-waves, looping until zero *new* P0s. Three-phase swarm mode (Context → Duel → Converge) via `deadly-loop.workflow.js`; plain Agent-tool path available for no-consent sessions |
 | **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N TRIO sets (Reviewer + Auditor + Critic per slot) with diversified lenses, then dedup + synthesize into one report |
 | **ship-it** | any change, from a one-line fix to a multi-phase feature | one lean workflow scaled S/M/L to blast radius — brainstorm + plan **in plan mode** (ExitPlanMode is the gate), deadly-loop-hardened *before* code, large work fanned out as a Workflow swarm, each phase verified with fresh evidence + a vacuous-test guard until zero *new* P0s |
-| **install-statusline** | "install the statusline / add the bar" | writes the `statusLine` setting (global or per-repo), wraps an existing statusline as line 1 + adds anti-hall bar as line 2, with backup + restore |
+| **install-statusline** | "install the statusline / add the bar" | writes the `statusLine` setting (global or per-repo), wraps an existing statusline as line 1 + adds anti-hall bar as line 2, with backup + restore. `--consolidate` merges with an existing statusline (e.g., OMC HUD) instead of replacing it; base persisted to `~/.anti-hall/consolidated-base.json`. Env: `ANTIHALL_STATUSLINE_BASE` |
 | **doctor** | "is anti-hall working?" / after install/update | confirms Node ≥ 18, all hooks present + syntax-valid, **runs live behavioral self-tests** (spawns real guards with crafted payloads and asserts exit codes), reports context footprint in bytes + estimated tokens |
 | **update** | "update anti-hall" / "is anti-hall up to date?" | `git pull --ff-only` the marketplace clone, syncs the version-pinned cache (semver-anchored, traversal-proof), prints the changelog delta, then instructs `/reload-plugins` for in-session reload (hooks and statusline pick up from disk immediately; `/reload-plugins` refreshes the skill list and version label; rarely a restart is needed) |
 | **flutter-debug** | "debug my Flutter app" / "drive the iOS simulator / Android emulator" / "reproduce this bug in the app" / "fix and verify in the UI" | agent-driven Flutter debug loop (run + hot reload + **visually verified UI changes**); reproduces bugs → reads errors (exceptions / layout / logs / VM service) → roots cause → fixes → re-verifies with screenshots. iOS fully; Android run/reload/errors today, taps/screenshots pending FP7 probe. Delegates to the `flutter-debug` agent after zero-setup MCP + app-side marionette integration. Capability tier degradation (full-visual / coordinate-visual / error-only) announced per preflight |
@@ -162,8 +163,22 @@ A live **two-line** statusline the plugin renders itself — installable globall
 Install it the easy way — just ask Claude **"install the statusline"** (the
 `install-statusline` skill writes the setting, wraps any existing statusline as line 1 +
 adds the anti-hall bar as line 2, with backup/restore) — or run the installer directly.
+Use `--consolidate` to merge with an existing statusline (e.g., the OMC HUD) instead of
+replacing it; the base is persisted to `~/.anti-hall/consolidated-base.json`. Set
+`ANTIHALL_STATUSLINE_BASE` to pin the base expression explicitly.
 See [STATUSLINE.md](plugins/anti-hall/statusline/STATUSLINE.md). *Claude Code reads
 `statusLine` only at startup, so restart once after installing.*
+
+---
+
+## 🔌 Optional: oh-my-claudecode (OMC)
+
+[oh-my-claudecode](https://github.com/talas9/oh-my-claudecode) is a **recommended optional** companion. anti-hall is fully standalone without it, but two features gain automatic behavior when OMC is installed:
+
+- **Limit-conservation auto mode** — `limit-conserve-inject` reads the OMC usage cache to detect the live context percentage and fire at the right moment. Without OMC, the hook operates in manual `on`/`off` mode only (`ANTIHALL_LIMIT_CONSERVE=on` to force).
+- **Consolidated statusline** — `install-statusline --consolidate` merges the anti-hall bar with the OMC HUD seamlessly.
+
+Nothing breaks without OMC. These features fall back gracefully.
 
 ---
 

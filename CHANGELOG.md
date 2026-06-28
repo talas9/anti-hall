@@ -6,6 +6,40 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.38.0
+
+**Limit-conservation mode + consolidated statusline merge + OMC as recommended optional dependency.**
+
+### New: `limit-conserve-inject` hook (UserPromptSubmit) + `limit-conserve.js` helper
+
+`limit-conserve-inject.js` — a UserPromptSubmit hook that injects a token-conservation nudge when the session context usage is at or above a threshold. Env knobs:
+
+- `ANTIHALL_LIMIT_CONSERVE` — `auto` (default), `on`, or `off`. In `auto` mode the hook reads the OMC usage cache (`~/.anti-hall/omc-usage-cache.json`) to detect the current context percentage; `on` forces the nudge unconditionally; `off` disables it.
+- `ANTIHALL_LIMIT_THRESHOLD` — integer percentage (default `85`). The nudge fires only when detected context usage ≥ this value.
+
+Auto mode requires an OMC installation that populates the usage cache; without it the hook operates in manual mode (`on`/`off` only) and auto silently behaves as off. Skip-guard hatch: `limit-conserve`. UserPromptSubmit hooks 2 → 3.
+
+`limit-conserve.js` is the shared helper consumed by the hook (reads the OMC usage cache, applies threshold logic). It is not itself a hook.
+
+### Statusline: consolidated merge mode (`--consolidate`)
+
+`install-statusline --consolidate` merges the anti-hall statusline with an existing statusline (e.g., the OMC HUD) instead of replacing it. The existing base `statusLine` value is read from `ANTIHALL_STATUSLINE_BASE` (env) or detected from the current settings; the anti-hall bar is appended as an additional component. The resolved base is persisted to `~/.anti-hall/consolidated-base.json` so subsequent sessions can restore it without re-reading the env var.
+
+New env knob: `ANTIHALL_STATUSLINE_BASE` — explicitly sets the base statusline expression when using consolidated mode.
+
+### OMC: recommended optional dependency
+
+oh-my-claudecode (OMC) is now explicitly documented as a **recommended optional** dependency. Anti-hall is and remains fully standalone without it. Two features unlock automatic behavior when OMC is installed:
+
+1. `limit-conserve` auto mode — reads the OMC usage cache to detect the live context percentage.
+2. Consolidated statusline mode — the version chip and base-merge work with the OMC HUD out of the box.
+
+Without OMC, both features fall back to manual/off behavior; no errors, no breaking change.
+
+### Temporary: Fable removed from all spawn sites
+
+- Temporary: Fable removed from all spawn sites (Anthropic disabled it) — Reviewer/flagship-Claude seats in `deadly-loop` and `ship-it` run on Opus until re-enabled. All changed spawn sites are marked `TEMP(fable-disabled 2026-06-29)` for easy grep-revert when Fable is restored.
+
 ## 0.37.0
 
 **Version awareness + priority-aware guards + anti-nesting backstop + cmux/OMC KBs.**

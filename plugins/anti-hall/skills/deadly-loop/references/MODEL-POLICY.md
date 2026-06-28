@@ -39,9 +39,11 @@ for any seat is Opus — never a weaker/cheaper model.
 
 ## The three roles (the TRIO)
 
+> **TEMPORARY (2026-06-29): Fable is disabled by Anthropic — the Reviewer seat runs on Opus until Fable is re-enabled; revert the reviewer model from `'opus'` back to `'fable'` then.** The spawn sites in `references/ship-it.workflow.js` and `references/deadly-loop.workflow.js` are marked `TEMP(fable-disabled 2026-06-29)` for easy grep-revert.
+
 | Role | Model | Thinking | Persona |
 |---|---|---|---|
-| **Reviewer** | latest flagship Claude (`model: "fable"`) | adaptive, effort `xhigh` (→ `high`) | correctness / architecture auditor |
+| **Reviewer** | latest flagship Claude (`model: "fable"`) *(temporarily Opus — see note above)* | adaptive, effort `xhigh` (→ `high`) | correctness / architecture auditor |
 | **Auditor** | latest Claude Opus (`model: "opus"`) | adaptive, effort `xhigh` | divergent: regression & coupling hunter |
 | **Critic** | latest OpenAI Codex | max reasoning (`xhigh` → `high`) | adversarial failure-mode hunter |
 

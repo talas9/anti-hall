@@ -249,8 +249,8 @@ test('AH version chip: minor-ahead cache shows star and yellow color', () => {
   const h = makeStatusHome();
   const proj = makeProjectDir();
   try {
-    // latest minor is ahead of running (0.37.0 < 0.38.0)
-    writeVersionCheck(h.antiHall, { latest: '0.38.0', checkedAt: Date.now() });
+    // latest minor is ahead of running (0.38.0 < 0.39.0)
+    writeVersionCheck(h.antiHall, { latest: '0.39.0', checkedAt: Date.now() });
     const out = runSL('statusline-rich.js', {
       home: h.home, cwd: proj.dir, stdin: JSON.stringify({ model: { display_name: 'Sonnet' } }),
       env: { ANTIHALL_STATUSLINE_NO_EMAIL: '1' }, // colors ON (no NO_COLOR)

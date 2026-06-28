@@ -190,7 +190,8 @@ function buildFormation(a) {
     ? Math.floor(a.multiplier) : 1;
   const codexUp = a.codexAvailable !== false;
   const roles = [
-    { role: 'reviewer', opts: { model: 'fable' } },
+    // TEMP(fable-disabled 2026-06-29): Anthropic disabled Fable; Reviewer runs on Opus until re-enabled — revert this 'opus' back to 'fable' then.
+    { role: 'reviewer', opts: { model: 'opus' } },
     { role: 'auditor', opts: { model: 'opus' } },
     {
       role: 'critic',

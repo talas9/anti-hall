@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { execSync, execFileSync } = require('child_process');
+const { execSync, execFileSync, spawnSync } = require('child_process');
 const os = require('os');
 
 // Configuration
@@ -463,12 +463,13 @@ function progressBar(current, total) {
 // cost, etc.). When invoked via runWithInput() the raw string is supplied
 // directly; when run as a standalone process we read fd 0 synchronously.
 let _stdinData = undefined;
+let _stdinRaw = undefined;  // raw stdin string, set alongside _stdinData
 
 // Inject a pre-read stdin string (used by runWithInput()).
 function setStdinData(raw) {
+  _stdinRaw = (raw || '').trim();
   try {
-    const s = (raw || '').trim();
-    _stdinData = (s && s.startsWith('{')) ? JSON.parse(s) : null;
+    _stdinData = (_stdinRaw && _stdinRaw.startsWith('{')) ? JSON.parse(_stdinRaw) : null;
   } catch {
     _stdinData = null;
   }
@@ -478,7 +479,7 @@ function getStdinData() {
   if (_stdinData !== undefined) return _stdinData;
   try {
     // Check if stdin is a TTY (manual run) — skip reading
-    if (process.stdin.isTTY) { _stdinData = null; return null; }
+    if (process.stdin.isTTY) { _stdinData = null; _stdinRaw = ''; return null; }
     // Read stdin synchronously via fd 0
     const chunks = [];
     const buf = Buffer.alloc(4096);
@@ -489,11 +490,19 @@ function getStdinData() {
       }
     } catch { /* EOF or read error */ }
     const raw = Buffer.concat(chunks).toString('utf-8').trim();
+    _stdinRaw = raw;
     _stdinData = (raw && raw.startsWith('{')) ? JSON.parse(raw) : null;
   } catch {
     _stdinData = null;
+    if (_stdinRaw === undefined) _stdinRaw = '';
   }
   return _stdinData;
+}
+
+// Return the raw stdin string (triggers read from fd 0 if not yet read).
+function getStdinRaw() {
+  if (_stdinRaw === undefined) getStdinData();
+  return _stdinRaw || '';
 }
 
 // Prefer model display name from stdin.
@@ -532,9 +541,92 @@ function getCostFromStdin() {
   return null;
 }
 
+// ─── Consolidated base-passthrough helpers ──────────────────────
+//
+// Consolidated mode: if ANTIHALL_STATUSLINE_BASE env var is set (a shell command
+// string) OR ~/.anti-hall/consolidated-base.json exists, the rich renderer runs
+// THAT command first (passing the same stdin JSON the harness provided), captures
+// its stdout, then APPENDS the AH version chip as the only anti-hall-specific
+// segment.  Fail-open: if the base command errors or is absent, the renderer falls
+// through to its normal full-rich output.
+//
+// Config file shape: { "command": "<shell command string>" }
+// Written by: install-statusline.js --consolidate
+
+function getConsolidatedBase() {
+  // Priority 1: env var inline in the statusLine command (POSIX-friendly)
+  const envCmd = (process.env.ANTIHALL_STATUSLINE_BASE || '').trim();
+  if (envCmd) return envCmd;
+  // Priority 2: config file written by install-statusline.js --consolidate
+  try {
+    const cfgPath = path.join(os.homedir(), '.anti-hall', 'consolidated-base.json');
+    const obj = readJSON(cfgPath);
+    if (obj && typeof obj.command === 'string' && obj.command.trim()) {
+      return obj.command.trim();
+    }
+  } catch { /* absent or malformed */ }
+  return null;
+}
+
+// Run a shell command with rawInput as stdin; return its stdout string (trailing
+// newlines stripped) or null on failure.  Mirrors statusline.js's runBaseCommand.
+function runConsolidatedBase(baseCmd, rawInput) {
+  try {
+    const isWin = process.platform === 'win32';
+    const shell = isWin ? 'cmd' : 'sh';
+    const shellFlag = isWin ? '/c' : '-c';
+    const result = spawnSync(shell, [shellFlag, baseCmd], {
+      input: rawInput || '',
+      encoding: 'utf8',
+      timeout: 3000,
+      maxBuffer: 256 * 1024,
+    });
+    if (result.error || result.status !== 0) return null;
+    return (result.stdout || '').replace(/[\r\n]+$/, '');
+  } catch {
+    return null;
+  }
+}
+
+// Build just the AH version chip segment (including the leading │ separator)
+// so it can be appended to either a base-command output (consolidated mode) or
+// the normal rich header line.  Returns '' when the plugin version is unreadable.
+function buildAhChip() {
+  const ahVersion = getAhVersion();
+  if (!ahVersion) return '';
+  const cache = getVersionCheckCache();
+  const level = cache ? semverUpdateLevel(ahVersion, cache.latest) : 'none';
+  let ahColor, ahPrefix;
+  if (level === 'major') {
+    ahColor = c.red;
+    ahPrefix = '★ ';
+  } else if (level === 'minor') {
+    ahColor = c.yellow;
+    ahPrefix = '★ ';
+  } else {
+    ahColor = c.dim;
+    ahPrefix = '';
+  }
+  return '  ' + c.dim + '│' + c.reset + '  ' + ahColor + ahPrefix + 'AH: V' + ahVersion + c.reset;
+}
+
 // ─── Statusline builder ─────────────────────────────────────────
 
 function generateStatusline() {
+  // ── Consolidated mode ──────────────────────────────────────────────────────
+  // If a base command is configured (env var or config file), run it with the
+  // same stdin the harness supplied, then append only the AH chip.  Fail-open:
+  // if the base command is absent or exits non-zero, fall through to the full
+  // rich render below so the user always sees SOMETHING.
+  const consolidatedBase = getConsolidatedBase();
+  if (consolidatedBase) {
+    const baseOut = runConsolidatedBase(consolidatedBase, getStdinRaw());
+    if (baseOut !== null) {
+      return baseOut + buildAhChip();
+    }
+    // base command failed — fall through to full rich render
+  }
+
   const git = getGitInfo();
   // Prefer model name from stdin, fallback to file-based detection.
   const modelName = getModelFromStdin() || getModelName();
@@ -606,23 +698,8 @@ function generateStatusline() {
   // (omitted when unreadable). Positioned between cost and email.
   // Update indicator: reads ~/.anti-hall/version-check.json; if a newer version
   // is available, prefixes "★ " and renders in red (major bump) or yellow (minor).
-  const ahVersion = getAhVersion();
-  if (ahVersion) {
-    const cache = getVersionCheckCache();
-    const level = cache ? semverUpdateLevel(ahVersion, cache.latest) : 'none';
-    let ahColor, ahPrefix;
-    if (level === 'major') {
-      ahColor = c.red;
-      ahPrefix = '★ ';
-    } else if (level === 'minor') {
-      ahColor = c.yellow;
-      ahPrefix = '★ ';
-    } else {
-      ahColor = c.dim;
-      ahPrefix = '';
-    }
-    header += '  ' + c.dim + '│' + c.reset + '  ' + ahColor + ahPrefix + 'AH: V' + ahVersion + c.reset;
-  }
+  const ahChip = buildAhChip();
+  if (ahChip) header += ahChip;
   // GSD phase chip — only renders when .planning/STATE.md exists. Uses
   // (non-bright) cyan so it sits visually between the subagents/cost chips.
   const gsd = getGsdPhase();

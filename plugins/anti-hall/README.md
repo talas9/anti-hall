@@ -56,6 +56,8 @@ claude --plugin-dir /path/to/anti-hall
 | `phase-tracker.js` | PreToolUse (Agent/Task) | Records every subagent spawn so the statusline shows live swarm activity. Never blocks. |
 | `agent-watchdog.js` | CLI helper (not a hook) | Heartbeat enforcer — scans `~/.anti-hall/agents/*.json` and reports stale/hung subagents; run manually by the orchestration skill. |
 | `task-tracker.js` | UserPromptSubmit | Injects task-list discipline (capture, prioritize, work in order) + a one-line freshness note when open/stale tasks exist. |
+| `limit-conserve-inject.js` | UserPromptSubmit | **Limit-conservation mode.** Injects a token-conservation nudge when context usage reaches `ANTIHALL_LIMIT_THRESHOLD` (default 85%). `ANTIHALL_LIMIT_CONSERVE`: `auto` (default) reads the OMC usage cache; `on` forces the nudge; `off` disables. Auto mode requires OMC; without it, manual on/off only. Skip-guard hatch: `limit-conserve`. |
+| `limit-conserve.js` | Shared helper (not a hook) | Reads the OMC usage cache and applies threshold logic; consumed by `limit-conserve-inject.js`. |
 | `task-guard.js` | Stop | Blocks once if the session ends with open tasks. |
 | `tasklist-guard.js` | Stop | Blocks when non-trivial work (≥ threshold file-mutating actions) wasn't tracked as tasks or lacks a fresh `.anti-hall-progress.md`; coexists with `task-guard` with its own independent block cap; capped + fail-open. |
 | `skip-guard.js` | Escape hatch (shared primitive) | TTL'd `~/.anti-hall/skip.json` user-override read by the guards; granular per-guard, and a broad `all` skip excludes the destructive git-guard (must be named explicitly). |
@@ -148,7 +150,7 @@ primitive — a TTL'd JSON marker at `~/.anti-hall/skip.json`, e.g.
 startup and fail-opens while it is in effect; the marker auto-expires (default 15 min) so a
 safety guard is never left silently disabled.
 
-- **Granular:** name a single guard (`"speculation-guard"`, `"tasklist-guard"`, …) or use
+- **Granular:** name a single guard (`"speculation-guard"`, `"tasklist-guard"`, `"limit-conserve"`, …) or use
   `"all"` to cover the noisy guards at once.
 - **Safe default:** a broad `"all"` skip does **not** cover the destructive `git-guard`
   (force-push / AI-credit trailer) — to skip that, the agent must name `"git-guard"`
@@ -318,7 +320,10 @@ Invoke via slash command:
 - **`/anti-hall:deadly-loop-multi`** — scaled-up deadly-loop: N Reviewer + N Critic
   pairs with diversified lenses, then dedup + synthesize (double / triple / quadruple).
 - **`/anti-hall:install-statusline`** — writes the statusLine setting (global by
-  default, per-project on request) and reminds you to restart.
+  default, per-project on request) and reminds you to restart. `--consolidate` merges
+  with an existing statusline (e.g., OMC HUD) instead of replacing it; base persisted
+  to `~/.anti-hall/consolidated-base.json`. Env: `ANTIHALL_STATUSLINE_BASE` pins the
+  base expression explicitly.
 - **`/anti-hall:doctor`** — health-check: confirms Node is found, every hook is
   present + syntax-valid, and the guards actually fire (live behavioral self-tests on
   e.g. git-guard / command-guard / swarm-guard / speculation-guard / tasklist-guard).
@@ -345,6 +350,12 @@ major version, plain dim when up-to-date (fail-open if no version-check cache ex
 Only if the rich renderer yields nothing does it fall back to a
 monorepo-aware renderer (`.gitmodules` / `.gsd/` / `.planning/`) or a **simple**
 `model | branch | dir | context%` line. Line 2 is an always-on phase/context bar. No emojis.
+
+**Consolidated mode (`--consolidate`):** pass `--consolidate` to merge with an existing
+`statusLine` (e.g., the OMC HUD) instead of replacing it. The existing base is detected
+from current settings or read from `ANTIHALL_STATUSLINE_BASE` (env), and is persisted to
+`~/.anti-hall/consolidated-base.json` for subsequent sessions. Use this mode when you
+already have another statusline and want anti-hall to extend it rather than overwrite it.
 
 ```bash
 # Find the installed plugin dir and run the Node installer. Claude Code installs a
@@ -430,6 +441,22 @@ claude --plugin-dir /path/to/anti-hall                                       # l
   users do not receive the update. Add a `CHANGELOG.md` entry.
 - **Keep hooks pure Node (built-ins only)** and fail-open, so they run unchanged on
   Windows, macOS, and Linux and never wedge a turn.
+
+### Recommended optional: oh-my-claudecode (OMC)
+
+[oh-my-claudecode](https://github.com/talas9/oh-my-claudecode) is a **recommended
+optional** dependency. anti-hall installs and runs fully standalone without it. Two
+features gain automatic behavior when OMC is installed:
+
+- **`limit-conserve` auto mode** — `limit-conserve-inject.js` reads the OMC usage
+  cache (`~/.anti-hall/omc-usage-cache.json`) to detect the live context percentage.
+  Without OMC, the hook operates in manual `on`/`off` mode only.
+- **Consolidated statusline** — `install-statusline --consolidate` merges the anti-hall
+  bar with the OMC HUD. The version chip in consolidated mode reads OMC session state.
+
+Without OMC, both features fall back gracefully (limit-conserve manual only; consolidated
+mode still works but requires `ANTIHALL_STATUSLINE_BASE` to specify the base). No errors,
+no breaking change.
 
 ### Recommended companion: graphify
 

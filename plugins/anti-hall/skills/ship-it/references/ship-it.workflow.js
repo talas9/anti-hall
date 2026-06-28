@@ -137,10 +137,11 @@ async function reviewerAgent(p) {
   if (!fableOff) {
     const r = await agent(reviewerBrief(p), {
       schema: VERDICT_SCHEMA, run_in_background: true,
-      label: p.label + ':reviewer', model: 'fable',
+      // TEMP(fable-disabled 2026-06-29): Anthropic disabled Fable; Reviewer runs on Opus until re-enabled — revert this 'opus' back to 'fable' then.
+      label: p.label + ':reviewer', model: 'opus',
     });
     if (r !== null) return r; // flagship succeeded
-    log('ship-it: Fable Reviewer unavailable for "' + p.label + '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
+    log('ship-it: Reviewer unavailable for "' + p.label + '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
   }
   // Fable✗ -> Opus Reviewer (divergent), per the availability fallback matrix.
   return agent(reviewerBrief(p), {
