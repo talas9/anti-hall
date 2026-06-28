@@ -37,6 +37,7 @@ Requires Node.js >= 18 on PATH; without it the hooks silently no-op. Updates via
 - [docs/KB-claude-codex.md](docs/KB-claude-codex.md): knowledge base on Claude Code hook contracts, prompting, and verified Claude Code internals (cmux subagent detection, macOS memory, statusline architecture).
 - [docs/KB.md](docs/KB.md): plugin knowledge base index (hooks, skills, design decisions).
 - [docs/KB-claude-workflow-orchestration.md](docs/KB-claude-workflow-orchestration.md): when/how to use programmatic multi-agent orchestration (the Workflow tool) vs a single/shallow agent — patterns, cost numbers, decision criteria; 14 sources (8 official Anthropic).
+- [docs/KB-codex-vs-opus-coding.md](docs/KB-codex-vs-opus-coding.md): Codex (GPT-5.5) vs Claude Opus 4.8 for coding — benchmark consensus, what each is best at, the "Codex=apply/Opus=think" framing (partial), and a recommended division of labor; 13 sources (Feb–Jun 2026).
 - [docs/CONTEXT-PRESERVATION-KB.md](docs/CONTEXT-PRESERVATION-KB.md): swarm-researched context-discipline KB (findings-externalization, compaction cadence, context-rot sweet spot).
 - [docs/TASK-WORK.md](docs/TASK-WORK.md): task-list + `.anti-hall-progress.md` work-tracking discipline.
 - [docs/TASKLIST-GUARD.md](docs/TASKLIST-GUARD.md): tasklist-guard usage, thresholds, and escape hatch.
@@ -62,6 +63,7 @@ All pure Node, fail-open. Registered in hooks.json.
 - [skip-guard.js](plugins/anti-hall/hooks/skip-guard.js): shared user-override escape-hatch primitive read by the guards — a TTL'd, granular `~/.anti-hall/skip.json` marker; a broad `all` skip excludes the destructive git-guard (it must be named explicitly).
 - [speculation-guard.js](plugins/anti-hall/hooks/speculation-guard.js): Stop — flags hedge-word speculation; confident inference-as-fact is the opt-in speculation-judge (Tier 3).
 - [speculation-judge.js](plugins/anti-hall/hooks/speculation-judge.js): Stop — opt-in LLM-evaluated speculation check (off by default).
+- [codex-nudge.js](plugins/anti-hall/hooks/codex-nudge.js): Stop (advisory) — nudges once/session for an independent Codex second-opinion review when substantial code shipped with no Codex review; off-switch ANTIHALL_CODEX_NUDGE=off.
 - [ship-it-guard.js](plugins/anti-hall/hooks/ship-it-guard.js): PreToolUse Write/Edit/MultiEdit — OPT-IN, default OFF (the only opt-in code-edit gate). With ANTIHALL_SHIPIT_GATE ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration/auth/.github/workflows/security) when no PLAN.md exists (repo root or .planning/PLAN.md). Enforces artifact existence only, conservative, fail-open; no effect when unset.
 - [graphify-session.js](plugins/anti-hall/hooks/graphify-session.js) / [graphify-reminder.js](plugins/anti-hall/hooks/graphify-reminder.js) / [graphify-guard.js](plugins/anti-hall/hooks/graphify-guard.js): query-the-graph-first priming, update reminder, and search guard (no-op without a graph).
 - [hooks.json](plugins/anti-hall/hooks/hooks.json): hook registration manifest.

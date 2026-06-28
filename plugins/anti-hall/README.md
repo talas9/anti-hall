@@ -63,6 +63,7 @@ claude --plugin-dir /path/to/anti-hall
 | `graphify-reminder.js` | Stop | One-time reminder to update the graph after real edits. |
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
 | `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
+| `codex-nudge.js` | Stop (advisory) | Nudges once/session for an independent Codex second-opinion review when substantial code shipped with no Codex review; off-switch ANTIHALL_CODEX_NUDGE=off. |
 | `ship-it-guard.js` | PreToolUse (Write/Edit/MultiEdit) | **OPT-IN, default OFF** — the only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root or `.planning/PLAN.md`). Enforces artifact existence only (not plan quality), conservative, fail-open. No effect when unset. |
 | `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `update`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
@@ -155,8 +156,8 @@ safety guard is never left silently disabled.
   `isSkipped` return false, so the guard stays **active**. A broken skip file must never
   silently disable protection.
 
-> **Five Stop hooks are registered** (`task-guard`, `graphify-reminder`, `speculation-guard`,
-> `speculation-judge`, `tasklist-guard`), all emitting the top-level `{"decision":"block","reason":...}`
+> **Six Stop hooks are registered** (`task-guard`, `graphify-reminder`, `speculation-guard`,
+> `speculation-judge`, `tasklist-guard`, `codex-nudge`), all emitting the top-level `{"decision":"block","reason":...}`
 > Stop schema. Claude Code does not merge `reason` strings across Stop hooks: if multiple fire on
 > the same Stop, all block but only one reason is shown that turn. `task-guard` is registered
 > **first** because open-task discipline is higher-stakes, so its reason wins precedence.

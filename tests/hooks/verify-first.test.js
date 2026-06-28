@@ -146,9 +146,10 @@ test('the new "DONE = verified against the AGREED acceptance" nudge is reachable
   }
 });
 
-test('NUDGES array has exactly 18 entries (count asserted via the source)', () => {
+test('NUDGES array has exactly 20 entries (count asserted via the source)', () => {
   // Lock the rotation size: the per-turn pick is SHA-1(stdin) % NUDGES.length,
-  // so the count is load-bearing. 0.30.0 added the done-bar/acceptance nudge -> 18.
+  // so the count is load-bearing. 0.30.0 added the done-bar/acceptance nudge -> 18;
+  // 0.36.0 added the distribute-models + shallow+wide nudges -> 20.
   const path = require('node:path');
   const fs = require('node:fs');
   const src = fs.readFileSync(
@@ -159,7 +160,7 @@ test('NUDGES array has exactly 18 entries (count asserted via the source)', () =
   assert.ok(arr, 'NUDGES array literal not found in verify-first.js');
   // Count the quoted string entries (each nudge is a "..." line ending in a comma).
   const entries = arr[1].split('\n').filter((l) => /^\s*"/.test(l.trim()) || /^\s*"/.test(l));
-  assert.strictEqual(entries.length, 18, `expected 18 nudges, found ${entries.length}`);
+  assert.strictEqual(entries.length, 20, `expected 20 nudges, found ${entries.length}`);
 });
 
 test('FAIL-OPEN: empty stdin -> exit 0', () => {

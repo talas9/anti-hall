@@ -88,6 +88,7 @@ argued with.
 | `graphify-session` | SessionStart | Reminds to query the graph first when a `graphify-out/` graph exists |
 | `graphify-guard` | PreToolUse/Grep+Glob+Bash | Blocks the *first* code-navigation search of a session and redirects to `/graphify query` when a graph exists. Segment/verb-aware — a substring like `echo /graphify && rg secret` doesn't exempt the search. Block-once per session; second call always allowed |
 | `graphify-reminder` | Stop | One-time soft block reminding to keep the graph updated |
+| `codex-nudge` | Stop (advisory) | Nudges once/session for an independent Codex second-opinion review when substantial code shipped with no Codex review; off-switch ANTIHALL_CODEX_NUDGE=off |
 | `skip-guard` | Escape hatch (shared) | TTL'd `~/.anti-hall/skip.json` user-override read by the guards; granular per-guard, and a broad `all` skip excludes the destructive `git-guard` (must be named explicitly) |
 
 **🔵 On-demand (the skills).** Invoke as `/anti-hall:<name>`:

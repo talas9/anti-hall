@@ -145,6 +145,29 @@ function tasklistTest() {
 }
 tasklistTest() ? ok('tasklist-guard blocks untracked work (4 edits, no tasks, no progress file)') : bad('tasklist-guard did NOT block untracked work');
 
+// codex-nudge: Stop-hook advisory that nudges for a Codex second opinion when a
+// session shipped >= MIN substantial code-file edits with no Codex review. Build a
+// throwaway transcript of 3 Edit tool_uses on .ts files and no codex spawn.
+function codexNudgeTest() {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cx-'));
+  const tp = path.join(tdir, 't.jsonl');
+  try {
+    const lines = [];
+    for (const f of ['a.ts', 'b.ts', 'c.ts']) {
+      lines.push(JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', id: 'toolu_' + f, input: { file_path: '/x/' + f } }] },
+      }));
+    }
+    fs.writeFileSync(tp, lines.join('\n') + '\n');
+    const r = runHook('codex-nudge.js', { transcript_path: tp, session_id: 'doctor-cx-' + Date.now() });
+    return /"decision"\s*:\s*"block"/.test(r.out);
+  } finally {
+    try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+codexNudgeTest() ? ok('codex-nudge flags substantial code change with no Codex review') : bad('codex-nudge did NOT flag uncovered code change');
+
 // model-routing-guard: blocks a mechanical task pinned to a flagship model (row 1);
 // allows a benign spawn with no model specified and no mechanical signals (row 5).
 function mrg(payload) {

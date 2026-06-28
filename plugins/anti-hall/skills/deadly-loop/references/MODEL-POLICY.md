@@ -6,6 +6,24 @@
      own references/ copy, and symlinks are stripped on plugin install. Update
      BOTH copies together so they stay byte-identical. -->
 
+## Everyday agent routing (main-agent policy)
+
+This governs the MAIN agent's everyday model choices (distinct from the TRIO debate roster below, which deadly-loop/ship-it read). Route by task SHAPE, and set `model` EXPLICITLY on every spawn — an omitted model inherits the orchestrator (a flagship), and a fan-out of omitted/Opus seats silently becomes an all-flagship swarm that exhausts the usage limit.
+
+| Task shape | Model | Why |
+|---|---|---|
+| Planning, architecture, design, ambiguous-requirement reasoning, design-level review | **opus** | judgment/coherence; leads repo-scale SWE-bench Pro |
+| Correctness / subtle-bug review, second opinion on substantial code | **Codex** (`codex:codex-rescue`) | off-by-one / races / low-level bugs are Codex's strength; does NOT consume the Claude usage limit |
+| Implementation from a ready plan, mechanical edits | **sonnet** | convention-aware, far cheaper than Opus at scale |
+| Trivial leaf / file-navigation / cheap lookups | **haiku** | cheapest; sufficient |
+
+- **Codex second opinion is ALWAYS warranted on substantial code changes** (the `codex-nudge` Stop hook reminds the main agent; the deadly-loop/ship-it Critic seat already enforces it inside those skills). Keep the architecture/design lens on Opus — the two are complementary.
+- **In a Workflow, distribute models across stages/lenses** — never default every `agent()` to Opus. The model-routing-guard hook does NOT police models inside a workflow review fan-out (it exempts review tasks, and workflow-spawn advisories are not surfaced to the orchestrator), so distribution is the SCRIPT AUTHOR's responsibility.
+- **Route SMART, not blindly — weigh BOTH limits.** Codex has its OWN usage limit; don't treat "use Codex" as an unconditional rule. If Codex is unavailable or rate-limited, DEGRADE immediately to a cheap Claude (Sonnet) so work continues — never strand the main agent. Do NOT retry Codex every turn: re-attempt only after the reset/`retry-after` time Codex reports, or — if none is given — after a backoff (give it time), not on the next turn. (deadly-loop/ship-it already gate the Critic seat on a `codexUp` probe and degrade to an Opus persona.)
+- See `docs/KB-codex-vs-opus-coding.md` for the evidence base; the "Codex=apply/Opus=think" split is a routing heuristic, not a capability wall.
+
+---
+
 This file defines the three-agent ("TRIO") debate roster used by the
 `deadly-loop` and `ship-it` skills. Both skills MUST read this before spawning
 any debate round so the model selection and spawn mechanics are correct and

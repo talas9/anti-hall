@@ -6,6 +6,22 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.36.0
+
+**Codex everyday-routing + Workflow model-distribution discipline + new `codex-nudge` advisory hook.**
+
+### New hook: `codex-nudge` (Stop, advisory)
+A loop-safe, fail-open Stop hook that nudges ONCE per session to get an independent OpenAI-Codex second opinion when the session shipped a substantial code change (>= `ANTIHALL_CODEX_NUDGE_MIN`, default 3 code-file edits) with no Codex review (no `codex:codex-rescue` spawn / codex skill). Mechanizes the everyday-routing policy for the MAIN agent (the deadly-loop/ship-it Critic seat already covers those skills). Codex is the cross-model correctness reviewer (off-by-one, races, subtle bugs); Opus keeps architecture/design review. Deduped on the edited-file signature, hard cap 2 nudges/session. Off-switch `ANTIHALL_CODEX_NUDGE=off`; skip-guard hatch `codex-nudge`. 10 tests + doctor smoke test. Stop hooks: 5 -> 6.
+
+### Everyday-routing + Workflow model-distribution discipline
+`verify-first-full.js` gains orchestration rules M (shallow+wide; a subagent is a worker that does not re-delegate; lift 3+ nested/parallel spawns into a deterministic Workflow; Explore for read-only) and N (distribute models per seat — implementation->sonnet, correctness/verify review->Codex, planning/architecture->opus; NEVER an all-Opus fan-out; the model-routing guard does NOT police models inside a workflow review fan-out, so it is an authoring responsibility), a `model-routing` ALWAYS-APPLY bullet, and two per-turn nudges. Reconciled against a 13-source Codex-vs-Opus coding KB (`docs/KB-codex-vs-opus-coding.md`) + the Workflow KB (`docs/KB-claude-workflow-orchestration.md`).
+
+### Fix: ship-it build seats set an explicit model
+`ship-it.workflow.js` implementation seats omitted `model` — under strict model-routing (default since 0.35.0) a mechanical omitted-model spawn is BLOCKED, so the build could self-block, and an omitted model inherits the flagship orchestrator. Build seats now set `model: phase.model || 'sonnet'` (implementation -> Sonnet per the KB; override per phase).
+
+### MODEL-POLICY: everyday routing section
+`skills/MODEL-POLICY.md` (+ the deadly-loop copy) gains an "Everyday agent routing" section: Codex = second-opinion/correctness review (always) + bounded code-apply/terminal/migration; Opus = planning/architecture/design + design-level review; Sonnet = implementation; Haiku = trivial/nav. The TRIO debate roster is unchanged.
+
 ## 0.35.1
 
 **ship-it Workflow Fable→Opus availability fallback (bug fix) + Workflow orchestration KB.**

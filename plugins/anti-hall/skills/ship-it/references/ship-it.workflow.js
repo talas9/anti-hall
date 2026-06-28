@@ -203,14 +203,23 @@ async function main() {
 
     // A group of 1 is a plain inline build (no parallel wrapper, no swarm overhead).
     let built;
+    // Implementation seats run on Sonnet EXPLICITLY (not the inherited flagship):
+    //   (1) per the everyday-routing policy, code implementation from a ready plan is a
+    //       Sonnet-shaped task — convention-aware, far cheaper than Opus at scale;
+    //   (2) an OMITTED model inherits the orchestrator (a flagship) AND, under strict
+    //       model-routing (default since 0.35.0), a mechanical omitted-model spawn is
+    //       BLOCKED — so an explicit model is required to avoid self-blocking the build.
+    // Override per phase by setting phase.model in the plan if a seat needs Opus/Codex.
     if (group.length === 1) {
       built = [await agent(buildBrief(group[0]), {
         schema: RESULT_SCHEMA, run_in_background: true, label: group[0].label,
+        model: group[0].model || 'sonnet',
       })];
     } else {
       // BARRIER fan-out: all disjoint phases finish before we proceed.
       built = await parallel(group.map((p) => () => agent(buildBrief(p), {
         schema: RESULT_SCHEMA, run_in_background: true, label: p.label,
+        model: p.model || 'sonnet',
       })));
     }
     group.forEach((p, i) => { results[p.label] = { build: built[i] }; });
