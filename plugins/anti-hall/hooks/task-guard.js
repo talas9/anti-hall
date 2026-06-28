@@ -375,11 +375,31 @@ function agentsRunning(freshMs) {
   return false;
 }
 
+// normPriority — normalize a raw priority value to a trimmed string or null.
+// Non-string/blank collapses to null (treated as missing → actionable P1).
+function normPriority(p) {
+  if (p == null) return null;
+  const s = String(p).trim();
+  return s || null;
+}
+
+// isActionablePriority — returns true when a task's priority should trigger
+// idle-neglect nagging. P0/P1 and missing/unknown = actionable (fail-open: never
+// under-nag a real high-priority task). Only an EXPLICIT P2 (or "low"/"deferred")
+// is treated as non-nagging backlog. Garbage/unrecognized values → actionable.
+function isActionablePriority(p) {
+  if (p == null || p === '') return true; // missing → treat as P1
+  const s = String(p).trim().toLowerCase();
+  return s !== 'p2' && s !== 'low' && s !== 'deferred';
+}
+
 // classifyOpen(openTasks) — split open tasks into ACTIONABLE-NOW vs the rest.
 // ACTIONABLE NOW = status pending AND unowned (no owner, or owner is the main
 // thread) AND no OPEN blocker (every blockedBy id is either absent from the map
-// or already in a done/completed state). in_progress / owned / blocked tasks are
-// NOT actionable — the orchestrator is either working them or genuinely waiting.
+// or already in a done/completed state) AND priority P0/P1 (missing → P1).
+// P2/low/deferred tasks are NON-NAGGING backlog and never trigger idle-neglect.
+// in_progress / owned / blocked tasks are NOT actionable — the orchestrator is
+// either working them or genuinely waiting.
 function classifyOpen(openTasks, taskMap) {
   // Build sets of (a) ids present in the map and (b) ids that are NOT done (so a
   // blocker pointing at them is "open"). A blocker whose id is NOT in the map at
@@ -410,6 +430,9 @@ function classifyOpen(openTasks, taskMap) {
       return notDone.has(k) || !known.has(k);
     });
     if (hasOpenBlocker) continue;
+    // Priority filter: only P0/P1 (or missing) tasks trigger idle-neglect.
+    // P2/low/deferred is non-nagging backlog — never count toward idle-neglect.
+    if (!isActionablePriority(t.priority)) continue;
     actionable.push(t);
   }
   return actionable;
@@ -482,6 +505,10 @@ function parseTasksFromFile(filePath) {
               // (i.e. always actionable when pending).
               owner: normOwner(todo.owner),
               blockedBy: normBlockedBy(todo.blockedBy),
+              priority: normPriority(
+                (todo.metadata != null && todo.metadata.priority != null)
+                  ? todo.metadata.priority : todo.priority
+              ),
             });
           }
         }
@@ -500,8 +527,14 @@ function parseTasksFromFile(filePath) {
         // still classified correctly.
         const owner = normOwner(inp.owner);
         const blockedBy = normBlockedBy(inp.blockedBy);
+        // Priority: check inp.metadata.priority first (harness convention), then
+        // inp.priority as a fallback. Missing/null → null (treated as P1 later).
+        const priority = normPriority(
+          (inp.metadata != null && inp.metadata.priority != null)
+            ? inp.metadata.priority : inp.priority
+        );
         if (toolUseId) {
-          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy });
+          provisionalMap.set(toolUseId, { toolUseId, content, status, owner, blockedBy, priority });
         }
         continue;
       }
@@ -515,6 +548,17 @@ function parseTasksFromFile(filePath) {
                  : null;
         if (id != null) {
           const existing = taskMap.get(id) || { id, content: id };
+          // Priority: only overwrite when the update explicitly carries the field
+          // (either inp.priority or inp.metadata.priority). A status-only update
+          // must not clear a priority that was set at TaskCreate time.
+          const hasPriorityUpdate = inp.priority !== undefined ||
+            (inp.metadata != null && inp.metadata.priority !== undefined);
+          const updatedPriority = hasPriorityUpdate
+            ? normPriority(
+                (inp.metadata != null && inp.metadata.priority != null)
+                  ? inp.metadata.priority : inp.priority
+              )
+            : (existing.priority || null);
           taskMap.set(id, {
             id: existing.id,
             content: existing.content,
@@ -524,6 +568,7 @@ function parseTasksFromFile(filePath) {
             owner: inp.owner !== undefined ? normOwner(inp.owner) : (existing.owner || ''),
             blockedBy: inp.blockedBy !== undefined ? normBlockedBy(inp.blockedBy)
                                                     : (existing.blockedBy || []),
+            priority: updatedPriority,
           });
         }
         continue;
@@ -544,6 +589,7 @@ function parseTasksFromFile(filePath) {
       taskMap.set(key, {
         id: key, content: rec.content, status: rec.status,
         owner: rec.owner || '', blockedBy: rec.blockedBy || [],
+        priority: rec.priority || null,
       });
     } else if (!existing.content || existing.content === key) {
       // Backfill subject from provisional record (update may have arrived first).
@@ -551,6 +597,7 @@ function parseTasksFromFile(filePath) {
         id: key, content: rec.content, status: existing.status,
         owner: existing.owner || rec.owner || '',
         blockedBy: (existing.blockedBy && existing.blockedBy.length) ? existing.blockedBy : (rec.blockedBy || []),
+        priority: existing.priority || rec.priority || null,
       });
     }
     // If existing already has a richer status from TaskUpdate, leave it.

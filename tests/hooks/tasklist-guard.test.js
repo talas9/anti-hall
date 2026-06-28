@@ -42,6 +42,18 @@ function taskCreate(id, subject, status) {
   }];
   return lines;
 }
+// Like taskCreate but sets priority via metadata (harness convention: input.metadata.priority).
+function taskCreateP(id, subject, status, priority) {
+  const tuId = 'toolu_tc' + id;
+  const lines = [{
+    type: 'assistant',
+    message: { role: 'assistant', content: [{ type: 'tool_use', name: 'TaskCreate', id: tuId, input: { subject, status, metadata: { priority } } }] },
+  }, {
+    type: 'user',
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: tuId, content: 'Task #' + id + ' created successfully: ' + subject }] },
+  }];
+  return lines;
+}
 function taskUpdate(id, status) {
   return {
     type: 'assistant',
@@ -422,3 +434,73 @@ for (const [label, cmd] of BASH_NOMATCH) {
     } finally { h.cleanup(); }
   });
 }
+
+// ---- PRIORITY AWARENESS ----
+
+test('PRIORITY (c): all-P2 in_progress + one P0 actively-in_progress (no live agent, fresh progress) -> no stale-multi block', () => {
+  // Scenario: owner is working a P0; two P2/backlog tasks are also in_progress.
+  // Only P0/P1 count toward the stale-multi threshold. P0 count = 1, which is
+  // the healthy single-in_progress invariant (FIX 2) → no block.
+  const h = makeHome();
+  try {
+    writeProgress(h.home); // fresh + tracked
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreateP(1, 'critical feature', 'pending', 'P0'),
+      ...taskCreateP(2, 'backlog item A', 'pending', 'P2'),
+      ...taskCreateP(3, 'backlog item B', 'pending', 'P2'),
+      taskUpdate(1, 'in_progress'),
+      taskUpdate(2, 'in_progress'),
+      taskUpdate(3, 'in_progress'),
+    ]);
+    // No live agent heartbeat; but inProgressCount (P0/P1 only) = 1 → healthy.
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r),
+      `P2 in_progress tasks must not count toward stale-multi; P0 alone is healthy; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PRIORITY: all-P2 in_progress (no P0/P1), no live agent, fresh progress -> no stale-multi block', () => {
+  // Pure P2 backlog in_progress — inProgressCount = 0, well under the > 1 threshold.
+  const h = makeHome();
+  try {
+    writeProgress(h.home);
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreateP(1, 'deferred chore A', 'pending', 'P2'),
+      ...taskCreateP(2, 'deferred chore B', 'pending', 'P2'),
+      taskUpdate(1, 'in_progress'),
+      taskUpdate(2, 'in_progress'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r),
+      `all-P2 in_progress must not trigger stale-multi; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PRIORITY: two P0/P1 in_progress, no live agent, fresh progress -> stale-multi block still fires', () => {
+  // Confirm that priority filter doesn't suppress the stale-multi check when two
+  // HIGH-priority tasks are genuinely dangling with no agent running.
+  const h = makeHome();
+  try {
+    writeProgress(h.home);
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreateP(1, 'urgent task A', 'pending', 'P0'),
+      ...taskCreateP(2, 'urgent task B', 'pending', 'P1'),
+      taskUpdate(1, 'in_progress'),
+      taskUpdate(2, 'in_progress'),
+    ]);
+    // inProgressCount = 2 (both P0/P1) and no live agent → stale-multi block.
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r),
+      `two P0/P1 in_progress with no live agent must still trigger stale-multi; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /in_progress but NO background agent is live|STALLED/i);
+  } finally {
+    h.cleanup();
+  }
+});

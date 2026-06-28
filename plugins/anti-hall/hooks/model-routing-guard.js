@@ -60,6 +60,14 @@ const FLAGSHIP_MODELS = new Set(['opus', 'fable']);
 // NOT exempt (keyword-stuffing the prompt must not buy a flagship pass).
 const ROLE_WORD_RE = /\b(reviewer|auditor|critic|debate|deadly[- ]?loop)\b/i;
 
+// Research/read-only signals for the Row-6 Explore-type advisory. Matched against
+// the bounded corpus (raw, case-insensitive) — no tokenizer needed because the
+// regex is word-boundary anchored (\b) so substring false hits (e.g. "searching"
+// matching "search") are already blocked by the word-boundary rules.
+// "look up" / "read-only" are multi-word; read[ -]?only also matches "readonly".
+const RESEARCH_RE =
+  /\b(research|investigate|find|search|audit|survey|read[ -]?only|locate|map|gather|explore|scout|look\s+up|trace|reconnaissance)\b/i;
+
 // Mechanical signals -> haiku (execution-only). Multi-word phrases are checked as
 // adjacent tokens after tokenization (see hasToken / hasPhrase).
 const MECHANICAL = [
@@ -244,6 +252,25 @@ function main() {
     advise(
       'MODEL-ROUTING (advisory): this looks planning-shaped (review/plan/audit/' +
       'design) but runs on haiku — consider opus or fable for deeper reasoning.'
+    );
+  }
+
+  // Row 6: research/read-only-shaped ∧ generic agent => advisory (suggest Explore).
+  //
+  // A general-purpose spawn carries the Agent tool and CAN recurse (general-purpose
+  // → general-purpose chains waste ~7x tokens by depth 5). The Explore agent type
+  // has WebSearch/WebFetch but NO Agent tool, so it structurally CANNOT recurse.
+  // This is advisory-only: a research spawn on general-purpose is legitimate, just
+  // suboptimal. Only fires for generic agents (subagent_type '' or 'general-purpose');
+  // named types (Explore, codex:*, custom) are already non-generic and skip this row.
+  if (isGenericAgent && RESEARCH_RE.test(corpus)) {
+    advise(
+      'AGENT-ROUTING (advisory): this spawn looks research/read-only-shaped but uses ' +
+      "subagent_type:'general-purpose', which carries the Agent tool and can recurse " +
+      '(general-purpose → general-purpose chains waste ~7x tokens by depth 5). ' +
+      "Consider re-dispatching as subagent_type:'Explore' — it has WebSearch/WebFetch " +
+      'but NO Agent tool, so it structurally cannot recurse. Only keep general-purpose ' +
+      'if the task genuinely needs to write files or spawn sub-agents.'
     );
   }
 

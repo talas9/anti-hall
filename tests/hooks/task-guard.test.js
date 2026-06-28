@@ -288,3 +288,71 @@ test('FAIL-OPEN: malformed JSON -> no block', () => {
     h.cleanup();
   }
 });
+
+// ---- PRIORITY AWARENESS ----
+
+test('PRIORITY (a): only-P2 pending tasks -> NO idle-neglect (P2 is non-nagging backlog)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'low prio chore', status: 'pending', priority: 'P2' },
+        { id: '2', content: 'another backlog item', status: 'pending', priority: 'P2' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    // P2-only tasks must NOT trigger idle-neglect. They may still produce a
+    // generic nudge (the tasks ARE open), but the sharp IDLE NEGLECT accusation
+    // must not appear because no P0/P1 actionable task is pending.
+    assert.ok(!isIdleNeglect(r), `P2-only tasks must not trigger idle-neglect; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PRIORITY (b): P1 pending unowned unblocked task -> idle-neglect still fires', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'important work', status: 'pending', priority: 'P1' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isIdleNeglect(r), `P1 task must still trigger idle-neglect; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PRIORITY (b-metadata): P0 via metadata.priority -> idle-neglect fires', () => {
+  // Verifies that priority set in inp.metadata.priority (harness convention) is
+  // captured correctly and treated as actionable.
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'critical task', status: 'pending', metadata: { priority: 'P0' } },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isIdleNeglect(r), `P0 via metadata.priority must trigger idle-neglect; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('PRIORITY: missing priority treated as P1 (fail-open) -> idle-neglect fires', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([
+        { id: '1', content: 'unprioritized work', status: 'pending' },
+      ]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isIdleNeglect(r), `missing priority must default to actionable -> idle-neglect; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});

@@ -299,6 +299,21 @@ function main() {
   process.exit(0);
 }
 
+// normPriority — normalize a raw priority value to a trimmed string or null.
+function normPriority(p) {
+  if (p == null) return null;
+  const s = String(p).trim();
+  return s || null;
+}
+
+// isActionablePriority — true for P0/P1 and missing/unknown (fail-open).
+// Only explicit P2/low/deferred is treated as non-nagging backlog.
+function isActionablePriority(p) {
+  if (p == null || p === '') return true;
+  const s = String(p).trim().toLowerCase();
+  return s !== 'p2' && s !== 'low' && s !== 'deferred';
+}
+
 function readThreshold() {
   const v = parseInt(process.env.ANTIHALL_TASKLIST_WORK_THRESHOLD || '', 10);
   return Number.isFinite(v) && v > 0 ? v : DEFAULT_WORK_THRESHOLD;
@@ -425,7 +440,11 @@ function scanTranscript(filePath) {
         const toolUseId = tu.id || '';
         const content = inp.subject || inp.title || inp.content || inp.description || toolUseId;
         const status = inp.status || 'pending';
-        if (toolUseId) provisionalMap.set(toolUseId, { content, status });
+        const priority = normPriority(
+          (inp.metadata != null && inp.metadata.priority != null)
+            ? inp.metadata.priority : inp.priority
+        );
+        if (toolUseId) provisionalMap.set(toolUseId, { content, status, priority });
         continue;
       }
 
@@ -439,10 +458,19 @@ function scanTranscript(filePath) {
           : null;
         if (id != null) {
           const existing = taskMap.get(id) || { id, content: id };
+          const hasPriorityUpdate = inp.priority !== undefined ||
+            (inp.metadata != null && inp.metadata.priority !== undefined);
+          const updatedPriority = hasPriorityUpdate
+            ? normPriority(
+                (inp.metadata != null && inp.metadata.priority != null)
+                  ? inp.metadata.priority : inp.priority
+              )
+            : (existing.priority || null);
           taskMap.set(id, {
             id: existing.id,
             content: existing.content,
             status: inp.status || existing.status || 'pending',
+            priority: updatedPriority,
           });
         }
         continue;
@@ -455,9 +483,9 @@ function scanTranscript(filePath) {
     const key = String(resultIdMap.get(toolUseId) || toolUseId);
     const existing = taskMap.get(key);
     if (!existing) {
-      taskMap.set(key, { id: key, content: rec.content, status: rec.status });
+      taskMap.set(key, { id: key, content: rec.content, status: rec.status, priority: rec.priority || null });
     } else if (!existing.content || existing.content === key) {
-      taskMap.set(key, { id: key, content: rec.content, status: existing.status });
+      taskMap.set(key, { id: key, content: rec.content, status: existing.status, priority: existing.priority || rec.priority || null });
     }
   }
 
@@ -465,13 +493,21 @@ function scanTranscript(filePath) {
   // and must NOT trigger a block. Only MORE THAN ONE in_progress at once is a
   // smell (work fragmented / tasks left dangling). So count in_progress and set
   // the sub-cause only when the count exceeds one.
-  let inProgressCount = 0;
+  //
+  // PRIORITY FILTER: only P0/P1 (or missing) in_progress tasks count toward the
+  // stale-multi check. A pile of P2/deferred in_progress tasks while a P0 is
+  // actively worked is fine — don't nag about low-priority backlog being in_progress.
+  let inProgressCount = 0; // only P0/P1 in_progress for stale-multi check
   const openTaskIds = [];
   for (const task of taskMap.values()) {
     const s = (task.status || '').toLowerCase();
     if (s === 'in_progress' || s === 'in-progress') {
-      inProgressCount++;
+      // All in_progress go into openTaskIds (for dedup hash), but only P0/P1
+      // count toward the stale-multi threshold that triggers a block.
       openTaskIds.push(String(task.id));
+      if (isActionablePriority(task.priority)) {
+        inProgressCount++;
+      }
     } else if (s === 'pending') {
       openTaskIds.push(String(task.id));
     }

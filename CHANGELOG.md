@@ -6,6 +6,25 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.37.0
+
+**Version awareness + priority-aware guards + anti-nesting backstop + cmux/OMC KBs.**
+
+### New: SessionStart `version-alert` hook
+`version-alert.js` (+ detached `version-alert-refresh.js`): a NON-BLOCKING SessionStart check that alerts when a newer anti-hall version is available. Reads the running version vs a cached latest (`~/.anti-hall/version-check.json`); if behind, emits a one-line "vX available — /anti-hall:update". When the cache is absent/stale it spawns a DETACHED, unref'd `git ls-remote --tags` refresh and stays silent that session — SessionStart never blocks or does synchronous network. Off-switch `ANTIHALL_VERSION_ALERT=off`; skip-guard hatch. SessionStart hooks 2 -> 3. 8 tests.
+
+### Statusline: version chip with update indicator
+The statusline shows `AH: Vx.y.z` between the cost chip and the email segment. When the version-check cache shows a newer release: `★ AH: …` in YELLOW for a new MINOR, RED for a new MAJOR; plain dim otherwise (fail-open if no cache).
+
+### Priority-aware Stop guards (less nag noise)
+`task-guard` (idle-neglect) and `tasklist-guard` (multi-in_progress) now read each task's `metadata.priority` and only chase ACTIONABLE P0/P1 work — a backlog of P2/deferred tasks no longer triggers a nudge, and P2 in_progress doesn't count toward the stale-multi check. Missing/garbage priority is treated as actionable (P1) so a real high-priority task is never under-nagged. Encodes "priority = check the top first/more often, never neglect the rest, don't nag about backlog."
+
+### Anti-nesting backstop in `model-routing-guard`
+A new advisory fires when research/read-only-shaped work is spawned as `general-purpose` (carries the Agent tool, can recurse) — nudging to use the `Explore` agent type (has WebSearch/WebFetch but NO Agent tool, so it structurally cannot nest). Advisory only; the structural complement to rule M's anti-deep-nesting discipline.
+
+### New KBs
+`docs/KB-cmux.md` (cmux terminal multiplexer) + `docs/KB-omc.md` (oh-my-claudecode + the cmux+OMC+Claude stack). Both agnostic; registered in llms.txt + docs/KB.md.
+
 ## 0.36.1
 
 **Fix: `tasklist-guard` multiple-in_progress false-positive was crippling parallel orchestration.**

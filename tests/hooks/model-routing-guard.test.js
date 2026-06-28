@@ -422,6 +422,78 @@ test('AGENT tool_name: row-2 default strict -> BLOCK (strict is now default)', (
   } finally { h.cleanup(); }
 });
 
+// ------------------------------------------------------------ Row 6 (Explore advisory)
+
+test('ROW 6 (a): research-shaped + general-purpose + no model -> advisory mentions Explore', () => {
+  const h = makeHome();
+  try {
+    // No mechanical signals -> Row 2 (strict) does NOT fire (isMechanicalOnly=false).
+    // No complex signals -> Row 4 does NOT fire. Row 6 fires on "investigate"+"find".
+    const r = testHook(HOOK, payload({
+      subagent_type: 'general-purpose',
+      description: 'investigate the codebase structure',
+      prompt: 'research and find all usages of the deprecated API, then gather results',
+    }), { home: h.home });
+    assertAdvisory(r, /Explore/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /AGENT-ROUTING/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 6 (b): research-shaped + Explore subagent_type -> NO advisory (silent allow)', () => {
+  const h = makeHome();
+  try {
+    // Explore is a named/custom type (isGenericAgent=false) -> Row 6 skips entirely.
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'Explore',
+      description: 'investigate the codebase structure',
+      prompt: 'search and find all usages of the deprecated API',
+    }), { home: h.home });
+    assertSilentAllow(r);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 6 (c): non-research task + general-purpose -> NO Explore advisory', () => {
+  const h = makeHome();
+  try {
+    // "implement"/"write"/"add" are not research keywords -> RESEARCH_RE won't match.
+    const r = testHook(HOOK, payload({
+      model: 'sonnet',
+      subagent_type: 'general-purpose',
+      description: 'implement the new feature',
+      prompt: 'write the code to add user authentication with JWT tokens',
+    }), { home: h.home });
+    assertSilentAllow(r);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 6 (d): research-shaped + codex:codex-rescue -> NO advisory', () => {
+  const h = makeHome();
+  try {
+    // codex:codex-rescue is a named/custom type (isGenericAgent=false) -> Row 6 skips.
+    const r = testHook(HOOK, payload({
+      model: 'sonnet',
+      subagent_type: 'codex:codex-rescue',
+      description: 'investigate and research the bug',
+      prompt: 'scout the codebase to locate the failing module',
+    }), { home: h.home });
+    assertSilentAllow(r);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 6 (e): FAIL-OPEN: null tool_input on research corpus -> exit 0', () => {
+  const h = makeHome();
+  try {
+    // Malformed payload (tool_input: null) must not throw — fail-open per contract.
+    const r = testHookRaw(HOOK, JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Agent',
+      tool_input: null,
+    }), { home: h.home });
+    assert.strictEqual(r.status, 0);
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------- hooks.json ORDER
 
 test('ORDER: model-routing-guard is FIRST (before swarm-guard) in BOTH Agent and Task', () => {

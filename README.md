@@ -89,6 +89,7 @@ argued with.
 | `graphify-guard` | PreToolUse/Grep+Glob+Bash | Blocks the *first* code-navigation search of a session and redirects to `/graphify query` when a graph exists. Segment/verb-aware — a substring like `echo /graphify && rg secret` doesn't exempt the search. Block-once per session; second call always allowed |
 | `graphify-reminder` | Stop | One-time soft block reminding to keep the graph updated |
 | `codex-nudge` | Stop (advisory) | Nudges once/session for an independent Codex second-opinion review when substantial code shipped with no Codex review; off-switch ANTIHALL_CODEX_NUDGE=off |
+| `version-alert` | SessionStart (non-blocking) | Alerts when a newer anti-hall version is available; reads running version vs a cached latest (`~/.anti-hall/version-check.json`); emits a one-line "vX available — /anti-hall:update" if behind. Cache refresh is DETACHED + unref'd — SessionStart never blocks on network. Off-switch: `ANTIHALL_VERSION_ALERT=off` |
 | `skip-guard` | Escape hatch (shared) | TTL'd `~/.anti-hall/skip.json` user-override read by the guards; granular per-guard, and a broad `all` skip excludes the destructive `git-guard` (must be named explicitly) |
 
 **🔵 On-demand (the skills).** Invoke as `/anti-hall:<name>`:
@@ -151,7 +152,7 @@ A live **two-line** statusline the plugin renders itself — installable globall
 [███████████◐────────] 56% context
 ```
 
-- **Line 1 — rich & dynamic:** project, git (branch / worktree / stash / staged-modified-untracked / ahead-behind), model, effort, subagent count, session duration, context-window %, cost, and the GSD `.planning` phase when present.
+- **Line 1 — rich & dynamic:** project, git (branch / worktree / stash / staged-modified-untracked / ahead-behind), model, effort, subagent count, session duration, context-window %, cost, and the GSD `.planning` phase when present. Also shows an **anti-hall version chip** (`AH: Vx.y.z`) between the cost and email segments; `★` prefix in YELLOW for a new minor version, RED for a new major version, plain dim when up-to-date (fail-open if no cache).
 - **Line 2 — always-on, three smart tiers:**
   1. **During an orchestration run** → live phase progress bar (`P2 · build api 2/5 · 3 agents`)
   2. **While a swarm is active** (auto, zero setup) → animated `orchestrating · N agents` (powered by `phase-tracker` recording every spawn)

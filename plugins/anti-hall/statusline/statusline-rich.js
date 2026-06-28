@@ -246,6 +246,52 @@ function getGsdPhase() {
   }
 }
 
+// Plugin version chip — reads the version from plugin.json bundled alongside this
+// script. Path: <statusline-dir>/../.claude-plugin/plugin.json (one dir up from
+// statusline/). Fail-open: returns null when the file is absent or unreadable so
+// the statusline never crashes. Resolved relative to __dirname so it works both
+// in the repo and when installed to a user's plugin directory.
+function getAhVersion() {
+  try {
+    const pluginJson = path.join(__dirname, '..', '.claude-plugin', 'plugin.json');
+    const obj = JSON.parse(fs.readFileSync(pluginJson, 'utf8'));
+    const v = obj && typeof obj.version === 'string' && obj.version.trim();
+    return v || null;
+  } catch {
+    return null;
+  }
+}
+
+// Version-check cache — reads ~/.anti-hall/version-check.json written by
+// hooks/version-alert.js. Shape: { latest: "x.y.z", checkedAt: <ms> }.
+// Fail-open: absent/unreadable/malformed → returns null.
+function getVersionCheckCache() {
+  try {
+    const p = path.join(os.homedir(), '.anti-hall', 'version-check.json');
+    const obj = readJSON(p);
+    if (!obj || typeof obj.latest !== 'string') return null;
+    return obj;
+  } catch {
+    return null;
+  }
+}
+
+// Tiny inline semver major/minor compare. Strips leading 'v', splits on '.'.
+// Returns 'major' | 'minor' | 'none'. Any parse error → 'none' (fail-open).
+function semverUpdateLevel(running, latest) {
+  try {
+    const parse = (v) => String(v).replace(/^v/, '').split('.').map(Number);
+    const [rMaj, rMin] = parse(running);
+    const [lMaj, lMin] = parse(latest);
+    if (isNaN(rMaj) || isNaN(rMin) || isNaN(lMaj) || isNaN(lMin)) return 'none';
+    if (lMaj > rMaj) return 'major';
+    if (lMaj === rMaj && lMin > rMin) return 'minor';
+    return 'none';
+  } catch {
+    return 'none';
+  }
+}
+
 // Claude account email — read the signed-in account email from ~/.claude.json
 // (oauthAccount.emailAddress). Returns null when unavailable. The chip shows it
 // only when available, and can be suppressed via ANTIHALL_STATUSLINE_NO_EMAIL.
@@ -555,6 +601,27 @@ function generateStatusline() {
   // with the yellow-tier of the ctx gradient or the GSD chip — money is FYI.
   if (costInfo && costInfo.costUsd > 0) {
     header += '  ' + c.dim + '│' + c.reset + '  ' + c.brightWhite + '$' + costInfo.costUsd.toFixed(2) + c.reset;
+  }
+  // AH version chip — plugin version from .claude-plugin/plugin.json, fail-open
+  // (omitted when unreadable). Positioned between cost and email.
+  // Update indicator: reads ~/.anti-hall/version-check.json; if a newer version
+  // is available, prefixes "★ " and renders in red (major bump) or yellow (minor).
+  const ahVersion = getAhVersion();
+  if (ahVersion) {
+    const cache = getVersionCheckCache();
+    const level = cache ? semverUpdateLevel(ahVersion, cache.latest) : 'none';
+    let ahColor, ahPrefix;
+    if (level === 'major') {
+      ahColor = c.red;
+      ahPrefix = '★ ';
+    } else if (level === 'minor') {
+      ahColor = c.yellow;
+      ahPrefix = '★ ';
+    } else {
+      ahColor = c.dim;
+      ahPrefix = '';
+    }
+    header += '  ' + c.dim + '│' + c.reset + '  ' + ahColor + ahPrefix + 'AH: V' + ahVersion + c.reset;
   }
   // GSD phase chip — only renders when .planning/STATE.md exists. Uses
   // (non-bright) cyan so it sits visually between the subagents/cost chips.

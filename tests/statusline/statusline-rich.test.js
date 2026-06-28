@@ -203,6 +203,111 @@ test('getModelName segment matching: sonnet segment → Sonnet', () => {
   } finally { h.cleanup(); proj.cleanup(); }
 });
 
+// --- AH version chip -----------------------------------------------------------
+
+test('rich line shows AH version chip (AH: Vx.x.x) between cost and email', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    // Write ~/.claude.json with oauthAccount so the email chip renders
+    fs.writeFileSync(
+      path.join(h.home, '.claude.json'),
+      JSON.stringify({ oauthAccount: { emailAddress: 'test@example.com' } }),
+      'utf8'
+    );
+    const payload = JSON.stringify({
+      model: { display_name: 'Sonnet' },
+      cost: { total_cost_usd: 0.5, total_duration_ms: 60000 },
+    });
+    // Run WITHOUT suppressing email so all three segments (cost, AH, email) appear
+    const out = runSL('statusline-rich.js', {
+      home: h.home, cwd: proj.dir, stdin: payload,
+      env: { NO_COLOR: '1' },
+    }).stdout;
+    assert.match(out, /AH: V\d+\.\d+\.\d+/, 'AH version chip present in output');
+    // Ordering: cost ($) < AH version < email
+    const dollarIdx = out.indexOf('$');
+    const ahIdx     = out.indexOf('AH: V');
+    const emailIdx  = out.indexOf('test@example.com');
+    assert.ok(dollarIdx !== -1, 'cost chip present');
+    assert.ok(ahIdx     !== -1, 'AH version chip present');
+    assert.ok(emailIdx  !== -1, 'email chip present');
+    assert.ok(dollarIdx < ahIdx,    'cost segment appears before AH version');
+    assert.ok(ahIdx     < emailIdx, 'AH version appears before email segment');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+// --- AH version update indicator -------------------------------------------
+
+// Helper: write version-check.json into fake HOME's .anti-hall dir.
+function writeVersionCheck(antiHallDir, obj) {
+  fs.writeFileSync(path.join(antiHallDir, 'version-check.json'), JSON.stringify(obj), 'utf8');
+}
+
+// (a) cache latest minor-ahead → segment contains "★" + yellow ANSI code
+test('AH version chip: minor-ahead cache shows star and yellow color', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    // latest minor is ahead of running (0.36.1 < 0.37.0)
+    writeVersionCheck(h.antiHall, { latest: '0.37.0', checkedAt: Date.now() });
+    const out = runSL('statusline-rich.js', {
+      home: h.home, cwd: proj.dir, stdin: JSON.stringify({ model: { display_name: 'Sonnet' } }),
+      env: { ANTIHALL_STATUSLINE_NO_EMAIL: '1' }, // colors ON (no NO_COLOR)
+    }).stdout;
+    assert.match(out, /★/, 'star present for minor update');
+    // yellow ANSI: \x1b[0;33m
+    assert.ok(out.includes('\x1b[0;33m'), 'yellow color code present for minor update');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+// (b) cache latest major-ahead → segment contains "★" + red ANSI code
+test('AH version chip: major-ahead cache shows star and red color', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    // latest major is ahead of running (0.36.1 < 1.0.0)
+    writeVersionCheck(h.antiHall, { latest: '1.0.0', checkedAt: Date.now() });
+    const out = runSL('statusline-rich.js', {
+      home: h.home, cwd: proj.dir, stdin: JSON.stringify({ model: { display_name: 'Sonnet' } }),
+      env: { ANTIHALL_STATUSLINE_NO_EMAIL: '1' },
+    }).stdout;
+    assert.match(out, /★/, 'star present for major update');
+    // red ANSI: \x1b[0;31m
+    assert.ok(out.includes('\x1b[0;31m'), 'red color code present for major update');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+// (c) cache latest == running → no star, dim plain style
+test('AH version chip: same version in cache shows no star', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    writeVersionCheck(h.antiHall, { latest: '0.36.1', checkedAt: Date.now() });
+    const out = runSL('statusline-rich.js', {
+      home: h.home, cwd: proj.dir, stdin: JSON.stringify({ model: { display_name: 'Sonnet' } }),
+      env: { NO_COLOR: '1', ANTIHALL_STATUSLINE_NO_EMAIL: '1' },
+    }).stdout;
+    assert.match(out, /AH: V/, 'AH chip still present');
+    assert.doesNotMatch(out, /★/, 'no star when version is current');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
+// (d) no cache file → no star, plain, no crash
+test('AH version chip: no cache file shows no star and does not crash', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    // antiHall dir exists but version-check.json is absent
+    const out = runSL('statusline-rich.js', {
+      home: h.home, cwd: proj.dir, stdin: JSON.stringify({ model: { display_name: 'Sonnet' } }),
+      env: { NO_COLOR: '1', ANTIHALL_STATUSLINE_NO_EMAIL: '1' },
+    }).stdout;
+    assert.match(out, /AH: V/, 'AH chip still present without cache');
+    assert.doesNotMatch(out, /★/, 'no star without cache');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
 test('getModelName segment matching: haiku segment → Haiku', () => {
   const h = makeStatusHome();
   const proj = makeProjectDir();

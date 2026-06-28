@@ -59,6 +59,7 @@ claude --plugin-dir /path/to/anti-hall
 | `task-guard.js` | Stop | Blocks once if the session ends with open tasks. |
 | `tasklist-guard.js` | Stop | Blocks when non-trivial work (≥ threshold file-mutating actions) wasn't tracked as tasks or lacks a fresh `.anti-hall-progress.md`; coexists with `task-guard` with its own independent block cap; capped + fail-open. |
 | `skip-guard.js` | Escape hatch (shared primitive) | TTL'd `~/.anti-hall/skip.json` user-override read by the guards; granular per-guard, and a broad `all` skip excludes the destructive git-guard (must be named explicitly). |
+| `version-alert.js` | SessionStart (non-blocking) | Alerts when a newer anti-hall version is available. Reads running version vs a cached latest (`~/.anti-hall/version-check.json`); emits a one-line "vX available — /anti-hall:update" if behind. When the cache is absent/stale, spawns a DETACHED, unref'd `git ls-remote --tags` refresh and stays silent that session — never blocks on network. Off-switch: `ANTIHALL_VERSION_ALERT=off`; skip-guard hatch. |
 | `graphify-session.js` | SessionStart | Primes "query the graph first" when a graphify graph exists. |
 | `graphify-reminder.js` | Stop | One-time reminder to update the graph after real edits. |
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
@@ -338,7 +339,10 @@ Critic = Codex latest max reasoning when available, else a divergent Opus advers
 Claude Code plugins cannot auto-apply the main statusline, so this is activated by an
 installer. `statusline/` ships a dispatcher whose **line 1 is the rich renderer for
 ANY repo** (project name, git, model, context%, cost, duration, subagents, optional
-GSD phase). Only if the rich renderer yields nothing does it fall back to a
+GSD phase). Line 1 also shows an **anti-hall version chip** (`AH: Vx.y.z`) between the
+cost and email segments: `★` prefix in YELLOW for a new minor version, RED for a new
+major version, plain dim when up-to-date (fail-open if no version-check cache exists).
+Only if the rich renderer yields nothing does it fall back to a
 monorepo-aware renderer (`.gitmodules` / `.gsd/` / `.planning/`) or a **simple**
 `model | branch | dir | context%` line. Line 2 is an always-on phase/context bar. No emojis.
 
