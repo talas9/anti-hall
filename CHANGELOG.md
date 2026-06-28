@@ -6,6 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.36.1
+
+**Fix: `tasklist-guard` multiple-in_progress false-positive was crippling parallel orchestration.**
+
+The Stop-hook `hasStaleInProgress` sub-cause fired on ANY 2+ in_progress tasks and told the
+agent to "keep one task in_progress at a time" — i.e. to **serialize**, the exact opposite of
+the parallel fan-out anti-hall itself promotes. With background agents legitimately working N
+tasks at once, it nagged on every Stop and pushed agents to collapse their parallel work. Fix:
+
+- **Exempt the multi-in_progress block when a live background-agent heartbeat exists** — reuse
+  `agentsRunning()` (`~/.anti-hall/agents/*.json` fresh within 20 min). Multiple in_progress is
+  CORRECT while agents are live; only genuinely STALLED in_progress (no live agent) now flags.
+- **Rewrite the message** from "keep one in_progress at a time" (serialize) to "dispatch a
+  background agent for EACH so they run in PARALLEL, or set idle ones back to pending; priority
+  = check it first and more often, never pause the rest."
+- Fail-open: an `agentsRunning()` error reads as not-running (can only permit a nudge, never
+  wrongly silence a real stall). +2 tests.
+
 ## 0.36.0
 
 **Codex everyday-routing + Workflow model-distribution discipline + new `codex-nudge` advisory hook.**

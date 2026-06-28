@@ -169,7 +169,7 @@ test('BLOCK (not due to staleness): single in_progress + 4 edits + NO progress f
   } finally { h.cleanup(); }
 });
 
-test('BLOCK: MULTIPLE in_progress at once (2 in_progress, fresh progress) — FIX 2', () => {
+test('BLOCK: MULTIPLE in_progress + NO live agent (2 in_progress, fresh progress) — FIX 2/3', () => {
   const h = makeHome();
   try {
     writeProgress(h.home); // fresh + tracked, so the sub-cause is multi-in_progress
@@ -180,9 +180,33 @@ test('BLOCK: MULTIPLE in_progress at once (2 in_progress, fresh progress) — FI
       taskUpdate(1, 'in_progress'),
       taskUpdate(2, 'in_progress'),
     ]);
+    // No ~/.anti-hall/agents heartbeat => agentsRunning() false => the 2 in_progress
+    // are genuinely STALLED, so the block fires (new FIX-3 text, not the old serialize text).
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
-    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /Multiple tasks are in_progress/i);
+    assert.ok(isBlock(r), `expected block (no live agent); stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /in_progress but NO background agent is live|STALLED/i);
+    assert.doesNotMatch(r.json.reason, /keep one task in_progress at a time/i); // no serialize advice
+  } finally { h.cleanup(); }
+});
+
+test('ALLOW: MULTIPLE in_progress WITH a live agent heartbeat — FIX 3 (parallel work is OK)', () => {
+  const h = makeHome();
+  try {
+    writeProgress(h.home);
+    // Simulate a live background agent: a FRESH heartbeat under ~/.anti-hall/agents/.
+    const agentsDir = path.join(h.antiHall, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(path.join(agentsDir, 'a1.json'), JSON.stringify({ ts: Date.now() }), 'utf8');
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'task one', 'pending'),
+      ...taskCreate(2, 'task two', 'pending'),
+      taskUpdate(1, 'in_progress'),
+      taskUpdate(2, 'in_progress'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    // 2 in_progress is LEGITIMATE parallel work while an agent is live => no multi-in_progress block.
+    assert.ok(!isBlock(r), `parallel work with a live agent must NOT block; stdout: ${r.stdout}`);
   } finally { h.cleanup(); }
 });
 

@@ -125,6 +125,7 @@ function main() {
   const workCount = scan.workCount;
   const sawTaskActivity = scan.sawTaskActivity;
   const hasStaleInProgress = scan.hasStaleInProgress;
+  const inProgressCount = scan.inProgressCount;
   const openTaskIds = scan.openTaskIds;
 
   // Progress-file freshness — relative to the session's cwd.
@@ -234,8 +235,11 @@ function main() {
       'NO tasks.';
   } else if (hasStaleInProgress) {
     lead =
-      'Multiple tasks are in_progress at once after ' + workCount + ' file-changing ' +
-      'actions — keep one task in_progress at a time; the rest look stale.';
+      inProgressCount + ' tasks are in_progress but NO background agent is live — they are ' +
+      'STALLED, not being worked in parallel. DISPATCH a background agent for EACH now so they ' +
+      'progress concurrently (do NOT serialize down to one), or set the idle ones back to ' +
+      'pending. Priority ≠ stop the rest: spin the HIGHEST-priority task\'s agent FIRST and ' +
+      'check it more often, but keep the others running in parallel — never pause them.';
   } else {
     lead =
       'You made ' + workCount + ' file-changing actions but ' +
@@ -472,9 +476,44 @@ function scanTranscript(filePath) {
       openTaskIds.push(String(task.id));
     }
   }
-  const hasStaleInProgress = inProgressCount > 1;
+  // FIX 3 (parallel-orchestration false-positive): multiple in_progress tasks are
+  // LEGITIMATE when background agents are running — anti-hall itself promotes parallel
+  // fan-out (N live agents => N in_progress is correct, not a smell). Flagging it then
+  // cripples the very parallelism the plugin encourages. So only treat >1 in_progress as
+  // "stale" when NO live agent is running (mirror task-guard/task-tracker's agentsRunning
+  // heartbeat check). When agents stop, a later Stop with no live agent still catches any
+  // genuinely-dangling in_progress, so nothing is permanently masked.
+  const hasStaleInProgress = inProgressCount > 1 && !agentsRunning();
 
-  return { workCount, sawTaskActivity, hasStaleInProgress, openTaskIds };
+  return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds };
+}
+
+// agentsRunning() — true if ~/.anti-hall/agents/ holds a FRESH heartbeat, meaning
+// background subagents are live RIGHT NOW (so multiple in_progress tasks are legitimate
+// parallel work, not a stall). Mirrors task-guard/task-tracker. Absent/unreadable dir or
+// any error => false (fail-open toward "not running", which can only permit a nudge, never
+// wrongly silence a genuinely-stalled session).
+function agentsRunning(freshMs) {
+  const FRESH = freshMs || 20 * 60 * 1000;
+  const dir = path.join(os.homedir(), '.anti-hall', 'agents');
+  let files;
+  try {
+    files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+  } catch (_) {
+    return false;
+  }
+  const now = Date.now();
+  for (const f of files) {
+    const full = path.join(dir, f);
+    let ts = 0;
+    try {
+      const data = JSON.parse(fs.readFileSync(full, 'utf8'));
+      if (data && typeof data.ts === 'number') ts = data.ts;
+    } catch (_) { /* fall back to mtime */ }
+    if (!ts) { try { ts = fs.statSync(full).mtimeMs; } catch (_) { ts = 0; } }
+    if (ts && (now - ts) < FRESH) return true;
+  }
+  return false;
 }
 
 function collectToolUses(node) {
