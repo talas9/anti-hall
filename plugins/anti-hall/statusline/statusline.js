@@ -48,11 +48,10 @@ const { execFileSync, spawnSync } = require('child_process');
 // Base-statusline config
 // ---------------------------------------------------------------------------
 
-const BASE_CONFIG_PATH = path.join(os.homedir(), '.anti-hall', 'base-statusline.json');
-
 function readBaseCommand() {
   try {
-    const raw = fs.readFileSync(BASE_CONFIG_PATH, 'utf8');
+    const configPath = path.join(os.homedir(), '.anti-hall', 'base-statusline.json');
+    const raw = fs.readFileSync(configPath, 'utf8');
     const obj = JSON.parse(raw);
     if (obj && typeof obj.command === 'string' && obj.command.trim()) {
       return obj.command.trim();
