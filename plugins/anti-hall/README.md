@@ -421,7 +421,7 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 
 ```bash
 # Full zero-dependency E2E suite (node:test, run from the repo root):
-node --test                                                                  # 539 pass +2 platform-skip (541 total); CI runs the same on push/PR (.github/workflows/test.yml)
+node --test                                                                  # 604 pass +2 platform-skip (606 total); CI runs the same on push/PR (.github/workflows/test.yml)
 
 # Quick smoke-checks of individual hooks:
 echo '{"hook_event_name":"SessionStart"}' | node hooks/verify-first-full.js  # full Iron-Law protocol + skill primer

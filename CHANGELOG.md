@@ -6,6 +6,10 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.38.1
+
+Test + docs maintenance: de-coupled the statusline minor/major-ahead test fixtures from the hardcoded version (now derived from plugin.json so they never go stale on a bump); refreshed stale test-count references in README/llms.txt/KB.md.
+
 ## 0.38.0
 
 **Limit-conservation mode + consolidated statusline merge + OMC as recommended optional dependency.**

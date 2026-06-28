@@ -244,13 +244,22 @@ function writeVersionCheck(antiHallDir, obj) {
   fs.writeFileSync(path.join(antiHallDir, 'version-check.json'), JSON.stringify(obj), 'utf8');
 }
 
+// Derive fixture versions from the running plugin.json so these tests never
+// break on a version bump.
+const _pluginVersion = JSON.parse(
+  fs.readFileSync(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', '.claude-plugin', 'plugin.json'), 'utf8')
+).version;
+const [_pMajor, _pMinor] = _pluginVersion.split('.').map(Number);
+const _minorAheadLatest = `${_pMajor}.${_pMinor + 1}.0`;
+const _majorAheadLatest = `${_pMajor + 1}.0.0`;
+
 // (a) cache latest minor-ahead → segment contains "★" + yellow ANSI code
 test('AH version chip: minor-ahead cache shows star and yellow color', () => {
   const h = makeStatusHome();
   const proj = makeProjectDir();
   try {
-    // latest minor is ahead of running (0.38.0 < 0.39.0)
-    writeVersionCheck(h.antiHall, { latest: '0.39.0', checkedAt: Date.now() });
+    // latest minor is ahead of running (current < _minorAheadLatest)
+    writeVersionCheck(h.antiHall, { latest: _minorAheadLatest, checkedAt: Date.now() });
     const out = runSL('statusline-rich.js', {
       home: h.home, cwd: proj.dir, stdin: JSON.stringify({ model: { display_name: 'Sonnet' } }),
       env: { ANTIHALL_STATUSLINE_NO_EMAIL: '1' }, // colors ON (no NO_COLOR)
@@ -266,8 +275,8 @@ test('AH version chip: major-ahead cache shows star and red color', () => {
   const h = makeStatusHome();
   const proj = makeProjectDir();
   try {
-    // latest major is ahead of running (0.37.0 < 1.0.0)
-    writeVersionCheck(h.antiHall, { latest: '1.0.0', checkedAt: Date.now() });
+    // latest major is ahead of running (current < _majorAheadLatest)
+    writeVersionCheck(h.antiHall, { latest: _majorAheadLatest, checkedAt: Date.now() });
     const out = runSL('statusline-rich.js', {
       home: h.home, cwd: proj.dir, stdin: JSON.stringify({ model: { display_name: 'Sonnet' } }),
       env: { ANTIHALL_STATUSLINE_NO_EMAIL: '1' },
