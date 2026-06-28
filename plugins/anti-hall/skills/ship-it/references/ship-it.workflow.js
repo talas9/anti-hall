@@ -120,6 +120,35 @@ function criticBrief(phase) {
   ].join('\n');
 }
 
+// REVIEWER SEAT with AVAILABILITY FALLBACK (MODEL-POLICY.md "Availability fallback
+// matrix"). The Reviewer's preferred model is the latest flagship Claude (`fable`),
+// but that token can be UNAVAILABLE (e.g. Anthropic disabled Fable for the account).
+// Previously the seat hardcoded `model: 'fable'` with no guard, so a disabled Fable
+// made the spawn die and the whole gate could not complete. We now wire the documented
+// matrix into CODE — never trust prose policy to be applied by hand at runtime:
+//   1. If the coordinator KNOWS Fable is unavailable it passes args.fableAvailable===false,
+//      and we skip straight to the Opus Reviewer (no wasted failed spawn).
+//   2. Otherwise we attempt the flagship; agent() returns null on a terminal model error
+//      (per the Workflow contract), which is our reliable "Fable unavailable" signal —
+//      we then fall back to an Opus Reviewer (divergent), exactly per the matrix.
+// The floor for every seat is Opus; we NEVER silently drop to a weaker/cheaper model.
+async function reviewerAgent(p) {
+  const fableOff = (typeof args === 'object' && args !== null && args.fableAvailable === false);
+  if (!fableOff) {
+    const r = await agent(reviewerBrief(p), {
+      schema: VERDICT_SCHEMA, run_in_background: true,
+      label: p.label + ':reviewer', model: 'fable',
+    });
+    if (r !== null) return r; // flagship succeeded
+    log('ship-it: Fable Reviewer unavailable for "' + p.label + '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
+  }
+  // Fable✗ -> Opus Reviewer (divergent), per the availability fallback matrix.
+  return agent(reviewerBrief(p), {
+    schema: VERDICT_SCHEMA, run_in_background: true,
+    label: p.label + ':reviewer(opus-fallback)', model: 'opus',
+  });
+}
+
 // FAIL-CLOSED safety check: a parallel group must be conflict-free before fan-out.
 // Phases run concurrently and commit serially, so within a group they must have
 // UNIQUE labels, DISJOINT files (no two phases touch the same path), and NO declared
@@ -196,7 +225,7 @@ async function main() {
     for (const p of group) {
       phase('deadly-loop gate: ' + p.label);
       const audit = await parallel([
-        () => agent(reviewerBrief(p), { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':reviewer', model: 'fable' }),
+        () => reviewerAgent(p), // latest flagship Claude with documented Opus fallback (see reviewerAgent)
         () => agent(auditorBrief(p),  { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':auditor', model: 'opus' }),
         () => agent(criticBrief(p),   { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':critic', agentType: 'codex:codex-rescue' }),
       ]);

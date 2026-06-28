@@ -6,6 +6,29 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.35.1
+
+**ship-it Workflow Fable→Opus availability fallback (bug fix) + Workflow orchestration KB.**
+
+- **Fixed: the ship-it deadly-loop gate broke when Fable was unavailable.** The Reviewer
+  seat in `skills/ship-it/references/ship-it.workflow.js` hardcoded `model: 'fable'` with
+  no guard, so when the `fable` tier token is disabled at the account level the Reviewer
+  spawn died and the whole per-phase gate could not complete. `MODEL-POLICY.md` *documented*
+  a fable✗→Opus fallback matrix, but it was never wired into the workflow script (only the
+  Codex seat had a runtime probe). Added `reviewerAgent(p)`: it attempts the latest flagship
+  and, on a terminal `null` return (the Workflow contract's unavailable-model signal), falls
+  back to an Opus Reviewer — or short-circuits straight to Opus when the coordinator passes
+  `args.fableAvailable === false` (no wasted spawn). Floor stays Opus; never a cheaper model.
+  Validated: 3 branches (Fable healthy / Fable null / coordinator-off), 8/8 assertions green
+  against the real shipped function. `ship-it/SKILL.md` snippet updated to show the wrapper.
+- **New: `docs/KB-claude-workflow-orchestration.md`** — a 14-source (8 official Anthropic)
+  knowledge base on programmatic multi-agent orchestration (the `Workflow` tool): what it is
+  vs ad-hoc subagent spawns, when to use it vs a single/shallow agent, the core patterns
+  (orchestrator-worker, pipeline/parallel, map-reduce, loop-until-done, adversarial verify),
+  the ~15× token / 90.2% / depth-nesting cost numbers, and a "how to make an agent utilize it
+  more" section. Reconciled against in-repo live verification (Workflow runs under Opus 4.8 —
+  it is **not** Fable-bound). Registered in `llms.txt` and the `docs/KB.md` doc table.
+
 ## 0.35.0
 
 **Strict-by-default model routing + `anti-hall:activate` first-run setup skill.**

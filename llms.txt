@@ -36,6 +36,7 @@ Requires Node.js >= 18 on PATH; without it the hooks silently no-op. Updates via
 - [AGENTS.md](AGENTS.md): prose mirror of the verify-first Iron Law for Codex / cross-tool agents (repo root; not bundled by /plugin install).
 - [docs/KB-claude-codex.md](docs/KB-claude-codex.md): knowledge base on Claude Code hook contracts, prompting, and verified Claude Code internals (cmux subagent detection, macOS memory, statusline architecture).
 - [docs/KB.md](docs/KB.md): plugin knowledge base index (hooks, skills, design decisions).
+- [docs/KB-claude-workflow-orchestration.md](docs/KB-claude-workflow-orchestration.md): when/how to use programmatic multi-agent orchestration (the Workflow tool) vs a single/shallow agent — patterns, cost numbers, decision criteria; 14 sources (8 official Anthropic).
 - [docs/CONTEXT-PRESERVATION-KB.md](docs/CONTEXT-PRESERVATION-KB.md): swarm-researched context-discipline KB (findings-externalization, compaction cadence, context-rot sweet spot).
 - [docs/TASK-WORK.md](docs/TASK-WORK.md): task-list + `.anti-hall-progress.md` work-tracking discipline.
 - [docs/TASKLIST-GUARD.md](docs/TASKLIST-GUARD.md): tasklist-guard usage, thresholds, and escape hatch.

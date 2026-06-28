@@ -31,3 +31,8 @@ CLAUDE.md
 .omc/
 docs/*-session-handoff.md
 build/
+
+# SkillOpt staging / helper scripts — never commit
+.skillopt-sleep/
+# SkillOpt deployment manifest — personal paths, never commit
+SKILLOPT-DEPLOYMENT.md

@@ -174,7 +174,7 @@ Codex critic is preserved (canonical Codex form + availability fallback matrix i
 
 ```js
 parallel([
-  () => agent(reviewerBrief, { model: "fable", run_in_background: true, label: "reviewer" }),
+  () => reviewerAgent(p),    // latest flagship (fable) with Opus fallback when fable is unavailable
   () => agent(auditorBrief,  { model: "opus",  run_in_background: true, label: "auditor" }),
   () => agent(criticBrief,   { agentType: "codex:codex-rescue", run_in_background: true, label: "critic" }),
 ])
@@ -183,7 +183,11 @@ parallel([
 Note: spawning all three as plain Claude agents would silently drop the cross-model Codex
 critic (collapsing to the all-Opus fallback), and an omitted `model` inherits the
 orchestrator's model — so set `model` EXPLICITLY on the Reviewer and Auditor and use
-`agentType` for the Critic. The main thread **stays coordinator**: it synthesizes their
+`agentType` for the Critic. The Reviewer's preferred `model: "fable"` can be UNAVAILABLE
+(e.g. Anthropic disabled Fable for the account); wrap it like `reviewerAgent` in
+`references/ship-it.workflow.js`, which applies the documented fable✗→Opus fallback in
+CODE (null-return probe + optional `args.fableAvailable===false` short-circuit) rather
+than trusting the prose matrix to be applied by hand. The main thread **stays coordinator**: it synthesizes their
 findings, dispatches fix-waves, and loops to re-debate.
 
 **Loop fix-waves → re-debate until zero NEW P0s** (count NEW issues, not rediscovered ones;
