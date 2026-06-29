@@ -68,6 +68,8 @@ const POSITIVE_RULES = [
   ['[inference]', 'positive rule 8 keyword (label claims [inference])'],
   ['  9.', 'positive rule 9 number'],
   ['User agreement is not correctness', 'positive rule 9 keyword (user agreement is not correctness)'],
+  ['  10.', 'positive rule 10 number'],
+  ['no real baseline', 'positive rule 10 keyword (no real baseline for per-run savings)'],
 ];
 
 // RULE 6 ACCEPTANCE-CRITERIA clause ("false done" P0, 0.30.0). The injected

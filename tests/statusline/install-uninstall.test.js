@@ -37,8 +37,8 @@ function sandbox() {
   };
 }
 
-function install(sb, args) {
-  return runSL('install-statusline.js', { home: sb.home, cwd: sb.cwd, args });
+function install(sb, args, env) {
+  return runSL('install-statusline.js', { home: sb.home, cwd: sb.cwd, args, env });
 }
 function uninstall(sb, args) {
   return runSL('uninstall-statusline.js', { home: sb.home, cwd: sb.cwd, args });
@@ -162,5 +162,32 @@ test('uninstall is idempotent when the statusLine key is already absent', () => 
     const r = uninstall(sb, ['--user']);
     assert.strictEqual(r.status, 0);
     assert.match(r.stdout, /nothing to uninstall/i);
+  } finally { sb.cleanup(); }
+});
+
+// --- isShellSafe dispatcher guard -------------------------------------------
+
+test('install rejects a dispatcher path with shell metacharacters and prints manual-setup instructions', () => {
+  const sb = sandbox();
+  try {
+    sb.writeUser({ keepme: 42 });
+    const r = install(sb, ['--user'], { ANTIHALL_DISPATCHER_OVERRIDE: '/unsafe$path;evil/statusline.js' });
+    assert.notStrictEqual(r.status, 0, 'must exit non-zero for unsafe dispatcher path');
+    assert.match(r.stderr, /SAFETY|metacharacter|manually/i);
+    // settings.json must NOT be modified — no unsafe command written.
+    const s = sb.readJSON(sb.userSettings);
+    assert.ok(!('statusLine' in s), 'statusLine key must NOT be written when dispatcher path is unsafe');
+  } finally { sb.cleanup(); }
+});
+
+test('install embeds a safe dispatcher path override into statusLine.command', () => {
+  const sb = sandbox();
+  try {
+    sb.writeUser({});
+    const safePath = '/safe/path/to/statusline.js';
+    const r = install(sb, ['--user'], { ANTIHALL_DISPATCHER_OVERRIDE: safePath });
+    assert.strictEqual(r.status, 0, 'safe dispatcher path must succeed');
+    const s = sb.readJSON(sb.userSettings);
+    assert.ok(s.statusLine && s.statusLine.command.includes(safePath), 'safe path embedded in statusLine.command');
   } finally { sb.cleanup(); }
 });

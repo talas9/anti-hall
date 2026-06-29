@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.39.0
+
+**Subagents now receive the verify-first Iron Law (new SubagentStart hook) + guard/hardening refinements.**
+
+### New: SubagentStart re-injection — discipline finally reaches subagents
+`verify-first-full.js` was SessionStart-only, so every Task-spawned subagent ran verify-first-UNAWARE. New `verify-first-subagent.js` (SubagentStart hook) injects the Iron Law + rationalization table + positive rules + scope-fidelity into each spawned subagent — but DELIBERATELY omits the orchestration "delegate everything" block (subagents are workers; re-injecting it would recreate deep nesting). The shared core is extracted to `verify-first-core.js` (one source of truth for both hooks, no drift). 9 tests. (SubagentStart confirmed as a real Claude Code event via docs/KB-claude-codex.md §1.1.)
+
+### model-routing-guard: research→Explore nudge no longer false-positives on write tasks
+The 0.37.0 anti-nesting advisory nudged any research-shaped `general-purpose` spawn toward Explore — but Explore can't write, so release/commit/build agents were wrongly nudged. Now suppressed when the spawn has write/execute signals.
+
+### Hardening (ponytail-derived)
+- `install-statusline.js`: `isShellSafe()` allowlist guards paths before embedding them in a settings.json command (unsafe → manual-setup fallback).
+- verify-first rule 10: never display a per-run "you saved X tokens/lines" number — the unbuilt baseline was never run; cite a benchmark median with provenance, or say it's unmeasured.
+
 ## 0.38.2
 
 **Fix: `agentsRunning()` was inert — the parallel-orchestration guard exemptions never fired.**

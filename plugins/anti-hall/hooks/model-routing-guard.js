@@ -68,6 +68,14 @@ const ROLE_WORD_RE = /\b(reviewer|auditor|critic|debate|deadly[- ]?loop)\b/i;
 const RESEARCH_RE =
   /\b(research|investigate|find|search|audit|survey|read[ -]?only|locate|map|gather|explore|scout|look\s+up|trace|reconnaissance)\b/i;
 
+// Write/execute signals that SUPPRESS the Row-6 Explore advisory. If the corpus
+// contains any of these the task needs write/Agent tools that Explore lacks, so
+// nudging toward Explore would recommend the wrong agent type. Checked against the
+// bounded corpus (same RESEARCH_RE approach: raw, case-insensitive, \b-anchored).
+// Prefix stems (modif, migrat, refactor, implement) match common inflections.
+const WRITE_RE =
+  /\b(write|edit|modif|commit|push|tag|release|bump|changelog|create\s+(?:a\s+|the\s+)?file|apply|patch|build|deploy|install|migrat|refactor|implement|fix)\b/i;
+
 // Mechanical signals -> haiku (execution-only). Multi-word phrases are checked as
 // adjacent tokens after tokenization (see hasToken / hasPhrase).
 const MECHANICAL = [
@@ -263,7 +271,13 @@ function main() {
   // This is advisory-only: a research spawn on general-purpose is legitimate, just
   // suboptimal. Only fires for generic agents (subagent_type '' or 'general-purpose');
   // named types (Explore, codex:*, custom) are already non-generic and skip this row.
-  if (isGenericAgent && RESEARCH_RE.test(corpus)) {
+  //
+  // SUPPRESSED when the corpus contains write/execute signals (WRITE_RE): tasks that
+  // commit, edit, build, release, etc. need write/Agent tools that Explore lacks —
+  // nudging them toward Explore would recommend the wrong agent type (false-positive
+  // guard added v0.37.x after a release agent was wrongly nudged due to "audit/find"
+  // in its description).
+  if (isGenericAgent && RESEARCH_RE.test(corpus) && !WRITE_RE.test(corpus)) {
     advise(
       'AGENT-ROUTING (advisory): this spawn looks research/read-only-shaped but uses ' +
       "subagent_type:'general-purpose', which carries the Agent tool and can recurse " +

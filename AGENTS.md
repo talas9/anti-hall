@@ -165,9 +165,11 @@ gracefully when graphify is not present — there is no hard dependency.
 
 The plugin enforces no-speculation discipline at three layers:
 
-**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full.js` (SessionStart)
-and `verify-first.js` (per-turn) inject the Iron Law including explicit bans on both
-confident inference-as-fact and hedge-word speculation.
+**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full.js` (SessionStart),
+`verify-first-subagent.js` (SubagentStart — re-injects the Iron Law into every spawned
+subagent, omitting the orchestration/delegate block so workers don't recurse; shared core
+in `verify-first-core.js`), and `verify-first.js` (per-turn) inject the Iron Law
+including explicit bans on both confident inference-as-fact and hedge-word speculation.
 
 **Tier 2 — Lexical guard (on by default, zero cost):** `speculation-guard.js` (Stop)
 scans the last assistant message for hedge-word markers and blocks once if none of the

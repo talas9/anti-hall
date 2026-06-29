@@ -41,6 +41,17 @@ const path = require('path');
 const os   = require('os');
 
 // ---------------------------------------------------------------------------
+// Shell-safety allowlist
+// ---------------------------------------------------------------------------
+// Paths/fragments that anti-hall itself injects into the statusLine.command
+// shell string must match this allowlist. Characters outside it (shell
+// metacharacters: $, ;, &, |, >, <, `, (, ), {, }, !, etc.) could enable
+// command injection if a path were ever attacker-controlled.
+function isShellSafe(p) {
+  return typeof p === 'string' && /^[A-Za-z0-9 _.\-:/\\~]+$/.test(p);
+}
+
+// ---------------------------------------------------------------------------
 // Stable dispatcher path resolution
 // ---------------------------------------------------------------------------
 // Prefer the marketplace install location (stable across plugin version bumps).
@@ -53,13 +64,22 @@ const STABLE_DISPATCHER = path.join(
 );
 
 const SCRIPT_DIR   = __dirname;
-const DISPATCHER   = fs.existsSync(STABLE_DISPATCHER) ? STABLE_DISPATCHER
-                                                       : path.join(SCRIPT_DIR, 'statusline.js');
+
+// ANTIHALL_DISPATCHER_OVERRIDE is a test-only escape hatch that lets the test
+// suite inject an arbitrary dispatcher path (including unsafe ones) without
+// needing a real file on disk. Never set this in production.
+const DISPATCHER_OVERRIDE = process.env.ANTIHALL_DISPATCHER_OVERRIDE;
+const DISPATCHER   = DISPATCHER_OVERRIDE !== undefined
+  ? DISPATCHER_OVERRIDE
+  : (fs.existsSync(STABLE_DISPATCHER) ? STABLE_DISPATCHER
+                                      : path.join(SCRIPT_DIR, 'statusline.js'));
+
 const BASE_CFG_DIR = path.join(os.homedir(), '.anti-hall');
 const BASE_CFG     = path.join(BASE_CFG_DIR, 'base-statusline.json');
 
-// Verify the dispatcher exists (sanity check).
-if (!fs.existsSync(DISPATCHER)) {
+// Verify the dispatcher exists (sanity check). Skipped when the test override
+// is active because the test path is intentionally fake.
+if (!DISPATCHER_OVERRIDE && !fs.existsSync(DISPATCHER)) {
   console.error('ERROR: statusline.js not found at: ' + DISPATCHER);
   console.error('The installer must live in the same directory as statusline.js.');
   process.exit(1);
@@ -221,6 +241,11 @@ const CONSOLIDATED_CFG = path.join(BASE_CFG_DIR, 'consolidated-base.json');
 if (isConsolidate && existingCmd) {
   try {
     fs.mkdirSync(BASE_CFG_DIR, { recursive: true });
+    // NOTE: existingCmd is the user's own previously configured statusLine command.
+    // It is treated as user-trusted input and is NOT metachar-validated here —
+    // it is written to a JSON config file (not injected into a shell command
+    // string by this installer). The statusline.js runtime executes it; the
+    // PATH portions anti-hall itself injects (DISPATCHER above) are guarded.
     fs.writeFileSync(CONSOLIDATED_CFG, JSON.stringify({ command: existingCmd }, null, 2) + '\n', 'utf8');
     console.log('CONSOLIDATED MODE: saved existing statusLine as passthrough base:');
     console.log('  ' + CONSOLIDATED_CFG);
@@ -246,6 +271,8 @@ if (isConsolidate && existingCmd) {
   // No global base yet — record this scope's existing statusLine as the line-1 base.
   try {
     fs.mkdirSync(BASE_CFG_DIR, { recursive: true });
+    // NOTE: existingCmd is user-trusted (their previous statusLine command).
+    // Not metachar-validated — stored in JSON, not embedded in a shell string.
     fs.writeFileSync(BASE_CFG, JSON.stringify({ command: existingCmd }, null, 2) + '\n', 'utf8');
     console.log('Saved existing statusLine as base (line 1 wrapper):');
     console.log('  ' + BASE_CFG);
@@ -352,6 +379,16 @@ console.log('');
 // ---------------------------------------------------------------------------
 // Write new statusLine (merge into existing JSON — never clobber other keys)
 // ---------------------------------------------------------------------------
+
+// Safety check: reject dispatcher paths that contain shell metacharacters
+// before embedding them into the statusLine.command shell string.
+if (!isShellSafe(DISPATCHER)) {
+  console.error('SAFETY: dispatcher path contains shell metacharacters — refusing to embed in statusLine.command.');
+  console.error('  Path: ' + DISPATCHER);
+  console.error('  To install manually, add to ' + SETTINGS_PATH + ':');
+  console.error('    "statusLine": { "type": "command", "command": "node \\"/path/to/statusline.js\\"" }');
+  process.exit(1);
+}
 
 const newCommand    = 'node "' + DISPATCHER + '"';
 const newStatusLine = {

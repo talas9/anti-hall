@@ -481,6 +481,44 @@ test('ROW 6 (d): research-shaped + codex:codex-rescue -> NO advisory', () => {
   } finally { h.cleanup(); }
 });
 
+test('ROW 6 (f): pure research spawn + general-purpose -> STILL nudges Explore', () => {
+  const h = makeHome();
+  try {
+    // Only research keywords, no write/execute signals -> advisory fires as before.
+    const r = testHook(HOOK, payload({
+      model: 'sonnet',
+      subagent_type: 'general-purpose',
+      description: 'research X, find Y, report findings',
+      prompt: 'investigate the codebase, search for usages, gather results and report',
+    }), { home: h.home });
+    assertAdvisory(r, /Explore/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /AGENT-ROUTING/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 6 (g): research+write spawn + general-purpose -> NO Explore nudge (WRITE_RE suppresses)', () => {
+  const h = makeHome();
+  try {
+    // "audit"+"find" are research signals, but "commit"+"release" are write signals ->
+    // WRITE_RE suppresses the Row-6 advisory (Explore can't write/commit).
+    const r = testHook(HOOK, payload({
+      model: 'sonnet',
+      subagent_type: 'general-purpose',
+      description: 'audit the diff then commit the fix and release',
+      prompt: 'find the changed files, apply the patch, commit, tag, and push the release',
+    }), { home: h.home });
+    // Must NOT emit an Explore advisory.
+    assert.strictEqual(r.status, 0);
+    if (r.json && r.json.hookSpecificOutput) {
+      assert.doesNotMatch(
+        r.json.hookSpecificOutput.additionalContext,
+        /Explore/,
+        'WRITE_RE should suppress the Explore advisory when write signals are present',
+      );
+    }
+  } finally { h.cleanup(); }
+});
+
 test('ROW 6 (e): FAIL-OPEN: null tool_input on research corpus -> exit 0', () => {
   const h = makeHome();
   try {

@@ -38,7 +38,7 @@ compaction), a short rotating reminder every turn, and **mechanical hooks** that
 argued with.
 
 > **What's proven, and what isn't.** The **mechanical hooks** are the load-bearing part and
-> are verified by 604 passing tests (+2 platform-skipped, 606 total) — they deterministically block force-pushes, AI-credit
+> are verified by 623 passing tests (+2 platform-skipped, 625 total) — they deterministically block force-pushes, AI-credit
 > trailers, un-delegated heavy commands, and stale task state regardless of what the model
 > "feels" like doing. The **prompt layer** (verify-first protocol + nudges) is a *discipline*,
 > not a benchmark-validated hallucination cure: a four-round A/B eval ([`eval/`](eval/)) —
@@ -139,7 +139,7 @@ is meant to prevent. anti-hall enforces this at two levels:
 
 **For itself:** the plugin minimizes its own footprint in your conversation:
 - `task-tracker` is **throttled** — full directive once per ~6h window, one-liner after (~68% per-turn reduction, ≈693 B → ≈223 B steady-state).
-- `verify-first-full.js` (SessionStart) carries the full Iron-Law + orchestration protocol; `/anti-hall:doctor` reports its exact byte size, so any change to the footprint stays visible and auditable rather than hidden behind a fixed claim.
+- `verify-first-full.js` (SessionStart) carries the full Iron-Law + orchestration protocol; `verify-first-subagent.js` (SubagentStart) re-injects the Iron Law into every spawned subagent (omitting the orchestration/delegate block so workers don't recurse); shared core in `verify-first-core.js`. `/anti-hall:doctor` reports the exact byte size of the SessionStart injection, so any footprint change stays visible and auditable.
 - `/anti-hall:doctor` **measures** the context footprint — reports SessionStart / per-turn / per-Stop injection sizes in bytes + estimated tokens, so the cost is visible and auditable.
 
 ---
@@ -230,7 +230,7 @@ anti-hall/
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
 ├── docs/                               # KB + design notes — CONTEXT-PRESERVATION-KB · KB · TASKLIST-GUARD · TASK-WORK · E2E-TESTING (+ Claude Code internals)
-├── tests/                              # zero-dependency node:test E2E suite (606 tests, 604 pass +2 platform-skip) — `node --test`
+├── tests/                              # zero-dependency node:test E2E suite (625 tests, 623 pass +2 platform-skip) — `node --test`
 ├── .github/workflows/test.yml          # CI: runs the suite on push/PR
 └── CHANGELOG.md
 ```
@@ -239,7 +239,7 @@ anti-hall/
 `AGENTS.md` (e.g. Codex). It lives at the repo root and is **not** bundled by
 `/plugin install` — copy it into your own repo if you want cross-tool coverage.
 
-A zero-dependency **`node --test` E2E suite** (`tests/`, 604 passing +2 platform-skipped, 606 total) covers the hooks and
+A zero-dependency **`node --test` E2E suite** (`tests/`, 623 passing +2 platform-skipped, 625 total) covers the hooks and
 runs in **CI** on every push/PR ([`.github/workflows/test.yml`](.github/workflows/test.yml)).
 
 See [`plugins/anti-hall/README.md`](plugins/anti-hall/README.md) for the full component
