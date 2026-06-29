@@ -1,13 +1,13 @@
 # anti-hall
 
-> A Claude Code marketplace + plugin that makes Claude Code verify before it claims.
+> A Claude Code marketplace plugin plus a Codex-native port that makes coding agents verify before they claim.
 > It injects a verify-first protocol at session start (re-firing after compaction), a
 > short rotating nudge every turn, mechanical guards (no AI commit self-credit, no silent
 > force-push, command-delegation, anti-fork-bomb, anti-speculation, task-list discipline via
 > tasklist-guard), an always-on output-presentation rule (rule K: present for scannability),
 > an always-on scope & fidelity discipline (simplest sufficient solution; intent over letter;
 > confirm before expanding scope; match rigor to blast radius; finish what was asked / drop
-> nothing), a TTL'd user-override escape hatch (~/.anti-hall/skip.json), ten workflow skills,
+> nothing), a TTL'd user-override escape hatch (~/.anti-hall/skip.json), Claude workflow skills plus Codex-native skill equivalents,
 > a live two-line statusline, and an opt-in mcp-reaper companion (macOS + Linux) that kills
 > orphaned MCP-server processes. All hooks are pure Node.js (built-ins only) and run on macOS,
 > Linux, and Windows; the one prerequisite is Node >= 18 on PATH.
@@ -25,6 +25,18 @@ protocol injection, per-turn nudges, and mechanical hooks that cannot be argued 
 /plugin install anti-hall@anti-hall
 ```
 
+Codex project-local activation:
+
+```
+node plugins/anti-hall/codex/install-codex.js
+```
+
+Codex global activation:
+
+```
+node plugins/anti-hall/codex/install-codex.js --global
+```
+
 Requires Node.js >= 18 on PATH; without it the hooks silently no-op. Updates via the
 `/plugin` manager; updates pull on restart if autoUpdate is enabled (or via the /plugin manager).
 
@@ -32,6 +44,10 @@ Requires Node.js >= 18 on PATH; without it the hooks silently no-op. Updates via
 
 - [README](README.md): overview, the four failure modes, two-layer design, statusline, AFK mode, quickstart.
 - [Plugin README](plugins/anti-hall/README.md): full component reference, how-it-works, configuration, troubleshooting, contributing.
+- [Codex README](plugins/anti-hall/codex/README.md): Codex hook-subset installer, skills, OMX mapping, and parity boundaries.
+- [docs/KB-codex-platform-hooks-plugins.md](docs/KB-codex-platform-hooks-plugins.md): Codex hooks, plugins, skills, MCP, AGENTS.md, config, permissions, and marketplace structure.
+- [docs/KB-codex-workflow-orchestration.md](docs/KB-codex-workflow-orchestration.md): Codex workflow/swarm equivalents: subagents, worktrees, cloud/noninteractive/SDK/GitHub Action, and OMX mapping.
+- [docs/KB-omx.md](docs/KB-omx.md): oh-my-codex (OMX) as the Codex-side OMC equivalent.
 - [CHANGELOG](CHANGELOG.md): version history (current: see plugin.json).
 - [AGENTS.md](AGENTS.md): prose mirror of the verify-first Iron Law for Codex / cross-tool agents (repo root; not bundled by /plugin install).
 - [docs/KB-claude-codex.md](docs/KB-claude-codex.md): knowledge base on Claude Code hook contracts, prompting, and verified Claude Code internals (cmux subagent detection, macOS memory, statusline architecture).

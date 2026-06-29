@@ -6,6 +6,35 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.41.0
+
+**Codex/OMX port without disturbing the Claude plugin surface.**
+
+### New: Codex-native plugin layer
+- Added `plugins/anti-hall/.codex-plugin/plugin.json` and `plugins/anti-hall/codex/install-codex.js`. The installer writes Codex `.codex/hooks.json` plus `[features].hooks = true` for the supported Codex hook subset.
+- Added plugin-scoped Codex hooks at `plugins/anti-hall/codex/hooks/hooks.json` using `${PLUGIN_ROOT}` commands, matching installed Codex plugin examples.
+- Added Codex repo marketplace compatibility via `.agents/plugins/marketplace.json`, pointing at `./plugins/anti-hall` with the official local marketplace shape.
+- Added project/global install and dry-run modes for Codex activation. The installer preserves unrelated hook groups and replaces stale anti-hall hook groups.
+- Added regression coverage in `tests/codex/install-codex.test.js` for dry-run behavior, hook/config writing, and merge behavior.
+
+### New: Codex skills and OMX workflow mapping
+- Added Codex-native skills for activate, doctor, update, root-cause, orchestration, deadly-loop, ship-it, model policy, context-conserve, feature-launch, OMX integration, OMC integration, statusline install, flutter-debug, simplify, and debt.
+- `anti-hall-context-conserve` ports the limit/context conservation behavior to Codex model routing and output hygiene.
+- `anti-hall-feature-launch` replaces the removed GSD path with a Codex/OMX planning protocol, graphify-first setup, `gpt-5.5` debate gates, phased execution, and launch verification.
+
+### New: Codex KB equivalents
+- Added `docs/CODEX-KB-MIGRATION-MAP.md` to classify existing KBs into Claude-specific, Codex/agnostic, and historical buckets.
+- Added source-audited Codex KBs: `docs/KB-codex-platform-hooks-plugins.md`, `docs/KB-codex-workflow-orchestration.md`, and `docs/KB-omx.md`. Each has at least 10 sources and at least 2 official OpenAI sources.
+- Updated `docs/KB.md` and `llms.txt` to include the Codex KBs.
+
+### Codex parity boundary
+Current official Codex docs expose more hook events than the first migration note used for the initial port, including edit and subagent lifecycle hook names. This release intentionally registers only the Codex hook subset whose anti-hall payload contracts are currently adapted/tested: SessionStart, UserPromptSubmit, Bash PreToolUse, and Stop. Edit-time guards (`api-guard`, `ship-it-guard`) and lifecycle/compaction hooks are tracked as documented-but-not-yet-adapted Codex parity work until Codex payload adapters and tests prove them. Claude Workflow JS remains non-portable; use Codex skills/native subagents/OMX/scripts instead.
+
+Codex/OMX statusline parity is explicitly bounded: Claude Code supports a command-backed `statusLine`, so anti-hall can append the `AH: Vx.y.z` chip there. Codex `[tui].status_line` is documented as built-in footer item IDs only, so the Codex port documents the limitation rather than injecting an unsupported custom item.
+
+### Claude compatibility
+The Claude manifest remains present and versioned, and the Claude hook/skill files remain in their existing locations. The Codex port lives in separate `codex/` and `.codex-plugin/` paths.
+
 ## 0.40.0
 
 **Ponytail-derived heavier features: two new skills (`simplify`, `debt`) + a zero-API eval rescorer.**

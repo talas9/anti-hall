@@ -4,12 +4,11 @@
 
 # 🛡️ anti-hall
 
-### Make Claude Code *verify before it claims* — and ship the workflow skills that enforce it.
+### Make Claude Code and Codex *verify before they claim* — with platform-native guardrails and workflow skills.
 
-[![tests](https://github.com/talas9/anti-hall/actions/workflows/test.yml/badge.svg)](https://github.com/talas9/anti-hall/actions/workflows/test.yml) [![version](https://img.shields.io/github/v/tag/talas9/anti-hall?label=version)](https://github.com/talas9/anti-hall/releases) [![license](https://img.shields.io/github/license/talas9/anti-hall)](LICENSE) ![node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen) ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2)
+[![tests](https://github.com/talas9/anti-hall/actions/workflows/test.yml/badge.svg)](https://github.com/talas9/anti-hall/actions/workflows/test.yml) [![version](https://img.shields.io/github/v/tag/talas9/anti-hall?label=version)](https://github.com/talas9/anti-hall/releases) [![license](https://img.shields.io/github/license/talas9/anti-hall)](LICENSE) ![node](https://img.shields.io/badge/node-%E2%89%A518-brightgreen) ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2) ![Codex port](https://img.shields.io/badge/Codex-port-111827)
 
-A Claude Code **marketplace + plugin** that installs always-on hooks, evidence-driven
-workflow skills, and a live two-line statusline. Pure Node.js, no dependencies, runs on
+A Claude Code **marketplace + plugin** plus a separate Codex-native port that installs always-on hooks where each platform supports them, evidence-driven workflow skills, and a live two-line statusline for Claude Code. Pure Node.js, no dependencies, runs on
 **macOS · Linux · Windows**. The only prerequisite is Node ≥ 18 on `PATH`.
 
 ```bash
@@ -17,9 +16,38 @@ workflow skills, and a live two-line statusline. Pure Node.js, no dependencies, 
 /plugin install anti-hall@anti-hall
 ```
 
+Codex project-local activation:
+
+```bash
+node plugins/anti-hall/codex/install-codex.js
+```
+
+Codex global activation:
+
+```bash
+node plugins/anti-hall/codex/install-codex.js --global
+```
+
 </div>
 
 ---
+
+## Codex / OMX port
+
+The Claude plugin remains the authoritative Claude Code package. The Codex port is intentionally separate:
+
+- Manifest: `plugins/anti-hall/.codex-plugin/plugin.json`
+- Installer: `plugins/anti-hall/codex/install-codex.js`
+- Skills: `plugins/anti-hall/codex/skills/*/SKILL.md`
+- Local launch helper: `./cx.sh` (OMX `--madmax` wrapper)
+
+Codex hook parity is not 1:1 with Claude Code. The Codex installer hard-registers the surfaces Codex can enforce today: `SessionStart`, `UserPromptSubmit`, Bash `PreToolUse`, and `Stop`. Claude edit-time gates (`api-guard`, `ship-it-guard`), subagent lifecycle hooks, compaction/session-end hooks, and Claude Workflow JS are represented as Codex skills/protocols until their Codex payload contracts are adapted and tested.
+
+Codex skills include `anti-hall-context-conserve`, `anti-hall-feature-launch`, `anti-hall-ship-it`, `anti-hall-deadly-loop`, `anti-hall-doctor`, `anti-hall-update`, and `anti-hall-omx`. Debate/review gates use `gpt-5.5`; settled implementation uses `gpt-5.4`; mechanical lookup/commands use `gpt-5.4-mini` or `gpt-5.3-codex-spark`.
+
+Codex/OMX statusline note: Claude Code supports command-backed `statusLine`, so anti-hall can append the `AH: Vx.y.z` chip there. Codex `[tui].status_line` is documented as built-in footer item IDs only; this port does not inject an unsupported custom `anti-hall-version` item. Use `omx hud` / Codex built-ins for Codex HUD, and keep the Claude statusline installer for Claude Code.
+
+Codex KBs: `docs/KB-codex-platform-hooks-plugins.md`, `docs/KB-codex-workflow-orchestration.md`, and `docs/KB-omx.md`. Each carries a source audit with at least 10 sources and at least 2 official OpenAI sources.
 
 ## Why it exists
 

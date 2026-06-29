@@ -1,0 +1,41 @@
+{
+  "name": "anti-hall",
+  "version": "0.41.0",
+  "description": "Verify-first discipline for Codex. Bundles Codex-native skills plus an installer for the Codex hook subset that can be enforced today: session/prompt nudges, shell-command guards, Stop guards, graphify reminders, task discipline, and speculation checks. Claude Code plugin files are kept separate and unchanged.",
+  "author": {
+    "name": "Mohammed Talas",
+    "url": "https://github.com/talas9"
+  },
+  "homepage": "https://github.com/talas9/anti-hall",
+  "repository": "https://github.com/talas9/anti-hall",
+  "license": "MIT",
+  "keywords": [
+    "verification",
+    "anti-hallucination",
+    "codex",
+    "quality",
+    "guards",
+    "workflow"
+  ],
+  "skills": "./codex/skills/",
+  "interface": {
+    "displayName": "Anti-Hall",
+    "shortDescription": "Verify-first guardrails and workflows for Codex",
+    "longDescription": "Anti-Hall brings verify-first discipline, command/git guards, task reminders, graphify-first nudges, and Codex-native workflow guidance to Codex. Some Claude edit-time and subagent lifecycle hooks have no direct Codex equivalent; those are exposed as skill/workflow protocols instead of pretending to hard-block.",
+    "developerName": "Mohammed Talas",
+    "category": "Developer Tools",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/talas9/anti-hall",
+    "privacyPolicyURL": "https://github.com/talas9/anti-hall",
+    "termsOfServiceURL": "https://github.com/talas9/anti-hall/blob/main/LICENSE",
+    "defaultPrompt": [
+      "Use anti-hall to verify this change before claiming it is done"
+    ],
+    "brandColor": "#111827",
+    "screenshots": []
+  },
+  "hooks": "./codex/hooks/hooks.json"
+}

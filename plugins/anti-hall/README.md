@@ -74,6 +74,33 @@ claude --plugin-dir /path/to/anti-hall
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
 | `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`companion/README.md`](companion/README.md). |
 
+## Codex port
+
+This repository now ships a separate Codex-native port without moving or rewriting the Claude plugin surface.
+
+- Codex manifest: [`plugins/anti-hall/.codex-plugin/plugin.json`](.codex-plugin/plugin.json)
+- Codex installer: [`plugins/anti-hall/codex/install-codex.js`](codex/install-codex.js)
+- Codex docs: [`plugins/anti-hall/codex/README.md`](codex/README.md)
+- Codex skills: [`plugins/anti-hall/codex/skills/`](codex/skills/)
+
+Install project-local Codex hooks:
+
+```bash
+node plugins/anti-hall/codex/install-codex.js
+```
+
+Install global Codex hooks:
+
+```bash
+node plugins/anti-hall/codex/install-codex.js --global
+```
+
+The Codex installer registers the supported hook subset only: SessionStart, UserPromptSubmit, Bash PreToolUse, and Stop. Claude-only edit-time gates and lifecycle hooks stay documented as skill/workflow protocols in Codex until Codex payload adapters and tests prove parity. The Claude `.claude-plugin` manifest, hooks, skills, statusline, and companion files remain in their existing locations.
+
+Codex statusline boundary: Claude Code's command-backed statusline can append the anti-hall `AH: Vx.y.z` chip. Codex/OMX `[tui].status_line` is documented as built-in item IDs only, so the Codex port does not add an unsupported custom anti-hall footer item.
+
+Codex repo marketplace compatibility is provided by [`../../.agents/plugins/marketplace.json`](../../.agents/plugins/marketplace.json), which points Codex at `./plugins/anti-hall` using the official local marketplace shape.
+
 ## How it works
 
 ### Verify-first protocol (the core)
