@@ -115,6 +115,22 @@ answer calls again:
 ANTHROPIC_API_KEY=sk-... node eval/grade.js eval/results.json
 ```
 
+To recompute the **summary** stats (protocol/baseline fabrication rates, delta, and
+per-task differences) from already-graded result files with **zero API calls** — no
+answer calls *and* no judge calls — use `rescore.js`. It reads `records[].fabricated`
+straight from the saved files, so it's free to run and useful for re-aggregating or
+combining runs:
+
+```bash
+node eval/rescore.js eval/results-hard.json                 # one file
+node eval/rescore.js eval/results-powered-c*.json           # aggregate across runs
+```
+
+`rescore.js --selftest <files…>` is an integrity gate: it re-derives each file's summary
+from its own records and fails (exit 1) on any schema violation or count/rate mismatch —
+catching hand-edited or corrupted result files before they're trusted. Without
+`--selftest` it's pure reporting and always exits 0.
+
 ## Honest caveats
 
 - **The judge needs human spot-check calibration.** An LLM judge can mis-grade

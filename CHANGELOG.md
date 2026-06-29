@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.40.0
+
+**Ponytail-derived heavier features: two new skills (`simplify`, `debt`) + a zero-API eval rescorer.**
+
+### New skill: `/anti-hall:simplify` — measured, behavior-preserving simplification
+A harvest-then-prove pass over recently-changed (or named) code. Each finding gets exactly one tag — `delete:` (dead code), `stdlib:` (reinvented stdlib), `native:` (reimplemented builtin), `yagni:` (premature generality), `shrink:` (verbose equivalent), `slop:` (AI-slop filler) — the safe set is applied, the SAME tests are re-run, and the result is scored as a single `net: -N lines`. Crucially the score is the **measured** post-apply diff delta (`git diff --shortstat`), never a projected "you'll save ~X" estimate — that's the exact unverifiable saved-X claim verify-first rule 10 forbids. Behavior-preserving by contract: anything that removes a capability is declined as a scope change, not applied.
+
+### New skill: `/anti-hall:debt` — a register for *deliberate*, budgeted debt
+Introduces the `// anti-hall: <ceiling>,<when>` marker — a budgeted, harvestable alternative to vague TODOs. `<ceiling>` is the limit you consciously accepted (e.g. `30 lines`, `O(n^2)`); `<when>` is the concrete payback trigger (e.g. `when >3 callers`). New `plugins/anti-hall/scripts/harvest-debt.js` (pure Node, comment-syntax-agnostic across `//` `#` `--` `/* */` `<!-- -->`) greps the tree, parses each marker, and flags **rot-risk** (`no-trigger`) when a marker has no `<when>` *or* sits in code git-untouched past a staleness threshold (default 90 days; fail-open when git is absent). Explicitly **not** a license to skip real work — lazy TODO/stub patterns remain blockers; the marker is the narrow, defensible exception.
+
+### New: `eval/rescore.js` — recompute eval stats with zero API calls
+Recomputes the summary block (protocol/baseline fabrication rates, delta, per-task differences) straight from saved `records[].fabricated` — no answer calls *and* no judge calls (distinct from `grade.js`, which re-calls the judge). Aggregates across multiple result files. `--selftest` is an integrity gate: it re-derives each file's summary from its own records and fails (exit 1) on any schema violation or count/rate mismatch, catching hand-edited or corrupted result files. 21 new tests (`tests/eval/rescore.test.js`, `tests/hooks/harvest-debt.test.js`); suite 646 (644 pass / 2 skip).
+
 ## 0.39.0
 
 **Subagents now receive the verify-first Iron Law (new SubagentStart hook) + guard/hardening refinements.**
