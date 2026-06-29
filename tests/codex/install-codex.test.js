@@ -84,6 +84,6 @@ test('install-codex: preserves non anti-hall hooks and replaces stale anti-hall 
     const commands = pre.flatMap(g => g.hooks || []).map(h => h.command);
     assert.ok(commands.includes('echo keep-me'));
     assert.ok(!commands.some(c => c.includes('/old.js')));
-    assert.ok(commands.some(c => c.includes('/git-guard.js')));
+    assert.ok(commands.some(c => /[\\/]git-guard\.js$/.test(c.replace(/\"$/, ''))));
   } finally { t.cleanup(); }
 });

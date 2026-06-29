@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.41.1
+
+**CI fix for Codex installer tests.**
+
+- Fixed the new Codex installer regression test to accept both POSIX and Windows path separators when checking generated hook commands. No runtime behavior change.
+
 ## 0.41.0
 
 **Codex/OMX port without disturbing the Claude plugin surface.**
