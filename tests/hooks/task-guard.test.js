@@ -125,7 +125,10 @@ test('IDLE NEGLECT: actionable-now pending + no agents -> idle-neglect block nam
   }
 });
 
-test('NO IDLE NEGLECT: agents running -> generic nudge, not idle-neglect', () => {
+test('GENERIC SUPPRESSED: agents running (pending tasks) -> NO block at all (FIX 2)', () => {
+  // With FIX 2: agentsRunning() true + !idleNeglect -> suppress the generic block
+  // entirely (soft advisory only). Previously this was a generic (non-idle-neglect)
+  // block; now it is suppressed because live orchestration is picking up those tasks.
   const h = makeHome();
   try {
     writeFreshAgent(h, 'worker-a');
@@ -136,8 +139,43 @@ test('NO IDLE NEGLECT: agents running -> generic nudge, not idle-neglect', () =>
       ]),
     ]);
     const r = testHook(HOOK, stopPayload(tp), { home: h.home });
-    assert.ok(isBlock(r), `expected a block; stdout: ${r.stdout}`);
-    assert.ok(!isIdleNeglect(r), `agents running -> must NOT be idle-neglect; reason: ${r.json && r.json.reason}`);
+    assert.ok(!isBlock(r), `agents running -> generic block must be suppressed; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('GENERIC SUPPRESSED: open in_progress task + fresh recent-spawn.json -> NO block (FIX 2)', () => {
+  // The phase-tracker heartbeat (recent-spawn.json) makes agentsRunning() true.
+  // An in_progress task is open but the live agent is handling it -> suppress generic block.
+  const h = makeHome();
+  try {
+    const fs2 = require('node:fs');
+    const path2 = require('node:path');
+    const agentsDir = path2.join(h.antiHall, 'agents');
+    fs2.mkdirSync(agentsDir, { recursive: true });
+    fs2.writeFileSync(path2.join(agentsDir, 'recent-spawn.json'),
+      JSON.stringify({ ts: Date.now() }), 'utf8');
+    const tp = h.writeTranscript([
+      todoWrite([{ id: '1', content: 'work in progress', status: 'in_progress' }]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(!isBlock(r), `live agent + in_progress task -> generic block suppressed; stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('GENERIC block FIRES: open in_progress task + NO heartbeat -> blocks (FIX 2)', () => {
+  // No heartbeat => agentsRunning() false => genuinely-neglected in_progress task => block.
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([
+      todoWrite([{ id: '1', content: 'stalled work', status: 'in_progress' }]),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.ok(isBlock(r), `no agents + in_progress task -> generic block must fire; stdout: ${r.stdout}`);
+    assert.ok(!isIdleNeglect(r), `in_progress is not actionable -> not idle-neglect; reason: ${r.json && r.json.reason}`);
   } finally {
     h.cleanup();
   }

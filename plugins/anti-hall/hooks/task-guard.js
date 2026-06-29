@@ -204,6 +204,24 @@ function main() {
     // detection error → fall through to normal block
   }
 
+  // FIX 2: Generic block suppression — when live agents are active, the generic
+  // "open tasks remain" nudge would fire even though those agents are picking up
+  // the open tasks. Suppress it (soft advisory, no decision:block) to avoid
+  // interrupting genuine parallel orchestration. The idle-neglect sharp block
+  // (pending + no agents) is unaffected — it fires via the idleNeglect branch above.
+  // An in_progress task that carries an owner is also "being worked" — the owner
+  // field already excludes it from the actionable set (classifyOpen only returns
+  // pending+unowned tasks), so when haveAgents catches the rest no extra check is needed.
+  // State is NOT written here (no block counter increment) so a future Stop after
+  // agents finish can still hard-block on genuinely neglected work.
+  if (!idleNeglect && haveAgents) {
+    // fs.writeSync(1): stdout.write races the async pipe flush on macOS node 18/20.
+    fs.writeSync(1,
+      '[task-guard] open tasks remain but live agents are active — deferring Stop block.\n'
+    );
+    process.exit(0);
+  }
+
   // Write the new state before blocking (so a no-op next Stop won't re-block and
   // the cap is enforced even if the set keeps changing).
   try {

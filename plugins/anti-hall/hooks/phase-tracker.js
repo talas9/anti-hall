@@ -70,6 +70,26 @@ try {
     fs.mkdirSync(DIR, { recursive: true });
     fs.writeFileSync(LOG, lines.join('\n') + '\n', 'utf8');
   } catch (e) { /* fail-open: can't persist -> just don't track */ }
+
+  // FIX 1: Write a rolling heartbeat so agentsRunning() (task-guard / tasklist-guard /
+  // task-tracker) can detect live orchestration. Those functions read
+  // ~/.anti-hall/agents/*.json and check data.ts (number) within a 20-min window;
+  // recent-spawn.json satisfies that contract exactly.
+  //
+  // Semantics: agentsRunning() returns true for ~20 min after the most recent Agent/Task
+  // spawn. The false-positive direction (heartbeat lingers up to 20 min after agents
+  // finish) only SUPPRESSES nags — the safe direction. Known limitation: a long-running
+  // agent (>20 min) without a new spawn will not be detected; per-subagent refresh is a
+  // future enhancement. One rolling file (overwritten each spawn) — no unbounded growth.
+  try {
+    const agentsDir = path.join(DIR, 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(agentsDir, 'recent-spawn.json'),
+      JSON.stringify({ ts: now }),
+      'utf8'
+    );
+  } catch (e) { /* fail-open: heartbeat write failure MUST NEVER block a spawn */ }
 } catch (e) {
   /* never throw */
 }

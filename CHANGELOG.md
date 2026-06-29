@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.38.2
+
+**Fix: `agentsRunning()` was inert — the parallel-orchestration guard exemptions never fired.**
+
+`agentsRunning()` (consumed by task-guard, tasklist-guard, task-tracker) reads `~/.anti-hall/agents/*.json` heartbeats, but NOTHING wrote them, so it always returned false — the 0.36.1 multiple-in_progress exemption and the idle-neglect "no agents running" signal were no-ops, and the Stop guards nagged even while background agents were actively working. Fix:
+- `phase-tracker.js` now writes a rolling heartbeat `~/.anti-hall/agents/recent-spawn.json` (`{ts}`) on every Agent/Task spawn (fail-open; the existing `agent-spawns.log` write is unchanged). `agentsRunning()` returns true for ~20 min after the most recent spawn = active orchestration, so the agent-aware exemptions ACTUALLY fire now. (A single agent running >20 min with no new spawn is a known limitation — a per-subagent refresh is a future enhancement.)
+- `task-guard.js`: the generic "open tasks remain at Stop" block now suppresses when agents are live (it was firing on in_progress/owned tasks regardless of agent state). Genuinely-neglected work (open tasks + no live agent) still blocks.
+- +6 tests.
+
 ## 0.38.1
 
 Test + docs maintenance: de-coupled the statusline minor/major-ahead test fixtures from the hardcoded version (now derived from plugin.json so they never go stale on a bump); refreshed stale test-count references in README/llms.txt/KB.md.
