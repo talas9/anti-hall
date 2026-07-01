@@ -24,12 +24,24 @@
 | Price $/M (in / out) | $5 / $25 | **$3 / $15** ($2/$10 intro → Aug 31 2026) | **$1 / $5** |
 | Context / max output | 1M / 128k | 1M / 128k (300k batch) | 200k / 64k |
 | Thinking | adaptive, scales with `effort` | adaptive, scales with `effort` | extended thinking (explicit budget) |
-| Claude Code default effort | `xhigh` | `xhigh` | — |
+| Claude Code/API default effort | `high` | `high` | n/a (no `effort` support) |
 | Knowledge cutoff | Jan 2026 | Jan 2026 | Feb 2025 |
 
-Notes: `xhigh` is the Claude Code default for Opus 4.8, Sonnet 4.6, **and** Sonnet 5 (it was never
-Sonnet-only). Sonnet 5 does **not** support `temperature` / `top_p` / `top_k`. Opus 4.8, Sonnet 5,
-and Opus 4.7 share the newer tokenizer (~1.3–1.35× tokens vs pre-4.6 for the same English text).
+> **Correction (2026-07-01):** an earlier version of this KB claimed `xhigh` was the default effort
+> for Opus 4.8/Sonnet 5. That was wrong — verified against the live official effort docs
+> (`platform.claude.com/docs/en/build-with-claude/effort`, fetched 2026-07-01): **`high` is the
+> default** ("produces exactly the same behavior as omitting the `effort` parameter entirely");
+> `xhigh` is an available, non-default tier. Corrected below; see `docs/KB-token-usage-models.md`
+> for the full effort-tier + billing research this correction came from.
+
+Notes: the full API effort taxonomy is **five tiers** — `low`, `medium`, `high` (default), `xhigh`,
+`max` — not a Sonnet-specific set. `xhigh` support is narrow: only Opus 4.8, Opus 4.7, and Sonnet 5
+among the models in this KB (official). **Haiku 4.5 does not support the `effort` parameter (or
+adaptive thinking) at all** — it's legacy manual `thinking:{budget_tokens}` only. Sonnet 5 does
+**not** support `temperature` / `top_p` / `top_k`. Opus 4.8 and Sonnet 5 share the newer tokenizer
+introduced at Opus 4.7 (official range: ~1.0–1.35× tokens vs pre-4.7 for the same text, "~30%"
+aggregate; independent testing found up to ~1.47× for some content types — see
+`docs/KB-token-usage-models.md` §3 for the full tokenizer research).
 
 ## 3. Benchmarks (source-tagged; directional)
 | Benchmark | Opus 4.8 | Sonnet 5 | Haiku 4.5 | Winner |
