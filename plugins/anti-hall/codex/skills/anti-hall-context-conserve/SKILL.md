@@ -39,6 +39,11 @@ When conservation is active and the **main/coordinator** agent is on `gpt-5.5`, 
 - **NEVER** downshift to `gpt-5.4-mini` (only 400k context; context loss is unacceptable).
 - Keep `gpt-5.5` for delegated hard-reasoning subagents and on-demand escalation.
 - Codex cannot self-switch its own model — **surface this recommendation to the user** or let OMX/orchestration layer set it.
+- **Long-context cost premium:** both `gpt-5.4` and `gpt-5.5` incur a confirmed 2× input / 1.5×
+  output multiplier once a request exceeds ~272K input tokens — this applies regardless of which
+  of the two you're on. For a very-large-context task (a big repo dump, a huge diff), consider
+  capping scope or routing to a Claude model instead (no equivalent premium up to 1M there). See
+  `docs/KB-token-usage-models.md` §2/§7.
 
 ## Codex routing policy
 

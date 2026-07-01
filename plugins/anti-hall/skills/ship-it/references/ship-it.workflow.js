@@ -140,13 +140,26 @@ async function reviewerAgent(p) {
       // Reviewer = Sonnet 5 (model:'sonnet', effort xhigh, resolved at runtime); if Fable returns, reconsider.
       label: p.label + ':reviewer', model: 'sonnet', effort: 'xhigh',
     });
-    if (r !== null) return r; // flagship succeeded
+    if (r) return r; // flagship succeeded
     log('ship-it: Reviewer unavailable for "' + p.label + '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
   }
   // Fable✗ -> Opus Reviewer (divergent), per the availability fallback matrix.
   return agent(reviewerBrief(p), {
     schema: VERDICT_SCHEMA, run_in_background: true,
     label: p.label + ':reviewer(opus-fallback)', model: 'opus',
+  });
+}
+
+async function criticAgent(p) {
+  const r = await agent(criticBrief(p), {
+    schema: VERDICT_SCHEMA, run_in_background: true,
+    label: p.label + ':critic', agentType: 'codex:codex-rescue',
+  });
+  if (r) return r; // Codex critic succeeded
+  log('ship-it: Critic unavailable for "' + p.label + '" — falling back to Opus Critic (MODEL-POLICY matrix).');
+  return agent(criticBrief(p), {
+    schema: VERDICT_SCHEMA, run_in_background: true,
+    label: p.label + ':critic(opus-fallback)', model: 'opus',
   });
 }
 
@@ -237,7 +250,7 @@ async function main() {
       const audit = await parallel([
         () => reviewerAgent(p), // Sonnet 5 with documented Opus fallback (see reviewerAgent)
         () => agent(auditorBrief(p),  { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':auditor', model: 'opus', effort: 'high' }),
-        () => agent(criticBrief(p),   { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':critic', agentType: 'codex:codex-rescue' }),
+        () => criticAgent(p), // Codex with documented Opus fallback (see criticAgent)
       ]);
       results[p.label].review = { reviewer: audit[0], auditor: audit[1], critic: audit[2] };
     }

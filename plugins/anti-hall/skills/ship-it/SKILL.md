@@ -231,8 +231,12 @@ Use the **`Workflow` tool / Dynamic Workflows** to fan out at L. Primitives:
   - Step 3 auditors (Reviewer + Auditor + Critic trio, disjoint lenses).
   - Step 4 phases in the same `parallel_group` (disjoint files, no dependency).
   - Step 5 per-phase deadly-loops (Reviewer + Auditor + Critic trio, same phase diff).
-- **Caps:** ~`min(16, cores-2)` in-flight agents; 1000 total per run. **Cost: many tokens —
-  test on a small slice first.** Determinism: no `Date.now()` / `Math.random()` / argless
+- **Caps:** ~`min(16, cores-2)` in-flight agents (this repo's own working assumption, not
+  Anthropic-documented — official docs only guarantee "up to 16, fewer on limited-CPU
+  machines"; see `docs/KB-token-usage-models.md` §5/§9); 1000 total per run. **Cost: many
+  tokens** — Anthropic's own measurement: multi-agent fan-out costs ~15× a single chat
+  turn, ~4× for a lone agent (`docs/KB-token-usage-models.md` §5) — **test on a small
+  slice first.** Determinism: no `Date.now()` / `Math.random()` / argless
   `new Date()` in the workflow script; pass seeds/timestamps via `args`.
 
 > **Want this as a reusable `/ship-it` command?** A copyable Dynamic-Workflow template
@@ -424,9 +428,11 @@ inherit these guards; a background agent cannot bypass a gate the main thread co
   the build-unlock gate. No code/edits before approval.
 - **`Workflow` tool / Dynamic Workflows** (Claude Code built-in) — the swarm mechanism for
   the **L-only** Step 4 build fan-out and the Step 3/5 auditor `parallel([...])` stages.
-  Main thread coordinates; concurrency capped at ~`min(16, cores-2)`. Determinism: no
+  Main thread coordinates; concurrency capped at ~`min(16, cores-2)` (working assumption,
+  see line 234 caveat). Determinism: no
   `Date.now()` / `Math.random()` / argless `new Date()`; pass seeds via `args`. Cost: many
-  tokens — test on a small slice first. S/M don't use it.
+  tokens (~15× a chat turn per Anthropic's own measurement — `docs/KB-token-usage-models.md`
+  §5) — test on a small slice first. S/M don't use it.
 - **`deadly-loop`** (same plugin) — the debate engine for Steps 3 & 5 (Reviewer + Auditor + Critic trio per
   its `references/MODEL-POLICY.md`), the A3 branch/SHA verification preamble (Step 4.2), the
   validation table (Step 4.5), and the D1.5 fresh-evidence + vacuous-test convergence gate.

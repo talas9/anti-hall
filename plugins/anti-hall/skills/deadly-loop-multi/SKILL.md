@@ -70,10 +70,14 @@ section). The main thread stays a coordinator (orchestration discipline): it dis
 swarm, keeps itself free, and synthesizes — it does not do the auditing itself.
 
 **Capacity math (the DISPATCH wave):** respect the concurrency cap
-(~`min(16, cores-2)`) AND the swarm-guard spawn cap (≤ 20 spawns / 60 s). At quadruple
+(~`min(16, cores-2)` — this repo's own working assumption, not an Anthropic-documented
+formula; official docs only guarantee "up to 16 concurrent agents, fewer on machines with
+limited CPU cores," no disclosed subtraction constant, see `docs/KB-token-usage-models.md`
+§5/§9) AND the swarm-guard spawn cap (≤ 20 spawns / 60 s). At quadruple
 the dispatch is **12 auditors** (4 Reviewers + 4 Auditors + 4 Critics) — 12 ≤ `min(16,
 cores-2)` on an 8-core+ host and 12 ≤ 20/60 s, so the whole trio fan-out fits in ONE
-wave. **Retry arithmetic:** the one-retry-per-seat rule can add up to 12 more spawns in
+wave (treat the "fits in one wave" claim as a working estimate, not a guarantee, per the
+caveat above). **Retry arithmetic:** the one-retry-per-seat rule can add up to 12 more spawns in
 the same 60 s window (12 + 12 = 24 > the 20-cap), so at multiplier **≥ triple, retries
 are SEQUENTIAL after the wave settles** (or accept the documented +1-entry
 blocked-retry cost). **Wave children** (the fix-wave executors, if you fix-and-reconverge)
@@ -136,7 +140,8 @@ audit spawns — state this explicitly when you dispatch.
 7. **Report** the deduped issue list + easy wins, with the agent that raised each.
 
 ## Notes
-- Respect the swarm concurrency cap (~min(16, cores-2)) AND the swarm-guard spawn cap
+- Respect the swarm concurrency cap (~min(16, cores-2) — working assumption, not
+  Anthropic-documented; see the caveat above) AND the swarm-guard spawn cap
   (≤ 20 / 60 s); quadruple = 12 agents fits one wave (12 ≤ min(16, cores-2) on 8+ cores,
   12 ≤ 20/60 s), but don't stack it with other large fan-outs, and keep retries sequential
   at ≥ triple so 12 + retries doesn't blow the 20-cap.

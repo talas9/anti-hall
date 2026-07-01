@@ -256,6 +256,21 @@ function investigateBrief(seat, a, packText, driftReason) {
   return lines.join('\n');
 }
 
+async function investigateAgent(seat, a, packText, driftReason, labelSuffix) {
+  const label = seat.label + (labelSuffix || '');
+  const brief = investigateBrief(seat, a, packText, driftReason);
+  const r = await agent(brief, {
+    ...seat.opts, label, schema: VERDICT_SCHEMA,
+  });
+  if (r) return r;
+  if (seat.role !== 'reviewer' || !seat.opts || seat.opts.model !== 'sonnet') return r;
+  log('round ' + a.round + ': Reviewer unavailable for "' + label +
+    '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
+  return agent(brief, {
+    ...seat.opts, label: label + '(opus-fallback)', model: 'opus', schema: VERDICT_SCHEMA,
+  });
+}
+
 // ---- Phase 2b: ARGUE brief -------------------------------------------------
 function argueBrief(seat, a, packText, peerFindings) {
   return [
@@ -352,9 +367,7 @@ async function main() {
   // ---- Phase 2a: INVESTIGATE (parallel) ------------------------------------
   phase('Investigate: ' + seats.length + ' seat(s) in parallel (round ' + round + ')');
   let reports = await parallel(seats.map((seat) => () =>
-    agent(investigateBrief(seat, a, packText, null), {
-      ...seat.opts, label: seat.label, schema: VERDICT_SCHEMA,
-    })));
+    investigateAgent(seat, a, packText, null, '')));
 
   // ---- Drift check + respawn-once ------------------------------------------
   const respawnQuota = (typeof a.respawnQuota === 'number') ? a.respawnQuota : 1;
@@ -363,9 +376,7 @@ async function main() {
     if (reason && respawnQuota > 0) {
       log('round ' + round + ': seat ' + seats[i].label + ' DRIFTED (' + reason +
         ') — respawning once with corrected brief.');
-      reports[i] = await agent(investigateBrief(seats[i], a, packText, reason), {
-        ...seats[i].opts, label: seats[i].label + ':respawn', schema: VERDICT_SCHEMA,
-      });
+      reports[i] = await investigateAgent(seats[i], a, packText, reason, ':respawn');
     } else if (reason) {
       log('round ' + round + ': seat ' + seats[i].label + ' DRIFTED (' + reason +
         ') and respawn quota exhausted — counting as DEGRADED.');

@@ -97,7 +97,9 @@ isolated, fire-and-collect work.
 - **Partition before you parallelize.** Write down which files/dirs each agent owns;
   overlapping ownership is the #1 cause of clobbered work.
 - **Don't fan out beyond the work.** A 3-file change doesn't need 10 agents. Scale the
-  swarm to the actual independent units.
+  swarm to the actual independent units. This isn't a style preference — Anthropic's own
+  measurement: multi-agent fan-out costs ~15× a single chat turn, a lone agent ~4×, and
+  Claude Code's Agent Teams ~7× in plan mode (`docs/KB-token-usage-models.md` §5).
 - **Tear down what you set up.** Worktrees, teams, and background jobs are cleaned up
   when the work is integrated. Don't leave orphans.
 - **Surface, don't swallow.** If a background agent fails or is rate-limited, report

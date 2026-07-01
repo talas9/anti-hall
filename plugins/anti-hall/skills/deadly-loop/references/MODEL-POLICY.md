@@ -25,12 +25,13 @@ This governs the MAIN agent's everyday model choices (distinct from the TRIO deb
 - **Route SMART, not blindly — weigh BOTH limits.** Codex has its OWN usage limit; don't treat "use Codex" as an unconditional rule. If Codex is unavailable or rate-limited, DEGRADE immediately to a cheap Claude (Sonnet) so work continues — never strand the main agent. Do NOT retry Codex every turn: re-attempt only after the reset/`retry-after` time Codex reports, or — if none is given — after a backoff (give it time), not on the next turn. (deadly-loop/ship-it already gate the Critic seat on a `codexUp` probe and degrade to an Opus persona.)
 - See `docs/KB-codex-vs-opus-coding.md` for the evidence base; the "Codex=apply/Opus=think" split is a routing heuristic, not a capability wall.
 
-**Four governance rules (always apply):**
+**Five governance rules (always apply):**
 
 1. **Cross-model, no self-review.** The code implementer and its correctness reviewer MUST always be different models. Codex-impl → reviewed by Sonnet 5 or Opus. Sonnet 5-impl → reviewed by Codex or Opus. An agent may never review its own implementation.
 2. **Codex is the primary implementer** (conserves the Claude usage bucket). Fail over to Sonnet 5 at effort `high` when Codex is unavailable or rate-limited — never retry-loop. Back off: wait for the reset/`retry-after` time Codex reports, or a backoff window if none is given.
 3. **NEVER run Sonnet 5 at effort `max` inside loops.** Sonnet 5 TTFT at `max` is ~163 s and is cost-prohibitive at loop scale. The ceiling inside any loop is `xhigh`.
 4. **The `sonnet` tier token resolves to Sonnet 5** (`claude-sonnet-5`) at runtime. Everywhere this policy says `sonnet`, it means Sonnet 5.
+5. **Watch context size before routing to Codex.** gpt-5.4/gpt-5.5 (Codex's implementer models) incur a confirmed 2× input / 1.5× output cost premium once a request exceeds ~272K input tokens — Claude has no equivalent premium up to its 1M window. For large-context implementation tasks (roughly >200K input tokens fed to Codex — a big repo dump, a huge diff), prefer Sonnet 5 over Codex, or scope the context down first. See `docs/KB-token-usage-models.md` §2/§7.
 
 ---
 
@@ -123,6 +124,77 @@ Opus (never silently downgrade below Opus). When Codex is unavailable, the Criti
 seat becomes a 3rd Opus with the adversarial persona. In the all-Opus floor, the
 three seats keep their three DISTINCT personas (verify / regression-hunt / break)
 so objective diversity is preserved even without model diversity.
+
+---
+
+## Canonical seat-fallback pattern (copy this into every workflow script)
+
+Dynamic Workflow scripts cannot import a shared JavaScript helper, so every new
+script must copy this null-check shape instead of re-deriving it:
+
+```js
+async function reviewerSeat(brief, label) {
+  const primary = await agent(brief, {
+    schema: VERDICT_SCHEMA,
+    run_in_background: true,
+    label,
+    model: 'sonnet',
+    effort: 'xhigh',
+  });
+  if (primary) return primary;
+  log('Reviewer unavailable for "' + label + '" - falling back to Opus Reviewer.');
+  return agent(brief, {
+    schema: VERDICT_SCHEMA,
+    run_in_background: true,
+    label: label + '(opus-fallback)',
+    model: 'opus',
+  });
+}
+
+async function criticSeat(brief, label) {
+  const primary = await agent(brief, {
+    schema: VERDICT_SCHEMA,
+    run_in_background: true,
+    label,
+    agentType: 'codex:codex-rescue',
+  });
+  if (primary) return primary;
+  log('Critic unavailable for "' + label + '" - falling back to Opus Critic.');
+  return agent(brief, {
+    schema: VERDICT_SCHEMA,
+    run_in_background: true,
+    label: label + '(opus-fallback)',
+    model: 'opus',
+  });
+}
+
+async function codexImplementerSeat(brief, label) {
+  const primary = await agent(brief, {
+    schema: RESULT_SCHEMA,
+    run_in_background: true,
+    label,
+    agentType: 'codex:codex-rescue',
+  });
+  if (primary) return primary;
+  log('Codex implementer unavailable for "' + label + '" - falling back to Sonnet 5 @high.');
+  return agent(brief, {
+    schema: RESULT_SCHEMA,
+    run_in_background: true,
+    label: label + '(sonnet-fallback)',
+    model: 'sonnet',
+    effort: 'high',
+  });
+}
+```
+
+Always retry the SAME brief after a null/falsy `agent()` result, and label the
+fallback attempt distinctly. Reviewer/Auditor/Critic-shaped seats fall back to
+Opus; Codex-as-implementer seats fall back to Sonnet 5 at `high`.
+
+ship-it.workflow.js and deadly-loop.workflow.js both follow this pattern for
+their Reviewer and Critic seats as of this fix -- any NEW Dynamic Workflow script
+with a Reviewer/Auditor/Critic-shaped seat should copy this same shape rather
+than re-deriving it.
 
 ---
 
