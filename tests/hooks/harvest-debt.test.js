@@ -61,6 +61,39 @@ test('parses /* */ marker: trailing closer stripped', () => {
   } finally { cleanup(); }
 });
 
+test('parses /* */ marker without leaking trailing code into when', () => {
+  const { dir, write, cleanup } = makeTmpDir();
+  try {
+    write('a.c', 'int x = 1; /* anti-hall: 2 deps, when we drop node18 */ return x;\n');
+    const markers = harvestMarkers({ dir, gitTime: NO_GIT });
+    assert.strictEqual(markers.length, 1);
+    assert.strictEqual(markers[0].ceiling, '2 deps');
+    assert.strictEqual(markers[0].when, 'when we drop node18');
+  } finally { cleanup(); }
+});
+
+test('parses HTML marker: ceiling and when extracted correctly', () => {
+  const { dir, write, cleanup } = makeTmpDir();
+  try {
+    write('page.html', '<!-- anti-hall: 4 selectors, when CSS module lands -->\n');
+    const markers = harvestMarkers({ dir, gitTime: NO_GIT });
+    assert.strictEqual(markers.length, 1);
+    assert.strictEqual(markers[0].ceiling, '4 selectors');
+    assert.strictEqual(markers[0].when, 'when CSS module lands');
+  } finally { cleanup(); }
+});
+
+test('parses -- marker: ceiling and when extracted correctly', () => {
+  const { dir, write, cleanup } = makeTmpDir();
+  try {
+    write('query.sql', '-- anti-hall: temp index, when query planner changes\n');
+    const markers = harvestMarkers({ dir, gitTime: NO_GIT });
+    assert.strictEqual(markers.length, 1);
+    assert.strictEqual(markers[0].ceiling, 'temp index');
+    assert.strictEqual(markers[0].when, 'when query planner changes');
+  } finally { cleanup(); }
+});
+
 test('no-comma marker → when:null, rotRisk:true, rotReason mentions no trigger', () => {
   const { dir, write, cleanup } = makeTmpDir();
   try {
@@ -99,6 +132,21 @@ test('injected recent gitTime + when present → rotRisk:false', () => {
   } finally { cleanup(); }
 });
 
+test('multiple markers on one line are all captured with the same line number', () => {
+  const { dir, write, cleanup } = makeTmpDir();
+  try {
+    write('same-line.js', '// anti-hall: first ceiling, when first // anti-hall: second ceiling, when second\n');
+    const markers = harvestMarkers({ dir, gitTime: NO_GIT });
+    assert.strictEqual(markers.length, 2);
+    assert.strictEqual(markers[0].line, 1);
+    assert.strictEqual(markers[0].ceiling, 'first ceiling');
+    assert.strictEqual(markers[0].when, 'when first');
+    assert.strictEqual(markers[1].line, 1);
+    assert.strictEqual(markers[1].ceiling, 'second ceiling');
+    assert.strictEqual(markers[1].when, 'when second');
+  } finally { cleanup(); }
+});
+
 test('multiple markers in one file: all found with correct line numbers', () => {
   const { dir, write, cleanup } = makeTmpDir();
   try {
@@ -126,6 +174,16 @@ test('json-style summary counts: total, rotRisk, withTrigger', () => {
     assert.strictEqual(total, 2);
     assert.strictEqual(rotRisk, 1);       // only 'fix me' (no when)
     assert.strictEqual(withTrigger, 1);   // only 'ok, when later'
+  } finally { cleanup(); }
+});
+
+test('skips files over the size cap instead of parsing truncated content', () => {
+  const { dir, write, cleanup } = makeTmpDir();
+  try {
+    const overCap = '// anti-hall: oversized marker, when never\n' + 'x'.repeat((2 * 1024 * 1024) + 1);
+    write('large.js', overCap);
+    const markers = harvestMarkers({ dir, gitTime: NO_GIT });
+    assert.strictEqual(markers.length, 0);
   } finally { cleanup(); }
 });
 

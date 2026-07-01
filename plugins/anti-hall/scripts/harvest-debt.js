@@ -26,7 +26,7 @@ const BINARY_CHECK_BYTES = 4096;
 
 // Match any comment leader then optional whitespace then "anti-hall:" then content.
 // Leaders: //  #  --  /*  <!--
-const MARKER_RE = /(?:\/\/|#|--|\/\*|<!--)\s*anti-hall:\s*(.+)/;
+const MARKER_RE = /(?:\/\/|#|--|\/\*|<!--)\s*anti-hall:\s*(.*?)(?=(?:\/\/|#|--|\/\*|<!--)\s*anti-hall:|$)/g;
 
 function isBinary(buf) {
   const len = Math.min(buf.length, BINARY_CHECK_BYTES);
@@ -42,11 +42,8 @@ function scanFile(filePath) {
     const stat = fs.statSync(filePath);
     if (!stat.isFile()) return [];
     if (stat.size === 0) return [];
-    const fd = fs.openSync(filePath, 'r');
-    const readLen = Math.min(stat.size, MAX_FILE_BYTES);
-    buf = Buffer.alloc(readLen);
-    fs.readSync(fd, buf, 0, readLen, 0);
-    fs.closeSync(fd);
+    if (stat.size > MAX_FILE_BYTES) return [];
+    buf = fs.readFileSync(filePath);
   } catch (_) {
     return []; // fail-open
   }
@@ -55,42 +52,50 @@ function scanFile(filePath) {
   const lines = buf.toString('utf8').split('\n');
   const results = [];
   for (let i = 0; i < lines.length; i++) {
-    const m = MARKER_RE.exec(lines[i]);
-    if (!m) continue;
-    // Strip trailing comment closers (* / or -->)
-    let raw = m[1].replace(/\s*(?:\*\/|-->)\s*$/, '').trim();
-    const commaIdx = raw.indexOf(',');
-    let ceiling, when;
-    if (commaIdx === -1) {
-      ceiling = raw.trim();
-      when = null;
-    } else {
-      ceiling = raw.slice(0, commaIdx).trim();
-      when = raw.slice(commaIdx + 1).trim() || null;
+    const line = lines[i];
+    MARKER_RE.lastIndex = 0;
+    let m;
+    while ((m = MARKER_RE.exec(line)) !== null) {
+      const raw = m[1].replace(/\s*(?:\*\/|-->)\s*$/, '').trim();
+      const commaIdx = raw.indexOf(',');
+      let ceiling, when;
+      if (commaIdx === -1) {
+        ceiling = raw.trim();
+        when = null;
+      } else {
+        ceiling = raw.slice(0, commaIdx).trim();
+        when = raw.slice(commaIdx + 1).replace(/\s*(?:\*\/|-->).*$/, '').trim() || null;
+      }
+      results.push({ lineNum: i + 1, ceiling, when });
     }
-    results.push({ lineNum: i + 1, ceiling, when });
   }
   return results;
 }
 
 function walkDir(dir) {
   const files = [];
-  function walk(current) {
+  const stack = [dir];
+  while (stack.length) {
+    const current = stack.pop();
+    let stat;
+    try { stat = fs.statSync(current); }
+    catch (_) { continue; }
+    if (stat.isFile()) {
+      files.push(current);
+      continue;
+    }
+    if (!stat.isDirectory()) continue;
+
     let entries;
     try { entries = fs.readdirSync(current, { withFileTypes: true }); }
-    catch (_) { return; }
-    for (const e of entries) {
+    catch (_) { continue; }
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i];
       if (e.name === '.git' || e.name === 'node_modules') continue;
       if (e.name.startsWith('.')) continue; // skip dot-dirs/files
-      const full = path.join(current, e.name);
-      if (e.isDirectory()) {
-        walk(full);
-      } else if (e.isFile()) {
-        files.push(full);
-      }
+      if (e.isDirectory() || e.isFile()) stack.push(path.join(current, e.name));
     }
   }
-  walk(dir);
   return files;
 }
 

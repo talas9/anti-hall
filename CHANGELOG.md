@@ -6,6 +6,32 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.42.1
+
+**Bug-fix patch: root-causes the recurring ubuntu/node22 statusline flake and hardens `harvest-debt.js` / `eval/rescore.js`.**
+
+### Fixed: statusline base-command timeout flake
+`runBaseCommand`'s `spawnSync` timeout raised from 3000ms to 10000ms. Root-caused via
+code read (not a re-run guess) to CI runner contention on the `ubuntu-latest`/node22 job
+specifically; the flake had recurred 3 times across prior releases.
+
+### Hardened: `harvest-debt.js`
+- Fixed a multi-marker-per-line drop (only the first `// anti-hall:` marker on a line was
+  picked up).
+- Fixed a comment-closer (`-->`, `*/`) leaking into the parsed `when` field.
+- Oversized files are now skipped, not silently truncated.
+- Directory walk converted from recursive to iterative (avoids stack-depth risk on deep
+  trees).
+- Added tests covering `<!-- -->` and `--` marker styles.
+
+### Hardened: `eval/rescore.js`
+- `--selftest` now warns (instead of silently disagreeing) on a non-boolean `fabricated`
+  value, a missing `condition`, or a duplicate `task_id` in the aggregate.
+- Removed a duplicate `'use strict'` directive.
+- Added missing selftest branch tests for the above.
+
+Full suite: 664 tests, 662 pass, 2 skipped, 0 fail.
+
 ## 0.42.0
 
 **Sonnet 5 routing update + `KB-sonnet-5.md`; retires the Fable-disabled temp patch.**

@@ -3,6 +3,10 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 const { rescore, selftest } = require('../../eval/rescore.js');
 
 // Synthetic records: 2 protocol (1 fab), 2 baseline (0 fab)
@@ -53,6 +57,20 @@ test('rescore: empty records → zero counts and no diffs', () => {
   assert.deepStrictEqual(s.task_level_differences, []);
 });
 
+test('rescore: warns on fabricated value that is not boolean', () => {
+  const s = rescore([
+    { task_id: 'x', condition: 'protocol', fabricated: 'yes' },
+  ]);
+  assert.ok(s.warnings.some((w) => w.includes('fabricated is not boolean')));
+});
+
+test('rescore: warns on missing condition', () => {
+  const s = rescore([
+    { task_id: 'x', fabricated: false },
+  ]);
+  assert.ok(s.warnings.some((w) => w.includes('condition="undefined"')));
+});
+
 // --- selftest ---
 
 test('selftest: passes on self-consistent file', () => {
@@ -76,6 +94,18 @@ test('selftest: fails when stored fabricated count is wrong', () => {
   assert.strictEqual(result.ok, false);
   assert.ok(result.failures.length > 0);
   assert.ok(result.failures.some((f) => f.includes('fabricated')));
+});
+
+test('selftest: fails when summary block is missing', () => {
+  const result = selftest({ records: RECORDS });
+  assert.strictEqual(result.ok, false);
+  assert.ok(result.failures.some((f) => f.includes('missing summary block')));
+});
+
+test('selftest: fails when records is not an array', () => {
+  const result = selftest({ summary: rescore([]), records: { nope: true } });
+  assert.strictEqual(result.ok, false);
+  assert.ok(result.failures.some((f) => f.includes('records is not an array')));
 });
 
 test('selftest: fails when stored n is wrong', () => {
@@ -111,4 +141,30 @@ test('selftest: fails on record with invalid condition', () => {
   const result = selftest(file);
   assert.strictEqual(result.ok, false);
   assert.ok(result.failures.some((f) => f.includes('condition')));
+});
+
+test('reporting CLI: warns on duplicate task_id+condition across aggregate files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-rescore-'));
+  const a = path.join(dir, 'a.json');
+  const b = path.join(dir, 'b.json');
+  fs.writeFileSync(a, JSON.stringify({
+    records: [
+      { task_id: 'dup', condition: 'protocol', fabricated: false },
+    ],
+  }));
+  fs.writeFileSync(b, JSON.stringify({
+    records: [
+      { task_id: 'dup', condition: 'protocol', fabricated: true },
+    ],
+  }));
+
+  const result = spawnSync(process.execPath, ['eval/rescore.js', a, b], {
+    cwd: path.join(__dirname, '../..'),
+    encoding: 'utf8',
+  });
+  assert.strictEqual(result.status, 0);
+  assert.match(result.stderr, /duplicate task_id\+condition/);
+  assert.match(result.stderr, /dup\+protocol/);
+  assert.match(result.stderr, /a\.json/);
+  assert.match(result.stderr, /b\.json/);
 });

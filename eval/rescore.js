@@ -10,10 +10,8 @@
 //   node eval/rescore.js --selftest [results.json ...]         # integrity gate
 //
 // EXPORT
-//   rescore(records)      -> summary object (pure)
+//   rescore(records)      -> summary object
 //   selftest(parsedFile)  -> { ok, failures: [] }
-
-'use strict';
 
 const fs = require('fs');
 const path = require('path');
@@ -21,11 +19,24 @@ const path = require('path');
 const EPSILON = 1e-9;
 
 /**
- * rescore(records) — pure function.
+ * rescore(records).
  * Recomputes the summary object from records[].fabricated + records[].condition.
- * Returns { protocol, baseline, delta_fab_rate, task_level_differences }
+ * Returns { protocol, baseline, delta_fab_rate, task_level_differences, warnings }
  */
 function rescore(records) {
+  const warnings = [];
+  for (let i = 0; i < records.length; i++) {
+    const r = records[i];
+    const p = `record[${i}]`;
+    if (!r || typeof r !== 'object') continue;
+    if (typeof r.fabricated !== 'boolean') {
+      warnings.push(`${p}: fabricated is not boolean (got ${typeof r.fabricated})`);
+    }
+    if (r.condition !== 'protocol' && r.condition !== 'baseline') {
+      warnings.push(`${p}: condition="${r.condition}" not in {protocol,baseline}`);
+    }
+  }
+
   const proto = records.filter((r) => r.condition === 'protocol');
   const base  = records.filter((r) => r.condition === 'baseline');
 
@@ -55,7 +66,38 @@ function rescore(records) {
     if (pFab !== bFab) task_level_differences.push(task_id);
   }
 
-  return { protocol, baseline, delta_fab_rate, task_level_differences };
+  return { protocol, baseline, delta_fab_rate, task_level_differences, warnings };
+}
+
+function warnRescoreDiagnostics(file, warnings) {
+  for (const warning of warnings) {
+    console.error('WARN ' + file + ': ' + warning);
+  }
+}
+
+function duplicateTaskConditionWarnings(fileRecords) {
+  const byPair = {};
+  for (const { file, records } of fileRecords) {
+    const seenInFile = new Set();
+    for (const r of records) {
+      if (!r || typeof r !== 'object') continue;
+      if (typeof r.task_id === 'undefined' || typeof r.condition === 'undefined') continue;
+      const key = String(r.task_id) + '\u0000' + String(r.condition);
+      if (seenInFile.has(key)) continue;
+      seenInFile.add(key);
+      if (!byPair[key]) byPair[key] = { task_id: r.task_id, condition: r.condition, files: [] };
+      byPair[key].files.push(file);
+    }
+  }
+
+  return Object.values(byPair)
+    .filter((entry) => entry.files.length > 1)
+    .map((entry) => (
+      'duplicate task_id+condition ' +
+      JSON.stringify(String(entry.task_id) + '+' + String(entry.condition)) +
+      ' found in ' +
+      entry.files.join(', ')
+    ));
 }
 
 /**
@@ -147,6 +189,7 @@ if (require.main === module) {
 
   // Reporting mode — always exits 0
   const allRecords = [];
+  const fileRecords = [];
   for (const f of files) {
     let parsed;
     try {
@@ -158,6 +201,8 @@ if (require.main === module) {
     const records = Array.isArray(parsed) ? parsed : (parsed.records || []);
     const stored  = (!Array.isArray(parsed) && parsed.summary) || {};
     const computed = rescore(records);
+    warnRescoreDiagnostics(f, computed.warnings);
+    fileRecords.push({ file: f, records });
 
     console.log('\n=== ' + path.basename(f) + ' ===');
     console.log('model       : ' + (stored.model      || '(unknown)'));
@@ -179,6 +224,7 @@ if (require.main === module) {
   }
 
   if (files.length > 1 && allRecords.length) {
+    warnRescoreDiagnostics('aggregate', duplicateTaskConditionWarnings(fileRecords));
     const agg = rescore(allRecords);
     console.log('\n=== AGGREGATE (' + files.length + ' files, ' + allRecords.length + ' records) ===');
     console.log('protocol    : n=' + agg.protocol.n +

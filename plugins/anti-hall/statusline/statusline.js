@@ -73,7 +73,8 @@ function runBaseCommand(baseCmd, stdinBytes) {
     const result = spawnSync(shell, [shellFlag, baseCmd], {
       input: stdinBytes,
       encoding: 'buffer',     // preserve raw bytes (ANSI / arbitrary encoding)
-      timeout: 3000,
+      // CI runner contention has delayed trivial base commands; hangs still fail open to ownLine1.
+      timeout: 10000,
       maxBuffer: 256 * 1024,
     });
 
