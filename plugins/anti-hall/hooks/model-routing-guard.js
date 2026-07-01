@@ -10,7 +10,9 @@
 // signals in the spawn's description/prompt; keyword stuffing trivially evades it
 // (an accepted waste-ALLOW). The block path only fires on the unambiguous
 // expensive-misroute case (mechanical-only task pinned to a flagship model on a
-// generic agent), and even then a debate-role exemption applies.
+// generic agent), and even then a debate-role exemption AND a research-shaped
+// exemption apply (a research/investigate-flavored task with no unambiguous
+// execution verb present downgrades to advisory, never a hard block).
 //
 // PARENT-MODEL BLINDNESS: the hook CANNOT see the orchestrator's own model — it
 // is not in PreToolUse stdin. A spawn that OMITS `model` inherits the parent.
@@ -83,6 +85,13 @@ const MECHANICAL = [
   'run script', 'install', 'build', 'run tests', 'git push', 'deploy', 'dump',
   'export', 'tail', 'read logs', 'list', 'check status',
 ];
+
+// Subset of MECHANICAL that is UNAMBIGUOUSLY execution (ship/run/change something) —
+// as opposed to data-I/O verbs ('export', 'dump', 'list', 'check status', etc.) that
+// are equally at home as the reporting step of a genuine investigation. Used ONLY to
+// gate the research exemption below: a hard-execution signal always means "no, this
+// really is mechanical," even if a research word is also present.
+const HARD_EXECUTION = ['run script', 'install', 'build', 'run tests', 'git push', 'deploy'];
 
 // Complex signals -> opus/fable. COMPLEX ANYWHERE (description OR prompt) => never
 // block: a single planning signal vetoes the misroute classification.
@@ -194,6 +203,19 @@ function main() {
   // widened), so normalizing here would only enlarge the bypass surface.
   const exempt = ROLE_WORD_RE.test(description);
 
+  // Research exemption: a RESEARCH_RE signal (investigate/audit/trace/etc) downgrades
+  // Row 1's block to advisory too, UNLESS a HARD_EXECUTION verb is also present. This
+  // closes a real gap: RESEARCH_RE was previously consulted only by Row 6 (advisory),
+  // which never runs once Row 1 has already blocked+exited — so a genuinely
+  // research-shaped task (e.g. "investigate X, export the findings") could get
+  // hard-blocked just because it used a data-I/O verb ('export'/'dump'/'list'/'check
+  // status') from MECHANICAL instead of one of the 17 exact COMPLEX words. Gating on
+  // "no HARD_EXECUTION verb" keeps the guard's actual anti-waste purpose intact: a
+  // task that says 'deploy'/'install'/'build'/etc is still unambiguously mechanical
+  // regardless of any research word also present, so it still blocks.
+  const hardExecution = countSignals(tokens, HARD_EXECUTION) > 0;
+  const researchExempt = !hardExecution && RESEARCH_RE.test(corpus);
+
   // subagent_type qualifies for the generic-agent rows when missing OR
   // 'general-purpose'. A named custom type takes the row-3 advisory path.
   const isGenericAgent = subagentType === '' || subagentType === 'general-purpose';
@@ -217,6 +239,15 @@ function main() {
         "execution-shaped on a flagship model ('" + model + "'), but a debate-role " +
         'word in its description exempts it from blocking. If this is genuinely ' +
         "mechanical work, prefer model:'haiku'."
+      );
+    }
+    if (researchExempt) {
+      advise(
+        'MODEL-ROUTING (advisory, research-shaped exempt): this spawn looks ' +
+        "execution-shaped on a flagship model ('" + model + "'), but it also reads " +
+        'as research/investigation work with no unambiguous execution verb present, ' +
+        'so it is exempt from blocking. If this is genuinely mechanical work, prefer ' +
+        "model:'haiku' (or 'sonnet' if it authors code)."
       );
     }
     block(blockReason);

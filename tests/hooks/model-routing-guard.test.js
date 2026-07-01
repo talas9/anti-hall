@@ -108,6 +108,56 @@ test('EXEMPTION SCOPE: role word in prompt (no complex token) does NOT exempt ->
   } finally { h.cleanup(); }
 });
 
+// ------------------------------------------------- Row 1 research exemption
+
+test('ROW 1 RESEARCH EXEMPT: investigate + ambiguous data-I/O verb (no hard-execution) -> advisory', () => {
+  const h = makeHome();
+  try {
+    // 'investigate' (RESEARCH_RE) + 'export'/'check status' (MECHANICAL, but not
+    // HARD_EXECUTION) -> the real-world bug: a genuine investigation task using a
+    // data-output verb instead of one of the 17 exact COMPLEX words used to get
+    // hard-blocked, because RESEARCH_RE was only ever consulted by Row 6, which
+    // never runs once Row 1 has already block()+exit(2)'d.
+    const r = testHook(HOOK, payload({
+      model: 'opus',
+      subagent_type: 'general-purpose',
+      description: 'investigate the old-version device population',
+      prompt: 'check status of Firestore writes and export the findings',
+    }), { home: h.home });
+    assertAdvisory(r, /research-shaped exempt/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 1 RESEARCH EXEMPT does NOT apply when a HARD_EXECUTION verb is present -> BLOCK stands', () => {
+  const h = makeHome();
+  try {
+    // 'investigate' is present, but so is 'deploy' (HARD_EXECUTION) -- a research
+    // word must not mask an unambiguous execution verb; this must still block.
+    const r = testHook(HOOK, payload({
+      model: 'opus',
+      subagent_type: 'general-purpose',
+      description: 'investigate the build, then deploy it',
+      prompt: 'install dependencies and run tests before deploying',
+    }), { home: h.home });
+    assertBlock(r, /flagship model/);
+  } finally { h.cleanup(); }
+});
+
+test('ROW 1 RESEARCH EXEMPT: bare ambiguous MECHANICAL verbs with NO research signal still BLOCK', () => {
+  const h = makeHome();
+  try {
+    // Sanity check: without a RESEARCH_RE match at all, ambiguous data-I/O verbs
+    // alone (no research word) must still block exactly as before this fix.
+    const r = testHook(HOOK, payload({
+      model: 'opus',
+      subagent_type: 'general-purpose',
+      description: 'export the report',
+      prompt: 'dump the list and check status',
+    }), { home: h.home });
+    assertBlock(r, /flagship model/);
+  } finally { h.cleanup(); }
+});
+
 // --------------------------------------------------------- Row 2 (omitted model)
 
 // ROW 2: strict is now the DEFAULT (v0.35.0+). Advisory is the opt-out.
