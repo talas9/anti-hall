@@ -72,6 +72,18 @@ test('parses /* */ marker without leaking trailing code into when', () => {
   } finally { cleanup(); }
 });
 
+test('no-comma marker with trailing code does not leak the closer into ceiling', () => {
+  const { dir, write, cleanup } = makeTmpDir();
+  try {
+    write('a.c', '/* anti-hall: solo ceiling */ doStuff();\n');
+    const markers = harvestMarkers({ dir, gitTime: NO_GIT });
+    assert.strictEqual(markers.length, 1);
+    assert.strictEqual(markers[0].ceiling, 'solo ceiling');
+    assert.strictEqual(markers[0].when, null);
+    assert.strictEqual(markers[0].rotRisk, true, 'no-when marker is still rot-risk');
+  } finally { cleanup(); }
+});
+
 test('parses HTML marker: ceiling and when extracted correctly', () => {
   const { dir, write, cleanup } = makeTmpDir();
   try {

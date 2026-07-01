@@ -60,7 +60,7 @@ function scanFile(filePath) {
       const commaIdx = raw.indexOf(',');
       let ceiling, when;
       if (commaIdx === -1) {
-        ceiling = raw.trim();
+        ceiling = raw.replace(/\s*(?:\*\/|-->).*$/, '').trim();
         when = null;
       } else {
         ceiling = raw.slice(0, commaIdx).trim();
