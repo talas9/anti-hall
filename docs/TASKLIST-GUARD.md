@@ -46,7 +46,8 @@ two never compound into a runaway loop.
    - **No task activity** was seen for that work (no `TaskCreate`/`TaskUpdate`/`TodoWrite`); or
    - **More than one task is `in_progress`** at once (the healthy invariant is exactly
      one — a single `in_progress` task never triggers a block); or
-   - **No fresh `.anti-hall-progress.md`** (missing, stale, or not a real file).
+   - **No fresh per-session progress file** at
+     `.anti-hall/progress/<date>/<session-id>.md` (missing, stale, or not a real file).
 
 It is **capped at `MAX_BLOCKS = 3` total per session** and is **fail-open**: any
 error (unreadable transcript, missing cwd, parse failure, cold start) results in **no
@@ -54,10 +55,17 @@ block**. A bug in the hook can never hard-loop Claude. It blocks via the JSON
 `decision` form (never exit 2), because plugin-packaged Stop hooks don't reliably
 continue on exit 2.
 
-## The progress file: `.anti-hall-progress.md`
+## The progress file: `.anti-hall/progress/<date>/<session-id>.md`
 
-A small markdown file at the **root of your working directory** (`<cwd>/.anti-hall-progress.md`)
-that records, in plain prose or bullets:
+**Per-session, collision-free (v0.43.0+).** Each Claude Code session gets its own
+progress file at `<cwd>/.anti-hall/progress/<date>/<session-id>.md`, where `<date>`
+is the current UTC date (`YYYY-MM-DD`) and `<session-id>` is that session's own
+`session_id` (sanitized to `[A-Za-z0-9_-]`). Two sessions running concurrently on the
+same project each write their own file, so neither can clobber the other's progress —
+the old convention was a single shared `.anti-hall-progress.md` at the repo root,
+which two concurrent sessions could overwrite.
+
+The file records, in plain prose or bullets:
 
 - **done** — what's finished and verified this session;
 - **in-progress** — what's underway right now;
@@ -74,12 +82,21 @@ Rules:
   rejected (so freshness can't be spoofed).
 - It is **gitignored** and **never shipped**. It is local session state, not a
   deliverable.
+- A running index, `.anti-hall/progress/INDEX.md`, is maintained automatically —
+  once a session's progress file exists, the guard appends one line linking to it
+  (`- <date> · <session-id> · [progress](<date>/<session-id>.md)`). The append is
+  idempotent (skipped if the session id is already present) and atomic
+  (`fs.appendFileSync` with the `'a'` flag) — never a read-modify-rewrite — so two
+  sessions finishing at the same moment can't corrupt each other's index entry.
+  Read `INDEX.md` first to find prior sessions' work.
 
-## The fix ledger: `.anti-hall-history.md`
+## The fix ledger: `.anti-hall/history/<date>/<session-id>.md`
 
-An append-only companion to the progress file, also at the **root of your working
-directory** (`<cwd>/.anti-hall-history.md`). When the Stop reminder fires it also
-prompts you to append **each completed task** as one entry with three fields:
+An append-only companion to the progress file, also **per-session** at
+`<cwd>/.anti-hall/history/<date>/<session-id>.md` (same `<date>`/`<session-id>`
+scheme as the progress file, and the same collision-free rationale). When the Stop
+reminder fires it also prompts you to append **each completed task** as one entry
+with three fields:
 
 - **Cause** — what was actually wrong / why the task existed;
 - **Fix** — what you changed to resolve it;
@@ -88,8 +105,16 @@ prompts you to append **each completed task** as one entry with three fields:
 Unlike the progress file (a rolling done/in-progress/next snapshot), this is a
 **durable, append-only** record so the fix history persists for the knowledge layer.
 It is **gitignored and never shipped**, and the hook **never creates it** — the
-discipline is yours; the reminder only nudges. It is referenced from
-`.anti-hall-progress.md` and `CONTINUE-HERE` so a later agent can find the history.
+discipline is yours; the reminder only nudges. Like the progress file, it gets its
+own running index at `.anti-hall/history/INDEX.md`, maintained the same
+idempotent/atomic way — but triggered by the file's **existence**, not its
+freshness (a fix ledger has no per-turn staleness concept). The project's local
+`CLAUDE.md` points at both `INDEX.md` files as the entry point for finding prior
+session work.
+
+The pre-v0.43.0 single-file convention (`.anti-hall-progress.md` /
+`.anti-hall-history.md` at the repo root) is preserved untouched for any project
+that already has one — it is simply no longer written to by new sessions.
 
 ## Per-turn freshness note
 
@@ -110,7 +135,7 @@ instructions.
 | Variable | Default | Effect |
 |---|---|---|
 | `ANTIHALL_TASKLIST_WORK_THRESHOLD` | `3` | Minimum file-mutating actions before the Stop can block. Raise to be less strict. |
-| `ANTIHALL_PROGRESS_FRESH_MS` | `1800000` (30 min) | How recently `.anti-hall-progress.md` must have been updated to count as fresh. |
+| `ANTIHALL_PROGRESS_FRESH_MS` | `1800000` (30 min) | How recently the current session's `.anti-hall/progress/<date>/<session-id>.md` must have been updated to count as fresh. |
 
 ## Escape hatch
 
@@ -133,10 +158,11 @@ skip it**, and it will record your consent by writing this file.
    that).
 2. **Keep exactly one task `in_progress`.** Mark it `in_progress` before starting,
    `completed` only when fully done and verified.
-3. **Update `.anti-hall-progress.md` as you go** — done / in-progress / next — so
-   freshness survives compaction and cold starts.
-4. **Append each completed task to `.anti-hall-history.md`** — Cause / Fix / Verified —
-   so the fix history persists for the knowledge layer.
+3. **Update your session's `.anti-hall/progress/<date>/<session-id>.md` as you go** —
+   done / in-progress / next — so freshness survives compaction and cold starts.
+4. **Append each completed task to your session's
+   `.anti-hall/history/<date>/<session-id>.md`** — Cause / Fix / Verified — so the
+   fix history persists for the knowledge layer.
 
 Do that and neither the Stop block nor the freshness note will ever fire — they only
 appear when the discipline has slipped.

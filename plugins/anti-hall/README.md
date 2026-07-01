@@ -61,9 +61,10 @@ claude --plugin-dir /path/to/anti-hall
 | `limit-conserve-inject.js` | UserPromptSubmit | **Limit-conservation mode.** Injects a token-conservation nudge when context usage reaches `ANTIHALL_LIMIT_THRESHOLD` (default 85%). `ANTIHALL_LIMIT_CONSERVE`: `auto` (default) reads the OMC usage cache; `on` forces the nudge; `off` disables. Auto mode requires OMC; without it, manual on/off only. Skip-guard hatch: `limit-conserve`. |
 | `limit-conserve.js` | Shared helper (not a hook) | Reads the OMC usage cache and applies threshold logic; consumed by `limit-conserve-inject.js`. |
 | `task-guard.js` | Stop | Blocks once if the session ends with open tasks. |
-| `tasklist-guard.js` | Stop | Blocks when non-trivial work (≥ threshold file-mutating actions) wasn't tracked as tasks or lacks a fresh `.anti-hall-progress.md`; coexists with `task-guard` with its own independent block cap; capped + fail-open. |
+| `tasklist-guard.js` | Stop | Blocks when non-trivial work (≥ threshold file-mutating actions) wasn't tracked as tasks or lacks a fresh per-session progress file (`.anti-hall/progress/<date>/<session-id>.md`); coexists with `task-guard` with its own independent block cap; capped + fail-open. |
 | `skip-guard.js` | Escape hatch (shared primitive) | TTL'd `~/.anti-hall/skip.json` user-override read by the guards; granular per-guard, and a broad `all` skip excludes the destructive git-guard (must be named explicitly). |
 | `version-alert.js` | SessionStart (non-blocking) | Alerts when a newer anti-hall version is available. Reads running version vs a cached latest (`~/.anti-hall/version-check.json`); emits a one-line "vX available — /anti-hall:update" if behind. When the cache is absent/stale, spawns a DETACHED, unref'd `git ls-remote --tags` refresh and stays silent that session — never blocks on network. Off-switch: `ANTIHALL_VERSION_ALERT=off`; skip-guard hatch. |
+| `fable-availability.js` | SessionStart (non-blocking) | Reads `~/.claude.json`'s `modelAccessCache`/`additionalModelOptionsCache` (the same cache Claude Code's own `/model` selector renders from) once per session — no live API probe, fail-open, silent unless Fable 5 is actually available. When available, threads `args.fableAvailable=true` into ship-it/deadly-loop Workflow invocations so the Reviewer seat's fallback chain extends to Fable 5 → Sonnet 5 → Opus. |
 | `graphify-session.js` | SessionStart | Primes "query the graph first" when a graphify graph exists. |
 | `graphify-reminder.js` | Stop | One-time reminder to update the graph after real edits. |
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
@@ -164,10 +165,15 @@ documented boundaries, not silent gaps.
 - `tasklist-guard.js` (Stop) blocks when **non-trivial work** — ≥
   `ANTIHALL_TASKLIST_WORK_THRESHOLD` (default 3) file-mutating actions — happened without
   task tracking (or with more than one task `in_progress`, or without a fresh
-  `<cwd>/.anti-hall-progress.md`). It coexists with `task-guard` (which drains declared
-  tasks) and keeps an **independent block cap** (`MAX_BLOCKS=3` cumulative/session) so the
-  two never compound. The progress file is gitignored, never created by the hook, and must
-  be updated this session (default 30 min freshness window) to count. Fully fail-open.
+  **per-session** progress file at `<cwd>/.anti-hall/progress/<date>/<session-id>.md`
+  (`<date>` = UTC `YYYY-MM-DD`, `<session-id>` = the sanitized Claude Code session id) —
+  collision-free across concurrent sessions on the same project, replacing the old
+  single shared `.anti-hall-progress.md`. It coexists with `task-guard` (which drains
+  declared tasks) and keeps an **independent block cap** (`MAX_BLOCKS=3` cumulative/session)
+  so the two never compound. The progress file is gitignored, never created by the hook, and
+  must be updated this session (default 30 min freshness window) to count. A running
+  `.anti-hall/progress/INDEX.md` (and the history-side equivalent) is maintained via
+  atomic single-line appends only — never a read-modify-rewrite. Fully fail-open.
   See [`docs/TASKLIST-GUARD.md`](../../docs/TASKLIST-GUARD.md).
 
 ### User-override escape hatch (skip-guard)

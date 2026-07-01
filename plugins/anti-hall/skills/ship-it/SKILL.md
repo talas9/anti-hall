@@ -185,8 +185,10 @@ critic (collapsing to the all-Opus fallback), and an omitted `model` inherits th
 orchestrator's model — so set `model` EXPLICITLY on the Reviewer and Auditor and use
 `agentType` for the Critic. The Reviewer uses `model: "sonnet"` (Sonnet 5) at effort
 `xhigh` — never `max` inside loops (TTFT ~163 s). See `references/ship-it.workflow.js`
-for the canonical spawn. *If Fable returns to general availability, reconsider this seat
-for the flagship tier.* The main thread **stays coordinator**: it synthesizes their
+for the canonical spawn. *When Fable 5 is available (checked once per session by
+`fable-availability.js`, threaded in via `args.fableAvailable`), the Reviewer seat
+automatically routes to Fable first, falling back to Sonnet 5 then Opus — no manual
+reconsideration needed.* The main thread **stays coordinator**: it synthesizes their
 findings, dispatches fix-waves, and loops to re-debate.
 
 **Loop fix-waves → re-debate until zero NEW P0s** (count NEW issues, not rediscovered ones;

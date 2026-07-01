@@ -172,6 +172,25 @@ test('one full round runs Context->Investigate->Argue->Converge and returns the 
   assert.ok(calls.agents.some((c) => c.opts && c.opts.agentType === 'codex:codex-rescue'));
 });
 
+test('Reviewer uses Fable first when args.fableAvailable=true, then Sonnet 5, then Opus', async () => {
+  const reviewerModels = [];
+  const { promise, calls } = runStubbed({
+    round: 1, multiplier: 1, targetSHA: 'abc123', branch: 'main', scope: 'whole repo',
+    contextMode: 'initial', argue: false, fableAvailable: true,
+  }, (brief, opts, def) => {
+    if (opts && /^round-1:reviewer-1/.test(opts.label || '')) {
+      reviewerModels.push(opts.model);
+      if (opts.model === 'fable' || opts.model === 'sonnet') return null;
+    }
+    return def;
+  });
+  const out = await promise;
+  assert.strictEqual(out.verdictSummary.degraded, false);
+  assert.deepStrictEqual(reviewerModels, ['fable', 'sonnet', 'opus']);
+  assert.ok(calls.logs.some((l) => /Fable Reviewer unavailable/.test(l)));
+  assert.ok(calls.logs.some((l) => /falling back to Opus Reviewer/.test(l)));
+});
+
 test('multiplier scales the formation (double = 6 debate seats)', async () => {
   const { promise } = runStubbed({
     round: 2, multiplier: 2, targetSHA: 'abc123', branch: 'main', scope: 'diff',

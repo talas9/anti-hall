@@ -66,6 +66,11 @@ All three are dispatched **in the SAME message** so they run truly in parallel.
   tier token resolves to Sonnet 5 / `claude-sonnet-5` at runtime; always resolve
   "latest", never hardcode a version). *If Fable returns to general availability,
   reconsider this seat for the flagship tier.*
+- **Fable availability:** Before invoking ship-it/deadly-loop, check
+  `~/.anti-hall/fable-availability.json` (or the SessionStart additionalContext) --
+  if `available:true`, thread `args.fableAvailable=true` into the Workflow invocation
+  so the Reviewer seat can route to Fable 5 instead of Sonnet 5. This is checked
+  ONCE per session (not every turn) by the `fable-availability.js` SessionStart hook.
 - **Effort:** `xhigh`. `effort` defaults to `high`; `xhigh` is the recommended
   max for agentic/review work. **NEVER use effort `max` for this seat inside
   loops** — Sonnet 5 TTFT at `max` is ~163 s and is cost-prohibitive at loop

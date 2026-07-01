@@ -1,7 +1,7 @@
 'use strict';
 // tasklist-guard (Stop hook). Enforces: non-trivial work (>= threshold
 // file-mutating actions) must be TRACKED (TaskCreate/TaskUpdate/TodoWrite) AND
-// have a fresh .anti-hall-progress.md in cwd. Block => stdout {decision:'block'}
+// have a fresh per-session progress file in cwd. Block => stdout {decision:'block'}
 // + exit 0 (NOT exit 2). State: ~/.anti-hall/tasklist-guard-state-<session>.json.
 
 const { test } = require('node:test');
@@ -16,6 +16,38 @@ const HOOK = 'tasklist-guard.js';
 // cwd defaults to the fake home so the progress-file lookup is isolated per test.
 function stopPayload(transcriptPath, cwd, session = 't') {
   return { hook_event_name: 'Stop', transcript_path: transcriptPath, cwd, session_id: session };
+}
+
+function todayUtc() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function safeSession(session) {
+  const safe = String(session || '').replace(/[^A-Za-z0-9_-]/g, '');
+  return safe || 'unknown-session';
+}
+
+function progressRel(session = 't', date = todayUtc()) {
+  return path.join('.anti-hall', 'progress', date, safeSession(session) + '.md');
+}
+
+function progressPath(home, session = 't', date = todayUtc()) {
+  return path.join(home, progressRel(session, date));
+}
+
+function historyRel(session = 't', date = todayUtc()) {
+  return path.join('.anti-hall', 'history', date, safeSession(session) + '.md');
+}
+
+function historyPath(home, session = 't', date = todayUtc()) {
+  return path.join(home, historyRel(session, date));
+}
+
+function writeHistory(home, session = 't') {
+  const p = historyPath(home, session);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, '# history\n- v0.0.0 -- fix: something. Cause/Fix/Verified.\n', 'utf8');
+  return p;
 }
 
 function edit(i) {
@@ -61,8 +93,9 @@ function taskUpdate(id, status) {
   };
 }
 
-function writeProgress(home, mtimeMs) {
-  const p = path.join(home, '.anti-hall-progress.md');
+function writeProgress(home, mtimeMs, session = 't') {
+  const p = progressPath(home, session);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, '# progress\n- done: x\n- next: y\n', 'utf8');
   if (mtimeMs != null) {
     const sec = mtimeMs / 1000;
@@ -99,6 +132,17 @@ test('ALLOW: trivial session (1 edit, below threshold)', () => {
   } finally { h.cleanup(); }
 });
 
+test('ALLOW: fresh session below threshold without per-session progress file', () => {
+  const h = makeHome();
+  try {
+    const session = 'fresh-below-threshold';
+    const tp = h.writeTranscript(edits(1));
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r), `below-threshold session must allow; stdout: ${r.stdout}`);
+    assert.ok(!fs.existsSync(progressPath(h.home, session)), 'test setup must not create progress file');
+  } finally { h.cleanup(); }
+});
+
 test('BLOCK: no tasklist (4 edits, no task activity, no progress file)', () => {
   const h = makeHome();
   try {
@@ -109,13 +153,13 @@ test('BLOCK: no tasklist (4 edits, no task activity, no progress file)', () => {
   } finally { h.cleanup(); }
 });
 
-test('REMINDER mentions the .anti-hall-history.md fix-ledger discipline when it fires', () => {
+test('REMINDER mentions the per-session history fix-ledger discipline when it fires', () => {
   const h = makeHome();
   try {
     const tp = h.writeTranscript(edits(4));
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
-    assert.match(r.json.reason, /\.anti-hall-history\.md/);
+    assert.match(r.json.reason, /\.anti-hall\/history\/\d{4}-\d{2}-\d{2}\/t\.md/);
     assert.match(r.json.reason, /Cause/);
     assert.match(r.json.reason, /Fix/);
     assert.match(r.json.reason, /Verified/);
@@ -135,7 +179,23 @@ test('ALLOW: tracked + fresh progress (4 edits + TaskCreate completed + fresh pr
   } finally { h.cleanup(); }
 });
 
-test('BLOCK: stale progress (4 edits + completed task + old-mtime progress)', () => {
+test('BLOCK: missing per-session progress (4 edits + completed task) includes exact path', () => {
+  const h = makeHome();
+  try {
+    const session = 'actual-session-42';
+    const expected = progressRel(session);
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /missing or stale/i);
+    assert.ok(r.json.reason.includes(expected), `reason must include exact path ${expected}; got ${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+test('BLOCK: stale per-session progress (4 edits + completed task + old-mtime progress)', () => {
   const h = makeHome();
   try {
     // mtime 10 min in the past; tiny fresh-window so it reads as stale.
@@ -147,6 +207,86 @@ test('BLOCK: stale progress (4 edits + completed task + old-mtime progress)', ()
     const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home, env: { ANTIHALL_PROGRESS_FRESH_MS: '1000' } });
     assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
     assert.match(r.json.reason, /missing or stale/i);
+  } finally { h.cleanup(); }
+});
+
+test('ALLOW: fresh per-session progress avoids progress-freshness block', () => {
+  const h = makeHome();
+  try {
+    const session = 'fresh-progress-session';
+    writeProgress(h.home, null, session);
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r), `fresh progress must allow; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('INDEX: same session fresh progress appends one progress index line only', () => {
+  const h = makeHome();
+  try {
+    const session = 'index-session';
+    writeProgress(h.home, null, session);
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const payload = stopPayload(tp, h.home, session);
+    const r1 = testHook(HOOK, payload, { home: h.home });
+    const r2 = testHook(HOOK, payload, { home: h.home });
+    assert.ok(!isBlock(r1), `first run must allow; stdout: ${r1.stdout}`);
+    assert.ok(!isBlock(r2), `second run must allow; stdout: ${r2.stdout}`);
+
+    const indexPath = path.join(h.home, '.anti-hall', 'progress', 'INDEX.md');
+    const index = fs.readFileSync(indexPath, 'utf8');
+    const lines = index.split(/\r?\n/).filter((line) => line.includes(session));
+    assert.deepStrictEqual(lines, [
+      '- ' + todayUtc() + ' · ' + session + ' · [progress](../' + todayUtc() + '/' + session + '.md)',
+    ]);
+  } finally { h.cleanup(); }
+});
+
+test('HISTORY INDEX: a session with its own history file gets exactly one history index line', () => {
+  const h = makeHome();
+  try {
+    const session = 'index-history-session';
+    writeProgress(h.home, null, session);
+    writeHistory(h.home, session);
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const payload = stopPayload(tp, h.home, session);
+    const r1 = testHook(HOOK, payload, { home: h.home });
+    const r2 = testHook(HOOK, payload, { home: h.home });
+    assert.ok(!isBlock(r1), `first run must allow; stdout: ${r1.stdout}`);
+    assert.ok(!isBlock(r2), `second run must allow; stdout: ${r2.stdout}`);
+
+    const indexPath = path.join(h.home, '.anti-hall', 'history', 'INDEX.md');
+    const index = fs.readFileSync(indexPath, 'utf8');
+    const lines = index.split(/\r?\n/).filter((line) => line.includes(session));
+    assert.deepStrictEqual(lines, [
+      '- ' + todayUtc() + ' · ' + session + ' · [history](../' + todayUtc() + '/' + session + '.md)',
+    ]);
+  } finally { h.cleanup(); }
+});
+
+test('HISTORY INDEX: no history file yet -> no history index created, and it never affects blocking', () => {
+  const h = makeHome();
+  try {
+    const session = 'no-history-yet-session';
+    writeProgress(h.home, null, session); // fresh progress, no history file at all
+    const tp = h.writeTranscript([
+      ...edits(4),
+      ...taskCreate(1, 'do the work', 'completed'),
+    ]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r), `absent history must never block; stdout: ${r.stdout}`);
+
+    const indexPath = path.join(h.home, '.anti-hall', 'history', 'INDEX.md');
+    assert.ok(!fs.existsSync(indexPath), 'history INDEX.md must not be created when no history file exists');
   } finally { h.cleanup(); }
 });
 
@@ -298,7 +438,7 @@ test('BLOCK: progress file that is a DIRECTORY -> not fresh — FIX 4', () => {
   try {
     // Create a DIRECTORY named like the progress file. A dir mtime always looks
     // fresh; lstat + isFile() must reject it so the block still fires.
-    fs.mkdirSync(path.join(h.home, '.anti-hall-progress.md'));
+    fs.mkdirSync(progressPath(h.home), { recursive: true });
     const tp = h.writeTranscript([
       ...edits(4),
       ...taskCreate(1, 'do the work', 'completed'),

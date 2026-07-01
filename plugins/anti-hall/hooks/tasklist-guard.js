@@ -12,7 +12,7 @@
 // BLOCK iff (and the guard is not skipped):
 //   WORK_COUNT >= threshold  AND  ( no task activity seen
 //                                   OR a task left in_progress (stale)
-//                                   OR no fresh .anti-hall-progress.md ).
+//                                   OR no fresh per-session progress file ).
 //
 // Contract (Claude Code Stop hook):
 //   stdin  : JSON { session_id, transcript_path, cwd, ... }
@@ -35,6 +35,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { appendIndexLineIfAbsent } = require('./session-history-index.js');
 
 // DEFERRED (accepted): (a) cumulative work counters vs the 512 KB tail clip — work
 // before the window is unseen, which can only SUPPRESS a block (fail-open, the safe
@@ -43,7 +44,7 @@ const crypto = require('crypto');
 const MAX_BLOCKS = 3;
 const DEFAULT_WORK_THRESHOLD = 3;
 const DEFAULT_PROGRESS_FRESH_MS = 30 * 60 * 1000; // 1,800,000 ms
-const PROGRESS_FILE = '.anti-hall-progress.md';
+const UNKNOWN_SESSION = 'unknown-session';
 
 // File-mutating tool names (each tool_use = +1 to WORK_COUNT).
 const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -128,6 +129,13 @@ function main() {
   const inProgressCount = scan.inProgressCount;
   const openTaskIds = scan.openTaskIds;
 
+  const rawSessionId = payload && payload.session_id != null ? String(payload.session_id) : '';
+  const sessionIdForPath = sanitizeSessionId(rawSessionId);
+  const progressDate = new Date().toISOString().slice(0, 10);
+  const progressHeader = '<!-- session: ' + (rawSessionId || UNKNOWN_SESSION) +
+    ' | started: ' + new Date().toISOString() + ' -->';
+  const progressRelPath = path.join('.anti-hall', 'progress', progressDate, sessionIdForPath + '.md');
+
   // Progress-file freshness — relative to the session's cwd.
   //
   // Fail-open layering (FIX 5): we stat the cwd DIRECTORY first. If cwd is absent
@@ -137,7 +145,7 @@ function main() {
   // the progress file is absent or stale — that is the case we actually want to nudge.
   //
   // FIX 4: use lstatSync (not statSync) and require a real regular file. A
-  // directory named .anti-hall-progress.md would always look "fresh" (a dir mtime
+  // directory named like the progress file would always look "fresh" (a dir mtime
   // bumps on any child change); a SYMLINK could spoof freshness by pointing at an
   // always-touched file. lstat does not follow the link, and st.isFile() rejects
   // both a directory and a symlink — only a real regular file counts as progress.
@@ -153,22 +161,53 @@ function main() {
     if (!cwdExists) {
       progressFresh = true; // FIX 5: cwd unreadable → fail-open, do not block
     } else {
+      const progressDir = path.join(cwd, '.anti-hall', 'progress', progressDate);
+      let progressDirReady = true;
       try {
-        const pPath = path.join(cwd, PROGRESS_FILE);
-        const st = fs.lstatSync(pPath); // FIX 4: lstat — do NOT follow symlinks
-        if (!st.isFile()) {
-          progressFresh = false; // a dir or symlink named like the file ≠ real progress
-        } else {
-          const age = Date.now() - st.mtimeMs;
-          progressFresh = age <= readFreshMs();
-        }
+        fs.mkdirSync(progressDir, { recursive: true });
       } catch (_) {
-        // cwd EXISTS but the progress file is absent (ENOENT) → not fresh → nudge.
-        progressFresh = false;
+        progressDirReady = false;
+      }
+      if (!progressDirReady) {
+        progressFresh = true; // cannot prepare progress dir → fail-open
+      } else {
+        try {
+          const pPath = path.join(cwd, progressRelPath);
+          const st = fs.lstatSync(pPath); // FIX 4: lstat — do NOT follow symlinks
+          if (!st.isFile()) {
+            progressFresh = false; // a dir or symlink named like the file ≠ real progress
+          } else {
+            maintainSessionIndex(cwd, progressDate, sessionIdForPath, 'progress');
+            const age = Date.now() - st.mtimeMs;
+            progressFresh = age <= readFreshMs();
+          }
+        } catch (_) {
+          // cwd EXISTS but the progress file is absent (ENOENT) → not fresh → nudge.
+          progressFresh = false;
+        }
       }
     }
   } else {
     progressFresh = true; // no cwd → can't locate the file → fail-open
+  }
+
+  // History-index maintenance — purely a side effect, NEVER affects blocking.
+  // Unlike progress, history has no "freshness" concept (it's an append-only
+  // per-task ledger, not a per-turn current-state file), so the trigger here
+  // is EXISTENCE, not mtime/age: if this session has written anything to its
+  // own per-session history file, ensure exactly one index line exists for it.
+  // Wrapped so any error here can never affect progressFresh/shouldBlock above.
+  try {
+    if (cwd && typeof cwd === 'string') {
+      const historyRelPath = path.join('.anti-hall', 'history', progressDate, sessionIdForPath + '.md');
+      const hPath = path.join(cwd, historyRelPath);
+      const hSt = fs.lstatSync(hPath); // lstat — do NOT follow symlinks (mirrors progress's guard)
+      if (hSt.isFile()) {
+        maintainSessionIndex(cwd, progressDate, sessionIdForPath, 'history');
+      }
+    }
+  } catch (_) {
+    // History file absent, cwd unreadable, or any other error — no-op, fail-open.
   }
 
   // Below the work threshold → trivial session → never block.
@@ -183,7 +222,7 @@ function main() {
 
   // --- loop-safety state -----------------------------------------------------
   const sessionId =
-    (payload && payload.session_id && String(payload.session_id)) ||
+    rawSessionId ||
     crypto.createHash('sha1').update(transcriptPath).digest('hex').slice(0, 16);
   const safeSession = sessionId.replace(/[^A-Za-z0-9_.-]/g, '_');
   const stateDir = path.join(os.homedir(), '.anti-hall');
@@ -243,7 +282,7 @@ function main() {
   } else {
     lead =
       'You made ' + workCount + ' file-changing actions but ' +
-      '.anti-hall-progress.md is missing or stale.';
+      progressRelPath + ' is missing or stale.';
   }
 
   const reason = sanitizeReason(
@@ -251,9 +290,11 @@ function main() {
       ' Capture this work as priority-sorted tasks via TaskCreate/TaskUpdate ' +
       '(check TaskList FIRST to dedup/relate — do not duplicate an existing task; ' +
       'link related ones with addBlockedBy/addBlocks), set statuses ' +
-      '(in_progress/completed), and update .anti-hall-progress.md ' +
-      '(done/in-progress/next) — gitignore it so it never ships. ' +
-      'Also append each COMPLETED task to .anti-hall-history.md (append-only ' +
+      '(in_progress/completed), and update ' + progressRelPath + ' ' +
+      '(done/in-progress/next); if creating it, put this header at the very top: ' +
+      progressHeader + '. Gitignore it so it never ships. ' +
+      'Also append each COMPLETED task to .anti-hall/history/' + progressDate + '/' +
+      sessionIdForPath + '.md (append-only ' +
       'ledger, one entry per task: Cause / Fix / Verified) so the fix history ' +
       'persists for the knowledge layer — gitignore it too.'
   );
@@ -324,12 +365,24 @@ function readFreshMs() {
   return Number.isFinite(v) && v >= 0 ? v : DEFAULT_PROGRESS_FRESH_MS;
 }
 
+function sanitizeSessionId(raw) {
+  const safe = String(raw || '').replace(/[^A-Za-z0-9_-]/g, '');
+  return safe || UNKNOWN_SESSION;
+}
+
+function maintainSessionIndex(cwd, date, sessionId, kind) {
+  if (kind !== 'progress' && kind !== 'history') return;
+  const indexPath = path.join(cwd, '.anti-hall', kind, 'INDEX.md');
+  const line = '- ' + date + ' · ' + sessionId + ' · [' + kind + '](../' + date + '/' + sessionId + '.md)';
+  appendIndexLineIfAbsent(indexPath, sessionId, line);
+}
+
 // sanitizeReason — single line, no control chars, bounded length so a task
 // subject or path can't reshape the Stop reason or inject instruction-like lines.
 function sanitizeReason(s) {
   if (typeof s !== 'string') return '';
   let out = s.replace(/[\x00-\x1F\x7F-\x9F]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (out.length > 600) out = out.slice(0, 600).trimEnd() + '…';
+  if (out.length > 900) out = out.slice(0, 900).trimEnd() + '…';
   return out;
 }
 

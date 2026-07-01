@@ -56,6 +56,7 @@
 //     respawnQuota: 1,                  // drift respawns allowed PER SEAT this round
 //     seats: [ ... ],                   // OPTIONAL formation override (verbatim); else derived
 //     codexAvailable: true,             // false => Codex critic becomes Opus adversarial persona
+//     fableAvailable: true,             // true => Reviewer tries Fable before Sonnet 5
 //   }
 //   If `args` is undefined the workflow exits with a usage note (no guessing).
 
@@ -181,7 +182,8 @@ function contextBrief(a) {
 
 // ---- Formation: build the trio (x multiplier) ------------------------------
 // Role models per MODEL-POLICY.md canon:
-//   Reviewer = Sonnet 5 (correctness/architecture, effort xhigh — never max in loops),
+//   Reviewer = Sonnet 5 by default, or Fable when args.fableAvailable === true
+//   (correctness/architecture, effort xhigh — never max in loops),
 //   Auditor = Opus (regression/coupling, effort high),
 //   Critic = Codex (codex:codex-rescue, adversarial — unless Codex implemented the diff,
 //   then Opus/Sonnet 5). If codexAvailable === false the Critic degrades to an Opus
@@ -192,9 +194,10 @@ function buildFormation(a) {
   const mult = (typeof a.multiplier === 'number' && a.multiplier >= 1)
     ? Math.floor(a.multiplier) : 1;
   const codexUp = a.codexAvailable !== false;
+  const reviewerModel = a.fableAvailable === true ? 'fable' : 'sonnet';
   const roles = [
-    // Reviewer = Sonnet 5 (model:'sonnet', resolved at runtime); if Fable returns, reconsider.
-    { role: 'reviewer', opts: { model: 'sonnet', effort: 'xhigh' } },
+    // Reviewer = Sonnet 5 by default; Fable only when the SessionStart cache says it is available.
+    { role: 'reviewer', opts: { model: reviewerModel, effort: 'xhigh' } },
     { role: 'auditor', opts: { model: 'opus', effort: 'high' } },
     {
       role: 'critic',
@@ -263,7 +266,17 @@ async function investigateAgent(seat, a, packText, driftReason, labelSuffix) {
     ...seat.opts, label, schema: VERDICT_SCHEMA,
   });
   if (r) return r;
-  if (seat.role !== 'reviewer' || !seat.opts || seat.opts.model !== 'sonnet') return r;
+  if (seat.role !== 'reviewer' || !seat.opts) return r;
+  if (seat.opts.model === 'fable') {
+    log('round ' + a.round + ': Fable Reviewer unavailable for "' + label +
+      '" — falling back to Sonnet 5 Reviewer (MODEL-POLICY matrix).');
+    const sonnet = await agent(brief, {
+      ...seat.opts, label: label + '(sonnet-fallback)', model: 'sonnet', schema: VERDICT_SCHEMA,
+    });
+    if (sonnet) return sonnet;
+  } else if (seat.opts.model !== 'sonnet') {
+    return r;
+  }
   log('round ' + a.round + ': Reviewer unavailable for "' + label +
     '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
   return agent(brief, {

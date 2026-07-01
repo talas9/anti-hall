@@ -206,14 +206,19 @@ treated as a feature launch.
    ⇒ point at existing id; related ⇒ suggest `addBlockedBy`/`addBlocks` link;
    new ⇒ allow.
 
-4. **State file as ground truth:** keep a `.anti-hall-progress.md` progress file
-   refreshed so freshness survives compaction and cold starts (mirrors
-   Anthropic's `claude-progress.txt`). NOTE: the hook only **checks** this file's
-   freshness (its mtime, relative to the session cwd) — it never writes or refreshes
-   it. The agent/user maintains the file each sweep; the guard just nudges when it's
-   missing or stale. Tasks themselves already persist under
-   `~/.claude/tasks/<TASK_LIST_ID>/` — read that as the authoritative store when
-   `CLAUDE_CODE_TASK_LIST_ID` is known.
+4. **State file as ground truth:** keep a per-session progress file at
+   `.anti-hall/progress/<date>/<session-id>.md` (`<date>` = UTC `YYYY-MM-DD`,
+   `<session-id>` = the sanitized `session_id`) refreshed so freshness survives
+   compaction and cold starts (mirrors Anthropic's `claude-progress.txt`) — scoping
+   the file per session (rather than one shared file) means two concurrent
+   sessions on the same project never clobber each other's progress. NOTE: the
+   hook only **checks** this file's freshness (its mtime, relative to the session
+   cwd) — it never writes or refreshes it. The agent/user maintains the file each
+   sweep; the guard just nudges when it's missing or stale. A running
+   `.anti-hall/progress/INDEX.md` links every session's file via idempotent,
+   atomic single-line appends (never a read-modify-rewrite). Tasks themselves
+   already persist under `~/.claude/tasks/<TASK_LIST_ID>/` — read that as the
+   authoritative store when `CLAUDE_CODE_TASK_LIST_ID` is known.
 
 5. **Mode-agnostic scanning:** support both `Task*` and `TodoWrite` transcripts
    (the user may set `CLAUDE_CODE_ENABLE_TASKS=0`). For `TodoWrite`, take the last

@@ -6,6 +6,55 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.43.0
+
+**Fable-5 availability flag (auto-detected, gated) + collision-free per-session progress/history.**
+
+### New: automatic Fable-5 detection — no manual "reconsider this seat" needed
+`fable-availability.js` (new SessionStart hook) reads `~/.claude.json`'s `modelAccessCache`/
+`additionalModelOptionsCache` -- the exact same data Claude Code's own `/model` selector renders
+from -- ONCE per session (never re-probed every turn), fail-open, silent unless Fable 5 is
+actually available. When it is, the flag threads into ship-it/deadly-loop Workflow invocations
+via `args.fableAvailable`, and the Reviewer seat's fallback chain automatically extends to
+Fable 5 → Sonnet 5 → Opus (previously Sonnet 5 → Opus). No live API probe as the primary path
+(many Claude Code sessions have no `ANTHROPIC_API_KEY` to probe with); this reuses Claude Code's
+own already-maintained entitlement cache.
+
+### New: per-session progress/history files — collision-free across concurrent sessions
+`.anti-hall-progress.md` and the fix/history ledger used to be single shared files at the repo
+root -- two Claude Code sessions running concurrently on the same project could clobber each
+other's writes. Now each session gets its own file: `.anti-hall/progress/<date>/<session-id>.md`
+and `.anti-hall/history/<date>/<session-id>.md`. `tasklist-guard.js`'s freshness check now
+targets the current session's own path (session_id + UTC date, sanitized). Both get a running
+`INDEX.md` maintained via single-line atomic appends only (`fs.appendFileSync` with the `'a'`
+flag, idempotent, never read-modify-rewrite -- safe even if two sessions finish at the same
+moment). The old root-level ledgers are preserved untouched (`.anti-hall-history.md` also copied
+to `.anti-hall/history/legacy/pre-2026-07-01.md`); local `CLAUDE.md` now points at both new
+`INDEX.md` files as the entry point for finding prior session work.
+
+### New: progress-file pruning — dated+timed, auto-archived into history
+Per-session progress files solve the single-huge-file problem but would otherwise accumulate
+unboundedly (one small file per session, forever). `progress-prune.js` (new SessionStart hook,
+per-cwd 24h-throttled) archives stale ones automatically: a newly-created progress file now
+carries a `<!-- session: ... | started: <ISO-8601 UTC> -->` header (dated *and* timed, human-
+readable); today's UTC date-folder is never touched; a past-date file is only pruned once its
+mtime is more than 6 hours stale (so a session still running across a midnight boundary is never
+touched mid-flight); pruning always appends the file's full content to that session's own history
+ledger under an "Archived progress" heading *before* deleting it — never deletes if the archive
+append fails, so no data is ever lost, only relocated.
+
+### Hardening
+- Fixed a real gap the adversarial verify step caught: the history-side index maintenance was
+  dead code (`kind !== 'progress'` guard) despite being part of the spec -- now both progress
+  and history are mechanically indexed, existence-triggered for history (no per-turn freshness
+  concept applies there) so nothing depends on the agent remembering a manual bookkeeping step.
+- `ship-it/SKILL.md`'s Reviewer-seat prose updated to describe the automatic fallback chain
+  instead of the stale "if Fable returns, reconsider this seat" note.
+
+17 new tests (fable-availability.test.js, ship-it-workflow.test.js, progress-prune.test.js,
++ additions to deadly-loop-workflow.test.js and tasklist-guard.test.js); suite 688
+(686 pass / 0 fail / 2 skip).
+
 ## 0.42.1
 
 **Bug-fix patch: root-causes the recurring ubuntu/node22 statusline flake and hardens `harvest-debt.js` / `eval/rescore.js`.**

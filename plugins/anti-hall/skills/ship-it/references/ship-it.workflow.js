@@ -33,6 +33,7 @@
 //
 // INPUT (`args`): an object describing the approved plan, e.g.
 //   {
+//     fableAvailable: true, // true => Reviewer tries Fable before Sonnet 5
 //     parallelGroups: [
 //       // each group is a list of DISJOINT phases that run as one parallel barrier.
 //       // `files` is the EXACT list of paths the phase touches (used to PROVE the
@@ -88,8 +89,9 @@ function buildBrief(phase) {
   ].join('\n\n');
 }
 
-// deadly-loop per-phase gate: Reviewer (Sonnet 5) + Auditor (Opus) + Critic (Codex) in a
-// BARRIER parallel. The roster, availability fallback matrix, and canonical Codex spawn
+// deadly-loop per-phase gate: Reviewer (Sonnet 5, or Fable when args.fableAvailable
+// is true) + Auditor (Opus) + Critic (Codex) in a BARRIER parallel. The roster,
+// availability fallback matrix, and canonical Codex spawn
 // form live in deadly-loop/references/MODEL-POLICY.md. Model tokens are tier tokens
 // (fable/opus) resolved to the latest of that tier at call time — never versioned ids.
 function reviewerBrief(phase) {
@@ -121,29 +123,28 @@ function criticBrief(phase) {
 }
 
 // REVIEWER SEAT with AVAILABILITY FALLBACK (MODEL-POLICY.md "Availability fallback
-// matrix"). The Reviewer's preferred model is the latest flagship Claude (`fable`),
-// but that token can be UNAVAILABLE (e.g. Anthropic disabled Fable for the account).
-// Previously the seat hardcoded `model: 'fable'` with no guard, so a disabled Fable
-// made the spawn die and the whole gate could not complete. We now wire the documented
-// matrix into CODE — never trust prose policy to be applied by hand at runtime:
-//   1. If the coordinator KNOWS Fable is unavailable it passes args.fableAvailable===false,
-//      and we skip straight to the Opus Reviewer (no wasted failed spawn).
-//   2. Otherwise we attempt the flagship; agent() returns null on a terminal model error
-//      (per the Workflow contract), which is our reliable "Fable unavailable" signal —
-//      we then fall back to an Opus Reviewer (divergent), exactly per the matrix.
-// The floor for every seat is Opus; we NEVER silently drop to a weaker/cheaper model.
+// matrix"). Default behavior is unchanged: Sonnet 5 -> Opus. When the SessionStart
+// fable-availability hook tells the coordinator to pass args.fableAvailable === true,
+// this seat tries Fable first, then falls back through the normal chain.
 async function reviewerAgent(p) {
-  const fableOff = (typeof args === 'object' && args !== null && args.fableAvailable === false);
-  if (!fableOff) {
-    const r = await agent(reviewerBrief(p), {
+  const tryFable = typeof args === 'object' && args !== null && args.fableAvailable === true;
+  if (tryFable) {
+    const fable = await agent(reviewerBrief(p), {
       schema: VERDICT_SCHEMA, run_in_background: true,
-      // Reviewer = Sonnet 5 (model:'sonnet', effort xhigh, resolved at runtime); if Fable returns, reconsider.
-      label: p.label + ':reviewer', model: 'sonnet', effort: 'xhigh',
+      label: p.label + ':reviewer', model: 'fable', effort: 'xhigh',
     });
-    if (r) return r; // flagship succeeded
-    log('ship-it: Reviewer unavailable for "' + p.label + '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
+    if (fable) return fable;
+    log('ship-it: Fable Reviewer unavailable for "' + p.label + '" — falling back to Sonnet 5 Reviewer (MODEL-POLICY matrix).');
   }
-  // Fable✗ -> Opus Reviewer (divergent), per the availability fallback matrix.
+
+  const sonnet = await agent(reviewerBrief(p), {
+    schema: VERDICT_SCHEMA, run_in_background: true,
+    label: p.label + ':reviewer' + (tryFable ? '(sonnet-fallback)' : ''),
+    model: 'sonnet', effort: 'xhigh',
+  });
+  if (sonnet) return sonnet;
+
+  log('ship-it: Reviewer unavailable for "' + p.label + '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
   return agent(reviewerBrief(p), {
     schema: VERDICT_SCHEMA, run_in_background: true,
     label: p.label + ':reviewer(opus-fallback)', model: 'opus',
