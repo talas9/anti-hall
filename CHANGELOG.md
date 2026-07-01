@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.43.1
+
+**History-entry writes now delegate to a cheap model; fixed a stale path left by 0.43.0.**
+
+- `verify-first-full.js`'s always-injected orchestration rule B previously told the coordinator
+  to compose and append history entries itself (an expensive-model tokens spent on a mechanical
+  write). Now it says to delegate the write to a cheap model (Haiku): hand it the cause/fix/
+  verification facts, let it compose and append the entry.
+- The same instruction still referenced the OLD flat-file path (`.anti-hall-history.md`) from
+  before 0.43.0's per-session restructuring -- missed by that release's doc sweep since it's a
+  hardcoded string, not a doc file. Now points at `.anti-hall/history/<date>/<session-id>.md`.
+
+Suite 688 (686 pass / 0 fail / 2 skip), no test/code changes beyond the instruction string.
+
 ## 0.43.0
 
 **Fable-5 availability flag (auto-detected, gated) + collision-free per-session progress/history.**
