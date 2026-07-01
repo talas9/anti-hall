@@ -31,6 +31,15 @@ Status check:
 node -e "const {isConserving}=require('./plugins/anti-hall/hooks/limit-conserve.js'); console.log(JSON.stringify(isConserving(), null, 2))"
 ```
 
+## Main-model downshift (flagship preservation)
+
+When conservation is active and the **main/coordinator** agent is on `gpt-5.5`, switch it to `gpt-5.4` **(1M-context variant only)** to preserve the flagship weekly bucket.
+
+- **Target**: `gpt-5.4` at 1M context — same context window, lower cost.
+- **NEVER** downshift to `gpt-5.4-mini` (only 400k context; context loss is unacceptable).
+- Keep `gpt-5.5` for delegated hard-reasoning subagents and on-demand escalation.
+- Codex cannot self-switch its own model — **surface this recommendation to the user** or let OMX/orchestration layer set it.
+
 ## Codex routing policy
 
 When conservation is active:

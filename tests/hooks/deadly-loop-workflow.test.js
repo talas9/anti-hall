@@ -118,8 +118,7 @@ test('MODEL INVARIANT: no versioned model ids anywhere in source', () => {
 });
 
 test('tier tokens + canonical Codex agentType present (latest-at-call-time routing)', () => {
-  assert.ok(/model:\s*'sonnet'/.test(SRC), "context agent must be model:'sonnet'");
-  assert.ok(/model:\s*'fable'/.test(SRC), "reviewer must be model:'fable'");
+  assert.ok(/model:\s*'sonnet'/.test(SRC), "context agent and reviewer must use model:'sonnet'");
   assert.ok(/model:\s*'opus'/.test(SRC), "auditor must be model:'opus'");
   assert.ok(/agentType:\s*'codex:codex-rescue'/.test(SRC),
     'critic must use the canonical codex:codex-rescue agentType');
@@ -167,10 +166,8 @@ test('one full round runs Context->Investigate->Argue->Converge and returns the 
   assert.ok(calls.phases.some((p) => /Investigate:/.test(p)));
   assert.ok(calls.phases.some((p) => /Argue:/.test(p)));
   assert.ok(calls.phases.some((p) => /Converge:/.test(p)));
-  // Context = sonnet; trio = opus + opus + codex (reviewer seat was fable, now opus).
+  // Context agent + Reviewer = sonnet (Sonnet 5); Auditor = opus; Critic = codex:codex-rescue.
   assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'sonnet'));
-  // TEMP(fable-disabled 2026-06-29): reviewer is Opus until Fable re-enabled; revert this assertion to 'fable' then.
-  assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'opus'));
   assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'opus'));
   assert.ok(calls.agents.some((c) => c.opts && c.opts.agentType === 'codex:codex-rescue'));
 });
@@ -294,7 +291,8 @@ test('model-routing-guard: every seat brief template contains at least one compl
   });
   return p.then(() => {
     // Separate context-pack agent from debate seats.
-    const debateAgents = calls.agents.filter((c) => c.opts && (c.opts.model === 'fable' || c.opts.model === 'opus' || c.opts.agentType === 'codex:codex-rescue'));
+    const debateAgents = calls.agents.filter((c) => c.opts && c.opts.label &&
+      /(reviewer|auditor|critic)/.test(c.opts.label));
     assert.ok(debateAgents.length > 0, 'expected at least one debate seat agent call');
     for (const c of debateAgents) {
       assert.ok(

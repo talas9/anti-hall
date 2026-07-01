@@ -88,13 +88,13 @@ function buildBrief(phase) {
   ].join('\n\n');
 }
 
-// deadly-loop per-phase gate: Reviewer (Fable) + Auditor (Opus) + Critic (Codex) in a
+// deadly-loop per-phase gate: Reviewer (Sonnet 5) + Auditor (Opus) + Critic (Codex) in a
 // BARRIER parallel. The roster, availability fallback matrix, and canonical Codex spawn
 // form live in deadly-loop/references/MODEL-POLICY.md. Model tokens are tier tokens
 // (fable/opus) resolved to the latest of that tier at call time — never versioned ids.
 function reviewerBrief(phase) {
   return [
-    'You are the deadly-loop REVIEWER (latest flagship Claude, max thinking) for phase ' + phase.label + '.',
+    'You are the deadly-loop REVIEWER (Sonnet 5, effort xhigh — never max in loops) for phase ' + phase.label + '.',
     'Audit this phase diff for: correctness vs the plan, edge cases actually handled,',
     'regressions, security on security-relevant phases, full blast radius.',
     'Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
@@ -137,8 +137,8 @@ async function reviewerAgent(p) {
   if (!fableOff) {
     const r = await agent(reviewerBrief(p), {
       schema: VERDICT_SCHEMA, run_in_background: true,
-      // TEMP(fable-disabled 2026-06-29): Anthropic disabled Fable; Reviewer runs on Opus until re-enabled — revert this 'opus' back to 'fable' then.
-      label: p.label + ':reviewer', model: 'opus',
+      // Reviewer = Sonnet 5 (model:'sonnet', effort xhigh, resolved at runtime); if Fable returns, reconsider.
+      label: p.label + ':reviewer', model: 'sonnet', effort: 'xhigh',
     });
     if (r !== null) return r; // flagship succeeded
     log('ship-it: Reviewer unavailable for "' + p.label + '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
@@ -235,8 +235,8 @@ async function main() {
     for (const p of group) {
       phase('deadly-loop gate: ' + p.label);
       const audit = await parallel([
-        () => reviewerAgent(p), // latest flagship Claude with documented Opus fallback (see reviewerAgent)
-        () => agent(auditorBrief(p),  { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':auditor', model: 'opus' }),
+        () => reviewerAgent(p), // Sonnet 5 with documented Opus fallback (see reviewerAgent)
+        () => agent(auditorBrief(p),  { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':auditor', model: 'opus', effort: 'high' }),
         () => agent(criticBrief(p),   { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':critic', agentType: 'codex:codex-rescue' }),
       ]);
       results[p.label].review = { reviewer: audit[0], auditor: audit[1], critic: audit[2] };

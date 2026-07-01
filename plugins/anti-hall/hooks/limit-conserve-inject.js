@@ -22,6 +22,17 @@ const fs = require('fs');
 const { isConserving } = require('./limit-conserve.js');
 const { isSkipped } = require('./skip-guard.js');
 
+const DOWNSHIFT_DIRECTIVE =
+  'MAIN-MODEL DOWNSHIFT: if the main agent is on the flagship model ' +
+  '(Claude Opus or Codex gpt-5.5), switch it to the cheaper 1M-context variant ' +
+  'to preserve the flagship weekly bucket — ' +
+  'Claude → Sonnet 5 (1M context), Codex → gpt-5.4 (1M context). ' +
+  'NEVER downshift to a sub-1M model (e.g. gpt-5.4-mini has only 400k context). ' +
+  'Keep the flagship for delegated hard-reasoning subagents and on-demand escalation. ' +
+  'The agent cannot self-switch models (/model is a user action) — ' +
+  'SURFACE this recommendation to the user; ' +
+  'under an orchestration layer that can set the model (OMC/OMX), route main accordingly.';
+
 function buildDirective(state) {
   const resetsClause = state.resetsAt
     ? ' Defer non-urgent heavy work until reset at ' + state.resetsAt + '.'
@@ -33,7 +44,8 @@ function buildDirective(state) {
     'Keep the MAIN agent on Claude; send hard reasoning to subagents. ' +
     'Codex has its OWN limit — if it’s unavailable/rate-limited degrade to Sonnet, ' +
     'never retry-loop (backoff).' +
-    resetsClause
+    resetsClause +
+    ' ' + DOWNSHIFT_DIRECTIVE
   );
 }
 

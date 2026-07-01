@@ -1,6 +1,6 @@
 ---
 name: deadly-loop-multi
-description: Run a DOUBLE / TRIPLE / QUADRUPLE deadly loop — the deadly-loop TRIO (Fable Reviewer + Opus Auditor + Codex Critic) multiplied N× in parallel, auditing a target (whole repo, a diff, or named files) with diversified lenses, then dedup + synthesize, optionally fix-wave and re-converge. Use when the user says "double deadly loop", "triple deadly loop", "quadruple deadly loop", "deep multi-agent review", "have multiple flagship + codex agents review everything", or wants a heavier review than the standard 1× deadly-loop. Multiplier — double=2× the trio (6 agents), triple=3× (9), quadruple=4× (12).
+description: Run a DOUBLE / TRIPLE / QUADRUPLE deadly loop — the deadly-loop TRIO (Sonnet 5 Reviewer + Opus Auditor + Codex Critic) multiplied N× in parallel, auditing a target (whole repo, a diff, or named files) with diversified lenses, then dedup + synthesize, optionally fix-wave and re-converge. Use when the user says "double deadly loop", "triple deadly loop", "quadruple deadly loop", "deep multi-agent review", "have multiple flagship + codex agents review everything", or wants a heavier review than the standard 1× deadly-loop. Multiplier — double=2× the trio (6 agents), triple=3× (9), quadruple=4× (12).
 ---
 
 # Multi Deadly Loop
@@ -10,7 +10,7 @@ Reviewer + Auditor + Critic TRIO, run **N× the trio in parallel** with *differe
 lenses*, then synthesize. Catches more because diverse perspectives find
 non-overlapping problems.
 
-| Phrase | Multiplier | Reviewers (Fable) | Auditors (Opus) | Critics (Codex) | Total agents |
+| Phrase | Multiplier | Reviewers (Sonnet 5) | Auditors (Opus) | Critics (Codex) | Total agents |
 |--------|-----------|-------------------|-----------------|-----------------|--------------|
 | **double deadly loop** | 2× | 2 | 2 | 2 | **6** |
 | **triple deadly loop** | 3× | 3 | 3 | 3 | **9** |
@@ -37,15 +37,16 @@ agents and converge on a single consolidated answer — not an open-ended loop.
 
 The 3N auditors are split **exactly in thirds** — one third per trio seat:
 
-- **N Reviewers = the latest flagship Claude (`model:"fable"`), at max thinking** —
-  correctness / architecture lens.
+- **N Reviewers = Sonnet 5 (`model:"sonnet"`), at effort `xhigh`** — correctness /
+  architecture lens. *If Fable returns to general availability, reconsider this seat for
+  the flagship tier.*
 - **N Auditors = the latest Opus (`model:"opus"`), at max thinking** — divergent
   regression & coupling lens (a different Claude generation, orthogonal lens).
 - **N Critics = the latest OpenAI Codex** when available — a genuinely different model
   finds different bugs. **Check availability once** via the OS-agnostic Node probe in
   [MODEL-POLICY.md](../MODEL-POLICY.md) (or the codex companion's status / `/codex:setup`).
-  Walk the availability fallback matrix there: if `fable` is missing, the Reviewer third
-  falls back to Opus; if Codex is missing or unauthenticated, substitute Opus with a
+  Walk the availability fallback matrix there: if Sonnet 5 is unavailable, the Reviewer
+  third falls back to Opus; if Codex is missing or unauthenticated, substitute Opus with a
   divergent adversarial persona for the Critic third. Floor for every seat is Opus. Never
   silently drop to fewer agents — always run the full 3N, maximally cross-model.
 
@@ -54,7 +55,7 @@ The 3N auditors are split **exactly in thirds** — one third per trio seat:
 > follows the same "resolve latest at runtime; version names are examples, not pins" rule.)
 
 Spawn mechanics (canonical forms + availability matrix live in [MODEL-POLICY.md](../MODEL-POLICY.md)):
-- Reviewer (Fable): `Agent({ description: "<lens> Reviewer", subagent_type: "general-purpose", model: "fable", run_in_background: true, prompt: <lens brief> })`
+- Reviewer (Sonnet 5): `Agent({ description: "<lens> Reviewer", subagent_type: "general-purpose", model: "sonnet", effort: "xhigh", run_in_background: true, prompt: <lens brief> })`
 - Auditor (Opus): `Agent({ description: "<lens> Auditor", subagent_type: "general-purpose", model: "opus", run_in_background: true, prompt: <lens brief> })`
 - Critic (Codex): `Agent({ description: "<lens> Critic", subagent_type: "codex:codex-rescue", run_in_background: true, prompt: "--background --fresh <lens brief>" })`
 
@@ -87,7 +88,7 @@ audit spawns — state this explicitly when you dispatch.
    table below so coverage is non-overlapping. With N=2 use lenses 1–2 per column; N=3 use
    1–3; N=4 use 1–4.
 
-   | # | Reviewer (Fable) lens | Auditor (Opus) lens | Critic (Codex) lens |
+   | # | Reviewer (Sonnet 5) lens | Auditor (Opus) lens | Critic (Codex) lens |
    |---|------------------------|---------------------|---------------------|
    | 1 | correctness / logic bugs | regressions in dependent unchanged code | adversarial "try to break it" bug hunt |
    | 2 | docs-vs-code accuracy + consistency | cross-module / cross-PR coupling drift | verify every doc/CHANGELOG claim against code |

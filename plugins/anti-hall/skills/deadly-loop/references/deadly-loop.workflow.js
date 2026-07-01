@@ -29,8 +29,10 @@
 //   the coordinator owns all git + fix dispatch on the main thread.
 //
 // MODEL INVARIANT: select models LATEST-AT-CALL-TIME — use ONLY tier tokens in agent()
-//   options (model:'fable'/'opus'/'sonnet'/'haiku', agentType:'codex:codex-rescue').
-//   NEVER hardcode a versioned/dated model id anywhere (script, briefs, or schemas).
+//   options (model:'opus'/'sonnet'/'haiku', agentType:'codex:codex-rescue').
+//   'sonnet' resolves to Sonnet 5 at runtime. NEVER hardcode a versioned/dated model id
+//   anywhere (script, briefs, or schemas). NEVER use effort:'max' for Sonnet 5 inside
+//   loops — TTFT ~163s; the ceiling inside any loop is 'xhigh'.
 //   The host resolves each tier token to today's flagship build at call time.
 //
 // DETERMINISM: no Date.now() / Math.random() / argless new Date(). All run-varying
@@ -178,11 +180,12 @@ function contextBrief(a) {
 }
 
 // ---- Formation: build the trio (x multiplier) ------------------------------
-// Role models per Workstream C + A1 canon:
-//   Reviewer = Fable (correctness/architecture), Auditor = Opus (regression/coupling),
-//   Critic = Codex (codex:codex-rescue, adversarial). If codexAvailable === false the
-//   Critic degrades to an Opus adversarial persona. If args.seats is given, use it
-//   verbatim (caller-controlled formation override).
+// Role models per MODEL-POLICY.md canon:
+//   Reviewer = Sonnet 5 (correctness/architecture, effort xhigh — never max in loops),
+//   Auditor = Opus (regression/coupling, effort high),
+//   Critic = Codex (codex:codex-rescue, adversarial — unless Codex implemented the diff,
+//   then Opus/Sonnet 5). If codexAvailable === false the Critic degrades to an Opus
+//   adversarial persona. If args.seats is given, use it verbatim.
 function buildFormation(a) {
   if (Array.isArray(a.seats) && a.seats.length > 0) return a.seats;
 
@@ -190,9 +193,9 @@ function buildFormation(a) {
     ? Math.floor(a.multiplier) : 1;
   const codexUp = a.codexAvailable !== false;
   const roles = [
-    // TEMP(fable-disabled 2026-06-29): Anthropic disabled Fable; Reviewer runs on Opus until re-enabled — revert this 'opus' back to 'fable' then.
-    { role: 'reviewer', opts: { model: 'opus' } },
-    { role: 'auditor', opts: { model: 'opus' } },
+    // Reviewer = Sonnet 5 (model:'sonnet', resolved at runtime); if Fable returns, reconsider.
+    { role: 'reviewer', opts: { model: 'sonnet', effort: 'xhigh' } },
+    { role: 'auditor', opts: { model: 'opus', effort: 'high' } },
     {
       role: 'critic',
       opts: codexUp ? { agentType: 'codex:codex-rescue' } : { model: 'opus' },

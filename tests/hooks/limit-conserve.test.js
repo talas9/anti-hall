@@ -311,3 +311,65 @@ test('INJECTOR FAIL-OPEN: malformed stdin -> exit 0, no crash', () => {
     assert.strictEqual(r.status, 0, 'exit 0 on malformed stdin');
   } finally { h.cleanup(); }
 });
+
+// ── Main-model downshift directive tests ─────────────────────────────────────
+
+test('INJECTOR DOWNSHIFT: conserving -> directive contains MAIN-MODEL DOWNSHIFT', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const ctx = additionalContext(r);
+    assert.ok(ctx.includes('MAIN-MODEL DOWNSHIFT'), `downshift directive missing; got: ${ctx}`);
+  } finally { h.cleanup(); }
+});
+
+test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet 5 and gpt-5.4', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ fiveHour: 90 }));
+    const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const ctx = additionalContext(r);
+    assert.ok(ctx.includes('Sonnet 5'), `Sonnet 5 missing from downshift directive; got: ${ctx}`);
+    assert.ok(ctx.includes('gpt-5.4'), `gpt-5.4 missing from downshift directive; got: ${ctx}`);
+  } finally { h.cleanup(); }
+});
+
+test('INJECTOR DOWNSHIFT: conserving -> warns against sub-1M model (gpt-5.4-mini)', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const ctx = additionalContext(r);
+    assert.ok(ctx.includes('gpt-5.4-mini'), `sub-1M warning missing; got: ${ctx}`);
+    assert.ok(/NEVER/i.test(ctx), 'NEVER guard missing from downshift directive');
+  } finally { h.cleanup(); }
+});
+
+test('INJECTOR DOWNSHIFT: NOT conserving -> directive absent', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ fiveHour: 40, weekly: 40, sonnet: 40 }));
+    const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const ctx = additionalContext(r);
+    assert.strictEqual(ctx, '', 'no downshift directive when not conserving');
+  } finally { h.cleanup(); }
+});
+
+test('INJECTOR DOWNSHIFT: env=off -> directive absent even with high cache', () => {
+  const h = makeHome();
+  try {
+    writeCacheFile(h.home, makeCache({ weekly: 95 }));
+    const r = testHook(INJECT_HOOK, promptPayload(), {
+      home: h.home,
+      env: { ANTIHALL_LIMIT_CONSERVE: 'off' },
+      expectJson: true,
+    });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(additionalContext(r), '', 'env=off suppresses downshift directive');
+  } finally { h.cleanup(); }
+});

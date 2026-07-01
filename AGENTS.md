@@ -241,3 +241,18 @@ distinct message, never wedges.
   gates) is for genuinely risky or large work — not a reflex on small asks.
 - Track every request in the task list; finish what was asked before starting tangents;
   drop nothing silently.
+
+## Dual-platform parity (always apply)
+
+anti-hall ships BOTH a Claude Code plugin and a Codex-native port (`plugins/anti-hall/codex/`).
+Any plan or work item must cover **both platform variations (Claude + Codex)** AND **both
+orchestration layers — OMC (oh-my-claudecode) for Claude and OMX (oh-my-codex) for Codex.** A
+change that lands on only one side drifts the ports apart; parity is mandatory, not optional.
+
+- New skill/hook/routing/KB → produce the Claude version AND the Codex mirror
+  (`plugins/anti-hall/codex/skills/…`).
+- Any model-routing artifact → a Claude-model table (Opus / Sonnet 5 / Haiku) AND a parallel
+  Codex-model table (gpt-5.x lineup), with a cross-platform equivalence mapping.
+- Reference the orchestration layers by parity: OMC ↔ OMX (`docs/KB-omc.md` ↔ `docs/KB-omx.md`).
+- The pre-release doc sweep covers BOTH ports (README + Codex README, llms.txt, both MODEL-POLICY
+  copies, the Codex skill mirrors).

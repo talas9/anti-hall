@@ -363,8 +363,8 @@ Invoke via slash command:
   immediately; `/reload-plugins` refreshes the skill list and version label. `--check`
   mode answers "is anti-hall up to date?" without pulling or writing.
 
-`MODEL-POLICY.md` is the shared TRIO roster (Reviewer = latest flagship Claude `model:"fable"` max thinking;
-Auditor = latest Opus `model:"opus"` divergent regression/coupling lens;
+`MODEL-POLICY.md` is the shared TRIO roster (Reviewer = Sonnet 5 `model:"sonnet"` effort `xhigh`;
+Auditor = latest Opus `model:"opus"` divergent regression/coupling lens effort `high`;
 Critic = Codex latest max reasoning when available, else a divergent Opus adversarial persona). It is
 **duplicated** — see [Contributing](#contributing).
 

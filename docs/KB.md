@@ -111,6 +111,7 @@ into the `KB-claude-codex.md` synthesis (kept standalone for provenance + depth)
 | [`KB-omx.md`](./KB-omx.md) | **oh-my-codex (OMX)** — Codex orchestration companion, OMC equivalent, skills/hooks/plugin/runtime mapping | — | **Living — primary Codex** | Compiled 2026-06-30 | OMX package metadata + official Codex docs |
 | [`KB-codex-vs-opus-coding.md`](./KB-codex-vs-opus-coding.md) | **Codex (GPT-5.5) vs Opus 4.8 for coding** — benchmark consensus, per-model strengths, the "Codex=apply/Opus=think" framing (partial), recommended division of labor + cross-check pattern | — | **Living — snapshot** | Compiled 2026-06-29 | 13 sources (Feb–Jun 2026, 2 official); sourced not re-run |
 | [`KB-cmux.md`](./KB-cmux.md) | **cmux — terminal for AI coding agents** — native macOS terminal (manaflow-ai, libghostty + socket CLI) for running Claude Code in parallel; disambiguates the separate craigsc/cmux worktree CLI; notification wiring (OSC 777 / `cmux notify`), teammates-as-panes, memory + orphan-process gotchas | — | **Living — snapshot** | Compiled 2026-06-29 | 11 sources (4 official); WEB-only, sourced not re-run |
+| [`KB-sonnet-5.md`](./KB-sonnet-5.md) | **Sonnet 5 + model routing** — 3-way Claude benchmark tables (Opus 4.8 / Sonnet 5 / Haiku 4.5) + the parallel Codex table (gpt-5.5 / gpt-5.4 / gpt-5.4-mini), effort behavior, pricing, task→model decision matrix, switch thresholds, anti-hall seat routing, cross-platform equivalence | — | **Living — snapshot** | Compiled 2026-07-01 | 17 sources (2 official Anthropic + 3 official OpenAI); directional (system cards unparsed) |
 | [`KB-omc.md`](./KB-omc.md) | **oh-my-claudecode (OMC)** — multi-agent orchestration layer for Claude Code (plugin marketplace, skills, agents, hooks, state); canonical launch, model routing, key skills (`/team`, `/ralph`, `/autopilot`, `/ultrawork`, `/ccg`); the combined cmux+OMC+Claude Code stack; agnostic | — | **Living — snapshot** | Compiled 2026-06-29 | OMC shipped docs + public repo; agnostic |
 | [`gsd-distilled.md`](./gsd-distilled.md) | GSD phase model distilled; the lightweight phase loop ship-it borrows from | 270 ln | **Living — folded** (KB-claude-codex §12) | Research 2026-05-29 | `.gsd/*`, gsd-*-phase SKILLs (cited in header) |
 | [`superpowers-planning.md`](./superpowers-planning.md) | Distillation of 7 superpowers skills; Iron-Law + rationalization-table pattern; minimal plan-first loop | 234 ln | **Living — folded** (KB-claude-codex §13) | (date unknown) | superpowers skill set (read-only study) |
@@ -143,7 +144,7 @@ docs are background; their actionable content is already in the synthesis.
 | **deadly-loop / ship-it** phase model + debate roster | KB-claude-codex §12, §13; gsd-distilled; superpowers-planning; `skills/MODEL-POLICY.md` |
 | **Task discipline** (tasklist-guard) | TASKLIST-GUARD (usage); TASK-WORK (design/research) |
 | **Testing** the hooks | E2E-TESTING |
-| **Model selection / effort / thinking** | opus-4-8-features; opus-4-8-swarm; `skills/MODEL-POLICY.md` |
+| **Model selection / effort / thinking** (which model when: Opus 4.8 / Sonnet 5 / Haiku 4.5 + Codex gpt-5.x) | **KB-sonnet-5** (benchmark tables + decision matrix + switch thresholds + cross-platform); opus-4-8-features; `skills/MODEL-POLICY.md` |
 | Anti-hallucination **evidence base** (peer-reviewed) | KB-claude-codex §8 + "Design implications" |
 
 ---

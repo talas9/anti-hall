@@ -158,7 +158,7 @@ describe the behavior for a scenario, that's the hole the deadly-loop will find 
 PLAN.md** using the Workflow tool to fan out a parallel `parallel([...])` barrier stage with
 the three concurrent TRIO seats:
 
-- **Reviewer agent** (latest flagship Claude `model:"fable"`, max thinking): read `PLAN.md`,
+- **Reviewer agent** (Sonnet 5 `model:"sonnet"`, effort `xhigh`): read `PLAN.md`,
   audit for narrow vision / missed blast radius, unsound phase decomposition or sequencing,
   schema/migration/rollback gaps, and assumptions stated as fact without evidence.
 - **Auditor agent** (latest Opus `model:"opus"`, max thinking): divergent regression &
@@ -174,7 +174,7 @@ Codex critic is preserved (canonical Codex form + availability fallback matrix i
 
 ```js
 parallel([
-  () => reviewerAgent(p),    // latest flagship (fable) with Opus fallback when fable is unavailable
+  () => agent(reviewerBrief, { model: "sonnet", effort: "xhigh", run_in_background: true, label: "reviewer" }),
   () => agent(auditorBrief,  { model: "opus",  run_in_background: true, label: "auditor" }),
   () => agent(criticBrief,   { agentType: "codex:codex-rescue", run_in_background: true, label: "critic" }),
 ])
@@ -183,11 +183,10 @@ parallel([
 Note: spawning all three as plain Claude agents would silently drop the cross-model Codex
 critic (collapsing to the all-Opus fallback), and an omitted `model` inherits the
 orchestrator's model — so set `model` EXPLICITLY on the Reviewer and Auditor and use
-`agentType` for the Critic. The Reviewer's preferred `model: "fable"` can be UNAVAILABLE
-(e.g. Anthropic disabled Fable for the account); wrap it like `reviewerAgent` in
-`references/ship-it.workflow.js`, which applies the documented fable✗→Opus fallback in
-CODE (null-return probe + optional `args.fableAvailable===false` short-circuit) rather
-than trusting the prose matrix to be applied by hand. The main thread **stays coordinator**: it synthesizes their
+`agentType` for the Critic. The Reviewer uses `model: "sonnet"` (Sonnet 5) at effort
+`xhigh` — never `max` inside loops (TTFT ~163 s). See `references/ship-it.workflow.js`
+for the canonical spawn. *If Fable returns to general availability, reconsider this seat
+for the flagship tier.* The main thread **stays coordinator**: it synthesizes their
 findings, dispatches fix-waves, and loops to re-debate.
 
 **Loop fix-waves → re-debate until zero NEW P0s** (count NEW issues, not rediscovered ones;

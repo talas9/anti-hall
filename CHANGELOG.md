@@ -6,6 +6,22 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.42.0
+
+**Sonnet 5 routing update + `KB-sonnet-5.md`; retires the Fable-disabled temp patch.**
+
+### New: `docs/KB-sonnet-5.md` — model routing KB (Claude + Codex)
+Benchmark tables for Opus 4.8 / Sonnet 5 / Haiku 4.5 **and** the parallel Codex table (gpt-5.5 / gpt-5.4 / gpt-5.4-mini), effort-tier behavior, pricing, a task→model decision matrix, switch thresholds, the anti-hall seat routing, and cross-platform equivalence (gpt-5.5↔Opus, gpt-5.4↔Sonnet 5, gpt-5.4-mini↔Haiku). 17 sources (2 official Anthropic + 3 official OpenAI); benchmark figures are directional (system-card PDFs unparsed) and source-tagged. Indexed in `docs/KB.md` + `llms.txt`.
+
+### Routing: Sonnet 5 lands; Fable-temp retired
+The `sonnet` tier token now resolves to `claude-sonnet-5`. MODEL-POLICY (both byte-identical copies) + the ship-it/deadly-loop workflow seats updated: **implementation → Codex primary, Sonnet 5 failover**; **deadly-loop Reviewer + M/secondary planning → Sonnet 5 @xhigh** (Auditor stays Opus @high, Critic stays Codex); Opus keeps top-level planning / root-cause / deep-debug. New rules: (1) the code implementer and its correctness reviewer are **always different models** (cross-model, no self-review); (2) Codex is the primary implementer (own limit → conserves the Claude bucket), failover to Sonnet 5 on unavailable/rate-limited — backoff, never retry-loop; (3) **never run Sonnet 5 at `max` inside a loop** (TTFT ~163s). The long-standing `TEMP(fable-disabled)` patch on the Reviewer seat is **removed** (Sonnet 5 fills it; a one-line "if Fable returns, reconsider" pointer remains).
+
+### Limit-conservation: main-model downshift directive
+When conservation is active, `limit-conserve-inject.js` now advises downshifting the **main coordinator** off the flagship (Claude Opus → Sonnet 5; Codex gpt-5.5 → gpt-5.4) to preserve the flagship weekly bucket — **but only to a 1M-context target** (never gpt-5.4-mini / 400k), so no context is lost. The flagship stays for delegated hard seats + escalation. Conditional advisory (the model isn't exposed in the UserPromptSubmit payload); the agent surfaces it (it can't self-`/model`). Codex mirror in the `anti-hall-context-conserve` skill.
+
+### Dual-platform parity
+Committed the standing **parity mandate** to `AGENTS.md`: every plan/work covers both platform variations (Claude + Codex) AND both orchestration layers (OMC ↔ OMX); model-routing artifacts get a Claude table AND a Codex table. Codex `anti-hall-model-policy` skill updated with the Claude-side mapping.
+
 ## 0.41.1
 
 **CI fix for Codex installer tests.**

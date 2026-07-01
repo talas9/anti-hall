@@ -61,9 +61,9 @@ tokens `haiku`/`sonnet`/`opus`/`fable`, never a versioned model id):
 - **Opus** — deep analysis; flagship-tier work when Fable is unavailable (the Opus floor
   for debate seats — see the availability fallback matrix in `../MODEL-POLICY.md`).
 - **Fable (flagship)** — planning, plan review / validation, design mockups, logic
-  creation & checking, workflow analysis, simulations, and debate roles (the Reviewer seat
-  of the ship-it / deadly-loop trio — roster in `../MODEL-POLICY.md`).
-  > **TEMPORARY (2026-06-29): Fable is disabled by Anthropic — use Opus for all Fable roles until re-enabled. Spawn sites are marked `TEMP(fable-disabled 2026-06-29)` for easy revert.**
+  creation & checking, workflow analysis, simulations, and debate roles. The Reviewer seat
+  of the ship-it / deadly-loop trio is currently Sonnet 5 — see `../MODEL-POLICY.md`.
+  *If Fable returns to general availability, reconsider the Reviewer seat for the flagship tier.*
 
 Don't send a planning problem to Haiku, or a log-tail to Fable/Opus.
 
@@ -128,7 +128,7 @@ concurrently and you get cross-model diversity (different training, different bl
 spots). Good splits:
 - Implementation slices: some files to Claude agents, others to Codex.
 - Review/debate: spread the seats across models (this is exactly the
-  `../MODEL-POLICY.md` trio roster — Fable Reviewer + Opus Auditor + Codex Critic).
+  `../MODEL-POLICY.md` trio roster — Sonnet 5 Reviewer + Opus Auditor + Codex Critic).
 - A second opinion on a hard diagnosis: ask both, compare.
 Balance by load (don't pile everything on one pool) and by fit. If Codex is
 unavailable, fall back to Claude-only (divergent personas for adversarial roles).

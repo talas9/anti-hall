@@ -10,17 +10,27 @@
 
 This governs the MAIN agent's everyday model choices (distinct from the TRIO debate roster below, which deadly-loop/ship-it read). Route by task SHAPE, and set `model` EXPLICITLY on every spawn — an omitted model inherits the orchestrator (a flagship), and a fan-out of omitted/Opus seats silently becomes an all-flagship swarm that exhausts the usage limit.
 
-| Task shape | Model | Why |
-|---|---|---|
-| Planning, architecture, design, ambiguous-requirement reasoning, design-level review | **opus** | judgment/coherence; leads repo-scale SWE-bench Pro |
-| Correctness / subtle-bug review, second opinion on substantial code | **Codex** (`codex:codex-rescue`) | off-by-one / races / low-level bugs are Codex's strength; does NOT consume the Claude usage limit |
-| Implementation from a ready plan, mechanical edits | **sonnet** | convention-aware, far cheaper than Opus at scale |
-| Trivial leaf / file-navigation / cheap lookups | **haiku** | cheapest; sufficient |
+| Task shape | Model | Effort | Why |
+|---|---|---|---|
+| Main coordinator | **Opus** | — | leads, judges, decides |
+| Planning — large / top-level | **Opus** | `xhigh` | judgment/coherence; leads repo-scale SWE-bench Pro |
+| Planning — medium / secondary | **Sonnet 5** (`sonnet`) | `xhigh` | faster + cheaper for scoped planning; escalate to Opus when ambiguous |
+| Implementation from a ready plan, mechanical edits | **Codex primary → Sonnet 5 failover** | Sonnet 5 at `high` on failover | Codex conserves the Claude bucket; see governance rules below |
+| Correctness / subtle-bug review, second opinion on substantial code | **Codex** (`codex:codex-rescue`) | — | off-by-one / races / low-level bugs are Codex's strength; does NOT consume the Claude usage limit |
+| Root-cause / deep debug | **Opus** | `high` | deep causal trace needs full reasoning budget |
+| Trivial leaf / file-navigation / cheap lookups | **Haiku** | — | cheapest; sufficient |
 
 - **Codex second opinion is ALWAYS warranted on substantial code changes** (the `codex-nudge` Stop hook reminds the main agent; the deadly-loop/ship-it Critic seat already enforces it inside those skills). Keep the architecture/design lens on Opus — the two are complementary.
 - **In a Workflow, distribute models across stages/lenses** — never default every `agent()` to Opus. The model-routing-guard hook does NOT police models inside a workflow review fan-out (it exempts review tasks, and workflow-spawn advisories are not surfaced to the orchestrator), so distribution is the SCRIPT AUTHOR's responsibility.
 - **Route SMART, not blindly — weigh BOTH limits.** Codex has its OWN usage limit; don't treat "use Codex" as an unconditional rule. If Codex is unavailable or rate-limited, DEGRADE immediately to a cheap Claude (Sonnet) so work continues — never strand the main agent. Do NOT retry Codex every turn: re-attempt only after the reset/`retry-after` time Codex reports, or — if none is given — after a backoff (give it time), not on the next turn. (deadly-loop/ship-it already gate the Critic seat on a `codexUp` probe and degrade to an Opus persona.)
 - See `docs/KB-codex-vs-opus-coding.md` for the evidence base; the "Codex=apply/Opus=think" split is a routing heuristic, not a capability wall.
+
+**Four governance rules (always apply):**
+
+1. **Cross-model, no self-review.** The code implementer and its correctness reviewer MUST always be different models. Codex-impl → reviewed by Sonnet 5 or Opus. Sonnet 5-impl → reviewed by Codex or Opus. An agent may never review its own implementation.
+2. **Codex is the primary implementer** (conserves the Claude usage bucket). Fail over to Sonnet 5 at effort `high` when Codex is unavailable or rate-limited — never retry-loop. Back off: wait for the reset/`retry-after` time Codex reports, or a backoff window if none is given.
+3. **NEVER run Sonnet 5 at effort `max` inside loops.** Sonnet 5 TTFT at `max` is ~163 s and is cost-prohibitive at loop scale. The ceiling inside any loop is `xhigh`.
+4. **The `sonnet` tier token resolves to Sonnet 5** (`claude-sonnet-5`) at runtime. Everywhere this policy says `sonnet`, it means Sonnet 5.
 
 ---
 
@@ -29,39 +39,37 @@ This file defines the three-agent ("TRIO") debate roster used by the
 any debate round so the model selection and spawn mechanics are correct and
 consistent.
 
-The roster is deliberately **cross-model**: a Claude Fable Reviewer, a Claude
-Opus Auditor, and an OpenAI Codex Critic. Three independent vantage points
-(flagship-Claude correctness, divergent-Claude regression/coupling, non-Claude
-adversarial) catch non-overlapping bugs that a single pair would miss. The floor
-for any seat is Opus — never a weaker/cheaper model.
+The roster is deliberately **cross-model**: a Sonnet 5 Reviewer, a Claude Opus
+Auditor, and an OpenAI Codex Critic. Three independent vantage points (Sonnet 5
+correctness, divergent-Opus regression/coupling, non-Claude adversarial) catch
+non-overlapping bugs that a single pair would miss. The floor for fallback seats
+is Opus — never a weaker/cheaper model.
 
 ---
 
 ## The three roles (the TRIO)
 
-> **TEMPORARY (2026-06-29): Fable is disabled by Anthropic — the Reviewer seat runs on Opus until Fable is re-enabled; revert the reviewer model from `'opus'` back to `'fable'` then.** The spawn sites in `references/ship-it.workflow.js` and `references/deadly-loop.workflow.js` are marked `TEMP(fable-disabled 2026-06-29)` for easy grep-revert.
-
-| Role | Model | Thinking | Persona |
+| Role | Model | Effort | Persona |
 |---|---|---|---|
-| **Reviewer** | latest flagship Claude (`model: "fable"`) *(temporarily Opus — see note above)* | adaptive, effort `xhigh` (→ `high`) | correctness / architecture auditor |
-| **Auditor** | latest Claude Opus (`model: "opus"`) | adaptive, effort `xhigh` | divergent: regression & coupling hunter |
-| **Critic** | latest OpenAI Codex | max reasoning (`xhigh` → `high`) | adversarial failure-mode hunter |
+| **Reviewer** | Sonnet 5 (`model: "sonnet"`) | `xhigh` (→ `high`; never `max` in loops) | correctness / architecture auditor |
+| **Auditor** | latest Claude Opus (`model: "opus"`) | `high` | divergent: regression & coupling hunter |
+| **Critic** | Codex primary (`codex:codex-rescue`) — unless Codex implemented the diff, then Opus/Sonnet 5 | max reasoning (`xhigh` → `high`) | adversarial failure-mode hunter |
+
+*If Fable returns to general availability, reconsider the Reviewer seat for the flagship tier.*
 
 All three are dispatched **in the SAME message** so they run truly in parallel.
 
 ### Reviewer — correctness / architecture auditor
 
-- **Model:** the latest flagship Claude — pass `model: "fable"` to the Agent
-  tool (the `fable` enum token resolves to the newest flagship at runtime;
-  always resolve "latest", never hardcode a version). Fable 5 is the top
-  generally-available Claude model, above Opus 4.8 (see `docs/KB-fable-5.md` §1).
-- **Thinking:** MAXIMUM. Adaptive thinking is the ONLY mode on flagship Claude —
-  always on; `thinking: {type:"disabled"}` and manual `budget_tokens` extended
-  thinking are not supported (effort controls depth instead — `docs/KB-fable-5.md`
-  §2). Effort `xhigh`. `effort` defaults to `high`; `xhigh` is the recommended
-  max for agentic/review work and IS supported on Fable 5. If the resolved model
-  does not support `xhigh`, fall back to `high` (never silently degrade below
-  `high` for review).
+- **Model:** Sonnet 5 — pass `model: "sonnet"` to the Agent tool (the `sonnet`
+  tier token resolves to Sonnet 5 / `claude-sonnet-5` at runtime; always resolve
+  "latest", never hardcode a version). *If Fable returns to general availability,
+  reconsider this seat for the flagship tier.*
+- **Effort:** `xhigh`. `effort` defaults to `high`; `xhigh` is the recommended
+  max for agentic/review work. **NEVER use effort `max` for this seat inside
+  loops** — Sonnet 5 TTFT at `max` is ~163 s and is cost-prohibitive at loop
+  scale. If the resolved model does not support `xhigh`, fall back to `high`
+  (never silently degrade below `high` for review).
 - **Persona:** rigorous correctness and architecture auditor. Verifies that
   changes do what they claim, that fixes resolve their parent findings without
   regression, that merge order is sound, and that every claim is backed by
@@ -73,9 +81,8 @@ All three are dispatched **in the SAME message** so they run truly in parallel.
 - **Model:** the latest Claude Opus — pass `model: "opus"`. Deliberately a
   DIFFERENT Claude generation from the Reviewer so the two Claude seats do not
   share the same flagship blind spots; the divergence is the point.
-- **Thinking:** MAXIMUM. Adaptive thinking ON, effort `xhigh` (fall back to
-  `high` if unsupported on the resolved model). On recent Opus generations
-  manual `budget_tokens` is rejected; use adaptive mode + `effort`.
+- **Thinking:** MAXIMUM. Adaptive thinking ON, effort `high`. On recent Opus
+  generations manual `budget_tokens` is rejected; use adaptive mode + `effort`.
 - **Persona:** divergent regression & coupling hunter. Its lens is orthogonal to
   the Reviewer's: hunt where the change broke something ELSEWHERE (regressions in
   unchanged code that depends on the change), where coupling between modules /
@@ -104,19 +111,18 @@ The roster degrades gracefully by which model families are reachable. The
 **floor for every seat is Opus** — never a mid-tier or cheaper model. If a
 flagship seat is rate-limited, **wait and retry** rather than degrading depth.
 
-| fable | codex | Roster |
+| sonnet5 | codex | Roster |
 |---|---|---|
-| ✓ | ✓ | **Fable Reviewer + Opus Auditor + Codex Critic** (the canonical TRIO) |
+| ✓ | ✓ | **Sonnet 5 Reviewer + Opus Auditor + Codex Critic** (the canonical TRIO) |
 | ✗ | ✓ | Opus Reviewer + Opus Auditor (divergent) + Codex Critic |
-| ✓ | ✗ | Fable Reviewer + Opus Auditor + Opus Critic (adversarial persona) |
+| ✓ | ✗ | Sonnet 5 Reviewer + Opus Auditor + Opus Critic (adversarial persona) |
 | ✗ | ✗ | 3× Opus, three divergent personas (verify / regression-hunt / break) |
 
-When the `fable` token is unavailable on the surface, the Reviewer seat falls
-back to Opus (the Agent tool allows unknown tokens, but never silently downgrade
-below Opus). When Codex is unavailable, the Critic seat becomes a 3rd Opus with
-the adversarial persona. In the all-Opus floor, the three seats keep their three
-DISTINCT personas (verify / regression-hunt / break) so objective diversity is
-preserved even without model diversity.
+When Sonnet 5 is unavailable or rate-limited, the Reviewer seat falls back to
+Opus (never silently downgrade below Opus). When Codex is unavailable, the Critic
+seat becomes a 3rd Opus with the adversarial persona. In the all-Opus floor, the
+three seats keep their three DISTINCT personas (verify / regression-hunt / break)
+so objective diversity is preserved even without model diversity.
 
 ---
 
@@ -278,20 +284,20 @@ Every shipped spawn carries an explicit `model` (Reviewer/Auditor) or
 model inheritance (an omitted `model` inherits the orchestrator's model; on a
 flagship orchestrator that produces an all-flagship swarm).
 
-### Reviewer (Fable) — via the `Agent` tool
+### Reviewer (Sonnet 5) — via the `Agent` tool
 
 ```
 Agent({
-  description: "Round N Reviewer (Fable, max thinking)",
+  description: "Round N Reviewer (Sonnet 5, effort xhigh)",
   subagent_type: "general-purpose",
-  model: "fable",           // resolves to the latest flagship Claude available
+  model: "sonnet",          // resolves to Sonnet 5 (claude-sonnet-5) at runtime
   run_in_background: true,
-  prompt: <REVIEWER_PROMPT with effort xhigh / adaptive thinking ON>
+  prompt: <REVIEWER_PROMPT with effort xhigh — NEVER max inside loops (TTFT ~163s)>
 })
 ```
 
-In the prompt, instruct the agent to use maximum thinking (effort `xhigh`) and
-to cite `file:line` for every claim.
+In the prompt, instruct the agent to use effort `xhigh` and to cite `file:line`
+for every claim. Never pass effort `max` inside a loop context.
 
 ### Auditor (Opus) — via the `Agent` tool
 
@@ -338,14 +344,14 @@ different issues.
 
 ## Why cross-model beats same-model
 
-- **Diverse failure modes.** Fable, Opus, and Codex are trained on different data
-  with different objectives and architectures. They are wrong about *different*
+- **Diverse failure modes.** Sonnet 5, Opus, and Codex are trained on different
+  data with different objectives and architectures. They are wrong about *different*
   things, so a bug invisible to one is often obvious to another.
 - **Independent training → fewer shared blind spots.** Two instances of the same
   model share systematic blind spots (the same tokenizer quirks, the same
   reasoning shortcuts, the same training-data gaps). The TRIO mixes two distinct
-  Claude generations (Fable + Opus) AND a non-Claude model (Codex) — a genuinely
-  independent set of second opinions is the whole point of a debate.
+  Claude generations (Sonnet 5 + Opus) AND a non-Claude model (Codex) — a
+  genuinely independent set of second opinions is the whole point of a debate.
 - **Reduced correlated confidence.** Same-model agents tend to agree confidently
   on the same wrong answer. A cross-model disagreement is a high-signal flag that
   something needs human adjudication.
@@ -364,7 +370,7 @@ fallback, not the preferred TRIO.
 ## "Latest" resolution reminder
 
 "Latest" means the newest available model at runtime, not a hardcoded version:
-- Reviewer: newest flagship Claude (`model: "fable"`) available at runtime.
+- Reviewer: Sonnet 5 (`model: "sonnet"`, resolves to `claude-sonnet-5` at runtime).
 - Auditor / Opus-fallback seats: newest Claude Opus available at runtime.
 - Codex Critic: newest OpenAI Codex model the installed CLI supports.
 
