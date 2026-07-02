@@ -127,7 +127,12 @@ function criticBrief(phase) {
 // fable-availability hook tells the coordinator to pass args.fableAvailable === true,
 // this seat tries Fable first, then falls back through the normal chain.
 async function reviewerAgent(p) {
-  const tryFable = typeof args === 'object' && args !== null && args.fableAvailable === true;
+  // Fable routing is policy-disabled (owner call, 2026-07-02): negative community feedback
+  // reports it as over-restrictive/refusal-prone, and a refusal would pass StructuredOutput
+  // validation as a "successful" verdict rather than triggering fallback. Sonnet 5 is the
+  // primary Reviewer until Fable's track record improves. The availability flag/hook stays
+  // wired for visibility; only the routing decision is disabled here.
+  const tryFable = false && typeof args === 'object' && args !== null && args.fableAvailable === true;
   if (tryFable) {
     const fable = await agent(reviewerBrief(p), {
       schema: VERDICT_SCHEMA, run_in_background: true,

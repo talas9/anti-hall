@@ -172,7 +172,7 @@ test('one full round runs Context->Investigate->Argue->Converge and returns the 
   assert.ok(calls.agents.some((c) => c.opts && c.opts.agentType === 'codex:codex-rescue'));
 });
 
-test('Reviewer uses Fable first when args.fableAvailable=true, then Sonnet 5, then Opus', async () => {
+test('Reviewer skips Fable even when args.fableAvailable=true (policy-disabled), goes Sonnet 5 then Opus', async () => {
   const reviewerModels = [];
   const { promise, calls } = runStubbed({
     round: 1, multiplier: 1, targetSHA: 'abc123', branch: 'main', scope: 'whole repo',
@@ -180,14 +180,14 @@ test('Reviewer uses Fable first when args.fableAvailable=true, then Sonnet 5, th
   }, (brief, opts, def) => {
     if (opts && /^round-1:reviewer-1/.test(opts.label || '')) {
       reviewerModels.push(opts.model);
-      if (opts.model === 'fable' || opts.model === 'sonnet') return null;
+      if (opts.model === 'sonnet') return null;
     }
     return def;
   });
   const out = await promise;
   assert.strictEqual(out.verdictSummary.degraded, false);
-  assert.deepStrictEqual(reviewerModels, ['fable', 'sonnet', 'opus']);
-  assert.ok(calls.logs.some((l) => /Fable Reviewer unavailable/.test(l)));
+  assert.deepStrictEqual(reviewerModels, ['sonnet', 'opus'], 'fable must never be attempted, even with fableAvailable=true');
+  assert.ok(!calls.agents.some((c) => c.opts && c.opts.model === 'fable'), 'no agent() call should ever request model:fable');
   assert.ok(calls.logs.some((l) => /falling back to Opus Reviewer/.test(l)));
 });
 

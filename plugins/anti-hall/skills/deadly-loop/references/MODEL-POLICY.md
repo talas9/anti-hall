@@ -56,7 +56,11 @@ is Opus — never a weaker/cheaper model.
 | **Auditor** | latest Claude Opus (`model: "opus"`) | `high` | divergent: regression & coupling hunter |
 | **Critic** | Codex primary (`codex:codex-rescue`) — unless Codex implemented the diff, then Opus/Sonnet 5 | max reasoning (`xhigh` → `high`) | adversarial failure-mode hunter |
 
-*If Fable returns to general availability, reconsider the Reviewer seat for the flagship tier.*
+*Fable routing is policy-disabled (2026-07-02): reported over-restrictive/refusal-prone by
+the community, and a soft refusal would pass StructuredOutput validation as a "successful"
+verdict rather than triggering fallback — worse than unavailability. Sonnet 5 is the fixed
+Reviewer model regardless of `args.fableAvailable`; reconsider only if Fable's track record
+improves.*
 
 All three are dispatched **in the SAME message** so they run truly in parallel.
 
@@ -64,13 +68,13 @@ All three are dispatched **in the SAME message** so they run truly in parallel.
 
 - **Model:** Sonnet 5 — pass `model: "sonnet"` to the Agent tool (the `sonnet`
   tier token resolves to Sonnet 5 / `claude-sonnet-5` at runtime; always resolve
-  "latest", never hardcode a version). *If Fable returns to general availability,
-  reconsider this seat for the flagship tier.*
-- **Fable availability:** Before invoking ship-it/deadly-loop, check
-  `~/.anti-hall/fable-availability.json` (or the SessionStart additionalContext) --
-  if `available:true`, thread `args.fableAvailable=true` into the Workflow invocation
-  so the Reviewer seat can route to Fable 5 instead of Sonnet 5. This is checked
-  ONCE per session (not every turn) by the `fable-availability.js` SessionStart hook.
+  "latest", never hardcode a version). Fable routing is policy-disabled (see above) —
+  do not route this seat to Fable even when `fableAvailable` is true.
+- **Fable availability (informational only, not currently acted on):** the
+  `fable-availability.js` SessionStart hook still checks
+  `~/.anti-hall/fable-availability.json` once per session for visibility, but neither
+  ship-it.workflow.js nor deadly-loop.workflow.js currently routes the Reviewer seat to
+  Fable regardless of the flag's value — see the policy-disabled note above.
 - **Effort:** `xhigh`. `effort` defaults to `high`; `xhigh` is the recommended
   max for agentic/review work. **NEVER use effort `max` for this seat inside
   loops** — Sonnet 5 TTFT at `max` is ~163 s and is cost-prohibitive at loop

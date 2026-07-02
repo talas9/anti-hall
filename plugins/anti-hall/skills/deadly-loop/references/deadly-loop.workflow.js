@@ -194,9 +194,13 @@ function buildFormation(a) {
   const mult = (typeof a.multiplier === 'number' && a.multiplier >= 1)
     ? Math.floor(a.multiplier) : 1;
   const codexUp = a.codexAvailable !== false;
-  const reviewerModel = a.fableAvailable === true ? 'fable' : 'sonnet';
+  // Fable routing is policy-disabled (owner call, 2026-07-02): negative community feedback
+  // reports it as over-restrictive/refusal-prone, and a refusal would pass StructuredOutput
+  // validation as a "successful" verdict rather than triggering fallback. Sonnet 5 stays
+  // primary Reviewer regardless of args.fableAvailable until Fable's track record improves.
+  const reviewerModel = false && a.fableAvailable === true ? 'fable' : 'sonnet';
   const roles = [
-    // Reviewer = Sonnet 5 by default; Fable only when the SessionStart cache says it is available.
+    // Reviewer = Sonnet 5 (Fable routing disabled, see above).
     { role: 'reviewer', opts: { model: reviewerModel, effort: 'xhigh' } },
     { role: 'auditor', opts: { model: 'opus', effort: 'high' } },
     {

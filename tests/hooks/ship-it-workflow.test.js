@@ -69,18 +69,18 @@ test('default Reviewer path remains Sonnet 5 -> Opus fallback', async () => {
   assert.deepStrictEqual(reviewerModels, ['sonnet', 'opus']);
 });
 
-test('Reviewer uses Fable first when args.fableAvailable=true, then Sonnet 5, then Opus', async () => {
+test('Reviewer skips Fable even when args.fableAvailable=true (policy-disabled), goes Sonnet 5 then Opus', async () => {
   const reviewerModels = [];
   const { promise, calls } = runStubbed(plan({ fableAvailable: true }), (brief, opts, def) => {
     if (opts && /^phase1:reviewer/.test(opts.label || '')) {
       reviewerModels.push(opts.model);
-      if (opts.model === 'fable' || opts.model === 'sonnet') return null;
+      if (opts.model === 'sonnet') return null;
     }
     return def;
   });
   const out = await promise;
   assert.ok(out.phases.phase1.review);
-  assert.deepStrictEqual(reviewerModels, ['fable', 'sonnet', 'opus']);
-  assert.ok(calls.logs.some((l) => /Fable Reviewer unavailable/.test(l)));
+  assert.deepStrictEqual(reviewerModels, ['sonnet', 'opus'], 'fable must never be attempted, even with fableAvailable=true');
+  assert.ok(!calls.agents.some((c) => c.opts && c.opts.model === 'fable'), 'no agent() call should ever request model:fable');
   assert.ok(calls.logs.some((l) => /falling back to Opus Reviewer/.test(l)));
 });

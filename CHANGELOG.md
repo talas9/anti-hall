@@ -6,6 +6,27 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.43.2
+
+**Fable routing policy-disabled: negative community feedback (over-restrictive/refusal-prone).**
+
+- `reviewerAgent()`/`buildFormation()` in ship-it.workflow.js and deadly-loop.workflow.js no
+  longer attempt Fable for the Reviewer seat, even when `args.fableAvailable === true`. Reason:
+  a soft refusal from an over-restrictive model would pass StructuredOutput schema validation
+  as a "successful" verdict and get silently treated as real analysis -- worse than the
+  already-handled unavailable/null case, and not worth building refusal-detection for given
+  the community's reported experience with Fable's current behavior. Sonnet 5 is now the fixed
+  primary Reviewer regardless of the flag; Opus stays the final fallback.
+- The `fable-availability.js` SessionStart hook and its cache stay in place for visibility
+  (informational only, no longer acted on) -- easy to re-enable if Fable's track record improves.
+- MODEL-POLICY.md (both copies) documents the policy decision and its reasoning.
+- Fixed a doc-currency gap the 0.43.0 doc sweep missed: `orchestration/SKILL.md` still
+  described the OLD single `.anti-hall-progress.md` file as the enforced mechanism; now
+  references the per-session path.
+
+2 tests updated to assert the new behavior (Fable never attempted); suite 688
+(686 pass / 0 fail / 2 skip).
+
 ## 0.43.1
 
 **History-entry writes now delegate to a cheap model; fixed a stale path left by 0.43.0.**

@@ -333,10 +333,10 @@ uses the home directory (not os.tmpdir()).
   exploration tokens stay in the throwaway subagent window — only the conclusion
   enters the coordinator (reinforces the core rules above).
 - **Externalize findings by TYPE.** Durable, reusable patterns -> Claude Code Auto
-  Memory / `CLAUDE.md`. Case-specific findings + current state -> the repo-local
-  progress file `.anti-hall-progress.md` (enforced by the tasklist-guard `Stop`
-  hook). Do NOT dump transient case facts into `MEMORY.md` — that is the
-  reusable-patterns layer; keep it clean.
+  Memory / `CLAUDE.md`. Case-specific findings + current state -> the per-session
+  progress file `.anti-hall/progress/<date>/<session-id>.md` (enforced by the
+  tasklist-guard `Stop` hook). Do NOT dump transient case facts into `MEMORY.md` —
+  that is the reusable-patterns layer; keep it clean.
 - **Compact early.** Once findings are externalized, prefer compacting before a long
   context rots; the statusline context gauge (green->yellow->red at ~70/90%) is the
   visual cue.
