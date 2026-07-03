@@ -6,6 +6,49 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.44.0
+
+**Ship-it v2: resumable state, a global P0+P1 convergence gate, Codex-primary build seats, and legacy-state migration.**
+
+- **Global deadly-loop convergence gate now blocks on confirmed P0 *or* P1** (was P0-only).
+  `deadly-loop.workflow.js`'s `VERDICT_SCHEMA` already tagged every finding P0/P1/P2/P3; the
+  gate simply never checked P1 until now. This is a plugin-wide change — every deadly-loop
+  consumer (ship-it, root-cause debugging, deadly-loop-multi) now requires zero NEW P0s AND
+  P1s to converge, not just P0s. Mirrored in the Codex-native `anti-hall-deadly-loop` skill.
+- **ship-it v2, L-tier only:**
+  - Resumable `.anti-hall/ship-it/<slug>/STATE.json` (coordinator-owned protocol — Dynamic
+    Workflow scripts have no filesystem access, so this lives in `SKILL.md`, not the
+    `.workflow.js` template): `plan_hash` (drift detection against `PLAN.md`), per-phase
+    status, and an `escalations` counter. Reuses the existing `~/.anti-hall/agents/*.json`
+    heartbeat convention (`agent-watchdog.js`) rather than inventing a new one.
+  - P2-severity findings from a converged deadly-loop no longer vanish — they're appended to
+    `.anti-hall/ship-it/<slug>/decisions.md`.
+  - Build-to-plan escalations (a fix that needs re-planning, not just another fix-wave) are
+    capped at 2; the 3rd stops and surfaces to the owner instead of looping.
+  - Step 6 now auto-writes a session-history entry (via the existing per-session system) plus
+    `.anti-hall/ship-it/<slug>/SUMMARY.md`, then triggers `/graphify --obsidian --update`.
+- **Build seats now try Codex-primary / Sonnet-5-failover** (`buildAgent()` in
+  `ship-it.workflow.js`, mirroring the existing `criticAgent()` fallback shape) instead of
+  always going straight to Sonnet 5 — matching MODEL-POLICY.md's already-documented
+  implementation-seat routing. Surfaced a real cross-model gap: when a phase's build falls
+  back to Sonnet 5, that phase's Reviewer seat (also Sonnet-5-by-default) would otherwise be
+  reviewing its own model's output. Fixed — the Reviewer now skips Sonnet 5 and goes straight
+  to Opus for any phase Sonnet 5 itself built.
+- **`scripts/migrate-state.js`** (new) — non-destructive (copy-only, never deletes/moves),
+  idempotent script that folds legacy root `.anti-hall-progress.md` / `.anti-hall-history.md`
+  files into `.anti-hall/history/legacy/` for repos that haven't been through that migration
+  yet. Wired into the `update` skill as a post-pull step.
+- **Codex-native `anti-hall-ship-it` parity** — same L-tier resumable-state convention, P0+P1
+  LOCK threshold, P2 decisions log, migrate-state.js reference, and wrap-up/summarize step,
+  written as protocol text (this port has no Dynamic Workflow runtime, so nothing here relies
+  on one). Codex-native ship-it is already the Codex-primary implementer by construction, so
+  the cross-model self-review guard above doesn't apply on this port.
+- Doc sweep: README (root + plugin) and llms.txt updated for the above; also corrected
+  drifted test-pass counts (623/625 → 701/703) that had gone stale since 0.43.0.
+
+Suite 703 (701 pass / 0 fail / 2 skip, up from 688 — 15 new tests across the deadly-loop and
+ship-it workflow suites plus the new migrate-state suite).
+
 ## 0.43.2
 
 **Fable routing policy-disabled: negative community feedback (over-restrictive/refusal-prone).**

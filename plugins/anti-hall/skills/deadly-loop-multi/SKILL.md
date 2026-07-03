@@ -128,7 +128,7 @@ audit spawns — state this explicitly when you dispatch.
      each with file:line, the validated evidence, the fix, and which agents raised it.
 6. **(Optional) fix-wave + reconverge.** If the user wants fixes, dispatch fix agents
    (one per cluster, worktree-isolated if they touch the same files), then re-run a
-   lighter loop to confirm zero NEW P0s — the convergence rule from the base deadly-loop.
+   lighter loop to confirm zero NEW P0s or P1s — the convergence rule from the base deadly-loop.
    The reconverge agents are given the PRIOR round's findings + the exact fixes applied,
    and must **verify-then-hunt-new (carry-forward)**: first confirm each prior finding's fix
    actually resolved it without regression, then hunt genuinely NEW issues — distinguishing

@@ -512,14 +512,15 @@ async function main() {
   }
 
   // Verdict: GO only if EVERY live seat returned GO AND no unresolved blockers
-  // (any confirmed P0 OR any contested-escalated group is an unresolved blocker).
+  // (any confirmed P0 or P1 OR any contested-escalated group is an unresolved blocker).
   // A DEGRADED round (a seat dead after retry) can never be a clean final GO — the
   // coordinator must run a full follow-up round; we mark degraded so it propagates.
   const liveVerdicts = liveIdx.map((i) => reports[i].verdict);
   const allLiveGO = liveVerdicts.length > 0 && liveVerdicts.every((v) => v === 'GO');
-  const hasConfirmedP0 = confirmed.some((g) => g.members.some((f) => f && f.severity === 'P0'));
+  const hasConfirmedP0orP1 = confirmed.some((g) =>
+    g.members.some((f) => f && (f.severity === 'P0' || f.severity === 'P1')));
   const hasEscalated = contested.some((g) => g.stances.escalated > 0);
-  const noUnresolvedBlockers = !hasConfirmedP0 && !hasEscalated;
+  const noUnresolvedBlockers = !hasConfirmedP0orP1 && !hasEscalated;
 
   const verdictSummary = {
     go: allLiveGO && noUnresolvedBlockers && !anySeatDead,

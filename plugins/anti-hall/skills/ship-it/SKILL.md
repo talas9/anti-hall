@@ -1,6 +1,6 @@
 ---
 name: ship-it
-description: One lean, anti-hall-native workflow for shipping any change correctly — from a one-line fix to a multi-phase feature. Scales rigor to blast radius (S/M/L tiers). Brainstorm + plan happen IN PLAN MODE (ExitPlanMode is the approval gate); the plan is hardened with the deadly-loop BEFORE any code; on large work the disjoint build phases and the per-phase deadly-loop fan out as a Workflow swarm; each phase is verified with fresh evidence and a vacuous-test guard, then hardened until zero NEW P0s. Standalone — depends only on Claude Code built-ins (plan mode, the Workflow tool) plus anti-hall's own deadly-loop and always-on guards. Use when the user says "let's build X" / "implement Y" / "fix Z" and you want it done right the first time. Replaces feature-launch.
+description: One lean, anti-hall-native workflow for shipping any change correctly — from a one-line fix to a multi-phase feature. Scales rigor to blast radius (S/M/L tiers). Brainstorm + plan happen IN PLAN MODE (ExitPlanMode is the approval gate); the plan is hardened with the deadly-loop BEFORE any code; on large work the disjoint build phases and the per-phase deadly-loop fan out as a Workflow swarm; each phase is verified with fresh evidence and a vacuous-test guard, then hardened until zero NEW P0s or P1s. Standalone — depends only on Claude Code built-ins (plan mode, the Workflow tool) plus anti-hall's own deadly-loop and always-on guards. Use when the user says "let's build X" / "implement Y" / "fix Z" and you want it done right the first time. Replaces feature-launch.
 ---
 
 # Ship It — Plan Right, Build in Slices, Prove It Works
@@ -16,7 +16,7 @@ later as bugs, so the rigor is spent up front, then kept cheap by scaling it to 
 - **Plan as an executable artifact** (zero placeholders), hardened **before** any code.
 - **Build in vertical slices**; on large work, fan disjoint phases out as a **Workflow
   swarm** — each verified with fresh evidence, then hardened with the `deadly-loop` to zero
-  NEW P0s.
+  NEW P0s or P1s.
 
 Generic by design: no assumed cloud, language, branch policy, or CI provider. Substitute
 the repo's own conventions where the text says "the repo's own policy."
@@ -191,19 +191,19 @@ automatically routes to Fable first, falling back to Sonnet 5 then Opus — no m
 reconsideration needed.* The main thread **stays coordinator**: it synthesizes their
 findings, dispatches fix-waves, and loops to re-debate.
 
-**Loop fix-waves → re-debate until zero NEW P0s** (count NEW issues, not rediscovered ones;
+**Loop fix-waves → re-debate until zero NEW P0s or P1s** (count NEW issues, not rediscovered ones;
 the trend must fall to 0). Same deadly-loop caps: soft-10 / hard-15 rounds. If the trend
 isn't falling well before soft-10, escalate to the owner (redesign scope / accept risk /
 narrow).
 
-**Convergence gate:** once the plan survives with zero NEW P0s, present it via `ExitPlanMode`.
+**Convergence gate:** once the plan survives with zero NEW P0s or P1s, present it via `ExitPlanMode`.
 `ExitPlanMode` is the single plan → build transition; the first post-approval action is
 writing the durable `PLAN.md` (Step 2) — **do not write a line of feature code before that.**
 
 **Who approves — interactive vs autonomous (this is a SOFT gate, not a hard stop):**
 - **Interactive:** present the plan and wait for the owner's approval, as normal.
 - **Autonomy ALREADY granted** (the owner said "AFK" / "full autonomy" / "build it" / "go
-  autonomous" / approved this plan): **the deadly-loop convergence to zero NEW P0s IS the
+  autonomous" / approved this plan): **the deadly-loop convergence to zero NEW P0s or P1s IS the
   approval — self-approve and PROCEED to build. Do NOT re-stop for a "go" the owner already
   gave.** Record the plan in `PLAN.md` and continue. Stopping here for human sign-off you
   already have is the failure mode this rule exists to prevent (a converged, green-lit plan
@@ -221,6 +221,41 @@ writing the durable `PLAN.md` (Step 2) — **do not write a line of feature code
 Plan mode is now exited and approved. **On resume after `/clear`:** read `PLAN.md` first —
 Decisions + Progress are the resume point — then continue from the first unchecked phase.
 *(S: this step is the whole job, done inline. M: build phases in order, inline.)*
+
+### Resumable state — `STATE.json` (L only)
+
+Dynamic Workflow scripts have **zero filesystem access** — `STATE.json` cannot live inside
+`ship-it.workflow.js`. It is a **coordinator-owned protocol**: the main thread (using its own
+Read/Write/Edit tools, not the workflow script) maintains
+`.anti-hall/ship-it/<slug>/STATE.json` alongside `PLAN.md`:
+
+```json
+{
+  "plan_hash": "<sha256 of PLAN.md content>",
+  "phases": [
+    { "label": "phase1", "status": "pending" }
+  ],
+  "escalations": 0
+}
+```
+
+- **`plan_hash`** — `crypto.createHash('sha256').update(planMdContent).digest('hex')`, the same
+  `createHash(...).update(...).digest('hex')` shape already used throughout the plugin's hooks
+  (e.g. `hooks/tasklist-guard.js`) — `sha256` here (vs. the `sha1` those hooks use) because this
+  hashes the full `PLAN.md` content for drift detection, not a short session/dedup signal.
+- **`status`** per phase: `pending | running | done | failed`.
+- **`escalations`** — a counter; see Step 5's build→plan escalation cap below.
+- **Heartbeats are NOT reinvented.** Spawned build/review agents already write
+  `~/.anti-hall/agents/<id>.json` (`{id, ts, status, step}`), and `hooks/agent-watchdog.js`
+  already scans that directory for staleness (20-minute default). A phase's `running` status
+  just points at that agent's id — check liveness by running `agent-watchdog.js`, don't add a
+  second heartbeat mechanism.
+
+**On resume** (after `/clear`/compaction, having already read `PLAN.md` per above): also read
+`STATE.json` if present, recompute `plan_hash` from the current `PLAN.md`, and if it differs
+from the stored value, **warn and ask the owner** (the plan changed since the state was last
+written — don't blindly resume against a stale plan). Otherwise resume from the first phase
+with `status: pending` or `status: failed`, not from scratch.
 
 ### Swarm fan-out — L only, and only where the plan declares real parallelism
 
@@ -334,7 +369,7 @@ For each phase (swarmed at L, or inline at S/M):
 
 After a phase is committed, **invoke `deadly-loop` on that phase's diff** — using Workflow
 `parallel([...])` again to fan out the Reviewer + Auditor + Critic trio concurrently, coordinator synthesizing.
-Iterate fix-waves to **zero NEW P0s**: correctness vs the plan, edge cases actually handled,
+Iterate fix-waves to **zero NEW P0s or P1s**: correctness vs the plan, edge cases actually handled,
 regressions, security on security-relevant phases, and full blast radius.
 
 The deadly-loop's carry-forward discipline (verify prior fixes held, THEN hunt genuinely NEW
@@ -349,7 +384,24 @@ Same soft-10 / hard-15 caps from Step 3 apply.
   Step 4 verification is sufficient.
 - **S:** skip.
 
-**If a phase won't converge** (hits soft cap, or NEW-P0 trend stalls): revert this phase's
+**P2 findings → decisions log (L only).** Once a phase's deadly-loop LOCKs (`go:true`), scan
+the returned `confirmed`/`residue` groups for members with `severity:'P2'` — real findings the
+owner is choosing to accept rather than block on, which would otherwise vanish once the phase
+is done. Append them to `.anti-hall/ship-it/<slug>/decisions.md`, one entry per finding, using
+the same idempotent check-then-append pattern already used by
+`hooks/session-history-index.js` (read the file first; skip an already-recorded finding) and
+the mkdir-then-`fs.appendFileSync(..., { flag: 'a' })` shape already used by
+`hooks/progress-prune.js`. No new script — this is a coordinator action with its own
+Read/Write/Edit tools, same as `STATE.json`.
+
+**Build→plan escalation cap (L only).** Not every non-convergence is another fix-wave: if the
+required fix means going back to **re-plan** (the phase's design itself was wrong, not just its
+implementation) — as opposed to another fix-wave against the same design — that's a
+coordinator-owned **escalation**. Increment `STATE.json`'s `escalations` counter each time this
+happens. At **2** escalations, STOP: don't attempt a 3rd re-plan loop — surface the options
+(redesign scope / accept risk / unblock) to the owner instead.
+
+**If a phase won't converge** (hits soft cap, or NEW-P0/P1 trend stalls): revert this phase's
 commits (it's atomic) and escalate to the owner with options — redesign / accept risk /
 unblock. Never advance to the next phase, and never ship an unconverged phase on the
 assumption it'll be fixed later.
@@ -374,6 +426,14 @@ assumption it'll be fixed later.
   in the same breath; the caveat wins and the state is **"pending owner review — do not
   merge."** Your own doubt, written down, is a verification signal — honor it, don't override
   it with "tests pass."
+- **L (and M when release-worthy) — auto-summarize + graph index, before the final wrap-up
+  below.** Write a session-history entry via the **existing** per-session system —
+  `.anti-hall/history/<date>/<session-id>.md`, already maintained by
+  `hooks/tasklist-guard.js` and `hooks/session-history-index.js` — summarizing the shipped
+  change (do not invent a new ledger). At **L only**, also write
+  `.anti-hall/ship-it/<slug>/SUMMARY.md`, mirroring `PLAN.md`'s Progress section into a
+  terminal summary. Then run `/graphify --obsidian --update` (or, if the coordinator can't
+  invoke it inline, list it as the next owner/session action).
 - **List any owner actions** (deploys, secrets, migrations) explicitly — these never
   autonomy-bypass.
 - **L (and M when it produced a release-worthy change):** version bump / changelog per the
@@ -389,7 +449,7 @@ When the owner has granted autonomy, **run the whole S/M/L flow to completion wi
 stopping for approvals you already have.** The two human gates in this skill — the brainstorm
 gate (Step 1) and the plan-approval gate (Step 3 `ExitPlanMode`) — are **SOFT**: under
 granted autonomy they are satisfied by *forming/recording the design* and *converging the
-plan via the deadly-loop to zero NEW P0s*, then **proceeding straight into the build**. Do
+plan via the deadly-loop to zero NEW P0s or P1s*, then **proceeding straight into the build**. Do
 NOT re-stop at `ExitPlanMode` for a "go" already given — a converged, green-lit plan sitting
 idle waiting on a redundant gate is the #1 autonomy failure (it can waste hours/overnight).
 

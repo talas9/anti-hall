@@ -348,9 +348,15 @@ Invoke via slash command:
   blends superpowers planning + GSD, not GSD-dependent), enumerate edge cases, harden
   the plan with the deadly-loop BEFORE any code, fan large work out as a Workflow swarm,
   and verify each phase with fresh evidence + a vacuous-test guard, running the
-  deadly-loop after each phase until zero NEW P0s.
+  deadly-loop after each phase until zero NEW P0/P1s. **L tier** adds a resumable
+  `.anti-hall/ship-it/<slug>/STATE.json` (plan hash + per-phase status + an escalation
+  counter capped at 2 build→re-plan loops), logs accepted P2 findings to
+  `decisions.md`, routes build seats Codex-primary with Sonnet-5 failover (a
+  cross-model guard skips the Sonnet 5 Reviewer when a phase's build fell back to
+  Sonnet 5, to avoid same-model self-review), and closes out with a session-history
+  entry + `SUMMARY.md` + a `/graphify --obsidian --update` trigger.
 - **`/anti-hall:deadly-loop`** — iterative parallel Reviewer + Critic debate +
-  fix-waves until convergence (zero NEW P0s). The debate engine behind
+  fix-waves until convergence (zero NEW P0/P1s). The debate engine behind
   ship-it's gates.
 - **`/anti-hall:deadly-loop-multi`** — scaled-up deadly-loop: N Reviewer + N Critic
   pairs with diversified lenses, then dedup + synthesize (double / triple / quadruple).
@@ -367,7 +373,9 @@ Invoke via slash command:
   prints the changelog delta between installed and latest, then instructs
   `/reload-plugins` for in-session reload. Hooks and statusline pick up from disk
   immediately; `/reload-plugins` refreshes the skill list and version label. `--check`
-  mode answers "is anti-hall up to date?" without pulling or writing.
+  mode answers "is anti-hall up to date?" without pulling or writing. After a pull, also
+  runs `scripts/migrate-state.js` once per repo (idempotent) to fold legacy root
+  `.anti-hall-progress.md` / `.anti-hall-history.md` into `.anti-hall/history/legacy/`.
 
 `MODEL-POLICY.md` is the shared TRIO roster (Reviewer = Sonnet 5 `model:"sonnet"` effort `xhigh`;
 Auditor = latest Opus `model:"opus"` divergent regression/coupling lens effort `high`;
@@ -456,7 +464,7 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 
 ```bash
 # Full zero-dependency E2E suite (node:test, run from the repo root):
-node --test                                                                  # 623 pass +2 platform-skip (625 total); CI runs the same on push/PR (.github/workflows/test.yml)
+node --test                                                                  # 701 pass +2 platform-skip (703 total); CI runs the same on push/PR (.github/workflows/test.yml)
 
 # Quick smoke-checks of individual hooks:
 echo '{"hook_event_name":"SessionStart"}' | node hooks/verify-first-full.js  # full Iron-Law protocol + skill primer

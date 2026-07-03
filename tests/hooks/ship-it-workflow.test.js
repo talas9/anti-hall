@@ -84,3 +84,75 @@ test('Reviewer skips Fable even when args.fableAvailable=true (policy-disabled),
   assert.ok(!calls.agents.some((c) => c.opts && c.opts.model === 'fable'), 'no agent() call should ever request model:fable');
   assert.ok(calls.logs.some((l) => /falling back to Opus Reviewer/.test(l)));
 });
+
+test('B5: build seat tries Codex first; on success implementerModel is "codex"', async () => {
+  const { promise, calls } = runStubbed(plan(), undefined);
+  const out = await promise;
+  assert.strictEqual(out.phases.phase1.build.implementerModel, 'codex');
+  const buildCall = calls.agents.find((c) => c.opts && c.opts.label === 'phase1');
+  assert.ok(buildCall, 'expected a build agent() call labeled exactly "phase1"');
+  assert.strictEqual(buildCall.opts.agentType, 'codex:codex-rescue');
+});
+
+test('B5: build seat falls back to Sonnet 5 when Codex is unavailable, and marks implementerModel accordingly', async () => {
+  const { promise, calls } = runStubbed(plan(), (brief, opts, def) => {
+    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // Codex build fails
+    return def;
+  });
+  const out = await promise;
+  assert.strictEqual(out.phases.phase1.build.implementerModel, 'sonnet');
+  const fallbackCall = calls.agents.find((c) => c.opts && c.opts.label === 'phase1(sonnet-fallback)');
+  assert.ok(fallbackCall, 'expected a build agent() call labeled "phase1(sonnet-fallback)"');
+  assert.strictEqual(fallbackCall.opts.model, 'sonnet');
+  assert.ok(calls.logs.some((l) => /Codex build unavailable/.test(l)));
+});
+
+test('B5: RESULT_SCHEMA requires implementerModel with enum [codex, sonnet]', async () => {
+  const { promise, calls } = runStubbed(plan(), undefined);
+  await promise;
+  const buildCall = calls.agents.find((c) => c.opts && c.opts.label === 'phase1');
+  assert.ok(buildCall.opts.schema.required.includes('implementerModel'));
+  // Array.from re-materializes the vm-realm array in this realm — plain deepStrictEqual on a
+  // cross-realm array fails ("same structure but not reference-equal") even with identical
+  // contents, since Node's assert checks the array's prototype/constructor realm too.
+  assert.deepStrictEqual(Array.from(buildCall.opts.schema.properties.implementerModel.enum), ['codex', 'sonnet']);
+});
+
+test('B5: Reviewer skips its own Sonnet 5 attempt and goes straight to Opus when this phase was built by Sonnet 5 (cross-model self-review guard)', async () => {
+  const reviewerModels = [];
+  const { promise, calls } = runStubbed(plan(), (brief, opts, def) => {
+    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet 5 build fallback
+    if (opts && /^phase1:reviewer/.test(opts.label || '')) {
+      reviewerModels.push(opts.model);
+    }
+    return def;
+  });
+  const out = await promise;
+  assert.strictEqual(out.phases.phase1.build.implementerModel, 'sonnet');
+  assert.ok(out.phases.phase1.review);
+  assert.deepStrictEqual(reviewerModels, ['opus'], 'Reviewer must skip Sonnet 5 entirely and go straight to Opus');
+  assert.ok(calls.logs.some((l) => /Reviewer skipping Sonnet 5.*cross-model self-review guard/.test(l)));
+});
+
+test('B5: Reviewer still tries Sonnet 5 normally when Codex built the phase (no self-review conflict)', async () => {
+  const reviewerModels = [];
+  const { promise } = runStubbed(plan(), (brief, opts, def) => {
+    if (opts && /^phase1:reviewer/.test(opts.label || '')) {
+      reviewerModels.push(opts.model);
+    }
+    return def;
+  });
+  const out = await promise;
+  assert.strictEqual(out.phases.phase1.build.implementerModel, 'codex');
+  assert.deepStrictEqual(reviewerModels, ['sonnet'], 'Codex built the phase, so Sonnet 5 Reviewer runs normally');
+});
+
+test('determinism: no Date.now/Math.random/argless new Date anywhere in ship-it.workflow.js (code, not the doc comment describing the rule)', () => {
+  // Strip line comments first — the file's own header documents the rule in prose
+  // ("// DETERMINISM: no Date.now() / Math.random() / argless new Date()."), which would
+  // otherwise false-positive against a raw-text scan.
+  const codeOnly = SRC.split('\n').map((line) => line.replace(/\/\/.*$/, '')).join('\n');
+  assert.ok(!/Date\.now\s*\(/.test(codeOnly), 'Date.now() found in code — breaks workflow determinism');
+  assert.ok(!/Math\.random\s*\(/.test(codeOnly), 'Math.random() found in code — breaks workflow determinism');
+  assert.ok(!/new Date\(\s*\)/.test(codeOnly), 'argless new Date() found in code — breaks workflow determinism');
+});

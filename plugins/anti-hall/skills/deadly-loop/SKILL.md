@@ -1,6 +1,6 @@
 ---
 name: deadly-loop
-description: Iterative TRIO-debate + fix-wave protocol for hardening non-trivial PRs and changes before merge. Spawns a parallel Reviewer + Auditor + Critic trio, dispatches fix waves, loops until convergence (zero NEW P0 blockers). Use before merging anything with cross-file risk, cross-PR coordination, security-sensitive changes (auth, signing, redaction, prompt-injection defense), schema migrations, production-data touches, shell scripts, CI/workflow YAML, cross-repo coordination, or LLM prompt work — anywhere a silent failure would be expensive. Born from a real project where 7 iteration rounds caught 30+ bugs that solo review would have missed.
+description: Iterative TRIO-debate + fix-wave protocol for hardening non-trivial PRs and changes before merge. Spawns a parallel Reviewer + Auditor + Critic trio, dispatches fix waves, loops until convergence (zero NEW P0 or P1 blockers). Use before merging anything with cross-file risk, cross-PR coordination, security-sensitive changes (auth, signing, redaction, prompt-injection defense), schema migrations, production-data touches, shell scripts, CI/workflow YAML, cross-repo coordination, or LLM prompt work — anywhere a silent failure would be expensive. Born from a real project where 7 iteration rounds caught 30+ bugs that solo review would have missed.
 ---
 
 # Deadly Loop — Iterative Debate Until Clean
@@ -47,7 +47,7 @@ Round 1 (initial audit, Reviewer + Auditor + Critic trio in parallel)
                   └─→ commits pushed → Round 2 (post-Wave-1 audit)
                                         └─→ findings → Wave 2
                                                        └─→ ...
-                                                            └─→ Round N (zero NEW P0s) → GO → owner merge
+                                                            └─→ Round N (zero NEW P0/P1s) → GO → owner merge
 ```
 
 Each round = a Reviewer + Auditor + Critic TRIO (3 agents), dispatched **in parallel in the same message**. Roster, availability fallback matrix, round governance + spawn details: `references/MODEL-POLICY.md`.
@@ -263,7 +263,7 @@ All three seats return → dedup their findings → categorize, applying the **r
 **Apply the round-discipline rules:**
 1. Each round has full history (handoff doc) AND focuses NEW analysis on the latest delta.
 2. If a round's findings RE-DISCOVER prior issues already verified clean, that's a process bug — narrow scope further.
-3. **Convergence test**: count of NEW (not rediscovered) P0s. Target: 0 → GO. The trend should monotonically decrease.
+3. **Convergence test**: count of NEW (not rediscovered) confirmed P0s or P1s. Target: 0 → GO. The trend should monotonically decrease.
 
 Append round outputs to handoff. Commit + push.
 
@@ -279,7 +279,7 @@ You are the Fix Wave N orchestrator for <feature>. Round N found <count> P0/P1 i
 CRITICAL READING:
 1. <handoff doc path>
 2. The verification preamble (branch+SHA check, Phase A3)
-3. The round-discipline rules (focus NEW analysis on the latest delta; convergence counts NEW not rediscovered P0s)
+3. The round-discipline rules (focus NEW analysis on the latest delta; convergence counts NEW not rediscovered P0s/P1s)
 
 HARD CONSTRAINTS:
 - Branch+SHA preamble in EVERY child agent prompt
@@ -340,14 +340,14 @@ When Round N returns GO from ALL THREE seats (a non-degraded round — see the r
 
 ### D1. Confirm convergence
 
-- Count of NEW P0s in Round N: should be 0.
-- Trend: P0 count per round should monotonically decrease toward 0.
-- If Round N finds NEW P0s genuinely introduced by Wave-(N-1), keep iterating (Wave N → Round N+1).
+- Count of NEW confirmed P0s or P1s in Round N: should be 0.
+- Trend: P0/P1 count per round should monotonically decrease toward 0.
+- If Round N finds NEW P0s or P1s genuinely introduced by Wave-(N-1), keep iterating (Wave N → Round N+1).
 - If Round N finds REDISCOVERED issues, narrow scope (process bug) — re-emphasize delta-focus discipline in the next prompt.
 
 ### D1.5 — Verification gate (a GO is NOT valid without it)
 
-Zero NEW P0s is necessary but NOT sufficient. Before declaring GO, the orchestrator
+Zero NEW P0/P1s is necessary but NOT sufficient. Before declaring GO, the orchestrator
 must independently confirm — with FRESH evidence in the current round, not an agent's
 say-so — that every "fixed / passing" claim is real. A clean debate over unverified
 fixes is a false GO. This makes the verify-first discipline a hard convergence
@@ -360,14 +360,14 @@ For each fix claimed resolved this loop:
 4. **VERIFY** the output actually confirms the claim (a green suite ≠ the bug is fixed — check the bug's own assertion).
 5. **VACUOUS-TEST GUARD:** any test added/changed to prove a fix MUST be shown to FAIL when the fix is reverted (revert → run → confirm red → restore). A test that passes with the fix removed proves nothing and does not count as resolution.
 
-If any claim fails its check, the issue is NOT resolved — keep it open and iterate, regardless of the debate verdict. GO requires zero NEW P0s **and** every resolution verified by fresh evidence here.
+If any claim fails its check, the issue is NOT resolved — keep it open and iterate, regardless of the debate verdict. GO requires zero NEW P0s or P1s **and** every resolution verified by fresh evidence here.
 
 ### Iteration caps (soft 10 / hard 15)
 
-The convergence loop (Reviewer + Auditor + Critic trio debate → fix wave → re-converge, "until zero NEW P0s") MUST be bounded — a loop that never converges is itself a failure signal, not a reason to keep grinding silently.
+The convergence loop (Reviewer + Auditor + Critic trio debate → fix wave → re-converge, "until zero NEW P0/P1 blockers") MUST be bounded — a loop that never converges is itself a failure signal, not a reason to keep grinding silently.
 
-- **SOFT CAP = 10 rounds.** When you reach round 10 without convergence, STOP and checkpoint with the user via `AskUserQuestion` — present the choice: **continue** (keep iterating), **stop** (accept current state and report outstanding P0s), or **change scope** (narrow the target / split the work). Do NOT keep looping silently past this point.
-- **HARD CAP = 15 rounds.** At round 15, force-stop unconditionally — even if not converged. Report the remaining NEW P0s, the per-round trend, and why convergence was not reached. No further automatic rounds.
+- **SOFT CAP = 10 rounds.** When you reach round 10 without convergence, STOP and checkpoint with the user via `AskUserQuestion` — present the choice: **continue** (keep iterating), **stop** (accept current state and report outstanding P0s/P1s), or **change scope** (narrow the target / split the work). Do NOT keep looping silently past this point.
+- **HARD CAP = 15 rounds.** At round 15, force-stop unconditionally — even if not converged. Report the remaining NEW P0s/P1s, the per-round trend, and why convergence was not reached. No further automatic rounds.
 
 Soft = ask the user what to do; hard = force-stop regardless. If the trend is not monotonically decreasing well before the soft cap, treat that as a process bug (rediscovery / scope too broad) and fix the process rather than burning rounds.
 
@@ -438,7 +438,7 @@ Per round, record in the handoff:
 - Token usage (rough)
 - P0/P1/P2 count
 - Whether findings are NEW or REDISCOVERED
-- Convergence trend (P0 count per round)
+- Convergence trend (P0/P1 count per round)
 
 Per wave:
 - Orchestrator agent ID

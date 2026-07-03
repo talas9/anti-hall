@@ -60,8 +60,12 @@ const RESULT_SCHEMA = {
     status: { type: 'string', enum: ['pass', 'needs_rework', 'blocked'] },
     evidence: { type: 'string' }, // fresh acceptance-command output / file:line cited
     blockers: { type: 'string' },
+    // Which seat actually built this phase (B5). Set by buildAgent() based on which
+    // branch succeeded, not trusted from the agent's own self-report — Step 5's
+    // cross-model self-review guard depends on this being accurate.
+    implementerModel: { type: 'string', enum: ['codex', 'sonnet'] },
   },
-  required: ['label', 'status'],
+  required: ['label', 'status', 'implementerModel'],
 };
 
 const VERDICT_SCHEMA = {
@@ -77,7 +81,7 @@ const VERDICT_SCHEMA = {
 // Build-agent brief: inject FULL context, never "read the plan". The agent runs the
 // deadly-loop A3 branch/SHA preamble, edits ONLY its disjoint files, then proves the
 // phase with FRESH acceptance output (Iron Law) + the D1.5 vacuous-test cycle.
-function buildBrief(phase) {
+function buildBrief(phase, implementerModel) {
   return [
     'You are a ship-it build agent for phase: ' + phase.label + '.',
     'A3 PREAMBLE: verify you are on the right branch + HEAD before editing; cite file:line you change.',
@@ -85,8 +89,30 @@ function buildBrief(phase) {
     phase.prompt,
     'IRON LAW: do NOT claim done without fresh acceptance-command output in your result.',
     'D1.5 VACUOUS-TEST GUARD: revert fix -> run -> confirm RED -> restore -> run -> confirm GREEN.',
-    'Return the result schema: {label, status, evidence, blockers}.',
+    'Return the result schema: {label, status, evidence, blockers, implementerModel: "' + implementerModel + '"}.',
   ].join('\n\n');
+}
+
+// BUILD SEAT with Codex-primary / Sonnet-5-failover (MODEL-POLICY.md "implementation"
+// row, B5). Mirrors criticAgent's fallback shape below: try Codex first (draws its own
+// limit, strong code-apply model), fall back to Sonnet 5 on unavailable/null — never a
+// retry-loop. implementerModel is set by the CALLING CODE based on which branch actually
+// succeeded, not trusted from the agent's own self-report, so Step 5's cross-model
+// self-review guard (reviewerAgent's skipSonnet option) can rely on it being accurate.
+async function buildAgent(p) {
+  const codex = await agent(buildBrief(p, 'codex'), {
+    schema: RESULT_SCHEMA, run_in_background: true,
+    label: p.label, agentType: 'codex:codex-rescue',
+  });
+  if (codex) return { ...codex, implementerModel: 'codex' };
+
+  log('ship-it: Codex build unavailable for "' + p.label + '" — falling back to Sonnet 5 build (MODEL-POLICY matrix).');
+  const sonnet = await agent(buildBrief(p, 'sonnet'), {
+    schema: RESULT_SCHEMA, run_in_background: true,
+    label: p.label + '(sonnet-fallback)', model: p.model || 'sonnet',
+  });
+  if (!sonnet) return sonnet; // both seats unavailable — caller sees a falsy build result
+  return { ...sonnet, implementerModel: 'sonnet' };
 }
 
 // deadly-loop per-phase gate: Reviewer (Sonnet 5, or Fable when args.fableAvailable
@@ -126,7 +152,9 @@ function criticBrief(phase) {
 // matrix"). Default behavior is unchanged: Sonnet 5 -> Opus. When the SessionStart
 // fable-availability hook tells the coordinator to pass args.fableAvailable === true,
 // this seat tries Fable first, then falls back through the normal chain.
-async function reviewerAgent(p) {
+async function reviewerAgent(p, opts) {
+  const skipSonnet = !!(opts && opts.skipSonnet);
+
   // Fable routing is policy-disabled (owner call, 2026-07-02): negative community feedback
   // reports it as over-restrictive/refusal-prone, and a refusal would pass StructuredOutput
   // validation as a "successful" verdict rather than triggering fallback. Sonnet 5 is the
@@ -140,6 +168,17 @@ async function reviewerAgent(p) {
     });
     if (fable) return fable;
     log('ship-it: Fable Reviewer unavailable for "' + p.label + '" — falling back to Sonnet 5 Reviewer (MODEL-POLICY matrix).');
+  }
+
+  // B5 cross-model self-review guard: this phase's build fell back to Sonnet 5, so a
+  // Sonnet-5 Reviewer would be reviewing Sonnet-5-implemented code — same-model self-review,
+  // violating the plugin's "cross-model, no self-review" rule. Skip straight to Opus.
+  if (skipSonnet) {
+    log('ship-it: Reviewer skipping Sonnet 5 for "' + p.label + '" — phase was built by Sonnet 5 (cross-model self-review guard); using Opus Reviewer.');
+    return agent(reviewerBrief(p), {
+      schema: VERDICT_SCHEMA, run_in_background: true,
+      label: p.label + ':reviewer(opus-noselfreview)', model: 'opus',
+    });
   }
 
   const sonnet = await agent(reviewerBrief(p), {
@@ -223,24 +262,15 @@ async function main() {
 
     // A group of 1 is a plain inline build (no parallel wrapper, no swarm overhead).
     let built;
-    // Implementation seats run on Sonnet EXPLICITLY (not the inherited flagship):
-    //   (1) per the everyday-routing policy, code implementation from a ready plan is a
-    //       Sonnet-shaped task — convention-aware, far cheaper than Opus at scale;
-    //   (2) an OMITTED model inherits the orchestrator (a flagship) AND, under strict
-    //       model-routing (default since 0.35.0), a mechanical omitted-model spawn is
-    //       BLOCKED — so an explicit model is required to avoid self-blocking the build.
-    // Override per phase by setting phase.model in the plan if a seat needs Opus/Codex.
+    // Implementation seats run Codex-primary / Sonnet-5-failover via buildAgent() (B5,
+    // MODEL-POLICY.md "implementation" row) — Codex draws its own limit and is a strong
+    // code-apply model; failover to Sonnet 5 only on unavailable/null, never a retry-loop.
+    // Override the fallback model per phase by setting phase.model in the plan.
     if (group.length === 1) {
-      built = [await agent(buildBrief(group[0]), {
-        schema: RESULT_SCHEMA, run_in_background: true, label: group[0].label,
-        model: group[0].model || 'sonnet',
-      })];
+      built = [await buildAgent(group[0])];
     } else {
       // BARRIER fan-out: all disjoint phases finish before we proceed.
-      built = await parallel(group.map((p) => () => agent(buildBrief(p), {
-        schema: RESULT_SCHEMA, run_in_background: true, label: p.label,
-        model: p.model || 'sonnet',
-      })));
+      built = await parallel(group.map((p) => () => buildAgent(p)));
     }
     group.forEach((p, i) => { results[p.label] = { build: built[i] }; });
 
@@ -253,8 +283,13 @@ async function main() {
     // COORDINATOR runs the real deadly-loop skill fix-wave -> re-converge loop (not this script).
     for (const p of group) {
       phase('deadly-loop gate: ' + p.label);
+      // B5: if this phase's build fell back to Sonnet 5, the Reviewer must skip its own
+      // Sonnet 5 attempt (same-model self-review) and go straight to Opus. Auditor (always
+      // Opus) and Critic (Codex, or Opus fallback) never need this — neither is ever the
+      // implementer.
+      const skipSonnet = !!(results[p.label].build && results[p.label].build.implementerModel === 'sonnet');
       const audit = await parallel([
-        () => reviewerAgent(p), // Sonnet 5 with documented Opus fallback (see reviewerAgent)
+        () => reviewerAgent(p, { skipSonnet }), // Sonnet 5 with documented Opus fallback (see reviewerAgent)
         () => agent(auditorBrief(p),  { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':auditor', model: 'opus', effort: 'high' }),
         () => criticAgent(p), // Codex with documented Opus fallback (see criticAgent)
       ]);
@@ -265,7 +300,7 @@ async function main() {
   // This script does NOT commit and does NOT loop. It returns the single-pass results;
   // the COORDINATOR (main thread) reads `results`, commits passing phases serially
   // (manual git on the main thread — never the script), and runs the deadly-loop skill's
-  // fix-wave -> re-converge loop on any phase with newP0 > 0 until zero NEW P0s.
+  // fix-wave -> re-converge loop on any phase with newP0 > 0 until zero NEW P0s or P1s.
   return { phases: results };
 }
 

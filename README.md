@@ -66,7 +66,7 @@ compaction), a short rotating reminder every turn, and **mechanical hooks** that
 argued with.
 
 > **What's proven, and what isn't.** The **mechanical hooks** are the load-bearing part and
-> are verified by 623 passing tests (+2 platform-skipped, 625 total) — they deterministically block force-pushes, AI-credit
+> are verified by 701 passing tests (+2 platform-skipped, 703 total) — they deterministically block force-pushes, AI-credit
 > trailers, un-delegated heavy commands, and stale task state regardless of what the model
 > "feels" like doing. The **prompt layer** (verify-first protocol + nudges) is a *discipline*,
 > not a benchmark-validated hallucination cure: a four-round A/B eval ([`eval/`](eval/)) —
@@ -128,9 +128,9 @@ argued with.
 |-------|-------------|--------------|
 | **root-cause** | any bug, crash, flaky test, alert | evidence → hypothesis → instrument → prove the *original* root cause → fix → verify |
 | **orchestration** | heavy/parallel/long work | non-blocking coordinator; fan out to subagents; watchdog + heartbeat; live phase statusline; **verify delegated work** (a subagent's "done/passing" is an unverified claim — re-check it against ground truth before marking complete) |
-| **deadly-loop** | before merging anything risky | parallel **Reviewer + Auditor + Critic TRIO** debate + fix-waves, looping until zero *new* P0s. Three-phase swarm mode (Context → Duel → Converge) via `deadly-loop.workflow.js`; plain Agent-tool path available for no-consent sessions |
+| **deadly-loop** | before merging anything risky | parallel **Reviewer + Auditor + Critic TRIO** debate + fix-waves, looping until zero *new* P0s or P1s. Three-phase swarm mode (Context → Duel → Converge) via `deadly-loop.workflow.js`; plain Agent-tool path available for no-consent sessions |
 | **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N TRIO sets (Reviewer + Auditor + Critic per slot) with diversified lenses, then dedup + synthesize into one report |
-| **ship-it** | any change, from a one-line fix to a multi-phase feature | one lean workflow scaled S/M/L to blast radius — brainstorm + plan **in plan mode** (ExitPlanMode is the gate), deadly-loop-hardened *before* code, large work fanned out as a Workflow swarm, each phase verified with fresh evidence + a vacuous-test guard until zero *new* P0s |
+| **ship-it** | any change, from a one-line fix to a multi-phase feature | one lean workflow scaled S/M/L to blast radius — brainstorm + plan **in plan mode** (ExitPlanMode is the gate), deadly-loop-hardened *before* code, large work fanned out as a Workflow swarm, each phase verified with fresh evidence + a vacuous-test guard until zero *new* P0s or P1s. **L tier:** resumable `.anti-hall/ship-it/<slug>/STATE.json` (per-phase status + escalation cap), P2 findings logged to `decisions.md`, Codex-primary/Sonnet-5-failover build seats (with a cross-model no-self-review guard), and an end-of-run session-history + `SUMMARY.md` + `/graphify --obsidian --update` |
 | **install-statusline** | "install the statusline / add the bar" | writes the `statusLine` setting (global or per-repo), wraps an existing statusline as line 1 + adds anti-hall bar as line 2, with backup + restore. `--consolidate` merges with an existing statusline (e.g., OMC HUD) instead of replacing it; base persisted to `~/.anti-hall/consolidated-base.json`. Env: `ANTIHALL_STATUSLINE_BASE` |
 | **doctor** | "is anti-hall working?" / after install/update | confirms Node ≥ 18, all hooks present + syntax-valid, **runs live behavioral self-tests** (spawns real guards with crafted payloads and asserts exit codes), reports context footprint in bytes + estimated tokens |
 | **update** | "update anti-hall" / "is anti-hall up to date?" | `git pull --ff-only` the marketplace clone, syncs the version-pinned cache (semver-anchored, traversal-proof), prints the changelog delta, then instructs `/reload-plugins` for in-session reload (hooks and statusline pick up from disk immediately; `/reload-plugins` refreshes the skill list and version label; rarely a restart is needed) |
@@ -257,7 +257,7 @@ anti-hall/
 │   ├── .claude-plugin/plugin.json      # plugin manifest — version is the sole authority
 │   ├── hooks/                          # always-on Node hooks (+ hooks.json registration)
 │   ├── skills/                         # root-cause · orchestration · deadly-loop · deadly-loop-multi · ship-it · install-statusline · doctor · update · flutter-debug · activate · simplify · debt
-│   ├── scripts/                        # shared pure-Node helpers — harvest-debt.js (debt-marker harvester behind /anti-hall:debt)
+│   ├── scripts/                        # shared pure-Node helpers — harvest-debt.js (debt-marker harvester behind /anti-hall:debt), migrate-state.js (folds legacy root state files into .anti-hall/history/legacy/, run by /anti-hall:update)
 │   ├── companion/                      # opt-in mcp-reaper (macOS+Linux) — kills orphaned MCP processes; not a hook
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
@@ -271,7 +271,7 @@ anti-hall/
 `AGENTS.md` (e.g. Codex). It lives at the repo root and is **not** bundled by
 `/plugin install` — copy it into your own repo if you want cross-tool coverage.
 
-A zero-dependency **`node --test` E2E suite** (`tests/`, 623 passing +2 platform-skipped, 625 total) covers the hooks and
+A zero-dependency **`node --test` E2E suite** (`tests/`, 701 passing +2 platform-skipped, 703 total) covers the hooks and
 runs in **CI** on every push/PR ([`.github/workflows/test.yml`](.github/workflows/test.yml)).
 
 See [`plugins/anti-hall/README.md`](plugins/anti-hall/README.md) for the full component
@@ -285,7 +285,10 @@ Ask Claude **"update anti-hall"** — the `/anti-hall:update` skill handles the 
 update: pulls the latest, syncs the version-pinned cache, shows the changelog delta,
 and instructs `/reload-plugins` for in-session reload. Alternatively, updates pull on
 restart if autoUpdate is enabled (or via the `/plugin` manager —
-optionally `/plugin marketplace update anti-hall` first).
+optionally `/plugin marketplace update anti-hall` first). After pulling, the skill also
+runs `node plugins/anti-hall/scripts/migrate-state.js` once per repo (idempotent) to fold
+any legacy root-level `.anti-hall-progress.md` / `.anti-hall-history.md` into the dated
+`.anti-hall/history/` structure.
 
 ---
 

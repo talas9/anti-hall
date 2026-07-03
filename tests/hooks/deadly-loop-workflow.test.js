@@ -266,6 +266,41 @@ test('C1-3: multiplier 2 — one corroboration is residue, two confirm (threshol
   assert.strictEqual(two.confirmed[0].stances.corroborated, 2);
 });
 
+// ---- ADDENDUM B2: global gate blocks on confirmed P0 OR P1 -------------------
+function multiSeatFindingImpl(severity, id1, id2) {
+  const finding = (id) => ({ id, severity, file: 'y.js', line: 10, category: 'bug',
+    claim: 'flagged by two seats', evidence: 'y.js:10' });
+  return (brief, opts, def) => {
+    const label = (opts && opts.label) || '';
+    if (label === 'round-1:reviewer-1') return { ...def, findings: [finding(id1)] };
+    if (label === 'round-1:auditor-1') return { ...def, findings: [finding(id2)] };
+    return def;
+  };
+}
+
+test('B2: a single confirmed P1 finding (multi-seat, no P0) blocks convergence (go:false)', async () => {
+  const A = { round: 1, multiplier: 1, targetSHA: 'abc123', branch: 'main',
+    scope: 'whole repo', contextMode: 'initial', argue: false };
+  const { promise } = runStubbed(A, multiSeatFindingImpl('P1', 'R1', 'A1'));
+  const out = await promise;
+  assert.strictEqual(out.confirmed.length, 1, 'multi-seat finding should be confirmed');
+  assert.strictEqual(out.confirmed[0].members[0].severity, 'P1');
+  assert.strictEqual(out.verdictSummary.degraded, false, 'round is not degraded');
+  assert.strictEqual(out.verdictSummary.go, false,
+    'a confirmed P1 must block convergence under the P0-or-P1 gate');
+});
+
+test('B2: a single confirmed P0 finding (multi-seat) still blocks convergence (go:false)', async () => {
+  const A = { round: 1, multiplier: 1, targetSHA: 'abc123', branch: 'main',
+    scope: 'whole repo', contextMode: 'initial', argue: false };
+  const { promise } = runStubbed(A, multiSeatFindingImpl('P0', 'R2', 'A2'));
+  const out = await promise;
+  assert.strictEqual(out.confirmed.length, 1, 'multi-seat finding should be confirmed');
+  assert.strictEqual(out.confirmed[0].members[0].severity, 'P0');
+  assert.strictEqual(out.verdictSummary.go, false,
+    'a confirmed P0 alone must still block convergence');
+});
+
 test('model-routing-guard: every seat brief template contains at least one complex token', () => {
   // Read the guard's COMPLEX list directly from the source — never duplicate it here.
   const guardSrc = fs.readFileSync(

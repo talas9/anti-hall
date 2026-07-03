@@ -76,6 +76,11 @@ Modes:
    > reflected after reloading, restart Claude Code). Statusline + hooks pick up
    > changes automatically; /reload-plugins refreshes the skill list and version
    > label.
+6. After pulling a new plugin version, run
+   `node plugins/anti-hall/scripts/migrate-state.js` once per repo (idempotent,
+   safe to re-run) to fold any legacy root-level `.anti-hall-progress.md` /
+   `.anti-hall-history.md` files into the new dated `.anti-hall/history/`
+   structure.
 
 ## Why /reload-plugins, and the honest edge
 

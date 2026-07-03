@@ -1,6 +1,6 @@
 ---
 name: anti-hall-deadly-loop
-description: Codex-native equivalent of anti-hall deadly-loop. Use to harden risky changes with repeated adversarial review and fix waves until no new P0 blockers remain.
+description: Codex-native equivalent of anti-hall deadly-loop. Use to harden risky changes with repeated adversarial review and fix waves until no new P0/P1 blockers remain.
 ---
 
 # anti-hall deadly-loop for Codex
@@ -26,7 +26,7 @@ Round structure:
 4. Synthesize findings by evidence, not by vote alone.
 5. Fix confirmed P0/P1 issues in scoped waves.
 6. Re-run the full three-lens round after any code change.
-7. Stop only when a non-degraded round has zero unadjudicated P0 blockers and no new P0s.
+7. Stop only when a non-degraded round has zero unadjudicated P0/P1 blockers and no new P0s or P1s.
 
 Each review must cite file/line evidence and distinguish:
 
