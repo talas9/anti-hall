@@ -49,6 +49,27 @@ the update.
 Suite 703 (701 pass / 0 fail / 2 skip, up from 688 — 15 new tests across the deadly-loop and
 ship-it workflow suites plus the new migrate-state suite).
 
+## 0.44.1
+
+**Fixed a Windows-only CI failure in 0.44.0: the new determinism test's comment-stripping
+regex silently no-op'd on CRLF checkouts.**
+
+- `tests/hooks/ship-it-workflow.test.js`'s determinism test stripped `//` comments by
+  splitting on `\n` then matching `\/\/.*$` per line. On a Windows (CRLF) checkout each
+  split line keeps a trailing `\r`; since regex `.` never matches a line terminator, `.*`
+  can't reach the line's true end, so `$` (no multiline flag) never matches and the strip
+  silently does nothing. The file's own doc-comment ("no Date.now() / Math.random() /
+  argless new Date()") then survives verbatim into the "code" being scanned, and the test
+  fails on every Windows Node version (18.x/20.x/22.x/24.x) — confirmed via `gh run view`
+  after v0.44.0's push, reproduced locally with a CRLF-line simulation, and root-caused by
+  comparing against `deadly-loop-workflow.test.js`'s equivalent test, which uses a `gm`-flag
+  regex over the whole string instead (CRLF-safe by construction) and passed on the same run.
+- Fix: normalize `\r\n` → `\n` before splitting, matching the CRLF-safe approach already
+  used elsewhere. v0.44.0's tag is left as-is (not retagged) since it was never propagated
+  to the marketplace or given a GitHub Release.
+
+Suite 703 (701 pass / 0 fail / 2 skip locally); Windows CI re-verified green after this fix.
+
 ## 0.43.2
 
 **Fable routing policy-disabled: negative community feedback (over-restrictive/refusal-prone).**

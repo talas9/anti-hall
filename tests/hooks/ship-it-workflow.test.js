@@ -150,8 +150,11 @@ test('B5: Reviewer still tries Sonnet 5 normally when Codex built the phase (no 
 test('determinism: no Date.now/Math.random/argless new Date anywhere in ship-it.workflow.js (code, not the doc comment describing the rule)', () => {
   // Strip line comments first — the file's own header documents the rule in prose
   // ("// DETERMINISM: no Date.now() / Math.random() / argless new Date()."), which would
-  // otherwise false-positive against a raw-text scan.
-  const codeOnly = SRC.split('\n').map((line) => line.replace(/\/\/.*$/, '')).join('\n');
+  // otherwise false-positive against a raw-text scan. Normalize CRLF -> LF first: on a
+  // Windows checkout each split line keeps a trailing \r, and since `.` never matches a
+  // line terminator, `\/\/.*$` can't reach the true end of that line — the strip silently
+  // no-ops and the doc-comment's literal "Date.now()" text survives into codeOnly.
+  const codeOnly = SRC.replace(/\r\n/g, '\n').split('\n').map((line) => line.replace(/\/\/.*$/, '')).join('\n');
   assert.ok(!/Date\.now\s*\(/.test(codeOnly), 'Date.now() found in code — breaks workflow determinism');
   assert.ok(!/Math\.random\s*\(/.test(codeOnly), 'Math.random() found in code — breaks workflow determinism');
   assert.ok(!/new Date\(\s*\)/.test(codeOnly), 'argless new Date() found in code — breaks workflow determinism');
