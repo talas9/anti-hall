@@ -20,6 +20,6 @@ Codex model distribution:
 | --- | --- |
 | Planning, ambiguous requirements, validation, debate | `gpt-5.5` |
 | Implementation from an accepted plan | `gpt-5.4` |
-| Mechanical command runner / cheap lookup | `gpt-5.4-mini` or `gpt-5.3-codex-spark` |
+| Mechanical command runner / cheap lookup | `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only |
 
 Codex does not have Claude Workflow JS. For 3+ parallel/nested work units, use a flat Codex orchestration plan: dispatch independent agents where available, write progress to a durable file, then synthesize and verify.

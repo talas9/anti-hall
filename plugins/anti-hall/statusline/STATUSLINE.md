@@ -14,8 +14,8 @@ are absent.  Runs on **Windows, macOS, and Linux** via Node only
 | Script | Purpose |
 |---|---|
 | `statusline.js` | Dispatcher — wraps base command or own render; prints line 1 + optional line 2 |
-| `statusline-rich.js` | Rich line-1 renderer (project · git · model · effort · subagents · duration · ctx% · cost · GSD phase) |
-| `statusline-monorepo.js` | Rich statusline for monorepos and GSD projects (own-dispatch fallback) |
+| `statusline-rich.js` | Rich line-1 renderer (project · git · model · effort · subagents · duration · ctx% · cost) |
+| `statusline-monorepo.js` | Rich statusline for monorepos (own-dispatch fallback; GSD-state reading removed 2026-07-03 — GSD is discontinued) |
 | `statusline-simple.js` | Minimal statusline for plain repos (own-dispatch fallback) |
 | `phase-bar.js` | Standalone phase bar printer (line 2 renderer, 3-tier) |
 | `phase.js` | Phase state writer — called by orchestrators to update the progress bar |
@@ -43,10 +43,11 @@ preserved byte-for-byte.
 If no base config exists (or the base command errors), the dispatcher falls
 back to its own monorepo/simple dispatch:
 
-**Monorepo** (any of `.gitmodules`, `.gsd/`, `.planning/` found at git toplevel or cwd):
+**Monorepo** (`.gitmodules` found at git toplevel or cwd — `.gsd/`/`.planning/` dropped as
+triggers 2026-07-03, GSD is discontinued):
 
 ```
-<model> | <current-task-or-gsd-state> | <dir-basename> [context-bar %]
+<model> | <current-task> | <dir-basename> [context-bar %]
 ```
 
 **Simple** (any other repo or directory):
@@ -223,14 +224,14 @@ Fail-open: any error exits 0 without throwing.
 ## Monorepo detection rule (own dispatch fallback)
 
 `statusline.js` checks the **git toplevel** of the current repo (falling back
-to cwd) when using its own dispatch.  It picks `statusline-monorepo.js` when
-**any** of these exist at the toplevel:
+to cwd) when using its own dispatch.  It picks `statusline-monorepo.js` when:
 
 - `.gitmodules` (git submodules present)
-- `.gsd/` directory (GSD project)
-- `.planning/` directory (planning state present)
 
 Otherwise picks `statusline-simple.js`.
+
+(`.gsd/`/`.planning/` dropped as triggers 2026-07-03 — GSD is discontinued, nothing
+creates those directories anymore.)
 
 Detection uses `fs.existsSync` — no bash, no grep, fully cross-platform.
 

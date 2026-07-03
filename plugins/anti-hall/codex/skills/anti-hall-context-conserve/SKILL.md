@@ -50,8 +50,8 @@ When conservation is active and the **main/coordinator** agent is on `gpt-5.5`, 
 When conservation is active:
 
 - keep the coordinator concise; do not paste broad command output into the main thread
-- use `explore` / `gpt-5.3-codex-spark` for codebase lookup
-- use `gpt-5.4-mini` or `gpt-5.3-codex-spark` for mechanical command running
+- use `explore` / `gpt-5.4-mini` for codebase lookup (`gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only)
+- use `gpt-5.4-mini` (default) for mechanical command running
 - use `gpt-5.4` for settled implementation
 - reserve `gpt-5.5` for planning, root-cause, validation, code review, and debate gates
 - if a model is unavailable or rate-limited, record the limitation and choose the nearest safe fallback; do not retry-loop

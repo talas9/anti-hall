@@ -263,29 +263,41 @@ function investigateBrief(seat, a, packText, driftReason) {
   return lines.join('\n');
 }
 
+// Returns { report, resolvedOpts } — resolvedOpts is the ACTUAL opts that
+// produced `report` (which fallback rung, if any), not the seat's static
+// role-defined opts. B4/B5 fix: Phase 2b (Argue) must retry with whichever
+// model actually answered in 2a, not the original (possibly-dead) seat opts,
+// and an Opus fallback must use its OWN effort tier, never inherit a spread
+// `effort:'xhigh'` meant for the Sonnet-5 seat it replaced.
 async function investigateAgent(seat, a, packText, driftReason, labelSuffix) {
   const label = seat.label + (labelSuffix || '');
   const brief = investigateBrief(seat, a, packText, driftReason);
   const r = await agent(brief, {
     ...seat.opts, label, schema: VERDICT_SCHEMA,
   });
-  if (r) return r;
-  if (seat.role !== 'reviewer' || !seat.opts) return r;
+  if (r) return { report: r, resolvedOpts: seat.opts };
+  if (seat.role !== 'reviewer' || !seat.opts) return { report: r, resolvedOpts: seat.opts };
   if (seat.opts.model === 'fable') {
     log('round ' + a.round + ': Fable Reviewer unavailable for "' + label +
       '" — falling back to Sonnet 5 Reviewer (MODEL-POLICY matrix).');
+    const sonnetOpts = { model: 'sonnet', effort: 'xhigh' };
     const sonnet = await agent(brief, {
-      ...seat.opts, label: label + '(sonnet-fallback)', model: 'sonnet', schema: VERDICT_SCHEMA,
+      ...sonnetOpts, label: label + '(sonnet-fallback)', schema: VERDICT_SCHEMA,
     });
-    if (sonnet) return sonnet;
+    if (sonnet) return { report: sonnet, resolvedOpts: sonnetOpts };
   } else if (seat.opts.model !== 'sonnet') {
-    return r;
+    return { report: r, resolvedOpts: seat.opts };
   }
   log('round ' + a.round + ': Reviewer unavailable for "' + label +
     '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
-  return agent(brief, {
-    ...seat.opts, label: label + '(opus-fallback)', model: 'opus', schema: VERDICT_SCHEMA,
+  // Fresh options object — no spread from seat.opts, so Opus gets its OWN
+  // effort tier (high, matching the Auditor seat) instead of silently
+  // inheriting the Sonnet-5 Reviewer's effort:'xhigh'.
+  const opusOpts = { model: 'opus', effort: 'high' };
+  const opusReport = await agent(brief, {
+    ...opusOpts, label: label + '(opus-fallback)', schema: VERDICT_SCHEMA,
   });
+  return { report: opusReport, resolvedOpts: opusOpts };
 }
 
 // ---- Phase 2b: ARGUE brief -------------------------------------------------
@@ -383,8 +395,12 @@ async function main() {
 
   // ---- Phase 2a: INVESTIGATE (parallel) ------------------------------------
   phase('Investigate: ' + seats.length + ' seat(s) in parallel (round ' + round + ')');
-  let reports = await parallel(seats.map((seat) => () =>
+  const investigateResults = await parallel(seats.map((seat) => () =>
     investigateAgent(seat, a, packText, null, '')));
+  let reports = investigateResults.map((r) => r.report);
+  // Per-seat opts that actually produced `reports[i]` — reused by Phase 2b
+  // (Argue) instead of the seat's static role opts (B5 fix).
+  const resolvedOptsPerSeat = investigateResults.map((r) => r.resolvedOpts);
 
   // ---- Drift check + respawn-once ------------------------------------------
   const respawnQuota = (typeof a.respawnQuota === 'number') ? a.respawnQuota : 1;
@@ -393,7 +409,9 @@ async function main() {
     if (reason && respawnQuota > 0) {
       log('round ' + round + ': seat ' + seats[i].label + ' DRIFTED (' + reason +
         ') — respawning once with corrected brief.');
-      reports[i] = await investigateAgent(seats[i], a, packText, reason, ':respawn');
+      const respawned = await investigateAgent(seats[i], a, packText, reason, ':respawn');
+      reports[i] = respawned.report;
+      resolvedOptsPerSeat[i] = respawned.resolvedOpts;
     } else if (reason) {
       log('round ' + round + ': seat ' + seats[i].label + ' DRIFTED (' + reason +
         ') and respawn quota exhausted — counting as DEGRADED.');
@@ -423,8 +441,12 @@ async function main() {
         const fs2 = Array.isArray(reports[j].findings) ? reports[j].findings : [];
         for (const f of fs2) peerFindings.push(f);
       }
+      // Use the opts that ACTUALLY answered in Phase 2a (resolvedOptsPerSeat),
+      // not the seat's static role opts — if the primary model failed over in
+      // 2a, retrying the dead model here would silently drop this seat's
+      // cross-examination with no signal in verdictSummary (B5 fix).
       return agent(argueBrief(seats[i], a, packText, peerFindings), {
-        ...seats[i].opts, label: seats[i].label + ':argue', schema: ARGUE_SCHEMA,
+        ...(resolvedOptsPerSeat[i] || seats[i].opts), label: seats[i].label + ':argue', schema: ARGUE_SCHEMA,
       });
     });
     const argued = await parallel(argueTasks);

@@ -28,7 +28,9 @@ exist, but that the guards block what they should and allow what they should.
 ## How to run
 
 The doctor is a `node` script (the command-guard blocks heavy commands on the main
-thread), so **delegate it to a subagent** and relay the report:
+thread), so **delegate it to a Haiku subagent** (`model:"haiku"` — an execution-shaped
+spawn with no explicit model also trips model-routing-guard's strict-mode block) and
+relay the report:
 
 ```
 node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js"

@@ -54,7 +54,7 @@ is Opus — never a weaker/cheaper model.
 |---|---|---|---|
 | **Reviewer** | Sonnet 5 (`model: "sonnet"`) | `xhigh` (→ `high`; never `max` in loops) | correctness / architecture auditor |
 | **Auditor** | latest Claude Opus (`model: "opus"`) | `high` | divergent: regression & coupling hunter |
-| **Critic** | Codex primary (`codex:codex-rescue`) — unless Codex implemented the diff, then Opus/Sonnet 5 | max reasoning (`xhigh` → `high`) | adversarial failure-mode hunter |
+| **Critic** | Codex primary (`codex:codex-rescue`) — unless Codex implemented the diff, then Opus/Sonnet 5 | `xhigh` reasoning (→ `high`) | adversarial failure-mode hunter |
 
 *Fable routing is policy-disabled (2026-07-02): reported over-restrictive/refusal-prone by
 the community, and a soft refusal would pass StructuredOutput validation as a "successful"
@@ -294,9 +294,9 @@ Also confirm the Codex plugin / skill layer is ready before relying on it:
 
 ```
 if Codex CLI present (codex-available.js exits 0) AND codex:setup reports ready:
-    → Critic = OpenAI Codex (latest, max reasoning)  [cross-model debate]
+    → Critic = OpenAI Codex (latest, xhigh reasoning)  [cross-model debate]
 else:
-    → Critic = Opus (latest, max thinking, divergent adversarial persona)
+    → Critic = Opus (latest, full reasoning depth — effort high, divergent adversarial persona)
 ```
 
 Never silently downgrade to a cheaper/weaker model (e.g. a mid-tier model) for

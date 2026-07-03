@@ -60,10 +60,11 @@ tokens `haiku`/`sonnet`/`opus`/`fable`, never a versioned model id):
   subagent work.
 - **Opus** — deep analysis; flagship-tier work when Fable is unavailable (the Opus floor
   for debate seats — see the availability fallback matrix in `../MODEL-POLICY.md`).
-- **Fable (flagship)** — planning, plan review / validation, design mockups, logic
-  creation & checking, workflow analysis, simulations, and debate roles. The Reviewer seat
-  of the ship-it / deadly-loop trio is currently Sonnet 5 — see `../MODEL-POLICY.md`.
-  *If Fable returns to general availability, reconsider the Reviewer seat for the flagship tier.*
+- **Fable (flagship)** — policy-disabled as of 2026-07-02 (reported over-restrictive/
+  refusal-prone; see `../MODEL-POLICY.md`) — **not currently routed to anywhere in this
+  plugin**, including debate roles. The Reviewer seat of the ship-it / deadly-loop trio is
+  Sonnet 5. *If Fable's track record improves, reconsider the Reviewer seat for the
+  flagship tier.*
 
 Don't send a planning problem to Haiku, or a log-tail to Fable/Opus.
 
@@ -206,7 +207,10 @@ The plugin enforces a non-negotiable task-list protocol via two hooks:
   on every turn so it stays at top-of-context where it has the highest salience.
 - `task-guard.js` (`Stop`, loop-safe) — when the session is about to stop with open
   tasks still in `pending` or `in_progress`, blocks once to prompt the model to
-  continue, defer, or explicitly tell the user what is pending. Loop-safety: if the
+  continue, defer, or explicitly tell the user what is pending. Defers to an active
+  OMC autonomous loop or a live background agent (checked via `~/.anti-hall/agents/*.json`
+  fresh heartbeats) rather than blocking work already in flight, and exempts
+  low-priority/P2/explicitly-deferred tasks from idle-neglect entirely. Loop-safety: if the
   exact same open-task set was already blocked on, the guard does not block again
   (prevents infinite nudge loops). Fail-open on any parse/read error.
 

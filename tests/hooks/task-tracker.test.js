@@ -77,6 +77,77 @@ test('Garbage lastFull -> FULL', () => {
   }
 });
 
+// --- size-based early re-injection (transcript growth) ----------------------
+// FULL must re-fire on EITHER trigger: WINDOW_MS wall-clock OR ~240KB of
+// transcript growth since the last FULL injection, whichever comes first. These
+// tests cover the growth trigger firing WITHIN the window (wall-clock alone
+// would still say SHORT), and confirm sub-threshold growth does NOT fire early.
+
+const GROWTH_BYTES = 240 * 1024;
+
+function payloadWithTranscript(tp) {
+  return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: process.cwd(), transcript_path: tp };
+}
+
+test('Size trigger: transcript grows past threshold within window -> FULL again, baseline rewritten', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] } }]);
+    // Turn 1: first turn of the session -> FULL, records lastFull + lastFullSize
+    // (the transcript's small size at this point).
+    const r1 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home });
+    assert.ok(ctx(r1).startsWith(FULL_MARKER), `expected FULL on turn 1; got: ${ctx(r1).slice(0, 60)}`);
+    const stateAfter1 = JSON.parse(fs.readFileSync(path.join(h.antiHall, STATE_FILE), 'utf8'));
+    assert.ok(Number.isFinite(stateAfter1.lastFullSize), 'lastFullSize must be recorded');
+
+    // Grow the transcript file past GROWTH_BYTES since the recorded baseline —
+    // still well WITHIN WINDOW_MS, so wall-clock alone would say SHORT.
+    fs.appendFileSync(tp, 'x'.repeat(GROWTH_BYTES + 10 * 1024) + '\n', 'utf8');
+
+    // Turn 2: same session, no time has passed -> growth trigger must fire FULL.
+    const r2 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home });
+    assert.ok(ctx(r2).startsWith(FULL_MARKER), `expected FULL on growth; got: ${ctx(r2).slice(0, 60)}`);
+
+    const stateAfter2 = JSON.parse(fs.readFileSync(path.join(h.antiHall, STATE_FILE), 'utf8'));
+    assert.ok(stateAfter2.lastFullSize > stateAfter1.lastFullSize, 'baseline must be rewritten to the new (larger) size');
+
+    // Turn 3: immediately after, no further growth -> back to SHORT.
+    const r3 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home });
+    assert.ok(ctx(r3).startsWith(SHORT_MARKER), `expected SHORT once growth baseline is caught up; got: ${ctx(r3).slice(0, 60)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('Size trigger: sub-threshold growth within window -> stays SHORT', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([{ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hello' }] } }]);
+    const r1 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home });
+    assert.ok(ctx(r1).startsWith(FULL_MARKER));
+
+    // Grow by far LESS than GROWTH_BYTES.
+    fs.appendFileSync(tp, 'x'.repeat(1024) + '\n', 'utf8');
+
+    const r2 = testHook(HOOK, payloadWithTranscript(tp), { home: h.home });
+    assert.ok(ctx(r2).startsWith(SHORT_MARKER), `sub-threshold growth must not trigger FULL; got: ${ctx(r2).slice(0, 60)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('Size trigger: no transcript_path (unknown size) -> growth trigger inert, window logic unaffected', () => {
+  const h = makeHome();
+  try {
+    const r1 = testHook(HOOK, promptPayload(), { home: h.home });
+    assert.ok(ctx(r1).startsWith(FULL_MARKER));
+    const r2 = testHook(HOOK, promptPayload(), { home: h.home });
+    assert.ok(ctx(r2).startsWith(SHORT_MARKER), `no transcript_path must not spuriously trigger FULL; got: ${ctx(r2).slice(0, 60)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 // --- per-turn freshness note (open/stale tasks present) ---------------------
 
 function taskCreateLines(id, subject, status) {

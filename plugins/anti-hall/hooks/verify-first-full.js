@@ -24,7 +24,13 @@
 //   - §8.1/§6.2: hard rules at primacy slots (mid-prompt adherence drops ~30%).
 //   - §3.3: state DO + WHY so it generalizes.
 //   - §8.4: system prompt outranks user agreement.
-//   - §9.6: permission to say "I don't know". §1.6: kept under ~10k cap.
+//   - §9.6: permission to say "I don't know". §1.6 notes a ~10k-char injection
+//     cap (excess silently truncated) — MEASURED additionalContext here is
+//     ~15.3k chars, over that cap (see docs/KB.md's verify-first-full row for
+//     the measurement). Rule L is deliberately placed right after rule A
+//     (out of alphabetical order, see comment at its definition) so the
+//     highest-value, cross-referenced content survives truncation; content
+//     is NOT all guaranteed delivered.
 //
 // Contract:
 //   stdin  : JSON { hook_event_name, source?, ... }
@@ -43,6 +49,17 @@ const FULL = [
   ...CORE_LINES,
   'ORCHESTRATION DISCIPLINE (always apply; the main thread is a coordinator, not a worker):',
   '  A. COMMAND DELEGATION (TOP RULE): NEVER run verbose/long/state-changing commands (build, test, deploy, push, pull, install, migrate, dumps, bulk scripts) OR broad reads/Grep/Glob/code-nav searches (git grep, find, rg, ag, multi-file sweeps) inline. ALWAYS delegate to a subagent that returns a tight summary. Raw output bloats the orchestrator and INDUCES HALLUCINATION - the failure this plugin prevents.',
+  // Rule L is placed here (right after A), OUT of alphabetical order, on purpose:
+  // measured SessionStart output is ~15.3k chars, over the ~10k injection cap
+  // (KB-claude-codex.md §1.6) that this file's own header comment assumed it
+  // stayed under. Positive Rule 6 (verify-first-core.js) and rule F below both
+  // say "(rule L)" and both sit well inside the first 10k chars; leaving L in
+  // its alphabetical slot put its definition past the cap, so a truncated read
+  // saw two dangling "(rule L)" references with nothing to resolve them. Content
+  // after this point may still be truncated, but rule L (a direct, named
+  // extension of the Iron Law to delegated work) is prioritized over
+  // presentation/cadence rules (K/J/I) that used to occupy this space.
+  '  L. VERIFY DELEGATED WORK (Rule 6 applies to a subagent\'s report too): a subagent\'s "done / fixed / tests pass / N passing" is an UNVERIFIED CLAIM, never a fact. Before marking any delegated task complete, RE-RUN the authoritative check yourself (or dispatch a SEPARATE verifier) and read the REAL result - workers run in their own context and can be optimistic, wrong, or measuring stale/partial state. When multiple workers report, reconcile against GROUND TRUTH, not against each other. A self-reported completion is a hypothesis to confirm, not a result to accept.',
   '  B. Keep the MAIN thread non-blocking. Capture EVERY request AND interruption in a PRIORITY-SORTED task list immediately; work highest-first; update statuses; drop nothing silently. As each task COMPLETES, DELEGATE the write to a cheap model (Haiku) rather than composing it inline: hand it the cause/fix/verification facts and have it append the entry to .anti-hall/history/<today>/<session-id>.md (one entry per task: Cause / Fix / Verified) so the fix history persists for the knowledge layer without spending the coordinator\'s own tokens on a mechanical write.',
   '  C. ACTIVELY DRAIN THE LIST - DISPATCH PROACTIVELY, do NOT wait to be told: the MOMENT a task is pending, unblocked (no open blockedBy), and unassigned, fire a background agent for it WITHOUT being asked - never let it sit idle waiting for the user to say "spin agents". Run INDEPENDENT tasks in PARALLEL (one agent each, cap ~min(16, cores-2)); never spawn unbounded agents; let in-flight agents finish before the next wave - a runaway swarm can wedge the OS. Ending a turn with non-blocked, unassigned tasks and NO agents running is IDLE NEGLECT - the failure mode to avoid; only stop idle if a task genuinely needs the user, and then say which and why.',
   '  D. BIAS TOWARD DELEGATION: default to a subagent for any work touching files/tools/commands/search/build/test or that could balloon - avoid the "just do it inline" trap.',
@@ -54,7 +71,6 @@ const FULL = [
   '  I. WATCH/BABYSIT spawned agents: poll TaskOutput on an interval (ScheduleWakeup or loop); if an agent misses its heartbeat (~/.anti-hall/agents/<id>.json) for ~20 min, TaskStop and re-dispatch with tighter scope. Bounded time horizon in every brief - never wait forever.',
   '  J. UPDATE THE PHASE STATUSLINE as phases progress: call statusline/phase.js (set/advance/step/agents/clear) from the coordinator. Never from subagents - they report back; the coordinator writes phase state.',
   '  K. PRESENT FOR SCANNABILITY (do not overdo it): organize output with GitHub-flavored markdown - tables for comparisons/status, **bold** verdicts, *italic* caveats, `code` for flags/paths/commands, fenced blocks for commands/output, at most a leading status glyph (emoji = signal, not decoration). Styling organizes, never pads - rule H still rules. Avoid renderer-dropped syntax: strikethrough, [label](url) link labels (paste the bare URL), nested blockquotes, task-list checkboxes; underline and per-word color do not exist.',
-  '  L. VERIFY DELEGATED WORK (Rule 6 applies to a subagent\'s report too): a subagent\'s "done / fixed / tests pass / N passing" is an UNVERIFIED CLAIM, never a fact. Before marking any delegated task complete, RE-RUN the authoritative check yourself (or dispatch a SEPARATE verifier) and read the REAL result - workers run in their own context and can be optimistic, wrong, or measuring stale/partial state. When multiple workers report, reconcile against GROUND TRUTH, not against each other. A self-reported completion is a hypothesis to confirm, not a result to accept.',
   '  M. PREFER SHALLOW+WIDE; LIFT DEEP NESTING INTO A WORKFLOW. Delegation rules are for the ORCHESTRATOR; a spawned subagent is a WORKER - it does the work itself and does NOT re-delegate unless its task says to (deep general-purpose->general-purpose chains cost ~7x tokens by depth 5, drift intent each hop, add no quality). Route read-only research to Explore (it has no Agent tool, cannot recurse). When a task is breadth-first/parallelizable and would otherwise need 3+ subagents or a nested chain, use a deterministic WORKFLOW (one flat script with parallel/pipeline) instead of ad-hoc nesting - it is repeatable, keeps intermediate output off the main context, and runs in the background. Trigger it deliberately on that SHAPE, never as a blanket rule for routine work.',
   '  N. DISTRIBUTE MODELS - NEVER ALL-OPUS (esp. in a Workflow). An OMITTED model inherits the orchestrator (a flagship), so a fan-out of omitted/Opus seats silently becomes an all-flagship swarm that torches the usage limit. Set model/effort EXPLICITLY per seat by task shape: implementation/mechanical -> sonnet (or haiku for trivial leaf/nav); correctness/verify/subtle-bug review -> CODEX (codex:codex-rescue when available - its strength); planning/architecture/design/ambiguous-reasoning + design-level review -> opus. The model-routing-guard hook does NOT police models INSIDE a workflow review fan-out (it exempts review tasks and workflow-spawn advisories are not surfaced), so distribution is YOUR authoring responsibility when you write the workflow script. ALWAYS use Codex for an independent SECOND OPINION on substantial code changes (correctness lens) - it is the deadly-loop/ship-it Critic seat and should be pulled for everyday code review too; keep the architecture/design lens on Opus. CODEX HAS ITS OWN LIMITS: if Codex is unavailable or rate-limited, fall back to a CHEAP Claude (Sonnet) for the review - NEVER retry-loop an unavailable Codex, and do not strand the main agent waiting on it.',
   '',
@@ -113,7 +129,8 @@ function main() {
 
   // SYNCHRONOUS write to fd 1. Why not process.stdout.write: when stdout is a
   // pipe (Claude Code, and spawnSync in the tests both capture it) and the payload
-  // (~10KB) exceeds the OS pipe buffer, process.stdout.write becomes ASYNC — it
+  // (~15.4KB measured stdout, ~15.3KB of that the additionalContext string — see
+  // KB.md's verify-first-full row) exceeds the OS pipe buffer, process.stdout.write becomes ASYNC — it
   // buffers the tail and returns false. The trailing process.exit(0) then tears
   // the process down BEFORE that buffer flushes, so the consumer reads EMPTY or
   // PARTIAL stdout with exit 0. This is the macOS node 18/20 truncation that made

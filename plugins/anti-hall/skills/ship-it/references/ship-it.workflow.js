@@ -81,9 +81,9 @@ const VERDICT_SCHEMA = {
 // Build-agent brief: inject FULL context, never "read the plan". The agent runs the
 // deadly-loop A3 branch/SHA preamble, edits ONLY its disjoint files, then proves the
 // phase with FRESH acceptance output (Iron Law) + the D1.5 vacuous-test cycle.
-function buildBrief(phase, implementerModel) {
+function buildBrief(phase, implementerModel, effort) {
   return [
-    'You are a ship-it build agent for phase: ' + phase.label + '.',
+    'You are a ship-it build agent for phase: ' + phase.label + ' (effort ' + effort + ').',
     'A3 PREAMBLE: verify you are on the right branch + HEAD before editing; cite file:line you change.',
     'TASK (self-contained — do not read PLAN.md; everything you need is here):',
     phase.prompt,
@@ -99,17 +99,29 @@ function buildBrief(phase, implementerModel) {
 // retry-loop. implementerModel is set by the CALLING CODE based on which branch actually
 // succeeded, not trusted from the agent's own self-report, so Step 5's cross-model
 // self-review guard (reviewerAgent's skipSonnet option) can rely on it being accurate.
+//
+// EFFORT (KB-model-modes.md §10 item 5 / KB-overengineering.md §5 item 5): this is the
+// literal code-writing seat — the one most exposed to trained verbosity/length bias — and
+// effort tiers compound MULTIPLICATIVELY with the Workflow tool's own swarm fan-out cost, so
+// it must never be left to silently inherit a model default. Pin `medium` (Codex) / `high`
+// (Sonnet 5 failover) for ordinary phases — the same explicit-effort discipline MODEL-POLICY.md
+// already applies to the Reviewer/Auditor/Critic seats. A phase can opt into a higher tier
+// (e.g. `xhigh`) ONLY by the plan itself flagging it hard-risk via `phase.effort` — mirrors
+// how `phase.model` already overrides the Sonnet-5-failover model below. Never `max` here —
+// governance rule 3 (MODEL-POLICY.md) bans `max` for Sonnet 5 inside any loop-shaped seat.
 async function buildAgent(p) {
-  const codex = await agent(buildBrief(p, 'codex'), {
+  const codexEffort = p.effort || 'medium';
+  const codex = await agent(buildBrief(p, 'codex', codexEffort), {
     schema: RESULT_SCHEMA, run_in_background: true,
-    label: p.label, agentType: 'codex:codex-rescue',
+    label: p.label, agentType: 'codex:codex-rescue', effort: codexEffort,
   });
   if (codex) return { ...codex, implementerModel: 'codex' };
 
   log('ship-it: Codex build unavailable for "' + p.label + '" — falling back to Sonnet 5 build (MODEL-POLICY matrix).');
-  const sonnet = await agent(buildBrief(p, 'sonnet'), {
+  const sonnetEffort = p.effort || 'high';
+  const sonnet = await agent(buildBrief(p, 'sonnet', sonnetEffort), {
     schema: RESULT_SCHEMA, run_in_background: true,
-    label: p.label + '(sonnet-fallback)', model: p.model || 'sonnet',
+    label: p.label + '(sonnet-fallback)', model: p.model || 'sonnet', effort: sonnetEffort,
   });
   if (!sonnet) return sonnet; // both seats unavailable — caller sees a falsy build result
   return { ...sonnet, implementerModel: 'sonnet' };
@@ -131,7 +143,7 @@ function reviewerBrief(phase) {
 }
 function auditorBrief(phase) {
   return [
-    'You are the deadly-loop AUDITOR (latest Opus, max thinking) for phase ' + phase.label + '.',
+    'You are the deadly-loop AUDITOR (latest Opus, full reasoning depth — effort high) for phase ' + phase.label + '.',
     'DIVERGENT lens — regression & coupling hunter; do NOT duplicate the Reviewer. Trace',
     'OUTWARD: regressions in unchanged dependent code, wrong cross-module/cross-PR coupling,',
     'fixes that undid earlier fixes, merge-order cross-reference breaks.',
@@ -141,7 +153,7 @@ function auditorBrief(phase) {
 }
 function criticBrief(phase) {
   return [
-    'You are the deadly-loop CRITIC (Codex, max reasoning) for phase ' + phase.label + '.',
+    'You are the deadly-loop CRITIC (Codex, xhigh reasoning) for phase ' + phase.label + '.',
     'Adversarial lens — DIFFERENT mental model; find blindspots the Reviewer and Auditor',
     'would miss; try to BREAK the change. Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
     'Count only NEW P0 blockers. Return the verdict schema.',
@@ -266,6 +278,8 @@ async function main() {
     // MODEL-POLICY.md "implementation" row) — Codex draws its own limit and is a strong
     // code-apply model; failover to Sonnet 5 only on unavailable/null, never a retry-loop.
     // Override the fallback model per phase by setting phase.model in the plan.
+    // Override build effort (default medium/high — see buildAgent()) per phase by setting
+    // phase.effort in the plan, e.g. "xhigh" for a plan-flagged hard-risk phase.
     if (group.length === 1) {
       built = [await buildAgent(group[0])];
     } else {

@@ -18,6 +18,6 @@ Model routing:
 
 - root-cause analysis and tricky UI/state bugs: `gpt-5.5`
 - implementation after cause is proven: `gpt-5.4`
-- command-only build/test runner: `gpt-5.4-mini` or `gpt-5.3-codex-spark`
+- command-only build/test runner: `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only
 
 Avoid long-running watcher commands. Use bounded runs and clean up spawned test/build processes.

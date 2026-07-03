@@ -7,10 +7,12 @@
 
 ## TL;DR
 
-- The `Workflow` tool is a **native Claude Code feature** (GA ~May 28 2026, shipped with
-  Opus 4.8). It is **not** tied to any one model — workflow agents inherit the session
-  model by default. Verified live in-repo: a 2-agent workflow run under an Opus 4.8
-  session executed with both workers self-reporting `claude-opus-4-8`.
+- The `Workflow` tool is a **native Claude Code feature**, currently in **research
+  preview** (Claude Code v2.1.154+, paid plans; shipped ~May 28 2026 alongside Opus 4.8) —
+  not production-ready per Anthropic's own framing. It is **not** tied to any one model —
+  workflow agents inherit the session model by default. Verified live in-repo: a 2-agent
+  workflow run under an Opus 4.8 session executed with both workers self-reporting
+  `claude-opus-4-8`.
 - Use it for **wide, parallelizable, repeatable** work where intermediate results would
   flood the main context. Do **not** use it for routine, sequential, or low-value tasks.
 - **Cost is real:** a full multi-agent run ≈ **15× the tokens** of a single chat; nesting

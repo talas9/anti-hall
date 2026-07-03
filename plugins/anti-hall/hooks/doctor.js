@@ -63,9 +63,10 @@ ok(`anti-hall plugin version ${version}`);
 // --- 2. Hooks present + syntax-valid ----------------------------------------
 head('Hooks (present + syntax)');
 let registered = [];
+let hooksConfig = null;
 try {
-  const hj = JSON.parse(fs.readFileSync(path.join(HOOKS, 'hooks.json'), 'utf8'));
-  const cmds = JSON.stringify(hj).match(/[\w-]+\.js/g) || [];
+  hooksConfig = JSON.parse(fs.readFileSync(path.join(HOOKS, 'hooks.json'), 'utf8'));
+  const cmds = JSON.stringify(hooksConfig).match(/[\w-]+\.js/g) || [];
   registered = [...new Set(cmds)];
   ok(`hooks.json is valid JSON (${registered.length} hook script(s) registered)`);
 } catch (e) {
@@ -199,6 +200,40 @@ if (fs.existsSync(omcDetectPath)) {
 const sg = runHook('swarm-guard.js', { tool_name: 'Agent', tool_input: {} });
 ALLOWED(sg) ? ok('swarm-guard allows a spawn under normal memory') : warnl(`swarm-guard returned exit ${sg.code} (blocked) — check memory pressure`);
 
+// version-alert: SessionStart advisory that nudges when a cached "latest"
+// version is newer than the running one. It reads its cache from a FIXED path
+// under the user's home dir (~/.anti-hall/version-check.json), not from cwd or
+// the payload — so this test overrides HOME (and USERPROFILE for Windows,
+// since os.homedir() resolves from that var there) to a throwaway temp dir
+// rather than touching the real cache file. Two cases against the SAME
+// fresh-cache contract: a newer cached version must alert, an equal one must
+// stay silent (ANTIHALL_VERSION_ALERT is force-cleared so an inherited
+// off-switch can't fake a false negative).
+function versionAlertTest() {
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-va-'));
+  try {
+    const cacheDir = path.join(tdir, '.anti-hall');
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cachePath = path.join(cacheDir, 'version-check.json');
+    const fakeEnv = { HOME: tdir, USERPROFILE: tdir, ANTIHALL_VERSION_ALERT: '' };
+
+    // Case 1: fresh cache, latest > running -> must emit the update nudge.
+    fs.writeFileSync(cachePath, JSON.stringify({ latest: '999.0.0', checkedAt: Date.now() }));
+    const stale = runHook('version-alert.js', { hook_event_name: 'SessionStart', session_id: 'doctor-va-stale-' + Date.now() }, fakeEnv);
+    const staleAlerted = /"additionalContext"\s*:\s*"anti-hall v999\.0\.0 available \(running v/.test(stale.out);
+
+    // Case 2: fresh cache, latest === running -> must stay silent (no stdout).
+    fs.writeFileSync(cachePath, JSON.stringify({ latest: version, checkedAt: Date.now() }));
+    const current = runHook('version-alert.js', { hook_event_name: 'SessionStart', session_id: 'doctor-va-current-' + Date.now() }, fakeEnv);
+    const currentSilent = current.out.trim() === '';
+
+    return staleAlerted && currentSilent;
+  } finally {
+    try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+versionAlertTest() ? ok('version-alert nudges on a stale cached version and stays silent when current') : bad('version-alert did NOT behave correctly for stale-vs-current cache');
+
 // --- 4. Statusline install status -------------------------------------------
 head('Statusline');
 function readJSON(p) { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return null; } }
@@ -255,13 +290,11 @@ if (!fs.existsSync(slScript)) {
 head('Graphify');
 function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch (e) { return false; } }
 const graphOut = path.join(cwd, 'graphify-out');
-const graphPlanning = path.join(cwd, '.planning', 'graphs');
-const graphPresent = isDir(graphOut) || isDir(graphPlanning);
+const graphPresent = isDir(graphOut);
 if (graphPresent) {
-  const where = isDir(graphOut) ? graphOut : graphPlanning;
-  ok(`knowledge graph present in cwd (${where})`);
+  ok(`knowledge graph present in cwd (${graphOut})`);
 } else {
-  warnl('no knowledge graph in cwd (graphify-out/ or .planning/graphs/) — graph-first guards are silent no-ops here');
+  warnl('no knowledge graph in cwd (graphify-out/) — graph-first guards are silent no-ops here');
 }
 // Are the graphify hooks registered in hooks.json?
 for (const h of ['graphify-guard.js', 'graphify-session.js', 'graphify-reminder.js']) {
@@ -284,8 +317,35 @@ function ctxBytes(file, payload, picker) {
   return Buffer.byteLength(String(txt), 'utf8');
 }
 const tok = (b) => Math.round(b / 4);
-// SessionStart one-time cost.
-const ssB = ctxBytes('verify-first-full.js', { hook_event_name: 'SessionStart', source: 'startup' });
+// SessionStart one-time cost = SUM across every hook actually registered on
+// SessionStart in hooks.json (verify-first-full is only one of several — e.g.
+// graphify-session, version-alert, and fable-availability ALSO inject
+// additionalContext on the same event per hooks.json). Derive the list from
+// hooks.json itself rather than hardcoding it, so a future hooks.json edit is
+// picked up automatically instead of silently under-reporting.
+function sessionStartHookFiles(cfg) {
+  const groups = (cfg && cfg.hooks && Array.isArray(cfg.hooks.SessionStart)) ? cfg.hooks.SessionStart : [];
+  const files = [];
+  for (const group of groups) {
+    const hs = Array.isArray(group.hooks) ? group.hooks : [];
+    for (const h of hs) {
+      const m = String((h && h.command) || '').match(/[\w-]+\.js/);
+      if (m) files.push(m[0]);
+    }
+  }
+  return [...new Set(files)];
+}
+// Fallback to the single known SessionStart script ONLY if hooks.json itself
+// failed to parse (section 2 above already reported that failure as a FAIL).
+const ssFiles = sessionStartHookFiles(hooksConfig);
+const ssPayload = { hook_event_name: 'SessionStart', source: 'startup' };
+let ssB = 0;
+const ssParts = [];
+for (const f of (ssFiles.length ? ssFiles : ['verify-first-full.js'])) {
+  const b = ctxBytes(f, ssPayload);
+  ssB += b;
+  ssParts.push(`${f} ${b} B`);
+}
 // Per-turn cost = sum of UserPromptSubmit injections (verify-first + task-tracker).
 const upPayload = { hook_event_name: 'UserPromptSubmit', prompt: 'x', session_id: 'doctor-ctx', cwd };
 const vfB = ctxBytes('verify-first.js', upPayload);
@@ -315,7 +375,7 @@ try {
   stopB = stopReasonBytes('speculation-guard.js', { transcript_path: tp, session_id: 'doctor-ctx-stop-' + Date.now() });
   try { fs.rmSync(tdir, { recursive: true, force: true }); } catch (_) {}
 } catch (_) { stopB = 0; }
-ok(`SessionStart (one-time): ${ssB} B ~${tok(ssB)} tok`);
+ok(`SessionStart (one-time): ${ssB} B ~${tok(ssB)} tok  (${ssParts.join(' + ')})`);
 ok(`Per-TURN (every UserPromptSubmit): ${perTurnB} B ~${tok(perTurnB)} tok  (verify-first ${vfB} B + task-tracker ${ttB} B; task-tracker throttles to a short line after the first turn)`);
 ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
 

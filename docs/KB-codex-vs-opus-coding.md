@@ -8,6 +8,14 @@
 > OpenAI's GPT-5.5 page 403'd on fetch (numbers corroborated by secondary sources);
 > several scores are ranges; no Reddit/HN thread signal surfaced (blog/dev.to only).
 > Treat the numbers as directional and harness-dependent, not exact.
+>
+> **Scope note (2026-07-01):** this KB was compiled 2026-06-29, one day before Claude
+> Sonnet 5's release (2026-06-30), and frames routing as a two-way Opus-4.8-vs-Codex-GPT-5.5
+> choice — Sonnet 5 was not in scope. It is now the anti-hall **primary implementer failover**
+> and handles most multi-file/arch-aware work (`docs/KB-sonnet-5.md` §5); Opus is current
+> guidance's escalation tier, reserved for multi-repo refactors with subtle invariants
+> (§6), not general multi-file refactors as the "Keep on Opus 4.8" section below might
+> suggest read in isolation. See `docs/KB-sonnet-5.md` §5–§7 for current routing.
 
 ## TL;DR (verdict)
 

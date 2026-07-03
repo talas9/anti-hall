@@ -10,9 +10,9 @@
 //   Own dispatch (when no base config, or base command fails):
 //     Monorepo detection (checked at git toplevel, then cwd):
 //       .gitmodules exists    => monorepo (git submodules)
-//       .gsd/ dir exists      => monorepo (GSD project)
-//       .planning/ dir exists => monorepo (planning state present)
 //     Otherwise => simple statusline.
+//     (.gsd/ / .planning/ dropped as monorepo triggers 2026-07-03 — GSD is
+//     discontinued, nothing creates those directories anymore.)
 //
 // LINE 2: phase bar (only printed when ~/.anti-hall/phase-state.json
 //   exists and is valid). Omitted entirely when state file is absent/invalid.
@@ -107,10 +107,7 @@ function gitToplevel(cwd) {
 }
 
 function isMonorepo(dir) {
-  if (fs.existsSync(path.join(dir, '.gitmodules'))) return true;
-  if (fs.existsSync(path.join(dir, '.gsd')))        return true;
-  if (fs.existsSync(path.join(dir, '.planning')))   return true;
-  return false;
+  return fs.existsSync(path.join(dir, '.gitmodules'));
 }
 
 // ---------------------------------------------------------------------------
@@ -151,7 +148,7 @@ function ownLine1(input) {
 
     const scriptDir = __dirname;
     // Primary own-dispatch renderer is the RICH statusline (project name, git,
-    // model, context%, cost, duration, subagents, optional GSD phase) — it works
+    // model, context%, cost, duration, subagents) — it works
     // for both monorepo and plain repos. If it yields nothing (fail-open), fall
     // back to the monorepo/simple renderer.
     const renderers = [

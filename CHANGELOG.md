@@ -6,6 +6,104 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.45.0
+
+**GSD discontinued and removed as a live dependency; 4 new research KBs; a 17-item cross-KB
+feature audit resolved; a plugin-wide KB-contradiction sweep; 2 real bugs fixed in
+`deadly-loop.workflow.js`.**
+
+### GSD (`.planning/`) removed — owner decision, GSD itself is discontinued
+- `ship-it/SKILL.md`, `ship-it-guard.js`, and `docs/KB.md` no longer recognize `.planning/PLAN.md`
+  — `PLAN.md` at the repo root is the only location. `graphify-guard.js`, `graphify-reminder.js`,
+  and `doctor.js` no longer treat `.planning/graphs/` as an alternate graph location.
+- `scripts/migrate-state.js` gained `migrateGsdPlanning()`: folds an existing `.planning/` tree
+  into `.anti-hall/history/legacy/planning/`, then **deletes each source file once its own copy
+  is verified byte-identical** — the `.planning/` directory (and any subdirectory) is never
+  removed, only the individual files inside it, one at a time. A file whose copy can't be
+  verified is left in place, reported as `verify-failed`, never silently deleted. Wired into
+  `/anti-hall:update`'s existing migration step (same command, no new invocation needed).
+- `AGENTS.md`'s dual-platform-parity section now documents two accepted structural limitations
+  (Codex has no Dynamic-Workflows equivalent; Claude→Codex integration is one-directional) so
+  future work stops re-litigating them, and explicitly extends the parity mandate to KBs.
+
+### 4 new research KBs (all source-count-verified, none padded)
+- `docs/KB-model-modes.md` (47 sources) — Claude/Codex effort levels, Plan Mode, the Workflow
+  tool + "ultracode" (confirmed officially documented), `/code-review ultra`. Found and fixed a
+  real terminology-drift bug (prompt text said "max thinking"/"max reasoning" when the actual
+  code passes `effort:"high"`/`"xhigh"` — Codex has no `max` tier at all) across 10 files.
+- `docs/KB-overengineering.md` (15 sources) — general SE + AI-agent-specific causes of
+  overengineering, empirical bloat measurement.
+- `docs/KB-false-completion.md` (21 sources) — reward hacking / specification-gaming research;
+  identified that ship-it v2's own `STATE.json` protocol (shipped last release) was prose-only
+  and mechanically unenforced — the exact failure mode the research catalogs, now fixed (below).
+- `docs/KB-goal-setting.md` (15 sources) — goal-clarity research; identified a gap between
+  Step 1's intent and Step 2's decomposed phases with no reconciliation check — now fixed (below).
+
+### KB-contradiction sweep — 13 real contradictions found and fixed across 15 KB docs
+Including a within-document self-contradiction in `KB-sonnet-5.md` (TL;DR vs its own cited
+source), a benchmark figure mis-attributed to the wrong model, a pre-Sonnet-5 routing doc never
+flagged as superseded, and a stale error-code claim contradicting its own correction three
+sections later. All 13 independently re-verified against the actual working tree (grep/ls
+counts), not just re-read.
+
+### Feature-improvement audit — all 17 findings resolved
+- **Doc/text fixes:** `deadly-loop-multi` retry-arithmetic (wrong tier referenced), `task-guard.js`
+  under-description, `gpt-5.3-codex-spark` presented as interchangeable with `gpt-5.4-mini` (fixed
+  across 9 Codex files + added an Effort column to the Codex model-policy table), a 4-location
+  Fable stale-language sweep, `update`/`doctor` SKILL.md delegation instructions missing an
+  explicit model (live-verified to trigger `model-routing-guard.js`'s own block).
+- **Real code fixes:** `ship-it.workflow.js`'s `buildAgent()` now pins explicit effort
+  (`medium`/`high`, opt-up via `phase.effort`) instead of silently inheriting a model default;
+  `ship-it-guard.js` gained a plan-conformance advisory (flags — never blocks — an edit outside
+  every phase's declared `files:`); `graphify-guard.js` is now subagent-aware (a delegated
+  subagent's search no longer burns the coordinator's one-time nudge) and re-arms its nudge after
+  ~240KB of transcript growth instead of firing once per session forever; `task-tracker.js` gained
+  the same token-growth re-arm trigger alongside its wall-clock one; `doctor.js` now sums the
+  footprint of every registered SessionStart hook (was undercounting) and gained a behavioral test
+  for `version-alert.js`; Codex-native deadly-loop documents its same-model-TRIO as a disclosed
+  degraded config with an opt-in cross-model escalation path for L-tier hard-risk work.
+- **Empirical verification, not assumed:** ran a real experiment confirming SubagentStart's
+  `additionalContext` genuinely reaches a spawned subagent's model context (cross-checked against
+  37 historical subagent transcripts) — `docs/KB-claude-codex.md` updated accordingly.
+- **`ship-it/SKILL.md` protocol additions** (from the two false-completion/goal-setting KB
+  findings above): `STATE.json` gained a `gate:"locked"|"not-run"` field, set only after Step 5's
+  deadly-loop actually locks — a resumed phase can no longer be trusted `done` from inference
+  alone. `PLAN.md`'s template gained a "Goal coverage" field mapping each intent clause to the
+  phase that proves it, plus a new Step 3 Reviewer-checklist bullet verifying that mapping.
+
+### 2 real bugs fixed in `deadly-loop.workflow.js` (not doc-only — logic changes)
+- The Opus Reviewer-fallback silently inherited the Sonnet-5 seat's `effort:"xhigh"` via object
+  spread instead of using Opus's own tier — fixed with a fresh options object (`effort:"high"`).
+- Phase 2b (Argue) dispatched using each seat's *static* role-defined opts, never the opts that
+  actually answered in Phase 2a — meant a seat whose primary model failed over during Investigate
+  would silently retry the dead model in Argue with zero fallback and zero signal in
+  `verdictSummary`. Fixed by threading the resolved per-seat opts from 2a into 2b.
+
+### GSD removal, part 2 — statusline + Codex-side parity gaps
+A deeper sweep found GSD support was more extensive than the first pass caught:
+- `statusline-monorepo.js` was an entire dedicated rendering mode for GSD state
+  (`readGsdState`/`formatGsdState`/`.planning/config.json`) — stripped down to its
+  non-GSD content (model/context/current-task/dir); `.gsd/`/`.planning/` dropped as
+  monorepo-detection triggers in `statusline.js` (`.gitmodules` still triggers monorepo
+  mode for real git-submodule projects); `statusline-rich.js`'s GSD phase chip removed.
+- Two Codex-side skills contradicted their own stated intent: `anti-hall-feature-launch`
+  explicitly said "do not invoke GSD commands, GSD was removed" while still instructing
+  every artifact write into `.planning/` — fixed to `.anti-hall/feature-launch/`.
+  `anti-hall-ship-it` still preferred `.planning/PLAN.md` — fixed to repo-root only,
+  matching the Claude-side fix.
+- `install-statusline`'s SKILL.md and llms.txt's Codex README were also swept.
+- Historical/research docs (`docs/gsd-distilled.md`, `docs/KB-claude-codex.md` §12,
+  `docs/superpowers-planning.md`) were deliberately left untouched — they document GSD's
+  design as research provenance for anti-hall's own swarm/debate model, not live
+  coexistence, matching this repo's "historical artifacts are frozen" convention.
+
+### Process note
+Codex's independent verification of this release's implementation batch flagged one genuine
+defect (not environmental noise): a probe-record fixture claimed a grep returned zero matches
+when it actually returns one — corrected in place, logged rather than silently patched.
+
+Suite 729 (727 pass / 0 fail / 2 skip, up from 703 at the start of this release).
+
 ## 0.44.0
 
 **Ship-it v2: resumable state, a global P0+P1 convergence gate, Codex-primary build seats, and legacy-state migration.**

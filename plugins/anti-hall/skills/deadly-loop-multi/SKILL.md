@@ -40,7 +40,7 @@ The 3N auditors are split **exactly in thirds** — one third per trio seat:
 - **N Reviewers = Sonnet 5 (`model:"sonnet"`), at effort `xhigh`** — correctness /
   architecture lens. *If Fable returns to general availability, reconsider this seat for
   the flagship tier.*
-- **N Auditors = the latest Opus (`model:"opus"`), at max thinking** — divergent
+- **N Auditors = the latest Opus (`model:"opus"`), at full reasoning depth (effort `high`)** — divergent
   regression & coupling lens (a different Claude generation, orthogonal lens).
 - **N Critics = the latest OpenAI Codex** when available — a genuinely different model
   finds different bugs. **Check availability once** via the OS-agnostic Node probe in
@@ -78,7 +78,9 @@ the dispatch is **12 auditors** (4 Reviewers + 4 Auditors + 4 Critics) — 12 �
 cores-2)` on an 8-core+ host and 12 ≤ 20/60 s, so the whole trio fan-out fits in ONE
 wave (treat the "fits in one wave" claim as a working estimate, not a guarantee, per the
 caveat above). **Retry arithmetic:** the one-retry-per-seat rule can add up to 12 more spawns in
-the same 60 s window (12 + 12 = 24 > the 20-cap), so at multiplier **≥ triple, retries
+the same 60 s window (12 + 12 = 24 > the 20-cap) — but that is *quadruple's* own
+seat count. Triple's worst case is 9 + 9 = 18, which fits under the 20-cap in one
+wave, so it needs no special-casing. At multiplier **≥ quadruple, retries
 are SEQUENTIAL after the wave settles** (or accept the documented +1-entry
 blocked-retry cost). **Wave children** (the fix-wave executors, if you fix-and-reconverge)
 land in a LATER 60 s window than the audit dispatch, so they do not stack against the
@@ -111,7 +113,7 @@ audit spawns — state this explicitly when you dispatch.
      changed unit and mentally execute (or write a quick harness); report predicted outcomes
      and flag any wrong/unsafe/unbounded/fail-CLOSED result.*
 3. **Launch all 3N agents in parallel** (background) — see the capacity math above (12 fits
-   one wave at quadruple; retries sequential at ≥ triple). Keep the main thread free; do not
+   one wave at quadruple; retries sequential at ≥ quadruple). Keep the main thread free; do not
    block. (Codex `--fresh` avoids a resume prompt.)
 4. **Collect.** As each of the 3N agents reports, gather all findings. Do not present
    them raw — the deliverable is ONE reconciled report, not 3N dumps.
@@ -144,6 +146,6 @@ audit spawns — state this explicitly when you dispatch.
   Anthropic-documented; see the caveat above) AND the swarm-guard spawn cap
   (≤ 20 / 60 s); quadruple = 12 agents fits one wave (12 ≤ min(16, cores-2) on 8+ cores,
   12 ≤ 20/60 s), but don't stack it with other large fan-outs, and keep retries sequential
-  at ≥ triple so 12 + retries doesn't blow the 20-cap.
+  at ≥ quadruple so 12 + retries doesn't blow the 20-cap (triple's 9+9=18 fits in one wave).
 - The phase-tracker hook will surface "orchestrating · N agents" on the statusline while
   this runs — a free progress signal.

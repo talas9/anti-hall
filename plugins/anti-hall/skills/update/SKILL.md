@@ -55,9 +55,10 @@ Modes:
    - "is anti-hall up to date" / "check for an update" → `--check`
    - "update" / "upgrade anti-hall" → full update
 2. The helper is a `node` script (a state change — it pulls and may copy into the
-   cache), so **delegate it to a subagent** — do not run it inline in the coordinator
-   (the command-guard blocks heavy commands on the main thread). Brief the subagent to
-   run exactly one of:
+   cache), so **delegate it to a Haiku subagent** (`model:"haiku"`) — do not run it
+   inline in the coordinator (the command-guard blocks heavy commands on the main
+   thread; an execution-shaped spawn with no explicit model also trips
+   model-routing-guard's strict-mode block). Brief the subagent to run exactly one of:
    ```
    node "${CLAUDE_PLUGIN_ROOT}/skills/update/scripts/update.js" --check
    node "${CLAUDE_PLUGIN_ROOT}/skills/update/scripts/update.js"
@@ -80,7 +81,11 @@ Modes:
    `node plugins/anti-hall/scripts/migrate-state.js` once per repo (idempotent,
    safe to re-run) to fold any legacy root-level `.anti-hall-progress.md` /
    `.anti-hall-history.md` files into the new dated `.anti-hall/history/`
-   structure.
+   structure. The same command also folds a GSD `.planning/` tree (if present)
+   into `.anti-hall/history/legacy/planning/` — non-destructive; GSD's own
+   `/gsd-*` tooling keeps working against the untouched original. Owner
+   decision (2026-07-03): `.anti-hall/` is the intended destination for
+   progress/handover state across all projects going forward.
 
 ## Why /reload-plugins, and the honest edge
 

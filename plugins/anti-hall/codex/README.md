@@ -49,7 +49,7 @@ Model routing for Codex uses Codex model tiers:
 
 - planning, validation, debate: `gpt-5.5`
 - implementation: `gpt-5.4`
-- cheap mechanical work: `gpt-5.4-mini` or `gpt-5.3-codex-spark`
+- cheap mechanical work: `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model available on ChatGPT Pro only, not an effort setting of the flagship
 
 
 ## Ported Codex skills

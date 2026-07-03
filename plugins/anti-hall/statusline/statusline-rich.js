@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // statusline-rich.js — generic rich statusline (project name, git, model,
-// context%, cost, duration, subagents, optional GSD phase). Pure Node,
+// context%, cost, duration, subagents). Pure Node,
 // OS-agnostic, fail-open. No project/user specifics.
 
 'use strict';
@@ -217,32 +217,6 @@ function getSubagentCount() {
     return active;
   } catch {
     return 0;
-  }
-}
-
-// ─── GSD phase chip ─────────────────────────────────────────────
-
-// GSD phase chip — only renders when the project has a GSD
-// `.planning/STATE.md` file. Pure file read, no subprocess.
-function getGsdPhase() {
-  try {
-    const statePath = path.join(getProjectRoot(), '.planning', 'STATE.md');
-    const txt = fs.readFileSync(statePath, 'utf-8');
-    // GSD STATE.md frontmatter uses `milestone`, `status` (free-form
-    // sentence beginning with "Phase N..."), and a nested `progress.percent`.
-    // Extract a compact label for the chip.
-    const milestone = (txt.match(/^milestone:\s*['"]?([^'"\n]+?)['"]?\s*$/m) || [])[1];
-    const status = (txt.match(/^status:\s*(.+?)\s*$/m) || [])[1] || '';
-    const phaseMatch = status.match(/Phase\s+(\d+(?:\.\d+)?)/i);
-    const pct = (txt.match(/^\s*percent:\s*(\d+)\s*$/m) || [])[1];
-    if (!milestone && !phaseMatch && !pct) return null;
-    return {
-      milestone: milestone ? milestone.trim() : null,
-      phaseNum: phaseMatch ? phaseMatch[1] : null,
-      pct: pct ? parseInt(pct, 10) : null,
-    };
-  } catch {
-    return null;
   }
 }
 
@@ -690,7 +664,7 @@ function generateStatusline() {
     header += '  ' + c.dim + '│' + c.reset + '  ' + ctxColor + '● ' + ctxInfo.usedPct + '% ctx' + c.reset;
   }
   // Cost from stdin if available. Uses brightWhite so it doesn't collide
-  // with the yellow-tier of the ctx gradient or the GSD chip — money is FYI.
+  // with the yellow-tier of the ctx gradient — money is FYI.
   if (costInfo && costInfo.costUsd > 0) {
     header += '  ' + c.dim + '│' + c.reset + '  ' + c.brightWhite + '$' + costInfo.costUsd.toFixed(2) + c.reset;
   }
@@ -700,18 +674,6 @@ function generateStatusline() {
   // is available, prefixes "★ " and renders in red (major bump) or yellow (minor).
   const ahChip = buildAhChip();
   if (ahChip) header += ahChip;
-  // GSD phase chip — only renders when .planning/STATE.md exists. Uses
-  // (non-bright) cyan so it sits visually between the subagents/cost chips.
-  const gsd = getGsdPhase();
-  if (gsd) {
-    const parts = [];
-    if (gsd.milestone) parts.push(gsd.milestone);
-    if (gsd.phaseNum) parts.push('Phase ' + gsd.phaseNum);
-    if (gsd.pct != null) parts.push(gsd.pct + '%');
-    if (parts.length) {
-      header += '  ' + c.dim + '│' + c.reset + '  ' + c.cyan + '▸ ' + parts.join(' · ') + c.reset;
-    }
-  }
   // Account email chip — shows the signed-in email WHEN AVAILABLE (read from
   // ~/.claude.json). Dim, last segment. Opt-out: set ANTIHALL_STATUSLINE_NO_EMAIL=1
   // (or any non-'0'/'false' value) to hide it, e.g. for screenshots/screen-shares.

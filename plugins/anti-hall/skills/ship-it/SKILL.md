@@ -73,6 +73,13 @@ is edited or built**. You DRAFT the plan in this mode and present it via `ExitPl
 durable repo `PLAN.md` is written right after approval (see Step 2). No code is written until
 the plan is approved.
 
+*Delegate target for blast-radius research — a candidate worth piloting, not a proven win:*
+Claude Code ships a dedicated read-only `Plan` subagent type (Write/Edit denied), purpose-built
+for plan-mode research, that keeps exploration output in its own context window while the main
+conversation stays read-only. Worth piloting as the delegate for THIS step's blast-radius
+research specifically, instead of a generic delegate — not yet a settled recommendation;
+evaluate before defaulting to it.
+
 - Surface the real intent, not the literal request: what problem, for whom, the success
   criterion, and what is explicitly **out of scope**.
 - Ask clarifying questions **one at a time** (use `AskUserQuestion`), multiple-choice when
@@ -97,8 +104,10 @@ proceed without. Interactively (no autonomy granted), present the intent note an
 **Draft the plan content while still in plan mode** (it's the body you present via
 `ExitPlanMode`). The repo `PLAN.md` itself is **written as the first action right after
 `ExitPlanMode` approval** — plan mode is read-only for the repo, so the file lands the moment
-the gate clears, before any code. Write **one** file: `PLAN.md` in `.planning/` if that
-convention exists, else the repo root. It carries the design through `/clear` and compaction.
+the gate clears, before any code. Write **one** file: `PLAN.md` at the repo root. (GSD's
+`.planning/` convention is discontinued as of 2026-07-03 — no longer written to or read from;
+`scripts/migrate-state.js` folds any existing `.planning/` content into
+`.anti-hall/history/legacy/planning/`.) It carries the design through `/clear` and compaction.
 This single file is the durable memory — **not** an artifact graph, not a file per phase.
 
 ```markdown
@@ -129,6 +138,12 @@ This single file is the durable memory — **not** an artifact graph, not a file
   NOT "tasks done">
 ### Phase 2: ...
 
+## Goal coverage
+<map every clause of Step 1's intent/success-criterion to the specific phase(s) whose
+ `acceptance:` criterion actually proves it — or mark the clause explicitly "descoped,"
+ feeding Step 1's own out-of-scope note. A clause with no phase acceptance test behind it,
+ present only in prose, is a plan hole — fill it or descope it here, on paper.>
+
 ## Progress  (update in place — this is the resume point after /clear)
 - [ ] Phase 1 — <status>
 - [ ] Phase 2 — <status>
@@ -147,6 +162,12 @@ declares `depends_on`; phases that share a `parallel_group` (no mutual dependenc
 files**) are the swarm fan-out targets in Step 4. *(`parallel_group` only matters at L; M
 leaves it blank and builds in order.)*
 
+**Goal coverage prevents decomposition drift.** Step 3's Reviewer audits blast radius and phase
+decomposition, but nothing else re-derives the phase list against Step 1's original intent — a
+plan can converge cleanly while silently dropping or narrowing part of what was actually asked
+for. The `## Goal coverage` section closes that seam: every clause of Step 1's success criterion
+must map to a real phase's `acceptance:` criterion, or be explicitly marked descoped.
+
 **Edge-case enumeration is mandatory, on paper, before the plan is done.** If you can't
 describe the behavior for a scenario, that's the hole the deadly-loop will find — fill it now.
 
@@ -160,11 +181,13 @@ the three concurrent TRIO seats:
 
 - **Reviewer agent** (Sonnet 5 `model:"sonnet"`, effort `xhigh`): read `PLAN.md`,
   audit for narrow vision / missed blast radius, unsound phase decomposition or sequencing,
-  schema/migration/rollback gaps, and assumptions stated as fact without evidence.
-- **Auditor agent** (latest Opus `model:"opus"`, max thinking): divergent regression &
+  schema/migration/rollback gaps, assumptions stated as fact without evidence, and whether the
+  `## Goal coverage` map's every intent clause is actually backed by a real phase's `acceptance:`
+  criterion — not just present in prose.
+- **Auditor agent** (latest Opus `model:"opus"`, full reasoning depth — effort `high`): divergent regression &
   coupling lens — hunt where the plan's phases couple wrongly, where a later phase regresses
   an earlier one, where the blast-radius map misses a dependent consumer.
-- **Critic agent** (latest Codex if available, else divergent Opus, max reasoning): same
+- **Critic agent** (latest Codex if available, else divergent Opus, `xhigh` reasoning): same
   target, different mental model, find blindspots.
 
 All three run **concurrently** via a **BARRIER** `parallel([...])` — all finish before the
@@ -185,10 +208,11 @@ critic (collapsing to the all-Opus fallback), and an omitted `model` inherits th
 orchestrator's model — so set `model` EXPLICITLY on the Reviewer and Auditor and use
 `agentType` for the Critic. The Reviewer uses `model: "sonnet"` (Sonnet 5) at effort
 `xhigh` — never `max` inside loops (TTFT ~163 s). See `references/ship-it.workflow.js`
-for the canonical spawn. *When Fable 5 is available (checked once per session by
-`fable-availability.js`, threaded in via `args.fableAvailable`), the Reviewer seat
-automatically routes to Fable first, falling back to Sonnet 5 then Opus — no manual
-reconsideration needed.* The main thread **stays coordinator**: it synthesizes their
+for the canonical spawn. *Fable routing is policy-disabled (2026-07-02, over-restrictive/
+refusal-prone): even when `fable-availability.js` detects Fable 5 is available and threads
+`args.fableAvailable=true`, the Reviewer seat does NOT route to it — Sonnet 5 is the fixed
+primary Reviewer regardless of the flag. Reconsider only if Fable's track record improves.*
+The main thread **stays coordinator**: it synthesizes their
 findings, dispatches fix-waves, and loops to re-debate.
 
 **Loop fix-waves → re-debate until zero NEW P0s or P1s** (count NEW issues, not rediscovered ones;
@@ -233,7 +257,7 @@ Read/Write/Edit tools, not the workflow script) maintains
 {
   "plan_hash": "<sha256 of PLAN.md content>",
   "phases": [
-    { "label": "phase1", "status": "pending" }
+    { "label": "phase1", "status": "pending", "gate": "not-run" }
   ],
   "escalations": 0
 }
@@ -244,6 +268,11 @@ Read/Write/Edit tools, not the workflow script) maintains
   (e.g. `hooks/tasklist-guard.js`) — `sha256` here (vs. the `sha1` those hooks use) because this
   hashes the full `PLAN.md` content for drift detection, not a short session/dedup signal.
 - **`status`** per phase: `pending | running | done | failed`.
+- **`gate`** per phase: `"locked" | "not-run"`. Set to `"locked"` **only** immediately after
+  Step 5's deadly-loop returns `go:true` for that phase — **never** set by the phase-build step
+  (Step 4) itself, and never inferred from `status:"done"` alone. `status` is written by the same
+  agent whose self-report this repo's own research says cannot be trusted (`docs/KB-false-completion.md`
+  §5); `gate` is the independent record that the deadly-loop actually ran and converged.
 - **`escalations`** — a counter; see Step 5's build→plan escalation cap below.
 - **Heartbeats are NOT reinvented.** Spawned build/review agents already write
   `~/.anti-hall/agents/<id>.json` (`{id, ts, status, step}`), and `hooks/agent-watchdog.js`
@@ -256,6 +285,14 @@ Read/Write/Edit tools, not the workflow script) maintains
 from the stored value, **warn and ask the owner** (the plan changed since the state was last
 written — don't blindly resume against a stale plan). Otherwise resume from the first phase
 with `status: pending` or `status: failed`, not from scratch.
+
+**A `status:"done"` phase is not trusted on `status` alone — check `gate` first.** Only
+`gate:"locked"` counts as resumed-done, because that value can only have been set by Step 5's
+deadly-loop actually returning `go:true` for that phase. A phase with `status:"done"` but
+`gate:"not-run"` (or `gate` missing entirely) must **not** be treated as complete — re-run Step
+5's deadly-loop for that phase before resuming past it. Trusting `status:"done"` alone reproduces
+the exact failure this repo's own false-completion research warns against: a self-written "done"
+flag, trusted across a context reset without independent re-verification.
 
 ### Swarm fan-out — L only, and only where the plan declares real parallelism
 
@@ -408,6 +445,32 @@ assumption it'll be fixed later.
 
 ---
 
+## Step 5.5 — Optional ultrareview escalation (OPTIONAL; L-only hard-risk phases; owner opt-in)
+
+For an L-tier phase that hit one of **Step 0's own hard-risk triggers** (security/auth,
+schema/migration, production data, shell scripts, CI/workflow YAML, cross-repo, LLM prompts),
+and only **after** Step 5's deadly-loop has already LOCKed (`go:true`) on that phase, the
+coordinator MAY offer the owner one additional `/code-review ultra` pass on that phase's diff.
+
+Disclose plainly, every time it's offered:
+- **It is a PAID feature, not part of the free deadly-loop.** Per `docs/KB-model-modes.md` §7:
+  Pro/Max get 3 free one-time runs, then usage-billed, **typically $5–$20/review** depending on
+  change size; **Team/Enterprise get 0 free runs.**
+- **It requires Claude.ai account authentication** — **not available** on Bedrock/Vertex/Foundry
+  or for Zero-Data-Retention orgs (`docs/KB-model-modes.md` §7).
+- **It is never autonomous-invoked.** Even under granted autonomy, this step is never offered
+  or run without an explicit owner opt-in *this specific time* — a standing "AFK"/"full
+  autonomy" grant does not cover a paid, per-run cloud action the owner hasn't necessarily
+  budgeted for.
+- **It never substitutes for Step 5.** The free, local, cross-model deadly-loop gate is still
+  required and must already have converged; ultrareview here is an optional second opinion on
+  top of that gate, never a replacement for it.
+
+If declined, or not offered, proceed straight to Step 6 — this step changes nothing about the
+required gate.
+
+---
+
 ## Step 6 — Wrap up
 
 - **All tiers — goal-backward against the AGREED criteria.** Before reporting done/shipped,
@@ -456,7 +519,7 @@ idle waiting on a redundant gate is the #1 autonomy failure (it can waste hours/
 Stop an autonomous run ONLY for: (a) a **hard safety boundary** below, or (b) a **genuine
 ambiguity / missing input** the plan cannot resolve (a real blocker, not design preference).
 Otherwise: plan → harden → build → per-phase harden → ship, continuously. Stream status to a
-durable file (e.g. `.planning/AUTONOMY-STATUS.md`) so the owner can follow; silence ≠ stop.
+durable file (e.g. `.anti-hall/ship-it/<slug>/AUTONOMY-STATUS.md`) so the owner can follow; silence ≠ stop.
 Re-read each granted instruction literally: "build it / merge / full autonomy" means *do it*,
 not *plan it and wait*.
 

@@ -147,6 +147,60 @@ test('B5: Reviewer still tries Sonnet 5 normally when Codex built the phase (no 
   assert.deepStrictEqual(reviewerModels, ['sonnet'], 'Codex built the phase, so Sonnet 5 Reviewer runs normally');
 });
 
+test('build effort: defaults to medium (Codex) when phase does not specify phase.effort', async () => {
+  const { promise, calls } = runStubbed(plan(), undefined);
+  await promise;
+  const buildCall = calls.agents.find((c) => c.opts && c.opts.label === 'phase1');
+  assert.ok(buildCall, 'expected a build agent() call labeled exactly "phase1"');
+  assert.strictEqual(buildCall.opts.effort, 'medium');
+});
+
+test('build effort: defaults to high on the Sonnet-5-fallback branch when phase does not specify phase.effort', async () => {
+  const { promise, calls } = runStubbed(plan(), (brief, opts, def) => {
+    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet 5 build fallback
+    return def;
+  });
+  await promise;
+  const fallbackCall = calls.agents.find((c) => c.opts && c.opts.label === 'phase1(sonnet-fallback)');
+  assert.ok(fallbackCall, 'expected a build agent() call labeled "phase1(sonnet-fallback)"');
+  assert.strictEqual(fallbackCall.opts.effort, 'high');
+});
+
+test('build effort: phase.effort override is respected on the Codex-primary branch', async () => {
+  const hardRiskPlan = {
+    parallelGroups: [[{
+      label: 'phase1',
+      prompt: 'edit a.js',
+      files: ['a.js'],
+      effort: 'xhigh',
+    }]],
+  };
+  const { promise, calls } = runStubbed(hardRiskPlan, undefined);
+  await promise;
+  const buildCall = calls.agents.find((c) => c.opts && c.opts.label === 'phase1');
+  assert.ok(buildCall);
+  assert.strictEqual(buildCall.opts.effort, 'xhigh');
+});
+
+test('build effort: phase.effort override is respected on the Sonnet-5-fallback branch', async () => {
+  const hardRiskPlan = {
+    parallelGroups: [[{
+      label: 'phase1',
+      prompt: 'edit a.js',
+      files: ['a.js'],
+      effort: 'xhigh',
+    }]],
+  };
+  const { promise, calls } = runStubbed(hardRiskPlan, (brief, opts, def) => {
+    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet 5 build fallback
+    return def;
+  });
+  await promise;
+  const fallbackCall = calls.agents.find((c) => c.opts && c.opts.label === 'phase1(sonnet-fallback)');
+  assert.ok(fallbackCall);
+  assert.strictEqual(fallbackCall.opts.effort, 'xhigh');
+});
+
 test('determinism: no Date.now/Math.random/argless new Date anywhere in ship-it.workflow.js (code, not the doc comment describing the rule)', () => {
   // Strip line comments first — the file's own header documents the rule in prose
   // ("// DETERMINISM: no Date.now() / Math.random() / argless new Date()."), which would

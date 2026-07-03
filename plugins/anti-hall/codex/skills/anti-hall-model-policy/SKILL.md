@@ -5,11 +5,11 @@ description: Codex model routing policy for anti-hall work. Use when selecting m
 
 # anti-hall Codex model policy
 
-| Task shape | Codex model |
-| --- | --- |
-| Planning, architecture, validation, sensitive review, debate | `gpt-5.5` |
-| Implementation from a settled plan | `gpt-5.4` |
-| Mechanical command runner, cheap lookup, repetitive execution | `gpt-5.4-mini` or `gpt-5.3-codex-spark` |
+| Task shape | Codex model | Effort |
+| --- | --- | --- |
+| Planning, architecture, validation, sensitive review, debate | `gpt-5.5` | `xhigh` |
+| Implementation from a settled plan | `gpt-5.4` | `medium` |
+| Mechanical command runner, cheap lookup, repetitive execution | `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only, not an effort setting of the flagship | `low` |
 
 Rules:
 

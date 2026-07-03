@@ -15,13 +15,34 @@
 //   Does NOT block a Bash command that is itself a graphify query (/graphify).
 //
 // GRAPH DETECTION
-//   Looks for graphify-out/ or .planning/graphs/ at the cwd (from stdin payload)
-//   or the git toplevel. If no graph is found, this hook is a silent no-op.
+//   Looks for graphify-out/ at the cwd (from stdin payload) or the git toplevel.
+//   (`.planning/graphs/` — a GSD-adjacent fallback location — was removed
+//   2026-07-03; GSD is discontinued.) If no graph is found, this hook is a
+//   silent no-op.
 //
-// LOOP SAFETY (per-session, per-project)
-//   Blocks ONCE per session per project-root. After the first block, a marker under
-//   os.homedir()/.anti-hall is written, and subsequent calls exit 0 (allow). This
-//   means the model is nudged once, then allowed to proceed without repeated friction.
+// LOOP SAFETY (per-session, per-project, RE-ARMING)
+//   Blocks once per (session, project-root, nudge window). After a block, a marker
+//   under os.homedir()/.anti-hall is written and subsequent calls exit 0 (allow)
+//   until the marker EXPIRES, at which point the nudge re-arms and the next
+//   code-nav search blocks again. Expiry fires on whichever trigger passes first
+//   (mirrors task-tracker.js's dual-trigger design; KB-claude-codex.md's §6.2
+//   adherence-cadence guidance: re-inject every 40-80K new tokens):
+//     - the transcript has grown by REARM_GROWTH_BYTES (~240KB, the 40-80K-token
+//       midpoint at a common ~4 bytes/token estimate) since the marker was
+//       written, OR
+//     - REARM_MS (2h) of wall-clock time has elapsed since the marker was written.
+//   This keeps the nudge from firing on every call (never a loop) while ensuring a
+//   long/heavy session gets re-nudged instead of going silent for the rest of it.
+//
+// COORDINATOR-ONLY (subagent-aware)
+//   session_id is IDENTICAL between a coordinator and any Task-tool subagent it
+//   spawns (verified empirically against this repo — see KB-claude-codex.md), so
+//   a delegated subagent's OWN first code-nav search would otherwise silently
+//   burn the COORDINATOR's one-time nudge. isSubagent() mirrors command-guard.js's
+//   discriminator (agent_id/agent_type in the payload, or
+//   CLAUDE_CODE_ENTRYPOINT === 'agent_tool'): when true, this hook exits 0
+//   immediately and never reads or writes the marker, so subagent searches always
+//   pass straight through without touching the coordinator's state.
 //
 // Fail-open on ANY error (exit 0). Never blocks when uncertain.
 //
@@ -72,7 +93,6 @@ function findGraphRoot(cwd) {
   for (const root of roots) {
     if (!root) continue;
     if (safeIsDir(path.join(root, 'graphify-out'))) return root;
-    if (safeIsDir(path.join(root, '.planning', 'graphs'))) return root;
   }
   return null;
 }
@@ -263,6 +283,71 @@ function getSessionGraphKey(sessionId, graphRoot) {
   return crypto.createHash('sha1').update(combined).digest('hex').slice(0, 20);
 }
 
+// A Task-tool subagent is identified by agent markers in the hook payload
+// (reliable everywhere, incl. cmux) OR by the agent_tool entrypoint (vanilla
+// CLI). Mirrors command-guard.js's isSubagent() exactly (~:441-447 there) so the
+// two hooks agree on coordinator-vs-subagent detection.
+function isSubagent(payload) {
+  if (payload && (payload.agent_id || payload.agent_type)) return true;
+  if (process.env.CLAUDE_CODE_ENTRYPOINT === 'agent_tool') return true;
+  return false;
+}
+
+// Re-arm thresholds (see the LOOP SAFETY header comment for the full rationale).
+const REARM_GROWTH_BYTES = 240 * 1024;
+const REARM_MS = 2 * 60 * 60 * 1000;
+
+// Tolerance for a stored timestamp slightly ahead of `now` (benign clock skew).
+// Anything beyond this in the future is treated as corrupt/untrusted, mirroring
+// task-tracker.js's future/garbage-timestamp guard (same failure class: a bad
+// future timestamp would otherwise make `now - writtenAt` negative forever,
+// permanently freezing the marker as "fresh" and never re-arming).
+const FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
+
+// Byte size of payload.transcript_path via a cheap stat, or -1 when unavailable
+// (no path, ENOENT, any stat error). -1 is a sentinel distinct from a genuine
+// 0-byte file (mirrors task-tracker.js's transcriptSize()).
+function currentTranscriptSize(payload) {
+  const tp = payload && payload.transcript_path;
+  if (!tp || typeof tp !== 'string') return -1;
+  try {
+    return fs.statSync(tp).size;
+  } catch (_) {
+    return -1;
+  }
+}
+
+// Read the marker's { writtenAt, transcriptSize } state. Tolerates the LEGACY
+// format (a bare millis timestamp string, from before the re-arm mechanism
+// existed) by treating it as { writtenAt: <that number>, transcriptSize: -1 }.
+// Any missing/corrupt/unreadable marker collapses to { writtenAt: 0,
+// transcriptSize: -1 } -- the same shape as "never written" -- so the caller's
+// expiry check naturally treats a corrupt marker as expired (re-arm) rather than
+// permanently blocking OR permanently silencing the nudge either way.
+function readMarker(markerFile) {
+  let writtenAt = 0;
+  let transcriptSize = -1;
+  try {
+    const raw = fs.readFileSync(markerFile, 'utf8').trim();
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed === 'number' && Number.isFinite(parsed)) {
+        if (parsed <= Date.now() + FUTURE_TOLERANCE_MS) writtenAt = parsed;
+      } else if (parsed && typeof parsed === 'object') {
+        if (Number.isFinite(parsed.writtenAt) && parsed.writtenAt <= Date.now() + FUTURE_TOLERANCE_MS) {
+          writtenAt = parsed.writtenAt;
+        }
+        if (Number.isFinite(parsed.transcriptSize) && parsed.transcriptSize >= 0) {
+          transcriptSize = parsed.transcriptSize;
+        }
+      }
+    }
+  } catch (_) {
+    // Missing/corrupt marker -> defaults above stand (treated as expired).
+  }
+  return { writtenAt, transcriptSize };
+}
+
 function main() {
   let raw = '';
   try {
@@ -279,6 +364,13 @@ function main() {
   try {
     payload = JSON.parse(raw);
   } catch (_) {
+    process.exit(0);
+  }
+
+  // Subagent context: pass straight through, never touching (reading OR
+  // writing) the coordinator's marker. See isSubagent() + the COORDINATOR-ONLY
+  // header comment above for why.
+  if (isSubagent(payload)) {
     process.exit(0);
   }
 
@@ -318,7 +410,7 @@ function main() {
     process.exit(0); // no graph -> nothing to enforce
   }
 
-  // Session + project key for the once-per-session marker.
+  // Session + project key for the once-per-(session, re-arm window) marker.
   const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
     crypto.createHash('sha1').update(String(cwd)).digest('hex').slice(0, 16);
   const key = getSessionGraphKey(sessionId, graphRoot);
@@ -326,26 +418,31 @@ function main() {
   const stateDir = path.join(os.homedir(), '.anti-hall');
   const markerFile = path.join(stateDir, 'graphify-guard-' + key);
 
-  // Already blocked this session for this project -> allow (model tried the graph).
-  try {
-    if (fs.existsSync(markerFile)) {
-      process.exit(0);
-    }
-  } catch (_) {
-    process.exit(0); // fail-open
+  // Marker still fresh (neither re-arm trigger has fired) -> allow (model
+  // already tried the graph and hasn't earned another nudge yet).
+  const now = Date.now();
+  const marker = readMarker(markerFile);
+  const curSize = currentTranscriptSize(payload);
+  const windowFresh = (now - marker.writtenAt) < REARM_MS;
+  // Growth trigger only fires when BOTH sizes are known (never assume growth
+  // from an unknown baseline).
+  const grew = curSize >= 0 && marker.transcriptSize >= 0 &&
+    (curSize - marker.transcriptSize) >= REARM_GROWTH_BYTES;
+  if (windowFresh && !grew) {
+    process.exit(0);
   }
 
-  // Write the marker BEFORE blocking so the next call is always allowed.
+  // Window expired OR transcript grew past threshold since the marker was last
+  // written: (re)arm — write a fresh marker BEFORE blocking so the next call is
+  // always allowed until this marker itself expires.
   try {
     fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(markerFile, String(Date.now()), 'utf8');
+    fs.writeFileSync(markerFile, JSON.stringify({ writtenAt: now, transcriptSize: curSize }), 'utf8');
   } catch (_) {
     process.exit(0); // can't persist -> fail-open (allow)
   }
 
-  const graphDir = safeIsDir(path.join(graphRoot, 'graphify-out'))
-    ? path.join(graphRoot, 'graphify-out')
-    : path.join(graphRoot, '.planning', 'graphs');
+  const graphDir = path.join(graphRoot, 'graphify-out');
 
   const toolLabel = toolName === 'Bash'
     ? 'Bash search/command'
@@ -358,7 +455,8 @@ function main() {
     'Query it FIRST before raw code search: run `/graphify query "<question>"` ' +
     'or read the wiki index at "' + safeWikiIndex + '". ' +
     'Raw search (' + toolLabel + ') is allowed after the graph has been consulted ' +
-    'or lacks the answer (this block fires only once per session). ' +
+    'or lacks the answer (this nudge re-arms after ~240KB of transcript growth ' +
+    'or 2h, not just once). ' +
     'Stop. Query the graph. Then come back to search if needed.';
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');

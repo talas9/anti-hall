@@ -87,7 +87,7 @@ test('rich line omits cost and ctx chips when the payload lacks them', () => {
   } finally { h.cleanup(); proj.cleanup(); }
 });
 
-test('rich line renders a GSD chip when .planning/STATE.md is present at cwd', () => {
+test('rich line does NOT render a GSD chip even when .planning/STATE.md is present (GSD removed 2026-07-03)', () => {
   const h = makeStatusHome();
   const proj = makeProjectDir();
   try {
@@ -100,9 +100,10 @@ test('rich line renders a GSD chip when .planning/STATE.md is present at cwd', (
       '---',
     ].join('\n'));
     const out = renderRich(JSON.stringify({ model: { display_name: 'Opus' } }), h.home, proj.dir);
-    assert.match(out, /v1\.2/, 'milestone in GSD chip');
-    assert.match(out, /Phase 3/);
-    assert.match(out, /40%/);
+    assert.doesNotMatch(out, /v1\.2/, 'no GSD milestone rendered — reading code removed');
+    assert.doesNotMatch(out, /Phase 3/, 'no GSD phase rendered');
+    assert.doesNotMatch(out, /40%.*40%/, 'no duplicate/GSD percent segment');
+    assert.match(out, /Opus/, 'the rest of the line still renders normally');
   } finally { h.cleanup(); proj.cleanup(); }
 });
 

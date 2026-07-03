@@ -13,7 +13,10 @@ const os = require('os');
 const CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
 const STATE_FILE = path.join(os.homedir(), '.anti-hall', 'fable-availability.json');
 const CONTEXT =
-  "Fable 5 is available this session (per ~/.claude.json). MODEL-POLICY.md's Reviewer seat may route to Fable when invoking ship-it/deadly-loop -- pass args.fableAvailable=true to the Workflow.";
+  "Fable 5 is available this session (per ~/.claude.json). NOTE: Fable routing is currently " +
+  "policy-disabled in MODEL-POLICY.md (over-restrictive/refusal-prone) -- ship-it/deadly-loop's " +
+  "Reviewer seat stays on Sonnet 5 regardless of this flag. This message is informational only; " +
+  "reconsider passing args.fableAvailable=true only if the policy-disable is later lifted.";
 
 function hasFable(value) {
   return typeof value === 'string' && value.toLowerCase().includes('fable');

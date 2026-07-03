@@ -68,8 +68,7 @@ function safeIsDir(p) {
 
 function hasGraph(root) {
   if (!root) return false;
-  return safeIsDir(path.join(root, 'graphify-out')) ||
-         safeIsDir(path.join(root, '.planning', 'graphs'));
+  return safeIsDir(path.join(root, 'graphify-out'));
 }
 
 // Bounded tail read: load only the last `windowBytes` (default 512 KB) of a

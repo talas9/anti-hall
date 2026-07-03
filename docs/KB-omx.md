@@ -18,8 +18,8 @@ Verified local package: `oh-my-codex@0.18.16` with CLI binary `omx`.
 | Hooks | Installed OMX hook bundle uses `${PLUGIN_ROOT}/hooks/codex-native-hook.mjs` across SessionStart, PreToolUse, PostToolUse, UserPromptSubmit, PreCompact, PostCompact, Stop. | Anti-hall plugin-bundled hooks should use `${PLUGIN_ROOT}` too. |
 | Setup/doctor | OMX package scripts include `setup` and `doctor`; installed skills include `omx-setup` and `doctor`. | Anti-hall should document “install/enable OMX” separately from anti-hall activation. |
 | Workflows | Installed OMX skills include `plan`, `ralph`, `ultrawork`, `ultragoal`, `team`, `pipeline`, `ultraqa`, `visual-ralph`, `prometheus-strict`, `deep-interview`, and `code-review`. | Anti-hall feature-launch/ship-it can hand off to OMX workflows when task size justifies it. |
-| Deprecated naming | Installed OMX `swarm` skill is a deprecated compatibility shim for team execution. | Do not market “swarm” as the preferred Codex workflow; prefer `team` or native subagents. |
-| Model routing | OMX installed AGENTS/runtime table maps roles to Codex models and reasoning effort. | Anti-hall must keep debate gates on `gpt-5.5` and avoid all-frontier fan-out. |
+| Deprecated naming | Installed OMX `swarm` skill exists in the npm global package (`~/.nvm/versions/node/v24.14.0/lib/node_modules/oh-my-codex/skills/swarm/SKILL.md`), which self-describes as “Deprecated compatibility shim for team execution” / “Hard-deprecated. Do not invoke or route this skill for new work.” The separate Codex-plugin cache mirror (`~/.codex/plugins/cache/oh-my-codex-local/oh-my-codex/0.18.16/skills/`) ships no `swarm` skill directory at all; there, `swarm` survives only as a legacy mode name inside `cancel/SKILL.md`, with its own state files (`.omx/state/swarm.db`, `swarm-active.marker`, `swarm-tasks.db`). | Do not market “swarm” as the preferred Codex workflow; prefer `team` or native subagents. When citing “installed OMX,” specify which surface (npm CLI package vs Codex plugin cache) — their skill sets diverge even at the same version number. |
+| Model routing | OMX installed `ultrawork` role-routing table (`skills/ultrawork/references/agent-tiers.md`) maps roles to abstract tiers (`LOW`/`STANDARD`/`THOROUGH`) and postures (`frontier-orchestrator`/`deep-worker`/`fast-lane`), not to concrete Codex model IDs. Actual `model`/`model_reasoning_effort` resolution defaults to session `.codex/config` (or `$team` env-var defaults), except named pins — e.g. ralplan pins `planner`/`architect` to exact `gpt-5.4-mini`. | Anti-hall must keep debate gates on `gpt-5.5` and avoid all-frontier fan-out; do not assume OMX auto-binds a concrete model per role — see `KB-sonnet-5.md` §8 for the "no auto-select" framing this reconciles with. |
 | State | OMX uses repo `.omx/` and global `~/.codex` plugin/cache/state surfaces. | Keep `.omx/` local state out of git; this repo excludes it via `.git/info/exclude`. |
 
 ## OMC → OMX mapping for anti-hall
@@ -39,7 +39,7 @@ Verified local package: `oh-my-codex@0.18.16` with CLI binary `omx`.
 - `anti-hall-omx` is the correct Codex-side integration skill.
 - `anti-hall-feature-launch` should say Codex feature work can use OMX `$plan`, `$ralplan`, `$team`, `$ralph`, `$ultragoal`, or `$pipeline` after graphify/planning gates.
 - `anti-hall-context-conserve` should route mechanical work to spark/mini and preserve main-thread context, matching both Codex subagent docs and OMX role routing.
-- If docs say “swarm,” clarify whether it means legacy/deprecated naming, native Codex subagents, or OMX team mode.
+- If docs say “swarm,” clarify which install surface: the npm CLI package ships a hard-deprecated `swarm` skill (compatibility shim for `team`), while the Codex-plugin cache mirror has no `swarm` skill at all and only lists it as a stoppable legacy mode inside `cancel/SKILL.md`. Either way, prefer `team` or native Codex subagents for new work.
 
 ## Source audit (10+ sources, 2+ official)
 
@@ -62,4 +62,4 @@ Verified local package: `oh-my-codex@0.18.16` with CLI binary `omx`.
 
 - `omx --version` returned `oh-my-codex v0.18.16` in this repo session.
 - `npm view oh-my-codex ... --json` returned version `0.18.16`, repository, homepage, and description.
-- Installed skill manifests were sampled from the local package. The `swarm` skill is marked deprecated in the installed copy.
+- Installed skill manifests were sampled from the npm global package (`~/.nvm/versions/node/v24.14.0/lib/node_modules/oh-my-codex/skills/`), where `swarm/SKILL.md` frontmatter and body explicitly read “Deprecated compatibility shim for team execution” / “Hard-deprecated.” The separate Codex-plugin cache mirror (`~/.codex/plugins/cache/oh-my-codex-local/oh-my-codex/0.18.16/skills/`) omits this skill directory entirely — there `swarm` appears only as a legacy stoppable mode referenced in `cancel/SKILL.md`, not as its own skill.

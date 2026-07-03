@@ -70,7 +70,7 @@ claude --plugin-dir /path/to/anti-hall
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
 | `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
 | `codex-nudge.js` | Stop (advisory) | Nudges once/session for an independent Codex second-opinion review when substantial code shipped with no Codex review; off-switch ANTIHALL_CODEX_NUDGE=off. |
-| `ship-it-guard.js` | PreToolUse (Write/Edit/MultiEdit) | **OPT-IN, default OFF** — the only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root or `.planning/PLAN.md`). Enforces artifact existence only (not plan quality), conservative, fail-open. No effect when unset. |
+| `ship-it-guard.js` | PreToolUse (Write/Edit/MultiEdit) | **OPT-IN, default OFF** — the only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root). Also does a conformance advisory (never blocks) for edits outside a PLAN.md's declared `files:` list. Enforces artifact existence only (not plan quality), conservative, fail-open. No effect when unset. |
 | `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `update`, `flutter-debug`, `activate`, `simplify`, `debt`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
 | `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`companion/README.md`](companion/README.md). |
@@ -300,7 +300,7 @@ failure mode and the cost/latency is acceptable, Tier 3 closes the gap Tier 2 le
 ### graphify hooks (optional)
 
 - `graphify-session.js` (SessionStart) — if the project has a graphify graph
-  (`graphify-out/` or `.planning/graphs/`), primes the model to query the graph
+  (`graphify-out/`), primes the model to query the graph
   first for any issue/feature/function/code/doc lookup, and to keep it updated.
   Silent no-op when graphify isn't used.
 - `graphify-reminder.js` (Stop) — after a session with real edits and a graph
@@ -345,7 +345,7 @@ Invoke via slash command:
   so raw output never pollutes the coordinator's context.
 - **`/anti-hall:ship-it`** — one lean workflow for shipping any change, scaled S/M/L
   to blast radius: brainstorm + plan in plan mode (ExitPlanMode is the approval gate;
-  blends superpowers planning + GSD, not GSD-dependent), enumerate edge cases, harden
+  blends superpowers planning ideas — standalone, no external dependency), enumerate edge cases, harden
   the plan with the deadly-loop BEFORE any code, fan large work out as a Workflow swarm,
   and verify each phase with fresh evidence + a vacuous-test guard, running the
   deadly-loop after each phase until zero NEW P0/P1s. **L tier** adds a resumable
@@ -379,19 +379,19 @@ Invoke via slash command:
 
 `MODEL-POLICY.md` is the shared TRIO roster (Reviewer = Sonnet 5 `model:"sonnet"` effort `xhigh`;
 Auditor = latest Opus `model:"opus"` divergent regression/coupling lens effort `high`;
-Critic = Codex latest max reasoning when available, else a divergent Opus adversarial persona). It is
+Critic = Codex latest `xhigh` reasoning when available, else a divergent Opus adversarial persona). It is
 **duplicated** — see [Contributing](#contributing).
 
 ## Statusline (opt-in, one command)
 
 Claude Code plugins cannot auto-apply the main statusline, so this is activated by an
 installer. `statusline/` ships a dispatcher whose **line 1 is the rich renderer for
-ANY repo** (project name, git, model, context%, cost, duration, subagents, optional
-GSD phase). Line 1 also shows an **anti-hall version chip** (`AH: Vx.y.z`) between the
+ANY repo** (project name, git, model, context%, cost, duration, subagents). Line 1
+also shows an **anti-hall version chip** (`AH: Vx.y.z`) between the
 cost and email segments: `★` prefix in YELLOW for a new minor version, RED for a new
 major version, plain dim when up-to-date (fail-open if no version-check cache exists).
 Only if the rich renderer yields nothing does it fall back to a
-monorepo-aware renderer (`.gitmodules` / `.gsd/` / `.planning/`) or a **simple**
+monorepo-aware renderer (`.gitmodules`) or a **simple**
 `model | branch | dir | context%` line. Line 2 is an always-on phase/context bar. No emojis.
 
 **Consolidated mode (`--consolidate`):** pass `--consolidate` to merge with an existing
@@ -453,7 +453,7 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 - **Statusline didn't apply?** It is opt-in — run the installer above. If it reports
   "not found", run `/plugin install` first, then re-run, or locate the dir via `/plugin`.
 - **Graphify reminder won't stop?** It is capped per session; stop again to dismiss.
-  It only fires when a graph (`graphify-out/` or `.planning/graphs/`) is present.
+  It only fires when a graph (`graphify-out/`) is present.
 - **git-guard let a force-push through?** Check the documented fail-open scope above
   (interpreter wrappers / aliases / `-F <file>` commits are out of scope by design).
 - **Using Codex too?** Copy `AGENTS.md` (repo root) into your own repo root — it is
@@ -505,7 +505,7 @@ no breaking change.
 
 The `graphify-guard` and `graphify-session` hooks integrate with **graphify** — a
 user-global knowledge-graph skill/CLI (not a marketplace plugin) that builds a semantic
-graph of your codebase. When a `graphify-out/` or `.planning/graphs/` directory is
+graph of your codebase. When a `graphify-out/` directory is
 present, the hooks enforce querying the graph before raw code searches and remind the
 model to keep it updated after significant edits. Both hooks no-op gracefully when
 graphify is not present — there is no hard dependency, and the plugin installs and runs

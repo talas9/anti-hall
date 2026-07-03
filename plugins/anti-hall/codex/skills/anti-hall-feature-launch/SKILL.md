@@ -22,7 +22,7 @@ Do not use for single-file bug fixes or trivial UI copy changes.
 
 - Interview, planning, architecture, launch gate, debate: `gpt-5.5`
 - Implementation from settled plan: `gpt-5.4`
-- Repo lookup / command runner: `gpt-5.3-codex-spark` or `gpt-5.4-mini`
+- Repo lookup / command runner: `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only
 - Debate roles must use `gpt-5.5`.
 
 ## Phase A — initialize
@@ -33,11 +33,13 @@ Do not use for single-file bug fixes or trivial UI copy changes.
 graphify . --update --obsidian
 ```
 
-2. Create planning artifacts under `.planning/`:
+2. Create planning artifacts under `.anti-hall/feature-launch/` (GSD's `.planning/` convention
+   is discontinued as of 2026-07-03 — this skill already said "do not invoke GSD commands," and
+   previously contradicted that by still writing here; fixed):
 
-- `.planning/FEATURE-LAUNCH.md` — goal, scope, non-goals, risks, acceptance checks
-- `.planning/CONVERSATION-CONTEXT.md` — user decisions, constraints, branch/worktree rules, manual gates
-- `.planning/SKILLS_PROTOCOL.md` — required skills, model routing, entry/exit gates
+- `.anti-hall/feature-launch/FEATURE-LAUNCH.md` — goal, scope, non-goals, risks, acceptance checks
+- `.anti-hall/feature-launch/CONVERSATION-CONTEXT.md` — user decisions, constraints, branch/worktree rules, manual gates
+- `.anti-hall/feature-launch/SKILLS_PROTOCOL.md` — required skills, model routing, entry/exit gates
 
 3. If parallel work is needed, use Codex/OMX worktrees (`.codex/worktrees/<name>`) rather than Claude `.claude/worktrees`.
 
@@ -64,7 +66,7 @@ For each phase:
 
 1. Keep implementation scoped to the plan.
 2. Run targeted verification first, then broader checks only when needed.
-3. Record evidence in `.planning/FEATURE-LAUNCH.md`.
+3. Record evidence in `.anti-hall/feature-launch/FEATURE-LAUNCH.md`.
 4. For risky phases, run a post-execution `gpt-5.5` Reviewer/Critic debate.
 5. Update graphify with `--obsidian` after significant changes.
 

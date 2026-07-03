@@ -7,7 +7,7 @@ description: Iterative TRIO-debate + fix-wave protocol for hardening non-trivial
 
 Spend 1-2 hours of agent compute to ship a clean change rather than 1-2 weeks of post-merge incident response.
 
-This skill uses a shared TRIO debate roster defined in `references/MODEL-POLICY.md` (Reviewer = latest flagship Claude `model:"fable"` at max thinking; Auditor = latest Opus `model:"opus"`, divergent regression/coupling lens; Critic = latest OpenAI Codex at max reasoning, with an Opus divergent-persona fallback). Read that file before dispatching any round so the model selection, the availability fallback matrix, the round governance, and the spawn mechanics are correct.
+This skill uses a shared TRIO debate roster defined in `references/MODEL-POLICY.md` (Reviewer = Sonnet 5 `model:"sonnet"` at effort `xhigh`; Auditor = latest Opus `model:"opus"`, divergent regression/coupling lens, effort `high`; Critic = latest OpenAI Codex at `xhigh` reasoning, with an Opus divergent-persona fallback). Read that file before dispatching any round so the model selection, the availability fallback matrix, the round governance, and the spawn mechanics are correct.
 
 ## When to use this skill
 
@@ -129,9 +129,9 @@ The orchestrator dispatching the agent fills `<expected_dir>`, `<branch>`, `<sha
 
 A TRIO of three parallel agents dispatched in the **same message** (roster + availability fallback matrix + exact spawn syntax in `references/MODEL-POLICY.md`):
 
-- **Reviewer** — latest flagship Claude (`model:"fable"`) at maximum thinking. Correctness / architecture auditor.
-- **Auditor** — latest Opus (`model:"opus"`) at maximum thinking. Divergent: regression & coupling hunter (hunts what broke ELSEWHERE — regressions in unchanged code, wrong cross-module/cross-PR coupling, fixes that undid earlier fixes, merge-order cross-reference breaks).
-- **Critic** — latest OpenAI Codex at maximum reasoning **when available** (canonical Codex spawn form in `references/MODEL-POLICY.md`); otherwise an Opus with a divergent adversarial "failure-mode hunter" persona.
+- **Reviewer** — Sonnet 5 (`model:"sonnet"`) at effort `xhigh` (Fable routing is policy-disabled — see `references/MODEL-POLICY.md`). Correctness / architecture auditor.
+- **Auditor** — latest Opus (`model:"opus"`) at full reasoning depth (effort `high`). Divergent: regression & coupling hunter (hunts what broke ELSEWHERE — regressions in unchanged code, wrong cross-module/cross-PR coupling, fixes that undid earlier fixes, merge-order cross-reference breaks).
+- **Critic** — latest OpenAI Codex at `xhigh` reasoning **when available** (canonical Codex spawn form in `references/MODEL-POLICY.md`); otherwise an Opus with a divergent adversarial "failure-mode hunter" persona.
 
 See `references/MODEL-POLICY.md` for the OS-agnostic Node probe that checks `fable`/Codex availability and the concrete `Agent(...)` / Codex invocations. Dispatch all three in ONE message so they run truly in parallel.
 

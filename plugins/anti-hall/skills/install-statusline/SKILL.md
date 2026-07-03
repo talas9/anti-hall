@@ -6,7 +6,7 @@ description: Install or enable the anti-hall statusline (rich line-1 statusline 
 # Install Statusline
 
 Sets up the anti-hall two-line statusline:
-- **Line 1** — a rich generic statusline (project name, git branch/worktree/stash/staged-modified-untracked, ahead/behind, model, effort, subagent count, session duration, context-window %, cost, and the GSD `.planning` phase when present). Rendered by the plugin's own `statusline-rich.js` — works in any repo.
+- **Line 1** — a rich generic statusline (project name, git branch/worktree/stash/staged-modified-untracked, ahead/behind, model, effort, subagent count, session duration, context-window %, cost). Rendered by the plugin's own `statusline-rich.js` — works in any repo.
 - **Line 2** — the phase bar, shown while an orchestration phase is active (`~/.anti-hall/phase-state.json`).
 
 ## Critical facts (do not skip)

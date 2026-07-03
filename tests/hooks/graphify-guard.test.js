@@ -3,7 +3,8 @@
 //
 // CONTRACT (from plugins/anti-hall/hooks/graphify-guard.js):
 //   - Fires ONLY when a graphify graph exists at the payload cwd (or git toplevel):
-//     a `graphify-out/` dir or a `.planning/graphs/` dir (findGraphRoot ~:68).
+//     a `graphify-out/` dir (findGraphRoot ~:68). (`.planning/graphs/` — a GSD-adjacent
+//     fallback — was removed 2026-07-03; GSD is discontinued.)
 //   - Gated calls: Grep tool (any), Glob tool (any), and Bash whose command is a
 //     code-nav search (rg/grep/ag/find/ack/git grep/git log --grep|-S|-G), incl.
 //     `bash -c "rg foo"` unwrap and `$(rg foo)` substitution (isCodeNavBashCommand).
@@ -28,13 +29,22 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { testHook } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'graphify-guard.js';
 
+// Replicates graphify-guard.js's getSessionGraphKey() exactly, so tests can
+// pre-seed / locate the marker file directly (for re-arm tests that need to
+// control marker CONTENTS, not just observe block/allow behavior).
+function markerKeyFor(sessionId, graphRoot) {
+  return crypto.createHash('sha1').update(String(sessionId) + '|' + String(graphRoot))
+    .digest('hex').slice(0, 20);
+}
+
 // makeCwd({ graph, root }) -> { cwd, cleanup }
-//   graph: 'graphify-out' | '.planning/graphs' | null (no graph -> hook no-ops)
+//   graph: 'graphify-out' | null (no graph -> hook no-ops)
 //   root:  optional explicit project-root dir name (for sanitize tests).
 function makeCwd(graph, rootName) {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-gg-'));
@@ -92,7 +102,7 @@ test('graph exists + `rg foo`: FIRST call blocks (exit 2, decision block, GRAPHI
     assert.strictEqual(first.status, 2, `FIRST must block; stdout=${first.stdout}`);
     assert.ok(first.json && first.json.decision === 'block', 'decision:block expected');
     assert.match(first.json.reason, /^GRAPHIFY-FIRST: this project has a knowledge graph/);
-    assert.match(first.json.reason, /this block fires only once per session/);
+    assert.match(first.json.reason, /this nudge re-arms after ~240KB of transcript growth/);
 
     const second = testHook(HOOK, pl(), { home: h.home });
     assert.strictEqual(second.status, 0, `SECOND identical call must allow; stdout=${second.stdout}`);
@@ -215,4 +225,194 @@ test('reflected graph path > 80 chars: truncated with ellipsis in reason', () =>
   assert.ok(m, 'graph path is quoted in reason');
   assert.ok(m[1].length <= 81, `reflected path must be capped (<=81), got ${m[1].length}`);
   assert.ok(m[1].endsWith('…'), 'capped path ends with ellipsis');
+});
+
+// ---------------------------------------------------------------------------
+// 8. Subagent-awareness: session_id is IDENTICAL between a coordinator and any
+//    Task-tool subagent it spawns (verified empirically — see the hook's
+//    COORDINATOR-ONLY header comment). Without isSubagent() gating, a
+//    delegated subagent's OWN first code-nav search would silently burn the
+//    COORDINATOR's one-time marker. Both discriminators from isSubagent() are
+//    covered: agent_id in the payload, and CLAUDE_CODE_ENTRYPOINT=agent_tool.
+// ---------------------------------------------------------------------------
+test('subagent payload (agent_id set): search allowed, and does NOT consume the coordinator marker', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  const sess = 'subagent-sess-1';
+  try {
+    const subagentPl = {
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'rg foo' }, session_id: sess, cwd: c.cwd,
+      agent_id: 'agent-123',
+    };
+    const coordPl = {
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'rg foo' }, session_id: sess, cwd: c.cwd,
+    };
+
+    // Subagent call FIRST: must allow, must not write the marker.
+    const sub = testHook(HOOK, subagentPl, { home: h.home });
+    assert.strictEqual(sub.status, 0, `subagent call must allow; stdout=${sub.stdout}`);
+    assert.strictEqual(sub.json, null, 'subagent call must not emit a block payload');
+
+    // Coordinator call SECOND, SAME session_id: must still block (the
+    // subagent's search did not consume the coordinator's one-time marker).
+    const coord = testHook(HOOK, coordPl, { home: h.home });
+    assert.strictEqual(coord.status, 2, `coordinator must still block; stdout=${coord.stdout}`);
+    assert.ok(coord.json && coord.json.decision === 'block');
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
+});
+
+test('subagent via CLAUDE_CODE_ENTRYPOINT=agent_tool env: search allowed, coordinator marker untouched', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  const sess = 'subagent-sess-2';
+  try {
+    const pl = {
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'rg foo' }, session_id: sess, cwd: c.cwd,
+    };
+    const sub = testHook(HOOK, pl, { home: h.home, env: { CLAUDE_CODE_ENTRYPOINT: 'agent_tool' } });
+    assert.strictEqual(sub.status, 0, `agent_tool entrypoint must allow; stdout=${sub.stdout}`);
+    assert.strictEqual(sub.json, null);
+
+    // Coordinator call SECOND, same session, NO agent markers/entrypoint: must
+    // still block (proves the subagent call above never touched the marker).
+    const coord = testHook(HOOK, pl, { home: h.home });
+    assert.strictEqual(coord.status, 2, `coordinator must still block; stdout=${coord.stdout}`);
+    assert.ok(coord.json && coord.json.decision === 'block');
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 9. Re-arm: the marker must EXPIRE (not block forever, and not stay silent
+//    forever) once EITHER trigger passes — transcript growth >= 240KB since
+//    the marker was written, OR 2h of wall-clock time. Growth is exercised via
+//    a real transcript file (payload.transcript_path) whose byte size the hook
+//    stats directly; wall-clock is exercised by pre-seeding the marker file
+//    (via markerKeyFor) with a controlled writtenAt, since real elapsed time
+//    can't be faked in a spawned child process.
+// ---------------------------------------------------------------------------
+
+function makeTranscriptFile(dir, sizeBytes) {
+  const p = path.join(dir, 'transcript.jsonl');
+  fs.writeFileSync(p, 'x'.repeat(sizeBytes), 'utf8');
+  return p;
+}
+
+function growTranscriptFile(p, extraBytes) {
+  fs.appendFileSync(p, 'y'.repeat(extraBytes), 'utf8');
+}
+
+test('RE-ARM (growth): marker expires and re-blocks after transcript grows >= 240KB since last write', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  const sess = 'rearm-growth-1';
+  const tp = makeTranscriptFile(h.home, 1000);
+  try {
+    const pl = () => ({
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'rg foo' }, session_id: sess, cwd: c.cwd,
+      transcript_path: tp,
+    });
+
+    // 1st call: no marker yet -> blocks, records transcriptSize=1000.
+    const first = testHook(HOOK, pl(), { home: h.home });
+    assert.strictEqual(first.status, 2, `first must block; stdout=${first.stdout}`);
+
+    // 2nd call, SAME transcript size: marker fresh, no growth -> allow.
+    const second = testHook(HOOK, pl(), { home: h.home });
+    assert.strictEqual(second.status, 0, `second (no growth) must allow; stdout=${second.stdout}`);
+
+    // Grow the transcript by > 240KB (the REARM_GROWTH_BYTES threshold).
+    growTranscriptFile(tp, 260 * 1024);
+
+    // 3rd call: growth trigger fires -> re-arm -> blocks again.
+    const third = testHook(HOOK, pl(), { home: h.home });
+    assert.strictEqual(third.status, 2, `third (grown >=240KB) must re-block; stdout=${third.stdout}`);
+    assert.ok(third.json && third.json.decision === 'block');
+
+    // 4th call, SAME (now-grown) size again: proves the marker was actually
+    // REFRESHED with the new size baseline (not stuck comparing against the
+    // stale 1000-byte baseline, which would spuriously re-block forever).
+    const fourth = testHook(HOOK, pl(), { home: h.home });
+    assert.strictEqual(fourth.status, 0, `fourth (post-rearm, no further growth) must allow; stdout=${fourth.stdout}`);
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
+});
+
+test('RE-ARM (wall-clock fallback): stale marker (>2h old, transcript size unknown) re-arms and blocks', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  const sess = 'rearm-clock-stale';
+  try {
+    const key = markerKeyFor(sess, c.cwd);
+    const staleWrittenAt = Date.now() - (3 * 60 * 60 * 1000); // 3h ago > 2h TTL
+    h.writeState('graphify-guard-' + key, JSON.stringify({ writtenAt: staleWrittenAt, transcriptSize: -1 }));
+
+    // No transcript_path -> size unknown on both sides -> growth trigger can't
+    // fire -> must fall back to the wall-clock trigger.
+    const pl = {
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'rg foo' }, session_id: sess, cwd: c.cwd,
+    };
+    const r = testHook(HOOK, pl, { home: h.home });
+    assert.strictEqual(r.status, 2, `stale (>2h) marker must re-arm and block; stdout=${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
+});
+
+test('RE-ARM (wall-clock fallback): fresh marker (<2h old, transcript size unknown) stays quiet', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  const sess = 'rearm-clock-fresh';
+  try {
+    const key = markerKeyFor(sess, c.cwd);
+    const freshWrittenAt = Date.now() - (30 * 60 * 1000); // 30 min ago < 2h TTL
+    h.writeState('graphify-guard-' + key, JSON.stringify({ writtenAt: freshWrittenAt, transcriptSize: -1 }));
+
+    const pl = {
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'rg foo' }, session_id: sess, cwd: c.cwd,
+    };
+    const r = testHook(HOOK, pl, { home: h.home });
+    assert.strictEqual(r.status, 0, `fresh (<2h) marker must stay quiet; stdout=${r.stdout}`);
+    assert.strictEqual(r.json, null);
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
+});
+
+test('LEGACY marker format (bare millis timestamp string): still honored as a fresh marker', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  const sess = 'legacy-marker-1';
+  try {
+    const key = markerKeyFor(sess, c.cwd);
+    // Pre-upgrade marker format: plain `String(Date.now())`, no JSON object.
+    h.writeState('graphify-guard-' + key, String(Date.now()));
+
+    const pl = {
+      hook_event_name: 'PreToolUse', tool_name: 'Bash',
+      tool_input: { command: 'rg foo' }, session_id: sess, cwd: c.cwd,
+    };
+    const r = testHook(HOOK, pl, { home: h.home });
+    assert.strictEqual(r.status, 0, `fresh legacy marker must stay quiet; stdout=${r.stdout}`);
+    assert.strictEqual(r.json, null);
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
 });

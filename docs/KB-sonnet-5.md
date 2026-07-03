@@ -10,8 +10,9 @@
 ## 1. TL;DR
 - **Sonnet 5** (`claude-sonnet-5`, 2026-06-30) is a **clear win for implementation** — near-Opus
   coding at ~30–40% *real* savings (the ~40% sticker discount is eroded by a 1.3–1.4× tokenizer).
-- **Sonnet 5 @xhigh ≈ Opus 4.8 @medium**, *not* @high — so it's a great **cheaper secondary**
-  planning/review tier, but does **not** replace Opus on the hardest work.
+- **Sonnet 5 @xhigh ≈ Opus 4.8 @medium-to-high** (per §4's DataCamp citation — the source hedges
+  across both tiers, not just @medium) — so it's a great **cheaper secondary** planning/review tier,
+  but does **not** replace Opus on the hardest work.
 - **Opus 4.8 stays ahead** on deep reasoning (GPQA +15.6), olympiad math (USAMO +17.2), and deep
   multi-file coding (SWE-bench Pro +6.0). Keep it for root-cause, architecture, top-level planning.
 - **Haiku 4.5** stays the cheap, fast default (91–104 t/s, $1/$5) for trivial/mechanical/high-volume.
@@ -58,7 +59,10 @@ aggregate; independent testing found up to ~1.47× for some content types — se
 | MMLU-Pro / AIME | unconfirmed | unconfirmed | 72.4 / 80.7 | — |
 | Output speed (t/s) | moderate (unmeasured) | 57 @high / 78.9 @max | **91–104** | Haiku |
 
-*Terminal-Bench Opus figure disputed (74.6 @high per one source, 82.7 @higher-effort per another).
+*Terminal-Bench Opus figure is harness-dependent, not effort-dependent: 74.6 raw model vs 78.9 with
+Claude-Code harness (see `docs/KB-codex-vs-opus-coding.md` §Benchmark table). The 82.7% figure
+sometimes seen alongside this benchmark is GPT-5.5's (Interesting Engineering, source [13] in that
+doc), not Opus's — do not conflate.
 
 ## 4. Effort-tier behavior
 `low` (renames/greps/classification) · `medium` (coding, small refactors, tests) · `high` (default;
@@ -167,7 +171,9 @@ Third-party (2026): (3) [morphllm.com Claude benchmarks](https://www.morphllm.co
 Codex (gpt-5.x) — official OpenAI: (12) [developers.openai.com/codex/models](https://developers.openai.com/codex/models) · (13) [developers.openai.com/api/docs/pricing](https://developers.openai.com/api/docs/pricing) · (14) [developers.openai.com/codex/config-reference](https://developers.openai.com/codex/config-reference). Third-party: (15) [LM Council benchmarks](https://lmcouncil.ai/benchmarks) · (16) [morphllm SWE-bench Pro](https://www.morphllm.com/swe-bench-pro). OMX: (17) [github.com/Yeachan-Heo/oh-my-codex](https://github.com/Yeachan-Heo/oh-my-codex).
 
 ## 10. Discrepancies / caveats
-- Terminal-Bench 2.1 Opus: 74.6 (@high) vs 82.7 (higher-effort) — different effort levels.
+- Terminal-Bench 2.1 Opus: 74.6 (raw model) vs 78.9 (Claude-Code harness) — harness-dependent, not
+  effort-dependent (see `docs/KB-codex-vs-opus-coding.md`). The 82.7% Terminal-Bench figure
+  circulating in some sources is GPT-5.5's, not Opus's.
 - Sonnet 5 SWE-bench Verified: 72.7 (official announcement) vs 82.1 (third-party, extended thinking).
 - GDPval: "Sonnet beats Opus" holds on **v2** only (1618 vs 1615); Opus led the original v1.
 - MMLU-Pro / AIME / LiveCodeBench / TAU-bench: no published Opus-4.8/Sonnet-5 figures found as of

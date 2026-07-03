@@ -249,10 +249,25 @@ Any plan or work item must cover **both platform variations (Claude + Codex)** A
 orchestration layers — OMC (oh-my-claudecode) for Claude and OMX (oh-my-codex) for Codex.** A
 change that lands on only one side drifts the ports apart; parity is mandatory, not optional.
 
-- New skill/hook/routing/KB → produce the Claude version AND the Codex mirror
-  (`plugins/anti-hall/codex/skills/…`).
+- New skill/hook/routing/**KB** → produce the Claude version AND the Codex mirror
+  (`plugins/anti-hall/codex/skills/…`). This applies to research KBs (`docs/KB-*.md`) too, not
+  just shipped code: if a KB's topic is platform-relevant (models, effort, planning,
+  orchestration, review), it needs an explicit Codex-side section or a stated reason one isn't
+  needed — never silent Claude-only coverage on a cross-platform topic.
 - Any model-routing artifact → a Claude-model table (Opus / Sonnet 5 / Haiku) AND a parallel
   Codex-model table (gpt-5.x lineup), with a cross-platform equivalence mapping.
 - Reference the orchestration layers by parity: OMC ↔ OMX (`docs/KB-omc.md` ↔ `docs/KB-omx.md`).
 - The pre-release doc sweep covers BOTH ports (README + Codex README, llms.txt, both MODEL-POLICY
   copies, the Codex skill mirrors).
+
+**Two known, structural limitations — not decisions, not bugs to keep re-flagging.** Work around
+them; do not silently invent a fake Codex equivalent, and do not re-litigate them each time a new
+feature/KB touches this area:
+1. **Codex has no Dynamic-Workflows equivalent.** There is no Codex-side JS orchestration runtime
+   (`agent()`/`pipeline()`/`parallel()`). Codex-native mirrors of Workflow-driven Claude skills
+   (ship-it, deadly-loop) are written as plain sequential protocol text, not ported scripts — this
+   is the correct, permanent shape for that side, not a stopgap.
+2. **The Claude↔Codex integration is one-directional.** anti-hall invokes Codex FROM Claude
+   (`codex:codex-rescue` agentType, Codex CLI shell-outs, cross-model debate seats) — there is no
+   reverse path where Codex invokes Claude. Any cross-model design (e.g. deadly-loop's Critic seat)
+   must assume this direction only.

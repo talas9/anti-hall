@@ -10,6 +10,16 @@
 // The discipline is never weakened — the full text is delivered at session start
 // (and again every window) so capture/priority/drain rules stay present.
 //
+// FULL is re-injected on whichever of TWO triggers fires FIRST:
+//   - WINDOW_MS wall-clock elapses since the last FULL injection, OR
+//   - the transcript has GROWN by GROWTH_BYTES since the last FULL injection.
+// The wall-clock-only gate under-injects for a heavy autonomous session (this
+// plugin's own ralph/ultrawork use case): per KB-claude-codex.md §6.2 (adherence
+// re-injection cadence), instruction adherence decays every 40-80K new tokens —
+// and a busy session can blow past that in well under an hour, long before
+// WINDOW_MS elapses. GROWTH_BYTES reuses the same readTail()/stat mechanism
+// already in this file for freshnessNote(); no new dependency.
+//
 // Per-session state lives under ~/.anti-hall/ (F-07: never written into the
 // user's project tree). Keyed by session_id (fallback: hash of cwd). Conservative
 // and FAIL-OPEN: on ANY state error we inject the FULL directive (never less).
@@ -53,14 +63,38 @@ const SHORT =
 // primer fresh across a long session without repeating it every turn.
 const WINDOW_MS = 6 * 60 * 60 * 1000;
 
+// Re-inject FULL early — before WINDOW_MS elapses — once the transcript has
+// grown by this many bytes since the last FULL injection. KB-claude-codex.md
+// §6.2 puts the adherence-decay re-injection cadence at 40-80K NEW tokens; at
+// a common ~4 bytes/token estimate that is ~160-320KB, so 240KB (the midpoint)
+// is used as a single threshold rather than tracking a token count directly
+// (this file has no tokenizer; byte size is what readTail()/stat give for free).
+const GROWTH_BYTES = 240 * 1024;
+
 // Tolerance for a stored timestamp slightly ahead of `now` (benign clock skew
 // between writes/reads). Anything beyond this in the future is treated as
 // corrupt and self-healed. See the future/garbage-timestamp guard below.
 const FUTURE_TOLERANCE_MS = 5 * 60 * 1000;
 
-// Decide which message to inject. Returns FULL on the first turn of a session or
-// when the window has expired; SHORT otherwise. FAIL-OPEN to FULL on any error
-// so task discipline is never weakened by a state-file problem.
+// transcriptSize(payload) -> byte size of payload.transcript_path via a cheap
+// stat (pickMessage only needs the SIZE, not the content — no need to pay for
+// readTail()'s read here). Returns -1 when unavailable (no path, ENOENT, any
+// stat error) so callers can tell "unknown" apart from a genuine 0-byte file.
+function transcriptSize(payload) {
+  const tp = payload && payload.transcript_path;
+  if (!tp || typeof tp !== 'string') return -1;
+  try {
+    return fs.statSync(tp).size;
+  } catch (_) {
+    return -1;
+  }
+}
+
+// Decide which message to inject. Returns FULL on the first turn of a session,
+// when the window has expired, OR when the transcript has grown by
+// GROWTH_BYTES since the last FULL injection (whichever trigger fires first);
+// SHORT otherwise. FAIL-OPEN to FULL on any error so task discipline is never
+// weakened by a state-file problem.
 function pickMessage(payload) {
   try {
     const sessionId = (payload && payload.session_id && String(payload.session_id)) ||
@@ -71,7 +105,12 @@ function pickMessage(payload) {
     const stateFile = path.join(stateDir, 'task-tracker-' + safeSession + '.json');
 
     const now = Date.now();
+    const curSize = transcriptSize(payload);
     let lastFull = 0;
+    // -1 = unknown baseline (never recorded, or recorded when the transcript
+    // path/size was unavailable). Kept distinct from a real 0-byte transcript
+    // so the growth check below never compares against a false zero baseline.
+    let lastFullSize = -1;
     try {
       const raw = fs.readFileSync(stateFile, 'utf8').trim();
       if (raw) {
@@ -88,20 +127,33 @@ function pickMessage(payload) {
             parsed.lastFull <= now + FUTURE_TOLERANCE_MS) {
           lastFull = parsed.lastFull;
         }
+        // Same finite/non-negative sanity gate for the size baseline; anything
+        // else (missing key, garbage, negative) is left as -1 = unknown.
+        if (parsed && Number.isFinite(parsed.lastFullSize) && parsed.lastFullSize >= 0) {
+          lastFullSize = parsed.lastFullSize;
+        }
       }
     } catch (_) {
       // No prior state -> first turn -> FULL below.
     }
 
-    if (now - lastFull < WINDOW_MS) {
-      // Within a valid past window: short reminder, no state write needed.
+    const windowFresh = (now - lastFull) < WINDOW_MS;
+    // Growth trigger only fires when BOTH sizes are known (never assume growth
+    // from an unknown/zero baseline — that would spuriously fire FULL the very
+    // next turn merely because the transcript existed but had no prior baseline).
+    const grew = curSize >= 0 && lastFullSize >= 0 && (curSize - lastFullSize) >= GROWTH_BYTES;
+
+    if (windowFresh && !grew) {
+      // Within a valid past window AND no size-growth trigger: short reminder,
+      // no state write needed.
       return SHORT;
     }
 
-    // First turn of the session or window expired: inject FULL, record the time.
+    // Window expired OR transcript grew past threshold since last FULL: inject
+    // FULL, record the time and the new size baseline.
     try {
       fs.mkdirSync(stateDir, { recursive: true });
-      fs.writeFileSync(stateFile, JSON.stringify({ lastFull: now }), 'utf8');
+      fs.writeFileSync(stateFile, JSON.stringify({ lastFull: now, lastFullSize: curSize }), 'utf8');
     } catch (_) {
       // Can't persist -> still inject FULL (fail-open: never under-inject).
     }

@@ -19,7 +19,7 @@ Hard-risk triggers: auth/security, schema/migration, production data, shell scri
 
 ## 2. Plan
 
-For L work, write `PLAN.md` in `.planning/` if it exists, otherwise repo root. Include:
+For L work, write `PLAN.md` at the repo root (GSD's `.planning/` convention is discontinued as of 2026-07-03 — no longer written to or read from). Include:
 
 - intent
 - decisions and trade-offs
@@ -40,7 +40,7 @@ Model routing:
 
 - implementation: `gpt-5.4`
 - planning/validation/debate: `gpt-5.5`
-- mechanical command execution: `gpt-5.4-mini` or `gpt-5.3-codex-spark`
+- mechanical command execution: `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only
 
 > Note: the Claude-side ship-it workflow adds Codex-primary/Sonnet-5-failover build-seat routing plus a cross-model no-self-review rule — that's a `ship-it.workflow.js`-specific mechanism (Claude Dynamic Workflows only) and does not apply here. Codex-native ship-it already IS the Codex-primary implementer by construction, so there is no failover-fallback self-review edge case to guard against on this port.
 

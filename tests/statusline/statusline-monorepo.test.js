@@ -1,10 +1,12 @@
 'use strict';
-// statusline-monorepo.js — the GSD/monorepo line-1 renderer. It reads the
-// project from data.workspace.current_dir on stdin (NOT its own cwd), parses
-// <current_dir>/.planning/STATE.md, and composes a line. We drive it with a
-// fixture .planning/STATE.md tree + a crafted payload and assert the visible
-// (ANSI-stripped) line. CLAUDE_CONFIG_DIR is pointed at the fake HOME so the
-// todos lookup never reads the real machine.
+// statusline-monorepo.js — the monorepo (.gitmodules) line-1 renderer. It
+// reads the project from data.workspace.current_dir on stdin (NOT its own
+// cwd) and composes a model|task|dir line. GSD-state reading
+// (.planning/STATE.md) was removed 2026-07-03 — GSD is discontinued; several
+// tests below deliberately still create a .planning/STATE.md fixture to
+// regression-guard that its presence is now silently ignored, not read.
+// CLAUDE_CONFIG_DIR is pointed at the fake HOME so the todos lookup never
+// reads the real machine.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -20,7 +22,7 @@ function renderMono(payloadObj, home, claudeDir) {
   return stripAnsi(out);
 }
 
-test('monorepo line renders model, milestone+progress, active phase, dir basename', () => {
+test('monorepo line ignores a present .planning/STATE.md entirely (GSD removed 2026-07-03), still renders model + dir', () => {
   const h = makeStatusHome();
   const proj = makeProjectDir();
   try {
@@ -42,10 +44,9 @@ test('monorepo line renders model, milestone+progress, active phase, dir basenam
       h.home, h.claude,
     );
     assert.match(out, /Sonnet/);
-    assert.match(out, /v1\.2/);
-    assert.match(out, /40%/, 'milestone progress percent');
-    assert.match(out, /Phase 3 executing/);
-    assert.match(out, new RegExp(path.basename(proj.dir)), 'dir basename segment');
+    assert.doesNotMatch(out, /v1\.2/, 'GSD milestone must not be read');
+    assert.doesNotMatch(out, /Phase 3/, 'GSD phase must not be read');
+    assert.match(out, new RegExp(path.basename(proj.dir)), 'dir basename segment still renders');
   } finally { h.cleanup(); proj.cleanup(); }
 });
 
@@ -77,7 +78,7 @@ test('monorepo line renders the context meter from remaining_percentage', () => 
   } finally { h.cleanup(); proj.cleanup(); }
 });
 
-test('monorepo line shows "milestone complete" at 100 percent', () => {
+test('monorepo line does NOT show "milestone complete" even at 100 percent in .planning/STATE.md (GSD removed 2026-07-03)', () => {
   const h = makeStatusHome();
   const proj = makeProjectDir();
   try {
@@ -92,7 +93,8 @@ test('monorepo line shows "milestone complete" at 100 percent', () => {
       { model: { display_name: 'Opus' }, workspace: { current_dir: proj.dir } },
       h.home, h.claude,
     );
-    assert.match(out, /milestone complete/);
+    assert.doesNotMatch(out, /milestone complete/, 'GSD state must not be read at all');
+    assert.match(out, /Opus/);
   } finally { h.cleanup(); proj.cleanup(); }
 });
 

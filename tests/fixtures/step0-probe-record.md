@@ -76,6 +76,83 @@ repo).
 - **Consequences:** both workflow templates (deadly-loop, ship-it) parse
   string-or-object args defensively; static test asserts the export-meta form.
 
+## P9 — SubagentStart `additionalContext` reaches a spawned subagent's model context
+- **Status:** OBSERVED 2026-07-03 (live production session, real spawned subagent —
+  not a synthetic/throwaway probe). Confirms `verify-first-subagent.js`'s own
+  code-comment claim ("SubagentStart confirmation: listed in KB-claude-codex.md
+  §1.1") is not just documented but ACTUALLY delivered, closing the gap the
+  audit flagged (SubagentStart missing from KB-claude-codex.md:47's
+  confirmed-delivering list even though the hook has shipped since v0.39.0 /
+  commit `8edbc84`, 2026-06-29).
+- **Method:** could NOT spawn a fresh throwaway subagent for this probe — the
+  Agent/Task spawn tool is absent from this session's tool set (confirmed via
+  `ToolSearch` returning zero matches for `select:Agent,Task` and for
+  "dispatch general-purpose subagent launch worker"), because this investigating
+  session is itself a spawned subagent with no recursion capability (by design —
+  see CLAUDE.md: "Explore... lacks the Agent tool and structurally cannot
+  recurse"). Used the live, currently-running real subagent session as the
+  specimen instead:
+  1. Ran `node plugins/anti-hall/hooks/verify-first-subagent.js` with synthetic
+     `{"hook_event_name":"SubagentStart","session_id":"probe-test"}` on stdin to
+     capture the hook's ACTUAL current stdout (`hookSpecificOutput.additionalContext`,
+     6415 chars).
+  2. Compared that captured string, byte-for-byte, against the text this very
+     session actually received: a conversation turn literally labeled
+     `system SubagentStart hook additional context: VERIFY-FIRST + ROOT-CAUSE
+     PROTOCOL...` that appeared immediately after the human task message and
+     BEFORE this session's first assistant turn (i.e. in the primacy slot, at
+     spawn time, not injected later).
+  3. `diff` of the two (newline-normalized) — **exact match** (6421 vs 6422
+     chars, the 1-char delta being only the file-write's trailing newline).
+  4. Cross-checked the harness's own persisted transcript archive
+     (`~/.claude/projects/-Users-talas9-Projects-anti-hall/<parent-session>/subagents/*.jsonl`,
+     1680 files): 37 distinct REAL prior subagent transcripts (all dated
+     2026-06-29 or later, i.e. after the hook shipped) contain this exact
+     "VERIFY-FIRST + ROOT-CAUSE PROTOCOL" text, stored via the harness's own
+     internal record type
+     `{"type":"attachment","attachment":{"type":"hook_additional_context",
+     "hookName":"SubagentStart","hookEvent":"SubagentStart","content":[...]}}`
+     at message index 1 — immediately after the subagent's initiating task
+     message and before any assistant-generated token, in the SAME transcript
+     stream as the rest of the conversation (not a side-channel debug log).
+     This is the harness's identical storage/delivery convention already relied
+     on for the P2 PreToolUse finding (`PreToolUse:<matcher> hook additional
+     context: ...` renders from the same `hookSpecificOutput.additionalContext`
+     mechanism); SubagentStart uses the same pipe, just without a matcher
+     suffix.
+  5. Model-acted-on-it bar (same standard as P2): this investigating session's
+     own replies throughout the task (evidence-first tool calls, explicit
+     verified/inference labeling, refusal to guess about tool availability)
+     demonstrably followed the injected Iron Law / subagent-role discipline —
+     i.e. the content did not just arrive, it measurably shaped output.
+- **Evidence artifacts (this session's scratchpad, not committed):**
+  `hook_actual_text.txt` (real hook stdout), `received_in_my_context.txt`
+  (verbatim text this session received), diff = exact match.
+- **Conclusion — CONFIRMED, not simulated or guessed.** SubagentStart
+  `hookSpecificOutput.additionalContext` reaches the spawned subagent's actual
+  model context on the current harness build, via the same delivery channel
+  already confirmed for PreToolUse/UserPromptSubmit/UserPromptExpansion/SessionStart.
+  `docs/KB-claude-codex.md:47` updated accordingly (SubagentStart added to the
+  confirmed list, dated, harness-version-caveated the same way the PreToolUse
+  entry is). Residual: single-session evidence (1 live + 37 historical, all one
+  project, one harness build/machine) — re-probe recommended if the harness
+  version changes. **No compensating FULL duplication exists yet** —
+  `grep -rl "IRON LAW" plugins/anti-hall/agents/ plugins/anti-hall/skills/`
+  returns exactly ONE match (corrected 2026-07-03; an earlier version of this
+  entry wrongly claimed zero matches — caught by independent Codex
+  verification, not self-caught, logged here rather than silently fixed):
+  `skills/ship-it/references/ship-it.workflow.js:90`, a narrow one-line
+  reminder inside `buildBrief()` ("IRON LAW: do NOT claim done without fresh
+  acceptance-command output in your result.") — a different, much narrower use
+  of the phrase for one build-agent's task brief, NOT a duplicate of the full
+  multi-rule SubagentStart Iron-Law injection. So the underlying conclusion
+  still holds: the Iron Law's FULL text is NOT folded into the Task-tool spawn
+  prompt itself, and today the SubagentStart hook remains the sole delivery
+  path for the complete protocol. Since delivery IS confirmed (this probe),
+  implementing a full compensating path is out of scope per the task brief
+  (only required if delivery were NOT confirmed) — flagged here as a
+  legitimate follow-up hardening item, not done.
+
 ## P6 — Real `lastModelUsage` shape in `~/.claude.json`
 - **Status:** CAPTURED 2026-06-10 (live read, anti-hall project entry).
 - **Evidence (raw, truncated):**

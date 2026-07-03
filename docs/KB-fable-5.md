@@ -119,8 +119,8 @@ agentic-business benchmarks. [6]
 
 ## 7. Migration notes (Opus 4.8 → Fable 5) [1][4][14]
 
-1. Remove `thinking: {type:"disabled"}` (400 error).
-2. Remove manual `budget_tokens` extended thinking (400 error).
+1. Remove `thinking: {type:"disabled"}` (rejected — official docs say "not supported"; exact error code unverified).
+2. Remove manual `budget_tokens` extended thinking (rejected — official docs say "not supported"; exact error code unverified).
 3. `max_tokens` caps thinking+response combined — revisit values.
 4. Handle `stop_reason: "refusal"` (HTTP 200 path, not an error).
 5. Raw thinking never returned.
