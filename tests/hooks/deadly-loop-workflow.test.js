@@ -222,6 +222,34 @@ test("C1-5: report with non-Array findings drifts as 'missing-findings-array' an
     'clean respawn report means the round is not degraded');
 });
 
+// ---- P1 fix: a respawn that STILL drifts must be re-checked, not trusted ----
+test('P1: a respawned seat that STILL drifts is nulled/DEGRADED and cannot feed a GO', async () => {
+  const A = { round: 1, multiplier: 1, targetSHA: 'abc123', branch: 'main',
+    scope: 'whole repo', contextMode: 'initial', argue: false };
+  const { promise, calls } = runStubbed(A, (brief, opts, def) => {
+    // reviewer-1's ORIGINAL call drifts (sha-mismatch); its RESPAWN call also
+    // drifts (different reason) — simulating a respawn that never recovers.
+    if (opts && opts.label === 'round-1:reviewer-1') {
+      return { verdict: 'GO', checkedSHA: 'wrong-sha', checkedBranch: A.branch, findings: [] };
+    }
+    if (opts && opts.label === 'round-1:reviewer-1:respawn') {
+      return { verdict: 'GO', checkedSHA: 'still-wrong-sha', checkedBranch: A.branch, findings: [] };
+    }
+    return def;
+  });
+  const out = await promise;
+  assert.ok(calls.agents.some((c) => c.opts && c.opts.label === 'round-1:reviewer-1:respawn'),
+    'the drifted seat must be respawned once');
+  assert.ok(calls.logs.some((l) => /STILL DRIFTED after respawn/.test(l)),
+    'a still-drifting respawn must be logged distinctly, not silently trusted');
+  assert.ok(out.verdictSummary.deadSeats.includes('round-1:reviewer-1'),
+    'the still-drifting seat must be counted as DEAD/DEGRADED, not live');
+  assert.strictEqual(out.verdictSummary.degraded, true,
+    'a still-drifting respawn must degrade the round');
+  assert.strictEqual(out.verdictSummary.go, false,
+    'a DEGRADED round must never grant a final GO');
+});
+
 // ---- ADDENDUM C1-3: corroboration threshold (multiplier > 1 ? 2 : 1) --------
 const F1 = { id: 'F1', severity: 'P2', file: 'x.js', line: 5, category: 'bug',
   claim: 'stale guard', evidence: 'x.js:5' };

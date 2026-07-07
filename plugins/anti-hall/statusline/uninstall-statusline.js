@@ -21,7 +21,10 @@
 //
 // Scope:
 //   --user        (default)  ~/.claude/settings.json
-//   --project                ./.claude/settings.json
+//   --project                ./.claude/settings.local.json (falls back to
+//                            ./.claude/settings.json only if the local file
+//                            doesn't exist) — MUST match install-statusline.js,
+//                            which writes --project installs to settings.local.json.
 //   --purge-base             also delete the shared global base-statusline.json
 
 'use strict';
@@ -38,12 +41,44 @@ let SETTINGS_PATH;
 if (scope === 'user') {
   SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json');
 } else {
-  SETTINGS_PATH = path.join(process.cwd(), '.claude', 'settings.json');
+  // install-statusline.js --project always writes settings.local.json (highest
+  // precedence, gitignored). Target that same file so uninstall actually finds
+  // and removes what install put there. Fall back to settings.json only when
+  // the local file is absent (e.g. a pre-local-first install, or it was already
+  // removed) — never the reverse, or we'd mutate a file install never touched.
+  const localPath   = path.join(process.cwd(), '.claude', 'settings.local.json');
+  const projectPath = path.join(process.cwd(), '.claude', 'settings.json');
+  SETTINGS_PATH = fs.existsSync(localPath) ? localPath : projectPath;
 }
 
 const BACKUP_PATH  = SETTINGS_PATH + '.bak-antihall';
 const BASE_CFG_DIR = path.join(os.homedir(), '.anti-hall');
 const BASE_CFG     = path.join(BASE_CFG_DIR, 'base-statusline.json');
+
+// looksLikeAntiHallStatusLine(cmd) — true if cmd points at the anti-hall
+// dispatcher (statusline.js somewhere under an "anti-hall" directory). Mirrors
+// install-statusline.js's own already-installed check, so uninstall never
+// overwrites or removes a statusLine that belongs to something else.
+function looksLikeAntiHallStatusLine(cmd) {
+  if (typeof cmd !== 'string') return false;
+  const norm = cmd.replace(/\\/g, '/');
+  return norm.includes('statusline.js') && norm.includes('anti-hall/');
+}
+
+// ensureBackup() — back up SETTINGS_PATH once before the first mutation this
+// run, mirroring install-statusline.js's own backup-once behavior. Never
+// overwrites an existing backup (it may hold the real pre-install state).
+function ensureBackup() {
+  if (fs.existsSync(BACKUP_PATH)) return;
+  try {
+    fs.copyFileSync(SETTINGS_PATH, BACKUP_PATH);
+    console.log('Backed up: ' + SETTINGS_PATH);
+    console.log('       to: ' + BACKUP_PATH);
+    console.log('');
+  } catch (e) {
+    console.error('WARNING: Could not create backup: ' + e.message);
+  }
+}
 
 console.log('Scope:    ' + scope);
 console.log('Settings: ' + SETTINGS_PATH);
@@ -91,36 +126,51 @@ if (fs.existsSync(BASE_CFG)) {
       process.exit(1);
     }
 
-    const restoredCmd = baseObj.command.trim();
-    settings.statusLine = { type: 'command', command: restoredCmd };
+    const currentCmd = (settings.statusLine && typeof settings.statusLine.command === 'string')
+      ? settings.statusLine.command : null;
 
-    try {
-      fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n', 'utf8');
-    } catch (e) {
-      console.error('ERROR: Could not write ' + SETTINGS_PATH + ': ' + e.message);
-      process.exit(1);
-    }
-
-    console.log('Restored original statusLine from: ' + BASE_CFG);
-    console.log('  command: ' + restoredCmd);
-    console.log('');
-
-    // The base config is GLOBAL/shared — other projects wrap it as line 1.
-    // Only delete it when the user explicitly opts in via --purge-base.
-    if (purgeBase) {
-      try {
-        fs.unlinkSync(BASE_CFG);
-        console.log('Purged shared base config (--purge-base): ' + BASE_CFG);
-        console.log('  NOTE: any OTHER project still pointing at the anti-hall dispatcher');
-        console.log('  will lose its line-1 wrapper and fall back to the rich renderer.');
-      } catch (e) { /* already gone */ }
+    if (!looksLikeAntiHallStatusLine(currentCmd)) {
+      // The statusLine actually present in SETTINGS_PATH doesn't point at the
+      // anti-hall dispatcher (e.g. an unrelated statusLine, or anti-hall was
+      // already removed). Restoring the base command here would clobber
+      // something this uninstall doesn't own — fall through to strategy B/C.
+      console.log('NOTE: the statusLine in ' + SETTINGS_PATH + ' does not point at the');
+      console.log('anti-hall dispatcher — leaving it untouched, skipping the base-config restore.');
+      console.log('  current statusLine: ' + (currentCmd || '(none)'));
+      console.log('');
     } else {
-      console.log('Kept shared base config (global, used by other projects): ' + BASE_CFG);
-      console.log('  Pass --purge-base to remove it once anti-hall is uninstalled everywhere.');
+      const restoredCmd = baseObj.command.trim();
+      ensureBackup();
+      settings.statusLine = { type: 'command', command: restoredCmd };
+
+      try {
+        fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n', 'utf8');
+      } catch (e) {
+        console.error('ERROR: Could not write ' + SETTINGS_PATH + ': ' + e.message);
+        process.exit(1);
+      }
+
+      console.log('Restored original statusLine from: ' + BASE_CFG);
+      console.log('  command: ' + restoredCmd);
+      console.log('');
+
+      // The base config is GLOBAL/shared — other projects wrap it as line 1.
+      // Only delete it when the user explicitly opts in via --purge-base.
+      if (purgeBase) {
+        try {
+          fs.unlinkSync(BASE_CFG);
+          console.log('Purged shared base config (--purge-base): ' + BASE_CFG);
+          console.log('  NOTE: any OTHER project still pointing at the anti-hall dispatcher');
+          console.log('  will lose its line-1 wrapper and fall back to the rich renderer.');
+        } catch (e) { /* already gone */ }
+      } else {
+        console.log('Kept shared base config (global, used by other projects): ' + BASE_CFG);
+        console.log('  Pass --purge-base to remove it once anti-hall is uninstalled everywhere.');
+      }
+      console.log('');
+      console.log('Restart Claude Code (close and reopen) for the change to take effect.');
+      process.exit(0);
     }
-    console.log('');
-    console.log('Restart Claude Code (close and reopen) for the change to take effect.');
-    process.exit(0);
   }
 }
 
@@ -179,6 +229,7 @@ if (!('statusLine' in settings)) {
 }
 
 const removed = settings.statusLine;
+ensureBackup();
 delete settings.statusLine;
 
 try {

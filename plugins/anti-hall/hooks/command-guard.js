@@ -86,6 +86,18 @@ const LIGHT_EXCEPTIONS = [
   /\bgit\s+(?:push|pull|fetch)\b[^\n]*\s--dry-run\b/i,
   // docker ps/images/inspect (read-only)
   /\bdocker\s+(?:ps|images|inspect|logs|stats)\b/i,
+  // anti-hall's own coordinator-owned phase-state helpers. These are documented
+  // to run INLINE on the main thread on purpose — phase-state is written by the
+  // coordinator, never a subagent (orchestration/SKILL.md, ship-it/SKILL.md).
+  // Without this carve-out the generic `node <file>.js` HEAVY_PATTERN would make
+  // the documented workflow impossible (a catch-22). NARROW by design: it matches
+  // ONLY the exact plugin-relative helper paths `statusline/phase.js` and
+  // `hooks/agent-watchdog.js`, with the parent dir segment anchored (either at the
+  // token start or immediately after a path separator) so a look-alike prefix
+  // (`evilstatusline/phase.js`) or an arbitrary `node evil.js` is NOT exempted.
+  // Both `/` and `\` separators are accepted so it resolves identically on Windows.
+  /\bnode\s+(?:\S*[\\/])?statusline[\\/]phase\.js\b/i,
+  /\bnode\s+(?:\S*[\\/])?hooks[\\/]agent-watchdog\.js\b/i,
 ];
 
 // Split a full command line into logical segments on the shell operators

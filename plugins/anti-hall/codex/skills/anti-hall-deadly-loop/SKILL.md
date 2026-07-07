@@ -27,6 +27,16 @@ Round structure:
 5. Fix confirmed P0/P1 issues in scoped waves.
 6. Re-run the full three-lens round after any code change.
 7. Stop only when a non-degraded round has zero unadjudicated P0/P1 blockers and no new P0s or P1s.
+8. On convergence, write an advisory audit record to
+   `~/.anti-hall/approvals/<repo>@<HEAD-sha>.json` — fields: `repo`, `sha`,
+   `timestamp`, `roundTrend` (NEW confirmed P0/P1 count per round), `seatVerdicts`,
+   and `"proof": false`. **This file is an ADVISORY AUDIT RECORD, never proof of
+   correctness and never an authorization token.** Deadly-loop is agent-followed
+   guidance, not a hook enforced by the harness — an agent that fakes convergence
+   can just as easily fake this file. Any reader that consumes it (a CI push gate,
+   DevSwarm's merge gate, etc.) MUST treat `"proof": false` as load-bearing and
+   enforce its own real gating rather than trusting this record as sufficient
+   evidence on its own.
 
 Each review must cite file/line evidence and distinguish:
 

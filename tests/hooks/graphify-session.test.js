@@ -1,6 +1,6 @@
 'use strict';
 // graphify-session (SessionStart hook). When the project has a graphify graph
-// (graphify-out/ or .planning/graphs/ under cwd or git toplevel) it injects
+// (graphify-out/ under cwd or git toplevel) it injects
 // hookSpecificOutput.additionalContext telling the model to QUERY THE GRAPH
 // FIRST, naming the graph dir. Safe no-op (exit 0, no additionalContext) when no
 // graph exists. JSON is built via JSON.stringify, so a graph path containing `"`
@@ -76,6 +76,21 @@ test('NO-OP: no graph -> empty output, no additionalContext injected', () => {
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.strictEqual(r.stdout, '', `expected empty stdout (no injection); got: ${r.stdout}`);
     assert.strictEqual(ctx(r), '', 'no additionalContext when no graph');
+  } finally {
+    proj.cleanup();
+    h.cleanup();
+  }
+});
+
+test('NO-OP: legacy .planning/graphs alone is ignored (GSD fallback removed)', () => {
+  const h = makeHome();
+  const proj = makeProject({ graph: false });
+  try {
+    fs.mkdirSync(path.join(proj.dir, '.planning', 'graphs'), { recursive: true });
+    const r = testHook(HOOK, sessionPayload(proj.dir), { home: h.home });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    assert.strictEqual(ctx(r), '', 'legacy .planning/graphs must not trigger graphify-first injection');
   } finally {
     proj.cleanup();
     h.cleanup();

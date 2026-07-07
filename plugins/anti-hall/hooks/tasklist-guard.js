@@ -55,41 +55,74 @@ const MUTATING_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 // nested quantifiers; only simple \s*/\s+; linear). Built via concatenated strings
 // + new RegExp with the `m` flag so `^` matches at the start of EACH line.
 //
-//   (1) ALWAYS-work tokens, matched anywhere in the command:
+// Tested against a QUOTE-NEUTRALIZED copy of the command (neutralizeQuotedContents
+// below, mirrors command-guard.js's helper of the same name): quoted string
+// CONTENTS are blanked to spaces before matching, so text that only appears
+// inside a quoted argument (a commit message, a --format string, a sentence —
+// e.g. `git log --format="%an <%ae>"`, `echo "do not touch this"`) can never be
+// mistaken for a real write. Real unquoted commands are untouched and still match.
+//
+//   (1) ALWAYS-work tokens, matched anywhere (compound/multi-word, low
+//       false-positive risk once quoted text is neutralized):
 //         git commit/rebase/merge/cherry-pick/stash/reset/apply/am
 //         git checkout/switch/restore/clean
-//         tee · mkdir · touch · make · chmod · sed -i
-//         npm install|i|ci · (pnpm|yarn) add|install · pip install
-//   (2) COMMAND-POSITION-ONLY bare verbs (rm / cp / mv): these over-match inside
-//       quoted strings or URL-ish paths like "/cp/" if matched anywhere, so we
-//       anchor them to command position — start-of-line (m-flag), or immediately
-//       after one of:  ; & |  ( ` $(  or a newline — each optionally followed by
-//       whitespace. This catches command-substitution / subshell contexts:
-//         (rm f)   echo $(rm f)   echo `rm f`   "...\nrm f"
-//   (3) SHELL REDIRECT > / >> : shell syntax with no quoted-word ambiguity, so it
-//       matches ANYWHERE (un-anchored): `cmd > out.txt`, `cmd >> log`.
+//         sed -i · npm install|i|ci · (pnpm|yarn) add|install · pip install
+//   (2) COMMAND-POSITION-ONLY bare verbs (rm / cp / mv / tee / mkdir / touch /
+//       make / chmod): short, common-word verbs over-match mid-command, inside
+//       quoted strings, or in URL-ish paths like "/cp/" if matched anywhere, so
+//       we anchor them to command position — start-of-line (m-flag), or
+//       immediately after one of:  ; & |  ( ` $(  or a newline — each optionally
+//       followed by whitespace. This catches command-substitution / subshell
+//       contexts:  (rm f)   echo $(rm f)   echo `rm f`   "...\nrm f"
+//   (3) SHELL REDIRECT > / >> TO A FILE: matches anywhere (unambiguous shell
+//       syntax once quoted text is neutralized) EXCEPT fd-only redirects
+//       `2>`, `>&`, `2>&1` — a negative lookbehind rejects a preceding digit/`&`
+//       and a negative lookahead rejects a following `&`, so stderr-to-terminal
+//       and fd-duplication forms (`2>/dev/null`, `2>&1`, `>&2`) are excluded —
+//       they redirect a descriptor, not a file write.
 const CMD_BOUNDARY = '(?:^|[;&|`(]|\\$\\(|\\n)\\s*';
 const BASH_WORK_RE = new RegExp(
   '(' +
     // (1) always-work, anywhere
     '\\bgit\\s+(?:commit|rebase|merge|cherry-pick|stash|reset|apply|am)\\b' +
     '|\\bgit\\s+(?:checkout|switch|restore|clean)\\b' +
-    '|\\btee\\b' +
-    '|\\bmkdir\\b' +
-    '|\\btouch\\b' +
-    '|\\bmake\\b' +
-    '|\\bchmod\\b' +
     '|\\bsed\\s+-i' +
     '|\\bnpm\\s+(?:install|i|ci)\\b' +
     '|\\b(?:pnpm|yarn)\\s+(?:add|install)\\b' +
     '|\\bpip\\s+install\\b' +
     // (2) command-position-only bare verbs
-    '|' + CMD_BOUNDARY + '(?:rm|cp|mv)\\b' +
-    // (3) redirect, un-anchored (shell syntax)
-    '|>>?' +
+    '|' + CMD_BOUNDARY + '(?:rm|cp|mv|tee|mkdir|touch|make|chmod)\\b' +
+    // (3) file redirect, excluding fd-only `2>` / `>&` / `2>&1`
+    '|(?<![0-9&])>{1,2}(?!&)' +
   ')',
   'im'
 );
+
+// neutralizeQuotedContents — blank out the CONTENTS of single- and double-quoted
+// string literals (delimiters included) so BASH_WORK_RE cannot match text that is
+// merely quoted DATA rather than a real shell command. Same name/semantics as
+// command-guard.js's helper; duplicated here rather than imported since
+// command-guard.js is a standalone script with no exports.
+function neutralizeQuotedContents(segment) {
+  let out = '';
+  let i = 0;
+  const n = segment.length;
+  let inSingle = false;
+  let inDouble = false;
+  while (i < n) {
+    const c = segment[i];
+    const c2 = i + 1 < n ? segment[i + 1] : '';
+    if (inSingle) { out += ' '; if (c === "'") inSingle = false; i++; continue; }
+    if (inDouble) {
+      if (c === '\\' && c2) { out += '  '; i += 2; continue; }
+      out += ' '; if (c === '"') inDouble = false; i++; continue;
+    }
+    if (c === "'") { inSingle = true; out += ' '; i++; continue; }
+    if (c === '"') { inDouble = true; out += ' '; i++; continue; }
+    out += c; i++;
+  }
+  return out;
+}
 
 function main() {
   let raw = '';
@@ -465,7 +498,7 @@ function scanTranscript(filePath) {
 
       if (name === 'Bash') {
         const cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
-        if (cmd && BASH_WORK_RE.test(cmd)) workCount++;
+        if (cmd && BASH_WORK_RE.test(neutralizeQuotedContents(cmd))) workCount++;
         continue;
       }
 

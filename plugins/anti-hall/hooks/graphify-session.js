@@ -42,8 +42,6 @@ function findGraphDir(roots) {
     if (!root) continue;
     const a = path.join(root, 'graphify-out');
     if (safeIsDir(a)) return a;
-    const b = path.join(root, '.planning', 'graphs');
-    if (safeIsDir(b)) return b;
   }
   return null;
 }
@@ -105,8 +103,9 @@ function main() {
     "read '" + wikiIndex + "' / GRAPH_REPORT.md if present). The graph is the " +
     "FIRST resort, not the last; fall back to raw search only when the graph " +
     "lacks the answer. KEEP THE GRAPH UP TO DATE: after any change that " +
-    "adds/moves/removes code or docs, and at the END of any session with " +
-    "significant work, update it with '/graphify --obsidian'.";
+    "adds/moves/removes code, and at the END of any session with " +
+    "significant code work, update the code graph with 'graphify update .'. " +
+    "For docs/Obsidian semantic graph refreshes, use '/graphify . --update --obsidian'.";
 
   // Official schema: `hookEventName` is NESTED in `hookSpecificOutput` alongside
   // `additionalContext`, not a top-level sibling. KB §1.4 documents

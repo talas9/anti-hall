@@ -37,7 +37,7 @@ Verified local package: `oh-my-codex@0.18.16` with CLI binary `omx`.
 ## Anti-hall alignment notes
 
 - `anti-hall-omx` is the correct Codex-side integration skill.
-- `anti-hall-feature-launch` should say Codex feature work can use OMX `$plan`, `$ralplan`, `$team`, `$ralph`, `$ultragoal`, or `$pipeline` after graphify/planning gates.
+- `anti-hall-ship-it` (Codex-native; replaced `anti-hall-feature-launch` 2026-07-05) should say Codex feature work can use OMX `$plan`, `$ralplan`, `$team`, `$ralph`, `$ultragoal`, or `$pipeline` after graphify/planning gates.
 - `anti-hall-context-conserve` should route mechanical work to spark/mini and preserve main-thread context, matching both Codex subagent docs and OMX role routing.
 - If docs say “swarm,” clarify which install surface: the npm CLI package ships a hard-deprecated `swarm` skill (compatibility shim for `team`), while the Codex-plugin cache mirror has no `swarm` skill at all and only lists it as a stoppable legacy mode inside `cancel/SKILL.md`. Either way, prefer `team` or native Codex subagents for new work.
 

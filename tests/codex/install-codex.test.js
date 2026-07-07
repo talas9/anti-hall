@@ -87,3 +87,30 @@ test('install-codex: preserves non anti-hall hooks and replaces stale anti-hall 
     assert.ok(commands.some(c => /[\\/]git-guard\.js$/.test(c.replace(/\"$/, ''))));
   } finally { t.cleanup(); }
 });
+
+test('install-codex: dedups stale anti-hall groups that used backslash (Windows) paths', () => {
+  const t = tmpProject();
+  try {
+    const codexDir = path.join(t.root, '.codex');
+    fs.mkdirSync(codexDir, { recursive: true });
+    fs.writeFileSync(path.join(codexDir, 'hooks.json'), JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'echo keep-me', timeout: 1 }] },
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'node "C:\\Users\\dev\\.claude\\plugins\\anti-hall\\hooks\\git-guard.js"', timeout: 10 }] },
+        ],
+      },
+    }, null, 2));
+
+    // Simulate a re-install (e.g. running the installer twice on Windows): the
+    // existing backslash-path group above must be recognized as a stale
+    // anti-hall group and replaced, not kept alongside the freshly-added one.
+    const r = run(t.root);
+    assert.strictEqual(r.status, 0, r.stderr || r.stdout);
+    const pre = readJSON(path.join(codexDir, 'hooks.json')).hooks.PreToolUse;
+    const commands = pre.flatMap(g => g.hooks || []).map(h => h.command);
+    assert.ok(commands.includes('echo keep-me'));
+    const gitGuardCount = commands.filter(c => /git-guard\.js/.test(c)).length;
+    assert.strictEqual(gitGuardCount, 1, `expected exactly one git-guard.js entry after dedup, got ${gitGuardCount}: ${JSON.stringify(commands)}`);
+  } finally { t.cleanup(); }
+});

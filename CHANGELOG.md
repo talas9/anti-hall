@@ -6,6 +6,75 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.46.0
+
+**Whole-plugin ultracode audit remediated: 2 critical guard/data-loss bugs + 21
+correctness/parity fixes, plus 3 opt-in DevSwarm/hivecontrol integration hooks. Every fix
+ships with a non-vacuous test; `node --test` = 783 pass / 0 fail / 2 Windows-skips.**
+
+### Critical (P0)
+- **git-guard `bash -c`/`sh -c` bypass closed.** `scanCommand()` unwrapped only `eval`, so
+  `bash -c "git push --force"` and `bash -c '… Co-Authored-By: Claude …'` both passed (exit 0)
+  — a total bypass of the one guard the repo treats as non-skippable. Added
+  `extractShellCPayload()` (SHELL_VERBS `bash/sh/zsh/dash/ksh/ash` + `-c`/`--command`) with
+  depth-bounded recursion, mirroring `command-guard.js` / `graphify-guard.js`. Also fixed
+  `splitSegments` splitting on the `&` in `2>&1` / `>&2` / `&>`, which had orphaned a trailing
+  `--force` into a non-`git` segment. Both classes now block (exit 2).
+- **statusline uninstall no longer clobbers a committed settings file.** `uninstall --project`
+  targeted `.claude/settings.json` while the installer writes `.claude/settings.local.json`, and
+  Strategy A overwrote it with the global base — no backup, no check it was even anti-hall's.
+  Now resolves `settings.local.json` first, only rewrites when the current value is the anti-hall
+  dispatcher, and backs up before mutating.
+
+### Correctness & parity (P1)
+- **Guards:** command-guard adds a narrow, path-anchored exception for the coordinator-owned
+  helpers `statusline/phase.js` + `hooks/agent-watchdog.js` (arbitrary `node *.js` still blocked in
+  coordinator context); tasklist-guard's `BASH_WORK_RE` no longer counts read-only Bash (quoted
+  content, `2>` stderr redirects, mid-command write-verbs) as file-changing work.
+- **Workflows / skills:** `ship-it.workflow.js` now begins with `export const meta` (the Workflow
+  runtime previously rejected it, so `/ship-it` could not run), its audit gate blocks on new P0
+  **or** P1 (was P0-only), and Codex-implemented code is reviewed by an Opus Critic (implementer ≠
+  reviewer). `deadly-loop.workflow.js` re-checks a respawned seat for drift before trusting it as a
+  live GO. `deadly-loop/SKILL.md` swarm-mode Reviewer is Sonnet 5 (Fable routing is policy-disabled).
+- **Codex port:** every Codex skill resolves the plugin root via a `$ANTI_HALL_ROOT` preamble —
+  verified against official Codex docs that `${PLUGIN_ROOT}` is expanded only for hook commands,
+  never in skill bodies — instead of clone-relative `node plugins/anti-hall/…` paths that break
+  once the port is installed as a plugin. The Codex ship-it `STATE.json` gained the 0.45.0
+  `gate:"locked"|"not-run"` field + PLAN.md `## Goal coverage` (anti-false-completion parity);
+  `install-codex.js` dedup is backslash-safe so a Windows re-install no longer duplicates all 15
+  hook groups.
+- **Statusline:** `install --consolidate` on the already-installed path no longer throws a TDZ
+  `ReferenceError`.
+- **Docs accuracy:** model-routing-guard default documented correctly (strict by default since
+  v0.35.0; `=advisory` opts out — was documented backwards); the dead OMC companion link repointed
+  to the real upstream; the `docs/KB.md` version row refreshed; and a private project codename
+  scrubbed from a committed doc (agnostic-mandate fix).
+
+### DevSwarm / hivecontrol integration (opt-in, off by default)
+- **merge-gate** also recognizes `hivecontrol workspace merge-into-source` / `merge-from-source`
+  (stays default-OFF via `ANTIHALL_MERGE_GATE`; `skip.json` override intact).
+- **deadly-loop** writes an explicitly-**advisory** `~/.anti-hall/approvals/<repo>@<HEAD-sha>.json`
+  on convergence (`"proof": false` — an audit record, never an authorization token; the reader must
+  enforce its own real gating). Mirrored into the Codex deadly-loop skill.
+- **swarm-guard** appends a blocked-spawn trip to a separate `~/.anti-hall/swarm-trips.log` so a cap
+  trip leaves a forensic trace (the rate window and `SPAWN_CAP` are untouched — observation only).
+
+### Also in this release (carried-forward cleanup + docs)
+- **Codex `anti-hall-feature-launch` fully removed** — completes the 0.45.0 GSD/feature-launch
+  retirement on the Codex side. The skill is deleted and every reference (`codex/README.md`,
+  `docs/KB-omx.md`, `codex/skills/anti-hall-omx/SKILL.md`, and the plugin-manifest description)
+  now points at `anti-hall-ship-it`.
+- **graphify guidance modernized.** `doctor.js`, `graphify-reminder.js`, `graphify-session.js`, and
+  the SessionStart primer now say `graphify update .` (code graph) / `/graphify . --update --obsidian`
+  (docs + Obsidian) instead of the retired `/graphify --obsidian`, and the legacy `.planning/graphs/`
+  fallback is dropped (GSD is gone) — with a regression test asserting `.planning/graphs` alone no
+  longer triggers the graphify-first injection.
+- **New DevSwarm / hivecontrol docs.** `docs/KB-devswarm-hivecontrol.md` — a reference KB for the
+  `hivecontrol` CLI (v2.3.3), the `.devswarm/config.json` schema, and workspace role-detection —
+  plus the approved DevSwarm-aware workspace-tier orchestration design + implementation plan under
+  `docs/superpowers/`. The feature itself is not built yet; these are the hardened design/plan for a
+  separate later effort.
+
 ## 0.45.0
 
 **GSD discontinued and removed as a live dependency; 4 new research KBs; a 17-item cross-KB

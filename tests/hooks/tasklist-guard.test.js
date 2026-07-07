@@ -543,6 +543,8 @@ const BASH_MATCH = [
   ['chmod +x', 'chmod +x script.sh'],
   ['sed -i', 'sed -i s/a/b/ file'],
   ['pnpm add', 'pnpm add lodash'],
+  ['mkdir d', 'mkdir d'],
+  ['tee f', 'tee f'],
   ['cat x > out.txt', 'cat x > out.txt'],
   ['echo y >> log', 'echo y >> log'],
 ];
@@ -563,6 +565,12 @@ const BASH_NOMATCH = [
   ['grep mv', 'grep mv file'],
   ['git status', 'git status'],
   ['plain ls', 'ls'],
+  // LIVE false positives from the whole-plugin review (BASH_WORK_RE P1):
+  ['stderr redirect (not a file write)', 'ls foo 2>/dev/null'],
+  ['quoted redirect char in a --format string', 'git log --format="%an <%ae>"'],
+  ['quoted write-verb inside a sentence', 'echo "do not touch this"'],
+  ['fd duplication (not a file write)', 'some-cmd 2>&1'],
+  ['grep for a bare write-verb word (not command position)', 'grep touch file.txt'],
 ];
 for (const [label, cmd] of BASH_NOMATCH) {
   test(`FIX B NO-MATCH: 4x \`${label}\` -> below threshold -> allow`, () => {

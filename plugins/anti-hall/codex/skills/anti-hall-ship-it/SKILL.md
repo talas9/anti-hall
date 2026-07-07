@@ -1,6 +1,6 @@
 ---
 name: anti-hall-ship-it
-description: Codex-native ship-it workflow. Use to plan, implement, verify, and harden a change with rigor scaled to blast radius.
+description: Codex-native ship-it workflow. Use to plan, implement, verify, and harden a change with rigor scaled to blast radius. Replaces anti-hall-feature-launch (retired 2026-07-05, matching the Claude-side ship-it/feature-launch consolidation from v0.27.0).
 ---
 
 # anti-hall ship-it for Codex
@@ -25,6 +25,10 @@ For L work, write `PLAN.md` at the repo root (GSD's `.planning/` convention is d
 - decisions and trade-offs
 - blast radius
 - phases with exact files, read-first paths, steps, edge cases, and acceptance checks
+- goal coverage: map every clause of the intent/success-criterion to the specific phase(s)
+  whose acceptance check actually proves it, or mark the clause explicitly "descoped." A
+  clause with no phase acceptance test behind it, present only in prose, is a plan hole —
+  fill it or descope it here, on paper.
 - progress checklist
 - owner/manual actions
 
@@ -59,12 +63,22 @@ Claim done only after fresh verification output from this turn.
 For L-tier work, hand-maintain `.anti-hall/ship-it/<slug>/STATE.json` across turns/sessions:
 
 - `plan_hash`: a hash of `PLAN.md`'s content, used only to detect drift on resume — no specific hashing mechanism is prescribed, since Codex has no coordinator process to own one.
-- per-phase entries: `{label, status: "pending"|"running"|"done"|"failed"}`
+- per-phase entries: `{label, status: "pending"|"running"|"done"|"failed", gate: "locked"|"not-run"}`
 - `escalations`: counter, see the escalation cap below.
+
+`gate` is set to `"locked"` only immediately after that phase's `anti-hall-deadly-loop` run
+(§4 step 5, or §3's plan-level loop before build starts) actually converges — never set by
+the phase-build step itself, and never inferred from `status: "done"` alone.
+`status` is self-written by whichever agent just ran the phase — the exact self-report this
+repo's own false-completion research says cannot be trusted on its own — while `gate` is the
+independent record that hardening actually ran and converged. **A `status: "done"` phase is
+not resumable as done on `status` alone: a phase with `gate: "not-run"` (or `gate` missing)
+must be treated as unfinished — re-run the deadly-loop for that phase before resuming past
+it, even if `status` already says `"done"`.**
 
 Codex builds sequentially, one phase at a time, so there is no concurrent-agent staleness problem to track — no heartbeat mechanism is needed here.
 
-On resume, read `STATE.json` alongside `PLAN.md`, recompute the plan hash, warn if it drifted, and continue from the first `pending`/`failed` phase instead of restarting.
+On resume, read `STATE.json` alongside `PLAN.md`, recompute the plan hash, warn if it drifted, and continue from the first phase that is `pending`/`failed` by `status`, or has `gate: "not-run"` despite `status: "done"` — never restart from scratch, and never trust a `"done"` status whose gate was never locked.
 
 ## 6. Escalation cap
 
@@ -72,7 +86,19 @@ If a phase's fix requires re-planning (not just another fix-wave), that's an esc
 
 ## 7. Legacy state migration
 
-`plugins/anti-hall/scripts/migrate-state.js` is a pure-Node script with no Claude-specific dependencies — it works identically from a Codex session: `node plugins/anti-hall/scripts/migrate-state.js`. Use it to fold legacy root `.anti-hall-progress.md`/`.anti-hall-history.md` files into the new dated `.anti-hall/` structure.
+Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that
+variable is only set for plugin-bundled hook commands (see
+`docs/KB-codex-platform-hooks-plugins.md`). Resolve the plugin root from this
+SKILL.md's own file path (which Codex shows you when it selects the skill)
+before running the command below:
+
+```bash
+# SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
+ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
+test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+```
+
+`$ANTI_HALL_ROOT/scripts/migrate-state.js` is a pure-Node script with no Claude-specific dependencies — it works identically from a Codex session: `node "$ANTI_HALL_ROOT/scripts/migrate-state.js"`. Use it to fold legacy root `.anti-hall-progress.md`/`.anti-hall-history.md` files into the new dated `.anti-hall/` structure.
 
 ## 8. Wrap-up: summarize and index
 
@@ -80,4 +106,4 @@ At the end of a ship-it run (L, and M when release-worthy):
 
 1. Write a session-history entry to `.anti-hall/history/<date>/<session-id>.md` (same dated/session-id convention used elsewhere — plain files on disk, not Claude-specific).
 2. For L tier, write `.anti-hall/ship-it/<slug>/SUMMARY.md`.
-3. Run `/graphify --obsidian --update` if graphify is available in this environment; otherwise note it as a follow-up action.
+3. Run `graphify update .` if graphify is available in this environment; otherwise note it as a follow-up action.

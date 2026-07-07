@@ -26,7 +26,7 @@ const HOOK = 'graphify-reminder.js';
 // stable substrings so light rewording of the surrounding prose still matches.
 const REASON_MARKERS = [
   'graphify: significant edits this session and a knowledge graph is present',
-  '/graphify --obsidian',
+  'graphify update .',
   'one-time reminder; stop again to dismiss',
 ];
 

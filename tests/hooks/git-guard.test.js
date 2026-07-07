@@ -78,6 +78,21 @@ const BLOCK = [
   // FIX A.2: `-c trailer.<name>.key=<self-credit>` remaps a benign token to emit
   // a Co-Authored-By trailer, dodging the value scan. Blocker is the REMAP rule.
   { cmd: 'git -c trailer.ai.key=Co-Authored-By commit -m x --trailer "ai: Claude <noreply@anthropic.com>"', reason: REASON.REMAP },
+  // --- P0-1: `bash -c "..."` / `sh -c "..."` shell-wrapper recursion ---
+  // A shell wrapper's verb is not `git`, so without recursing the -c payload
+  // these force/self-credit forms would fail-open (total guard bypass). Mirror
+  // the eval unwrap: recurse the payload and block on the inner git violation.
+  { cmd: 'bash -c "git push --force"', reason: REASON.FORCE },
+  { cmd: 'sh -c "git push --force origin main"', reason: REASON.FORCE },
+  { cmd: 'zsh -c "git push -f"', reason: REASON.FORCE },
+  { cmd: 'sudo bash -c "git push --force"', reason: REASON.FORCE },
+  { cmd: `bash -c "git commit -m x --trailer 'Co-Authored-By: Claude <noreply@anthropic.com>'"`, reason: REASON.COMMIT },
+  // --- P1: `&` inside a redirection (2>&1 / >&2 / &>) is NOT a control-op ---
+  // Splitting on that `&` orphaned a trailing `--force` into a non-git segment
+  // so the force flag was never inspected. The push must still block.
+  { cmd: 'git push origin main 2>&1 --force', reason: REASON.FORCE },
+  { cmd: 'git push origin main >&2 --force', reason: REASON.FORCE },
+  { cmd: 'git push origin main &>out.log --force', reason: REASON.FORCE },
 ];
 
 const ALLOW = [
@@ -92,6 +107,14 @@ const ALLOW = [
   'git commit -m x --trailer "Reviewed-by=Alice"',
   // FIX A.2: a non-self-credit `-c trailer.*.key=` remap stays allowed.
   'git -c trailer.sob.key=Signed-off-by commit -m x --trailer "sob: Alice"',
+  // P0-1: a benign shell-wrapped command must NOT be over-blocked.
+  'bash -c "git status"',
+  'sh -c "npm test"',
+  'bash -c "git push origin main"',
+  // P1: a legitimate push with a redirection (no force) must still ALLOW —
+  // the redirection `&` must not be misread as force, nor over-block.
+  'git push origin main 2>&1',
+  'git push origin main &>out.log',
 ];
 
 // gh self-credit BLOCK cases. All block via ghSelfCreditMessage(), whose message

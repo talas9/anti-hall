@@ -115,6 +115,62 @@ test('SKIP-HATCH: skip.json {swarm-guard: future} -> ALLOW even over cap (exit 0
   }
 });
 
+// swarm-trips telemetry: a blocked spawn (cap trip) is deliberately NOT recorded in
+// swarm-spawns.log (see the BLOCK test above), which left zero forensic trace
+// of trips. swarm-trips.log is a SEPARATE observation-only file: one line per
+// trip, must NOT feed the rate window.
+test('TRIP LOG: cap trip appends one well-formed line to swarm-trips.log', () => {
+  const h = makeHome();
+  try {
+    seedSpawnLog(h.antiHall, SPAWN_CAP);
+    const tripLog = path.join(h.antiHall, 'swarm-trips.log');
+    assert.ok(!fs.existsSync(tripLog), 'trips log must not pre-exist');
+
+    const r = testHook(HOOK, taskPayload(), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block exit 2; stdout: ${r.stdout}`);
+
+    const lines = fs.readFileSync(tripLog, 'utf8').trim().split(/\r?\n/).filter(Boolean);
+    assert.strictEqual(lines.length, 1, `expected exactly one trip line; got: ${JSON.stringify(lines)}`);
+    const fields = lines[0].split('\t');
+    assert.strictEqual(fields.length, 3, `expected 3 tab-separated fields; line: ${lines[0]}`);
+    const [ts, count, tool] = fields;
+    assert.ok(!Number.isNaN(Date.parse(ts)), `first field must be an ISO timestamp; got: ${ts}`);
+    assert.strictEqual(count, String(SPAWN_CAP), `count field must be the recent-count at trip time; got: ${count}`);
+    assert.match(tool, /Task/, `tool field must identify the tripping tool; got: ${tool}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('TRIP LOG: trips-log write does NOT feed the spawn window (swarm-spawns.log untouched)', () => {
+  const h = makeHome();
+  try {
+    seedSpawnLog(h.antiHall, SPAWN_CAP);
+    const spawnLog = path.join(h.antiHall, 'swarm-spawns.log');
+    const before = fs.readFileSync(spawnLog, 'utf8');
+
+    const r = testHook(HOOK, taskPayload(), { home: h.home });
+    assert.strictEqual(r.status, 2, `expected block exit 2; stdout: ${r.stdout}`);
+
+    const after = fs.readFileSync(spawnLog, 'utf8');
+    assert.strictEqual(after, before, 'swarm-spawns.log must be byte-identical after a trip (trip logging must not touch the rate window)');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('TRIP LOG: normal uncapped spawn writes nothing to swarm-trips.log', () => {
+  const h = makeHome();
+  try {
+    const tripLog = path.join(h.antiHall, 'swarm-trips.log');
+    const r = testHook(HOOK, taskPayload(), { home: h.home });
+    assert.strictEqual(r.status, 0, `expected allow; stdout: ${r.stdout}`);
+    assert.ok(!fs.existsSync(tripLog), 'trips log must not be created on a normal, uncapped spawn');
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('FAIL-OPEN: empty stdin -> exit 0', () => {
   const h = makeHome();
   try {

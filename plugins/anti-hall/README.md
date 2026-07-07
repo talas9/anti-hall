@@ -52,9 +52,9 @@ claude --plugin-dir /path/to/anti-hall
 | `git-guard.js` | PreToolUse (Bash) | Blocks AI self-credit attribution — in `git commit` trailers AND in `gh pr/issue/release create\|edit\|comment` `--body`/`--title` (the 🤖 footer, Co-Authored-By, claude.com/claude-code link) — plus `git push --force`. Inline values only (`--body-file` is fail-open). |
 | `api-guard.js` | PreToolUse (Write/Edit/MultiEdit) | Blocks code that references a **non-existent** stdlib/builtin API — resolves `module.attr` in the code-to-be-written against the installed `python3`/`node` and refuses the write when the attribute is fabricated. The mechanical answer to API hallucination. Default = stdlib/builtins (import-safe); opt-in `ANTIHALL_API_GUARD_THIRDPARTY=1` also checks installed 3rd-party packages (off by default — verifying a package imports it, running its code at edit time). 0 FP + full in-scope catch on `eval/api-guard-bench.js`; never probes local/relative modules; fail-open; skip-hatch. |
 | `command-guard.js` | PreToolUse (Bash) | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload, per-segment (quote-aware). |
-| `model-routing-guard.js` | PreToolUse (Agent/Task) | Anti-waste routing — classifies spawn descriptions (mechanical vs complex) and blocks/advises toward the cheapest fitting model. Default: advisory for explicit flagship + mechanical, or omitted model on mechanical task. Strict mode (`ANTIHALL_MODEL_ROUTING=strict`, **project-scoped env** — global-export blast-radius warning): unconditional block on omitted-model mechanical spawns. Debate role-words in spawn description downgrade row-1 block to advisory. Fail-open; unknown model tokens always allowed. |
+| `model-routing-guard.js` | PreToolUse (Agent/Task) | Anti-waste routing — classifies spawn descriptions (mechanical vs complex) and blocks/advises toward the cheapest fitting model. Strict by default (v0.35.0+): unconditional block on omitted-model mechanical spawns. Set `ANTIHALL_MODEL_ROUTING=advisory` (**project-scoped env**) to opt out and revert to advisory-only. Debate role-words in spawn description downgrade row-1 block to advisory. Fail-open; unknown model tokens always allowed. |
 | `omc-detect.js` | Shared helper (not a hook) | Detects whether an oh-my-claudecode autonomous loop is active + fresh. Consumed by `task-guard` / `tasklist-guard` to suppress Stop-blocks to advisory when an OMC loop is running, preventing deadlock. Fail-open = NOT deferring. Kill-switches: `DISABLE_OMC=1` or `OMC_SKIP_HOOKS` including `persistent-mode`. |
-| `swarm-guard.js` | PreToolUse (Agent/Task) | Anti-fork-bomb — spawn-rate cap + real reclaimable-memory check (`vm_stat` / `MemAvailable`, not `os.freemem()`). |
+| `swarm-guard.js` | PreToolUse (Agent/Task) | Anti-fork-bomb — spawn-rate cap + real reclaimable-memory check (`vm_stat` / `MemAvailable`, not `os.freemem()`). A blocked spawn also logs one line to `~/.anti-hall/swarm-trips.log` (observation only — doesn't feed the rate window). |
 | `phase-tracker.js` | PreToolUse (Agent/Task) | Records every subagent spawn so the statusline shows live swarm activity. It also writes a rolling `~/.anti-hall/agents/recent-spawn.json` heartbeat that `agentsRunning()` consumes, so the Stop guards know when parallel work is live. Never blocks. |
 | `agent-watchdog.js` | CLI helper (not a hook) | Heartbeat enforcer — scans `~/.anti-hall/agents/*.json` and reports stale/hung subagents; run manually by the orchestration skill. |
 | `task-tracker.js` | UserPromptSubmit | Injects task-list discipline (capture, prioritize, work in order) + a one-line freshness note when open/stale tasks exist. |
@@ -71,6 +71,7 @@ claude --plugin-dir /path/to/anti-hall
 | `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
 | `codex-nudge.js` | Stop (advisory) | Nudges once/session for an independent Codex second-opinion review when substantial code shipped with no Codex review; off-switch ANTIHALL_CODEX_NUDGE=off. |
 | `ship-it-guard.js` | PreToolUse (Write/Edit/MultiEdit) | **OPT-IN, default OFF** — the only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root). Also does a conformance advisory (never blocks) for edits outside a PLAN.md's declared `files:` list. Enforces artifact existence only (not plan quality), conservative, fail-open. No effect when unset. |
+| `merge-gate.js` | PreToolUse (Bash) | **OPT-IN, default OFF** — a backstop, not a guarantee. With `ANTIHALL_MERGE_GATE` ∈ {1,true,yes,on}, blocks an auto-merge (`gh pr merge` incl. `--auto`, `gh pr review --approve`, `git merge --no-ff/--ff` into main/master/develop, and `hivecontrol workspace merge-into-source`/`merge-from-source`) when the agent's own recent output carries an UNRESOLVED self-hedge ("pending review" / "first-pass" / "needs your eyes" / …) not followed by a resolution token. Keyword-heuristic, bypassable, fail-open, cannot hard-loop; no effect when unset. |
 | `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `update`, `flutter-debug`, `activate`, `simplify`, `debt`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
 | `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`companion/README.md`](companion/README.md). |
@@ -144,11 +145,15 @@ Codex repo marketplace compatibility is provided by [`../../.agents/plugins/mark
   deliberate human action.
 
 It uses a **quote-aware tokenizer** that inspects argv positions, so quoted force
-flags (`git push "--force"`), bundled `-f`, and `+refspec` pushes are all caught.
+flags (`git push "--force"`), bundled `-f`, `+refspec` pushes, and a trailing
+`--force` after a `2>&1` redirect are all caught. It also **unwraps** `bash -c` /
+`sh -c` / `zsh -c` / `dash -c` / `ksh -c` / `ash -c` shell wrappers and re-inspects
+the payload, so `bash -c "git push --force"` and `bash -c '...Co-Authored-By:
+Claude...'` cannot smuggle either block past it that way.
 **Documented fail-open scope:** it inspects only inline `-m` / `--message` trailers,
-so `-F <file>` / `--file` and editor commits are not scanned, and interpreter
-wrappers (`sh -c "..."`, `xargs`, an aliased `g push`) can bypass it. These are
-documented boundaries, not silent gaps.
+so `-F <file>` / `--file` and editor commits are not scanned, and `xargs` / an
+aliased `g push` can still bypass it. These are documented boundaries, not silent
+gaps.
 
 ### Task discipline
 
@@ -304,7 +309,7 @@ failure mode and the cost/latency is acceptable, Tier 3 closes the gap Tier 2 le
   first for any issue/feature/function/code/doc lookup, and to keep it updated.
   Silent no-op when graphify isn't used.
 - `graphify-reminder.js` (Stop) — after a session with real edits and a graph
-  present, surfaces a one-time reminder to run `/graphify --obsidian`. A Stop hook
+  present, surfaces a one-time reminder to run `graphify update .`. A Stop hook
   cannot inject `additionalContext`, so it nudges with a single soft `decision:block`,
   capped via `os.tmpdir` state so it never loops — stop again to dismiss.
 
@@ -354,10 +359,12 @@ Invoke via slash command:
   `decisions.md`, routes build seats Codex-primary with Sonnet-5 failover (a
   cross-model guard skips the Sonnet 5 Reviewer when a phase's build fell back to
   Sonnet 5, to avoid same-model self-review), and closes out with a session-history
-  entry + `SUMMARY.md` + a `/graphify --obsidian --update` trigger.
+  entry + `SUMMARY.md` + a `graphify update .` trigger.
 - **`/anti-hall:deadly-loop`** — iterative parallel Reviewer + Critic debate +
   fix-waves until convergence (zero NEW P0/P1s). The debate engine behind
-  ship-it's gates.
+  ship-it's gates. On convergence, writes an ADVISORY
+  `~/.anti-hall/approvals/<repo>@<HEAD-sha>.json` record (`"proof": false` —
+  not authorization; a real gate must still enforce its own check).
 - **`/anti-hall:deadly-loop-multi`** — scaled-up deadly-loop: N Reviewer + N Critic
   pairs with diversified lenses, then dedup + synthesize (double / triple / quadruple).
 - **`/anti-hall:install-statusline`** — writes the statusLine setting (global by
@@ -455,7 +462,8 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 - **Graphify reminder won't stop?** It is capped per session; stop again to dismiss.
   It only fires when a graph (`graphify-out/`) is present.
 - **git-guard let a force-push through?** Check the documented fail-open scope above
-  (interpreter wrappers / aliases / `-F <file>` commits are out of scope by design).
+  (`xargs` / aliases / `-F <file>` commits are out of scope by design; `bash -c`/`sh -c`
+  wrappers are unwrapped and inspected, not a bypass).
 - **Using Codex too?** Copy `AGENTS.md` (repo root) into your own repo root — it is
   not bundled by `/plugin install`. Verify with
   `codex --ask-for-approval never "Summarize current instructions"`.
@@ -464,7 +472,7 @@ See `statusline/STATUSLINE.md` for details and how to revert.
 
 ```bash
 # Full zero-dependency E2E suite (node:test, run from the repo root):
-node --test                                                                  # 701 pass +2 platform-skip (703 total); CI runs the same on push/PR (.github/workflows/test.yml)
+node --test                                                                  # 783 pass +2 platform-skip (785 total); CI runs the same on push/PR (.github/workflows/test.yml)
 
 # Quick smoke-checks of individual hooks:
 echo '{"hook_event_name":"SessionStart"}' | node hooks/verify-first-full.js  # full Iron-Law protocol + skill primer
@@ -487,7 +495,7 @@ claude --plugin-dir /path/to/anti-hall                                       # l
 
 ### Recommended optional: oh-my-claudecode (OMC)
 
-[oh-my-claudecode](https://github.com/talas9/oh-my-claudecode) is a **recommended
+[oh-my-claudecode](https://github.com/Yeachan-Heo/oh-my-claudecode) is a **recommended
 optional** dependency. anti-hall installs and runs fully standalone without it. Two
 features gain automatic behavior when OMC is installed:
 

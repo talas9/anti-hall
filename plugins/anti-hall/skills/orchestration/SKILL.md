@@ -152,8 +152,8 @@ NEVER run them inline in the main conversation.
 
 ## Query the graph before searching
 
-When a graphify knowledge graph exists (`graphify-out/` or `.planning/graphs/`):
-1. Ensure it is fresh: `/graphify --obsidian` (rebuild / update) before analysis.
+When a graphify knowledge graph exists (`graphify-out/`):
+1. Ensure it is fresh: `graphify update .` (rebuild / update) before analysis.
 2. Query it first: `/graphify query "..."` before dispatching any Grep/Glob/raw
    code-nav search or before starting a ship-it analysis.
 
@@ -248,6 +248,10 @@ node hooks/agent-watchdog.js [threshold_ms]
 
 Default threshold: **1 200 000 ms (20 min)**. Override by passing a number.
 
+Run this inline from the coordinator — `command-guard` carves a narrow exception
+for `hooks/agent-watchdog.js` (and `statusline/phase.js`) so these coordinator-owned
+helpers are not forced through subagent delegation. See "Statusline wiring" below.
+
 Output: one `STALE <id> last=<iso> age=<ms>ms status=<status> step=<step>` line
 per stale agent, then a `summary: <stale>/<total> stale` line.
 
@@ -330,6 +334,12 @@ path in practice: `path.join(pluginRoot, 'statusline', 'phase.js')`.
 The statusline reads `~/.anti-hall/phase-state.json`. Write from the main
 coordinator only; the file path is consistent across all runners because it
 uses the home directory (not os.tmpdir()).
+
+`command-guard` normally blocks `node <file>.js` in the coordinator context (to
+push heavy work to subagents), but it carves a narrow LIGHT_EXCEPTION for exactly
+`statusline/phase.js` and `hooks/agent-watchdog.js` — these two helpers are
+coordinator-owned by design, so running them inline is allowed and does not need
+to be delegated.
 
 ## References & context guardrails
 

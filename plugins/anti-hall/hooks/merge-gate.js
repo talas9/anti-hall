@@ -8,7 +8,8 @@
 //   wrote a self-hedge ("first-pass" / "pending review" / "do not merge") in its
 //   own recent output, then turned around and AUTO-MERGED anyway. If a Bash
 //   command is an AUTO-MERGE intent (`gh pr merge`, `gh pr merge --auto`, `gh pr
-//   review --approve`, `git merge --no-ff/--ff into main|master|develop`) AND the
+//   review --approve`, `git merge --no-ff/--ff into main|master|develop`,
+//   `hivecontrol workspace merge-into-source|merge-from-source`) AND the
 //   recent assistant transcript tail still carries an UNRESOLVED self-hedge, it
 //   BLOCKS (exit 2) and tells the agent to verify-or-get-sign-off first.
 //
@@ -233,6 +234,8 @@ function splitSegments(cmd) {
 //   - gh pr merge ...            (any `gh pr merge`, incl. --auto)
 //   - gh pr review --approve ... (approve that can enable merge)
 //   - git merge --no-ff|--ff ... <main|master|develop>
+//   - hivecontrol workspace merge-into-source|merge-from-source (DevSwarm real
+//     `git merge`; see docs/KB-devswarm-hivecontrol.md:139-140,240-245)
 function isAutoMerge(cmd) {
   for (const seg of splitSegments(cmd)) {
     const words = seg.trim().split(/\s+/).filter(Boolean);
@@ -253,6 +256,11 @@ function isAutoMerge(cmd) {
         const targetsProtected = flags.some((w) => /^(main|master|develop|origin\/(main|master|develop))$/i.test(w));
         if (hasFastFlag && targetsProtected) return true;
       }
+    } else if (verb === 'hivecontrol') {
+      // hivecontrol workspace merge-into-source / merge-from-source — a real
+      // `git merge` a DevSwarm child/parent workspace can run without a `gh`/`git`
+      // verb, so it needs its own auto-merge branch here.
+      if (rest[0] === 'workspace' && (rest[1] === 'merge-into-source' || rest[1] === 'merge-from-source')) return true;
     }
   }
   return false;

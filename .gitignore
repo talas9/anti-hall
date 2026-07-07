@@ -37,3 +37,8 @@ build/
 .skillopt-sleep/
 # SkillOpt deployment manifest — personal paths, never commit
 SKILLOPT-DEPLOYMENT.md
+.devswarm-temp/
+# DevSwarm workspace config — machine-local (references gitignored settings.local.json), never ship
+.devswarm/
+# ad-hoc scratch prompts — never ship
+sanity_prompt.txt

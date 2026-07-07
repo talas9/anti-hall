@@ -7,12 +7,27 @@ description: Codex-native context and usage conservation mode. Use when the user
 
 This is the Codex port of anti-hall limit/context conservation. It combines hook nudges, model routing, and output hygiene; it does not depend on Claude Workflow JS.
 
+## Resolve the plugin root
+
+Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that
+variable is only set for plugin-bundled hook commands (see
+`docs/KB-codex-platform-hooks-plugins.md`). Codex does show you this skill's own
+file path when it selects the skill ("Codex starts with each skill's name,
+description, and file path" — official Codex Skills doc). Resolve the plugin
+root from that path before running anything below:
+
+```bash
+# SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
+ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
+test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+```
+
 ## Activation
 
 Project-local hooks are installed by `anti-hall-activate`:
 
 ```bash
-node plugins/anti-hall/codex/install-codex.js
+node "$ANTI_HALL_ROOT/codex/install-codex.js"
 ```
 
 The installer registers `hooks/limit-conserve-inject.js` on `UserPromptSubmit` so conservation instructions are injected when active.
@@ -28,7 +43,7 @@ export ANTIHALL_LIMIT_THRESHOLD=85   # default threshold
 Status check:
 
 ```bash
-node -e "const {isConserving}=require('./plugins/anti-hall/hooks/limit-conserve.js'); console.log(JSON.stringify(isConserving(), null, 2))"
+node -e "const {isConserving}=require('$ANTI_HALL_ROOT/hooks/limit-conserve.js'); console.log(JSON.stringify(isConserving(), null, 2))"
 ```
 
 ## Main-model downshift (flagship preservation)

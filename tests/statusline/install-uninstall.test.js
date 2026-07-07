@@ -165,6 +165,66 @@ test('uninstall is idempotent when the statusLine key is already absent', () => 
   } finally { sb.cleanup(); }
 });
 
+// --- uninstall --project: round-trip against the file install actually wrote --
+// P0-2: install --project writes settings.local.json, but uninstall --project
+// used to target settings.json — wrong file, so it never actually removed
+// anti-hall AND clobbered an unrelated committed settings.json with no backup.
+
+test('uninstall --project round-trips against settings.local.json (the file install writes), backs it up, and leaves an unrelated settings.json untouched', () => {
+  const sb = sandbox();
+  try {
+    // An UNRELATED committed settings.json already defines its own statusLine —
+    // e.g. a team's shared, version-controlled statusline. install --project must
+    // never touch this file, and neither must uninstall --project.
+    fs.mkdirSync(path.dirname(sb.projectSettings), { recursive: true });
+    fs.writeFileSync(sb.projectSettings, JSON.stringify({ statusLine: { command: 'echo TEAM' } }), 'utf8');
+
+    install(sb, ['--project']);
+    assert.ok(fs.existsSync(sb.localSettings), 'install wrote settings.local.json');
+    assert.match(sb.readJSON(sb.localSettings).statusLine.command, /statusline\.js/);
+
+    const r = uninstall(sb, ['--project']);
+    assert.strictEqual(r.status, 0);
+
+    // The anti-hall statusLine must actually be gone from settings.local.json —
+    // NOT left in place while a different file gets clobbered (the P0-2 bug).
+    const local = sb.readJSON(sb.localSettings);
+    assert.ok(!local.statusLine || !/statusline\.js/.test(local.statusLine.command || ''),
+      'anti-hall statusLine removed from settings.local.json');
+
+    // A backup of settings.local.json (the file actually mutated) must exist.
+    assert.ok(fs.existsSync(sb.localSettings + '.bak-antihall'), 'backup of settings.local.json exists');
+
+    // The unrelated settings.json must be completely untouched.
+    const proj = sb.readJSON(sb.projectSettings);
+    assert.strictEqual(proj.statusLine.command, 'echo TEAM', 'unrelated settings.json statusLine left untouched');
+  } finally { sb.cleanup(); }
+});
+
+test("uninstall --project (strategy A) does not clobber a settings.local.json statusLine that is not anti-hall's", () => {
+  const sb = sandbox();
+  try {
+    // Simulate: base-statusline.json exists (from a prior install elsewhere),
+    // but the CURRENT settings.local.json statusLine points at something else
+    // entirely (not the anti-hall dispatcher). Strategy A must not overwrite it
+    // with the base command. A same-content backup isolates this from strategy
+    // C's separate (pre-existing, intentionally unconditional) key-removal path:
+    // if A wrongly fired, the file would read back 'echo ORIGINAL'; since it
+    // correctly skips, B's restore-from-backup is a same-content no-op.
+    fs.mkdirSync(path.dirname(sb.localSettings), { recursive: true });
+    const unrelated = { statusLine: { command: 'echo NOT_ANTIHALL' } };
+    fs.writeFileSync(sb.localSettings, JSON.stringify(unrelated), 'utf8');
+    fs.writeFileSync(sb.localSettings + '.bak-antihall', JSON.stringify(unrelated), 'utf8');
+    fs.mkdirSync(path.dirname(sb.baseCfg), { recursive: true });
+    fs.writeFileSync(sb.baseCfg, JSON.stringify({ command: 'echo ORIGINAL' }), 'utf8');
+
+    const r = uninstall(sb, ['--project']);
+    assert.strictEqual(r.status, 0);
+    const local = sb.readJSON(sb.localSettings);
+    assert.strictEqual(local.statusLine.command, 'echo NOT_ANTIHALL', 'unrelated statusLine left untouched by strategy A');
+  } finally { sb.cleanup(); }
+});
+
 // --- isShellSafe dispatcher guard -------------------------------------------
 
 test('install rejects a dispatcher path with shell metacharacters and prints manual-setup instructions', () => {
@@ -189,5 +249,20 @@ test('install embeds a safe dispatcher path override into statusLine.command', (
     assert.strictEqual(r.status, 0, 'safe dispatcher path must succeed');
     const s = sb.readJSON(sb.userSettings);
     assert.ok(s.statusLine && s.statusLine.command.includes(safePath), 'safe path embedded in statusLine.command');
+  } finally { sb.cleanup(); }
+});
+
+// --- --consolidate on an already-installed effective statusLine -------------
+
+test('install --consolidate on an already-installed statusLine does not throw (TDZ) and prints the advisory', () => {
+  const sb = sandbox();
+  try {
+    sb.writeUser({ statusLine: { type: 'command', command: 'echo OLD' } });
+    install(sb, ['--user']);                       // first install (non-consolidated)
+    const r = install(sb, ['--user', '--consolidate']); // hits the "already installed" early-exit path
+    assert.strictEqual(r.status, 0, 'must not crash — currently throws a TDZ ReferenceError on CONSOLIDATED_CFG');
+    assert.doesNotMatch(r.stderr, /ReferenceError/, 'no TDZ ReferenceError');
+    assert.match(r.stdout, /ADVISORY/i, 'prints the switch-to-consolidated advisory');
+    assert.match(r.stdout, /No changes made/i, 'still a no-op, as documented');
   } finally { sb.cleanup(); }
 });

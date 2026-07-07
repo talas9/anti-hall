@@ -11,14 +11,14 @@
 
 ## Scenarios to test (4)
 ### S1 — CLAUDE.md inheritance (free-fix check)
-Q: does a spawned subagent already receive the project + global CLAUDE.md? If yes, the skycrew repeated-brief problem is solved free.
+Q: does a spawned subagent already receive the project + global CLAUDE.md? If yes, the project-B repeated-brief problem is solved free.
 Method: spawn a subagent whose ONLY task is to report verbatim whether it can see specific sentinel strings known to be in (a) project CLAUDE.md, (b) ~/.claude/CLAUDE.md. Use a UNIQUE sentinel we plant, not pre-existing text (avoids false-positive from training/echo). Confirm by the subagent quoting the sentinel back. Control: a sentinel NOT in any CLAUDE.md (must NOT be quoted).
 Metric: binary inherits-yes/no per file. Risk: subagent may hallucinate seeing it — the sentinel must be unguessable + we verify exact quote.
 
-### S2 — skycrew dispatch repetition (origin case)
-Q: does skycrew's orchestrator actually restate a big cleanly-separable project brief per dispatch (unlike anti-hall's 0.14%)?
-Method: same repeated-vs-unique analysis as #61/#62 but on the largest skycrew transcript. Report clean-extractable shared % + losslessness (do shared phrases strip cleanly or weld into task sentences as in anti-hall?).
-Metric: clean shared %, losslessness y/n, break-even. Confound: skycrew may already use CLAUDE.md (S1) → if S1=inherits, S2 is moot.
+### S2 — project-B dispatch repetition (origin case)
+Q: does project-B's orchestrator actually restate a big cleanly-separable project brief per dispatch (unlike anti-hall's 0.14%)?
+Method: same repeated-vs-unique analysis as #61/#62 but on the largest project-B transcript. Report clean-extractable shared % + losslessness (do shared phrases strip cleanly or weld into task sentences as in anti-hall?).
+Metric: clean shared %, losslessness y/n, break-even. Confound: project-B may already use CLAUDE.md (S1) → if S1=inherits, S2 is moot.
 
 ### S3 — SessionStart-injection caching
 Q: can a SessionStart hook skip re-injecting the ~7.5KB protocol when an identical version is already present post-compact, and what's the real recurring win?
@@ -59,7 +59,7 @@ Codex CONVERGES with Reviewer on all P0s (corroborated): S1 sentinel-value-must-
 HARDENED PLAN: S1=hard-gate kill-switch (plant unguessable KEY=value in CLAUDE.md not dispatch, subagent no-tools reports VALUE), run FIRST. S2 only if S1 negative (>=3 transcripts, replay). S3 DROP. S4 only if S1 negative + real delta (token-ratio, >=2 cross-family judges + rubric, per-block break-even, directional-only). Over-scoping guard: S1/S3 kill-switches.
 ## RESULTS (hardened run) + FINAL VERDICT
 - S1 CLAUDE.md inheritance: subagents INHERIT global ~/.claude/CLAUDE.md + project MEMORY.md (0-tool probe). Project-CLAUDE.md mid-session = ABSENT (caching confound; clean re-test = next session w/ file at start). → repeated-brief largely already solved free.
-- S2 skycrew repetition: SKIP. 3 transcripts (100/65/29MB), 1.44% median dispatch repetition = session-structure NOISE (task-notifications/compaction), NOT project brief. skycrew/CLAUDE.md (23.9KB) holds governance; 0/8 repeated phrases are directives. Origin hypothesis REFUTED.
+- S2 project-B repetition: SKIP. 3 transcripts (100/65/29MB), 1.44% median dispatch repetition = session-structure NOISE (task-notifications/compaction), NOT project brief. project-B/CLAUDE.md (23.9KB) holds governance; 0/8 repeated phrases are directives. Origin hypothesis REFUTED.
 - S3 SessionStart caching: DROPPED (both auditors: unanswerable from transcript + prompt-cache near-free).
 - S4 compact/structured returns: GREEN. 8 pre-registered returns >3000 chars from largest transcript, tiktoken cl100k. Median token-ratio 0.202 (~80% smaller); 0/8 lost claim/evidence/uncertainty/blockers/next (required-facts rubric); break-even POSITIVE (structured generation ~0 overhead, no re-expansion). Caveat: N=8 directional, cannot certify >99%; savings = context-WINDOW pressure relief (billed smaller due to cache).
 FINAL: the ONE real win = structured/compact subagent RETURNS (S4). Enforceable MECHANICALLY via Agent `schema` param (not a weak prompt rule). Prompt-layer half already shipped this session (rule G). To merge a hard feature per user gate: N>=40 validation OR adopt as low-risk default (Anthropic-recommended + 0/8 loss). All other levers: skip/dropped/already-solved.

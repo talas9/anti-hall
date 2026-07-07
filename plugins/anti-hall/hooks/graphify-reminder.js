@@ -211,8 +211,9 @@ function main() {
         decision: 'block',
         reason:
           'graphify: significant edits this session and a knowledge graph is ' +
-          'present. Consider running `/graphify --obsidian` to keep the graph ' +
-          'current before stopping (one-time reminder; stop again to dismiss).',
+          'present. Consider running `graphify update .` to keep the code graph ' +
+          'current before stopping; for docs/Obsidian semantic refreshes, use ' +
+          '`/graphify . --update --obsidian` (one-time reminder; stop again to dismiss).',
       }) + '\n'
     );
   } catch (_) { /* ignore */ }

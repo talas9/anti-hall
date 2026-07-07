@@ -37,7 +37,7 @@ Before invoking the deadly loop, ensure:
 2. A **canonical handoff doc** exists or will be created (e.g., `docs/<date>-<feature>-session-handoff.md`).
 3. The owner has authorized at least one full iteration (each round is ~5-30 min of agent compute).
 4. A verification preamble + branch/SHA check is in effect for every spawned agent (see Phase A3).
-5. The debate roster from `references/MODEL-POLICY.md` is resolved — confirm whether the `fable` token and Codex are available (use the OS-agnostic Node probe in `references/MODEL-POLICY.md`) so you know which row of the availability fallback matrix applies.
+5. The debate roster from `references/MODEL-POLICY.md` is resolved — confirm whether Sonnet 5 and Codex are available (use the OS-agnostic Node probe in `references/MODEL-POLICY.md`) so you know which row of the availability fallback matrix applies. (Fable routing is policy-disabled — see `references/MODEL-POLICY.md` — so the `fable` token is informational-only and does not change the Reviewer seat.)
 
 ## The pattern at a glance
 
@@ -362,6 +362,32 @@ For each fix claimed resolved this loop:
 
 If any claim fails its check, the issue is NOT resolved — keep it open and iterate, regardless of the debate verdict. GO requires zero NEW P0s or P1s **and** every resolution verified by fresh evidence here.
 
+### D1.6 — Write the advisory audit record (NOT a proof/authorization token)
+
+On convergence (GO from D1 + D1.5 passing), write
+`~/.anti-hall/approvals/<repo>@<HEAD-sha>.json` with:
+
+```json
+{
+  "repo": "<repo>",
+  "sha": "<HEAD short SHA>",
+  "timestamp": "<ISO-8601>",
+  "roundTrend": [/* NEW confirmed P0/P1 count per round, e.g. [5,2,0] */],
+  "seatVerdicts": { "reviewer": "GO", "auditor": "GO", "critic": "GO" },
+  "proof": false
+}
+```
+
+**This file is an ADVISORY AUDIT RECORD, never proof of correctness and never an
+authorization token.** Label it as such wherever it is referenced. The deadly-loop
+is agent-followed guidance, not a hook enforced by the harness — an agent that
+fakes convergence (skips D1.5, rubber-stamps a verdict) can just as easily fake
+this file. Any reader that consumes it — e.g. a CI push gate or DevSwarm's merge
+gate — MUST treat `"proof": false` as load-bearing and enforce its OWN real
+gating (fresh test runs, its own review, branch protection) rather than trusting
+this record as sufficient evidence on its own. This file is a breadcrumb for
+audit trails and telemetry, not a substitute for the reader's own verification.
+
 ### Iteration caps (soft 10 / hard 15)
 
 The convergence loop (Reviewer + Auditor + Critic trio debate → fix wave → re-converge, "until zero NEW P0/P1 blockers") MUST be bounded — a loop that never converges is itself a failure signal, not a reason to keep grinding silently.
@@ -427,7 +453,7 @@ Avoid:
 - **Sending the trio (Reviewer + Auditor + Critic) in separate messages** — they run sequentially that way, tripling wall time. Always dispatch ALL THREE in one message.
 - **Single-seat re-audit after a fix wave** — a single-seat re-run is allowed ONLY for evidence-adjudication with no code/plan change in between; ANY fix wave ⇒ the FULL TRIO re-runs next round (per the round governance in `references/MODEL-POLICY.md`).
 - **Granting a final GO on a DEGRADED round** — a round where a seat stayed dead after its one retry can drive a fix wave but NEVER grants a final GO; the missing seat must sit in a full follow-up round first.
-- **Downgrading debate agents without checking availability** — walk the availability fallback matrix in `references/MODEL-POLICY.md`: if `fable` is unavailable the Reviewer falls back to Opus; if Codex is unavailable the Critic becomes an Opus with a divergent adversarial persona — NOT a weaker/cheaper model. The floor for every seat is Opus. A weaker model's debate depth is substantially shallower; use cheap models only for wave fix children, never for round debate agents. If a flagship seat is rate-limited, wait and retry rather than silently degrading.
+- **Downgrading debate agents without checking availability** — walk the availability fallback matrix in `references/MODEL-POLICY.md`: if Sonnet 5 is unavailable the Reviewer falls back to Opus; if Codex is unavailable the Critic becomes an Opus with a divergent adversarial persona — NOT a weaker/cheaper model. The floor for every seat is Opus. A weaker model's debate depth is substantially shallower; use cheap models only for wave fix children, never for round debate agents. If a flagship seat is rate-limited, wait and retry rather than silently degrading.
 - **Stopping after Round 1 GO** — sometimes Round 1 misses things only Round 2 catches once you have a baseline. The first GO from ALL THREE seats (non-degraded) is the gate, not Round 1.
 
 ## Telemetry to track
@@ -512,9 +538,12 @@ matrix; multiplier = 1 for the base loop, ≥2 for deadly-loop-multi; contextMod
 budget). deadly-loop-multi is the same script with `multiplier > 1`.
 
 **Trio seats** are spawned per the canonical forms in `references/MODEL-POLICY.md`:
-`agent(brief, {model:"fable"})` / `agent(brief, {model:"opus"})` /
-`agent(brief, {agentType:"codex:codex-rescue"})`. The script begins with the
-codex availability probe (the MODEL-POLICY Node probe) and seats the Opus
+`agent(brief, {model:"sonnet", effort:"xhigh"})` / `agent(brief, {model:"opus"})` /
+`agent(brief, {agentType:"codex:codex-rescue"})`. Fable routing is
+policy-disabled (see `references/MODEL-POLICY.md`) — the Reviewer seat is fixed
+Sonnet 5, falling back to Opus only if Sonnet 5 itself is unavailable or
+rate-limited, never routed to `fable`. The script begins with the codex
+availability probe (the MODEL-POLICY Node probe) and seats the Opus
 adversarial fallback if Codex is absent.
 
 **Workflow consent friction (stated honestly):** each Workflow call may require

@@ -60,8 +60,7 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-root-cause` — root-cause debugging protocol
 - `anti-hall-orchestration` — delegation/task discipline
 - `anti-hall-deadly-loop` — Reviewer/Critic hardening loop with `gpt-5.5`
-- `anti-hall-ship-it` — scaled plan/build/verify workflow
-- `anti-hall-feature-launch` — Codex-native feature launch protocol replacing GSD
+- `anti-hall-ship-it` — scaled plan/build/verify workflow (replaces the retired `anti-hall-feature-launch`)
 - `anti-hall-context-conserve` — context/usage conservation and model routing
 - `anti-hall-model-policy` — Codex model routing table
 - `anti-hall-doctor`, `anti-hall-update`, `anti-hall-debt`, `anti-hall-simplify`, `anti-hall-flutter-debug`, `anti-hall-install-statusline`, `anti-hall-omx`, `anti-hall-omc`

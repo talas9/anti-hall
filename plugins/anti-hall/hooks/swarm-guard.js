@@ -93,6 +93,13 @@ function availableBytes() {
 const LOG_DIR = path.join(os.homedir(), '.anti-hall');
 const LOG_FILE = path.join(LOG_DIR, 'swarm-spawns.log');
 const LOCK_FILE = path.join(LOG_DIR, 'swarm-spawns.lock');
+// SEPARATE observation-only file: a blocked spawn is deliberately NOT recorded
+// in LOG_FILE (a blocked entry must never extend the rate window — see the cap
+// check below), which left cap trips with no forensic trace. TRIP_LOG_FILE
+// records that a trip happened WITHOUT feeding the rate window: it is never
+// read by readTimestamps()/writeTimestamps() and is written outside the
+// LOCK_FILE critical section, so it cannot affect the block decision.
+const TRIP_LOG_FILE = path.join(LOG_DIR, 'swarm-trips.log');
 const LOCK_STALE_MS = 5000;    // steal a lock whose mtime is older than this
 const LOCK_RETRY_MS = 50;      // bounded total spin time trying to acquire
 const LOCK_SPIN_STEP_MS = 5;   // busy-wait granularity (no async in a sync hook)
@@ -223,9 +230,47 @@ function writeTimestamps(timestamps) {
   }
 }
 
+// Append ONE line to TRIP_LOG_FILE when a spawn is BLOCKED by the rate cap:
+// ISO timestamp \t recent-count-in-window \t tool/agent that tripped. Fire and
+// forget: never throws, never affects the block decision (telemetry only), and
+// never touches LOG_FILE/LOCK_FILE (must not feed the rate window).
+function logTrip(recentCount, toolLabel) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const line = new Date().toISOString() + '\t' + recentCount + '\t' + toolLabel + '\n';
+    fs.appendFileSync(TRIP_LOG_FILE, line, 'utf8');
+  } catch (_) {
+    // Fail-open: a telemetry write failure must never crash the guard or
+    // change its block decision.
+  }
+}
+
+// Identify the tool/agent that spawned this hook invocation, for the trip log
+// only (never used in the block decision itself). Checks subagent_type /
+// agentType / agent_type — the Agent tool, the Workflow agent() API, and a
+// generic fallback spell it differently (mirrors codex-nudge.js:117-119).
+function describeSpawn(payload) {
+  try {
+    const toolName = (payload && typeof payload.tool_name === 'string' && payload.tool_name) || 'unknown';
+    const inp = (payload && payload.tool_input && typeof payload.tool_input === 'object') ? payload.tool_input : {};
+    const atype = (typeof inp.subagent_type === 'string' && inp.subagent_type) ||
+                  (typeof inp.agentType === 'string' && inp.agentType) ||
+                  (typeof inp.agent_type === 'string' && inp.agent_type) || '';
+    return atype ? (toolName + ':' + atype) : toolName;
+  } catch (_) {
+    return 'unknown';
+  }
+}
+
 function main() {
-  // Read stdin (not strictly needed for logic but required by hook protocol)
-  try { fs.readFileSync(0, 'utf8'); } catch (_) {}
+  // Read stdin and parse it JUST enough to label a trip (tool/agent name).
+  // Never required for the block/allow logic itself — a parse failure simply
+  // leaves toolLabel as 'unknown'.
+  let toolLabel = 'unknown';
+  try {
+    const raw = fs.readFileSync(0, 'utf8');
+    try { toolLabel = describeSpawn(JSON.parse(raw)); } catch (_) {}
+  } catch (_) {}
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   const { isSkipped } = require('./skip-guard.js');
@@ -267,6 +312,7 @@ function main() {
   }
 
   let blockReason = null;
+  let tripCount = 0;
   try {
     let timestamps;
     try {
@@ -283,6 +329,7 @@ function main() {
     // logged, otherwise repeated blocked retries keep extending the window and the
     // guard can never recover. Only an ALLOWED spawn is recorded (below).
     if (recent.length >= SPAWN_CAP) {
+      tripCount = recent.length;
       blockReason =
         'anti-hall swarm-guard: agent spawn-rate ceiling reached (' + recent.length +
         ' spawns in the last 60s, cap is ' + SPAWN_CAP + '). Pause new agents to avoid ' +
@@ -300,6 +347,10 @@ function main() {
   }
 
   if (blockReason !== null) {
+    // Telemetry only, AFTER the lock is released: a trip must be observable
+    // but must never feed the rate window (LOG_FILE) or extend
+    // the critical section that guards it.
+    logTrip(tripCount, toolLabel);
     process.stdout.write(JSON.stringify({ decision: 'block', reason: blockReason }) + '\n');
     process.exit(2);
   }

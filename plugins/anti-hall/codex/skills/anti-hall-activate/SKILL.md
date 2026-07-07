@@ -7,22 +7,37 @@ description: Idempotent Codex setup for anti-hall. Use when the user asks to act
 
 Activation for Codex installs the supported Codex hook subset and writes an advisory sentinel. It does not touch Claude Code settings.
 
+## Resolve the plugin root
+
+Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that
+variable is only set for plugin-bundled hook commands (see
+`docs/KB-codex-platform-hooks-plugins.md`). Codex does show you this skill's own
+file path when it selects the skill ("Codex starts with each skill's name,
+description, and file path" — official Codex Skills doc). Resolve the plugin
+root from that path before running anything below:
+
+```bash
+# SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
+ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
+test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+```
+
 1. Install project-local Codex hooks:
 
 ```bash
-node plugins/anti-hall/codex/install-codex.js
+node "$ANTI_HALL_ROOT/codex/install-codex.js"
 ```
 
 2. For global Codex hooks instead:
 
 ```bash
-node plugins/anti-hall/codex/install-codex.js --global
+node "$ANTI_HALL_ROOT/codex/install-codex.js" --global
 ```
 
 3. Verify:
 
 ```bash
-node plugins/anti-hall/hooks/doctor.js
+node "$ANTI_HALL_ROOT/hooks/doctor.js"
 codex features list
 test -f .codex/hooks.json && sed -n '1,220p' .codex/hooks.json
 ```

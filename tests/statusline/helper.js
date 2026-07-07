@@ -33,12 +33,11 @@ function isolatedEnv(home) {
     // Unlike the HOOK harness (spawn-hook.js), the statusline scripts read NO Claude
     // Code markers (CLAUDE_CODE_ENTRYPOINT / agent ids) — those only drive the
     // hooks' coordinator-vs-subagent detection. The ONLY thing the statusline must
-    // have isolated is HOME, so it reads the fixture's ~/.anti-hall state. So on
-    // win32 we inherit the FULL parent env (giving cmd.exe exactly what it has in
-    // production, where the statusline is spawned with the real shell env) and only
-    // OVERRIDE the home-pointing vars. This exercises the real base-command SUCCESS
-    // path instead of starving cmd.exe with a stripped env. (POSIX `sh -c` needs
-    // none of this, so there we keep the minimal controlled base below.)
+    // have isolated is HOME, so it reads the fixture's ~/.anti-hall state. So we
+    // inherit the FULL parent env (giving cmd.exe exactly what it has in production,
+    // where the statusline is spawned with the real shell env) and only OVERRIDE the
+    // home-pointing vars. This exercises the real base-command SUCCESS path instead
+    // of starving cmd.exe with a stripped env.
     const root = path.parse(home).root;
     return {
       ...process.env,
@@ -48,7 +47,35 @@ function isolatedEnv(home) {
       HOMEPATH: home.slice(root.length),
     };
   }
-  return { PATH: process.env.PATH, HOME: home };
+  const env = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    // Keep USER unset on POSIX unless the parent supplied it; os.homedir() uses
+    // HOME first, and the fixture HOME is what matters for statusline state.
+  };
+  // Tests that exercise statusline-specific env pass it explicitly. Do not let
+  // a real user's statusline configuration leak into unrelated fixture tests.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('ANTIHALL_STATUSLINE_')) {
+      delete env[key];
+    }
+  }
+  delete env.CLAUDE_CONFIG_DIR;
+  delete env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  // Color tests rely on the default colored path unless they pass NO_COLOR
+  // explicitly through opts.env (merged after isolatedEnv()). Do not inherit the
+  // caller's terminal color policy into the fixture.
+  delete env.NO_COLOR;
+  delete env.FORCE_COLOR;
+  delete env.CLICOLOR;
+  delete env.CLICOLOR_FORCE;
+  // Statusline scripts do not need Claude hook-entrypoint metadata, and keeping it
+  // out preserves the "not running under Claude" fixture shape.
+  delete env.CLAUDE_CODE_ENTRYPOINT;
+  delete env.CLAUDE_CODE_AGENT_ID;
+  delete env.CLAUDE_CODE_AGENT_TYPE;
+  return env;
 }
 
 // runSL(scriptName, { stdin, args, home, cwd, env }) -> { status, stdout, stderr }

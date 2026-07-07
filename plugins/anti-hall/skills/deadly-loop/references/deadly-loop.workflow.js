@@ -410,7 +410,14 @@ async function main() {
       log('round ' + round + ': seat ' + seats[i].label + ' DRIFTED (' + reason +
         ') — respawning once with corrected brief.');
       const respawned = await investigateAgent(seats[i], a, packText, reason, ':respawn');
-      reports[i] = respawned.report;
+      const respawnReason = driftReasonFor(respawned.report, a);
+      if (respawnReason) {
+        log('round ' + round + ': seat ' + seats[i].label + ' STILL DRIFTED after respawn (' +
+          respawnReason + ') — counting as DEGRADED.');
+        reports[i] = null;
+      } else {
+        reports[i] = respawned.report;
+      }
       resolvedOptsPerSeat[i] = respawned.resolvedOpts;
     } else if (reason) {
       log('round ' + round + ': seat ' + seats[i].label + ' DRIFTED (' + reason +

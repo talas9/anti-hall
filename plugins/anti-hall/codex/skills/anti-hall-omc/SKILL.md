@@ -5,6 +5,21 @@ description: Inspect or integrate optional oh-my-claudecode/OMC state with anti-
 
 # anti-hall OMC integration for Codex
 
+## Resolve the plugin root
+
+Codex does not expand `${PLUGIN_ROOT}` inside a skill's own instructions — that
+variable is only set for plugin-bundled hook commands (see
+`docs/KB-codex-platform-hooks-plugins.md`). Codex does show you this skill's own
+file path when it selects the skill ("Codex starts with each skill's name,
+description, and file path" — official Codex Skills doc). Resolve the plugin
+root from that path before running anything below:
+
+```bash
+# SKILL_FILE = the absolute path Codex showed you for this SKILL.md.
+ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
+test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
+```
+
 OMC is a recommended optional companion, not an anti-hall dependency.
 
 Anti-hall uses OMC when present for:
@@ -23,7 +38,7 @@ grep -RIn "oh-my-claudecode@omc\\|enabledPlugins" .omc ~/.codex ~/.agents 2>/dev
 Check anti-hall's OMC helper:
 
 ```bash
-node --check plugins/anti-hall/hooks/omc-detect.js
+node --check "$ANTI_HALL_ROOT/hooks/omc-detect.js"
 ```
 
 Do not install OMC automatically from anti-hall activation. It changes separate global/project state and should be explicit.

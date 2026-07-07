@@ -301,7 +301,7 @@ for (const h of ['graphify-guard.js', 'graphify-session.js', 'graphify-reminder.
   if (registered.includes(h)) ok(`${h} registered in hooks.json`);
   else warnl(`${h} NOT registered in hooks.json`);
 }
-warnl('graphify staleness is NOT auto-detected — re-run `/graphify --obsidian` after significant edits to keep the graph current');
+warnl('graphify staleness is NOT auto-detected — re-run `graphify update .` after significant edits to keep the graph current');
 
 // --- 6. Context footprint ----------------------------------------------------
 // The plugin injects text into the model's context. Measure it so the cost of

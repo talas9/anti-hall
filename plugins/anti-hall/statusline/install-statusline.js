@@ -76,6 +76,10 @@ const DISPATCHER   = DISPATCHER_OVERRIDE !== undefined
 
 const BASE_CFG_DIR = path.join(os.homedir(), '.anti-hall');
 const BASE_CFG     = path.join(BASE_CFG_DIR, 'base-statusline.json');
+// Consolidated-mode passthrough-base path. Declared here (not down near its
+// write site) because the already-installed early-exit check above references
+// it — hoisted so that check never hits a const before it's declared.
+const CONSOLIDATED_CFG = path.join(BASE_CFG_DIR, 'consolidated-base.json');
 
 // Verify the dispatcher exists (sanity check). Skipped when the test override
 // is active because the test path is intentionally fake.
@@ -234,9 +238,9 @@ const existingCmd = (existing && typeof existing.command === 'string') ? existin
 // Consolidated mode: save the existing command to consolidated-base.json so
 // statusline-rich.js appends the AH chip to the base output (single merged line).
 // Separate from base-statusline.json (which is the line-1 wrap / two-line mode).
+// CONSOLIDATED_CFG itself is declared up near BASE_CFG (hoisted for the
+// already-installed early-exit check above).
 // ---------------------------------------------------------------------------
-
-const CONSOLIDATED_CFG = path.join(BASE_CFG_DIR, 'consolidated-base.json');
 
 if (isConsolidate && existingCmd) {
   try {

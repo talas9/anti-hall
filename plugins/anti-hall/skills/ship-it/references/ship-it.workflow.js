@@ -46,6 +46,21 @@
 //   }
 //   If `args` is undefined the workflow exits with a usage note (no guessing).
 
+// META must be the FIRST statement in the file and a PURE LITERAL (no vars/calls/
+// spreads): the Workflow runtime rejects a saved script whose first statement is not
+// `export const meta = {...}` (probe P8, mirrors deadly-loop.workflow.js:63). Without
+// this, saving to .claude/workflows/ship-it.js and running /ship-it — the template's
+// entire purpose — is rejected at load. `phases` describes the two-stage shape each
+// group runs: a parallel Build, then a per-phase deadly-loop Audit gate.
+export const meta = {
+  name: 'ship-it',
+  description: 'One lean anti-hall-native ship workflow: a parallel build over disjoint, conflict-free phase groups (Codex-primary / Sonnet-5 failover) followed by a per-phase deadly-loop audit gate (Reviewer + Auditor + Critic). Single-pass scaffold — the coordinator commits passing phases serially and drives the fix-wave loop; the script never commits.',
+  phases: [
+    { title: 'Build', detail: 'parallel build over disjoint, conflict-free phase groups (validated fail-closed before fan-out)' },
+    { title: 'Audit', detail: 'per-phase deadly-loop gate: Reviewer + Auditor + Critic barrier, gate on zero NEW P0 or P1' },
+  ],
+};
+
 // args may arrive as an OBJECT or a JSON STRING depending on harness build
 // (live-verified 2026-06-10 — see tests/fixtures/step0-probe-record.md P8).
 const plan = (typeof args === 'object' && args) ? args
@@ -68,15 +83,31 @@ const RESULT_SCHEMA = {
   required: ['label', 'status', 'implementerModel'],
 };
 
+// The convergence bar everywhere in the plugin is "zero NEW P0 OR P1" (deadly-loop
+// gate, MODEL-POLICY). A seat that reports newP0:0 but newP1>0 is NOT converged — it
+// must still trigger the coordinator's fix-wave loop. So the schema REQUIRES both
+// counts and the per-phase gate (see main()) blocks while newP0>0 OR newP1>0.
 const VERDICT_SCHEMA = {
   type: 'object',
   properties: {
     verdict: { type: 'string', enum: ['converged', 'fix_needed'] },
     newP0: { type: 'number' }, // count of NEW P0 blockers this round (must reach 0)
+    newP1: { type: 'number' }, // count of NEW P1 blockers this round (must reach 0)
     summary: { type: 'string' },
   },
-  required: ['verdict', 'newP0'],
+  required: ['verdict', 'newP0', 'newP1'],
 };
+
+// Sum a severity count across the trio's seat verdicts, ignoring dead seats (null)
+// and non-numeric/negative reports. Used by the per-phase gate to decide convergence.
+function seatSeverityCount(verdicts, key) {
+  let n = 0;
+  for (const v of verdicts) {
+    const c = v && Number(v[key]);
+    if (Number.isFinite(c) && c > 0) n += c;
+  }
+  return n;
+}
 
 // Build-agent brief: inject FULL context, never "read the plan". The agent runs the
 // deadly-loop A3 branch/SHA preamble, edits ONLY its disjoint files, then proves the
@@ -138,7 +169,8 @@ function reviewerBrief(phase) {
     'Audit this phase diff for: correctness vs the plan, edge cases actually handled,',
     'regressions, security on security-relevant phases, full blast radius.',
     'Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
-    'Count only NEW P0 blockers (not rediscovered ones). Return the verdict schema.',
+    'Count NEW P0 AND NEW P1 blockers separately (not rediscovered ones); return both as',
+    'newP0 and newP1. The gate blocks while EITHER is > 0. Return the verdict schema.',
   ].join('\n');
 }
 function auditorBrief(phase) {
@@ -148,7 +180,8 @@ function auditorBrief(phase) {
     'OUTWARD: regressions in unchanged dependent code, wrong cross-module/cross-PR coupling,',
     'fixes that undid earlier fixes, merge-order cross-reference breaks.',
     'Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
-    'Count only NEW P0 blockers. Return the verdict schema.',
+    'Count NEW P0 AND NEW P1 blockers separately; return both as newP0 and newP1.',
+    'The gate blocks while EITHER is > 0. Return the verdict schema.',
   ].join('\n');
 }
 function criticBrief(phase) {
@@ -156,7 +189,8 @@ function criticBrief(phase) {
     'You are the deadly-loop CRITIC (Codex, xhigh reasoning) for phase ' + phase.label + '.',
     'Adversarial lens — DIFFERENT mental model; find blindspots the Reviewer and Auditor',
     'would miss; try to BREAK the change. Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
-    'Count only NEW P0 blockers. Return the verdict schema.',
+    'Count NEW P0 AND NEW P1 blockers separately; return both as newP0 and newP1.',
+    'The gate blocks while EITHER is > 0. Return the verdict schema.',
   ].join('\n');
 }
 
@@ -207,7 +241,21 @@ async function reviewerAgent(p, opts) {
   });
 }
 
-async function criticAgent(p) {
+// CRITIC SEAT with the SAME cross-model self-review guard the Reviewer uses (B5,
+// MODEL-POLICY implementer≠reviewer). The default path builds with Codex, so a Codex
+// Critic would be reviewing Codex-implemented code — self-review. When opts.skipCodex is
+// set (the caller saw implementerModel === 'codex'), skip Codex entirely and seat an Opus
+// Critic. Only the rarer Sonnet-5-built phase keeps the Codex Critic (no self-review there).
+async function criticAgent(p, opts) {
+  const skipCodex = !!(opts && opts.skipCodex);
+  if (skipCodex) {
+    log('ship-it: Critic skipping Codex for "' + p.label + '" — phase was built by Codex (cross-model self-review guard); using Opus Critic.');
+    return agent(criticBrief(p), {
+      schema: VERDICT_SCHEMA, run_in_background: true,
+      label: p.label + ':critic(opus-noselfreview)', model: 'opus',
+    });
+  }
+
   const r = await agent(criticBrief(p), {
     schema: VERDICT_SCHEMA, run_in_background: true,
     label: p.label + ':critic', agentType: 'codex:codex-rescue',
@@ -293,28 +341,40 @@ async function main() {
     // Models are set EXPLICITLY per seat (an omitted model inherits the orchestrator's model;
     // on a flagship orchestrator that would silently produce an all-flagship swarm). Tier
     // tokens only — resolved to the latest of that tier at call time, never versioned ids.
-    // This is a SINGLE pass that shows the fan-out shape; if it returns newP0 > 0 the
-    // COORDINATOR runs the real deadly-loop skill fix-wave -> re-converge loop (not this script).
+    // This is a SINGLE pass that shows the fan-out shape; if the gate does not converge
+    // (newP0 > 0 OR newP1 > 0) the COORDINATOR runs the real deadly-loop skill fix-wave
+    // -> re-converge loop (not this script).
     for (const p of group) {
       phase('deadly-loop gate: ' + p.label);
-      // B5: if this phase's build fell back to Sonnet 5, the Reviewer must skip its own
-      // Sonnet 5 attempt (same-model self-review) and go straight to Opus. Auditor (always
-      // Opus) and Critic (Codex, or Opus fallback) never need this — neither is ever the
-      // implementer.
-      const skipSonnet = !!(results[p.label].build && results[p.label].build.implementerModel === 'sonnet');
+      // B5 cross-model self-review guard (implementer≠reviewer). The build seat that
+      // produced this phase must NOT also review it:
+      //   - Sonnet-5-built => Reviewer skips its own Sonnet 5 attempt, goes straight to Opus.
+      //   - Codex-built    => Critic skips its own Codex attempt, seats an Opus Critic.
+      // The Auditor is always Opus and is never the implementer, so it needs no guard.
+      const implementerModel = results[p.label].build && results[p.label].build.implementerModel;
+      const skipSonnet = implementerModel === 'sonnet';
+      const skipCodex = implementerModel === 'codex';
       const audit = await parallel([
         () => reviewerAgent(p, { skipSonnet }), // Sonnet 5 with documented Opus fallback (see reviewerAgent)
         () => agent(auditorBrief(p),  { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':auditor', model: 'opus', effort: 'high' }),
-        () => criticAgent(p), // Codex with documented Opus fallback (see criticAgent)
+        () => criticAgent(p, { skipCodex }), // Codex (or Opus when Codex built the phase / on fallback) — see criticAgent
       ]);
       results[p.label].review = { reviewer: audit[0], auditor: audit[1], critic: audit[2] };
+
+      // Mechanical convergence gate: the fix-wave loop must trigger while EITHER newP0
+      // or newP1 is > 0 across the trio (the plugin-wide "zero NEW P0 OR P1" bar). The
+      // coordinator reads this to decide whether to run the deadly-loop fix-wave.
+      const newP0 = seatSeverityCount(audit, 'newP0');
+      const newP1 = seatSeverityCount(audit, 'newP1');
+      results[p.label].gate = { newP0, newP1, converged: newP0 === 0 && newP1 === 0 };
     }
   }
 
   // This script does NOT commit and does NOT loop. It returns the single-pass results;
   // the COORDINATOR (main thread) reads `results`, commits passing phases serially
   // (manual git on the main thread — never the script), and runs the deadly-loop skill's
-  // fix-wave -> re-converge loop on any phase with newP0 > 0 until zero NEW P0s or P1s.
+  // fix-wave -> re-converge loop on any phase whose gate is not converged (newP0 > 0 OR
+  // newP1 > 0) until zero NEW P0s or P1s.
   return { phases: results };
 }
 

@@ -32,6 +32,15 @@ const BLOCK = [
   'bash -c "npm run build"',
   'eval "npm test"',
   'go env -w GOFLAGS=-mod=mod',
+  // Arbitrary node scripts stay blocked — the helper exception must be narrow.
+  'node evil.js',
+  'node build.js',
+  'node scripts/deploy.mjs',
+  // Wrong filename inside the same helper dir is NOT exempted.
+  'node /abs/plugins/anti-hall/statusline/other.js',
+  // Spoof attempt: a look-alike dir prefix must not satisfy the anchored exception.
+  'node evilstatusline/phase.js',
+  'node fakehooks/agent-watchdog.js',
 ];
 
 const ALLOW = [
@@ -42,6 +51,16 @@ const ALLOW = [
   'git push --dry-run origin main',
   'go env GOPATH',
   'echo "hello world"',
+  // Coordinator-owned phase-state helpers (orchestration/SKILL.md:305, ship-it/SKILL.md:280).
+  // Documented relative form (path relative to plugin root) ...
+  'node statusline/phase.js set PLAN "Planning feature X" 0 3',
+  'node statusline/phase.js advance',
+  'node hooks/agent-watchdog.js 1200000',
+  // ... and the documented absolute form (path.join(pluginRoot, ...)).
+  'node /Users/x/plugins/anti-hall/statusline/phase.js clear',
+  'node /Users/x/plugins/anti-hall/hooks/agent-watchdog.js',
+  // Windows-separator form must resolve identically (OS-agnostic).
+  'node C:\\proj\\plugins\\anti-hall\\statusline\\phase.js agents 4',
 ];
 
 for (const cmd of BLOCK) {

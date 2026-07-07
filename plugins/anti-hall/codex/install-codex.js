@@ -71,7 +71,10 @@ function readJSON(file) {
 
 function isAntiHallGroup(g) {
   const hooks = Array.isArray(g && g.hooks) ? g.hooks : [];
-  return hooks.some((h) => h && typeof h.command === 'string' && h.command.includes('/plugins/anti-hall/hooks/'));
+  // hook() builds paths with path.join, which emits backslashes on Windows;
+  // normalize separators before matching so a prior Windows-installed group
+  // is still recognized as stale and deduped, not appended alongside a fresh one.
+  return hooks.some((h) => h && typeof h.command === 'string' && h.command.replace(/\\/g, '/').includes('/plugins/anti-hall/hooks/'));
 }
 
 function mergeHooks(existing) {

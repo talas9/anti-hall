@@ -78,6 +78,63 @@ test('ON + `git merge --no-ff` into main + hedge -> BLOCK', () => {
   } finally { h.cleanup(); }
 });
 
+test('ON + `hivecontrol workspace merge-into-source` + hedge -> BLOCK (hivecontrol verb)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('Built the slice — pending review by you.')]);
+    const r = testHook(HOOK, bashPayload('hivecontrol workspace merge-into-source', tp), { home: h.home, env: ON });
+    assert.strictEqual(r.status, 2, `expected block; stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.match(r.stderr, /merge-gate/);
+  } finally { h.cleanup(); }
+});
+
+test('ON + `hivecontrol workspace merge-from-source` + hedge -> BLOCK (hivecontrol verb)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('Landed it. Do not merge — needs your eyes.')]);
+    const r = testHook(HOOK, bashPayload('hivecontrol workspace merge-from-source', tp), { home: h.home, env: ON });
+    assert.strictEqual(r.status, 2, `expected block; stdout: ${r.stdout} stderr: ${r.stderr}`);
+    assert.match(r.stderr, /merge-gate/);
+  } finally { h.cleanup(); }
+});
+
+test('ON + `hivecontrol workspace merge-into-source` + NO hedge -> allow', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('All criteria verified and green. Merging.')]);
+    const r = testHook(HOOK, bashPayload('hivecontrol workspace merge-into-source', tp), { home: h.home, env: ON });
+    assert.strictEqual(r.status, 0, `expected allow with no hedge; stderr: ${r.stderr}`);
+  } finally { h.cleanup(); }
+});
+
+test('OFF (default) + `hivecontrol workspace merge-into-source` + hedge -> no-op allow', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('This is a first-pass, do not merge yet.')]);
+    const r = testHook(HOOK, bashPayload('hivecontrol workspace merge-into-source', tp), { home: h.home });
+    assert.strictEqual(r.status, 0, `expected allow when gate off; stderr: ${r.stderr}`);
+  } finally { h.cleanup(); }
+});
+
+test('skip-hatch: merge-gate skip marker disables the gate for hivecontrol merge verbs too', () => {
+  const h = makeHome();
+  try {
+    h.writeSkip({ 'merge-gate': Date.now() + 60_000 });
+    const tp = h.writeTranscript([assistantMessage('first-pass, do not merge')]);
+    const r = testHook(HOOK, bashPayload('hivecontrol workspace merge-from-source', tp), { home: h.home, env: ON });
+    assert.strictEqual(r.status, 0, `expected allow when skipped; stderr: ${r.stderr}`);
+  } finally { h.cleanup(); }
+});
+
+test('ON + `hivecontrol workspace list all` (not a merge verb) + hedge -> allow', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript([assistantMessage('first-pass, do not merge')]);
+    const r = testHook(HOOK, bashPayload('hivecontrol workspace list all --tree', tp), { home: h.home, env: ON });
+    assert.strictEqual(r.status, 0, `expected allow on non-merge hivecontrol cmd; stderr: ${r.stderr}`);
+  } finally { h.cleanup(); }
+});
+
 test('ON + `gh pr merge` + NO hedge -> allow', () => {
   const h = makeHome();
   try {

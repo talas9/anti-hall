@@ -38,8 +38,7 @@ Resume last run:
 
 ## Anti-hall + OMX workflow mapping
 
-- Feature launch: `anti-hall-feature-launch` plus OMX `$plan`, `$ralplan`, `$team`, `$ralph`, or `$ultragoal` as the execution surface.
-- Ship-it: `anti-hall-ship-it`; use OMX team/ralph only when the task size justifies it.
+- Ship-it (replaces the retired feature-launch): `anti-hall-ship-it` plus OMX `$plan`, `$ralplan`, `$team`, `$ralph`, or `$ultragoal` as the execution surface when task size justifies it.
 - Deadly-loop: `anti-hall-deadly-loop`; debate roles stay on `gpt-5.5`.
 - Context conservation: `anti-hall-context-conserve`; route lookup/mechanical work to spark/mini lanes.
 

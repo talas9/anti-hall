@@ -234,7 +234,20 @@ function splitSegments(cmd) {
     if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
     if (c === '|') { flush(); i++; continue; }
     if (c === ';') { flush(); i++; continue; }
-    if (c === '&') { flush(); i++; continue; }
+    // `&>` / `&>>` is a redirect-BOTH operator (stdout+stderr to a file), NOT a
+    // control-op separator. Keep the `&` in the current segment so the following
+    // `>`/filename stays part of THIS command; splitting here would orphan a
+    // trailing flag like `--force` into a bogus non-git segment (P1).
+    if (c === '&' && c2 === '>') { cur += c; i++; continue; }
+    // A single `&` is a background / separator control-op ONLY when it is not
+    // part of a redirection. In `2>&1` / `>&2` the `&` duplicates a file
+    // descriptor and is preceded by `>` (or `<`); splitting there would orphan a
+    // trailing `--force` into a non-git segment and bypass the force guard (P1).
+    if (c === '&') {
+      const prev = cur.length ? cur[cur.length - 1] : '';
+      if (prev === '>' || prev === '<') { cur += c; i++; continue; }
+      flush(); i++; continue;
+    }
     if (c === '\n') { flush(); i++; continue; }
     // Subshell / grouping / command-substitution boundaries: treat as splits so
     // `(git push --force)` and `$(...)` / `{ ...; }` bodies are scanned as their
@@ -657,6 +670,34 @@ function extractEvalPayload(segment) {
   return parts.join(' ');
 }
 
+// Shell interpreters whose `-c "<payload>"` argument is itself a shell command.
+// A `bash -c "git push --force"` wrapper's effective verb is `bash`, not `git`,
+// so without recursing the payload the git force/self-credit rules never run and
+// the wrapper is a TOTAL guard bypass (P0-1). Mirrors command-guard.js and
+// graphify-guard.js SHELL_VERBS.
+const SHELL_VERBS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash']);
+
+// If a segment is `bash -c '<payload>'` (or sh/zsh/dash/ksh/ash -c "...",
+// including bundled forms like `bash -lc "..."` and `--command`), return the
+// payload command string to be re-parsed, else ''. Reuses the tokenizer +
+// effectiveVerb so wrappers (`sudo bash -c ...`) resolve correctly. Mirrors the
+// proven extractShellCPayload in command-guard.js / graphify-guard.js.
+function extractShellCPayload(segment) {
+  const tokens = tokenize(segment);
+  const ev = effectiveVerb(tokens);
+  if (!ev || !SHELL_VERBS.has(ev.verb.toLowerCase())) return '';
+  const args = ev.args;
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i].text;
+    // The `-c` flag (or `--command`, or a bundled short cluster ending in `c`
+    // such as `-lc` / `-xc`) carries the payload in the NEXT token.
+    if (t === '-c' || t === '--command' || /^-[a-z]*c$/.test(t)) {
+      return i + 1 < args.length ? args[i + 1].text : '';
+    }
+  }
+  return '';
+}
+
 // Run the git force/trailer detection on every segment of a command string.
 // Returns a block message string if a violation is found, else null. Recurses
 // into `eval <payload>` segments (depth-bounded) so force/trailer forms hidden
@@ -677,6 +718,22 @@ function scanCommand(cmd, depth) {
     if (ev.verb === 'eval') {
       if (d < 3) {
         const payload = extractEvalPayload(seg);
+        if (payload) {
+          const nested = scanCommand(payload, d + 1);
+          if (nested) return nested;
+        }
+      }
+      continue;
+    }
+
+    // Unwrap `bash -c "<payload>"` (sh/zsh/dash/ksh/ash): a shell wrapper's verb
+    // is not `git`, so `bash -c "git push --force"` would otherwise fall through
+    // to the `ev.verb !== 'git'` skip below and fail-open — a total bypass of the
+    // one guard the repo treats as non-skippable (P0-1). Recurse the -c payload
+    // depth-bounded, exactly like the eval branch.
+    if (SHELL_VERBS.has(ev.verb.toLowerCase())) {
+      if (d < 3) {
+        const payload = extractShellCPayload(seg);
         if (payload) {
           const nested = scanCommand(payload, d + 1);
           if (nested) return nested;
