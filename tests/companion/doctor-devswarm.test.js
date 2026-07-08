@@ -63,24 +63,19 @@ test('per-workspace readout: escalated verdict -> FAIL', () => {
   } finally { cleanup(); }
 });
 
-test('per-workspace readout: fresh `recovering` = WARN; STUCK `recovering` past stuckMs = FAIL', () => {
+test('per-workspace readout: `nudged` verdict -> WARN (soft — no more stuck-timer escalation)', () => {
   const { home, cleanup } = makeHome();
   try {
-    const now = Date.now();
-    const mk = (id) => {
-      const worktreePath = path.join(home, 'wt', id);
-      fs.mkdirSync(worktreePath, { recursive: true });
-      fs.mkdirSync(projectDirFor(worktreePath, home), { recursive: true });
-      writeDescriptor(home, { id, worktreePath, inboxPath: path.join(worktreePath, 'i'), cursorPath: path.join(worktreePath, 'c') });
-    };
-    mk('fresh'); mk('stuck');
-    writeVerdict('fresh', { status: 'recovering', lastOutboundTs: 1, staleSince: 1, recoveries: 1, recoveredAt: now - 60 * 1000 }, home);
-    writeVerdict('stuck', { status: 'recovering', lastOutboundTs: 1, staleSince: 1, recoveries: 1, recoveredAt: now - 60 * 60 * 1000 }, home);
+    const worktreePath = path.join(home, 'wt', 'n');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.mkdirSync(projectDirFor(worktreePath, home), { recursive: true });
+    writeDescriptor(home, { id: 'n', worktreePath, inboxPath: path.join(worktreePath, 'i'), cursorPath: path.join(worktreePath, 'c') });
+    writeVerdict('n', { status: 'nudged', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 1, nudgedAt: Date.now() }, home);
 
-    const r = D.runChecks({ home, env: {}, now, stuckMs: 30 * 60 * 1000 });
-    const fresh = r.results.find((x) => /workspace fresh/.test(x.message));
-    const stuck = r.results.find((x) => /workspace stuck/.test(x.message));
-    assert.strictEqual(fresh.status, D.WARN, 'a just-recovered workspace is a soft WARN');
-    assert.strictEqual(stuck.status, D.FAIL, 'a workspace wedged in recovering past stuckMs FAILs (needs a human)');
+    const r = D.runChecks({ home, env: {} });
+    const line = r.results.find((x) => /workspace n:/.test(x.message));
+    assert.ok(line, 'a per-workspace line is present');
+    assert.strictEqual(line.status, D.WARN, 'nudged -> WARN');
+    assert.ok(/nudgeAttempts=1/.test(line.message));
   } finally { cleanup(); }
 });

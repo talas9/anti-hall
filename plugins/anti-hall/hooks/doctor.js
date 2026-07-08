@@ -444,17 +444,9 @@ ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
 
   const modPath = path.join(libDir, 'doctor-devswarm.js');
   let dsd = null, report = null;
-  // stuckMs: honor ANTIHALL_DEVSWARM_STUCK_SEC (and its idle-floor clamp) via the
-  // supervisor's env resolver; if that module is missing/broken, leave stuckMs
-  // undefined so runChecks falls back to its own DEFAULT_STUCK_MS (fail-open).
-  let stuckMs;
-  const supPath = path.join(ROOT, 'companion', 'devswarm-supervisor.js');
-  if (fs.existsSync(supPath)) {
-    try { stuckMs = require(supPath).resolveThresholdsFromEnv(process.env).stuckMs; } catch (_) { stuckMs = undefined; }
-  }
   if (fs.existsSync(modPath)) {
     try { dsd = require(modPath); } catch (_) { dsd = null; } // fail-open: a broken check never breaks doctor
-    if (dsd) { try { report = dsd.runChecks({ home: os.homedir(), env: process.env, stuckMs }); } catch (_) { report = null; } }
+    if (dsd) { try { report = dsd.runChecks({ home: os.homedir(), env: process.env }); } catch (_) { report = null; } }
   }
   const active = !!(report && report.active);
 

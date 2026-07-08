@@ -6,6 +6,64 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.49.0
+
+**DevSwarm recovery redesign — the supervisor NO LONGER auto-kills.** The automatic path is now
+layered and non-destructive (detect → poke → escalate-to-parent); the hardened kill+`--resume`
+survives only as a deliberate on-demand CLI. Plus a child self-report hook, a fully autonomous
+updater, and a mid-turn-kill safety hardening.
+
+### ⚠️ Behavior change: automatic kill removed
+The 0.47–0.48 supervisor auto-killed + `--resume`d a workspace it judged wedged. **That automatic
+kill is removed.** Rationale: the real-world failure is overwhelmingly *idle-not-wedged* (a finished
+child with a dead listener), where a poke recovers it non-destructively; a blind automatic kill is too
+aggressive. If you relied on automatic recovery, it now **escalates to the parent/you** instead — and
+you kill deliberately via the new CLI. An already-installed 0.48 supervisor picks up this no-kill
+behavior automatically on its next sweep (the companion is an ephemeral per-interval spawn, not a
+persistent daemon); old on-disk `recovering` verdicts are simply superseded.
+
+### The layered liveness model (automatic path — never kills)
+- **Layer 1 — child self-report** (new SessionStart hook `hooks/devswarm-child-role.js` +
+  `hooks/lib/devswarm-role.js`): a DevSwarm **child workspace** sub-orchestrator is reminded to message
+  its parent "idle — reassign or archive me" when idle. Role-gated by `DEVSWARM_SOURCE_BRANCH` — fires
+  **only** on child workspaces, never the Primary/main orchestrator, never subagents.
+- **Layer 2 — supervisor poke** (non-destructive): on `stale`, if the descriptor carries an optional
+  `nudgeCommand`, the sweep fires it (the consumer's real wake channel) — no pid targeting at all.
+- **Layer 3 — escalate-to-parent**: after the poke budget is exhausted, write `status:"escalated"` +
+  a `recovery.log` line, and fire an optional `escalateCommand`. **The automatic sweep stops here.**
+
+### On-demand recovery CLI — the ONLY kill path
+- `node companion/devswarm-recover.js <workspace-id>` — a deliberate, human/parent-invoked kill +
+  `claude --resume` for one named workspace. Reuses the deadly-loop-hardened confirm-gate
+  (exactly-one-candidate-or-abstain, identity-binding, cwd match, TOCTOU re-confirm before every
+  signal, single-writer lock, recovery cap), with one relaxation: it targets **interactive** sessions
+  too (DevSwarm launches children interactively; naming the id is itself the deliberate override of the
+  human-takeover protection).
+- **Mid-turn-kill hardening** (from a live test that caught a real double-execution risk): the CLI
+  **group-kills** the process tree (a lone `claude` SIGKILL otherwise orphans the in-flight tool
+  subprocess), and the resume prompt is **prepended with a state-check guardrail** ("before re-running
+  any side-effecting command, verify with a read-only check whether it already completed") — which
+  measurably stopped the model from blindly re-running a mutating command on resume.
+
+### Autonomous updater
+- `/anti-hall:update` (+ Codex mirror) now **autonomously installs or refreshes** the supervisor when
+  the update runs inside a DevSwarm session (`DEVSWARM_REPO_ID`) — no prompt, no manual step (the
+  installer is idempotent and reloads, so the next sweep runs the new code). Safe unprompted precisely
+  because the daemon never kills. Outside a DevSwarm session it does nothing.
+
+### Config + doctor
+- Sweep env: dropped `ANTIHALL_DEVSWARM_MAX_RECOVERIES`/`GRACE_SEC`/`STUCK_SEC` (kill-era knobs);
+  added `ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS`/`NUDGE_WINDOW_SEC`/`NUDGE_COOLDOWN_SEC`. The on-demand
+  CLI keeps its own cap/grace, decoupled from the sweep.
+- Verdict enum is now `alive | stale | nudged | ambiguous | escalated` (dropped `recovering`); doctor
+  maps `nudged` → WARN and drops the stuck-recovering logic. A genuine **simplification** — removing
+  automatic kill also removes most of the precision-kill machinery from the sweep path.
+
+### Codex model routing — re-verified, unchanged
+- Confirmed against official sources that the current Codex flagship is still **`gpt-5.5`** (GPT-5.6 is
+  preview/select-partners-only, not GA). The plugin's `gpt-5.5`→`gpt-5.4`→`gpt-5.4-mini` routing already
+  matches; no change. (Re-check at the next release if 5.6 goes GA.)
+
 ## 0.48.0
 
 **DevSwarm addons rounded out + plugin self-awareness: tunable supervisor thresholds, a new

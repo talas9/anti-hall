@@ -10,8 +10,14 @@
 // NOT used — it is blind to this failure mode (the wedged child stopped consuming
 // inbound too). Liveness is uuid-SCOPED: only <sessionId>.jsonl is stat'd, so a
 // busy colliding sibling session in the shared encoded dir cannot mask staleness.
-// `escalated` is terminal (short-circuited); a fresh recovery arms a cooldown so a
-// just-resumed workspace cannot immediately re-go-stale and burn its budget.
+//
+// `escalated` is terminal (short-circuited). `nudged` is a HOLD state entered by
+// the automatic path's poke (recovery.js's pokeOrEscalate — never a kill): while
+// nudgeWindowMs hasn't elapsed since nudgedAt, stay `nudged` unless the outbound
+// signal has advanced past nudgedAt (the poke worked -> clear to `alive`); once
+// the window elapses with no advance, stop holding and fall through to a fresh
+// recompute so pokeOrEscalate can decide (another poke, or escalate). Verdict
+// status enum: alive | stale | nudged | ambiguous | escalated.
 
 const os = require('os');
 const fs = require('fs');
@@ -21,6 +27,7 @@ const { projectDirFor } = require('./target-session.js');
 
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
 const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000;
+const DEFAULT_NUDGE_WINDOW_MS = 3 * 60 * 1000; // how long a poke stays "in effect" before falling through
 const GIT_TIMEOUT_MS = 4000;
 
 // isSafeId(id) -> bool. A descriptor id must be a single safe path segment before
@@ -106,36 +113,29 @@ function unreadBacklog(inboxPath, cursorPath, fsi) {
 }
 
 // computeLiveness(opts) ->
-//   { status, lastOutboundTs, staleSince, recoveries, recoveredAt, pending }.
+//   { status, lastOutboundTs, staleSince, nudgeAttempts, nudgedAt, pending }.
 function computeLiveness(opts) {
   const descriptor = opts.descriptor;
   const now = opts.now || Date.now();
   const idle = Number.isFinite(opts.idleThresholdMs) ? opts.idleThresholdMs : DEFAULT_IDLE_MS;
-  const cooldownMs = Number.isFinite(opts.cooldownMs) ? opts.cooldownMs : DEFAULT_COOLDOWN_MS;
+  const nudgeWindowMs = Number.isFinite(opts.nudgeWindowMs) ? opts.nudgeWindowMs : DEFAULT_NUDGE_WINDOW_MS;
   const home = opts.home || os.homedir();
   const runners = opts.runners || {};
   const fsi = runners.fs || fs;
 
-  // Prior verdict (persisted across sweeps) — read FIRST so the terminal + cooldown
+  // Prior verdict (persisted across sweeps) — read FIRST so the terminal + nudge
   // short-circuits can skip all recomputation.
   let prev = null;
   try { prev = JSON.parse(fsi.readFileSync(livenessPathFor(descriptor.id, home), 'utf8')); } catch (_) {}
-  const recoveries = (prev && Number.isFinite(prev.recoveries)) ? prev.recoveries : 0;
+  const nudgeAttempts = (prev && Number.isFinite(prev.nudgeAttempts)) ? prev.nudgeAttempts : 0;
+  const nudgedAt = (prev && Number.isFinite(prev.nudgedAt)) ? prev.nudgedAt : null;
   const priorStaleSince = (prev && Number.isFinite(prev.staleSince)) ? prev.staleSince : null;
-  const recoveredAt = (prev && Number.isFinite(prev.recoveredAt)) ? prev.recoveredAt : null;
   const priorOutbound = (prev && Number.isFinite(prev.lastOutboundTs)) ? prev.lastOutboundTs : null;
 
   // P2-13 TERMINAL short-circuit: `escalated` is sticky — return it unchanged,
   // never re-stat, so the sweep stops re-targeting a workspace a human must handle.
   if (prev && prev.status === 'escalated') {
-    return { status: 'escalated', lastOutboundTs: priorOutbound, staleSince: priorStaleSince, recoveries, recoveredAt, pending: false };
-  }
-
-  // P2-10 post-recovery COOLDOWN: within cooldownMs of a resume, hold `recovering`
-  // — the fresh headless session needs time and the cursor is not advanced by the
-  // resume, so it must not be eligible to re-go-stale (and burn the N budget).
-  if (recoveredAt !== null && (now - recoveredAt) < cooldownMs) {
-    return { status: 'recovering', lastOutboundTs: priorOutbound, staleSince: priorStaleSince, recoveries, recoveredAt, pending: false };
+    return { status: 'escalated', lastOutboundTs: priorOutbound, staleSince: priorStaleSince, nudgeAttempts, nudgedAt, pending: false };
   }
 
   const projectDir = projectDirFor(descriptor.worktreePath, home);
@@ -145,6 +145,24 @@ function computeLiveness(opts) {
 
   const backlog = unreadBacklog(descriptor.inboxPath, descriptor.cursorPath, fsi);
   const pending = backlog.known && backlog.lines.length > 0;
+
+  // NUDGE hold: a poke is outstanding. Stay `nudged` unless the fresh outbound
+  // signal has advanced past nudgedAt (proof the poke woke the session up ->
+  // clear to alive). Once nudgeWindowMs elapses with no advance, stop holding —
+  // fall through to the normal recompute below so pokeOrEscalate (called by the
+  // sweep on a `stale` verdict) can decide: another poke, or escalate once the
+  // attempt budget is exhausted. NEVER a kill from this branch.
+  if (prev && prev.status === 'nudged') {
+    const advanced = nudgedAt !== null && lastOutboundTs !== null && lastOutboundTs > nudgedAt;
+    if (advanced) {
+      return { status: 'alive', lastOutboundTs, staleSince: null, nudgeAttempts, nudgedAt, pending };
+    }
+    const withinWindow = nudgedAt !== null && (now - nudgedAt) < nudgeWindowMs;
+    if (withinWindow) {
+      return { status: 'nudged', lastOutboundTs: priorOutbound, staleSince: priorStaleSince, nudgeAttempts, nudgedAt, pending };
+    }
+    // window elapsed, no advance -> fall through to the normal recompute.
+  }
 
   // BOTH signals must be present AND idle. A missing signal -> not conclusively
   // stale (fail-safe). max() being idle is equivalent to "both idle".
@@ -156,8 +174,8 @@ function computeLiveness(opts) {
     status: stale ? 'stale' : 'alive',
     lastOutboundTs,
     staleSince: stale ? (priorStaleSince || now) : null,
-    recoveries,
-    recoveredAt,
+    nudgeAttempts,
+    nudgedAt,
     pending,
   };
 }
@@ -174,6 +192,6 @@ function writeVerdict(id, verdict, home, fsi) {
 }
 
 module.exports = {
-  DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, isSafeId, devswarmRoot, livenessPathFor, projectDirFor,
+  DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS, isSafeId, devswarmRoot, livenessPathFor, projectDirFor,
   transcriptMtime, worktreeActivityMtime, unreadBacklog, computeLiveness, writeVerdict,
 };

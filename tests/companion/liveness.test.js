@@ -180,6 +180,54 @@ test('NOT stale: worktree signal fresh even though transcript is idle', () => {
   } finally { cleanup(); }
 });
 
+test('NUDGE: within window and no advance past nudgedAt -> holds `nudged`', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seed(home, { id: 'n1', transcriptAgeMs: 30 * 60 * 1000, inboxLines: [{ m: 1 }], cursor: 0 });
+    const now = Date.now();
+    const nudgedAt = now - 60 * 1000; // nudged 1m ago
+    M.writeVerdict('n1', { status: 'nudged', lastOutboundTs: nudgedAt - 1000, staleSince: 1, nudgeAttempts: 1, nudgedAt }, home);
+    const v = M.computeLiveness({
+      descriptor: d, home, now, idleThresholdMs: IDLE, nudgeWindowMs: 3 * 60 * 1000,
+      runners: { gitCommitTs: () => now - 40 * 60 * 1000 }, // still idle, no advance
+    });
+    assert.strictEqual(v.status, 'nudged');
+    assert.strictEqual(v.nudgeAttempts, 1);
+  } finally { cleanup(); }
+});
+
+test('NUDGE: lastOutboundTs advances past nudgedAt -> clears to alive (the poke worked)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seed(home, { id: 'n2', transcriptAgeMs: 5 * 1000, inboxLines: [{ m: 1 }], cursor: 0 }); // fresh transcript
+    const now = Date.now();
+    const nudgedAt = now - 60 * 1000; // nudged 1m ago
+    M.writeVerdict('n2', { status: 'nudged', lastOutboundTs: nudgedAt - 1000, staleSince: 1, nudgeAttempts: 1, nudgedAt }, home);
+    const v = M.computeLiveness({
+      descriptor: d, home, now, idleThresholdMs: IDLE, nudgeWindowMs: 3 * 60 * 1000,
+      runners: { gitCommitTs: () => now - 40 * 60 * 1000 },
+    });
+    assert.strictEqual(v.status, 'alive');
+    assert.ok(v.lastOutboundTs > nudgedAt);
+  } finally { cleanup(); }
+});
+
+test('NUDGE: window elapsed with no advance -> falls through to a fresh recompute, carrying nudgeAttempts forward', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seed(home, { id: 'n3', transcriptAgeMs: 30 * 60 * 1000, inboxLines: [{ m: 1 }], cursor: 0 });
+    const now = Date.now();
+    const nudgedAt = now - 10 * 60 * 1000; // nudged 10m ago -> the 3m window is long elapsed
+    M.writeVerdict('n3', { status: 'nudged', lastOutboundTs: nudgedAt - 1000, staleSince: 1, nudgeAttempts: 1, nudgedAt }, home);
+    const v = M.computeLiveness({
+      descriptor: d, home, now, idleThresholdMs: IDLE, nudgeWindowMs: 3 * 60 * 1000,
+      runners: { gitCommitTs: () => now - 40 * 60 * 1000 },
+    });
+    assert.strictEqual(v.status, 'stale'); // fell through: both signals still idle + pending
+    assert.strictEqual(v.nudgeAttempts, 1); // carried forward so pokeOrEscalate can see the attempt count
+  } finally { cleanup(); }
+});
+
 test('TERMINAL short-circuit: a persisted `escalated` verdict is returned unchanged, un-recomputed', () => {
   const { home, cleanup } = makeHome();
   try {
@@ -195,37 +243,14 @@ test('TERMINAL short-circuit: a persisted `escalated` verdict is returned unchan
   } finally { cleanup(); }
 });
 
-test('COOLDOWN: within cooldownMs of a recovery a workspace is held `recovering`, not re-stale', () => {
-  const { home, cleanup } = makeHome();
-  try {
-    const d = seed(home, { id: 'w8', transcriptAgeMs: 30 * 60 * 1000, inboxLines: [{ m: 1 }], cursor: 0 });
-    const now = Date.now();
-    M.writeVerdict('w8', { status: 'recovering', lastOutboundTs: 1, staleSince: 1, recoveries: 1, recoveredAt: now - 60 * 1000 }, home);
-    const v = M.computeLiveness({ descriptor: d, home, now, idleThresholdMs: IDLE, cooldownMs: 10 * 60 * 1000, runners: { gitCommitTs: () => now - 40 * 60 * 1000 } });
-    assert.strictEqual(v.status, 'recovering'); // cooldown holds it; would otherwise be stale
-    assert.strictEqual(v.recoveries, 1);
-  } finally { cleanup(); }
-});
-
-test('COOLDOWN expired: past the window the workspace can go stale again', () => {
-  const { home, cleanup } = makeHome();
-  try {
-    const d = seed(home, { id: 'w9', transcriptAgeMs: 30 * 60 * 1000, inboxLines: [{ m: 1 }], cursor: 0 });
-    const now = Date.now();
-    M.writeVerdict('w9', { status: 'recovering', lastOutboundTs: 1, staleSince: 1, recoveries: 1, recoveredAt: now - 30 * 60 * 1000 }, home);
-    const v = M.computeLiveness({ descriptor: d, home, now, idleThresholdMs: IDLE, cooldownMs: 10 * 60 * 1000, runners: { gitCommitTs: () => now - 40 * 60 * 1000 } });
-    assert.strictEqual(v.status, 'stale');
-  } finally { cleanup(); }
-});
-
-test('writeVerdict round-trips atomically and recoveries persists into computeLiveness', () => {
+test('writeVerdict round-trips atomically and nudgeAttempts persists into computeLiveness', () => {
   const { home, cleanup } = makeHome();
   try {
     const d = seed(home, { id: 'w6', transcriptAgeMs: 60 * 1000, inboxLines: [], cursor: 0 });
-    M.writeVerdict('w6', { status: 'alive', lastOutboundTs: 1, staleSince: null, recoveries: 2 }, home);
+    M.writeVerdict('w6', { status: 'alive', lastOutboundTs: 1, staleSince: null, nudgeAttempts: 2 }, home);
     const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => Date.now() - 40 * 60 * 1000 } });
-    assert.strictEqual(v.recoveries, 2); // carried forward from the persisted verdict
+    assert.strictEqual(v.nudgeAttempts, 2); // carried forward from the persisted verdict
     const onDisk = JSON.parse(fs.readFileSync(M.livenessPathFor('w6', home), 'utf8'));
-    assert.strictEqual(onDisk.recoveries, 2);
+    assert.strictEqual(onDisk.nudgeAttempts, 2);
   } finally { cleanup(); }
 });

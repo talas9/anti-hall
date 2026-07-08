@@ -229,6 +229,97 @@ test('acquireLock: a DEAD-holder lock is stolen; a LIVE-holder lock is respected
   } finally { cleanup(); }
 });
 
+test('resume prompt PREPENDS the state-check guardrail before the backlog', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io, spawns } = spyIo();
+    M.recover({ descriptor: d, target: { pid: 555, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(spawns.length, 1);
+    assert.ok(spawns[0].prompt.startsWith(M.RESUME_GUARDRAIL), 'guardrail must be prepended');
+    assert.ok(spawns[0].prompt.includes('do the thing'), 'backlog still included after the guardrail');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: nudgeCommand fires, persists `nudged` + nudgeAttempts, logs — NEVER a kill', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'wake-up'] });
+    const nudges = [];
+    const killed = [];
+    const io = { nudge: (cmd) => { nudges.push(cmd); }, kill: (...a) => killed.push(a), killGroup: (...a) => killed.push(a) };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const now = Date.now();
+    const r = M.pokeOrEscalate(d, verdict, { home, now, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, io);
+    assert.strictEqual(r.action, 'nudged');
+    assert.deepStrictEqual(nudges, [['echo', 'wake-up']]);
+    assert.strictEqual(killed.length, 0);
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.status, 'nudged');
+    assert.strictEqual(persisted.nudgeAttempts, 1);
+    assert.strictEqual(persisted.nudgedAt, now);
+    assert.ok(fs.readFileSync(path.join(home, '.anti-hall', 'devswarm', 'recovery.log'), 'utf8').includes('nudged'));
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: attempts exhausted -> escalate, never nudges again, NEVER a kill', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'wake-up'] });
+    const nudges = [];
+    const killed = [];
+    const io = { nudge: (cmd) => { nudges.push(cmd); }, kill: (...a) => killed.push(a), killGroup: (...a) => killed.push(a) };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 2, nudgedAt: Date.now() - 500000, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, io);
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(r.reason, 'poke-exhausted');
+    assert.strictEqual(nudges.length, 0, 'must not nudge again once exhausted');
+    assert.strictEqual(killed.length, 0);
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.status, 'escalated');
+    assert.ok(fs.readFileSync(path.join(home, '.anti-hall', 'devswarm', 'recovery.log'), 'utf8').includes('poke-exhausted'));
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: no nudgeCommand on the descriptor -> straight to escalate, no nudge attempted', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home); // no nudgeCommand
+    const nudges = [];
+    const io = { nudge: (cmd) => { nudges.push(cmd); } };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home }, io);
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(nudges.length, 0);
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'escalated');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: escalateCommand fires once on escalation', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { escalateCommand: ['echo', 'help'] });
+    const escalated = [];
+    const io = { escalate: (cmd) => { escalated.push(cmd); } };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home }, io);
+    assert.strictEqual(r.action, 'escalate');
+    assert.deepStrictEqual(escalated, [['echo', 'help']]);
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: fail-open — a throwing nudge io -> error result, never throws out, never kills', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'x'] });
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    // nudge() itself is wrapped in try/catch inside pokeOrEscalate, so a throwing
+    // nudge must still result in a handled 'nudged' outcome, not an uncaught throw.
+    const r = M.pokeOrEscalate(d, verdict, { home }, { nudge: () => { throw new Error('boom'); } });
+    assert.strictEqual(r.action, 'nudged');
+  } finally { cleanup(); }
+});
+
 test('fail-open: a throwing spawnResume -> error result, never throws out', () => {
   const { home, cleanup } = makeHome();
   try {
@@ -236,5 +327,60 @@ test('fail-open: a throwing spawnResume -> error result, never throws out', () =
     const { io } = spyIo({ spawnResume: () => { throw new Error('boom'); } });
     const r = M.recover({ descriptor: d, target: { pid: 1, uuid: UUID, worktreePath: d.worktreePath }, home, io });
     assert.strictEqual(r.action, 'error');
+  } finally { cleanup(); }
+});
+
+// P1: persistVerdict (recover()'s own bookkeeping) and persistNudgeVerdict
+// (pokeOrEscalate's) write the SAME liveness file. Each must preserve the FULL
+// union of cross-cutting fields from `prev`, not just the ones it owns — else an
+// interleaved sweep silently resets the OTHER path's counter (defeating the
+// recovery cap / nudge budget).
+test('interleave: a nudge verdict AFTER a recovery must NOT clobber recoveries/recoveredAt', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const { io } = spyIo();
+    const r = M.recover({ descriptor: d, target: { pid: 555, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'resumed');
+    assert.strictEqual(r.recoveries, 1);
+    const afterRecover = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(afterRecover.recoveries, 1);
+    assert.ok(afterRecover.recoveredAt > 0);
+
+    // The AUTOMATIC sweep later nudges the SAME workspace — an independent path
+    // writing the same liveness file.
+    const dWithNudge = Object.assign({}, d, { nudgeCommand: ['echo', 'wake-up'] });
+    const nudgeVerdict = Object.assign({ nudgeAttempts: 0, nudgedAt: null }, afterRecover);
+    const pr = M.pokeOrEscalate(dWithNudge, nudgeVerdict, { home, now: Date.now() }, { nudge: () => {} });
+    assert.strictEqual(pr.action, 'nudged');
+
+    const afterNudge = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(afterNudge.nudgeAttempts, 1, 'nudge attempt recorded');
+    assert.strictEqual(afterNudge.recoveries, 1, 'recoveries must NOT be dropped by a nudge verdict write');
+    assert.strictEqual(afterNudge.recoveredAt, afterRecover.recoveredAt, 'recoveredAt must NOT be dropped by a nudge verdict write');
+  } finally { cleanup(); }
+});
+
+test('interleave (reverse): a recovery AFTER a nudge must NOT clobber nudgeAttempts/nudgedAt', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'wake-up'] });
+    const nudgeVerdict = { status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const now = Date.now();
+    const pr = M.pokeOrEscalate(d, nudgeVerdict, { home, now, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, { nudge: () => {} });
+    assert.strictEqual(pr.action, 'nudged');
+    const afterNudge = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(afterNudge.nudgeAttempts, 1);
+    assert.strictEqual(afterNudge.nudgedAt, now);
+
+    // A manual recover() runs on the SAME workspace afterward — same liveness file.
+    const { io } = spyIo();
+    const r = M.recover({ descriptor: d, target: { pid: 666, uuid: UUID, worktreePath: d.worktreePath }, home, io });
+    assert.strictEqual(r.action, 'resumed');
+
+    const afterRecover = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(afterRecover.recoveries, 1);
+    assert.strictEqual(afterRecover.nudgeAttempts, 1, 'nudgeAttempts must NOT be dropped by a recovery verdict write');
+    assert.strictEqual(afterRecover.nudgedAt, now, 'nudgedAt must NOT be dropped by a recovery verdict write');
   } finally { cleanup(); }
 });

@@ -1,9 +1,11 @@
 'use strict';
 // devswarm-supervisor: one sweep over published descriptors. Uses a real temp
-// HOME for descriptor discovery; computeLiveness/findTarget/recover are injected
-// so no real process is touched and per-workspace fail-open is provable. Also
-// covers descriptor sanitization (unsafe id / missing sessionId dropped) and the
-// single-flight sweep lock.
+// HOME for descriptor discovery; computeLiveness/pokeOrEscalate are injected so
+// no real process is touched and per-workspace fail-open is provable. The
+// AUTOMATIC path never resolves a pid and never kills — it has no findTarget or
+// recover dependency at all any more; a `stale` verdict only ever reaches
+// pokeOrEscalate. Also covers descriptor sanitization (unsafe id / missing
+// sessionId dropped) and the single-flight sweep lock.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -51,26 +53,27 @@ test('readDescriptors: reads valid; skips malformed / no-worktree / no-sessionId
   } finally { cleanup(); }
 });
 
-test('sweepOnce: alive workspace -> verdict written, no recovery attempted', () => {
+test('sweepOnce: alive workspace -> verdict written, no poke/escalate attempted', () => {
   const { home, cleanup } = makeHome();
   try {
     writeDescriptor(home, { id: 'a', worktreePath: '/wt/a' });
-    let recoverCalls = 0;
+    let pokeCalls = 0;
     const res = M.sweepOnce({
       home,
       deps: {
-        computeLiveness: () => ({ status: 'alive', lastOutboundTs: 1, staleSince: null, recoveries: 0 }),
+        computeLiveness: () => ({ status: 'alive', lastOutboundTs: 1, staleSince: null, nudgeAttempts: 0 }),
         writeVerdict: () => {},
-        recover: () => { recoverCalls++; return { action: 'resumed' }; },
+        pokeOrEscalate: () => { pokeCalls++; return { action: 'nudged' }; },
       },
     });
     assert.strictEqual(res.length, 1);
     assert.strictEqual(res[0].verdict.status, 'alive');
-    assert.strictEqual(recoverCalls, 0);
+    assert.strictEqual(res[0].poke, null);
+    assert.strictEqual(pokeCalls, 0);
   } finally { cleanup(); }
 });
 
-test('sweepOnce: stale workspace -> findTarget (identity-bound) + recover invoked', () => {
+test('sweepOnce: stale workspace -> pokeOrEscalate invoked; NEVER findTarget, NEVER a kill', () => {
   const { home, cleanup } = makeHome();
   try {
     writeDescriptor(home, { id: 'a', worktreePath: '/wt/a' });
@@ -78,16 +81,17 @@ test('sweepOnce: stale workspace -> findTarget (identity-bound) + recover invoke
     const res = M.sweepOnce({
       home,
       deps: {
-        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, recoveries: 0 }),
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
         writeVerdict: () => {},
-        findTarget: (o) => { seen.wt = o.worktreePath; seen.sid = o.sessionId; return { pid: 1, uuid: o.sessionId, worktreePath: o.worktreePath }; },
-        recover: (o) => { seen.recovered = o.target.pid; return { action: 'resumed' }; },
+        // The automatic path has NO findTarget/recover dependency at all any more —
+        // sweepOnce cannot possibly call them since they are simply not required.
+        pokeOrEscalate: (d, verdict, opts) => { seen.id = d.id; seen.verdictStatus = verdict.status; seen.home = opts.home; return { action: 'nudged' }; },
       },
     });
-    assert.strictEqual(seen.wt, '/wt/a');
-    assert.strictEqual(seen.sid, UUID); // sessionId threaded from the descriptor
-    assert.strictEqual(seen.recovered, 1);
-    assert.strictEqual(res[0].recovery.action, 'resumed');
+    assert.strictEqual(seen.id, 'a');
+    assert.strictEqual(seen.verdictStatus, 'stale');
+    assert.strictEqual(seen.home, home);
+    assert.strictEqual(res[0].poke.action, 'nudged');
   } finally { cleanup(); }
 });
 
@@ -99,9 +103,9 @@ test('sweepOnce: fail-open — a throwing computeLiveness on one workspace does 
     const res = M.sweepOnce({
       home,
       deps: {
-        computeLiveness: (o) => { if (o.descriptor.id === 'a') throw new Error('boom'); return { status: 'alive', recoveries: 0 }; },
+        computeLiveness: (o) => { if (o.descriptor.id === 'a') throw new Error('boom'); return { status: 'alive', nudgeAttempts: 0 }; },
         writeVerdict: () => {},
-        recover: () => ({ action: 'resumed' }),
+        pokeOrEscalate: () => ({ action: 'nudged' }),
       },
     });
     assert.strictEqual(res.length, 2);
@@ -140,9 +144,9 @@ test('resolveThresholdsFromEnv: each env var overrides its threshold; absent -> 
   assert.deepStrictEqual(defaults, {
     idleThresholdMs: 15 * 60 * 1000,
     cooldownMs: 10 * 60 * 1000,
-    maxRecoveries: 3,
-    graceMs: 5000,
-    stuckMs: 30 * 60 * 1000,
+    nudgeMaxAttempts: 2,
+    nudgeWindowMs: 3 * 60 * 1000,
+    nudgeCooldownMs: 2 * 60 * 1000,
   }, 'no env set -> current module defaults, unchanged');
 
   assert.strictEqual(
@@ -152,13 +156,13 @@ test('resolveThresholdsFromEnv: each env var overrides its threshold; absent -> 
     M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_COOLDOWN_SEC: '30' }).cooldownMs, 30 * 1000,
   );
   assert.strictEqual(
-    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_MAX_RECOVERIES: '1' }).maxRecoveries, 1,
+    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS: '1' }).nudgeMaxAttempts, 1,
   );
   assert.strictEqual(
-    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_GRACE_SEC: '10' }).graceMs, 10 * 1000,
+    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC: '600' }).nudgeWindowMs, 600 * 1000,
   );
   assert.strictEqual(
-    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_STUCK_SEC: '3600' }).stuckMs, 3600 * 1000,
+    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC: '10' }).nudgeCooldownMs, 10 * 1000,
   );
 
   // clamps
@@ -166,73 +170,50 @@ test('resolveThresholdsFromEnv: each env var overrides its threshold; absent -> 
     M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_IDLE_SEC: '10' }).idleThresholdMs, 60 * 1000, 'idle floored to 60s',
   );
   assert.strictEqual(
-    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_MAX_RECOVERIES: '99' }).maxRecoveries, 20, 'maxRecoveries capped at 20',
+    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS: '99' }).nudgeMaxAttempts, 20, 'nudgeMaxAttempts capped at 20',
   );
   assert.strictEqual(
-    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_MAX_RECOVERIES: '0' }).maxRecoveries, 3, 'invalid -> default (fail-open)',
+    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS: '0' }).nudgeMaxAttempts, 2, 'invalid -> default (fail-open)',
   );
   assert.strictEqual(
-    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_GRACE_SEC: '0' }).graceMs, 5000, 'invalid grace -> default',
+    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC: '0' }).nudgeWindowMs, 3 * 60 * 1000, 'invalid window -> default',
   );
   assert.strictEqual(
-    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_GRACE_SEC: '9999' }).graceMs, 60 * 1000, 'grace capped at 60s',
-  );
-  // stuck must never be a tighter window than idle, whether idle was raised by
-  // env or left at its default.
-  assert.strictEqual(
-    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_IDLE_SEC: '3700' }).stuckMs, 3700 * 1000,
-    'stuck floored up to a larger idle',
-  );
-  assert.strictEqual(
-    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_IDLE_SEC: '3700', ANTIHALL_DEVSWARM_STUCK_SEC: '5000' }).stuckMs,
-    5000 * 1000, 'an explicit stuck above idle is respected',
+    M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC: 'abc' }).nudgeCooldownMs, 2 * 60 * 1000, 'non-numeric -> default',
   );
 });
 
-test('sweepOnce: graceMs is threaded through to recover() for a stale workspace', () => {
+test('sweepOnce: nudgeMaxAttempts/nudgeCooldownMs are threaded through to pokeOrEscalate for a stale workspace', () => {
   const { home, cleanup } = makeHome();
   try {
     writeDescriptor(home, { id: 'a', worktreePath: '/wt/a' });
-    let seenGraceMs;
+    let seen;
     M.sweepOnce({
-      home, graceMs: 12345,
+      home, nudgeMaxAttempts: 7, nudgeCooldownMs: 12345,
       deps: {
-        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, recoveries: 0 }),
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
         writeVerdict: () => {},
-        findTarget: (o) => ({ pid: 1, uuid: o.sessionId, worktreePath: o.worktreePath }),
-        recover: (o) => { seenGraceMs = o.graceMs; return { action: 'resumed' }; },
+        pokeOrEscalate: (d, verdict, opts) => { seen = opts; return { action: 'nudged' }; },
       },
     });
-    assert.strictEqual(seenGraceMs, 12345);
+    assert.strictEqual(seen.nudgeMaxAttempts, 7);
+    assert.strictEqual(seen.nudgeCooldownMs, 12345);
   } finally { cleanup(); }
 });
 
-test('end-to-end: ANTIHALL_DEVSWARM_MAX_RECOVERIES=1 makes recover() escalate after 1 (not the default 3)', () => {
-  const { recover } = require(path.join(
-    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'recovery.js',
-  ));
-  const { livenessPathFor } = require(path.join(
-    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'liveness.js',
-  ));
+test('sweepOnce: nudgeWindowMs is threaded through to computeLiveness for every workspace', () => {
   const { home, cleanup } = makeHome();
   try {
-    const worktreePath = path.join(home, 'wt');
-    fs.mkdirSync(worktreePath, { recursive: true });
-    const inboxPath = path.join(worktreePath, 'inbox.ndjson');
-    const cursorPath = path.join(worktreePath, 'cursor');
-    fs.writeFileSync(inboxPath, JSON.stringify({ m: 'x' }) + '\n');
-    fs.writeFileSync(cursorPath, '0');
-    const d = { id: 'w1', worktreePath, inboxPath, cursorPath, sessionId: UUID };
-    fs.mkdirSync(path.join(home, '.anti-hall', 'devswarm', 'liveness'), { recursive: true });
-    // already recovered once -> with the env-resolved cap of 1, the 2nd attempt escalates.
-    fs.writeFileSync(livenessPathFor('w1', home), JSON.stringify({ status: 'stale', lastOutboundTs: 1, staleSince: 1, recoveries: 1 }));
-
-    const { maxRecoveries } = M.resolveThresholdsFromEnv({ ANTIHALL_DEVSWARM_MAX_RECOVERIES: '1' });
-    const io = { platform: 'darwin', selfPid: 999999, sleep: () => {}, reconfirm: () => true, kill: () => false, killGroup: () => true };
-    const r = recover({ descriptor: d, target: { pid: 9, uuid: UUID, worktreePath: d.worktreePath }, home, io, maxRecoveries });
-    assert.strictEqual(r.action, 'escalate');
-    assert.strictEqual(r.reason, 'max-recoveries');
-    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'escalated');
+    writeDescriptor(home, { id: 'a', worktreePath: '/wt/a' });
+    let seenWindow;
+    M.sweepOnce({
+      home, nudgeWindowMs: 54321,
+      deps: {
+        computeLiveness: (o) => { seenWindow = o.nudgeWindowMs; return { status: 'alive', nudgeAttempts: 0 }; },
+        writeVerdict: () => {},
+      },
+    });
+    assert.strictEqual(seenWindow, 54321);
   } finally { cleanup(); }
 });
 

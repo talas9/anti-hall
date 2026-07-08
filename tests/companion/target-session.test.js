@@ -232,6 +232,37 @@ test('findTarget: empty ps output (a timed-out probe = NO DATA) -> abstain, neve
   assert.strictEqual(r.reason, 'no-candidate');
 });
 
+test('findTarget: allowInteractive:true admits a lone INTERACTIVE session as a normal candidate (default false still abstains)', () => {
+  const dir = M.projectDirFor(WT, '/home/x');
+  const runners = mkRunners({
+    psLines: ['100 1 claude --resume ' + UUID], // interactive: no -p
+    cwdByPid: { 100: WT },
+    transcripts: new Set([dir + '::' + UUID]),
+  });
+  const withInteractive = find(runners, { allowInteractive: true });
+  assert.strictEqual(withInteractive.ambiguous, undefined);
+  assert.strictEqual(withInteractive.pid, 100);
+  // default behavior is unchanged: the SAME fixture still abstains without opt-in.
+  const withoutInteractive = find(runners);
+  assert.strictEqual(withoutInteractive.ambiguous, true);
+  assert.strictEqual(withoutInteractive.reason, 'interactive-candidate');
+});
+
+test('findTarget: allowInteractive:true still abstains on >1 candidates (interactive + headless both match)', () => {
+  const dir = M.projectDirFor(WT, '/home/x');
+  const runners = mkRunners({
+    psLines: [
+      '100 1 claude --resume ' + UUID,     // interactive
+      '101 1 claude -p --resume ' + UUID,  // headless
+    ],
+    cwdByPid: { 100: WT, 101: WT },
+    transcripts: new Set([dir + '::' + UUID]),
+  });
+  const r = find(runners, { allowInteractive: true });
+  assert.strictEqual(r.ambiguous, true);
+  assert.strictEqual(r.reason, 'multiple-candidates');
+});
+
 test('verifyTarget: fresh re-derivation confirms the same pid/uuid, else false (TOCTOU seam)', () => {
   const dir = M.projectDirFor(WT, '/home/x');
   const good = mkRunners({

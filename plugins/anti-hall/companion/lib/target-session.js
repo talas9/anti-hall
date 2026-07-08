@@ -6,13 +6,21 @@
 // SAFETY: the confirm-gate is the single most important property here. A survivor
 // must satisfy ALL of: (1) cwd == worktreePath, (2) argv uuid == descriptor
 // sessionId (identity-binding), (3) argv is HEADLESS (-p/--print — orchestrated
-// children are headless; a human takeover is interactive and must NOT be killed),
-// (4) not the supervisor's own pid nor any descendant of it. THEN exactly one
-// survivor must remain, else ABSTAIN. Live counter-examples that MUST abstain: a
-// stale bootstrap wrapper `sh -c 'claude -p --resume <uuid>'` sharing cwd + uuid
-// (>1 candidate), and a lone INTERACTIVE `claude --resume <uuid>` (a person
-// rescuing the worktree). The candidate FILTER stays inclusive; correctness comes
-// from the gate, not a clever filter.
+// children are headless; a human takeover is interactive and must NOT be killed
+// UNLESS the caller explicitly opts in via allowInteractive), (4) not the
+// supervisor's own pid nor any descendant of it. THEN exactly one survivor must
+// remain, else ABSTAIN. Live counter-examples that MUST abstain: a stale
+// bootstrap wrapper `sh -c 'claude -p --resume <uuid>'` sharing cwd + uuid (>1
+// candidate), and — by DEFAULT — a lone INTERACTIVE `claude --resume <uuid>` (a
+// person rescuing the worktree). The candidate FILTER stays inclusive;
+// correctness comes from the gate, not a clever filter.
+//
+// allowInteractive (default false): the ON-DEMAND CLI (devswarm-recover.js) is
+// the ONLY caller that ever passes true — an operator explicitly recovering ONE
+// named workspace by hand is allowed to target a lone interactive session too,
+// under the SAME exactly-one-or-abstain + identity+cwd checks. The AUTOMATIC
+// sweep never sets this (it never resolves a pid at all any more — see
+// devswarm-supervisor.js / recovery.js's pokeOrEscalate).
 //
 // Pure Node built-ins. All process/fs access goes through INJECTABLE runners so
 // unit tests never touch real processes. Never throws (any error -> abstain).
@@ -113,7 +121,9 @@ function descendantsOf(procs, rootPid) {
 // interactiveMatched } where a survivor passed ALL four conditions and
 // interactiveMatched flags an identity+cwd+transcript match that was rejected
 // ONLY for being interactive (so findTarget can abstain with a precise reason).
-function survivorsFor(procs, worktreePath, projectDir, sessionId, runners, selfPid) {
+// allowInteractive: when true, condition (3) is skipped — an interactive match
+// is a normal candidate, same as a headless one.
+function survivorsFor(procs, worktreePath, projectDir, sessionId, runners, selfPid, allowInteractive) {
   const raw = candidatesFromPs(procs);
   const excluded = descendantsOf(procs, selfPid);
   excluded.add(selfPid);
@@ -125,13 +135,13 @@ function survivorsFor(procs, worktreePath, projectDir, sessionId, runners, selfP
     const cwd = runners.cwdOf(c.pid);
     if (!cwd || path.resolve(cwd) !== path.resolve(worktreePath)) continue;  // cwd confirm-gate
     if (!runners.transcriptExists(projectDir, c.uuid)) continue;             // transcript cross-check
-    if (!c.headless) { interactiveMatched = true; continue; }                // human takeover -> never kill
+    if (!c.headless && !allowInteractive) { interactiveMatched = true; continue; } // human takeover -> never kill by default
     survivors.push(c);
   }
   return { survivors, interactiveMatched };
 }
 
-// findTarget({worktreePath, sessionId, home, runners, selfPid}) ->
+// findTarget({worktreePath, sessionId, home, runners, selfPid, allowInteractive}) ->
 //   { pid, uuid, worktreePath }             (exactly one confirmed)
 //   { ambiguous: true, reason, candidates } (0 / >1 / interactive-only / no
 //                                            sessionId -> ABSTAIN)
@@ -142,12 +152,13 @@ function findTarget(opts) {
     const home = (opts && opts.home) || os.homedir();
     const runners = (opts && opts.runners) || defaultRunners();
     const selfPid = (opts && Number.isFinite(opts.selfPid)) ? opts.selfPid : process.pid;
+    const allowInteractive = !!(opts && opts.allowInteractive);
     if (!worktreePath) return { ambiguous: true, reason: 'no-worktree-path', candidates: [] };
     if (!sessionId) return { ambiguous: true, reason: 'no-session-id', candidates: [] };
 
     const projectDir = projectDirFor(worktreePath, home);
     const procs = parsePs(runners.ps());
-    const { survivors, interactiveMatched } = survivorsFor(procs, worktreePath, projectDir, sessionId, runners, selfPid);
+    const { survivors, interactiveMatched } = survivorsFor(procs, worktreePath, projectDir, sessionId, runners, selfPid, allowInteractive);
 
     if (survivors.length !== 1) {
       let reason;

@@ -1,8 +1,15 @@
 'use strict';
 // anti-hall :: devswarm-supervisor — one sweep over published workspace
-// descriptors: compute liveness, write the verdict, recover the wedged ones.
-// Workaround for claude-code#39755. OPT-IN (installed explicitly by the user via
-// install-devswarm-supervisor.js), fail-open per workspace, pure Node.
+// descriptors: compute liveness, write the verdict, poke or escalate the stale
+// ones. Workaround for claude-code#39755. OPT-IN (installed explicitly by the
+// user via install-devswarm-supervisor.js), fail-open per workspace, pure Node.
+//
+// This automatic path NEVER kills and NEVER resolves a pid — it does not import
+// findTarget or recover. On a `stale` verdict it only pokes (an optional
+// descriptor-supplied nudgeCommand) or escalates (a log line + optional
+// escalateCommand); see lib/recovery.js's pokeOrEscalate. Kill+resume survives
+// ONLY as the on-demand devswarm-recover.js CLI, invoked explicitly per
+// workspace — never from this sweep.
 //
 // Activation signal = the presence of ~/.anti-hall/devswarm/workspaces/*.json
 // descriptors (published by the consumer). DEVSWARM_REPO_ID is a per-SESSION var
@@ -15,21 +22,23 @@
 // running — overlapping sweeps must never stack blocking ps/lsof work.
 //
 // ENV-TUNABLE THRESHOLDS (all seconds; absent/invalid -> module default, clamped):
-//   ANTIHALL_DEVSWARM_IDLE_SEC          idleThresholdMs   (default 900,  min 60)
-//   ANTIHALL_DEVSWARM_COOLDOWN_SEC      cooldownMs        (default 600,  min 0)
-//   ANTIHALL_DEVSWARM_MAX_RECOVERIES    maxRecoveries     (default 3,    1..20)
-//   ANTIHALL_DEVSWARM_GRACE_SEC         graceMs           (default 5,    1..60)
-//   ANTIHALL_DEVSWARM_STUCK_SEC         doctor stuckMs    (default 1800, floored to idle)
-// See resolveThresholdsFromEnv() below; main() and doctor.js's DevSwarm section
-// both read through it so a real launchd/systemd/cron sweep honors overrides.
+//   ANTIHALL_DEVSWARM_IDLE_SEC            idleThresholdMs   (default 900, min 60)
+//   ANTIHALL_DEVSWARM_COOLDOWN_SEC        cooldownMs        (default 600, min 0)
+//   ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS  nudgeMaxAttempts  (default 2,   1..20)
+//   ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC    nudgeWindowMs     (default 180, min 1)
+//   ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC  nudgeCooldownMs   (default 120, min 0)
+// See resolveThresholdsFromEnv() below; main() reads through it so a real
+// launchd/systemd/cron sweep honors overrides. (The on-demand devswarm-recover.js
+// CLI resolves its OWN maxRecoveries/graceMs directly, decoupled from this sweep.)
 
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { devswarmRoot, computeLiveness, writeVerdict, isSafeId, DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS } = require('./lib/liveness.js');
-const { findTarget } = require('./lib/target-session.js');
-const { recover, DEFAULT_MAX_RECOVERIES, DEFAULT_GRACE_MS } = require('./lib/recovery.js');
-const { DEFAULT_STUCK_MS } = require('./lib/doctor-devswarm.js');
+const {
+  devswarmRoot, computeLiveness, writeVerdict, isSafeId,
+  DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS,
+} = require('./lib/liveness.js');
+const { pokeOrEscalate, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
 
 const SWEEP_LOCK_STALE_MS = 5 * 60 * 1000; // a sweep should never run this long; steal a lock older than this
 
@@ -53,25 +62,23 @@ function parseEnvNum(env, name, defaultVal, opts) {
   return v;
 }
 
-// resolveThresholdsFromEnv(env) -> { idleThresholdMs, cooldownMs, maxRecoveries,
-// graceMs, stuckMs }. All *_SEC env vars are seconds; converted to ms here so
-// callers (sweepOnce, recover, doctor's runChecks) keep taking ms as they already
-// do. stuckMs is floored to idleSec so a "stuck" recovering workspace can never
-// be a *shorter* window than the idle threshold that fed it.
+// resolveThresholdsFromEnv(env) -> { idleThresholdMs, cooldownMs, nudgeMaxAttempts,
+// nudgeWindowMs, nudgeCooldownMs }. All *_SEC env vars are seconds; converted to
+// ms here so callers (sweepOnce, computeLiveness, pokeOrEscalate) keep taking ms
+// as they already do.
 function resolveThresholdsFromEnv(env) {
   const e = env || process.env;
   const idleSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_IDLE_SEC', DEFAULT_IDLE_MS / 1000, { min: 60 });
   const cooldownSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_COOLDOWN_SEC', DEFAULT_COOLDOWN_MS / 1000, { min: 0 });
-  const maxRecoveries = parseEnvNum(e, 'ANTIHALL_DEVSWARM_MAX_RECOVERIES', DEFAULT_MAX_RECOVERIES, { min: 1, max: 20 });
-  const graceSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_GRACE_SEC', DEFAULT_GRACE_MS / 1000, { min: 1, max: 60 });
-  let stuckSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_STUCK_SEC', DEFAULT_STUCK_MS / 1000);
-  if (stuckSec < idleSec) stuckSec = idleSec; // stuck must never be a tighter window than idle
+  const nudgeMaxAttempts = parseEnvNum(e, 'ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS', DEFAULT_NUDGE_MAX_ATTEMPTS, { min: 1, max: 20 });
+  const nudgeWindowSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC', DEFAULT_NUDGE_WINDOW_MS / 1000, { min: 1 });
+  const nudgeCooldownSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC', DEFAULT_NUDGE_COOLDOWN_MS / 1000, { min: 0 });
   return {
     idleThresholdMs: idleSec * 1000,
     cooldownMs: cooldownSec * 1000,
-    maxRecoveries,
-    graceMs: graceSec * 1000,
-    stuckMs: stuckSec * 1000,
+    nudgeMaxAttempts,
+    nudgeWindowMs: nudgeWindowSec * 1000,
+    nudgeCooldownMs: nudgeCooldownSec * 1000,
   };
 }
 
@@ -144,8 +151,12 @@ function acquireSweepLock(home, io) {
   return null;
 }
 
-// sweepOnce({home, now, env, idleThresholdMs, cooldownMs, maxRecoveries, selfPid, deps})
-//   -> [{ id, verdict, recovery } | { id, error }]. deps injectable for tests.
+// sweepOnce({home, now, env, idleThresholdMs, cooldownMs, nudgeWindowMs,
+//   nudgeMaxAttempts, nudgeCooldownMs, deps}) -> [{ id, verdict, poke } | { id,
+//   error }]. deps injectable for tests. NEVER resolves a pid, NEVER kills — a
+//   `stale` verdict only ever reaches pokeOrEscalate (poke or escalate; see
+//   lib/recovery.js). The on-demand devswarm-recover.js CLI is the only caller
+//   that ever resolves a target / kills.
 function sweepOnce(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
@@ -160,20 +171,17 @@ function sweepOnce(opts) {
     try {
       const verdict = (deps.computeLiveness || computeLiveness)({
         descriptor: d, now: o.now, home, runners: deps.runners,
-        idleThresholdMs: o.idleThresholdMs, cooldownMs: o.cooldownMs,
+        idleThresholdMs: o.idleThresholdMs, cooldownMs: o.cooldownMs, nudgeWindowMs: o.nudgeWindowMs,
       });
       (deps.writeVerdict || writeVerdict)(d.id, verdict, home, F);
 
-      let recovery = null;
+      let poke = null;
       if (verdict.status === 'stale') {
-        const target = (deps.findTarget || findTarget)({
-          worktreePath: d.worktreePath, sessionId: d.sessionId, home, runners: deps.targetRunners, selfPid: o.selfPid,
-        });
-        recovery = (deps.recover || recover)({
-          descriptor: d, target, home, now: o.now, io: deps.io, maxRecoveries: o.maxRecoveries, graceMs: o.graceMs,
-        });
+        poke = (deps.pokeOrEscalate || pokeOrEscalate)(d, verdict, {
+          home, now: o.now, nudgeMaxAttempts: o.nudgeMaxAttempts, nudgeCooldownMs: o.nudgeCooldownMs,
+        }, deps.io);
       }
-      results.push({ id: d.id, verdict, recovery });
+      results.push({ id: d.id, verdict, poke });
     } catch (e) {
       results.push({ id: d && d.id, error: String(e && e.message) });
     }
@@ -190,7 +198,7 @@ function main() {
     const t = resolveThresholdsFromEnv(process.env);
     const results = sweepOnce({
       home, idleThresholdMs: t.idleThresholdMs, cooldownMs: t.cooldownMs,
-      maxRecoveries: t.maxRecoveries, graceMs: t.graceMs,
+      nudgeMaxAttempts: t.nudgeMaxAttempts, nudgeWindowMs: t.nudgeWindowMs, nudgeCooldownMs: t.nudgeCooldownMs,
     });
     process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length }) + '\n');
   } catch (_) {

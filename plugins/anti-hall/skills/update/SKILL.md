@@ -94,10 +94,32 @@ Modes:
    available-vs-active summary to the user:
    - `state-migrations` at `active: false` is already handled by step 6 above
      (it just ran) — no action needed, don't re-surface it as a gap.
-   - Any other capability at `active: false` — **guide, don't auto-install**:
-     print its `how` command and let the user decide (a companion can run
-     background jobs or, for the DevSwarm supervisor, kill processes — never
-     self-install without an explicit ask).
+   - **DevSwarm liveness supervisor** — **autonomously install-or-refresh it
+     whenever this update is running inside a DevSwarm session, no offer, no
+     ask.** Check `devswarm-detect`'s `isDevswarmActive(process.env)` — true
+     only when `DEVSWARM_REPO_ID` is set, i.e. the current session really is a
+     DevSwarm workspace (do NOT trigger on machine-level descriptor presence
+     alone; the session might be running outside DevSwarm). If inside a
+     DevSwarm session, run its `how` command
+     (`node companion/install-devswarm-supervisor.js`) regardless of the
+     capability scan's `active` value — delegate to a **Haiku subagent**
+     (`model:"haiku"`), never inline (it's a `node` script that writes a
+     launchd/systemd/cron job; the command-guard blocks heavy commands on the
+     main thread). The installer is idempotent (`launchctl unload && load` on
+     macOS / systemd reload on Linux), so this both first-installs when absent
+     and refreshes an already-installed supervisor so the next sweep runs this
+     build's code. REPORT it plainly ("DevSwarm session detected — installed/
+     refreshed the liveness supervisor to `<version>`"). Fail-open: an install/
+     refresh failure is reported, never fatal to the update. If NOT inside a
+     DevSwarm session, do **not** install — just note it's available. (Safe to
+     do unprompted: the supervisor's automatic sweep never kills — killing is
+     only the separate on-demand `devswarm-recover` CLI. Defense in depth: the
+     installed daemon is inert without work — it only ever acts on descriptors
+     under `~/.anti-hall/devswarm/workspaces/`, so it no-ops when DevSwarm isn't
+     actually running.)
+   - **Any other opt-in companion** at `active: false` (e.g. mcp-reaper — no
+     active-integration signal) — just print its `how` command and let the user
+     install it when they want.
    - `active: 'unknown'` — the probe couldn't determine state (fail-open);
      mention it as unverified rather than claiming either state.
    - `active: true` for everything — say so briefly; no gaps to report.

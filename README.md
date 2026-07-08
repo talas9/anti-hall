@@ -132,9 +132,9 @@ argued with.
 | **deadly-loop-multi** | deeper review — double/triple/quadruple pass | N TRIO sets (Reviewer + Auditor + Critic per slot) with diversified lenses, then dedup + synthesize into one report |
 | **ship-it** | any change, from a one-line fix to a multi-phase feature | one lean workflow scaled S/M/L to blast radius — brainstorm + plan **in plan mode** (ExitPlanMode is the gate), deadly-loop-hardened *before* code, large work fanned out as a Workflow swarm, each phase verified with fresh evidence + a vacuous-test guard until zero *new* P0s or P1s. **L tier:** resumable `.anti-hall/ship-it/<slug>/STATE.json` (per-phase status + escalation cap), P2 findings logged to `decisions.md`, Codex-primary/Sonnet-5-failover build seats (with a cross-model no-self-review guard), and an end-of-run session-history + `SUMMARY.md` + `graphify update .` |
 | **install-statusline** | "install the statusline / add the bar" | writes the `statusLine` setting (global or per-repo), wraps an existing statusline as line 1 + adds anti-hall bar as line 2, with backup + restore. `--consolidate` merges with an existing statusline (e.g., OMC HUD) instead of replacing it; base persisted to `~/.anti-hall/consolidated-base.json`. Env: `ANTIHALL_STATUSLINE_BASE` |
-| **doctor** | "is anti-hall working?" / after install/update | confirms Node ≥ 18, all hooks present + syntax-valid, **runs live behavioral self-tests** (spawns real guards with crafted payloads and asserts exit codes), reports context footprint in bytes + estimated tokens. **Env-aware:** also detects + tests OMC, Codex/OMX, and the DevSwarm liveness supervisor (installed-companion state + a per-workspace liveness self-test), each silent and skipped when that integration isn't in play |
+| **doctor** | "is anti-hall working?" / after install/update | confirms Node ≥ 18, all hooks present + syntax-valid, **runs live behavioral self-tests** (spawns real guards with crafted payloads and asserts exit codes), reports context footprint in bytes + estimated tokens. **Env-aware:** also detects + tests OMC, Codex/OMX, and the DevSwarm liveness supervisor (installed-companion state + a per-workspace liveness self-test, `nudged` reads as WARN not FAIL), each silent and skipped when that integration isn't in play |
 | **update** | "update anti-hall" / "is anti-hall up to date?" | `git pull --ff-only` the marketplace clone, syncs the version-pinned cache (semver-anchored, traversal-proof), prints the changelog delta, then instructs `/reload-plugins` for in-session reload (hooks and statusline pick up from disk immediately; `/reload-plugins` refreshes the skill list and version label; rarely a restart is needed). Then runs a **dynamic capability scan** (read-only) reporting each opt-in capability this build ships — companions, statusline, pending state migrations — as available-vs-active on this machine, with the exact command to close any gap |
-| **devswarm** | "explain the anti-hall DevSwarm integration" / "tune the liveness supervisor" | explains the three DevSwarm addons (hivecontrol reference KB, the designed-not-built workspace tier, the shipped liveness supervisor) and its full activation checklist + tunable env vars |
+| **devswarm** | "explain the anti-hall DevSwarm integration" / "tune the liveness supervisor" / "recover a stuck workspace" | explains the four DevSwarm addons (hivecontrol reference KB, the designed-not-built workspace tier, the shipped layered recovery model, the on-demand recovery CLI) — the automatic path only detects → pokes → escalates and **never kills**; killing is on-demand only, via `devswarm-recover.js` — plus the full activation checklist + tunable env vars |
 | **flutter-debug** | "debug my Flutter app" / "drive the iOS simulator / Android emulator" / "reproduce this bug in the app" / "fix and verify in the UI" | agent-driven Flutter debug loop (run + hot reload + **visually verified UI changes**); reproduces bugs → reads errors (exceptions / layout / logs / VM service) → roots cause → fixes → re-verifies with screenshots. iOS fully; Android run/reload/errors today, taps/screenshots pending FP7 probe. Delegates to the `flutter-debug` agent after zero-setup MCP + app-side marionette integration. Capability tier degradation (full-visual / coordinate-visual / error-only) announced per preflight |
 | **activate** | "activate anti-hall" / "set up anti-hall" / "first-time setup" | one-shot idempotent first-run setup: checks & installs the statusline (user scope by default; offers project-scope on conflict), reports model-routing state (strict by default), writes a `~/.anti-hall/activated.json` sentinel, and prints a restart reminder if settings changed. **Never auto-invoked** — always user-triggered. Re-running is safe |
 | **simplify** | "simplify this" / "deslop" / "trim the fat" / "this is over-engineered" | behavior-preserving simplification harvest on recently-changed (or named) code: tags each finding `delete:`/`stdlib:`/`native:`/`yagni:`/`shrink:`/`slop:`, applies the safe set, re-runs tests, and reports a single **measured** `net: -N lines` score (the real post-apply diff delta — never a projected estimate). Scope change ≠ simplification: declines anything that removes capability |
@@ -240,29 +240,33 @@ orphan detection is unsafe — the correct fix there is Job Objects set by the s
 
 ---
 
-## 🐝 DevSwarm liveness supervisor (companion, opt-in and OPTIONAL)
+## 🐝 DevSwarm layered recovery (companion, opt-in and OPTIONAL)
 
 A second **interval companion** (not a hook), dormant with zero effect unless
 [DevSwarm](https://devswarm.ai) is actually in use — feature-gated exactly like the OMC
 integration above. It works around a `claude` session silently wedging (process alive,
-listener dead, claude-code#39755) by detecting a stale DevSwarm workspace agent from
-**outbound** activity (its own transcript + git/worktree commits) and recovering it via
-a precise, identity-bound, headless-only targeted kill + `claude --resume` — abstaining
-on any ambiguity rather than guessing.
+listener dead, claude-code#39755) with three escalating layers, **none of which ever
+kill anything**: a child workspace's own idle self-report, a supervisor **poke** (an
+optional descriptor-supplied command) on a detected-stale workspace, then an
+**escalate-to-parent** signal once the poke budget is exhausted. Killing lives
+separately, on-demand only:
 
 ```bash
-node plugins/anti-hall/companion/install-devswarm-supervisor.js              # install
+node plugins/anti-hall/companion/install-devswarm-supervisor.js              # install the automatic poke/escalate sweep
 node plugins/anti-hall/companion/install-devswarm-supervisor.js --uninstall  # remove
+node plugins/anti-hall/companion/devswarm-recover.js <workspace-id>          # on-demand: the ONLY path that ever kills
 ```
 
-macOS + Linux run full recovery; **Windows is detection-only** (the cwd confirm-gate
-that makes the kill safe isn't obtainable in pure Node there). anti-hall ships only the
-generic supervisor — a DevSwarm-aware consumer publishes the workspace descriptor it
-sweeps. Recovery thresholds are env-tunable (seconds; clamped, invalid/absent falls back
-to the default): `ANTIHALL_DEVSWARM_IDLE_SEC` (900), `ANTIHALL_DEVSWARM_COOLDOWN_SEC`
-(600), `ANTIHALL_DEVSWARM_MAX_RECOVERIES` (3), `ANTIHALL_DEVSWARM_GRACE_SEC` (5),
-`ANTIHALL_DEVSWARM_STUCK_SEC` (1800). See
-[`plugins/anti-hall/README.md`](plugins/anti-hall/README.md#opt-in-companion-devswarm-supervisor-macos--linux-full-windows-detection-only).
+macOS + Linux run the full sweep; **Windows is detection-only** for the automatic path,
+and the on-demand CLI is escalate-only there too (the cwd confirm-gate that makes the
+kill safe isn't obtainable in pure Node on Windows). anti-hall ships only the generic
+supervisor — a DevSwarm-aware consumer publishes the workspace descriptor it sweeps.
+Sweep thresholds are env-tunable (seconds; clamped, invalid/absent falls back to the
+default): `ANTIHALL_DEVSWARM_IDLE_SEC` (900), `ANTIHALL_DEVSWARM_COOLDOWN_SEC` (600),
+`ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS` (2), `ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC` (180),
+`ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC` (120); the on-demand CLI resolves its own
+`ANTIHALL_DEVSWARM_MAX_RECOVERIES` (3) and `ANTIHALL_DEVSWARM_GRACE_SEC` (5). See
+[`plugins/anti-hall/README.md`](plugins/anti-hall/README.md#opt-in-companion-devswarm-layered-recovery-macos--linux-full-windows-detection-only).
 
 ---
 

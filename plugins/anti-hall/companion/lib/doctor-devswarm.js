@@ -17,7 +17,6 @@ const PASS = 'PASS';
 const WARN = 'WARN';
 const FAIL = 'FAIL';
 const SELFTEST_UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
-const DEFAULT_STUCK_MS = 30 * 60 * 1000; // recovering longer than this = stuck -> FAIL (needs a human)
 const LISTENER_IDLE_MS = 15 * 60 * 1000; // mirrors liveness.js's DEFAULT_IDLE_MS
 
 function workspacesDir(home) { return path.join(devswarmRoot(home), 'workspaces'); }
@@ -36,26 +35,23 @@ function readDescriptors(home, F) {
   return out;
 }
 
-// statusFor(verdictStatus) -> PASS | WARN | FAIL (base mapping, no stuck logic).
+// statusFor(verdictStatus) -> PASS | WARN | FAIL (base mapping).
 function statusFor(s) {
   if (s === 'alive') return PASS;
-  if (s === 'stale' || s === 'recovering') return WARN;
+  if (s === 'stale' || s === 'nudged') return WARN;
   return FAIL; // ambiguous | escalated | anything unexpected
 }
 
-// statusForVerdict(verdict, now, stuckMs) -> PASS | WARN | FAIL. Adds the P0-3
-// stuck-recovering escalation: a `recovering` verdict that has not cleared within
-// stuckMs (or has no recoveredAt at all) FAILs so a human is told, rather than
-// sitting as a soft WARN forever.
-function statusForVerdict(verdict, now, stuckMs) {
+// statusForVerdict(verdict) -> PASS | WARN | FAIL. No stuck-timer any more — the
+// automatic path never kills, so there is no kill-then-resume window to watch
+// for being "stuck"; a `nudged` verdict is just a soft WARN, and the
+// poke/escalate machinery (liveness.js's nudge branch + recovery.js's
+// pokeOrEscalate) already owns moving it to `escalated` once the nudge budget is
+// exhausted.
+function statusForVerdict(verdict) {
   const s = verdict && verdict.status;
   if (s === 'alive') return PASS;
-  if (s === 'stale') return WARN;
-  if (s === 'recovering') {
-    const recoveredAt = verdict && Number.isFinite(verdict.recoveredAt) ? verdict.recoveredAt : null;
-    if (recoveredAt === null) return FAIL;                 // recovering with no recovery ts = stuck
-    return (now - recoveredAt) > stuckMs ? FAIL : WARN;    // stuck past the window -> FAIL
-  }
+  if (s === 'stale' || s === 'nudged') return WARN;
   return FAIL; // ambiguous | escalated | unexpected
 }
 
@@ -135,7 +131,6 @@ function runChecks(opts) {
   const env = o.env || process.env;
   const F = o.fsi || fs;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
-  const stuckMs = Number.isFinite(o.stuckMs) ? o.stuckMs : DEFAULT_STUCK_MS;
 
   const descriptors = readDescriptors(home, F);
   const active = isDevswarmActive(env) || descriptors.length > 0;
@@ -153,11 +148,10 @@ function runChecks(opts) {
     if (!verdict) {
       results.push({ status: WARN, message: 'workspace ' + d.id + ': no liveness verdict yet (sweep has not run)' });
     } else {
-      const status = statusForVerdict(verdict, now, stuckMs);
-      const stuckNote = (status === FAIL && verdict.status === 'recovering') ? ' [STUCK — needs a human]' : '';
+      const status = statusForVerdict(verdict);
       results.push({
         status,
-        message: 'workspace ' + d.id + ': ' + verdict.status + ' (recoveries=' + (verdict.recoveries || 0) + ')' + stuckNote,
+        message: 'workspace ' + d.id + ': ' + verdict.status + ' (nudgeAttempts=' + (verdict.nudgeAttempts || 0) + ')',
       });
     }
     try {
@@ -169,4 +163,4 @@ function runChecks(opts) {
   return { active: true, results };
 }
 
-module.exports = { PASS, WARN, FAIL, DEFAULT_STUCK_MS, statusFor, statusForVerdict, listenerPresenceFor, runChecks };
+module.exports = { PASS, WARN, FAIL, statusFor, statusForVerdict, listenerPresenceFor, runChecks };
