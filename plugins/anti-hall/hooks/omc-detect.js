@@ -231,4 +231,7 @@ function isOmcLoopActive(opts) {
   }
 }
 
-module.exports = { isOmcLoopActive };
+// isOmcEnabled(cwd) → boolean — just Gate 2 (plugin enabled in settings), exposed
+// standalone for consumers (doctor.js) that want to report "OMC detected" as its
+// own fact, independent of whether an autonomous loop happens to be active.
+module.exports = { isOmcLoopActive, isOmcEnabled: omcEnabled };

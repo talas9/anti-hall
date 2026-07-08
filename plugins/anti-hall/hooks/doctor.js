@@ -31,6 +31,11 @@ const lines = [];
 function ok(msg)   { pass++; lines.push(`  ${C.g}✓${C.x} ${msg}`); }
 function bad(msg)  { fail++; lines.push(`  ${C.r}✗${C.x} ${msg}`); }
 function warnl(msg){ warn++; lines.push(`  ${C.y}!${C.x} ${msg}`); }
+// infol: a neutral "not detected — skipped" note. Deliberately does NOT touch
+// pass/fail/warn — an absent optional integration is not a warning, it's the
+// expected state for most users, and must not make a healthy machine look
+// unhealthy.
+function infol(msg){ lines.push(`  ${C.d}i${C.x} ${msg}`); }
 function head(t)   { lines.push(`\n${C.b}${t}${C.x}`); }
 
 // --- spawn a hook with a payload + env, return {code, out} -------------------
@@ -439,22 +444,117 @@ ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
 
   const modPath = path.join(libDir, 'doctor-devswarm.js');
   let dsd = null, report = null;
+  // stuckMs: honor ANTIHALL_DEVSWARM_STUCK_SEC (and its idle-floor clamp) via the
+  // supervisor's env resolver; if that module is missing/broken, leave stuckMs
+  // undefined so runChecks falls back to its own DEFAULT_STUCK_MS (fail-open).
+  let stuckMs;
+  const supPath = path.join(ROOT, 'companion', 'devswarm-supervisor.js');
+  if (fs.existsSync(supPath)) {
+    try { stuckMs = require(supPath).resolveThresholdsFromEnv(process.env).stuckMs; } catch (_) { stuckMs = undefined; }
+  }
   if (fs.existsSync(modPath)) {
     try { dsd = require(modPath); } catch (_) { dsd = null; } // fail-open: a broken check never breaks doctor
-    if (dsd) { try { report = dsd.runChecks({ home: os.homedir(), env: process.env }); } catch (_) { report = null; } }
+    if (dsd) { try { report = dsd.runChecks({ home: os.homedir(), env: process.env, stuckMs }); } catch (_) { report = null; } }
   }
   const active = !!(report && report.active);
 
-  // Fully silent ONLY when dormant AND every lib parses; otherwise render.
-  if (!active && syntaxErrors.length === 0) return;
+  // Supervisor companion (launchd/systemd background job) INSTALLED vs merely
+  // available on disk — always checked against the REAL os.homedir(), never the
+  // `home` used above for report/descriptors (those may be a test fixture; the
+  // scheduler artifact is always per-real-user). Read-only existence check,
+  // never spawns launchctl/systemctl. LABEL/UNIT live in
+  // install-devswarm-supervisor.js (NOT devswarm-supervisor.js, which doesn't
+  // export them) — require that module separately so this can't drift from
+  // what install actually writes.
+  let installed = false;
+  const installPath = path.join(ROOT, 'companion', 'install-devswarm-supervisor.js');
+  if (fs.existsSync(installPath)) {
+    try {
+      const inst = require(installPath);
+      const realHome = os.homedir();
+      if (process.platform === 'darwin') {
+        installed = fs.existsSync(path.join(realHome, 'Library', 'LaunchAgents', `${inst.LABEL}.plist`));
+      } else if (process.platform === 'linux') {
+        installed = fs.existsSync(path.join(realHome, '.config', 'systemd', 'user', `${inst.UNIT}.timer`));
+      }
+      // win32: recovery is a documented no-op (see install-devswarm-supervisor.js) — never installed.
+    } catch (_) { installed = false; } // fail-open: unknown = not installed
+  }
+
+  // Fully silent ONLY when dormant, not installed, AND every lib parses.
+  if (!active && !installed && syntaxErrors.length === 0) return;
   head('DevSwarm liveness supervisor (optional)');
   for (const se of syntaxErrors) bad('supervisor lib SYNTAX ERROR: ' + path.basename(se.f) + ' — ' + se.err);
+  if (installed) ok(`supervisor companion INSTALLED (${process.platform === 'darwin' ? 'launchd' : 'systemd'} background sweep)`);
+  else infol('supervisor companion not installed — background auto-recovery is off; the in-session checks below (if any) still run');
   if (active && report && dsd) {
     for (const r of report.results) {
       if (r.status === dsd.FAIL) bad(r.message);
       else if (r.status === dsd.WARN) warnl(r.message);
       else ok(r.message);
     }
+  }
+})();
+
+// --- 6d. OMC (oh-my-claudecode) detection (CONDITIONAL) ----------------------
+// Reuses hooks/omc-detect.js's OWN gates (enabledPlugins + .omc/state/) so this
+// can never drift from what task-guard/tasklist-guard actually check to decide
+// deference. omc-detect.js's presence/syntax was already verified in section 3
+// above — if it's missing/broken, stay silent here rather than double-report.
+(function omcSection() {
+  if (!fs.existsSync(omcDetectPath)) return;
+  let mod;
+  try { mod = require(omcDetectPath); } catch (_) { return; }
+  let enabled = false;
+  try { enabled = !!(mod.isOmcEnabled && mod.isOmcEnabled(cwd)); } catch (_) { enabled = false; }
+  if (!enabled) { infol('OMC (oh-my-claudecode) not detected — skipped'); return; }
+  head('OMC (oh-my-claudecode) — detected');
+  ok('OMC plugin enabled in settings (enabledPlugins["oh-my-claudecode@omc"])');
+  let loopActive = false;
+  try { loopActive = !!mod.isOmcLoopActive({ cwd, sessionId: 'doctor-omc-probe' }); } catch (_) { loopActive = false; }
+  if (loopActive) ok('an OMC autonomous loop is ACTIVE right now — anti-hall task-guard/tasklist-guard defer to it (no double-block)');
+  else ok('no active OMC autonomous loop detected — anti-hall Stop-hook guards run normally');
+})();
+
+// --- 6e. Codex / OMX port detection (CONDITIONAL) -----------------------------
+// Detects a Codex install by the same artifacts codex/install-codex.js writes:
+// <scope>/.codex/config.toml (+ [features] hooks = true) and <scope>/.codex/
+// hooks.json with anti-hall's own hook commands merged in (matched the same way
+// install-codex.js's own isAntiHallGroup() does — by the /plugins/anti-hall/
+// hooks/ path fragment in the command string). Read-only; never writes.
+(function codexSection() {
+  function hasAntiHallHooks(hooksJsonPath) {
+    let cfg;
+    try { cfg = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8')); } catch (_) { return null; } // null = file absent/unreadable
+    try {
+      return JSON.stringify(cfg).replace(/\\\\/g, '/').includes('/plugins/anti-hall/hooks/');
+    } catch (_) { return false;
+    }
+  }
+  const scopesX = [
+    ['project', path.join(cwd, '.codex')],
+    ['global', path.join(os.homedir(), '.codex')],
+  ];
+  const found = [];
+  for (const [label, dir] of scopesX) {
+    let hasConfig = false;
+    try { hasConfig = fs.statSync(path.join(dir, 'config.toml')).isFile(); } catch (_) {}
+    if (!hasConfig) continue;
+    let hooksEnabled = false;
+    try {
+      const toml = fs.readFileSync(path.join(dir, 'config.toml'), 'utf8');
+      hooksEnabled = /\[features\][\s\S]*?^\s*hooks\s*=\s*true/m.test(toml);
+    } catch (_) {}
+    found.push({ label, hooksEnabled, wired: hasAntiHallHooks(path.join(dir, 'hooks.json')) });
+  }
+  if (found.length === 0) { infol('Codex / OMX not detected — no <cwd>/.codex or ~/.codex config.toml — skipped'); return; }
+  head('Codex / OMX port — detected');
+  for (const s of found) {
+    if (s.hooksEnabled) ok(`Codex config.toml (${s.label}) has the hooks feature enabled`);
+    else warnl(`Codex config.toml (${s.label}) found but [features] hooks is not enabled`);
+    if (s.wired === true) ok(`Codex hooks.json (${s.label}) has anti-hall hooks registered`);
+    else if (s.wired === false) warnl(`Codex hooks.json (${s.label}) present but no anti-hall hooks found — run plugins/anti-hall/codex/install-codex.js`);
+    else warnl(`Codex hooks.json (${s.label}) missing — run plugins/anti-hall/codex/install-codex.js`);
   }
 })();
 

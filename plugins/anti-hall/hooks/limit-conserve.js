@@ -24,6 +24,18 @@
 // FAIL-OPEN direction = inactive: a detection failure must never erroneously
 // force conservation mode. An unreadable / malformed cache is source:'manual-only'.
 //
+// ACCOUNT-CHANGE GUARD: the usage cache carries no account id, so switching the
+// logged-in Claude account (a different weekly bucket) can leave a stale HIGH
+// reading from the OLD account applied to the NEW one. We track the current
+// account's userID (~/.claude.json, no tokens/keychain ever touched) alongside
+// the cache's mtime in a small state file. If the account changed since we last
+// saw it AND the cache mtime has NOT advanced since (OMC hasn't refreshed it
+// under the new account yet), the cache is stale-for-this-account and we
+// deactivate — the safe direction, since the user's complaint is
+// over-restriction after a switch, not under-restriction. Any read failure
+// (missing userID, unreadable state) falls back to the plain cache behavior
+// above. Disable via ANTIHALL_LIMIT_ACCOUNT_CHECK=off.
+//
 // Exports: isConserving, CACHE_FILE, THRESHOLD, STALE_MS (for tests).
 //
 // Pure Node built-ins only. Never throws.
@@ -37,12 +49,95 @@ const os = require('os');
 const CACHE_FILE = path.join(
   os.homedir(), '.claude', 'plugins', 'oh-my-claudecode', '.usage-cache-anthropic.json'
 );
+const CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
+const ACCOUNT_STATE_FILE = path.join(os.homedir(), '.anti-hall', 'limit-conserve-account.json');
 
 const STALE_MS = 15 * 60 * 1000;
 
 // Compute THRESHOLD at load time from the child process env (each spawned hook
 // process reads its own env). parseInt('', 10) is NaN so || 85 fires correctly.
 const THRESHOLD = parseInt(process.env.ANTIHALL_LIMIT_THRESHOLD, 10) || 85;
+
+// readCurrentUserID(): bounded read of ~/.claude.json's top-level `userID`
+// field only. Never touches the keychain or any token. null on any error.
+function readCurrentUserID() {
+  try {
+    const raw = fs.readFileSync(CLAUDE_JSON, 'utf8');
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed.userID === 'string') ? parsed.userID : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// readCacheMtimeMs(): mtime of the usage cache file, or null if unreadable.
+function readCacheMtimeMs() {
+  try {
+    return fs.statSync(CACHE_FILE).mtimeMs;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readAccountState() {
+  try {
+    const raw = fs.readFileSync(ACCOUNT_STATE_FILE, 'utf8');
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    if (typeof parsed.userID !== 'string' || typeof parsed.usageCacheMtime !== 'number') return null;
+    return parsed;
+  } catch (_) {
+    return null;
+  }
+}
+
+// writeAccountState: best-effort; a write failure must never surface (state is
+// advisory, not load-bearing for the fail-open direction).
+function writeAccountState(userID, usageCacheMtime) {
+  try {
+    fs.mkdirSync(path.dirname(ACCOUNT_STATE_FILE), { recursive: true });
+    fs.writeFileSync(ACCOUNT_STATE_FILE, JSON.stringify({ userID, usageCacheMtime }), 'utf8');
+  } catch (_) {
+    /* best-effort */
+  }
+}
+
+// isAccountSwitchStale(cacheMtimeMs): true when the logged-in account changed
+// since our last observation AND the cache has not been refreshed since (its
+// mtime did not advance past what we last recorded) — i.e. the cache still
+// reflects the OLD account. Updates the stored state whenever a fresh
+// reading (matching account, or an advanced mtime post-switch) is observed.
+function isAccountSwitchStale(cacheMtimeMs) {
+  if ((process.env.ANTIHALL_LIMIT_ACCOUNT_CHECK || '').toLowerCase().trim() === 'off') {
+    return false;
+  }
+
+  const currentUserID = readCurrentUserID();
+  if (currentUserID === null) return false; // can't determine account -> no override
+
+  const stored = readAccountState();
+  if (!stored) {
+    writeAccountState(currentUserID, cacheMtimeMs);
+    return false;
+  }
+
+  if (stored.userID !== currentUserID) {
+    if (cacheMtimeMs !== null && cacheMtimeMs <= stored.usageCacheMtime) {
+      // Account switched but the cache is still the pre-switch reading.
+      return true;
+    }
+    // Cache has advanced since the switch (or mtime is unavailable) -> trust it.
+    writeAccountState(currentUserID, cacheMtimeMs);
+    return false;
+  }
+
+  // Same account: keep the recorded mtime current so a future switch compares
+  // against the freshest reading we've seen.
+  if (cacheMtimeMs !== null && cacheMtimeMs !== stored.usageCacheMtime) {
+    writeAccountState(currentUserID, cacheMtimeMs);
+  }
+  return false;
+}
 
 // Inactive sentinel for cache-absent / malformed cases.
 const ABSENT = {
@@ -150,7 +245,11 @@ function isConserving() {
     if (weekly >= THRESHOLD) trips.push('weekly');
     if (sonnetWeekly >= THRESHOLD) trips.push('sonnetWeekly');
 
-    const active = trips.length > 0;
+    // ACCOUNT-CHANGE GUARD: an account switch with a not-yet-refreshed cache
+    // means these trips belong to the OLD account -> force inactive.
+    const accountSwitchStale = trips.length > 0 && isAccountSwitchStale(readCacheMtimeMs());
+
+    const active = !accountSwitchStale && trips.length > 0;
 
     // Earliest upcoming reset time among tripped buckets.
     let resetsAt = null;
@@ -182,4 +281,4 @@ function isConserving() {
   }
 }
 
-module.exports = { isConserving, CACHE_FILE, THRESHOLD, STALE_MS };
+module.exports = { isConserving, CACHE_FILE, THRESHOLD, STALE_MS, CLAUDE_JSON, ACCOUNT_STATE_FILE };

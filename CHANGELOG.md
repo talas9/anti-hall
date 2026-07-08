@@ -6,6 +6,50 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.48.0
+
+**DevSwarm addons rounded out + plugin self-awareness: tunable supervisor thresholds, a new
+`/anti-hall:devswarm` skill, a capability-aware smart update, an environment-aware doctor, and
+account-change-aware limit-conservation. Every optional integration stays dormant unless it's
+actually in use.**
+
+### DevSwarm liveness supervisor — thresholds now env-tunable
+- The supervisor's runtime thresholds (previously hardcoded) are configurable, fail-open to the same
+  defaults: `ANTIHALL_DEVSWARM_IDLE_SEC` (900), `ANTIHALL_DEVSWARM_COOLDOWN_SEC` (600),
+  `ANTIHALL_DEVSWARM_MAX_RECOVERIES` (3), `ANTIHALL_DEVSWARM_GRACE_SEC` (5), and doctor's
+  `ANTIHALL_DEVSWARM_STUCK_SEC` (1800). (`ANTIHALL_DEVSWARM_INTERVAL` was already tunable.) Also
+  fixed a latent gap — `graceMs` wasn't being threaded into recovery at all before.
+
+### New skill: `/anti-hall:devswarm` (+ Codex mirror)
+- Explains the whole OPTIONAL DevSwarm integration — the hivecontrol KB, the (designed, unbuilt)
+  workspace-tier orchestration, and the shipped liveness supervisor — plus a consumer **activation
+  checklist**: the install command, the `~/.anti-hall/devswarm/workspaces/<id>.json` descriptor
+  schema (required vs load-bearing fields), env gates, keep-fresh rules, config/tuning env, the
+  safety model, and where to watch outputs. A DevSwarm-orchestrating agent invokes this to get the
+  as-built activation contract — no separate hand-off doc needed.
+
+### Smart, capability-aware update
+- `/anti-hall:update` (+ Codex mirror) now runs a **dynamic capability scan** after pulling: it
+  discovers opt-in companions from `companion/install-*.js` (no hardcoded list), checks which are
+  actually installed on this machine (launchd / systemd / cron artifacts), plus statusline state and
+  pending state-migrations, and reports "available vs active + how to enable." Idempotent migrations
+  run automatically; opt-in installs are *guided*, never auto-run (a process-killer must stay
+  opt-in). New pure-Node `scripts/capability-scan.js`.
+
+### Comprehensive, environment-aware doctor
+- `doctor.js` now detects and tests each present integration and cleanly skips the absent ones (no
+  noise for a plain user): **OMC** (enabled + whether a loop is active), **Codex/OMX** (config +
+  anti-hall hooks wired), and **DevSwarm** — including whether the supervisor companion is installed
+  and an explicit per-workspace **listener-presence** line (an honest WARN when the listener state
+  can't be observed, never a fabricated PASS).
+
+### Limit-conservation is account-aware
+- anti-hall's weekly-limit conservation nudge now **deactivates when the Claude account changes**
+  (`userID` in `~/.claude.json`) until the usage cache is refreshed under the new account — fixing
+  stale over-restriction after an account switch. Fail-open (any ambiguity → prior behavior), biased
+  toward *not* over-restricting, with an `ANTIHALL_LIMIT_ACCOUNT_CHECK=off` kill-switch. Its firing
+  depends on `userID` rotating on switch (a safe no-op if it doesn't).
+
 ## 0.47.1
 
 **Windows CI fix for the 0.47.0 DevSwarm liveness supervisor.** `encodeWorktreePath()`

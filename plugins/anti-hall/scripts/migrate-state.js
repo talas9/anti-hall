@@ -37,15 +37,18 @@ function safeWrite(destPath, content) {
 }
 
 /**
- * migrateLegacyState({ dir })
+ * migrateLegacyState({ dir, dryRun })
  *
  * dir — repo root to look in (default: cwd)
+ * dryRun — when true, detect only: no write happens, and a file that would be
+ *   migrated is reported as 'pending' instead of 'migrated'. Used by
+ *   capability-scan.js to report gap state without mutating anything.
  *
  * Returns Array<{ file, dest, action }>. Idempotent: if the destination
  * already holds identical content, the source is left alone and 'skipped'
  * is reported instead of re-copying.
  */
-function migrateLegacyState({ dir } = {}) {
+function migrateLegacyState({ dir, dryRun } = {}) {
   const root = path.resolve(dir || process.cwd());
   const legacyDir = path.join(root, '.anti-hall', 'history', 'legacy');
   const results = [];
@@ -71,6 +74,11 @@ function migrateLegacyState({ dir } = {}) {
 
     if (destContent === srcContent) {
       results.push({ file: name, dest: destPath, action: 'skipped' });
+      continue;
+    }
+
+    if (dryRun) {
+      results.push({ file: name, dest: destPath, action: 'pending' });
       continue;
     }
 
@@ -101,9 +109,12 @@ function migrateLegacyState({ dir } = {}) {
  * emptied of files that are safely duplicated elsewhere.
  *
  * dir — repo root to look in (default: cwd)
+ * dryRun — when true, detect only: no write/delete happens, and a file that
+ *   would be migrated is reported as 'pending' instead of 'migrated'.
  *
  * Returns Array<{ file, dest, action }>, action one of:
  *   'migrated'      — copied, verified, source file deleted
+ *   'pending'       — (dryRun only) would migrate; nothing written
  *   'skipped'       — destination already holds identical content (idempotent
  *                     re-run); source is NOT deleted here (a prior run already
  *                     deleted it, or this is a second independent source with
@@ -131,7 +142,7 @@ function walkFiles(root, rel) {
   return out;
 }
 
-function migrateGsdPlanning({ dir } = {}) {
+function migrateGsdPlanning({ dir, dryRun } = {}) {
   const root = path.resolve(dir || process.cwd());
   const planningDir = path.join(root, '.planning');
   const legacyDir = path.join(root, '.anti-hall', 'history', 'legacy', 'planning');
@@ -173,6 +184,11 @@ function migrateGsdPlanning({ dir } = {}) {
       // content. Either way, never delete on this path: we did not just
       // write+verify a fresh copy in THIS call.
       results.push({ file: rel, dest: destPath, action: 'skipped' });
+      continue;
+    }
+
+    if (dryRun) {
+      results.push({ file: rel, dest: destPath, action: 'pending' });
       continue;
     }
 

@@ -60,7 +60,7 @@ claude --plugin-dir /path/to/anti-hall
 | `agent-watchdog.js` | CLI helper (not a hook) | Heartbeat enforcer — scans `~/.anti-hall/agents/*.json` and reports stale/hung subagents; run manually by the orchestration skill. |
 | `task-tracker.js` | UserPromptSubmit | Injects task-list discipline (capture, prioritize, work in order) + a one-line freshness note when open/stale tasks exist. |
 | `limit-conserve-inject.js` | UserPromptSubmit | **Limit-conservation mode.** Injects a token-conservation nudge when context usage reaches `ANTIHALL_LIMIT_THRESHOLD` (default 85%). `ANTIHALL_LIMIT_CONSERVE`: `auto` (default) reads the OMC usage cache; `on` forces the nudge; `off` disables. Auto mode requires OMC; without it, manual on/off only. Skip-guard hatch: `limit-conserve`. |
-| `limit-conserve.js` | Shared helper (not a hook) | Reads the OMC usage cache and applies threshold logic; consumed by `limit-conserve-inject.js`. |
+| `limit-conserve.js` | Shared helper (not a hook) | Reads the OMC usage cache and applies threshold logic; consumed by `limit-conserve-inject.js`. **Account-aware:** tracks the logged-in Claude account's `userID` (`~/.claude.json`) alongside the usage cache's mtime; if the account changed since last seen and the cache hasn't been refreshed under the new account yet, the stale reading is deactivated rather than mis-applied across accounts. Kill-switch: `ANTIHALL_LIMIT_ACCOUNT_CHECK=off`. |
 | `task-guard.js` | Stop | Blocks once if the session ends with open tasks. |
 | `tasklist-guard.js` | Stop | Blocks when non-trivial work (≥ threshold file-mutating actions) wasn't tracked as tasks or lacks a fresh per-session progress file (`.anti-hall/progress/<date>/<session-id>.md`); coexists with `task-guard` with its own independent block cap; capped + fail-open. |
 | `skip-guard.js` | Escape hatch (shared primitive) | TTL'd `~/.anti-hall/skip.json` user-override read by the guards; granular per-guard, and a broad `all` skip excludes the destructive git-guard (must be named explicitly). |
@@ -73,7 +73,7 @@ claude --plugin-dir /path/to/anti-hall
 | `codex-nudge.js` | Stop (advisory) | Nudges once/session for an independent Codex second-opinion review when substantial code shipped with no Codex review; off-switch ANTIHALL_CODEX_NUDGE=off. |
 | `ship-it-guard.js` | PreToolUse (Write/Edit/MultiEdit) | **OPT-IN, default OFF** — the only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root). Also does a conformance advisory (never blocks) for edits outside a PLAN.md's declared `files:` list. Enforces artifact existence only (not plan quality), conservative, fail-open. No effect when unset. |
 | `merge-gate.js` | PreToolUse (Bash) | **OPT-IN, default OFF** — a backstop, not a guarantee. With `ANTIHALL_MERGE_GATE` ∈ {1,true,yes,on}, blocks an auto-merge (`gh pr merge` incl. `--auto`, `gh pr review --approve`, `git merge --no-ff/--ff` into main/master/develop, and `hivecontrol workspace merge-into-source`/`merge-from-source`) when the agent's own recent output carries an UNRESOLVED self-hedge ("pending review" / "first-pass" / "needs your eyes" / …) not followed by a resolution token. Keyword-heuristic, bypassable, fail-open, cannot hard-loop; no effect when unset. |
-| `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `update`, `flutter-debug`, `activate`, `simplify`, `debt`) | Skills | Slash commands (see [Skills](#skills)). |
+| `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `update`, `flutter-debug`, `activate`, `simplify`, `debt`, `devswarm`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
 | `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`companion/README.md`](companion/README.md). |
 | `companion/devswarm-supervisor.js` (+ `install-devswarm-supervisor.js`) | Interval companion (not a hook) | **OPT-IN and OPTIONAL** — dormant with zero effect unless DevSwarm is in use (feature-gated via `devswarm-detect.js`, same optionality model as the OMC/OMX integration). Detects a wedged/idle DevSwarm workspace agent from outbound activity (session transcript + git/worktree) and recovers it with a precise targeted kill + `claude --resume`. Install via `node companion/install-devswarm-supervisor.js` (`--uninstall` to remove); macOS + Linux full, Windows detection-only (documented no-op for recovery). Workaround for claude-code#39755. |
@@ -377,6 +377,11 @@ Invoke via slash command:
 - **`/anti-hall:doctor`** — health-check: confirms Node is found, every hook is
   present + syntax-valid, and the guards actually fire (live behavioral self-tests on
   e.g. git-guard / command-guard / swarm-guard / speculation-guard / tasklist-guard).
+  Also **env-aware**: detects and tests each optional integration only when it's
+  actually present — OMC (plugin-enabled + live-loop check), Codex/OMX (config/skills
+  detection), and the DevSwarm liveness supervisor (supervisor-companion-installed
+  state plus a per-workspace liveness self-test) — silent and skipped for any
+  integration that isn't in play.
 - **`/anti-hall:update`** — updates anti-hall in place: `git pull --ff-only` the
   marketplace clone, syncs the version-pinned cache (semver-anchored, traversal-proof),
   prints the changelog delta between installed and latest, then instructs
@@ -384,7 +389,15 @@ Invoke via slash command:
   immediately; `/reload-plugins` refreshes the skill list and version label. `--check`
   mode answers "is anti-hall up to date?" without pulling or writing. After a pull, also
   runs `scripts/migrate-state.js` once per repo (idempotent) to fold legacy root
-  `.anti-hall-progress.md` / `.anti-hall-history.md` into `.anti-hall/history/legacy/`.
+  `.anti-hall-progress.md` / `.anti-hall-history.md` into `.anti-hall/history/legacy/`,
+  then a **dynamic capability scan** (`scripts/capability-scan.js`, read-only) reports
+  each opt-in capability shipped in this build (companions discovered from
+  `companion/install-*.js`, statusline, pending state migrations) as available-vs-active
+  on this machine, with the exact command to enable any gap — never auto-installs.
+- **`/anti-hall:devswarm`** — explains anti-hall's optional DevSwarm integration: the
+  `hivecontrol` reference KB, the designed-but-unbuilt workspace-tier orchestration, and
+  the shipped liveness supervisor, including its full activation checklist and tunable
+  env vars.
 
 `MODEL-POLICY.md` is the shared TRIO roster (Reviewer = Sonnet 5 `model:"sonnet"` effort `xhigh`;
 Auditor = latest Opus `model:"opus"` divergent regression/coupling lens effort `high`;
@@ -503,7 +516,10 @@ features gain automatic behavior when OMC is installed:
 
 - **`limit-conserve` auto mode** — `limit-conserve-inject.js` reads the OMC usage
   cache (`~/.anti-hall/omc-usage-cache.json`) to detect the live context percentage.
-  Without OMC, the hook operates in manual `on`/`off` mode only.
+  Without OMC, the hook operates in manual `on`/`off` mode only. **Account-aware:** if
+  the logged-in Claude account changes and the usage cache hasn't refreshed under the
+  new account yet, conservation mode deactivates rather than apply a stale reading
+  across accounts. Kill-switch: `ANTIHALL_LIMIT_ACCOUNT_CHECK=off`.
 - **Consolidated statusline** — `install-statusline --consolidate` merges the anti-hall
   bar with the OMC HUD. The version chip in consolidated mode reads OMC session state.
 
@@ -571,7 +587,13 @@ fallback); default sweep interval 90 s (`ANTIHALL_DEVSWARM_INTERVAL`, clamped 60
 obtainable in pure Node on Windows, so the cwd confirm-gate that makes the kill safe
 cannot run; detection-only use from a session is still possible. Env knobs:
 `ANTIHALL_DEVSWARM_SUPERVISOR` (`off`/`on`/`auto`, default `auto`),
-`DISABLE_ANTIHALL_DEVSWARM=1` (hard kill-switch). `doctor.js` runs a matching
+`DISABLE_ANTIHALL_DEVSWARM=1` (hard kill-switch). The recovery thresholds are also
+env-tunable (all seconds; invalid/absent falls back to the default, clamped):
+`ANTIHALL_DEVSWARM_IDLE_SEC` (default `900`, min 60), `ANTIHALL_DEVSWARM_COOLDOWN_SEC`
+(default `600`, min 0), `ANTIHALL_DEVSWARM_MAX_RECOVERIES` (default `3`, clamped 1–20),
+`ANTIHALL_DEVSWARM_GRACE_SEC` (default `5`, clamped 1–60), `ANTIHALL_DEVSWARM_STUCK_SEC`
+(default `1800`, floored to the resolved idle threshold) — the last one also drives
+`doctor.js`'s stuck-recovering-escalates-to-FAIL check. `doctor.js` runs a matching
 per-workspace liveness check that stays silent unless DevSwarm is active.
 
 ### Codex / cross-tool

@@ -41,4 +41,16 @@ node "$ANTI_HALL_ROOT/codex/install-codex.js" --global
 
 Do not force-pull, rebase, or delete plugin cache directories. If the update helper reports a dirty tree, diverged branch, offline state, or missing marketplace clone, surface that result and stop.
 
+After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
+
+```bash
+node "$ANTI_HALL_ROOT/scripts/capability-scan.js"
+```
+
+Read-only — it never installs anything. It reports each opt-in capability (companions under `companion/install-*.js`, statusline, pending state migrations) as `{name, available, active, how}`. Present a concise available-vs-active summary:
+- `state-migrations` at `active: false` — run `node "$ANTI_HALL_ROOT/scripts/migrate-state.js"` (idempotent, safe to re-run) to fold it, same as the Claude-side update flow.
+- Any other capability at `active: false` — guide, don't auto-install: print its `how` command and let the user decide (a companion can run background jobs or, for the DevSwarm supervisor, kill processes — never self-install without an explicit ask).
+- `active: 'unknown'` — the probe couldn't determine state (fail-open); mention it as unverified rather than claiming either state.
+- `active: true` for everything — say so briefly; no gaps to report.
+
 After updating, restart Codex or start a fresh session if plugin/skill discovery does not reflect the new files immediately.

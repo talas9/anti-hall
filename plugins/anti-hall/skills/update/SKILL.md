@@ -86,6 +86,21 @@ Modes:
    `/gsd-*` tooling keeps working against the untouched original. Owner
    decision (2026-07-03): `.anti-hall/` is the intended destination for
    progress/handover state across all projects going forward.
+7. Run the capability scan (`node plugins/anti-hall/scripts/capability-scan.js`)
+   to find what's missing on **this machine** vs what this build **ships**.
+   Read-only — it never installs anything. It reports each opt-in capability
+   (companions under `companion/install-*.js`, statusline, pending state
+   migrations) as `{name, available, active, how}`. Present a concise
+   available-vs-active summary to the user:
+   - `state-migrations` at `active: false` is already handled by step 6 above
+     (it just ran) — no action needed, don't re-surface it as a gap.
+   - Any other capability at `active: false` — **guide, don't auto-install**:
+     print its `how` command and let the user decide (a companion can run
+     background jobs or, for the DevSwarm supervisor, kill processes — never
+     self-install without an explicit ask).
+   - `active: 'unknown'` — the probe couldn't determine state (fail-open);
+     mention it as unverified rather than claiming either state.
+   - `active: true` for everything — say so briefly; no gaps to report.
 
 ## Why /reload-plugins, and the honest edge
 

@@ -62,11 +62,36 @@ function runWrapper(home, extraEnv) {
 }
 
 // writeCacheFile: create the OMC usage cache at the expected path under fakeHome.
-function writeCacheFile(home, cacheObj) {
+// Optional mtimeMs pins the file's mtime (fs.utimesSync wants seconds).
+function writeCacheFile(home, cacheObj, mtimeMs) {
   const dir = path.join(home, '.claude', 'plugins', 'oh-my-claudecode');
   fs.mkdirSync(dir, { recursive: true });
   const p = path.join(dir, '.usage-cache-anthropic.json');
   fs.writeFileSync(p, typeof cacheObj === 'string' ? cacheObj : JSON.stringify(cacheObj), 'utf8');
+  if (typeof mtimeMs === 'number') {
+    const sec = mtimeMs / 1000;
+    fs.utimesSync(p, sec, sec);
+  }
+  return fs.statSync(p).mtimeMs;
+}
+
+// writeClaudeJson: create ~/.claude.json under fakeHome with a given userID
+// (or arbitrary raw content, for malformed-input tests).
+function writeClaudeJson(home, userIDOrRaw) {
+  const p = path.join(home, '.claude.json');
+  const body = typeof userIDOrRaw === 'string' && userIDOrRaw.trim().startsWith('{')
+    ? userIDOrRaw
+    : JSON.stringify({ userID: userIDOrRaw });
+  fs.writeFileSync(p, body, 'utf8');
+  return p;
+}
+
+// writeAccountState: seed ~/.anti-hall/limit-conserve-account.json (the
+// account-guard's own tracked {userID, usageCacheMtime} pairing).
+function writeAccountState(home, userID, usageCacheMtime) {
+  const p = path.join(home, '.anti-hall', 'limit-conserve-account.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ userID, usageCacheMtime }), 'utf8');
   return p;
 }
 
@@ -371,5 +396,121 @@ test('INJECTOR DOWNSHIFT: env=off -> directive absent even with high cache', () 
     });
     assert.strictEqual(r.status, 0);
     assert.strictEqual(additionalContext(r), '', 'env=off suppresses downshift directive');
+  } finally { h.cleanup(); }
+});
+
+// ── ACCOUNT-CHANGE GUARD ─────────────────────────────────────────────────────
+// isConserving() must deactivate when the logged-in Claude account changed
+// (~/.claude.json userID) since the last-recorded reading AND the usage cache
+// has not been refreshed since (mtime did not advance) — the cache still
+// reflects the OLD account's high usage. Once the cache is refreshed under the
+// new account (mtime advances), normal behavior resumes.
+
+test('ACCOUNT GUARD (a): same userID, fresh cache over threshold -> still conserving', () => {
+  const h = makeHome();
+  try {
+    writeClaudeJson(h.home, 'user-aaaa');
+    const mtime = writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    writeAccountState(h.home, 'user-aaaa', mtime); // last observation: same account, same mtime
+    const { json: r } = runWrapper(h.home);
+    assert.ok(r && r.active === true, 'no regression: same account keeps conserving');
+    assert.ok(/weekly/i.test(r.reason));
+  } finally { h.cleanup(); }
+});
+
+test('ACCOUNT GUARD (b): userID changed, cache mtime NOT advanced -> NOT conserving', () => {
+  const h = makeHome();
+  try {
+    writeClaudeJson(h.home, 'user-bbbb'); // current account
+    const mtime = writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    writeAccountState(h.home, 'user-aaaa', mtime); // stored: OLD account, same mtime (stale cache)
+    const { json: r } = runWrapper(h.home);
+    assert.ok(r && r.active === false, 'deactivated: cache still reflects the old account');
+  } finally { h.cleanup(); }
+});
+
+test('ACCOUNT GUARD (c): userID changed, cache mtime ADVANCED (refreshed under new account) -> conserving again', () => {
+  const h = makeHome();
+  try {
+    writeClaudeJson(h.home, 'user-bbbb');
+    const oldMtime = writeCacheFile(h.home, makeCache({ weekly: 10 }), Date.now() - 60000);
+    writeAccountState(h.home, 'user-aaaa', oldMtime);
+    // OMC rewrites the cache under the new account: newer mtime, high usage.
+    const newMtime = writeCacheFile(h.home, makeCache({ weekly: 90 }), Date.now());
+    assert.ok(newMtime > oldMtime, 'sanity: new cache mtime is later');
+    const { json: r } = runWrapper(h.home);
+    assert.ok(r && r.active === true, 'refreshed cache under new account is trusted');
+    assert.ok(/weekly/i.test(r.reason));
+  } finally { h.cleanup(); }
+});
+
+test('ACCOUNT GUARD (d): userID unreadable/absent -> falls back to current (cache-only) behavior', () => {
+  const h = makeHome();
+  try {
+    // No ~/.claude.json at all.
+    const mtime = writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    writeAccountState(h.home, 'user-aaaa', mtime); // irrelevant: can't compare without current userID
+    const { json: r } = runWrapper(h.home);
+    assert.ok(r && r.active === true, 'unreadable userID -> plain cache behavior (still conserving)');
+  } finally { h.cleanup(); }
+});
+
+test('ACCOUNT GUARD (d2): malformed ~/.claude.json -> falls back to current behavior', () => {
+  const h = makeHome();
+  try {
+    writeClaudeJson(h.home, '{bad json');
+    const mtime = writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    writeAccountState(h.home, 'user-aaaa', mtime);
+    const { json: r } = runWrapper(h.home);
+    assert.ok(r && r.active === true, 'malformed claude.json -> plain cache behavior');
+  } finally { h.cleanup(); }
+});
+
+test('ACCOUNT GUARD (e): kill-switch ANTIHALL_LIMIT_ACCOUNT_CHECK=off -> account check skipped entirely', () => {
+  const h = makeHome();
+  try {
+    writeClaudeJson(h.home, 'user-bbbb');
+    const mtime = writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    writeAccountState(h.home, 'user-aaaa', mtime); // would normally trigger deactivation
+    const { json: r } = runWrapper(h.home, { ANTIHALL_LIMIT_ACCOUNT_CHECK: 'off' });
+    assert.ok(r && r.active === true, 'kill-switch disables the account guard -> plain cache result');
+  } finally { h.cleanup(); }
+});
+
+test('ACCOUNT GUARD: no prior state file (first run) -> conserving per cache, state gets recorded', () => {
+  const h = makeHome();
+  try {
+    writeClaudeJson(h.home, 'user-cccc');
+    writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    const { json: r } = runWrapper(h.home);
+    assert.ok(r && r.active === true, 'first-ever observation is not treated as a switch');
+    const statePath = path.join(h.home, '.anti-hall', 'limit-conserve-account.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.strictEqual(state.userID, 'user-cccc', 'state now records current userID');
+  } finally { h.cleanup(); }
+});
+
+test('ACCOUNT GUARD: not conserving (below threshold) is unaffected by an account switch', () => {
+  const h = makeHome();
+  try {
+    writeClaudeJson(h.home, 'user-bbbb');
+    const mtime = writeCacheFile(h.home, makeCache({ weekly: 40 }));
+    writeAccountState(h.home, 'user-aaaa', mtime);
+    const { json: r } = runWrapper(h.home);
+    assert.ok(r && r.active === false, 'no trip either way -> inactive regardless of account state');
+  } finally { h.cleanup(); }
+});
+
+// ── INJECTOR: account guard end-to-end ───────────────────────────────────────
+
+test('INJECTOR ACCOUNT GUARD: account switched + stale cache -> additionalContext is empty', () => {
+  const h = makeHome();
+  try {
+    writeClaudeJson(h.home, 'user-bbbb');
+    const mtime = writeCacheFile(h.home, makeCache({ weekly: 90 }));
+    writeAccountState(h.home, 'user-aaaa', mtime);
+    const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(additionalContext(r), '', 'no directive: cache is stale for the new account');
   } finally { h.cleanup(); }
 });

@@ -13,15 +13,67 @@
 // StartInterval / systemd OnUnitActiveSec do, so main() takes a process-wide sweep
 // lock (dead-holder/stale steal) and exits immediately if a prior sweep is still
 // running — overlapping sweeps must never stack blocking ps/lsof work.
+//
+// ENV-TUNABLE THRESHOLDS (all seconds; absent/invalid -> module default, clamped):
+//   ANTIHALL_DEVSWARM_IDLE_SEC          idleThresholdMs   (default 900,  min 60)
+//   ANTIHALL_DEVSWARM_COOLDOWN_SEC      cooldownMs        (default 600,  min 0)
+//   ANTIHALL_DEVSWARM_MAX_RECOVERIES    maxRecoveries     (default 3,    1..20)
+//   ANTIHALL_DEVSWARM_GRACE_SEC         graceMs           (default 5,    1..60)
+//   ANTIHALL_DEVSWARM_STUCK_SEC         doctor stuckMs    (default 1800, floored to idle)
+// See resolveThresholdsFromEnv() below; main() and doctor.js's DevSwarm section
+// both read through it so a real launchd/systemd/cron sweep honors overrides.
 
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
-const { devswarmRoot, computeLiveness, writeVerdict, isSafeId } = require('./lib/liveness.js');
+const { devswarmRoot, computeLiveness, writeVerdict, isSafeId, DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS } = require('./lib/liveness.js');
 const { findTarget } = require('./lib/target-session.js');
-const { recover } = require('./lib/recovery.js');
+const { recover, DEFAULT_MAX_RECOVERIES, DEFAULT_GRACE_MS } = require('./lib/recovery.js');
+const { DEFAULT_STUCK_MS } = require('./lib/doctor-devswarm.js');
 
 const SWEEP_LOCK_STALE_MS = 5 * 60 * 1000; // a sweep should never run this long; steal a lock older than this
+
+// ----- env-tunable thresholds (P2-xx) -----
+// parseEnvNum(env, name, defaultVal, {min,max}) -> number. A launchd/systemd/cron
+// sweep has no way to pass CLI flags, so these thresholds are env-only. Absent /
+// non-numeric / non-positive input ALWAYS falls back to defaultVal (fail-open —
+// a typo in a plist/unit file must never crash the sweep or silently zero a
+// threshold). min/max are applied to whichever value wins (env or default) so a
+// clamp can never be bypassed by simply omitting the var.
+function parseEnvNum(env, name, defaultVal, opts) {
+  const o = opts || {};
+  const raw = (env || {})[name];
+  let v = defaultVal;
+  if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+    const n = parseInt(raw.trim(), 10);
+    if (Number.isFinite(n) && n > 0) v = n;
+  }
+  if (Number.isFinite(o.min)) v = Math.max(o.min, v);
+  if (Number.isFinite(o.max)) v = Math.min(o.max, v);
+  return v;
+}
+
+// resolveThresholdsFromEnv(env) -> { idleThresholdMs, cooldownMs, maxRecoveries,
+// graceMs, stuckMs }. All *_SEC env vars are seconds; converted to ms here so
+// callers (sweepOnce, recover, doctor's runChecks) keep taking ms as they already
+// do. stuckMs is floored to idleSec so a "stuck" recovering workspace can never
+// be a *shorter* window than the idle threshold that fed it.
+function resolveThresholdsFromEnv(env) {
+  const e = env || process.env;
+  const idleSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_IDLE_SEC', DEFAULT_IDLE_MS / 1000, { min: 60 });
+  const cooldownSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_COOLDOWN_SEC', DEFAULT_COOLDOWN_MS / 1000, { min: 0 });
+  const maxRecoveries = parseEnvNum(e, 'ANTIHALL_DEVSWARM_MAX_RECOVERIES', DEFAULT_MAX_RECOVERIES, { min: 1, max: 20 });
+  const graceSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_GRACE_SEC', DEFAULT_GRACE_MS / 1000, { min: 1, max: 60 });
+  let stuckSec = parseEnvNum(e, 'ANTIHALL_DEVSWARM_STUCK_SEC', DEFAULT_STUCK_MS / 1000);
+  if (stuckSec < idleSec) stuckSec = idleSec; // stuck must never be a tighter window than idle
+  return {
+    idleThresholdMs: idleSec * 1000,
+    cooldownMs: cooldownSec * 1000,
+    maxRecoveries,
+    graceMs: graceSec * 1000,
+    stuckMs: stuckSec * 1000,
+  };
+}
 
 function workspacesDir(home) {
   return path.join(devswarmRoot(home), 'workspaces');
@@ -118,7 +170,7 @@ function sweepOnce(opts) {
           worktreePath: d.worktreePath, sessionId: d.sessionId, home, runners: deps.targetRunners, selfPid: o.selfPid,
         });
         recovery = (deps.recover || recover)({
-          descriptor: d, target, home, now: o.now, io: deps.io, maxRecoveries: o.maxRecoveries,
+          descriptor: d, target, home, now: o.now, io: deps.io, maxRecoveries: o.maxRecoveries, graceMs: o.graceMs,
         });
       }
       results.push({ id: d.id, verdict, recovery });
@@ -135,7 +187,11 @@ function main() {
     const home = os.homedir();
     release = acquireSweepLock(home, {});
     if (!release) { process.exit(0); return; } // a prior sweep is still running — do not stack
-    const results = sweepOnce({ home });
+    const t = resolveThresholdsFromEnv(process.env);
+    const results = sweepOnce({
+      home, idleThresholdMs: t.idleThresholdMs, cooldownMs: t.cooldownMs,
+      maxRecoveries: t.maxRecoveries, graceMs: t.graceMs,
+    });
     process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length }) + '\n');
   } catch (_) {
     // absolute fail-safe: never throw out of the sweep
@@ -147,4 +203,7 @@ function main() {
 
 if (require.main === module) main();
 
-module.exports = { workspacesDir, readDescriptors, supervisorEnabled, sweepLockPath, acquireSweepLock, sweepOnce };
+module.exports = {
+  workspacesDir, readDescriptors, supervisorEnabled, sweepLockPath, acquireSweepLock, sweepOnce,
+  parseEnvNum, resolveThresholdsFromEnv,
+};
