@@ -34,9 +34,16 @@ const CLAUDE_RE = /(^|[\s/])claude(\s|$)/i;
 const HEADLESS_RE = /(^|\s)(-p|--print)(\s|=|$)/;
 
 // encodeWorktreePath(p) -> Claude projects dir segment. LOSSY, FORWARD-ONLY:
-// replace every '/' AND every '.' with '-'. Never decode back.
+// replace every '/', '\', ':', AND '.' with '-'. Never decode back.
+// The '\' and ':' cases matter on Windows: a worktreePath there is an absolute
+// path like 'C:\Users\x\wt' — without stripping the backslashes and the
+// drive-letter colon, the "encoded" segment is still a multi-component (and
+// partly ILLEGAL — a bare ':' outside the drive prefix is not a legal NTFS
+// filename char) path. path.join'ing that raw string under
+// ~/.claude/projects/ then produces a doubled/invalid path (home + projects +
+// the original absolute path re-appended) instead of one flat directory name.
 function encodeWorktreePath(worktreePath) {
-  return String(worktreePath).replace(/[/.]/g, '-');
+  return String(worktreePath).replace(/[/\\:.]/g, '-');
 }
 
 // projectDirFor(worktreePath, home) -> ~/.claude/projects/<encoded>.

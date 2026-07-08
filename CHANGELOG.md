@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.47.1
+
+**Windows CI fix for the 0.47.0 DevSwarm liveness supervisor.** `encodeWorktreePath()`
+(`companion/lib/target-session.js`) stripped only `/` and `.` when mapping a worktree path to its
+`~/.claude/projects/<encoded>` transcript dir — not `\` or the drive-letter `:`. On Windows an
+absolute `C:\…` worktree path therefore stayed a multi-component absolute segment, and `path.join`
+(which does not anchor on a later absolute-looking argument) produced a doubled
+`…\.claude\projects\C:\…` path → the doctor self-test and the liveness detector ENOENT'd on all
+Windows CI jobs (macOS + Linux were unaffected and green). Widened the strip to `/[/\\:.]/g` so the
+encoded segment is always one flat, filesystem-legal component on every platform — a no-op on POSIX
+(which has no `\`/`:`). `node --test` = 855 pass / 0 fail / 2 skip; green across
+ubuntu/macos/windows × node 18/20/22/24.
+
 ## 0.47.0
 
 **New OPT-IN DevSwarm liveness supervisor — a pure-Node companion that detects a wedged/idle
