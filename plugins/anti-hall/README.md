@@ -54,6 +54,7 @@ claude --plugin-dir /path/to/anti-hall
 | `command-guard.js` | PreToolUse (Bash) | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload, per-segment (quote-aware). |
 | `model-routing-guard.js` | PreToolUse (Agent/Task) | Anti-waste routing — classifies spawn descriptions (mechanical vs complex) and blocks/advises toward the cheapest fitting model. Strict by default (v0.35.0+): unconditional block on omitted-model mechanical spawns. Set `ANTIHALL_MODEL_ROUTING=advisory` (**project-scoped env**) to opt out and revert to advisory-only. Debate role-words in spawn description downgrade row-1 block to advisory. Fail-open; unknown model tokens always allowed. |
 | `omc-detect.js` | Shared helper (not a hook) | Detects whether an oh-my-claudecode autonomous loop is active + fresh. Consumed by `task-guard` / `tasklist-guard` to suppress Stop-blocks to advisory when an OMC loop is running, preventing deadlock. Fail-open = NOT deferring. Kill-switches: `DISABLE_OMC=1` or `OMC_SKIP_HOOKS` including `persistent-mode`. |
+| `hooks/lib/devswarm-detect.js` | Shared helper (not a hook) | **OPTIONAL, feature-gated** — mirrors `omc-detect.js` for the opt-in DevSwarm liveness supervisor: reports whether it should be considered active for this session/environment. Dormant (zero effect, byte-for-byte identical to today) unless `DEVSWARM_REPO_ID` is set (auto mode) or `ANTIHALL_DEVSWARM_SUPERVISOR=on`. Consumed by `doctor.js`'s per-workspace DevSwarm check. Fail-open = NOT active. Kill-switch: `DISABLE_ANTIHALL_DEVSWARM=1`. |
 | `swarm-guard.js` | PreToolUse (Agent/Task) | Anti-fork-bomb — spawn-rate cap + real reclaimable-memory check (`vm_stat` / `MemAvailable`, not `os.freemem()`). A blocked spawn also logs one line to `~/.anti-hall/swarm-trips.log` (observation only — doesn't feed the rate window). |
 | `phase-tracker.js` | PreToolUse (Agent/Task) | Records every subagent spawn so the statusline shows live swarm activity. It also writes a rolling `~/.anti-hall/agents/recent-spawn.json` heartbeat that `agentsRunning()` consumes, so the Stop guards know when parallel work is live. Never blocks. |
 | `agent-watchdog.js` | CLI helper (not a hook) | Heartbeat enforcer — scans `~/.anti-hall/agents/*.json` and reports stale/hung subagents; run manually by the orchestration skill. |
@@ -75,6 +76,7 @@ claude --plugin-dir /path/to/anti-hall
 | `root-cause` / `orchestration` / `ship-it` / `deadly-loop` (+ `deadly-loop-multi`, `install-statusline`, `doctor`, `update`, `flutter-debug`, `activate`, `simplify`, `debt`) | Skills | Slash commands (see [Skills](#skills)). |
 | `statusline/` | Statusline | Rich line 1 for ANY repo (monorepo or simple); the monorepo/simple renderer is only a fallback if the rich renderer yields nothing. Line 2 is an always-on phase/context bar. |
 | `companion/mcp-reaper.js` (+ `install-reaper.js`) | Interval companion (not a hook) | **OPT-IN**, macOS + Linux. Kills ONLY orphaned MCP-server processes (parent already died). Install via `node companion/install-reaper.js` (`--uninstall` to remove); Windows is a documented no-op. See [`companion/README.md`](companion/README.md). |
+| `companion/devswarm-supervisor.js` (+ `install-devswarm-supervisor.js`) | Interval companion (not a hook) | **OPT-IN and OPTIONAL** — dormant with zero effect unless DevSwarm is in use (feature-gated via `devswarm-detect.js`, same optionality model as the OMC/OMX integration). Detects a wedged/idle DevSwarm workspace agent from outbound activity (session transcript + git/worktree) and recovers it with a precise targeted kill + `claude --resume`. Install via `node companion/install-devswarm-supervisor.js` (`--uninstall` to remove); macOS + Linux full, Windows detection-only (documented no-op for recovery). Workaround for claude-code#39755. |
 
 ## Codex port
 
@@ -537,6 +539,40 @@ exclude it via `ANTIHALL_REAPER_EXCLUDE='name|name'`. Env knobs: `MCP_REAP_DRYRU
 **Windows is a documented no-op** — it has no parent-death
 reparenting and recycles PIDs, so external orphan detection is unsafe there; the correct
 fix is Job Objects set by the spawner. See [`companion/README.md`](companion/README.md).
+
+### Opt-in companion: devswarm-supervisor (macOS + Linux full, Windows detection-only)
+
+`companion/devswarm-supervisor.js` is a second **opt-in interval companion** (not a
+hook) — a workaround for claude-code#39755, where a `claude` session can silently wedge
+(process alive, listener dead) with no upstream headless recovery. It is **OPTIONAL**,
+exactly like the OMC/OMX integration: dormant with zero effect unless DevSwarm is
+actually in use, gated by `hooks/lib/devswarm-detect.js` (modeled on `omc-detect.js`)
+and the presence of published workspace descriptors under
+`~/.anti-hall/devswarm/workspaces/*.json`.
+
+**The seam:** anti-hall ships only the generic supervisor. A DevSwarm-aware consumer
+publishes the workspace descriptor (`id`, `worktreePath`, `sessionId`, `inboxPath`,
+`cursorPath`); anti-hall never assumes DevSwarm's internals beyond that JSON shape.
+
+Each sweep computes liveness from **outbound** activity only (the session's own
+transcript mtime + git/worktree commit activity — both must be idle, plus a pending
+unread backlog, before a workspace is nominated `stale`), then recovers stale
+workspaces with a precise targeted kill: identity-bound (worktree + session uuid),
+headless-only (never touches an interactive human takeover), abstains on any
+ambiguity (0 or >1 candidates), re-confirms identity on fresh data immediately before
+each signal (a pid recycled mid-grace is never SIGKILLed), and signals the process
+**group** (not just the pid) so orphaned MCP children are cleaned up too. Capped at a
+bounded number of auto-recoveries before escalating instead of restart-looping.
+
+Install with `node companion/install-devswarm-supervisor.js` (`--uninstall` to remove,
+`--dry-run` to preview). macOS → LaunchAgent; Linux → `systemd --user` timer (cron
+fallback); default sweep interval 90 s (`ANTIHALL_DEVSWARM_INTERVAL`, clamped 60-120).
+**Windows is a documented no-op for recovery** — a running process's cwd is not
+obtainable in pure Node on Windows, so the cwd confirm-gate that makes the kill safe
+cannot run; detection-only use from a session is still possible. Env knobs:
+`ANTIHALL_DEVSWARM_SUPERVISOR` (`off`/`on`/`auto`, default `auto`),
+`DISABLE_ANTIHALL_DEVSWARM=1` (hard kill-switch). `doctor.js` runs a matching
+per-workspace liveness check that stays silent unless DevSwarm is active.
 
 ### Codex / cross-tool
 

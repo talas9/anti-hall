@@ -6,6 +6,56 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.47.0
+
+**New OPT-IN DevSwarm liveness supervisor — a pure-Node companion that detects a wedged/idle
+DevSwarm workspace agent from its OUTBOUND activity and precisely recovers it (targeted kill +
+`claude --resume`), fully dormant unless DevSwarm is in use. Hardened by a 3-seat deadly-loop that
+found 15 issues (incl. a wrong-victim P0) — all fixed with non-vacuous tests BEFORE any code
+shipped. `node --test` = 855 pass / 0 fail / 2 Windows-skips (+74 tests).**
+
+### What it is
+- A background companion (`companion/devswarm-supervisor.js`, installed via
+  `companion/install-devswarm-supervisor.js` — the same opt-in launchd / systemd-user / cron model
+  as the `mcp-reaper`). Per active DevSwarm workspace it computes liveness from **OUTBOUND** signals
+  (the agent's own session-transcript activity + git/worktree activity — not inbound messages, which
+  are blind to the hang) and recovers the agent only when BOTH signals are idle past a threshold AND
+  the workspace has pending work it should be servicing.
+- Works around an upstream Claude Code core hang (process stays alive but can't service the next
+  turn, so crash-restarters never fire) — labeled a documented workaround for `claude-code#39755`,
+  to re-evaluate when a real upstream fix lands.
+
+### Optional — exactly like OMC/OMX
+- Entirely feature-detected via `DEVSWARM_REPO_ID` (new `hooks/lib/devswarm-detect.js`, modeled on
+  `omc-detect.js`). When DevSwarm is not in use, the supervisor and its doctor check are completely
+  dormant — zero effect, nothing installed, no context. Opt-in install; kill-switch + config env.
+  Documented as optional in README + llms.txt alongside OMC/OMX.
+
+### Safety (it kills processes, so it is hardened accordingly)
+- **Precise targeting, never a broad `pkill`:** maps a workspace to exactly one `claude` pid via the
+  process's own argv session-id + a real cwd match, and **ABSTAINS** on any ambiguity (0 or >1
+  candidates).
+- **Identity-bound:** the target's session-id must match the workspace's declared id AND the process
+  must be **headless (`-p`)** — so a human who takes over a worktree interactively is never killed.
+- Re-confirms identity on fresh data immediately **before every kill signal** (PID-recycle/TOCTOU
+  defense, mirroring `mcp-reaper`); **group-kills** so it never orphans MCP children; **detached
+  `--resume`** so it can't time-out and kill legitimate long-running work; **stale-lock steal**
+  (mirroring `swarm-guard`) so a supervisor crash can't permanently disable recovery; a per-workspace
+  recovery cap that escalates instead of looping; single-flight sweep; descriptor-id sanitization;
+  bounded `ps`/`lsof` probes. **Fail-open throughout** — any error logs and continues, never kills a
+  healthy agent. **Windows = detection-only** (a running process's cwd isn't obtainable in pure Node
+  there), matching the `mcp-reaper` platform stance.
+- **doctor** gains a per-active-workspace listener + liveness PASS/WARN/FAIL check (dormant when no
+  DevSwarm) and now syntax-checks the new `lib/` files.
+
+### The seam — anti-hall stays generic; the consumer owns the DevSwarm glue
+- anti-hall ships only the generic, agnostic supervisor. The DevSwarm-specific transport (inbox
+  daemon, done-report contract, `hivecontrol` wiring) stays consumer-side. Interface: the consumer
+  publishes a per-workspace descriptor `~/.anti-hall/devswarm/workspaces/<id>.json =
+  { id, worktreePath, inboxPath, cursorPath, sessionId }`; anti-hall derives pid/session itself and
+  writes a liveness verdict + recovery log. Full design + implementation plan under
+  `docs/superpowers/`.
+
 ## 0.46.0
 
 **Whole-plugin ultracode audit remediated: 2 critical guard/data-loss bugs + 21

@@ -411,6 +411,53 @@ ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
   }
 })();
 
+// --- 6c. DevSwarm liveness supervisor (CONDITIONAL: active session or descriptors) ---
+// ONE implementation, two entry points: companion/lib/doctor-devswarm.js EXPORTS
+// runChecks; doctor requires it and CALLS it IN-PROCESS. Silent unless a DevSwarm
+// session is active OR the consumer has published workspace descriptors — EXCEPT a
+// syntax error in any supervisor lib is always surfaced (P2-12). Workaround for
+// claude-code#39755.
+(function devswarmSection() {
+  const libDir = path.join(ROOT, 'companion', 'lib');
+  const supervisorFiles = [
+    path.join(HOOKS, 'lib', 'devswarm-detect.js'),
+    path.join(libDir, 'target-session.js'),
+    path.join(libDir, 'liveness.js'),
+    path.join(libDir, 'recovery.js'),
+    path.join(libDir, 'doctor-devswarm.js'),
+    path.join(ROOT, 'companion', 'devswarm-supervisor.js'),
+    path.join(ROOT, 'companion', 'install-devswarm-supervisor.js'),
+  ];
+  // P2-12: node --check each PRESENT file so a broken file FAILS (loudly) instead
+  // of vanishing behind the require()-fail-open below.
+  const syntaxErrors = [];
+  for (const f of supervisorFiles) {
+    if (!fs.existsSync(f)) continue; // optional / older build
+    const chk = cp.spawnSync(process.execPath, ['--check', f], { encoding: 'utf8' });
+    if (chk.status !== 0) syntaxErrors.push({ f, err: (chk.stderr || '').split('\n')[0] });
+  }
+
+  const modPath = path.join(libDir, 'doctor-devswarm.js');
+  let dsd = null, report = null;
+  if (fs.existsSync(modPath)) {
+    try { dsd = require(modPath); } catch (_) { dsd = null; } // fail-open: a broken check never breaks doctor
+    if (dsd) { try { report = dsd.runChecks({ home: os.homedir(), env: process.env }); } catch (_) { report = null; } }
+  }
+  const active = !!(report && report.active);
+
+  // Fully silent ONLY when dormant AND every lib parses; otherwise render.
+  if (!active && syntaxErrors.length === 0) return;
+  head('DevSwarm liveness supervisor (optional)');
+  for (const se of syntaxErrors) bad('supervisor lib SYNTAX ERROR: ' + path.basename(se.f) + ' — ' + se.err);
+  if (active && report && dsd) {
+    for (const r of report.results) {
+      if (r.status === dsd.FAIL) bad(r.message);
+      else if (r.status === dsd.WARN) warnl(r.message);
+      else ok(r.message);
+    }
+  }
+})();
+
 // --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')

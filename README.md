@@ -239,6 +239,28 @@ orphan detection is unsafe — the correct fix there is Job Objects set by the s
 
 ---
 
+## 🐝 DevSwarm liveness supervisor (companion, opt-in and OPTIONAL)
+
+A second **interval companion** (not a hook), dormant with zero effect unless
+[DevSwarm](https://devswarm.ai) is actually in use — feature-gated exactly like the OMC
+integration above. It works around a `claude` session silently wedging (process alive,
+listener dead, claude-code#39755) by detecting a stale DevSwarm workspace agent from
+**outbound** activity (its own transcript + git/worktree commits) and recovering it via
+a precise, identity-bound, headless-only targeted kill + `claude --resume` — abstaining
+on any ambiguity rather than guessing.
+
+```bash
+node plugins/anti-hall/companion/install-devswarm-supervisor.js              # install
+node plugins/anti-hall/companion/install-devswarm-supervisor.js --uninstall  # remove
+```
+
+macOS + Linux run full recovery; **Windows is detection-only** (the cwd confirm-gate
+that makes the kill safe isn't obtainable in pure Node there). anti-hall ships only the
+generic supervisor — a DevSwarm-aware consumer publishes the workspace descriptor it
+sweeps. See [`plugins/anti-hall/README.md`](plugins/anti-hall/README.md#opt-in-companion-devswarm-supervisor-macos--linux-full-windows-detection-only).
+
+---
+
 ## Requirements
 
 - **Node.js ≥ 18** on `PATH`. The hooks launch as `node <hook>.js`; without Node they
@@ -259,6 +281,7 @@ anti-hall/
 │   ├── skills/                         # root-cause · orchestration · deadly-loop · deadly-loop-multi · ship-it · install-statusline · doctor · update · flutter-debug · activate · simplify · debt
 │   ├── scripts/                        # shared pure-Node helpers — harvest-debt.js (debt-marker harvester behind /anti-hall:debt), migrate-state.js (folds legacy root state files into .anti-hall/history/legacy/, run by /anti-hall:update)
 │   ├── companion/                      # opt-in mcp-reaper (macOS+Linux) — kills orphaned MCP processes; not a hook
+│   │                                   #   + optional devswarm-supervisor (macOS+Linux full, Windows detection-only)
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
 ├── docs/                               # KB + design notes — CONTEXT-PRESERVATION-KB · KB · TASKLIST-GUARD · TASK-WORK · E2E-TESTING (+ Claude Code internals)

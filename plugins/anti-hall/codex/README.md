@@ -44,6 +44,7 @@ Documented-but-not-yet-adapted anti-hall hard-hook parity:
 - subagent lifecycle hooks: Codex documents `SubagentStart`/`SubagentStop`, but anti-hall has not yet added Codex-specific payload tests
 - `PreCompact`/`PostCompact`: Codex documents them; anti-hall has not yet mapped Claude compaction behavior to Codex payloads
 - `TaskCreated`/`TaskCompleted` and Claude Workflow JS files: no direct Codex equivalent documented; use skills, native subagents, OMX, or scripts instead
+- DevSwarm liveness supervisor (`companion/devswarm-supervisor.js`, 0.47.0): intentionally **Claude-only, no Codex mirror** — it recovers wedged *Claude Code* sessions specifically (targets `claude` processes, `claude --resume`, and `~/.claude/projects` transcripts). Like the Claude side it is OPT-IN and fully dormant unless DevSwarm is in use (`DEVSWARM_REPO_ID`). A Codex-side equivalent would be a separate future effort keyed to Codex's own session/transcript model.
 
 Model routing for Codex uses Codex model tiers:
 
