@@ -109,6 +109,11 @@ BLOCKED(cg('echo "$(npm run build)"')) ? ok('command-guard blocks heavy cmd in $
 BLOCKED(cg('bash -c "npm run build"')) ? ok('command-guard blocks heavy `bash -c "npm run build"` payload') : bad('command-guard MISSED heavy bash -c payload — recursive-parse fix regressed');
 ALLOWED(cg('echo "$(date)"')) ? ok('command-guard allows benign substitution (`echo "$(date)"` — date is not heavy)') : bad('command-guard wrongly blocked benign `echo "$(date)"` — over-blocking substitutions');
 
+// edit-guard: blocks direct Edit-family tool use in COORDINATOR; allows in SUBAGENT (payload agent_id)
+function eg(extra) { return runHook('edit-guard.js', Object.assign({ tool_name: 'Edit', tool_input: { file_path: 'src/x.js', old_string: 'a', new_string: 'b' } }, extra), { CLAUDE_CODE_ENTRYPOINT: 'cli' }); }
+BLOCKED(eg()) ? ok('edit-guard blocks coordinator edit') : bad('edit-guard did NOT block coordinator edit');
+ALLOWED(eg({ agent_id: 'test-agent', agent_type: 'general-purpose' })) ? ok('edit-guard ALLOWS subagent edit') : bad('edit-guard wrongly blocked a subagent edit — delegation would deadlock');
+
 // speculation-guard: a Stop-hook block on hedged-without-evidence text. Build a
 // throwaway transcript whose last assistant message says "should be fine".
 function specTest() {

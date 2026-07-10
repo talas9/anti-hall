@@ -450,32 +450,6 @@ function classifyHeavy(command, depth) {
   return null;
 }
 
-// A Task-tool subagent is identified by agent markers in the hook payload
-// (reliable everywhere, incl. cmux) OR by the agent_tool entrypoint (vanilla CLI).
-function isSubagent(payload) {
-  if (payload && (payload.agent_id || payload.agent_type)) return true;
-  if (process.env.CLAUDE_CODE_ENTRYPOINT === 'agent_tool') return true;
-  return false;
-}
-
-// Coordinator = NOT a subagent, running under a recognized interactive entrypoint.
-// Takes the parsed hook payload so it can use the payload's agent markers.
-function isCoordinator(payload) {
-  // Subagents are never the coordinator — allow them (the whole point of the guard
-  // is to keep the MAIN thread clean by pushing heavy work down to subagents).
-  if (isSubagent(payload)) return false;
-
-  const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT;
-  // Fail-open: if absent or unknown, allow (treat as subagent)
-  if (!entrypoint || typeof entrypoint !== 'string') return false;
-  // cli, vscode, jetbrains, vim, emacs, terminal_ide_* = coordinator
-  if (entrypoint === 'cli') return true;
-  if (entrypoint.startsWith('terminal_ide_')) return true;
-  if (['vscode', 'jetbrains', 'vim', 'emacs'].includes(entrypoint)) return true;
-  // Unknown/future values: fail-open (allow)
-  return false;
-}
-
 function main() {
   // Read + parse the payload FIRST — coordinator/subagent detection needs the
   // payload's agent_id/agent_type markers (the only reliable signal under cmux).
@@ -489,6 +463,7 @@ function main() {
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   const { isSkipped } = require('./skip-guard.js');
   if (isSkipped('command-guard')) process.exit(0);
+  const { isCoordinator } = require('./coordinator-detect.js');
 
   let payload;
   try {

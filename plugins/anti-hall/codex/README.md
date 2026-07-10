@@ -41,6 +41,7 @@ Documented-but-not-yet-adapted anti-hall hard-hook parity:
 
 - edit-time `api-guard`: current implementation parses Claude-style `Write/Edit/MultiEdit` payloads; Codex `apply_patch` payload adapter + tests are still needed before claiming hard-block parity
 - edit-time `ship-it-guard`: same payload-adapter requirement
+- edit-time `edit-guard` (0.50.0): same payload-adapter requirement — it carries the identical `apply_patch` gap and is intentionally not registered in `codex/hooks/hooks.json` until a real Codex edit payload is captured
 - subagent lifecycle hooks: Codex documents `SubagentStart`/`SubagentStop`, but anti-hall has not yet added Codex-specific payload tests
 - `PreCompact`/`PostCompact`: Codex documents them; anti-hall has not yet mapped Claude compaction behavior to Codex payloads
 - `TaskCreated`/`TaskCompleted` and Claude Workflow JS files: no direct Codex equivalent documented; use skills, native subagents, OMX, or scripts instead

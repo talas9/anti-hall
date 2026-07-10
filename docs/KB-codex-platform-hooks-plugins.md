@@ -36,6 +36,7 @@ hooks = true` defensively, but docs should use `hooks` as canonical. |
 - Marketplace entry uses Codex marketplace shape under `.agents/plugins/marketplace.json`, not Claude `.claude-plugin/marketplace.json`.
 - Dogfood verifies hook trust and actual hook behavior, not just file creation.
 - Edit-time anti-hall guards require a Codex payload adapter before hard-parity can be claimed: `api-guard.js` currently extracts Claude `tool_name` values `Write`, `Edit`, and `MultiEdit`, while Codex docs name `apply_patch`/`Edit`/`Write` matchers.
+- `edit-guard.js` (0.50.0) carries the identical `apply_patch` payload-adapter gap as `api-guard.js`/`ship-it-guard.js` and is intentionally not registered in `codex/hooks/hooks.json` until a real Codex edit payload is captured.
 
 ## Source audit (10+ sources, 2+ official)
 

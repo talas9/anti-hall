@@ -59,6 +59,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
+const { isSubagent } = require('./coordinator-detect.js');
 
 // Code-nav search verbs that warrant a graph-first nudge.
 const SEARCH_VERBS = new Set(['grep', 'rg', 'ag', 'find', 'ack']);
@@ -283,15 +284,9 @@ function getSessionGraphKey(sessionId, graphRoot) {
   return crypto.createHash('sha1').update(combined).digest('hex').slice(0, 20);
 }
 
-// A Task-tool subagent is identified by agent markers in the hook payload
-// (reliable everywhere, incl. cmux) OR by the agent_tool entrypoint (vanilla
-// CLI). Mirrors command-guard.js's isSubagent() exactly (~:441-447 there) so the
-// two hooks agree on coordinator-vs-subagent detection.
-function isSubagent(payload) {
-  if (payload && (payload.agent_id || payload.agent_type)) return true;
-  if (process.env.CLAUDE_CODE_ENTRYPOINT === 'agent_tool') return true;
-  return false;
-}
+// isSubagent() is imported from coordinator-detect.js (the canonical shared
+// definition, extracted from command-guard.js) so all hooks agree on
+// coordinator-vs-subagent detection.
 
 // Re-arm thresholds (see the LOOP SAFETY header comment for the full rationale).
 const REARM_GROWTH_BYTES = 240 * 1024;

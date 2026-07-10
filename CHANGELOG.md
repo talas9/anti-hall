@@ -6,6 +6,37 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.50.0
+
+**New always-on guard `edit-guard` — the coordinator can no longer edit files directly.**
+Mirrors what `command-guard` already does for heavy Bash: a PreToolUse hook mechanically
+blocks a coordinator/orchestrator from calling `Edit`/`Write`/`MultiEdit`/`NotebookEdit`
+directly. Only coordinators are gated — subagents always pass, which prevents infinite
+agent nesting — and it fails open on ambiguity.
+
+- **Shared coordinator detection.** `hooks/coordinator-detect.js` is extracted from
+  `command-guard.js` so both guards share the exact same coordinator/subagent
+  discriminator (behavior-preserving refactor, no change to `command-guard`'s own logic).
+- **Decision A — normally-skippable.** `edit-guard` is intentionally NOT added to
+  skip-guard's DESTRUCTIVE set; it's skippable like its sibling `command-guard`. Skip name
+  is `edit-guard` (write `~/.anti-hall/skip.json` `{"edit-guard": <expiry-ms>}`).
+- **Decision B — built-in allowlist.** Coordinator-owned config/plan/memory paths are
+  always allowed through: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`, `.claude/**`, `.omc/**`,
+  `.anti-hall/**`, `PLAN.md`, `STATE.json`. Extensible via env `ANTIHALL_EDIT_GUARD_ALLOW`
+  (colon/comma-separated globs).
+- **DevSwarm-aware.** Enforcement is always on in both standalone and DevSwarm sessions;
+  only the block-message wording adapts via `isDevswarmActive()` — the guard is agnostic
+  and works identically with or without DevSwarm.
+- **New hooks.json entry.** A separate PreToolUse matcher `Write|Edit|MultiEdit|NotebookEdit
+  -> edit-guard.js` was added; the existing `api-guard`/`ship-it-guard` matcher is left
+  untouched, so `NotebookEdit` isn't dragged onto them.
+- **Doctor + tests.** `doctor` gained a live behavioral self-test for `edit-guard` (the
+  first edit-time behavioral probe); `tests/hooks/edit-guard.test.js` adds 17 tests.
+- **Codex parity gap (documented, not claimed).** `edit-guard` shares the same documented
+  `apply_patch` payload-adapter gap as `api-guard`/`ship-it-guard` — it is NOT registered
+  in the Codex hooks yet (a real Codex `apply_patch` PreToolUse payload must be captured
+  first). No hard-block parity is claimed for Codex edit-time.
+
 ## 0.49.0
 
 **DevSwarm recovery redesign — the supervisor NO LONGER auto-kills.** The automatic path is now

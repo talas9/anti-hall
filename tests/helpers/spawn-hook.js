@@ -149,4 +149,22 @@ function bashPayload(command, { agentId } = {}) {
   };
 }
 
-module.exports = { testHook, testHookRaw, bashPayload, HOOKS_DIR };
+// Build a PreToolUse Edit-family payload (Edit, Write, MultiEdit, NotebookEdit).
+// When agentId is supplied it lands in the PAYLOAD (the cmux-reliable subagent
+// discriminator the hooks read first). For NotebookEdit, opts.filePath is used
+// as the notebook_path instead of file_path.
+function editPayload(tool, { filePath, agentId, cwd } = {}) {
+  const inputPath = tool === 'NotebookEdit'
+    ? { notebook_path: filePath }
+    : { file_path: filePath };
+  return {
+    hook_event_name: 'PreToolUse',
+    tool_name: tool,
+    tool_input: { ...inputPath, old_string: 'x', new_string: 'y' },
+    session_id: 't',
+    cwd: cwd || process.cwd(),
+    ...(agentId ? { agent_id: agentId, agent_type: 'general-purpose' } : {}),
+  };
+}
+
+module.exports = { testHook, testHookRaw, bashPayload, editPayload, HOOKS_DIR };
