@@ -35,6 +35,9 @@ function group(matcher, files, timeout) {
 // - PreToolUse is registered only for Bash/shell command guards.
 // - Edit-time Claude guards (api-guard, ship-it-guard) are not registered here
 //   because current Codex hook runtime does not hard-run PreToolUse for edits.
+// - fable-availability.js is deliberately omitted: it probes ~/.claude.json for a
+//   Claude Fable model entitlement (Claude Reviewer-seat fallback only), which is
+//   irrelevant to gpt-5.x Codex/OMX sessions.
 const ANTI_HALL_HOOKS = {
   SessionStart: [
     group(null, ['verify-first-full.js'], 10),

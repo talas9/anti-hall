@@ -26,6 +26,29 @@ const CONTEXT =
   "everyday correctness-review plus a share of implementation load. Coordinators " +
   "should read ~/.anti-hall/codex-availability.json instead of re-probing.";
 
+// isRealExecutable(candidate, isWin) -- true only if `candidate` is a REGULAR
+// FILE (never a directory) and, on POSIX, has the execute bit set. `statSync`
+// follows symlinks, so a symlink to the real binary still counts. This is the
+// P0 fix: a DIRECTORY named "codex" on PATH has the execute/search bit set on
+// POSIX, so an X_OK/F_OK-only check (the prior bug) falsely reported it as a
+// runnable binary. Requiring isFile() first rejects that directory outright.
+function isRealExecutable(candidate, isWin) {
+  let stat;
+  try {
+    stat = fs.statSync(candidate);
+  } catch (_) {
+    return false;
+  }
+  if (!stat.isFile()) return false;
+  if (isWin) return true; // isFile() + the caller's PATHEXT extension match is sufficient
+  try {
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 // OS-agnostic PATH probe (mirrors plugins/anti-hall/skills/MODEL-POLICY.md's
 // codex-available.js reference probe): exit-code-free version returning a bool.
 function probeCodexOnPath() {
@@ -34,15 +57,13 @@ function probeCodexOnPath() {
   const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
   return dirs.some((d) => exts.some((e) => {
     try {
-      fs.accessSync(path.join(d, 'codex' + e.toLowerCase()), fs.constants.X_OK);
-      return true;
+      const lower = path.join(d, 'codex' + e.toLowerCase());
+      if (isRealExecutable(lower, isWin)) return true;
+      const asIs = path.join(d, 'codex' + e);
+      if (asIs !== lower && isRealExecutable(asIs, isWin)) return true;
+      return false;
     } catch (_) {
-      try {
-        fs.accessSync(path.join(d, 'codex' + e), fs.constants.F_OK);
-        return true;
-      } catch (_) {
-        return false;
-      }
+      return false;
     }
   }));
 }

@@ -263,10 +263,19 @@ const path = require('path');
 const isWin = process.platform === 'win32';
 const exts = isWin ? (process.env.PATHEXT || '.COM;.EXE;.BAT;.CMD').split(';') : [''];
 const dirs = (process.env.PATH || '').split(path.delimiter).filter(Boolean);
-const found = dirs.some(d => exts.some(e => {
-  try { fs.accessSync(path.join(d, 'codex' + e.toLowerCase()), fs.constants.X_OK); return true; }
-  catch (_) { try { fs.accessSync(path.join(d, 'codex' + e), fs.constants.F_OK); return true; } catch (_) { return false; } }
-}));
+// isFile() first -- rejects a DIRECTORY named "codex" on PATH, which otherwise
+// passes X_OK/F_OK on POSIX and would falsely report as a runnable binary.
+function isRealExecutable(p) {
+  let st;
+  try { st = fs.statSync(p); } catch (_) { return false; } // follows symlinks
+  if (!st.isFile()) return false;
+  if (isWin) return true;
+  try { fs.accessSync(p, fs.constants.X_OK); return true; } catch (_) { return false; }
+}
+const found = dirs.some(d => exts.some(e => (
+  isRealExecutable(path.join(d, 'codex' + e.toLowerCase())) ||
+  isRealExecutable(path.join(d, 'codex' + e))
+)));
 process.exit(found ? 0 : 1);
 ```
 

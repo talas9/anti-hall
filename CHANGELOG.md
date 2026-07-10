@@ -6,6 +6,40 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.51.1
+
+**P0 fix — `codex-availability` PATH probe falsely reported a directory as an executable.**
+
+- **`hooks/codex-availability.js`.** `probeCodexOnPath()` matched a candidate with
+  `fs.accessSync(candidate, X_OK)` and no `isFile()` check. On POSIX a DIRECTORY
+  named `codex` on PATH has the execute/search bit set, so `X_OK` succeeded and
+  the hook wrote `available:true` / emitted the prefer-Codex `additionalContext`
+  even though no runnable binary existed — contradicting the hook's own comment
+  that it matches "a real executable (never a shell alias)". Fixed: a candidate
+  now counts only if `fs.statSync(candidate).isFile()` is true (symlinks to a
+  real binary still resolve via `statSync`'s follow-symlink behavior), and on
+  POSIX the execute bit (`X_OK`) is additionally required; on Windows `isFile()`
+  plus the `PATHEXT`-extension match is sufficient. Still fully fail-open (any
+  stat/access throw just means "not a match here"; the hook always exits 0).
+- **Reference probe parity.** The byte-identical `codex-available.js` reference
+  snippet in both `skills/MODEL-POLICY.md` and
+  `skills/deadly-loop/references/MODEL-POLICY.md` carried the same bug and got
+  the same `isFile()` fix, edited identically so the two copies remain
+  byte-for-byte the same.
+- **New regression test** `tests/hooks/codex-availability.test.js`: a directory
+  named `codex` on PATH (the bug) now asserts `available:false` and no emitted
+  context; a real executable file named `codex` on PATH asserts `available:true`;
+  an empty PATH asserts fail-open (`available:false`, exit 0, no throw).
+
+**Docs — `fable-availability.js` documented as intentionally Claude-only.** No
+behavior change: `hooks/fable-availability.js` probes `~/.claude.json` for a
+Claude Fable model entitlement to inform the Claude Reviewer-seat fallback,
+which is irrelevant to gpt-5.x Codex/OMX sessions and (like the DevSwarm
+liveness supervisor) has no Codex mirror by design — Fable routing is itself
+policy-disabled (see `MODEL-POLICY.md`). Documented in
+`plugins/anti-hall/codex/README.md`'s intentional-parity list, with a matching
+inline comment in `codex/install-codex.js`.
+
 ## 0.51.0
 
 **"Strongly-defaulted" Codex utilization** — a new `codex-availability` SessionStart hook

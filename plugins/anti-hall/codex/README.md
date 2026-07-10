@@ -46,6 +46,7 @@ Documented-but-not-yet-adapted anti-hall hard-hook parity:
 - `PreCompact`/`PostCompact`: Codex documents them; anti-hall has not yet mapped Claude compaction behavior to Codex payloads
 - `TaskCreated`/`TaskCompleted` and Claude Workflow JS files: no direct Codex equivalent documented; use skills, native subagents, OMX, or scripts instead
 - DevSwarm liveness supervisor (`companion/devswarm-supervisor.js`, 0.47.0): intentionally **Claude-only, no Codex mirror** — it recovers wedged *Claude Code* sessions specifically (targets `claude` processes, `claude --resume`, and `~/.claude/projects` transcripts). Like the Claude side it is OPT-IN and fully dormant unless DevSwarm is in use (`DEVSWARM_REPO_ID`). A Codex-side equivalent would be a separate future effort keyed to Codex's own session/transcript model.
+- `hooks/fable-availability.js`: intentionally **Claude-only, no Codex mirror** — it probes `~/.claude.json` for a Claude Fable model entitlement to inform the Claude Reviewer-seat fallback, which is irrelevant to gpt-5.x Codex/OMX sessions. Like the DevSwarm supervisor, it has no Codex mirror by design. Fable routing is itself policy-disabled (see `MODEL-POLICY.md`), so there is no behavior to port.
 
 Model routing for Codex uses Codex model tiers:
 
