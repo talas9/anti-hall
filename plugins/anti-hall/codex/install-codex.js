@@ -40,6 +40,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['verify-first-full.js'], 10),
     group(null, ['graphify-session.js'], 10),
     group(null, ['version-alert.js'], 10),
+    group(null, ['codex-availability.js'], 10),
   ],
   UserPromptSubmit: [
     group(null, ['verify-first.js'], 10),

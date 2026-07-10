@@ -15,6 +15,11 @@
         "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/version-alert.js\"", "timeout": 10 }
         ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/codex-availability.js\"", "timeout": 10 }
+        ]
       }
     ],
     "UserPromptSubmit": [

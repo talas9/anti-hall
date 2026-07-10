@@ -555,6 +555,37 @@ ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
   }
 })();
 
+// --- 6f. Saved workflow templates (deadly-loop / ship-it) --------------------
+// Advisory ONLY (warnl, never bad) — must NOT change doctor's exit code. Checks
+// whether the deadly-loop/ship-it Workflow templates have been saved via
+// /workflows into ~/.claude/workflows/ or <cwd>/.claude/workflows/. Without a
+// saved workflow, deadly-loop/ship-it run via the inline SKILL path, where the
+// Critic seat is unenforced LLM guidance (agentType:'codex:codex-rescue' is a
+// prompt-level convention there, not mechanically wired) and can silently
+// degrade to Opus with nobody noticing.
+head('Workflow templates (deadly-loop / ship-it)');
+(function workflowSection() {
+  function findMatches(dir, patterns) {
+    let entries = [];
+    try { entries = fs.readdirSync(dir); } catch (_) { return []; }
+    return entries.filter((f) => patterns.some((re) => re.test(f)));
+  }
+  const patterns = [/^deadly-loop.*\.js$/i, /^ship-it.*\.js$/i];
+  const dirs = [
+    path.join(os.homedir(), '.claude', 'workflows'),
+    path.join(cwd, '.claude', 'workflows'),
+  ];
+  const found = [];
+  for (const d of dirs) {
+    for (const f of findMatches(d, patterns)) found.push(path.join(d, f));
+  }
+  if (found.length > 0) {
+    ok(`saved workflow template(s) found: ${found.join(', ')}`);
+  } else {
+    warnl('no saved deadly-loop/ship-it Workflow template found in ~/.claude/workflows/ or <cwd>/.claude/workflows/ -- running via the inline SKILL path means the Critic seat is unenforced LLM guidance and can silently degrade to Opus; save the workflow template via /workflows for the enforced codexUp Critic wiring');
+  }
+})();
+
 // --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')

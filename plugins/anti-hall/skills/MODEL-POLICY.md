@@ -23,6 +23,7 @@ This governs the MAIN agent's everyday model choices (distinct from the TRIO deb
 - **Codex second opinion is ALWAYS warranted on substantial code changes** (the `codex-nudge` Stop hook reminds the main agent; the deadly-loop/ship-it Critic seat already enforces it inside those skills). Keep the architecture/design lens on Opus — the two are complementary.
 - **In a Workflow, distribute models across stages/lenses** — never default every `agent()` to Opus. The model-routing-guard hook does NOT police models inside a workflow review fan-out (it exempts review tasks, and workflow-spawn advisories are not surfaced to the orchestrator), so distribution is the SCRIPT AUTHOR's responsibility.
 - **Route SMART, not blindly — weigh BOTH limits.** Codex has its OWN usage limit; don't treat "use Codex" as an unconditional rule. If Codex is unavailable or rate-limited, DEGRADE immediately to a cheap Claude (Sonnet) so work continues — never strand the main agent. Do NOT retry Codex every turn: re-attempt only after the reset/`retry-after` time Codex reports, or — if none is given — after a backoff (give it time), not on the next turn. (deadly-loop/ship-it already gate the Critic seat on a `codexUp` probe and degrade to an Opus persona.)
+- **`codex-availability.json` sets the default.** When the `codex-availability` SessionStart hook's fact (`~/.anti-hall/codex-availability.json`) says `available:true`, default everyday implementation and correctness-review load to `codex:codex-rescue` rather than defaulting to Opus/Sonnet by habit — Opus/Sonnet is the fallback, not the first choice, whenever Codex is on PATH.
 - See `docs/KB-codex-vs-opus-coding.md` for the evidence base; the "Codex=apply/Opus=think" split is a routing heuristic, not a capability wall.
 
 **Five governance rules (always apply):**
@@ -238,6 +239,14 @@ parallel. These rules keep rounds honest and bounded:
 ---
 
 ## Codex availability check
+
+**Read the fact before probing.** Read `~/.anti-hall/codex-availability.json` first
+(written once per session by the `codex-availability` SessionStart hook — a pure
+PATH probe, run at session start automatically). Only run the live probe below if
+that fact is missing or stale (e.g. long-running session, PATH changed mid-session).
+`available:true` => default the Critic seat and everyday correctness-review load to
+`codex:codex-rescue`; Opus is the FALLBACK, taken only when a spawn actually returns
+null — never skip straight to Opus just because you haven't re-checked.
 
 Resolve the Critic path at runtime with this branch logic:
 

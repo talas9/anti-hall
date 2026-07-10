@@ -125,16 +125,25 @@ task unambiguous.
 
 ## Distribute load across Claude AND Codex (when Codex is available)
 
-When the `codex` CLI / plugin is available, treat it as a second worker pool, not a
-fallback. Split independent slices between Claude subagents and Codex so they run
+Check the `codex-availability` fact (`~/.anti-hall/codex-availability.json`, written
+once per session by the `codex-availability` SessionStart hook) before fanning out.
+When it reports `available:true`, treat Codex as a co-equal worker pool — not a
+fallback — for correctness-review AND a share of implementation, not just review.
+Split independent slices between Claude subagents and Codex so they run
 concurrently and you get cross-model diversity (different training, different blind
 spots). Good splits:
 - Implementation slices: some files to Claude agents, others to Codex.
 - Review/debate: spread the seats across models (this is exactly the
   `../MODEL-POLICY.md` trio roster — Sonnet 5 Reviewer + Opus Auditor + Codex Critic).
 - A second opinion on a hard diagnosis: ask both, compare.
-Balance by load (don't pile everything on one pool) and by fit. If Codex is
+Balance by load (don't pile everything on one pool) and by fit. If the fact is
+missing/stale, fall back to the live probe in `../MODEL-POLICY.md`; if Codex is
 unavailable, fall back to Claude-only (divergent personas for adversarial roles).
+
+For big/parallel work, PREFER the Workflow tool with a **saved** deadly-loop/ship-it
+template (`.claude/workflows/deadly-loop*.js` / `ship-it*.js`) over ad-hoc inline
+Agent fan-out — a saved workflow gives the Critic seat's `codexUp` wiring enforced
+mechanics, where an inline Skill-driven fan-out only has LLM-followed guidance.
 
 ## Keep command output OFF the main thread
 

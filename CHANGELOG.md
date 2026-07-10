@@ -6,6 +6,35 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.51.0
+
+**"Strongly-defaulted" Codex utilization** — a new `codex-availability` SessionStart hook
+(Claude + Codex port) plus guidance edits pushing Codex toward being the default worker
+pool rather than an occasional afterthought. This strongly defaults Codex usage but does
+NOT mechanically guarantee it on the inline-Skill path — a saved Workflow template is
+still required for the enforced `codexUp` Critic wiring.
+
+- **New hook `hooks/codex-availability.js`.** A pure-Node, OS-agnostic PATH probe
+  (mirrors the probe documented in `MODEL-POLICY.md`) that checks once per session
+  whether a real `codex` executable is on PATH, writes `~/.anti-hall/codex-availability.json`
+  (`{available, checkedAt, source:"path-probe"}`), and — when `available:true` — emits an
+  honest `additionalContext`: this proves the binary is reachable, NOT that Codex is
+  authenticated/ready, so a runtime spawn returning null still falls back to Opus/Sonnet.
+  Fails open (any error -> exit 0, no output). Registered in both `hooks/hooks.json`
+  (after `fable-availability.js`) and the Codex port's `codex/hooks/hooks.json`.
+- **`doctor` gains a non-failing "saved workflow template" advisory.** Looks for
+  `~/.claude/workflows/deadly-loop*.js` / `ship-it*.js` (and the `<cwd>/.claude/workflows/`
+  equivalents); if none are saved, prints an advisory (warning, not a failure — exit code
+  unchanged) that the inline SKILL path leaves the Critic seat as unenforced LLM guidance
+  that can silently degrade to Opus, and points at `/workflows` for the enforced wiring.
+- **Guidance edits** (`MODEL-POLICY.md` — both copies, `skills/orchestration/SKILL.md`,
+  `skills/deadly-loop/SKILL.md`, `skills/ship-it/SKILL.md`): read the
+  `codex-availability` fact before re-probing; when available, default the Critic seat
+  and everyday correctness-review/implementation load to `codex:codex-rescue` with
+  Opus as the fallback taken only on a null spawn (never a default); prefer the Workflow
+  tool with a saved deadly-loop/ship-it template over ad-hoc inline Agent fan-out for
+  big/parallel work.
+
 ## 0.50.0
 
 **New always-on guard `edit-guard` — the coordinator can no longer edit files directly.**

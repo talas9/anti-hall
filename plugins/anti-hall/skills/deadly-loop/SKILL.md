@@ -37,7 +37,7 @@ Before invoking the deadly loop, ensure:
 2. A **canonical handoff doc** exists or will be created (e.g., `docs/<date>-<feature>-session-handoff.md`).
 3. The owner has authorized at least one full iteration (each round is ~5-30 min of agent compute).
 4. A verification preamble + branch/SHA check is in effect for every spawned agent (see Phase A3).
-5. The debate roster from `references/MODEL-POLICY.md` is resolved — confirm whether Sonnet 5 and Codex are available (use the OS-agnostic Node probe in `references/MODEL-POLICY.md`) so you know which row of the availability fallback matrix applies. (Fable routing is policy-disabled — see `references/MODEL-POLICY.md` — so the `fable` token is informational-only and does not change the Reviewer seat.)
+5. The debate roster from `references/MODEL-POLICY.md` is resolved — read the `codex-availability` fact (`~/.anti-hall/codex-availability.json`) first; fall back to the live OS-agnostic Node probe in `references/MODEL-POLICY.md` only if that fact is absent/stale — so you know which row of the availability fallback matrix applies. When Codex is available, the Critic seat MUST spawn `agentType:'codex:codex-rescue'`, not degrade to Opus. (Fable routing is policy-disabled — see `references/MODEL-POLICY.md` — so the `fable` token is informational-only and does not change the Reviewer seat.)
 
 ## The pattern at a glance
 
@@ -220,6 +220,8 @@ Run independently of the Reviewer and Critic agents.
 ```
 
 ### B2. Critic prompt skeleton
+
+Reminder: Codex (`agentType:'codex:codex-rescue'`) is the DEFAULT spawn for this seat; `{model:'opus'}` is the FALLBACK only, used only when Codex is unavailable per the availability check above.
 
 (Apply the B0 depth requirements: dig deep, simulate edge cases, P0/P1/P2 + EASY-WIN, carry-forward.)
 

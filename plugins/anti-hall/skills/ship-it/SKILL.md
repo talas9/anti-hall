@@ -206,7 +206,10 @@ parallel([
 Note: spawning all three as plain Claude agents would silently drop the cross-model Codex
 critic (collapsing to the all-Opus fallback), and an omitted `model` inherits the
 orchestrator's model — so set `model` EXPLICITLY on the Reviewer and Auditor and use
-`agentType` for the Critic. The Reviewer uses `model: "sonnet"` (Sonnet 5) at effort
+`agentType` for the Critic. Read the `codex-availability` fact
+(`~/.anti-hall/codex-availability.json`) first; Codex (`agentType:"codex:codex-rescue"`)
+is the DEFAULT for this seat, `{model:"opus"}` is the FALLBACK only, taken only when
+Codex is unavailable. The Reviewer uses `model: "sonnet"` (Sonnet 5) at effort
 `xhigh` — never `max` inside loops (TTFT ~163 s). See `references/ship-it.workflow.js`
 for the canonical spawn. *Fable routing is policy-disabled (2026-07-02, over-restrictive/
 refusal-prone): even when `fable-availability.js` detects Fable 5 is available and threads
