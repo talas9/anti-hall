@@ -38,6 +38,7 @@ Mapping to hooks:
 |------------------------|--------------------|-----------------------|
 | `git-guard`            | PreToolUse (Bash)  | force-push / AI-credit-trailer forms exit 2; safe forms exit 0 |
 | `command-guard`        | PreToolUse (Bash)  | heavy commands exit 2 **in coordinator**; allowed in subagent / for light commands |
+| `edit-guard`           | PreToolUse (Edit-family) | Edit/Write/MultiEdit/NotebookEdit exit 2 **in coordinator**; allowed in subagent (payload `agent_id`/`agent_type`) and for allowlisted paths |
 | `skip-guard`           | (module)           | `isSkipped` TTL + granularity (`all` ≠ destructive `git-guard`); plus an e2e bypass through `command-guard` |
 | `speculation-guard`    | Stop               | hedge-without-acknowledgment blocks; acknowledgment / no-hedge allows; `MAX_BLOCKS` cap; skip hatch |
 | `speculation-judge`    | Stop               | opt-in: without `ANTIHALL_SEMANTIC_JUDGE=1` it exits 0 regardless of transcript (live API path untested) |

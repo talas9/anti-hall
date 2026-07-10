@@ -32,7 +32,7 @@ include `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools.
 This port currently hard-registers only the anti-hall hooks whose payload
 contracts are live-aligned and regression-tested for Codex:
 
-- `SessionStart`: full verify-first protocol, graphify session reminder, version alert
+- `SessionStart`: full verify-first protocol, graphify session reminder, version alert, codex-availability probe
 - `UserPromptSubmit`: rotating verify-first nudge, task tracker, limit-conserve nudge
 - `PreToolUse`: shell command guards (`git-guard`, `command-guard`, `graphify-guard`, `merge-gate`)
 - `Stop`: task guards, graphify reminder, speculation guard/judge

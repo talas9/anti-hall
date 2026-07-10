@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: Health-check anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / swarm-guard / model-routing-guard), and the statusline is installed. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "are the guards on", or after install/update to verify everything is live.
+description: Health-check anti-hall — confirm Node is found, every hook is present + syntax-valid, the guards actually fire (live behavioral self-tests on git-guard / command-guard / edit-guard / swarm-guard / model-routing-guard), and the statusline is installed. Use when the user asks "is anti-hall working / active / running", "check the hooks", "anti-hall doctor", "are the guards on", or after install/update to verify everything is live.
 ---
 
 # Doctor
@@ -16,12 +16,14 @@ exist, but that the guards block what they should and allow what they should.
 - **Guard behavior (live self-tests):** spawns the real guards with crafted payloads and
   asserts exit codes — git-guard blocks force-push + AI self-credit and allows `git status`;
   command-guard blocks heavy commands in the coordinator but ALLOWS them in a subagent
-  (payload `agent_id`); swarm-guard allows a normal spawn under healthy memory;
-  model-routing-guard blocks a mechanical task pinned to a flagship model (synthetic
-  payload: fetch/download description + `model:"opus"` + `subagent_type:"general-purpose"`
-  → exit 2) and allows a benign spawn with no model and no mechanical signals (exit 0);
-  omc-detect.js (the OMC-deference shared helper consumed by task-guard /
-  tasklist-guard) is checked for presence + syntax validity.
+  (payload `agent_id`); edit-guard blocks a coordinator Edit but ALLOWS the same Edit in
+  a subagent (payload `agent_id`/`agent_type`), sharing that coordinator-vs-subagent
+  discriminator with command-guard via `coordinator-detect.js`; swarm-guard allows a
+  normal spawn under healthy memory; model-routing-guard blocks a mechanical task pinned
+  to a flagship model (synthetic payload: fetch/download description + `model:"opus"` +
+  `subagent_type:"general-purpose"` → exit 2) and allows a benign spawn with no model and
+  no mechanical signals (exit 0); omc-detect.js (the OMC-deference shared helper consumed
+  by task-guard / tasklist-guard) is checked for presence + syntax validity.
 - **Statusline:** whether a statusLine is installed and in which scope.
 - A final verdict: `anti-hall ACTIVE — N checks passed`, or the list of failures.
 
