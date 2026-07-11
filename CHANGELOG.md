@@ -6,6 +6,31 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.53.0
+
+**DevSwarm destructive-read redirect (command-guard) + topology-aware edit-guard wording.**
+
+- **`command-guard` — new DevSwarm destructive-read redirect.** Under a DevSwarm-active
+  session (`isDevswarmActive`), the guard now redirects the two CONSUMING native
+  `hivecontrol` inbox reads before its own skip/coordinator gate, in ALL contexts (not
+  coordinator-only — a delegated read drains the queue identically):
+  - `hivecontrol workspace monitor` blocks UNCONDITIONALLY (a no-timeout long-poll that
+    hangs the shell AND consumes the native queue).
+  - `hivecontrol workspace read-messages` blocks ONLY when durable-inbox evidence exists
+    (`ANTIHALL_DEVSWARM_INBOX_CMD` non-empty, OR a `~/.anti-hall/devswarm/workspaces/*.json`
+    descriptor with a truthy `inboxPath`); otherwise a harmless single-consumer read is
+    ALLOWED (fail-OPEN-to-allow).
+  - Matching reuses the heavy-path quote-neutralization + `bash -c`/`eval`/`$()`/backtick
+    recursion, so a grep/echo of the command as quoted DATA does not false-positive while
+    smuggled forms still block. Closed-vocabulary reason never echoes input.
+  - Its own `devswarm-read-guard` skip name, now added to skip-guard's `DESTRUCTIVE` set —
+    a blanket `all` skip does NOT silence it (it prevents irreversible native-queue drain /
+    data loss); an explicit `{"devswarm-read-guard": <ttl>}` skip is required, like git-guard.
+  - Fully fail-open: any error falls through and never blocks a turn.
+- **`edit-guard` — topology-aware DevSwarm block wording.** The DevSwarm block reason now
+  distinguishes the Primary (`the primary/main orchestrator`) from a child workspace (`the
+  sub-orchestrator`) via `isChildWorkspace`; both still block, only the noun changes.
+
 ## 0.52.0
 
 **New KB + Codex model-tier migration to GPT-5.6 (Sol/Terra/Luna).**

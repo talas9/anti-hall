@@ -2796,7 +2796,7 @@ Add a `## 0.47.0` section above `## 0.46.0` summarizing: new opt-in DevSwarm liv
 
 - [ ] **Step 7: Sanity + commit**
 
-Run: `grep -rniE "skycrew|<any private consumer/product name>|@.*\\.(com|io|dev)" README.md plugins/anti-hall/README.md llms.txt docs/KB.md CHANGELOG.md plugins/anti-hall/.claude-plugin/plugin.json plugins/anti-hall/codex/README.md`
+Run: `grep -rniE "<private-project>|<any private consumer/product name>|@.*\\.(com|io|dev)" README.md plugins/anti-hall/README.md llms.txt docs/KB.md CHANGELOG.md plugins/anti-hall/.claude-plugin/plugin.json plugins/anti-hall/codex/README.md`
 Expected: only the allowed author identity (`github.com/talas9`, `Mohammed Talas`) — NO private consumer names, emails, or machine paths.
 
 ```bash

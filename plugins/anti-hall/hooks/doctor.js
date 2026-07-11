@@ -108,6 +108,12 @@ BLOCKED(cg('cd app && npm test')) ? ok('command-guard blocks heavy cmd after `cd
 BLOCKED(cg('echo "$(npm run build)"')) ? ok('command-guard blocks heavy cmd in $(...) substitution (`echo "$(npm run build)"`)') : bad('command-guard MISSED heavy cmd in command substitution — recursive-parse fix regressed');
 BLOCKED(cg('bash -c "npm run build"')) ? ok('command-guard blocks heavy `bash -c "npm run build"` payload') : bad('command-guard MISSED heavy bash -c payload — recursive-parse fix regressed');
 ALLOWED(cg('echo "$(date)"')) ? ok('command-guard allows benign substitution (`echo "$(date)"` — date is not heavy)') : bad('command-guard wrongly blocked benign `echo "$(date)"` — over-blocking substitutions');
+// DevSwarm destructive-read redirect (v0.53.0): under a DevSwarm-active env, a
+// `hivecontrol workspace monitor` (no-timeout long-poll) blocks UNCONDITIONALLY,
+// while a grep whose only hivecontrol text is quoted DATA must NOT false-positive.
+function cgds(cmd) { return runHook('command-guard.js', { tool_name: 'Bash', tool_input: { command: cmd } }, { CLAUDE_CODE_ENTRYPOINT: 'cli', ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' }); }
+BLOCKED(cgds('hivecontrol workspace monitor')) ? ok('command-guard blocks `hivecontrol workspace monitor` under DevSwarm (blocking long-poll)') : bad('command-guard did NOT block hivecontrol monitor under DevSwarm — destructive-read redirect regressed');
+ALLOWED(cgds("grep -n 'hivecontrol workspace monitor' docs/KB.md")) ? ok('command-guard allows grep of quoted hivecontrol DATA under DevSwarm (no false-positive)') : bad('command-guard wrongly blocked a grep of quoted hivecontrol data — destructive-read redirect over-blocks');
 
 // edit-guard: blocks direct Edit-family tool use in COORDINATOR; allows in SUBAGENT (payload agent_id)
 function eg(extra) { return runHook('edit-guard.js', Object.assign({ tool_name: 'Edit', tool_input: { file_path: 'src/x.js', old_string: 'a', new_string: 'b' } }, extra), { CLAUDE_CODE_ENTRYPOINT: 'cli' }); }

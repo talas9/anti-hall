@@ -49,16 +49,23 @@ test('per-guard skip: command-guard skipped, git-guard not', () => {
   });
 });
 
-test('"all" covers noisy guards but NOT destructive git-guard', () => {
+test('"all" covers noisy guards but NOT destructive git-guard / devswarm-read-guard', () => {
   withSkip({ all: future() }, (isSkipped) => {
     assert.strictEqual(isSkipped('command-guard'), true);
     assert.strictEqual(isSkipped('git-guard'), false, 'git-guard is destructive; "all" must not cover it');
+    assert.strictEqual(isSkipped('devswarm-read-guard'), false, 'devswarm-read-guard is destructive (native-queue drain); "all" must not cover it');
   });
 });
 
 test('git-guard skipped only when named explicitly', () => {
   withSkip({ 'git-guard': future() }, (isSkipped) => {
     assert.strictEqual(isSkipped('git-guard'), true);
+  });
+});
+
+test('devswarm-read-guard skipped only when named explicitly', () => {
+  withSkip({ 'devswarm-read-guard': future() }, (isSkipped) => {
+    assert.strictEqual(isSkipped('devswarm-read-guard'), true);
   });
 });
 

@@ -150,3 +150,27 @@ test('INJECTION: block reason does not echo file_path text', () => {
   assert.ok(!r.stdout.includes('INJECTSECRET'), 'stdout must not reflect file_path text');
   assert.ok(!r.stderr.includes('INJECTSECRET'), 'stderr must not reflect file_path text');
 });
+
+// ---------------------------------------------------------------------------
+// DevSwarm topology-aware wording. isDevswarmActive follows DEVSWARM_REPO_ID (auto
+// mode); isChildWorkspace follows DEVSWARM_SOURCE_BRANCH (non-empty = child).
+// Both roles still BLOCK a non-allowlisted edit — only the orchestrator noun in
+// the reason string differs (child = "sub-orchestrator", root = "primary").
+
+test('DEVSWARM CHILD: coordinator + child env + Edit -> block, reason says sub-orchestrator', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }),
+    { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' });
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  assert.ok(/sub-orchestrator/.test(r.json.reason), `reason: ${r.json.reason}`);
+});
+
+test('DEVSWARM PRIMARY: coordinator + primary env (no source branch) + Edit -> block, reason says primary', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }),
+    { DEVSWARM_REPO_ID: 'repo-x' }); // DEVSWARM_SOURCE_BRANCH unset -> Primary
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  assert.ok(/primary/.test(r.json.reason), `reason: ${r.json.reason}`);
+  assert.ok(!/sub-orchestrator/.test(r.json.reason),
+    `Primary reason must NOT say sub-orchestrator: ${r.json.reason}`);
+});

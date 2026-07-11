@@ -31,7 +31,10 @@ const os = require('os');
 const SKIP_FILE = path.join(os.homedir(), '.anti-hall', 'skip.json');
 
 // Guards NOT covered by a broad "all" skip — they must be named explicitly.
-const DESTRUCTIVE = new Set(['git-guard']);
+// devswarm-read-guard is here because it prevents an IRREVERSIBLE native-queue
+// drain (data loss); a blanket "all" skip must not silence it — it needs an
+// explicit, guard-named skip (like git-guard).
+const DESTRUCTIVE = new Set(['git-guard', 'devswarm-read-guard']);
 
 // isSkipped(name): true when an unexpired, applicable skip is recorded.
 //   - data[name]  > now            -> skip this guard (covers destructive when named)

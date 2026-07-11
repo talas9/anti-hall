@@ -170,7 +170,7 @@ function main() {
 
   if (isAllowed(filePath, cwd)) process.exit(0);
 
-  // DevSwarm-aware wording switch (mirrors devswarm-child-role.js's pattern).
+  // DevSwarm-aware wording switch (lazy-require, mirrors this file's pattern).
   let devswarmActive = false;
   try {
     devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
@@ -178,14 +178,33 @@ function main() {
     devswarmActive = false; // fail-open: treat as standalone/dormant
   }
 
-  const reason = devswarmActive
-    ? ('DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
-       'directly in its workspace — spawn a subagent to make this edit and have it ' +
-       'report a tight summary. (tool: ' + toolName + ')')
-    : ('EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
-       'a subagent to make this edit and have it report a tight summary. The ' +
-       'coordinator synthesizes the summary; raw edits never happen in the main ' +
-       'thread. (tool: ' + toolName + ')');
+  let reason;
+  if (devswarmActive) {
+    // Topology-aware noun: a child workspace is a sub-orchestrator, but the root
+    // session is the primary/main orchestrator — the old wording hardcoded
+    // "sub-orchestrator" even for the Primary. Fail-open: if devswarm-role
+    // require/throws, default to the current (sub-orchestrator) wording. This only
+    // changes the noun; the block decision is identical for both roles.
+    let childWorkspace = true; // default to current wording on any failure
+    try {
+      childWorkspace = require('./lib/devswarm-role.js').isChildWorkspace(process.env);
+    } catch (_) {
+      childWorkspace = true; // fall back to current generic (sub-orchestrator) wording
+    }
+    reason = childWorkspace
+      ? ('DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
+         'directly in its workspace — spawn a subagent to make this edit and have it ' +
+         'report a tight summary. (tool: ' + toolName + ')')
+      : ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
+         'files directly — spawn a subagent to make this edit and have it report a ' +
+         'tight summary. (tool: ' + toolName + ')');
+  } else {
+    reason =
+      'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
+      'a subagent to make this edit and have it report a tight summary. The ' +
+      'coordinator synthesizes the summary; raw edits never happen in the main ' +
+      'thread. (tool: ' + toolName + ')';
+  }
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(2);

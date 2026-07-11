@@ -34,6 +34,8 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 // Commands whose FIRST WORD (verb) are always heavy in coordinator context.
 const HEAVY_VERBS = new Set([
@@ -99,6 +101,122 @@ const LIGHT_EXCEPTIONS = [
   /\bnode\s+(?:\S*[\\/])?statusline[\\/]phase\.js\b/i,
   /\bnode\s+(?:\S*[\\/])?hooks[\\/]agent-watchdog\.js\b/i,
 ];
+
+// DevSwarm destructive-read redirect: the two CONSUMING native hivecontrol inbox
+// reads — `hivecontrol workspace read-messages` (mark-reads / drains the native
+// message queue) and `hivecontrol workspace monitor` (a blocking long-poll that
+// also consumes the queue). Non-destructive subcommands (message-count,
+// message-parent, message-child) and any other subcommand are NOT matched
+// (default-allow). Optional flag tokens are tolerated on both sides so
+// `hivecontrol --json workspace read-messages` / `hivecontrol workspace --foo
+// monitor` cannot slip past by flag insertion. Split into TWO regexes because the
+// block policy differs by kind: `monitor` blocks unconditionally, `read-messages`
+// blocks only with durable-layer evidence (see the branch in main()).
+const HIVECTL_MONITOR =
+  /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*monitor\b/i;
+const HIVECTL_READ_MESSAGES =
+  /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*read-messages\b/i;
+
+// detectHivectlDestructiveRead(command, depth) -> 'monitor' | 'read-messages' | null.
+// Mirrors isHeavyCommand's matching discipline so DATA and CODE are separated the
+// same way the heavy path does it: the per-segment regex test runs against the
+// QUOTE-NEUTRALIZED segment (so `grep 'hivecontrol workspace read-messages' f` and
+// `echo "...monitor..."` — quoted DATA — do NOT match), while `bash -c "..."`,
+// `eval ...`, `$(...)` and backtick payloads ARE unwrapped and recursed (so a
+// smuggled `bash -c "hivecontrol workspace read-messages"` / `$(hivecontrol
+// workspace monitor)` STILL matches). `monitor` wins over `read-messages` when both
+// appear, because monitor blocks unconditionally.
+function detectHivectlDestructiveRead(command, depth) {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  const d = typeof depth === 'number' ? depth : 0;
+  let sawReadMessages = false;
+  for (const seg of splitSegments(command)) {
+    const forPatterns = neutralizeQuotedContents(seg);
+    if (HIVECTL_MONITOR.test(forPatterns)) return 'monitor';
+    if (HIVECTL_READ_MESSAGES.test(forPatterns)) sawReadMessages = true;
+    if (d < 3) {
+      const payload = extractShellCPayload(seg);
+      if (payload) {
+        const inner = detectHivectlDestructiveRead(payload, d + 1);
+        if (inner === 'monitor') return 'monitor';
+        if (inner === 'read-messages') sawReadMessages = true;
+      }
+      const evalPayload = extractEvalPayload(seg);
+      if (evalPayload) {
+        const inner = detectHivectlDestructiveRead(evalPayload, d + 1);
+        if (inner === 'monitor') return 'monitor';
+        if (inner === 'read-messages') sawReadMessages = true;
+      }
+    }
+  }
+  if (d < 3) {
+    for (const inner of extractSubstitutions(command)) {
+      const r = detectHivectlDestructiveRead(inner, d + 1);
+      if (r === 'monitor') return 'monitor';
+      if (r === 'read-messages') sawReadMessages = true;
+    }
+  }
+  return sawReadMessages ? 'read-messages' : null;
+}
+
+// hasDurableInboxEvidence(env) -> bool. Durable-layer evidence for a `read-messages`
+// block is EITHER: ANTIHALL_DEVSWARM_INBOX_CMD non-empty, OR at least one
+// ~/.anti-hall/devswarm/workspaces/*.json descriptor with a truthy `inboxPath`.
+// Cheap + fail-OPEN-TO-ALLOW: any error (unreadable dir, bad JSON) -> false, so a
+// harmless single-consumer `read-messages` is never blocked on a broken check.
+function hasDurableInboxEvidence(env) {
+  try {
+    const e = env || process.env;
+    const cmd = e.ANTIHALL_DEVSWARM_INBOX_CMD;
+    if (typeof cmd === 'string' && cmd.trim() !== '') return true;
+    const dir = path.join(os.homedir(), '.anti-hall', 'devswarm', 'workspaces');
+    let names;
+    try { names = fs.readdirSync(dir); } catch (_) { return false; }
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      try {
+        const desc = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'));
+        if (desc && desc.inboxPath) return true;
+      } catch (_) { /* skip malformed descriptor */ }
+    }
+    return false;
+  } catch (_) {
+    return false; // fail-open to ALLOW
+  }
+}
+
+// buildDevswarmReason(kind, env) -> closed-vocabulary block reason. NEVER reflects
+// command/stdin text (injection hygiene). Names ANTIHALL_DEVSWARM_INBOX_CMD (the
+// var, not its value) as the read path when configured; always includes the
+// do-not-delegate line; for read-messages, states that message-count reflects the
+// NATIVE queue only (a 0 there does NOT mean no pending messages under a durable
+// inbox). References no wrapper/CLI that does not exist.
+function buildDevswarmReason(kind, env) {
+  const e = env || process.env;
+  const inboxCmd = e.ANTIHALL_DEVSWARM_INBOX_CMD;
+  const hasInboxCmd = typeof inboxCmd === 'string' && inboxCmd.trim() !== '';
+  const doNotDelegate =
+    ' Do NOT delegate this to a subagent either — a delegated read drains the ' +
+    'queue identically.';
+  const viaDurable = hasInboxCmd
+    ? ' Read pending messages via the consumer-configured ANTIHALL_DEVSWARM_INBOX_CMD ' +
+      'command instead — it does not drain the native queue.'
+    : '';
+  if (kind === 'monitor') {
+    return 'DEVSWARM COORDINATOR-READ REDIRECT: `hivecontrol workspace monitor` is ' +
+      'a blocking long-poll with no default timeout — running it inline hangs the ' +
+      'shell/Bash call until a message arrives or the process is killed, and it ' +
+      'consumes the native message queue. Do NOT run it here.' +
+      doNotDelegate + viaDurable;
+  }
+  return 'DEVSWARM COORDINATOR-READ REDIRECT: `hivecontrol workspace read-messages` ' +
+    'is a DESTRUCTIVE read — it mark-reads / drains the native message queue. A ' +
+    'durable inbox layer is in use here, so draining the native queue loses ' +
+    'messages the durable layer still needs. Do NOT run it here.' +
+    doNotDelegate + viaDurable +
+    ' Note: `hivecontrol workspace message-count` reflects the NATIVE queue only; a ' +
+    '0 there does NOT mean there are no pending messages when a durable inbox is in use.';
+}
 
 // Split a full command line into logical segments on the shell operators
 // ; && || | (and newlines), honoring single/double quotes so an operator inside
@@ -460,10 +578,7 @@ function main() {
     process.exit(0);
   }
 
-  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
   const { isSkipped } = require('./skip-guard.js');
-  if (isSkipped('command-guard')) process.exit(0);
-  const { isCoordinator } = require('./coordinator-detect.js');
 
   let payload;
   try {
@@ -472,12 +587,50 @@ function main() {
     process.exit(0);
   }
 
-  // Only block in coordinator context (subagents pass through).
+  const command = (payload && payload.tool_input && payload.tool_input.command) || '';
+
+  // DevSwarm destructive-read redirect branch. DIFFERENT protection goal from the
+  // heavy-command gate below (data-loss / shell-hang vs coordinator context-hygiene),
+  // so it is evaluated FIRST — in ALL session contexts (coordinator AND subagent: a
+  // delegated read drains the queue identically), with its OWN skip name
+  // (`devswarm-read-guard`), independent of command-guard's own skip/coordinator gate.
+  //   - monitor: block UNCONDITIONALLY when DevSwarm-active (a no-timeout long-poll
+  //     hangs the shell; it also consumes the queue).
+  //   - read-messages: block ONLY with durable-layer evidence; otherwise a harmless
+  //     single-consumer read -> ALLOW (fail-OPEN-to-allow, never brick).
+  // Fully fail-open: any throw -> fall through (never block).
+  try {
+    let devswarmActive = false;
+    try {
+      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+    } catch (_) {
+      devswarmActive = false; // fail-open: dormant
+    }
+    if (devswarmActive && !isSkipped('devswarm-read-guard')) {
+      const kind = detectHivectlDestructiveRead(command);
+      if (kind) {
+        const doBlock = kind === 'monitor'
+          ? true
+          : hasDurableInboxEvidence(process.env);
+        if (doBlock) {
+          const reason = buildDevswarmReason(kind, process.env);
+          fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+          process.exit(2);
+        }
+      }
+    }
+  } catch (_) {
+    // fail-open: never block a turn on a devswarm-branch bug.
+  }
+
+  // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).
+  if (isSkipped('command-guard')) process.exit(0);
+  const { isCoordinator } = require('./coordinator-detect.js');
+
+  // Only block heavy commands in coordinator context (subagents pass through).
   if (!isCoordinator(payload)) {
     process.exit(0);
   }
-
-  const command = (payload && payload.tool_input && payload.tool_input.command) || '';
 
   if (!isHeavyCommand(command)) {
     process.exit(0);
