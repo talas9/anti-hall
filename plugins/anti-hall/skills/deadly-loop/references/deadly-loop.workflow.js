@@ -271,7 +271,15 @@ function investigateBrief(seat, a, packText, driftReason) {
 // `effort:'xhigh'` meant for the Sonnet-5 seat it replaced.
 async function investigateAgent(seat, a, packText, driftReason, labelSuffix) {
   const label = seat.label + (labelSuffix || '');
-  const brief = investigateBrief(seat, a, packText, driftReason);
+  let brief = investigateBrief(seat, a, packText, driftReason);
+  // Pin the Codex CRITIC seat to gpt-5.6-sol (verified change-spec). ONLY the codex
+  // critic seat is pinned — the Opus-fallback seat ({model:'opus'}) is never touched,
+  // so the sol pin can never leak onto an Opus seat. On codex CLI v0.143.0 the -m pin
+  // works but may emit "Model metadata not found" (fallback metadata) per
+  // docs/KB-gpt-5.6.md — acceptable.
+  if (seat.role === 'critic' && seat.opts && seat.opts.agentType === 'codex:codex-rescue') {
+    brief = '--fresh --model gpt-5.6-sol\n' + brief;
+  }
   const r = await agent(brief, {
     ...seat.opts, label, schema: VERDICT_SCHEMA,
   });

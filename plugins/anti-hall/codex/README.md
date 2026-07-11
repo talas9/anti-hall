@@ -34,14 +34,14 @@ contracts are live-aligned and regression-tested for Codex:
 
 - `SessionStart`: full verify-first protocol, graphify session reminder, version alert, codex-availability probe
 - `UserPromptSubmit`: rotating verify-first nudge, task tracker, limit-conserve nudge
-- `PreToolUse`: shell command guards (`git-guard`, `command-guard`, `graphify-guard`, `merge-gate`)
+- `PreToolUse`: shell command guards (`git-guard`, `command-guard`, `graphify-guard`, `merge-gate`) — `command-guard.js` is a single shared file, so its DevSwarm destructive-read redirect (0.53.0: blocks `hivecontrol workspace monitor` unconditionally, `read-messages` when durable-inbox evidence exists, own skip `devswarm-read-guard`) auto-applies to Codex sessions with no separate adapter
 - `Stop`: task guards, graphify reminder, speculation guard/judge
 
 Documented-but-not-yet-adapted anti-hall hard-hook parity:
 
 - edit-time `api-guard`: current implementation parses Claude-style `Write/Edit/MultiEdit` payloads; Codex `apply_patch` payload adapter + tests are still needed before claiming hard-block parity
 - edit-time `ship-it-guard`: same payload-adapter requirement
-- edit-time `edit-guard` (0.50.0): same payload-adapter requirement — it carries the identical `apply_patch` gap and is intentionally not registered in `codex/hooks/hooks.json` until a real Codex edit payload is captured
+- edit-time `edit-guard` (0.50.0): same payload-adapter requirement — it carries the identical `apply_patch` gap and is intentionally not registered in `codex/hooks/hooks.json` until a real Codex edit payload is captured; its 0.53.0 Primary-vs-child DevSwarm wording fix therefore does not apply to Codex either
 - subagent lifecycle hooks: Codex documents `SubagentStart`/`SubagentStop`, but anti-hall has not yet added Codex-specific payload tests
 - `PreCompact`/`PostCompact`: Codex documents them; anti-hall has not yet mapped Claude compaction behavior to Codex payloads
 - `TaskCreated`/`TaskCompleted` and Claude Workflow JS files: no direct Codex equivalent documented; use skills, native subagents, OMX, or scripts instead

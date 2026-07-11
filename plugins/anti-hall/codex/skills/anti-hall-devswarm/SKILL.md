@@ -46,6 +46,22 @@ workspace), all of the above only ever touches the `claude` ones — it identity
 `claude` process's argv session id and cwd. A Codex workspace is simply outside its
 target surface; nothing here signals or resumes a Codex process.
 
+## command-guard's destructive-read redirect (shipped, v0.53.0 — applies to Codex too)
+
+Unlike the recovery model above, this one is **not** Claude-only: `command-guard.js` is
+a single file registered in both `codex/hooks/hooks.json` and the Claude hooks.json, so
+its DevSwarm branch fires identically for a Codex workspace. Under a DevSwarm-active
+session it redirects the two CONSUMING native `hivecontrol` inbox reads, in ALL contexts
+(a delegated read drains the queue identically): `hivecontrol workspace monitor` blocks
+UNCONDITIONALLY (a no-timeout long-poll that hangs the shell and consumes the queue);
+`hivecontrol workspace read-messages` blocks ONLY when durable-inbox evidence exists —
+`ANTIHALL_DEVSWARM_INBOX_CMD` set, or a `~/.anti-hall/devswarm/workspaces/*.json`
+descriptor with a truthy `inboxPath` — so a harmless single-consumer `read-messages` is
+still allowed. Non-destructive `message-count`/`message-parent`/`message-child` are
+untouched. Own `devswarm-read-guard` skip name (in skip-guard's `DESTRUCTIVE` set — a
+blanket `all` skip does not cover it). Full detail: `docs/KB-devswarm-hivecontrol.md`
+§8.5.
+
 ## On-demand recovery — devswarm-recover CLI
 
 ```bash

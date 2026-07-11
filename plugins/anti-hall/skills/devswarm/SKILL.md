@@ -21,6 +21,22 @@ project is running DevSwarm, not to this plugin.
 | **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped** | `companion/devswarm-supervisor.js`, `companion/install-devswarm-supervisor.js`, `companion/lib/{liveness,recovery,target-session,doctor-devswarm}.js`, `hooks/lib/devswarm-detect.js`, `hooks/lib/devswarm-role.js`, `hooks/devswarm-child-role.js`. The automatic background sweep. See "The layered recovery model" below. |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped** | `companion/devswarm-recover.js`. Invoked explicitly, per workspace id, by an operator (or a parent orchestrator acting on an escalation). See "On-demand recovery" below. |
 
+## command-guard's destructive-read redirect (shipped, v0.53.0)
+
+Separate from the four addons above — this lives in the always-on `command-guard.js`
+hook, not in the DevSwarm companion. Under a DevSwarm-active session, `command-guard`
+redirects the two CONSUMING native `hivecontrol` inbox reads, in ALL contexts (a
+delegated subagent read drains the queue identically): `hivecontrol workspace monitor`
+blocks UNCONDITIONALLY (a no-timeout long-poll that hangs the shell and consumes the
+queue); `hivecontrol workspace read-messages` blocks ONLY when durable-inbox evidence
+exists — `ANTIHALL_DEVSWARM_INBOX_CMD` set, or a
+`~/.anti-hall/devswarm/workspaces/*.json` descriptor with a truthy `inboxPath` — so a
+harmless single-consumer `read-messages` is still allowed. Non-destructive
+`message-count`/`message-parent`/`message-child` are untouched. It has its own
+`devswarm-read-guard` skip name (in skip-guard's `DESTRUCTIVE` set, so a blanket `all`
+skip does not cover it) and is fail-open. Full detail: `docs/KB-devswarm-hivecontrol.md`
+§8.5.
+
 ## What this is for
 
 A workaround for a documented, unresolved Claude Code core-loop bug class

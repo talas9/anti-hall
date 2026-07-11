@@ -30,6 +30,16 @@ the update.
 - **`edit-guard` — topology-aware DevSwarm block wording.** The DevSwarm block reason now
   distinguishes the Primary (`the primary/main orchestrator`) from a child workspace (`the
   sub-orchestrator`) via `isChildWorkspace`; both still block, only the noun changes.
+- **deadly-loop / ship-it — Codex CRITIC seat pinned to `gpt-5.6-sol`.** The adversarial
+  Critic seat in both workflows now pins the flagship reasoning model via the brief prefix
+  `--fresh --model gpt-5.6-sol` (deadly-loop `investigateAgent`, ship-it `criticAgent` —
+  the single Codex-critic call site in each). This **supersedes** the 0.52.0 note that the
+  workflows "neither pins a Codex model by design": the Critic is now deliberately pinned.
+  The Codex IMPLEMENTER seat (ship-it `buildAgent`) stays unpinned (`gpt-5.6-terra`); the
+  availability-fallback (Codex-unavailable → Opus) and cross-model self-review guard are
+  untouched, so the sol pin can never leak onto an Opus seat. Both `MODEL-POLICY.md` copies
+  updated in lockstep. On codex CLI v0.143.0 the `-m` pin may emit "Model metadata not
+  found" (fallback metadata) per `docs/KB-gpt-5.6.md` — acceptable.
 
 ## 0.52.0
 

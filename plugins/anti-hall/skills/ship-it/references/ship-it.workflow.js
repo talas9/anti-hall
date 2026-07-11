@@ -256,7 +256,13 @@ async function criticAgent(p, opts) {
     });
   }
 
-  const r = await agent(criticBrief(p), {
+  // Pin the Codex CRITIC seat to gpt-5.6-sol (verified change-spec). This is the ONLY
+  // codex critic call site — the opus-noselfreview Critic (skipCodex above), the
+  // opus-fallback Critic below, and the Codex implementer (buildAgent, which stays
+  // terra/unpinned) are all left untouched, so the sol pin never leaks onto an Opus or
+  // implementer seat. On codex CLI v0.143.0 the -m pin works but may emit "Model
+  // metadata not found" (fallback metadata) per docs/KB-gpt-5.6.md — acceptable.
+  const r = await agent('--fresh --model gpt-5.6-sol\n' + criticBrief(p), {
     schema: VERDICT_SCHEMA, run_in_background: true,
     label: p.label + ':critic', agentType: 'codex:codex-rescue',
   });

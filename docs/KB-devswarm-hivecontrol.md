@@ -120,6 +120,18 @@ migrations) [P2]:
 
 ## 4. The `hivecontrol` CLI — command reference (v2.3.3, verified)
 
+> **Re-verified 2026-07-12 against `hivecontrol` v2.3.4 (bumped from 2.3.3 — patch-level
+> only).** Ran `--version` and every `--help` one level deep (`workspace`, `repo`, `health`,
+> `open`, plus all 13 `workspace` and all 7 `repo` subcommand `--help`s, including
+> `list children`/`list all`/`port-vars add`/`worktree-include add`/`scripts set`). **Zero
+> surface changes**: identical top-level groups, identical subcommand counts, identical flags
+> (including `-t/--title` on `create`, `--tree` on both `list` subcommands, `-w/-y/-s` on
+> `update-base`, `-i/-t` on `monitor`). No `--json` flag exists anywhere (JSON is the
+> unconditional default output, confirmed by the top-level help's "All commands return JSON
+> for easy parsing by AI agents" line — not an opt-in flag). No `archive`/`delete`/`status`
+> subcommand exists at any level — the "GUI-only teardown" gap in §10/§8.6 is still real.
+> Everything below this note remains accurate for 2.3.4; only the version pin is stale.
+
 Bundled at `/Applications/DevSwarm.app/Contents/Resources/cli/{hivecontrol,devswarm}`; on the
 `PATH` of every workspace shell. **Most commands return JSON** for agent parsing (`configure`
 and `help`/`--help` print human-readable text) [P1]. Invoke `hivecontrol --help`.
@@ -306,6 +318,19 @@ platform-identical** (both call the same `hivecontrol`):
 
 - **`git-guard` / `merge-gate`** already gate merge/commit paths — reuse them around
   `merge-into-source`.
+- **`command-guard`'s DevSwarm destructive-read redirect (shipped, v0.53.0).** Under a
+  DevSwarm-active session, `command-guard.js` intercepts the two CONSUMING native
+  `hivecontrol` inbox reads from §4.1/§7 before its own coordinator-only gate, in ALL
+  contexts (a delegated subagent read drains the queue identically): `hivecontrol
+  workspace monitor` blocks unconditionally (a no-timeout long-poll that hangs the shell
+  and consumes the queue); `hivecontrol workspace read-messages` blocks only when
+  durable-inbox evidence exists (`ANTIHALL_DEVSWARM_INBOX_CMD` set, or a
+  `~/.anti-hall/devswarm/workspaces/*.json` descriptor with a truthy `inboxPath`) — a
+  harmless single-consumer `read-messages` is allowed. Non-destructive `message-count` /
+  `message-parent` / `message-child` are never touched. Own `devswarm-read-guard` skip
+  name (in skip-guard's `DESTRUCTIVE` set — a blanket `all` skip does not silence it).
+  Fires on both platforms: `command-guard.js` is a single file shared by the Claude and
+  Codex ports (§8.4), so this redirect needs no separate Codex adapter.
 - A **new no-child-child guard** should block `hivecontrol workspace create` when
   `DEVSWARM_SOURCE_BRANCH` is non-empty (child), mirroring the swarm-guard/anti-deep-nesting
   pattern.
@@ -460,7 +485,10 @@ parent-child + coordination protocol ·
 - **Packaged SQLite path, `update-base` cycle-detection, rebase-via-CLI reachability —
   UNVERIFIED** [P2].
 - **Version-pinned.** All CLI/schema facts are for **`hivecontrol` 2.3.3** / this app build;
-  re-verify against `--help` after a DevSwarm update.
+  re-verify against `--help` after a DevSwarm update. **Re-verified 2026-07-12 at v2.3.4** —
+  full `--help` surface (top-level + all `workspace`/`repo` subcommands) is byte-for-byte
+  identical in structure to the 2.3.3 surface documented in §4; no new subcommands, flags,
+  or removed commands. Treat the CLI-surface facts as current through 2.3.4.
 - **Vendor productivity claims** ("5×") are self-reported, not independently benchmarked [5][18];
   the "19% slower" counter-figure is reported by DevSwarm's blog [5] citing METR (2025), not a
   direct METR source here.

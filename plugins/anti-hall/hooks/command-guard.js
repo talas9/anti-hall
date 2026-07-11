@@ -132,8 +132,30 @@ function detectHivectlDestructiveRead(command, depth) {
   let sawReadMessages = false;
   for (const seg of splitSegments(command)) {
     const forPatterns = neutralizeQuotedContents(seg);
-    if (HIVECTL_MONITOR.test(forPatterns)) return 'monitor';
-    if (HIVECTL_READ_MESSAGES.test(forPatterns)) sawReadMessages = true;
+    // COMMAND-POSITION ANCHORING: only treat `hivecontrol` as the destructive verb
+    // when it is actually THIS segment's command verb (mirrors the heavy path's
+    // effectiveVerb discipline — basename + wrapper/assignment skipping), not merely
+    // a word that happens to appear somewhere in the args. This drops the
+    // false-positive where unquoted data args are literally these words in order —
+    // `grep hivecontrol workspace monitor docs/KB.md`, `echo hivecontrol workspace
+    // monitor` — which have verb `grep`/`echo`, not `hivecontrol`, so they ALLOW.
+    // Smuggling is UNAFFECTED: `bash -c "..."`, `$(...)`, backtick, `eval`, and
+    // chained (`a && hivecontrol ...`) forms each put hivecontrol at verb position
+    // inside a recursively-extracted payload / its own segment, and a path- or
+    // flag-prefixed form (`/usr/bin/hivecontrol workspace monitor`,
+    // `sudo hivecontrol ...`) still resolves to `hivecontrol` via effectiveVerb.
+    //
+    // ACCEPTED LIMITATION (drift-guard threat model, NOT an adversary defense):
+    // deliberate shell-obfuscation forms that only synthesize the verb/subcommand
+    // AFTER shell expansion are NOT caught — `hiv'ec'ontrol workspace monitor`,
+    // `hivecontrol workspace 'mon'itor`, `mon${X:-itor}`, `mon$(printf itor)`.
+    // Catching them would need a full shell-expansion simulation, which is out of
+    // scope: this guard prevents ACCIDENTAL destructive reads, not a determined
+    // bypass. Tests document these as knowingly-allowed.
+    if (effectiveVerb(seg) === 'hivecontrol') {
+      if (HIVECTL_MONITOR.test(forPatterns)) return 'monitor';
+      if (HIVECTL_READ_MESSAGES.test(forPatterns)) sawReadMessages = true;
+    }
     if (d < 3) {
       const payload = extractShellCPayload(seg);
       if (payload) {
@@ -160,10 +182,13 @@ function detectHivectlDestructiveRead(command, depth) {
 }
 
 // hasDurableInboxEvidence(env) -> bool. Durable-layer evidence for a `read-messages`
-// block is EITHER: ANTIHALL_DEVSWARM_INBOX_CMD non-empty, OR at least one
-// ~/.anti-hall/devswarm/workspaces/*.json descriptor with a truthy `inboxPath`.
-// Cheap + fail-OPEN-TO-ALLOW: any error (unreadable dir, bad JSON) -> false, so a
-// harmless single-consumer `read-messages` is never blocked on a broken check.
+// block is EITHER: ANTIHALL_DEVSWARM_INBOX_CMD non-empty (trimmed), OR at least one
+// ~/.anti-hall/devswarm/workspaces/*.json descriptor with a non-whitespace `inboxPath`.
+// Cheap + fail-OPEN-TO-ALLOW: any error (unreadable dir, bad JSON, non-regular/oversize
+// candidate) -> false, so a harmless single-consumer `read-messages` is never blocked
+// on a broken check and the hook NEVER wedges.
+const MAX_DESCRIPTOR_BYTES = 64 * 1024; // a workspace descriptor is tiny; anything
+// larger is not a real descriptor and reading it blind could stall the hook.
 function hasDurableInboxEvidence(env) {
   try {
     const e = env || process.env;
@@ -175,9 +200,20 @@ function hasDurableInboxEvidence(env) {
     for (const n of names) {
       if (!/\.json$/.test(n)) continue;
       try {
-        const desc = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'));
-        if (desc && desc.inboxPath) return true;
-      } catch (_) { /* skip malformed descriptor */ }
+        const p = path.join(dir, n);
+        // FIX (fail-open integrity): a blind readFileSync on a symlink to /dev/zero,
+        // a FIFO, a device node, or a huge file BLOCKS FOREVER -> the whole hook
+        // wedges instead of failing open (PROVEN by a `ln -s /dev/zero .../zero.json`
+        // probe that timed out). lstat (NOT stat — so a symlink is rejected, not
+        // followed) and skip anything that is not a plain regular file, and cap the
+        // size, before ever opening the candidate.
+        const st = fs.lstatSync(p);
+        if (!st.isFile() || st.size > MAX_DESCRIPTOR_BYTES) continue;
+        const desc = JSON.parse(fs.readFileSync(p, 'utf8'));
+        // Require a NON-WHITESPACE inboxPath (mirrors the env-var trim above) so a
+        // `{"inboxPath":"   "}` descriptor does not wrongly arm the block.
+        if (desc && desc.inboxPath && String(desc.inboxPath).trim() !== '') return true;
+      } catch (_) { /* skip malformed / unreadable / non-regular descriptor */ }
     }
     return false;
   } catch (_) {
@@ -614,6 +650,9 @@ function main() {
           : hasDurableInboxEvidence(process.env);
         if (doBlock) {
           const reason = buildDevswarmReason(kind, process.env);
+          // Emit via fs.writeSync(1,…) not process.stdout.write per CLAUDE.md: on
+          // macOS node 18/20 a synchronous exit right after process.stdout.write can
+          // race the async pipe flush and truncate the JSON; writeSync is atomic.
           fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
           process.exit(2);
         }

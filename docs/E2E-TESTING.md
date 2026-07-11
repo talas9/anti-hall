@@ -37,7 +37,7 @@ Mapping to hooks:
 | Hook                   | Event              | What the test asserts |
 |------------------------|--------------------|-----------------------|
 | `git-guard`            | PreToolUse (Bash)  | force-push / AI-credit-trailer forms exit 2; safe forms exit 0 |
-| `command-guard`        | PreToolUse (Bash)  | heavy commands exit 2 **in coordinator**; allowed in subagent / for light commands |
+| `command-guard`        | PreToolUse (Bash)  | heavy commands exit 2 **in coordinator**; allowed in subagent / for light commands. Under DevSwarm-active env: `hivecontrol workspace monitor` exit 2 unconditionally, `read-messages` exit 2 only with durable-inbox evidence, quoted DATA mentions of either allowed — all contexts, own skip `devswarm-read-guard` |
 | `edit-guard`           | PreToolUse (Edit-family) | Edit/Write/MultiEdit/NotebookEdit exit 2 **in coordinator**; allowed in subagent (payload `agent_id`/`agent_type`) and for allowlisted paths |
 | `skip-guard`           | (module)           | `isSkipped` TTL + granularity (`all` ≠ destructive `git-guard`); plus an e2e bypass through `command-guard` |
 | `speculation-guard`    | Stop               | hedge-without-acknowledgment blocks; acknowledgment / no-hedge allows; `MAX_BLOCKS` cap; skip hatch |

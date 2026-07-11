@@ -37,6 +37,7 @@ hooks = true` defensively, but docs should use `hooks` as canonical. |
 - Dogfood verifies hook trust and actual hook behavior, not just file creation.
 - Edit-time anti-hall guards require a Codex payload adapter before hard-parity can be claimed: `api-guard.js` currently extracts Claude `tool_name` values `Write`, `Edit`, and `MultiEdit`, while Codex docs name `apply_patch`/`Edit`/`Write` matchers.
 - `edit-guard.js` (0.50.0) carries the identical `apply_patch` payload-adapter gap as `api-guard.js`/`ship-it-guard.js` and is intentionally not registered in `codex/hooks/hooks.json` until a real Codex edit payload is captured.
+- `command-guard.js`'s DevSwarm destructive-read redirect (0.53.0 — blocks `hivecontrol workspace monitor` unconditionally and `read-messages` when durable-inbox evidence exists) needs **no separate adapter**: `command-guard.js` is a single shared Bash-`PreToolUse` file registered in both `codex/hooks/hooks.json` and the Claude hooks.json, so the new branch auto-applies to Codex sessions as-is. `edit-guard.js`'s parallel wording fix (Primary vs child DevSwarm phrasing) does **not** carry over — `edit-guard.js` stays unregistered for Codex per the line above.
 
 ## Source audit (10+ sources, 2+ official)
 

@@ -292,3 +292,103 @@ test('DEVSWARM INJECTION: block reason does not echo command text', () => {
   assert.ok(!r.stdout.includes('INJECTSECRET'), 'stdout must not reflect command text');
   assert.ok(!r.stderr.includes('INJECTSECRET'), 'stderr must not reflect command text');
 });
+
+// --- FIX 3: command-position anchoring drops the unquoted-args false-positive ---
+// Unquoted args that are literally these words in order but whose command VERB is
+// grep/echo (not hivecontrol) must ALLOW — hivecontrol is not at command position.
+const HIVECTL_ALLOW_UNQUOTED_ARGS = [
+  'grep hivecontrol workspace monitor docs/KB.md',
+  'echo hivecontrol workspace monitor',
+];
+for (const cmd of HIVECTL_ALLOW_UNQUOTED_ARGS) {
+  test(`DEVSWARM ALLOW (unquoted args, verb not hivecontrol): ${cmd}`, () => {
+    const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 0, `expected allow: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
+
+// A path-/wrapper-prefixed hivecontrol IS still the verb -> must STILL block
+// (guards that the anchoring did not weaken smuggling detection).
+test('DEVSWARM BLOCK: /usr/bin/hivecontrol workspace monitor (path prefix, still verb)', () => {
+  const r = runDevswarm('/usr/bin/hivecontrol workspace monitor');
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+});
+test('DEVSWARM BLOCK: sudo hivecontrol workspace monitor (wrapper, still verb)', () => {
+  const r = runDevswarm('sudo hivecontrol workspace monitor');
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+});
+
+// --- FIX 4: shell-obfuscation forms are ACCEPTED as NOT caught (drift-guard, not
+// an adversary defense). These synthesize the verb/subcommand only after shell
+// expansion; catching them needs full expansion simulation (out of scope). ---
+const HIVECTL_ACCEPTED_OBFUSCATION = [
+  "hiv'ec'ontrol workspace monitor",   // verb tokenizes as hiv'ec'ontrol, not hivecontrol
+  "hivecontrol workspace 'mon'itor",   // subcommand split across quotes
+];
+for (const cmd of HIVECTL_ACCEPTED_OBFUSCATION) {
+  test(`DEVSWARM accepted-limitation (obfuscation NOT caught, allows): ${cmd}`, () => {
+    const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 0, `documented accepted bypass should allow: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
+
+// --- FIX 2: whitespace-only inboxPath must NOT arm the read block ---
+test('DEVSWARM ALLOW read-messages when descriptor inboxPath is whitespace-only', () => {
+  const r = runDevswarm('hivecontrol workspace read-messages', {}, {
+    descriptor: { id: 'ws', inboxPath: '   ' },
+  });
+  assert.strictEqual(r.status, 0, `whitespace inboxPath is not evidence\nstdout: ${r.stdout}`);
+});
+test('DEVSWARM BLOCK read-messages when descriptor inboxPath is a real path', () => {
+  const r = runDevswarm('hivecontrol workspace read-messages', {}, {
+    descriptor: { id: 'ws', inboxPath: '/real/path/inbox.jsonl' },
+  });
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+});
+
+// --- FIX 1: descriptor scan must never wedge and must not be fooled into evidence
+// by a non-regular / oversized candidate. Uses a custom HOME so we can plant a
+// symlink or an oversized file where a descriptor would live. ---
+function runDevswarmWithWorkspace(command, plant) {
+  const h = makeHome();
+  try {
+    const wdir = pathx.join(h.antiHall, 'devswarm', 'workspaces');
+    fsx.mkdirSync(wdir, { recursive: true });
+    plant(wdir);
+    return testHook(HOOK, bashPayload(command), {
+      home: h.home,
+      env: DEVSWARM_COORD,
+    });
+  } finally {
+    h.cleanup();
+  }
+}
+
+// A *.json descriptor that is a SYMLINK must be skipped (lstat, not followed) — so
+// even though its target holds a valid inboxPath, it counts as NO evidence -> ALLOW.
+// This is the fail-open-integrity guarantee (a symlink to /dev/zero would otherwise
+// wedge the hook). Skipped on platforms where symlink creation is unavailable.
+test('DEVSWARM FIX1: symlink descriptor is skipped (not followed) -> read-messages allows', (t) => {
+  let symlinkOk = true;
+  const r = runDevswarmWithWorkspace('hivecontrol workspace read-messages', (wdir) => {
+    const target = pathx.join(wdir, 'real-target.txt');
+    fsx.writeFileSync(target, JSON.stringify({ inboxPath: '/x/inbox.jsonl' }), 'utf8');
+    try {
+      fsx.symlinkSync(target, pathx.join(wdir, 'ws.json'));
+    } catch (_) {
+      symlinkOk = false; // e.g. Windows without privilege
+    }
+  });
+  if (!symlinkOk) return t.skip('symlink creation unavailable on this platform');
+  assert.strictEqual(r.status, 0, `symlink descriptor must not count as evidence\nstdout: ${r.stdout}`);
+});
+
+// An oversized (> 64 KB) *.json candidate is skipped before it is ever read, so a
+// huge file cannot stall the scan nor (here) supply evidence -> ALLOW.
+test('DEVSWARM FIX1: oversized descriptor is skipped -> read-messages allows', () => {
+  const big = JSON.stringify({ inboxPath: '/x/inbox.jsonl', pad: 'x'.repeat(70 * 1024) });
+  const r = runDevswarmWithWorkspace('hivecontrol workspace read-messages', (wdir) => {
+    fsx.writeFileSync(pathx.join(wdir, 'ws.json'), big, 'utf8');
+  });
+  assert.strictEqual(r.status, 0, `oversized descriptor must be skipped\nstdout: ${r.stdout}`);
+});
