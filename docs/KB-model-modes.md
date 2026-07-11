@@ -270,9 +270,11 @@ for PR-number mode.
 **Effort taxonomy and its evolution** [27][28][36]: original GPT-5 shipped `minimal/low/medium/high`
 — `minimal` outputs "very few or no reasoning tokens" and OpenAI's own cookbook explicitly says to
 **avoid it "for multi-step planning or tool-heavy workflows"** [36]. GPT-5.1 added `none` as a
-true no-reasoning floor. By the current lineup (July 2026) — gpt-5.2-codex, gpt-5.3-codex,
+true no-reasoning floor. As of this doc's compile date (2026-07-03) — gpt-5.2-codex, gpt-5.3-codex,
 gpt-5.5 — the full tier set is `none/low/medium/high/xhigh`, with **`medium` as the universal
-recommended default** across every current model doc checked [29][31][32].
+recommended default** across every model doc checked at that time [29][31][32]. **Since then,
+GPT-5.6 (Sol/Terra/Luna) went GA 2026-07-09**, extending the lineup; its own effort-tier taxonomy
+was not re-checked against this specific claim — see [`KB-gpt-5.6.md`](./KB-gpt-5.6.md).
 
 *(Caveat per Coverage note: `platform.openai.com/docs/models/gpt-5.1-codex-max` [30] is often
 cited as the origin of the `xhigh` tier, but that specific page does **not** itself list an
@@ -299,14 +301,22 @@ the post does not state which `reasoning_effort` level was active during the inc
 source, and is presented here only as an illustration of the *documented risk category* above
 [28], not as confirmed evidence that `xhigh` specifically caused it.
 
-**Model variant is a separate axis from effort** [33][34][35]: `gpt-5.5` (recommended flagship,
-complex multi-step agentic work), `gpt-5.4` (pinned-workflow flagship), `gpt-5.4-mini` (fast/cheap
+**Model variant is a separate axis from effort** [33][34][35]: at the time these sources [29][31][32]
+were fetched (compiled 2026-07-03), the recommended lineup was `gpt-5.5` (flagship, complex
+multi-step agentic work), `gpt-5.4` (pinned-workflow flagship), `gpt-5.4-mini` (fast/cheap
 subagents), `gpt-5.3-codex-spark` (a **distinct**, less-capable, near-instant model — not a
-low-effort setting of the flagship, ChatGPT Pro only). Codex subagents expose their own
-`model_reasoning_effort` (high/medium/low mapped to task complexity), independent of the top-level
-session's effort [33]. A separate "Fast Mode" toggle (1.5x speedup at 2-2.5x credit cost on
-gpt-5.5/5.4) [35] and "compaction" (`/compact`, unlocks long-horizon runs past context limits) [37]
-are both distinct knobs from `reasoning_effort`.
+low-effort setting of the flagship, ChatGPT Pro only). **GPT-5.6 (Sol/Terra/Luna) went GA
+2026-07-09** and is now the recommended migration target for the same three routing seats —
+`gpt-5.6-sol` ≈ `gpt-5.5`'s slot, `gpt-5.6-terra` ≈ `gpt-5.4`'s slot, `gpt-5.6-luna` as a selective
+alternative to `gpt-5.4-mini` (kept as the cheap default) — see
+[`KB-gpt-5.6.md`](./KB-gpt-5.6.md) for full sourcing; whether GPT-5.6 tiers replicate the exact
+effort-tier taxonomy (`none/low/medium/high/xhigh`) documented for gpt-5.5/gpt-5.4 above is **not
+independently re-confirmed** (`KB-gpt-5.6.md` §9 flags context-window and effort-taxonomy specifics
+as unverified for GPT-5.6). Codex subagents expose their own `model_reasoning_effort`
+(high/medium/low mapped to task complexity), independent of the top-level session's effort [33]. A
+separate "Fast Mode" toggle (1.5x speedup at 2-2.5x credit cost, documented on gpt-5.5/5.4 per
+source [35] — not re-verified for GPT-5.6) and "compaction" (`/compact`, unlocks long-horizon runs
+past context limits) [37] are both distinct knobs from `reasoning_effort`.
 
 ---
 

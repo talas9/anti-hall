@@ -48,13 +48,13 @@ node -e "const {isConserving}=require('$ANTI_HALL_ROOT/hooks/limit-conserve.js')
 
 ## Main-model downshift (flagship preservation)
 
-When conservation is active and the **main/coordinator** agent is on `gpt-5.5`, switch it to `gpt-5.4` **(1M-context variant only)** to preserve the flagship weekly bucket.
+When conservation is active and the **main/coordinator** agent is on `gpt-5.6-sol`, switch it to `gpt-5.6-terra` **(1M-context variant only)** to preserve the flagship weekly bucket.
 
-- **Target**: `gpt-5.4` at 1M context — same context window, lower cost.
+- **Target**: `gpt-5.6-terra` at 1M context — same context window, lower cost.
 - **NEVER** downshift to `gpt-5.4-mini` (only 400k context; context loss is unacceptable).
-- Keep `gpt-5.5` for delegated hard-reasoning subagents and on-demand escalation.
+- Keep `gpt-5.6-sol` for delegated hard-reasoning subagents and on-demand escalation.
 - Codex cannot self-switch its own model — **surface this recommendation to the user** or let OMX/orchestration layer set it.
-- **Long-context cost premium:** both `gpt-5.4` and `gpt-5.5` incur a confirmed 2× input / 1.5×
+- **Long-context cost premium:** both `gpt-5.6-terra` and `gpt-5.6-sol` incur a confirmed 2× input / 1.5×
   output multiplier once a request exceeds ~272K input tokens — this applies regardless of which
   of the two you're on. For a very-large-context task (a big repo dump, a huge diff), consider
   capping scope or routing to a Claude model instead (no equivalent premium up to 1M there). See
@@ -65,10 +65,10 @@ When conservation is active and the **main/coordinator** agent is on `gpt-5.5`, 
 When conservation is active:
 
 - keep the coordinator concise; do not paste broad command output into the main thread
-- use `explore` / `gpt-5.4-mini` for codebase lookup (`gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only)
+- use `explore` / `gpt-5.4-mini` for codebase lookup (`gpt-5.6-luna` when 5.6-era capability/cutoff matters; `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only)
 - use `gpt-5.4-mini` (default) for mechanical command running
-- use `gpt-5.4` for settled implementation
-- reserve `gpt-5.5` for planning, root-cause, validation, code review, and debate gates
+- use `gpt-5.6-terra` for settled implementation
+- reserve `gpt-5.6-sol` for planning, root-cause, validation, code review, and debate gates
 - if a model is unavailable or rate-limited, record the limitation and choose the nearest safe fallback; do not retry-loop
 
 ## Context hygiene rules

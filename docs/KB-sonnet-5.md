@@ -120,23 +120,36 @@ rate-limited / placeholder return; backoff, never retry-loop**; (3) **never run 
 inside a loop** (TTFT ~163s + cost); (4) the `sonnet` tier token now resolves to `claude-sonnet-5`.
 
 ## 8. Codex-model parallel (gpt-5.x) — for the Codex port
-anti-hall ships a Codex-native port, so routing has a Codex mirror. The lineup maps cleanly to the
-Claude tiers.
+anti-hall ships a Codex-native port, so routing has a Codex mirror. **GPT-5.6 (Sol/Terra/Luna)
+went GA 2026-07-09, superseding gpt-5.5/gpt-5.4 as the recommended tiers** — see
+[`KB-gpt-5.6.md`](./KB-gpt-5.6.md) for full sourcing/confidence-labeling; this section reflects
+that migration. `gpt-5.4-mini` is kept as the cheap-default tier (unchanged; still the cheapest
+confirmed-priced option) alongside the new `gpt-5.6-luna` as a selective alternative.
 
-**Model facts** (OpenAI docs):
-| | gpt-5.5 (frontier) | gpt-5.4 (flagship) | gpt-5.4-mini |
-|---|---|---|---|
-| Price $/M (in / out) | $5 / $30 | $2.50 / $15 | $0.75 / $4.50 |
-| Context | 1M | 1M | 400k |
-| Knowledge cutoff | Dec 2025 | Aug 2025 | Aug 2025 |
-| Max effort | xhigh | xhigh | high (likely) |
-| **Claude equivalent** | **Opus 4.8** | **Sonnet 5** | **Haiku 4.5** |
+**Model facts** (`KB-gpt-5.6.md` §1–2, PRIMARY-CONFIRMED for pricing/tier-ID/positioning; context
+window, knowledge cutoff, and full effort-tier taxonomy were **not** independently re-confirmed for
+GPT-5.6 and are marked accordingly — do not carry over the old gpt-5.5/gpt-5.4 numbers as fact):
+| | gpt-5.6-sol (frontier) | gpt-5.6-terra (flagship) | gpt-5.4-mini | gpt-5.6-luna (alt.) |
+|---|---|---|---|---|
+| Price $/M (in / out) | $5 / $30 | $2.50 / $15 | $0.75 / $4.50 | $1 / $6 |
+| Cached input $/M | $0.50 (confirmed) | [unverified] | $0.075 | [unverified] |
+| Context | [unverified for GPT-5.6 — not re-confirmed, see `KB-gpt-5.6.md` §9] | [unverified] | 400k | [unverified] |
+| Knowledge cutoff | [not stated in confirmed GPT-5.6 sourcing] | [not stated] | Aug 2025 | [not stated] |
+| Max effort | documented `max`/"ultra" tier, Sol-only (2-1 vote, not unanimous — `KB-gpt-5.6.md` §1) | "standard reasoning-effort range," no documented `max` | high (likely) | "standard reasoning-effort range" |
+| **Claude equivalent** | **Opus 4.8** | **Sonnet 5** | **Haiku 4.5** | **Haiku 4.5** |
 
 **Reasoning effort:** `model_reasoning_effort` = `minimal | low | medium | high | xhigh` (Responses
-API only; `medium` is the gpt-5.5 default). Rough parity: Codex `minimal/low` ≈ Claude thinking-off,
-`medium` ≈ Claude default, `high` ≈ ~8k budget, `xhigh` ≈ 16k+ budget.
+API only; `medium` was the confirmed default for the gpt-5.5/gpt-5.4 generation). GPT-5.6-tier
+effort defaults are **not independently confirmed** — treat the same `minimal/low/medium/high/xhigh`
+scale as a working assumption pending direct verification, not a confirmed GPT-5.6 fact. Rough
+parity: Codex `minimal/low` ≈ Claude thinking-off, `medium` ≈ Claude default, `high` ≈ ~8k budget,
+`xhigh` ≈ 16k+ budget.
 
-**Benchmarks** (directional; vendor vs standardized-harness noted):
+**Benchmarks** (directional; vendor vs standardized-harness noted). These are the last confirmed
+figures for the **superseded** gpt-5.5/gpt-5.4/gpt-5.4-mini generation — GPT-5.6's own reported
+benchmarks (Artificial Analysis Coding Agent Index: Sol scores 80; SWE-Bench Pro: Sol 64.6%, both
+press-reported per `KB-gpt-5.6.md` §6) use different suites/formats and are **not directly
+comparable** to the rows below; do not merge them into one table:
 | Benchmark | gpt-5.5 | gpt-5.4 | gpt-5.4-mini |
 |---|---|---|---|
 | SWE-bench Verified | 88.7 (vendor) / 80.6 (LMC std) | 76.9 (LMC) | — |
@@ -146,17 +159,21 @@ API only; `medium` is the gpt-5.5 default). Rough parity: Codex `minimal/low` �
 | OSWorld-Verified | 78.7 | 75.0 | — |
 
 **Codex decision matrix:** trivial → gpt-5.4-mini @minimal · mechanical impl → gpt-5.4-mini @low ·
-standard impl → gpt-5.4 @medium · complex impl → gpt-5.4 @high *or* gpt-5.5 @medium · debugging /
-planning → gpt-5.5 @high · correctness-review → gpt-5.5 @xhigh · long-horizon agentic → gpt-5.5
-@medium · parallel subagent → gpt-5.4-mini @low–medium.
+standard impl → gpt-5.6-terra @medium · complex impl → gpt-5.6-terra @high *or* gpt-5.6-sol @medium ·
+debugging / planning → gpt-5.6-sol @high · correctness-review → gpt-5.6-sol @xhigh · long-horizon
+agentic → gpt-5.6-sol @medium · parallel subagent → gpt-5.4-mini @low–medium (or gpt-5.6-luna where
+available).
 
-**Switch thresholds:** mini → gpt-5.4 when multi-file reasoning / mini errors 2× / needs `high`.
-gpt-5.4 → gpt-5.5 when concurrency/cross-system debugging, correctness-critical `xhigh`, or the
-Dec-2025 cutoff matters. Downgrade for budget sprints (gpt-5.4 default; 5.5 for review/unblock).
+**Switch thresholds:** mini → gpt-5.6-terra when multi-file reasoning / mini errors 2× / needs
+`high`. gpt-5.6-terra → gpt-5.6-sol when concurrency/cross-system debugging, correctness-critical
+`xhigh`, or Sol's deeper reasoning tier matters. Downgrade for budget sprints (gpt-5.6-terra default;
+gpt-5.6-sol for review/unblock).
 
-**Cross-platform equivalence:** gpt-5.5 ≈ Opus 4.8 (tie on SWE-bench Verified vendor ~88.7; Opus
-leads SWE-bench Pro 69.2 vs 58.6) · gpt-5.4 ≈ Sonnet 5 (affordable-flagship class) · gpt-5.4-mini ≈
-Haiku 4.5 (subagent/latency tier).
+**Cross-platform equivalence:** gpt-5.6-sol ≈ Opus 4.8 · gpt-5.6-terra ≈ Sonnet 5
+(affordable-flagship class) · gpt-5.4-mini / gpt-5.6-luna ≈ Haiku 4.5 (subagent/latency tier). This
+equivalence mirrors the prior gpt-5.5≈Opus / gpt-5.4≈Sonnet 5 / gpt-5.4-mini≈Haiku framing by tier
+position, not by re-verified benchmark parity — GPT-5.6's own benchmark numbers (§ above) were not
+cross-compared against Claude figures in this pass.
 
 **Orchestration (OMX ↔ OMC):** OMX (oh-my-codex) is the Codex analogue of OMC. `scalarian/oh-my-codex`
 was archived 2026-05-25; `Yeachan-Heo/oh-my-codex` is the active fork. OMX does **not** auto-select

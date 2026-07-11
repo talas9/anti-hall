@@ -23,8 +23,8 @@ Workflow:
 
 Model routing:
 
-- audit/selection: `gpt-5.5` when ambiguous or risky
-- implementation: `gpt-5.4`
-- simple mechanical cleanup: `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only
+- audit/selection: `gpt-5.6-sol` when ambiguous or risky
+- implementation: `gpt-5.6-terra`
+- simple mechanical cleanup: `gpt-5.4-mini` (default; `gpt-5.6-luna` available when 5.6-era capability/cutoff matters) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only
 
 If behavior would change, decline that finding and say why.

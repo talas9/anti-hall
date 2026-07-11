@@ -6,6 +6,30 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.52.0
+
+**New KB + Codex model-tier migration to GPT-5.6 (Sol/Terra/Luna).**
+
+- **New `docs/KB-gpt-5.6.md`** — a cited knowledge-base doc on OpenAI's GPT-5.6 lineup
+  (Sol/Terra/Luna): tier breakdown, official model IDs (`gpt-5.6-sol`, `gpt-5.6-terra`,
+  `gpt-5.6-luna`; bare `gpt-5.6` resolves to Sol), pricing (Sol $5/$30, Terra $2.50/$15,
+  Luna $1/$6), GA date 2026-07-09, with honest confidence bands (primary vs secondary vs
+  press sourcing) and the local codex #31873 picker/cache caveat noted explicitly.
+- **Codex port model-tier migration to GPT-5.6** across the codex skills, README, the
+  `MODEL-POLICY.md` line, and the limit-conserve downshift hook (updated in lockstep with
+  its test): planning/debate `gpt-5.5`→`gpt-5.6-sol`; implementation `gpt-5.4`→`gpt-5.6-terra`
+  — both are same-price capability upgrades over their predecessors. The cheap tier KEEPS
+  `gpt-5.4-mini` as the default (Luna is offered only selectively — it's +33% over
+  `gpt-5.4-mini`). The #31873 degraded-metadata caveat is carried forward, and `gpt-5.5` is
+  kept as the recommended non-degraded fallback until the codex CLI cache issue is fixed.
+- **Deadly-loop / ship-it workflows unchanged.** Neither pins a Codex model by design —
+  every Codex seat in those workflows uses `agentType codex:codex-rescue`, which resolves
+  its own backend.
+- **Correction:** GPT-5.6 reached GA on 2026-07-09. The 0.49.0 entry above (lines 156–159,
+  "Codex model routing — re-verified, unchanged") stated GPT-5.6 was "preview/select-partners-only,
+  not GA" at the time — that note is now superseded by this entry; it is left unedited as a
+  historical record.
+
 ## 0.51.1
 
 **P0 fix — `codex-availability` PATH probe falsely reported a directory as an executable.**

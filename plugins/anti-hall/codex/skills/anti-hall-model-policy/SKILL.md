@@ -7,16 +7,16 @@ description: Codex model routing policy for anti-hall work. Use when selecting m
 
 | Task shape | Codex model | Effort |
 | --- | --- | --- |
-| Planning, architecture, validation, sensitive review, debate | `gpt-5.5` | `xhigh` |
-| Implementation from a settled plan | `gpt-5.4` | `medium` |
-| Mechanical command runner, cheap lookup, repetitive execution | `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only, not an effort setting of the flagship | `low` |
+| Planning, architecture, validation, sensitive review, debate | `gpt-5.6-sol` | `xhigh` |
+| Implementation from a settled plan | `gpt-5.6-terra` | `medium` |
+| Mechanical command runner, cheap lookup, repetitive execution | `gpt-5.4-mini` (default) — `gpt-5.6-luna` available when 5.6-era capability/cutoff matters (not the default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only, not an effort setting of the flagship | `low` |
 
 Rules:
 
-- Debate roles always use `gpt-5.5`.
+- Debate roles always use `gpt-5.6-sol`.
 - Do not use mini models for security-sensitive validation or launch go/no-go decisions.
-- Do not run every subtask on `gpt-5.5`; distribute by task shape.
-- If a model is unavailable or rate-limited, record the limitation and choose the nearest safe fallback. Do not silently downgrade debate below `gpt-5.5`.
+- Do not run every subtask on `gpt-5.6-sol`; distribute by task shape.
+- If a model is unavailable or rate-limited, record the limitation and choose the nearest safe fallback. Do not silently downgrade debate below `gpt-5.6-sol`.
 
 ## Claude-side mapping (when coordinating with Claude agents)
 

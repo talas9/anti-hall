@@ -39,7 +39,7 @@ Resume last run:
 ## Anti-hall + OMX workflow mapping
 
 - Ship-it (replaces the retired feature-launch): `anti-hall-ship-it` plus OMX `$plan`, `$ralplan`, `$team`, `$ralph`, or `$ultragoal` as the execution surface when task size justifies it.
-- Deadly-loop: `anti-hall-deadly-loop`; debate roles stay on `gpt-5.5`.
+- Deadly-loop: `anti-hall-deadly-loop`; debate roles stay on `gpt-5.6-sol`.
 - Context conservation: `anti-hall-context-conserve`; route lookup/mechanical work to spark/mini lanes.
 
 Anti-hall does not replace OMX. Anti-hall supplies verify-first policy and guards; OMX supplies Codex-native orchestration/workflow runtime.

@@ -32,7 +32,7 @@ This governs the MAIN agent's everyday model choices (distinct from the TRIO deb
 2. **Codex is the primary implementer** (conserves the Claude usage bucket). Fail over to Sonnet 5 at effort `high` when Codex is unavailable or rate-limited — never retry-loop. Back off: wait for the reset/`retry-after` time Codex reports, or a backoff window if none is given.
 3. **NEVER run Sonnet 5 at effort `max` inside loops.** Sonnet 5 TTFT at `max` is ~163 s and is cost-prohibitive at loop scale. The ceiling inside any loop is `xhigh`.
 4. **The `sonnet` tier token resolves to Sonnet 5** (`claude-sonnet-5`) at runtime. Everywhere this policy says `sonnet`, it means Sonnet 5.
-5. **Watch context size before routing to Codex.** gpt-5.4/gpt-5.5 (Codex's implementer models) incur a confirmed 2× input / 1.5× output cost premium once a request exceeds ~272K input tokens — Claude has no equivalent premium up to its 1M window. For large-context implementation tasks (roughly >200K input tokens fed to Codex — a big repo dump, a huge diff), prefer Sonnet 5 over Codex, or scope the context down first. See `docs/KB-token-usage-models.md` §2/§7.
+5. **Watch context size before routing to Codex.** gpt-5.6-terra/gpt-5.6-sol (Codex's implementer models) incur a confirmed 2× input / 1.5× output cost premium once a request exceeds ~272K input tokens — Claude has no equivalent premium up to its 1M window. For large-context implementation tasks (roughly >200K input tokens fed to Codex — a big repo dump, a huge diff), prefer Sonnet 5 over Codex, or scope the context down first. See `docs/KB-token-usage-models.md` §2/§7.
 
 ---
 

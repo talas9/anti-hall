@@ -20,8 +20,8 @@ Workflow:
 
 Codex model routing:
 
-- Ambiguous diagnosis, architecture, or safety-sensitive analysis: `gpt-5.5`
-- Implementation once cause is proven: `gpt-5.4`
-- Simple command execution / file lookup subtask: `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only
+- Ambiguous diagnosis, architecture, or safety-sensitive analysis: `gpt-5.6-sol`
+- Implementation once cause is proven: `gpt-5.6-terra`
+- Simple command execution / file lookup subtask: `gpt-5.4-mini` (default; `gpt-5.6-luna` available when 5.6-era capability/cutoff matters) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only
 
 Do not copy raw noisy command output into the final answer. Summarize findings with evidence references.

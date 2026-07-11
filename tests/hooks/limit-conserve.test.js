@@ -350,7 +350,7 @@ test('INJECTOR DOWNSHIFT: conserving -> directive contains MAIN-MODEL DOWNSHIFT'
   } finally { h.cleanup(); }
 });
 
-test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet 5 and gpt-5.4', () => {
+test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet 5 and gpt-5.6-terra', () => {
   const h = makeHome();
   try {
     writeCacheFile(h.home, makeCache({ fiveHour: 90 }));
@@ -358,7 +358,7 @@ test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet 5 and gpt-5.4', (
     assert.strictEqual(r.status, 0);
     const ctx = additionalContext(r);
     assert.ok(ctx.includes('Sonnet 5'), `Sonnet 5 missing from downshift directive; got: ${ctx}`);
-    assert.ok(ctx.includes('gpt-5.4'), `gpt-5.4 missing from downshift directive; got: ${ctx}`);
+    assert.ok(ctx.includes('gpt-5.6-terra'), `gpt-5.6-terra missing from downshift directive; got: ${ctx}`);
   } finally { h.cleanup(); }
 });
 

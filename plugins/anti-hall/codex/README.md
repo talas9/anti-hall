@@ -50,9 +50,16 @@ Documented-but-not-yet-adapted anti-hall hard-hook parity:
 
 Model routing for Codex uses Codex model tiers:
 
-- planning, validation, debate: `gpt-5.5`
-- implementation: `gpt-5.4`
-- cheap mechanical work: `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model available on ChatGPT Pro only, not an effort setting of the flagship
+- planning, validation, debate: `gpt-5.6-sol` (reasoning `xhigh`)
+- implementation: `gpt-5.6-terra` (reasoning `medium`)
+- cheap mechanical work: `gpt-5.4-mini` (default) — `gpt-5.6-luna` ($1/$6, +33% vs mini) is available when 5.6-era capability/cutoff matters, but is not the default — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model available on ChatGPT Pro only, not an effort setting of the flagship
+
+GPT-5.6 (GA 2026-07-09) is invocable via `codex -m gpt-5.6-sol`, but on codex CLI
+≤ v0.143.0 the `/model` picker/cache omits it (upstream bug
+openai/codex#31873); it runs with fallback metadata (degraded
+reasoning-effort/tool defaults) until fixed. Keep `gpt-5.5` as the
+non-degraded fallback if full picker/metadata support is needed. See
+`docs/KB-gpt-5.6.md`.
 
 
 ## Ported Codex skills
@@ -62,7 +69,7 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-activate` — install/enable supported Codex hooks
 - `anti-hall-root-cause` — root-cause debugging protocol
 - `anti-hall-orchestration` — delegation/task discipline
-- `anti-hall-deadly-loop` — Reviewer/Critic hardening loop with `gpt-5.5`
+- `anti-hall-deadly-loop` — Reviewer/Critic hardening loop with `gpt-5.6-sol`
 - `anti-hall-ship-it` — scaled plan/build/verify workflow (replaces the retired `anti-hall-feature-launch`)
 - `anti-hall-context-conserve` — context/usage conservation and model routing
 - `anti-hall-model-policy` — Codex model routing table

@@ -34,7 +34,7 @@ For L work, write `PLAN.md` at the repo root (GSD's `.planning/` convention is d
 
 ## 3. Harden the plan
 
-Run `anti-hall-deadly-loop` against the plan before code for L work. Debate/validation uses `gpt-5.5`. Convergence (LOCK) requires **zero NEW P0 and P1 findings** — a single confirmed P1 blocks LOCK the same as a P0.
+Run `anti-hall-deadly-loop` against the plan before code for L work. Debate/validation uses `gpt-5.6-sol`. Convergence (LOCK) requires **zero NEW P0 and P1 findings** — a single confirmed P1 blocks LOCK the same as a P0.
 
 For L-tier work, once LOCK is reached, append any P2-severity findings from the debate to `.anti-hall/ship-it/<slug>/decisions.md` (plain-text append, one entry per finding) instead of dropping them.
 
@@ -42,9 +42,9 @@ For L-tier work, once LOCK is reached, append any P2-severity findings from the 
 
 Model routing:
 
-- implementation: `gpt-5.4`
-- planning/validation/debate: `gpt-5.5`
-- mechanical command execution: `gpt-5.4-mini` (default) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only
+- implementation: `gpt-5.6-terra`
+- planning/validation/debate: `gpt-5.6-sol`
+- mechanical command execution: `gpt-5.4-mini` (default; `gpt-5.6-luna` available when 5.6-era capability/cutoff matters) — `gpt-5.3-codex-spark` is a distinct, faster/less-capable model, ChatGPT Pro only
 
 > Note: the Claude-side ship-it workflow adds Codex-primary/Sonnet-5-failover build-seat routing plus a cross-model no-self-review rule — that's a `ship-it.workflow.js`-specific mechanism (Claude Dynamic Workflows only) and does not apply here. Codex-native ship-it already IS the Codex-primary implementer by construction, so there is no failover-fallback self-review edge case to guard against on this port.
 

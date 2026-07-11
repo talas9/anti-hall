@@ -109,25 +109,36 @@ they still occupy space in the model's context window and are billed as output t
 - `plan_mode_reasoning_effort` (Codex CLI plan-mode override) adds a 6th value, `none`, and defaults
   to an undisclosed built-in preset.
 
-**Prompt caching — confirmed exact 10% cached-input rate, no write fee:**
-| Model | Input | Cached input (10%) | Output |
+**Prompt caching:** GPT-5.6 (Sol/Terra/Luna) went GA 2026-07-09 and supersedes gpt-5.5/gpt-5.4 as
+the recommended tiers — see [`KB-gpt-5.6.md`](./KB-gpt-5.6.md) for full sourcing. `gpt-5.4-mini`
+is kept as the cheap-default tier (unchanged); `gpt-5.6-luna` is a selective cheap alternative.
+| Model | Input | Cached input | Output |
 |---|---|---|---|
-| gpt-5.5 | $5.00 | $0.50 | $30.00 |
-| gpt-5.4 | $2.50 | $0.25 | $15.00 |
+| gpt-5.6-sol | $5.00 | $0.50 (confirmed, `KB-gpt-5.6.md` §2) | $30.00 |
+| gpt-5.6-terra | $2.50 | [unverified — not separately re-confirmed] | $15.00 |
 | gpt-5.4-mini | $0.75 | $0.075 | $4.50 |
-Caching is automatic (no opt-in, no write fee) for prompts ≥1,024 tokens with matching prefixes.
-Retention: in-memory 5–10 min (up to 1hr), or an "extended retention" tier (up to 24hr) on newer
-models via `prompt_cache_retention` — parameter-level detail on interaction with `previous_response_id`
-not fully confirmed from docs.
+| gpt-5.6-luna | $1.00 | [unverified — same caveat as Terra] | $6.00 |
+Caching is automatic (no opt-in) for prompts ≥1,024 tokens with matching prefixes. **Pricing-model
+discrepancy across generations, both confirmed:** the gpt-5.5/gpt-5.4 generation was confirmed
+no-write-fee (OpenAI prompt-caching guide, source 20 below); GPT-5.6 is separately confirmed to
+bill cache writes at **1.25× the uncached input rate** (`KB-gpt-5.6.md` §2, PRIMARY-CONFIRMED
+against the pricing page). Not reconciled further here — flagged as a real generational change, not
+an error in either source. Retention: in-memory 5–10 min (up to 1hr), or an "extended retention"
+tier (up to 24hr) on newer models via `prompt_cache_retention` — parameter-level detail on
+interaction with `previous_response_id` not fully confirmed from docs.
 
-**⚠ Real cost asymmetry vs Claude: Codex has a long-context premium Claude does not.** gpt-5.5 and
-gpt-5.4 both carry a **1.05M context window** but **prompts exceeding 272K input tokens get a 2×
-input / 1.5× output multiplier for the entire request** — confirmed on both model cards, same
-threshold. gpt-5.4-mini (400K window) has no stated premium tier (not confirmed either way — treat
-as unconfirmed, not proven-flat). **This directly matters for the Codex-primary-implementer routing
-we just shipped: a Codex task fed a large repo context past 272K tokens could jump to 1.5–2× cost
-mid-task, while the equivalent Sonnet 5/Opus task at even 900K tokens stays flat-rate.** Worth a
-scope check before routing very-large-context work to Codex by default.
+**⚠ Real cost asymmetry vs Claude: Codex has a long-context premium Claude does not.** The
+>272K-input-token premium is **CONFIRMED for GPT-5.6** (`gpt-5.6-sol`/`gpt-5.6-terra`, per
+`KB-gpt-5.6.md` §2, PRIMARY-CONFIRMED): prompts whose input exceeds **272K tokens are billed at 2×
+input / 1.5× output for the entire request** (not just the excess) — the same threshold and
+multiplier previously confirmed on the gpt-5.5/gpt-5.4 model cards, now reconfirmed on the GPT-5.6
+pricing page. `gpt-5.4-mini`/`gpt-5.6-luna` (smaller-context tiers) have no stated premium tier
+(not confirmed either way — treat as unconfirmed, not proven-flat). **This directly matters for the
+Codex-primary-implementer routing we just shipped: a Codex task fed a large repo context past 272K
+tokens could jump to 1.5–2× cost mid-task, while the equivalent Sonnet 5/Opus task at even 900K
+tokens stays flat-rate.** Worth a scope check before routing very-large-context work to Codex by
+default. (GPT-5.6's context-window size itself is **not** independently re-confirmed — see
+`KB-gpt-5.6.md` §9 — so this note describes the surcharge rule, not a specific window size.)
 
 ## 3. Tokenizer comparison (official + independently verified)
 
@@ -298,6 +309,10 @@ shows order-of-magnitude/relative shape, not a precise unit-cost model. Full tab
 - **"min(16, cpu cores − 2)" concurrency formula is unconfirmed externally** (§5) — treat as this
   codebase's own tool-spec detail, not an Anthropic-published fact.
 - **gpt-5.4-mini's long-context premium status is unconfirmed** (absent from its model card, not
-  proven flat).
+  proven flat). Same caveat applies to **gpt-5.6-luna**.
+- **GPT-5.6 tier migration (2026-07-09 GA):** pricing and the >272K surcharge are re-confirmed for
+  Sol/Terra directly against the pricing page (see `KB-gpt-5.6.md` §2); Terra/Luna cached-input
+  rates, context-window size, and knowledge cutoff are **not** independently re-confirmed — see
+  `KB-gpt-5.6.md` §9 for the full list of facts dropped for lack of verification.
 - **"Claude Fable 5" / "Claude Mythos 5" / "Mythos Preview"** appear in live official docs but are
   outside this KB's scope and the research agent's training knowledge — flagged, not investigated.

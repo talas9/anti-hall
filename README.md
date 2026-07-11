@@ -43,7 +43,7 @@ The Claude plugin remains the authoritative Claude Code package. The Codex port 
 
 Codex hook parity is not 1:1 with Claude Code. The Codex installer hard-registers the surfaces Codex can enforce today: `SessionStart`, `UserPromptSubmit`, Bash `PreToolUse`, and `Stop`. Claude edit-time gates (`api-guard`, `ship-it-guard`), subagent lifecycle hooks, compaction/session-end hooks, and Claude Workflow JS are represented as Codex skills/protocols until their Codex payload contracts are adapted and tested.
 
-Codex skills include `anti-hall-context-conserve`, `anti-hall-ship-it`, `anti-hall-deadly-loop`, `anti-hall-doctor`, `anti-hall-update`, and `anti-hall-omx`. Debate/review gates use `gpt-5.5`; settled implementation uses `gpt-5.4`; mechanical lookup/commands use `gpt-5.4-mini` or `gpt-5.3-codex-spark`.
+Codex skills include `anti-hall-context-conserve`, `anti-hall-ship-it`, `anti-hall-deadly-loop`, `anti-hall-doctor`, `anti-hall-update`, and `anti-hall-omx`. Debate/review gates use `gpt-5.6-sol` (migrated from `gpt-5.5` on GPT-5.6's 2026-07-09 GA — see `docs/KB-gpt-5.6.md`); settled implementation uses `gpt-5.6-terra` (migrated from `gpt-5.4`); mechanical lookup/commands use `gpt-5.4-mini` (kept as cheap default) or `gpt-5.3-codex-spark`, with `gpt-5.6-luna` as a selective alternative.
 
 Codex/OMX statusline note: Claude Code supports command-backed `statusLine`, so anti-hall can append the `AH: Vx.y.z` chip there. Codex `[tui].status_line` is documented as built-in footer item IDs only; this port does not inject an unsupported custom `anti-hall-version` item. Use `omx hud` / Codex built-ins for Codex HUD, and keep the Claude statusline installer for Claude Code.
 
