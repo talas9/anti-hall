@@ -115,6 +115,29 @@ test('doctor: DevSwarm workspace descriptor with a caught-up inbox -> listener-p
   }
 });
 
+test('doctor: DevSwarm-active session -> the four Phase-1 hook self-tests all PASS (no FAIL)', () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    // Mode ON forces the section to surface even with no descriptors/installed
+    // companion, so the always-run behavioral self-tests are printed and can be
+    // asserted PASS. The self-tests build their OWN isolated fixture homes, so
+    // this env only affects the section-visibility gate.
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /DevSwarm liveness supervisor/);
+    assert.match(r.out, /✓ devswarm-child-turn writes a turn-authored heartbeat/);
+    assert.match(r.out, /✓ devswarm-child-gate forces a child to self-report/);
+    assert.match(r.out, /✓ devswarm-parent-inbox surfaces a workspace unread backlog/);
+    assert.match(r.out, /✓ devswarm-parent-gate blocks the Primary turn while a child inbox is unread/);
+    // None of the Phase-1 self-tests may report a FAIL.
+    assert.doesNotMatch(r.out, /✗ devswarm-(child|parent)-(turn|gate|inbox)/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
 test('doctor: real supervisor companion artifact present -> reports INSTALLED', { skip: process.platform === 'win32' }, () => {
   // Regression guard for a bug where doctor read LABEL/UNIT off the WRONG
   // module (devswarm-supervisor.js, which exports neither) instead of

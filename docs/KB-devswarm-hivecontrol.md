@@ -352,6 +352,93 @@ platform-identical** (both call the same `hivecontrol`):
    can create children but **cannot reap them**; it must surface "remove workspace X in the
    DevSwarm app" to the user (prefer archive; never delete without confirmation — repo rule).
 
+> **Update (shipped):** questions 2–4 are now answered by the anti-hall DevSwarm substrate
+> in §8.7 — the async monitor loop lives in the supervised `devswarm-ingest.js` daemon
+> (not a hook); child-never-reports is covered by the liveness supervisor's stale/escalated
+> verdict feeding the parent-gate; and the GUI-only-teardown gap is handled by the CLI's
+> `archive` subcommand, which archives-by-absence on anti-hall's own registry and SURFACES
+> the manual "remove workspace X in the DevSwarm app" step (it never runs a delete — none
+> exists). The questions are kept above as the pre-build record.
+
+### 8.7 The anti-hall DevSwarm substrate (SHIPPED — generic, project-agnostic)
+
+Beyond the command-guard redirect (§8.5), anti-hall ships a generic coordination
+**substrate** that turns the "Primary silently neglects child workspaces" failure
+(claude-code#39755) into a **mechanical** one. It is entirely **optional + feature-gated**
+(dormant, byte-for-byte identical to today, unless `DEVSWARM_REPO_ID` is set or
+`ANTIHALL_DEVSWARM_SUPERVISOR=on`) and **project-agnostic** — the consumer keeps its own
+done-contract / deploy glue and calls anti-hall's generic CLI. anti-hall owns ALL generic
+coordination substrate; project-specifics stay in the consumer repo.
+
+**Mechanical triggers (4 hooks + the SessionStart role hook).** These are the actual fix —
+prose reminders get ignored; only a mechanical trigger works.
+- `hooks/devswarm-parent-inbox.js` (UserPromptSubmit, **Primary only**) — each turn,
+  surfaces the REAL unread/idle state of active workspaces so the Primary engages them, and
+  recommends archiving any workspace the store derived as complete (`archive_ready`). Reads
+  the durable-inbox files + the supervisor's already-written verdicts + `summary.json`;
+  never runs `computeLiveness`/git on the hot path.
+- `hooks/devswarm-parent-gate.js` (Stop, **Primary only**, capped/loop-safe) — blocks the
+  Primary from ending its turn while a child still has unread backlog past its cursor **OR**
+  the supervisor already judged a child stale/escalated. Reads only files (the fs cursor +
+  the supervisor's verdict file) — no git, no live liveness on the ~30 s Stop path.
+- `hooks/devswarm-child-turn.js` (UserPromptSubmit, **child only**) — writes a
+  turn-authored heartbeat (`heartbeats/<branch>.json`) and reminds the child to report to
+  its parent.
+- `hooks/devswarm-child-gate.js` (Stop, **child only**, capped) — forces the child to
+  self-report to its parent before going idle.
+- `hooks/devswarm-child-role.js` (SessionStart, **child only**) — Layer-1 self-report
+  reminder (the recovery model; see the `devswarm` skill).
+
+**Heartbeat-authorship rule:** heartbeats are ALWAYS written by the working session's own
+turn/hook, NEVER by a background ticker — a daemon-written heartbeat would read "fresh" even
+while the session is wedged, defeating the whole point of the detector.
+
+**The store (`companion/lib/devswarm-store.js`).** ONE API, TWO interchangeable backends
+chosen by **feature-detect** (`try { require('node:sqlite') }` → WAL sqlite; else an
+append-only NDJSON journal) — dependency-free and green on Node 18/20 (no `node:sqlite`)
+through 22/24. **Hooks NEVER open the DB**: the store is the write/derive side and derives a
+`summary.json` projection (written atomically via tmp+rename) that hooks read. Data model —
+`messages` (timestamped, append-only, idempotent by dedupe hash), `registry` (workspace
+descriptors), `cursors` (per-workspace consumed count), `gates` (per-workspace named boolean
+**completion gates**, timestamped + append-only). It derives `archive_ready: true` when ALL
+required gates are satisfied for a still-present workspace; the required set is configurable
+(default `done,merged,tests_passed`, override via `ANTIHALL_DEVSWARM_REQUIRED_GATES`).
+anti-hall stays **agnostic** about what any consumer gate (e.g. `deployed`) MEANS — the
+consumer sets them; the store only tracks and derives.
+
+**The CLI (`scripts/devswarm.js`) — THE structured interface (CLI over MCP, owner
+preference).** Stable JSON on stdout, pure Node built-ins. Subcommands: `register`/`ensure`
+(write a workspace descriptor + populate `sessionId`, closing the registry null-gap),
+`heartbeat` (turn-authored), `inbox count|read|ack` (the durable-inbox cursor primitive —
+`ack` advances the cursor and is the parent-gate's non-skip **clear path**), `workspaces
+list` (derive + emit the `summary.json` projection), `gate --set/--clear` (mark/unmark
+completion gates), `nudge` (poke-or-escalate, reusing `recovery.pokeOrEscalate`), `archive`
+(archive-by-absence on anti-hall's OWN registry — because hivecontrol has **no** teardown
+command (§4/§10), it SURFACES a manual "remove workspace in the DevSwarm app" step and never
+runs a delete), `archive-ignore`/`archive-unignore` (per-workspace mute of the archive-ready
+reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTION` for
+`scripts/devswarm.js` so the guard doesn't block its own wrapper.
+
+> **Destructive-vs-non-destructive (reinforces §4.1):** the substrate never consumes the
+> native queue. `message-count` (**non-destructive**) is the count source; the durable inbox
+> (fed by the ingest daemon) is what `inbox read/ack` advances. `read-messages` (**marks
+> read**) and `monitor` (**consumes / blocking long-poll**) remain the two destructive
+> native reads the §8.5 redirect steers agents away from.
+
+**Auto-safe migration (`companion/devswarm-migrate.js` + `companion/devswarm-ingest.js`).**
+`migrate` (also wired into the updater path, and exposed as `scripts/devswarm.js migrate`)
+dual-reads the existing on-disk state — the JSON registry descriptors + each descriptor's
+legacy NDJSON inbox/cursor — into the store. **Safety contract, each test-asserted:**
+IDEMPOTENT (dedupe hash from id + line-index + content; a re-run imports only genuinely new
+appended lines), **NON-DESTRUCTIVE** (reads sources only — never deletes/moves/truncates, so
+the legacy files stay byte-for-byte and rollback is always possible), SINGLE-CONSUMER-LOCKED
+(O_EXCL lock), and COUNT-VERIFIED (the store's message count must equal the distinct legacy
+lines before it reports `verified:true`). `devswarm-ingest.js` is the ONE supervised daemon
+that wraps the native `monitor` → store (dedupe-idempotent) and **refuses to start if
+another monitor consumer is already running** (lockfile), mechanically enforcing the
+single-native-consumer invariant — two concurrent `monitor` consumers split the destructive
+queue and silently lose messages.
+
 ---
 
 ## 9. Best practices, tips & tricks

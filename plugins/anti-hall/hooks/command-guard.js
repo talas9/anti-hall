@@ -100,6 +100,15 @@ const LIGHT_EXCEPTIONS = [
   // Both `/` and `\` separators are accepted so it resolves identically on Windows.
   /\bnode\s+(?:\S*[\\/])?statusline[\\/]phase\.js\b/i,
   /\bnode\s+(?:\S*[\\/])?hooks[\\/]agent-watchdog\.js\b/i,
+  // anti-hall's own DevSwarm CLI wrapper (scripts/devswarm.js). It is THE
+  // structured interface the guard steers users toward (CLI over MCP), so the
+  // generic `node <file>.js` HEAVY_PATTERN blocking its own wrapper is the exact
+  // catch-22 called out in PLAN.md "Phase 2 — scope corrections". Same NARROW,
+  // anchored discipline as the phase.js / agent-watchdog.js carve-outs above:
+  // matches ONLY `scripts/devswarm.js` with the parent dir segment anchored at a
+  // token start or path separator (so `evilscripts/devswarm.js` is NOT exempt),
+  // both `/` and `\` separators for Windows parity.
+  /\bnode\s+(?:\S*[\\/])?scripts[\\/]devswarm\.js\b/i,
 ];
 
 // DevSwarm destructive-read redirect: the two CONSUMING native hivecontrol inbox

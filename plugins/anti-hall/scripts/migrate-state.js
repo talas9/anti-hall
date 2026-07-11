@@ -25,6 +25,50 @@ const path = require('path');
 
 const LEGACY_FILES = ['.anti-hall-progress.md', '.anti-hall-history.md'];
 
+/**
+ * migrateDevswarmStore({ dryRun }) — AUTOMATIC-BUT-SAFE migration of existing
+ * on-disk DevSwarm state (JSON workspace registry + legacy NDJSON inboxes) into
+ * the Phase-2 store. Wired here so an anti-hall update auto-migrates without a
+ * manual step (owner directive: "read current state and migrate automatically").
+ *
+ * Delegates to companion/devswarm-migrate.js, which is idempotent,
+ * NON-DESTRUCTIVE (dual-reads sources, never deletes them), single-consumer
+ * locked, and count-verifies before reporting success. This state lives under
+ * ~/.anti-hall/devswarm/ (HOME-scoped), not the repo `dir`, so it takes no dir
+ * argument. Fail-soft: any error -> a report object, never a throw (an update
+ * must never be bricked by a migration hiccup).
+ *
+ * dryRun — when true, DETECT ONLY (no lock, no writes): reports whether any
+ *   workspace descriptor is present that a real run would import. Used by
+ *   capability-scan.js-style gap reporting.
+ *
+ * Returns the migrate report ({ ok, action:'migrate', ... }) or, in dryRun, a
+ * lightweight { action:'migrate', dryRun:true, pending, workspaces }.
+ */
+function migrateDevswarmStore({ dryRun } = {}) {
+  let mod;
+  try {
+    mod = require('../companion/devswarm-migrate.js');
+  } catch (e) {
+    return { ok: false, action: 'migrate', error: 'devswarm-migrate unavailable: ' + (e && e.message) };
+  }
+  if (dryRun) {
+    try {
+      const os = require('os');
+      const { readDescriptors } = require('../companion/devswarm-supervisor.js');
+      const descriptors = readDescriptors(os.homedir());
+      return { action: 'migrate', dryRun: true, pending: descriptors.length > 0, workspaces: descriptors.length };
+    } catch (e) {
+      return { action: 'migrate', dryRun: true, pending: false, error: e && e.message };
+    }
+  }
+  try {
+    return mod.migrateToStore({});
+  } catch (e) {
+    return { ok: false, action: 'migrate', error: e && e.message };
+  }
+}
+
 function safeWrite(destPath, content) {
   const dir = path.dirname(destPath);
   fs.mkdirSync(dir, { recursive: true });
@@ -258,6 +302,21 @@ if (require.main === module) {
       (verifyFailed ? ', ' + verifyFailed + ' FAILED VERIFICATION (source kept, not deleted)' : '') +
       '. The .planning/ directory itself is never removed.');
   }
+
+  // DevSwarm store auto-migration (HOME-scoped, idempotent + non-destructive).
+  const ds = migrateDevswarmStore({});
+  if (ds && ds.ok && ds.action === 'migrate') {
+    if (!ds.workspaces) {
+      console.log('DevSwarm store: no on-disk workspace registry to migrate');
+    } else {
+      console.log('DevSwarm store: migrated ' + ds.workspaces + ' workspace(s) into the ' +
+        ds.backend + ' backend' + (ds.verifiedAll ? ' (all counts verified)' : ' (SOME COUNTS UNVERIFIED — sources kept)'));
+    }
+  } else if (ds && ds.locked === false) {
+    console.log('DevSwarm store: another migration/consumer holds the lock — skipped this run');
+  } else if (ds && ds.error) {
+    console.log('DevSwarm store: migration skipped (' + ds.error + ')');
+  }
 }
 
-module.exports = { migrateLegacyState, migrateGsdPlanning };
+module.exports = { migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore };

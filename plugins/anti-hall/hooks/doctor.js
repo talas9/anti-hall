@@ -433,6 +433,92 @@ ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
 // session is active OR the consumer has published workspace descriptors — EXCEPT a
 // syntax error in any supervisor lib is always surfaced (P2-12). Workaround for
 // claude-code#39755.
+// devswarmHookSelfTests() -> [{ok, msg}]. Behavioral self-tests for the four
+// Phase-1 mechanical hooks. Each builds an isolated fixture home (its own
+// ~/.anti-hall/devswarm tree) and runs the REAL hook subprocess with the
+// appropriate DevSwarm role env, then asserts the observable effect. Fully
+// self-contained + cleaned up; any throw fails-safe to a single FAIL result.
+function devswarmHookSelfTests() {
+  const results = [];
+  let base = null;
+  try { base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-ds-')); } catch (_) { return results; }
+  try {
+    // A descriptor + its durable inbox/cursor, mirroring the workspace registry
+    // shape readDescriptors() requires (id, worktreePath, sessionId, inbox/cursor).
+    function writeWorkspace(home, id, opts) {
+      const root = path.join(home, '.anti-hall', 'devswarm');
+      fs.mkdirSync(path.join(root, 'workspaces'), { recursive: true });
+      const inboxPath = path.join(root, 'inbox', id + '.ndjson');
+      const cursorPath = path.join(root, 'cursor', id + '.json');
+      fs.mkdirSync(path.dirname(inboxPath), { recursive: true });
+      fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
+      const inbox = (opts && opts.inbox) || [];
+      fs.writeFileSync(inboxPath, inbox.length ? inbox.join('\n') + '\n' : '');
+      fs.writeFileSync(cursorPath, String((opts && opts.cursor) || 0));
+      const d = { id, worktreePath: path.join(root, 'wt', id), sessionId: 'sess-' + id, inboxPath, cursorPath };
+      fs.writeFileSync(path.join(root, 'workspaces', id + '.json'), JSON.stringify(d));
+    }
+    // Force the supervisor ON (mode wins over feature-detect) and clear the
+    // hard kill-switch so the self-test verifies the code regardless of the
+    // operator's runtime toggle. HOME + USERPROFILE point os.homedir() at the
+    // fixture on every platform. Child = source-branch set; Primary = cleared.
+    const CHILD_ENV = (home) => ({ HOME: home, USERPROFILE: home, DISABLE_ANTIHALL_DEVSWARM: '', ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature-x' });
+    const PRIMARY_ENV = (home) => ({ HOME: home, USERPROFILE: home, DISABLE_ANTIHALL_DEVSWARM: '', ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: '' });
+
+    // 1. devswarm-child-turn (UserPromptSubmit, child): writes a turn-authored
+    //    heartbeat AND injects the per-turn parent-update reminder.
+    (function () {
+      const home = path.join(base, 'child-turn'); fs.mkdirSync(home, { recursive: true });
+      const r = runHook('devswarm-child-turn.js', { hook_event_name: 'UserPromptSubmit', session_id: 'ct', prompt: 'hi' }, CHILD_ENV(home));
+      const said = /CHILD WORKSPACE/.test(r.out);
+      let beat = false;
+      try { beat = fs.readdirSync(path.join(home, '.anti-hall', 'devswarm', 'heartbeats')).some((f) => /\.json$/.test(f)); } catch (_) {}
+      results.push({ ok: said && beat, msg: (said && beat)
+        ? 'devswarm-child-turn writes a turn-authored heartbeat + reminds the child to update its parent'
+        : 'devswarm-child-turn did NOT heartbeat/remind a child session (said=' + said + ', heartbeat=' + beat + ')' });
+    })();
+
+    // 2. devswarm-child-gate (Stop, child): forces a self-report before idling.
+    (function () {
+      const home = path.join(base, 'child-gate'); fs.mkdirSync(home, { recursive: true });
+      const r = runHook('devswarm-child-gate.js', { hook_event_name: 'Stop', session_id: 'cg-' + Date.now() }, CHILD_ENV(home));
+      const blocked = /"decision"\s*:\s*"block"/.test(r.out);
+      results.push({ ok: blocked, msg: blocked
+        ? 'devswarm-child-gate forces a child to self-report to its parent before stopping'
+        : 'devswarm-child-gate did NOT force a child heartbeat at Stop' });
+    })();
+
+    // 3. devswarm-parent-inbox (UserPromptSubmit, Primary): surfaces a neglected
+    //    workspace's unread backlog to the Primary.
+    (function () {
+      const home = path.join(base, 'parent-inbox'); fs.mkdirSync(home, { recursive: true });
+      writeWorkspace(home, 'wsA', { inbox: ['{"m":1}', '{"m":2}', '{"m":3}'], cursor: 0 });
+      const r = runHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 'pi', prompt: 'hi' }, PRIMARY_ENV(home));
+      const said = /DEVSWARM PARENT INBOX/.test(r.out) && /3 unread/.test(r.out);
+      results.push({ ok: said, msg: said
+        ? 'devswarm-parent-inbox surfaces a workspace unread backlog to the Primary'
+        : 'devswarm-parent-inbox did NOT surface unread backlog to the Primary' });
+    })();
+
+    // 4. devswarm-parent-gate (Stop, Primary): blocks the Primary turn while a
+    //    child still has unread backlog past its cursor.
+    (function () {
+      const home = path.join(base, 'parent-gate'); fs.mkdirSync(home, { recursive: true });
+      writeWorkspace(home, 'wsA', { inbox: ['{"m":1}', '{"m":2}'], cursor: 0 });
+      const r = runHook('devswarm-parent-gate.js', { hook_event_name: 'Stop', session_id: 'pg-' + Date.now() }, PRIMARY_ENV(home));
+      const blocked = /"decision"\s*:\s*"block"/.test(r.out);
+      results.push({ ok: blocked, msg: blocked
+        ? 'devswarm-parent-gate blocks the Primary turn while a child inbox is unread'
+        : 'devswarm-parent-gate did NOT block on a neglected child at Stop' });
+    })();
+  } catch (e) {
+    results.push({ ok: false, msg: 'devswarm hook self-tests raised: ' + (e && e.message) });
+  } finally {
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {}
+  }
+  return results;
+}
+
 (function devswarmSection() {
   const libDir = path.join(ROOT, 'companion', 'lib');
   const supervisorFiles = [
@@ -484,10 +570,23 @@ ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
     } catch (_) { installed = false; } // fail-open: unknown = not installed
   }
 
-  // Fully silent ONLY when dormant, not installed, AND every lib parses.
-  if (!active && !installed && syntaxErrors.length === 0) return;
+  // Phase-1 mechanical hooks (parent-inbox / child-turn / parent-gate /
+  // child-gate) behavioral self-tests. Each constructs its OWN throwaway fixture
+  // home + DevSwarm env and runs the real hook as a subprocess, proving it still
+  // FIRES (a child that finishes a turn is forced to heartbeat; a Primary with a
+  // neglected workspace is nudged and gated). Runs UNCONDITIONALLY — the fixtures
+  // are self-contained, so this verifies the code even for a dormant session —
+  // but stays QUIET when healthy: a FAILURE is always surfaced (loud, matching
+  // the P2-12 syntax-error rule) so a broken Phase-1 hook can never hide.
+  const hookTests = devswarmHookSelfTests();
+  const anyHookFail = hookTests.some((t) => !t.ok);
+
+  // Fully silent ONLY when dormant, not installed, every lib parses, AND every
+  // Phase-1 hook self-test passed.
+  if (!active && !installed && syntaxErrors.length === 0 && !anyHookFail) return;
   head('DevSwarm liveness supervisor (optional)');
   for (const se of syntaxErrors) bad('supervisor lib SYNTAX ERROR: ' + path.basename(se.f) + ' — ' + se.err);
+  for (const t of hookTests) (t.ok ? ok : bad)(t.msg);
   if (installed) ok(`supervisor companion INSTALLED (${process.platform === 'darwin' ? 'launchd' : 'systemd'} background sweep)`);
   else infol('supervisor companion not installed — background auto-recovery is off; the in-session checks below (if any) still run');
   if (active && report && dsd) {

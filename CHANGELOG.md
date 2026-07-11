@@ -6,6 +6,44 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.54.0
+
+**DevSwarm coordination substrate — mechanical parent/child triggers, SQLite-backed store, ingest daemon, CLI, auto-safe migration, archive-ready recommendation.**
+
+- **Mechanical parent/child trigger hooks.** Four new opt-in hooks, all fail-open and
+  empty-when-idle (own state files, no output unless the DevSwarm workspace is actually
+  active):
+  - `devswarm-parent-inbox` (UserPromptSubmit) — injects unread/idle status for the
+    parent, plus a persistent reminder once a workspace becomes archive-ready.
+  - `devswarm-parent-gate` (Stop) — capped forced-ack on unread/stale state, surfaces
+    supervisor verdicts; does not touch git on Stop.
+  - `devswarm-child-turn` (UserPromptSubmit) — child heartbeat.
+  - `devswarm-child-gate` (Stop) — heartbeat forced-ack for the child.
+- **`devswarm-inbox-cursor`** — the read/ack primitive underlying the forced-ack clear
+  path shared by the parent/child gate hooks.
+- **SQLite dual-backend store** (`node:sqlite` feature-detected, journal-file fallback
+  when unavailable, WAL mode) with an atomic `summary.json` projection; hooks read only
+  the projection, never the DB directly.
+- **`devswarm-ingest` daemon** — wraps `hivecontrol workspace monitor` behind a
+  single-native-consumer lock (never steals a live lock; heartbeats while running) with
+  dedupe.
+- **`scripts/devswarm.js` CLI** — `register` / `heartbeat` / `inbox` (`read`/`ack`/`count`)
+  / `workspaces` / `nudge` / `archive` / `gate` / `archive-ignore` / `migrate`; JSON
+  output throughout (CLI-over-MCP, per project convention).
+- **Automatic-but-safe migration** wired into the updater: idempotent, non-destructive,
+  single-consumer-locked, verifies row counts before switching over.
+- **Archive-ready recommendation.** Tracks per-workspace completion gates
+  (done/merged/tests_passed plus consumer-defined gates, e.g. deployed); once met,
+  PERSISTENTLY reminds the user to archive the workspace in the DevSwarm app (GUI-only
+  teardown), with a per-workspace `archive-ignore` opt-out. Never auto-archives.
+- **`system-briefing` companion skill** — derived live from the current hook/KB map;
+  hivecontrol KB refreshed to 2.3.4.
+- Note: the 4 DevSwarm Phase-1 hooks are documented-non-mirror on the Codex port
+  (env-gated inert there; tested).
+- **Cross-model review hardening:** ingest live-pid lock guard + heartbeat, migration
+  false-verify-on-unreadable fix, `summary.json` unique-tmp write, child-gate fail-open,
+  journal-dedupe lock, CLI register validation.
+
 ## 0.53.0
 
 **DevSwarm destructive-read redirect (command-guard) + topology-aware edit-guard wording.**

@@ -38,6 +38,17 @@ function group(matcher, files, timeout) {
 // - fable-availability.js is deliberately omitted: it probes ~/.claude.json for a
 //   Claude Fable model entitlement (Claude Reviewer-seat fallback only), which is
 //   irrelevant to gpt-5.x Codex/OMX sessions.
+// - The DevSwarm hooks are deliberately NOT mirrored: the SessionStart
+//   devswarm-child-role.js and the Phase-1 parent/child pair
+//   (UserPromptSubmit: devswarm-parent-inbox.js, devswarm-child-turn.js;
+//   Stop: devswarm-parent-gate.js, devswarm-child-gate.js). NOT APPLICABLE to
+//   Codex — DevSwarm is hivecontrol's Claude-side worktree orchestration: the
+//   gating DEVSWARM_* env vars (DEVSWARM_REPO_ID / DEVSWARM_SOURCE_BRANCH) are
+//   set only for the `claude` child sessions hivecontrol spawns, so these hooks
+//   would be permanently inert in a gpt-5.x Codex/OMX session. This matches the
+//   liveness supervisor's documented Claude-only status (codex/README.md) and
+//   the existing devswarm-child-role omission; a Codex-side equivalent would be
+//   a separate effort keyed to Codex's own session/transcript model.
 const ANTI_HALL_HOOKS = {
   SessionStart: [
     group(null, ['verify-first-full.js'], 10),

@@ -41,6 +41,9 @@ const BLOCK = [
   // Spoof attempt: a look-alike dir prefix must not satisfy the anchored exception.
   'node evilstatusline/phase.js',
   'node fakehooks/agent-watchdog.js',
+  // Look-alike prefix must NOT satisfy the anchored devswarm.js carve-out.
+  'node evilscripts/devswarm.js',
+  'node scripts/other.js',
 ];
 
 const ALLOW = [
@@ -61,6 +64,12 @@ const ALLOW = [
   'node /Users/x/plugins/anti-hall/hooks/agent-watchdog.js',
   // Windows-separator form must resolve identically (OS-agnostic).
   'node C:\\proj\\plugins\\anti-hall\\statusline\\phase.js agents 4',
+  // DevSwarm CLI wrapper (scripts/devswarm.js) — the catch-22 carve-out (PLAN.md
+  // Phase 2). Relative, absolute, and Windows-separator forms all resolve.
+  'node scripts/devswarm.js workspaces list',
+  'node scripts/devswarm.js gate w --set done',
+  'node /Users/x/plugins/anti-hall/scripts/devswarm.js migrate',
+  'node C:\\proj\\plugins\\anti-hall\\scripts\\devswarm.js register w',
 ];
 
 for (const cmd of BLOCK) {
