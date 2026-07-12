@@ -94,7 +94,14 @@ supervisor active for the Claude side, the install command and full activation c
 `ANTIHALL_DEVSWARM_NUDGE_*` tuning vars) live in `plugins/anti-hall/skills/devswarm/SKILL.md`.
 The `update` skill on the Claude side autonomously installs/refreshes this supervisor
 whenever it detects it's running inside an active DevSwarm session — no separate step
-needed once that side is set up.
+needed once that side is set up. As of 0.54.1, the same autonomous-refresh posture also
+covers `companion/install-devswarm-ingest.js` — the one supervised daemon wrapping
+`hivecontrol workspace monitor` into the substrate store (`companion/devswarm-ingest.js`,
+shipped 0.54.0). It runs continuously (macOS LaunchAgent `KeepAlive` / Linux `systemd
+--user` `Restart=always` `.service`, cron fallback with a ~60s worst-case revive gap on a
+cron-only Linux host), distinct label/log from the supervisor, and is Claude-side
+tooling like the rest of this section — for awareness on a mixed OMC/OMX setup, not a
+Codex-side capability.
 
 Outputs to watch either way: `~/.anti-hall/devswarm/liveness/<id>.json` (per-workspace
 verdict — `alive`/`stale`/`nudged`/`ambiguous`/`escalated`), `~/.anti-hall/devswarm/recovery.log`

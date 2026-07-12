@@ -13,6 +13,21 @@
 // forced-ack is the mechanism — it blocks the Stop with a reason telling the
 // child to run `hivecontrol workspace message-parent`.
 //
+// SOUND FORCED-ACK (v0.54.1 correction — reverts the v0.54.0 "fresh heartbeat
+// satisfies the Stop gate" logic, which FALSE-SILENCED a child that worked <5min
+// then stopped WITHOUT message-parent): the turn-START heartbeat written by
+// devswarm-child-turn is NOT a valid "I reported my stop-state" signal — it says
+// only that a turn began, not that the child pinged its parent before going idle.
+// Treating it as satisfaction let an unreported child drop off the parent's radar.
+// So this gate ALWAYS demands at least one real report per unchanged blocking
+// state (never false-silence), bounded ONLY by the capped forced-ack below.
+//
+// v0.54.2 IMPROVEMENT (not yet built): a proper "satisfied-by-actual-
+// message-parent-report" marker — a distinct signal written by the child's own
+// `hivecontrol workspace message-parent` call — could let a genuinely-reported
+// child skip the nag WITHOUT the turn-start heartbeat's false-silence. Until that
+// exists, the bounded forced-ack is the only correct behavior.
+//
 // CAPPED + SELF-RESETTING (loop-safe): we block at most MAX_BLOCKS times inside a
 // single stop episode, then yield (allow the stop) so we can NEVER hard-loop the
 // child. The cap is tracked in this hook's OWN DISTINCT state file (separate from
@@ -117,6 +132,11 @@ function main() {
   }
 
   const now = Date.now();
+
+  // NO heartbeat-satisfaction check (reverted — see header): the child's turn-start
+  // heartbeat is NOT proof it reported its stop-state, so it can never silence this
+  // gate. An unreported child ALWAYS reaches the capped forced-ack below.
+
   // Session key: prefer session_id; fall back to a stable hash of the transcript
   // path so the per-session cap still works when session_id is absent.
   const sessionId = (payload && payload.session_id && String(payload.session_id)) ||

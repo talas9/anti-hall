@@ -135,6 +135,43 @@ test('companionActive: linux reports active=true when the systemd --user timer f
   }
 });
 
+test('companionActive: linux reports active=true when systemd ENABLED the continuous .service (WantedBy symlink)', () => {
+  // The ingest daemon installs a Type=simple .service (continuous), not a .timer.
+  // The REAL "scheduled" signal is the WantedBy symlink systemd creates on enable —
+  // NOT the bare .service file existing (P1-2).
+  const t = makeTmpDir('capscan-active-linux-service-');
+  try {
+    const installScript = t.write('companion/install-x.js', fakeInstallerSource({ label: 'com.test.x', unit: 'test-x' }));
+    const unitDir = path.join(t.dir, 'home', '.config', 'systemd', 'user');
+    fs.mkdirSync(path.join(unitDir, 'default.target.wants'), { recursive: true });
+    fs.writeFileSync(path.join(unitDir, 'test-x.service'), '[Service]');
+    fs.writeFileSync(path.join(unitDir, 'default.target.wants', 'test-x.service'), ''); // enable symlink
+
+    const active = companionActive({ installScript, home: path.join(t.dir, 'home'), platform: 'linux' });
+    assert.strictEqual(active, true);
+  } finally {
+    t.cleanup();
+  }
+});
+
+// P1-2 regression: a bare .service FILE (no WantedBy symlink, no cron marker) is NOT
+// proof of scheduling — the cron-fallback path used to write the .service and
+// install no scheduler, yet this reported active. Must now report inactive.
+test('companionActive: linux reports active=false for a bare .service file (no scheduler signal)', () => {
+  const t = makeTmpDir('capscan-bare-service-');
+  try {
+    const installScript = t.write('companion/install-x.js', fakeInstallerSource({ label: 'com.test.x', unit: 'test-x' }));
+    const unitDir = path.join(t.dir, 'home', '.config', 'systemd', 'user');
+    fs.mkdirSync(unitDir, { recursive: true });
+    fs.writeFileSync(path.join(unitDir, 'test-x.service'), '[Service]');
+
+    const active = companionActive({ installScript, home: path.join(t.dir, 'home'), platform: 'linux' });
+    assert.strictEqual(active, false);
+  } finally {
+    t.cleanup();
+  }
+});
+
 test('companionActive: linux reports active=false when neither timer file nor cron entry exists', () => {
   const t = makeTmpDir('capscan-inactive-linux-');
   try {

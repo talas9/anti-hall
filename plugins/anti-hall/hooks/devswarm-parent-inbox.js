@@ -71,6 +71,10 @@ const STUCK_STATUSES = new Set(['stale', 'nudged', 'escalated']);
 // reminder is PERSISTENT but not literally every-turn.
 const ARCHIVE_NUDGE_COOLDOWN_MS = DEFAULT_COOLDOWN_MS;
 const MAX_LISTED = 6; // cap workspaces named inline to keep additionalContext short
+// The live workspace table is injected EVERY turn, so it is capped harder than the
+// inline lists. Rows past this cap are folded into a "+N more" note and the cap is
+// logged (never silently truncated).
+const MAX_TABLE_ROWS = 12;
 
 function summaryPath(home) {
   return path.join(devswarmRoot(home), 'summary.json');
@@ -83,6 +87,9 @@ function archiveIgnorePath(home, id) {
 }
 function archiveNudgePath(home, id) {
   return path.join(devswarmRoot(home), 'archive-nudges', String(id) + '.json');
+}
+function heartbeatPathFor(home, id) {
+  return path.join(devswarmRoot(home), 'heartbeats', String(id) + '.json');
 }
 
 // readSummary(home) -> parsed object | null. summary.json is the derived hook
@@ -109,19 +116,129 @@ function summaryEntry(summary, id) {
   return entry && typeof entry === 'object' ? entry : null;
 }
 
-// verdictStatus(home, id) -> status string | null. Reads the supervisor's already-
-// written fs verdict for a workspace (zero git, no computeLiveness). Prefers the
-// derived summary.json entry (the designated hook read-surface, P1-C), then falls
-// back to the persisted liveness verdict file so "idle" is meaningful even before
-// Phase 2 derives summary.json.
-function verdictStatus(home, id, summary) {
-  const entry = summaryEntry(summary, id);
-  if (entry && typeof entry.status === 'string') return entry.status;
+// readVerdictFile(home, id) -> parsed liveness verdict | null. Reads the
+// supervisor's already-written fs verdict (zero git, no computeLiveness). Tolerant
+// of a missing / empty / partially-written file.
+function readVerdictFile(home, id) {
   try {
     const v = JSON.parse(fs.readFileSync(livenessPathFor(id, home), 'utf8'));
-    if (v && typeof v.status === 'string') return v.status;
-  } catch (_) {}
+    return v && typeof v === 'object' ? v : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// verdictStatus(summary, id, verdict) -> status string | null. Prefers the derived
+// summary.json entry (the designated hook read-surface, P1-C), then falls back to
+// the persisted liveness verdict so "idle" is meaningful even before Phase 2
+// derives summary.json. `verdict` is passed in so the file is read at most once.
+function verdictStatus(summary, id, verdict) {
+  const entry = summaryEntry(summary, id);
+  if (entry && typeof entry.status === 'string') return entry.status;
+  if (verdict && typeof verdict.status === 'string') return verdict.status;
   return null;
+}
+
+// readHeartbeat(home, id) -> parsed heartbeat | null. The turn-authored heartbeat
+// (heartbeats/<id>.json) carries progress_pct + ts. Read-only fs; tolerant of a
+// missing / malformed file (fail toward "no heartbeat").
+function readHeartbeat(home, id) {
+  try {
+    const b = JSON.parse(fs.readFileSync(heartbeatPathFor(home, id), 'utf8'));
+    return b && typeof b === 'object' ? b : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// lastActivityTs(verdict, heartbeat) -> ms | null. The most recent activity signal
+// already persisted for the workspace: the liveness verdict's lastOutboundTs
+// (transcript/git activity) and the heartbeat's ts, whichever is newer. Never
+// spawns git — reads only what the supervisor / a heartbeat already wrote.
+function lastActivityTs(verdict, heartbeat) {
+  const a = verdict && Number.isFinite(verdict.lastOutboundTs) ? verdict.lastOutboundTs : 0;
+  const b = heartbeat && Number.isFinite(heartbeat.ts) ? heartbeat.ts : 0;
+  const best = Math.max(a, b);
+  return best > 0 ? best : null;
+}
+
+// formatRelative(ts, now) -> compact relative age ("18m", "2h", "3d", "5s") or "—"
+// when the signal is unknown. Clamps a future ts to 0 (never a negative age).
+function formatRelative(ts, now) {
+  if (!Number.isFinite(ts) || ts <= 0) return '—';
+  let delta = now - ts;
+  if (delta < 0) delta = 0;
+  const s = Math.floor(delta / 1000);
+  if (s < 60) return s + 's';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + 'm';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h';
+  return Math.floor(h / 24) + 'd';
+}
+
+// finishingRate(summary, id, heartbeat) -> string. Required completion gates met /
+// total, from summary.requiredGates + the workspace's gate map (e.g. "2/3"). When
+// no required gates are declared (or no summary entry yet) the gate ratio is
+// unknown ("—"); a heartbeat progress_pct, when present, is appended (or shown
+// alone if it is the only signal). Decision: gates are the authoritative finishing
+// signal; progress_pct is an advisory secondary shown only when it exists.
+function finishingRate(summary, id, heartbeat) {
+  const entry = summaryEntry(summary, id);
+  const required = summary && Array.isArray(summary.requiredGates) ? summary.requiredGates : [];
+  let gatesStr = null;
+  if (entry && required.length > 0) {
+    const gates = entry.gates && typeof entry.gates === 'object' ? entry.gates : {};
+    const met = required.filter((g) => gates[g] === true).length;
+    gatesStr = met + '/' + required.length;
+  }
+  const pct = heartbeat && Number.isFinite(heartbeat.progress_pct) ? heartbeat.progress_pct : null;
+  if (gatesStr && pct !== null) return gatesStr + ' (' + pct + '%)';
+  if (gatesStr) return gatesStr;
+  if (pct !== null) return pct + '%';
+  return '—';
+}
+
+// displayStatus(archiveReady, status) -> { label, rank }. Collapses the raw verdict
+// enum into the four surfaced states and assigns a sort rank so attention-needed
+// workspaces sort first: escalated (0) > stale (1, incl. nudged) > archive-ready
+// (2) > active (3). escalated outranks archive-ready: a wedged child needing a
+// human beats a tidy teardown recommendation.
+function displayStatus(archiveReady, status) {
+  if (status === 'escalated') return { label: 'escalated', rank: 0 };
+  if (status === 'stale' || status === 'nudged') return { label: 'stale', rank: 1 };
+  if (archiveReady) return { label: 'archive-ready', rank: 2 };
+  return { label: 'active', rank: 3 };
+}
+
+// buildWorkspaceTable(rows, now, capped, hidden) -> string. Compact markdown table
+// of the ACTIVE workspaces (one row each): workspace, status, finishing rate,
+// unread, last-activity. Rows are pre-sorted + already capped by the caller.
+function buildWorkspaceTable(rows, now, capped, hidden) {
+  const lines = [
+    'DEVSWARM WORKSPACES (live — refreshed every turn):',
+    '| workspace | status | finish | unread | last |',
+    '|---|---|---|---|---|',
+  ];
+  for (const r of rows) {
+    lines.push(
+      '| ' + r.id + ' | ' + r.label + ' | ' + r.finish + ' | ' + r.unread
+      + ' | ' + formatRelative(r.lastActivityTs, now) + ' |'
+    );
+  }
+  if (capped) lines.push('+' + hidden + ' more (capped at ' + MAX_TABLE_ROWS + ')');
+  return lines.join('\n');
+}
+
+// logTableCap(home, total, shown) — record that the live table was truncated, so a
+// silent-truncation regression is visible in telemetry. Best-effort; never throws.
+function logTableCap(home, total, shown) {
+  try {
+    const p = parentInboxLogPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const line = JSON.stringify({ ts: Date.now(), event: 'table-cap', total, shown, hidden: total - shown });
+    fs.appendFileSync(p, line + '\n');
+  } catch (_) {}
 }
 
 // isArchiveReady(home, id, summary) -> bool. The store derives archive_ready:true
@@ -234,6 +351,7 @@ function main() {
 
   const attention = []; // { id, unread, cursor, total, status }
   const archiveList = [];
+  const rows = []; // live-table row per ACTIVE workspace: { id, label, rank, finish, unread, lastActivityTs }
 
   for (const d of descriptors) {
     if (!d || !isSafeId(d.id)) continue;
@@ -245,22 +363,50 @@ function main() {
       cursor = u.cursor;
       total = u.total;
     } catch (_) {}
-    const status = verdictStatus(home, d.id, summary);
+    const verdict = readVerdictFile(home, d.id);
+    const status = verdictStatus(summary, d.id, verdict);
     const stuck = status !== null && STUCK_STATUSES.has(status);
     if (unread > 0 || stuck) {
       attention.push({ id: d.id, unread, cursor, total, status });
     }
 
     // --- archive-ready recommendation (P1-E) ---
+    const archiveReady = isArchiveReady(d.id, summary);
     try {
-      if (isArchiveReady(d.id, summary) && !isArchiveIgnored(home, d.id)
+      if (archiveReady && !isArchiveIgnored(home, d.id)
           && archiveCooldownElapsed(home, d.id, now)) {
         archiveList.push(d.id);
       }
     } catch (_) {}
+
+    // --- live-table row (every ACTIVE workspace, every turn) ---
+    try {
+      const heartbeat = readHeartbeat(home, d.id);
+      const ds = displayStatus(archiveReady, status);
+      rows.push({
+        id: d.id,
+        label: ds.label,
+        rank: ds.rank,
+        finish: finishingRate(summary, d.id, heartbeat),
+        unread,
+        lastActivityTs: lastActivityTs(verdict, heartbeat),
+      });
+    } catch (_) {}
   }
 
   const segments = [];
+
+  // Live workspace table FIRST — the always-on status overview the Primary reads
+  // every turn. Attention-needed rows (escalated/stale) sort to the top; ties by
+  // unread desc, then id. Capped at MAX_TABLE_ROWS with a logged "+N more".
+  if (rows.length) {
+    rows.sort((a, b) => (a.rank - b.rank) || (b.unread - a.unread) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const capped = rows.length > MAX_TABLE_ROWS;
+    const shown = capped ? rows.slice(0, MAX_TABLE_ROWS) : rows;
+    if (capped) logTableCap(home, rows.length, shown.length);
+    segments.push(buildWorkspaceTable(shown, now, capped, rows.length - shown.length));
+  }
+
   if (attention.length) {
     segments.push(buildUnreadSegment(attention));
     // Acceptance telemetry only when there is genuine unread backlog (not merely a

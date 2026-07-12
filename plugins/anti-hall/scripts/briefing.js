@@ -193,7 +193,7 @@ for (const f of ['devswarm-migrate.js', 'devswarm-ingest.js']) {
   const p = path.join(ROOT, 'companion', f);
   if (isFile(p)) substrate.migration.push({ file: 'companion/' + f, purpose: purposeOf(p) });
 }
-for (const f of ['devswarm-supervisor.js', 'devswarm-recover.js', 'install-devswarm-supervisor.js']) {
+for (const f of ['devswarm-supervisor.js', 'devswarm-recover.js', 'install-devswarm-supervisor.js', 'install-devswarm-ingest.js']) {
   const p = path.join(ROOT, 'companion', f);
   if (isFile(p)) substrate.supervisor.push({ file: 'companion/' + f, purpose: purposeOf(p) });
 }

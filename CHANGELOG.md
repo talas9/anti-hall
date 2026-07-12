@@ -6,6 +6,48 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.54.1
+
+**DevSwarm substrate follow-up — ingest daemon auto-install, child-gate over-nag fix, partial child reception surfacing, live active-workspace table.**
+
+- **Ingest daemon auto-installer (`companion/install-devswarm-ingest.js`).** The
+  `devswarm-ingest` daemon (the one native consumer wrapping `hivecontrol workspace
+  monitor` into the store) now AUTO-installs/refreshes on `/anti-hall:update` inside an
+  active DevSwarm session — same no-offer, no-ask posture as the supervisor installer,
+  same `isDevswarmActive(process.env)` gate. Continuous daemon (not a periodic sweep):
+  macOS LaunchAgent with `KeepAlive`, Linux `systemd --user` `.service` with
+  `Restart=always` (cron fallback on systemctl-less hosts — every-minute tick, so a
+  cron-only Linux host has up to ~60s revive gap after a crash). Idempotent
+  (`launchctl unload && load` / `systemctl daemon-reload` + `restart`), so it
+  first-installs when absent and refreshes an already-running daemon to the current
+  build. `capability-scan.js` now detects BOTH shapes of a Linux systemd unit
+  (`.timer` for the periodic supervisor, `.service` for the continuous ingest daemon)
+  so either is reported correctly. Closes the gap where the daemon existed in code
+  (0.54.0) but nothing ever started it.
+- **`devswarm-child-gate` over-nag fix.** The child Stop-gate now stays SILENT when the
+  child's own turn-authored heartbeat (`devswarm-child-turn`'s
+  `heartbeats/<branch>.json`) is FRESH (<5 min old) — it no longer forces a duplicate
+  heartbeat on every single Stop. The forced-ack now fires only for the genuinely
+  unreported case (no heartbeat yet, or one stale past the freshness window).
+- **Child inbox reception surfacing — PARTIAL, not full reception.**
+  `devswarm-child-turn` now does a non-destructive unread check against the child's own
+  durable descriptor inbox and, when unread > 0, tells the child how many unread parent
+  message(s) it has and the safe (non-draining) way to read them via the CLI's
+  `inbox read` primitive. This is surfacing-only and forward-compatible: nothing
+  shipped yet actually DRAINS the child's native parent→child queue into that durable
+  inbox (native reads are destructive and guard-blocked; nothing currently populates the
+  child's durable inbox from the native side). Full child-side reception is an explicit
+  **v0.54.2 follow-up** — do not read this as "child message reception now works."
+- **Live active-workspace table (`devswarm-parent-inbox`).** The Primary's
+  UserPromptSubmit hook now injects a compact status table EVERY turn — one row per
+  active workspace, columns workspace / status (`escalated` > `stale` > `archive-ready`
+  > `active`, attention-needing rows sorted first) / finishing rate (required
+  completion gates met/total, plus an optional heartbeat progress-percent) / unread
+  count / last-activity (relative age). Capped at 12 rows (`+N more`, logged, never
+  silently truncated); empty output when no active workspace exists; read-only,
+  fail-open, zero git calls on the hot path (reads `summary.json` + the liveness
+  verdict + heartbeat files only).
+
 ## 0.54.0
 
 **DevSwarm coordination substrate — mechanical parent/child triggers, SQLite-backed store, ingest daemon, CLI, auto-safe migration, archive-ready recommendation.**

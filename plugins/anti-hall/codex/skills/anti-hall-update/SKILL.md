@@ -69,6 +69,26 @@ Read-only — it never installs anything. It reports each opt-in capability (com
   without work — it only ever acts on descriptors under
   `~/.anti-hall/devswarm/workspaces/`, so it no-ops when DevSwarm isn't
   actually running.)
+- **DevSwarm ingest daemon** — install-or-refresh it under the **same
+  DevSwarm-session-only, no-offer, no-ask posture as the supervisor above**, in
+  the SAME `isDevswarmActive(process.env)` branch. When inside a DevSwarm
+  session, also run its `how` command
+  (`node companion/install-devswarm-ingest.js`) regardless of the scan's
+  `active` value. It is idempotent (`launchctl unload && load` on macOS /
+  `systemctl --user daemon-reload` + `restart` on Linux), so it first-installs
+  when absent and refreshes an already-installed daemon to this build's code.
+  Unlike the supervisor (a periodic sweep), the ingest daemon runs
+  **continuously** — the unit uses `KeepAlive`/`Restart=always` to re-exec it on
+  exit; hence a distinct label (`com.anti-hall.devswarm-ingest`) and log
+  (`~/.anti-hall/devswarm-ingest.log`). It is the single native consumer that
+  wraps `hivecontrol workspace monitor` and folds messages into the store;
+  nothing else auto-starts it, so a DevSwarm session without it silently ingests
+  nothing. Safe to install unprompted and idempotently: the daemon takes an
+  O_EXCL single-consumer lock, so only ONE instance ever runs even if installs
+  race. **Report it** plainly ("DevSwarm session detected — installed/refreshed
+  the ingest daemon to `<version>`"). Fail-open: an install/refresh failure is
+  reported, never fatal to the update. If NOT inside a DevSwarm session, do
+  **not** install — just note it's available.
 - Any other opt-in capability at `active: false` (e.g. mcp-reaper — no
   active-integration signal) — guide, don't auto-install: print its `how`
   command and let the user decide.

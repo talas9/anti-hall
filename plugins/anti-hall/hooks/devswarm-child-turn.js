@@ -20,6 +20,18 @@
 //      updated (`hivecontrol workspace message-parent`) and to stay responsive
 //      to parent messages, so a child stays visible on the parent's task list.
 //
+//   3. UNREAD-INBOX SURFACING (advisory, reception gap). A child cannot run
+//      `hivecontrol workspace monitor` / `read-messages` (command-guard blocks them
+//      as destructive queue drains), so a parent->child message can sit unseen. This
+//      hook does a NON-DESTRUCTIVE unread check on the child's OWN durable descriptor
+//      inbox (workspaces/<DEVSWARM_BUILDER_ID>.json -> inboxPath/cursorPath, via the
+//      inbox-cursor primitive — pure fs, no native-queue drain, no hivecontrol spawn)
+//      and, when unread>0, tells the child it has N unread parent message(s) and the
+//      SAFE (non-draining) way to read them. Empty-when-zero: with no durable inbox
+//      populated it is a pure no-op. KNOWN GAP (v0.54.2): nothing shipped drains the
+//      child's NATIVE parent->child queue into this durable inbox, so this fires only
+//      once a child-side ingest/drain populates it — see the report/PLAN follow-up.
+//
 // Primary / non-DevSwarm sessions and malformed stdin are silent no-ops (no
 // output, exit 0) — byte-identical to dormant. Fail-open on ANY error. Pure
 // Node built-ins only.
@@ -42,6 +54,7 @@ const crypto = require('crypto');
 const { isDevswarmActive } = require('./lib/devswarm-detect.js');
 const { isChildWorkspace } = require('./lib/devswarm-role.js');
 const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
+const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 
 const REMINDER =
   'DEVSWARM CHILD WORKSPACE (per turn): keep the parent orchestrator updated — ' +
@@ -89,6 +102,35 @@ function writeHeartbeat(env, sessionId, home) {
   fs.renameSync(tmp, target);
 }
 
+// unreadParentSegment(env, home) -> string | null. NON-DESTRUCTIVE unread check on
+// the child's OWN durable descriptor inbox (workspaces/<DEVSWARM_BUILDER_ID>.json).
+// Uses the inbox-cursor primitive (pure fs; never drains the native queue, never
+// spawns hivecontrol). Returns a SHORT nudge naming the unread count + the SAFE
+// (non-draining) read path when the durable child inbox has unread message(s);
+// returns null otherwise (empty-when-zero: a child with no populated durable inbox
+// stays a pure no-op). Fail-safe: ANY error -> null (never blocks or crashes a turn).
+function unreadParentSegment(env, home) {
+  try {
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return null;
+    const descPath = path.join(devswarmRoot(home), 'workspaces', id + '.json');
+    let desc;
+    try { desc = JSON.parse(fs.readFileSync(descPath, 'utf8')); } catch (_) { return null; }
+    if (!desc || typeof desc !== 'object' || !desc.inboxPath) return null;
+    const u = readUnread(desc.inboxPath, desc.cursorPath);
+    if (!u.known || u.count <= 0) return null;
+    return (
+      'DEVSWARM CHILD INBOX: you have ' + u.count + ' unread parent message(s). Read '
+      + 'them the SAFE, NON-DRAINING way via the durable inbox cursor — '
+      + '`devswarm.js inbox read ' + id + '` (anti-hall devswarm CLI). Do NOT run '
+      + '`hivecontrol workspace read-messages` or `monitor` — those DESTRUCTIVELY '
+      + 'drain the native queue.'
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
 function main() {
   // Read stdin for contract completeness; the only field we use is session_id
   // (a heartbeat correlator). Absent/malformed stdin is fine — fail-open.
@@ -108,10 +150,16 @@ function main() {
     writeHeartbeat(env, payload.session_id, os.homedir());
   } catch (_) { /* fail-open: never block a turn on a heartbeat write */ }
 
+  // REMINDER is always present; append the unread-inbox nudge only when the child's
+  // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
+  const segments = [REMINDER];
+  const unreadSeg = unreadParentSegment(env, os.homedir());
+  if (unreadSeg) segments.push(unreadSeg);
+
   const out = {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: REMINDER,
+      additionalContext: segments.join('\n\n'),
     },
   };
   fs.writeSync(1, JSON.stringify(out) + '\n');

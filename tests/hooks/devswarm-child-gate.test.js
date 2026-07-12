@@ -22,6 +22,19 @@ function stateFile(home, session) {
   return path.join(home, '.anti-hall', 'devswarm', 'child-gate', session + '.json');
 }
 
+// A branch that is isSafeId-clean, so the heartbeat file key == the branch verbatim
+// (heartbeats/main.json) — no sanitize+hash needed in the test.
+const SAFE_CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' };
+
+function heartbeatFile(home, key) {
+  return path.join(home, '.anti-hall', 'devswarm', 'heartbeats', key + '.json');
+}
+function writeHeartbeat(home, key, ts) {
+  const p = heartbeatFile(home, key);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ ts, source: 'child-turn', branch: key }));
+}
+
 test('BLOCK: child workspace + supervisor active -> Stop is blocked with heartbeat forced-ack', () => {
   const h = makeHome();
   try {
@@ -32,6 +45,32 @@ test('BLOCK: child workspace + supervisor active -> Stop is blocked with heartbe
     assert.ok(/message-parent/.test(r.json.reason), `reason must tell child to message-parent; got=${r.json.reason}`);
     // Distinct state file was created under devswarm/child-gate/.
     assert.ok(fs.existsSync(stateFile(h.home, 's1')), 'own distinct state file must exist');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('UNREPORTED: no heartbeat emitted yet -> Stop is blocked (child has not reported current state)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: SAFE_CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'no heartbeat -> must force a report');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('REGRESSION (v0.54.1): a FRESH turn-start heartbeat must NOT false-silence the gate — an unreported child still blocks', () => {
+  const h = makeHome();
+  try {
+    // devswarm-child-turn writes this heartbeat at TURN START — it means "a turn
+    // began", NOT "the child pinged its parent". The v0.54.0 gate wrongly treated it
+    // as satisfaction and silenced a child that never ran message-parent. The gate
+    // must now block regardless of a fresh heartbeat.
+    writeHeartbeat(h.home, 'main', Date.now());
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: SAFE_CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a fresh heartbeat must not silence an unreported child');
+    assert.ok(/message-parent/.test(r.json.reason), 'must still demand a real message-parent report');
   } finally {
     h.cleanup();
   }

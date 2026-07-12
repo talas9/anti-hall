@@ -71,7 +71,6 @@ function companionActive({ installScript, home, platform }) {
   }
   const label = mod && mod.LABEL;
   const unit = mod && mod.UNIT;
-  const script = mod && mod.SCRIPT; // optional — not every installer exports it
   const plat = platform || process.platform;
 
   try {
@@ -85,21 +84,28 @@ function companionActive({ installScript, home, platform }) {
       // there is no scheduler artifact to check here.
       return 'unknown';
     }
-    // Linux: the installer writes the .service/.timer pair to this path
-    // whether or not systemctl actually enabled it (cron-fallback case still
-    // writes the unit files) — so the timer file's presence is the artifact.
+    // Linux: a bare unit FILE existing is NOT proof of scheduling (the cron-fallback
+    // path writes a .service but installs no scheduler; a failed install can leave a
+    // stray file). Report active only on a REAL signal (P1-2):
+    //   - a .timer file — a periodic sweep (supervisor); its presence IS the
+    //     scheduling artifact (unchanged — do not regress supervisor detection), OR
+    //   - a continuous .service that systemd actually ENABLED — a WantedBy symlink
+    //     under default.target.wants/ (pure fs), OR
+    //   - the managed cron fallback marker `# <unit>` present in the crontab.
     if (!unit) return 'unknown';
-    if (safeExists(path.join(home, '.config', 'systemd', 'user', `${unit}.timer`))) return true;
-    // Best-effort cron fallback check (only when the installer exports SCRIPT).
-    if (script) {
-      try {
-        const r = cp.spawnSync('crontab', ['-l'], { encoding: 'utf8', timeout: 5000 });
-        if (!r.error && typeof r.stdout === 'string' && r.stdout.includes(path.basename(script))) {
-          return true;
-        }
-      } catch (_) {
-        // best-effort only — fall through to false
+    const unitBase = path.join(home, '.config', 'systemd', 'user');
+    if (safeExists(path.join(unitBase, `${unit}.timer`))) return true;
+    if (safeExists(path.join(unitBase, 'default.target.wants', `${unit}.service`))) return true;
+    if (safeExists(path.join(unitBase, 'timers.target.wants', `${unit}.timer`))) return true;
+    // Managed cron fallback marker (best-effort; crontab may be absent -> false).
+    try {
+      const r = cp.spawnSync('crontab', ['-l'], { encoding: 'utf8', timeout: 5000 });
+      if (!r.error && typeof r.stdout === 'string' &&
+          r.stdout.split('\n').some((l) => l.trim() === `# ${unit}`)) {
+        return true;
       }
+    } catch (_) {
+      // best-effort only — fall through to false
     }
     return false;
   } catch (_) {

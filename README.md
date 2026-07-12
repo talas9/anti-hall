@@ -275,15 +275,24 @@ Alongside the recovery companion, anti-hall ships a generic, project-agnostic **
 coordination substrate** — also dormant unless DevSwarm is in use — that turns the
 "Primary silently neglects its child workspaces" failure into a mechanical one. Four
 feature-gated hooks are the trigger: `devswarm-parent-inbox` (surfaces each turn the real
-unread/idle state of active workspaces + recommends archiving a completed one) and
-`devswarm-parent-gate` (blocks the Primary from ending a turn while a child has unread
-backlog or the supervisor judged it stale/escalated) on the Primary; `devswarm-child-turn`
-and `devswarm-child-gate` (turn-authored heartbeat + forced self-report to the parent) on a
-child. They sit over a dual-backend store (`companion/lib/devswarm-store.js` — feature-detects
-`node:sqlite`, else an NDJSON journal; hooks read only its `summary.json` projection, never
-the DB) and a structured CLI (`scripts/devswarm.js` — register/heartbeat/inbox/gate/nudge/
-archive/migrate), with auto-safe migration (idempotent, non-destructive, count-verified).
-anti-hall stays agnostic: the consumer owns its done-contract and calls the generic CLI. Run
+unread/idle state of active workspaces + recommends archiving a completed one, plus a
+live per-turn status table of every active workspace — status/finish-rate/unread/
+last-activity, attention-needing rows first) and `devswarm-parent-gate` (blocks the
+Primary from ending a turn while a child has unread backlog or the supervisor judged it
+stale/escalated) on the Primary; `devswarm-child-turn` (turn-authored heartbeat +
+reminder to report to the parent, plus a non-destructive surfacing of unread parent
+messages from the child's own durable inbox — surfacing only; the actual native-queue
+drain into that inbox is a v0.54.2 follow-up) and `devswarm-child-gate` (forced
+self-report before idling, now silent when the child already heartbeated fresh within
+5 minutes, fixing an over-nag) on a child. They sit over a dual-backend store
+(`companion/lib/devswarm-store.js` — feature-detects `node:sqlite`, else an NDJSON
+journal; hooks read only its `summary.json` projection, never the DB), a structured CLI
+(`scripts/devswarm.js` — register/heartbeat/inbox/gate/nudge/archive/migrate), an
+ingest daemon (`companion/devswarm-ingest.js`, the one native consumer wrapping
+`hivecontrol workspace monitor`, auto-installed/refreshed by `/anti-hall:update` inside
+an active DevSwarm session — `companion/install-devswarm-ingest.js`), and auto-safe
+migration (idempotent, non-destructive, count-verified). anti-hall stays agnostic: the
+consumer owns its done-contract and calls the generic CLI. Run
 `/anti-hall:system-briefing` for a live, derived map of the whole system.
 
 ---
@@ -308,7 +317,7 @@ anti-hall/
 │   ├── skills/                         # root-cause · orchestration · deadly-loop · deadly-loop-multi · ship-it · install-statusline · doctor · system-briefing · update · flutter-debug · activate · simplify · debt · devswarm
 │   ├── scripts/                        # shared pure-Node helpers — harvest-debt.js (debt-marker harvester behind /anti-hall:debt), migrate-state.js (folds legacy root state files into .anti-hall/history/legacy/, run by /anti-hall:update), capability-scan.js (read-only available-vs-active report for opt-in capabilities, run by /anti-hall:update), briefing.js (derived live system briefing behind /anti-hall:system-briefing), devswarm.js (the DevSwarm coordination CLI)
 │   ├── companion/                      # opt-in mcp-reaper (macOS+Linux) — kills orphaned MCP processes; not a hook
-│   │                                   #   + optional devswarm-supervisor (macOS+Linux full, Windows detection-only) + the DevSwarm substrate: lib/devswarm-store.js, devswarm-ingest.js, devswarm-migrate.js
+│   │                                   #   + optional devswarm-supervisor (macOS+Linux full, Windows detection-only) + the DevSwarm substrate: lib/devswarm-store.js, devswarm-ingest.js (+ install-devswarm-ingest.js, auto-installed on update), devswarm-migrate.js
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
 ├── docs/                               # KB + design notes — CONTEXT-PRESERVATION-KB · KB · TASKLIST-GUARD · TASK-WORK · E2E-TESTING (+ Claude Code internals)

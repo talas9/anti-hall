@@ -30,6 +30,21 @@ function readBeat(home, key) {
   return JSON.parse(fs.readFileSync(path.join(heartbeatDir(home), key + '.json'), 'utf8'));
 }
 
+// Register a child's own durable descriptor (workspaces/<id>.json) plus its NDJSON
+// inbox + cursor, so the hook's NON-DESTRUCTIVE unread check has something to read.
+function seedChildInbox(home, id, lines, consumed) {
+  const dsw = path.join(home, '.anti-hall', 'devswarm');
+  const inboxPath = path.join(dsw, id + '.inbox.ndjson');
+  const cursorPath = path.join(dsw, id + '.cursor.json');
+  fs.mkdirSync(dsw, { recursive: true });
+  fs.writeFileSync(inboxPath, lines.map((l) => l).join('\n') + (lines.length ? '\n' : ''));
+  fs.writeFileSync(cursorPath, String(consumed));
+  const wdir = path.join(dsw, 'workspaces');
+  fs.mkdirSync(wdir, { recursive: true });
+  fs.writeFileSync(path.join(wdir, id + '.json'), JSON.stringify({ id, inboxPath, cursorPath }));
+  return { inboxPath, cursorPath };
+}
+
 test('CHILD: DevSwarm active + branch set -> reminder injected AND heartbeat written', () => {
   const h = makeHome();
   try {
@@ -74,6 +89,61 @@ test('CHILD: unsafe branch name is sanitized + hashed into a safe heartbeat file
     assert.ok(/^feature-new-thing-[0-9a-f]{8}\.json$/.test(name), `expected sanitized+hashed name; got ${name}`);
     const beat = JSON.parse(fs.readFileSync(path.join(heartbeatDir(h.home), name), 'utf8'));
     assert.strictEqual(beat.branch, 'feature/new-thing', 'raw branch preserved inside the file');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('UNREAD: durable child inbox with unread parent messages -> count + safe read path surfaced', () => {
+  const h = makeHome();
+  try {
+    // 2 messages, cursor at 0 -> 2 unread.
+    seedChildInbox(h.home, 'child-1', ['from parent: rebase now', 'from parent: status?'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(/2 unread parent message/.test(c), `must surface the unread count; ctx=${c}`);
+    assert.ok(/inbox read child-1/.test(c), `must name the safe durable read path; ctx=${c}`);
+    assert.ok(/read-messages|monitor/.test(c), `must warn off the destructive drains; ctx=${c}`);
+    assert.ok(c.includes(REMINDER_PHRASE), 'the base reminder must still be present');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('UNREAD NONE: cursor caught up -> no unread segment, reminder only (empty-when-zero)', () => {
+  const h = makeHome();
+  try {
+    // 1 message, cursor at 1 -> 0 unread.
+    seedChildInbox(h.home, 'child-1', ['from parent: old'], 1);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!/unread parent message/.test(ctx(r)), 'no unread -> no unread segment');
+    assert.ok(ctx(r).includes(REMINDER_PHRASE), 'reminder still present');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('UNREAD NO-DESCRIPTOR: child without a durable inbox descriptor -> reminder only, no crash', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!/unread parent message/.test(ctx(r)), 'absent descriptor -> no unread segment');
+    assert.ok(ctx(r).includes(REMINDER_PHRASE), 'reminder still present');
   } finally {
     h.cleanup();
   }

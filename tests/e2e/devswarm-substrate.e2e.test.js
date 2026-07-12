@@ -53,6 +53,13 @@ const childEnv = (branch) => ({ DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRAN
 function ctxOf(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
+// segOf(c, banner) -> the '\n\n'-separated additionalContext segment whose first
+// line starts with `banner`, or '' if absent. The parent-inbox hook now always
+// injects a live "DEVSWARM WORKSPACES" status table for active workspaces, so a
+// test asserting on the archive/inbox banner alone must isolate that segment.
+function segOf(c, banner) {
+  return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
+}
 
 // ============================================================================
 // 1. GUARD — command-guard.js DevSwarm destructive-read redirect, end to end.
@@ -168,15 +175,21 @@ test('2 PARENT-INBOX: injects the exact unread count for a dummy inbox with N un
   } finally { H.rm(home); }
 });
 
-test('2 PARENT-INBOX: empty (no stdout) when the inbox is fully consumed', () => {
+test('2 PARENT-INBOX: no attention banner when the inbox is fully consumed (live table still lists the active workspace)', () => {
   const home = H.makeHome();
   try {
     H.seedWorkspace(home, 'wsA', { inbox: ['{"m":1}', '{"m":2}'], cursor: 2 }); // cursor==total
     const r = testHook('devswarm-parent-inbox.js',
       { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi' },
-      { home, env: PRIMARY_ENV });
+      { home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `expected no stdout; got ${r.stdout}`);
+    const c = ctxOf(r);
+    // No unread/idle attention banner when the inbox is fully consumed...
+    assert.ok(!/DEVSWARM PARENT INBOX/.test(c), `no attention banner; ctx=${c}`);
+    // ...but the always-on live table still lists the active workspace (0 unread, active).
+    const tbl = segOf(c, 'DEVSWARM WORKSPACES');
+    assert.ok(tbl, `live table expected; ctx=${c}`);
+    assert.match(tbl, /\|\s*wsA\s*\|\s*active\s*\|[^|]*\|\s*0\s*\|/);
   } finally { H.rm(home); }
 });
 
@@ -555,9 +568,12 @@ test('9 ARCHIVE-READY: reminder is COOLDOWN\'d (not repeated next turn) but PERS
       { home, env: PRIMARY_ENV, expectJson: true });
     assert.match(ctxOf(t1), /DEVSWARM ARCHIVE-READY/);
 
-    // Turn 2 (immediately after): within cooldown -> suppressed (not every-turn spam).
-    const t2 = testHook('devswarm-parent-inbox.js', inboxPayload(), { home, env: PRIMARY_ENV });
-    assert.strictEqual(t2.stdout, '', 'within cooldown the reminder is suppressed');
+    // Turn 2 (immediately after): within cooldown -> the archive NUDGE banner is
+    // suppressed (not every-turn spam). The live status table still lists wsA with
+    // its factual archive-ready status — the cooldown gates the reminder, not the table.
+    const t2 = testHook('devswarm-parent-inbox.js', inboxPayload(), { home, env: PRIMARY_ENV, expectJson: true });
+    assert.ok(!/DEVSWARM ARCHIVE-READY/.test(ctxOf(t2)), 'within cooldown the reminder is suppressed');
+    assert.match(segOf(ctxOf(t2), 'DEVSWARM WORKSPACES'), /\|\s*wsA\s*\|\s*archive-ready\s*\|/);
 
     // Later turn: cooldown elapsed -> the SAME still-ready, still-present workspace is
     // reminded AGAIN. Proves the reminder is persistent, not one-shot.
@@ -589,9 +605,12 @@ test('9 ARCHIVE-READY: `archive-ignore` suppresses ONE workspace while a second 
     const r = testHook('devswarm-parent-inbox.js', inboxPayload(),
       { home, env: PRIMARY_ENV, expectJson: true });
     const c = ctxOf(r);
-    assert.match(c, /DEVSWARM ARCHIVE-READY/, 'wsB still surfaces');
-    assert.ok(!/wsA/.test(c), `ignored workspace must be suppressed; ctx=${c}`);
-    assert.match(c, /wsB/, 'the non-ignored still-ready workspace keeps being reminded');
+    // The ignore mark suppresses wsA in the archive NUDGE banner only (wsA is still
+    // listed in the factual live table — ignore governs the reminder, not the table).
+    const archive = segOf(c, 'DEVSWARM ARCHIVE-READY');
+    assert.ok(archive, 'wsB still surfaces');
+    assert.ok(!/wsA/.test(archive), `ignored workspace must be suppressed in the nudge; archive=${archive}`);
+    assert.match(archive, /wsB/, 'the non-ignored still-ready workspace keeps being reminded');
 
     // The ignored workspace stays TRACKED (descriptor intact) — ignore silences the
     // reminder only, it does not archive/delete.

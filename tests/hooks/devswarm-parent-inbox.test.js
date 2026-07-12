@@ -20,6 +20,20 @@ function payload() {
 function ctx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
+// segment(ctx, banner) -> the '\n\n'-separated additionalContext segment whose
+// first line starts with `banner`, or '' if absent. Lets a test assert on the
+// archive/inbox banner alone, independent of the always-on live table segment.
+function segment(c, banner) {
+  return c.split('\n\n').find((s) => s.startsWith(banner)) || '';
+}
+// tableSeg(ctx) -> the live-workspace-table segment (or '').
+function tableSeg(c) {
+  return segment(c, 'DEVSWARM WORKSPACES');
+}
+// tableRow(ctx, id) -> the table row line for workspace `id`, or ''.
+function tableRow(c, id) {
+  return tableSeg(c).split('\n').find((l) => l.startsWith('| ' + id + ' ')) || '';
+}
 
 // swarmDir(home) -> ~/.anti-hall/devswarm, created.
 function swarmDir(home) {
@@ -59,6 +73,11 @@ function writeVerdict(home, id, verdict) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(verdict));
 }
+function writeHeartbeat(home, id, beat) {
+  const p = path.join(swarmDir(home), 'heartbeats', id + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(beat));
+}
 
 // ---- gating no-ops ----
 
@@ -94,13 +113,22 @@ test('NO-OP: Primary DevSwarm but no descriptors -> no stdout (inert)', () => {
   } finally { h.cleanup(); }
 });
 
-test('NO-OP: descriptor with fully-consumed inbox + no stuck verdict -> no stdout', () => {
+test('TABLE: descriptor with fully-consumed inbox + no stuck verdict -> live table row only (no attention/archive banner)', () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: ['{"m":1}', '{"m":2}'], cursor: 2 }); // cursor==total
-    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV });
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    const c = ctx(r);
+    // An ACTIVE workspace always appears in the live table, even when quiet.
+    assert.ok(tableSeg(c).includes('DEVSWARM WORKSPACES'), `live table expected; ctx=${c}`);
+    const row = tableRow(c, 'wsA');
+    assert.ok(row, `wsA must have a table row; ctx=${c}`);
+    assert.ok(/\bactive\b/.test(row), `quiet workspace status must be active; row=${row}`);
+    assert.ok(/\|\s*0\s*\|/.test(row), `unread column must be 0; row=${row}`);
+    // But no attention/archive banners when nothing is unread/stuck/archive-ready.
+    assert.ok(!c.includes('DEVSWARM PARENT INBOX'), `no inbox banner; ctx=${c}`);
+    assert.ok(!c.includes('DEVSWARM ARCHIVE-READY'), `no archive banner; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
@@ -182,13 +210,16 @@ test('ARCHIVE: ignore mark silences the archive reminder for that workspace only
     fs.writeFileSync(path.join(igDir, 'wsA.json'), '{}');
     const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const c = ctx(r);
-    assert.ok(c.includes('DEVSWARM ARCHIVE-READY'), `archive banner expected for wsB; ctx=${c}`);
-    assert.ok(!c.includes('wsA'), `ignored workspace must not be surfaced; ctx=${c}`);
-    assert.ok(c.includes('wsB'), 'non-ignored workspace must still be surfaced');
+    // The ignore mark silences the archive NUDGE for wsA only (wsA still appears in
+    // the factual live table — ignore governs the reminder, not the status table).
+    const archive = segment(c, 'DEVSWARM ARCHIVE-READY');
+    assert.ok(archive, `archive banner expected for wsB; ctx=${c}`);
+    assert.ok(!archive.includes('wsA'), `ignored workspace must not be nudged; archive=${archive}`);
+    assert.ok(archive.includes('wsB'), 'non-ignored workspace must still be nudged');
   } finally { h.cleanup(); }
 });
 
-test('ARCHIVE: recent nudge within cooldown -> not repeated', () => {
+test('ARCHIVE: recent nudge within cooldown -> archive banner suppressed (table still shows archive-ready status)', () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
@@ -196,9 +227,119 @@ test('ARCHIVE: recent nudge within cooldown -> not repeated', () => {
     const nudgeDir = path.join(h.home, '.anti-hall', 'devswarm', 'archive-nudges');
     fs.mkdirSync(nudgeDir, { recursive: true });
     fs.writeFileSync(path.join(nudgeDir, 'wsA.json'), JSON.stringify({ lastNudgedAt: Date.now() }));
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    // Cooldown suppresses the repeat NUDGE banner...
+    assert.ok(!c.includes('DEVSWARM ARCHIVE-READY'), `cooldown should suppress the archive banner; ctx=${c}`);
+    // ...but the live table still reports the factual archive-ready status.
+    assert.ok(/archive-ready/.test(tableRow(c, 'wsA')), `table row must show archive-ready; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+// ---- live workspace table (v0.54.1) ----
+
+test('TABLE: renders correct rows/columns for varied status + gates + unread, sorted attention-first', () => {
+  const h = makeHome();
+  try {
+    // wsQuiet: alive, no unread, gates 1/2 + heartbeat progress -> active
+    writeWorkspace(h.home, 'wsQuiet', { inbox: ['a', 'b'], cursor: 2 });
+    writeHeartbeat(h.home, 'wsQuiet', { id: 'wsQuiet', ts: Date.now(), progress_pct: 40 });
+    // wsStale: stale verdict + unread -> stale, attention-first
+    writeWorkspace(h.home, 'wsStale', { inbox: ['x', 'y', 'z'], cursor: 0 });
+    writeVerdict(h.home, 'wsStale', { status: 'stale', lastOutboundTs: Date.now() - 20 * 60 * 1000 });
+    // wsDone: archive_ready, all required gates met -> archive-ready, 2/2
+    writeWorkspace(h.home, 'wsDone', { inbox: [], cursor: 0 });
+    writeSummary(h.home, {
+      requiredGates: ['tests', 'review'],
+      workspaces: {
+        wsQuiet: { gates: { tests: true, review: false }, archive_ready: false },
+        wsStale: { gates: {}, archive_ready: false },
+        wsDone: { gates: { tests: true, review: true }, archive_ready: true },
+      },
+    });
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const t = tableSeg(c);
+    assert.ok(t.includes('| workspace | status | finish | unread | last |'), `header row expected; t=${t}`);
+    // Column values
+    // required gates declared but none met for wsStale -> 0/2 (not "—").
+    assert.ok(/\|\s*wsStale\s*\|\s*stale\s*\|\s*0\/2\s*\|\s*3\s*\|/.test(tableRow(c, 'wsStale')), `wsStale row; row=${tableRow(c, 'wsStale')}`);
+    assert.ok(/\|\s*wsDone\s*\|\s*archive-ready\s*\|\s*2\/2\s*\|\s*0\s*\|/.test(tableRow(c, 'wsDone')), `wsDone row; row=${tableRow(c, 'wsDone')}`);
+    // gates 1/2 + progress 40% shown together
+    assert.ok(/\|\s*wsQuiet\s*\|\s*active\s*\|\s*1\/2 \(40%\)\s*\|\s*0\s*\|/.test(tableRow(c, 'wsQuiet')), `wsQuiet row; row=${tableRow(c, 'wsQuiet')}`);
+    // Sort: stale (attention) before archive-ready before active.
+    const body = t.split('\n');
+    const iStale = body.findIndex((l) => l.startsWith('| wsStale '));
+    const iDone = body.findIndex((l) => l.startsWith('| wsDone '));
+    const iQuiet = body.findIndex((l) => l.startsWith('| wsQuiet '));
+    assert.ok(iStale < iDone && iDone < iQuiet, `attention-first sort; order stale<done<quiet; body=${JSON.stringify(body)}`);
+  } finally { h.cleanup(); }
+});
+
+test('TABLE: no active workspaces -> no table, no stdout (inert)', () => {
+  const h = makeHome();
+  try {
     const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `cooldown should suppress; got: ${r.stdout}`);
+    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('TABLE: caps at 12 rows with a "+N more" note and a logged table-cap event', () => {
+  const h = makeHome();
+  try {
+    for (let i = 0; i < 15; i++) {
+      const id = 'ws' + String(i).padStart(2, '0');
+      writeWorkspace(h.home, id, { inbox: [], cursor: 0 });
+    }
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const t = tableSeg(ctx(r));
+    const dataRows = t.split('\n').filter((l) => /^\| ws\d\d /.test(l));
+    assert.strictEqual(dataRows.length, 12, `must cap at 12 rows; got ${dataRows.length}`);
+    assert.ok(t.includes('+3 more (capped at 12)'), `must note the +3 hidden; t=${t}`);
+    // cap logged (no silent truncation)
+    const logPath = path.join(h.home, '.anti-hall', 'devswarm', 'parent-inbox.log');
+    const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    const cap = lines.find((e) => e.event === 'table-cap');
+    assert.ok(cap, 'a table-cap telemetry line must be written');
+    assert.strictEqual(cap.total, 15);
+    assert.strictEqual(cap.shown, 12);
+    assert.strictEqual(cap.hidden, 3);
+  } finally { h.cleanup(); }
+});
+
+test('TABLE: fail-open on a malformed descriptor -> good workspace still tabled, exit 0', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsGood', { inbox: ['a'], cursor: 0 });
+    // A corrupt descriptor file alongside the good one.
+    fs.writeFileSync(path.join(swarmDir(h.home), 'workspaces', 'wsBad.json'), '{not json');
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(tableRow(c, 'wsGood'), `good workspace must still be tabled; ctx=${c}`);
+    assert.ok(!c.includes('wsBad'), 'malformed descriptor must be skipped');
+  } finally { h.cleanup(); }
+});
+
+test('TABLE: coexists with the unread inbox + archive-ready banners (append, no clobber)', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsUnread', { inbox: ['m1', 'm2'], cursor: 0 });
+    writeWorkspace(h.home, 'wsDone', { inbox: [], cursor: 0 });
+    writeSummary(h.home, { workspaces: { wsDone: { archive_ready: true } } });
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    // All three segments present.
+    assert.ok(tableSeg(c).includes('DEVSWARM WORKSPACES'), `table segment present; ctx=${c}`);
+    assert.ok(segment(c, 'DEVSWARM PARENT INBOX'), `unread inbox banner present; ctx=${c}`);
+    assert.ok(segment(c, 'DEVSWARM ARCHIVE-READY'), `archive banner present; ctx=${c}`);
+    // Table lists both workspaces.
+    assert.ok(tableRow(c, 'wsUnread'), 'table row for unread workspace');
+    assert.ok(tableRow(c, 'wsDone'), 'table row for archive-ready workspace');
   } finally { h.cleanup(); }
 });
 

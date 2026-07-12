@@ -166,6 +166,30 @@ node plugins/anti-hall/companion/install-devswarm-supervisor.js --uninstall
   current build's poke/escalate logic. It's idempotent (`launchctl unload && load` /
   systemd reload), so it both first-installs and refreshes.
 
+**1b. Install the ingest daemon (new in 0.54.1 — same autonomous-refresh posture):**
+
+```bash
+node plugins/anti-hall/companion/install-devswarm-ingest.js
+node plugins/anti-hall/companion/install-devswarm-ingest.js --dry-run   # preview
+node plugins/anti-hall/companion/install-devswarm-ingest.js --uninstall
+```
+
+`devswarm-ingest.js` is the one supervised daemon wrapping `hivecontrol workspace
+monitor` into the substrate store (see `docs/KB-devswarm-hivecontrol.md` §8.7) — it
+shipped in 0.54.0 but nothing auto-started it until this installer landed in 0.54.1.
+Unlike the supervisor (a periodic sweep on `StartInterval`/`.timer`), the ingest daemon
+runs **continuously**, so this installer schedules re-exec-on-exit instead: macOS
+LaunchAgent with `KeepAlive`; Linux `systemd --user` `.service` with `Restart=always`
+(cron fallback — every minute, restart-if-dead — when `systemctl` is absent, giving a
+cron-only Linux host up to ~60s of revive gap after a crash). Distinct label
+(`com.anti-hall.devswarm-ingest`) and log (`~/.anti-hall/devswarm-ingest.log`) from the
+supervisor. Idempotent and safe to install redundantly — the daemon's own
+single-consumer lock means only one instance ever actually runs. Windows: documented
+no-op (no pure-Node long-running user-level scheduler; run the daemon manually if
+needed). Same **autonomous refresh** as the supervisor installer: the `update` skill
+runs its `how` command automatically (no offer, no ask) inside an active DevSwarm
+session, so a fresh update always carries a running, current-build ingest daemon.
+
 **2. Publish a per-workspace descriptor** at
 `~/.anti-hall/devswarm/workspaces/<id>.json`:
 
@@ -298,5 +322,6 @@ supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supe
   there.
 - **doctor** — surfaces the liveness supervisor's per-workspace health as one more
   section, silent when DevSwarm isn't in play.
-- **update** — autonomously installs/refreshes the automatic supervisor when running
-  inside an active DevSwarm session (see the activation checklist above).
+- **update** — autonomously installs/refreshes the automatic supervisor AND (as of
+  0.54.1) the ingest daemon when running inside an active DevSwarm session (see the
+  activation checklist above).

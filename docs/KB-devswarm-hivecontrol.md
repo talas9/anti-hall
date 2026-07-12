@@ -425,6 +425,52 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
 > read**) and `monitor` (**consumes / blocking long-poll**) remain the two destructive
 > native reads the §8.5 redirect steers agents away from.
 
+**v0.54.1 follow-up (shipped).** Four refinements on top of the Phase-1 substrate above:
+- **Ingest daemon auto-install (`companion/install-devswarm-ingest.js`).** Until this
+  release nothing auto-started `devswarm-ingest.js` — it existed in code but required a
+  manual install. It now installs/refreshes on `/anti-hall:update` inside an active
+  DevSwarm session, mirroring the supervisor's no-offer/no-ask autonomous-refresh
+  posture (same `isDevswarmActive` gate). Unlike the supervisor (a periodic sweep), the
+  ingest daemon runs continuously, so the installer schedules re-exec-on-exit: macOS
+  LaunchAgent `KeepAlive`, Linux `systemd --user` `Restart=always` `.service` (cron
+  fallback ticks every minute when `systemctl` is absent, so a cron-only Linux host has
+  up to ~60 s of revive gap after a crash before the next tick relaunches it). Distinct
+  label (`com.anti-hall.devswarm-ingest`) and log
+  (`~/.anti-hall/devswarm-ingest.log`) from the supervisor. Idempotent — safe to
+  install unprompted; the daemon's own single-consumer lock means a redundant install
+  never runs two ingest processes. `capability-scan.js`'s Linux detection now checks
+  for BOTH a `.timer` (periodic supervisor) and a `.service` (continuous daemon) unit
+  file under the same installer-discovery mechanism, so either shape reports correctly.
+- **`devswarm-child-gate` over-nag fix.** The Stop-gate now checks the child's own
+  turn-authored heartbeat (`heartbeats/<branch>.json`, written every turn by
+  `devswarm-child-turn`) before forcing an ack: a heartbeat fresher than 5 minutes means
+  the parent already has the child's current state, so the gate stays silent instead of
+  forcing a duplicate report. The forced-ack path is unchanged for the genuinely
+  unreported case (no heartbeat, or a stale one).
+- **Child inbox reception surfacing — PARTIAL (v0.54.2 follow-up still open).**
+  `devswarm-child-turn` now runs a non-destructive unread check against the child's OWN
+  durable descriptor inbox (`workspaces/<DEVSWARM_BUILDER_ID>.json` → `inboxPath`/
+  `cursorPath`, via the inbox-cursor primitive — pure fs, no native-queue drain) and,
+  when unread > 0, surfaces the count plus the safe `inbox read` path in
+  `additionalContext`. **This is surfacing only.** It does NOT itself solve child-side
+  message reception: nothing shipped yet drains the child's NATIVE parent→child queue
+  into that durable inbox (a native read is destructive and guard-blocked; nothing
+  currently populates the child's durable inbox from the native side), so this segment
+  is a no-op until a child-side ingest/drain mechanism exists. Treat "child reception"
+  as still unsolved going into v0.54.2 — this only makes an already-populated durable
+  inbox visible to the child, it doesn't populate one.
+- **Live active-workspace table (`devswarm-parent-inbox`).** Every Primary turn now
+  gets a compact markdown table of active workspaces (not just the unread/stale
+  subset): columns workspace / status (`escalated` > `stale`/`nudged` > `archive-ready`
+  > `active`, attention-needing rows sorted first, ties by unread desc then id) /
+  finishing rate (required completion gates met/total from `summary.json`'s
+  `requiredGates`, with an optional heartbeat `progress_pct` appended when present) /
+  unread count / last-activity (relative age, from the newer of the liveness verdict's
+  `lastOutboundTs` and the heartbeat's `ts`). Capped at 12 rows with a logged (never
+  silent) `+N more`; empty output when there are no active workspaces; read-only,
+  fail-open, and — like the rest of the parent hooks — makes zero git calls or
+  `computeLiveness()` invocations on the hot UserPromptSubmit path.
+
 **Auto-safe migration (`companion/devswarm-migrate.js` + `companion/devswarm-ingest.js`).**
 `migrate` (also wired into the updater path, and exposed as `scripts/devswarm.js migrate`)
 dual-reads the existing on-disk state — the JSON registry descriptors + each descriptor's
