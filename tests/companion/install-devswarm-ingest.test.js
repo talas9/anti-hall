@@ -103,6 +103,76 @@ test('pathIsEmittable rejects control/quote chars, accepts ordinary (spaced) pat
 });
 
 // ---------------------------------------------------------------------------
+// WorkingDirectory: the daemon must run FROM the install-time git worktree, else
+// `hivecontrol workspace monitor` fails "Not in a git repository" and drains nothing
+// (launchd/systemd/cron default a unit's cwd to $HOME, which is not a git repo).
+// Each unit type bakes the worktree in, escaped per its own quoting rules.
+// ---------------------------------------------------------------------------
+
+const NASTY_WT = '/Users/a b & c/<w>/"q\'/tree';
+
+test('buildPlist embeds an XML-escaped WorkingDirectory when a worktree is given (and omits it otherwise)', () => {
+  const xml = m.buildPlist({ exec: '/usr/bin/node', script: '/x/ingest.js', log: '/x/log', workdir: NASTY_WT });
+  assert.ok(/<key>WorkingDirectory<\/key>/.test(xml), 'WorkingDirectory key present');
+  assert.ok(xml.includes('<string>/Users/a b &amp; c/&lt;w&gt;/&quot;q&apos;/tree</string>'), 'worktree XML-escaped');
+  assert.ok(!/&(?!amp;|lt;|gt;|quot;|apos;)/.test(xml), 'no bare ampersands allowed');
+  assert.strictEqual((xml.match(/<string>/g) || []).length, (xml.match(/<\/string>/g) || []).length, 'balanced string tags');
+  // No worktree -> no WorkingDirectory key (backward compatible).
+  assert.ok(!/WorkingDirectory/.test(m.buildPlist({ exec: '/n', script: '/s', log: '/l' })), 'omitted when no worktree');
+});
+
+test('buildService emits a systemd-escaped WorkingDirectory under [Service] before ExecStart (no injection survives)', () => {
+  const inject = '/tmp/wt"; touch /tmp/pwn #';
+  const unit = m.buildService({ exec: '/usr/bin/node', script: '/x/ingest.js', workdir: inject });
+  const line = unit.split('\n').find((l) => l.startsWith('WorkingDirectory='));
+  assert.ok(line, 'WorkingDirectory line present');
+  assert.ok(line.includes('/tmp/wt\\"; touch /tmp/pwn #'), 'double-quote escaped as \\" (systemd rule)');
+  assert.ok(!line.includes('wt"; touch'), 'no raw unescaped double-quote may survive');
+  const idxSvc = unit.indexOf('[Service]');
+  const idxWd = unit.indexOf('WorkingDirectory=');
+  const idxExec = unit.indexOf('ExecStart=');
+  assert.ok(idxSvc >= 0 && idxSvc < idxWd && idxWd < idxExec, 'WorkingDirectory sits in [Service] before ExecStart');
+  // No worktree -> no WorkingDirectory line (backward compatible).
+  assert.ok(!/WorkingDirectory/.test(m.buildService({ exec: '/n', script: '/s' })), 'omitted when no worktree');
+});
+
+test('buildCronLine prefixes a POSIX single-quoted `cd <worktree> &&` (no shell break-out survives)', () => {
+  const inject = "/tmp/wt'; touch /tmp/pwn #";
+  const line = m.buildCronLine({ exec: '/usr/bin/node', script: '/x/ingest.js', workdir: inject });
+  assert.ok(line.startsWith('* * * * * cd '), 'cron line cds into the worktree first');
+  assert.ok(line.includes("cd '/tmp/wt'\\''; touch /tmp/pwn #'"), "worktree single-quote POSIX-escaped as '\\''");
+  assert.ok(!line.includes("cd '/tmp/wt'; touch"), 'no raw quote-close followed by a live command may survive');
+  assert.ok(line.includes(' && '), 'the cd is chained before the daemon exec');
+  assert.ok(line.endsWith('>/dev/null 2>&1'), 'redirection preserved');
+  // No worktree -> no cd prefix (backward compatible with the plain form).
+  assert.ok(!/\bcd /.test(m.buildCronLine({ exec: '/n', script: '/s' })), 'omitted when no worktree');
+});
+
+// ---------------------------------------------------------------------------
+// Install refuses (skips, non-fatal) when cwd is not inside a git worktree — a
+// daemon launched from $HOME can never resolve a workspace, so we install nothing.
+// ---------------------------------------------------------------------------
+
+test('install refuses (skips, non-fatal exit 0) and writes no unit when cwd is not a git worktree', () => {
+  if (process.platform === 'win32') return; // Windows is a documented no-op (no scheduler)
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-nogit-home-'));
+  const nogit = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-nogit-cwd-'));
+  try {
+    // execFileSync throws on non-zero exit; reaching here proves exit 0 (non-fatal).
+    const out = execFileSync(process.execPath, [MOD, '--dry-run'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home },
+      cwd: nogit,
+    });
+    assert.ok(/no git worktree resolved from cwd/.test(out), 'must log the refuse message');
+    assert.ok(!/\[dry-run\] would write .+\.(plist|service)/.test(out), 'must not write any unit when no worktree resolves');
+  } finally {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {}
+    try { fs.rmSync(nogit, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// ---------------------------------------------------------------------------
 // P1-2: cron fallback installs a MANAGED MARKER entry (not just a printed line),
 // and the merge is idempotent — so it is a real scheduling signal, installed once.
 // ---------------------------------------------------------------------------

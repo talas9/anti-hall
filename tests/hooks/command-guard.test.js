@@ -70,6 +70,11 @@ const ALLOW = [
   'node scripts/devswarm.js gate w --set done',
   'node /Users/x/plugins/anti-hall/scripts/devswarm.js migrate',
   'node C:\\proj\\plugins\\anti-hall\\scripts\\devswarm.js register w',
+  // Child-side reception drain (v0.54.2) — bounded, guard-safe pull. It IS the
+  // devswarm.js wrapper, so the same anchored LIGHT_EXCEPTION allows it inline in
+  // coordinator context (its internal spawn is the non-destructive count-gate +
+  // one bounded read-messages, never a blocking monitor).
+  'node scripts/devswarm.js inbox pull x',
 ];
 
 for (const cmd of BLOCK) {

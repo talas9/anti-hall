@@ -25,6 +25,11 @@
 //                  authorship rule).
 //   inbox count <id> | inbox read <id> | inbox ack <id> [--to N]
 //                  the durable-inbox cursor primitive (advance = ack-all).
+//   inbox pull <id> [--session S]
+//                  child-side reception drain: auto-ensure the descriptor, then ONE
+//                  bounded guard-safe pull — non-destructive `message-count` gate,
+//                  at-most-one bounded `read-messages` (never `monitor`), atomic
+//                  idempotent NDJSON append into the durable inbox + store parity.
 //   workspaces list
 //                  derive + emit summary.json projection (unread, gates, archive_ready).
 //   gate <id> [--set CSV] [--clear CSV]
@@ -57,6 +62,7 @@ const {
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate } = require('../companion/lib/recovery.js');
 const migrate = require('../companion/devswarm-migrate.js');
+const pull = require('../companion/lib/devswarm-pull.js');
 
 // ----- paths -----
 function workspacesDir(home) { return path.join(devswarmRoot(home), 'workspaces'); }
@@ -239,8 +245,46 @@ function cmdHeartbeat(id, flags, ctx) {
   return { ok: true, action: 'heartbeat', id, heartbeat: beat };
 }
 
+// cmdInboxPull(id, flags, ctx) — child-side reception drain. AUTO-ENSURES the
+// descriptor (idempotent — reuses cmdRegister's write + cursor-init path with
+// requireNew so an existing descriptor is left intact) so a child can pull without
+// a prior explicit register, then runs ONE bounded, guard-safe pullOnce (native
+// message-count gate -> at-most-one bounded read-messages -> atomic durable NDJSON
+// append + store parity). Defaults: worktreePath = ctx.cwd || cwd; sessionId from
+// --session / DEVSWARM_BUILDER_ID env / the id; inbox + cursor under the devswarm
+// root; cursor initialized to 0.
+function cmdInboxPull(id, flags, ctx) {
+  const home = ctx.home;
+  const root = devswarmRoot(home);
+  const session = one(flags, 'session')
+    || (ctx.env && ctx.env.DEVSWARM_BUILDER_ID)
+    || id;
+  const worktree = ctx.cwd || process.cwd();
+  const ensureFlags = {
+    worktree: [worktree],
+    session: [session],
+    inbox: [pull.inboxDefaultPath(home, id)],
+    cursor: [pull.cursorDefaultPath(home, id)],
+  };
+  // requireNew: idempotent — leaves an existing descriptor (and its inboxPath)
+  // untouched; only CREATES one when absent. Ignore the register result and pull.
+  cmdRegister(id, ensureFlags, ctx, { requireNew: true });
+  // ctx.io is undefined in production (real hivecontrol spawn); tests inject
+  // { run } so the CLI path is exercised without touching a real binary — same
+  // injection posture as ctx.backend / ctx.now / ctx.env already use.
+  const res = pull.pullOnce({ home, id, env: ctx.env, backend: ctx.backend, now: ctx.now, io: ctx.io });
+  const out = {
+    ok: !!res.ok, action: 'pull', id,
+    imported: res.imported || 0, duplicate: res.duplicate || 0,
+    nativeCount: res.nativeCount || 0, locked: !!res.locked,
+  };
+  if (res.error) out.error = res.error;
+  return out;
+}
+
 function cmdInbox(sub, id, flags, ctx) {
   const home = ctx.home;
+  if (sub === 'pull') return cmdInboxPull(id, flags, ctx);
   const desc = readDescriptorFile(home, id);
   if (!desc || !desc.inboxPath) {
     return { ok: false, error: 'no inboxPath for workspace ' + JSON.stringify(id) + ' (register it first)' };
@@ -268,7 +312,7 @@ function cmdInbox(sub, id, flags, ctx) {
     }
     return { ok: true, action: 'ack', id, cursor, total: inboxCursor.countMessages(inboxPath) };
   }
-  return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count)' };
+  return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count|pull)' };
 }
 
 function cmdWorkspacesList(ctx) {

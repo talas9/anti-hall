@@ -204,8 +204,9 @@ function rowToDescriptor(r) {
 // Journal backend (append-only NDJSON). Dependency-free; the guaranteed-green
 // path on node 18/20. fs is injectable for isolation/testing.
 // ============================================================================
-function openJournal(home, fsi) {
+function openJournal(home, fsi, lockOpts) {
   const F = fsi || fs;
+  const L = lockOpts || {};
   const dir = journalDir(home);
   const files = {
     messages: path.join(dir, 'messages.ndjson'),
@@ -221,36 +222,77 @@ function openJournal(home, fsi) {
   // processes. The journal has no UNIQUE(hash) constraint (unlike sqlite), so a
   // bare scan-then-append lets two processes both scan (miss the hash) and both
   // append the SAME hash -> duplicate rows. An O_EXCL lockfile makes check+append
-  // one critical section. Fail-soft: an unexpected fs error just proceeds
-  // best-effort (no worse than before); a stale lock (crashed holder) is stolen so
-  // the journal can never permanently wedge.
+  // one critical section. A stale lock (crashed holder) is stolen so the journal
+  // can never permanently wedge.
+  //
+  // SOUNDNESS (v0.54.2): the critical section NEVER runs without the lock. If the
+  // contention budget is exhausted the fn is NOT executed unlocked (that would let
+  // two writers both check-then-append the same hash -> a duplicate row); instead a
+  // distinct ELOCKUNAVAIL is thrown so the caller can retry later (idempotent by
+  // hash). A genuine unexpected fs error opening the lock (e.g. EPERM) throws
+  // ELOCKFS — fail CLOSED, never race. appendMessage() layers a bounded retry on
+  // ELOCKUNAVAIL so transient contention self-heals without corrupting the trail.
   const messagesLock = path.join(dir, 'messages.lock');
-  const MESSAGES_LOCK_STALE_MS = 10 * 1000;
-  const MESSAGES_LOCK_MAX_TRIES = 500;
+  const MESSAGES_LOCK_STALE_MS = Number.isFinite(L.staleMs) ? L.staleMs : 10 * 1000;
+  // Raised 500 -> 1000 + jittered backoff: slow FS (Windows NTFS + Defender) needs
+  // more headroom before an append is considered genuinely un-acquirable. Tunable
+  // for tests via openStore({ lock: { maxTries, appendRetries, staleMs } }).
+  const MESSAGES_LOCK_MAX_TRIES = Number.isFinite(L.maxTries) ? L.maxTries : 1000;
+  const MESSAGES_APPEND_MAX_RETRIES = Number.isFinite(L.appendRetries) ? L.appendRetries : 5;
   function lockSleep(ms) {
     try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms | 0)); } catch (_) {}
+  }
+  function lockErr(code, msg) { const e = new Error(msg); e.code = code; return e; }
+  // acquireOnce() -> 'held' | 'stole' | 'busy'; throws on a genuine fs error.
+  // A lock is stolen ONLY when on-disk evidence shows the holder is gone: a
+  // parseable-but-old ts, OR (for a torn/empty/unparseable file) an old MTIME. A
+  // live holder is briefly a 0-byte file between openSync('wx') and writeSync — a
+  // concurrent reader that catches it empty MUST NOT steal it (that lets two
+  // processes both run the critical section -> a duplicate hash row). The empty
+  // window is microseconds, so a fresh mtime = live holder -> back off, never steal.
+  function acquireOnce() {
+    try {
+      const fd = F.openSync(messagesLock, 'wx');
+      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() })); } finally { F.closeSync(fd); }
+      return 'held';
+    } catch (e) {
+      if (!e || e.code !== 'EEXIST') throw e; // unexpected fs error -> caller fails closed
+      let ts = null;
+      try { ts = JSON.parse(F.readFileSync(messagesLock, 'utf8')).ts; } catch (_) {}
+      if (!Number.isFinite(ts)) {
+        // torn/empty/unparseable content — fall back to the file's mtime for
+        // liveness; a live holder mid-write has a FRESH mtime.
+        try { ts = F.statSync(messagesLock).mtimeMs; } catch (_) { ts = null; }
+      }
+      if (ts === null || (Date.now() - ts) > MESSAGES_LOCK_STALE_MS) {
+        try { F.unlinkSync(messagesLock); } catch (_) {} // steal a genuinely stale lock
+        return 'stole';
+      }
+      return 'busy'; // live holder
+    }
   }
   function withMessagesLock(fn) {
     try { F.mkdirSync(dir, { recursive: true }); } catch (_) {}
     let held = false;
     for (let i = 0; i < MESSAGES_LOCK_MAX_TRIES && !held; i++) {
-      try {
-        const fd = F.openSync(messagesLock, 'wx');
-        try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() })); } finally { F.closeSync(fd); }
-        held = true;
-      } catch (e) {
-        if (!e || e.code !== 'EEXIST') break; // unexpected fs error -> proceed unlocked (best-effort)
-        let ts = null;
-        try { ts = JSON.parse(F.readFileSync(messagesLock, 'utf8')).ts; } catch (_) {}
-        if (ts === null || (Date.now() - ts) > MESSAGES_LOCK_STALE_MS) {
-          try { F.unlinkSync(messagesLock); } catch (_) {} // steal a stale/torn lock
-          continue;
-        }
-        lockSleep(2); // live holder -> back off and retry
+      let st;
+      try { st = acquireOnce(); }
+      catch (e) {
+        // Genuine, unexpected fs error opening the lock (e.g. EPERM). Fail CLOSED —
+        // NEVER run the critical section unlocked.
+        throw lockErr('ELOCKFS', 'devswarm messages lock: fs error (' + (e && e.code || 'unknown') + ')');
       }
+      if (st === 'held') { held = true; break; }
+      if (st === 'busy') lockSleep(2 + Math.floor(Math.random() * 4)); // jittered backoff desyncs writers
+      // 'stole' -> retry immediately (we just cleared a stale lock)
+    }
+    if (!held) {
+      // Contention budget exhausted. Do NOT append unlocked (duplicates the dedupe
+      // hash). Signal a retryable failure; the caller re-attempts (idempotent).
+      throw lockErr('ELOCKUNAVAIL', 'devswarm messages lock unavailable after ' + MESSAGES_LOCK_MAX_TRIES + ' tries');
     }
     try { return fn(); }
-    finally { if (held) { try { F.unlinkSync(messagesLock); } catch (_) {} } }
+    finally { try { F.unlinkSync(messagesLock); } catch (_) {} }
   }
   function readAll(file) {
     let raw;
@@ -271,7 +313,7 @@ function openJournal(home, fsi) {
       // both append it (the journal has no UNIQUE(hash) constraint). A null hash is
       // always distinct, so it needs no dedupe scan — but still append under the
       // lock so the appendFileSync itself can't interleave a torn line.
-      return withMessagesLock(() => {
+      const critical = () => {
         if (hash !== null) {
           // idempotent by hash — scan existing (append-only, so a prior identical
           // hash means already-recorded); preserves the trail without a duplicate.
@@ -286,7 +328,23 @@ function openJournal(home, fsi) {
           body: (m && m.body != null) ? String(m.body) : '',
         });
         return { inserted: true };
-      });
+      };
+      // Bounded retry on ELOCKUNAVAIL (contention exhaustion). The critical section
+      // NEVER runs unlocked, so a retry can only ADD the row once — the dedupe hash
+      // makes every re-attempt idempotent (a prior success is seen and skipped). A
+      // genuine fs error (ELOCKFS) is NOT retried: fail closed, never race. If the
+      // lock stays unavailable past the budget the error propagates so the ingest
+      // path re-attempts on its next monitor poll (replay is idempotent by hash).
+      let lastErr = null;
+      for (let attempt = 0; attempt < MESSAGES_APPEND_MAX_RETRIES; attempt++) {
+        try { return withMessagesLock(critical); }
+        catch (e) {
+          lastErr = e;
+          if (e && e.code === 'ELOCKUNAVAIL') { lockSleep(4 + Math.floor(Math.random() * 8)); continue; }
+          throw e; // ELOCKFS / unexpected -> fail closed
+        }
+      }
+      throw lastErr;
     },
     upsertRegistry(d) {
       append(files.registry, {
@@ -395,12 +453,14 @@ function deserializeCmd(raw) {
 // ============================================================================
 // openStore(opts) -> backend handle. opts: { home, backend, env, fsi }.
 //   backend: force 'sqlite' | 'journal'; else feature-detect. `fsi` only affects
-//   the journal backend (sqlite opens a real file).
+//   the journal backend (sqlite opens a real file). `lock` (journal only) tunes the
+//   messages-lock budget { maxTries, appendRetries, staleMs } — used by tests to
+//   exercise the contention-exhaustion path deterministically.
 function openStore(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const backend = selectBackend({ backend: o.backend, env: o.env });
-  return backend === 'sqlite' ? openSqlite(home) : openJournal(home, o.fsi);
+  return backend === 'sqlite' ? openSqlite(home) : openJournal(home, o.fsi, o.lock);
 }
 
 // deriveSummary(store, opts) -> summary object (also written to summary.json).

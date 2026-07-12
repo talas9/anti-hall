@@ -74,7 +74,15 @@ function acquireMigrateLock(home, io) {
       let holder = null;
       try { holder = JSON.parse(F.readFileSync(p, 'utf8')); } catch (_) {}
       const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
-      const holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
+      let holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
+      if (holderTs === null) {
+        // TORN-READ GUARD: a live holder is briefly a 0-byte file between openSync('wx')
+        // and writeSync. A concurrent reader that catches it empty/unparseable must NOT
+        // treat it as absent — fall back to the file's MTIME for liveness. A FRESH mtime =
+        // live migration mid-write -> back off (never steal); only an OLD mtime (or a stat
+        // failure) reads as a dead holder we may reclaim. Mirrors devswarm-store acquireOnce.
+        try { holderTs = F.statSync(p).mtimeMs; } catch (_) { holderTs = null; }
+      }
       const alive = holderPid !== null && isAlive(holderPid); // a KNOWN-live holder
       const stale = holderTs === null || (now() - holderTs) > MIGRATE_LOCK_STALE_MS;
       // Steal ONLY a stale lock whose holder is NOT alive (dead or unknown pid):

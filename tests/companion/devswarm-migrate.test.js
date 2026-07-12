@@ -169,6 +169,37 @@ test('refuses to run when another consumer holds the migrate lock', () => {
   } finally { rm(home); }
 });
 
+test('acquireMigrateLock does NOT steal a TORN/EMPTY lock whose MTIME is FRESH (live migration mid-write)', () => {
+  const home = tmpHome();
+  try {
+    const p = migrate.migrateLockPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // A live holder is briefly a 0-byte file between openSync('wx') and writeSync.
+    fs.writeFileSync(p, ''); // torn/empty -> unparseable (holderTs would be null)
+    const mt = fs.statSync(p).mtimeMs;
+    // Unparseable AND no live pid, but a FRESH mtime -> a live migration mid-write ->
+    // MUST NOT be stolen (two migrations racing the same store corrupt it).
+    const rel = migrate.acquireMigrateLock(home, { isAlive: () => false, now: () => mt + 1000 });
+    assert.equal(rel, null, 'a torn/empty lock with a FRESH mtime is not stolen');
+    assert.equal(fs.readFileSync(p, 'utf8'), '', 'the live holder empty lock is left intact');
+  } finally { rm(home); }
+});
+
+test('acquireMigrateLock RECLAIMS a TORN/EMPTY lock whose MTIME is OLD (dead holder)', () => {
+  const home = tmpHome();
+  try {
+    const p = migrate.migrateLockPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, ''); // torn/empty, written long ago (dead holder)
+    const mt = fs.statSync(p).mtimeMs;
+    // Unparseable AND its mtime is older than the 5-min stale window -> dead holder -> reclaimable.
+    const rel = migrate.acquireMigrateLock(home, { isAlive: () => false, now: () => mt + 6 * 60 * 1000 });
+    assert.ok(rel, 'a torn/empty lock with an OLD mtime (dead holder) is reclaimed');
+    assert.notEqual(fs.readFileSync(p, 'utf8'), '', 'the reclaimed lock now carries our token');
+    rel();
+  } finally { rm(home); }
+});
+
 test('empty state (no descriptors) is a successful no-op', () => {
   const home = tmpHome();
   try {

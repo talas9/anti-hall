@@ -37,6 +37,24 @@ harmless single-consumer `read-messages` is still allowed. Non-destructive
 skip does not cover it) and is fail-open. Full detail: `docs/KB-devswarm-hivecontrol.md`
 §8.5.
 
+## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
+
+Because the native reads (`monitor`/`read-messages`) are guard-redirected, a child needs a
+**safe** way to actually RECEIVE parent messages. That is `node scripts/devswarm.js inbox
+pull <DEVSWARM_BUILDER_ID>` — a bounded, guard-safe one-shot drain (`command-guard`'s
+root-anchored `LIGHT_EXCEPTION` for `scripts/devswarm.js` allows it inline). It auto-ensures
+the child's descriptor, then runs ONE pull: a **non-destructive `message-count` gate first**
+(count `0` → it never calls `read-messages`), and only on count `>0` a single **bounded**
+`read-messages` (finite 10 s timeout, **never `monitor`**), appended to the durable inbox
+NDJSON in one atomic, hash-idempotent write plus a store-parity feed. The per-turn child hook
+statically nudges the child to run this pull, then read the drained messages the non-draining
+way (`inbox read`). **Residual limitations (honest):** (1) `read-messages` marks-read BEFORE
+the durable append, so a crash in that window loses the native messages — the count-gate
+minimizes but cannot close it (hivecontrol has no non-destructive full read); a failed append
+surfaces `ok:false` and writes no partial NDJSON. (2) It is pull-not-push: reception latency =
+one child turn (no background child drainer — a child cannot host the blocking `monitor`
+daemon). Full detail: `docs/KB-devswarm-hivecontrol.md` (v0.54.2 note).
+
 ## What this is for
 
 A workaround for a documented, unresolved Claude Code core-loop bug class

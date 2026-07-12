@@ -62,6 +62,24 @@ untouched. Own `devswarm-read-guard` skip name (in skip-guard's `DESTRUCTIVE` se
 blanket `all` skip does not cover it). Full detail: `docs/KB-devswarm-hivecontrol.md`
 §8.5.
 
+## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
+
+Since the native reads are guard-redirected, the safe way a child RECEIVES parent messages
+is `node scripts/devswarm.js inbox pull <DEVSWARM_BUILDER_ID>` — a bounded, guard-safe
+one-shot drain (`command-guard`'s root-anchored `LIGHT_EXCEPTION` for `scripts/devswarm.js`
+allows it inline; the CLI wrapper is invokable from either agent). It auto-ensures the
+descriptor, then runs ONE pull: a **non-destructive `message-count` gate first** (count `0`
+→ never calls `read-messages`), and only on count `>0` a single **bounded** `read-messages`
+(finite 10 s timeout, **never `monitor`**), appended to the durable inbox NDJSON in one
+atomic, hash-idempotent write plus a store-parity feed. **Residual limitations (honest):**
+(1) `read-messages` marks-read BEFORE the durable append, so a crash in that window loses
+the native messages — the count-gate minimizes but cannot close it (hivecontrol has no
+non-destructive full read); a failed append surfaces `ok:false`, no partial NDJSON. (2)
+Pull-not-push: reception latency = one turn (no background child drainer). The drain module
+(`companion/lib/devswarm-pull.js`) and the durable inbox are Claude-side companion state, but
+the CLI itself runs identically either way. Full detail: `docs/KB-devswarm-hivecontrol.md`
+(v0.54.2 note).
+
 ## On-demand recovery — devswarm-recover CLI
 
 ```bash

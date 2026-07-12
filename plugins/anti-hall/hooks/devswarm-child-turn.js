@@ -62,6 +62,22 @@ const REMINDER =
   'make them, and check for + act on any parent messages before continuing, so ' +
   'you stay visible on the parent\'s task list instead of drifting off it.';
 
+// RECEPTION nudge (advisory, static — NO spawn in the hook). Tells the child the
+// SAFE way to RECEIVE parent messages: run the bounded `inbox pull` drain (native
+// message-count gate -> at-most-one bounded read-messages, never `monitor`), which
+// folds the native parent->child queue into the durable inbox, THEN read it via the
+// non-draining cursor. This is what makes the unreadParentSegment below fire — the
+// pull is what populates the durable inbox it checks. Static string only: the hook
+// itself never spawns hivecontrol (that would put a destructive read on the hot
+// per-turn path); it just tells the child which command to run.
+const RECEIVE_NUDGE =
+  'DEVSWARM CHILD RECEPTION: to RECEIVE parent messages, run ' +
+  '`node scripts/devswarm.js inbox pull <DEVSWARM_BUILDER_ID>` (anti-hall devswarm ' +
+  'CLI) — a SAFE, bounded drain that folds the native parent->child queue into your ' +
+  'durable inbox (non-destructive count gate, one bounded read, never `monitor`). ' +
+  'Then read them the non-draining way via `node scripts/devswarm.js inbox read ' +
+  '<DEVSWARM_BUILDER_ID>`. Substitute your own DEVSWARM_BUILDER_ID for <...>.';
+
 // heartbeatKey(branch) -> a safe single path segment for the heartbeat filename.
 // PLAN.md keys the heartbeat as heartbeats/<branch>.json; a plain branch like
 // `main` stays clean, but a branch can carry `/` or other chars unsafe as a file
@@ -152,7 +168,7 @@ function main() {
 
   // REMINDER is always present; append the unread-inbox nudge only when the child's
   // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
-  const segments = [REMINDER];
+  const segments = [REMINDER, RECEIVE_NUDGE];
   const unreadSeg = unreadParentSegment(env, os.homedir());
   if (unreadSeg) segments.push(unreadSeg);
 

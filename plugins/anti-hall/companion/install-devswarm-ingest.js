@@ -118,13 +118,37 @@ function pathIsEmittable(p) {
   return !/[\u0000-\u001f\u007f"']/.test(String(p));
 }
 
+// Resolve the git worktree the daemon must be launched FROM. `hivecontrol
+// workspace <cmd>` resolves its workspace by walking up from the process's cwd to
+// an enclosing git worktree (NOT from DEVSWARM_* env). launchd/systemd/cron default
+// a unit's cwd to $HOME, which is not a git repo — so a daemon with no baked cwd can
+// never resolve a workspace and drains nothing. We resolve the install-time worktree
+// here and bake it into the unit's working directory. Returns the absolute toplevel
+// path, or null when `cwd` is not inside a git worktree (installer then fails open).
+function resolveWorktree(cwd) {
+  try {
+    const r = spawnSync('git', ['-C', cwd, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
+    if (r.error || r.status !== 0) return null;
+    const top = String(r.stdout || '').trim();
+    return top || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 // ----- macOS -----
 function macPlistPath() { return path.join(HOME, 'Library', 'LaunchAgents', `${LABEL}.plist`); }
 
 // KeepAlive (not StartInterval): the ingest daemon runs continuously, so launchd
 // must relaunch it whenever it exits — the "re-exec on exit" contract the daemon
 // expects. RunAtLoad starts it at load/login.
-function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG } = {}) {
+function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG, workdir } = {}) {
+  // WorkingDirectory: launchd otherwise defaults the daemon's cwd to $HOME (not a
+  // git repo) and `hivecontrol workspace monitor` fails "Not in a git repository",
+  // draining nothing. Baking the install-time worktree lets the daemon resolve it.
+  const workdirKey = workdir
+    ? `  <key>WorkingDirectory</key>\n  <string>${xmlEscape(workdir)}</string>\n`
+    : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -136,7 +160,7 @@ function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG } =
     <string>${xmlEscape(exec)}</string>
     <string>${xmlEscape(script)}</string>
   </array>
-  <key>KeepAlive</key>
+${workdirKey}  <key>KeepAlive</key>
   <true/>
   <key>RunAtLoad</key>
   <true/>
@@ -149,9 +173,9 @@ function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG } =
 `;
 }
 
-function macInstall() {
+function macInstall(workdir) {
   const plist = macPlistPath();
-  planWrite(plist, buildPlist());
+  planWrite(plist, buildPlist({ workdir }));
   planRun('launchctl', ['unload', plist]); // ignore err
   planRun('launchctl', ['load', plist]);
   say(`installed LaunchAgent ${LABEL} (continuous, KeepAlive). Logs: ${LOG}`);
@@ -169,13 +193,17 @@ function unitDir() { return path.join(HOME, '.config', 'systemd', 'user'); }
 // Type=simple + Restart=always: a long-running daemon that systemd relaunches on
 // exit (the daemon's re-exec-on-exit contract). No .timer — this is a continuous
 // service, not a periodic sweep.
-function buildService({ exec = EXEC, script = SCRIPT, restartSec = RESTART_SEC } = {}) {
+function buildService({ exec = EXEC, script = SCRIPT, restartSec = RESTART_SEC, workdir } = {}) {
+  // WorkingDirectory: systemd otherwise defaults the daemon's cwd to $HOME (not a
+  // git repo), so `hivecontrol workspace monitor` can never resolve a workspace.
+  // systemd-escaped like ExecStart (systemd tokenizes + does $VAR expansion).
+  const workdirLine = workdir ? `WorkingDirectory=${sdQuote(workdir)}\n` : '';
   return `[Unit]
 Description=anti-hall DevSwarm ingest daemon (native monitor -> store)
 
 [Service]
 Type=simple
-ExecStart=${sdQuote(exec)} ${sdQuote(script)}
+${workdirLine}ExecStart=${sdQuote(exec)} ${sdQuote(script)}
 Restart=always
 RestartSec=${restartSec}
 
@@ -191,8 +219,12 @@ function hasSystemctl() {
 // lock, so a duplicate launch refuses-and-exits immediately (single-consumer);
 // when the daemon is dead, the next tick takes over. Each path is POSIX
 // single-quoted so no path can inject shell (P0-2).
-function buildCronLine({ exec = EXEC, script = SCRIPT } = {}) {
-  return `* * * * * ${shSingleQuote(exec)} ${shSingleQuote(script)} >/dev/null 2>&1`;
+function buildCronLine({ exec = EXEC, script = SCRIPT, workdir } = {}) {
+  // cd into the install-time worktree first: cron runs from $HOME (not a git repo),
+  // so without this the daemon can never resolve a workspace. The worktree path is
+  // POSIX single-quoted like exec/script (no injection hole reintroduced).
+  const cd = workdir ? `cd ${shSingleQuote(workdir)} && ` : '';
+  return `* * * * * ${cd}${shSingleQuote(exec)} ${shSingleQuote(script)} >/dev/null 2>&1`;
 }
 
 // The managed cron marker comment. It is BOTH the idempotence key (a second install
@@ -203,8 +235,8 @@ const CRON_MARKER = `# ${UNIT}`;
 
 // buildCronEntry -> the managed 2-line block written to the crontab: the marker
 // comment followed by the (escaped) restart-if-dead line.
-function buildCronEntry({ exec = EXEC, script = SCRIPT } = {}) {
-  return `${CRON_MARKER}\n${buildCronLine({ exec, script })}`;
+function buildCronEntry({ exec = EXEC, script = SCRIPT, workdir } = {}) {
+  return `${CRON_MARKER}\n${buildCronLine({ exec, script, workdir })}`;
 }
 
 // mergeCrontab(current, entry, marker) -> { next, changed }. Idempotent: if the
@@ -248,14 +280,14 @@ function readCrontab() {
 // crontab so the ingest daemon is ACTUALLY scheduled when systemctl is absent
 // (previously the installer only PRINTED the line and installed no scheduler —
 // yet capability-scan reported active; P1-2).
-function installCron() {
-  const { next, changed } = mergeCrontab(readCrontab(), buildCronEntry(), CRON_MARKER);
+function installCron(workdir) {
+  const { next, changed } = mergeCrontab(readCrontab(), buildCronEntry({ workdir }), CRON_MARKER);
   if (!changed) { say(`cron entry already present (marker ${CRON_MARKER}); crontab left as-is`); return; }
   const r = spawnSync('crontab', ['-'], { input: next, encoding: 'utf8' });
   if (r.error || r.status !== 0) {
     say('(warn) could not install cron entry via `crontab -`; add it manually (crontab -e):');
     say(`  ${CRON_MARKER}`);
-    say(`  ${buildCronLine()}`);
+    say(`  ${buildCronLine({ workdir })}`);
     return;
   }
   say(`installed cron fallback (managed marker ${CRON_MARKER}, every minute restart-if-dead). Logs: ${LOG}`);
@@ -269,19 +301,19 @@ function uninstallCron() {
   if (!r.error && r.status === 0) say(`removed cron fallback (managed marker ${CRON_MARKER})`);
 }
 
-function linuxInstall() {
+function linuxInstall(workdir) {
   const dir = unitDir();
-  planWrite(path.join(dir, `${UNIT}.service`), buildService());
+  planWrite(path.join(dir, `${UNIT}.service`), buildService({ workdir }));
   if (DRYRUN) {
     say(`[dry-run] would run: systemctl --user daemon-reload && systemctl --user enable --now ${UNIT}.service && systemctl --user restart ${UNIT}.service`);
     say(`[dry-run] if systemctl absent, would install this managed cron fallback (marker ${CRON_MARKER}; every minute, restart-if-dead; the daemon's single-consumer lock makes redundant launches a no-op):`);
     say(`  ${CRON_MARKER}`);
-    say(`  ${buildCronLine()}`);
+    say(`  ${buildCronLine({ workdir })}`);
     return;
   }
   if (!hasSystemctl()) {
     say('systemctl not available; installing a managed cron fallback (every minute, restart-if-dead).');
-    installCron();
+    installCron(workdir);
     return;
   }
   planRun('systemctl', ['--user', 'daemon-reload']);
@@ -319,17 +351,30 @@ function main() {
   try {
     if (process.platform === 'win32') return windowsNoop();
     if (!fs.existsSync(SCRIPT)) { say(`error: ingest daemon script not found at ${SCRIPT}`); process.exit(1); return; }
+    // Resolve the worktree the daemon must run FROM (see resolveWorktree). Only for
+    // install — uninstall must still tear the unit down regardless of cwd. If cwd is
+    // not inside a git worktree, do NOT install a non-draining daemon: fail open —
+    // log + skip, exit 0 (non-fatal). Better no daemon than one that drains nothing.
+    let workdir = null;
+    if (!UNINSTALL) {
+      workdir = resolveWorktree(process.cwd());
+      if (!workdir) {
+        say('ingest daemon not installed: no git worktree resolved from cwd; the daemon must run from a workspace worktree to drain its queue. Skipping install (no-op, exit 0).');
+        process.exit(0);
+        return;
+      }
+    }
     // Belt-and-suspenders (defense in depth on top of per-target escaping): refuse
-    // to emit a unit/plist/cron entry for a node/script path carrying control chars
-    // or quote characters. Fail-open — log + skip install, exit 0 (non-fatal), so a
-    // hostile path never yields an unsafe unit and never aborts hard.
-    if (!UNINSTALL && (!pathIsEmittable(EXEC) || !pathIsEmittable(SCRIPT))) {
-      say('error: node/script path contains control or quote characters; refusing to emit an unsafe unit. Skipping install (no-op, exit 0).');
+    // to emit a unit/plist/cron entry for a node/script/worktree path carrying
+    // control chars or quote characters. Fail-open — log + skip install, exit 0
+    // (non-fatal), so a hostile path never yields an unsafe unit and never aborts hard.
+    if (!UNINSTALL && (!pathIsEmittable(EXEC) || !pathIsEmittable(SCRIPT) || !pathIsEmittable(workdir))) {
+      say('error: node/script/worktree path contains control or quote characters; refusing to emit an unsafe unit. Skipping install (no-op, exit 0).');
       process.exit(0);
       return;
     }
-    if (process.platform === 'darwin') { if (UNINSTALL) macUninstall(); else macInstall(); }
-    else { if (UNINSTALL) linuxUninstall(); else linuxInstall(); }
+    if (process.platform === 'darwin') { if (UNINSTALL) macUninstall(); else macInstall(workdir); }
+    else { if (UNINSTALL) linuxUninstall(); else linuxInstall(workdir); }
     process.exit(0);
   } catch (e) {
     say(`error: ${e && e.message ? e.message : e}`);
@@ -341,6 +386,6 @@ if (require.main === module) main();
 
 module.exports = {
   LABEL, UNIT, SCRIPT, RESTART_SEC, CRON_MARKER,
-  xmlEscape, shSingleQuote, sdQuote, pathIsEmittable,
+  xmlEscape, shSingleQuote, sdQuote, pathIsEmittable, resolveWorktree,
   buildPlist, buildService, buildCronLine, buildCronEntry, mergeCrontab, removeCronEntry,
 };

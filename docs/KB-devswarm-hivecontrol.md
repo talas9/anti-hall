@@ -410,7 +410,10 @@ consumer sets them; the store only tracks and derives.
 preference).** Stable JSON on stdout, pure Node built-ins. Subcommands: `register`/`ensure`
 (write a workspace descriptor + populate `sessionId`, closing the registry null-gap),
 `heartbeat` (turn-authored), `inbox count|read|ack` (the durable-inbox cursor primitive —
-`ack` advances the cursor and is the parent-gate's non-skip **clear path**), `workspaces
+`ack` advances the cursor and is the parent-gate's non-skip **clear path**), `inbox pull`
+(child-side reception drain — auto-ensures the descriptor, then ONE bounded guard-safe pull:
+non-destructive `message-count` gate → at-most-one bounded `read-messages` (never `monitor`)
+→ atomic idempotent NDJSON append + store parity; see the v0.54.2 note below), `workspaces
 list` (derive + emit the `summary.json` projection), `gate --set/--clear` (mark/unmark
 completion gates), `nudge` (poke-or-escalate, reusing `recovery.pokeOrEscalate`), `archive`
 (archive-by-absence on anti-hall's OWN registry — because hivecontrol has **no** teardown
@@ -441,24 +444,47 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
   never runs two ingest processes. `capability-scan.js`'s Linux detection now checks
   for BOTH a `.timer` (periodic supervisor) and a `.service` (continuous daemon) unit
   file under the same installer-discovery mechanism, so either shape reports correctly.
+  **Cwd caveat:** the daemon drains the workspace of the git worktree it is INSTALLED
+  FROM — `hivecontrol` resolves a workspace by walking up from the process's own cwd,
+  NOT from any `DEVSWARM_*` env — so the installer resolves that worktree at install
+  time (`git rev-parse --show-toplevel` against the install-time cwd) and bakes it in
+  as the unit's working directory (macOS plist `WorkingDirectory`, Linux systemd
+  `WorkingDirectory=`, a `cd` prefix on the cron fallback line); it refuses to install
+  (fail-open, no-op, exit 0) when run from a cwd that isn't inside a git worktree.
 - **`devswarm-child-gate` over-nag fix.** The Stop-gate now checks the child's own
   turn-authored heartbeat (`heartbeats/<branch>.json`, written every turn by
   `devswarm-child-turn`) before forcing an ack: a heartbeat fresher than 5 minutes means
   the parent already has the child's current state, so the gate stays silent instead of
   forcing a duplicate report. The forced-ack path is unchanged for the genuinely
   unreported case (no heartbeat, or a stale one).
-- **Child inbox reception surfacing — PARTIAL (v0.54.2 follow-up still open).**
-  `devswarm-child-turn` now runs a non-destructive unread check against the child's OWN
-  durable descriptor inbox (`workspaces/<DEVSWARM_BUILDER_ID>.json` → `inboxPath`/
-  `cursorPath`, via the inbox-cursor primitive — pure fs, no native-queue drain) and,
-  when unread > 0, surfaces the count plus the safe `inbox read` path in
-  `additionalContext`. **This is surfacing only.** It does NOT itself solve child-side
-  message reception: nothing shipped yet drains the child's NATIVE parent→child queue
-  into that durable inbox (a native read is destructive and guard-blocked; nothing
-  currently populates the child's durable inbox from the native side), so this segment
-  is a no-op until a child-side ingest/drain mechanism exists. Treat "child reception"
-  as still unsolved going into v0.54.2 — this only makes an already-populated durable
-  inbox visible to the child, it doesn't populate one.
+- **Child inbox reception — SHIPPED (v0.54.2). `devswarm.js inbox pull <id>` is the drain.**
+  `devswarm-child-turn` runs a non-destructive unread check against the child's OWN durable
+  descriptor inbox (`workspaces/<DEVSWARM_BUILDER_ID>.json` → `inboxPath`/`cursorPath`, via
+  the inbox-cursor primitive — pure fs, no native-queue drain) and, when unread > 0, surfaces
+  the count plus the safe `inbox read` path. What was missing in v0.54.1 — a mechanism to
+  DRAIN the child's NATIVE parent→child queue into that durable inbox — now ships as the
+  bounded CLI pull `node scripts/devswarm.js inbox pull <DEVSWARM_BUILDER_ID>`
+  (`companion/lib/devswarm-pull.js`, `pullOnce`). Each drain: (1) takes a PER-ID `O_EXCL`
+  lock (a child never drains its own queue twice concurrently — the same single-consumer
+  invariant the ingest lock enforces); (2) runs the **non-destructive `message-count`** gate
+  FIRST — count `0` returns without ever calling `read-messages`; (3) on count `>0`, ONE
+  **bounded** `read-messages` with a finite 10 s timeout — **never `monitor`**; (4) appends
+  the batch to the durable inbox NDJSON in ONE atomic `appendFileSync`, idempotent by embedded
+  content hash (reused verbatim from the ingest daemon, so both paths dedupe identically), and
+  feeds the store parity projection with the same hash. The per-turn child hook now statically
+  nudges the child to run this pull (no spawn on the hot path) — the pull is what POPULATES the
+  durable inbox the unread-surfacing segment reads. **Residual limitations (honest):**
+  1. **Destructive-read crash-window.** `read-messages` marks the native messages read BEFORE
+     `pullOnce` durably persists them; a crash in the window between the native mark-read and
+     the `appendFileSync` loses those messages from the native side without landing them in the
+     durable inbox. The count-gate MINIMIZES the window (no `read-messages` when count `0`) but
+     cannot close it — hivecontrol exposes no non-destructive full read. A thrown append
+     surfaces `ok:false` (never a false success) and writes no partial NDJSON, but the native
+     messages are already gone.
+  2. **Pull, not push — latency = turn cadence.** Reception happens only when the child runs
+     the pull (nudged each turn), so a parent→child message is seen at most one child turn late,
+     not instantly. There is no background child drainer (a child cannot host the blocking
+     `monitor` daemon on its turn thread, and `monitor` is guard-blocked).
 - **Live active-workspace table (`devswarm-parent-inbox`).** Every Primary turn now
   gets a compact markdown table of active workspaces (not just the unread/stale
   subset): columns workspace / status (`escalated` > `stale`/`nudged` > `archive-ready`

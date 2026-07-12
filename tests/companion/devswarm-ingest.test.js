@@ -97,6 +97,39 @@ test('acquireIngestLock does NOT steal a dead holder whose lock is still FRESH',
   } finally { rm(home); }
 });
 
+test('acquireIngestLock does NOT steal a TORN/EMPTY lock whose MTIME is FRESH (live holder mid-write)', () => {
+  const home = tmpHome();
+  try {
+    const p = ingest.ingestLockPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // A live holder is briefly a 0-byte file between openSync('wx') and writeSync.
+    fs.writeFileSync(p, ''); // torn/empty -> unparseable (holderTs would be null)
+    const mt = fs.statSync(p).mtimeMs;
+    // No parseable pid (alive=false) AND no parseable ts, but a FRESH mtime -> the
+    // holder is a live consumer mid-write and MUST NOT be stolen (stealing it splits
+    // the destructive native queue -> lost messages).
+    const rel = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => mt + 1000 });
+    assert.equal(rel, null, 'a torn/empty lock with a FRESH mtime is not stolen');
+    assert.equal(fs.readFileSync(p, 'utf8'), '', 'the live holder empty lock is left intact');
+  } finally { rm(home); }
+});
+
+test('acquireIngestLock RECLAIMS a TORN/EMPTY lock whose MTIME is OLD (dead holder)', () => {
+  const home = tmpHome();
+  try {
+    const p = ingest.ingestLockPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, ''); // torn/empty, but written long ago (dead holder)
+    const mt = fs.statSync(p).mtimeMs;
+    // Unparseable AND its mtime is older than the 15-min stale window -> genuinely dead
+    // holder -> reclaimable.
+    const rel = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => mt + 16 * 60 * 1000 });
+    assert.ok(rel, 'a torn/empty lock with an OLD mtime (dead holder) is reclaimed');
+    assert.notEqual(fs.readFileSync(p, 'utf8'), '', 'the reclaimed lock now carries our token');
+    rel();
+  } finally { rm(home); }
+});
+
 test('release.heartbeat refreshes the lock ts so a long-lived daemon stays fresh', () => {
   const home = tmpHome();
   try {
@@ -192,5 +225,70 @@ test('runIngestLoop survives a monitor crash (counts the error, keeps looping)',
     assert.equal(summary.started, true);
     assert.equal(summary.stats.errors, 1);
     assert.equal(summary.stats.iterations, 2);
+  } finally { rm(home); }
+});
+
+test('runIngestLoop LOGS-AND-CONTINUES on a store-lock ELOCKFS/ELOCKUNAVAIL instead of crash-looping', () => {
+  const home = tmpHome();
+  try {
+    // Register 'p' so a successful poll can project it.
+    const reg = storeLib.openStore({ home, backend: 'journal' });
+    try { reg.upsertRegistry({ id: 'p', worktreePath: '/wt/p', sessionId: 's', inboxPath: null, cursorPath: null, nudgeCommand: null }); }
+    finally { reg.close(); }
+
+    // io.openStore returns a REAL store whose appendMessage throws the store's two
+    // fail-closed lock signals on the first two polls, then succeeds. A crash-looping
+    // daemon would throw out of the loop on poll 1 (re-exec'd every RESTART_SEC); the
+    // fix must CATCH these two known-retryable codes, count them, and keep polling.
+    let appendCalls = 0;
+    const io = {
+      openStore(args) {
+        const real = storeLib.openStore(args);
+        const orig = real.appendMessage.bind(real);
+        real.appendMessage = function (m) {
+          appendCalls++;
+          if (appendCalls === 1) { const e = new Error('lock fs error'); e.code = 'ELOCKFS'; throw e; }
+          if (appendCalls === 2) { const e = new Error('lock unavailable'); e.code = 'ELOCKUNAVAIL'; throw e; }
+          return orig(m);
+        };
+        return real;
+      },
+    };
+    // Distinct message per poll so the third (successful) append inserts a durable row.
+    let poll = 0;
+    const run = () => { poll++; return { ok: true, raw: JSON.stringify([{ fromBranch: 'c', message: 'm' + poll, createdAt: '2026-01-01T00:00:0' + poll + 'Z' }]) }; };
+
+    let summary;
+    assert.doesNotThrow(() => {
+      summary = ingest.runIngestLoop({
+        home, backend: 'journal', workspaceId: 'p', maxIterations: 3,
+        run, sleep: () => {}, restartBackoffMs: 0, io,
+      });
+    }, 'a store-lock fail-closed error must not crash the loop out');
+    assert.equal(summary.started, true);
+    assert.equal(summary.stats.iterations, 3);
+    assert.equal(summary.stats.errors, 2, 'both lock errors are counted, not fatal');
+    assert.equal(summary.stats.inserted, 1, 'the subsequent poll still ingests (idempotent replay)');
+    // The subsequent poll's row is durable in the store — a later poll genuinely works.
+    const s = storeLib.openStore({ home, backend: 'journal' });
+    try { assert.equal(s.messageCount('p'), 1); } finally { s.close(); }
+  } finally { rm(home); }
+});
+
+test('runIngestLoop still surfaces a NON-lock store error (does not swallow arbitrary bugs)', () => {
+  const home = tmpHome();
+  try {
+    const io = {
+      openStore(args) {
+        const real = storeLib.openStore(args);
+        real.appendMessage = function () { throw new Error('unexpected bug'); };
+        return real;
+      },
+    };
+    const run = () => ({ ok: true, raw: JSON.stringify([{ message: 'x', createdAt: '2026-01-01T00:00:00Z' }]) });
+    assert.throws(() => ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 2,
+      run, sleep: () => {}, restartBackoffMs: 0, io,
+    }), /unexpected bug/, 'a non-lock error must still propagate (fail-open is only for the lock signals)');
   } finally { rm(home); }
 });

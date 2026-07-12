@@ -97,7 +97,15 @@ function acquireIngestLock(home, io) {
       let holder = null;
       try { holder = JSON.parse(F.readFileSync(p, 'utf8')); } catch (_) {}
       const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
-      const holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
+      let holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
+      if (holderTs === null) {
+        // TORN-READ GUARD: a live holder is briefly a 0-byte file between openSync('wx')
+        // and writeSync. A concurrent reader that catches it empty/unparseable must NOT
+        // treat it as absent — fall back to the file's MTIME for liveness. A FRESH mtime =
+        // live holder mid-write -> back off (never steal); only an OLD mtime (or a stat
+        // failure) reads as a dead holder we may reclaim. Mirrors devswarm-store acquireOnce.
+        try { holderTs = F.statSync(p).mtimeMs; } catch (_) { holderTs = null; }
+      }
       const alive = holderPid !== null && isAlive(holderPid); // a KNOWN-live holder
       const stale = holderTs === null || (now() - holderTs) > INGEST_LOCK_STALE_MS;
       // Steal ONLY a stale lock whose holder is NOT alive (dead or unknown pid).
@@ -228,7 +236,8 @@ function runIngestLoop(opts) {
     return { ok: false, started: false, reason: 'another monitor consumer is already running (ingest lock held)' };
   }
 
-  const s = store.openStore({ home, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
+  const openStore = (o.io && o.io.openStore) || store.openStore;
+  const s = openStore({ home, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
   const stats = { iterations: 0, inserted: 0, duplicate: 0, errors: 0 };
   try {
     for (let i = 0; i < maxIterations; i++) {
@@ -248,7 +257,26 @@ function runIngestLoop(opts) {
         if (i + 1 < maxIterations) sleep(backoffMs); // crash -> backoff then re-spawn
         continue;
       }
-      const ing = ingestPayload(s, res.raw, { workspaceId, now: o.now });
+      let ing;
+      try {
+        ing = ingestPayload(s, res.raw, { workspaceId, now: o.now });
+      } catch (e) {
+        // STORE-LOCK FAIL-CLOSED errors must not CRASH-LOOP the daemon. appendMessage
+        // fails closed on ELOCKFS (a genuine fs/EPERM error on the messages lock) and
+        // ELOCKUNAVAIL (contention budget exhausted) — correct, but if that throw
+        // propagates out of the loop the daemon exits and is re-exec'd every RESTART_SEC,
+        // hammering the same wedged lock. The native queue BUFFERS until the next monitor
+        // poll and replay is idempotent by hash, so on these two known-retryable lock
+        // signals we LOG and CONTINUE to the next poll instead of crashing. Any OTHER
+        // error still propagates (fail-open is only for the lock signals, not arbitrary bugs).
+        if (e && (e.code === 'ELOCKFS' || e.code === 'ELOCKUNAVAIL')) {
+          stats.errors++;
+          try { fs.writeSync(2, 'devswarm-ingest: store lock ' + e.code + ' — skipping this batch, replaying next poll (idempotent by hash)\n'); } catch (_) {}
+          if (i + 1 < maxIterations) sleep(backoffMs);
+          continue;
+        }
+        throw e;
+      }
       stats.inserted += ing.inserted;
       stats.duplicate += ing.duplicate;
       if (ing.inserted > 0) store.deriveSummary(s, { home, env: o.env, now: o.now });

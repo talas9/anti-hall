@@ -6,6 +6,80 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.54.2
+
+**Child reception ships (native queue → durable inbox); the ingest daemon actually functions (`WorkingDirectory` fix); lock hardening closes a torn-read double-consumer race.**
+
+- **Child reception (SHIPPED — replaces v0.54.1's surfacing-only).** `node
+  scripts/devswarm.js inbox pull <id>` (`companion/lib/devswarm-pull.js`,
+  `pullOnce`) is the drain v0.54.1 left as an explicit follow-up: a bounded,
+  guard-safe pull that folds a child's NATIVE parent→child queue into its durable
+  inbox + store. Each pull auto-ensures the descriptor (idempotent — reuses
+  `register`'s write path), then runs a non-destructive `message-count` gate FIRST
+  (count `0` returns without ever calling `read-messages`); on count `>0`, ONE
+  bounded `read-messages` (finite 10 s timeout — never the hanging `monitor`);
+  appends the batch to the durable inbox in one atomic NDJSON `appendFileSync`,
+  idempotent by embedded content hash (reused verbatim from the ingest daemon so
+  both paths dedupe identically); a per-id `O_EXCL` lock so a child never drains
+  its own queue twice concurrently. `devswarm-child-turn` now statically nudges
+  the child to run it every turn (no spawn on the hot path — the nudge is a
+  string, not a call). Honest limits, not hidden: reception is **pull, not
+  push** (a parent message is seen at most one child turn late, since a child
+  can't host the blocking `monitor` daemon on its turn thread), and there is a
+  **destructive-read crash-window** — `read-messages` marks the native messages
+  read before `pullOnce` durably persists them, so a crash in that window loses
+  them from the native side without landing in the durable inbox; the
+  `message-count` gate minimizes but cannot close the window (hivecontrol exposes
+  no non-destructive full read).
+- **Ingest daemon now actually functions (fix).** v0.54.1's auto-installer baked
+  no `WorkingDirectory` into the plist/systemd unit/cron line, so
+  launchd/systemd/cron ran the daemon from `$HOME` — not a git repo — and every
+  `hivecontrol workspace monitor` call failed "Not in a git repository",
+  draining nothing. `install-devswarm-ingest.js` now resolves the git worktree
+  the installer was RUN from (`git rev-parse --show-toplevel` against the
+  install-time cwd) and bakes it into the unit: macOS `WorkingDirectory` plist
+  key, Linux systemd `WorkingDirectory=` (escaped the same way as `ExecStart`),
+  and a `cd '<worktree>' &&` prefix on the cron fallback line (single-quoted, no
+  injection hole reopened). Refuses to install (fail-open — log + skip, exit 0)
+  if the install-time cwd doesn't resolve to a git worktree — no daemon is
+  better than one that silently drains nothing.
+- **Lock hardening.** `withMessagesLock` (journal backend) no longer ever runs
+  the append critical section UNLOCKED when contention is exhausted: a genuine
+  fs error opening the lock (e.g. `EPERM`) now fails closed with a distinct
+  `ELOCKFS`, and exhausting the retry budget throws a distinct, retryable
+  `ELOCKUNAVAIL` that `appendMessage` retries with jittered backoff (idempotent
+  by hash, so a retry can only add a row once). Also fixed a torn-read-steal
+  race: a lock file is briefly 0 bytes between `openSync('wx')` and the write,
+  and a concurrent reader that caught that empty window was wrongly treated as
+  "holder absent" and stealable; readers now fall back to the lock file's mtime
+  when the content is torn/unparseable and steal only on a genuinely OLD mtime,
+  never a fresh torn read. The same torn-read-safe steal propagated to the
+  `devswarm-ingest` / `devswarm-migrate` / `inbox pull` `O_EXCL` locks — closes a
+  double-consumer race on the destructive native queue shared by any two of
+  those. This is the exact race behind the CI failure caught on `windows-latest
+  / node 24.x` for v0.54.1's "concurrent writers never duplicate a deduped hash
+  row" test (`actual: 2, expected: 1`) — verified against the actual failed run
+  before writing this note.
+- **Reception silent-loss now surfaced (hardening).** `pullOnce` count-gates a
+  destructive `read-messages` on the non-destructive `message-count`, then relies
+  on `normalizeMonitorPayload` — but an unhandled read-messages shape normalized
+  to `[]`, so the messages were marked-read natively yet never persisted and the
+  drain returned a quiet `imported:0, ok:true`. It now RECONCILES: when a drain
+  recovers fewer messages than the native count (`imported+duplicate <
+  message-count`) it surfaces a loud `lost` field, logs a best-effort telemetry
+  line, and returns `ok:false`. The two are the same native unread metric
+  (`message-count` counts the unread set; `read-messages` reads that same set), so
+  a shortfall is real loss, never a benign count-vs-read race (a message arriving
+  between the two calls can only make `read-messages` return more, never fewer).
+- **Ingest daemon no longer crash-loops on a store-lock error (hardening).** The
+  store's messages lock fails CLOSED on `ELOCKFS` (a genuine fs/`EPERM` error) and
+  `ELOCKUNAVAIL` (contention budget exhausted) — correct, but an uncaught throw
+  propagated out of `runIngestLoop`, exiting the daemon so launchd/systemd re-exec'd
+  it every restart interval, hammering the same wedged lock. The ingest loop now
+  CATCHES those two known-retryable lock signals, logs, and continues to the next
+  poll (the native queue buffers and replay is idempotent by hash); any other error
+  still propagates so real bugs are not swallowed.
+
 ## 0.54.1
 
 **DevSwarm substrate follow-up — ingest daemon auto-install, child-gate over-nag fix, partial child reception surfacing, live active-workspace table.**

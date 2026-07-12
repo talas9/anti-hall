@@ -161,6 +161,45 @@ test('inbox on an unregistered workspace fails soft', () => {
   } finally { rm(home); }
 });
 
+test('inbox pull AUTO-ENSURES the descriptor (truthy inboxPath + cursor 0) then drains', () => {
+  const home = tmpHome();
+  try {
+    // No prior descriptor. The pull spawn is injected via ctx.io.run so no real
+    // hivecontrol binary is touched. A zero count exercises the count-gate: the
+    // descriptor is still auto-ensured before the (no-op) drain.
+    const io = { run: (s) => (s.args[1] === 'message-count' ? { ok: true, raw: '0' } : { ok: false, error: 'unexpected' }) };
+    const r = cli.run(['inbox', 'pull', 'child-1'], ctx(home, { io }));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.action, 'pull');
+    assert.equal(r.result.imported, 0);
+    assert.equal(r.result.nativeCount, 0);
+    // A valid descriptor now exists with a truthy inboxPath under the devswarm root...
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'child-1'), 'utf8'));
+    assert.ok(desc.inboxPath && typeof desc.inboxPath === 'string', 'auto-ensured a truthy inboxPath');
+    assert.ok(desc.cursorPath && typeof desc.cursorPath === 'string', 'auto-ensured a cursorPath');
+    assert.equal(desc.worktreePath, process.cwd(), 'worktreePath defaults to the cwd');
+    // ...and the cursor was initialized to 0 (nothing consumed yet).
+    assert.equal(fs.readFileSync(desc.cursorPath, 'utf8').trim(), '0', 'cursor initialized to 0');
+  } finally { rm(home); }
+});
+
+test('inbox pull is idempotent about the descriptor (re-pull leaves an existing one intact)', () => {
+  const home = tmpHome();
+  try {
+    // Pre-register with a CUSTOM inboxPath; the pull must NOT clobber it.
+    const inbox = path.join(home, 'custom.ndjson');
+    const cursor = path.join(home, 'custom.cursor');
+    cli.run(['register', 'child-1', '--worktree', '/wt/c', '--session', 's', '--inbox', inbox, '--cursor', cursor], ctx(home));
+    const io = { run: (s) => (s.args[1] === 'message-count' ? { ok: true, raw: '0' } : { ok: false, error: 'x' }) };
+    const r = cli.run(['inbox', 'pull', 'child-1'], ctx(home, { io }));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'child-1'), 'utf8'));
+    assert.equal(desc.inboxPath, inbox, 'the existing inboxPath is left intact (idempotent ensure)');
+  } finally { rm(home); }
+});
+
 test('workspaces list emits the derived projection', () => {
   const home = tmpHome();
   try {

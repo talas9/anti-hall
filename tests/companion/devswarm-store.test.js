@@ -284,6 +284,95 @@ test('[journal] concurrent writers never duplicate a deduped hash row (serialize
   } finally { rm(home); }
 });
 
+// ---- lock-soundness (v0.54.2): the critical section NEVER runs unlocked --------
+
+test('[journal] a held (non-stale) lock makes appendMessage fail closed — no unlocked append, no dup, retryable', () => {
+  const home = tmpHome();
+  try {
+    const dir = store.journalDir(home);
+    fs.mkdirSync(dir, { recursive: true });
+    const lockPath = path.join(dir, 'messages.lock');
+    const messagesFile = path.join(dir, 'messages.ndjson');
+    // A live holder: fresh ts + a large stale window so it is NEVER stolen.
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: 999999, ts: Date.now() }));
+
+    // Small budget so exhaustion is fast + deterministic.
+    const s = store.openStore({ home, backend: 'journal', lock: { maxTries: 3, appendRetries: 2, staleMs: 60000 } });
+    try {
+      let threw = null;
+      try { s.appendMessage({ workspaceId: 'w', body: 'x', hash: 'dupe' }); }
+      catch (e) { threw = e; }
+      assert.ok(threw && threw.code === 'ELOCKUNAVAIL',
+        'append under a held lock surfaces ELOCKUNAVAIL, never runs the critical section unlocked');
+      // CRITICAL: nothing was appended while the lock was unavailable.
+      assert.equal(s.messageCount('w'), 0, 'no row written while the lock was held');
+      assert.ok(!fs.existsSync(messagesFile) || fs.readFileSync(messagesFile, 'utf8').trim() === '',
+        'messages.ndjson has no unlocked write');
+
+      // Lock released -> a retry now persists EXACTLY once (idempotent by hash).
+      fs.unlinkSync(lockPath);
+      assert.deepEqual(s.appendMessage({ workspaceId: 'w', body: 'x', hash: 'dupe' }), { inserted: true });
+      assert.equal(s.messageCount('w'), 1);
+      assert.deepEqual(s.appendMessage({ workspaceId: 'w', body: 'x', hash: 'dupe' }), { inserted: false }, 'still deduped');
+      assert.equal(s.messageCount('w'), 1, 'exactly one physical row, no dup');
+    } finally { s.close(); }
+  } finally { rm(home); }
+});
+
+test('[journal] appendMessage retries transient lock-unavailability and eventually persists exactly once', () => {
+  const home = tmpHome();
+  try {
+    const lockPath = path.join(store.journalDir(home), 'messages.lock');
+    // maxTries:1 -> each withMessagesLock makes ONE acquire attempt, so a forced
+    // EEXIST exhausts it and throws ELOCKUNAVAIL; appendMessage's outer retry then
+    // recovers. Fail the first 2 acquire attempts, succeed on the 3rd.
+    let fails = 2;
+    const spy = Object.create(fs);
+    spy.openSync = (p, flags, ...rest) => {
+      if (String(p) === lockPath && String(flags) === 'wx' && fails > 0) {
+        fails--;
+        const e = new Error('EEXIST: forced contention'); e.code = 'EEXIST'; throw e;
+      }
+      return fs.openSync(p, flags, ...rest);
+    };
+    const s = store.openStore({ home, backend: 'journal', fsi: spy, lock: { maxTries: 1, appendRetries: 5 } });
+    try {
+      assert.deepEqual(s.appendMessage({ workspaceId: 'w', body: 'x', hash: 'h1' }), { inserted: true },
+        'append recovers after 2 lock-unavailable attempts');
+      assert.equal(fails, 0, 'all forced contention was consumed (retry actually happened)');
+      assert.equal(s.messageCount('w'), 1);
+      // A re-append of the same hash stays deduped — the retry never doubled it.
+      assert.deepEqual(s.appendMessage({ workspaceId: 'w', body: 'x', hash: 'h1' }), { inserted: false });
+      assert.equal(s.messageCount('w'), 1, 'exactly one physical row');
+    } finally { s.close(); }
+  } finally { rm(home); }
+});
+
+test('[journal] a genuine fs error opening the lock fails closed (ELOCKFS), never appends unlocked', () => {
+  const home = tmpHome();
+  try {
+    const dir = store.journalDir(home);
+    const lockPath = path.join(dir, 'messages.lock');
+    const messagesFile = path.join(dir, 'messages.ndjson');
+    const spy = Object.create(fs);
+    spy.openSync = (p, flags, ...rest) => {
+      if (String(p) === lockPath && String(flags) === 'wx') {
+        const e = new Error('EPERM: operation not permitted'); e.code = 'EPERM'; throw e;
+      }
+      return fs.openSync(p, flags, ...rest);
+    };
+    const s = store.openStore({ home, backend: 'journal', fsi: spy, lock: { maxTries: 5, appendRetries: 5 } });
+    try {
+      let threw = null;
+      try { s.appendMessage({ workspaceId: 'w', body: 'x', hash: 'h1' }); }
+      catch (e) { threw = e; }
+      assert.ok(threw && threw.code === 'ELOCKFS', 'genuine fs error surfaces ELOCKFS (fail closed)');
+      assert.ok(!fs.existsSync(messagesFile) || fs.readFileSync(messagesFile, 'utf8').trim() === '',
+        'no row appended on a genuine fs error');
+    } finally { s.close(); }
+  } finally { rm(home); }
+});
+
 if (store.sqliteAvailable()) {
   test('[sqlite] uses WAL journal mode', () => {
     const home = tmpHome();
