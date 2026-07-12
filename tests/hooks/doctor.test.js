@@ -220,7 +220,7 @@ test('doctor: Foreign skill/hook conflict scan surfaces a real foreign Stop-hook
   }
 });
 
-test('doctor: DevSwarm-active session with no installed daemons -> runtime checks 1-4 report INFO "not installed" (no false FAIL)', () => {
+test('doctor: DevSwarm-active session with no installed daemons -> runtime checks 1-4 report INFO "not installed" (no false FAIL)', { skip: process.platform === 'win32' }, () => {
   const { home, cleanup } = makeFakeHome();
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
   try {

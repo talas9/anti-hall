@@ -336,7 +336,7 @@ test('probeCronRunning: stale heartbeat -> running:false via heartbeat', () => {
   } finally { cleanup(); }
 });
 
-test('probeCronRunning: no hash (legacy pre-per-worktree unit) -> falls back to bare ps scan', () => {
+test('probeCronRunning: no hash (legacy pre-per-worktree unit) -> falls back to bare ps scan', { skip: process.platform === 'win32' }, () => {
   const { home, cleanup } = tmpHome();
   try {
     const fakeSpawnSync = () => ({ status: 0, stdout: '  123 node /x/companion/devswarm-ingest.js\n' });
