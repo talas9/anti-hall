@@ -10,6 +10,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
+const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+const { hashFromWorkspaceId } = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 
 const HOOK = 'devswarm-parent-inbox.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + no source-branch = Primary
@@ -65,8 +67,25 @@ function writeWorkspace(home, id, opts = {}) {
   return d;
 }
 
+// PER-DESCRIPTOR summary: the store keys summaries/<hash>.json by EACH
+// descriptor's OWN id (hashFromWorkspaceId(id)) — NOT by the hook's cwd worktree
+// hash. writeSummary takes a { workspaces: { id: entry, ... }, requiredGates,
+// generatedAt } shape (the same shape deriveSummary produces) and splits it into
+// one hash-keyed file per id, so each descriptor's data lands where the hook
+// actually looks it up regardless of the test process's cwd.
 function writeSummary(home, obj) {
-  fs.writeFileSync(path.join(swarmDir(home), 'summary.json'), JSON.stringify(obj));
+  const dir = path.join(swarmDir(home), 'summaries');
+  fs.mkdirSync(dir, { recursive: true });
+  const workspaces = (obj && obj.workspaces) || {};
+  for (const id of Object.keys(workspaces)) {
+    const hash = hashFromWorkspaceId(id);
+    const perId = {
+      generatedAt: obj.generatedAt,
+      requiredGates: obj.requiredGates,
+      workspaces: { [id]: workspaces[id] },
+    };
+    fs.writeFileSync(path.join(dir, hash + '.json'), JSON.stringify(perId));
+  }
 }
 function writeVerdict(home, id, verdict) {
   const p = path.join(swarmDir(home), 'liveness', id + '.json');
@@ -237,6 +256,37 @@ test('ARCHIVE: recent nudge within cooldown -> archive banner suppressed (table 
   } finally { h.cleanup(); }
 });
 
+test('PER-DESCRIPTOR SUMMARY: two workspaces with different id-hashes each resolve their OWN summary (regression for the per-project store migration bug — a single cwd-keyed summary must NOT leak across descriptors)', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsAlpha', { inbox: [], cursor: 0 });
+    writeWorkspace(h.home, 'wsBeta', { inbox: [], cursor: 0 });
+    // Two DISTINCT per-descriptor summaries, each landing under its OWN
+    // hashFromWorkspaceId(id) file (never a single shared summary). No cwd is
+    // passed in the payload at all, so the pre-fix code — which resolved ONE
+    // summary via the hook's cwd worktree hash — would have read null for BOTH
+    // and shown neither as archive-ready/escalated.
+    writeSummary(h.home, {
+      requiredGates: ['done'],
+      workspaces: {
+        wsAlpha: { archive_ready: true, status: 'idle', gates: { done: true } },
+        wsBeta: { archive_ready: false, status: 'escalated', gates: {} },
+      },
+    });
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    // wsAlpha: archive-ready + 1/1 gates, per ITS OWN summary entry.
+    const archive = segment(c, 'DEVSWARM ARCHIVE-READY');
+    assert.ok(archive.includes('wsAlpha'), `wsAlpha must be archive-ready from its own summary; ctx=${c}`);
+    assert.ok(!archive.includes('wsBeta'), `wsBeta must NOT be archive-ready; ctx=${c}`);
+    assert.ok(/\|\s*wsAlpha\s*\|\s*archive-ready\s*\|\s*1\/1\s*\|/.test(tableRow(c, 'wsAlpha')), `wsAlpha row; row=${tableRow(c, 'wsAlpha')}`);
+    // wsBeta: escalated + 0/1 gates, per ITS OWN summary entry — not wsAlpha's
+    // archive-ready status leaking over, and not silently null (the bug).
+    assert.ok(/\|\s*wsBeta\s*\|\s*escalated\s*\|\s*0\/1\s*\|/.test(tableRow(c, 'wsBeta')), `wsBeta row; row=${tableRow(c, 'wsBeta')}`);
+  } finally { h.cleanup(); }
+});
+
 // ---- live workspace table (v0.54.1) ----
 
 test('TABLE: renders correct rows/columns for varied status + gates + unread, sorted attention-first', () => {
@@ -358,5 +408,126 @@ test('FAIL-OPEN: malformed JSON stdin -> exit 0, no crash', () => {
   try {
     const r = testHookRaw(HOOK, '{bad', { home: h.home, env: PRIMARY_ENV });
     assert.strictEqual(r.status, 0);
+  } finally { h.cleanup(); }
+});
+
+// ---- daemon-liveness staleness banner (rewired to the ingest daemon's own
+// heartbeat, not summary.json's generatedAt — #21) ----
+// heartbeats/ingest-<hash>.json is rewritten EVERY sweep cycle regardless of
+// whether anything was inserted (writeIngestHeartbeat in devswarm-ingest.js), so a
+// live-but-QUIET daemon (backlog present, no new messages) no longer false-reads
+// as stale via a frozen generatedAt. `hash` = install-devswarm-ingest.js's own
+// worktreeHash() of the git toplevel — the hook resolves it via a pure fs walk
+// from payload.cwd (no git spawn), so passing THIS test process's own cwd (a real
+// git checkout) lets both sides land on the identical hash.
+const HEARTBEAT_STALE_MS = 3 * 60 * 1000; // must match HEARTBEAT_STALE_MS in the hook
+const REPO_CWD = process.cwd();
+const REPO_HASH = installIngest.worktreeHash(REPO_CWD);
+// staleBanner(ctx) -> the '⚠ DEVSWARM STALE DATA' segment, or ''.
+function staleBanner(c) {
+  return c.split('\n\n').find((s) => s.includes('DEVSWARM STALE DATA')) || '';
+}
+// withCwd(payloadFn) -> payload object carrying this test process's own cwd, so
+// the hook's fs-only worktree resolution lands on REPO_HASH.
+function withCwd(payloadFn) {
+  return { ...payloadFn(), cwd: REPO_CWD };
+}
+function writeDaemonHeartbeat(home, hash, ts) {
+  const p = path.join(swarmDir(home), 'heartbeats', 'ingest-' + hash + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ ts, workspaceId: 'primary-' + hash, workingDir: REPO_CWD, pid: 1 }));
+}
+
+test('STALE: fresh daemon heartbeat -> NO banner even with an ancient summary.generatedAt (proves the live-but-quiet fix)', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: ['a', 'b'], cursor: 0 });
+    // generatedAt is WAY past the old threshold -- would have false-alarmed under
+    // the pre-#21 mechanism. The heartbeat is fresh, so the rewired banner must not.
+    writeSummary(h.home, { generatedAt: Date.now() - HEARTBEAT_STALE_MS * 10, workspaces: { wsA: { unread: 2 } } });
+    writeDaemonHeartbeat(h.home, REPO_HASH, Date.now() - 10 * 1000);
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(tableSeg(c).includes('DEVSWARM WORKSPACES'), `table still present; ctx=${c}`);
+    assert.strictEqual(staleBanner(c), '', `fresh heartbeat must not warn; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE: heartbeat older than threshold + active descriptor -> banner ABOVE the table', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: ['a', 'b'], cursor: 0 });
+    writeDaemonHeartbeat(h.home, REPO_HASH, Date.now() - (HEARTBEAT_STALE_MS + 60 * 1000));
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const banner = staleBanner(c);
+    assert.ok(banner, `stale heartbeat must warn; ctx=${c}`);
+    assert.ok(/ingest daemon last alive/.test(banner), `banner text; banner=${banner}`);
+    assert.ok(/doctor/.test(banner), `banner must point to a remedy; banner=${banner}`);
+    // Banner must sit ABOVE the live workspace table.
+    const iBanner = c.indexOf('DEVSWARM STALE DATA');
+    const iTable = c.indexOf('DEVSWARM WORKSPACES');
+    assert.ok(iBanner >= 0 && iTable >= 0 && iBanner < iTable, `banner above table; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE: missing heartbeat file (daemon never wrote one for this worktree) + active descriptor -> banner (additive, does not suppress the unread banner)', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: ['a', 'b', 'c'], cursor: 0 });
+    // No heartbeat file written at all, and no summary.json either.
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(staleBanner(c), `missing heartbeat must warn; ctx=${c}`);
+    assert.ok(c.includes('DEVSWARM PARENT INBOX'), `live unread still surfaced alongside; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE: no active descriptor -> NO banner (nothing tabled, regardless of heartbeat state)', () => {
+  const h = makeHome();
+  try {
+    // No descriptors at all; no heartbeat either.
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `no descriptors -> fully inert, no banner; stdout=${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE: no cwd in payload (worktree unresolvable) -> NO banner, no throw (fail-open)', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true }); // no cwd field
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(tableSeg(c).includes('DEVSWARM WORKSPACES'), `table still renders; ctx=${c}`);
+    assert.strictEqual(staleBanner(c), '', `unresolvable worktree -> no banner, no throw; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE: cwd with no enclosing git repo (bogus path) -> NO banner, no throw (fail-open)', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
+    const r = testHook(HOOK, { ...payload(), cwd: '/definitely-does-not-exist-anti-hall-test-root' },
+      { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(staleBanner(ctx(r)), '', `no git toplevel found -> no banner; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE: malformed heartbeat JSON -> treated as unknown/missing (still warns), no throw', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
+    const p = path.join(swarmDir(h.home), 'heartbeats', 'ingest-' + REPO_HASH + '.json');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, '{not json');
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.ok(staleBanner(ctx(r)), `malformed heartbeat treated as missing -> still warns; ctx=${ctx(r)}`);
   } finally { h.cleanup(); }
 });

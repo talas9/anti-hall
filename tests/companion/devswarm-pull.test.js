@@ -138,7 +138,7 @@ test('idempotent re-append: the same batch twice -> no duplicate line or store r
     assert.equal(r2.duplicate, 2, 'both re-observed messages are recognized as duplicates');
     const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
     assert.equal(lines.length, 2, 'the NDJSON must not grow on replay');
-    const s = storeLib.openStore({ home, backend: 'journal' });
+    const s = storeLib.openStore({ home, workspaceId: 'child-1', backend: 'journal' });
     try { assert.equal(s.messageCount('child-1'), 2, 'the store parity feed is deduped by the same hash'); }
     finally { s.close(); }
   } finally { rm(home); }
@@ -203,7 +203,7 @@ test('crash-window: a thrown durable append surfaces ok:false (no false success,
     assert.equal(res.locked, true);
     assert.ok(!fs.existsSync(inboxPath) || fs.readFileSync(inboxPath, 'utf8').trim() === '',
       'no partial NDJSON may be left behind');
-    const s = storeLib.openStore({ home, backend: 'journal' });
+    const s = storeLib.openStore({ home, workspaceId: 'child-1', backend: 'journal' });
     try { assert.equal(s.messageCount('child-1'), 0, 'store parity must not run when the durable append failed'); }
     finally { s.close(); }
   } finally { rm(home); }

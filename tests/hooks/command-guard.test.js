@@ -134,9 +134,11 @@ test('FAIL-OPEN: malformed JSON -> allow', () => {
 // auto-true), in ALL contexts (coordinator AND subagent), with its OWN skip name
 // (`devswarm-read-guard`), BEFORE command-guard's own skip/coordinator gate.
 //   - `monitor`      -> block UNCONDITIONALLY (no-timeout long-poll hangs the shell).
-//   - `read-messages`-> block ONLY with durable-layer evidence (ANTIHALL_DEVSWARM_INBOX_CMD
-//                       set, OR a ~/.anti-hall/devswarm/workspaces/*.json descriptor
-//                       with a truthy inboxPath); otherwise ALLOW (harmless single read).
+//   - `read-messages`-> block UNCONDITIONALLY too (Part B, v0.55): a raw native read
+//                       desyncs the durable cursor regardless of evidence, so it blocks
+//                       like `monitor` (the old durable-evidence gate is removed).
+//   - raw file reads (cat/head/… of the inbox or store) -> block via the Bash-side
+//                       companion to inbox-read-guard.js (the shared path classifier).
 const fsx = require('node:fs');
 const pathx = require('node:path');
 const DEVSWARM_COORD = { CLAUDE_CODE_ENTRYPOINT: 'cli', DEVSWARM_REPO_ID: 'repo-x' };
@@ -181,11 +183,12 @@ for (const cmd of HIVECTL_ALLOW_DATA) {
 }
 
 // --- POSITIVE: real destructive reads / smuggled forms must block ---
-// monitor blocks with no durable evidence; read-messages needs durable evidence.
+// Part B: BOTH monitor and read-messages block UNCONDITIONALLY (no evidence needed).
 const HIVECTL_BLOCK = [
+  { cmd: 'hivecontrol workspace read-messages', env: {} }, // unconditional (Part B)
   { cmd: 'hivecontrol workspace read-messages', env: DURABLE_ENV },
   { cmd: 'hivecontrol workspace monitor', env: {} }, // unconditional
-  { cmd: 'bash -c "hivecontrol workspace read-messages"', env: DURABLE_ENV },
+  { cmd: 'bash -c "hivecontrol workspace read-messages"', env: {} },
   { cmd: '$(hivecontrol workspace monitor)', env: {} },
   // Chained after a benign command — caught on the destructive segment.
   { cmd: 'echo hi && hivecontrol workspace monitor', env: {} },
@@ -200,18 +203,23 @@ for (const { cmd, env } of HIVECTL_BLOCK) {
   });
 }
 
-// Durable evidence via a workspace DESCRIPTOR (not env) also arms the read block.
-test('DEVSWARM BLOCK read-messages when a descriptor has inboxPath', () => {
-  const r = runDevswarm('hivecontrol workspace read-messages', {}, {
-    descriptor: { id: 'ws', worktreePath: '/x', sessionId: 's', inboxPath: '/x/inbox.jsonl' },
-  });
+// --- SCOPING ---
+// Part B inversion: read-messages with NO durable evidence now BLOCKS unconditionally
+// (was ALLOW). A raw native read desyncs the durable cursor regardless of evidence.
+test('DEVSWARM BLOCK read-messages with NO durable evidence (Part B: unconditional)', () => {
+  const r = runDevswarm('hivecontrol workspace read-messages');
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
 });
 
-// --- SCOPING ---
-test('DEVSWARM ALLOW read-messages with NO durable evidence (no env, no descriptor)', () => {
+// The block reason redirects to the wrapper (`inbox pull`) and names the kill-switch.
+test('DEVSWARM read-messages reason names `inbox pull` + DISABLE_ANTIHALL_DEVSWARM kill-switch', () => {
   const r = runDevswarm('hivecontrol workspace read-messages');
-  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  assert.strictEqual(r.status, 2);
+  assert.ok(r.json && /inbox pull/.test(r.json.reason),
+    'reason should redirect to `devswarm.js inbox pull`');
+  assert.ok(r.json && /DISABLE_ANTIHALL_DEVSWARM=1/.test(r.json.reason),
+    'reason should name the DISABLE_ANTIHALL_DEVSWARM=1 kill-switch');
 });
 
 test('DEVSWARM SUBAGENT (agent_id) + monitor still blocks (all-contexts)', () => {
@@ -346,30 +354,21 @@ for (const cmd of HIVECTL_ACCEPTED_OBFUSCATION) {
   });
 }
 
-// --- FIX 2: whitespace-only inboxPath must NOT arm the read block ---
-test('DEVSWARM ALLOW read-messages when descriptor inboxPath is whitespace-only', () => {
-  const r = runDevswarm('hivecontrol workspace read-messages', {}, {
-    descriptor: { id: 'ws', inboxPath: '   ' },
-  });
-  assert.strictEqual(r.status, 0, `whitespace inboxPath is not evidence\nstdout: ${r.stdout}`);
-});
-test('DEVSWARM BLOCK read-messages when descriptor inboxPath is a real path', () => {
-  const r = runDevswarm('hivecontrol workspace read-messages', {}, {
-    descriptor: { id: 'ws', inboxPath: '/real/path/inbox.jsonl' },
-  });
-  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-});
-
-// --- FIX 1: descriptor scan must never wedge and must not be fooled into evidence
-// by a non-regular / oversized candidate. Uses a custom HOME so we can plant a
-// symlink or an oversized file where a descriptor would live. ---
-function runDevswarmWithWorkspace(command, plant) {
+// ---------------------------------------------------------------------------
+// Bash file-read branch (item 3): detectProtectedFileRead — closes the `cat`/`head`
+// bypass that this Bash-verb-only guard could not otherwise see. Paths are built
+// ABSOLUTE under the fresh fake HOME's ~/.anti-hall/devswarm root (the real inbox
+// location), so classification resolves unambiguously. Store-CLI-present gating is
+// exercised at the classifier UNIT level (inbox-read-guard.test.js); here the store
+// probe finds NO listMessages yet, so a raw store read fails OPEN (ALLOW) — proving
+// a pre-#13 Primary is never bricked.
+// runDevswarmFileRead(mkCommand) — DevSwarm-active, fresh HOME; mkCommand(dsRoot)
+// receives the absolute devswarm root and returns the command string to test.
+function runDevswarmFileRead(mkCommand) {
   const h = makeHome();
   try {
-    const wdir = pathx.join(h.antiHall, 'devswarm', 'workspaces');
-    fsx.mkdirSync(wdir, { recursive: true });
-    plant(wdir);
-    return testHook(HOOK, bashPayload(command), {
+    const dsRoot = pathx.join(h.antiHall, 'devswarm');
+    return testHook(HOOK, bashPayload(mkCommand(dsRoot)), {
       home: h.home,
       env: DEVSWARM_COORD,
     });
@@ -378,31 +377,125 @@ function runDevswarmWithWorkspace(command, plant) {
   }
 }
 
-// A *.json descriptor that is a SYMLINK must be skipped (lstat, not followed) — so
-// even though its target holds a valid inboxPath, it counts as NO evidence -> ALLOW.
-// This is the fail-open-integrity guarantee (a symlink to /dev/zero would otherwise
-// wedge the hook). Skipped on platforms where symlink creation is unavailable.
-test('DEVSWARM FIX1: symlink descriptor is skipped (not followed) -> read-messages allows', (t) => {
-  let symlinkOk = true;
-  const r = runDevswarmWithWorkspace('hivecontrol workspace read-messages', (wdir) => {
-    const target = pathx.join(wdir, 'real-target.txt');
-    fsx.writeFileSync(target, JSON.stringify({ inboxPath: '/x/inbox.jsonl' }), 'utf8');
-    try {
-      fsx.symlinkSync(target, pathx.join(wdir, 'ws.json'));
-    } catch (_) {
-      symlinkOk = false; // e.g. Windows without privilege
-    }
-  });
-  if (!symlinkOk) return t.skip('symlink creation unavailable on this platform');
-  assert.strictEqual(r.status, 0, `symlink descriptor must not count as evidence\nstdout: ${r.stdout}`);
+// BLOCK: an unquoted `cat`/`head`/… of the raw inbox NDJSON (inbox deny is NOT gated).
+test('DEVSWARM FILE-READ BLOCK: cat of the raw inbox ndjson', () => {
+  const r = runDevswarmFileRead((root) => `cat ${pathx.join(root, 'inbox', 'x.ndjson')}`);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  assert.ok(/CURSOR DESYNC/.test(r.json.reason) && /does NOT drain the queue/.test(r.json.reason),
+    'reason must use the accurate cursor-desync harm model (append-only, not a drain)');
 });
 
-// An oversized (> 64 KB) *.json candidate is skipped before it is ever read, so a
-// huge file cannot stall the scan nor (here) supply evidence -> ALLOW.
-test('DEVSWARM FIX1: oversized descriptor is skipped -> read-messages allows', () => {
-  const big = JSON.stringify({ inboxPath: '/x/inbox.jsonl', pad: 'x'.repeat(70 * 1024) });
-  const r = runDevswarmWithWorkspace('hivecontrol workspace read-messages', (wdir) => {
-    fsx.writeFileSync(pathx.join(wdir, 'ws.json'), big, 'utf8');
+// BLOCK: head/tail forms of the inbox also block.
+test('DEVSWARM FILE-READ BLOCK: head of the raw inbox ndjson', () => {
+  const r = runDevswarmFileRead((root) => `head -n 5 ${pathx.join(root, 'inbox', 'x.ndjson')}`);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+});
+
+// Store deny is self-healing: it arms once devswarm-store.js exposes the read-CLI
+// (listMessages), which has landed -> a raw `head` of the store db BLOCKS. The
+// fail-OPEN-when-absent direction is covered by the classifier UNIT test (CLI_OFF)
+// in inbox-read-guard.test.js.
+test('DEVSWARM FILE-READ BLOCK: head of store db (read-CLI present -> gate armed)', () => {
+  const r = runDevswarmFileRead((root) => `head ${pathx.join(root, 'store', 'devswarm.db')}`);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && /STORE READ-GUARD/.test(r.json.reason), 'store block reason expected');
+});
+
+// REGRESSION (P1): a raw inbox/store path QUOTED with double or single quotes is a
+// completely normal, everyday shell pattern — it must block IDENTICALLY to the
+// unquoted form. Previously the segment was neutralized (quoted content blanked to
+// spaces) BEFORE path classification, so the quoted path argument became invisible
+// to detectProtectedFileRead and the read sailed through (exit 0). Verified fixed:
+// unquoted / double-quoted / single-quoted all now classify the SAME path text.
+const QUOTE_FORMS = [
+  ['unquoted', (p) => p],
+  ['double-quoted', (p) => `"${p}"`],
+  ['single-quoted', (p) => `'${p}'`],
+];
+for (const verb of ['cat', 'head', 'tail']) {
+  for (const [label, quote] of QUOTE_FORMS) {
+    test(`DEVSWARM FILE-READ BLOCK (regression): ${verb} of ${label} raw inbox ndjson`, () => {
+      const r = runDevswarmFileRead((root) => `${verb} ${quote(pathx.join(root, 'inbox', 'w1.ndjson'))}`);
+      assert.strictEqual(r.status, 2, `expected block for ${label} ${verb}\nstdout: ${r.stdout}`);
+      assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+    });
+    test(`DEVSWARM FILE-READ BLOCK (regression): ${verb} of ${label} raw store db`, () => {
+      const r = runDevswarmFileRead((root) => `${verb} ${quote(pathx.join(root, 'store', 'devswarm.db'))}`);
+      assert.strictEqual(r.status, 2, `expected block for ${label} ${verb}\nstdout: ${r.stdout}`);
+      assert.ok(r.json && /STORE READ-GUARD/.test(r.json.reason), 'store block reason expected');
+    });
+  }
+}
+
+// ALLOW: reads of the ALLOW-taxonomy surfaces (summary/cursors/workspaces), both
+// unquoted and double-quoted (the quoted form must resolve identically, not merely
+// "not block" — it must classify the SAME non-protected path).
+const FILE_READ_ALLOW = [
+  (root) => `cat ${pathx.join(root, 'summary.json')}`,
+  (root) => `cat ${pathx.join(root, 'cursors', 'x.cursor')}`,
+  (root) => `cat ${pathx.join(root, 'workspaces', 'x.json')}`,
+  (root) => `cat "${pathx.join(root, 'summary.json')}"`,
+  (root) => `cat "${pathx.join(root, 'cursors', 'x')}"`,
+];
+for (let i = 0; i < FILE_READ_ALLOW.length; i++) {
+  test(`DEVSWARM FILE-READ ALLOW (non-protected surface #${i})`, () => {
+    const r = runDevswarmFileRead(FILE_READ_ALLOW[i]);
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
   });
-  assert.strictEqual(r.status, 0, `oversized descriptor must be skipped\nstdout: ${r.stdout}`);
+}
+
+// ALLOW: quoted DATA that mentions the inbox path must NOT block — `echo` is not a
+// read verb, and grep/sed/awk's first non-flag operand is a PATTERN/script (never
+// classified as a path), so only a TRAILING file operand can trip the classifier.
+test('DEVSWARM FILE-READ ALLOW: echo of a quoted inbox path (echo is not a read verb)', () => {
+  const r = runDevswarmFileRead((root) => `echo "${pathx.join(root, 'inbox', 'x.ndjson')}"`);
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+test('DEVSWARM FILE-READ ALLOW: grep with a quoted bare-word PATTERN over a non-protected file', () => {
+  const r = runDevswarmFileRead(() => `grep 'inbox' docs/KB.md`);
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+test('DEVSWARM FILE-READ ALLOW: grep with the literal inbox path AS THE PATTERN (not a file operand)', () => {
+  const r = runDevswarmFileRead((root) => `grep -n '${pathx.join(root, 'inbox', 'x')}' docs/KB.md`);
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+// Subagent context (agent_id in payload): the file-read branch fires in ALL contexts.
+test('DEVSWARM FILE-READ BLOCK: inbox cat in SUBAGENT context (all-contexts)', () => {
+  const h = makeHome();
+  try {
+    const p = pathx.join(h.antiHall, 'devswarm', 'inbox', 'x.ndjson');
+    const r = testHook(HOOK, bashPayload(`cat ${p}`, { agentId: 'sub' }), {
+      home: h.home, env: DEVSWARM_COORD,
+    });
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// SKIP: an explicit devswarm-read-guard skip allows the raw file read.
+test('DEVSWARM FILE-READ SKIP: devswarm-read-guard skipped -> inbox cat allowed', () => {
+  const h = makeHome();
+  try {
+    h.writeSkip({ 'devswarm-read-guard': Date.now() + 60 * 60 * 1000 });
+    const p = pathx.join(h.antiHall, 'devswarm', 'inbox', 'x.ndjson');
+    const r = testHook(HOOK, bashPayload(`cat ${p}`), { home: h.home, env: DEVSWARM_COORD });
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// GATE OFF: without DevSwarm active, a raw inbox cat is NOT the guard's concern -> allow.
+test('DEVSWARM FILE-READ gate off: inbox cat allowed when DevSwarm inactive', () => {
+  const h = makeHome();
+  try {
+    const p = pathx.join(h.antiHall, 'devswarm', 'inbox', 'x.ndjson');
+    const r = testHook(HOOK, bashPayload(`cat ${p}`), { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
 });

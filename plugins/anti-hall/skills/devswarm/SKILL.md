@@ -21,21 +21,34 @@ project is running DevSwarm, not to this plugin.
 | **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped** | `companion/devswarm-supervisor.js`, `companion/install-devswarm-supervisor.js`, `companion/lib/{liveness,recovery,target-session,doctor-devswarm}.js`, `hooks/lib/devswarm-detect.js`, `hooks/lib/devswarm-role.js`, `hooks/devswarm-child-role.js`. The automatic background sweep. See "The layered recovery model" below. |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped** | `companion/devswarm-recover.js`. Invoked explicitly, per workspace id, by an operator (or a parent orchestrator acting on an escalation). See "On-demand recovery" below. |
 
-## command-guard's destructive-read redirect (shipped, v0.53.0)
+## command-guard's destructive-read redirect (shipped v0.53.0, later hardened to an unconditional block)
 
 Separate from the four addons above — this lives in the always-on `command-guard.js`
 hook, not in the DevSwarm companion. Under a DevSwarm-active session, `command-guard`
 redirects the two CONSUMING native `hivecontrol` inbox reads, in ALL contexts (a
-delegated subagent read drains the queue identically): `hivecontrol workspace monitor`
-blocks UNCONDITIONALLY (a no-timeout long-poll that hangs the shell and consumes the
-queue); `hivecontrol workspace read-messages` blocks ONLY when durable-inbox evidence
-exists — `ANTIHALL_DEVSWARM_INBOX_CMD` set, or a
-`~/.anti-hall/devswarm/workspaces/*.json` descriptor with a truthy `inboxPath` — so a
-harmless single-consumer `read-messages` is still allowed. Non-destructive
-`message-count`/`message-parent`/`message-child` are untouched. It has its own
-`devswarm-read-guard` skip name (in skip-guard's `DESTRUCTIVE` set, so a blanket `all`
-skip does not cover it) and is fail-open. Full detail: `docs/KB-devswarm-hivecontrol.md`
-§8.5.
+delegated subagent read drains the queue identically): **both** `hivecontrol workspace
+monitor` (a no-timeout long-poll that hangs the shell and consumes the queue) **and**
+`hivecontrol workspace read-messages` (marks-read/drains the queue) now block
+UNCONDITIONALLY whenever DevSwarm is active — `read-messages` no longer has a
+durable-inbox-evidence carve-out (a raw native read desyncs the durable cursor
+regardless of whether a durable inbox exists, so it is treated exactly like `monitor`
+now). Non-destructive `message-count`/`message-parent`/`message-child` are untouched.
+It has its own `devswarm-read-guard` skip name (in skip-guard's `DESTRUCTIVE` set, so a
+blanket `all` skip does not cover it) and is fail-open. Use `devswarm.js inbox pull` /
+`inbox read` / `inbox messages` instead (see the CLI reference below).
+
+A companion guard closes the same hole for RAW file reads of the durable inbox/store
+(`cat`/`head`/`grep`/… via Bash, or the `Read` tool) — those don't drain the native
+queue, but bypass the durable cursor (cursor desync) and violate the store's
+write/derive layering. `command-guard.js` itself catches the shell-verb form (both
+platforms); a Claude-only PreToolUse hook, `hooks/inbox-read-guard.js`, catches a
+direct `Read` tool call (not mirrored to Codex — it guards Claude's own `Read` tool).
+`inbox/**` is always denied; the store's db/journal files are denied once a Primary
+read path exists to serve the same data (`inbox messages`, below — already shipped).
+Everything else under `~/.anti-hall/devswarm/` (`summary.json`, `cursors/**`,
+`workspaces/**`, `liveness/**`, `heartbeats/**`, `locks/**`) is unaffected. Full
+detail (including the exact taxonomy and why raw reads are blocked at all — the
+single-native-consumer invariant): `docs/KB-devswarm-hivecontrol.md` §8.5/§8.7.1.
 
 ## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
 
@@ -54,6 +67,31 @@ minimizes but cannot close it (hivecontrol has no non-destructive full read); a 
 surfaces `ok:false` and writes no partial NDJSON. (2) It is pull-not-push: reception latency =
 one child turn (no background child drainer — a child cannot host the blocking `monitor`
 daemon). Full detail: `docs/KB-devswarm-hivecontrol.md` (v0.54.2 note).
+
+## CLI reference — `scripts/devswarm.js`
+
+THE structured interface (CLI over MCP — owner preference). Every subcommand emits one
+JSON line on stdout, exit `0`=`ok:true`/`2`=`ok:false`; every `<id>` is
+`isSafeId`-gated (`^[A-Za-z0-9._-]+$`) before use. Full table with source-line
+citations and a worked lifecycle example: `docs/KB-devswarm-hivecontrol.md` §8.8.
+Quick reference:
+
+| Command | Purpose |
+|---|---|
+| `register <id> --worktree P --session S [--inbox NDJSON] [--cursor P]` | Write a workspace descriptor + upsert the store registry. `--worktree`/`--session` required. |
+| `ensure <id> [--worktree P] [--session S] ...` | Idempotent `register` — leaves an existing descriptor untouched. |
+| `register-primary [--worktree P] [--session S] [--inbox NDJSON]` | Register the CURRENT worktree's Primary descriptor under its per-worktree id `primary-<hash>` (never a shared `'primary'`). |
+| `heartbeat <id> [--progress N] [--phase X] [--wip T]...` | Turn-authored heartbeat — never fabricates unsupplied fields. |
+| `inbox pull <id> [--session S]` | CHILD-side: bounded, guard-safe native-queue drain into the durable inbox (count-gate → at-most-one `read-messages`, never `monitor`). |
+| `inbox read <id>` / `inbox count <id>` / `inbox ack <id> [--to N]` | CHILD-side durable-inbox cursor read/count/advance. |
+| `inbox messages <id> [--unread] [--ack]` | Primary/store non-destructive read — bodies straight from the store, no descriptor needed, never touches the native queue. |
+| `inbox read-primary <id>` | `inbox messages <id> --unread --ack` under one name. |
+| `workspaces list` | Emit the `summary.json` projection. |
+| `gate <id> --set CSV --clear CSV` | Mark/unmark named completion gates (drives `archive_ready`). |
+| `nudge <id>` | Poke-or-escalate one workspace on demand. |
+| `archive <id>` | Archive-by-absence on anti-hall's own registry; surfaces the manual DevSwarm-app removal step. |
+| `archive-ignore <id>` / `archive-unignore <id>` | Mute/unmute the archive-ready reminder for one workspace. |
+| `migrate` | Idempotent, non-destructive, count-verified fold of legacy on-disk state into the store. |
 
 ## What this is for
 
@@ -201,12 +239,26 @@ LaunchAgent with `KeepAlive`; Linux `systemd --user` `.service` with `Restart=al
 (cron fallback — every minute, restart-if-dead — when `systemctl` is absent, giving a
 cron-only Linux host up to ~60s of revive gap after a crash). Distinct label
 (`com.anti-hall.devswarm-ingest`) and log (`~/.anti-hall/devswarm-ingest.log`) from the
-supervisor. Idempotent and safe to install redundantly — the daemon's own
-single-consumer lock means only one instance ever actually runs. Windows: documented
-no-op (no pure-Node long-running user-level scheduler; run the daemon manually if
-needed). Same **autonomous refresh** as the supervisor installer: the `update` skill
-runs its `how` command automatically (no offer, no ask) inside an active DevSwarm
-session, so a fresh update always carries a running, current-build ingest daemon.
+supervisor. Windows: documented no-op (no pure-Node long-running user-level scheduler;
+run the daemon manually if needed). Same **autonomous refresh** as the supervisor
+installer: the `update` skill runs its `how` command automatically (no offer, no ask)
+inside an active DevSwarm session, so a fresh update always carries a running,
+current-build ingest daemon.
+
+**PER-PROJECT, not per-machine — install it from EVERY repo you want covered.** The
+daemon's identity (macOS label / Linux unit / cron marker / lock file / its own
+reception workspace id `primary-<hash>`) is derived from the worktree it was installed
+FROM (an 8-hex hash of that worktree's realpath), so a second repo's install ADDS a new
+unit rather than overwriting the first — and safe-to-install-redundantly means "a
+second install for the SAME repo is a no-op," not "one daemon covers every repo."
+`hivecontrol` itself resolves which workspace a command targets by walking up from the
+process's OWN cwd — there is no way to point it at a different repo's queue by id — so
+each daemon can only ever drain the ONE worktree baked into its `WorkingDirectory` at
+install time. **If you use DevSwarm across multiple repos on one machine, run this
+installer once per repo** (`cd <repo A> && node .../install-devswarm-ingest.js`, then
+the same from repo B, …); a repo with no install of its own has zero ingest coverage,
+silently. Do not describe "the ingest daemon is running" as proof that ingest is
+covered machine-wide or for other repos — it proves only that its OWN worktree drains.
 
 **2. Publish a per-workspace descriptor** at
 `~/.anti-hall/devswarm/workspaces/<id>.json`:

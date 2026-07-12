@@ -85,6 +85,41 @@ for (const B of backends) {
     } finally { s.close(); rm(home); }
   });
 
+  test(`[${B.name}] listMessages returns bodies in order; sinceCursor excludes acked (read-back round-trip)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      // appendMessage(wsId, body) -> listMessages(wsId) returns the body ...
+      s.appendMessage({ workspaceId: 'p', body: 'first',  hash: 'h1' });
+      s.appendMessage({ workspaceId: 'p', body: 'second', hash: 'h2' });
+      s.appendMessage({ workspaceId: 'p', body: 'third',  hash: 'h3' });
+      s.appendMessage({ workspaceId: 'other', body: 'nope', hash: 'x1' }); // partitioned out
+
+      const all = s.listMessages('p');
+      assert.deepEqual(all.map((m) => m.body), ['first', 'second', 'third'], 'bodies returned in insertion order');
+      assert.deepEqual(all.map((m) => m.seq), [1, 2, 3], '1-based seq aligns with the consumed-count cursor');
+      assert.equal(all[0].hash, 'h1');
+      assert.deepEqual(s.listMessages('other').map((m) => m.body), ['nope'], 'keyed strictly by workspaceId');
+
+      // ... cursor advance -> listMessages(wsId,{sinceCursor}) excludes it.
+      assert.deepEqual(s.listMessages('p', { sinceCursor: 2 }).map((m) => m.body), ['third'], 'sinceCursor skips the first N');
+      assert.deepEqual(s.listMessages('p', { sinceCursor: 3 }), [], 'cursor at total -> nothing unread');
+      assert.deepEqual(s.listMessages('p', { sinceCursor: 0 }).map((m) => m.body), ['first', 'second', 'third']);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] listMessages dedupes identical hashes on read (parity with messageCount)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.appendMessage({ workspaceId: 'p', body: 'a', hash: 'dup' });
+      s.appendMessage({ workspaceId: 'p', body: 'a', hash: 'dup' }); // ignored dup
+      s.appendMessage({ workspaceId: 'p', body: 'b' }); // null hash -> distinct
+      assert.equal(s.messageCount('p'), 2);
+      assert.equal(s.listMessages('p').length, 2, 'listMessages count agrees with messageCount');
+    } finally { s.close(); rm(home); }
+  });
+
   test(`[${B.name}] cursor set + unread projection`, () => {
     const home = tmpHome();
     const s = open(home);
@@ -184,6 +219,42 @@ for (const B of backends) {
     } finally { s.close(); rm(home); }
   });
 }
+
+// ---- PER-PROJECT physical isolation (v0.55) -------------------------------
+test('PER-PROJECT: two workspaceIds -> two SEPARATE db files; a message in A is absent from B', () => {
+  const home = tmpHome();
+  try {
+    const A = 'primary-aaaaaaaa';
+    const B = 'primary-bbbbbbbb';
+    // distinct hashes -> distinct store dirs
+    assert.notEqual(store.hashFromWorkspaceId(A), store.hashFromWorkspaceId(B));
+
+    const sa = store.openStore({ home, workspaceId: A, backend: 'journal' });
+    try { sa.appendMessage({ workspaceId: A, body: 'in-A', hash: 'ha' }); } finally { sa.close(); }
+    const sb = store.openStore({ home, workspaceId: B, backend: 'journal' });
+    try { sb.appendMessage({ workspaceId: B, body: 'in-B', hash: 'hb' }); } finally { sb.close(); }
+
+    // Two SEPARATE db files on disk, one per project hash.
+    const fileA = path.join(store.journalDir(home, A), 'messages.ndjson');
+    const fileB = path.join(store.journalDir(home, B), 'messages.ndjson');
+    assert.notEqual(fileA, fileB, 'per-project stores live in different dirs');
+    assert.ok(fs.existsSync(fileA) && fs.existsSync(fileB), 'both physical files exist');
+
+    // A message in A's store is absent from B's FILE (physical isolation, not just
+    // a workspace_id column filter).
+    const rawA = fs.readFileSync(fileA, 'utf8');
+    const rawB = fs.readFileSync(fileB, 'utf8');
+    assert.ok(rawA.includes('in-A') && !rawA.includes('in-B'), "A's file holds only A's message");
+    assert.ok(rawB.includes('in-B') && !rawB.includes('in-A'), "B's file holds only B's message");
+
+    // And a reopen of B's store never sees A's row.
+    const rb = store.openStore({ home, workspaceId: B, backend: 'journal' });
+    try {
+      assert.equal(rb.messageCount(B), 1);
+      assert.equal(rb.messageCount(A), 0, "B's physical store has no rows for A");
+    } finally { rb.close(); }
+  } finally { rm(home); }
+});
 
 // ---- backend-independent unit tests ---------------------------------------
 test('requiredGatesFrom: default + env override', () => {

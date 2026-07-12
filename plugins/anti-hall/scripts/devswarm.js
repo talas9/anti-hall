@@ -63,6 +63,7 @@ const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate } = require('../companion/lib/recovery.js');
 const migrate = require('../companion/devswarm-migrate.js');
 const pull = require('../companion/lib/devswarm-pull.js');
+const inst = require('../companion/install-devswarm-ingest.js');
 
 // ----- paths -----
 function workspacesDir(home) { return path.join(devswarmRoot(home), 'workspaces'); }
@@ -70,6 +71,10 @@ function archivedDir(home) { return path.join(devswarmRoot(home), 'archived'); }
 function heartbeatsDir(home) { return path.join(devswarmRoot(home), 'heartbeats'); }
 function archiveIgnoreDir(home) { return path.join(devswarmRoot(home), 'archive-ignore'); }
 function descriptorPath(home, id) { return path.join(workspacesDir(home), id + '.json'); }
+// The durable ACK cursor for the Primary/store read-path. Lives under cursors/ — an
+// ALLOW location for the read-guard, deliberately NOT under store/ or inbox/ (which
+// hold the message trail itself). A bare integer = consumed message count.
+function primaryCursorPath(home, id) { return path.join(devswarmRoot(home), 'cursors', id + '.json'); }
 
 // ----- tiny flag parser -----
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
@@ -164,7 +169,8 @@ function buildDescriptorFromFlags(id, flags, existing) {
 // upsertStoreRegistry — open the store, upsert one descriptor, re-derive summary,
 // close. Kept in one place so every write path refreshes the projection.
 function upsertStoreRegistry(home, desc, ctx) {
-  const s = store.openStore({ home, backend: ctx && ctx.backend, env: ctx && ctx.env });
+  // PER-PROJECT: this descriptor's own workspaceId selects its physical store.
+  const s = store.openStore({ home, workspaceId: desc.id, backend: ctx && ctx.backend, env: ctx && ctx.env });
   try {
     s.upsertRegistry(desc);
     store.deriveSummary(s, { home, env: ctx && ctx.env });
@@ -282,9 +288,58 @@ function cmdInboxPull(id, flags, ctx) {
   return out;
 }
 
+// cmdInboxMessages(id, flags, ctx, {ack}) — the Primary/store READ path. Reads
+// message BODIES directly from the store via store.listMessages (NON-destructively —
+// it never drains the native queue or deletes a row), mirroring how child-side
+// `inbox read` reads the durable NDJSON. `--unread` returns only messages past the
+// durable ACK cursor (a bare-int file under cursors/); `ack` (the `read-primary`
+// ergonomic, or `--ack`) advances that cursor to the current total. Needs NO
+// descriptor — the store rows exist keyed by workspaceId regardless. `--json` is
+// accepted for parity (the CLI always emits JSON) and otherwise ignored.
+//
+// #22 fix: on ack, ALSO advance the STORE's own cursor (store.setCursor) — not just
+// the durable ACK cursor FILE under cursors/. deriveSummary()'s projected `unread`
+// (what the parent table shows) is computed from the store cursor
+// (store.cursorValue), NOT the ACK cursor file, so without this a Primary that read
+// its inbox still showed those messages as unread forever. Both cursors are kept:
+// the ACK cursor file stays the read-guard ALLOW-listed location; the store cursor
+// is the summary projection's source of truth. Re-derive summary.json in the same
+// call so the persisted projection reflects the drop immediately, not just on the
+// next unrelated store write.
+function cmdInboxMessages(id, flags, ctx, opts) {
+  const home = ctx.home;
+  const doAck = !!((opts && opts.ack) || flags.ack);
+  const unread = !!flags.unread || doAck; // read-primary is inherently unread-then-ack
+  const cursorPath = primaryCursorPath(home, id);
+  const cursor = inboxCursor.readCursor(cursorPath);
+  const s = store.openStore({ home, workspaceId: id, backend: ctx.backend, env: ctx.env });
+  let total, messages, acked;
+  try {
+    total = s.messageCount(id);
+    messages = s.listMessages(id, { sinceCursor: unread ? cursor : 0 });
+    if (doAck) {
+      acked = inboxCursor.ackTo(cursorPath, total); // absolute set to the current total (no inbox clamp)
+      s.setCursor(id, acked); // keep deriveSummary's unread projection in sync with the ACK
+      store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); // refresh the persisted projection now
+    }
+  } finally { s.close(); }
+  return {
+    ok: true,
+    action: doAck ? 'read-primary' : 'messages',
+    id,
+    unread,
+    cursor: acked !== undefined ? acked : cursor,
+    total,
+    count: messages.length,
+    messages,
+  };
+}
+
 function cmdInbox(sub, id, flags, ctx) {
   const home = ctx.home;
   if (sub === 'pull') return cmdInboxPull(id, flags, ctx);
+  if (sub === 'messages') return cmdInboxMessages(id, flags, ctx);
+  if (sub === 'read-primary') return cmdInboxMessages(id, flags, ctx, { ack: true });
   const desc = readDescriptorFile(home, id);
   if (!desc || !desc.inboxPath) {
     return { ok: false, error: 'no inboxPath for workspace ' + JSON.stringify(id) + ' (register it first)' };
@@ -312,17 +367,53 @@ function cmdInbox(sub, id, flags, ctx) {
     }
     return { ok: true, action: 'ack', id, cursor, total: inboxCursor.countMessages(inboxPath) };
   }
-  return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count|pull)' };
+  return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count|pull|messages|read-primary)' };
 }
 
-function cmdWorkspacesList(ctx) {
+// cmdRegisterPrimary(flags, ctx) — register the CURRENT worktree's Primary/parent
+// workspace descriptor under its per-worktree workspaceId (primary-<worktreeHash>),
+// so `migrate` can fold a legacy NDJSON inbox into the store under that same id (what
+// lets a Primary import its stranded messages). Reuses cmdRegister's descriptor-write
+// path (validation + store upsert + cursor init). worktree defaults to the git
+// toplevel of ctx.cwd; --inbox optionally points at a legacy NDJSON source for migrate.
+function cmdRegisterPrimary(flags, ctx) {
   const home = ctx.home;
-  const s = store.openStore({ home, backend: ctx.backend, env: ctx.env });
+  const cwd = ctx.cwd || process.cwd();
+  const worktree = one(flags, 'worktree') || inst.resolveWorktree(cwd);
+  if (!worktree) {
+    return { ok: false, error: 'register-primary must run inside a git worktree (or pass --worktree <path>)' };
+  }
+  const id = inst.primaryWorkspaceId(worktree);
+  if (!isSafeId(id)) return { ok: false, error: 'derived primary workspace id is unsafe: ' + JSON.stringify(id) };
+  const session = one(flags, 'session') || (ctx.env && ctx.env.DEVSWARM_BUILDER_ID) || id;
+  const inbox = one(flags, 'inbox'); // optional legacy NDJSON source for `migrate`
+  const cursor = one(flags, 'cursor') || primaryCursorPath(home, id);
+  const ensureFlags = { worktree: [worktree], session: [session], cursor: [cursor] };
+  if (inbox !== undefined) ensureFlags.inbox = [inbox];
+  const r = cmdRegister(id, ensureFlags, ctx);
+  if (!r.ok) return r;
+  return { ok: true, action: 'register-primary', id, workspaceId: id, worktree, descriptor: r.descriptor };
+}
+
+function cmdWorkspacesList(flags, ctx) {
+  const home = ctx.home;
+  // PER-PROJECT: which project's store to derive. Explicit targeting wins so a
+  // caller can inspect any project's summary: --workspace <id> (a store partition
+  // key directly) or --worktree <path> (its primary-<hash>). Otherwise derive the
+  // CURRENT worktree's own store (primary-<worktreeHash>) from cwd. Outside a
+  // worktree with no flag, fall back to the default bucket (an empty/legacy view).
+  let workspaceId = one(flags, 'workspace');
+  if (workspaceId === undefined) {
+    const worktreeFlag = one(flags, 'worktree');
+    const worktree = worktreeFlag || inst.resolveWorktree(ctx.cwd || process.cwd());
+    workspaceId = worktree ? inst.primaryWorkspaceId(worktree) : undefined;
+  }
+  const s = store.openStore({ home, workspaceId, backend: ctx.backend, env: ctx.env });
   let sum;
-  try { sum = store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); }
+  try { sum = store.deriveSummary(s, { home, workspaceId, env: ctx.env, now: ctx.now }); }
   finally { s.close(); }
   const workspaces = Object.values(sum.workspaces || {});
-  return { ok: true, action: 'workspaces', requiredGates: sum.requiredGates, count: workspaces.length, workspaces };
+  return { ok: true, action: 'workspaces', workspaceId: workspaceId || null, requiredGates: sum.requiredGates, count: workspaces.length, workspaces };
 }
 
 function cmdGate(id, flags, ctx) {
@@ -333,7 +424,7 @@ function cmdGate(id, flags, ctx) {
     return { ok: false, error: 'gate needs --set <csv> and/or --clear <csv>' };
   }
   const setBy = one(flags, 'by') !== undefined ? one(flags, 'by') : 'devswarm-cli';
-  const s = store.openStore({ home, backend: ctx.backend, env: ctx.env });
+  const s = store.openStore({ home, workspaceId: id, backend: ctx.backend, env: ctx.env });
   let summary;
   try {
     for (const name of setNames) s.setGate({ workspaceId: id, name, value: true, setBy });
@@ -376,7 +467,7 @@ function cmdArchive(id, ctx) {
       moved = true;
     } catch (_) { moved = false; }
   }
-  const s = store.openStore({ home, backend: ctx.backend, env: ctx.env });
+  const s = store.openStore({ home, workspaceId: id, backend: ctx.backend, env: ctx.env });
   try { s.removeRegistry(id); store.deriveSummary(s, { home, env: ctx.env }); }
   finally { s.close(); }
   return {
@@ -444,7 +535,7 @@ function run(argv, ctx0) {
       case 'workspaces': {
         const sub = positionals[1] || 'list';
         if (sub !== 'list') return { code: 2, result: { ok: false, error: 'unknown workspaces subcommand: ' + sub } };
-        return { code: 0, result: cmdWorkspacesList(ctx) };
+        return { code: 0, result: cmdWorkspacesList(flags, ctx) };
       }
       case 'gate': {
         const id = positionals[1];
@@ -473,12 +564,16 @@ function run(argv, ctx0) {
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
         return { code: 0, result: cmdArchiveIgnore(id, ctx, { set: false }) };
       }
+      case 'register-primary': {
+        const r = cmdRegisterPrimary(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       case 'migrate': {
         return { code: 0, result: cmdMigrate(ctx) };
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|migrate)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|migrate)' } };
     }
   } catch (e) {
     return { code: 2, result: { ok: false, error: String(e && e.message || e) } };
@@ -500,5 +595,5 @@ if (require.main === module) {
 module.exports = {
   run, parseArgs, one, many, csvList,
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
-  workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir,
+  workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath,
 };

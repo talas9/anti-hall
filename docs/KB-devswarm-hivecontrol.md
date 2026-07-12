@@ -318,19 +318,63 @@ platform-identical** (both call the same `hivecontrol`):
 
 - **`git-guard` / `merge-gate`** already gate merge/commit paths — reuse them around
   `merge-into-source`.
-- **`command-guard`'s DevSwarm destructive-read redirect (shipped, v0.53.0).** Under a
-  DevSwarm-active session, `command-guard.js` intercepts the two CONSUMING native
-  `hivecontrol` inbox reads from §4.1/§7 before its own coordinator-only gate, in ALL
-  contexts (a delegated subagent read drains the queue identically): `hivecontrol
-  workspace monitor` blocks unconditionally (a no-timeout long-poll that hangs the shell
-  and consumes the queue); `hivecontrol workspace read-messages` blocks only when
-  durable-inbox evidence exists (`ANTIHALL_DEVSWARM_INBOX_CMD` set, or a
-  `~/.anti-hall/devswarm/workspaces/*.json` descriptor with a truthy `inboxPath`) — a
-  harmless single-consumer `read-messages` is allowed. Non-destructive `message-count` /
-  `message-parent` / `message-child` are never touched. Own `devswarm-read-guard` skip
-  name (in skip-guard's `DESTRUCTIVE` set — a blanket `all` skip does not silence it).
-  Fires on both platforms: `command-guard.js` is a single file shared by the Claude and
-  Codex ports (§8.4), so this redirect needs no separate Codex adapter.
+- **`command-guard`'s DevSwarm destructive-read redirect (shipped v0.53.0; hardened to an
+  UNCONDITIONAL block on `read-messages` too in a later, undated follow-up — verified
+  directly against the current `command-guard.js` source, since neither CHANGELOG.md nor
+  this doc had caught up).** Under a DevSwarm-active session, `command-guard.js`
+  intercepts the two CONSUMING native `hivecontrol` inbox reads from §4.1/§7 before its
+  own coordinator-only gate, in ALL contexts (a delegated subagent read drains the queue
+  identically): **both** `hivecontrol workspace monitor` (a no-timeout long-poll that
+  hangs the shell and consumes the queue) **and** `hivecontrol workspace read-messages`
+  (marks-read / drains the queue) now block UNCONDITIONALLY whenever DevSwarm is active.
+  `read-messages` no longer requires durable-inbox evidence first — the original v0.53.0
+  design (`hasDurableInboxEvidence()`, gated on `ANTIHALL_DEVSWARM_INBOX_CMD` or a
+  descriptor's `inboxPath`) has been **removed from the code**: a raw native
+  `read-messages` desyncs the durable cursor regardless of whether a durable inbox
+  happens to exist, so it is now treated exactly like `monitor`. **CORRECTION:** any
+  earlier text (in this doc, the `devswarm` skill, or its Codex mirror) describing
+  `read-messages` as "evidence-gated" / "allowed when no durable inbox exists" is stale —
+  do not repeat it. Non-destructive `message-count` / `message-parent` / `message-child`
+  are still never touched. Own `devswarm-read-guard` skip name (in skip-guard's
+  `DESTRUCTIVE` set — a blanket `all` skip does not silence it). Fires on both platforms:
+  `command-guard.js` is a single file shared by the Claude and Codex ports (§8.4), so this
+  redirect needs no separate Codex adapter. **Redirect target:**
+  `scripts/devswarm.js inbox pull <id>` / `inbox read <id>` / `inbox messages <id>` — see
+  §8.8 for the full CLI.
+- **Raw-file-read guard (companion to the above, closes the shell/Read-tool bypass).**
+  Blocking the native `hivecontrol` commands does not stop an agent from reading the
+  DURABLE inbox/store files directly — `cat`/`head`/`grep`/… or the `Read` tool. That
+  does **not** drain anything (the inbox is append-only NDJSON), but it (1) **desyncs the
+  durable cursor** — bypassing it means messages get re-processed or skipped — and (2)
+  violates the store's write/derive layering (`devswarm-store.js`: "hooks never open the
+  DB"). Two guards close this, sharing one classifier
+  (`hooks/lib/devswarm-inbox-paths.js`'s `classifyDevswarmPath(path, home, cwd)`):
+  - **Bash-side** — `command-guard.js`'s `detectProtectedFileRead()` matches
+    `cat`/`head`/`tail`/`less`/`more`/`od`/`xxd`/`strings`/`nl`/`grep`/`sed`/`awk` at
+    command-verb position (the same quote-neutralization + `bash -c`/`eval`/`$()`/backtick
+    recursion as the native-read detector above) and classifies each unquoted path
+    argument.
+  - **Read-tool-side** — a dedicated PreToolUse hook, `hooks/inbox-read-guard.js`
+    (**Claude-only** — not registered in `codex/hooks/hooks.json`, since it guards
+    Claude's own `Read` tool specifically; the Bash-side guard above still fires
+    identically on Codex because `command-guard.js` is shared), classifies
+    `tool_input.file_path` the same way.
+  - **Taxonomy** (verified against `liveness.js`'s `devswarmRoot()` + the store's own
+    paths): `inbox/**` → `deny-inbox`, UNCONDITIONALLY (the `devswarm.js inbox pull`/
+    `read` wrapper already exists, so there is no legitimate reason to read it raw).
+    `store/<hash>/devswarm.db` (+ `-wal`/`-shm`/`-journal` sidecars) and
+    `store/<hash>/journal/*.ndjson` → `deny-store` (the store is now PHYSICALLY
+    PER-PROJECT, one `store/<worktreeHash>/` per worktree; the legacy flat
+    `store/devswarm.db` / `store/journal/*.ndjson` layout is still matched for a
+    pre-migration on-disk store), but only when a Primary read path that can
+    serve the same data through the wrapper is actually present (probed via
+    `devswarm-store.js` exposing `listMessages` — now shipped, so this gate is armed).
+    Everything else under the DevSwarm root (`summaries/<hash>.json`, `cursors/**`,
+    `workspaces/**`, `liveness/**`, `heartbeats/**`, `locks/**`, `archive-*`) is
+    `allow`, as is any path outside the root or any resolution error (fail-open by
+    design — a hook bug must never block a turn). Redirect target: `inbox pull`/`read`
+    for a child's own inbox, `inbox messages`/`read-primary` for the Primary/store path
+    (§8.8).
 - A **new no-child-child guard** should block `hivecontrol workspace create` when
   `DEVSWARM_SOURCE_BRANCH` is non-empty (child), mirroring the swarm-guard/anti-deep-nesting
   pattern.
@@ -396,8 +440,15 @@ while the session is wedged, defeating the whole point of the detector.
 **The store (`companion/lib/devswarm-store.js`).** ONE API, TWO interchangeable backends
 chosen by **feature-detect** (`try { require('node:sqlite') }` → WAL sqlite; else an
 append-only NDJSON journal) — dependency-free and green on Node 18/20 (no `node:sqlite`)
-through 22/24. **Hooks NEVER open the DB**: the store is the write/derive side and derives a
-`summary.json` projection (written atomically via tmp+rename) that hooks read. Data model —
+through 22/24. The store is **PHYSICALLY PER-PROJECT**: each worktree gets its OWN
+`store/<hash>/devswarm.db` (+ journal), where `<hash>` derives from the workspaceId the
+caller operates on (`primary-<worktreeHash>` unwraps to that worktree hash; any other id
+buckets by `sha256(id)`). A 0.54.x GLOBAL store is split into per-project stores
+non-destructively on upgrade (`devswarm-migrate.js migrateGlobalStoreToPerProject`; the
+global file is kept as a backup). **Hooks NEVER open the DB**: the store is the
+write/derive side and derives a PER-PROJECT `summaries/<hash>.json` projection (written
+atomically via tmp+rename, placed OUTSIDE `store/` so the read-guard ALLOWs it) that hooks
+read. Data model —
 `messages` (timestamped, append-only, idempotent by dedupe hash), `registry` (workspace
 descriptors), `cursors` (per-workspace consumed count), `gates` (per-workspace named boolean
 **completion gates**, timestamped + append-only). It derives `archive_ready: true` when ALL
@@ -451,6 +502,62 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
   as the unit's working directory (macOS plist `WorkingDirectory`, Linux systemd
   `WorkingDirectory=`, a `cd` prefix on the cron fallback line); it refuses to install
   (fail-open, no-op, exit 0) when run from a cwd that isn't inside a git worktree.
+- **PER-PROJECT identity — ONE ingest daemon per repo/git-worktree, not per machine
+  (CORRECTION — this scope was not spelled out before and must not be assumed).**
+  `install-devswarm-ingest.js` derives an **additive, per-worktree** unit identity so a
+  second repo's install creates a NEW unit rather than overwriting the first repo's:
+  `worktreeHash(wt)` — an 8-hex SHA-256 fingerprint of the worktree's realpath — feeds
+  `labelForWorktree`/`unitForWorktree` (macOS label `com.anti-hall.devswarm-ingest.<hash>`,
+  Linux unit `anti-hall-devswarm-ingest-<hash>.service`/cron marker
+  `# anti-hall-devswarm-ingest-<hash>`) and `primaryWorkspaceId(wt)` = `primary-<hash>`
+  (the store partition key for THAT worktree's own reception queue — replacing an early
+  hardcoded `'primary'` that collided rows across repos). `devswarm-ingest.js` computes
+  the identical hash from its own resolved worktree (`resolveDaemonWorktree` →
+  `installIngest.resolveWorktree`/`worktreeHash`, so lock path (`locks/ingest-<hash>.lock`)
+  and workspace id agree byte-for-byte with what the installer baked into the unit.
+  **Multi-repo coverage means installing this installer from EACH repo/worktree
+  separately** (`node plugins/anti-hall/companion/install-devswarm-ingest.js` run from
+  inside repo A, then again from inside repo B) — there is no single daemon that covers
+  more than the one worktree it was launched from, and there is no way to point an
+  existing daemon at a different repo after the fact (its `WorkingDirectory` is baked in
+  at install time). `listInstalledIngestUnits()` enumerates every installed unit
+  (legacy hash-less AND per-worktree) for readback (`doctor`/`doctor-repair` use this,
+  not a re-derivation). **Do not describe an installed ingest daemon as "verified
+  functioning" for the whole machine or for other repos** — a live daemon proves only
+  that IT'S worktree drains; a sibling repo with no install of its own has no ingest
+  coverage at all, silently.
+- **The store is PHYSICALLY PER-PROJECT (per worktree), like the daemon.** Each worktree
+  gets its OWN `~/.anti-hall/devswarm/store/<worktreeHash>/devswarm.db` (+ journal) and its
+  own `~/.anti-hall/devswarm/summaries/<worktreeHash>.json`; the store dir is derived from
+  the workspaceId the caller operates on (`primary-<worktreeHash>` → that worktree hash; any
+  other id → `sha256(id)`). This replaces the former single global
+  `~/.anti-hall/devswarm/store` shared by every worktree. The `workspace_id` column is
+  retained (harmless) but each physical store now holds one project's data. Daemon coverage
+  still determines which ids actually receive new native messages, and each daemon writes
+  into ITS worktree's own store. A pre-existing 0.54.x global store is split into per-project
+  stores automatically + non-destructively on upgrade (the global file is left as a backup).
+- **Daemon liveness heartbeat (forward-compatible, not yet consumed).** Every ingest
+  loop iteration — even a quiet one with zero inserts — writes
+  `heartbeats/ingest-<hash>.json` (`{ts, workspaceId, workingDir, pid}`) via
+  `writeIngestHeartbeat()`, independent of `summary.json`'s `generatedAt` (which only
+  advances when `inserted > 0`, so a live-but-quiet daemon would otherwise read as
+  stale). As of this writing `doctor`/`doctor-repair` do NOT yet read this heartbeat —
+  their daemon-health check classifies the INSTALLED UNIT's config
+  (`ok`/`wrong-path`/`stale-script`/`absent`), not runtime freshness. Wiring the
+  freshness banner to this heartbeat is an explicit open follow-up; do not claim it is
+  live-liveness-checked until that lands.
+- **Design rule — hook (event) vs daemon (interval), stated explicitly.** The four
+  mechanical trigger hooks above fire ONLY on a turn boundary (`UserPromptSubmit`/`Stop`/
+  `SessionStart`) and structurally cannot self-fire between turns. Anything genuinely
+  TIME-based or IDLE-based — the liveness supervisor's idle-child staleness sweep
+  (`devswarm-supervisor.js`'s `sweepOnce`, run on a `launchd StartInterval`/`systemd
+  .timer`/cron tick, independent of any session being open) and the ingest daemon's
+  continuous native-queue consumption (`devswarm-ingest.js`'s `runIngestLoop`, a
+  long-running process re-exec'd on exit) — therefore lives in the **companion/**
+  daemons, never in a hook. A hook that tried to implement "has this workspace been idle
+  15 minutes?" would only ever re-check on the NEXT turn, which may never come for a
+  genuinely wedged session — the whole reason this substrate exists. Keep new
+  time/idle-based logic in a companion daemon; keep new turn-boundary logic in a hook.
 - **`devswarm-child-gate` over-nag fix.** The Stop-gate now checks the child's own
   turn-authored heartbeat (`heartbeats/<branch>.json`, written every turn by
   `devswarm-child-turn`) before forcing an ack: a heartbeat fresher than 5 minutes means
@@ -510,6 +617,93 @@ that wraps the native `monitor` → store (dedupe-idempotent) and **refuses to s
 another monitor consumer is already running** (lockfile), mechanically enforcing the
 single-native-consumer invariant — two concurrent `monitor` consumers split the destructive
 queue and silently lose messages.
+
+### 8.7.1 Single-consumer importance (why the read-guard exists)
+
+Stated once, explicitly, because it is the load-bearing invariant behind §8.5's read-guard
+AND every lock in this substrate: **exactly one process may ever be the native consumer of
+a given `hivecontrol` message queue at a time.** `read-messages` and `monitor` both
+DESTRUCTIVELY drain/mark-read the native queue — there is no non-destructive full read.
+If two consumers ever call either concurrently against the SAME queue, each drains
+whatever the other did not already see; the split is silent (no error, no signal that a
+message went to the "wrong" reader) and unrecoverable (a marked-read native message cannot
+be un-marked). This is why:
+- The ingest daemon (`devswarm-ingest.js`) takes an O_EXCL lock and refuses to start a
+  second instance against the same worktree's queue (§8.7's per-worktree identity note).
+- The child-side pull (`devswarm-pull.js`'s `pullOnce`) takes a PER-ID O_EXCL lock so a
+  child never drains its own queue twice concurrently.
+- **Every other consumer — hooks, agents, the Primary, a delegated subagent — must NEVER
+  call `read-messages`/`monitor` directly at all**, not even once, not even "just to
+  check": there is no way to tell, from outside, whether the ingest daemon or a child's
+  pull is ALSO about to poll the same queue, so any ad-hoc call is a potential silent
+  split. This is why §8.5's guard blocks it UNCONDITIONALLY rather than trying to detect
+  contention — contention is exactly the thing that cannot be detected from a single call
+  site. Read pending messages via the wrapper instead (§8.8): it reads the DURABLE inbox
+  (already-drained, safe to read any number of times) or the STORE (same), never the
+  native queue directly.
+
+---
+
+## 8.8 Full CLI reference — `scripts/devswarm.js`
+
+THE structured interface (CLI over MCP — owner preference; every subcommand below is a
+**thin wrapper reusing already-built primitives**, per the file's own header comment — it
+invents no parallel schema). Every command emits one JSON line on stdout and a matching
+process exit code (`0` = `ok:true`, `2` = `ok:false`/unknown command/unsafe id); every
+positional `<id>` is `isSafeId`-gated (`^[A-Za-z0-9._-]+$`, never `.`/`..`, never a bare
+`..` anywhere in the string) before it is ever `path.join`'d — an unsafe or missing id
+fails closed with `{ok:false, error:...}` for every subcommand, never a throw. Verified
+line-for-line against the current `plugins/anti-hall/scripts/devswarm.js`.
+
+| Command | Purpose | Source |
+|---|---|---|
+| `register <id> --worktree P --session S [--inbox NDJSON] [--cursor P] [--nudge ARGV]...` | Write/update a workspace descriptor (`workspaces/<id>.json`) + upsert the store registry. `--worktree`/`--session` are REQUIRED for a fresh registration — a descriptor missing either is invisible to the supervisor's `readDescriptors` (which filters on both), so `register` validates the MERGED result and fails closed rather than silently writing a phantom registration. Initializes the durable cursor to `0` if one doesn't already exist (non-destructive — never clobbers an existing cursor). | `cmdRegister` L180–220, dispatch L486–491 |
+| `ensure <id> [--worktree P] [--session S] ...` | Idempotent `register`: if a descriptor already exists it is LEFT UNTOUCHED (only the store registry is re-upserted, refreshing the `summary.json` projection); only a genuinely-absent descriptor goes through full `register` validation. `inbox pull` calls this internally to auto-create a child's descriptor before draining. | `cmdRegister(..., {requireNew:true})` L180–220, dispatch L492–497 |
+| `register-primary [--worktree P] [--session S] [--inbox NDJSON] [--cursor P]` | Register the CURRENT worktree's Primary/parent descriptor under its PER-WORKTREE id `primary-<worktreeHash>` (§8.7's per-project identity — never the old collision-prone hardcoded `'primary'`). `--worktree` defaults to `git rev-parse --show-toplevel` of cwd; `--session` defaults to `DEVSWARM_BUILDER_ID` env or the derived id; `--cursor` defaults to `cursors/<id>.json` (the durable ACK cursor `inbox messages --ack`/`read-primary` advance — a SEPARATE cursor namespace from a child's own descriptor `cursorPath`); `--inbox` optionally points `migrate` at a legacy NDJSON source to fold into this partition. | `cmdRegisterPrimary` L365–382, dispatch L542–545 |
+| `heartbeat <id> [--progress N] [--phase X] [--wip T]... [--blockers T]... [--session S]` | Write a turn-authored heartbeat (`heartbeats/<id>.json`). Only asserts fields the caller actually supplied — NEVER fabricates `progress`/`phase`/`wip`/`blockers` (absent input = `null`/`[]` on write, not a guess). Consumer/session-invoked ONLY — the heartbeat-authorship rule (§8.7) forbids a background ticker ever writing one. | `cmdHeartbeat` L222–251, dispatch L498–502 |
+| `inbox pull <id> [--session S]` | CHILD-side reception drain. Auto-`ensure`s the descriptor, then ONE bounded guard-safe pull: non-destructive `message-count` gate FIRST (count `0` → returns without ever calling `read-messages`); on count `>0`, exactly ONE bounded `read-messages` (10 s finite timeout, never the blocking `monitor`); appends the batch to the durable inbox NDJSON in one atomic write, idempotent by content hash; feeds the store-parity projection with the same hash. | `cmdInboxPull` L261–288 → `companion/lib/devswarm-pull.js` `pullOnce` L177–289 |
+| `inbox read <id>` | CHILD-side cursor read: the unread slice of the durable inbox NDJSON past the descriptor's own `cursorPath`. Requires an existing descriptor with `inboxPath` (`register`/`ensure`/`inbox pull` all create one). | `cmdInbox` 'read' branch L339–342 |
+| `inbox count <id>` | CHILD-side non-destructive unread COUNT only (no message bodies) against the descriptor's inbox. | `cmdInbox` 'count' branch L335–338 |
+| `inbox ack <id> [--to N]` | Advance the descriptor's durable cursor. No `--to` = ack-all (cursor := current total); `--to N` sets an absolute count, clamped to `[0, total]` so an over-ack can never swallow messages that arrive later. This is the parent-gate's non-skip CLEAR path. | `cmdInbox` 'ack' branch L343–355 |
+| `inbox messages <id> [--unread] [--ack] [--json]` | **Primary/store non-destructive READ path.** Reads message BODIES directly from the store (`store.listMessages`) — never touches the native queue, needs NO descriptor (rows are keyed by workspace id regardless of registration, so it works even for an id nothing ever `register`ed). `--unread` returns only messages past the durable ACK cursor at `cursors/<id>.json` (note: this is a DIFFERENT cursor file/namespace than a child descriptor's own `cursorPath` used by `inbox read`/`ack`). `--ack` additionally advances that cursor to the current total in the same call (equivalent to `read-primary`). `--json` is accepted for CLI-invocation parity and is otherwise a no-op — output is always JSON regardless. | `cmdInboxMessages` L298–322, dispatch via `cmdInbox` L326–328 |
+| `inbox read-primary <id>` | Sugar for `inbox messages <id> --unread --ack` under one name — "read what's unread, then advance the ACK cursor," the Primary's one-shot ergonomic. | `cmdInboxMessages(..., {ack:true})` L298–322, dispatch L328 |
+| `workspaces list` | Derive + emit the `summary.json` projection: `{requiredGates, count, workspaces: {...}}`, one entry per registered workspace with `total`/`cursor`/`unread`/`gates`/`archive_ready`. | `cmdWorkspacesList` L384–392, dispatch L510–514 |
+| `gate <id> --set CSV --clear CSV [--by NAME]` | Mark/unmark named completion gates (append-only in the store — a set/clear appends a new timestamped row; current value = latest row per name). anti-hall is agnostic about what any gate MEANS — the consumer defines and sets them (default required set for `archive_ready`: `done,merged,tests_passed`, override via `ANTIHALL_DEVSWARM_REQUIRED_GATES`). `--by` names the setter (default `devswarm-cli`). | `cmdGate` L394–416, dispatch L515–520 |
+| `nudge <id>` | Poke-or-escalate one workspace ON DEMAND, honoring the same persisted attempt-count/cooldown state the automatic supervisor sweep would (reuses `recovery.pokeOrEscalate` — the identical primitive, not a re-implementation). | `cmdNudge` L418–428, dispatch L521–526 |
+| `archive <id>` | Archive-by-absence on anti-hall's OWN registry ONLY: moves the descriptor into `archived/` (renames — never unlinks) and tombstones the store registry entry. hivecontrol itself has NO teardown/delete/archive command at any level (§4/§10), so this SURFACES a manual "remove workspace X in the DevSwarm app" step in its response — it never runs an actual delete. | `cmdArchive` L430–453, dispatch L527–531 |
+| `archive-ignore <id>` / `archive-unignore <id>` | Write / remove a per-workspace `archive-ignore/<id>.json` mute of the `devswarm-parent-inbox` archive-ready reminder. | `cmdArchiveIgnore` L455–470, dispatch L532–541 |
+| `migrate` | Auto-migrate on-disk state (the JSON descriptor registry + each descriptor's legacy NDJSON inbox/cursor) into the store. Idempotent (dedupe hash from id + line-index + content), NON-DESTRUCTIVE (reads sources only, never deletes/moves/truncates), single-consumer-locked (O_EXCL), and COUNT-VERIFIED (store count must equal distinct legacy lines) before it reports `verified:true`. | `cmdMigrate` L472–474 → `companion/devswarm-migrate.js`, dispatch L546–548 |
+
+**Worked example — a full Primary/child lifecycle end to end:**
+```bash
+# Primary, from its own worktree — register once (per-worktree id, idempotent):
+node scripts/devswarm.js register-primary --session "$CLAUDE_SESSION_ID"
+#  -> { ok:true, action:"register-primary"|"registered"|"updated", id:"primary-<hash>", ... }
+
+# A child workspace registers itself (worktreePath/sessionId REQUIRED):
+node scripts/devswarm.js register child-1 --worktree /path/to/child/worktree --session "$CHILD_SESSION_ID"
+
+# Child drains its native parent->child queue into its own durable inbox, then reads it:
+node scripts/devswarm.js inbox pull child-1
+node scripts/devswarm.js inbox read child-1
+node scripts/devswarm.js inbox ack child-1          # ack-all once processed
+
+# Primary reads what its OWN reception queue collected (no native call, no descriptor
+# needed — the store is keyed by id) and acks it in one shot:
+node scripts/devswarm.js inbox read-primary primary-<hash>
+
+# Consumer marks completion gates; anti-hall derives archive_ready once all are set:
+node scripts/devswarm.js gate child-1 --set done,merged,tests_passed
+node scripts/devswarm.js workspaces list             # archive_ready:true once satisfied
+node scripts/devswarm.js archive child-1              # archive-by-absence + manual-step note
+```
+
+Every subcommand above was verified to exist at the cited line by reading the current
+`scripts/devswarm.js` directly — none is inferred from a skill/doc description. No other
+`devswarm.js` subcommand exists; `hivecontrol workspace <cmd>` (§4.1) is a SEPARATE,
+native binary this CLI never shells out to except via the two guard-redirected code paths
+already covered in §8.5/§8.7 (the ingest daemon's `monitor` wrap and the child pull's
+bounded `message-count`/`read-messages` pair).
 
 ---
 

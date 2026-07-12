@@ -6,6 +6,147 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.55.0
+
+**DevSwarm Primary read path ships (the Primary can finally read its own inbox); per-project ingest daemon fixes multi-repo coverage; a mechanical single-consumer read-guard closes the raw-read bypass; the supervisor actively escalates into the parent's store; and `doctor` now DIAGNOSES then REPAIRS every aspect it safely can.**
+
+- **DevSwarm Primary read path (NEW).** `store.listMessages(id, {sinceCursor})` —
+  implemented on BOTH backends (sqlite `devswarm-store.js`, journal/NDJSON, the
+  latter deduping by hash on read for parity with `messageCount`) — is the read-BACK
+  side of the store: message `body` was written but never readable back until now.
+  `devswarm.js inbox messages <id>` reads it non-destructively (`--unread` limits to
+  the tail past a durable ACK cursor under `cursors/<id>.json`); `inbox read-primary
+  <id>` additionally ACKs — advancing both the cursor file and the store's own
+  cursor (`store.setCursor`) so `deriveSummary`'s projected `unread` count (what the
+  live workspace table shows) drops immediately, not just on the next unrelated
+  store write. `register-primary` registers the CURRENT worktree's Primary/parent
+  descriptor under its per-worktree `primary-<hash>` id (reusing `register`'s
+  validation + store-upsert path) so `migrate` can fold a stranded legacy NDJSON
+  inbox into the store under the same id.
+- **Per-project ingest daemon (Option A — fixes multi-repo coverage).** The daemon
+  previously covered only the ONE worktree it was installed from, silently — a
+  second repo had no reception at all. `install-devswarm-ingest.js` now derives an
+  **additive, per-worktree** unit identity: `worktreeHash(wt)` (an 8-hex SHA-256 of
+  the worktree's realpath) feeds a per-worktree LaunchAgent label
+  `com.anti-hall.devswarm-ingest.<hash>` (macOS), systemd unit / cron marker
+  `anti-hall-devswarm-ingest-<hash>` (Linux), a per-worktree `O_EXCL` lock
+  (`locks/ingest-<hash>.lock`), and `primaryWorkspaceId(wt)` = `primary-<hash>` (the
+  store partition key for that worktree's own reception queue — replacing an early
+  hardcoded `'primary'` that collided rows across repos). Installing from a second
+  repo now creates a NEW unit rather than overwriting the first's; `devswarm-ingest.js`
+  computes the identical hash from its own resolved worktree so lock path and
+  workspace id agree byte-for-byte with what the installer baked in. New
+  `listInstalledIngestUnits()` enumerates every installed unit (legacy hash-less AND
+  per-worktree, across launchd/systemd/cron) for readback — `doctor`/`doctor-repair`
+  use this rather than re-deriving. The daemon writes a per-worktree LIVENESS
+  HEARTBEAT (`heartbeats/ingest-<hash>.json`, atomic tmp+rename) every bounded sweep
+  cycle regardless of whether anything was ingested — a live-but-quiet daemon no
+  longer false-reads as stale. **Multi-repo coverage means installing separately
+  from each repo/worktree** — there is still no single daemon that covers more than
+  the worktree it was launched from.
+- **Mechanical single-consumer read-guard.** New PreToolUse-Read hook
+  `hooks/inbox-read-guard.js` blocks a direct Read-tool read of the raw DevSwarm
+  inbox NDJSON or store (sqlite db + sidecars, journal NDJSON) — the harm is cursor
+  desync + a store-layering violation, not queue-draining (the inbox is append-only).
+  `command-guard.js` gained a parallel Bash-side branch (`detectProtectedFileRead`,
+  reusing the shared `devswarm-inbox-paths.js` classifier, with the same
+  quote-neutralization + `bash -c`/`eval`/`$()` recursion as the existing hivecontrol
+  detector) that blocks `cat`/`head`/`tail`/`grep`/`sed`/`awk`/etc. reads of those same
+  paths — closing the shell-side bypass the Read-tool guard can't see. `hivecontrol
+  workspace read-messages` now blocks UNCONDITIONALLY under DevSwarm, same as
+  `monitor` (previously it only blocked with durable-inbox evidence present); both
+  reasons now redirect to the `devswarm.js inbox pull`/`read` wrapper and document the
+  `DISABLE_ANTIHALL_DEVSWARM=1` kill-switch. Both guards share the
+  `devswarm-read-guard` skip name (immune to a blanket `{all}` skip, like git-guard)
+  and are fully fail-open on any internal error.
+- **Supervisor active escalation.** `recovery.js`'s `pokeOrEscalate` — on the
+  TRANSITION into `escalated` (nudge attempts exhausted) — now also mechanically
+  appends a notice into the PARENT/Primary's store (`notifyParentEscalation`,
+  resolving the parent's `primary-<hash>` id via `install-devswarm-ingest.js`), so an
+  idle Primary sees "child X idle Nm — reassign or archive" without the child taking
+  a turn. Idempotent two ways: caller-gated to the actual verdict transition, plus a
+  stable per-escalation content hash (`escalate:<childId>:<staleSince>`) so a race
+  between two sweep observers still lands one row. Fully fail-open — a store-write
+  failure never crashes the sweep or blocks the already-persisted escalation.
+- **Freshness banner** in `devswarm-parent-inbox.js`, rewired from `summary.json`'s
+  `generatedAt` (which only advances on `inserted>0` and false-read a live-but-quiet
+  daemon as stale) to the daemon's own per-worktree heartbeat file. Resolves the
+  current worktree via a pure `fs` walk-up for `.git` (no git spawn on this hot path)
+  hashed the same way the installer did; when the heartbeat is missing or older than
+  3 minutes, a `⚠ DEVSWARM STALE DATA` banner is injected above the live workspace
+  table. Gated on at least one active workspace so an idle system never false-alarms;
+  fully fail-open.
+- **doctor repair mode.** `doctor` now DIAGNOSES then REPAIRS every aspect it
+  safely can. New module `hooks/lib/doctor-repair.js` (mirrors the `companion/lib/doctor-devswarm.js`
+  require-and-call pattern doctor already uses). Exports `runRepairs()` plus the testable
+  `readInstalledIngestWorkingDir()` / `classifyIngestUnit()`.
+- **Flags on `hooks/doctor.js`:** `--check` = PURE read-only (today's behavior, the CI/test
+  path — mutates nothing); `--dry-run` = detection + print what WOULD be fixed, writes nothing
+  (threads each installer's own `--dry-run`, migrate-state `dryRun:true`); `--fix`/`--repair` =
+  explicit aliases for the default auto-apply path; **plain `doctor` (no flags) now auto-applies
+  fixes.** `--quiet` preserved.
+- **Two safety classes.** AUTO-SAFE (always, honors dry-run): legacy/GSD/DevSwarm-store state
+  migration; statusline install **only when no statusLine is configured in any scope** (a custom
+  statusLine is never overridden); idempotent relaunch of an ALREADY-installed supervisor; Codex
+  hook refresh when a `.codex/config.toml` exists but hooks are unwired (never creates a new
+  `.codex`). GATED (only when `isDevswarmActive(env)` AND `resolveWorktree(cwd)` is a git
+  worktree): ingest daemon install, the **v0.54.1 wrong-path ingest heal** (a unit whose
+  `WorkingDirectory` no longer resolves inside a worktree is rebuilt from the correct one), stale
+  ExecStart script, and supervisor FIRST-install. A closed gate REPORTS the gap + the exact
+  manual command and mutates nothing. REPORT-ONLY: the MCP orphan reaper (kills on a timer —
+  never auto-installed).
+- **Ingest-daemon awareness added to doctor** (previously the ingest daemon was surfaced only via
+  the supervisor path); doctor now reads the installed ingest unit back and classifies it
+  `ok` / `wrong-path` / `stale-script` / `absent`.
+- **doctor runtime health (new module `companion/lib/doctor-runtime.js`, five REPORT-ONLY
+  checks, never mutates).** 1) DB/store health — sqlite `PRAGMA quick_check` (run in a
+  child process so its `node:sqlite` experimental warning never reaches doctor's own
+  stderr) plus a journal-backend torn-line scan and a store<->summary parity check
+  (flags only `summary.total > store.total`). 2) Data staleness — `summary.json`'s
+  `generatedAt` vs the per-worktree ingest heartbeat, gated on the daemon actually
+  running AND `unread > 0` so an idle system never false-alarms. 3) Daemons RUNNING,
+  not just installed — `launchctl list` PID probe for the continuous ingest daemon,
+  `launchctl`/`systemctl` loaded-state probe for the periodic supervisor, and a
+  heartbeat-or-`ps`-fallback probe for the cron fallback — enumerated per-worktree via
+  `listInstalledIngestUnits()`. 4) Second-consumer detection — scans the process table
+  for more than one `hivecontrol workspace monitor` process (which would split the
+  destructive native queue), cross-checked against the `locks/ingest*.lock` holder PID;
+  report-only, never kills. 5) Foreign-plugin/hook conflict scan (UNCONDITIONAL, not
+  gated on DevSwarm) — cross-references other ENABLED plugins' `hooks.json` and skill
+  directories against anti-hall's own, flagging a competing `PreToolUse`-on-Bash or
+  `Stop` hook, or a skill-name collision; privacy-scoped to plugin name + event +
+  matcher + hook basename only, never full command strings or file contents.
+- **Verify-after-fix:** each applied fix RE-RUNS the relevant detection before reporting `FIXED`
+  (a spawned installer's exit code is not trusted — `launchctl load` can warn). A `FAILED` repair
+  keeps the exit code non-zero. Every fix is try/catch fail-open.
+- **Backward-compat:** CI gates only on `node --test` (no doctor invocation), and the existing
+  `tests/hooks/doctor.test.js` read-only assertions were re-pointed to `--check`; new
+  `tests/hooks/doctor-repair.test.js` covers the auto-fix / gate / dry-run behavior. Windows
+  daemon fixes are documented no-ops.
+- **Dual-platform (doctor):** `skills/doctor/SKILL.md` + `codex/skills/anti-hall-doctor/SKILL.md`
+  document the flags, classes, and gate (the Codex mirror notes the gate is effectively always
+  closed for gpt-5.x sessions).
+- **DevSwarm store is now PHYSICALLY PER-PROJECT.** Each git worktree gets its own
+  `store/<hash>/devswarm.db` (sqlite) or `store/<hash>/journal/` (journal backend), plus its
+  own `summaries/<hash>.json` — deliberately outside `store/` so the inbox read-guard's
+  `store/**` deny doesn't also swallow summaries (`companion/lib/devswarm-store.js`). `<hash>`
+  is the worktree hash unwrapped from a `primary-<hash>` id, or `sha256(id).slice(0,8)` for
+  any other workspace id. Upgrading from the old single global store is handled by a
+  NON-DESTRUCTIVE `migrateGlobalStoreToPerProject` (`companion/devswarm-migrate.js`): it reads
+  whichever legacy backend(s) are actually present directly under `store/`, splits rows by
+  `workspace_id` into each project's own per-hash store, and leaves the legacy global store
+  byte-for-byte intact as a backup (never deleted); idempotent via content-hash dedupe so a
+  re-run copies nothing new.
+- **Docs sweep.** `skills/devswarm/SKILL.md` + `codex/skills/anti-hall-devswarm/SKILL.md` expanded
+  to a comprehensive CLI reference (`inbox messages`/`read-primary`/`register-primary`, the
+  per-worktree ingest identity, the single-consumer read-guard, and the hook-vs-daemon design
+  split: mechanical parent/child triggers fire per-event via hooks, the ingest/supervisor loops
+  run on their own interval via daemons). `docs/KB-devswarm-hivecontrol.md` gained the largest
+  update — the read path, per-worktree ingest identity (with an explicit correction that an
+  installed daemon must never be described as "verified functioning" for the whole machine or
+  for other repos — only for the worktree it drains), the read-guard, and active escalation.
+  `docs/KB.md` version row, `README.md`, and `llms.txt` updated to match.
+
 ## 0.54.2
 
 **Child reception ships (native queue → durable inbox); the ingest daemon actually functions (`WorkingDirectory` fix); lock hardening closes a torn-read double-consumer race.**

@@ -264,6 +264,16 @@
         ]
       },
       {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/inbox-read-guard.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
         "matcher": "Grep",
         "hooks": [
           {

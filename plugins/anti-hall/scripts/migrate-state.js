@@ -38,12 +38,40 @@ const LEGACY_FILES = ['.anti-hall-progress.md', '.anti-hall-history.md'];
  * argument. Fail-soft: any error -> a report object, never a throw (an update
  * must never be bricked by a migration hiccup).
  *
- * dryRun — when true, DETECT ONLY (no lock, no writes): reports whether any
- *   workspace descriptor is present that a real run would import. Used by
- *   capability-scan.js-style gap reporting.
+ * dryRun — when true, DETECT ONLY (no lock, no writes to any SOURCE file):
+ *   reports whether any workspace descriptor has legacy inbox content that is
+ *   NOT YET present in its per-project store. Used by capability-scan.js-style
+ *   gap reporting AND by doctor-repair.js's migrationFix re-verify loop.
+ *
+ *   IDEMPOTENT BY DESIGN (this is the fix for a real bug, not just a docstring):
+ *   `pending` must NOT merely count descriptors — a migration is
+ *   NON-DESTRUCTIVE, so a descriptor (and its legacy inbox) still exists on disk
+ *   forever, even after a fully successful migrate. Counting descriptors alone
+ *   made `pending` permanently true post-migration, which made doctor's
+ *   migrationFix re-verify loop (`!after.pending ? fixed : failed`) report
+ *   'failed' on every default run — a false FAILED on an otherwise-healthy
+ *   machine. Instead, for each descriptor with a READABLE, non-empty legacy
+ *   inbox, run devswarm-migrate's pendingLegacyLines against that workspace's
+ *   per-project store — the SAME cross-path body-multiset identity migrateOne
+ *   uses to decide which lines to import: only a descriptor with at least one
+ *   line NOT YET covered counts as pending. A descriptor whose inbox is
+ *   unreadable or empty contributes nothing migratable, so it is never pending
+ *   (it can never be resolved by running migrate, so treating it as pending
+ *   would reintroduce the same always-pending failure mode for that case).
+ *
+ *   PRIOR REGRESSION (fixed here too): an earlier version of this check tested
+ *   raw legacyLineHash presence in the store. A cross-path dedupe in migrateOne
+ *   (colliding a message copied by the global-store split with the SAME message
+ *   mirrored in a descriptor's legacy inbox) intentionally skips writing that
+ *   line's legacyLineHash once the store already holds an equivalent row under
+ *   a different hash namespace (`native:*`/`global-migrate:*`) — so a raw
+ *   hash-presence check saw that skipped line as "never migrated" and reported
+ *   `pending:true` forever, even immediately after a real, verified migrate.
+ *   pendingLegacyLines uses the EXACT identity migrateOne's import loop uses,
+ *   so "imported" and "pending" can never disagree about the same line.
  *
  * Returns the migrate report ({ ok, action:'migrate', ... }) or, in dryRun, a
- * lightweight { action:'migrate', dryRun:true, pending, workspaces }.
+ * lightweight { action:'migrate', dryRun:true, pending, workspaces, pendingWorkspaces }.
  */
 function migrateDevswarmStore({ dryRun } = {}) {
   let mod;
@@ -55,9 +83,29 @@ function migrateDevswarmStore({ dryRun } = {}) {
   if (dryRun) {
     try {
       const os = require('os');
+      const storeLib = require('../companion/lib/devswarm-store.js');
       const { readDescriptors } = require('../companion/devswarm-supervisor.js');
-      const descriptors = readDescriptors(os.homedir());
-      return { action: 'migrate', dryRun: true, pending: descriptors.length > 0, workspaces: descriptors.length };
+      const home = os.homedir();
+      const descriptors = readDescriptors(home);
+      let pendingWorkspaces = 0;
+      for (const d of descriptors) {
+        if (!d || !d.id) continue;
+        const inbox = mod.readInbox(d.inboxPath);
+        if (!inbox.readable || inbox.lines.length === 0) continue; // nothing this descriptor could contribute
+        let stillPending = true; // store unreadable -> treat as not-yet-covered (fail toward pending)
+        try {
+          const s = storeLib.openStore({ home, workspaceId: d.id });
+          try { stillPending = mod.pendingLegacyLines(s, d.id, inbox.lines).length > 0; }
+          finally { s.close(); }
+        } catch (_) { /* keep stillPending true */ }
+        if (stillPending) pendingWorkspaces++;
+      }
+      return {
+        action: 'migrate', dryRun: true,
+        pending: pendingWorkspaces > 0,
+        workspaces: descriptors.length,
+        pendingWorkspaces,
+      };
     } catch (e) {
       return { action: 'migrate', dryRun: true, pending: false, error: e && e.message };
     }

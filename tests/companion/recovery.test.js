@@ -19,6 +19,12 @@ const M = require(path.join(
 const { livenessPathFor } = require(path.join(
   __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'liveness.js',
 ));
+const storeLib = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js',
+));
+const inst = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js',
+));
 
 const UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
@@ -382,5 +388,100 @@ test('interleave (reverse): a recovery AFTER a nudge must NOT clobber nudgeAttem
     assert.strictEqual(afterRecover.recoveries, 1);
     assert.strictEqual(afterRecover.nudgeAttempts, 1, 'nudgeAttempts must NOT be dropped by a recovery verdict write');
     assert.strictEqual(afterRecover.nudgedAt, now, 'nudgedAt must NOT be dropped by a recovery verdict write');
+  } finally { cleanup(); }
+});
+
+// ---- #19: escalation MECHANICALLY notifies the PARENT/Primary's store --------
+// (owner principle #20: the daemon actively pushes into the parent's STORE — not
+// just a local log — so an idle parent learns without taking a turn first).
+
+test('pokeOrEscalate: escalation appends a synthetic notice into the PARENT store', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home); // id 'w1', no nudgeCommand -> straight to escalate
+    const now = Date.now();
+    const staleSince = now - 12 * 60 * 1000; // 12 minutes stale
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home, now }, {});
+    assert.strictEqual(r.action, 'escalate');
+
+    const parentId = inst.primaryWorkspaceId(d.worktreePath);
+    const s = storeLib.openStore({ home, workspaceId: parentId }); // parent's own per-project store
+    let msgs;
+    try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+    assert.strictEqual(msgs.length, 1, 'exactly one notice landed in the parent store');
+    assert.match(msgs[0].body, /child w1 idle 12m/);
+    assert.match(msgs[0].body, /reassign or archive/);
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: repeated escalate on an ALREADY-escalated verdict does NOT duplicate the parent notice (idempotent)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const now = Date.now();
+    const staleSince = now - 5 * 60 * 1000;
+    const first = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r1 = M.pokeOrEscalate(d, first, { home, now }, {});
+    assert.strictEqual(r1.action, 'escalate');
+
+    // Simulate a second sweep / a manual re-nudge passing the NOW-persisted verdict —
+    // must NOT append a second notice (the TRANSITION already happened).
+    const persisted = JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8'));
+    assert.strictEqual(persisted.status, 'escalated');
+    const r2 = M.pokeOrEscalate(d, persisted, { home, now: now + 1000 }, {});
+    assert.strictEqual(r2.action, 'escalate');
+
+    const parentId = inst.primaryWorkspaceId(d.worktreePath);
+    const s = storeLib.openStore({ home, workspaceId: parentId }); // parent's own per-project store
+    let msgs;
+    try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+    assert.strictEqual(msgs.length, 1, 'a repeated escalate call must NOT duplicate the parent notice');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: a throwing parent-store open fails OPEN — escalate still persists, never throws/crashes', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = descriptor(home);
+    const now = Date.now();
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: now - 60000, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const io = { openParentStore: () => { throw new Error('boom'); } };
+    const r = M.pokeOrEscalate(d, verdict, { home, now }, io);
+    assert.strictEqual(r.action, 'escalate', 'a parent-store notice failure must never surface as an error/crash');
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'escalated');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: never notifies itself when the escalating workspace IS the resolved parent id', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = path.join(home, 'wt-self');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const inboxPath = path.join(worktreePath, 'inbox.ndjson');
+    const cursorPath = path.join(worktreePath, 'cursor');
+    fs.writeFileSync(inboxPath, JSON.stringify({ m: 'x' }) + '\n');
+    fs.writeFileSync(cursorPath, '0');
+    const selfId = inst.primaryWorkspaceId(worktreePath);
+    const d = { id: selfId, worktreePath, inboxPath, cursorPath, sessionId: UUID };
+    let opened = false;
+    const io = { openParentStore: () => { opened = true; throw new Error('must not be called'); } };
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: Date.now() - 60000, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const r = M.pokeOrEscalate(d, verdict, { home, now: Date.now() }, io);
+    assert.strictEqual(r.action, 'escalate');
+    assert.strictEqual(opened, false, 'must never open the parent store to notify itself');
+  } finally { cleanup(); }
+});
+
+test('pokeOrEscalate: a NUDGE (not an escalate) never touches the parent store', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = Object.assign(descriptor(home), { nudgeCommand: ['echo', 'wake-up'] });
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince: Date.now(), nudgeAttempts: 0, nudgedAt: null, pending: true };
+    let opened = false;
+    const io = { nudge: () => {}, openParentStore: () => { opened = true; return { appendMessage() {}, close() {} }; } };
+    const r = M.pokeOrEscalate(d, verdict, { home, nudgeMaxAttempts: 2, nudgeCooldownMs: 120000 }, io);
+    assert.strictEqual(r.action, 'nudged');
+    assert.strictEqual(opened, false, 'a nudge must never open/notify the parent store');
   } finally { cleanup(); }
 });

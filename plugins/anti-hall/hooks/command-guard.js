@@ -118,9 +118,11 @@ const LIGHT_EXCEPTIONS = [
 // message-parent, message-child) and any other subcommand are NOT matched
 // (default-allow). Optional flag tokens are tolerated on both sides so
 // `hivecontrol --json workspace read-messages` / `hivecontrol workspace --foo
-// monitor` cannot slip past by flag insertion. Split into TWO regexes because the
-// block policy differs by kind: `monitor` blocks unconditionally, `read-messages`
-// blocks only with durable-layer evidence (see the branch in main()).
+// monitor` cannot slip past by flag insertion. Under DevSwarm BOTH block
+// UNCONDITIONALLY (Part B): `read-messages` no longer requires durable-layer
+// evidence — a raw native read desyncs the durable cursor regardless, so it blocks
+// like `monitor`. Kept as TWO regexes so the block reason can name the specific
+// destructive subcommand (see buildDevswarmReason).
 const HIVECTL_MONITOR =
   /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*monitor\b/i;
 const HIVECTL_READ_MESSAGES =
@@ -190,52 +192,138 @@ function detectHivectlDestructiveRead(command, depth) {
   return sawReadMessages ? 'read-messages' : null;
 }
 
-// hasDurableInboxEvidence(env) -> bool. Durable-layer evidence for a `read-messages`
-// block is EITHER: ANTIHALL_DEVSWARM_INBOX_CMD non-empty (trimmed), OR at least one
-// ~/.anti-hall/devswarm/workspaces/*.json descriptor with a non-whitespace `inboxPath`.
-// Cheap + fail-OPEN-TO-ALLOW: any error (unreadable dir, bad JSON, non-regular/oversize
-// candidate) -> false, so a harmless single-consumer `read-messages` is never blocked
-// on a broken check and the hook NEVER wedges.
-const MAX_DESCRIPTOR_BYTES = 64 * 1024; // a workspace descriptor is tiny; anything
-// larger is not a real descriptor and reading it blind could stall the hook.
-function hasDurableInboxEvidence(env) {
-  try {
-    const e = env || process.env;
-    const cmd = e.ANTIHALL_DEVSWARM_INBOX_CMD;
-    if (typeof cmd === 'string' && cmd.trim() !== '') return true;
-    const dir = path.join(os.homedir(), '.anti-hall', 'devswarm', 'workspaces');
-    let names;
-    try { names = fs.readdirSync(dir); } catch (_) { return false; }
-    for (const n of names) {
-      if (!/\.json$/.test(n)) continue;
-      try {
-        const p = path.join(dir, n);
-        // FIX (fail-open integrity): a blind readFileSync on a symlink to /dev/zero,
-        // a FIFO, a device node, or a huge file BLOCKS FOREVER -> the whole hook
-        // wedges instead of failing open (PROVEN by a `ln -s /dev/zero .../zero.json`
-        // probe that timed out). lstat (NOT stat — so a symlink is rejected, not
-        // followed) and skip anything that is not a plain regular file, and cap the
-        // size, before ever opening the candidate.
-        const st = fs.lstatSync(p);
-        if (!st.isFile() || st.size > MAX_DESCRIPTOR_BYTES) continue;
-        const desc = JSON.parse(fs.readFileSync(p, 'utf8'));
-        // Require a NON-WHITESPACE inboxPath (mirrors the env-var trim above) so a
-        // `{"inboxPath":"   "}` descriptor does not wrongly arm the block.
-        if (desc && desc.inboxPath && String(desc.inboxPath).trim() !== '') return true;
-      } catch (_) { /* skip malformed / unreadable / non-regular descriptor */ }
-    }
-    return false;
-  } catch (_) {
-    return false; // fail-open to ALLOW
+// File-read verbs whose path ARGUMENTS must be classified against the DevSwarm
+// inbox/store taxonomy. cat/head/tail/less/more/od/xxd/strings/nl take file args
+// directly; grep/sed/awk take a file arg after their pattern/script.
+const FILE_READ_VERBS = new Set([
+  'cat', 'head', 'tail', 'less', 'more', 'od', 'xxd', 'strings', 'nl',
+  'grep', 'sed', 'awk',
+]);
+
+// Verbs whose FIRST non-flag operand is a PATTERN/script, not a path — it must
+// never be classified as a file argument even when it is quoted and its text
+// happens to look like (or literally BE) a real path. Only operands AFTER the
+// pattern/script are candidate file paths for these verbs. cat/head/tail/etc.
+// are NOT in this set — every one of their non-flag operands is a path.
+const PATTERN_FIRST_VERBS = new Set(['grep', 'sed', 'awk']);
+
+// Tokenize a segment respecting single/double quotes, STRIPPING the quote
+// delimiters but PRESERVING their contents (unlike neutralizeQuotedContents,
+// which blanks quoted content out for pattern matching). This recovers the
+// real text of a quoted argument — `cat "…/inbox/x"` yields the token
+// `…/inbox/x`, identical to the unquoted form — so a quoted path argument is
+// visible to detectProtectedFileRead's classifier instead of disappearing.
+// Mirrors the quote-handling already used by extractShellCPayload/
+// extractEvalPayload (best-effort tokenization; no backslash-escape support,
+// consistent with those siblings).
+function tokenizeQuoted(segment) {
+  const tokens = [];
+  let cur = ''; let q = ''; let any = false;
+  const str = segment.trim();
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (q) { if (c === q) { q = ''; } else cur += c; any = true; continue; }
+    if (c === "'" || c === '"') { q = c; any = true; continue; }
+    if (/\s/.test(c)) { if (any) { tokens.push(cur); cur = ''; any = false; } continue; }
+    cur += c; any = true;
   }
+  if (any) tokens.push(cur);
+  return tokens;
+}
+
+// detectProtectedFileRead(command, home, cwd, depth) -> 'deny-inbox' | 'deny-store' | null.
+// Parallels detectHivectlDestructiveRead: the SAME effectiveVerb command-position
+// anchoring (computed on the RAW segment, as effectiveVerb always does), and the
+// SAME recursion into bash -c / eval / $()/backtick payloads. For a read verb, its
+// path args are recovered via tokenizeQuoted (quote delimiters stripped, content
+// kept — so a bare, double-quoted, OR single-quoted path all yield the identical
+// path string) and classified via the shared devswarm-inbox-paths module; the
+// FIRST arg resolving to a deny path wins.
+//   - This does NOT over-block quoted DATA: `echo "…/inbox/x"` never reaches here
+//     because echo is not a read verb. For grep/sed/awk (PATTERN_FIRST_VERBS), the
+//     first non-flag operand is the PATTERN/script and is SKIPPED — never
+//     classified — regardless of quoting or content, so `grep 'inbox' docs/KB.md`
+//     and even `grep '<the literal inbox path>' docs/KB.md` stay ALLOW; only a
+//     trailing FILE operand (e.g. `grep pattern <realInboxPath>`) can classify deny.
+// Fully fail-open: any throw / unavailable classifier -> null (never block).
+function detectProtectedFileRead(command, home, cwd, depth) {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  const d = typeof depth === 'number' ? depth : 0;
+  let classify;
+  try {
+    classify = require('./lib/devswarm-inbox-paths.js').classifyDevswarmPath;
+  } catch (_) {
+    return null; // classifier unavailable -> fail-open
+  }
+  for (const seg of splitSegments(command)) {
+    const verb = effectiveVerb(seg);
+    if (verb && FILE_READ_VERBS.has(verb)) {
+      const tokens = tokenizeQuoted(seg);
+      let idx = 0;
+      while (idx < tokens.length && basename(tokens[idx]).toLowerCase() !== verb) idx++;
+      idx++; // skip the verb token itself
+      // grep/sed/awk: the first non-flag operand is a PATTERN/script, not a path —
+      // skip it once before classifying any further operands as files.
+      let skipNextOperand = PATTERN_FIRST_VERBS.has(verb);
+      for (; idx < tokens.length; idx++) {
+        const tok = tokens[idx];
+        if (!tok || tok.startsWith('-')) continue; // skip flags / empties
+        if (skipNextOperand) { skipNextOperand = false; continue; }
+        let v = 'allow';
+        try { v = classify(tok, home, cwd); } catch (_) { v = 'allow'; }
+        if (v === 'deny-inbox' || v === 'deny-store') return v;
+      }
+    }
+    if (d < 3) {
+      const payload = extractShellCPayload(seg);
+      if (payload) {
+        const inner = detectProtectedFileRead(payload, home, cwd, d + 1);
+        if (inner) return inner;
+      }
+      const evalPayload = extractEvalPayload(seg);
+      if (evalPayload) {
+        const inner = detectProtectedFileRead(evalPayload, home, cwd, d + 1);
+        if (inner) return inner;
+      }
+    }
+  }
+  if (d < 3) {
+    for (const inner of extractSubstitutions(command)) {
+      const r = detectProtectedFileRead(inner, home, cwd, d + 1);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
+// buildRawFileReadReason(kind) -> closed-vocabulary block reason for a raw shell
+// read (cat/head/…) of the inbox/store. Uses the ACCURATE harm model (cursor
+// desync + store-layering violation — NOT "drains the queue", which is false for
+// the append-only inbox). NEVER echoes the path (injection hygiene).
+function buildRawFileReadReason(kind) {
+  const killSwitch = ' To disable this guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
+  if (kind === 'deny-store') {
+    return 'DEVSWARM STORE READ-GUARD: reading the raw DevSwarm store (the SQLite db + ' +
+      'sidecars, or the store journal NDJSON) via a shell read is blocked. The store is ' +
+      'the write/derive layer — hooks/agents NEVER open it (devswarm-store.js layering); ' +
+      'a raw read risks a partial/inconsistent view and a store-layering violation. Read ' +
+      'through the wrapper: `devswarm.js inbox read <id>` (or `devswarm.js inbox pull ' +
+      '<id>` to import first).' + killSwitch;
+  }
+  return 'DEVSWARM INBOX READ-GUARD: reading the raw DevSwarm inbox file via a shell ' +
+    'read is blocked. This does NOT drain the queue (append-only NDJSON), but a raw read ' +
+    'BYPASSES THE DURABLE CURSOR — it causes CURSOR DESYNC (messages re-processed or ' +
+    'skipped) and violates the store layering. Read the safe, cursor-tracked way: ' +
+    '`devswarm.js inbox pull <id>` then `devswarm.js inbox read <id>`.' + killSwitch;
 }
 
 // buildDevswarmReason(kind, env) -> closed-vocabulary block reason. NEVER reflects
 // command/stdin text (injection hygiene). Names ANTIHALL_DEVSWARM_INBOX_CMD (the
 // var, not its value) as the read path when configured; always includes the
-// do-not-delegate line; for read-messages, states that message-count reflects the
-// NATIVE queue only (a 0 there does NOT mean no pending messages under a durable
-// inbox). References no wrapper/CLI that does not exist.
+// do-not-delegate line, the wrapper redirect (`devswarm.js inbox pull`/`read`), and
+// the DISABLE_ANTIHALL_DEVSWARM=1 kill-switch; for read-messages, states that
+// message-count reflects the NATIVE queue only (a 0 there does NOT mean no pending
+// messages under a durable inbox). References no wrapper/CLI that does not exist.
 function buildDevswarmReason(kind, env) {
   const e = env || process.env;
   const inboxCmd = e.ANTIHALL_DEVSWARM_INBOX_CMD;
@@ -247,18 +335,23 @@ function buildDevswarmReason(kind, env) {
     ? ' Read pending messages via the consumer-configured ANTIHALL_DEVSWARM_INBOX_CMD ' +
       'command instead — it does not drain the native queue.'
     : '';
+  const viaWrapper =
+    ' Use the anti-hall DevSwarm CLI instead — `devswarm.js inbox pull <id>` then ' +
+    '`devswarm.js inbox read <id>` — which reads via the durable cursor.';
+  const killSwitch =
+    ' To disable the DevSwarm read-guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
   if (kind === 'monitor') {
     return 'DEVSWARM COORDINATOR-READ REDIRECT: `hivecontrol workspace monitor` is ' +
       'a blocking long-poll with no default timeout — running it inline hangs the ' +
       'shell/Bash call until a message arrives or the process is killed, and it ' +
       'consumes the native message queue. Do NOT run it here.' +
-      doNotDelegate + viaDurable;
+      doNotDelegate + viaDurable + viaWrapper + killSwitch;
   }
   return 'DEVSWARM COORDINATOR-READ REDIRECT: `hivecontrol workspace read-messages` ' +
-    'is a DESTRUCTIVE read — it mark-reads / drains the native message queue. A ' +
-    'durable inbox layer is in use here, so draining the native queue loses ' +
-    'messages the durable layer still needs. Do NOT run it here.' +
-    doNotDelegate + viaDurable +
+    'is a DESTRUCTIVE read — it mark-reads / drains the native message queue. Under ' +
+    'DevSwarm the durable inbox cursor is the read path, so draining the native queue ' +
+    'loses messages the durable layer still needs. Do NOT run it here.' +
+    doNotDelegate + viaDurable + viaWrapper + killSwitch +
     ' Note: `hivecontrol workspace message-count` reflects the NATIVE queue only; a ' +
     '0 there does NOT mean there are no pending messages when a durable inbox is in use.';
 }
@@ -639,10 +732,12 @@ function main() {
   // so it is evaluated FIRST — in ALL session contexts (coordinator AND subagent: a
   // delegated read drains the queue identically), with its OWN skip name
   // (`devswarm-read-guard`), independent of command-guard's own skip/coordinator gate.
-  //   - monitor: block UNCONDITIONALLY when DevSwarm-active (a no-timeout long-poll
-  //     hangs the shell; it also consumes the queue).
-  //   - read-messages: block ONLY with durable-layer evidence; otherwise a harmless
-  //     single-consumer read -> ALLOW (fail-OPEN-to-allow, never brick).
+  //   - monitor / read-messages (hivecontrol native reads): block UNCONDITIONALLY
+  //     when DevSwarm-active (Part B — read-messages no longer needs durable-layer
+  //     evidence; a raw native read desyncs the durable cursor regardless).
+  //   - raw file reads (cat/head/… of ~/.anti-hall/devswarm/inbox/** or the store):
+  //     the Bash-side companion to inbox-read-guard.js (the Read-tool guard), closing
+  //     the `cat` bypass that this Bash-verb-only guard could not otherwise see.
   // Fully fail-open: any throw -> fall through (never block).
   try {
     let devswarmActive = false;
@@ -652,19 +747,21 @@ function main() {
       devswarmActive = false; // fail-open: dormant
     }
     if (devswarmActive && !isSkipped('devswarm-read-guard')) {
+      // Emit via fs.writeSync(1,…) not process.stdout.write per CLAUDE.md: on macOS
+      // node 18/20 a synchronous exit right after process.stdout.write can race the
+      // async pipe flush and truncate the JSON; writeSync is atomic.
       const kind = detectHivectlDestructiveRead(command);
       if (kind) {
-        const doBlock = kind === 'monitor'
-          ? true
-          : hasDurableInboxEvidence(process.env);
-        if (doBlock) {
-          const reason = buildDevswarmReason(kind, process.env);
-          // Emit via fs.writeSync(1,…) not process.stdout.write per CLAUDE.md: on
-          // macOS node 18/20 a synchronous exit right after process.stdout.write can
-          // race the async pipe flush and truncate the JSON; writeSync is atomic.
-          fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
-          process.exit(2);
-        }
+        const reason = buildDevswarmReason(kind, process.env);
+        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+        process.exit(2);
+      }
+      const cwd = (payload && payload.cwd) || '';
+      const fileKind = detectProtectedFileRead(command, os.homedir(), cwd);
+      if (fileKind) {
+        const reason = buildRawFileReadReason(fileKind);
+        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+        process.exit(2);
       }
     }
   } catch (_) {

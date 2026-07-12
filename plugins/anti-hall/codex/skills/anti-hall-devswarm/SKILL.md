@@ -46,21 +46,30 @@ workspace), all of the above only ever touches the `claude` ones — it identity
 `claude` process's argv session id and cwd. A Codex workspace is simply outside its
 target surface; nothing here signals or resumes a Codex process.
 
-## command-guard's destructive-read redirect (shipped, v0.53.0 — applies to Codex too)
+## command-guard's destructive-read redirect (shipped v0.53.0, later hardened — applies to Codex too)
 
 Unlike the recovery model above, this one is **not** Claude-only: `command-guard.js` is
 a single file registered in both `codex/hooks/hooks.json` and the Claude hooks.json, so
 its DevSwarm branch fires identically for a Codex workspace. Under a DevSwarm-active
 session it redirects the two CONSUMING native `hivecontrol` inbox reads, in ALL contexts
-(a delegated read drains the queue identically): `hivecontrol workspace monitor` blocks
-UNCONDITIONALLY (a no-timeout long-poll that hangs the shell and consumes the queue);
-`hivecontrol workspace read-messages` blocks ONLY when durable-inbox evidence exists —
-`ANTIHALL_DEVSWARM_INBOX_CMD` set, or a `~/.anti-hall/devswarm/workspaces/*.json`
-descriptor with a truthy `inboxPath` — so a harmless single-consumer `read-messages` is
-still allowed. Non-destructive `message-count`/`message-parent`/`message-child` are
-untouched. Own `devswarm-read-guard` skip name (in skip-guard's `DESTRUCTIVE` set — a
-blanket `all` skip does not cover it). Full detail: `docs/KB-devswarm-hivecontrol.md`
-§8.5.
+(a delegated read drains the queue identically): **both** `hivecontrol workspace
+monitor` (a no-timeout long-poll that hangs the shell and consumes the queue) **and**
+`hivecontrol workspace read-messages` (marks-read/drains the queue) now block
+UNCONDITIONALLY whenever DevSwarm is active — the original evidence-gated carve-out for
+`read-messages` (`ANTIHALL_DEVSWARM_INBOX_CMD` / a descriptor's `inboxPath`) has been
+removed: a raw native `read-messages` desyncs the durable cursor regardless of whether a
+durable inbox exists, so it is now treated exactly like `monitor`. Non-destructive
+`message-count`/`message-parent`/`message-child` are untouched. Own
+`devswarm-read-guard` skip name (in skip-guard's `DESTRUCTIVE` set — a blanket `all`
+skip does not cover it). Full detail: `docs/KB-devswarm-hivecontrol.md` §8.5.
+
+A second guard closes the RAW-file-read hole (`cat`/`head`/`grep`/… of the durable
+inbox/store — doesn't drain the native queue, but desyncs the durable cursor and
+violates the store's write/derive layering). The shell-verb form is caught by
+`command-guard.js` itself — **shared, so this fires on Codex too.** The dedicated
+`Read`-tool guard (`hooks/inbox-read-guard.js`) is **Claude-only** (not registered in
+`codex/hooks/hooks.json` — it guards Claude's own `Read` tool specifically). Full
+taxonomy: `docs/KB-devswarm-hivecontrol.md` §8.5.
 
 ## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
 
@@ -79,6 +88,20 @@ Pull-not-push: reception latency = one turn (no background child drainer). The d
 (`companion/lib/devswarm-pull.js`) and the durable inbox are Claude-side companion state, but
 the CLI itself runs identically either way. Full detail: `docs/KB-devswarm-hivecontrol.md`
 (v0.54.2 note).
+
+## CLI reference — `scripts/devswarm.js`
+
+The structured interface (CLI over MCP) is agent-agnostic — invokable identically from
+a Codex or Claude session (`node "$ANTI_HALL_ROOT/scripts/devswarm.js" <cmd> ...`, with
+`$ANTI_HALL_ROOT` resolved as shown below).
+Subcommands: `register`/`ensure` (write a workspace descriptor), `register-primary`
+(register the CURRENT worktree's Primary under its per-worktree id `primary-<hash>`),
+`heartbeat`, `inbox pull`/`read`/`count`/`ack` (child-side durable-inbox cursor
+primitives), `inbox messages`/`read-primary` (Primary/store non-destructive read — no
+descriptor needed), `workspaces list`, `gate --set/--clear`, `nudge`, `archive`,
+`archive-ignore`/`archive-unignore`, `migrate`. Full table with source-line citations
+and a worked example: `docs/KB-devswarm-hivecontrol.md` §8.8 (or the fuller quick
+reference in `plugins/anti-hall/skills/devswarm/SKILL.md`).
 
 ## On-demand recovery — devswarm-recover CLI
 
@@ -119,7 +142,14 @@ shipped 0.54.0). It runs continuously (macOS LaunchAgent `KeepAlive` / Linux `sy
 --user` `Restart=always` `.service`, cron fallback with a ~60s worst-case revive gap on a
 cron-only Linux host), distinct label/log from the supervisor, and is Claude-side
 tooling like the rest of this section — for awareness on a mixed OMC/OMX setup, not a
-Codex-side capability.
+Codex-side capability. **Scope note (applies regardless of which agent is running in
+which workspace):** the daemon is PER-PROJECT, not per-machine — its identity (label/
+unit/lock/own reception workspace id) is derived from the worktree it was installed
+FROM, since `hivecontrol` itself resolves a workspace by walking up from the process's
+cwd, not by id. A mixed setup with multiple DevSwarm repos on one machine needs this
+installer run once per repo; a repo with no install of its own has zero ingest coverage,
+whether its workspaces run Claude or Codex agents. Full detail:
+`docs/KB-devswarm-hivecontrol.md` §8.7.
 
 Outputs to watch either way: `~/.anti-hall/devswarm/liveness/<id>.json` (per-workspace
 verdict — `alive`/`stale`/`nudged`/`ambiguous`/`escalated`), `~/.anti-hall/devswarm/recovery.log`

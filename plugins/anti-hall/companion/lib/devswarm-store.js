@@ -38,22 +38,83 @@
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
 
 const DEFAULT_REQUIRED_GATES = ['done', 'merged', 'tests_passed'];
 
-// ----- paths -----
-function storeDir(home) {
+// ----- paths (PHYSICALLY PER-PROJECT) -----
+// Each project (worktree) gets its OWN physical store under store/<hash>/, where
+// <hash> is derived from the workspaceId the caller operates on. This replaces the
+// former ONE global store/devswarm.db (+ journal) keyed only on $HOME. The
+// workspace_id column is retained (harmless), but each per-project store now holds
+// one project's data. summary.json ALSO becomes per-project, deliberately placed
+// OUTSIDE store/ (under summaries/) so the inbox read-guard — which DENYs store/**
+// — still ALLOWs the derived projection hooks read.
+//
+// DEFAULT_HASH: a stable bucket for a store opened with NO workspaceId (legacy
+// callers/tests that write MANY workspace_ids into one column-partitioned handle).
+// sha256('') is deterministic and 8-hex, so the read-guard's hash regex matches it.
+const DEFAULT_HASH = crypto.createHash('sha256').update('').digest('hex').slice(0, 8);
+
+// hashFromWorkspaceId(workspaceId) -> 8 lowercase hex chars. `primary-<hash>`
+// (install-devswarm-ingest.js's per-worktree Primary id) unwraps to that exact
+// worktreeHash, so the ingest daemon, the CLI, the parent-inbox hook, and doctor
+// all agree on which per-project dir a Primary's reception queue lives in. Any
+// other id (a child workspace, an arbitrary CLI id) buckets by sha256(id) so it
+// still gets its own physical store. Absent/empty -> DEFAULT_HASH.
+function hashFromWorkspaceId(workspaceId) {
+  const id = String(workspaceId == null ? '' : workspaceId);
+  if (id === '') return DEFAULT_HASH;
+  const m = id.match(/^primary-([0-9a-fA-F]{8})$/);
+  if (m) return m[1].toLowerCase();
+  return crypto.createHash('sha256').update(id).digest('hex').slice(0, 8);
+}
+
+// ----- roots -----
+function storeRootDir(home) {
   return path.join(devswarmRoot(home), 'store');
 }
-function sqlitePath(home) {
-  return path.join(storeDir(home), 'devswarm.db');
+function summariesRootDir(home) {
+  return path.join(devswarmRoot(home), 'summaries');
 }
-function journalDir(home) {
-  return path.join(storeDir(home), 'journal');
+
+// ----- hash-keyed (doctor/migration enumerate by hash) -----
+function storeDirForHash(home, hash) {
+  return path.join(storeRootDir(home), String(hash));
 }
-function summaryPath(home) {
-  return path.join(devswarmRoot(home), 'summary.json');
+function sqlitePathForHash(home, hash) {
+  return path.join(storeDirForHash(home, hash), 'devswarm.db');
+}
+function journalDirForHash(home, hash) {
+  return path.join(storeDirForHash(home, hash), 'journal');
+}
+function summaryPathForHash(home, hash) {
+  return path.join(summariesRootDir(home), String(hash) + '.json');
+}
+
+// ----- workspaceId-keyed (the public/test convenience surface) -----
+function storeDir(home, workspaceId) {
+  return storeDirForHash(home, hashFromWorkspaceId(workspaceId));
+}
+function sqlitePath(home, workspaceId) {
+  return sqlitePathForHash(home, hashFromWorkspaceId(workspaceId));
+}
+function journalDir(home, workspaceId) {
+  return journalDirForHash(home, hashFromWorkspaceId(workspaceId));
+}
+function summaryPath(home, workspaceId) {
+  return summaryPathForHash(home, hashFromWorkspaceId(workspaceId));
+}
+
+// listStoreHashes(home, fsi) -> string[] of per-project store subdir names present
+// under store/ (each an 8-hex hash). Fail-open [] on any read error. Used by doctor
+// to ENUMERATE per-project stores instead of one global file.
+function listStoreHashes(home, fsi) {
+  const F = fsi || fs;
+  let names = [];
+  try { names = F.readdirSync(storeRootDir(home)); } catch (_) { return []; }
+  return names.filter((n) => /^[0-9a-fA-F]{8}$/.test(n));
 }
 
 // ----- config -----
@@ -91,10 +152,13 @@ function sqliteAvailable() {
 // SQLite backend (WAL). Touches a real db file (DatabaseSync has no fs injection);
 // tests point it at an isolated temp HOME.
 // ============================================================================
-function openSqlite(home) {
+function openSqlite(home, workspaceId, opts) {
+  const o = opts || {};
+  const hash = o.hash != null ? String(o.hash) : hashFromWorkspaceId(workspaceId);
+  const dir = o.dir || storeDirForHash(home, hash);
   const { DatabaseSync } = require('node:sqlite');
-  fs.mkdirSync(storeDir(home), { recursive: true });
-  const db = new DatabaseSync(sqlitePath(home));
+  fs.mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(path.join(dir, 'devswarm.db'));
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(
@@ -129,6 +193,19 @@ function openSqlite(home) {
 
   return {
     backend: 'sqlite',
+    workspaceId: workspaceId != null ? String(workspaceId) : null,
+    hash,
+    // listWorkspaceIds() -> distinct workspace ids present anywhere in this store
+    // (messages/registry/cursors/gates). Used by the global->per-project migration
+    // to split a legacy multi-workspace store file. Pure read.
+    listWorkspaceIds() {
+      const ids = new Set();
+      try { for (const r of db.prepare('SELECT DISTINCT workspace_id AS id FROM messages;').all()) ids.add(String(r.id)); } catch (_) {}
+      try { for (const r of db.prepare('SELECT id FROM registry;').all()) ids.add(String(r.id)); } catch (_) {}
+      try { for (const r of db.prepare('SELECT DISTINCT workspace_id AS id FROM cursors;').all()) ids.add(String(r.id)); } catch (_) {}
+      try { for (const r of db.prepare('SELECT DISTINCT workspace_id AS id FROM gates;').all()) ids.add(String(r.id)); } catch (_) {}
+      return Array.from(ids);
+    },
     appendMessage(m) {
       const hash = (m && m.hash != null) ? String(m.hash) : null;
       const ts = Number.isFinite(m && m.ts) ? m.ts : Date.now();
@@ -176,6 +253,29 @@ function openSqlite(home) {
       const r = db.prepare('SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?;').get(String(id));
       return r ? Number(r.c) : 0;
     },
+    // listMessages(id, {sinceCursor}) -> ordered message rows INCLUDING body. The
+    // READ-BACK side of the store (the `body` column was written but never read
+    // until this). Ordered by insertion (id ASC) so `seq` (1-based) aligns with the
+    // consumed-count cursor. sinceCursor (a consumed-count) skips the first N rows —
+    // the caller passes cursorValue(id) to get only the unread tail. Pure read;
+    // never mutates. sqlite has UNIQUE(hash) so no dup-hash rows to fold here; a
+    // null-hash row is a distinct message (matches messageCount's COUNT(*)).
+    listMessages(id, opts) {
+      const o = opts || {};
+      const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
+      const rows = db.prepare('SELECT id, ts, hash, body FROM messages WHERE workspace_id = ? ORDER BY id ASC;').all(String(id));
+      const out = [];
+      for (let i = 0; i < rows.length; i++) {
+        if (i < since) continue;
+        out.push({
+          seq: i + 1,
+          ts: Number(rows[i].ts),
+          hash: rows[i].hash != null ? String(rows[i].hash) : null,
+          body: rows[i].body != null ? String(rows[i].body) : '',
+        });
+      }
+      return out;
+    },
     cursorValue(id) {
       const r = db.prepare('SELECT value FROM cursors WHERE workspace_id = ?;').get(String(id));
       return r ? Number(r.value) : 0;
@@ -204,10 +304,12 @@ function rowToDescriptor(r) {
 // Journal backend (append-only NDJSON). Dependency-free; the guaranteed-green
 // path on node 18/20. fs is injectable for isolation/testing.
 // ============================================================================
-function openJournal(home, fsi, lockOpts) {
+function openJournal(home, workspaceId, fsi, lockOpts, opts) {
+  const o = opts || {};
+  const hash = o.hash != null ? String(o.hash) : hashFromWorkspaceId(workspaceId);
   const F = fsi || fs;
   const L = lockOpts || {};
-  const dir = journalDir(home);
+  const dir = o.dir ? path.join(o.dir, 'journal') : journalDirForHash(home, hash);
   const files = {
     messages: path.join(dir, 'messages.ndjson'),
     registry: path.join(dir, 'registry.ndjson'),
@@ -307,6 +409,18 @@ function openJournal(home, fsi, lockOpts) {
 
   return {
     backend: 'journal',
+    workspaceId: workspaceId != null ? String(workspaceId) : null,
+    hash,
+    // listWorkspaceIds() -> distinct workspace ids present in any journal file.
+    // Used by the global->per-project migration. Pure read (fail-open []).
+    listWorkspaceIds() {
+      const ids = new Set();
+      for (const row of readAll(files.messages)) { if (row && row.workspaceId != null) ids.add(String(row.workspaceId)); }
+      for (const row of readAll(files.registry)) { if (row && row.id != null) ids.add(String(row.id)); }
+      for (const row of readAll(files.cursors)) { if (row && row.workspaceId != null) ids.add(String(row.workspaceId)); }
+      for (const row of readAll(files.gates)) { if (row && row.workspaceId != null) ids.add(String(row.workspaceId)); }
+      return Array.from(ids);
+    },
     appendMessage(m) {
       const hash = (m && m.hash != null) ? String(m.hash) : null;
       // Serialize check+append so concurrent writers can't both miss the hash and
@@ -410,6 +524,37 @@ function openJournal(home, fsi, lockOpts) {
       }
       return n;
     },
+    // listMessages(id, {sinceCursor}) -> ordered message rows INCLUDING body. Reads
+    // messages.ndjson in file (insertion) order, filtered by workspaceId, deduped by
+    // hash on read with the SAME rule messageCount uses (so the row indices agree
+    // with the consumed-count cursor). sinceCursor skips the first N kept rows. Pure
+    // read; never mutates the journal.
+    listMessages(id, opts) {
+      const o = opts || {};
+      const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
+      const wid = String(id);
+      const seen = new Set();
+      const kept = [];
+      for (const row of readAll(files.messages)) {
+        if (String(row.workspaceId) !== wid) continue;
+        if (row.hash != null) {
+          if (seen.has(row.hash)) continue; // dedupe identical hashes on read (parity with messageCount)
+          seen.add(row.hash);
+        }
+        kept.push(row);
+      }
+      const out = [];
+      for (let i = 0; i < kept.length; i++) {
+        if (i < since) continue;
+        out.push({
+          seq: i + 1,
+          ts: Number.isFinite(kept[i].ts) ? kept[i].ts : null,
+          hash: kept[i].hash != null ? String(kept[i].hash) : null,
+          body: kept[i].body != null ? String(kept[i].body) : '',
+        });
+      }
+      return out;
+    },
     cursorValue(id) {
       const wid = String(id);
       let v = 0;
@@ -451,29 +596,44 @@ function deserializeCmd(raw) {
 // ============================================================================
 // Top-level store API
 // ============================================================================
-// openStore(opts) -> backend handle. opts: { home, backend, env, fsi }.
-//   backend: force 'sqlite' | 'journal'; else feature-detect. `fsi` only affects
-//   the journal backend (sqlite opens a real file). `lock` (journal only) tunes the
-//   messages-lock budget { maxTries, appendRetries, staleMs } — used by tests to
-//   exercise the contention-exhaustion path deterministically.
+// openStore(opts) -> backend handle for ONE PROJECT's physical store. opts:
+//   { home, workspaceId, backend, env, fsi, lock, dir, hash }.
+//   workspaceId : selects the per-project store dir (store/<hashFromWorkspaceId>/).
+//                 Absent -> the DEFAULT_HASH bucket (legacy multi-workspace handle).
+//   dir/hash    : (advanced) open a store at an EXPLICIT dir (the legacy global
+//                 store/ for migration read-back) or force a specific hash subdir.
+//   backend     : force 'sqlite' | 'journal'; else feature-detect. `fsi` only
+//                 affects the journal backend (sqlite opens a real file). `lock`
+//                 (journal only) tunes the messages-lock budget.
 function openStore(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const backend = selectBackend({ backend: o.backend, env: o.env });
-  return backend === 'sqlite' ? openSqlite(home) : openJournal(home, o.fsi, o.lock);
+  const meta = { dir: o.dir, hash: o.hash };
+  return backend === 'sqlite'
+    ? openSqlite(home, o.workspaceId, meta)
+    : openJournal(home, o.workspaceId, o.fsi, o.lock, meta);
 }
 
-// deriveSummary(store, opts) -> summary object (also written to summary.json).
-//   opts: { home, requiredGates, env, now, fsi }. Iterates the ACTIVE registry
-//   set, projects unread (messages - cursor), current gates, and archive_ready
-//   (all required gates satisfied). Write is ATOMIC (tmp + rename) so a hook read
-//   never observes a partially-written file.
+// deriveSummary(store, opts) -> summary object (also written to this project's
+// summaries/<hash>.json). opts: { home, workspaceId, requiredGates, env, now, fsi }.
+// Iterates THIS store's ACTIVE registry set, projects unread (messages - cursor),
+// current gates, and archive_ready (all required gates satisfied). The target
+// summary file is chosen by opts.workspaceId, else the store handle's own
+// workspaceId/hash (so a per-project store writes its own per-project summary).
+// Write is ATOMIC (tmp + rename) so a hook read never observes a partial file.
 function deriveSummary(store, opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const F = o.fsi || fs;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const requiredGates = Array.isArray(o.requiredGates) ? o.requiredGates : requiredGatesFrom(o.env);
+  // Which per-project summary file: explicit opts.workspaceId wins, else the
+  // handle's workspaceId, else its hash (a handle always carries a hash).
+  const hash = (o.workspaceId != null)
+    ? hashFromWorkspaceId(o.workspaceId)
+    : (store && store.hash != null ? String(store.hash)
+      : hashFromWorkspaceId(store && store.workspaceId));
 
   const workspaces = {};
   for (const d of store.listRegistry()) {
@@ -497,7 +657,7 @@ function deriveSummary(store, opts) {
   }
 
   const summary = { generatedAt: now, requiredGates: requiredGates.slice(), workspaces };
-  writeSummaryAtomic(home, summary, F);
+  writeSummaryAtomicForHash(home, hash, summary, F);
   return summary;
 }
 
@@ -508,9 +668,9 @@ function deriveSummary(store, opts) {
 // publish). A unique tmp lets each writer stage independently; the rename onto the
 // final summary.json stays atomic (last writer wins a complete file).
 let summaryTmpCounter = 0;
-function writeSummaryAtomic(home, summary, fsi) {
+function writeSummaryAtomicForHash(home, hash, summary, fsi) {
   const F = fsi || fs;
-  const p = summaryPath(home);
+  const p = summaryPathForHash(home, hash);
   F.mkdirSync(path.dirname(p), { recursive: true });
   const tmp = p + '.' + process.pid + '.' + (summaryTmpCounter++) + '.tmp';
   try {
@@ -522,14 +682,31 @@ function writeSummaryAtomic(home, summary, fsi) {
   }
   return p;
 }
+// writeSummaryAtomic(home, workspaceId, summary, fsi) — workspaceId-keyed wrapper.
+function writeSummaryAtomic(home, workspaceId, summary, fsi) {
+  return writeSummaryAtomicForHash(home, hashFromWorkspaceId(workspaceId), summary, fsi);
+}
 
-// readSummary(home, fsi) -> object | null. TOLERANT: a missing, zero-byte, or
-// partially-written summary.json reads as null ("no data yet"), never a throw —
-// hook readers fail open on null.
-function readSummary(home, fsi) {
+// readSummary(home, workspaceId, fsi) -> object | null. Reads THIS project's
+// summaries/<hash>.json. TOLERANT: a missing, zero-byte, or partially-written
+// summary reads as null ("no data yet"), never a throw — hook readers fail open
+// on null. workspaceId absent -> the DEFAULT_HASH bucket.
+function readSummary(home, workspaceId, fsi) {
   const F = fsi || fs;
   try {
-    const raw = String(F.readFileSync(summaryPath(home), 'utf8'));
+    const raw = String(F.readFileSync(summaryPath(home, workspaceId), 'utf8'));
+    if (raw.trim() === '') return null;
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? obj : null;
+  } catch (_) {
+    return null;
+  }
+}
+// readSummaryForHash(home, hash, fsi) — hash-keyed variant (doctor enumerates by hash).
+function readSummaryForHash(home, hash, fsi) {
+  const F = fsi || fs;
+  try {
+    const raw = String(F.readFileSync(summaryPathForHash(home, hash), 'utf8'));
     if (raw.trim() === '') return null;
     const obj = JSON.parse(raw);
     return obj && typeof obj === 'object' ? obj : null;
@@ -539,9 +716,12 @@ function readSummary(home, fsi) {
 }
 
 module.exports = {
-  DEFAULT_REQUIRED_GATES,
+  DEFAULT_REQUIRED_GATES, DEFAULT_HASH,
+  hashFromWorkspaceId,
+  storeRootDir, summariesRootDir, listStoreHashes,
   storeDir, sqlitePath, journalDir, summaryPath,
+  storeDirForHash, sqlitePathForHash, journalDirForHash, summaryPathForHash,
   requiredGatesFrom, selectBackend, sqliteAvailable,
   openStore, openSqlite, openJournal,
-  deriveSummary, writeSummaryAtomic, readSummary,
+  deriveSummary, writeSummaryAtomic, readSummary, readSummaryForHash,
 };

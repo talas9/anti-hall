@@ -217,6 +217,64 @@ test('companionActive: fail-open -> "unknown" when the installer exports no LABE
 });
 
 // ---------------------------------------------------------------------------
+// companionActive: per-worktree-aware readback (listInstalledIngestUnits) —
+// regression coverage for the under-report bug where a per-worktree-ONLY
+// ingest install (hash-suffixed unit, no legacy base-name unit) read as
+// active=false because the bare base-LABEL/UNIT existence check never looked
+// for the hash-suffixed variant. Uses the REAL install-devswarm-ingest.js
+// module (not the fake fixture installer) since the fix is feature-detected
+// off its real listInstalledIngestUnits export.
+// ---------------------------------------------------------------------------
+
+const REAL_INGEST_INSTALLER = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js');
+
+test('companionActive: a per-worktree-ONLY ingest install (no legacy unit) reports active=true', { skip: process.platform === 'win32' }, () => {
+  const real = require(REAL_INGEST_INSTALLER);
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'capscan-perwt-'));
+  try {
+    const wt = path.join(home, 'some-worktree');
+    fs.mkdirSync(wt, { recursive: true });
+    if (process.platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = real.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'), real.buildPlist({ label, exec: '/n', script: '/a.js', log: '/l', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = real.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'), real.buildService({ exec: '/n', script: '/a.js', workdir: wt }));
+    }
+    // Sanity: NO legacy base-name unit exists — the bare LABEL/UNIT check alone
+    // (the pre-fix code path) would find nothing here.
+    const active = companionActive({ installScript: REAL_INGEST_INSTALLER, home, platform: process.platform });
+    assert.strictEqual(active, true, 'a per-worktree-only install must report active — the base-LABEL/UNIT-only check under-reports this');
+  } finally {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('companionActive: real ingest installer, nothing installed anywhere -> active=false', { skip: process.platform === 'win32' }, () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'capscan-perwt-empty-'));
+  try {
+    const active = companionActive({ installScript: REAL_INGEST_INSTALLER, home, platform: process.platform });
+    assert.strictEqual(active, false);
+  } finally {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('companionActive: real ingest installer on win32 -> "unknown" (documented no-op, feature-detected path included)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'capscan-perwt-win32-'));
+  try {
+    const active = companionActive({ installScript: REAL_INGEST_INSTALLER, home, platform: 'win32' });
+    assert.strictEqual(active, 'unknown');
+  } finally {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// ---------------------------------------------------------------------------
 // statuslineCapability
 // ---------------------------------------------------------------------------
 

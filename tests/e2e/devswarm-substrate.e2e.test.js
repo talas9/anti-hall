@@ -76,25 +76,17 @@ test('1 GUARD: coordinator+DevSwarm blocks raw `monitor` (unconditional) with du
   } finally { H.rm(home); }
 });
 
-test('1 GUARD: `read-messages` blocks ONLY with durable-layer evidence (a registered descriptor)', () => {
+test('1 GUARD: `read-messages` blocks UNCONDITIONALLY under DevSwarm (Part B — no evidence needed)', () => {
   const home = H.makeHome();
   try {
-    // No evidence yet -> a lone read-messages is a harmless single read -> ALLOW.
-    const before = testHook('command-guard.js', bashPayload('hivecontrol workspace read-messages'),
+    // Part B: a raw native read desyncs the durable cursor REGARDLESS of any
+    // descriptor/evidence, so read-messages blocks unconditionally like `monitor`
+    // (the old durable-evidence gate is removed). No registration required.
+    const r = testHook('command-guard.js', bashPayload('hivecontrol workspace read-messages'),
       { home, env: COORD_ENV });
-    assert.strictEqual(before.status, 0, `no evidence -> allow; stdout=${before.stdout}`);
-
-    // Register a workspace via the REAL CLI -> descriptor now carries an inboxPath,
-    // which is the durable-layer evidence that arms the read block.
-    const reg = H.runCli(home, ['register', 'ws1', '--worktree', '/wt/ws1', '--session', 's1',
-      '--inbox', path.join(home, 'inbox.ndjson'), '--cursor', path.join(home, 'cursor.json')]);
-    assert.strictEqual(reg.status, 0);
-    assert.ok(reg.json && reg.json.ok, 'register must succeed');
-
-    const after = testHook('command-guard.js', bashPayload('hivecontrol workspace read-messages'),
-      { home, env: COORD_ENV });
-    assert.strictEqual(after.status, 2, `evidence present -> block; stdout=${after.stdout}`);
-    assert.ok(after.json && after.json.decision === 'block');
+    assert.strictEqual(r.status, 2, `read-messages must block; stdout=${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+    assert.match(r.json.reason, /inbox pull|DISABLE_ANTIHALL_DEVSWARM=1/);
   } finally { H.rm(home); }
 });
 
@@ -124,14 +116,16 @@ test('1 GUARD: quoted AND unquoted data mentioning the subcommands is allowed (n
   } finally { H.rm(home); }
 });
 
-test('1 GUARD: a symlink descriptor (→/dev/zero) does NOT hang — fails open to allow', (t) => {
+test('1 GUARD: a symlink descriptor (→/dev/zero) does NOT hang the read-messages guard', (t) => {
   if (process.platform === 'win32') { t.skip('symlink-to-/dev/zero is POSIX-only'); return; }
   if (!fs.existsSync('/dev/zero')) { t.skip('/dev/zero not present on this host'); return; }
   const home = H.makeHome();
   try {
-    // The ONLY "descriptor" is a symlink to an infinite device. A blind read would
-    // hang forever; hasDurableInboxEvidence must lstat-skip it (never follow), so
-    // there is NO evidence -> read-messages is ALLOWED and the hook returns fast.
+    // Part B removed the descriptor-scan evidence gate, so read-messages blocks
+    // unconditionally and never reads any descriptor. This test now just guards that
+    // a hostile symlink descriptor present on disk cannot hang the hook: it must
+    // return PROMPTLY with a real exit code (blocking, since read-messages is
+    // unconditional) — never spin on the infinite device.
     fs.mkdirSync(H.workspacesDir(home), { recursive: true });
     try {
       fs.symlinkSync('/dev/zero', H.descriptorPath(home, 'zero'));
@@ -141,9 +135,9 @@ test('1 GUARD: a symlink descriptor (→/dev/zero) does NOT hang — fails open 
     const r = testHook('command-guard.js', bashPayload('hivecontrol workspace read-messages'),
       { home, env: COORD_ENV });
     // A hang would make spawnSync hit its 10s timeout (status null). Assert it
-    // completed with a real exit code, promptly, and allowed (fail-open).
+    // completed with a real exit code, promptly.
     assert.notStrictEqual(r.status, null, 'hook must not hang (spawn timeout)');
-    assert.strictEqual(r.status, 0, `symlink descriptor -> fail-open allow; stdout=${r.stdout}`);
+    assert.strictEqual(r.status, 2, `read-messages blocks unconditionally; stdout=${r.stdout}`);
     assert.ok(Date.now() - started < 8000, 'must return well under the spawn timeout');
   } finally { H.rm(home); }
 });
@@ -366,8 +360,11 @@ for (const B of backends) {
       } finally { s.close(); }
 
       // summary.json was written atomically (tmp+rename) and reads back identically.
-      assert.ok(fs.existsSync(H.summaryPath(home)), 'summary.json exists after derive');
-      const readBack = store.readSummary(home);
+      // PER-PROJECT: this store was opened with no workspaceId, so it (and its
+      // derived summary) live under the DEFAULT_HASH bucket (s.hash) — not the
+      // legacy global swarmRoot/summary.json path.
+      assert.ok(fs.existsSync(store.summaryPathForHash(home, s.hash)), 'summary.json exists after derive');
+      const readBack = store.readSummaryForHash(home, s.hash);
       assert.strictEqual(readBack.workspaces.w.unread, 2, 'read-back projection matches');
 
       // Durability: a fresh store handle sees the persisted rows (append-only trail).
@@ -376,8 +373,10 @@ for (const B of backends) {
       finally { s2.close(); }
 
       // Append-only evidence (journal backend keeps every physical row on disk).
+      // PER-PROJECT: the journal lives under store/<hash>/journal/, not the legacy
+      // global store/journal/.
       if (B.backend === 'journal') {
-        const msgs = fs.readFileSync(path.join(H.swarmRoot(home), 'store', 'journal', 'messages.ndjson'), 'utf8')
+        const msgs = fs.readFileSync(path.join(store.journalDirForHash(home, s.hash), 'messages.ndjson'), 'utf8')
           .split('\n').filter((l) => l.trim() !== '');
         assert.strictEqual(msgs.length, 3, 'journal appended exactly the 3 distinct messages (dup not written)');
       }
@@ -410,7 +409,10 @@ test('6 INGEST: replaying the same native batch inserts 0 the second time (dedup
     assert.strictEqual(second.stats.inserted, 0, 'replay of the same batch inserts nothing');
     assert.strictEqual(second.stats.duplicate, 2, 'both counted as duplicates');
 
-    const s = store.openStore({ home, backend: 'journal' });
+    // PER-PROJECT: the ingest loop opened its store keyed by workspaceId 'p'; scope
+    // this read-back to the same store (a bare no-workspaceId handle opens the
+    // unrelated DEFAULT_HASH bucket).
+    const s = store.openStore({ home, backend: 'journal', workspaceId: 'p' });
     try { assert.strictEqual(s.messageCount('p'), 2, 'store holds exactly 2, no dupes'); }
     finally { s.close(); }
   } finally { H.rm(home); }
@@ -419,11 +421,14 @@ test('6 INGEST: replaying the same native batch inserts 0 the second time (dedup
 test('6 INGEST: refuses to start while another monitor consumer holds the single-consumer lock', () => {
   const home = H.makeHome();
   try {
-    const held = ingest.acquireIngestLock(home);
-    assert.ok(held, 'first consumer acquires the lock');
+    // Locks are PER-WORKTREE now (no cross-repo collision): hold the SAME worktree's
+    // lock the loop derives, then prove the loop refuses that worktree.
+    const wt = process.cwd();
+    const held = ingest.acquireIngestLock(home, undefined, wt);
+    assert.ok(held, 'first consumer acquires the per-worktree lock');
     try {
       const refused = ingest.runIngestLoop({
-        home, backend: 'journal', workspaceId: 'p', maxIterations: 1,
+        home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
         run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
       });
       assert.strictEqual(refused.started, false, 'must refuse while the lock is held');
@@ -501,7 +506,10 @@ test('8 CLI: register/heartbeat/inbox count/workspaces list/nudge/archive emit w
     assert.strictEqual(count.json.action, 'count');
     assert.strictEqual(count.json.unread, 2);
 
-    const list = H.runCli(home, ['workspaces', 'list']);
+    // PER-PROJECT: target the 'w' workspace's own store explicitly (the CLI
+    // subprocess's cwd is the test runner's cwd, not any worktree tied to 'w', so a
+    // flagless `workspaces list` would resolve a different, unrelated project).
+    const list = H.runCli(home, ['workspaces', 'list', '--workspace', 'w']);
     assert.strictEqual(list.status, 0);
     assert.strictEqual(list.json.action, 'workspaces');
     assert.strictEqual(list.json.count, 1);

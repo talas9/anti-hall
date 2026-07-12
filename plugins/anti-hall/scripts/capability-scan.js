@@ -73,6 +73,24 @@ function companionActive({ installScript, home, platform }) {
   const unit = mod && mod.UNIT;
   const plat = platform || process.platform;
 
+  // Per-worktree-aware companions (currently: the DevSwarm ingest daemon) export
+  // listInstalledIngestUnits — the canonical multi-unit readback covering BOTH
+  // the legacy base-name unit AND per-worktree hash-suffixed units (see
+  // install-devswarm-ingest.js). The bare base-LABEL/UNIT existence check below
+  // under-reports a per-worktree-ONLY install (a real daemon scheduled for one
+  // repo, no legacy unit) as inactive. Feature-detected by export, not by
+  // matching the installer's filename, so this generalizes to any future
+  // per-worktree companion that adopts the same readback contract.
+  if (mod && typeof mod.listInstalledIngestUnits === 'function') {
+    if (plat === 'win32') return 'unknown'; // documented no-op; nothing to enumerate
+    try {
+      const units = mod.listInstalledIngestUnits({ home, platform: plat }) || [];
+      return units.length > 0;
+    } catch (_) {
+      return 'unknown';
+    }
+  }
+
   try {
     if (plat === 'darwin') {
       if (!label) return 'unknown';

@@ -3,9 +3,13 @@
 // file. Workaround for claude-code#39755.
 //
 //   1. pokeOrEscalate() — the AUTOMATIC path (called by devswarm-supervisor.js's
-//      sweep on a `stale` verdict). NEVER kills, NEVER resolves a pid. Its only
-//      tools are a soft nudge (an optional descriptor-supplied nudgeCommand) and
-//      an escalate signal (a recovery.log line + an optional escalateCommand).
+//      sweep on a `stale` verdict). NEVER kills, NEVER resolves a pid. Its tools
+//      are a soft nudge (an optional descriptor-supplied nudgeCommand) and an
+//      escalate signal (a recovery.log line, an optional escalateCommand, AND — on
+//      the transition into escalated — a mechanically-appended notice in the
+//      PARENT/Primary's store via notifyParentEscalation, so an idle parent learns
+//      without taking a turn; see notifyParentEscalation below for the dedupe
+//      story).
 //   2. recover() — kill the ONE confirmed wedged `claude` pid (and its process
 //      group) and resume it headless from the same worktree cwd, feeding the
 //      unread backlog as the fresh prompt. This is the ONLY path in DevSwarm that
@@ -43,6 +47,8 @@ const path = require('path');
 const { spawn } = require('child_process');
 const { devswarmRoot, livenessPathFor, writeVerdict, unreadBacklog, isSafeId } = require('./liveness.js');
 const { verifyTarget } = require('./target-session.js');
+const devswarmStore = require('./devswarm-store.js');
+const { primaryWorkspaceId } = require('../install-devswarm-ingest.js');
 
 const DEFAULT_MAX_RECOVERIES = 3;
 const DEFAULT_GRACE_MS = 5000;
@@ -360,6 +366,55 @@ function defaultFireCommand(argv) {
   } catch (_) {}
 }
 
+function defaultOpenParentStore(opts) { return devswarmStore.openStore(opts); }
+
+// notifyParentEscalation(descriptor, verdict, opts, openParentStore) — MECHANICALLY
+// appends a synthetic notice into the PARENT/Primary's store (owner principle #20:
+// the supervisor actively escalates into the parent's STORE, not just a local log,
+// so an idle parent learns without taking a turn). Resolves the parent workspaceId
+// via install-devswarm-ingest.js's primaryWorkspaceId(worktreePath) (`primary-<hash>`,
+// per-worktree, no collisions across repos) — the SAME id the Primary reads via
+// `devswarm inbox messages`/`read-primary`.
+//
+// IDEMPOTENT (belt-and-suspenders, two layers):
+//   1. Caller-gated: only invoked on the verdict TRANSITION into escalated (the
+//      caller checks `wasEscalated` before calling this at all — see pokeOrEscalate
+//      below). Also naturally gated by liveness.js's terminal short-circuit: once a
+//      workspace verdict persists 'escalated', computeLiveness stops returning
+//      'stale', so the AUTOMATIC sweep's `verdict.status === 'stale'` gate never
+//      calls pokeOrEscalate again for that workspace.
+//   2. Store-level hash dedupe: the appended message carries a stable per-escalation
+//      hash (`escalate:<childId>:<staleSince>`) so a genuine race between two
+//      processes both observing a pre-transition verdict still lands only one row
+//      (both backends' appendMessage dedupe by hash).
+// FAIL-OPEN: any error (unreadable worktree, unopenable store, fs failure) is
+// swallowed — a parent-notice failure must NEVER crash the sweep or block the
+// (already-persisted) escalation itself.
+function notifyParentEscalation(descriptor, verdict, opts, openParentStore) {
+  try {
+    if (!descriptor || !descriptor.worktreePath) return;
+    const home = opts && opts.home;
+    const now = Number.isFinite(opts && opts.now) ? opts.now : Date.now();
+    const parentId = primaryWorkspaceId(descriptor.worktreePath);
+    if (!isSafeId(parentId) || parentId === descriptor.id) return; // never notify self
+    const staleSince = Number.isFinite(verdict && verdict.staleSince) ? verdict.staleSince : null;
+    const idleMin = staleSince !== null ? Math.max(0, Math.round((now - staleSince) / 60000)) : null;
+    const body = 'child ' + descriptor.id + ' idle' + (idleMin !== null ? ' ' + idleMin + 'm' : '')
+      + ' — reassign or archive';
+    const open = openParentStore || defaultOpenParentStore;
+    // PER-PROJECT: open the PARENT's own store (keyed by its primary-<hash>) so the
+    // escalation lands where the parent's `inbox read-primary` reads it.
+    const s = open({ home, workspaceId: parentId, env: opts && opts.env, fsi: opts && opts.fsi });
+    try {
+      s.appendMessage({
+        workspaceId: parentId, ts: now,
+        hash: 'escalate:' + descriptor.id + ':' + (staleSince !== null ? staleSince : 'x'),
+        body,
+      });
+    } finally { s.close(); }
+  } catch (_) { /* fail-open: a store-write error must never crash the sweep */ }
+}
+
 // pokeOrEscalate(descriptor, verdict, opts, io) -> { action: 'nudged'|'escalate'|'error' }.
 // Called by the AUTOMATIC sweep on a `stale` verdict. NEVER kills, NEVER resolves
 // a pid — see the module header. Exactly two outcomes:
@@ -367,8 +422,10 @@ function defaultFireCommand(argv) {
 //     cooldown has elapsed -> fire nudgeCommand, persist 'nudged' + bump attempts.
 //   - escalate: attempts exhausted, still cooling down, or no nudgeCommand at
 //     all -> log + persist 'escalated', firing descriptor.escalateCommand once
-//     if present. A human must look; the sweep will not retry (escalated is
-//     terminal — see liveness.js's short-circuit).
+//     if present, AND (on the actual transition into escalated) mechanically
+//     notifying the parent's store via notifyParentEscalation above. A human must
+//     look; the sweep will not retry (escalated is terminal — see liveness.js's
+//     short-circuit).
 function pokeOrEscalate(descriptor, verdict, opts, io) {
   const o = opts || {};
   const IO = io || {};
@@ -379,6 +436,7 @@ function pokeOrEscalate(descriptor, verdict, opts, io) {
   const cooldownMs = Number.isFinite(o.nudgeCooldownMs) ? o.nudgeCooldownMs : DEFAULT_NUDGE_COOLDOWN_MS;
   const nudge = IO.nudge || defaultFireCommand;
   const escalate = IO.escalate || defaultFireCommand;
+  const openParentStore = IO.openParentStore;
 
   try {
     const attempts = Number.isFinite(verdict && verdict.nudgeAttempts) ? verdict.nudgeAttempts : 0;
@@ -394,9 +452,16 @@ function pokeOrEscalate(descriptor, verdict, opts, io) {
 
     // Exhaustion (attempts used up / still cooling down out of budget) or no
     // nudgeCommand at all -> escalate. NEVER a kill.
+    const wasEscalated = !!(verdict && verdict.status === 'escalated');
     appendLog(home, { id: descriptor.id, action: 'escalate', reason: 'poke-exhausted' }, F);
     persistNudgeVerdict(descriptor, home, F, 'escalated', {});
     if (descriptor.escalateCommand) { try { escalate(descriptor.escalateCommand); } catch (_) {} }
+    // Only on the TRANSITION into escalated — never re-notify an already-escalated
+    // workspace on a repeated call (e.g. a manual `devswarm nudge` re-invoked, or a
+    // stray sweep tick before liveness.js's terminal short-circuit takes effect).
+    if (!wasEscalated) {
+      notifyParentEscalation(descriptor, verdict, { home, now, env: o.env, fsi: F }, openParentStore);
+    }
     return { action: 'escalate', reason: 'poke-exhausted' };
   } catch (e) {
     appendLog(home, { id: descriptor && descriptor.id, action: 'error', reason: String(e && e.message) }, F);
@@ -407,5 +472,5 @@ function pokeOrEscalate(descriptor, verdict, opts, io) {
 module.exports = {
   DEFAULT_MAX_RECOVERIES, DEFAULT_GRACE_MS, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS,
   RESUME_GUARDRAIL, LOCK_STALE_MS,
-  lockPathFor, recoveryLogPath, acquireLock, recover, pokeOrEscalate,
+  lockPathFor, recoveryLogPath, acquireLock, recover, pokeOrEscalate, notifyParentEscalation,
 };

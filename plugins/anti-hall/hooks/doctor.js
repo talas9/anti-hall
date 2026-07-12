@@ -21,6 +21,13 @@ const cp   = require('child_process');
 const ROOT  = path.resolve(__dirname, '..');     // plugin root
 const HOOKS = __dirname;                           // hooks/
 const QUIET = process.argv.includes('--quiet');
+// Repair mode. Plain `doctor` (and --fix/--repair/--dry-run) run the repair pass
+// after the diagnostics; --check is PURE read-only (today's behavior, the CI/test
+// path) and skips repair entirely. --dry-run prints what WOULD be fixed, writes
+// nothing. --fix/--repair are explicit aliases for the default auto-apply path.
+const CHECK   = process.argv.includes('--check');
+const DRYRUN  = process.argv.includes('--dry-run');
+const DO_REPAIR = !CHECK; // default, --fix, --repair, --dry-run repair; --check does not
 
 const C = process.stdout.isTTY
   ? { g:'\x1b[32m', r:'\x1b[31m', y:'\x1b[33m', d:'\x1b[2m', b:'\x1b[1m', c:'\x1b[36m', x:'\x1b[0m' }
@@ -527,8 +534,11 @@ function devswarmHookSelfTests() {
     path.join(libDir, 'liveness.js'),
     path.join(libDir, 'recovery.js'),
     path.join(libDir, 'doctor-devswarm.js'),
+    path.join(libDir, 'doctor-runtime.js'),
     path.join(ROOT, 'companion', 'devswarm-supervisor.js'),
     path.join(ROOT, 'companion', 'install-devswarm-supervisor.js'),
+    path.join(ROOT, 'companion', 'install-devswarm-ingest.js'),
+    path.join(ROOT, 'companion', 'devswarm-ingest.js'),
   ];
   // P2-12: node --check each PRESENT file so a broken file FAILS (loudly) instead
   // of vanishing behind the require()-fail-open below.
@@ -594,6 +604,28 @@ function devswarmHookSelfTests() {
       if (r.status === dsd.FAIL) bad(r.message);
       else if (r.status === dsd.WARN) warnl(r.message);
       else ok(r.message);
+    }
+  }
+
+  // RUNTIME health checks 1-4 (companion/lib/doctor-runtime.js): store/journal
+  // health + summary parity, data staleness, daemons RUNNING (not just
+  // installed), and no-second-consumer. Same require-and-call pattern, same
+  // `active` gate as doctor-devswarm above (check 5 — foreign skill/hook
+  // conflicts — is unconditional; see its own top-level section below).
+  if (active) {
+    const runtimeModPath = path.join(libDir, 'doctor-runtime.js');
+    let dr = null, runtimeReport = null;
+    if (fs.existsSync(runtimeModPath)) {
+      try { dr = require(runtimeModPath); } catch (_) { dr = null; } // fail-open: a broken check never breaks doctor
+      if (dr) { try { runtimeReport = dr.runChecks({ home: os.homedir(), env: process.env }); } catch (_) { runtimeReport = null; } }
+    }
+    if (dr && runtimeReport) {
+      for (const r of runtimeReport.results) {
+        if (r.status === dr.FAIL) bad(r.message);
+        else if (r.status === dr.WARN) warnl(r.message);
+        else if (r.status === dr.INFO) infol(r.message);
+        else ok(r.message);
+      }
     }
   }
 })();
@@ -690,6 +722,62 @@ head('Workflow templates (deadly-loop / ship-it)');
     warnl('no saved deadly-loop/ship-it Workflow template found in ~/.claude/workflows/ or <cwd>/.claude/workflows/ -- running via the inline SKILL path means the Critic seat is unenforced LLM guidance and can silently degrade to Opus; save the workflow template via /workflows for the enforced codexUp Critic wiring');
   }
 })();
+
+// --- 6g. Foreign skill/hook conflict scan (UNCONDITIONAL) --------------------
+// Cross-references OTHER ENABLED plugins' hooks.json + skill directories
+// against anti-hall's own (companion/lib/doctor-runtime.js's
+// scanForeignConflicts — check 5 of the DevSwarm runtime checks, but this scan
+// itself has nothing to do with DevSwarm and so is NOT gated on it). A
+// competing PreToolUse/Stop hook or a skill-name collision matters on any
+// machine, DevSwarm-active or not. HIGH findings surface as a WARN (never bad —
+// this is advisory about a THIRD-PARTY plugin's own configuration, not an
+// anti-hall defect, so it must never flip doctor's exit code). PRIVACY: only
+// plugin name + event + matcher + hook basename are ever surfaced — never full
+// command strings (which can carry a local username/path) or file contents.
+head('Foreign skill/hook conflict scan');
+(function foreignConflictSection() {
+  const runtimeModPath = path.join(ROOT, 'companion', 'lib', 'doctor-runtime.js');
+  let dr = null, scan = null;
+  if (fs.existsSync(runtimeModPath)) {
+    try { dr = require(runtimeModPath); } catch (_) { dr = null; } // fail-open: a broken check never breaks doctor
+    if (dr) { try { scan = dr.scanForeignConflicts({ home: os.homedir(), cwd }); } catch (_) { scan = null; } }
+  }
+  if (!dr || !scan) { warnl('foreign conflict scan unavailable (module missing or raised, fail-open)'); return; }
+  if (scan.results.length === 0) { infol('no foreign hook/skill conflicts detected among enabled plugins'); return; }
+  for (const r of scan.results) {
+    if (r.status === 'HIGH') warnl(r.message);
+    else if (r.status === dr.WARN) warnl(r.message);
+    else if (r.status === dr.INFO) infol(r.message);
+    else ok(r.message);
+  }
+})();
+
+// --- 6h. Repair pass (default / --fix / --repair / --dry-run; SKIPPED on --check) ---
+// doctor now DIAGNOSES then REPAIRS. runRepairs applies AUTO-SAFE fixes always
+// (honoring --dry-run) and GATED daemon fixes only under the DevSwarm gate
+// (isDevswarmActive + a git-worktree cwd); a closed gate REPORTS the exact manual
+// command instead of mutating. Each 'failed' repair is a real failure and drives
+// the exit-code contract (exit 1). No existing diagnostic `bad` maps to a repair —
+// each repair re-verifies itself and carries its own verdict here.
+if (DO_REPAIR) {
+  head('Repair' + (DRYRUN ? ' (dry-run — no changes written)' : ''));
+  let repairs = [];
+  try {
+    repairs = require('./lib/doctor-repair.js').runRepairs({
+      cwd: process.cwd(), env: process.env, home: os.homedir(), dryRun: DRYRUN,
+    });
+  } catch (e) {
+    bad('repair pass raised (fail-open): ' + (e && e.message));
+  }
+  if (repairs.length === 0 && fail === 0) infol('nothing to repair');
+  for (const r of repairs) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('FIXED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else if (r.status === 'gated') warnl('GATED ' + label);
+    else infol('skipped ' + label);
+  }
+}
 
 // --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0

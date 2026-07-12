@@ -250,10 +250,11 @@ function pullOnce(opts) {
     // consume; the store projection is a secondary read model. Dedupe is by the SAME
     // messageHash, so a re-ingest OR-IGNOREs — idempotent across both layers.
     try {
-      const s = store.openStore({ home, backend, env });
+      // PER-PROJECT: the child's own workspaceId selects its physical store.
+      const s = store.openStore({ home, workspaceId: id, backend, env });
       try {
         ingestPayload(s, rRes.raw, { workspaceId: id, now });
-        store.deriveSummary(s, { home, env, now });
+        store.deriveSummary(s, { home, workspaceId: id, env, now });
       } finally { s.close(); }
     } catch (_) { /* durable inbox already persisted; store parity is best-effort */ }
 

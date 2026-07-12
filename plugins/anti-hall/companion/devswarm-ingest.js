@@ -33,13 +33,48 @@ const { spawnSync } = require('child_process');
 
 const store = require('./lib/devswarm-store.js');
 const { devswarmRoot } = require('./lib/liveness.js');
+// The installer OWNS per-worktree identity (worktreeHash / labelForWorktree / …). The
+// daemon reuses those exact helpers so its lock + workspaceId agree byte-for-byte
+// with what install-devswarm-ingest.js baked into the unit. Requiring the installer
+// does NOT run it (main() is guarded by require.main===module) and introduces no
+// cycle (the installer never requires this file).
+const installIngest = require('./install-devswarm-ingest.js');
 
 const INGEST_LOCK_STALE_MS = 15 * 60 * 1000; // a monitor consumer is long-lived; only a truly dead/old holder is stolen
 const DEFAULT_MONITOR_INTERVAL_SEC = 3;      // hivecontrol monitor default poll
 const DEFAULT_RESTART_BACKOFF_MS = 2000;     // gap before re-spawning after a monitor exit/crash
+// DEFAULT_MONITOR_TIMEOUT_SEC — the bounded `-t` timeout given to EVERY `hivecontrol
+// workspace monitor` call. Without a timeout, monitor long-polls (BLOCKS) until a
+// message arrives; on a live-but-QUIET workspace that parks runIngestLoop's iteration
+// inside run() indefinitely, so the per-iteration heartbeat write (see
+// writeIngestHeartbeat below) only fires per-MESSAGE, not per-interval, and goes
+// stale -> the freshness banner + doctor's daemon-running check false-report a live
+// daemon as down. Bounding the call guarantees the loop iterates (and heartbeats) at
+// least this often even with ZERO messages; a timed-out/empty monitor call is NOT an
+// error (see defaultMonitorRun) and no message is lost — hivecontrol's native queue
+// buffers until the next poll and ingestPayload is idempotent by hash.
+const DEFAULT_MONITOR_TIMEOUT_SEC = 30;
 
-function ingestLockPath(home) {
-  return path.join(devswarmRoot(home), 'locks', 'ingest.lock');
+// ingestLockPath(home, worktree) — PER-WORKTREE lock so a 2nd daemon for a DIFFERENT
+// repo does not collide on one global O_EXCL lock and refuse-and-exit. When a
+// worktree is given the lock is `locks/ingest-<hash>.lock`; with no worktree it falls
+// back to the legacy global `locks/ingest.lock` (keeps the direct acquireIngestLock
+// unit tests, which never resolve a worktree, on one shared path).
+function ingestLockPath(home, worktree) {
+  const dir = path.join(devswarmRoot(home), 'locks');
+  if (worktree) {
+    try { return path.join(dir, 'ingest-' + installIngest.worktreeHash(worktree) + '.lock'); } catch (_) {}
+  }
+  return path.join(dir, 'ingest.lock');
+}
+
+// ingestHeartbeatPath(home, hash) — the per-worktree daemon liveness file the ingest
+// loop rewrites EVERY sweep (even a quiet cycle with 0 inserts). A follow-up rewires
+// the freshness banner + doctor's daemon-RUNNING check to key off this instead of
+// summary.json's generatedAt (which only advances on inserted>0, so a live-but-quiet
+// daemon false-reads as stale).
+function ingestHeartbeatPath(home, hash) {
+  return path.join(devswarmRoot(home), 'heartbeats', 'ingest-' + String(hash) + '.json');
 }
 
 function isAliveDefault(pid) {
@@ -59,11 +94,11 @@ function isAliveDefault(pid) {
 // live `hivecontrol workspace monitor` consumer would split the destructive
 // native queue between two daemons and silently lose messages. Requiring BOTH
 // conditions (never one alone) is the fix for the "stale-steals-a-live-daemon" bug.
-function acquireIngestLock(home, io) {
+function acquireIngestLock(home, io, worktree) {
   const F = (io && io.fs) || fs;
   const isAlive = (io && io.isAlive) || isAliveDefault;
   const now = (io && io.now) || Date.now;
-  const p = ingestLockPath(home);
+  const p = ingestLockPath(home, worktree);
   try { F.mkdirSync(path.dirname(p), { recursive: true }); } catch (_) {}
   for (let attempt = 0; attempt < 2; attempt++) {
     const ts = now();
@@ -216,6 +251,19 @@ function defaultMonitorRun(opts) {
   }
 }
 
+// resolveMonitorTimeoutSec(explicit, env) -> number. Explicit opts.timeoutSec always wins
+// (tests/tuning can still force a specific or unbounded* value). Otherwise the
+// ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC env var configures the bounded cadence.
+// Otherwise DEFAULT_MONITOR_TIMEOUT_SEC. (*passing a genuinely unbounded monitor call
+// is only ever done explicitly — the production main() below never does.)
+function resolveMonitorTimeoutSec(explicit, env) {
+  if (Number.isFinite(explicit)) return explicit;
+  const raw = env && env.ANTIHALL_DEVSWARM_MONITOR_TIMEOUT_SEC;
+  const n = raw != null ? Number(raw) : NaN;
+  if (Number.isFinite(n) && n > 0) return n;
+  return DEFAULT_MONITOR_TIMEOUT_SEC;
+}
+
 // runIngestLoop(opts) -> summary. The supervised daemon body. Acquires the
 // single-consumer lock (refuses if held), opens the store, then loops:
 //   monitor once -> ingest -> deriveSummary -> (on child exit/crash) backoff and
@@ -224,20 +272,33 @@ function defaultMonitorRun(opts) {
 function runIngestLoop(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
-  const workspaceId = o.workspaceId || o.env && o.env.DEVSWARM_BUILDER_ID || 'primary';
+  // Resolve the worktree this daemon runs FROM (launchd/systemd bake it as the unit's
+  // WorkingDirectory). Explicit o.worktree wins (deterministic in tests); passing
+  // o.worktree===null forces the legacy global lock; otherwise resolve from
+  // o.cwd/process.cwd(). Both lock keying AND the store partition (workspaceId) derive
+  // from it so two daemons for DIFFERENT repos never collide (#15).
+  const worktree = ('worktree' in o) ? o.worktree : resolveDaemonWorktree(o.cwd);
+  const workspaceId = o.workspaceId
+    || (o.env && o.env.DEVSWARM_BUILDER_ID)
+    || (worktree ? installIngest.primaryWorkspaceId(worktree) : null)
+    || 'primary';
+  const hbHash = worktree ? safeWorktreeHash(worktree) : workspaceId;
   const run = o.run || defaultMonitorRun;
   const sleep = o.sleep || sleepSync;
   const maxIterations = Number.isFinite(o.maxIterations) ? o.maxIterations : Infinity;
   const backoffMs = Number.isFinite(o.restartBackoffMs) ? o.restartBackoffMs : DEFAULT_RESTART_BACKOFF_MS;
   const intervalSec = Number.isFinite(o.intervalSec) ? o.intervalSec : DEFAULT_MONITOR_INTERVAL_SEC;
+  const timeoutSec = resolveMonitorTimeoutSec(o.timeoutSec, o.env);
 
-  const release = (o.io && o.io.lock) ? o.io.lock(home) : acquireIngestLock(home, o.io);
+  const release = (o.io && o.io.lock) ? o.io.lock(home) : acquireIngestLock(home, o.io, worktree);
   if (!release) {
     return { ok: false, started: false, reason: 'another monitor consumer is already running (ingest lock held)' };
   }
 
   const openStore = (o.io && o.io.openStore) || store.openStore;
-  const s = openStore({ home, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
+  // PER-PROJECT store: this daemon opens ITS OWN worktree's store, keyed by the
+  // workspaceId it ingests under (primary-<worktreeHash>) -> store/<worktreeHash>/.
+  const s = openStore({ home, workspaceId, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
   const stats = { iterations: 0, inserted: 0, duplicate: 0, errors: 0 };
   try {
     for (let i = 0; i < maxIterations; i++) {
@@ -247,9 +308,13 @@ function runIngestLoop(opts) {
       if (release && typeof release.heartbeat === 'function') {
         try { release.heartbeat(o.now); } catch (_) {}
       }
+      // Per-worktree DAEMON liveness heartbeat, written EVERY sweep regardless of
+      // whether anything was ingested — a live-but-quiet daemon must still read as
+      // alive. Fail-open: a heartbeat-write error must never crash the loop.
+      writeIngestHeartbeat(home, hbHash, { workspaceId, workingDir: worktree, now: o.now }, (o.io && o.io.storeFs));
       const res = run({
         hivecontrol: o.hivecontrol, intervalSec,
-        timeoutSec: o.timeoutSec, hardTimeoutMs: o.hardTimeoutMs,
+        timeoutSec, hardTimeoutMs: o.hardTimeoutMs,
       });
       stats.iterations++;
       if (!res.ok) {
@@ -292,6 +357,38 @@ function sleepSync(ms) {
   try { const sab = new Int32Array(new SharedArrayBuffer(4)); Atomics.wait(sab, 0, 0, Math.max(0, ms | 0)); } catch (_) {}
 }
 
+// resolveDaemonWorktree(cwd) — the daemon's own worktree (git toplevel of its baked
+// WorkingDirectory), computed with the SAME resolver the installer used, so the hash
+// agrees. null when cwd is not inside a git worktree.
+function resolveDaemonWorktree(cwd) {
+  try { return installIngest.resolveWorktree(cwd || process.cwd()); } catch (_) { return null; }
+}
+// safeWorktreeHash(wt) — never throws (heartbeat keying must be fail-open).
+function safeWorktreeHash(wt) {
+  try { return installIngest.worktreeHash(wt); } catch (_) { return null; }
+}
+
+// writeIngestHeartbeat — atomic (tmp+rename) per-worktree daemon liveness file. Fully
+// fail-open: any error (bad hash, unwritable dir) is swallowed so a heartbeat failure
+// can never crash the ingest loop.
+function writeIngestHeartbeat(home, hash, meta, fsi) {
+  if (hash == null || hash === '') return;
+  const F = fsi || fs;
+  try {
+    const p = ingestHeartbeatPath(home, hash);
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    const beat = {
+      ts: Number.isFinite(meta && meta.now) ? meta.now : Date.now(),
+      workspaceId: meta && meta.workspaceId != null ? String(meta.workspaceId) : null,
+      workingDir: meta && meta.workingDir != null ? String(meta.workingDir) : null,
+      pid: process.pid,
+    };
+    const tmp = p + '.' + process.pid + '.tmp';
+    F.writeFileSync(tmp, JSON.stringify(beat));
+    F.renameSync(tmp, p);
+  } catch (_) { /* fail-open: liveness heartbeat is best-effort */ }
+}
+
 function main() {
   // A real invocation runs unbounded until killed (launchd/systemd re-execs it on
   // exit). workspaceId is the ingesting workspace's own id (DEVSWARM_BUILDER_ID),
@@ -309,7 +406,8 @@ if (require.main === module) {
 }
 
 module.exports = {
-  ingestLockPath, acquireIngestLock,
+  ingestLockPath, ingestHeartbeatPath, acquireIngestLock,
   messageHash, stableJson, normalizeMonitorPayload,
   ingestPayload, defaultMonitorRun, runIngestLoop,
+  DEFAULT_MONITOR_TIMEOUT_SEC, resolveMonitorTimeoutSec,
 };

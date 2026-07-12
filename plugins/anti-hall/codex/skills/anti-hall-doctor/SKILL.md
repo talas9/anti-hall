@@ -20,11 +20,42 @@ ANTI_HALL_ROOT="$(cd "$(dirname "$SKILL_FILE")/../../.." && pwd)"
 test -f "$ANTI_HALL_ROOT/.codex-plugin/plugin.json" || { echo "anti-hall plugin root not found relative to $SKILL_FILE — aborting" >&2; exit 1; }
 ```
 
-Run the existing doctor first:
+Run the existing doctor first. `doctor.js` is the SHARED script (Codex wires the same
+hooks via `install-codex.js`), so its repair mode (v0.55.0) applies identically here:
 
 ```bash
-node "$ANTI_HALL_ROOT/hooks/doctor.js"
+node "$ANTI_HALL_ROOT/hooks/doctor.js"           # diagnose + repair (default, auto-applies safe fixes)
+node "$ANTI_HALL_ROOT/hooks/doctor.js" --dry-run # print what it would fix; writes nothing
+node "$ANTI_HALL_ROOT/hooks/doctor.js" --check   # PURE read-only (mutates nothing) — the CI/scripting path
 ```
+
+Repair flags (mirror the Claude `doctor` skill): plain / `--fix` / `--repair` auto-apply;
+`--dry-run` shows would-fix and writes nothing; `--check` is read-only; `--quiet` is the
+one-line verdict. Two classes: **AUTO-SAFE** (state migrations; statusline only when none
+is configured; idempotent supervisor relaunch; **Codex hook refresh when a
+`.codex/config.toml` exists but the hooks are unwired** — it never creates a new `.codex`)
+and **GATED** daemon fixes (ingest install / wrong-path rebind / stale-script / supervisor
+first-install) applied only when `isDevswarmActive(env)` AND `resolveWorktree(cwd)` is a git
+worktree — otherwise doctor reports the exact manual command. The **DevSwarm gate is
+effectively always closed for gpt-5.x Codex/OMX sessions** (the `DEVSWARM_*` env vars are
+set only for the `claude` child sessions hivecontrol spawns), so on Codex the daemon fixes
+report the manual command rather than acting — matching the liveness supervisor's
+Claude-only status. Windows daemon fixes are documented no-ops.
+
+`doctor.js` also carries the same DevSwarm **RUNTIME health checks** as the Claude side
+(`companion/lib/doctor-runtime.js`, same shared script): store/journal health across
+every PER-PROJECT store `store/<hash>/` (sqlite `quick_check` via an isolated
+`--no-warnings` read-only probe, journal torn-line scan, store↔summary parity),
+data staleness (gated on the daemon RUNNING + unread backlog —
+never flags an idle system), daemons RUNNING vs merely installed (report-only, never
+restarts), and a no-other-consumer scan for a stray `hivecontrol workspace monitor`
+process (report-only, never kills). Since the DevSwarm gate is effectively always closed
+on Codex sessions, these four checks are effectively always silent there too (correct —
+DevSwarm liveness is a Claude-child-session concern). Separately, an **unconditional**
+foreign skill/hook conflict scan runs regardless of DevSwarm state, cross-referencing
+other enabled plugins' `hooks.json`/skills against anti-hall's own; only plugin name +
+event + matcher + hook basename are ever reported (never full command strings or file
+contents).
 
 Then verify Codex-specific surfaces:
 

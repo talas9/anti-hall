@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { migrateLegacyState, migrateGsdPlanning } = require('../../plugins/anti-hall/scripts/migrate-state.js');
+const { migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore } = require('../../plugins/anti-hall/scripts/migrate-state.js');
 
 function makeTmpDir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-state-test-'));
@@ -213,6 +213,131 @@ test('GSD: dedupe is per source path, not global content -- two different files 
     assert.strictEqual(fs.readFileSync(path.join(base, 'A.md'), 'utf8'), content);
     assert.strictEqual(fs.readFileSync(path.join(base, 'B.md'), 'utf8'), content);
   } finally { cleanup(); }
+});
+
+// --- migrateDevswarmStore dryRun pending (Bug 3: must be IDEMPOTENT, not a
+// bare descriptor count) ------------------------------------------------------
+
+function withHome(fn) {
+  const origHome = process.env.HOME;
+  const origUserProfile = process.env.USERPROFILE;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'migrate-state-devswarm-'));
+  fs.mkdirSync(path.join(home, '.anti-hall', 'devswarm', 'workspaces'), { recursive: true });
+  process.env.HOME = home;
+  if (process.platform === 'win32') process.env.USERPROFILE = home;
+  try {
+    return fn(home);
+  } finally {
+    process.env.HOME = origHome;
+    if (process.platform === 'win32') process.env.USERPROFILE = origUserProfile;
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+
+function seedDescriptor(home, id, lines) {
+  const wsDir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+  const inbox = path.join(home, 'inbox-' + id + '.ndjson');
+  fs.writeFileSync(inbox, lines.join('\n') + '\n');
+  fs.writeFileSync(path.join(wsDir, id + '.json'), JSON.stringify({
+    id, worktreePath: '/wt/' + id, sessionId: 'sess-' + id,
+    inboxPath: inbox, cursorPath: null, nudgeCommand: null,
+  }));
+}
+
+test('migrateDevswarmStore dryRun: pending flips true -> false after a real migrate (idempotent, not a bare descriptor count)', () => {
+  withHome((home) => {
+    seedDescriptor(home, 'w1', ['hello-from-w1']);
+
+    const before = migrateDevswarmStore({ dryRun: true });
+    assert.strictEqual(before.pending, true, 'an un-migrated descriptor with inbox content must be pending');
+    assert.strictEqual(before.workspaces, 1);
+
+    const applied = migrateDevswarmStore({});
+    assert.strictEqual(applied.ok, true);
+
+    // The descriptor itself is NEVER deleted (non-destructive migration) — a
+    // buggy `pending = descriptors.length > 0` would stay true forever here,
+    // which is exactly the false-FAILED bug doctor-repair.js hit on every run.
+    const after = migrateDevswarmStore({ dryRun: true });
+    assert.strictEqual(after.pending, false, 'pending must flip to false once the descriptor is actually migrated');
+    assert.strictEqual(after.workspaces, 1, 'the descriptor is still counted (non-destructive) even though nothing is pending');
+
+    // Re-running the real migration again stays a no-op (idempotent) and pending
+    // stays false.
+    migrateDevswarmStore({});
+    const after2 = migrateDevswarmStore({ dryRun: true });
+    assert.strictEqual(after2.pending, false);
+  });
+});
+
+test('migrateDevswarmStore dryRun: a descriptor with an empty/unreadable inbox is never pending', () => {
+  withHome((home) => {
+    const wsDir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.writeFileSync(path.join(wsDir, 'w2.json'), JSON.stringify({
+      id: 'w2', worktreePath: '/wt/w2', sessionId: 'sess-w2',
+      inboxPath: path.join(home, 'does-not-exist.ndjson'), cursorPath: null, nudgeCommand: null,
+    }));
+    const r = migrateDevswarmStore({ dryRun: true });
+    assert.strictEqual(r.pending, false, 'an unreadable inbox contributes nothing migratable, so it must not be pending');
+    assert.strictEqual(r.workspaces, 1);
+  });
+});
+
+test('migrateDevswarmStore dryRun: no descriptors at all -> not pending', () => {
+  withHome((home) => {
+    const r = migrateDevswarmStore({ dryRun: true });
+    assert.strictEqual(r.pending, false);
+    assert.strictEqual(r.workspaces, 0);
+  });
+});
+
+// --- P1 regression (Codex re-review, fixed here): a cross-path dedupe in
+// devswarm-migrate.js's migrateOne (colliding a message copied by the
+// global-store split, hash `native:*`, with the SAME message mirrored in a
+// descriptor's legacy inbox) intentionally skips writing that line's
+// legacyLineHash once the store already holds an equivalent row under the
+// OTHER hash namespace. The dryRun pending check used to test raw
+// legacyLineHash PRESENCE, so it could never see that skipped-but-covered
+// line as migrated -> `pending` stayed true FOREVER after a real, verified
+// migrate whenever this cross-path collision occurred -- doctor's
+// migrate-devswarm-store repair would report FAILED on an otherwise-healthy,
+// fully-migrated machine. pendingLegacyLines (the shared multiset identity)
+// fixes this: "imported" and "pending" now agree on the exact same line. ----
+test('migrateDevswarmStore dryRun: pending flips true -> false after a migrate that cross-path-dedupes against a pre-existing global-store row', () => {
+  withHome((home) => {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const id = 'primary-aaaaaaaa';
+
+    // Seed a legacy GLOBAL store with a native-hash row (as the v0.54 ingest
+    // daemon would have written directly, BEFORE the per-project split).
+    const legacyDir = storeLib.storeRootDir(home);
+    const src = storeLib.openStore({ home, backend: 'journal', dir: legacyDir, hash: 'legacy' });
+    try { src.appendMessage({ workspaceId: id, body: 'DUP-MSG', hash: 'native:dup1' }); }
+    finally { src.close(); }
+
+    // Descriptor whose legacy NDJSON inbox mirrors the SAME message text.
+    seedDescriptor(home, id, ['DUP-MSG']);
+
+    const before = migrateDevswarmStore({ dryRun: true });
+    assert.strictEqual(before.pending, true, 'un-migrated descriptor content must be pending');
+
+    const applied = migrateDevswarmStore({});
+    assert.strictEqual(applied.ok, true);
+    assert.strictEqual(applied.verifiedAll, true, 'the cross-path dup must still count-verify clean');
+
+    // messageCount must be 1 (collapsed), not 2 (duplicated).
+    const s = storeLib.openStore({ home, workspaceId: id });
+    try { assert.strictEqual(s.messageCount(id), 1); } finally { s.close(); }
+
+    // THE REGRESSION: this must flip to false, not stay stuck true.
+    const after = migrateDevswarmStore({ dryRun: true });
+    assert.strictEqual(after.pending, false, 'pending must flip to false — the message IS migrated, just under a different hash namespace');
+
+    // Idempotent re-run stays clean.
+    migrateDevswarmStore({});
+    const after2 = migrateDevswarmStore({ dryRun: true });
+    assert.strictEqual(after2.pending, false);
+  });
 });
 
 test('GSD: re-run after a file is re-created with DIFFERENT content migrates the new content (not confused with prior state)', () => {

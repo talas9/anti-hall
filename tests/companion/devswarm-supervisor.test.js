@@ -249,6 +249,63 @@ test('end-to-end: ANTIHALL_DEVSWARM_IDLE_SEC moves the stale cutoff seen by comp
   } finally { cleanup(); }
 });
 
+test('sweepOnce (real computeLiveness + pokeOrEscalate): escalation appends ONE parent-store notice; repeated sweeps do not duplicate it (#19)', () => {
+  const { projectDirFor, livenessPathFor } = require(path.join(
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'liveness.js',
+  ));
+  const inst = require(path.join(
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js',
+  ));
+  const storeLib = require(path.join(
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js',
+  ));
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = path.join(home, 'wt');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const projectDir = projectDirFor(worktreePath, home);
+    fs.mkdirSync(projectDir, { recursive: true });
+    const tp = path.join(projectDir, UUID + '.jsonl');
+    fs.writeFileSync(tp, '{}\n');
+    const ageMs = 20 * 60 * 1000; // 20 minutes idle -> past the default 15m threshold
+    const t = (Date.now() - ageMs) / 1000;
+    fs.utimesSync(tp, t, t);
+    const inboxPath = path.join(worktreePath, 'i'); const cursorPath = path.join(worktreePath, 'c');
+    fs.writeFileSync(inboxPath, JSON.stringify({ m: 1 }) + '\n');
+    fs.writeFileSync(cursorPath, '0');
+    writeDescriptor(home, { id: 'w1', worktreePath, inboxPath, cursorPath }, 'w1'); // NO nudgeCommand -> escalate on first stale sweep
+
+    const runners = { gitCommitTs: () => Date.now() - ageMs };
+    // Sweep 1: real computeLiveness classifies stale (no nudgeCommand) -> real
+    // pokeOrEscalate escalates immediately and notifies the parent store. The
+    // returned `verdict` here is the FRESH computeLiveness result (pre-escalate,
+    // 'stale') — pokeOrEscalate mutates the PERSISTED liveness file separately, so
+    // assert that on disk, not on this in-memory snapshot.
+    const res1 = M.sweepOnce({ home, deps: { runners } });
+    assert.strictEqual(res1.length, 1);
+    assert.strictEqual(res1[0].verdict.status, 'stale');
+    assert.strictEqual(res1[0].poke.action, 'escalate');
+    assert.strictEqual(JSON.parse(fs.readFileSync(livenessPathFor('w1', home), 'utf8')).status, 'escalated');
+
+    // Sweeps 2 and 3: liveness.js's terminal short-circuit returns 'escalated'
+    // without recompute, so sweepOnce's `verdict.status === 'stale'` gate never
+    // re-invokes pokeOrEscalate for this workspace again.
+    const res2 = M.sweepOnce({ home, deps: { runners } });
+    const res3 = M.sweepOnce({ home, deps: { runners } });
+    assert.strictEqual(res2[0].verdict.status, 'escalated');
+    assert.strictEqual(res2[0].poke, null, 'no re-poke on an already-escalated workspace');
+    assert.strictEqual(res3[0].poke, null);
+
+    const parentId = inst.primaryWorkspaceId(worktreePath);
+    const s = storeLib.openStore({ home, workspaceId: parentId }); // parent's own per-project store
+    let msgs;
+    try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+    assert.strictEqual(msgs.length, 1, 'exactly one parent notice survives three sweeps');
+    assert.match(msgs[0].body, /child w1 idle/);
+    assert.match(msgs[0].body, /reassign or archive/);
+  } finally { cleanup(); }
+});
+
 test('single-flight: a live-holder sweep lock blocks a second acquire; a dead holder is stolen', () => {
   const { home, cleanup } = makeHome();
   try {

@@ -62,6 +62,18 @@ const {
   DEFAULT_COOLDOWN_MS,
 } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
+// worktreeHash: the SAME per-worktree identity install-devswarm-ingest.js baked
+// into the daemon's unit (and devswarm-ingest.js keys its heartbeat file by).
+// ingestHeartbeatPath: the per-worktree daemon LIVENESS file (rewritten every
+// sweep, even a 0-insert one) — see the staleness banner below.
+const installIngest = require('../companion/install-devswarm-ingest.js');
+const devswarmIngest = require('../companion/devswarm-ingest.js');
+// hashFromWorkspaceId: the per-project store now keys summaries/<hash>.json by
+// EACH descriptor's OWN id (not by the hook's cwd worktree hash) — see the
+// per-descriptor summary resolution below. Same helper the store itself uses to
+// derive/write a workspace's summary, so the hook agrees byte-for-byte on which
+// file holds a given descriptor's data.
+const { hashFromWorkspaceId } = require('../companion/lib/devswarm-store.js');
 
 // A workspace whose supervisor verdict is one of these is idle/stuck (a wedged or
 // escalated child), independent of whether it still has unread backlog.
@@ -75,9 +87,26 @@ const MAX_LISTED = 6; // cap workspaces named inline to keep additionalContext s
 // inline lists. Rows past this cap are folded into a "+N more" note and the cap is
 // logged (never silently truncated).
 const MAX_TABLE_ROWS = 12;
+// How long the daemon LIVENESS HEARTBEAT (heartbeats/ingest-<hash>.json, written by
+// writeIngestHeartbeat in devswarm-ingest.js) may sit un-refreshed before the
+// staleness banner fires. Unlike summary.json's generatedAt (only advances on
+// inserted>0), the heartbeat is rewritten EVERY sweep cycle regardless of whether
+// anything was ingested — a live-but-QUIET daemon (backlog present, no new
+// messages) still refreshes it. DEFAULT_MONITOR_INTERVAL_SEC (devswarm-ingest.js)
+// is 3s; 3 minutes is a generous multiple of that sweep cadence — large enough to
+// absorb a slow monitor poll / restart backoff, small enough to still catch a
+// genuinely stopped daemon promptly. (Same value + rationale as the generatedAt-
+// based banner this replaces.)
+const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 
-function summaryPath(home) {
-  return path.join(devswarmRoot(home), 'summary.json');
+// summaryPath(home, hash) -> a PER-PROJECT summary file (summaries/<hash>.json).
+// The store writes one summary per project, keyed by hashFromWorkspaceId of the
+// workspace id that project's data belongs to (see summaryForDescriptor in
+// main() — each descriptor resolves its OWN hash, not the hook's cwd worktree
+// hash). `hash` null -> null (readSummary then fails open to "no data").
+function summaryPath(home, hash) {
+  if (!hash) return null;
+  return path.join(devswarmRoot(home), 'summaries', String(hash) + '.json');
 }
 function parentInboxLogPath(home) {
   return path.join(devswarmRoot(home), 'parent-inbox.log');
@@ -96,9 +125,11 @@ function heartbeatPathFor(home, id) {
 // read-surface (written atomically by the Phase 2 store). Tolerant of a missing,
 // empty, zero-byte, or partially-written file (P2-9): any failure -> null ("no
 // data yet"), never throws.
-function readSummary(home) {
+function readSummary(home, hash) {
+  const p = summaryPath(home, hash);
+  if (!p) return null;
   try {
-    const raw = String(fs.readFileSync(summaryPath(home), 'utf8')).trim();
+    const raw = String(fs.readFileSync(p, 'utf8')).trim();
     if (!raw) return null;
     const obj = JSON.parse(raw);
     return obj && typeof obj === 'object' ? obj : null;
@@ -114,6 +145,32 @@ function summaryEntry(summary, id) {
   const fromNested = summary.workspaces && summary.workspaces[id];
   const entry = fromNested || summary[id];
   return entry && typeof entry === 'object' ? entry : null;
+}
+
+// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
+// looking for a `.git` entry (a directory for a normal checkout, a FILE for a
+// linked worktree/submodule) — the same root `git rev-parse --show-toplevel`
+// would report for that cwd, WITHOUT spawning git (this hook's hot path spawns no
+// subprocess at all — install-devswarm-ingest.js's own worktreeHash() then
+// fs.realpathSync()'s this path, so it agrees byte-for-byte with what the
+// installer baked into the daemon's unit at install time, as long as this walk
+// lands on the same toplevel git itself would have found).
+function findGitToplevel(startDir) {
+  try {
+    let dir = path.resolve(String(startDir || ''));
+    if (!dir) return null;
+    for (;;) {
+      try {
+        fs.statSync(path.join(dir, '.git'));
+        return dir;
+      } catch (_) { /* keep walking up */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null; // reached filesystem root, no .git found
+      dir = parent;
+    }
+  } catch (_) {
+    return null;
+  }
 }
 
 // readVerdictFile(home, id) -> parsed liveness verdict | null. Reads the
@@ -333,10 +390,28 @@ function buildArchiveSegment(ids) {
   );
 }
 
+// buildStaleBanner(beatTs, now) -> string. VISIBLE daemon-LIVENESS warning,
+// injected ABOVE the live workspace table: the ingest daemon's own heartbeat
+// (rewritten every sweep, independent of inserts) is missing or hasn't been
+// refreshed in HEARTBEAT_STALE_MS, i.e. the daemon has very likely stopped and the
+// table below may be FROZEN. beatTs null (no heartbeat file at all) renders via
+// formatRelative's "—" (unknown-age) fallback. Uses the same compact relative-age
+// idiom as the table's "last" column.
+function buildStaleBanner(beatTs, now) {
+  return (
+    '⚠ DEVSWARM STALE DATA: ingest daemon last alive ' + formatRelative(beatTs, now)
+    + ' ago — data may be stale (the daemon may have stopped or never started for '
+    + 'this worktree). Run /anti-hall:doctor to check the DevSwarm ingest daemon.'
+  );
+}
+
 function main() {
-  // Read stdin for contract consistency; the payload carries nothing this hook
-  // needs (role/liveness come from env + fs).
-  try { fs.readFileSync(0, 'utf8'); } catch (_) { /* empty/absent stdin is fine */ }
+  // Parse stdin for `cwd` — the ONE field this hook needs from the payload (to
+  // resolve the CURRENT worktree's daemon heartbeat below); every other field is
+  // unused (role/liveness come from env + fs). Malformed/absent stdin -> payload
+  // stays null, and the heartbeat lookup below fails open (no banner).
+  let payload = null;
+  try { payload = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { payload = null; }
 
   // Gate: PRIMARY DevSwarm sessions only. Anything else -> silent no-op.
   if (!isDevswarmActive(process.env)) return;
@@ -344,7 +419,15 @@ function main() {
 
   const home = os.homedir();
   const now = Date.now();
-  const summary = readSummary(home);
+  const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : null;
+  // Resolve the CURRENT worktree's hash ONCE (pure fs walk, no git spawn) — it
+  // keys BOTH the per-project summary read AND the daemon-heartbeat staleness
+  // banner below. Fail-open: any failure -> null -> no summary data, no banner.
+  let worktreeHash = null;
+  try {
+    const top = cwd ? findGitToplevel(cwd) : null;
+    worktreeHash = top ? installIngest.worktreeHash(top) : null;
+  } catch (_) { worktreeHash = null; }
 
   let descriptors = [];
   try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
@@ -353,8 +436,24 @@ function main() {
   const archiveList = [];
   const rows = []; // live-table row per ACTIVE workspace: { id, label, rank, finish, unread, lastActivityTs }
 
+  // Per-descriptor summary cache: the store keys summaries/<hash>.json by EACH
+  // descriptor's OWN id (hashFromWorkspaceId(d.id)), NOT by the hook's cwd
+  // worktree hash — every descriptor other than the one matching cwd would
+  // otherwise silently read the WRONG (cwd's) summary. Cache by hash so two
+  // descriptors sharing a hash only trigger one fs read.
+  const summaryCache = new Map(); // hash -> summary object | null
+  function summaryForDescriptor(id) {
+    const hash = hashFromWorkspaceId(id);
+    if (summaryCache.has(hash)) return summaryCache.get(hash);
+    let s = null;
+    try { s = readSummary(home, hash); } catch (_) { s = null; }
+    summaryCache.set(hash, s);
+    return s;
+  }
+
   for (const d of descriptors) {
     if (!d || !isSafeId(d.id)) continue;
+    const summary = summaryForDescriptor(d.id);
     // --- unread / idle ---
     let unread = 0, cursor = 0, total = 0;
     try {
@@ -394,16 +493,48 @@ function main() {
     } catch (_) {}
   }
 
+  // Daemon-LIVENESS staleness banner (fail-open). Rewired (was: summary.json's
+  // generatedAt, which only advances on inserted>0 and false-reads a live-but-
+  // QUIET daemon as stale) to key off the daemon's own heartbeat instead
+  // (heartbeats/ingest-<hash>.json, rewritten EVERY sweep regardless of inserts —
+  // see writeIngestHeartbeat in devswarm-ingest.js). Gated on rows.length>0 (an
+  // active workspace exists, i.e. a daemon is EXPECTED to be running) so an idle
+  // system with no workspaces never false-alarms. The CURRENT worktree hash is
+  // resolved the same way install-devswarm-ingest.js baked it into the daemon's
+  // unit at install time (git-toplevel, hashed via its own worktreeHash) — via a
+  // PURE fs walk (findGitToplevel), never a git spawn. Any failure anywhere in
+  // this block (no cwd, no toplevel found, missing helper export, unreadable
+  // heartbeat file) -> no banner, hook proceeds byte-identical.
+  let staleBanner = null;
+  try {
+    if (rows.length > 0 && typeof devswarmIngest.ingestHeartbeatPath === 'function') {
+      const hash = worktreeHash; // resolved once above (same per-project key as the summary read)
+      if (hash) {
+        let beatTs = null;
+        try {
+          const beat = JSON.parse(fs.readFileSync(devswarmIngest.ingestHeartbeatPath(home, hash), 'utf8'));
+          beatTs = beat && Number.isFinite(beat.ts) ? beat.ts : null;
+        } catch (_) { beatTs = null; } // missing/unreadable/malformed heartbeat -> unknown age
+        if (beatTs === null || (now - beatTs) > HEARTBEAT_STALE_MS) {
+          staleBanner = buildStaleBanner(beatTs, now);
+        }
+      }
+    }
+  } catch (_) { staleBanner = null; }
+
   const segments = [];
 
   // Live workspace table FIRST — the always-on status overview the Primary reads
   // every turn. Attention-needed rows (escalated/stale) sort to the top; ties by
-  // unread desc, then id. Capped at MAX_TABLE_ROWS with a logged "+N more".
+  // unread desc, then id. Capped at MAX_TABLE_ROWS with a logged "+N more". A
+  // daemon-freshness staleness banner, when present, is injected immediately ABOVE
+  // the table so the Primary sees the data may be frozen before reading it.
   if (rows.length) {
     rows.sort((a, b) => (a.rank - b.rank) || (b.unread - a.unread) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const capped = rows.length > MAX_TABLE_ROWS;
     const shown = capped ? rows.slice(0, MAX_TABLE_ROWS) : rows;
     if (capped) logTableCap(home, rows.length, shown.length);
+    if (staleBanner) segments.push(staleBanner);
     segments.push(buildWorkspaceTable(shown, now, capped, rows.length - shown.length));
   }
 

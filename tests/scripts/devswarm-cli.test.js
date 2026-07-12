@@ -34,8 +34,8 @@ test('register writes the descriptor + store registry + summary projection', () 
     const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'w1'), 'utf8'));
     assert.equal(desc.sessionId, 'sess-1');
     assert.deepEqual(desc.nudgeCommand, ['echo', 'poke']);
-    // store registry + summary reflect it
-    const sum = storeLib.readSummary(home);
+    // store registry + summary reflect it (this workspace's PER-PROJECT summary)
+    const sum = storeLib.readSummary(home, 'w1');
     assert.ok(sum && sum.workspaces && sum.workspaces.w1);
   } finally { rm(home); }
 });
@@ -200,14 +200,19 @@ test('inbox pull is idempotent about the descriptor (re-pull leaves an existing 
   } finally { rm(home); }
 });
 
-test('workspaces list emits the derived projection', () => {
+test('workspaces list emits the derived projection (PER-PROJECT, targeted by --workspace)', () => {
   const home = tmpHome();
   try {
     cli.run(['register', 'a', '--worktree', '/wt/a', '--session', 's'], ctx(home));
     cli.run(['register', 'b', '--worktree', '/wt/b', '--session', 's'], ctx(home));
-    const r = cli.run(['workspaces', 'list'], ctx(home));
-    assert.equal(r.result.count, 2);
-    assert.deepEqual(r.result.workspaces.map((w) => w.id).sort(), ['a', 'b']);
+    // PER-PROJECT: each id lives in its OWN physical store, so `workspaces list`
+    // derives ONE project's summary. --workspace targets that project explicitly.
+    const ra = cli.run(['workspaces', 'list', '--workspace', 'a'], ctx(home));
+    assert.equal(ra.result.count, 1);
+    assert.deepEqual(ra.result.workspaces.map((w) => w.id), ['a']);
+    const rb = cli.run(['workspaces', 'list', '--workspace', 'b'], ctx(home));
+    assert.equal(rb.result.count, 1);
+    assert.deepEqual(rb.result.workspaces.map((w) => w.id), ['b']);
   } finally { rm(home); }
 });
 
@@ -222,8 +227,8 @@ test('archive tombstones the registry, moves the descriptor, surfaces the manual
     // descriptor moved (non-destructive), not deleted
     assert.equal(fs.existsSync(cli.descriptorPath(home, 'w')), false);
     assert.equal(fs.existsSync(path.join(cli.archivedDir(home), 'w.json')), true);
-    // dropped from the projection
-    const list = cli.run(['workspaces', 'list'], ctx(home));
+    // dropped from the projection (this workspace's own per-project store)
+    const list = cli.run(['workspaces', 'list', '--workspace', 'w'], ctx(home));
     assert.equal(list.result.count, 0);
   } finally { rm(home); }
 });
@@ -274,6 +279,154 @@ test('unknown command reports a closed-vocabulary error + exit 2', () => {
     assert.equal(r.code, 2);
     assert.equal(r.result.ok, false);
     assert.match(r.result.error, /unknown command/);
+  } finally { rm(home); }
+});
+
+// ---- Primary/store READ path (inbox messages / read-primary) ---------------
+const inst = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+
+// Seed store rows for a workspace as the ingest daemon would (bodies + hashes).
+function seedStore(home, id, bodies) {
+  // PER-PROJECT: seed into the SAME per-project store the CLI opens for this id.
+  const s = storeLib.openStore({ home, workspaceId: id, backend: 'journal' });
+  try { bodies.forEach((b, i) => s.appendMessage({ workspaceId: id, body: b, hash: id + '-h' + i })); }
+  finally { s.close(); }
+}
+
+test('inbox messages reads bodies from the store NON-destructively (no descriptor needed)', () => {
+  const home = tmpHome();
+  try {
+    seedStore(home, 'primary-x', ['msg one', 'msg two', 'msg three']);
+    const r = cli.run(['inbox', 'messages', 'primary-x', '--json'], ctx(home));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.action, 'messages');
+    assert.equal(r.result.total, 3);
+    assert.equal(r.result.count, 3);
+    assert.deepEqual(r.result.messages.map((m) => m.body), ['msg one', 'msg two', 'msg three']);
+    assert.equal(r.result.cursor, 0, 'no ack yet -> cursor 0');
+    // Non-destructive: a second read returns the SAME rows (store untouched).
+    const r2 = cli.run(['inbox', 'messages', 'primary-x'], ctx(home));
+    assert.equal(r2.result.count, 3, 'read is non-destructive — rows persist');
+  } finally { rm(home); }
+});
+
+test('inbox read-primary advances the durable ACK cursor (under cursors/, not store/) and --unread then excludes read', () => {
+  const home = tmpHome();
+  try {
+    seedStore(home, 'primary-x', ['a', 'b']);
+    const r = cli.run(['inbox', 'read-primary', 'primary-x'], ctx(home));
+    assert.equal(r.result.action, 'read-primary');
+    assert.equal(r.result.count, 2, 'first read-primary returns both unread');
+    assert.equal(r.result.cursor, 2, 'cursor advanced to the total');
+    // The ACK cursor is a file under cursors/, NOT under store/ or inbox/.
+    const cursorFile = cli.primaryCursorPath(home, 'primary-x');
+    assert.ok(cursorFile.includes(path.join('devswarm', 'cursors')), 'cursor lives under cursors/');
+    assert.ok(!/[\\/]store[\\/]/.test(cursorFile) && !/[\\/]inbox[\\/]/.test(cursorFile), 'never under store/ or inbox/');
+    assert.equal(fs.readFileSync(cursorFile, 'utf8').trim(), '2');
+
+    // A follow-up --unread read now excludes the acked messages.
+    const r2 = cli.run(['inbox', 'messages', 'primary-x', '--unread'], ctx(home));
+    assert.equal(r2.result.count, 0, 'nothing unread after ack');
+
+    // New store rows arrive -> they show as unread past the cursor.
+    seedStore(home, 'primary-x', ['a', 'b', 'c']); // 'a','b' dedupe, 'c' is new
+    const r3 = cli.run(['inbox', 'messages', 'primary-x', '--unread'], ctx(home));
+    assert.equal(r3.result.count, 1, 'only the newly-appended message is unread');
+    assert.equal(r3.result.messages[0].body, 'c');
+  } finally { rm(home); }
+});
+
+test('inbox read-primary drops the PERSISTED projected unread (store cursor, not just the ACK cursor file) — #22', () => {
+  const home = tmpHome();
+  try {
+    const wt = '/some/repo/worktree-22';
+    const id = inst.primaryWorkspaceId(wt);
+    const reg = cli.run(['register-primary', '--worktree', wt, '--session', 's22'], ctx(home));
+    assert.equal(reg.result.ok, true);
+    seedStore(home, id, ['hello', 'world']);
+
+    // Baseline: before any read, workspaces list (deriveSummary) shows 2 unread.
+    const before = cli.run(['workspaces', 'list', '--workspace', id], ctx(home));
+    assert.equal(before.result.workspaces.find((w) => w.id === id).unread, 2, 'baseline: 2 unread before any read');
+
+    const rp = cli.run(['inbox', 'read-primary', id], ctx(home));
+    assert.equal(rp.result.ok, true);
+    assert.equal(rp.result.cursor, 2);
+
+    // read-primary itself must refresh the PERSISTED summary.json projection — no
+    // separate `workspaces list` call needed to see the drop (Wave-1 residual #22:
+    // previously only the ACK cursor FILE advanced, while deriveSummary's `unread`
+    // is computed from the STORE cursor via store.cursorValue, so the parent table
+    // kept showing these messages unread after the Primary had already read them).
+    const summary = storeLib.readSummary(home, id);
+    assert.equal(summary.workspaces[id].unread, 0, 'persisted per-project summary unread drops immediately after read-primary');
+
+    // A subsequent workspaces list (fresh deriveSummary from the store) confirms the
+    // STORE cursor itself moved, not just the on-disk ACK file.
+    const after = cli.run(['workspaces', 'list', '--workspace', id], ctx(home));
+    assert.equal(after.result.workspaces.find((w) => w.id === id).unread, 0);
+  } finally { rm(home); }
+});
+
+// ---- register-primary ------------------------------------------------------
+test('register-primary registers the per-worktree Primary descriptor (id = primary-<hash>)', () => {
+  const home = tmpHome();
+  try {
+    const wt = '/some/repo/worktree';
+    const expectedId = inst.primaryWorkspaceId(wt);
+    const r = cli.run(['register-primary', '--worktree', wt, '--session', 'sess-primary'], ctx(home));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.action, 'register-primary');
+    assert.equal(r.result.workspaceId, expectedId);
+    assert.match(expectedId, /^primary-[0-9a-f]{8}$/);
+    // descriptor on disk with the resolved worktree + session
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, expectedId), 'utf8'));
+    assert.equal(desc.worktreePath, wt);
+    assert.equal(desc.sessionId, 'sess-primary');
+    // store registry + summary reflect it (this Primary's per-project summary)
+    assert.ok(storeLib.readSummary(home, expectedId).workspaces[expectedId]);
+  } finally { rm(home); }
+});
+
+test('register-primary then migrate folds a legacy NDJSON into the Primary partition (idempotent)', () => {
+  const home = tmpHome();
+  try {
+    const wt = '/some/repo/worktree';
+    const id = inst.primaryWorkspaceId(wt);
+    const legacy = path.join(home, 'legacy-inbox.ndjson');
+    fs.writeFileSync(legacy, 'stranded one\nstranded two\n');
+    // register-primary points the descriptor's inboxPath at the legacy NDJSON.
+    const reg = cli.run(['register-primary', '--worktree', wt, '--session', 's', '--inbox', legacy], ctx(home));
+    assert.equal(reg.result.ok, true);
+    // `migrate` folds any registered descriptor's inbox into the store under its id.
+    const mig = cli.run(['migrate'], ctx(home));
+    assert.equal(mig.result.ok, true);
+    const one = (mig.result.migrated || []).find((m) => m.id === id);
+    assert.ok(one, 'the primary workspace was migrated');
+    assert.equal(one.imported, 2);
+    assert.ok(one.verified, 'count-verified');
+    // The bodies are now readable via the Primary read path.
+    const rd = cli.run(['inbox', 'messages', id], ctx(home));
+    assert.deepEqual(rd.result.messages.map((m) => m.body), ['stranded one', 'stranded two']);
+    // Idempotent: a second migrate imports 0 new.
+    const mig2 = cli.run(['migrate'], ctx(home));
+    const one2 = (mig2.result.migrated || []).find((m) => m.id === id);
+    assert.equal(one2.imported, 0, 're-migrate is idempotent');
+  } finally { rm(home); }
+});
+
+test('register-primary fails soft outside a git worktree when no --worktree is given', () => {
+  const home = tmpHome();
+  try {
+    const nogit = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-nogit-'));
+    try {
+      const r = cli.run(['register-primary', '--session', 's'], ctx(home, { cwd: nogit }));
+      assert.equal(r.code, 2);
+      assert.equal(r.result.ok, false);
+      assert.match(r.result.error, /git worktree/);
+    } finally { rm(nogit); }
   } finally { rm(home); }
 });
 

@@ -40,6 +40,7 @@
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const LABEL = 'com.anti-hall.devswarm-ingest';
@@ -136,8 +137,34 @@ function resolveWorktree(cwd) {
   }
 }
 
+// ----- per-worktree identity (multi-repo, additive installs) -----
+// worktreeHash(wt) — an 8-hex fingerprint of the worktree's REAL (symlink-resolved)
+// path. The daemon (devswarm-ingest.js) MUST compute the identical hash from its
+// resolved worktree so their per-worktree lock/label/unit paths agree, so both sides
+// canonicalize via realpathSync first. Fail-open: if realpath can't stat the path
+// (e.g. it doesn't exist yet), fall back to path.resolve so a hash is still produced.
+function worktreeHash(wt) {
+  let p = String(wt || '');
+  try { p = fs.realpathSync(p); } catch (_) { p = path.resolve(p); }
+  return crypto.createHash('sha256').update(p).digest('hex').slice(0, 8);
+}
+// PER-WORKTREE unit identity. Base LABEL/UNIT are kept as the shared PREFIX so a
+// second repo's install creates a NEW unit (different hash), never overwriting the
+// first repo's. The base (hash-less) name is the LEGACY single-unit form still read
+// back for backward compat.
+function labelForWorktree(wt) { return `${LABEL}.${worktreeHash(wt)}`; }
+function unitForWorktree(wt) { return `${UNIT}-${worktreeHash(wt)}`; }
+function cronMarkerForWorktree(wt) { return `# ${unitForWorktree(wt)}`; }
+// primaryWorkspaceId(wt) — the store partition key for a worktree's Primary/parent
+// reception queue. Derived per-worktree (never the old hardcoded 'primary', which
+// collided rows across repos, #15). Always isSafeId-valid ([a-z0-9-]).
+function primaryWorkspaceId(wt) { return `primary-${worktreeHash(wt)}`; }
+
 // ----- macOS -----
-function macPlistPath() { return path.join(HOME, 'Library', 'LaunchAgents', `${LABEL}.plist`); }
+// macPlistPath(label) — the LaunchAgent path for a given label (default = the base
+// LABEL, i.e. the legacy single-unit path). Per-worktree installs pass
+// labelForWorktree(workdir).
+function macPlistPath(label) { return path.join(HOME, 'Library', 'LaunchAgents', `${label || LABEL}.plist`); }
 
 // KeepAlive (not StartInterval): the ingest daemon runs continuously, so launchd
 // must relaunch it whenever it exits — the "re-exec on exit" contract the daemon
@@ -174,17 +201,21 @@ ${workdirKey}  <key>KeepAlive</key>
 }
 
 function macInstall(workdir) {
-  const plist = macPlistPath();
-  planWrite(plist, buildPlist({ workdir }));
+  const label = labelForWorktree(workdir); // ADDITIVE: this repo's own unit, never overwrites another repo's
+  const plist = macPlistPath(label);
+  planWrite(plist, buildPlist({ label, workdir }));
   planRun('launchctl', ['unload', plist]); // ignore err
   planRun('launchctl', ['load', plist]);
-  say(`installed LaunchAgent ${LABEL} (continuous, KeepAlive). Logs: ${LOG}`);
+  say(`installed LaunchAgent ${label} (continuous, KeepAlive; worktree ${workdir}). Logs: ${LOG}`);
 }
-function macUninstall() {
-  const plist = macPlistPath();
+function macUninstall(workdir) {
+  // Uninstall targets THIS worktree's unit when cwd resolves to one; otherwise the
+  // legacy base-LABEL unit (so a pre-per-worktree install can still be torn down).
+  const label = workdir ? labelForWorktree(workdir) : LABEL;
+  const plist = macPlistPath(label);
   planRun('launchctl', ['unload', plist]); // ignore err
   planRm(plist);
-  say(`uninstalled LaunchAgent ${LABEL}`);
+  say(`uninstalled LaunchAgent ${label}`);
 }
 
 // ----- Linux -----
@@ -234,9 +265,11 @@ function buildCronLine({ exec = EXEC, script = SCRIPT, workdir } = {}) {
 const CRON_MARKER = `# ${UNIT}`;
 
 // buildCronEntry -> the managed 2-line block written to the crontab: the marker
-// comment followed by the (escaped) restart-if-dead line.
-function buildCronEntry({ exec = EXEC, script = SCRIPT, workdir } = {}) {
-  return `${CRON_MARKER}\n${buildCronLine({ exec, script, workdir })}`;
+// comment followed by the (escaped) restart-if-dead line. `marker` defaults to the
+// base CRON_MARKER (legacy single-unit); a per-worktree install passes
+// cronMarkerForWorktree(workdir) so each repo gets its own managed entry.
+function buildCronEntry({ exec = EXEC, script = SCRIPT, workdir, marker = CRON_MARKER } = {}) {
+  return `${marker}\n${buildCronLine({ exec, script, workdir })}`;
 }
 
 // mergeCrontab(current, entry, marker) -> { next, changed }. Idempotent: if the
@@ -281,33 +314,38 @@ function readCrontab() {
 // (previously the installer only PRINTED the line and installed no scheduler —
 // yet capability-scan reported active; P1-2).
 function installCron(workdir) {
-  const { next, changed } = mergeCrontab(readCrontab(), buildCronEntry({ workdir }), CRON_MARKER);
-  if (!changed) { say(`cron entry already present (marker ${CRON_MARKER}); crontab left as-is`); return; }
+  const marker = cronMarkerForWorktree(workdir);
+  const { next, changed } = mergeCrontab(readCrontab(), buildCronEntry({ workdir, marker }), marker);
+  if (!changed) { say(`cron entry already present (marker ${marker}); crontab left as-is`); return; }
   const r = spawnSync('crontab', ['-'], { input: next, encoding: 'utf8' });
   if (r.error || r.status !== 0) {
     say('(warn) could not install cron entry via `crontab -`; add it manually (crontab -e):');
-    say(`  ${CRON_MARKER}`);
+    say(`  ${marker}`);
     say(`  ${buildCronLine({ workdir })}`);
     return;
   }
-  say(`installed cron fallback (managed marker ${CRON_MARKER}, every minute restart-if-dead). Logs: ${LOG}`);
+  say(`installed cron fallback (managed marker ${marker}, every minute restart-if-dead). Logs: ${LOG}`);
 }
 
-// uninstallCron(): remove the managed cron fallback entry (marker + its line).
-function uninstallCron() {
-  const { next, changed } = removeCronEntry(readCrontab(), CRON_MARKER);
+// uninstallCron(): remove the managed cron fallback entry (marker + its line) for
+// this worktree (or the legacy base marker when cwd doesn't resolve to a worktree).
+function uninstallCron(workdir) {
+  const marker = workdir ? cronMarkerForWorktree(workdir) : CRON_MARKER;
+  const { next, changed } = removeCronEntry(readCrontab(), marker);
   if (!changed) return;
   const r = spawnSync('crontab', ['-'], { input: next, encoding: 'utf8' });
-  if (!r.error && r.status === 0) say(`removed cron fallback (managed marker ${CRON_MARKER})`);
+  if (!r.error && r.status === 0) say(`removed cron fallback (managed marker ${marker})`);
 }
 
 function linuxInstall(workdir) {
   const dir = unitDir();
-  planWrite(path.join(dir, `${UNIT}.service`), buildService({ workdir }));
+  const unit = unitForWorktree(workdir); // ADDITIVE: this repo's own unit
+  const marker = cronMarkerForWorktree(workdir);
+  planWrite(path.join(dir, `${unit}.service`), buildService({ workdir }));
   if (DRYRUN) {
-    say(`[dry-run] would run: systemctl --user daemon-reload && systemctl --user enable --now ${UNIT}.service && systemctl --user restart ${UNIT}.service`);
-    say(`[dry-run] if systemctl absent, would install this managed cron fallback (marker ${CRON_MARKER}; every minute, restart-if-dead; the daemon's single-consumer lock makes redundant launches a no-op):`);
-    say(`  ${CRON_MARKER}`);
+    say(`[dry-run] would run: systemctl --user daemon-reload && systemctl --user enable --now ${unit}.service && systemctl --user restart ${unit}.service`);
+    say(`[dry-run] if systemctl absent, would install this managed cron fallback (marker ${marker}; every minute, restart-if-dead; the daemon's single-consumer lock makes redundant launches a no-op):`);
+    say(`  ${marker}`);
     say(`  ${buildCronLine({ workdir })}`);
     return;
   }
@@ -317,21 +355,145 @@ function linuxInstall(workdir) {
     return;
   }
   planRun('systemctl', ['--user', 'daemon-reload']);
-  planRun('systemctl', ['--user', 'enable', '--now', `${UNIT}.service`]);
-  planRun('systemctl', ['--user', 'restart', `${UNIT}.service`]); // refresh a running daemon to this build's code
-  say(`installed systemd --user service ${UNIT}.service (continuous, Restart=always). Logs: ${LOG}`);
+  planRun('systemctl', ['--user', 'enable', '--now', `${unit}.service`]);
+  planRun('systemctl', ['--user', 'restart', `${unit}.service`]); // refresh a running daemon to this build's code
+  say(`installed systemd --user service ${unit}.service (continuous, Restart=always; worktree ${workdir}). Logs: ${LOG}`);
 }
-function linuxUninstall() {
+function linuxUninstall(workdir) {
   const dir = unitDir();
+  const unit = workdir ? unitForWorktree(workdir) : UNIT;
   if (!DRYRUN && !hasSystemctl()) {
     say('systemctl not available; removing the managed cron fallback if present.');
-    uninstallCron();
+    uninstallCron(workdir);
   } else {
-    planRun('systemctl', ['--user', 'disable', '--now', `${UNIT}.service`]);
+    planRun('systemctl', ['--user', 'disable', '--now', `${unit}.service`]);
   }
-  planRm(path.join(dir, `${UNIT}.service`));
+  planRm(path.join(dir, `${unit}.service`));
   if (!DRYRUN && hasSystemctl()) planRun('systemctl', ['--user', 'daemon-reload']);
-  say(`uninstalled ${UNIT}`);
+  say(`uninstalled ${unit}`);
+}
+
+// ----- readback: enumerate INSTALLED ingest units (multi-repo) -----
+// These are the canonical reverse of the buildPlist/buildService/buildCronLine
+// escaping — kept HERE (next to the builders) so a change to the emit side updates
+// the read side in one place. doctor-repair.js's per-worktree healing delegates to
+// listInstalledIngestUnits rather than re-deriving any of this.
+function unescapeXml(s) {
+  return String(s)
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+function unSdQuote(s) {
+  let v = String(s).trim();
+  if (v.startsWith('"') && v.endsWith('"')) v = v.slice(1, -1);
+  return v.replace(/\$\$/g, '$').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+}
+function firstShToken(s) {
+  const m = String(s).match(/'((?:[^'\\]|\\.)*)'/);
+  return m ? m[1].replace(/'\\''/g, "'") : null;
+}
+function parsePlistUnit(xml) {
+  const out = { workingDir: null, scriptPath: null };
+  const wd = xml.match(/<key>WorkingDirectory<\/key>\s*<string>([\s\S]*?)<\/string>/);
+  if (wd) out.workingDir = unescapeXml(wd[1]);
+  const arr = xml.match(/<key>ProgramArguments<\/key>\s*<array>([\s\S]*?)<\/array>/);
+  if (arr) {
+    const strs = arr[1].match(/<string>([\s\S]*?)<\/string>/g) || [];
+    if (strs.length >= 2) {
+      const m = strs[1].match(/<string>([\s\S]*?)<\/string>/);
+      if (m) out.scriptPath = unescapeXml(m[1]);
+    }
+  }
+  return out;
+}
+function parseServiceUnit(svc) {
+  const out = { workingDir: null, scriptPath: null };
+  const wd = svc.match(/^WorkingDirectory=(.*)$/m);
+  if (wd) out.workingDir = unSdQuote(wd[1]);
+  const ex = svc.match(/^ExecStart=(.*)$/m);
+  if (ex) {
+    const toks = ex[1].match(/"((?:[^"\\]|\\.)*)"/g) || [];
+    if (toks.length >= 2) out.scriptPath = unSdQuote(toks[1]);
+  }
+  return out;
+}
+function parseCronCommand(cmd) {
+  const out = { workingDir: null, scriptPath: null };
+  const cd = cmd.match(/cd\s+('((?:[^'\\]|\\.)*)')\s*&&/);
+  if (cd) out.workingDir = cd[2].replace(/'\\''/g, "'");
+  const afterCd = cd ? cmd.slice(cmd.indexOf('&&') + 2) : cmd;
+  const toks = afterCd.match(/'((?:[^'\\]|\\.)*)'/g) || [];
+  if (toks.length >= 2) out.scriptPath = firstShToken(toks[1]);
+  return out;
+}
+
+// listInstalledIngestUnits({home, platform}) -> Array<{label, unit, hash, workingDir,
+// scriptPath, source}>. The multi-unit successor to doctor-repair's single-unit
+// readback: scans EVERY installed ingest unit (legacy base-name AND per-worktree
+// hash-suffixed) and reads back each unit's baked WorkingDirectory + script. `hash`
+// is null for a legacy (pre-per-worktree) unit. Fail-open: any unreadable dir /
+// crontab / unit yields the units it COULD read (never throws).
+function listInstalledIngestUnits(opts) {
+  const o = opts || {};
+  const home = o.home || HOME;
+  const platform = o.platform || process.platform;
+  const units = [];
+  try {
+    if (platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch (_) { names = []; }
+      for (const name of names) {
+        if (!name.startsWith(LABEL) || !name.endsWith('.plist')) continue;
+        const rest = name.slice(LABEL.length, name.length - '.plist'.length); // '' (legacy) | '.<hash>'
+        let hash = null;
+        if (rest === '') hash = null;
+        else { const mm = rest.match(/^\.([0-9a-fA-F]{8})$/); if (!mm) continue; hash = mm[1]; }
+        let xml;
+        try { xml = fs.readFileSync(path.join(dir, name), 'utf8'); } catch (_) { continue; }
+        const parsed = parsePlistUnit(xml);
+        units.push({ label: name.slice(0, -('.plist'.length)), unit: null, hash, workingDir: parsed.workingDir, scriptPath: parsed.scriptPath, source: 'launchd' });
+      }
+      return units;
+    }
+    if (platform === 'linux') {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      let names = [];
+      try { names = fs.readdirSync(dir); } catch (_) { names = []; }
+      for (const name of names) {
+        if (!name.startsWith(UNIT) || !name.endsWith('.service')) continue;
+        const rest = name.slice(UNIT.length, name.length - '.service'.length); // '' (legacy) | '-<hash>'
+        let hash = null;
+        if (rest === '') hash = null;
+        else { const mm = rest.match(/^-([0-9a-fA-F]{8})$/); if (!mm) continue; hash = mm[1]; }
+        let svc;
+        try { svc = fs.readFileSync(path.join(dir, name), 'utf8'); } catch (_) { continue; }
+        const parsed = parseServiceUnit(svc);
+        units.push({ label: null, unit: name.slice(0, -('.service'.length)), hash, workingDir: parsed.workingDir, scriptPath: parsed.scriptPath, source: 'systemd' });
+      }
+      // cron fallback: scan the crontab for managed markers (legacy `# UNIT` and
+      // per-worktree `# UNIT-<hash>`), parsing the command line following each.
+      let crontab = '';
+      try {
+        const r = spawnSync('crontab', ['-l'], { encoding: 'utf8' });
+        if (!r.error && typeof r.stdout === 'string') crontab = r.stdout;
+      } catch (_) { crontab = ''; }
+      const clines = crontab.split('\n');
+      for (let i = 0; i < clines.length; i++) {
+        const t = clines[i].trim();
+        if (!t.startsWith(`# ${UNIT}`)) continue;
+        const rest = t.slice(`# ${UNIT}`.length); // '' (legacy) | '-<hash>'
+        let hash = null;
+        if (rest === '') hash = null;
+        else { const mm = rest.match(/^-([0-9a-fA-F]{8})$/); if (!mm) continue; hash = mm[1]; }
+        const parsed = parseCronCommand(clines[i + 1] || '');
+        units.push({ label: null, unit: t.slice(2), hash, workingDir: parsed.workingDir, scriptPath: parsed.scriptPath, source: 'cron' });
+      }
+      return units;
+    }
+  } catch (_) { return units; }
+  return units; // win32 / unknown: no installed unit is readable
 }
 
 // ----- Windows -----
@@ -363,6 +525,11 @@ function main() {
         process.exit(0);
         return;
       }
+    } else {
+      // Uninstall targets the CURRENT worktree's per-worktree unit when cwd resolves
+      // to one (best-effort); when it doesn't, the *Uninstall helpers fall back to the
+      // legacy base-LABEL/UNIT so a pre-per-worktree install can still be torn down.
+      workdir = resolveWorktree(process.cwd());
     }
     // Belt-and-suspenders (defense in depth on top of per-target escaping): refuse
     // to emit a unit/plist/cron entry for a node/script/worktree path carrying
@@ -373,8 +540,8 @@ function main() {
       process.exit(0);
       return;
     }
-    if (process.platform === 'darwin') { if (UNINSTALL) macUninstall(); else macInstall(workdir); }
-    else { if (UNINSTALL) linuxUninstall(); else linuxInstall(workdir); }
+    if (process.platform === 'darwin') { if (UNINSTALL) macUninstall(workdir); else macInstall(workdir); }
+    else { if (UNINSTALL) linuxUninstall(workdir); else linuxInstall(workdir); }
     process.exit(0);
   } catch (e) {
     say(`error: ${e && e.message ? e.message : e}`);
@@ -388,4 +555,6 @@ module.exports = {
   LABEL, UNIT, SCRIPT, RESTART_SEC, CRON_MARKER,
   xmlEscape, shSingleQuote, sdQuote, pathIsEmittable, resolveWorktree,
   buildPlist, buildService, buildCronLine, buildCronEntry, mergeCrontab, removeCronEntry,
+  worktreeHash, labelForWorktree, unitForWorktree, cronMarkerForWorktree, primaryWorkspaceId,
+  listInstalledIngestUnits,
 };

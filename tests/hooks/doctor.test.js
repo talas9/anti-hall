@@ -22,7 +22,11 @@ function makeFakeHome() {
 }
 
 function runDoctor({ cwd, env }) {
-  const res = cp.spawnSync(process.execPath, [DOCTOR_JS], {
+  // --check is doctor's PURE read-only path (v0.55.0): full detection, mutates
+  // NOTHING. These env-detection assertions predate repair mode and assert the
+  // read-only report/exit, so they run under --check. The auto-fix / gate /
+  // dry-run behavior is covered separately in doctor-repair.test.js.
+  const res = cp.spawnSync(process.execPath, [DOCTOR_JS, '--check'], {
     cwd,
     encoding: 'utf8',
     timeout: 15000,
@@ -166,6 +170,65 @@ test('doctor: real supervisor companion artifact present -> reports INSTALLED', 
     assert.strictEqual(r.code, 0, r.out);
     assert.match(r.out, /DevSwarm liveness supervisor/);
     assert.match(r.out, /supervisor companion INSTALLED/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('doctor: Foreign skill/hook conflict scan runs UNCONDITIONALLY — dormant DevSwarm, no other plugins -> INFO "no conflicts", exit 0', () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /Foreign skill\/hook conflict scan/);
+    assert.match(r.out, /no foreign hook\/skill conflicts detected/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('doctor: Foreign skill/hook conflict scan surfaces a real foreign Stop-hook fixture as a WARN (never a FAIL — third-party config, not an anti-hall defect)', () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const claudeDir = path.join(home, '.claude');
+    fs.mkdirSync(claudeDir, { recursive: true });
+    fs.writeFileSync(path.join(claudeDir, 'settings.json'), JSON.stringify({
+      enabledPlugins: { 'anti-hall@anti-hall': true, 'foo@mp': true },
+    }));
+    const installPath = path.join(home, '.claude', 'plugins', 'cache', 'mp', 'foo', '1.0.0');
+    fs.mkdirSync(path.join(installPath, 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(installPath, 'hooks', 'hooks.json'), JSON.stringify({
+      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node "/x/foo-stop.js"' }] }] },
+    }));
+    fs.mkdirSync(path.join(home, '.claude', 'plugins'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({
+      version: 2,
+      plugins: { 'foo@mp': [{ scope: 'user', installPath, version: '1.0.0', installedAt: '2026-01-01T00:00:00.000Z', lastUpdated: '2026-01-01T00:00:00.000Z' }] },
+    }));
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /Foreign skill\/hook conflict scan/);
+    assert.match(r.out, /foreign Stop hook: plugin "foo" registers foo-stop\.js/);
+    assert.doesNotMatch(r.out, /✗ foreign/, 'a foreign plugin\'s own config must never map to a doctor FAIL');
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('doctor: DevSwarm-active session with no installed daemons -> runtime checks 1-4 report INFO "not installed" (no false FAIL)', () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /DevSwarm liveness supervisor/);
+    assert.match(r.out, /ingest daemon: not installed/);
+    assert.match(r.out, /supervisor: not installed/);
   } finally {
     cleanup();
     try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}

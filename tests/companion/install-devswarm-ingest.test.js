@@ -244,6 +244,73 @@ test('install (--dry-run) targets ONE fixed unit file and is idempotent across r
 // supervisor entry): name, available, active, how.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// PER-WORKTREE identity (multi-repo additive installs) + listInstalledIngestUnits.
+// ---------------------------------------------------------------------------
+
+test('worktreeHash is a stable 8-hex fingerprint; label/unit/primaryWorkspaceId derive per-worktree', () => {
+  const a = m.worktreeHash('/repo/a');
+  const b = m.worktreeHash('/repo/b');
+  assert.match(a, /^[0-9a-f]{8}$/);
+  assert.notEqual(a, b, 'different worktrees -> different hashes');
+  assert.equal(m.worktreeHash('/repo/a'), a, 'stable across calls');
+  assert.equal(m.labelForWorktree('/repo/a'), m.LABEL + '.' + a);
+  assert.equal(m.unitForWorktree('/repo/a'), m.UNIT + '-' + a);
+  assert.equal(m.cronMarkerForWorktree('/repo/a'), '# ' + m.UNIT + '-' + a);
+  assert.equal(m.primaryWorkspaceId('/repo/a'), 'primary-' + a);
+});
+
+test('buildPlist embeds the PER-WORKTREE label so a second repo never overwrites the first', () => {
+  const la = m.labelForWorktree('/repo/a');
+  const lb = m.labelForWorktree('/repo/b');
+  assert.notEqual(la, lb);
+  const xmlA = m.buildPlist({ label: la, exec: '/n', script: '/s', log: '/l', workdir: '/repo/a' });
+  assert.ok(xmlA.includes('<string>' + la + '</string>'), 'plist carries the per-worktree label');
+});
+
+test('listInstalledIngestUnits reads back BOTH a legacy base unit AND per-worktree units', { skip: process.platform === 'win32' }, () => {
+  const platform = process.platform;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-listunits-'));
+  try {
+    const wtA = '/repo/a';
+    const hashA = m.worktreeHash(wtA);
+    if (platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      // legacy base-name unit (hash null)
+      fs.writeFileSync(path.join(dir, m.LABEL + '.plist'),
+        m.buildPlist({ label: m.LABEL, exec: '/n', script: '/legacy.js', log: '/l', workdir: '/legacy/wt' }));
+      // per-worktree unit
+      fs.writeFileSync(path.join(dir, m.labelForWorktree(wtA) + '.plist'),
+        m.buildPlist({ label: m.labelForWorktree(wtA), exec: '/n', script: '/a.js', log: '/l', workdir: wtA }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, m.UNIT + '.service'),
+        m.buildService({ exec: '/n', script: '/legacy.js', workdir: '/legacy/wt' }));
+      fs.writeFileSync(path.join(dir, m.unitForWorktree(wtA) + '.service'),
+        m.buildService({ exec: '/n', script: '/a.js', workdir: wtA }));
+    }
+    const units = m.listInstalledIngestUnits({ home, platform });
+    assert.equal(units.length, 2, 'both units discovered');
+    const legacy = units.find((u) => u.hash === null);
+    const perwt = units.find((u) => u.hash === hashA);
+    assert.ok(legacy, 'legacy (hash-null) unit found');
+    assert.equal(legacy.workingDir, '/legacy/wt');
+    assert.equal(legacy.scriptPath, '/legacy.js');
+    assert.ok(perwt, 'per-worktree unit found by hash');
+    assert.equal(perwt.workingDir, wtA);
+    assert.equal(perwt.scriptPath, '/a.js');
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+test('listInstalledIngestUnits fail-opens to [] when nothing is installed', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-listunits-empty-'));
+  try {
+    assert.deepEqual(m.listInstalledIngestUnits({ home, platform: process.platform }), []);
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
 test('capability-scan discovers and reports the devswarm-ingest companion', () => {
   const { scanCapabilities } = require('../../plugins/anti-hall/scripts/capability-scan.js');
   // Real plugin root so the actual install-devswarm-ingest.js is discovered.
