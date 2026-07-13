@@ -76,6 +76,13 @@ const {
 const installIngest = require('../companion/install-devswarm-ingest.js');
 const devswarmIngest = require('../companion/devswarm-ingest.js');
 
+// CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
+// from this hook's own on-disk location. The Primary's cwd is its own project
+// worktree, not the plugin root, so a bare/relative "devswarm.js" reference in
+// emitted text is unrunnable there — every emitted instruction below embeds
+// this absolute path instead (P1 fix).
+const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+
 // A workspace whose supervisor verdict is one of these is idle/stuck (a wedged or
 // escalated child), independent of whether it still has unread backlog.
 const STUCK_STATUSES = new Set(['stale', 'nudged', 'escalated']);
@@ -396,7 +403,7 @@ function buildUnreadSegment(list) {
   );
   body += anyUnread
     ? ('STOP and read each unread workspace\'s inbox message(s) FIRST via '
-      + '`devswarm.js inbox read <id>` before continuing (or reassign/archive it). ')
+      + '`node ' + CLI + ' inbox read <id>` before continuing (or reassign/archive it). ')
     : ('Read/ack each workspace inbox (or reassign/archive it) so it does not sit '
       + 'unnoticed off your task list. ');
   body += 'A workspace flagged stale/escalated has a wedged child — check on it.';
@@ -440,7 +447,7 @@ function buildUrgentUnreadSegment(list) {
   return (
     'DEVSWARM URGENT INBOX: ' + list.length + ' workspace(s) sent an URGENT/HIGH-priority '
     + 'direct message — ' + shown.join('; ') + extra + '. STOP and read each unread '
-    + 'workspace\'s inbox message(s) FIRST via `devswarm.js inbox read <id>` before '
+    + 'workspace\'s inbox message(s) FIRST via `node ' + CLI + ' inbox read <id>` before '
     + 'continuing.'
   );
 }
@@ -462,7 +469,7 @@ function buildOwnUnreadSegment(count, id, urgencyMax) {
     prefix + 'you have ' + count + ' unread parent/peer '
     + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
     + 'parent/peer message(s) FIRST before continuing. Read them the SAFE, '
-    + 'NON-DRAINING way — `devswarm.js inbox read-primary ' + id + '` (anti-hall '
+    + 'NON-DRAINING way — `node ' + CLI + ' inbox read-primary ' + id + '` (anti-hall '
     + 'devswarm CLI). Do NOT run `hivecontrol workspace read-messages` or '
     + '`monitor` — those DESTRUCTIVELY drain the native queue.'
   );
@@ -501,7 +508,7 @@ function buildArchiveSegment(ids) {
     'DEVSWARM ARCHIVE-READY: workspace(s) ' + shown + extra + ' are complete '
     + '(all required gates met). VERIFY this workspace is MERGED + TESTED + DEPLOYED '
     + 'per YOUR repo\'s policy (using your own tooling; anti-hall does not check this), '
-    + 'then run `devswarm.js archive-request <id>` to ask the child to archive. '
+    + 'then run `node ' + CLI + ' archive-request <id>` to ask the child to archive. '
     + 'NEVER archive mechanically; the child asks its user.'
   );
 }

@@ -250,6 +250,62 @@ test('send --to-primary on a non-git cwd returns {ok:false,reason:"no-project"}'
   } finally { rm(home); }
 });
 
+// register-primary stores whatever `inst.resolveWorktree(cwd)` (a raw `git
+// rev-parse --show-toplevel`) or an explicit `--worktree` hands it, VERBATIM
+// (cmdRegister writes desc.worktreePath as-is, no realpath). `send --to-primary`
+// separately computes `mainWorktree` via `inst.resolveMainWorktree(cwd)`
+// (`dirname(--git-common-dir)`, itself always realpath'd — see devswarm-
+// repokey.js's gitCommonDir). Two different pipelines CAN hand back two
+// different (but equivalent) spellings of the identical real directory — this
+// is exactly what happens on win32 (short-name vs long-name spelling; see
+// install-devswarm-ingest.js's worktreeHash header comment for the documented
+// mechanism) but is reproducible on ANY platform with a plain symlink alias,
+// which is what this test uses so it runs everywhere. The registry join must
+// therefore be identity-based (hash the REAL, realpath'd directory on both
+// sides — the same primaryWorkspaceId() pipeline resolveMeshTarget already
+// uses for `--to <meshId>`), never literal string equality.
+test('send --to-primary resolves a Primary registered (via the REAL register-primary CLI) under a differently-SPELLED alias of the same real worktree', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('to-primary-alias-main');
+  let childWt = null;
+  let alias = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'to-primary-alias-child');
+    // A symlink is a DIFFERENT string that resolves to the SAME real directory
+    // as `mainRepo` — the same class of divergence win32's short/long-name
+    // spelling produces, reproduced portably via the filesystem instead of a
+    // platform seam (register-primary/send have no injectable io.platform).
+    alias = mainRepo + '-alias';
+    fs.symlinkSync(mainRepo, alias, 'dir');
+
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    // Real CLI path, NOT seedRegistry: register-primary run with --worktree
+    // pointed at the alias, so the registry's stored worktreePath is the ALIAS
+    // spelling — literally different from what `resolveMainWorktree` will later
+    // compute from the child worktree (the real, non-aliased mainRepo path).
+    const reg = cli.run(
+      ['register-primary', '--worktree', alias, '--session', 's-primary'],
+      ctx(home, { cwd: mainRepo })
+    );
+    assert.equal(reg.result.ok, true, 'register-primary must succeed: ' + JSON.stringify(reg.result));
+    const primaryId = inst.primaryWorkspaceId(alias);
+    assert.equal(reg.result.id, primaryId);
+
+    const r = cli.run(['send', '--to-primary', '--message', 'status update'], ctx(home, { cwd: childWt }));
+    assert.equal(r.result.ok, true, 'send --to-primary must RESOLVE the alias-registered Primary, not report primary-unregistered: ' + JSON.stringify(r.result));
+    assert.equal(r.result.reason, undefined);
+    assert.equal(r.result.type, 'direct');
+    assert.equal(r.result.to, primaryId);
+
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const msgs = s.listMessages(primaryId);
+      assert.equal(msgs.length, 1);
+      assert.equal(msgs[0].body, 'status update');
+    } finally { s.close(); }
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); if (alias) rm(alias); }
+});
+
 test('send requires --message', () => {
   const home = tmpHome();
   const repo = makeGitRepo('nomessage');

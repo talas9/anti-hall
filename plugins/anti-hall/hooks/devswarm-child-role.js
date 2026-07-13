@@ -24,8 +24,15 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 const { isDevswarmActive } = require('./lib/devswarm-detect.js');
 const { isChildWorkspace } = require('./lib/devswarm-role.js');
+
+// CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
+// from this hook's own on-disk location (never a relative "scripts/devswarm.js"
+// string — see P1 fix below: a DevSwarm child's cwd is its PROJECT WORKTREE,
+// not the plugin root, so a relative path in emitted text is unrunnable there).
+const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 
 // OVERRIDE_CORE — the full COMMUNICATION OVERRIDE directive (PLAN.md "OVERRIDE +
 // WAKE-TIER0"), identical for both roles. Deliberately avoids the literal
@@ -35,10 +42,10 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 const OVERRIDE_CORE =
   'DEVSWARM COMMUNICATION OVERRIDE: anti-hall\'s shared mesh store is this workspace\'s ' +
   'ONLY messaging channel for DevSwarm coordination — native hivecontrol send commands ' +
-  '(`workspace message-*`) are BLOCKED. Report status: `node scripts/devswarm.js ' +
-  'heartbeat <id> --summary "<text>"`. Direct-message: `node scripts/devswarm.js send ' +
-  '--to-primary --message "<text>"` (or `--to <meshId>`). Check in: `node ' +
-  'scripts/devswarm.js roster`, `mesh read`, `inbox read-primary <id>`. RESTING state = ' +
+  '(`workspace message-*`) are BLOCKED. Report status: `node ' + CLI + ' ' +
+  'heartbeat <id> --summary "<text>"`. Direct-message: `node ' + CLI + ' send ' +
+  '--to-primary --message "<text>"` (or `--to <meshId>`). Check in: `node ' + CLI + ' ' +
+  'roster`, `mesh read`, `inbox read-primary <id>`. RESTING state = ' +
   'keep polling the mesh — do not idle silently. Scope: COMMUNICATION ONLY; this never ' +
   'changes your assigned task.';
 
@@ -47,7 +54,7 @@ const OVERRIDE_CORE =
 // blocked native `hivecontrol workspace message-parent`.
 const CHILD_IDLE_LINE =
   ' If you have been idle with no active task for a while, proactively run `node ' +
-  'scripts/devswarm.js heartbeat <id> --summary "idle — reassign me a task or archive ' +
+  CLI + ' heartbeat <id> --summary "idle — reassign me a task or archive ' +
   'me"` so the parent orchestrator\'s task list stays honest instead of you sitting ' +
   'idle unnoticed.';
 

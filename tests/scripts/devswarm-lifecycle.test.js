@@ -387,6 +387,47 @@ test('roster does NOT duplicate a native child whose worktreePath already matche
   } finally { rm(home); rm(repo); }
 });
 
+// P2-2: cmdRoster used to dedup the native `list children` fold against the
+// store registry by EXACT STRING equality on worktreePath — the same bug class
+// as resolvePrimaryTarget's alias bug (see devswarm-send.test.js's `send
+// --to-primary ... differently-SPELLED alias` test). Two different spellings of
+// the SAME real directory (e.g. a raw `--show-toplevel` path vs a symlinked
+// alias of it) therefore failed to dedup, producing a duplicate roster row for
+// one real workspace. Reproduced portably (works on every CI platform, not just
+// win32's short/long-name divergence) via a plain filesystem symlink, exactly
+// like the send --to-primary alias test does.
+test('roster dedups a native child against a store entry for the SAME real worktree even when the two spellings differ (symlink alias)', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('roster-fold-alias');
+  let alias = null;
+  try {
+    alias = mainRepo + '-alias';
+    fs.symlinkSync(mainRepo, alias, 'dir');
+
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    // Store registry holds the REAL (non-aliased) spelling.
+    seedRegistry(home, repoKey, { id: 'child-real', worktreePath: mainRepo, sessionId: 's' });
+    const io = {
+      run: (spec) => {
+        if (spec.args[1] === 'list' && spec.args[2] === 'children') {
+          // Native fold reports the ALIAS spelling of the identical real directory.
+          return { ok: true, raw: JSON.stringify([{ branch: 'child-real-branch', path: alias }]) };
+        }
+        return { ok: true, raw: '{}' };
+      },
+    };
+    const r = cli.run(['roster'], ctx(home, { cwd: mainRepo, io }));
+    assert.equal(r.result.ok, true);
+    const realId = inst.primaryWorkspaceId(mainRepo);
+    const aliasId = inst.primaryWorkspaceId(alias);
+    assert.equal(realId, aliasId, 'sanity: the alias must canonicalize to the SAME identity as the real path');
+    const matches = r.result.workspaces.filter((w) => inst.primaryWorkspaceId(w.worktreePath) === realId);
+    assert.equal(matches.length, 1, 'a native child spelled differently from its store entry must not produce a duplicate row');
+    assert.equal(matches[0].source, 'store');
+    assert.equal(matches[0].id, 'child-real');
+  } finally { rm(home); rm(mainRepo); if (alias) rm(alias); }
+});
+
 test('roster fold fails open: a native `list children` spawn error never breaks or degrades the store-only projection', () => {
   const home = tmpHome();
   const repo = makeGitRepo('roster-fold-failopen');

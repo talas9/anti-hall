@@ -524,6 +524,54 @@ test('sweepOnce (real notifyParentEscalation + real store): urgent mesh unread o
   } finally { cleanup(); }
 });
 
+// P2-3: the urgency-forced escalation call to notifyParentEscalation used to
+// omit `fsi` (the injected fs) entirely, unlike the NEIGHBOURING pokeOrEscalate
+// call site (lib/recovery.js), which threads `fsi: F` (its own IO.fs) into ITS
+// internal notifyParentEscalation call. Left unfixed this is a latent
+// injection/sandbox-escape in tests: a caller that injects `deps.fs` expecting
+// EVERY store write on this path to honor it would still leak the
+// urgency-forced escalate straight to the real filesystem. Proven here by
+// leaving notifyParentEscalation itself UNMOCKED (real) and spying only at the
+// openParentStore seam it forwards `opts.fsi` into — a fake fs object that
+// throws on any real disk touch it wasn't explicitly told to allow. Non-vacuous:
+// fails on pre-fix code (capturedFsi would be undefined there).
+test('sweepOnce: urgency-forced escalation threads the injected fsi through to notifyParentEscalation (matches the pokeOrEscalate call site), never touching the real fs', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = path.join(home, 'wt');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    writeDescriptor(home, { id: 'w1', worktreePath }, 'w1');
+
+    // A distinguishable wrapper (NOT the real `fs` module, but delegating the two
+    // reads readDescriptors genuinely needs) so equality below proves the EXACT
+    // injected object was threaded through, not merely "some truthy fs-like value".
+    const fakeFs = {
+      readdirSync: (...args) => fs.readdirSync(...args),
+      readFileSync: (...args) => fs.readFileSync(...args),
+    };
+    let capturedFsi = 'not-called';
+    const openParentStore = (opts) => {
+      capturedFsi = opts && opts.fsi;
+      return { appendMessage: () => {}, close: () => {} }; // avoid any real store I/O
+    };
+
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        fs: fakeFs,
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+        readMeshUrgency: () => ({ urgencyMax: 'urgent', directUnread: 1, broadcastUnread: 0 }),
+        openParentStore,
+      },
+    });
+    assert.strictEqual(res[0].poke.action, 'nudged');
+    assert.strictEqual(capturedFsi, fakeFs,
+      'notifyParentEscalation must receive the SAME injected fs (deps.fs) the surrounding sweepOnce code already threads through');
+  } finally { cleanup(); }
+});
+
 // ---------------------------------------------------------------------------
 // P1 fix, end-to-end through the REAL chain: real deriveSummary (devswarm-
 // store.js) writes the per-project summaries/<repoKey>.json projection, and

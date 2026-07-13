@@ -203,6 +203,33 @@ for (const { cmd, env } of HIVECTL_BLOCK) {
   });
 }
 
+// REGRESSION (P0, live-verified bypass): quoting a bareword does NOT change argv —
+// the shell executes `hivecontrol workspace "monitor"` identically to the unquoted
+// form. Previously the per-segment pattern test ran against
+// neutralizeQuotedContents(seg), which BLANKS quoted content instead of dequoting
+// it, so every quoted variant of monitor/read-messages sailed through (exit 0).
+// This defeated the single-consumer invariant: the guard's own block reason echoes
+// the exact blocked subcommand back, so a blocked model's natural retry is to quote
+// it. Covers: double-quoted subcommand, single-quoted subcommand, a mid-token split
+// quote, and a quoted VERB (which must also still anchor to `hivecontrol`).
+const HIVECTL_QUOTE_BYPASS_BLOCK = [
+  'hivecontrol workspace "monitor"',
+  "hivecontrol workspace 'monitor'",
+  'hivecontrol workspace mon"ito"r',
+  '"hivecontrol" workspace monitor',
+  'hivecontrol workspace "read-messages"',
+  "hivecontrol workspace 'read-messages'",
+  'hivecontrol workspace read"-mess"ages',
+  '"hivecontrol" workspace read-messages',
+];
+for (const cmd of HIVECTL_QUOTE_BYPASS_BLOCK) {
+  test(`DEVSWARM BLOCK (quote-bypass regression): ${cmd}`, () => {
+    const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 2, `expected block for: ${cmd}\nstdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+  });
+}
+
 // --- SCOPING ---
 // Part B inversion: read-messages with NO durable evidence now BLOCKS unconditionally
 // (was ALLOW). A raw native read desyncs the durable cursor regardless of evidence.
@@ -261,6 +288,31 @@ for (const cmd of HIVECTL_MESSAGE_BLOCK) {
   });
 }
 
+// REGRESSION (P0, live-verified bypass): quoting message-parent/message-child (or
+// the hivecontrol verb) does NOT change argv, so it must block IDENTICALLY to the
+// unquoted form. Previously ran against neutralizeQuotedContents(seg), which
+// BLANKS quoted content, so every quoted variant sailed through (exit 0) — this
+// defeated v0.58's headline invariant (mesh store is the SOLE agent-initiated
+// transport), and was trivially reachable since the block reason echoes the exact
+// blocked subcommand back, inviting a quoted retry.
+const HIVECTL_MESSAGE_QUOTE_BYPASS_BLOCK = [
+  'hivecontrol workspace "message-parent" hi',
+  "hivecontrol workspace 'message-parent' hi",
+  'hivecontrol workspace mes"sage-par"ent hi',
+  '"hivecontrol" workspace message-parent hi',
+  'hivecontrol workspace "message-child" hi',
+  "hivecontrol workspace 'message-child' hi",
+  'hivecontrol workspace mes"sage-chi"ld hi',
+  '"hivecontrol" workspace message-child hi',
+];
+for (const cmd of HIVECTL_MESSAGE_QUOTE_BYPASS_BLOCK) {
+  test(`DEVSWARM MESSAGE-SEND BLOCK (quote-bypass regression): ${cmd}`, () => {
+    const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 2, `expected block for: ${cmd}\nstdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+  });
+}
+
 test('DEVSWARM MESSAGE-SEND BLOCK: fires in SUBAGENT context too (all-contexts, like devswarm-read-guard)', () => {
   const r = runDevswarm('hivecontrol workspace message-parent hi', {}, { agentId: 'sub' });
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
@@ -287,6 +339,7 @@ const HIVECTL_MESSAGE_ALLOW = [
   'hivecontrol workspace list',
   'hivecontrol workspace check-merge',
   'hivecontrol workspace merge',
+  'hivecontrol workspace merge-into-source',
   'hivecontrol workspace message-count',
   // Quoted DATA / grep of a string mentioning the subcommand name — verb is
   // grep, not hivecontrol -> must never classify as a send.
@@ -452,15 +505,38 @@ test('DEVSWARM BLOCK: sudo hivecontrol workspace monitor (wrapper, still verb)',
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
 });
 
-// --- FIX 4: shell-obfuscation forms are ACCEPTED as NOT caught (drift-guard, not
-// an adversary defense). These synthesize the verb/subcommand only after shell
-// expansion; catching them needs full expansion simulation (out of scope). ---
-const HIVECTL_ACCEPTED_OBFUSCATION = [
-  "hiv'ec'ontrol workspace monitor",   // verb tokenizes as hiv'ec'ontrol, not hivecontrol
-  "hivecontrol workspace 'mon'itor",   // subcommand split across quotes
+// --- FIX 4 (SUPERSEDED by the dequote fix): these two quote-split forms were
+// previously documented as an ACCEPTED, out-of-scope limitation, because the old
+// matcher ran against neutralizeQuotedContents (which BLANKS quoted content) —
+// that made the split-quote obfuscation indistinguishable from a genuine bypass.
+// dequoteSegment (the P0 fix below) recovers the literal argv text for ANY
+// quote-delimited split, not just the specific message-parent/monitor examples,
+// so these now correctly BLOCK too (a strict improvement, not a regression). Only
+// TRUE shell-expansion forms (parameter/command substitution, which need a full
+// shell-expansion simulation to resolve) remain out of scope — see
+// HIVECTL_ACCEPTED_SHELL_EXPANSION below. ---
+const HIVECTL_NOW_BLOCKED_QUOTE_SPLIT = [
+  "hiv'ec'ontrol workspace monitor",   // verb dequotes to hivecontrol
+  "hivecontrol workspace 'mon'itor",   // subcommand dequotes to monitor
 ];
-for (const cmd of HIVECTL_ACCEPTED_OBFUSCATION) {
-  test(`DEVSWARM accepted-limitation (obfuscation NOT caught, allows): ${cmd}`, () => {
+for (const cmd of HIVECTL_NOW_BLOCKED_QUOTE_SPLIT) {
+  test(`DEVSWARM BLOCK (quote-split, previously an accepted gap — now fixed): ${cmd}`, () => {
+    const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 2, `expected block: ${cmd}\nstdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+  });
+}
+
+// --- ACCEPTED LIMITATION (still out of scope): forms that only synthesize the
+// verb/subcommand via shell PARAMETER or COMMAND expansion need a full
+// shell-expansion simulation to resolve, which this drift-guard does not attempt
+// (it defends against accidental and quote-obfuscated destructive reads, not a
+// determined shell-expansion bypass). ---
+const HIVECTL_ACCEPTED_SHELL_EXPANSION = [
+  'mon=itor; hivecontrol workspace $mon',   // resolved only after variable expansion
+];
+for (const cmd of HIVECTL_ACCEPTED_SHELL_EXPANSION) {
+  test(`DEVSWARM accepted-limitation (shell expansion NOT caught, allows): ${cmd}`, () => {
     const r = runDevswarm(cmd);
     assert.strictEqual(r.status, 0, `documented accepted bypass should allow: ${cmd}\nstdout: ${r.stdout}`);
   });

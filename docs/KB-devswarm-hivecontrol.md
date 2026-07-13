@@ -268,6 +268,14 @@ any message, run `monitor` and check messages at session start + periodically.
 
 ## 8. anti-hall × DevSwarm — the orchestration integration (the point)
 
+> **Optional, feature-gated.** Everything in this section is dormant — zero behavioral
+> change from anti-hall's non-DevSwarm baseline — unless `DEVSWARM_REPO_ID` is set (an
+> active DevSwarm session) and/or one of the opt-in companions (the ingest daemon, the
+> liveness supervisor) is installed. anti-hall's core (the verify-first protocol, the
+> mechanical guards, the statusline, `doctor`, `update`, etc.) works fully without
+> DevSwarm. See `README.md`'s "🐝 DevSwarm layered recovery" section for the enumerated
+> feature list at a glance.
+
 **Goal:** make anti-hall orchestration **workspace-topology-aware**, so the *same* skill picks
 its fan-out primitive by **where it runs**.
 

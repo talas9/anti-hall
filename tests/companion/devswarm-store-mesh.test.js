@@ -466,6 +466,75 @@ if (store.sqliteAvailable()) {
       } finally { s.close(); }
     } finally { rm(home); }
   });
+
+  // Regression test for the windows-latest/node24 CI failure (v0.58 hardening
+  // follow-up): busy_timeout alone bounds the wait WITHIN a single statement
+  // attempt, but under sustained contention that per-statement wait can still
+  // be exhausted (observed live: a two-process/40-write race threw "database
+  // is locked", errcode 5, at appendMeshRow's stmt.run()). This test INJECTS a
+  // deterministic SQLITE_BUSY by holding a real BEGIN IMMEDIATE write lock
+  // from a second process for LONGER than the store's (deliberately tiny)
+  // busyTimeoutMs, so the first attempt is GUARANTEED to exhaust its
+  // busy_timeout and throw — proving the store's own outer retry (not just
+  // sqlite's built-in per-statement wait) is what makes the write succeed.
+  // Deterministic and platform-agnostic (no reliance on real-world race
+  // timing like the D6 test above).
+  test('[sqlite] appendMeshRow retries past an injected SQLITE_BUSY that outlasts busy_timeout, and still succeeds', async () => {
+    const home = tmpHome();
+    try {
+      const hash = 'busyretry1';
+      // Pre-create the store file so both the holder and the main process
+      // open the SAME db file.
+      store.openSqlite(home, null, { hash }).close();
+      const dbPath = store.sqlitePathForHash(home, hash);
+      const markerPath = path.join(home, 'holder-locked.marker');
+      const HOLD_MS = 250; // longer than the store's busyTimeoutMs below (50ms)
+
+      // Holder process: takes a real WAL write lock via BEGIN IMMEDIATE,
+      // signals via a marker file once held, sleeps past HOLD_MS, then
+      // releases. A real second OS process is used (not same-process
+      // interleaving) since everything on one thread here is synchronous —
+      // there is no way to hold a lock "in the background" within one thread.
+      const holder = ''
+        + 'const { DatabaseSync } = require("node:sqlite");'
+        + 'const fs = require("fs");'
+        + 'const db = new DatabaseSync(' + JSON.stringify(dbPath) + ');'
+        + 'db.exec("PRAGMA busy_timeout = 3000;");'
+        + 'db.exec("BEGIN IMMEDIATE;");'
+        + 'fs.writeFileSync(' + JSON.stringify(markerPath) + ', "locked");'
+        + 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ' + HOLD_MS + ');'
+        + 'db.exec("COMMIT;");'
+        + 'db.close();';
+      const holderPromise = runNode(holder);
+
+      // Poll (bounded) for the holder's marker so the write lock is
+      // GUARANTEED held before the main-process attempt below.
+      const pollDeadline = Date.now() + 3000;
+      while (!fs.existsSync(markerPath)) {
+        if (Date.now() > pollDeadline) throw new Error('holder never signaled lock acquisition');
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+      }
+
+      // busyTimeoutMs (50ms) is deliberately far shorter than HOLD_MS (250ms):
+      // the FIRST appendMeshRow attempt is guaranteed to exhaust its internal
+      // busy_timeout wait and throw SQLITE_BUSY while the holder still has
+      // the lock. Only the store's own retrySqliteBusy outer retry (not
+      // sqlite's per-statement busy_timeout wait) can make this succeed.
+      const s = store.openSqlite(home, null, { hash, busyTimeoutMs: 50 });
+      try {
+        const f = { from: 'injector', to: null, type: 'broadcast', message: 'past-the-lock', timestamp: 1, urgency: 'normal' };
+        const r = store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+        assert.equal(r.inserted, true, 'the write must land once the injected lock is released, via the retry — not throw');
+        assert.ok(Number.isFinite(r.seq), 'a real seq is assigned once the retried insert succeeds');
+
+        const rows = s.listMessages(store.BROADCAST_PARTITION_ID);
+        assert.ok(rows.some((row) => row.body === 'past-the-lock'), 'the retried row is actually persisted, not just reported inserted');
+      } finally { s.close(); }
+
+      const holderResult = await holderPromise;
+      assert.equal(holderResult.exitCode, 0, 'holder process must exit cleanly: ' + holderResult.stderr);
+    } finally { rm(home); }
+  });
 }
 
 // ---- listStoreHashes (D20 — repoKey-shape extension) -----------------------

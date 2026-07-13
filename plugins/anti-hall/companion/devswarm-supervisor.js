@@ -263,8 +263,15 @@ function sweepOnce(opts) {
         // signal at all) -> no forced escalate; rely on the agent's next turn.
         const urgency = (deps.readMeshUrgency || readMeshUrgency)(d, home, deps);
         if (isUrgentMesh(urgency)) {
+          // Thread the SAME injected fs (F, already used above for
+          // readDescriptors/writeVerdict/computeLiveness) through to
+          // notifyParentEscalation's opts — matching how the neighbouring
+          // pokeOrEscalate call site passes `fsi: F` into its own internal
+          // notifyParentEscalation call (lib/recovery.js). Without this, a
+          // test/sandbox that injects fs here still leaks the forced-escalate
+          // path to the real filesystem.
           (deps.notifyParentEscalation || notifyParentEscalation)(d, verdict, {
-            home, now: o.now, env,
+            home, now: o.now, env, fsi: F,
           }, deps.openParentStore);
         }
       }

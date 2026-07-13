@@ -43,6 +43,28 @@ node plugins/anti-hall/codex/install-codex.js --global
 Requires Node.js >= 18 on PATH; without it the hooks silently no-op. Updates via the
 `/plugin` manager; updates pull on restart if autoUpdate is enabled (or via the /plugin manager).
 
+## DevSwarm coordination (optional)
+
+DevSwarm coordination is entirely optional: anti-hall's core (verify-first protocol,
+mechanical guards, statusline, doctor, update) works fully without it. It activates only
+inside a DevSwarm session (DEVSWARM_REPO_ID set) and/or via its own opt-in companions (the
+ingest daemon / liveness supervisor); otherwise everything below is dormant. Features:
+layered recovery that never auto-kills (child self-report -> supervisor poke -> escalate;
+only the on-demand devswarm-recover.js CLI ever kills); a per-project mesh store (shared
+per repoKey, all worktrees can message each other, #36-STRUCTURAL cross-project scoping);
+the mesh messaging CLI `scripts/devswarm.js` (`send --to <meshId>|--to-primary|--broadcast`,
+`roster`, `mesh read`, `heartbeat --summary`, `inbox pull/read/read-primary`; message rows
+carry {from, to, type, message, timestamp, urgency}); guard-blocked native `hivecontrol
+workspace message-child`/`message-parent` (redirected to the mesh CLI, now the sole
+agent-initiated messaging transport); per-turn communication-override + mesh-poll resting
+posture (Tier-0 wake only -- no external mechanism wakes a genuinely idle Claude Code
+session, anthropics/claude-code#44380, so a runner-wrap fallback is deferred, not built);
+thin lifecycle wrappers `spawn`/`merge` and a one-shot `reconcile`; `archive-request` as a
+direct store write (archiving stays a human-confirmed handoff, never mechanical); supervisor
+escalate-on-urgent for high/urgent mesh unread; and an optional per-project ingest daemon
+wrapping `hivecontrol workspace monitor` into the shared store. Full reference:
+[docs/KB-devswarm-hivecontrol.md](docs/KB-devswarm-hivecontrol.md) §8.
+
 ## Overview
 
 - [README](README.md): overview, the four failure modes, two-layer design, statusline, AFK mode, quickstart.

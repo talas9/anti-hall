@@ -7,6 +7,8 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
@@ -117,6 +119,37 @@ test('FAIL-OPEN: malformed JSON stdin -> exit 0, no crash', () => {
   try {
     const r = testHookRaw(HOOK, '{bad', { home: h.home });
     assert.strictEqual(r.status, 0);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// P1 fix: a DevSwarm child's cwd is its PROJECT WORKTREE, not the plugin root,
+// so a RELATIVE `scripts/devswarm.js` in emitted text only resolves when cwd
+// happens to be the plugin root — everywhere else it is MODULE_NOT_FOUND. Every
+// `node <cli>` instruction this hook emits must now carry an ABSOLUTE path that
+// actually exists on disk, regardless of the spawning process's own cwd.
+test('P1 FIX: every emitted `node <cli>` instruction carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    const rChild = testHook(HOOK, sessionPayload(), {
+      home: h.home, expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    const rPrimary = testHook(HOOK, sessionPayload(), {
+      home: h.home, expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: '' },
+    });
+    for (const c of [ctx(rChild), ctx(rPrimary)]) {
+      const matches = [...c.matchAll(/`node ([^`]*?devswarm\.js)\b/g)];
+      assert.ok(matches.length >= 2, `expected multiple node devswarm.js instructions; ctx=${c}`);
+      for (const m of matches) {
+        const cliPath = m[1];
+        assert.ok(path.isAbsolute(cliPath), `emitted CLI path must be absolute, not relative: ${cliPath}`);
+        assert.ok(fs.existsSync(cliPath), `emitted CLI path must exist on disk: ${cliPath}`);
+        assert.ok(cliPath.endsWith(path.join('scripts', 'devswarm.js')), `must resolve to scripts/devswarm.js: ${cliPath}`);
+      }
+    }
   } finally {
     h.cleanup();
   }

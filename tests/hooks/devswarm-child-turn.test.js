@@ -842,3 +842,110 @@ test('ITEM 6: dedupe — NDJSON marker path and summary.archive_requested both t
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// P1 fix: a DevSwarm child's cwd is its PROJECT WORKTREE, not the plugin root,
+// so a RELATIVE `scripts/devswarm.js` (or a bare `devswarm.js` with no
+// interpreter/path at all) in emitted text is unrunnable there. Every `node
+// <cli>` instruction this hook emits — REMINDER/RECEIVE_NUDGE (unconditional)
+// plus the unread/mesh-direct/archive-request segments — must carry an
+// ABSOLUTE path that actually exists on disk.
+
+function assertAbsoluteExistingCliPaths(c, { min } = {}) {
+  const matches = [...c.matchAll(/`node ([^`]*?devswarm\.js)\b/g)];
+  assert.ok(matches.length >= (min || 1), `expected node devswarm.js instruction(s); ctx=${c}`);
+  for (const m of matches) {
+    const cliPath = m[1];
+    assert.ok(path.isAbsolute(cliPath), `emitted CLI path must be absolute, not relative: ${cliPath}`);
+    assert.ok(fs.existsSync(cliPath), `emitted CLI path must exist on disk: ${cliPath}`);
+    assert.ok(cliPath.endsWith(path.join('scripts', 'devswarm.js')), `must resolve to scripts/devswarm.js: ${cliPath}`);
+  }
+  // No bare `devswarm.js` reference should survive without a preceding `node <abs-path>`.
+  assert.ok(!/[^/]\bdevswarm\.js\b/.test(c.replace(/`node [^`]*?devswarm\.js\b/g, '')),
+    `a bare/relative devswarm.js reference leaked through unconverted; ctx=${c}`);
+}
+
+test('P1 FIX: unconditional REMINDER + RECEIVE_NUDGE carry an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    assertAbsoluteExistingCliPaths(ctx(r), { min: 3 }); // heartbeat + inbox pull + inbox read
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('P1 FIX: durable-unread PRIORITY segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    seedChildInbox(h.home, 'child-1', ['from parent: rebase now'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assertAbsoluteExistingCliPaths(ctx(r));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('P1 FIX: mesh-direct segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'child-stale', 1, 'urgent');
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assertAbsoluteExistingCliPaths(ctx(r));
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('P1 FIX: archive-request segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    seedChildInbox(h.home, 'child-1', ['from parent: please [[ANTIHALL_ARCHIVE_REQUEST]] this workspace'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    assertAbsoluteExistingCliPaths(ctx(r));
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Text/mechanism mismatch (P1 follow-up, option (a)): REMINDER previously
+// implied a direct `send --to-primary` was an equivalent alternative to
+// `heartbeat --summary` for "keeping the parent updated" — but
+// devswarm-child-gate.js's alreadyReportedThisEpisode() only recognizes an
+// OUTBOUND row in the shared summary's `recent[]`, which is populated ONLY by
+// a broadcast/heartbeat --summary call (deriveSummary reads it from the
+// broadcast partition) — a direct send lands in the RECIPIENT's own partition
+// and never touches `recent[]`. REMINDER now explicitly names `heartbeat
+// --summary` as what satisfies the Stop-gate and calls out `send --to-primary`
+// as a separate, non-substitute channel.
+
+test('MISMATCH FIX: REMINDER names heartbeat --summary as satisfying the Stop-gate, and send --to-primary as a non-substitute', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    const c = ctx(r);
+    assert.ok(/heartbeat <DEVSWARM_BUILDER_ID> --summary[\s\S]*?satisfies your Stop-gate report/.test(c),
+      `must name heartbeat --summary as satisfying the Stop-gate; ctx=${c}`);
+    assert.ok(/send --to-primary[\s\S]*?SEPARATE direct[\s\S]*?not a substitute/.test(c),
+      `must call out send --to-primary as a separate, non-substitute channel; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});

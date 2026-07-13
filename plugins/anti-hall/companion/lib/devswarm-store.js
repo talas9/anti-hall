@@ -251,6 +251,42 @@ function appendMeshMessage(store, fields) {
   });
 }
 
+// isSqliteBusyError(e) -> true for a SQLITE_BUSY / "database is locked" throw
+// from node:sqlite (errcode 5). PRAGMA busy_timeout (set in openSqlite below)
+// already makes ONE blocked statement wait (bounded) before sqlite gives up;
+// this only recognizes that specific give-up so retrySqliteBusy (below) never
+// masks a genuine, unrelated error.
+function isSqliteBusyError(e) {
+  if (!e) return false;
+  if (e.errcode === 5) return true; // SQLITE_BUSY
+  return /database is locked|SQLITE_BUSY/i.test(String((e && (e.message || e.errstr)) || ''));
+}
+// retrySqliteBusy(fn) — bounded retry on SQLITE_BUSY, mirroring the journal
+// backend's withRetriedMessagesLock (jittered backoff, small fixed attempt
+// cap; a non-busy error is never retried — fail closed). PRAGMA busy_timeout
+// already bounds the wait WITHIN a single statement attempt; this is the
+// outer safety net for when even that per-statement wait is exhausted under
+// sustained multi-process contention — observed live on windows-latest/
+// node24 CI (two 40-write processes; one `appendMeshRow` INSERT exceeded the
+// 3000ms busy_timeout and threw "database is locked", errcode 5). Retrying
+// the whole prepared-statement call is safe: `appendMeshRow`'s INSERT never
+// partially applies (a thrown statement inserts nothing), and the OR-IGNORE
+// dedupe-by-hash path makes any eventual re-attempt idempotent regardless.
+const SQLITE_BUSY_MAX_RETRIES = 5;
+function retrySqliteBusy(fn) {
+  let lastErr = null;
+  for (let attempt = 0; attempt < SQLITE_BUSY_MAX_RETRIES; attempt++) {
+    try { return fn(); }
+    catch (e) {
+      if (!isSqliteBusyError(e)) throw e; // not contention -> fail closed, never mask
+      lastErr = e;
+      // jittered backoff, same shape as the journal backend's lockSleep.
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 + Math.floor(Math.random() * 40)); } catch (_) {}
+    }
+  }
+  throw lastErr;
+}
+
 // ============================================================================
 // SQLite backend (WAL). Touches a real db file (DatabaseSync has no fs injection);
 // tests point it at an isolated temp HOME.
@@ -377,7 +413,9 @@ function openSqlite(home, workspaceId, opts) {
         + 'INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, seq)'
         + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));'
       );
-      const r = stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat);
+      const r = retrySqliteBusy(() =>
+        stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat)
+      );
       if (r.changes <= 0) return { inserted: false, seq: null }; // dedupe hit (OR IGNORE)
       const got = db.prepare('SELECT seq FROM messages WHERE id = ?;').get(Number(r.lastInsertRowid));
       return { inserted: true, seq: got ? Number(got.seq) : null };

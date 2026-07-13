@@ -83,6 +83,13 @@ const { isSkipped } = require('./skip-guard.js');
 const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 
+// CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
+// from this hook's own on-disk location (never a relative "scripts/devswarm.js"
+// string — a DevSwarm child's cwd is its PROJECT WORKTREE, not the plugin
+// root, so a relative path in the emitted Stop-block reason is unrunnable
+// there; P1 fix).
+const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
 // looking for a `.git` entry — mirrors devswarm-child-turn.js's/devswarm-parent-
 // inbox.js's own copy byte-for-byte (kept local rather than shared so this Stop
@@ -338,7 +345,7 @@ function main() {
   const unreadPending = hasUnreadParentMessages(process.env, os.homedir());
   const inboundPrefix = unreadPending
     ? 'DEVSWARM CHILD INBOX — you have unpulled/unread parent message(s): run ' +
-      '`node scripts/devswarm.js inbox pull <DEVSWARM_BUILDER_ID>` (or `inbox read` ' +
+      '`node ' + CLI + ' inbox pull <DEVSWARM_BUILDER_ID>` (or `inbox read` ' +
       'if already pulled), then `inbox ack` once addressed — BEFORE you stop. '
     : '';
 
@@ -346,7 +353,7 @@ function main() {
     inboundPrefix +
     'DEVSWARM CHILD WORKSPACE — before you stop, emit a heartbeat / self-report to ' +
     'your parent orchestrator so you do not silently drop off its radar and later ' +
-    'read as stale. Run `node scripts/devswarm.js heartbeat <DEVSWARM_BUILDER_ID> ' +
+    'read as stale. Run `node ' + CLI + ' heartbeat <DEVSWARM_BUILDER_ID> ' +
     '--summary "<status>"` with a one-line status (e.g. "done — awaiting next task", ' +
     '"blocked on X", or "idle — reassign or archive me"), THEN stop. This keeps the ' +
     'parent\'s task list honest instead of leaving you unnoticed.';

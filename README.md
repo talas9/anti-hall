@@ -245,6 +245,47 @@ orphan detection is unsafe — the correct fix there is Job Objects set by the s
 
 ## 🐝 DevSwarm layered recovery (companion, opt-in and OPTIONAL)
 
+**DevSwarm coordination is entirely optional.** anti-hall's core — the verify-first
+protocol, the mechanical guards, the statusline, `doctor`, `update`, etc. — works fully
+**without** DevSwarm. Everything below is dormant with zero behavioral change unless a
+DevSwarm session is active (`DEVSWARM_REPO_ID` set) and/or one of its own opt-in
+companions (the ingest daemon / the liveness supervisor) is installed; nothing else in the
+plugin depends on it.
+
+**All DevSwarm features, at a glance** (detail below; full reference:
+[`docs/KB-devswarm-hivecontrol.md`](docs/KB-devswarm-hivecontrol.md) §8):
+
+- **Layered recovery, never-auto-kill** — a wedged child self-reports idleness, a
+  supervisor **pokes** it, then **escalates to the parent**; the only path that ever kills
+  a process is the separate, on-demand `devswarm-recover.js` CLI.
+- **Per-project mesh store** — one shared store per project keyed by a stable `repoKey`,
+  so any worktree can message any other directly; **#36-STRUCTURAL scoping** closes a
+  spoofable cross-project bleed.
+- **Mesh messaging CLI** (`scripts/devswarm.js`) — `send --to <meshId>|--to-primary|
+  --broadcast [--urgency low|normal|high|urgent]`, `roster` (also folds in unregistered
+  native `hivecontrol` children), `mesh read`, `heartbeat --summary`, `inbox
+  pull/read/read-primary`. Every message row carries `{from, to, type, message, timestamp,
+  urgency}`.
+- **Guard-blocked native messaging** — `hivecontrol workspace message-child`/
+  `message-parent` are unconditionally blocked and redirected to the mesh CLI, which is
+  the sole agent-initiated messaging transport once DevSwarm is active.
+- **Per-turn communication override + mesh-poll resting posture** — every role gets a
+  per-turn reminder to poll the mesh instead of idling; honestly scoped as **Tier-0 only**
+  — no external signal can wake a genuinely idle Claude Code session
+  ([anthropics/claude-code#44380](https://github.com/anthropics/claude-code/issues/44380)),
+  so a runner-wrap fallback is named **deferred**, not built.
+- **Thin lifecycle wrappers** — `spawn`/`merge` wrap `hivecontrol workspace create` /
+  `check-merge`+`merge-into-source`, then auto-register/broadcast the result to the mesh;
+  `reconcile` one-shot-drains every registered worktree's inbox (e.g. after a daemon
+  outage).
+- **`archive-request`** — a direct store write asking a child to archive itself;
+  archiving stays a human-confirmed handoff on both sides, never mechanical.
+- **Supervisor escalate-on-urgent + liveness** — the opt-in supervisor also escalates to
+  the parent on a high/urgent mesh unread; it still never kills anything itself.
+- **Optional per-project ingest daemon** — the one native consumer wrapping `hivecontrol
+  workspace monitor` into the shared store, installed per project via
+  `companion/install-devswarm-ingest.js`.
+
 A second **interval companion** (not a hook), dormant with zero effect unless
 [DevSwarm](https://devswarm.ai) is actually in use — feature-gated exactly like the OMC
 integration above. It works around a `claude` session silently wedging (process alive,

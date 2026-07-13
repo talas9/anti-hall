@@ -82,11 +82,28 @@ const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 const { ARCHIVE_REQUEST_MARKER } = require('../companion/lib/devswarm-store.js');
 
+// CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
+// from this hook's own on-disk location. A DevSwarm child's cwd is its PROJECT
+// WORKTREE, not the plugin root — a relative "scripts/devswarm.js" string in
+// emitted text only resolves when cwd happens to be the plugin root, so every
+// emitted instruction below embeds this absolute path instead (P1 fix).
+const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+
+// REMINDER — names `heartbeat --summary` as the verb that actually satisfies
+// the Stop-gate report requirement (devswarm-child-gate.js's
+// alreadyReportedThisEpisode() reads the shared store's `recent[]` projection,
+// which is populated ONLY by a broadcast/heartbeat --summary call, never a
+// direct `send --to-primary` — a direct message lands in the RECIPIENT's own
+// partition, not anywhere this child's own "did I report" check can see it).
+// `send --to-primary` is called out as a SEPARATE, additional channel — not a
+// substitute — so a child that direct-messages only does not mistakenly believe
+// it has satisfied the Stop-gate and then get blocked anyway.
 const REMINDER =
   'DEVSWARM CHILD WORKSPACE (per turn): keep the parent orchestrator updated — ' +
-  'run `node scripts/devswarm.js heartbeat <DEVSWARM_BUILDER_ID> --summary ' +
-  '"<status>"` to report progress/blockers as you make them (or `send --to-primary ' +
-  '--message "<text>"` to direct-message), and check for + act on any parent ' +
+  'run `node ' + CLI + ' heartbeat <DEVSWARM_BUILDER_ID> --summary ' +
+  '"<status>"` to report progress/blockers as you make them — this is what satisfies ' +
+  'your Stop-gate report (`send --to-primary --message "<text>"` is a SEPARATE direct ' +
+  'message, not a substitute) — and check for + act on any parent ' +
   'messages before continuing, so you stay visible on the parent\'s task list ' +
   'instead of drifting off it.';
 
@@ -112,10 +129,10 @@ const OVERRIDE_REASSERT =
 // per-turn path); it just tells the child which command to run.
 const RECEIVE_NUDGE =
   'DEVSWARM CHILD RECEPTION: to RECEIVE parent messages, run ' +
-  '`node scripts/devswarm.js inbox pull <DEVSWARM_BUILDER_ID>` (anti-hall devswarm ' +
+  '`node ' + CLI + ' inbox pull <DEVSWARM_BUILDER_ID>` (anti-hall devswarm ' +
   'CLI) — a SAFE, bounded drain that folds the native parent->child queue into your ' +
   'durable inbox (non-destructive count gate, one bounded read, never `monitor`). ' +
-  'Then read them the non-draining way via `node scripts/devswarm.js inbox read ' +
+  'Then read them the non-draining way via `node ' + CLI + ' inbox read ' +
   '<DEVSWARM_BUILDER_ID>`. Substitute your own DEVSWARM_BUILDER_ID for <...>.';
 
 // heartbeatKey(builderId, branch) -> a safe single path segment for the heartbeat
@@ -198,7 +215,7 @@ function buildUnreadSegment(info) {
     'DEVSWARM CHILD INBOX — PRIORITY: you have ' + info.count + ' unread parent '
     + 'message(s). STOP and address these parent message(s) FIRST before '
     + 'continuing. Read them the SAFE, NON-DRAINING way via the durable inbox '
-    + 'cursor — `devswarm.js inbox read ' + info.id + '` (anti-hall devswarm CLI). '
+    + 'cursor — `node ' + CLI + ' inbox read ' + info.id + '` (anti-hall devswarm CLI). '
     + 'Do NOT run `hivecontrol workspace read-messages` or `monitor` — those '
     + 'DESTRUCTIVELY drain the native queue.'
   );
@@ -216,13 +233,13 @@ function buildMeshDirectSegment(count, id, urgencyMax) {
   if (urgent) {
     return (
       'DEVSWARM MESH DIRECT — URGENT: you have ' + count + ' unread mesh direct '
-      + 'message(s) addressed to you. STOP and read them FIRST via `devswarm.js '
+      + 'message(s) addressed to you. STOP and read them FIRST via `node ' + CLI + ' '
       + 'inbox read-primary ' + id + '` before continuing.'
     );
   }
   return (
     'DEVSWARM MESH DIRECT: you have ' + count + ' unread mesh direct message(s) '
-    + 'addressed to you. Read them via `devswarm.js inbox read-primary ' + id + '`.'
+    + 'addressed to you. Read them via `node ' + CLI + ' inbox read-primary ' + id + '`.'
   );
 }
 
@@ -240,7 +257,7 @@ function buildMeshDirectSegment(count, id, urgencyMax) {
 function buildArchiveRequestSegment(id) {
   return (
     'DEVSWARM ARCHIVE REQUEST: your parent asks you to archive this workspace. '
-    + 'Confirm with YOUR user, then run `devswarm.js archive ' + id + '`. NEVER '
+    + 'Confirm with YOUR user, then run `node ' + CLI + ' archive ' + id + '`. NEVER '
     + 'auto-archive.'
   );
 }

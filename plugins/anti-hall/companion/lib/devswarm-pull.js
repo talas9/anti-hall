@@ -129,6 +129,7 @@ function defaultRun(spec) {
     const opts = { encoding: 'utf8' };
     if (Number.isFinite(o.timeout)) opts.timeout = o.timeout;
     if (o.env && typeof o.env === 'object') opts.env = o.env;
+    if (typeof o.cwd === 'string' && o.cwd) opts.cwd = o.cwd;
     const r = spawnSync(bin, args, opts);
     if (r.error) return { ok: false, raw: '', error: String(r.error.message || r.error) };
     return { ok: true, raw: String(r.stdout || ''), error: null };

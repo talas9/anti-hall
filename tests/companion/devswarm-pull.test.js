@@ -125,6 +125,36 @@ test('hard-timeout: the read-messages spawn carries a finite timeout', () => {
   } finally { rm(home); }
 });
 
+// P2-1: cmdSpawn/cmdMergeVerb (scripts/devswarm.js) pass a `cwd` into `run(spec)`
+// (spec.cwd), but defaultRun used to never read it, so the native spawn silently
+// inherited process.cwd() instead of the caller's requested directory. Uses
+// `process.execPath` (node itself) as the "hivecontrol" binary — guaranteed
+// present on every platform in the CI matrix, no shell, no `pwd`/`cd` reliance —
+// to have the spawned process report its OWN cwd back on stdout. realpathSync on
+// both sides avoids false negatives from symlinked tmp dirs (e.g. macOS
+// /var -> /private/var).
+test('defaultRun: honors spec.cwd when provided, and omits it (inherits the caller\'s own cwd) when absent', () => {
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-pull-cwd-'));
+  try {
+    const withCwd = pull.defaultRun({
+      hivecontrol: process.execPath,
+      args: ['-e', 'process.stdout.write(process.cwd())'],
+      cwd: target,
+    });
+    assert.equal(withCwd.ok, true, JSON.stringify(withCwd));
+    assert.equal(fs.realpathSync(withCwd.raw.trim()), fs.realpathSync(target),
+      'spec.cwd must be passed through to spawnSync, not silently dropped');
+
+    const withoutCwd = pull.defaultRun({
+      hivecontrol: process.execPath,
+      args: ['-e', 'process.stdout.write(process.cwd())'],
+    });
+    assert.equal(withoutCwd.ok, true, JSON.stringify(withoutCwd));
+    assert.equal(fs.realpathSync(withoutCwd.raw.trim()), fs.realpathSync(process.cwd()),
+      'an absent spec.cwd must inherit the CALLING process\'s cwd (no forced cwd option)');
+  } finally { rm(target); }
+});
+
 test('idempotent re-append: the same batch twice -> no duplicate line or store row', () => {
   const home = tmpHome();
   try {

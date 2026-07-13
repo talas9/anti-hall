@@ -65,10 +65,16 @@
 //                  MATCH or the send is rejected. `--to <meshId>` is fail-closed
 //                  against the shared registry (D12a) — an unregistered meshId is
 //                  rejected, never silently black-holed. `--to-primary` (v0.58)
-//                  resolves the registry entry whose worktreePath matches this
-//                  project's MAIN worktree (install-devswarm-ingest's
-//                  resolveMainWorktree) — fail-closed (`reason:'primary-unregistered'`)
-//                  when no such entry exists. A non-git cwd returns
+//                  resolves the registry entry whose worktree-derived meshId
+//                  (via resolveMeshTarget, same identity-hash join `--to` uses)
+//                  matches this project's MAIN worktree (install-devswarm-
+//                  ingest's resolveMainWorktree) — fail-closed
+//                  (`reason:'primary-unregistered'`) when no such entry exists.
+//                  A hash join (not literal worktreePath equality) so a
+//                  register-primary'd path and a later-resolved main worktree
+//                  that are different STRINGS but the same real directory (e.g.
+//                  win32 short/long-name spelling) still resolve. A non-git cwd
+//                  returns
 //                  {ok:false,reason:'no-project'} BEFORE any identity is derived
 //                  (D28 — never emits an env-derived `from`).
 //   roster [--ack]
@@ -1020,21 +1026,6 @@ function resolveMeshTarget(storeHandle, meshId) {
   return null;
 }
 
-// resolvePrimaryTarget(storeHandle, mainWorktree) -> the registry descriptor
-// whose worktreePath is an EXACT match for `mainWorktree` (install-devswarm-
-// ingest's resolveMainWorktree(cwd) — the repo's MAIN worktree, dirname of
-// `--git-common-dir`), or null (fail-closed, D-lane-B `send --to-primary`).
-// Literal path equality (per PLAN.md's own wording), not a meshId-hash
-// re-derivation — `register-primary` always registers a Primary under its OWN
-// resolved worktree path, so this join is exact by construction.
-function resolvePrimaryTarget(storeHandle, mainWorktree) {
-  if (!mainWorktree) return null;
-  for (const d of storeHandle.listRegistry()) {
-    if (d && d.worktreePath === mainWorktree) return d;
-  }
-  return null;
-}
-
 // cmdSend(flags, ctx) — send --from <id> --to <meshId>|--broadcast --message
 // TEXT [--urgency low|normal|high|urgent]. Opens store/<repoKey>/ directly.
 //
@@ -1120,7 +1111,7 @@ function cmdSend(flags, ctx) {
       // shared registry is rejected outright — never a silent black-hole. Same
       // posture for --to-primary: an unregistered Primary is a fail-closed error,
       // never a silent black-hole either.
-      const target = toPrimaryFlag ? resolvePrimaryTarget(s, mainWorktree) : resolveMeshTarget(s, toFlag);
+      const target = toPrimaryFlag ? resolveMeshTarget(s, primaryMeshId) : resolveMeshTarget(s, toFlag);
       if (!target) {
         return toPrimaryFlag
           ? {
@@ -1219,10 +1210,14 @@ function cmdRoster(flags, ctx) {
     broadcastUnread: w.broadcastUnread, urgencyMax: w.urgencyMax,
     worktreePath: w.worktreePath || null, source: 'store',
   }));
-  const knownPaths = new Set(workspaces.map((w) => w.worktreePath).filter(Boolean));
+  // Dedup by CANONICAL identity (inst.primaryWorkspaceId, which realpath-
+  // normalizes before hashing), not raw string equality — the same fix class
+  // as resolvePrimaryTarget: a raw `--show-toplevel` spelling and a
+  // canonicalized one for the SAME real directory must collapse to one row.
+  const knownIds = new Set(workspaces.map((w) => w.worktreePath).filter(Boolean).map((p) => inst.primaryWorkspaceId(p)));
   const nativeChildren = fetchNativeChildren(ctx);
   for (const child of nativeChildren) {
-    if (child.path && knownPaths.has(child.path)) continue; // already represented via the store
+    if (child.path && knownIds.has(inst.primaryWorkspaceId(child.path))) continue; // already represented via the store
     workspaces.push({
       id: child.branch || child.id || null, working_on: null,
       directUnread: null, broadcastUnread: null, urgencyMax: null,

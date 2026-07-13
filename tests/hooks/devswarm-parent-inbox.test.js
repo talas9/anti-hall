@@ -991,3 +991,57 @@ test('OWN UNREAD/#34: the Primary\'s own summary entry never double-surfaces as 
     assert.ok(normalChild.includes('wsA'), `wsA must still be named in the child unread segment; seg=${normalChild}`);
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// P1 fix: the Primary's cwd is its own PROJECT WORKTREE, not the plugin root,
+// so a bare/relative `devswarm.js` reference in emitted text (this hook never
+// even said `node scripts/devswarm.js` — every mention was a bare `devswarm.js`
+// with no interpreter or path at all) is unrunnable there. Every emitted
+// instruction must now carry an ABSOLUTE, existing `node <cli>` invocation.
+
+function assertAbsoluteExistingCliPaths(c, { min } = {}) {
+  const matches = [...c.matchAll(/`node ([^`]*?devswarm\.js)\b/g)];
+  assert.ok(matches.length >= (min || 1), `expected node devswarm.js instruction(s); ctx=${c}`);
+  for (const m of matches) {
+    const cliPath = m[1];
+    assert.ok(path.isAbsolute(cliPath), `emitted CLI path must be absolute, not relative: ${cliPath}`);
+    assert.ok(fs.existsSync(cliPath), `emitted CLI path must exist on disk: ${cliPath}`);
+    assert.ok(cliPath.endsWith(path.join('scripts', 'devswarm.js')), `must resolve to scripts/devswarm.js: ${cliPath}`);
+  }
+}
+
+test('P1 FIX: standard unread (PARENT INBOX) segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, { wsA: { total: 3, cursor: 0, unread: 3, directUnread: 3 } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assertAbsoluteExistingCliPaths(segment(ctx(r), 'DEVSWARM PARENT INBOX'));
+  } finally { h.cleanup(); }
+});
+
+test('P1 FIX: urgent unread (URGENT INBOX) segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, { wsUrgent: { total: 1, cursor: 0, unread: 1, directUnread: 1, urgencyMax: 'urgent' } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assertAbsoluteExistingCliPaths(segment(ctx(r), 'DEVSWARM URGENT INBOX'));
+  } finally { h.cleanup(); }
+});
+
+test('P1 FIX: own-unread (OWN INBOX) segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, { [OWN_ID]: { total: 4, cursor: 0, unread: 4, directUnread: 4 } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assertAbsoluteExistingCliPaths(ownSegment(ctx(r)));
+  } finally { h.cleanup(); }
+});
+
+test('P1 FIX: archive-ready segment carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, { wsA: { archive_ready: true } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assertAbsoluteExistingCliPaths(segment(ctx(r), 'DEVSWARM ARCHIVE-READY'));
+  } finally { h.cleanup(); }
+});

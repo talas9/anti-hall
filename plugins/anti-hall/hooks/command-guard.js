@@ -153,18 +153,29 @@ const HIVECTL_MESSAGE_PARENT =
 // detectHivectlDestructiveRead(command, depth) -> 'monitor' | 'read-messages' | null.
 // Mirrors isHeavyCommand's matching discipline so DATA and CODE are separated the
 // same way the heavy path does it: the per-segment regex test runs against the
-// QUOTE-NEUTRALIZED segment (so `grep 'hivecontrol workspace read-messages' f` and
-// `echo "...monitor..."` — quoted DATA — do NOT match), while `bash -c "..."`,
-// `eval ...`, `$(...)` and backtick payloads ARE unwrapped and recursed (so a
-// smuggled `bash -c "hivecontrol workspace read-messages"` / `$(hivecontrol
-// workspace monitor)` STILL matches). `monitor` wins over `read-messages` when both
+// DEQUOTED segment — dequoteSegment(seg), the SHELL-EFFECTIVE argv text — so a
+// quoted subcommand or verb (`hivecontrol workspace "monitor"`, `"hivecontrol"
+// workspace monitor`, a mid-token split `mes"sage-par"ent`) matches IDENTICALLY
+// to its unquoted form, because that is what the shell actually executes: quoting
+// a bareword does not change argv. (FIXED P0: this previously ran against
+// neutralizeQuotedContents(seg), which BLANKS quoted content instead of
+// dequoting it — that made every quoted variant of a blocked subcommand
+// invisible to the regex, a live-verified bypass of the single-consumer
+// invariant.) Quoted DATA passed to an unrelated verb still safely ALLOWS:
+// `grep 'hivecontrol workspace read-messages' f` / `echo "...monitor..."`
+// dequote to `grep hivecontrol workspace read-messages f` / `echo ...monitor...`,
+// but COMMAND-POSITION ANCHORING below reads the FIRST token as `grep`/`echo`,
+// not `hivecontrol`, so they still do NOT match. `bash -c "..."`, `eval ...`,
+// `$(...)` and backtick payloads ARE unwrapped and recursed (so a smuggled
+// `bash -c "hivecontrol workspace read-messages"` / `$(hivecontrol workspace
+// monitor)` STILL matches). `monitor` wins over `read-messages` when both
 // appear, because monitor blocks unconditionally.
 function detectHivectlDestructiveRead(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return null;
   const d = typeof depth === 'number' ? depth : 0;
   let sawReadMessages = false;
   for (const seg of splitSegments(command)) {
-    const forPatterns = neutralizeQuotedContents(seg);
+    const dequoted = dequoteSegment(seg);
     // COMMAND-POSITION ANCHORING: only treat `hivecontrol` as the destructive verb
     // when it is actually THIS segment's command verb (mirrors the heavy path's
     // effectiveVerb discipline — basename + wrapper/assignment skipping), not merely
@@ -176,18 +187,20 @@ function detectHivectlDestructiveRead(command, depth) {
     // chained (`a && hivecontrol ...`) forms each put hivecontrol at verb position
     // inside a recursively-extracted payload / its own segment, and a path- or
     // flag-prefixed form (`/usr/bin/hivecontrol workspace monitor`,
-    // `sudo hivecontrol ...`) still resolves to `hivecontrol` via effectiveVerb.
+    // `sudo hivecontrol ...`) still resolves to `hivecontrol` via effectiveVerb —
+    // now checked against the DEQUOTED segment (effectiveVerb(dequoted)) so a
+    // quoted verb (`"hivecontrol" workspace monitor`) anchors correctly too.
     //
     // ACCEPTED LIMITATION (drift-guard threat model, NOT an adversary defense):
-    // deliberate shell-obfuscation forms that only synthesize the verb/subcommand
-    // AFTER shell expansion are NOT caught — `hiv'ec'ontrol workspace monitor`,
-    // `hivecontrol workspace 'mon'itor`, `mon${X:-itor}`, `mon$(printf itor)`.
-    // Catching them would need a full shell-expansion simulation, which is out of
-    // scope: this guard prevents ACCIDENTAL destructive reads, not a determined
-    // bypass. Tests document these as knowingly-allowed.
-    if (effectiveVerb(seg) === 'hivecontrol') {
-      if (HIVECTL_MONITOR.test(forPatterns)) return 'monitor';
-      if (HIVECTL_READ_MESSAGES.test(forPatterns)) sawReadMessages = true;
+    // dequoting only recovers quote-delimited obfuscation. Forms that only
+    // synthesize the verb/subcommand via shell PARAMETER or COMMAND expansion are
+    // still NOT caught — `mon${X:-itor}`, `mon$(printf itor)`. Catching those
+    // would need a full shell-expansion simulation, which is out of scope: this
+    // guard prevents ACCIDENTAL and quote-obfuscated destructive reads, not a
+    // determined shell-expansion bypass. Tests document these as knowingly-allowed.
+    if (effectiveVerb(dequoted) === 'hivecontrol') {
+      if (HIVECTL_MONITOR.test(dequoted)) return 'monitor';
+      if (HIVECTL_READ_MESSAGES.test(dequoted)) sawReadMessages = true;
     }
     if (d < 3) {
       const payload = extractShellCPayload(seg);
@@ -216,27 +229,37 @@ function detectHivectlDestructiveRead(command, depth) {
 
 // detectHivectlMessageSend(command, depth) -> 'message-child' | 'message-parent' | null.
 // Mirrors detectHivectlDestructiveRead's matching discipline byte-for-byte: the
-// per-segment regex test runs against the QUOTE-NEUTRALIZED segment (so quoted
-// DATA — `grep 'hivecontrol workspace message-parent' docs/KB.md`, `echo
-// "...message-child..."` — never matches), while `bash -c "..."`, `eval ...`,
-// `$(...)` and backtick payloads ARE unwrapped and recursed (a smuggled `bash -c
-// "hivecontrol workspace message-parent ..."` / `$(hivecontrol workspace
-// message-child ...)` STILL matches). COMMAND-POSITION ANCHORING via
-// effectiveVerb === 'hivecontrol' (the same false-positive protection as the
-// destructive-read detector): `grep hivecontrol workspace message-parent
-// docs/KB.md` / `echo hivecontrol workspace message-parent` ALLOW — verb is
-// grep/echo, not hivecontrol. message-child is checked first (arbitrary tie-
-// break; both matching one command is not a realistic shape) — MUST match
-// ONLY its own literal subcommand, never `message-count`/`create`/`list`/
-// `check-merge`/`merge`.
+// per-segment regex test runs against the DEQUOTED segment — dequoteSegment(seg),
+// the SHELL-EFFECTIVE argv text — so a quoted subcommand or verb
+// (`hivecontrol workspace "message-parent"`, `"hivecontrol" workspace
+// message-parent`, a mid-token split `mes"sage-par"ent`) matches IDENTICALLY to
+// its unquoted form, because quoting a bareword does not change argv. (FIXED
+// P0: this previously ran against neutralizeQuotedContents(seg), which BLANKS
+// quoted content instead of dequoting it — a live-verified bypass of v0.58's
+// mesh-only-messaging invariant, since the guard's own block reason echoes the
+// blocked subcommand back, making "just quote it" the natural retry.) Quoted
+// DATA passed to an unrelated verb still safely ALLOWS: `grep 'hivecontrol
+// workspace message-parent' docs/KB.md` / `echo "...message-child..."` dequote
+// to `grep hivecontrol workspace message-parent docs/KB.md` / `echo
+// ...message-child...`, but COMMAND-POSITION ANCHORING below reads the FIRST
+// token as `grep`/`echo`, not `hivecontrol`, so they still do NOT match.
+// `bash -c "..."`, `eval ...`, `$(...)` and backtick payloads ARE unwrapped and
+// recursed (a smuggled `bash -c "hivecontrol workspace message-parent ..."` /
+// `$(hivecontrol workspace message-child ...)` STILL matches).
+// COMMAND-POSITION ANCHORING via effectiveVerb(dequoted) === 'hivecontrol' (the
+// same false-positive protection as the destructive-read detector, now also
+// dequoted so a quoted verb anchors correctly). message-child is checked first
+// (arbitrary tie-break; both matching one command is not a realistic shape) —
+// MUST match ONLY its own literal subcommand, never `message-count`/`create`/
+// `list`/`check-merge`/`merge`.
 function detectHivectlMessageSend(command, depth) {
   if (typeof command !== 'string' || !command.trim()) return null;
   const d = typeof depth === 'number' ? depth : 0;
   for (const seg of splitSegments(command)) {
-    const forPatterns = neutralizeQuotedContents(seg);
-    if (effectiveVerb(seg) === 'hivecontrol') {
-      if (HIVECTL_MESSAGE_CHILD.test(forPatterns)) return 'message-child';
-      if (HIVECTL_MESSAGE_PARENT.test(forPatterns)) return 'message-parent';
+    const dequoted = dequoteSegment(seg);
+    if (effectiveVerb(dequoted) === 'hivecontrol') {
+      if (HIVECTL_MESSAGE_CHILD.test(dequoted)) return 'message-child';
+      if (HIVECTL_MESSAGE_PARENT.test(dequoted)) return 'message-parent';
     }
     if (d < 3) {
       const payload = extractShellCPayload(seg);
@@ -312,6 +335,27 @@ function tokenizeQuoted(segment) {
   }
   if (any) tokens.push(cur);
   return tokens;
+}
+
+// dequoteSegment(segment) -> the SHELL-EFFECTIVE argv text: quote delimiters
+// stripped, quoted/unquoted fragments WITHIN one token concatenated (via
+// tokenizeQuoted), tokens rejoined with single spaces. Models what the shell
+// actually passes as argv — quoting a bareword does NOT change argv, the shell
+// executes it identically — so `"hivecontrol"`, `'message-parent'`, and
+// `mes"sage-par"ent` all dequote to the same literal text as their unquoted
+// form (`hivecontrol`, `message-parent`). Used (instead of
+// neutralizeQuotedContents, which BLANKS quoted content and was the source of
+// a live-verified P0 bypass — quoting a subcommand or the verb made the
+// hivectl guards below miss it entirely) so verb-anchoring and subcommand
+// matching run against the same text the shell would. Quoted DATA passed to
+// an unrelated verb stays safe: `grep -n "hivecontrol workspace
+// message-parent" f` dequotes to `grep -n hivecontrol workspace
+// message-parent f`, but the verb-anchoring check below still reads the FIRST
+// token as `grep`, not `hivecontrol`, so it still ALLOWS. NOT a shell parser —
+// no backslash-escape or parameter/command-substitution support, matching the
+// existing best-effort tokenization used throughout this file.
+function dequoteSegment(segment) {
+  return tokenizeQuoted(segment).join(' ');
 }
 
 // detectProtectedFileRead(command, home, cwd, depth) -> 'deny-inbox' | 'deny-store' | null.

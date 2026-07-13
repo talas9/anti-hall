@@ -455,3 +455,73 @@ test('HOOK-TEXT SWEEP: emitted child-gate block reason never contains the blocke
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// P1 fix: a DevSwarm child's cwd is its PROJECT WORKTREE, not the plugin root,
+// so a RELATIVE `scripts/devswarm.js` in the emitted Stop-block reason is
+// unrunnable there. Every `node <cli>` instruction in the reason must carry an
+// ABSOLUTE path that actually exists on disk.
+
+function assertAbsoluteExistingCliPaths(reason, { min } = {}) {
+  const matches = [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)];
+  assert.ok(matches.length >= (min || 1), `expected node devswarm.js instruction(s); reason=${reason}`);
+  for (const m of matches) {
+    const cliPath = m[1];
+    assert.ok(path.isAbsolute(cliPath), `emitted CLI path must be absolute, not relative: ${cliPath}`);
+    assert.ok(fs.existsSync(cliPath), `emitted CLI path must exist on disk: ${cliPath}`);
+    assert.ok(cliPath.endsWith(path.join('scripts', 'devswarm.js')), `must resolve to scripts/devswarm.js: ${cliPath}`);
+  }
+}
+
+test('P1 FIX: outbound-only block reason carries an ABSOLUTE, existing devswarm.js path', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assertAbsoluteExistingCliPaths(r.json.reason);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('P1 FIX: inbound (unpulled/unread) block reason carries ABSOLUTE, existing devswarm.js paths (both the pull AND heartbeat instructions)', () => {
+  const h = makeHome();
+  try {
+    seedDurableUnread(h.home, 'b-1', ['from parent: rebase now'], 0);
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assertAbsoluteExistingCliPaths(r.json.reason, { min: 2 });
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Text/mechanism mismatch (documents the mechanism the child-turn.js REMINDER
+// fix relies on): alreadyReportedThisEpisode() reads ONLY the shared summary's
+// `recent[]` projection, which deriveSummary populates EXCLUSIVELY from the
+// broadcast partition (a `heartbeat --summary` / `send --broadcast` call) — a
+// `send --to-primary` DIRECT message lands in the RECIPIENT's own partition and
+// is invisible to this check. So a child that direct-messages its parent but
+// never heartbeats is STILL blocked here, confirming REMINDER must not (and,
+// post-fix, no longer does) imply the two are interchangeable.
+test('MISMATCH: a DIRECT send (not broadcast/heartbeat) from this child does NOT satisfy the gate -> still blocks', () => {
+  const h = makeHome();
+  try {
+    const s = meshStore.openStore({ home: h.home, workspaceId: 'child-ar', hash: REPO_KEY });
+    try {
+      meshStore.appendMeshMessage(s, {
+        from: 'child-ar', to: 'some-primary-id', type: 'direct',
+        message: 'status update via direct send', timestamp: Date.now(),
+        hash: 'direct-child-ar-1',
+      });
+      meshStore.deriveSummary(s, { home: h.home });
+    } finally { s.close(); }
+    const r = testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, expectJson: true, env: REPORTED_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'a direct send (never written to recent[]) must not satisfy alreadyReportedThisEpisode');
+  } finally {
+    h.cleanup();
+  }
+});

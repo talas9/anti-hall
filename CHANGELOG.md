@@ -6,6 +6,43 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.58.0
+
+**DevSwarm mesh-only messaging: a per-project mesh store becomes the sole agent-initiated messaging transport, mechanically enforced. hivecontrol's per-worktree native messaging is replaced (per-worktree queues, no from/to addressing, no broadcast); every other hivecontrol feature (create/list/check-merge/merge) is kept and thinly wrapped. DevSwarm coordination remains entirely OPTIONAL — dormant with zero behavioral change outside a DevSwarm session.**
+
+- **Mesh substrate (previously unreleased v0.57 work).** Per-project `repoKey`-keyed
+  shared store: every linked worktree of one repo shares one store, so any worktree can
+  message any other (all-to-all), not just its own parent/child. Windows-hardened path
+  canonicalization.
+- **Mesh CLI.** `send --to <meshId>|--to-primary|--broadcast [--urgency low|normal|
+  high|urgent]`, `roster [--ack]`, `mesh read`, `heartbeat <id> --summary`. Rows carry
+  `{from, to, type, message, timestamp, urgency}`. Spoof-resistant cwd-derived `from`;
+  fail-closed `--to`.
+- **#36 STRUCTURAL.** `devswarm-parent-gate`/`devswarm-parent-inbox` now scope to the
+  caller's OWN project via `repoKey`, replacing a spoofable env-var filter that leaked
+  workspaces across projects.
+- **Mesh-only messaging enforcement.** `command-guard` blocks agent-initiated
+  `hivecontrol message-child`/`message-parent` in all contexts and redirects to the mesh
+  CLI. Matching dequotes to the shell-effective argv, closing quote-based bypasses
+  (`"message-parent"`, split-quote, quoted verb) — which also closes the same
+  pre-existing gap in the `monitor`/`read-messages` guards. Lifecycle commands are never
+  blocked; coordination commands stay exempt from the heavy-command gate.
+- **Per-turn communication override** (both roles) re-asserting mesh-only messaging and
+  a mesh-poll resting posture. No external mechanism can wake a truly idle Claude Code
+  session (anthropics/claude-code#44380), so idle-wake is not claimed.
+- Thin lifecycle wrappers `spawn`/`merge`; `roster` folds `hivecontrol list`.
+- `reconcile` drains stranded per-worktree native queues into the store.
+- `archive-request` is now a store write (zero native calls).
+- Supervisor escalates (never kills) on urgent/high unread — direct or broadcast.
+- `child-gate` gains a projection-only already-reported check; heartbeat sender identity
+  is ownership-validated, so a forged heartbeat can no longer satisfy another workspace's
+  Stop-gate.
+- Emitted coordination commands now use an absolute CLI path (they were unrunnable from
+  an agent's working directory).
+- SQLite writes retry past `busy_timeout` exhaustion under concurrent writers.
+- **Codex parity.** The guard-block is shared and fires on Codex; the per-turn override
+  hooks remain Claude-only (full parity tracked as a follow-up).
+
 ## 0.56.0
 
 **DevSwarm archive handshake (send-only, never mechanical on either side); ack-ownership guard is now cwd-ground-truth (closes an env-spoof cursor-corruption path); the Primary sees its own inbound because the ingest daemon self-registers its own store row; child descriptor registration + heartbeat-key fix close two discovery/collision bugs; doctor/update now heal a drifted ingest script, not just a missing one; the Fable Reviewer seat is back.**
