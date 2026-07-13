@@ -1,9 +1,9 @@
 'use strict';
-// devswarm-child-role (SessionStart hook). Injects a short self-report reminder
-// ONLY when the liveness supervisor is active (devswarm-detect) AND this session
-// is a DevSwarm child workspace (devswarm-role: DEVSWARM_SOURCE_BRANCH non-empty).
-// Primary (empty/unset DEVSWARM_SOURCE_BRANCH), non-DevSwarm sessions, and
-// malformed stdin must all be silent no-ops (fail-open, exit 0).
+// devswarm-child-role (SessionStart hook). v0.58 "mesh-only messaging": injects
+// the FULL DEVSWARM COMMUNICATION OVERRIDE directive for BOTH DevSwarm roles
+// (Primary AND child workspace) whenever the liveness supervisor is active
+// (devswarm-detect). A child additionally gets an idle-self-report nudge. Only a
+// non-DevSwarm session or malformed stdin is a silent no-op (fail-open, exit 0).
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -11,7 +11,9 @@ const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'devswarm-child-role.js';
-const REMINDER_PHRASE = 'message-parent';
+// Stable substring surviving the v0.58 hook-text sweep (the OLD marker,
+// 'message-parent', is now a BLOCKED native verb and must never appear).
+const REMINDER_PHRASE = 'COMMUNICATION OVERRIDE';
 
 function sessionPayload() {
   return { hook_event_name: 'SessionStart', source: 'startup', session_id: 't' };
@@ -21,7 +23,7 @@ function ctx(r) {
   return (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
 }
 
-test('INJECT: DevSwarm active + DEVSWARM_SOURCE_BRANCH set (child) -> reminder present', () => {
+test('INJECT: DevSwarm active + DEVSWARM_SOURCE_BRANCH set (child) -> override present + idle nudge', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, sessionPayload(), {
@@ -32,21 +34,44 @@ test('INJECT: DevSwarm active + DEVSWARM_SOURCE_BRANCH set (child) -> reminder p
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.ok(r.json, `stdout must be valid JSON; stdout=${r.stdout}`);
     assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'SessionStart');
-    assert.ok(ctx(r).includes(REMINDER_PHRASE), `reminder must mention ${REMINDER_PHRASE}; ctx=${ctx(r)}`);
+    assert.ok(ctx(r).includes(REMINDER_PHRASE), `override must mention ${REMINDER_PHRASE}; ctx=${ctx(r)}`);
+    assert.ok(/idle — reassign me a task or archive me/.test(ctx(r)), `child must get the idle nudge; ctx=${ctx(r)}`);
   } finally {
     h.cleanup();
   }
 });
 
-test('NO-OP: DevSwarm active but DEVSWARM_SOURCE_BRANCH empty (Primary) -> no injection', () => {
+test('INJECT: DevSwarm active but DEVSWARM_SOURCE_BRANCH empty (Primary) -> override present, NO child idle nudge', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, sessionPayload(), {
       home: h.home,
+      expectJson: true,
       env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: '' },
     });
     assert.strictEqual(r.status, 0, 'must exit 0');
-    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    assert.ok(ctx(r).includes(REMINDER_PHRASE), `Primary must also get the override (both roles); ctx=${ctx(r)}`);
+    assert.ok(!/idle — reassign me a task or archive me/.test(ctx(r)), `Primary must NOT get the child idle nudge; ctx=${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HOOK-TEXT SWEEP: emitted override never contains the blocked native verbs (either role)', () => {
+  const h = makeHome();
+  try {
+    const rChild = testHook(HOOK, sessionPayload(), {
+      home: h.home, expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    const rPrimary = testHook(HOOK, sessionPayload(), {
+      home: h.home, expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: '' },
+    });
+    for (const c of [ctx(rChild), ctx(rPrimary)]) {
+      assert.ok(!/message-parent/.test(c), `must never emit message-parent; ctx=${c}`);
+      assert.ok(!/message-child/.test(c), `must never emit message-child; ctx=${c}`);
+    }
   } finally {
     h.cleanup();
   }

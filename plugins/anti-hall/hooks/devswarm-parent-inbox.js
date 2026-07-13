@@ -18,8 +18,14 @@
 //     fs verdicts and the derived summary.json. NEVER runs computeLiveness / git on
 //     this hot path (no per-child `git` spawnSync) and NEVER opens the store DB — it
 //     reads only fs-backed projections (P1-B / P1-C).
-//   - EMPTY additionalContext (no stdout) when nothing is unread/idle AND nothing is
-//     archive_ready — zero per-turn overhead.
+//   - v0.58 "mesh-only messaging": additionalContext is NO LONGER empty on a quiet
+//     turn — OVERRIDE_REASSERT (a terse, <=160-char per-turn re-assertion of the
+//     SessionStart COMMUNICATION OVERRIDE, devswarm-child-role.js) is now injected
+//     UNCONDITIONALLY on every Primary DevSwarm turn, ahead of every other segment.
+//     This is a deliberate, small, fixed per-turn cost (one short line) traded for
+//     resistance to model habituation/drift back toward native messaging across
+//     many quiet turns. Every OTHER segment below still follows the original
+//     empty-when-nothing-to-report discipline.
 //   - Append-only: it only ADDS context; it never suppresses or clobbers another
 //     hook's output (each hook returns its own additionalContext; the harness
 //     concatenates).
@@ -93,6 +99,20 @@ const MAX_TABLE_ROWS = 12;
 // genuinely stopped daemon promptly. (Same value + rationale as the generatedAt-
 // based banner this replaces.)
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
+
+// OVERRIDE_REASSERT — terse (<=160 char) per-turn re-assertion of the SessionStart
+// COMMUNICATION OVERRIDE (devswarm-child-role.js, both roles): DevSwarm's own
+// `--system-prompt-file` REPLACES the system prompt at every child spawn, and a
+// quiet Primary session can drift back toward native messaging over many turns
+// with nothing else to report — exactly when this re-assertion matters most.
+// v0.58: injected UNCONDITIONALLY whenever this session is an active DevSwarm
+// Primary (the ONE deliberate departure from this hook's prior "EMPTY when
+// nothing to report" zero-cost contract — see main()). Avoids the literal
+// `message-child`/`message-parent` strings (uses the `message-*` wildcard form)
+// so it never re-introduces the blocked native verbs into emitted hook text.
+const OVERRIDE_REASSERT =
+  'DEVSWARM COMMS OVERRIDE: mesh only — native hivecontrol messaging blocked. ' +
+  'Check: `roster` / `mesh read`. Direct: `send --to <meshId>`.';
 
 // summaryPath(home, hash) -> a PER-PROJECT summary file (summaries/<hash>.json).
 // v0.57 mesh (D1/D24/Phase 8 step 1): the store now writes ONE shared summary
@@ -707,9 +727,13 @@ function main() {
     }
   } catch (_) { staleBanner = null; }
 
-  const segments = [];
+  // v0.58: the terse COMMUNICATION OVERRIDE re-assertion is the ONLY segment
+  // injected unconditionally (see OVERRIDE_REASSERT's own comment) — it goes in
+  // FIRST, ahead of even the staleness banner, so it survives any future segment
+  // reordering/truncation as the highest-priority line.
+  const segments = [OVERRIDE_REASSERT];
 
-  // Daemon-freshness staleness banner, when present, is injected FIRST — above
+  // Daemon-freshness staleness banner, when present, is injected next — above
   // the table AND independent of rows.length (the legacy-fallback back-compat
   // path can fire the banner even with zero active workspaces, since repoKey —
   // and therefore the shared summary rows — may be unresolvable in exactly the
@@ -766,7 +790,10 @@ function main() {
   }
 
   const additionalContext = segments.join('\n\n');
-  if (!additionalContext) return; // EMPTY -> no stdout (zero-cost)
+  // Defensive only (v0.58): segments always carries at least OVERRIDE_REASSERT
+  // once this line is reached (the role gate above already returned otherwise),
+  // so this is never actually empty — kept as a fail-safe, not the primary gate.
+  if (!additionalContext) return;
 
   const out = {
     hookSpecificOutput: {

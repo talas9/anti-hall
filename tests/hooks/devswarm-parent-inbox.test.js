@@ -30,6 +30,15 @@ const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.
 const HOOK = 'devswarm-parent-inbox.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + no source-branch = Primary
 
+// OVERRIDE_REASSERT — v0.58 "mesh-only messaging": the terse per-turn COMMS
+// OVERRIDE re-assertion the hook now injects UNCONDITIONALLY for every active
+// Primary DevSwarm turn (see the hook's own OVERRIDE_REASSERT constant). Kept
+// literal (not a substring match) so a "QUIET" test can assert the segment is
+// EXACTLY this and nothing else.
+const OVERRIDE_REASSERT =
+  'DEVSWARM COMMS OVERRIDE: mesh only — native hivecontrol messaging blocked. ' +
+  'Check: `roster` / `mesh read`. Direct: `send --to <meshId>`.';
+
 // REPO_CWD/REPO_HASH/REPO_KEY — this test process's own cwd (a real git
 // checkout) lets the hook's worktree resolution land on these exact keys, so a
 // summary written under REPO_KEY is found. REPO_HASH is kept for the legacy
@@ -149,32 +158,32 @@ test('NO-OP: child workspace (DEVSWARM_SOURCE_BRANCH set) -> no stdout', () => {
   } finally { h.cleanup(); }
 });
 
-test('NO-OP: Primary DevSwarm but no summary file at all -> no stdout (inert)', () => {
+test('QUIET: Primary DevSwarm but no summary file at all -> ONLY the terse override re-assertion (v0.58, no longer fully inert)', () => {
   const h = makeHome();
   try {
-    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    assert.strictEqual(ctx(r), OVERRIDE_REASSERT, `expected ONLY the override; got: ${ctx(r)}`);
   } finally { h.cleanup(); }
 });
 
-test('NO-OP: Primary DevSwarm, summary exists but has ZERO workspaces -> no stdout (inert)', () => {
+test('QUIET: Primary DevSwarm, summary exists but has ZERO workspaces -> ONLY the terse override re-assertion', () => {
   const h = makeHome();
   try {
     writeSharedSummary(h.home, {});
-    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    assert.strictEqual(ctx(r), OVERRIDE_REASSERT, `expected ONLY the override; got: ${ctx(r)}`);
   } finally { h.cleanup(); }
 });
 
-test('NO-OP: cwd unresolvable (no cwd in payload) -> no summary read, no stdout even with real data on disk', () => {
+test('QUIET: cwd unresolvable (no cwd in payload) -> no summary read, but the override still fires unconditionally', () => {
   const h = makeHome();
   try {
     writeSharedSummary(h.home, { wsA: { total: 3, cursor: 0, unread: 3, directUnread: 3 } });
-    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV }); // no cwd field
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true }); // no cwd field
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `unresolvable repoKey must show nothing; got: ${r.stdout}`);
+    assert.strictEqual(ctx(r), OVERRIDE_REASSERT, `unresolvable repoKey must still show the override only; got: ${ctx(r)}`);
   } finally { h.cleanup(); }
 });
 
@@ -360,13 +369,13 @@ test('TABLE: renders correct rows/columns for varied status + gates + unread, so
   } finally { h.cleanup(); }
 });
 
-test('TABLE: no active workspaces -> no table, no stdout (inert)', () => {
+test('TABLE: no active workspaces -> no table, ONLY the terse override re-assertion', () => {
   const h = makeHome();
   try {
     writeSharedSummary(h.home, {});
-    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+    assert.strictEqual(ctx(r), OVERRIDE_REASSERT, `expected ONLY the override; got: ${ctx(r)}`);
   } finally { h.cleanup(); }
 });
 
@@ -584,9 +593,9 @@ test('#36 EXCLUDE: an entry whose worktree resolves to a DIFFERENT repoKey never
     writeSharedSummary(h.home, {
       foreign: { total: 2, cursor: 0, unread: 2, directUnread: 2, worktreePath: otherRepo },
     });
-    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', 'a foreign-repoKey entry must produce zero output');
+    assert.strictEqual(ctx(r), OVERRIDE_REASSERT, 'a foreign-repoKey entry must produce ONLY the override, no leaked data');
   } finally { h.cleanup(); fs.rmSync(otherRepo, { recursive: true, force: true }); }
 });
 
@@ -640,9 +649,9 @@ test('FAIL-OPEN: corrupt summary.json -> treated as no data, exit 0, no crash', 
     const dir = path.join(swarmDir(h.home), 'summaries');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), '{not json');
-    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `corrupt summary must fail open to no data; got: ${r.stdout}`);
+    assert.strictEqual(ctx(r), OVERRIDE_REASSERT, `corrupt summary must fail open to no data (override only); got: ${ctx(r)}`);
   } finally { h.cleanup(); }
 });
 
@@ -720,24 +729,24 @@ test('STALE: missing heartbeat file (daemon never wrote one for this project) + 
   } finally { h.cleanup(); }
 });
 
-test('STALE: no active workspace -> NO banner (nothing tabled, regardless of heartbeat state)', () => {
+test('STALE: no active workspace -> NO banner (nothing tabled, regardless of heartbeat state); ONLY the override', () => {
   const h = makeHome();
   try {
     writeSharedSummary(h.home, {}); // repoKey resolves, but zero workspaces
     // No heartbeat either.
-    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `no active workspaces -> fully inert, no banner; stdout=${r.stdout}`);
+    assert.strictEqual(ctx(r), OVERRIDE_REASSERT, `no active workspaces -> no banner, override only; ctx=${ctx(r)}`);
   } finally { h.cleanup(); }
 });
 
-test('STALE: no cwd in payload (worktree unresolvable) -> NO banner, no throw (fail-open)', () => {
+test('STALE: no cwd in payload (worktree unresolvable) -> NO banner, no throw (fail-open); ONLY the override', () => {
   const h = makeHome();
   try {
     writeSharedSummary(h.home, { wsA: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
-    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV }); // no cwd field -> nothing resolves at all
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true }); // no cwd field -> nothing resolves at all
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.stdout, '', `unresolvable cwd -> fully inert; stdout=${r.stdout}`);
+    assert.strictEqual(ctx(r), OVERRIDE_REASSERT, `unresolvable cwd -> no banner, override only; ctx=${ctx(r)}`);
   } finally { h.cleanup(); }
 });
 
@@ -913,6 +922,40 @@ test('OWN UNREAD: unresolvable cwd (no git toplevel) -> no own segment, no throw
 // INBOX / URGENT INBOX / ARCHIVE-READY segments, all of which suggest a CLI
 // command (`inbox read <id>`, `archive-request <id>`) that is provably broken
 // for a primary id (readDescriptorFile has no descriptor for it).
+// ---------------------------------------------------------------------------
+// v0.58 "mesh-only messaging": terse per-turn OVERRIDE_REASSERT ordering +
+// hook-text sweep (no emitted text ever names the blocked native verbs).
+
+test('OVERRIDE: is the FIRST segment, ahead of the live table / unread / archive banners', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsUnread: { total: 2, cursor: 0, unread: 2, directUnread: 2 },
+      wsDone: { archive_ready: true },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    assert.ok(c.startsWith(OVERRIDE_REASSERT), `override must lead every other segment; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('HOOK-TEXT SWEEP: emitted parent-inbox text never contains the blocked native verbs, even with every segment active', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsUnread: { total: 2, cursor: 0, unread: 2, directUnread: 2, urgencyMax: 'urgent' },
+      wsDone: { archive_ready: true },
+      [OWN_ID]: { total: 1, cursor: 0, unread: 1, directUnread: 1 },
+    }, {
+      recent: [{ from: 'peer-1', summary: 'status update', ts: Date.now(), urgency: 'normal' }],
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    assert.ok(!/message-parent/.test(c), `must never emit message-parent; ctx=${c}`);
+    assert.ok(!/message-child/.test(c), `must never emit message-child; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
 test('OWN UNREAD/#34: the Primary\'s own summary entry never double-surfaces as a fake child — table/attention/archive all exclude it, only the dedicated OWN INBOX segment names it', () => {
   const h = makeHome();
   try {

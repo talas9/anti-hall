@@ -91,7 +91,9 @@ test('BLOCK: child workspace + supervisor active -> Stop is blocked with heartbe
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.ok(r.json, `stdout must be JSON; stdout=${r.stdout}`);
     assert.strictEqual(r.json.decision, 'block');
-    assert.ok(/message-parent/.test(r.json.reason), `reason must tell child to message-parent; got=${r.json.reason}`);
+    assert.ok(/devswarm\.js heartbeat/.test(r.json.reason), `reason must tell child to heartbeat via the mesh CLI; got=${r.json.reason}`);
+    assert.ok(!/message-parent/.test(r.json.reason) && !/message-child/.test(r.json.reason),
+      `reason must never emit the blocked native verbs; got=${r.json.reason}`);
     // Distinct state file was created under devswarm/child-gate/.
     assert.ok(fs.existsSync(stateFile(h.home, 's1')), 'own distinct state file must exist');
   } finally {
@@ -119,7 +121,7 @@ test('REGRESSION (v0.54.1): a FRESH turn-start heartbeat must NOT false-silence 
     writeHeartbeat(h.home, 'main', Date.now());
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: SAFE_CHILD_ENV });
     assert.strictEqual(r.json && r.json.decision, 'block', 'a fresh heartbeat must not silence an unreported child');
-    assert.ok(/message-parent/.test(r.json.reason), 'must still demand a real message-parent report');
+    assert.ok(/devswarm\.js heartbeat/.test(r.json.reason), 'must still demand a real mesh heartbeat report');
   } finally {
     h.cleanup();
   }
@@ -252,7 +254,7 @@ test('INBOUND: durable unread>0 -> reason adds the inbox-pull instruction alongs
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.ok(/inbox pull/.test(r.json.reason), `reason must include the inbound inbox-pull instruction; got=${r.json.reason}`);
-    assert.ok(/message-parent/.test(r.json.reason), 'the outbound report demand must still be present');
+    assert.ok(/devswarm\.js heartbeat/.test(r.json.reason), 'the outbound report demand must still be present');
   } finally {
     h.cleanup();
   }
@@ -332,6 +334,123 @@ test('FAIL-OPEN: native message-count probe has no binary on PATH -> exit 0, blo
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.strictEqual(r.json && r.json.decision, 'block', 'the outbound forced-ack must still fire');
     assert.ok(!/inbox pull/.test(r.json.reason), 'an unknown native probe result must never be treated as unread');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- v0.58 item 5: projection-only "already-reported" satisfaction -----
+// Skip the block when summaries/<repoKey>.json shows an OUTBOUND row this child
+// itself sent (recent[], sender === DEVSWARM_BUILDER_ID) THIS stop episode.
+
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const meshStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const REPO_CWD = process.cwd();
+const REPO_KEY = repokey.repoKeyForWorktree(REPO_CWD);
+
+// GIT_ONLY_PATH — repoKeyForWorktree spawns a real `git` binary, but CHILD_ENV's
+// PATH is deliberately pinned to NO_NATIVE_BIN_PATH (a nonexistent dir) so the
+// STRICT-mode native `hivecontrol` probe elsewhere in this file never resolves a
+// REAL system binary. Resolving `git` needs SOME real PATH entry, so for the
+// already-reported tests below we build a PATH containing ONLY the directory
+// that holds the real `git` executable (never the host's full PATH) — git
+// resolves, while a real `hivecontrol` (installed elsewhere, e.g. via the
+// DevSwarm app) stays unreachable.
+function findGitDir() {
+  const exe = process.platform === 'win32' ? 'git.exe' : 'git';
+  for (const p of String(process.env.PATH || '').split(path.delimiter)) {
+    try { if (fs.existsSync(path.join(p, exe))) return p; } catch (_) {}
+  }
+  return '';
+}
+const GIT_ONLY_PATH = [findGitDir(), NO_NATIVE_BIN_PATH].filter(Boolean).join(path.delimiter);
+
+// seedOutboundReport(home, id, ts) — writes a REAL mesh broadcast/heartbeat row
+// (the SAME primitive `devswarm.js heartbeat --summary` uses) with `from: id`
+// and the given `ts`, then re-derives summaries/<REPO_KEY>.json, so
+// alreadyReportedThisEpisode's recent[] read finds it.
+function seedOutboundReport(home, id, ts) {
+  const s = meshStore.openStore({ home, workspaceId: id, hash: REPO_KEY });
+  try {
+    meshStore.appendMeshMessage(s, {
+      from: id, type: 'broadcast', message: 'status update', timestamp: ts,
+      isHeartbeat: true, hash: 'ar-' + id + '-' + ts,
+    });
+    meshStore.deriveSummary(s, { home });
+  } finally { s.close(); }
+}
+
+const REPORTED_ENV = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'child-ar', PATH: GIT_ONLY_PATH });
+
+test('ALREADY-REPORTED: a fresh outbound row this stop episode -> Stop is NOT blocked (skip)', () => {
+  const h = makeHome();
+  try {
+    seedOutboundReport(h.home, 'child-ar', Date.now());
+    const r = testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, env: REPORTED_ENV });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `already-reported child must not be blocked; got: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ALREADY-REPORTED + KNOWN durable unread pending -> STILL blocks (inbound half of the gate is preserved)', () => {
+  const h = makeHome();
+  try {
+    seedOutboundReport(h.home, 'child-ar', Date.now());
+    seedDurableUnread(h.home, 'child-ar', ['from parent: rebase now'], 0);
+    const r = testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, expectJson: true, env: REPORTED_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a reported-but-still-unread child must still be blocked');
+    assert.ok(/inbox pull/.test(r.json.reason), `reason must still demand the inbound pull; got=${r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ALREADY-REPORTED window: an outbound row OLDER than this stop episode does NOT satisfy -> normal capped forced-ack', () => {
+  const h = makeHome();
+  try {
+    // RESET_MS is 5 minutes; a report from 10 minutes ago, with no prior
+    // lastBlockAt, falls outside episodeSince = now - RESET_MS.
+    seedOutboundReport(h.home, 'child-ar', Date.now() - 10 * 60 * 1000);
+    const r = testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, expectJson: true, env: REPORTED_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a stale outbound row must not satisfy this episode');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ALREADY-REPORTED: an outbound row from a DIFFERENT sender does not satisfy -> still blocks', () => {
+  const h = makeHome();
+  try {
+    seedOutboundReport(h.home, 'some-other-child', Date.now());
+    const r = testHook(HOOK, stopPayload({ cwd: REPO_CWD }), { home: h.home, expectJson: true, env: REPORTED_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a DIFFERENT sender\'s report must not satisfy this child\'s gate');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ALREADY-REPORTED: no cwd resolvable (falls back to process.cwd(), no summary seeded there) -> fail-open, normal forced-ack', () => {
+  const h = makeHome();
+  try {
+    // No cwd in the payload and nothing seeded under this fake HOME for whatever
+    // repoKey process.cwd() resolves to -> alreadyReportedThisEpisode fails open
+    // (false), so behavior is byte-identical to pre-v0.58.
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: REPORTED_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'unresolvable/unseeded projection must fail open to the normal forced-ack');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HOOK-TEXT SWEEP: emitted child-gate block reason never contains the blocked native verbs', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.ok(!/message-parent/.test(r.json.reason), `reason must never emit message-parent; got=${r.json.reason}`);
+    assert.ok(!/message-child/.test(r.json.reason), `reason must never emit message-child; got=${r.json.reason}`);
   } finally {
     h.cleanup();
   }

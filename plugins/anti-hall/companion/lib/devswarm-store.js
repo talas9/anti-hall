@@ -170,6 +170,18 @@ const BROADCAST_PARTITION_ID = '*mesh-broadcast*';
 const URGENCY_RANK = { low: 0, normal: 1, high: 2, urgent: 3 };
 const DEFAULT_RECENT_CAP = 50; // O-D8 (broadcast retention) UNRESOLVED — sane default, overridable via opts.recentCap.
 
+// ARCHIVE_REQUEST_MARKER (v0.58, PLAN.md STORE + child-gate) — the mechanical
+// tag a parent's `scripts/devswarm.js archive-request <childId>` prefixes onto
+// a mesh-direct message so a receiving child (and, here, deriveSummary) can
+// recognize an archive request vs. ordinary chatter. This is the ONE canonical
+// copy for this file's own devswarm.js caller (which re-exports/reuses it via
+// `store.ARCHIVE_REQUEST_MARKER` rather than keeping a second local literal);
+// hooks/devswarm-child-turn.js (a different lane, HOOKS NEVER OPEN THE DB —
+// P1-B layering) keeps its OWN identical literal copy rather than requiring
+// this module — both sides MUST stay byte-identical, verified by dedicated
+// tests, since neither reads the other's copy at runtime.
+const ARCHIVE_REQUEST_MARKER = '[[ANTIHALL_ARCHIVE_REQUEST]]';
+
 // ensureMessagesMeshColumns(db) — additive migration for a `messages` table that
 // pre-dates the v0.57 mesh columns (an on-disk store created by <=0.56). A brand
 // new table already has them via CREATE TABLE; this is a no-op there. For an
@@ -960,6 +972,17 @@ function deriveSummary(store, opts) {
     const unreadRows = unread > 0 ? store.listMessages(d.id, { sinceCursor: cursor }) : [];
     const urgencyMax = maxUrgencyOf(unreadRows);
 
+    // archive_requested (v0.58, additive): true when an UNREAD DIRECT row
+    // addressed to this workspace carries the archive-request marker — scanned
+    // over the ALREADY-fetched `unreadRows` above (zero extra store reads).
+    // Restricted to `mtype === 'direct'` (a mesh-direct send, e.g.
+    // `devswarm.js archive-request`) so a native-drained row (mtype null,
+    // devswarm-ingest.js/devswarm-pull.js) can never false-positive here even
+    // if its body happened to contain the literal marker text.
+    const archive_requested = unreadRows.some(
+      (r) => r && r.mtype === 'direct' && typeof r.body === 'string' && r.body.indexOf(ARCHIVE_REQUEST_MARKER) !== -1
+    );
+
     const bcCursor = typeof store.broadcastCursorValue === 'function' ? store.broadcastCursorValue(d.id) : 0;
     const broadcastUnread = broadcastNonHeartbeat.filter(
       (r) => Number.isFinite(r.storeSeq) && r.storeSeq > bcCursor
@@ -984,6 +1007,7 @@ function deriveSummary(store, opts) {
       working_on,
       gates,
       archive_ready,
+      archive_requested,
     };
   }
 
@@ -1064,4 +1088,6 @@ module.exports = {
   deriveSummary, writeSummaryAtomic, readSummary, readSummaryForHash,
   // mesh (v0.57, D3-D7/D22/D23):
   BROADCAST_PARTITION_ID, meshMessageHash, appendMeshMessage,
+  // v0.58 (archive-request store write, deriveSummary archive_requested):
+  ARCHIVE_REQUEST_MARKER,
 };

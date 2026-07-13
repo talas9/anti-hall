@@ -294,7 +294,13 @@ test('4 CHILD-TURN: a child turn WRITES a fresh turn-authored heartbeat + remind
       { hook_event_name: 'UserPromptSubmit', session_id: 'child-sess', prompt: 'work' },
       { home, env: childEnv('feat-x'), expectJson: true });
     assert.strictEqual(r.status, 0);
-    assert.match(ctxOf(r), /message-parent/, 'child is reminded to report to the parent');
+    // v0.58 mesh-only messaging: native `message-parent` is blocked/deleted from
+    // every emitted hook string (PLAN.md HOOK-TEXT SWEEP) — the child is now
+    // reminded via the mesh CLI verbs instead (`heartbeat --summary` / `send
+    // --to-primary`), never the old native hivecontrol verb.
+    assert.match(ctxOf(r), /heartbeat <DEVSWARM_BUILDER_ID> --summary/, 'child is reminded to report to the parent');
+    assert.match(ctxOf(r), /send --to-primary/, 'child is reminded it can direct-message the parent via mesh');
+    assert.ok(!/message-parent/.test(ctxOf(r)), 'must never emit the blocked native verb');
     const hbPath = path.join(H.heartbeatsDir(home), 'feat-x.json');
     assert.ok(fs.existsSync(hbPath), 'a heartbeat must be written by the child turn');
     const hb = JSON.parse(fs.readFileSync(hbPath, 'utf8'));
@@ -311,7 +317,10 @@ test('4 CHILD-GATE: a child stop is forced to emit a heartbeat / self-report (de
       { home, env: childEnv('feat-x') });
     assert.strictEqual(r.status, 0);
     assert.ok(r.json && r.json.decision === 'block', `child gate must force a heartbeat; stdout=${r.stdout}`);
-    assert.match(r.json.reason, /message-parent/);
+    // v0.58 mesh-only messaging: the forced-ack reason names the mesh CLI verb
+    // (`heartbeat --summary`), never the blocked native `message-parent`.
+    assert.match(r.json.reason, /devswarm\.js heartbeat <DEVSWARM_BUILDER_ID> --summary/);
+    assert.ok(!/message-parent/.test(r.json.reason), 'must never emit the blocked native verb');
   } finally { H.rm(home); }
 });
 

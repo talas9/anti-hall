@@ -229,12 +229,124 @@ test('DEVSWARM SUBAGENT (agent_id) + monitor still blocks (all-contexts)', () =>
 
 const HIVECTL_ALLOW = [
   'hivecontrol workspace message-count',
-  'hivecontrol workspace message-parent',
-  'hivecontrol workspace message-child',
 ];
 for (const cmd of HIVECTL_ALLOW) {
   test(`DEVSWARM ALLOW (non-destructive): ${cmd}`, () => {
     const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// v0.58 "mesh-only messaging" branch: HIVECTL_MESSAGE_CHILD / HIVECTL_MESSAGE_PARENT.
+// Native SEND subcommands are now guard-blocked; every LIFECYCLE verb
+// (create/list/check-merge/merge) and the read-only message-count counter stay
+// default-allow — breaking those would break DevSwarm spawn/merge.
+
+// --- POSITIVE: real message-child/message-parent sends, smuggled forms too ---
+const HIVECTL_MESSAGE_BLOCK = [
+  'hivecontrol workspace message-parent "status update"',
+  'hivecontrol workspace message-child "status update"',
+  'bash -c "hivecontrol workspace message-parent hi"',
+  '$(hivecontrol workspace message-child hi)',
+  'echo hi && hivecontrol workspace message-parent hi',
+  'hivecontrol --json workspace message-parent hi', // flag insertion must not bypass
+];
+for (const cmd of HIVECTL_MESSAGE_BLOCK) {
+  test(`DEVSWARM MESSAGE-SEND BLOCK: ${cmd}`, () => {
+    const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 2, `expected block for: ${cmd}\nstdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected in stdout');
+    assert.ok(/DEVSWARM MESH-ONLY MESSAGING/.test(r.json.reason), `reason must name the mesh-only-messaging rule; got=${r.json.reason}`);
+  });
+}
+
+test('DEVSWARM MESSAGE-SEND BLOCK: fires in SUBAGENT context too (all-contexts, like devswarm-read-guard)', () => {
+  const r = runDevswarm('hivecontrol workspace message-parent hi', {}, { agentId: 'sub' });
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+});
+
+test('DEVSWARM MESSAGE-SEND reason redirects to the mesh CLI (send / heartbeat)', () => {
+  const r = runDevswarm('hivecontrol workspace message-parent hi');
+  assert.strictEqual(r.status, 2);
+  assert.ok(/devswarm\.js send/.test(r.json.reason), `reason must redirect to devswarm.js send; got=${r.json.reason}`);
+  assert.ok(/devswarm\.js heartbeat/.test(r.json.reason), `reason must redirect to devswarm.js heartbeat; got=${r.json.reason}`);
+  assert.ok(/DISABLE_ANTIHALL_DEVSWARM=1/.test(r.json.reason), 'reason must name the kill-switch');
+});
+
+test('DEVSWARM MESSAGE-SEND INJECTION: block reason does not echo command text', () => {
+  const r = runDevswarm('hivecontrol workspace message-parent "INJECTSECRET"');
+  assert.strictEqual(r.status, 2);
+  assert.ok(!r.stdout.includes('INJECTSECRET'), 'stdout must not reflect command text');
+  assert.ok(!r.stderr.includes('INJECTSECRET'), 'stderr must not reflect command text');
+});
+
+// --- NEGATIVE: lifecycle verbs, message-count, and DATA mentions must ALLOW ---
+const HIVECTL_MESSAGE_ALLOW = [
+  'hivecontrol workspace create feature-x',
+  'hivecontrol workspace list',
+  'hivecontrol workspace check-merge',
+  'hivecontrol workspace merge',
+  'hivecontrol workspace message-count',
+  // Quoted DATA / grep of a string mentioning the subcommand name — verb is
+  // grep, not hivecontrol -> must never classify as a send.
+  'grep message-parent docs/KB.md',
+  'grep -n "hivecontrol workspace message-parent" docs/KB.md',
+];
+for (const cmd of HIVECTL_MESSAGE_ALLOW) {
+  test(`DEVSWARM MESSAGE-SEND ALLOW (lifecycle/count/data): ${cmd}`, () => {
+    const r = runDevswarm(cmd);
+    assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
+  });
+}
+
+// --- SKIP (own name `devswarm-send-guard`, independent of devswarm-read-guard
+// and command-guard's own skip) ---
+test('DEVSWARM MESSAGE-SEND SKIP: devswarm-send-guard skipped -> message-parent allowed', () => {
+  const r = runDevswarm('hivecontrol workspace message-parent hi', {}, {
+    skip: { 'devswarm-send-guard': FUTURE },
+  });
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+test('DEVSWARM MESSAGE-SEND SKIP: devswarm-read-guard skip does NOT cover message-parent', () => {
+  const r = runDevswarm('hivecontrol workspace message-parent hi', {}, {
+    skip: { 'devswarm-read-guard': FUTURE },
+  });
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+});
+
+test('DEVSWARM MESSAGE-SEND SKIP: command-guard skip does NOT cover message-parent', () => {
+  const r = runDevswarm('hivecontrol workspace message-parent hi', {}, {
+    skip: { 'command-guard': FUTURE },
+  });
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+});
+
+test('DEVSWARM MESSAGE-SEND KILL-SWITCH: DISABLE_ANTIHALL_DEVSWARM=1 -> message-parent allowed', () => {
+  const r = runDevswarm('hivecontrol workspace message-parent hi', { DISABLE_ANTIHALL_DEVSWARM: '1' });
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+test('DEVSWARM MESSAGE-SEND gate off: non-DevSwarm coordinator allows message-parent', () => {
+  const r = runCoord('hivecontrol workspace message-parent hi');
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+// --- EXEMPTION confirmation: the devswarm.js carve-out already covers every
+// mesh coordination verb (generic, no subcommand restriction) ---
+const DEVSWARM_JS_MESH_VERB_ALLOW = [
+  'node scripts/devswarm.js send --to-primary --message "hi"',
+  'node scripts/devswarm.js heartbeat w1 --summary "status"',
+  'node scripts/devswarm.js roster',
+  'node scripts/devswarm.js mesh read',
+  'node scripts/devswarm.js inbox read-primary w1',
+  'node scripts/devswarm.js archive-request w1',
+  'node scripts/devswarm.js reconcile',
+];
+for (const cmd of DEVSWARM_JS_MESH_VERB_ALLOW) {
+  test(`COORD ALLOW (mesh CLI verb, devswarm.js carve-out): ${cmd}`, () => {
+    const r = runCoord(cmd);
     assert.strictEqual(r.status, 0, `expected allow for: ${cmd}\nstdout: ${r.stdout}`);
   });
 }

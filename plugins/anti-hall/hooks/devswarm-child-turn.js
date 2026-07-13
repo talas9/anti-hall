@@ -80,12 +80,27 @@ const { isDevswarmActive } = require('./lib/devswarm-detect.js');
 const { isChildWorkspace } = require('./lib/devswarm-role.js');
 const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
+const { ARCHIVE_REQUEST_MARKER } = require('../companion/lib/devswarm-store.js');
 
 const REMINDER =
   'DEVSWARM CHILD WORKSPACE (per turn): keep the parent orchestrator updated — ' +
-  'run `hivecontrol workspace message-parent` to report progress/blockers as you ' +
-  'make them, and check for + act on any parent messages before continuing, so ' +
-  'you stay visible on the parent\'s task list instead of drifting off it.';
+  'run `node scripts/devswarm.js heartbeat <DEVSWARM_BUILDER_ID> --summary ' +
+  '"<status>"` to report progress/blockers as you make them (or `send --to-primary ' +
+  '--message "<text>"` to direct-message), and check for + act on any parent ' +
+  'messages before continuing, so you stay visible on the parent\'s task list ' +
+  'instead of drifting off it.';
+
+// OVERRIDE_REASSERT — terse (<=160 char) per-turn re-assertion of the SessionStart
+// COMMUNICATION OVERRIDE (devswarm-child-role.js): DevSwarm's own `--system-
+// prompt-file` REPLACES the system prompt at every child spawn (PLAN.md "Locked
+// design" — the only lever against that erasure is per-turn UserPromptSubmit
+// injection), so this is injected UNCONDITIONALLY every turn, same as REMINDER
+// below. Avoids the literal `message-child`/`message-parent` strings (uses the
+// `message-*` wildcard form) so it never re-introduces the blocked native verbs
+// into emitted hook text.
+const OVERRIDE_REASSERT =
+  'DEVSWARM COMMS OVERRIDE: mesh only — native hivecontrol messaging blocked. ' +
+  'Report: `heartbeat <id> --summary`. Direct: `send --to-primary`.';
 
 // RECEPTION nudge (advisory, static — NO spawn in the hook). Tells the child the
 // SAFE way to RECEIVE parent messages: run the bounded `inbox pull` drain (native
@@ -214,8 +229,10 @@ function buildMeshDirectSegment(count, id, urgencyMax) {
 // ARCHIVE_REQUEST_MARKER — a parent embeds this literal token in a message body to
 // ask the child to archive its own workspace. A plain substring scan (format-
 // agnostic: works whether the durable line is raw text or NDJSON-wrapped) over the
-// already-fetched unread lines, so detecting it costs no extra read.
-const ARCHIVE_REQUEST_MARKER = '[[ANTIHALL_ARCHIVE_REQUEST]]';
+// already-fetched unread lines, so detecting it costs no extra read. Imported from
+// companion/lib/devswarm-store.js (the canonical definition) rather than kept as a
+// second local literal — no circular require (devswarm-store.js only pulls in
+// ./liveness.js).
 
 // buildArchiveRequestSegment(id) -> string. A DISTINCT segment from the unread
 // nudge: teardown is never automatic — the child must get its OWN user's
@@ -399,6 +416,11 @@ function main() {
   // surfacing block (one git spawn, not two).
   let staleBanner = null;
   let meshDirectSegment = null;
+  // v0.58 (item 6): Lane B's deriveSummary additively marks archive_requested on
+  // a workspace entry once the store observes the parent's archive-request
+  // marker. Read DEFENSIVELY — undefined (an older store/summary shape, or Lane
+  // B not yet landed) is falsy, so this stays a pure no-op until it ships.
+  let archiveRequestedId = null;
   try {
     const worktree = findGitToplevel(payload.cwd);
     if (worktree) {
@@ -442,24 +464,35 @@ function main() {
             if (directUnread > 0) {
               meshDirectSegment = buildMeshDirectSegment(directUnread, id, entry.urgencyMax || null);
             }
+            if (entry && entry.archive_requested) {
+              archiveRequestedId = id;
+            }
           } catch (_) { meshDirectSegment = null; }
         }
       }
     }
-  } catch (_) { staleBanner = null; meshDirectSegment = null; }
+  } catch (_) { staleBanner = null; meshDirectSegment = null; archiveRequestedId = null; }
 
   // REMINDER is always present; append the unread-inbox nudge only when the child's
   // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
   const segments = [];
   if (staleBanner) segments.push(staleBanner);
-  segments.push(REMINDER, RECEIVE_NUDGE);
+  segments.push(OVERRIDE_REASSERT, REMINDER, RECEIVE_NUDGE);
   if (meshDirectSegment) segments.push(meshDirectSegment);
   const info = unreadInfo(env, home);
+  let archiveSegmentPushed = false;
   if (info) {
     segments.push(buildUnreadSegment(info));
     if (info.lines.some((l) => typeof l === 'string' && l.includes(ARCHIVE_REQUEST_MARKER))) {
       segments.push(buildArchiveRequestSegment(info.id));
+      archiveSegmentPushed = true;
     }
+  }
+  // v0.58 (item 6): the store-projected archive_requested flag surfaces the SAME
+  // segment as the NDJSON-marker path above, deduped so a turn with both signals
+  // present never double-pushes it.
+  if (archiveRequestedId && !archiveSegmentPushed) {
+    segments.push(buildArchiveRequestSegment(archiveRequestedId));
   }
 
   const out = {

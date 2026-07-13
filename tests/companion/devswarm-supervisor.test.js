@@ -306,6 +306,209 @@ test('sweepOnce (real computeLiveness + pokeOrEscalate): escalation appends ONE 
   } finally { cleanup(); }
 });
 
+// ---------------------------------------------------------------------------
+// Mesh-urgency escalation (v0.58 "mesh-only messaging" — additive Tier 0 wake).
+// readMeshUrgency reads this project's `summaries/<repoKey>.json` (the SAME
+// projection file the hooks read, deriveSummary-written) and looks up THIS
+// descriptor's own row; sweepOnce forces a parent-store escalate notice
+// (notifyParentEscalation — never a kill, never a resolved pid) when that row's
+// urgencyMax is high/urgent AND the workspace is stale, independent of the
+// pre-existing pokeOrEscalate nudge/escalate cadence.
+// ---------------------------------------------------------------------------
+
+test('readMeshUrgency: resolves repoKey + reads summary, returns this descriptor\'s urgency row', () => {
+  const d = { id: 'w1', worktreePath: '/wt/w1' };
+  const seen = {};
+  const urgency = M.readMeshUrgency(d, '/home', {
+    repoKeyForWorktree: (wt) => { seen.wt = wt; return 'myrepo-abc123'; },
+    readSummaryForHash: (home, hash) => {
+      seen.home = home; seen.hash = hash;
+      return { workspaces: { w1: { urgencyMax: 'urgent', directUnread: 3, broadcastUnread: 1 } } };
+    },
+  });
+  assert.strictEqual(seen.wt, '/wt/w1');
+  assert.strictEqual(seen.home, '/home');
+  assert.strictEqual(seen.hash, 'myrepo-abc123');
+  assert.deepStrictEqual(urgency, { urgencyMax: 'urgent', directUnread: 3, broadcastUnread: 1 });
+});
+
+test('readMeshUrgency: fail-open — unresolvable repoKey (non-git worktree) -> null, never throws', () => {
+  const urgency = M.readMeshUrgency({ id: 'w1', worktreePath: '/not/git' }, '/home', {
+    repoKeyForWorktree: () => null,
+    readSummaryForHash: () => { throw new Error('must not be called when repoKey is null'); },
+  });
+  assert.strictEqual(urgency, null);
+});
+
+test('readMeshUrgency: fail-open — missing/unreadable summary file -> null, never throws (item 3)', () => {
+  const urgency = M.readMeshUrgency({ id: 'w1', worktreePath: '/wt/w1' }, '/home', {
+    repoKeyForWorktree: () => 'myrepo-abc123',
+    readSummaryForHash: () => null, // mirrors the real readSummaryForHash's tolerant-null on ENOENT/bad JSON
+  });
+  assert.strictEqual(urgency, null);
+});
+
+test('readMeshUrgency: fail-open — descriptor id absent from summary.workspaces -> null', () => {
+  const urgency = M.readMeshUrgency({ id: 'w1', worktreePath: '/wt/w1' }, '/home', {
+    repoKeyForWorktree: () => 'myrepo-abc123',
+    readSummaryForHash: () => ({ workspaces: { someOtherId: { urgencyMax: 'urgent' } } }),
+  });
+  assert.strictEqual(urgency, null);
+});
+
+test('readMeshUrgency: fail-open — a throwing repoKeyForWorktree/readSummaryForHash never propagates', () => {
+  assert.strictEqual(
+    M.readMeshUrgency({ id: 'w1', worktreePath: '/wt/w1' }, '/home', {
+      repoKeyForWorktree: () => { throw new Error('boom'); },
+    }),
+    null,
+  );
+});
+
+test('isUrgentMesh: only high/urgent qualify; low/normal/absent/null do not', () => {
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: 'urgent' }), true);
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: 'high' }), true);
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: 'normal' }), false);
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: 'low' }), false);
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: null }), false);
+  assert.strictEqual(M.isUrgentMesh(null), false);
+  assert.strictEqual(M.isUrgentMesh(undefined), false);
+});
+
+test('sweepOnce: stale descriptor WITH urgent unread in its mesh summary -> escalation notice produced, even though the base poke only nudged', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'a', worktreePath: '/wt/a' });
+    let notifyCalls = 0; let seenDescriptor = null; let seenVerdict = null;
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        // base poke only NUDGES (attempts remain) -> proves the urgency escalate is
+        // an INDEPENDENT path, not a side effect of pokeOrEscalate's own exhaustion.
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+        readMeshUrgency: () => ({ urgencyMax: 'urgent', directUnread: 2, broadcastUnread: 0 }),
+        notifyParentEscalation: (d, verdict) => { notifyCalls++; seenDescriptor = d; seenVerdict = verdict; },
+      },
+    });
+    assert.strictEqual(notifyCalls, 1, 'urgent unread forces exactly one escalation notice');
+    assert.strictEqual(seenDescriptor.id, 'a');
+    assert.strictEqual(seenVerdict.status, 'stale');
+    assert.strictEqual(res[0].poke.action, 'nudged', 'the base poke result is untouched by the urgency escalate');
+  } finally { cleanup(); }
+});
+
+test('sweepOnce: SAME stale descriptor with only low/normal unread -> NO escalation (rely on the agent\'s next turn)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'a', worktreePath: '/wt/a' });
+    let notifyCalls = 0;
+    for (const tier of ['low', 'normal']) {
+      const res = M.sweepOnce({
+        home,
+        deps: {
+          computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+          writeVerdict: () => {},
+          pokeOrEscalate: () => ({ action: 'nudged' }),
+          readMeshUrgency: () => ({ urgencyMax: tier, directUnread: 1, broadcastUnread: 0 }),
+          notifyParentEscalation: () => { notifyCalls++; },
+        },
+      });
+      assert.strictEqual(res[0].poke.action, 'nudged');
+    }
+    assert.strictEqual(notifyCalls, 0, 'low/normal urgency never forces an escalation notice');
+  } finally { cleanup(); }
+});
+
+test('sweepOnce: no mesh summary at all (dormant mesh / real readMeshUrgency) -> no throw, no escalation', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'a', worktreePath: '/wt/a' });
+    let notifyCalls = 0;
+    // readMeshUrgency is left UNMOCKED (real) — deps.repoKeyForWorktree resolves a
+    // repoKey, but no summaries/<repoKey>.json was ever written for it, so the
+    // real readSummaryForHash reads through to null (ENOENT) -> fail-open null.
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+        repoKeyForWorktree: () => 'myrepo-abc123',
+        notifyParentEscalation: () => { notifyCalls++; },
+      },
+    });
+    assert.strictEqual(res.length, 1);
+    assert.strictEqual(res[0].error, undefined, 'a missing summary file must never throw out of the sweep');
+    assert.strictEqual(res[0].poke.action, 'nudged');
+    assert.strictEqual(notifyCalls, 0);
+  } finally { cleanup(); }
+});
+
+test('sweepOnce: mesh-urgency path NEVER resolves a pid / never kills — recover/findTarget/kill spies present but never invoked', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'a', worktreePath: '/wt/a' });
+    let recoverCalls = 0; let findTargetCalls = 0; let killCalls = 0;
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+        readMeshUrgency: () => ({ urgencyMax: 'urgent', directUnread: 5, broadcastUnread: 0 }),
+        notifyParentEscalation: () => {},
+        // sweepOnce has no code path that reads these deps at all — proves it
+        // structurally cannot resolve a pid or kill, even under an urgent verdict.
+        recover: () => { recoverCalls++; },
+        findTarget: () => { findTargetCalls++; },
+        kill: () => { killCalls++; },
+      },
+    });
+    assert.strictEqual(recoverCalls, 0);
+    assert.strictEqual(findTargetCalls, 0);
+    assert.strictEqual(killCalls, 0);
+    assert.strictEqual(res[0].poke.action, 'nudged');
+  } finally { cleanup(); }
+});
+
+test('sweepOnce (real notifyParentEscalation + real store): urgent mesh unread on a stale-but-nudged workspace still appends a parent-store escalate notice', () => {
+  const inst = require(path.join(
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js',
+  ));
+  const storeLib = require(path.join(
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js',
+  ));
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = path.join(home, 'wt');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    writeDescriptor(home, { id: 'w1', worktreePath }, 'w1');
+
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        // base poke only nudges (a nudgeCommand-bearing / not-yet-exhausted case) --
+        // the escalate below can ONLY come from the urgency path.
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+        readMeshUrgency: () => ({ urgencyMax: 'high', directUnread: 4, broadcastUnread: 0 }),
+      },
+    });
+    assert.strictEqual(res[0].poke.action, 'nudged');
+
+    const parentId = inst.primaryWorkspaceId(worktreePath);
+    const s = storeLib.openStore({ home, workspaceId: parentId });
+    let msgs;
+    try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+    assert.strictEqual(msgs.length, 1, 'exactly one parent notice from the urgency-forced escalate');
+    assert.match(msgs[0].body, /child w1 idle/);
+    assert.match(msgs[0].body, /reassign or archive/);
+  } finally { cleanup(); }
+});
+
 test('single-flight: a live-holder sweep lock blocks a second acquire; a dead holder is stolen', () => {
   const { home, cleanup } = makeHome();
   try {

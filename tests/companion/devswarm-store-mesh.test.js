@@ -270,6 +270,71 @@ for (const B of backends) {
       assert.deepEqual(Object.keys(sum.workspaces), ['w']);
     } finally { s.close(); rm(home); }
   });
+
+  // ---- archive_requested (v0.58, PLAN.md STORE + child-gate) ----------------
+  test(`[${B.name}] deriveSummary marks archive_requested:true when an UNREAD DIRECT row's body carries the archive-request marker`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('child-1'));
+      const body = store.ARCHIVE_REQUEST_MARKER + ' milestone shipped — your parent asks you to archive this '
+        + 'workspace; confirm with your user, then run devswarm.js archive <id>.';
+      const f = { from: 'primary-abc', to: 'child-1', type: 'direct', message: body, timestamp: 1, urgency: 'high' };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-1'].archive_requested, true);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] deriveSummary leaves archive_requested false for an ordinary unread direct message (no marker)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('child-2'));
+      const f = { from: 'primary-abc', to: 'child-2', type: 'direct', message: 'just checking in', timestamp: 1, urgency: 'normal' };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-2'].archive_requested, false);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] archive_requested clears once the marker row is ACKed (cursor advanced past it — no longer unread)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('child-3'));
+      const f = { from: 'primary-abc', to: 'child-3', type: 'direct', message: store.ARCHIVE_REQUEST_MARKER + ' go', timestamp: 1, urgency: 'high' };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      let sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-3'].archive_requested, true, 'unread marker -> requested');
+      s.setCursor('child-3', s.messageCount('child-3')); // ack-all
+      sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-3'].archive_requested, false, 'acked -> no longer unread -> not requested');
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] a marker string inside a BROADCAST row never sets archive_requested on any workspace (mtype must be 'direct')`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w1'));
+      const f = { from: 'w1', to: null, type: 'broadcast', message: store.ARCHIVE_REQUEST_MARKER + ' not really a request', timestamp: 1, urgency: 'high' };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces.w1.archive_requested, false, 'a broadcast row can never set archive_requested — it never lands in a workspace direct partition');
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] a NATIVE-DRAINED (mtype-null) row containing the marker text never sets archive_requested (mesh-direct only)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('child-4'));
+      s.appendMessage({ workspaceId: 'child-4', body: store.ARCHIVE_REQUEST_MARKER + ' looks like a request but is native', hash: 'native-h1' });
+      const sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-4'].archive_requested, false, 'native rows carry mtype:null, never direct — defense-in-depth, never a false positive');
+    } finally { s.close(); rm(home); }
+  });
 }
 
 // ---- broadcastCursorValue / setBroadcastCursor (direct handle API) --------

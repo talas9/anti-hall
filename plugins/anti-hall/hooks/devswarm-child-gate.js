@@ -22,11 +22,14 @@
 // So this gate ALWAYS demands at least one real report per unchanged blocking
 // state (never false-silence), bounded ONLY by the capped forced-ack below.
 //
-// v0.54.2 IMPROVEMENT (not yet built): a proper "satisfied-by-actual-
-// message-parent-report" marker — a distinct signal written by the child's own
-// `hivecontrol workspace message-parent` call — could let a genuinely-reported
-// child skip the nag WITHOUT the turn-start heartbeat's false-silence. Until that
-// exists, the bounded forced-ack is the only correct behavior.
+// v0.58 "mesh-only messaging" BUILDS the v0.54.2 improvement noted above: a
+// proper "satisfied-by-actual-report" marker now exists — alreadyReportedThisEpisode()
+// below reads the shared store's summaries/<repoKey>.json projection for a
+// `recent[]` row this child itself SENT (a real `heartbeat --summary`/`send
+// --broadcast` mesh call, never the turn-start heartbeat FILE) since the last
+// forced-ack. When found (and no KNOWN durable unread backlog is still pending —
+// the INBOUND half of this gate, #29, is a SEPARATE concern this satisfaction
+// path does not silence), the block is skipped entirely for this Stop.
 //
 // INBOUND GATE (#29): alongside the outbound message-parent forcing above, this
 // hook also checks whether the child has unpulled/unread PARENT messages waiting.
@@ -79,6 +82,63 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 const { isSkipped } = require('./skip-guard.js');
 const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
+
+// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
+// looking for a `.git` entry — mirrors devswarm-child-turn.js's/devswarm-parent-
+// inbox.js's own copy byte-for-byte (kept local rather than shared so this Stop
+// hook's dependency surface stays exactly what it already was).
+function findGitToplevel(startDir) {
+  try {
+    let dir = path.resolve(String(startDir || ''));
+    if (!dir) return null;
+    for (;;) {
+      try {
+        fs.statSync(path.join(dir, '.git'));
+        return dir;
+      } catch (_) { /* keep walking up */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null; // reached filesystem root, no .git found
+      dir = parent;
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
+// alreadyReportedThisEpisode(env, home, cwd, episodeSince) -> bool. PROJECTION-
+// ONLY "already-reported" satisfaction (v0.58 mesh-only messaging): reads the
+// SAME shared summaries/<repoKey>.json projection the Primary/child-turn hooks
+// already read (no store DB open — devswarm-store.js layering) and looks for an
+// OUTBOUND row THIS CHILD ITSELF sent — a `recent[]` entry (the only place the
+// projection carries a `sender`/`from`) with `from === DEVSWARM_BUILDER_ID` and
+// `ts >= episodeSince`. `recent[]` is populated by a REAL `devswarm.js heartbeat
+// --summary` / `send --broadcast` call (never the mechanical devswarm-child-
+// turn.js turn-start heartbeat FILE, which the v0.54.1 correction above already
+// ruled out as a false-silence signal — that heartbeat never touches the store).
+// Fail-open: ANY error (unresolvable repoKey, missing/corrupt summary, lazy-
+// require failure, unsafe id) -> false — never silently skip a required report.
+function alreadyReportedThisEpisode(env, home, cwd, episodeSince) {
+  try {
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return false;
+    let repokeyMod = null;
+    try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
+    if (!repokeyMod) return false;
+    const worktree = findGitToplevel(cwd);
+    if (!worktree) return false;
+    let repoKey = null;
+    try { repoKey = repokeyMod.repoKeyForWorktree(worktree); } catch (_) { repoKey = null; }
+    if (!repoKey) return false;
+    const p = path.join(devswarmRoot(home), 'summaries', repoKey + '.json');
+    const raw = String(fs.readFileSync(p, 'utf8')).trim();
+    if (!raw) return false;
+    const summary = JSON.parse(raw);
+    const recent = summary && Array.isArray(summary.recent) ? summary.recent : [];
+    return recent.some((r) => r && r.from === id && Number.isFinite(r.ts) && r.ts >= episodeSince);
+  } catch (_) {
+    return false;
+  }
+}
 
 // How many times a single stop episode may be forced to heartbeat before we
 // yield. One forced-ack is usually enough; a small budget lets a child that
@@ -224,9 +284,11 @@ function main() {
 
   const now = Date.now();
 
-  // NO heartbeat-satisfaction check (reverted — see header): the child's turn-start
-  // heartbeat is NOT proof it reported its stop-state, so it can never silence this
-  // gate. An unreported child ALWAYS reaches the capped forced-ack below.
+  // NO turn-start-heartbeat-satisfaction check (reverted — see header): the
+  // child's turn-start heartbeat FILE is NOT proof it reported its stop-state.
+  // What CAN satisfy the gate (v0.58) is a REAL mesh report — see
+  // alreadyReportedThisEpisode below, evaluated AFTER the cap state is read
+  // (it needs state.lastBlockAt to bound "this stop episode").
 
   // Session key: prefer session_id; fall back to a stable hash of the transcript
   // path so the per-session cap still works when session_id is absent.
@@ -237,6 +299,22 @@ function main() {
 
   const stateFile = stateFileFor(sessionId);
   const state = readState(stateFile);
+
+  // Already-reported satisfaction (v0.58, projection-only): "this stop episode"
+  // is bounded to the more recent of (a) the last time this gate actually forced
+  // a block, or (b) RESET_MS ago — the same episode window the cap-reset logic
+  // below already uses, so a stale lastBlockAt from long ago never makes an
+  // ancient report count. If satisfied, skip the block UNLESS a KNOWN (durable,
+  // pure-fs, cheap) unread backlog is still pending — the INBOUND half of this
+  // gate (#29) stays intact; deliberately checks ONLY the cheap durable read
+  // here (never the STRICT native probe) so a healthy/reported child never pays
+  // the native spawn cost just to evaluate this satisfaction path.
+  const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : process.cwd();
+  const episodeSince = Math.max(state.lastBlockAt, now - RESET_MS);
+  if (alreadyReportedThisEpisode(process.env, os.homedir(), cwd, episodeSince)) {
+    const durable = readDurableUnread(process.env, os.homedir());
+    if (!(durable.known && durable.count > 0)) return;
+  }
 
   // Cap reset: once RESET_MS has elapsed since the last forced block, treat this
   // as a genuinely new stop episode and re-arm the heartbeat forcing. lastBlockAt
@@ -268,10 +346,10 @@ function main() {
     inboundPrefix +
     'DEVSWARM CHILD WORKSPACE — before you stop, emit a heartbeat / self-report to ' +
     'your parent orchestrator so you do not silently drop off its radar and later ' +
-    'read as stale. Run `hivecontrol workspace message-parent` with a one-line status ' +
-    '(e.g. "done — awaiting next task", "blocked on X", or "idle — reassign or archive ' +
-    'me"), THEN stop. This keeps the parent\'s task list honest instead of leaving you ' +
-    'unnoticed.';
+    'read as stale. Run `node scripts/devswarm.js heartbeat <DEVSWARM_BUILDER_ID> ' +
+    '--summary "<status>"` with a one-line status (e.g. "done — awaiting next task", ' +
+    '"blocked on X", or "idle — reassign or archive me"), THEN stop. This keeps the ' +
+    'parent\'s task list honest instead of leaving you unnoticed.';
 
   // fs.writeSync(1): a synchronous write to fd 1 — process.stdout.write races the
   // async pipe flush with process.exit() on macOS node 18/20 (project convention).

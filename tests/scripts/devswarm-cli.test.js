@@ -505,150 +505,110 @@ test('register-primary fails soft outside a git worktree when no --worktree is g
   } finally { rm(home); }
 });
 
-// ---- archive-request ---------------------------------------------------------
-test('archive-request posts the exact marker string via injected io.run, using --child-branch', () => {
+// ---- archive-request (v0.58: STORE WRITE, zero hivecontrol calls) ----------
+// Uses a REAL git worktree as cwd — archive-request now resolves repoKey from
+// cwd (a mesh-direct store write, same posture as `send`), unlike the OLD
+// native `message-child` implementation which needed no repoKey at all.
+const cpArchive = require('node:child_process');
+function makeGitRepoArchive(tag) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-archive-repo-' + tag + '-'));
+  cpArchive.spawnSync('git', ['init', '-q', dir]);
+  cpArchive.spawnSync('git', ['-C', dir, 'config', 'user.email', 'a@b.c']);
+  cpArchive.spawnSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'README.md'), tag);
+  cpArchive.spawnSync('git', ['-C', dir, 'add', '.']);
+  cpArchive.spawnSync('git', ['-C', dir, 'commit', '-q', '-m', 'init']);
+  return dir;
+}
+
+test('archive-request makes ZERO hivecontrol calls — an injected runner that asserts on ANY invocation still succeeds', () => {
   const home = tmpHome();
+  const repo = makeGitRepoArchive('zero-native');
   try {
-    const calls = [];
-    const io = { run: (spec) => { calls.push(spec); return { ok: true, raw: '{}' }; } };
-    const r = cli.run(['archive-request', 'child-1', '--child-branch', 'feature/child-1', '--reason', 'milestone shipped'],
-      ctx(home, { io }));
+    const io = { run: () => { throw new Error('archive-request must NEVER spawn a native hivecontrol call'); } };
+    const r = cli.run(['archive-request', 'child-1', '--reason', 'milestone shipped'], ctx(home, { cwd: repo, io }));
     assert.equal(r.code, 0);
     assert.equal(r.result.ok, true);
     assert.equal(r.result.id, 'child-1');
-    assert.equal(r.result.childBranch, 'feature/child-1');
+    assert.equal(r.result.childId, 'child-1');
     assert.equal(r.result.posted, true);
     assert.equal(r.result.reason, 'milestone shipped');
-    assert.equal(calls.length, 1);
-    assert.deepEqual(calls[0].args.slice(0, 2), ['workspace', 'message-child']);
-    assert.equal(calls[0].args[2], 'feature/child-1');
-    assert.equal(calls[0].args[3],
-      '[[ANTIHALL_ARCHIVE_REQUEST]] milestone shipped — your parent asks you to archive this workspace; '
-      + 'confirm with your user, then run devswarm.js archive <id>.');
-  } finally { rm(home); }
+  } finally { rm(home); rm(repo); }
+});
+
+test('archive-request writes the exact marker string as a mesh-direct message into the childId partition', () => {
+  const home = tmpHome();
+  const repo = makeGitRepoArchive('marker-body');
+  try {
+    const r = cli.run(['archive-request', 'child-2', '--reason', 'milestone shipped'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true);
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const msgs = s.listMessages('child-2');
+      assert.equal(msgs.length, 1);
+      assert.equal(msgs[0].mtype, 'direct');
+      assert.equal(msgs[0].urgency, 'high');
+      assert.equal(msgs[0].body,
+        '[[ANTIHALL_ARCHIVE_REQUEST]] milestone shipped — your parent asks you to archive this workspace; '
+        + 'confirm with your user, then run devswarm.js archive <id>.');
+    } finally { s.close(); }
+  } finally { rm(home); rm(repo); }
 });
 
 test('archive-request omits the reason clause when --reason is not given', () => {
   const home = tmpHome();
+  const repo = makeGitRepoArchive('no-reason');
   try {
-    const calls = [];
-    const io = { run: (spec) => { calls.push(spec); return { ok: true, raw: '{}' }; } };
-    const r = cli.run(['archive-request', 'child-1', '--child-branch', 'child-branch-1'], ctx(home, { io }));
+    const r = cli.run(['archive-request', 'child-3'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true);
     assert.equal(r.result.reason, null);
-    assert.equal(calls[0].args[3],
-      '[[ANTIHALL_ARCHIVE_REQUEST]] — your parent asks you to archive this workspace; '
-      + 'confirm with your user, then run devswarm.js archive <id>.');
-  } finally { rm(home); }
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const msgs = s.listMessages('child-3');
+      assert.equal(msgs[0].body,
+        '[[ANTIHALL_ARCHIVE_REQUEST]] — your parent asks you to archive this workspace; '
+        + 'confirm with your user, then run devswarm.js archive <id>.');
+    } finally { s.close(); }
+  } finally { rm(home); rm(repo); }
 });
 
-test('archive-request resolves the branch from the descriptor when it carries one (no --child-branch)', () => {
+test('archive-request is visible via deriveSummary\'s archive_requested projection for the targeted child', () => {
   const home = tmpHome();
+  const repo = makeGitRepoArchive('summary-fold');
   try {
-    // Manually write a descriptor carrying a `branch` field (not populated by any
-    // current register/ensure path, but resolveChildBranch checks for it).
-    fs.mkdirSync(path.dirname(cli.descriptorPath(home, 'child-2')), { recursive: true });
-    fs.writeFileSync(cli.descriptorPath(home, 'child-2'), JSON.stringify({
-      id: 'child-2', worktreePath: '/wt/child-2', sessionId: 's', branch: 'feature/child-2',
-    }));
-    const calls = [];
-    const io = { run: (spec) => { calls.push(spec); return { ok: true, raw: '{}' }; } };
-    const r = cli.run(['archive-request', 'child-2'], ctx(home, { io }));
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const s0 = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try { s0.upsertRegistry({ id: 'child-4', worktreePath: '/wt/child-4', sessionId: 's' }); } finally { s0.close(); }
+    const r = cli.run(['archive-request', 'child-4'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true);
-    assert.equal(r.result.childBranch, 'feature/child-2');
-    assert.equal(calls[0].args[2], 'feature/child-2');
-  } finally { rm(home); }
+    // readSummary is workspaceId-keyed (legacy hash bucket); read this project's
+    // repoKey-hashed summary directly instead, matching how the CLI itself derives it.
+    const summaryForRepo = storeLib.readSummaryForHash(home, repoKey);
+    assert.ok(summaryForRepo && summaryForRepo.workspaces && summaryForRepo.workspaces['child-4']);
+    assert.equal(summaryForRepo.workspaces['child-4'].archive_requested, true);
+  } finally { rm(home); rm(repo); }
 });
 
-test('archive-request falls back to `list children`, matching by worktreePath, when the descriptor has no branch', () => {
+test('archive-request on a non-git cwd returns {ok:false,reason:"no-project"} and makes zero hivecontrol calls', () => {
   const home = tmpHome();
   try {
-    cli.run(['register', 'child-3', '--worktree', '/wt/child-3', '--session', 's'], ctx(home));
-    const calls = [];
-    const io = {
-      run: (spec) => {
-        calls.push(spec);
-        if (spec.args[0] === 'workspace' && spec.args[1] === 'list' && spec.args[2] === 'children') {
-          return { ok: true, raw: JSON.stringify([{ branch: 'feature/child-3', path: '/wt/child-3' }]) };
-        }
-        return { ok: true, raw: '{}' };
-      },
-    };
-    const r = cli.run(['archive-request', 'child-3'], ctx(home, { io }));
-    assert.equal(r.result.ok, true);
-    assert.equal(r.result.childBranch, 'feature/child-3');
-    assert.equal(calls.length, 2, 'list children then message-child');
-    assert.deepEqual(calls[0].args, ['workspace', 'list', 'children']);
-    assert.deepEqual(calls[1].args.slice(0, 3), ['workspace', 'message-child', 'feature/child-3']);
-  } finally { rm(home); }
-});
-
-test('archive-request falls back to `list children`, matching by branch/id equal to the positional', () => {
-  const home = tmpHome();
-  try {
-    const io = {
-      run: (spec) => {
-        if (spec.args[0] === 'workspace' && spec.args[1] === 'list' && spec.args[2] === 'children') {
-          return { ok: true, raw: JSON.stringify({ children: [{ id: 'child-4', branch: 'child-4' }] }) };
-        }
-        return { ok: true, raw: '{}' };
-      },
-    };
-    const r = cli.run(['archive-request', 'child-4'], ctx(home, { io }));
-    assert.equal(r.result.ok, true);
-    assert.equal(r.result.childBranch, 'child-4');
-  } finally { rm(home); }
-});
-
-test('archive-request falls back to treating the positional itself as the branch when nothing else resolves', () => {
-  const home = tmpHome();
-  try {
-    const io = { run: (spec) => ({ ok: true, raw: '[]' }) };
-    const r = cli.run(['archive-request', 'raw-branch-name'], ctx(home, { io }));
-    assert.equal(r.result.ok, true);
-    assert.equal(r.result.childBranch, 'raw-branch-name');
-  } finally { rm(home); }
-});
-
-test('archive-request is fail-open on a message-child spawn error (never throws)', () => {
-  const home = tmpHome();
-  try {
-    const io = { run: (spec) => ({ ok: false, error: 'spawn ENOENT' }) };
-    const r = cli.run(['archive-request', 'child-5', '--child-branch', 'child-5-branch'], ctx(home, { io }));
-    assert.equal(r.code, 2);
+    const io = { run: () => { throw new Error('must never spawn hivecontrol'); } };
+    const r = cli.run(['archive-request', 'child-5'], ctx(home, { cwd: fakeCwd(home), io }));
     assert.equal(r.result.ok, false);
-    assert.equal(r.result.error, 'spawn ENOENT');
-    assert.equal(r.result.posted, false);
-    assert.equal(r.result.childBranch, 'child-5-branch');
+    assert.equal(r.result.reason, 'no-project');
   } finally { rm(home); }
 });
 
 test('archive-request rejects an unsafe id (never path-joins hostile input)', () => {
   const home = tmpHome();
+  const repo = makeGitRepoArchive('unsafe-id');
   try {
-    const r = cli.run(['archive-request', '../evil'], ctx(home));
+    const r = cli.run(['archive-request', '../evil'], ctx(home, { cwd: repo }));
     assert.equal(r.code, 2);
     assert.equal(r.result.ok, false);
-  } finally { rm(home); }
-});
-
-test('archive-request never invokes any merge/test/deploy check — only list-children + message-child are spawned', () => {
-  const home = tmpHome();
-  try {
-    const calls = [];
-    const io = {
-      run: (spec) => {
-        calls.push(spec.args.join(' '));
-        if (spec.args[1] === 'list') return { ok: true, raw: '[]' };
-        return { ok: true, raw: '{}' };
-      },
-    };
-    const r = cli.run(['archive-request', 'child-6'], ctx(home, { io }));
-    assert.equal(r.result.ok, true);
-    for (const call of calls) {
-      assert.doesNotMatch(call, /check-merge|merge-from-source|merge-into-source|test|deploy/i);
-    }
-  } finally { rm(home); }
+  } finally { rm(home); rm(repo); }
 });
 
 // ---- ack-ownership check (bug #2: cross-workspace ack hazard) --------------

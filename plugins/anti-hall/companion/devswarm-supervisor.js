@@ -38,7 +38,14 @@ const {
   devswarmRoot, computeLiveness, writeVerdict, isSafeId,
   DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS,
 } = require('./lib/liveness.js');
-const { pokeOrEscalate, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
+const { pokeOrEscalate, notifyParentEscalation, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
+// devswarm-repokey.js / devswarm-store.js are required LAZILY (inside
+// readMeshUrgency, not at module top level) so a corrupt/missing dependency
+// fails OPEN at call time (readMeshUrgency's own try/catch -> null, no
+// escalation) instead of throwing out of this module's top-level require —
+// this module is itself required at the TOP LEVEL by hooks/devswarm-parent-gate.js
+// (readDescriptors), so an unconditional require here would crash that hook's
+// module load entirely on a corrupt dependency (D27 fail-open contract).
 
 const SWEEP_LOCK_STALE_MS = 5 * 60 * 1000; // a sweep should never run this long; steal a lock older than this
 
@@ -84,6 +91,52 @@ function resolveThresholdsFromEnv(env) {
 
 function workspacesDir(home) {
   return path.join(devswarmRoot(home), 'workspaces');
+}
+
+// ----- mesh-urgency signal (v0.58 "mesh-only messaging" — additive Tier 0 wake) -----
+// URGENT_TIERS — only these two deriveSummary urgencyMax values qualify as an
+// urgent unread signal (deriveSummary's URGENCY_RANK: low=0, normal=1, high=2,
+// urgent=3). 'low'/'normal'/absent -> not urgent: the sweep relies on the agent's
+// own next turn (child-turn.js/parent-inbox.js already surface those), it does
+// NOT force an escalate for them.
+const URGENT_TIERS = new Set(['high', 'urgent']);
+
+// readMeshUrgency(descriptor, home, deps) -> {urgencyMax, directUnread,
+// broadcastUnread} | null. Resolves THIS descriptor's PROJECT repoKey the SAME
+// way the codebase already does (repoKeyForWorktree — never re-hashed here), then
+// reads that project's mesh-store projection `summaries/<repoKey>.json`
+// (readSummaryForHash — the EXACT file the hooks read; see
+// hooks/devswarm-parent-inbox.js's own summaryPath) and looks up THIS
+// descriptor's own row (summary.workspaces[d.id] — deriveSummary keys the
+// per-workspace projection by the registered workspace id). FAIL-OPEN throughout:
+// an unresolvable repoKey (non-git worktree, no git binary), a missing/
+// unreadable/malformed summary file, or a descriptor absent from
+// summary.workspaces all return null ("no urgent signal") — this signal
+// augments, it never blocks or throws out of, a sweep tick.
+function readMeshUrgency(descriptor, home, deps) {
+  const d = deps || {};
+  try {
+    const resolveRepoKey = d.repoKeyForWorktree || require('./lib/devswarm-repokey.js').repoKeyForWorktree;
+    const readSummary = d.readSummaryForHash || require('./lib/devswarm-store.js').readSummaryForHash;
+    const repoKey = resolveRepoKey(descriptor.worktreePath);
+    if (!repoKey) return null;
+    const summary = readSummary(home, repoKey, d.fs);
+    if (!summary || typeof summary.workspaces !== 'object' || !summary.workspaces) return null;
+    const w = summary.workspaces[descriptor.id];
+    if (!w) return null;
+    return {
+      urgencyMax: w.urgencyMax != null ? String(w.urgencyMax) : null,
+      directUnread: Number.isFinite(w.directUnread) ? w.directUnread : 0,
+      broadcastUnread: Number.isFinite(w.broadcastUnread) ? w.broadcastUnread : 0,
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
+// isUrgentMesh(urgency) -> bool. `urgency` is readMeshUrgency's return (or null).
+function isUrgentMesh(urgency) {
+  return !!(urgency && URGENT_TIERS.has(urgency.urgencyMax));
 }
 
 // readDescriptors(home, fsi) -> [{id, worktreePath, inboxPath, cursorPath, sessionId}].
@@ -180,6 +233,23 @@ function sweepOnce(opts) {
         poke = (deps.pokeOrEscalate || pokeOrEscalate)(d, verdict, {
           home, now: o.now, nudgeMaxAttempts: o.nudgeMaxAttempts, nudgeCooldownMs: o.nudgeCooldownMs,
         }, deps.io);
+
+        // Mesh-urgency escalation (v0.58 "mesh-only messaging", additive Tier 0
+        // wake): an urgent/high unread in the project's mesh-store summary forces
+        // a parent-store escalate notice NOW, independent of the poke budget/
+        // cadence above (a stale-but-just-nudged workspace with a genuinely
+        // urgent unread must not wait out the nudge window) — same
+        // notifyParentEscalation channel pokeOrEscalate itself uses, so the
+        // store-level hash dedupe (`escalate:<id>:<staleSince>`) keeps this
+        // idempotent even when the base poke above already escalated on its own.
+        // NEVER resolves a pid, NEVER kills. Low/normal urgency (or no mesh
+        // signal at all) -> no forced escalate; rely on the agent's next turn.
+        const urgency = (deps.readMeshUrgency || readMeshUrgency)(d, home, deps);
+        if (isUrgentMesh(urgency)) {
+          (deps.notifyParentEscalation || notifyParentEscalation)(d, verdict, {
+            home, now: o.now, env,
+          }, deps.openParentStore);
+        }
       }
       results.push({ id: d.id, verdict, poke });
     } catch (e) {
@@ -213,5 +283,5 @@ if (require.main === module) main();
 
 module.exports = {
   workspacesDir, readDescriptors, supervisorEnabled, sweepLockPath, acquireSweepLock, sweepOnce,
-  parseEnvNum, resolveThresholdsFromEnv,
+  parseEnvNum, resolveThresholdsFromEnv, readMeshUrgency, isUrgentMesh, URGENT_TIERS,
 };

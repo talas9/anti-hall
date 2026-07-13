@@ -178,6 +178,78 @@ test('send --to an unregistered meshId is rejected fail-closed (D12a)', () => {
   } finally { rm(home); rm(repo); }
 });
 
+// ---- send --to-primary (v0.58, PLAN.md CLI VERB CONTRACT) ------------------
+
+test('send --to-primary resolves the registry entry whose worktreePath is the MAIN worktree and delivers there, from a CHILD linked worktree', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('to-primary-main');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'to-primary-child');
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    const mainWorktree = inst.resolveMainWorktree(mainRepo);
+    assert.ok(mainWorktree, 'resolveMainWorktree must resolve for a real repo');
+    const primaryId = inst.primaryWorkspaceId(mainWorktree);
+    seedRegistry(home, repoKey, { id: primaryId, worktreePath: mainWorktree, sessionId: 's' });
+
+    const r = cli.run(['send', '--to-primary', '--message', 'status update'], ctx(home, { cwd: childWt }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.type, 'direct');
+    assert.equal(r.result.to, primaryId);
+
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const msgs = s.listMessages(primaryId);
+      assert.equal(msgs.length, 1);
+      assert.equal(msgs[0].body, 'status update');
+    } finally { s.close(); }
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+test('send --to-primary is fail-closed when no Primary is registered for this project', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('to-primary-unreg-main');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'to-primary-unreg-child');
+    const r = cli.run(['send', '--to-primary', '--message', 'hi'], ctx(home, { cwd: childWt }));
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.reason, 'primary-unregistered');
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+test('send --to-primary from the Primary\'s OWN main worktree is rejected as self-address, even when unregistered', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('to-primary-self');
+  try {
+    const r = cli.run(['send', '--to-primary', '--message', 'hi'], ctx(home, { cwd: mainRepo }));
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /cannot address the sender itself/);
+  } finally { rm(home); rm(mainRepo); }
+});
+
+test('send rejects combining --to-primary with --to or --broadcast', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('to-primary-combo');
+  try {
+    const r1 = cli.run(['send', '--to-primary', '--to', 'primary-x', '--message', 'hi'], ctx(home, { cwd: repo }));
+    assert.equal(r1.result.ok, false);
+    assert.match(r1.result.error, /not more than one/);
+    const r2 = cli.run(['send', '--to-primary', '--broadcast', '--message', 'hi'], ctx(home, { cwd: repo }));
+    assert.equal(r2.result.ok, false);
+    assert.match(r2.result.error, /not more than one/);
+  } finally { rm(home); rm(repo); }
+});
+
+test('send --to-primary on a non-git cwd returns {ok:false,reason:"no-project"}', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['send', '--to-primary', '--message', 'hi'], ctx(home, { cwd: fakeCwd(home) }));
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.reason, 'no-project');
+  } finally { rm(home); }
+});
+
 test('send requires --message', () => {
   const home = tmpHome();
   const repo = makeGitRepo('nomessage');
@@ -273,6 +345,66 @@ test('round trip: sending --to <the meshId a peer sent as its from> succeeds and
     rm(home);
     if (childWt) { cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', childWt]); }
     rm(mainRepo);
+  }
+});
+
+// Regression (P1, cross-model review): a child that runs `inbox pull` from a git
+// SUBDIRECTORY must remain addressable by mesh `send --to <its meshId>`. Before
+// the fix, cmdInboxPull registered the RAW cwd (the subdir) as worktreePath, which
+// primaryWorkspaceId hashes to a DIFFERENT meshId than the child's canonical
+// identity (derived from the RESOLVED toplevel by callerIdentity). So a later
+// `send --to <the child's real meshId>` iterated the registry, hashed the stored
+// subdir path, never matched, and failed closed as `unregistered-recipient` — the
+// child was unaddressable. The fix registers the RESOLVED toplevel (via the SAME
+// resolveCallerWorktree primitive callerIdentity uses), so the stored worktreePath
+// hashes to the SAME meshId `send --to` resolves against.
+test('a child registered via `inbox pull` from a git SUBDIRECTORY is addressable by `send --to <its meshId>` (registers the RESOLVED toplevel, not the raw subdir)', () => {
+  const home = tmpHome();
+  const childRepo = makeGitRepo('pull-subdir-child');
+  let peerWt = null;
+  try {
+    // The child process happens to run from a nested subdirectory of its worktree.
+    const subdir = path.join(childRepo, 'packages', 'app');
+    fs.mkdirSync(subdir, { recursive: true });
+
+    // A peer (a linked worktree of the SAME project → same repoKey, DISTINCT meshId)
+    // will be the sender, so `send --to` is a real cross-workspace address, not self.
+    peerWt = addLinkedWorktree(childRepo, 'pull-subdir-peer');
+    assert.equal(
+      repokey.repoKeyForWorktree(childRepo), repokey.repoKeyForWorktree(peerWt),
+      'child worktree and peer linked worktree share ONE repoKey'
+    );
+
+    // The child registers itself by draining its inbox FROM THE SUBDIR. io is
+    // injected (count 0 → no-op drain) so no real hivecontrol binary is touched;
+    // the descriptor is still auto-ensured + written to the shared repoKey store.
+    const io = { run: (s) => (s.args[1] === 'message-count' ? { ok: true, raw: '0' } : { ok: false, error: 'x' }) };
+    const pullRes = cli.run(['inbox', 'pull', 'child-1'], ctx(home, { cwd: subdir, io }));
+    assert.equal(pullRes.result.ok, true, JSON.stringify(pullRes.result));
+
+    // The stored worktreePath is the git-RESOLVED toplevel, NOT the raw subdir.
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'child-1'), 'utf8'));
+    assert.equal(desc.worktreePath, inst.resolveWorktree(subdir), 'registered the resolved toplevel, not the raw subdir');
+    assert.notEqual(desc.worktreePath, subdir, 'the raw subdir path was NOT stored');
+
+    // The child's canonical meshId (what callerIdentity derives for that subdir cwd,
+    // == the toplevel's meshId) must resolve against the registry `send` reads.
+    const childMeshId = derivedId(subdir);
+    const r = cli.run(['send', '--to', childMeshId, '--message', 'ping the subdir child'], ctx(home, { cwd: peerWt }));
+    assert.equal(r.result.ok, true, 'child registered from a subdir is addressable: ' + JSON.stringify(r.result));
+    assert.notEqual(r.result.reason, 'unregistered-recipient');
+
+    // The row landed in the child's REAL read partition (its builder-id).
+    const s = storeLib.openStore({ home, hash: repokey.repoKeyForWorktree(peerWt), backend: 'journal' });
+    try {
+      const inbox = s.listMessages('child-1');
+      assert.equal(inbox.length, 1);
+      assert.equal(inbox[0].body, 'ping the subdir child');
+    } finally { s.close(); }
+  } finally {
+    rm(home);
+    if (peerWt) { cp.spawnSync('git', ['-C', childRepo, 'worktree', 'remove', '--force', peerWt]); }
+    rm(childRepo);
   }
 });
 

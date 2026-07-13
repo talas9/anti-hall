@@ -43,30 +43,61 @@
 //   archive-ignore <id> | archive-unignore <id>
 //                  write/remove archive-ignore/<id>.json — the per-workspace ignore
 //                  mark the archive-ready surfacing consults (PLAN.md P1-E).
-//   archive-request <childId|childBranch> [--reason TEXT] [--child-branch B]
-//                  SEND-ONLY: post a parent->child `[[ANTIHALL_ARCHIVE_REQUEST]]`
-//                  message via `message-child <branch> <msg>`. AGNOSTIC — never
-//                  verifies merged/tested/deployed itself; that is the receiving
-//                  parent's own repo policy. Fail-open on spawn error.
+//   archive-request <childId> [--reason TEXT]
+//                  v0.58 STORE WRITE (mesh-only messaging): posts a parent->child
+//                  `[[ANTIHALL_ARCHIVE_REQUEST]]` message DIRECTLY into `<childId>`'s
+//                  own store partition (mesh-direct, urgency 'high') — `childId` is
+//                  ALREADY the target's real read partition (same semantics as
+//                  `heartbeat <id>`/`inbox read <id>`), so, unlike `send --to
+//                  <meshId>`, no registry/meshId resolution happens. ZERO hivecontrol
+//                  calls (replaces the old native `list children` + `message-child`
+//                  spawn — the one native-messaging leak the guard could never
+//                  catch). AGNOSTIC — never verifies merged/tested/deployed itself;
+//                  that is the receiving parent's own repo policy.
 //   migrate        auto-migrate on-disk state (JSON registry + legacy NDJSON inbox)
 //                  into the store. Idempotent, NON-DESTRUCTIVE (never deletes source),
 //                  single-consumer-locked, count-verified before it reports success.
-//   send --to <meshId>|--broadcast --message TEXT [--from <id>] [--urgency ...]
+//   send --to <meshId>|--to-primary|--broadcast --message TEXT [--from <id>] [--urgency ...]
 //                  v0.57 MESH (PLAN-v0.57-mesh.md Phase 4, D8): writes THIS project's
 //                  shared store/<repoKey>/ DIRECTLY — daemon-independent, ZERO
 //                  hivecontrol calls. `--from` is always re-derived from cwd
 //                  (callerIdentity, spoof-proof, D18/D19); an explicit --from must
 //                  MATCH or the send is rejected. `--to <meshId>` is fail-closed
 //                  against the shared registry (D12a) — an unregistered meshId is
-//                  rejected, never silently black-holed. A non-git cwd returns
+//                  rejected, never silently black-holed. `--to-primary` (v0.58)
+//                  resolves the registry entry whose worktreePath matches this
+//                  project's MAIN worktree (install-devswarm-ingest's
+//                  resolveMainWorktree) — fail-closed (`reason:'primary-unregistered'`)
+//                  when no such entry exists. A non-git cwd returns
 //                  {ok:false,reason:'no-project'} BEFORE any identity is derived
 //                  (D28 — never emits an env-derived `from`).
 //   roster [--ack]
 //                  ALLOW-listed projection read of this project's shared registry +
 //                  `working_on` + `recent[]` broadcast digest. `--ack` (alias of
 //                  `mesh read`, D23) advances the CALLER's own broadcast cursor to
-//                  head — the ONLY surface that clears `broadcastUnread`.
+//                  head — the ONLY surface that clears `broadcastUnread`. v0.58:
+//                  plain `roster` (never `--ack`) additionally FOLDS a read-only
+//                  `hivecontrol workspace list children` view into the projection —
+//                  a child hivecontrol spawned but that has never yet registered
+//                  itself with the store stays visible instead of invisible.
 //   mesh read      same as `roster --ack` (D23) — listed separately for discovery.
+//   reconcile      v0.58: for every registry descriptor of THIS project with a
+//                  worktreePath, spawns `node scripts/devswarm.js inbox pull <id>`
+//                  as a SUBPROCESS with cwd=<that worktree> (an in-process call
+//                  would drain the WRONG queue — inbox pull's native spawns inherit
+//                  the calling process's cwd). Per-id O_EXCL pull lock (already
+//                  shipped in devswarm-pull.js) serializes a sweep against a live
+//                  child concurrently pulling its own inbox.
+//   spawn <branch> [hivecontrol create flags...]
+//                  v0.58: THIN pass-through wrap of `hivecontrol workspace create
+//                  <branch> ...` (never re-implemented/re-parsed), then
+//                  best-effort auto-registers the new worktree in this project's
+//                  shared store registry (store-only; the child's own first
+//                  inbox-pull/heartbeat/register still fills in its real sessionId).
+//   merge [hivecontrol merge-into-source flags...]
+//                  v0.58: THIN wrap of `hivecontrol workspace check-merge` +
+//                  `hivecontrol workspace merge-into-source ...` (pass-through),
+//                  then `send --broadcast`s the outcome to the mesh.
 //
 // Every id is isSafeId-gated before it is ever path.join'd. Fail-soft: a bad
 // subcommand / id reports { ok:false, error } + exit 2, never throws a stack.
@@ -141,10 +172,25 @@ function findGitToplevel(startDir) {
 // with git unavailable). Only when NEITHER resolves does cwd fail to resolve to
 // a workspace at all (case 2 above; final fallback = primaryWorkspaceId(raw
 // cwd) so callerIdentity always returns a deterministic non-empty string).
+// resolveCallerWorktree(cwd) -> the RESOLVED git worktree/toplevel for `cwd`, or
+// null when `cwd` is not inside any git worktree. This is the SINGLE primitive
+// used to canonicalize a cwd into a workspace identity: git `resolveWorktree`
+// first, then the pure-fs `findGitToplevel` fallback (same order + rationale as
+// callerIdentity's original inline resolution). Callers that must agree on a
+// worktree's meshId — callerIdentity (identity derivation) AND cmdInboxPull (the
+// registered worktreePath that `send --to` later hashes) — MUST route through
+// this so a subdirectory cwd canonicalizes to the SAME toplevel both places
+// (bug: a child that ran `inbox pull` from a git SUBDIR registered the raw
+// subdir path, which hashed to a meshId no `send --to` could resolve — the child
+// became unaddressable, failing closed as `unregistered-recipient`).
+function resolveCallerWorktree(cwd) {
+  const c = cwd || process.cwd();
+  return inst.resolveWorktree(c) || findGitToplevel(c) || null;
+}
 function callerIdentity(env, cwd) {
   const bid = env && env.DEVSWARM_BUILDER_ID ? String(env.DEVSWARM_BUILDER_ID) : null;
   const c = cwd || process.cwd();
-  const wt = inst.resolveWorktree(c) || findGitToplevel(c);
+  const wt = resolveCallerWorktree(c);
   if (wt) {
     // cwd resolves to a real workspace: identity derives from cwd. A mismatching
     // declared env id is NOT trusted to override it (the spoof this guard exists
@@ -557,7 +603,17 @@ function cmdInboxPull(id, flags, ctx) {
   const session = one(flags, 'session')
     || (ctx.env && ctx.env.DEVSWARM_BUILDER_ID)
     || id;
-  const worktree = ctx.cwd || process.cwd();
+  // Register the RESOLVED git worktree, NOT the raw cwd — the SAME canonical
+  // primitive callerIdentity uses (resolveCallerWorktree). A child that runs
+  // `inbox pull` from a git SUBDIRECTORY must register the toplevel, so the
+  // stored worktreePath hashes to the SAME meshId a later `send --to <its-meshId>`
+  // resolves against (resolveMeshTarget hashes d.worktreePath). Registering the
+  // raw subdir instead hashed to a DIFFERENT meshId, so the child failed closed
+  // as `unregistered-recipient` and was unaddressable by mesh. Fall back to the
+  // raw cwd ONLY for the non-git case (no toplevel resolves) — preserves the
+  // existing raw-cwd behavior a non-git daemon/unit relies on.
+  const rawCwd = ctx.cwd || process.cwd();
+  const worktree = resolveCallerWorktree(rawCwd) || rawCwd;
   const ensureFlags = {
     worktree: [worktree],
     session: [session],
@@ -853,86 +909,54 @@ function cmdArchiveIgnore(id, ctx, { set }) {
   return { ok: true, action: 'archive-unignore', id, removed };
 }
 
-// ARCHIVE_REQUEST_MARKER — the mechanical tag a receiving child looks for atop a
-// parent->child message to recognize an archive request (vs. ordinary chatter).
-const ARCHIVE_REQUEST_MARKER = '[[ANTIHALL_ARCHIVE_REQUEST]]';
-
 // buildArchiveRequestMessage(reason) — the exact posted string. `reason` is
 // optional; when omitted the marker + instruction still stand alone.
 function buildArchiveRequestMessage(reason) {
   const tail = 'your parent asks you to archive this workspace; confirm with your user, then run devswarm.js archive <id>.';
   return reason
-    ? ARCHIVE_REQUEST_MARKER + ' ' + reason + ' — ' + tail
-    : ARCHIVE_REQUEST_MARKER + ' — ' + tail;
+    ? store.ARCHIVE_REQUEST_MARKER + ' ' + reason + ' — ' + tail
+    : store.ARCHIVE_REQUEST_MARKER + ' — ' + tail;
 }
 
-// resolveChildBranch(id, flags, ctx) -> { branch, source, error? }. `message-child`
-// needs a BRANCH (per KB: <branch> IS the hivecontrol workspace identifier — no
-// separate name field), but our OWN descriptor (workspaces/<id>.json) carries no
-// `branch` field today (verified: buildDescriptorFromFlags only ever populates
-// worktreePath/sessionId/inboxPath/cursorPath/nudgeCommand). Resolution order:
-//   1. --child-branch (explicit, always wins)
-//   2. desc.branch, if some future/other write path ever set one (harmless check)
-//   3. `hivecontrol workspace list children` — the JSON shape is not pinned in the
-//      KB (no example payload documented anywhere in this repo), so parse
-//      TOLERANTLY: accept a bare array or a {children:[...]} wrapper, and match an
-//      entry by branch/id equal to our childId OR by worktreePath equal to the
-//      entry's path (the one join key we reliably hold ourselves).
-//   4. the positional `id` itself, taken AS the branch — valid because a caller is
-//      explicitly allowed to pass `<childId|childBranch>` directly, and by this
-//      point `id` has already passed the isSafeId gate the dispatcher applies.
-function resolveChildBranch(id, flags, ctx) {
-  const explicit = one(flags, 'child-branch');
-  if (explicit) return { branch: explicit, source: 'flag' };
-  const home = ctx.home;
-  const desc = readDescriptorFile(home, id);
-  if (desc && desc.branch) return { branch: desc.branch, source: 'descriptor' };
-  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
-  const res = run({ args: ['workspace', 'list', 'children'], env: ctx.env });
-  if (res && res.ok) {
-    let list = [];
-    try {
-      const parsed = JSON.parse(res.raw);
-      list = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.children) ? parsed.children : []);
-    } catch (_) { list = []; }
-    const worktree = desc && desc.worktreePath;
-    for (const entry of list) {
-      if (!entry || typeof entry !== 'object') continue;
-      const entryBranch = entry.branch || entry.id || null;
-      if (entryBranch && entryBranch === id) return { branch: entryBranch, source: 'list-children' };
-      if (worktree && entry.path && entry.path === worktree && entryBranch) {
-        return { branch: entryBranch, source: 'list-children' };
-      }
-    }
-  }
-  return { branch: id, source: 'positional' };
-}
-
-// cmdArchiveRequest(id, flags, ctx) — SEND-ONLY. Posts a parent->child archive
-// request via `message-child <branch> <marker + text>`, using the SAME injectable
-// io.run spawn pattern as cmdInboxPull/devswarm-pull.js (pull.defaultRun), so this
-// is testable without touching a real hivecontrol binary. AGNOSTIC: this verb never
-// checks merged/tested/deployed itself — that is the RECEIVING parent's own repo
-// policy to enforce before it ever runs `archive`; we only remind, never gate.
+// cmdArchiveRequest(id, flags, ctx) — v0.58 (PLAN.md CLI VERB CONTRACT): STORE
+// WRITE, never a native hivecontrol call. Posts a parent->child `[[ANTIHALL_
+// ARCHIVE_REQUEST]]` mesh-direct message straight into `id`'s OWN store
+// partition — `id` is ALREADY the target's real read partition (its registered
+// builder-id/workspaceId, the SAME semantics `heartbeat <id>` and `inbox read
+// <id>` already use), so, unlike `send --to <meshId>`, no registry/meshId
+// resolution is needed or performed. `urgency:'high'` (a mechanical, fixed
+// choice — never 'urgent', which stays reserved for a sender's own judgment
+// call elsewhere). AGNOSTIC: this verb never itself verifies merged/tested/
+// deployed — that stays the RECEIVING parent's own repo policy; the message
+// only reminds, never gates. DELETES the OLD native `list children` lookup +
+// `message-child` spawn (pre-v0.58: resolveChildBranch + ctx.io.run) — the
+// marker now travels over the SAME daemon-independent mesh path every other
+// send uses, closing the one native-messaging leak the command-guard could
+// never catch (a spawned `message-child` call is invisible to a guard that
+// only inspects the FIRST hivecontrol subcommand token by design).
 function cmdArchiveRequest(id, flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, reason: 'no-project' };
+
   const reason = one(flags, 'reason');
-  const resolved = resolveChildBranch(id, flags, ctx);
-  if (!resolved.branch) {
-    return { ok: false, error: 'could not resolve child branch for ' + JSON.stringify(id) + ' — pass --child-branch explicitly' };
-  }
   const message = buildArchiveRequestMessage(reason);
-  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
-  const res = run({ args: ['workspace', 'message-child', resolved.branch, message], env: ctx.env });
-  if (!res || !res.ok) {
+  const from = callerIdentity(ctx.env, cwd);
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  try {
+    const fields = { from, to: id, type: 'direct', message, timestamp: now, urgency: 'high' };
+    const hash = store.meshMessageHash(fields);
+    const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+    store.deriveSummary(s, { home, env: ctx.env, now });
     return {
-      ok: false, error: (res && res.error) || 'message-child failed',
-      id, childBranch: resolved.branch, posted: false, reason: reason || null,
+      ok: true, action: 'archive-request', id, childId: id, posted: true,
+      sent: !!res.inserted, seq: res.seq, reason: reason || null,
+      reminder: 'Ensure you have verified merged + tested + deployed per your repo policy before archiving.',
     };
-  }
-  return {
-    ok: true, id, childBranch: resolved.branch, posted: true, reason: reason || null,
-    reminder: 'Ensure you have verified merged + tested + deployed per your repo policy before archiving.',
-  };
+  } finally { s.close(); }
 }
 
 function cmdMigrate(ctx) {
@@ -975,6 +999,21 @@ function resolveMeshTarget(storeHandle, meshId) {
   return null;
 }
 
+// resolvePrimaryTarget(storeHandle, mainWorktree) -> the registry descriptor
+// whose worktreePath is an EXACT match for `mainWorktree` (install-devswarm-
+// ingest's resolveMainWorktree(cwd) — the repo's MAIN worktree, dirname of
+// `--git-common-dir`), or null (fail-closed, D-lane-B `send --to-primary`).
+// Literal path equality (per PLAN.md's own wording), not a meshId-hash
+// re-derivation — `register-primary` always registers a Primary under its OWN
+// resolved worktree path, so this join is exact by construction.
+function resolvePrimaryTarget(storeHandle, mainWorktree) {
+  if (!mainWorktree) return null;
+  for (const d of storeHandle.listRegistry()) {
+    if (d && d.worktreePath === mainWorktree) return d;
+  }
+  return null;
+}
+
 // cmdSend(flags, ctx) — send --from <id> --to <meshId>|--broadcast --message
 // TEXT [--urgency low|normal|high|urgent]. Opens store/<repoKey>/ directly.
 //
@@ -1005,11 +1044,15 @@ function cmdSend(flags, ctx) {
 
   const toFlag = one(flags, 'to');
   const broadcastFlag = hasFlag(flags, 'broadcast') || one(flags, 'type') === 'broadcast';
-  if (toFlag !== undefined && broadcastFlag) {
-    return { ok: false, error: 'send accepts --to <meshId> OR --broadcast, not both' };
+  // --to-primary (v0.58, PLAN.md CLI VERB CONTRACT): a third mutually-exclusive
+  // target mode alongside the existing --to <meshId> / --broadcast.
+  const toPrimaryFlag = hasFlag(flags, 'to-primary');
+  const targetModeCount = (toFlag !== undefined ? 1 : 0) + (broadcastFlag ? 1 : 0) + (toPrimaryFlag ? 1 : 0);
+  if (targetModeCount > 1) {
+    return { ok: false, error: 'send accepts --to <meshId> OR --to-primary OR --broadcast, not more than one' };
   }
-  if (toFlag === undefined && !broadcastFlag) {
-    return { ok: false, error: 'send requires --to <meshId> or --broadcast' };
+  if (targetModeCount === 0) {
+    return { ok: false, error: 'send requires --to <meshId>, --to-primary, or --broadcast' };
   }
   const type = broadcastFlag ? 'broadcast' : 'direct';
 
@@ -1026,8 +1069,25 @@ function cmdSend(flags, ctx) {
     };
   }
 
-  if (type === 'direct' && toFlag === from) {
-    return { ok: false, error: 'send --to cannot address the sender itself' };
+  // --to-primary resolution (cheap, no store open needed): the installer helper
+  // resolveMainWorktree(cwd) resolves THIS project's main worktree; its meshId
+  // is what the fail-closed registry lookup (below, inside the store) and the
+  // self-address check (here, mirroring --to's own ordering) both key off.
+  let mainWorktree = null;
+  let primaryMeshId = null;
+  if (toPrimaryFlag) {
+    mainWorktree = inst.resolveMainWorktree(cwd);
+    if (!mainWorktree) {
+      return { ok: false, reason: 'no-primary-worktree', error: 'send --to-primary: cwd is not inside a resolvable git worktree' };
+    }
+    primaryMeshId = inst.primaryWorkspaceId(mainWorktree);
+  }
+
+  if (type === 'direct') {
+    const selfTarget = toPrimaryFlag ? primaryMeshId : toFlag;
+    if (selfTarget === from) {
+      return { ok: false, error: 'send --to' + (toPrimaryFlag ? '-primary' : '') + ' cannot address the sender itself' };
+    }
   }
 
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
@@ -1036,13 +1096,20 @@ function cmdSend(flags, ctx) {
     let targetPartition = null;
     if (type === 'direct') {
       // Fail-closed addressing (D12a): a --to naming a meshId not present in the
-      // shared registry is rejected outright — never a silent black-hole.
-      const target = resolveMeshTarget(s, toFlag);
+      // shared registry is rejected outright — never a silent black-hole. Same
+      // posture for --to-primary: an unregistered Primary is a fail-closed error,
+      // never a silent black-hole either.
+      const target = toPrimaryFlag ? resolvePrimaryTarget(s, mainWorktree) : resolveMeshTarget(s, toFlag);
       if (!target) {
-        return {
-          ok: false, reason: 'unregistered-recipient',
-          error: 'send --to ' + JSON.stringify(toFlag) + ' is not a registered mesh workspace',
-        };
+        return toPrimaryFlag
+          ? {
+            ok: false, reason: 'primary-unregistered',
+            error: 'send --to-primary: no registered Primary workspace for this project (run `register-primary` first)',
+          }
+          : {
+            ok: false, reason: 'unregistered-recipient',
+            error: 'send --to ' + JSON.stringify(toFlag) + ' is not a registered mesh workspace',
+          };
       }
       // The row's workspace_id is the target's REAL read partition — its
       // builder-id (target.id), NOT the meshId (D19 child-delivery join): this
@@ -1059,16 +1126,64 @@ function cmdSend(flags, ctx) {
     store.deriveSummary(s, { home, env: ctx.env, now });
     return {
       ok: true, action: 'send', from,
-      to: type === 'direct' ? toFlag : null, type, urgency,
+      to: type === 'direct' ? (toPrimaryFlag ? primaryMeshId : toFlag) : null, type, urgency,
       sent: !!res.inserted, seq: res.seq,
     };
   } finally { s.close(); }
+}
+
+// LIST_CHILDREN_TIMEOUT_MS — bounded timeout for roster's read-only native
+// fold spawn (`hivecontrol workspace list children`). Mirrors the finite-
+// timeout posture every other hivecontrol spawn in this codebase uses
+// (devswarm-pull.js's message-count/read-messages, child-gate.js's
+// probeNativeMessageCount) — a hung/slow native CLI must never wedge `roster`.
+const LIST_CHILDREN_TIMEOUT_MS = 5000;
+
+// parseChildrenList(raw) -> [{branch,id,path}]. TOLERANT parse of `hivecontrol
+// workspace list children` output — the JSON shape is not pinned in the KB, so
+// accept a bare array or a {children:[...]} wrapper (same tolerance the old,
+// now-deleted resolveChildBranch used for the same command).
+function parseChildrenList(raw) {
+  let list = [];
+  try {
+    const parsed = JSON.parse(raw);
+    list = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.children) ? parsed.children : []);
+  } catch (_) { list = []; }
+  return list.filter((e) => e && typeof e === 'object').map((e) => ({
+    branch: e.branch || e.id || null,
+    id: e.id || null,
+    path: e.path || e.worktreePath || null,
+  }));
+}
+
+// fetchNativeChildren(ctx) -> [{branch,id,path}]. ONE bounded, NON-DESTRUCTIVE
+// `hivecontrol workspace list children` spawn (never `monitor`/`read-messages`),
+// using the SAME injectable io.run posture as every other native spawn in this
+// file (pull.defaultRun). Fail-open []: hivecontrol not installed / spawn error
+// / unparseable output all read as "nothing to fold" — roster's own store-only
+// view is NEVER blocked or degraded by this best-effort addition.
+function fetchNativeChildren(ctx) {
+  try {
+    const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+    const res = run({ args: ['workspace', 'list', 'children'], env: ctx.env, timeout: LIST_CHILDREN_TIMEOUT_MS });
+    if (!res || !res.ok) return [];
+    return parseChildrenList(res.raw);
+  } catch (_) {
+    return [];
+  }
 }
 
 // cmdRoster(flags, ctx) — ALLOW-listed projection read of THIS project's
 // shared registry + `working_on` (D3 roster surface). Derives a FRESH summary
 // (never a stale cache) from store/<repoKey>/, keyed purely off cwd — no id
 // argument, project-scoped like `send`/`mesh read`.
+//
+// v0.58 roster fold: additionally unions a READ-ONLY `hivecontrol workspace
+// list children` view into the projection (never written back to the store —
+// the store registry stays the single write-owned source of truth). A native
+// child not yet matched by worktreePath against the store set (i.e. one that
+// has never registered itself via inbox pull/heartbeat/register) is appended
+// as a minimal entry so it is still VISIBLE on the roster instead of invisible.
 function cmdRoster(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
@@ -1081,7 +1196,18 @@ function cmdRoster(flags, ctx) {
   const workspaces = Object.values(sum.workspaces || {}).map((w) => ({
     id: w.id, working_on: w.working_on, directUnread: w.directUnread,
     broadcastUnread: w.broadcastUnread, urgencyMax: w.urgencyMax,
+    worktreePath: w.worktreePath || null, source: 'store',
   }));
+  const knownPaths = new Set(workspaces.map((w) => w.worktreePath).filter(Boolean));
+  const nativeChildren = fetchNativeChildren(ctx);
+  for (const child of nativeChildren) {
+    if (child.path && knownPaths.has(child.path)) continue; // already represented via the store
+    workspaces.push({
+      id: child.branch || child.id || null, working_on: null,
+      directUnread: null, broadcastUnread: null, urgencyMax: null,
+      worktreePath: child.path || null, source: 'native',
+    });
+  }
   return { ok: true, action: 'roster', repoKey, count: workspaces.length, workspaces, recent: sum.recent || [] };
 }
 
@@ -1126,6 +1252,209 @@ function cmdMeshRead(flags, ctx) {
     store.deriveSummary(s, { home, env: ctx.env, now });
     return { ok: true, action: 'mesh-read', from, acked: true, newCursor, count: broadcasts.length, broadcasts };
   } finally { s.close(); }
+}
+
+// ============================================================================
+// v0.58 lifecycle wrappers (reconcile / spawn / merge) — PLAN.md CLI VERB
+// CONTRACT. spawn/merge are THIN pass-through wraps: hivecontrol's own flag
+// grammar is NEVER re-parsed by this file's `parseArgs` (which only recognizes
+// `--long` flags) — the dispatcher instead hands these two verbs the RAW
+// argv tail (see `run()` below), so every hivecontrol flag (present or future,
+// short OR long form, e.g. `-p`/`--prompt`) forwards byte-for-byte.
+// ============================================================================
+
+// defaultSpawnReconcile(d, ctx) -> spawnSync result. Spawns THIS SAME script
+// (`__filename`, via `process.execPath` — an ABSOLUTE resolved binary path,
+// NOT a bare command name) as a subprocess with `cwd: d.worktreePath`, running
+// `inbox pull <d.id>` there. Verified-before-build: hooks/devswarm-child-gate.js's
+// `shell: process.platform === 'win32'` precedent applies ONLY to a bare
+// command name (`hivecontrol`) that depends on Windows PATHEXT shim
+// resolution (a `.cmd`/`.bat` global-CLI shim); `process.execPath` is already
+// the resolved node binary, so no shell is needed here — same posture as this
+// file's own `defaultSpawnInstaller` a few hundred lines up, which spawns
+// itself the identical way.
+function defaultSpawnReconcile(d, ctx) {
+  const env = Object.assign({}, ctx.env || process.env, { HOME: ctx.home });
+  if (ctx.backend) env.ANTIHALL_DEVSWARM_STORE_BACKEND = ctx.backend;
+  try {
+    return spawnSync(process.execPath, [__filename, 'inbox', 'pull', d.id], {
+      cwd: d.worktreePath, env, encoding: 'utf8', timeout: 30000,
+    });
+  } catch (e) {
+    return { error: e };
+  }
+}
+
+// cmdReconcile(flags, ctx) — PLAN.md "reconcile": drain EVERY worktree
+// registered in THIS project's shared store once. Each `inbox pull` MUST run
+// with that worktree as its OWN process cwd (never in-process) — inbox pull's
+// native spawns (devswarm-pull.js -> hivecontrol) resolve their target
+// workspace from the CALLING process's cwd, so an in-process call from the
+// reconciler's own cwd would silently drain the WRONG (the caller's own)
+// queue for every descriptor instead of each worktree's own. A per-id O_EXCL
+// pull lock (already shipped in devswarm-pull.js's acquireExclLock) serializes
+// a reconcile sweep against a live child concurrently pulling its own inbox —
+// surfaced here as `locked:true` on that descriptor's result, never silently
+// dropped from the count.
+function cmdReconcile(flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, reason: 'no-project' };
+
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  let descriptors;
+  try { descriptors = s.listRegistry(); } finally { s.close(); }
+
+  const targets = descriptors.filter((d) => d && d.worktreePath && isSafeId(d.id));
+  const spawnFn = (ctx.io && ctx.io.spawnReconcile) || defaultSpawnReconcile;
+  const results = [];
+  for (const d of targets) {
+    const r = spawnFn(d, ctx);
+    let parsed = null;
+    if (r && !r.error && typeof r.stdout === 'string') {
+      try { parsed = JSON.parse(r.stdout); } catch (_) { parsed = null; }
+    }
+    results.push({
+      id: d.id,
+      worktreePath: d.worktreePath,
+      ok: !!(parsed && parsed.ok),
+      imported: (parsed && parsed.imported) || 0,
+      duplicate: (parsed && parsed.duplicate) || 0,
+      locked: !!(parsed && parsed.locked),
+      error: (parsed && parsed.error)
+        || (r && r.error ? String((r.error && r.error.message) || r.error) : null)
+        || (parsed ? null : 'reconcile: could not parse inbox-pull subprocess output'),
+    });
+  }
+  const imported = results.reduce((acc, r) => acc + (r.imported || 0), 0);
+  return { ok: true, action: 'reconcile', repoKey, count: results.length, imported, results };
+}
+
+// resolveCreatedWorktreePath(res) -> string | null. TOLERANT best-effort parse
+// of `hivecontrol workspace create`'s stdout for a `path`/`worktreePath` field
+// (accepting a top-level field or one nested under a `workspace` key) — the
+// exact JSON shape is not pinned in the KB, so this NEVER guesses a directory-
+// naming convention; an unparseable/fieldless payload returns null, and the
+// caller treats that as a legitimate best-effort-skip, not an error.
+function resolveCreatedWorktreePath(res) {
+  if (!res || typeof res.raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(res.raw);
+    if (parsed && typeof parsed === 'object') {
+      const nested = parsed.workspace && typeof parsed.workspace === 'object' ? parsed.workspace : null;
+      const p = parsed.path || parsed.worktreePath || (nested && (nested.path || nested.worktreePath));
+      if (typeof p === 'string' && p) return p;
+    }
+  } catch (_) { /* unparseable -> null, never a guess */ }
+  return null;
+}
+
+// cmdSpawn(rest, ctx) — PLAN.md "spawn": THIN pass-through wrap of
+// `hivecontrol workspace create <branch> ...` (rest[0] is the branch; every
+// remaining token forwards untouched — never re-implemented), then a
+// best-effort auto-registration of the new worktree in THIS project's shared
+// store registry (store-only — no descriptor file, no sessionId yet; the
+// child's own first inbox-pull/heartbeat/register fills that in itself, the
+// same self-registration path every other child already relies on). A create
+// failure is returned as-is; a registration failure AFTER a successful create
+// never rolls back or fails the (already-succeeded) hivecontrol create.
+function cmdSpawn(rest, ctx) {
+  const branch = rest && rest[0];
+  if (!branch) return { ok: false, error: 'spawn requires a branch name' };
+  const cwd = ctx.cwd || process.cwd();
+  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+  const args = ['workspace', 'create'].concat(rest);
+  const res = run({ args, env: ctx.env, cwd });
+  if (!res || !res.ok) {
+    return { ok: false, error: (res && res.error) || 'hivecontrol workspace create failed', branch };
+  }
+
+  let registered = false;
+  let worktreePath = null;
+  let meshId = null;
+  try {
+    // hivecontrol's own `create` output shape is NOT pinned in the KB, so this
+    // is a TOLERANT best-effort parse (same posture as this file's own
+    // parseChildrenList) for a `path`/`worktreePath` field — NEVER a guessed
+    // directory-naming convention. `ctx.io.newWorktreePath` is the explicit
+    // test/override seam. Absent a resolvable path, registration is
+    // best-effort-skipped (`registered:false` is a legitimate, reported
+    // outcome — never a failure of the verb itself, which already succeeded
+    // at the hivecontrol create call above).
+    worktreePath = (ctx.io && ctx.io.newWorktreePath) || resolveCreatedWorktreePath(res);
+    if (worktreePath) {
+      meshId = inst.primaryWorkspaceId(worktreePath);
+      const repoKey = repoKeyForCwd(ctx);
+      const s = store.openStore({ home: ctx.home, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
+      try {
+        s.upsertRegistry({ id: meshId, worktreePath, sessionId: null, inboxPath: null, cursorPath: null, nudgeCommand: null });
+        store.deriveSummary(s, { home: ctx.home, env: ctx.env, now: ctx.now });
+        registered = true;
+      } finally { s.close(); }
+    }
+  } catch (_) { registered = false; }
+
+  return {
+    ok: true, action: 'spawn', branch, created: true,
+    worktreePath, meshId, registered, raw: res.raw,
+  };
+}
+
+// cmdMergeVerb(rest, ctx) — PLAN.md "merge": THIN wrap of `hivecontrol
+// workspace check-merge` (informational, always run first) + `hivecontrol
+// workspace merge-into-source ...` (the documented "ship upstream" completion
+// step — the standard child-finish flow this verb is named for; the OTHER
+// direction, `merge-from-source`, stays a raw hivecontrol call, never
+// blocked). `rest` forwards to merge-into-source untouched (pass-through —
+// this verb never re-parses or gates on check-merge's own verdict; hivecontrol's
+// own merge call reports its own success/failure faithfully). The outcome is
+// then `send --broadcast` to the mesh so every peer sees a merge landed
+// without needing to poll — best-effort: a broadcast failure (e.g. non-git
+// cwd) never masks the merge's own result.
+function cmdMergeVerb(rest, ctx) {
+  const cwd = ctx.cwd || process.cwd();
+  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+
+  const checkRes = run({ args: ['workspace', 'check-merge'], env: ctx.env, cwd });
+  let checkMerge = null;
+  if (checkRes && checkRes.ok) {
+    try { checkMerge = JSON.parse(checkRes.raw); } catch (_) { checkMerge = null; }
+  }
+
+  const mergeArgs = ['workspace', 'merge-into-source'].concat(rest || []);
+  const mergeRes = run({ args: mergeArgs, env: ctx.env, cwd });
+  const merged = !!(mergeRes && mergeRes.ok);
+
+  let broadcast = null;
+  try {
+    const repoKey = repokey.repoKeyForWorktree(cwd);
+    if (!repoKey) {
+      broadcast = { ok: false, reason: 'no-project' };
+    } else {
+      const from = callerIdentity(ctx.env, cwd);
+      const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+      const summary = merged
+        ? 'merge-into-source completed'
+        : 'merge-into-source failed: ' + ((mergeRes && mergeRes.error) || 'unknown error');
+      const s = store.openStore({ home: ctx.home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+      try {
+        const fields = { from, to: null, type: 'broadcast', message: summary, timestamp: now, urgency: merged ? 'normal' : 'high' };
+        const hash = store.meshMessageHash(fields);
+        const bres = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+        store.deriveSummary(s, { home: ctx.home, env: ctx.env, now });
+        broadcast = { ok: true, sent: !!bres.inserted, seq: bres.seq };
+      } finally { s.close(); }
+    }
+  } catch (e) {
+    broadcast = { ok: false, error: String(e && e.message || e) };
+  }
+
+  return {
+    ok: merged, action: 'merge', checkMerge, merged,
+    error: merged ? undefined : ((mergeRes && mergeRes.error) || 'merge-into-source failed'),
+    raw: mergeRes && mergeRes.raw, broadcast,
+  };
 }
 
 // ----- dispatch -----
@@ -1202,7 +1531,9 @@ function run(argv, ctx0) {
       case 'archive-request': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        // Send-time self-heal (Phase 7): archive-request posts via `message-child`.
+        // Send-time self-heal (Phase 7): archive-request is a mesh-direct STORE
+        // write (v0.58) — still a "send-like verb" per withSelfHeal's own
+        // categorization, so the per-project ingest daemon health check still runs.
         const r = withSelfHeal(() => cmdArchiveRequest(id, flags, ctx), ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
@@ -1232,9 +1563,25 @@ function run(argv, ctx0) {
         }
         return { code: 2, result: { ok: false, error: 'unknown mesh subcommand: ' + JSON.stringify(sub || '') + ' (read)' } };
       }
+      case 'reconcile': {
+        const r = cmdReconcile(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'spawn': {
+        // THIN pass-through (PLAN.md): the RAW argv tail (never our own `--long`
+        // flag parser, which would swallow a `--prompt`/`--title`/etc. token and
+        // break faithful forwarding) — argv[0] is 'spawn' itself.
+        const r = cmdSpawn((argv || []).slice(1), ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'merge': {
+        // THIN pass-through (PLAN.md), same raw-tail posture as `spawn`.
+        const r = cmdMergeVerb((argv || []).slice(1), ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|archive-request|migrate|send|roster|mesh)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|archive-request|migrate|send|roster|mesh|reconcile|spawn|merge)' } };
     }
   } catch (e) {
     return { code: 2, result: { ok: false, error: String(e && e.message || e) } };

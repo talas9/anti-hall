@@ -108,6 +108,12 @@ const LIGHT_EXCEPTIONS = [
   // matches ONLY `scripts/devswarm.js` with the parent dir segment anchored at a
   // token start or path separator (so `evilscripts/devswarm.js` is NOT exempt),
   // both `/` and `\` separators for Windows parity.
+  // CONFIRMED GENERALIZED (v0.58 PLAN.md "GUARD CONTRACT" EXEMPTION note): this
+  // regex has no subcommand restriction — it exempts the WHOLE `node .../scripts/
+  // devswarm.js ...` invocation regardless of verb, so every mesh coordination
+  // command (`send`, `heartbeat`, `roster`, `mesh`, `inbox`, `archive-request`,
+  // `reconcile`, `spawn`, `merge`) already runs inline, exempt from the heavy-
+  // command gate, with no further change needed here.
   /\bnode\s+(?:\S*[\\/])?scripts[\\/]devswarm\.js\b/i,
 ];
 
@@ -127,6 +133,22 @@ const HIVECTL_MONITOR =
   /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*monitor\b/i;
 const HIVECTL_READ_MESSAGES =
   /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*read-messages\b/i;
+
+// v0.58 "mesh-only messaging" (PLAN.md GUARD CONTRACT): the two native SEND
+// subcommands — `hivecontrol workspace message-child` / `message-parent` — are
+// REPLACED by anti-hall's shared mesh store (scripts/devswarm.js send/heartbeat).
+// Modeled EXACTLY on HIVECTL_MONITOR/HIVECTL_READ_MESSAGES above (same optional-
+// flag tolerance so `hivecontrol --json workspace message-parent` cannot slip
+// past by flag insertion). Deliberately does NOT match `message-count` (a
+// read-only counter — distinct literal subcommand, never blocked) or any
+// lifecycle verb (`create`/`list`/`check-merge`/`merge`) — those are unmatched
+// by construction (different literal text) and stay default-allow, so
+// `devswarm.js spawn`/`merge` (THIN wraps of hivecontrol create/check-merge/
+// merge) keep working.
+const HIVECTL_MESSAGE_CHILD =
+  /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*message-child\b/i;
+const HIVECTL_MESSAGE_PARENT =
+  /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*message-parent\b/i;
 
 // detectHivectlDestructiveRead(command, depth) -> 'monitor' | 'read-messages' | null.
 // Mirrors isHeavyCommand's matching discipline so DATA and CODE are separated the
@@ -190,6 +212,67 @@ function detectHivectlDestructiveRead(command, depth) {
     }
   }
   return sawReadMessages ? 'read-messages' : null;
+}
+
+// detectHivectlMessageSend(command, depth) -> 'message-child' | 'message-parent' | null.
+// Mirrors detectHivectlDestructiveRead's matching discipline byte-for-byte: the
+// per-segment regex test runs against the QUOTE-NEUTRALIZED segment (so quoted
+// DATA — `grep 'hivecontrol workspace message-parent' docs/KB.md`, `echo
+// "...message-child..."` — never matches), while `bash -c "..."`, `eval ...`,
+// `$(...)` and backtick payloads ARE unwrapped and recursed (a smuggled `bash -c
+// "hivecontrol workspace message-parent ..."` / `$(hivecontrol workspace
+// message-child ...)` STILL matches). COMMAND-POSITION ANCHORING via
+// effectiveVerb === 'hivecontrol' (the same false-positive protection as the
+// destructive-read detector): `grep hivecontrol workspace message-parent
+// docs/KB.md` / `echo hivecontrol workspace message-parent` ALLOW — verb is
+// grep/echo, not hivecontrol. message-child is checked first (arbitrary tie-
+// break; both matching one command is not a realistic shape) — MUST match
+// ONLY its own literal subcommand, never `message-count`/`create`/`list`/
+// `check-merge`/`merge`.
+function detectHivectlMessageSend(command, depth) {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  const d = typeof depth === 'number' ? depth : 0;
+  for (const seg of splitSegments(command)) {
+    const forPatterns = neutralizeQuotedContents(seg);
+    if (effectiveVerb(seg) === 'hivecontrol') {
+      if (HIVECTL_MESSAGE_CHILD.test(forPatterns)) return 'message-child';
+      if (HIVECTL_MESSAGE_PARENT.test(forPatterns)) return 'message-parent';
+    }
+    if (d < 3) {
+      const payload = extractShellCPayload(seg);
+      if (payload) {
+        const inner = detectHivectlMessageSend(payload, d + 1);
+        if (inner) return inner;
+      }
+      const evalPayload = extractEvalPayload(seg);
+      if (evalPayload) {
+        const inner = detectHivectlMessageSend(evalPayload, d + 1);
+        if (inner) return inner;
+      }
+    }
+  }
+  if (d < 3) {
+    for (const inner of extractSubstitutions(command)) {
+      const r = detectHivectlMessageSend(inner, d + 1);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+
+// buildDevswarmSendReason(kind) -> closed-vocabulary block reason (NEVER reflects
+// command/stdin text — injection hygiene). Redirects to the mesh CLI verbs from
+// PLAN.md's CLI VERB CONTRACT: `send --to-primary|--to <meshId>` to direct-
+// message, `heartbeat <id> --summary "<text>"` to report status.
+function buildDevswarmSendReason(kind) {
+  const killSwitch = ' To disable this guard entirely, set DISABLE_ANTIHALL_DEVSWARM=1.';
+  return 'DEVSWARM MESH-ONLY MESSAGING: `hivecontrol workspace ' + kind + '` is blocked. ' +
+    'anti-hall\'s shared mesh store is the SOLE agent-initiated messaging transport for ' +
+    'DevSwarm — native per-worktree messaging (no from/to/broadcast) is replaced. Do NOT ' +
+    'delegate this to a subagent either — a delegated send writes the native queue ' +
+    'identically. Use the anti-hall DevSwarm CLI instead: `node scripts/devswarm.js send ' +
+    '--to-primary --message "<text>"` (or `--to <meshId>`) to direct-message, or `node ' +
+    'scripts/devswarm.js heartbeat <id> --summary "<text>"` to report status.' + killSwitch;
 }
 
 // File-read verbs whose path ARGUMENTS must be classified against the DevSwarm
@@ -766,6 +849,38 @@ function main() {
     }
   } catch (_) {
     // fail-open: never block a turn on a devswarm-branch bug.
+  }
+
+  // v0.58 "mesh-only messaging" branch: blocks the native `hivecontrol workspace
+  // message-child`/`message-parent` SENDS — anti-hall's shared mesh store
+  // (scripts/devswarm.js send/heartbeat) is now the SOLE agent-initiated
+  // messaging transport for DevSwarm (native per-worktree messaging has no
+  // from/to/broadcast and is REPLACED, PLAN.md "Locked design"). Modeled on the
+  // devswarm-read-guard branch above: fires in ALL contexts (coordinator AND
+  // subagent — a delegated send writes the native queue identically), its OWN
+  // skip name (`devswarm-send-guard`, independent of both devswarm-read-guard
+  // and command-guard's own skip below), honors DISABLE_ANTIHALL_DEVSWARM.
+  // Deliberately does NOT touch message-count (read-only) or any lifecycle verb
+  // (create/list/check-merge/merge) — unmatched by the regexes above, so
+  // `devswarm.js spawn`/`merge` (THIN wraps of hivecontrol create/check-merge/
+  // merge) are unaffected. Fully fail-open: any throw -> fall through.
+  try {
+    let devswarmActive = false;
+    try {
+      devswarmActive = require('./lib/devswarm-detect.js').isDevswarmActive(process.env);
+    } catch (_) {
+      devswarmActive = false; // fail-open: dormant
+    }
+    if (devswarmActive && !isSkipped('devswarm-send-guard')) {
+      const sendKind = detectHivectlMessageSend(command);
+      if (sendKind) {
+        const reason = buildDevswarmSendReason(sendKind);
+        fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
+        process.exit(2);
+      }
+    }
+  } catch (_) {
+    // fail-open: never block a turn on a devswarm-send-guard bug.
   }
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).

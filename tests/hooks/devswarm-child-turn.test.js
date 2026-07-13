@@ -14,7 +14,9 @@ const { makeHome } = require('../helpers/fixtures.js');
 const { readDescriptors } = require('../../plugins/anti-hall/companion/devswarm-supervisor.js');
 
 const HOOK = 'devswarm-child-turn.js';
-const REMINDER_PHRASE = 'message-parent';
+// Stable substring surviving the v0.58 hook-text sweep (the OLD marker,
+// 'message-parent', is now a BLOCKED native verb and must never appear).
+const REMINDER_PHRASE = 'stay visible on the parent';
 
 // This test process's own cwd (the anti-hall repo, a real git worktree) —
 // findGitToplevel resolves it with NO git spawn, exactly like devswarm-parent-
@@ -707,3 +709,136 @@ test('D26 MESH DIRECT: cwd not a git worktree -> no segment, no throw (fail-open
 // ingest-health.js/devswarm-repokey.js block already has direct unit coverage
 // in tests/companion/ingest-health.test.js's "D27 contract" test (same
 // require-fails-safely pattern, asserted without any shared-file mutation).
+
+// ---------------------------------------------------------------------------
+// v0.58 "mesh-only messaging": terse per-turn OVERRIDE_REASSERT + hook-text sweep.
+
+test('OVERRIDE: terse per-turn COMMS OVERRIDE re-assertion is present, unconditionally, for a child', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(/DEVSWARM COMMS OVERRIDE/.test(ctx(r)), `override must be present; ctx=${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('HOOK-TEXT SWEEP: emitted child-turn text never contains the blocked native verbs', () => {
+  const h = makeHome();
+  try {
+    seedChildInbox(h.home, 'child-1', ['from parent: rebase now'], 0);
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    const c = ctx(r);
+    assert.ok(!/message-parent/.test(c), `must never emit message-parent; ctx=${c}`);
+    assert.ok(!/message-child/.test(c), `must never emit message-child; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// v0.58 item 6: child-turn surfaces summary.archive_requested (a field Lane B
+// adds to deriveSummary; read here defensively — undefined = falsy = no
+// surface). devswarm-store.js's deriveSummary does NOT yet compute this field
+// (a separate lane), and this hook's OWN registerStoreDescriptor unconditionally
+// re-derives + overwrites summaries/<repoKey>.json from the store BEFORE this
+// block reads it (the SAME caveat the D26 tests document above) — so these
+// tests pass an EMPTY session_id, the one input that makes registerChildDescriptor
+// (and therefore registerStoreDescriptor) a no-op, letting a hand-seeded summary
+// file survive untouched for this block to read.
+
+function archiveRequestPromptPayload(cwd) {
+  return { hook_event_name: 'UserPromptSubmit', session_id: '', prompt: 'go', cwd: cwd || '/tmp' };
+}
+function writeRawSummary(home, repoKey, workspaces) {
+  const dir = path.join(home, '.anti-hall', 'devswarm', 'summaries');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, repoKey + '.json'), JSON.stringify({ workspaces }));
+}
+
+test('ITEM 6: summary.archive_requested:true surfaces the archive-request segment', () => {
+  const h = makeHome();
+  try {
+    writeRawSummary(h.home, REPO_KEY, {
+      'child-ar': { directUnread: 0, unread: 0, archive_requested: true },
+    });
+    const r = testHook(HOOK, archiveRequestPromptPayload(REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(/DEVSWARM ARCHIVE REQUEST/.test(c), `must surface the archive-request segment; ctx=${c}`);
+    assert.ok(/archive child-ar/.test(c), `must name this workspace's archive command; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ITEM 6: summary.archive_requested absent/undefined -> no surface (defensive read, back-compat)', () => {
+  const h = makeHome();
+  try {
+    writeRawSummary(h.home, REPO_KEY, {
+      'child-ar': { directUnread: 0, unread: 0 }, // no archive_requested field at all
+    });
+    const r = testHook(HOOK, archiveRequestPromptPayload(REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!/DEVSWARM ARCHIVE REQUEST/.test(ctx(r)), `undefined field must not surface; ctx=${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ITEM 6: another workspace\'s archive_requested does not leak onto this child', () => {
+  const h = makeHome();
+  try {
+    writeRawSummary(h.home, REPO_KEY, {
+      'other-child': { directUnread: 0, unread: 0, archive_requested: true },
+      'child-ar': { directUnread: 0, unread: 0 },
+    });
+    const r = testHook(HOOK, archiveRequestPromptPayload(REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
+    });
+    assert.strictEqual(r.status, 0);
+    assert.ok(!/DEVSWARM ARCHIVE REQUEST/.test(ctx(r)), `a DIFFERENT workspace's flag must not surface here; ctx=${ctx(r)}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ITEM 6: dedupe — NDJSON marker path and summary.archive_requested both true in the same turn -> segment appears once', () => {
+  const h = makeHome();
+  try {
+    writeRawSummary(h.home, REPO_KEY, {
+      'child-ar': { directUnread: 0, unread: 0, archive_requested: true },
+    });
+    seedChildInbox(h.home, 'child-ar', ['from parent: please [[ANTIHALL_ARCHIVE_REQUEST]] this workspace'], 0);
+    const r = testHook(HOOK, archiveRequestPromptPayload(REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-ar' },
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const count = (c.match(/DEVSWARM ARCHIVE REQUEST/g) || []).length;
+    assert.strictEqual(count, 1, `segment must appear exactly once, not double-pushed; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});

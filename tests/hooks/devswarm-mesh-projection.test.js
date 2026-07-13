@@ -232,9 +232,14 @@ test('8a. corrupt summary.json fails open to "no data" in BOTH parent-gate and p
     fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), '{not json');
     seedGateDescriptor(h.home, 'ignored-by-corrupt-summary'); // gate doesn't read this file anyway
 
-    const ir = testHook(PARENT_INBOX, inboxPayload(), { home: h.home, env: PRIMARY_ENV });
+    const ir = testHook(PARENT_INBOX, inboxPayload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(ir.status, 0);
-    assert.strictEqual(ir.stdout, '', `parent-inbox must fail open on a corrupt summary; stdout=${ir.stdout}`);
+    // v0.58: parent-inbox now ALWAYS emits the terse per-turn COMMS OVERRIDE
+    // re-assertion (unconditional) — "fails open to no data" means no OTHER
+    // segment appears, not that stdout is empty. See devswarm-parent-inbox.test.js.
+    const irCtx = (ir.json && ir.json.hookSpecificOutput && ir.json.hookSpecificOutput.additionalContext) || '';
+    assert.ok(!/DEVSWARM PARENT INBOX|DEVSWARM WORKSPACES|DEVSWARM ARCHIVE-READY/.test(irCtx),
+      `parent-inbox must fail open on a corrupt summary (override only); ctx=${irCtx}`);
 
     const gr = testHookRaw(PARENT_GATE, JSON.stringify(gatePayload()), { home: h.home, env: PRIMARY_ENV });
     assert.strictEqual(gr.status, 0, 'parent-gate must exit 0 regardless (it does not read the mesh summary for its blocking set)');
