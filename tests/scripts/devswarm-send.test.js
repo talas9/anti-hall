@@ -234,8 +234,18 @@ test('round trip: sending --to <the meshId a peer sent as its from> succeeds and
     // Seed BOTH sides' registry entries under their OWN builder-id (the read
     // partition each side actually reads) with their OWN worktreePath (the D19
     // derivation input) — simulating what Phase 5's re-keyed register will do.
-    seedRegistry(home, repoKeyMain, { id: primaryId, worktreePath: mainRepo, sessionId: 's-primary' });
-    seedRegistry(home, repoKeyMain, { id: childId, worktreePath: childWt, sessionId: 's-child' });
+    // worktreePath MUST be the git-RESOLVED toplevel (inst.resolveWorktree),
+    // matching what production's cmdRegisterPrimary always stores (devswarm.js
+    // cmdRegisterPrimary: `worktree = ... || inst.resolveWorktree(cwd)`) and what
+    // derivedId()/callerIdentity() derive from — NOT the raw pre-resolution repo
+    // dir. On win32, `git rev-parse --show-toplevel` expands a short-name %TEMP%
+    // path (what mkdtempSync/`git worktree add` hand back here) to its long-name
+    // form, while worktreeHash's plain fs.realpathSync does not further normalize
+    // it — so seeding the raw (short-name) path would hash to a DIFFERENT meshId
+    // than resolveMeshTarget expects, purely a test-setup artifact, not a
+    // production divergence (production never stores an unresolved worktree).
+    seedRegistry(home, repoKeyMain, { id: primaryId, worktreePath: inst.resolveWorktree(mainRepo), sessionId: 's-primary' });
+    seedRegistry(home, repoKeyMain, { id: childId, worktreePath: inst.resolveWorktree(childWt), sessionId: 's-child' });
 
     // Leg 1: Primary -> child, addressed by the child's meshId.
     const leg1 = cli.run(['send', '--to', childId, '--message', 'ping from primary'], ctx(home, { cwd: mainRepo }));
