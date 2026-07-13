@@ -78,7 +78,11 @@ the update.
   their `repoId` within one turn.
 - Docs sweep: `README.md`, `llms.txt`, `docs/KB-devswarm-hivecontrol.md`, `docs/KB.md`, and
   `skills/devswarm/SKILL.md` / `skills/update/SKILL.md` updated to match.
-- Full suite: 1486 tests, 1484 pass, 2 skipped (Windows-gated doctor no-ops), 0 fail.
+- **Cross-platform CI fixes.** `devswarm-child-gate`'s STRICT native `message-count` probe now
+  resolves the `hivecontrol` shim on Windows (`spawnSync` `shell` on win32 → PATHEXT); the
+  statusline base-command dispatcher no longer discards a successful result when writing stdin to
+  a non-reading child races to a benign `EPIPE` (POSIX timing).
+- Full suite: 1487 tests, 1485 pass, 2 skipped (Windows-gated doctor no-ops), 0 fail.
 
 ## 0.55.0
 

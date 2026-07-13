@@ -162,10 +162,18 @@ function readDurableUnread(env, home) {
 // `hivecontrol workspace message-count` spawn (finite timeout, NEVER read-messages
 // or monitor). Returns null on any error/timeout/non-zero exit/unparseable output
 // (unknown -> fail-open, never counted as unread).
+//
+// shell: win32-only. Node's spawnSync resolves a bare command name via Windows
+// CreateProcess, which (unlike cmd.exe) does NOT consult PATHEXT — an npm-style
+// `hivecontrol.cmd`/`.bat` shim (how JS-based global CLIs install on Windows)
+// silently fails to spawn without a shell to do that resolution. args stay a
+// fixed, hardcoded literal array (never user input), so shell:true here carries
+// no injection risk. POSIX is unaffected (shell stays false; plain PATH search).
 function probeNativeMessageCount(env) {
   try {
     const r = spawnSync('hivecontrol', ['workspace', 'message-count'], {
       encoding: 'utf8', timeout: MESSAGE_COUNT_TIMEOUT_MS, env,
+      shell: process.platform === 'win32',
     });
     if (r.error || r.status !== 0 || r.signal) return null;
     const m = String(r.stdout || '').trim().match(/-?\d+/);

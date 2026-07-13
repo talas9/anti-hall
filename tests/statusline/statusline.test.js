@@ -61,6 +61,30 @@ test('dispatcher uses a base-statusline.json command as line 1 when present', ()
   } finally { h.cleanup(); proj.cleanup(); }
 });
 
+test('dispatcher still uses the base command when a large stdin payload overflows the pipe buffer (benign EPIPE on write)', () => {
+  const h = makeStatusHome();
+  const proj = makeProjectDir();
+  try {
+    // Regression for a real CI flake (ubuntu-latest, all node majors, never
+    // mac/Windows): `echo` never reads stdin. If our write of stdinBytes to the
+    // child's stdin pipe doesn't fully land before the child exits — guaranteed
+    // here by a payload well past any OS pipe buffer (~64KB) — spawnSync reports
+    // a benign `result.error.code === 'EPIPE'` even though the child ran to
+    // completion with status 0 and correct stdout. runBaseCommand must not
+    // discard that successful result.
+    const baseCmd = 'echo BASELINE-LARGE';
+    fs.writeFileSync(path.join(h.antiHall, 'base-statusline.json'), JSON.stringify({ command: baseCmd }), 'utf8');
+    const r = run({
+      model: { display_name: 'Opus' },
+      context_window: { used_percentage: 20 },
+      _padding: 'x'.repeat(300000),
+    }, h.home, proj.dir);
+    const lines = stripAnsi(r.stdout).split('\n');
+    assert.strictEqual(lines[0], 'BASELINE-LARGE', 'line 1 = the base command stdout, despite the stdin-write EPIPE race');
+    assert.match(lines[1], /20% context/, 'line 2 still rendered');
+  } finally { h.cleanup(); proj.cleanup(); }
+});
+
 test('dispatcher falls through to own-dispatch when the base command fails', () => {
   const h = makeStatusHome();
   const proj = makeProjectDir();

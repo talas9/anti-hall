@@ -78,7 +78,14 @@ function runBaseCommand(baseCmd, stdinBytes) {
       maxBuffer: 256 * 1024,
     });
 
-    if (result.error || result.status !== 0) return null;
+    // A base command that never reads stdin (e.g. `echo foo`) can exit before
+    // Node finishes writing stdinBytes to its stdin pipe. That write then fails
+    // with a benign EPIPE — the child still ran to completion with a clean exit
+    // and correct stdout, but spawnSync surfaces the EPIPE on `result.error`
+    // regardless. Only treat this as a real failure when the error is not that
+    // benign write-race, or when the process didn't actually exit cleanly.
+    const benignStdinEpipe = !!result.error && result.error.code === 'EPIPE' && result.status === 0;
+    if ((result.error && !benignStdinEpipe) || result.status !== 0) return null;
 
     let out = result.stdout.toString('utf8');
     // Trim trailing newlines to exactly one (we will append line 2 after a single \n).
