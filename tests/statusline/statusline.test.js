@@ -61,17 +61,25 @@ test('dispatcher uses a base-statusline.json command as line 1 when present', ()
   } finally { h.cleanup(); proj.cleanup(); }
 });
 
-test('dispatcher still uses the base command when a large stdin payload overflows the pipe buffer (benign EPIPE on write)', () => {
+test('dispatcher still uses the base command when a large stdin payload overflows the pipe buffer (benign stdin-write race)', () => {
   const h = makeStatusHome();
   const proj = makeProjectDir();
   try {
-    // Regression for a real CI flake (ubuntu-latest, all node majors, never
-    // mac/Windows): `echo` never reads stdin. If our write of stdinBytes to the
-    // child's stdin pipe doesn't fully land before the child exits — guaranteed
-    // here by a payload well past any OS pipe buffer (~64KB) — spawnSync reports
-    // a benign `result.error.code === 'EPIPE'` even though the child ran to
-    // completion with status 0 and correct stdout. runBaseCommand must not
-    // discard that successful result.
+    // Regression for a real CI flake (originally seen on ubuntu-latest, all
+    // node majors; Windows hits the same race with a different errno — see
+    // below): `echo` never reads stdin. If our write of stdinBytes to the
+    // child's stdin pipe doesn't fully land before the child exits —
+    // guaranteed here by a payload well past any OS pipe buffer (~64KB on
+    // POSIX, much smaller on Windows named pipes) — spawnSync reports a
+    // benign write error on `result.error` even though the child ran to
+    // completion with status 0 and correct stdout. The errno is platform-
+    // specific: POSIX reports `EPIPE`; Windows' libuv pipe-write completion
+    // path routes a broken-pipe write through the generic error translator,
+    // which maps it to `EOF` instead (not the write-specific EPIPE override),
+    // while still capturing the child's real exit status independently.
+    // runBaseCommand must not discard that successful result on ANY platform
+    // — so this test asserts on the OUTCOME (base command output wins),
+    // never on the specific errno, and must pass unmodified on every OS.
     const baseCmd = 'echo BASELINE-LARGE';
     fs.writeFileSync(path.join(h.antiHall, 'base-statusline.json'), JSON.stringify({ command: baseCmd }), 'utf8');
     const r = run({
@@ -80,7 +88,7 @@ test('dispatcher still uses the base command when a large stdin payload overflow
       _padding: 'x'.repeat(300000),
     }, h.home, proj.dir);
     const lines = stripAnsi(r.stdout).split('\n');
-    assert.strictEqual(lines[0], 'BASELINE-LARGE', 'line 1 = the base command stdout, despite the stdin-write EPIPE race');
+    assert.strictEqual(lines[0], 'BASELINE-LARGE', 'line 1 = the base command stdout, despite the stdin-write race (errno varies by platform)');
     assert.match(lines[1], /20% context/, 'line 2 still rendered');
   } finally { h.cleanup(); proj.cleanup(); }
 });

@@ -80,8 +80,11 @@ the update.
   `skills/devswarm/SKILL.md` / `skills/update/SKILL.md` updated to match.
 - **Cross-platform CI fixes.** `devswarm-child-gate`'s STRICT native `message-count` probe now
   resolves the `hivecontrol` shim on Windows (`spawnSync` `shell` on win32 → PATHEXT); the
-  statusline base-command dispatcher no longer discards a successful result when writing stdin to
-  a non-reading child races to a benign `EPIPE` (POSIX timing).
+  statusline base-command dispatcher no longer discards a successful base command (exit 0 +
+  output) when writing our stdin to a non-reading child races to a benign broken-pipe error —
+  judged errno-agnostically by exit status and stdout presence, since the OS reports it
+  differently per platform (`EPIPE` on POSIX; `EOF` on Windows, where libuv maps
+  `ERROR_BROKEN_PIPE` → `UV_EOF`).
 - Full suite: 1487 tests, 1485 pass, 2 skipped (Windows-gated doctor no-ops), 0 fail.
 
 ## 0.55.0

@@ -79,13 +79,25 @@ function runBaseCommand(baseCmd, stdinBytes) {
     });
 
     // A base command that never reads stdin (e.g. `echo foo`) can exit before
-    // Node finishes writing stdinBytes to its stdin pipe. That write then fails
-    // with a benign EPIPE — the child still ran to completion with a clean exit
-    // and correct stdout, but spawnSync surfaces the EPIPE on `result.error`
-    // regardless. Only treat this as a real failure when the error is not that
-    // benign write-race, or when the process didn't actually exit cleanly.
-    const benignStdinEpipe = !!result.error && result.error.code === 'EPIPE' && result.status === 0;
-    if ((result.error && !benignStdinEpipe) || result.status !== 0) return null;
+    // Node finishes writing stdinBytes to its stdin pipe. That auxiliary stdin
+    // write can then fail even though the child itself ran to completion with
+    // a clean exit and correct stdout — spawnSync still surfaces the write
+    // failure on `result.error` regardless. The errno differs by platform:
+    // POSIX reports `EPIPE`. Windows does not — libuv's win/pipe.c write-
+    // completion path routes a broken-pipe write through the *generic* error
+    // translator (win/error.c: `ERROR_BROKEN_PIPE -> UV_EOF`, not the write-
+    // specific EPIPE override used elsewhere), and Node's spawn_sync.cc
+    // captures the child's real exit status independently of that pipe error
+    // (both land on the result object together) — so on Windows this same
+    // benign race surfaces as `result.error.code === 'EOF'` with
+    // `result.status === 0`, not `EPIPE`. Rather than chase every platform's
+    // errno, judge success by the outcome: the base command exited 0 AND
+    // produced stdout. A benign auxiliary stdin-write error on an otherwise-
+    // successful run is accepted regardless of its errno/platform; a genuine
+    // failure (non-zero/absent exit status, or a successful exit with no
+    // output at all, e.g. a spawn error like ENOENT) still fails open to
+    // own-dispatch.
+    if (result.status !== 0 || !result.stdout || result.stdout.length === 0) return null;
 
     let out = result.stdout.toString('utf8');
     // Trim trailing newlines to exactly one (we will append line 2 after a single \n).
