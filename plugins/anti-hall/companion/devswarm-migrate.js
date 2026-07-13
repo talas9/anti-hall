@@ -47,6 +47,7 @@ const store = require('./lib/devswarm-store.js');
 const { devswarmRoot, isSafeId } = require('./lib/liveness.js');
 const { readCursor } = require('./lib/devswarm-inbox-cursor.js');
 const { readDescriptors } = require('./devswarm-supervisor.js');
+const { repoKeyForWorktree } = require('./lib/devswarm-repokey.js');
 
 const MIGRATE_LOCK_STALE_MS = 5 * 60 * 1000;
 
@@ -328,12 +329,28 @@ function migrateToStore(opts) {
     }
 
     const verifiedAll = migrated.every((m) => m.error ? false : m.verified);
+
+    // Phase 3 (v0.57 mesh, D13): fold today's hash-keyed per-project stores
+    // into the shared repo-name-keyed layout. Wired AFTER both the global-
+    // store split (above) AND the per-descriptor migration loop (above) so it
+    // sees every legacy hash dir this SAME run may have just populated. Runs
+    // UNDER the migrate lock already held by this call (migrateHashStores
+    // ToRepoNameLocked never re-acquires it — see acquireMigrateLock).
+    // NON-DESTRUCTIVE + idempotent; legacy hash sources are left in place.
+    let repoKeyMigration = null;
+    try {
+      repoKeyMigration = migrateHashStoresToRepoNameLocked({ home, backend: o.backend, env: o.env, now: o.now, io: o.io });
+    } catch (e) {
+      repoKeyMigration = { ok: false, action: 'migrate-repokey', error: String(e && e.message || e) };
+    }
+
     return {
       ok: true, action: 'migrate', locked: true,
       backend: store.selectBackend({ backend: o.backend, env: o.env }),
       workspaces: migrated.length,
       migrated,
       globalSplit,
+      repoKeyMigration,
       verifiedAll,
       markRead,
     };
@@ -552,9 +569,194 @@ function migrateLegacyInbox(opts) {
   }
 }
 
+// ----- HASH -> REPO-NAME migration (v0.57 mesh Phase 3, PLAN-v0.57-mesh.md D13) -----
+// synthRepoKeyMigrateHash(id, seq, body) — a stable dedupe hash for a source row
+// that carries NO hash of its own (mirrors synthGlobalHash's shape/rationale, in
+// its OWN disjoint namespace so it can never collide with `native:`/`legacy:`/
+// `global-migrate:`/`mesh:`). `seq` is the row's PER-WORKSPACE positional index
+// from listMessages(id) (stable across re-runs: the source is append-only, so
+// existing indices never shift), so a re-run maps each source row to the SAME
+// synthesized hash and is therefore OR-IGNOREd (idempotent).
+function synthRepoKeyMigrateHash(id, seq, body) {
+  return 'repokey-migrate:' + crypto.createHash('sha256')
+    .update(String(id) + '\x00' + String(seq) + '\x00' + String(body))
+    .digest('hex');
+}
+
+// migrateHashStoresToRepoNameLocked({home,backend,env,now,io}) -> report. The
+// UNLOCKED body of the Phase-3 fold — callable from INSIDE migrateToStore
+// (which already holds the migrate lock) without a nested lock acquisition.
+// Reads ONLY legacy 8-hex `store/<hash>/` dirs (listStoreHashes shape:'legacy'
+// — D13/Fable P2: never iterates the repoKey stores this function itself
+// creates, so a re-run can't treat its own output as a source). For each such
+// store, resolves the repoKey PER WORKSPACE_ID (never once for the whole
+// store — D13/Opus-auditor P2: the legacy DEFAULT_HASH bucket can hold
+// workspaces from DIFFERENT repos) from THAT workspace's OWN registry
+// descriptor's worktreePath -> repoKeyForWorktree. A workspace with no
+// registry descriptor, no worktreePath, or an unresolvable git worktree
+// (e.g. a deleted worktree) is SKIPPED and reported with a reason — never
+// guessed at (D13). Copies messages (idempotent by hash; a null-hash source
+// row gets a stable synthesized hash), the registry entry, the cursor AND
+// broadcast_cursors value (max-merge, never regress), and the gates —
+// mirroring migrateGlobalStoreToPerProject's copy model — then re-derives
+// `summaries/<repoKey>.json`. NON-DESTRUCTIVE: `store/<hash>/` and
+// `summaries/<hash>.json` are left byte-for-byte intact as a backup.
+function migrateHashStoresToRepoNameLocked(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const F = (o.io && o.io.storeFs) || (o.io && o.io.fs) || fs;
+
+  const sources = store.listStoreHashes(home, F, { shape: 'legacy' });
+  const perWorkspace = [];
+  let copied = 0;
+
+  for (const hash of sources) {
+    let src;
+    try { src = store.openStore({ home, backend: o.backend, env: o.env, hash, fsi: F }); }
+    catch (e) { perWorkspace.push({ sourceHash: hash, skipped: true, reason: 'unreadable-source-store: ' + String(e && e.message || e) }); continue; }
+
+    try {
+      let registry = [];
+      let ids = [];
+      try { registry = src.listRegistry(); } catch (_) { /* fail-open: unreadable registry -> nothing resolvable from it */ }
+      try {
+        ids = (typeof src.listWorkspaceIds === 'function' ? src.listWorkspaceIds() : [])
+          .filter((id) => id !== store.BROADCAST_PARTITION_ID && isSafeId(id));
+      } catch (_) { /* fail-open */ }
+      const registryById = new Map(registry.filter((d) => d && isSafeId(d.id)).map((d) => [d.id, d]));
+
+      for (const id of ids) {
+        const descriptor = registryById.get(id) || null;
+        const worktreePath = descriptor && descriptor.worktreePath;
+        if (!worktreePath) {
+          perWorkspace.push({ id, sourceHash: hash, skipped: true, reason: 'no-registry-worktree-path' });
+          continue;
+        }
+
+        // NEVER GUESS (D13): a git spawn failure / unresolvable worktree (e.g.
+        // deleted) yields repoKey===null, and this workspace is skipped, not
+        // routed to a fallback key.
+        const repoKey = repoKeyForWorktree(worktreePath, {
+          io: { run: o.io && o.io.run, fs: (o.io && o.io.repokeyFs) || F },
+        });
+        if (!repoKey) {
+          perWorkspace.push({ id, sourceHash: hash, worktreePath, skipped: true, reason: 'unresolvable-git-worktree' });
+          continue;
+        }
+
+        let dst;
+        try { dst = store.openStore({ home, backend: o.backend, env: o.env, hash: repoKey, fsi: F }); }
+        catch (e) {
+          perWorkspace.push({ id, sourceHash: hash, repoKey, skipped: true, reason: 'unreadable-target-store: ' + String(e && e.message || e) });
+          continue;
+        }
+        try {
+          const rows = src.listMessages(id);
+          const wantHashes = [];
+          let wsCopied = 0;
+          for (const row of rows) {
+            const h = row.hash != null ? String(row.hash) : synthRepoKeyMigrateHash(id, row.seq, row.body);
+            wantHashes.push(h);
+            const r = dst.appendMeshRow({
+              workspaceId: id, ts: row.ts, hash: h, body: row.body,
+              sender: row.sender, recipient: row.recipient, mtype: row.mtype,
+              urgency: row.urgency, isHeartbeat: row.isHeartbeat,
+            });
+            if (r && r.inserted) { wsCopied++; copied++; }
+          }
+
+          // Copy the NON-message state too (Fable P1: messages-only leaves the
+          // shared registry EMPTY, which fail-closed addressing then rejects
+          // ALL direct sends against, and resets cursors so historical
+          // messages re-read as unread). Registry upsert is naturally
+          // idempotent; cursor/broadcast_cursors are MAX-MERGED so a re-run
+          // (or a later source folding into the SAME repoKey) never regresses
+          // a value already carried further along.
+          dst.upsertRegistry(descriptor);
+
+          const mergedCursor = Math.max(Number(dst.cursorValue(id)) || 0, Number(src.cursorValue(id)) || 0);
+          dst.setCursor(id, mergedCursor);
+
+          if (typeof dst.setBroadcastCursor === 'function') {
+            const srcBc = typeof src.broadcastCursorValue === 'function' ? (Number(src.broadcastCursorValue(id)) || 0) : 0;
+            const dstBc = typeof dst.broadcastCursorValue === 'function' ? (Number(dst.broadcastCursorValue(id)) || 0) : 0;
+            dst.setBroadcastCursor(id, Math.max(dstBc, srcBc));
+          }
+
+          const gates = src.currentGates(id);
+          for (const name of Object.keys(gates)) dst.setGate({ workspaceId: id, name, value: gates[name] });
+
+          // NO `workspaceId` here (unlike migrateGlobalStoreToPerProject's call
+          // above): `dst` is opened by an EXPLICIT `hash: repoKey`, not by a
+          // workspaceId, and `id` here is a mesh workspace_id — NOT the store's
+          // own key. Passing `workspaceId: id` would make deriveSummary
+          // recompute the summary's target hash via hashFromWorkspaceId(id),
+          // which for an id shaped like `primary-<8hex>` resolves back to the
+          // LEGACY 8-hex hash, silently writing the projection to the WRONG
+          // (pre-migration) summary file instead of summaries/<repoKey>.json.
+          // Omitting it falls back to `dst.hash` (the repoKey this store was
+          // actually opened with) — the correct target.
+          store.deriveSummary(dst, { home, env: o.env, now: o.now });
+
+          // Count-verify (D13): every source row this workspace contributed
+          // must now be present in the target under its (possibly synthesized)
+          // hash — read-back verified, robust to a FOLD (two source hashes
+          // both routing into the SAME repoKey, each verified independently
+          // for the rows IT contributed) and to an idempotent re-run (already
+          // present -> still verified, imported 0 new).
+          const have = new Set(dst.listMessages(id).map((m) => m.hash));
+          const verified = wantHashes.every((h) => have.has(h));
+
+          perWorkspace.push({
+            id, sourceHash: hash, repoKey, worktreePath,
+            imported: wsCopied, sourceCount: rows.length, targetCount: dst.messageCount(id),
+            verified,
+          });
+        } finally { dst.close(); }
+      }
+    } finally { try { src.close(); } catch (_) {} }
+  }
+
+  const verifiedAll = perWorkspace.every((w) => (w.skipped ? true : w.verified));
+  return {
+    ok: true, action: 'migrate-repokey',
+    backend: store.selectBackend({ backend: o.backend, env: o.env }),
+    sources: sources.length,
+    workspaces: perWorkspace.length,
+    copied,
+    migrated: perWorkspace,
+    verifiedAll,
+  };
+}
+
+// migrateHashStoresToRepoName({home,backend,env,now,io}) -> report. The
+// LOCK-ACQUIRING standalone entrypoint (CLI/test surface) for the Phase-3
+// fold — acquires the SAME migrate lock as migrateToStore (never a second,
+// independent lock) and delegates to migrateHashStoresToRepoNameLocked.
+// migrateToStore calls the Locked variant directly (it already holds the
+// lock); calling THIS function from inside an already-locked context would
+// deadlock/refuse (the lock is held by the SAME live pid, so it is never
+// stolen) — that is by design: two migrations must never race the same store.
+function migrateHashStoresToRepoName(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+
+  const release = (o.io && o.io.lock) ? o.io.lock(home) : acquireMigrateLock(home, o.io);
+  if (!release) {
+    return { ok: false, action: 'migrate-repokey', locked: false, error: 'another migration or consumer holds the migrate lock' };
+  }
+  try {
+    const report = migrateHashStoresToRepoNameLocked(o);
+    return Object.assign({ locked: true }, report);
+  } finally {
+    try { release(); } catch (_) {}
+  }
+}
+
 module.exports = {
   migrateToStore, migrateOne, migrateLegacyInbox, legacyLineHash, readInbox, readInboxLines,
   acquireMigrateLock, migrateLockPath,
   migrateGlobalStoreToPerProject, legacyGlobalStoreExists, synthGlobalHash,
   bodyMultisetFor, consumeBody, pendingLegacyLines, resolveMarkRead,
+  migrateHashStoresToRepoName, migrateHashStoresToRepoNameLocked, synthRepoKeyMigrateHash,
 };

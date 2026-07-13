@@ -51,6 +51,22 @@
 //   migrate        auto-migrate on-disk state (JSON registry + legacy NDJSON inbox)
 //                  into the store. Idempotent, NON-DESTRUCTIVE (never deletes source),
 //                  single-consumer-locked, count-verified before it reports success.
+//   send --to <meshId>|--broadcast --message TEXT [--from <id>] [--urgency ...]
+//                  v0.57 MESH (PLAN-v0.57-mesh.md Phase 4, D8): writes THIS project's
+//                  shared store/<repoKey>/ DIRECTLY — daemon-independent, ZERO
+//                  hivecontrol calls. `--from` is always re-derived from cwd
+//                  (callerIdentity, spoof-proof, D18/D19); an explicit --from must
+//                  MATCH or the send is rejected. `--to <meshId>` is fail-closed
+//                  against the shared registry (D12a) — an unregistered meshId is
+//                  rejected, never silently black-holed. A non-git cwd returns
+//                  {ok:false,reason:'no-project'} BEFORE any identity is derived
+//                  (D28 — never emits an env-derived `from`).
+//   roster [--ack]
+//                  ALLOW-listed projection read of this project's shared registry +
+//                  `working_on` + `recent[]` broadcast digest. `--ack` (alias of
+//                  `mesh read`, D23) advances the CALLER's own broadcast cursor to
+//                  head — the ONLY surface that clears `broadcastUnread`.
+//   mesh read      same as `roster --ack` (D23) — listed separately for discovery.
 //
 // Every id is isSafeId-gated before it is ever path.join'd. Fail-soft: a bad
 // subcommand / id reports { ok:false, error } + exit 2, never throws a stack.
@@ -69,6 +85,7 @@ const { pokeOrEscalate } = require('../companion/lib/recovery.js');
 const migrate = require('../companion/devswarm-migrate.js');
 const pull = require('../companion/lib/devswarm-pull.js');
 const inst = require('../companion/install-devswarm-ingest.js');
+const repokey = require('../companion/lib/devswarm-repokey.js');
 
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
 // looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
@@ -331,7 +348,49 @@ function cmdHeartbeat(id, flags, ctx) {
   const tmp = p + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(beat));
   fs.renameSync(tmp, p);
-  return { ok: true, action: 'heartbeat', id, heartbeat: beat };
+
+  // v0.57 mesh (PLAN-v0.57-mesh.md D11/D22, Phase 4 step 4): `--summary TEXT`
+  // ALSO broadcasts a mesh heartbeat row into THIS project's SHARED
+  // store/<repoKey>/ — `mtype='broadcast'` + `is_heartbeat=1` (D22; never a
+  // third mtype value), so it tiers as a broadcast and NEVER Stop-gates, and is
+  // EXCLUDED from `broadcastUnread` (else every peer's per-turn heartbeat would
+  // grow that counter forever). `sender` is set to `id` — the BUILDER-ID this
+  // heartbeat is FOR (matching `deriveSummary`'s `working_on` match on
+  // `sender===d.id`) — deliberately NOT `callerIdentity()`/meshId, a DIFFERENT
+  // addressing handle (D19). The summary text is caller-supplied ONLY, never
+  // defaulted/fabricated (D11 heartbeat authorship rule); omitting --summary is
+  // a legacy no-op (back-compat, no mesh write at all). A non-git cwd (repoKey
+  // null, O-D5 "mesh dormant") is NOT an error — the base heartbeat above still
+  // succeeds; `meshBroadcast` reports why the mesh write was skipped.
+  let meshBroadcast = null;
+  const summaryText = one(flags, 'summary');
+  if (summaryText !== undefined) {
+    const cwd = ctx.cwd || process.cwd();
+    const repoKey = repokey.repoKeyForWorktree(cwd);
+    if (!repoKey) {
+      meshBroadcast = { ok: false, reason: 'no-project' };
+    } else {
+      const urgencyRaw = one(flags, 'urgency');
+      const urgency = urgencyRaw !== undefined ? urgencyRaw : 'low';
+      if (!ALLOWED_URGENCY.includes(urgency)) {
+        meshBroadcast = {
+          ok: false,
+          error: 'heartbeat --urgency must be one of ' + ALLOWED_URGENCY.join('|'),
+          allowed: ALLOWED_URGENCY.slice(),
+        };
+      } else {
+        const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+        try {
+          const fields = { from: id, to: null, type: 'broadcast', message: String(summaryText), timestamp: now, urgency };
+          const hash = store.meshMessageHash(fields);
+          const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash, isHeartbeat: true }));
+          store.deriveSummary(s, { home, env: ctx.env, now });
+          meshBroadcast = { ok: true, sent: !!res.inserted, seq: res.seq, repoKey };
+        } finally { s.close(); }
+      }
+    }
+  }
+  return { ok: true, action: 'heartbeat', id, heartbeat: beat, meshBroadcast };
 }
 
 // cmdInboxPull(id, flags, ctx) — child-side reception drain. AUTO-ENSURES the
@@ -687,6 +746,181 @@ function cmdMigrate(ctx) {
   return migrate.migrateToStore({ home: ctx.home, backend: ctx.backend, env: ctx.env, now: ctx.now });
 }
 
+// ============================================================================
+// v0.57 mesh CLI surface (send / roster / mesh read) — PLAN-v0.57-mesh.md
+// Phase 4. A mesh send writes THIS project's shared store/<repoKey>/ DIRECTLY
+// (D8, daemon-independent — decouples send availability from ingest-daemon
+// health; ZERO hivecontrol calls) via the store-layer mesh primitives already
+// shipped in Phase 2 (meshMessageHash/appendMeshMessage/deriveSummary).
+// ============================================================================
+const ALLOWED_URGENCY = ['low', 'normal', 'high', 'urgent'];
+
+// hasFlag(flags, name) -> true iff `--name` was passed at all (bare boolean OR
+// with a value) — distinct from `one()`, which returns undefined for a bare
+// boolean flag (`--broadcast` with no value).
+function hasFlag(flags, name) {
+  return !!(flags && Array.isArray(flags[name]) && flags[name].length > 0);
+}
+
+// resolveMeshTarget(storeHandle, meshId) -> the registry descriptor whose
+// worktree-derived meshId matches `meshId`, or null (fail-closed, D12a).
+//
+// meshId is NEVER stored as a schema field (Blast-radius note, D19): it is
+// recomputed on every lookup from each registry entry's `worktreePath` via the
+// SAME hardened primitive `callerIdentity` uses for a resolved worktree
+// (`inst.primaryWorkspaceId`) — so a sender and the address book derive a given
+// worktree's meshId IDENTICALLY, and the address book can never be env-spoofed
+// (it is derived from the REGISTERED worktree path, never from any caller's
+// env). This is the D19 join: `--to <meshId>` resolves to the target's real
+// read partition (`d.id`, the builder-id), NOT the meshId itself.
+function resolveMeshTarget(storeHandle, meshId) {
+  if (!meshId) return null;
+  for (const d of storeHandle.listRegistry()) {
+    if (!d || !d.worktreePath) continue;
+    if (inst.primaryWorkspaceId(d.worktreePath) === String(meshId)) return d;
+  }
+  return null;
+}
+
+// cmdSend(flags, ctx) — send --from <id> --to <meshId>|--broadcast --message
+// TEXT [--urgency low|normal|high|urgent]. Opens store/<repoKey>/ directly.
+//
+// ORDERING PIN (D28/Fable P2): repoKey is resolved from cwd FIRST — a null
+// repoKey (non-git cwd) returns {ok:false,reason:'no-project'} BEFORE any
+// identity derivation, so a spoofed DEVSWARM_BUILDER_ID on a non-git cwd can
+// NEVER emit an env-derived `from` (callerIdentity is never even reached on
+// that path — `no-project` is returned first, unconditionally).
+function cmdSend(flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, reason: 'no-project' };
+
+  // `from` is ALWAYS the hardened, cwd-derived identity (D18/D19) — never raw
+  // env. An explicit --from flag is accepted ONLY as a redundant declaration
+  // that must MATCH the derived identity; a mismatching one is spoofing and is
+  // rejected outright (D18 guard).
+  const from = callerIdentity(ctx.env, cwd);
+  const fromFlag = one(flags, 'from');
+  if (fromFlag !== undefined && fromFlag !== from) {
+    return {
+      ok: false,
+      error: 'send --from ' + JSON.stringify(fromFlag) + ' does not match the '
+        + 'caller\'s derived identity ' + JSON.stringify(from) + ' — spoofing rejected',
+    };
+  }
+
+  const toFlag = one(flags, 'to');
+  const broadcastFlag = hasFlag(flags, 'broadcast') || one(flags, 'type') === 'broadcast';
+  if (toFlag !== undefined && broadcastFlag) {
+    return { ok: false, error: 'send accepts --to <meshId> OR --broadcast, not both' };
+  }
+  if (toFlag === undefined && !broadcastFlag) {
+    return { ok: false, error: 'send requires --to <meshId> or --broadcast' };
+  }
+  const type = broadcastFlag ? 'broadcast' : 'direct';
+
+  const message = one(flags, 'message');
+  if (!message) return { ok: false, error: 'send requires --message TEXT' };
+
+  const urgencyRaw = one(flags, 'urgency');
+  const urgency = urgencyRaw !== undefined ? urgencyRaw : 'normal';
+  if (!ALLOWED_URGENCY.includes(urgency)) {
+    return {
+      ok: false,
+      error: 'send --urgency must be one of ' + ALLOWED_URGENCY.join('|'),
+      allowed: ALLOWED_URGENCY.slice(),
+    };
+  }
+
+  if (type === 'direct' && toFlag === from) {
+    return { ok: false, error: 'send --to cannot address the sender itself' };
+  }
+
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  try {
+    let targetPartition = null;
+    if (type === 'direct') {
+      // Fail-closed addressing (D12a): a --to naming a meshId not present in the
+      // shared registry is rejected outright — never a silent black-hole.
+      const target = resolveMeshTarget(s, toFlag);
+      if (!target) {
+        return {
+          ok: false, reason: 'unregistered-recipient',
+          error: 'send --to ' + JSON.stringify(toFlag) + ' is not a registered mesh workspace',
+        };
+      }
+      // The row's workspace_id is the target's REAL read partition — its
+      // builder-id (target.id), NOT the meshId (D19 child-delivery join): this
+      // is what lands a mesh direct in the exact partition the recipient (or a
+      // child's builder-id read surface, D26) actually reads.
+      targetPartition = target.id;
+    }
+    const fields = {
+      from, to: type === 'direct' ? targetPartition : null,
+      type, message: String(message), timestamp: now, urgency,
+    };
+    const hash = store.meshMessageHash(fields);
+    const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+    store.deriveSummary(s, { home, env: ctx.env, now });
+    return {
+      ok: true, action: 'send', from,
+      to: type === 'direct' ? toFlag : null, type, urgency,
+      sent: !!res.inserted, seq: res.seq,
+    };
+  } finally { s.close(); }
+}
+
+// cmdRoster(flags, ctx) — ALLOW-listed projection read of THIS project's
+// shared registry + `working_on` (D3 roster surface). Derives a FRESH summary
+// (never a stale cache) from store/<repoKey>/, keyed purely off cwd — no id
+// argument, project-scoped like `send`/`mesh read`.
+function cmdRoster(flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, reason: 'no-project' };
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  let sum;
+  try { sum = store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); }
+  finally { s.close(); }
+  const workspaces = Object.values(sum.workspaces || {}).map((w) => ({
+    id: w.id, working_on: w.working_on, directUnread: w.directUnread,
+    broadcastUnread: w.broadcastUnread, urgencyMax: w.urgencyMax,
+  }));
+  return { ok: true, action: 'roster', repoKey, count: workspaces.length, workspaces, recent: sum.recent || [] };
+}
+
+// cmdMeshRead(flags, ctx) — a.k.a. `roster --ack` (D23). Lists the CALLER's
+// unseen NON-heartbeat broadcasts (its own broadcast_cursors join point up to
+// the shared broadcast partition's current `seq` head), then advances the
+// CALLER's OWN broadcast_cursors to head — the ONLY surface that clears
+// `broadcastUnread`. `deriveSummary` re-scans only the bounded broadcast
+// partition tail (recentCap), never an unbounded history.
+function cmdMeshRead(flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, reason: 'no-project' };
+  const from = callerIdentity(ctx.env, cwd);
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  try {
+    const cursor = typeof s.broadcastCursorValue === 'function' ? s.broadcastCursorValue(from) : 0;
+    const all = typeof s.listMessages === 'function' ? s.listMessages(store.BROADCAST_PARTITION_ID) : [];
+    // Filtered on the PHYSICAL mesh `seq` (storeSeq), matching broadcast_cursors'
+    // own semantics (deriveSummary's broadcastUnread, D22/D23) — NOT the
+    // per-workspace positional `sinceCursor` listMessages() otherwise supports.
+    const broadcasts = all
+      .filter((r) => !r.isHeartbeat && Number.isFinite(r.storeSeq) && r.storeSeq > cursor)
+      .map((r) => ({ from: r.sender, message: r.body, timestamp: r.ts, urgency: r.urgency, seq: r.storeSeq }));
+    const newCursor = typeof s.advanceBroadcastCursor === 'function' ? s.advanceBroadcastCursor(from) : cursor;
+    store.deriveSummary(s, { home, env: ctx.env, now });
+    return { ok: true, action: 'mesh-read', from, acked: true, newCursor, count: broadcasts.length, broadcasts };
+  } finally { s.close(); }
+}
+
 // ----- dispatch -----
 // run(argv, ctx) -> { code, result }. ctx: { home, env, backend, now } (all
 // injectable for tests). NEVER throws — any internal error becomes a
@@ -766,9 +1000,27 @@ function run(argv, ctx0) {
       case 'migrate': {
         return { code: 0, result: cmdMigrate(ctx) };
       }
+      case 'send': {
+        const r = cmdSend(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'roster': {
+        // `roster --ack` is an alias of `mesh read` (D23) — both clear the
+        // caller's own broadcastUnread; plain `roster` is a read-only projection.
+        const r = hasFlag(flags, 'ack') ? cmdMeshRead(flags, ctx) : cmdRoster(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'mesh': {
+        const sub = positionals[1];
+        if (sub === 'read') {
+          const r = cmdMeshRead(flags, ctx);
+          return { code: r.ok ? 0 : 2, result: r };
+        }
+        return { code: 2, result: { ok: false, error: 'unknown mesh subcommand: ' + JSON.stringify(sub || '') + ' (read)' } };
+      }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|archive-request|migrate)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|archive-request|migrate|send|roster|mesh)' } };
     }
   } catch (e) {
     return { code: 2, result: { ok: false, error: String(e && e.message || e) } };
