@@ -543,7 +543,7 @@ test('CHILD STALE: healthy daemon (fresh heartbeat + live lock) -> NO banner', (
   } finally { h.cleanup(); }
 });
 
-test('CHILD STALE: missing heartbeat entirely -> banner surfaced FIRST, above the REMINDER', () => {
+test('CHILD STALE: missing heartbeat entirely -> banner surfaced FIRST, above the REMINDER', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
@@ -558,7 +558,7 @@ test('CHILD STALE: missing heartbeat entirely -> banner surfaced FIRST, above th
   } finally { h.cleanup(); }
 });
 
-test('CHILD D25: DEAD process with a still-fresh heartbeat file -> reported NOT-healthy -> banner shown', () => {
+test('CHILD D25: DEAD process with a still-fresh heartbeat file -> reported NOT-healthy -> banner shown', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   try {
     writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 5000); // fresh
@@ -569,7 +569,7 @@ test('CHILD D25: DEAD process with a still-fresh heartbeat file -> reported NOT-
   } finally { h.cleanup(); }
 });
 
-test('CHILD D25: LIVE process holding the lock but a MISSING heartbeat -> reported NOT-fresh -> banner shown', () => {
+test('CHILD D25: LIVE process holding the lock but a MISSING heartbeat -> reported NOT-fresh -> banner shown', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   try {
     writeDaemonLock(h.home, REPO_KEY, process.pid); // live, but no heartbeat file

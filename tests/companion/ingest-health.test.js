@@ -47,7 +47,7 @@ test('daemonHealth: fresh heartbeat + live-pid lock -> healthy', () => {
     const now = Date.now();
     writeHeartbeat(home, 'proj-abc', now - 5000);
     writeLock(home, 'proj-abc', 4242);
-    const r = health.daemonHealth(home, 'proj-abc', { now, io: { isAlive: () => true } });
+    const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'linux', io: { isAlive: () => true } });
     assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true });
   } finally { rm(home); }
 });
@@ -58,7 +58,7 @@ test('daemonHealth D25 failure mode 1: DEAD process with a still-fresh heartbeat
     const now = Date.now();
     writeHeartbeat(home, 'proj-abc', now - 5000); // fresh
     writeLock(home, 'proj-abc', 4242); // present, but the holder is dead
-    const r = health.daemonHealth(home, 'proj-abc', { now, io: { isAlive: () => false } });
+    const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'linux', io: { isAlive: () => false } });
     assert.strictEqual(r.status, 'stale');
     assert.strictEqual(r.fresh, true);
     assert.strictEqual(r.liveLock, false);
@@ -71,7 +71,7 @@ test('daemonHealth D25 failure mode 2: LIVE process with a MISSING heartbeat -> 
     const now = Date.now();
     // No heartbeat file written at all.
     writeLock(home, 'proj-abc', 4242);
-    const r = health.daemonHealth(home, 'proj-abc', { now, io: { isAlive: () => true } });
+    const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'linux', io: { isAlive: () => true } });
     assert.strictEqual(r.status, 'stale');
     assert.strictEqual(r.fresh, false);
     assert.strictEqual(r.liveLock, true);
@@ -84,7 +84,7 @@ test('daemonHealth: heartbeat older than the staleness window -> stale even with
     const now = Date.now();
     writeHeartbeat(home, 'proj-abc', now - (health.HEARTBEAT_STALE_MS + 60000));
     writeLock(home, 'proj-abc', 4242);
-    const r = health.daemonHealth(home, 'proj-abc', { now, io: { isAlive: () => true } });
+    const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'linux', io: { isAlive: () => true } });
     assert.strictEqual(r.status, 'stale');
     assert.strictEqual(r.fresh, false);
   } finally { rm(home); }
@@ -100,7 +100,7 @@ test('daemonHealth: malformed heartbeat/lock JSON -> both signals fail closed, n
     fs.mkdirSync(path.dirname(p2), { recursive: true });
     fs.writeFileSync(p2, '{also not json');
     assert.doesNotThrow(() => {
-      const r = health.daemonHealth(home, 'proj-abc', { now: Date.now() });
+      const r = health.daemonHealth(home, 'proj-abc', { now: Date.now(), platform: 'linux' });
       assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false });
     });
   } finally { rm(home); }
@@ -109,7 +109,7 @@ test('daemonHealth: malformed heartbeat/lock JSON -> both signals fail closed, n
 test('daemonHealth: repoKey null -> stale, no throw (nothing to check)', () => {
   const home = tmpHome();
   try {
-    const r = health.daemonHealth(home, null, { now: Date.now() });
+    const r = health.daemonHealth(home, null, { now: Date.now(), platform: 'linux' });
     assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false });
   } finally { rm(home); }
 });
@@ -164,6 +164,7 @@ test('selfHeal: healthy daemon -> daemonHealthy:true, no spawn attempted', () =>
     const ctx = {
       home, env: ACTIVE_ENV, cwd: repo, now: Date.now(),
       io: {
+        platform: 'linux',
         resolveWorktree: () => repo,
         repoKeyForWorktree: () => 'proj-x',
         health: { isAlive: () => true },
@@ -186,6 +187,7 @@ test('selfHeal: stale + gated (DevSwarm active + resolved worktree) + cooldown e
     const ctx = {
       home, env: ACTIVE_ENV, cwd: repo, now: Date.now(),
       io: {
+        platform: 'linux',
         resolveWorktree: () => repo,
         repoKeyForWorktree: () => 'proj-y',
         spawnInstaller: () => { spawned++; },
@@ -208,6 +210,7 @@ test('selfHeal: a SECOND stale send within the cooldown window -> no re-spawn', 
     const ctx = (at) => ({
       home, env: ACTIVE_ENV, cwd: repo, now: at,
       io: {
+        platform: 'linux',
         resolveWorktree: () => repo,
         repoKeyForWorktree: () => 'proj-z',
         spawnInstaller: () => { spawned++; },
@@ -236,6 +239,7 @@ test('selfHeal: a non-git cwd fails the gate -> {daemonWarning:"no-worktree"}, n
     const ctx = {
       home, env: ACTIVE_ENV, cwd: notGit, now: Date.now(),
       io: {
+        platform: 'linux',
         resolveWorktree: () => null,
         spawnInstaller: () => { spawned++; },
       },
@@ -274,6 +278,7 @@ test('selfHeal: stale but DevSwarm NOT active (env gate closed) -> warns, does n
     const ctx = {
       home, env: {}, cwd: repo, now: Date.now(), // no DEVSWARM_REPO_ID -> isDevswarmActive() false
       io: {
+        platform: 'linux',
         resolveWorktree: () => repo,
         repoKeyForWorktree: () => 'proj-v',
         spawnInstaller: () => { spawned++; },
@@ -293,6 +298,7 @@ test('selfHeal: never throws even if the installer spawn itself throws (fail-ope
     const ctx = {
       home, env: ACTIVE_ENV, cwd: repo, now: Date.now(),
       io: {
+        platform: 'linux',
         resolveWorktree: () => repo,
         repoKeyForWorktree: () => 'proj-u',
         spawnInstaller: () => { throw new Error('boom'); },
@@ -309,6 +315,7 @@ test('withSelfHeal: merges heal fields onto the action result without clobbering
     const ctx = {
       home, env: ACTIVE_ENV, cwd: repo, now: Date.now(),
       io: {
+        platform: 'linux',
         resolveWorktree: () => repo,
         repoKeyForWorktree: () => 'proj-t',
         spawnInstaller: () => {},
