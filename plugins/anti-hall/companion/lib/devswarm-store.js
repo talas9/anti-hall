@@ -107,14 +107,25 @@ function summaryPath(home, workspaceId) {
   return summaryPathForHash(home, hashFromWorkspaceId(workspaceId));
 }
 
-// listStoreHashes(home, fsi) -> string[] of per-project store subdir names present
-// under store/ (each an 8-hex hash). Fail-open [] on any read error. Used by doctor
-// to ENUMERATE per-project stores instead of one global file.
-function listStoreHashes(home, fsi) {
+// listStoreHashes(home, fsi, opts) -> string[] of per-project store subdir names
+// present under store/. Fail-open [] on any read error. Used by doctor/migration to
+// ENUMERATE per-project stores instead of one global file.
+//   Matches the LEGACY 8-hex shape (^[0-9a-fA-F]{8}$) AND, additively (D20), the
+//   NEW repoKey shape (^[a-z0-9-]{1,40}-[0-9a-f]{6}$) so doctor/enumeration is not
+//   blind to a post-migration repoKey store. Disjoint by construction (a repoKey
+//   always contains a literal '-' separator; a legacy hash never does).
+//   opts.shape === 'legacy' restricts to ONLY the 8-hex shape (D13/Phase 3 —
+//   migration source enumeration must never iterate the repoKey stores IT creates,
+//   avoiding self-migration noise / target==source double-open).
+const LEGACY_HASH_RE = /^[0-9a-fA-F]{8}$/;
+const REPOKEY_SHAPE_RE = /^[a-z0-9-]{1,40}-[0-9a-f]{6}$/;
+function listStoreHashes(home, fsi, opts) {
   const F = fsi || fs;
+  const o = opts || {};
   let names = [];
   try { names = F.readdirSync(storeRootDir(home)); } catch (_) { return []; }
-  return names.filter((n) => /^[0-9a-fA-F]{8}$/.test(n));
+  if (o.shape === 'legacy') return names.filter((n) => LEGACY_HASH_RE.test(n));
+  return names.filter((n) => LEGACY_HASH_RE.test(n) || REPOKEY_SHAPE_RE.test(n));
 }
 
 // ----- config -----
@@ -149,6 +160,86 @@ function sqliteAvailable() {
 }
 
 // ============================================================================
+// Mesh (v0.57) shared constants — PLAN-v0.57-mesh.md D3-D7, D22, D23.
+// ============================================================================
+// BROADCAST_PARTITION_ID — the single shared `workspace_id` every broadcast /
+// heartbeat row lands in (D3). NOT a real workspace: it fails isSafeId (contains
+// '*'), so it can never be path.join'd into a liveness/registry file path, and
+// deriveSummary explicitly skips it if it were ever (mis-)registered.
+const BROADCAST_PARTITION_ID = '*mesh-broadcast*';
+const URGENCY_RANK = { low: 0, normal: 1, high: 2, urgent: 3 };
+const DEFAULT_RECENT_CAP = 50; // O-D8 (broadcast retention) UNRESOLVED — sane default, overridable via opts.recentCap.
+
+// ensureMessagesMeshColumns(db) — additive migration for a `messages` table that
+// pre-dates the v0.57 mesh columns (an on-disk store created by <=0.56). A brand
+// new table already has them via CREATE TABLE; this is a no-op there. For an
+// EXISTING table missing them, ALTER TABLE ADD COLUMN (all nullable — never a
+// destructive rewrite, never touches an existing row's data).
+function ensureMessagesMeshColumns(db) {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(messages);').all().map((r) => String(r.name)); } catch (_) { return; }
+  const need = [
+    ['sender', 'TEXT'], ['recipient', 'TEXT'], ['mtype', 'TEXT'],
+    ['urgency', 'TEXT'], ['is_heartbeat', 'INTEGER'], ['seq', 'INTEGER'],
+  ];
+  for (const [name, type] of need) {
+    if (!cols.includes(name)) {
+      try { db.exec('ALTER TABLE messages ADD COLUMN ' + name + ' ' + type + ';'); } catch (_) { /* best-effort, fail-open */ }
+    }
+  }
+}
+
+// meshMessageHash(fields) -> 'mesh:<sha256>'. The DISJOINT dedupe namespace for
+// STORE-DIRECT mesh sends (D7) — over sender+recipient+mtype+urgency+message+
+// timestamp, so two DISTINCT broadcasts never collapse under UNIQUE(hash)/journal
+// dedupe. The 'mesh:' prefix keeps this namespace structurally disjoint from the
+// EXISTING native 'native:' messageHash (devswarm-ingest.js) — no cross-path
+// collision is even possible, by construction.
+function meshMessageHash(fields) {
+  const f = fields || {};
+  const parts = [
+    f.from != null ? String(f.from) : '',
+    f.to != null ? String(f.to) : '',
+    f.type != null ? String(f.type) : '',
+    f.urgency != null ? String(f.urgency) : '',
+    f.message != null ? String(f.message) : '',
+    f.timestamp != null ? String(f.timestamp) : '',
+  ].join(' ');
+  return 'mesh:' + crypto.createHash('sha256').update(parts).digest('hex');
+}
+
+// appendMeshMessage(store, {from,to,type,message,timestamp,urgency,hash,isHeartbeat})
+// -> {inserted, seq}. The WIRE-CONTRACT-to-physical-row mapping (D3): a DIRECT row's
+// workspace_id is the CALLER-SUPPLIED `to` (the target's real read partition per D19
+// — the caller resolves meshId -> builder-id partition BEFORE calling this; this
+// layer does not know about meshId resolution) so the EXISTING per-workspace
+// messageCount/listMessages/cursor machinery works verbatim as that recipient's
+// inbox. A BROADCAST (or HEARTBEAT, D22) row's workspace_id is the single shared
+// BROADCAST_PARTITION_ID. `hash` is an EXPLICIT parameter (D7) — the caller decides
+// the dedupe namespace: a store-direct mesh send passes `meshMessageHash(fields)`;
+// a native-drained row (Phase 5) passes the EXISTING `native:`-prefixed
+// `messageHash`. `isHeartbeat` sets the orthogonal D22 marker; it does NOT change
+// `mtype` (a heartbeat is `mtype='broadcast'` + `is_heartbeat=1`, never a third
+// mtype value).
+function appendMeshMessage(store, fields) {
+  const f = fields || {};
+  const type = f.type === 'broadcast' ? 'broadcast' : 'direct';
+  const from = f.from != null ? String(f.from) : null;
+  const to = f.to != null ? String(f.to) : null;
+  const message = f.message != null ? String(f.message) : '';
+  const ts = Number.isFinite(f.timestamp) ? f.timestamp : Date.now();
+  const urgency = f.urgency != null ? String(f.urgency) : 'normal';
+  const hash = f.hash != null ? String(f.hash) : null;
+  const isHeartbeat = !!f.isHeartbeat;
+  const workspaceId = type === 'direct' ? to : BROADCAST_PARTITION_ID;
+  const recipient = type === 'direct' ? to : null;
+  return store.appendMeshRow({
+    workspaceId, ts, hash, body: message,
+    sender: from, recipient, mtype: type, urgency, isHeartbeat,
+  });
+}
+
+// ============================================================================
 // SQLite backend (WAL). Touches a real db file (DatabaseSync has no fs injection);
 // tests point it at an isolated temp HOME.
 // ============================================================================
@@ -156,9 +247,25 @@ function openSqlite(home, workspaceId, opts) {
   const o = opts || {};
   const hash = o.hash != null ? String(o.hash) : hashFromWorkspaceId(workspaceId);
   const dir = o.dir || storeDirForHash(home, hash);
+  // busy_timeout (D6 — mesh writer-availability): mesh concentrates MANY concurrent
+  // writer PROCESSES on one shared db (daemon drain, per-turn heartbeats, mesh
+  // sends, registry upserts). node:sqlite's DatabaseSync throws SQLITE_BUSY
+  // IMMEDIATELY on writer contention with no busy handler set; PRAGMA busy_timeout
+  // makes a contended writer WAIT (bounded) instead of throwing. Overridable
+  // (opts.busyTimeoutMs) so tests can drive contention deterministically.
+  const busyTimeoutMs = Number.isFinite(o.busyTimeoutMs) ? o.busyTimeoutMs : 3000;
   const { DatabaseSync } = require('node:sqlite');
   fs.mkdirSync(dir, { recursive: true });
   const db = new DatabaseSync(path.join(dir, 'devswarm.db'));
+  // busy_timeout MUST be the FIRST statement on this connection, BEFORE even the
+  // journal_mode/foreign_keys pragmas and the CREATE TABLE IF NOT EXISTS calls
+  // below — those can ALSO throw SQLITE_BUSY under contention (e.g. two processes
+  // opening the same file for the first time, or a concurrent writer mid-WAL-
+  // checkpoint) since busy_timeout only protects statements issued AFTER it takes
+  // effect on this connection. Verified live: setting it after journal_mode still
+  // let 'PRAGMA journal_mode = WAL' itself throw 'database is locked' under a
+  // genuine two-process race.
+  db.exec('PRAGMA busy_timeout = ' + Math.max(0, Math.floor(busyTimeoutMs)) + ';');
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(
@@ -168,9 +275,20 @@ function openSqlite(home, workspaceId, opts) {
     + ' ts INTEGER NOT NULL,'
     + ' hash TEXT,'
     + ' body TEXT,'
+    // mesh columns (v0.57, D3/D6/D7/D22) — ALL NULLABLE so a pre-existing table
+    // (created before this ALTER) and pre-migration rows stay valid; a legacy row
+    // simply reads back with these as null (edge_case: mtype null -> treated as a
+    // legacy direct by any mesh-aware reader).
+    + ' sender TEXT,'
+    + ' recipient TEXT,'
+    + ' mtype TEXT,'
+    + ' urgency TEXT,'
+    + ' is_heartbeat INTEGER,'
+    + ' seq INTEGER,'
     + ' UNIQUE(hash)'
     + ');'
   );
+  ensureMessagesMeshColumns(db); // additive migration for a table that pre-dates the mesh columns
   db.exec(
     'CREATE TABLE IF NOT EXISTS registry ('
     + ' id TEXT PRIMARY KEY,'
@@ -188,6 +306,14 @@ function openSqlite(home, workspaceId, opts) {
     + ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
     + ' workspace_id TEXT NOT NULL, gate_name TEXT NOT NULL,'
     + ' value INTEGER NOT NULL, set_at INTEGER, set_by TEXT'
+    + ');'
+  );
+  // broadcast_cursors (D5) — a SEPARATE additive table (NOT a change to `cursors`'
+  // PRIMARY KEY, which would be a migration hazard). Mirrors `cursors` exactly;
+  // each workspace tracks broadcasts-seen independently of its direct-inbox cursor.
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS broadcast_cursors ('
+    + ' workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER'
     + ');'
   );
 
@@ -216,6 +342,33 @@ function openSqlite(home, workspaceId, opts) {
       );
       const r = stmt.run(String(m.workspaceId), ts, hash, body);
       return { inserted: r.changes > 0 };
+    },
+    // appendMeshRow(m) -> {inserted, seq}. The mesh-aware insert (D3/D6/D7/D22) —
+    // called by the top-level appendMeshMessage(), never directly by a consumer.
+    // `seq` is computed INSIDE this single INSERT statement (D6 collision-safety):
+    // sqlite's writer serialization makes the COALESCE(MAX(seq),0)+1 subquery
+    // atomic across concurrent writer PROCESSES — a JS read-MAX-then-bind across
+    // processes would race and could assign a DUPLICATE seq, which is FORBIDDEN.
+    // COALESCE handles the all-NULL legacy-rows-only case (bare MAX() would be
+    // NULL, poisoning every subsequent seq).
+    appendMeshRow(m) {
+      const hash = (m && m.hash != null) ? String(m.hash) : null;
+      const ts = Number.isFinite(m && m.ts) ? m.ts : Date.now();
+      const body = (m && m.body != null) ? String(m.body) : '';
+      const sender = m && m.sender != null ? String(m.sender) : null;
+      const recipient = m && m.recipient != null ? String(m.recipient) : null;
+      const mtype = m && m.mtype != null ? String(m.mtype) : null;
+      const urgency = m && m.urgency != null ? String(m.urgency) : null;
+      const isHeartbeat = m && m.isHeartbeat ? 1 : 0;
+      const stmt = db.prepare(
+        'INSERT ' + (hash !== null ? 'OR IGNORE ' : '')
+        + 'INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, seq)'
+        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));'
+      );
+      const r = stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat);
+      if (r.changes <= 0) return { inserted: false, seq: null }; // dedupe hit (OR IGNORE)
+      const got = db.prepare('SELECT seq FROM messages WHERE id = ?;').get(Number(r.lastInsertRowid));
+      return { inserted: true, seq: got ? Number(got.seq) : null };
     },
     upsertRegistry(d) {
       db.prepare(
@@ -246,6 +399,32 @@ function openSqlite(home, workspaceId, opts) {
         Number.isFinite(g && g.setAt) ? g.setAt : Date.now(),
         g && g.setBy != null ? String(g.setBy) : null);
     },
+    // broadcast_cursors (D5) — mirrors cursors' get/set shape exactly, but tracks
+    // a workspace's OWN join point into the shared broadcast partition.
+    broadcastCursorValue(id) {
+      const r = db.prepare('SELECT value FROM broadcast_cursors WHERE workspace_id = ?;').get(String(id));
+      return r ? Number(r.value) : 0;
+    },
+    setBroadcastCursor(id, value) {
+      const v = clampInt(value);
+      db.prepare(
+        'INSERT INTO broadcast_cursors (workspace_id, value, updated_at) VALUES (?, ?, ?)'
+        + ' ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;'
+      ).run(String(id), v, Date.now());
+    },
+    // advanceBroadcastCursor(id) -> the new cursor value (D23 read/ack). Sets `id`'s
+    // broadcast cursor to the CURRENT head `seq` of the shared broadcast partition
+    // (ALL broadcast rows, heartbeats included — "read up to head" marks everything
+    // currently visible as seen). Consumed by the Phase-4 `mesh read` verb.
+    advanceBroadcastCursor(id) {
+      const r = db.prepare("SELECT MAX(seq) AS m FROM messages WHERE mtype = 'broadcast';").get();
+      const head = (r && Number.isFinite(Number(r.m))) ? Number(r.m) : 0;
+      db.prepare(
+        'INSERT INTO broadcast_cursors (workspace_id, value, updated_at) VALUES (?, ?, ?)'
+        + ' ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;'
+      ).run(String(id), head, Date.now());
+      return head;
+    },
     listRegistry() {
       return db.prepare('SELECT * FROM registry ORDER BY id ASC;').all().map(rowToDescriptor);
     },
@@ -255,15 +434,22 @@ function openSqlite(home, workspaceId, opts) {
     },
     // listMessages(id, {sinceCursor}) -> ordered message rows INCLUDING body. The
     // READ-BACK side of the store (the `body` column was written but never read
-    // until this). Ordered by insertion (id ASC) so `seq` (1-based) aligns with the
-    // consumed-count cursor. sinceCursor (a consumed-count) skips the first N rows —
-    // the caller passes cursorValue(id) to get only the unread tail. Pure read;
-    // never mutates. sqlite has UNIQUE(hash) so no dup-hash rows to fold here; a
-    // null-hash row is a distinct message (matches messageCount's COUNT(*)).
+    // until this). Ordered by insertion (id ASC) so `seq` (1-based, PER-WORKSPACE
+    // positional index — NOT the physical mesh `seq` column, see `storeSeq` below)
+    // aligns with the consumed-count cursor. sinceCursor (a consumed-count) skips
+    // the first N rows — the caller passes cursorValue(id) to get only the unread
+    // tail. Pure read; never mutates. sqlite has UNIQUE(hash) so no dup-hash rows to
+    // fold here; a null-hash row is a distinct message (matches messageCount's
+    // COUNT(*)). Additive mesh fields (sender/recipient/mtype/urgency/isHeartbeat/
+    // storeSeq) are null/false on a pre-mesh legacy row — existing consumers that
+    // destructure only {seq,ts,hash,body} are unaffected.
     listMessages(id, opts) {
       const o = opts || {};
       const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
-      const rows = db.prepare('SELECT id, ts, hash, body FROM messages WHERE workspace_id = ? ORDER BY id ASC;').all(String(id));
+      const rows = db.prepare(
+        'SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, seq'
+        + ' FROM messages WHERE workspace_id = ? ORDER BY id ASC;'
+      ).all(String(id));
       const out = [];
       for (let i = 0; i < rows.length; i++) {
         if (i < since) continue;
@@ -272,6 +458,12 @@ function openSqlite(home, workspaceId, opts) {
           ts: Number(rows[i].ts),
           hash: rows[i].hash != null ? String(rows[i].hash) : null,
           body: rows[i].body != null ? String(rows[i].body) : '',
+          sender: rows[i].sender != null ? String(rows[i].sender) : null,
+          recipient: rows[i].recipient != null ? String(rows[i].recipient) : null,
+          mtype: rows[i].mtype != null ? String(rows[i].mtype) : null,
+          urgency: rows[i].urgency != null ? String(rows[i].urgency) : null,
+          isHeartbeat: rows[i].is_heartbeat === 1 || rows[i].is_heartbeat === 1n,
+          storeSeq: rows[i].seq != null ? Number(rows[i].seq) : null,
         });
       }
       return out;
@@ -315,6 +507,10 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     registry: path.join(dir, 'registry.ndjson'),
     cursors: path.join(dir, 'cursors.ndjson'),
     gates: path.join(dir, 'gates.ndjson'),
+    // broadcast_cursors (D5) — a SEPARATE file (NOT folded into cursors.ndjson),
+    // mirroring the sqlite backend's separate table. Each workspace tracks
+    // broadcasts-seen independently of its direct-inbox cursor.
+    broadcastCursors: path.join(dir, 'broadcast_cursors.ndjson'),
   };
   function append(file, obj) {
     F.mkdirSync(dir, { recursive: true });
@@ -396,6 +592,23 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     try { return fn(); }
     finally { try { F.unlinkSync(messagesLock); } catch (_) {} }
   }
+  // withRetriedMessagesLock(criticalFn) — bounded retry on ELOCKUNAVAIL (contention
+  // exhaustion), shared by appendMessage AND appendMeshRow. The critical section
+  // NEVER runs unlocked, so a retry can only ADD a row once — the dedupe hash makes
+  // every re-attempt idempotent (a prior success is seen and skipped). A genuine fs
+  // error (ELOCKFS) is NOT retried: fail closed, never race.
+  function withRetriedMessagesLock(criticalFn) {
+    let lastErr = null;
+    for (let attempt = 0; attempt < MESSAGES_APPEND_MAX_RETRIES; attempt++) {
+      try { return withMessagesLock(criticalFn); }
+      catch (e) {
+        lastErr = e;
+        if (e && e.code === 'ELOCKUNAVAIL') { lockSleep(4 + Math.floor(Math.random() * 8)); continue; }
+        throw e; // ELOCKFS / unexpected -> fail closed
+      }
+    }
+    throw lastErr;
+  }
   function readAll(file) {
     let raw;
     try { raw = String(F.readFileSync(file, 'utf8')); } catch (_) { return []; }
@@ -443,22 +656,48 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
         });
         return { inserted: true };
       };
-      // Bounded retry on ELOCKUNAVAIL (contention exhaustion). The critical section
-      // NEVER runs unlocked, so a retry can only ADD the row once — the dedupe hash
-      // makes every re-attempt idempotent (a prior success is seen and skipped). A
-      // genuine fs error (ELOCKFS) is NOT retried: fail closed, never race. If the
-      // lock stays unavailable past the budget the error propagates so the ingest
-      // path re-attempts on its next monitor poll (replay is idempotent by hash).
-      let lastErr = null;
-      for (let attempt = 0; attempt < MESSAGES_APPEND_MAX_RETRIES; attempt++) {
-        try { return withMessagesLock(critical); }
-        catch (e) {
-          lastErr = e;
-          if (e && e.code === 'ELOCKUNAVAIL') { lockSleep(4 + Math.floor(Math.random() * 8)); continue; }
-          throw e; // ELOCKFS / unexpected -> fail closed
+      // If the lock stays unavailable past the retry budget the error propagates so
+      // the ingest path re-attempts on its next monitor poll (replay is idempotent
+      // by hash).
+      return withRetriedMessagesLock(critical);
+    },
+    // appendMeshRow(m) -> {inserted, seq}. The mesh-aware insert (D3/D6/D7/D22) —
+    // called by the top-level appendMeshMessage(), never directly by a consumer.
+    // Reuses the SAME O_EXCL messages.lock as appendMessage (D6: "journal: a
+    // per-store counter written under the existing O_EXCL messages.lock, already
+    // serializes journal writers") — the per-store seq counter is computed by
+    // scanning the CURRENT max seq INSIDE the locked critical section (never a
+    // cross-process JS read-then-bind race, which D6 explicitly forbids: this scan
+    // is serialized by the SAME lock every other writer to this file must hold).
+    appendMeshRow(m) {
+      const hash = (m && m.hash != null) ? String(m.hash) : null;
+      const critical = () => {
+        const all = readAll(files.messages);
+        if (hash !== null) {
+          for (const row of all) {
+            if (row.hash === hash) return { inserted: false, seq: null };
+          }
         }
-      }
-      throw lastErr;
+        let maxSeq = 0;
+        for (const row of all) {
+          if (Number.isFinite(row.seq) && row.seq > maxSeq) maxSeq = row.seq;
+        }
+        const seq = maxSeq + 1;
+        append(files.messages, {
+          workspaceId: String(m.workspaceId),
+          ts: Number.isFinite(m && m.ts) ? m.ts : Date.now(),
+          hash,
+          body: (m && m.body != null) ? String(m.body) : '',
+          sender: m && m.sender != null ? String(m.sender) : null,
+          recipient: m && m.recipient != null ? String(m.recipient) : null,
+          mtype: m && m.mtype != null ? String(m.mtype) : null,
+          urgency: m && m.urgency != null ? String(m.urgency) : null,
+          isHeartbeat: !!(m && m.isHeartbeat),
+          seq,
+        });
+        return { inserted: true, seq };
+      };
+      return withRetriedMessagesLock(critical);
     },
     upsertRegistry(d) {
       append(files.registry, {
@@ -486,6 +725,31 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
         setAt: Number.isFinite(g && g.setAt) ? g.setAt : Date.now(),
         setBy: g && g.setBy != null ? String(g.setBy) : null,
       });
+    },
+    // broadcast_cursors (D5) — mirrors cursors' get/set shape exactly, but tracks
+    // a workspace's OWN join point into the shared broadcast partition.
+    broadcastCursorValue(id) {
+      const wid = String(id);
+      let v = 0;
+      for (const row of readAll(files.broadcastCursors)) {
+        if (String(row.workspaceId) === wid && Number.isFinite(row.value)) v = row.value;
+      }
+      return v;
+    },
+    setBroadcastCursor(id, value) {
+      append(files.broadcastCursors, { workspaceId: String(id), value: clampInt(value), updatedAt: Date.now() });
+    },
+    // advanceBroadcastCursor(id) -> the new cursor value (D23 read/ack). Sets `id`'s
+    // broadcast cursor to the CURRENT head `seq` of the shared broadcast partition
+    // (ALL broadcast rows, heartbeats included — "read up to head" marks everything
+    // currently visible as seen). Consumed by the Phase-4 `mesh read` verb.
+    advanceBroadcastCursor(id) {
+      let head = 0;
+      for (const row of readAll(files.messages)) {
+        if (row.mtype === 'broadcast' && Number.isFinite(row.seq) && row.seq > head) head = row.seq;
+      }
+      append(files.broadcastCursors, { workspaceId: String(id), value: head, updatedAt: Date.now() });
+      return head;
     },
     listRegistry() {
       // Reduce the append-only log to the current active set: latest row per id
@@ -528,7 +792,10 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     // messages.ndjson in file (insertion) order, filtered by workspaceId, deduped by
     // hash on read with the SAME rule messageCount uses (so the row indices agree
     // with the consumed-count cursor). sinceCursor skips the first N kept rows. Pure
-    // read; never mutates the journal.
+    // read; never mutates the journal. `seq` here is the PER-WORKSPACE positional
+    // index (1-based, unchanged) — NOT the physical mesh `seq` field written by
+    // appendMeshRow, which is surfaced separately as `storeSeq` (parity with the
+    // sqlite backend; a legacy row without it reads back as storeSeq:null).
     listMessages(id, opts) {
       const o = opts || {};
       const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
@@ -551,6 +818,12 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
           ts: Number.isFinite(kept[i].ts) ? kept[i].ts : null,
           hash: kept[i].hash != null ? String(kept[i].hash) : null,
           body: kept[i].body != null ? String(kept[i].body) : '',
+          sender: kept[i].sender != null ? String(kept[i].sender) : null,
+          recipient: kept[i].recipient != null ? String(kept[i].recipient) : null,
+          mtype: kept[i].mtype != null ? String(kept[i].mtype) : null,
+          urgency: kept[i].urgency != null ? String(kept[i].urgency) : null,
+          isHeartbeat: !!kept[i].isHeartbeat,
+          storeSeq: Number.isFinite(kept[i].seq) ? Number(kept[i].seq) : null,
         });
       }
       return out;
@@ -609,25 +882,57 @@ function openStore(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const backend = selectBackend({ backend: o.backend, env: o.env });
-  const meta = { dir: o.dir, hash: o.hash };
+  const meta = { dir: o.dir, hash: o.hash, busyTimeoutMs: o.busyTimeoutMs };
   return backend === 'sqlite'
     ? openSqlite(home, o.workspaceId, meta)
     : openJournal(home, o.workspaceId, o.fsi, o.lock, meta);
 }
 
+// maxUrgencyOf(rows) -> the highest-ranked `urgency` value present across `rows`
+// (each {urgency}), or null when none carry a recognized urgency (a legacy/
+// native-drained row has urgency=null and does not contribute — it never LOWERS
+// an already-found max, it simply never raises one). Computed purely from the
+// `urgency` COLUMN (D22-adjacent: "computed WITHOUT reading bodies").
+function maxUrgencyOf(rows) {
+  let best = null;
+  let bestRank = -1;
+  for (const r of rows) {
+    const u = r && r.urgency != null ? String(r.urgency) : null;
+    if (u == null) continue;
+    const rank = URGENCY_RANK[u];
+    if (rank == null) continue; // unrecognized value -> ignored, never thrown
+    if (rank > bestRank) { bestRank = rank; best = u; }
+  }
+  return best;
+}
+
 // deriveSummary(store, opts) -> summary object (also written to this project's
-// summaries/<hash>.json). opts: { home, workspaceId, requiredGates, env, now, fsi }.
-// Iterates THIS store's ACTIVE registry set, projects unread (messages - cursor),
-// current gates, and archive_ready (all required gates satisfied). The target
-// summary file is chosen by opts.workspaceId, else the store handle's own
-// workspaceId/hash (so a per-project store writes its own per-project summary).
-// Write is ATOMIC (tmp + rename) so a hook read never observes a partial file.
+// summaries/<hash>.json). opts: { home, workspaceId, requiredGates, env, now, fsi,
+// recentCap }. Iterates THIS store's ACTIVE registry set, projects unread
+// (messages - cursor), current gates, and archive_ready (all required gates
+// satisfied). The target summary file is chosen by opts.workspaceId, else the
+// store handle's own workspaceId/hash (so a per-project store writes its own
+// per-project summary). Write is ATOMIC (tmp + rename) so a hook read never
+// observes a partial file.
+//
+// MESH ADDITIVE fields (v0.57, D3-D5/D22/D23 — old readers ignore unknown keys):
+// per-workspace `directUnread` (alias of the existing `unread` — same value, the
+// wire-schema name), `broadcastUnread` (NON-heartbeat broadcast rows past this
+// workspace's OWN broadcast_cursors join point — heartbeats EXCLUDED per D22, else
+// it grows monotonically forever since every peer heartbeats every turn),
+// `urgencyMax` (highest urgency among this workspace's PENDING direct rows, from
+// the urgency column only), `working_on` (this workspace's latest heartbeat
+// summary — matched by `sender === d.id`; a caller supplies its own registered id
+// as `from` when heartbeating). Top-level `recent[]` = the last `recentCap`
+// (O-D8 UNRESOLVED broadcast-retention cap; default 50, overridable) broadcast
+// rows INCLUDING heartbeats, as `{from, summary, ts, urgency}` (roster state).
 function deriveSummary(store, opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const F = o.fsi || fs;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const requiredGates = Array.isArray(o.requiredGates) ? o.requiredGates : requiredGatesFrom(o.env);
+  const recentCap = Number.isFinite(o.recentCap) && o.recentCap > 0 ? Math.floor(o.recentCap) : DEFAULT_RECENT_CAP;
   // Which per-project summary file: explicit opts.workspaceId wins, else the
   // handle's workspaceId, else its hash (a handle always carries a hash).
   const hash = (o.workspaceId != null)
@@ -635,14 +940,36 @@ function deriveSummary(store, opts) {
     : (store && store.hash != null ? String(store.hash)
       : hashFromWorkspaceId(store && store.workspaceId));
 
+  // The shared broadcast partition — read ONCE, reused for every workspace's
+  // broadcastUnread/working_on AND the top-level recent[]. Ordered by insertion
+  // (== storeSeq order, since a mesh row's physical seq is assigned at insert time
+  // under the same serialized write path).
+  const broadcastAll = typeof store.listMessages === 'function' ? store.listMessages(BROADCAST_PARTITION_ID) : [];
+  const broadcastNonHeartbeat = broadcastAll.filter((r) => !r.isHeartbeat);
+
   const workspaces = {};
   for (const d of store.listRegistry()) {
     if (!isSafeId(d.id)) continue; // never project an unsafe id
+    if (d.id === BROADCAST_PARTITION_ID) continue; // defense-in-depth: the shared broadcast partition is NEVER a real workspace (isSafeId already excludes '*', kept explicit)
     const total = store.messageCount(d.id);
     const cursor = store.cursorValue(d.id);
     const unread = Math.max(0, total - cursor);
     const gates = store.currentGates(d.id);
     const archive_ready = requiredGates.length > 0 && requiredGates.every((g) => gates[g] === true);
+
+    const unreadRows = unread > 0 ? store.listMessages(d.id, { sinceCursor: cursor }) : [];
+    const urgencyMax = maxUrgencyOf(unreadRows);
+
+    const bcCursor = typeof store.broadcastCursorValue === 'function' ? store.broadcastCursorValue(d.id) : 0;
+    const broadcastUnread = broadcastNonHeartbeat.filter(
+      (r) => Number.isFinite(r.storeSeq) && r.storeSeq > bcCursor
+    ).length;
+
+    let working_on = null;
+    for (const r of broadcastAll) {
+      if (r.isHeartbeat && r.sender != null && r.sender === d.id) working_on = r.body;
+    }
+
     workspaces[d.id] = {
       id: d.id,
       worktreePath: d.worktreePath,
@@ -651,12 +978,23 @@ function deriveSummary(store, opts) {
       cursorPath: d.cursorPath,
       nudgeCommand: d.nudgeCommand,
       total, cursor, unread,
+      directUnread: unread,
+      broadcastUnread,
+      urgencyMax,
+      working_on,
       gates,
       archive_ready,
     };
   }
 
-  const summary = { generatedAt: now, requiredGates: requiredGates.slice(), workspaces };
+  const recent = broadcastAll.slice(-recentCap).map((r) => ({
+    from: r.sender != null ? r.sender : null,
+    summary: r.body != null ? r.body : '',
+    ts: r.ts,
+    urgency: r.urgency != null ? r.urgency : null,
+  }));
+
+  const summary = { generatedAt: now, requiredGates: requiredGates.slice(), workspaces, recent };
   writeSummaryAtomicForHash(home, hash, summary, F);
   return summary;
 }
@@ -724,4 +1062,6 @@ module.exports = {
   requiredGatesFrom, selectBackend, sqliteAvailable,
   openStore, openSqlite, openJournal,
   deriveSummary, writeSummaryAtomic, readSummary, readSummaryForHash,
+  // mesh (v0.57, D3-D7/D22/D23):
+  BROADCAST_PARTITION_ID, meshMessageHash, appendMeshMessage,
 };

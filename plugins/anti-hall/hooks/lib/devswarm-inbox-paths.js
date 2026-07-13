@@ -41,12 +41,23 @@ const STORE_MODULE_PATH = '../../companion/lib/devswarm-store.js';
 // slashes, no leading 'store/'). DENY the SQLite db + its sidecars and any journal
 // NDJSON; everything else under store/ is ALLOW (fail-open for unknown files).
 //
-// PER-PROJECT layout (v0.55): the store is now physically split by worktree hash —
-// store/<8hex>/devswarm.db(+ sidecars) and store/<8hex>/journal/*.ndjson. The
-// LEGACY flat layout (store/devswarm.db, store/journal/*.ndjson) is still matched
-// so a pre-migration on-disk store stays guarded during/after upgrade.
+// PER-PROJECT layout: the store is physically split by a project key —
+// store/<key>/devswarm.db(+ sidecars) and store/<key>/journal/*.ndjson. TWO key
+// shapes are matched, DISJOINT by construction (a repoKey always contains a
+// literal '-' separator before its 6-hex suffix; a legacy hash never does):
+//   - v0.55 LEGACY: an 8-hex worktree hash (<8hex>/...).
+//   - v0.57 MESH (D20): a repoKey — sanitized-repo-basename + '-' + 6-hex realpath
+//     suffix (<1-40 [a-z0-9-] chars>-<6hex>/...), e.g. 'anti-hall-a1b2c3/devswarm.db'.
+// Both shapes are kept guarded simultaneously (D9's migration window can leave
+// EITHER on disk). The LEGACY flat layout (store/devswarm.db, store/journal/*.ndjson,
+// pre-per-project) is still matched too, so a pre-migration on-disk store stays
+// guarded during/after upgrade.
 function isStoreDenyTarget(rest) {
-  // per-project: <hash>/devswarm.db(+ sidecars), <hash>/journal/*.ndjson
+  // per-project, v0.57 mesh repoKey shape: <repoKey>/devswarm.db(+ sidecars), <repoKey>/journal/*.ndjson
+  if (/^[a-z0-9-]{1,40}-[0-9a-f]{6}\/devswarm\.db$/.test(rest)) return true;
+  if (/^[a-z0-9-]{1,40}-[0-9a-f]{6}\/devswarm\.db-(wal|shm|journal)$/.test(rest)) return true;
+  if (/^[a-z0-9-]{1,40}-[0-9a-f]{6}\/journal\/[^/]+\.ndjson$/.test(rest)) return true;
+  // per-project, v0.55 legacy 8-hex shape: <hash>/devswarm.db(+ sidecars), <hash>/journal/*.ndjson
   if (/^[0-9a-fA-F]{8}\/devswarm\.db$/.test(rest)) return true;
   if (/^[0-9a-fA-F]{8}\/devswarm\.db-(wal|shm|journal)$/.test(rest)) return true;
   if (/^[0-9a-fA-F]{8}\/journal\/[^/]+\.ndjson$/.test(rest)) return true;
