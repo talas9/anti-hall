@@ -19,18 +19,38 @@ const HOOKS_DIR = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hook
 // reads USERPROFILE first, then HOMEDRIVE+HOMEPATH. So on win32 we must set all
 // three or the hook escapes the fixture and hits the real CI home (the bug that
 // made the 3 windows matrix legs fail 9/77). PATH is preserved from the parent.
+//
+// WINDOWS: some hooks (devswarm-child-gate's STRICT native message-count probe)
+// spawn a bare command via `shell: win32-only` so cmd.exe can resolve a PATHEXT
+// shim (e.g. `hivecontrol.cmd`). cmd.exe needs SystemRoot/ComSpec/PATHEXT/TEMP/
+// TMP and friends to even start — a hand-picked allowlist (PATH/HOME only)
+// starves it and the shim is silently never invoked. tests/statusline/helper.js
+// hit and solved this EXACT problem for statusline's own cmd.exe spawn: inherit
+// the FULL parent env so cmd.exe gets what it has in production, instead of a
+// stripped-down allowlist. We do the same here, but hook tests additionally rely
+// on isolatedEnv NOT leaking the developer's real DEVSWARM_*/ANTIHALL_* vars
+// (those drive hook behavior — e.g. a DORMANT-when-absent assertion). So on
+// win32 we inherit the full parent env, then strip every DEVSWARM_*/ANTIHALL_*
+// key from it, BEFORE the caller's explicit opts.env overrides are merged on
+// top by testHook/testHookRaw. POSIX has no cmd.exe dependency, so it keeps the
+// original minimal PATH+HOME allowlist unchanged.
 function isolatedEnv(home) {
-  const env = {
-    PATH: process.env.PATH,
-    HOME: home,
-  };
   if (process.platform === 'win32') {
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) {
+      if (/^DEVSWARM_/.test(key) || /^ANTIHALL_/.test(key)) delete env[key];
+    }
     const root = path.parse(home).root; // e.g. "C:\\"
+    env.HOME = home;
     env.USERPROFILE = home;
     env.HOMEDRIVE = root;
     env.HOMEPATH = home.slice(root.length);
+    return env;
   }
-  return env;
+  return {
+    PATH: process.env.PATH,
+    HOME: home,
+  };
 }
 
 // testHook(hookRelPathOrAbs, payloadObj, opts={}):

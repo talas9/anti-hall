@@ -84,7 +84,12 @@ the update.
   output) when writing our stdin to a non-reading child races to a benign broken-pipe error —
   judged errno-agnostically by exit status and stdout presence, since the OS reports it
   differently per platform (`EPIPE` on POSIX; `EOF` on Windows, where libuv maps
-  `ERROR_BROKEN_PIPE` → `UV_EOF`).
+  `ERROR_BROKEN_PIPE` → `UV_EOF`). The hook-test helper (`tests/helpers/spawn-hook.js`) now gives
+  cmd.exe its full Windows system env (`SystemRoot`/`ComSpec`/`PATHEXT`/etc, inherited from the
+  parent) on win32 so the STRICT probe's shell spawn can actually start, while stripping every
+  `DEVSWARM_*`/`ANTIHALL_*` key first to keep test isolation intact; the statusline's top-level
+  stdout error handler now tolerates the same benign broken-pipe condition (`EOF` on Windows,
+  `EPIPE` on POSIX) instead of rethrowing.
 - Full suite: 1487 tests, 1485 pass, 2 skipped (Windows-gated doctor no-ops), 0 fail.
 
 ## 0.55.0

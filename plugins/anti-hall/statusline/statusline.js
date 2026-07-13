@@ -249,7 +249,15 @@ function main() {
   });
 }
 
-// Suppress EPIPE so a closed pipe on stdout never propagates as an unhandled error.
-process.stdout.on('error', (e) => { if (e.code !== 'EPIPE') throw e; });
+// Suppress a broken-pipe stdout so a closed pipe never propagates as an unhandled
+// error and crashes the statusline (contract: never crash Claude Code — see top
+// of file). POSIX reports this as EPIPE. Windows does not: libuv's win/pipe.c
+// write-completion path maps a broken pipe through the generic error translator
+// (win/error.c: `ERROR_BROKEN_PIPE -> UV_EOF`, not the write-specific EPIPE
+// override used elsewhere — the same errno-agnostic reasoning already applied to
+// runBaseCommand's stdin-write race above), so the same benign condition surfaces
+// as `e.code === 'EOF'` there. A statusline whose stdout is gone has nothing left
+// to do but exit quietly, so swallow both rather than chase every platform's errno.
+process.stdout.on('error', (e) => { if (e.code !== 'EPIPE' && e.code !== 'EOF') throw e; });
 
 main();
