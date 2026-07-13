@@ -325,6 +325,125 @@ test('`mesh read` is the same verb as `roster --ack` (D23 alias)', () => {
   } finally { rm(home); rm(repo); }
 });
 
+// ---- ack-ownership + broadcast-cursor identity fix (P0 + P1, v0.57 mesh) ---
+// `callerIdentity()` (the caller's worktree-derived meshId) and a workspace's
+// own registered store-partition id (`d.id`) coincide ONLY for a self-registered
+// Primary. A CHILD registers under its hivecontrol DEVSWARM_BUILDER_ID (a UUID
+// unrelated to meshId, per docs/KB-devswarm-hivecontrol.md:215) — so before the
+// fix, every real child was refused reading/acking its own mesh direct inbox via
+// the EXACT command its own D26 nudge told it to run, and `roster --ack`/`mesh
+// read` never cleared its own broadcastUnread even though it reported
+// `ok:true`. These tests reproduce both with a REAL linked worktree (never a
+// hardcoded/short-name path — worktreePath is always `inst.resolveWorktree(...)`,
+// the same production-derived value `derivedId`/`callerIdentity` use) and prove
+// the fix without weakening the cross-workspace ack-hazard protection (bug #2).
+
+test('inbox read-primary: a CHILD (registered under a DEVSWARM_BUILDER_ID different from its own meshId, cwd = its own worktree) can read+ack its OWN mesh direct inbox (P0)', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('childack');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'childack');
+    const repoKey = repokey.repoKeyForWorktree(childWt);
+    const childMeshId = derivedId(childWt);
+    const builderId = 'sess-child-builder-abc'; // hivecontrol-assigned id, NEVER equal to childMeshId
+    assert.notEqual(childMeshId, builderId, 'sanity: the two id-spaces really do diverge for a child');
+    seedRegistry(home, repoKey, { id: builderId, worktreePath: inst.resolveWorktree(childWt), sessionId: 's-child' });
+
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try { s.appendMessage({ workspaceId: builderId, body: 'hello child', hash: 'h1' }); } finally { s.close(); }
+
+    // The exact command buildMeshDirectSegment (devswarm-child-turn.js, D26)
+    // nudges: `devswarm.js inbox read-primary <DEVSWARM_BUILDER_ID>`.
+    const r = cli.run(
+      ['inbox', 'read-primary', builderId],
+      ctx(home, { cwd: childWt, env: { DEVSWARM_BUILDER_ID: builderId } })
+    );
+    assert.equal(r.code, 0, 'the child must be able to read+ack its own inbox via the exact D26-nudged command');
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.equal(r.result.count, 1);
+    assert.equal(r.result.cursor, 1);
+  } finally {
+    rm(home);
+    if (childWt) cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', childWt]);
+    rm(mainRepo);
+  }
+});
+
+test('inbox read-primary: a caller CANNOT ack a DIFFERENT workspace\'s registered partition (cross-workspace ack hazard, bug #2, stays closed)', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('childack2');
+  let childWtA = null;
+  let childWtB = null;
+  try {
+    childWtA = addLinkedWorktree(mainRepo, 'childackA');
+    childWtB = addLinkedWorktree(mainRepo, 'childackB');
+    const repoKey = repokey.repoKeyForWorktree(childWtA);
+    const builderIdA = 'sess-child-builder-a';
+    const builderIdB = 'sess-child-builder-b';
+    seedRegistry(home, repoKey, { id: builderIdA, worktreePath: inst.resolveWorktree(childWtA), sessionId: 's-a' });
+    seedRegistry(home, repoKey, { id: builderIdB, worktreePath: inst.resolveWorktree(childWtB), sessionId: 's-b' });
+
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try { s.appendMessage({ workspaceId: builderIdB, body: 'for B only', hash: 'h1' }); } finally { s.close(); }
+
+    // Caller is running as A (its OWN cwd/env) but tries to ack B's partition.
+    const r = cli.run(
+      ['inbox', 'read-primary', builderIdB],
+      ctx(home, { cwd: childWtA, env: { DEVSWARM_BUILDER_ID: builderIdA } })
+    );
+    assert.equal(r.code, 2);
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /ack refused/);
+    assert.equal(r.result.callerIdentity, derivedId(childWtA));
+  } finally {
+    rm(home);
+    if (childWtA) cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', childWtA]);
+    if (childWtB) cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', childWtB]);
+    rm(mainRepo);
+  }
+});
+
+test('roster --ack (mesh read) for a CHILD registered under a DEVSWARM_BUILDER_ID different from its meshId clears its OWN broadcastUnread (P1: cursor keyed by registered d.id, not raw meshId)', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('childbcast');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'childbcast');
+    const repoKey = repokey.repoKeyForWorktree(childWt);
+    const senderId = derivedId(mainRepo);
+    const builderId = 'sess-child-builder-xyz';
+    seedRegistry(home, repoKey, { id: senderId, worktreePath: inst.resolveWorktree(mainRepo), sessionId: 's-sender' });
+    seedRegistry(home, repoKey, { id: builderId, worktreePath: inst.resolveWorktree(childWt), sessionId: 's-child' });
+
+    const sent = cli.run(['send', '--broadcast', '--message', 'everyone look'], ctx(home, { cwd: mainRepo }));
+    assert.equal(sent.result.ok, true);
+
+    const before = cli.run(['roster'], ctx(home, { cwd: mainRepo }));
+    const childRowBefore = before.result.workspaces.find((w) => w.id === builderId);
+    assert.equal(childRowBefore.broadcastUnread, 1, 'the child has not acked yet');
+
+    const acked = cli.run(
+      ['roster', '--ack'],
+      ctx(home, { cwd: childWt, env: { DEVSWARM_BUILDER_ID: builderId } })
+    );
+    assert.equal(acked.result.ok, true, JSON.stringify(acked.result));
+    assert.equal(acked.result.count, 1);
+
+    const after = cli.run(['roster'], ctx(home, { cwd: mainRepo }));
+    const childRowAfter = after.result.workspaces.find((w) => w.id === builderId);
+    assert.equal(
+      childRowAfter.broadcastUnread, 0,
+      'the child\'s OWN broadcastUnread must clear — before this fix the cursor was written under the '
+        + 'raw meshId, a key deriveSummary never reads back for this child, so it grew unboundedly forever'
+    );
+  } finally {
+    rm(home);
+    if (childWt) cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', childWt]);
+    rm(mainRepo);
+  }
+});
+
 // ---- heartbeat --summary (D11/D22) ------------------------------------------
 
 test('heartbeat --summary writes a mesh broadcast heartbeat row: tiered as broadcast, sets working_on, and does NOT increment broadcastUnread', () => {

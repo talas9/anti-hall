@@ -147,7 +147,74 @@ Quick reference:
 | `archive <id>` | Archive-by-absence on anti-hall's own registry; surfaces the manual DevSwarm-app removal step. |
 | `archive-ignore <id>` / `archive-unignore <id>` | Mute/unmute the archive-ready reminder for one workspace. |
 | `archive-request <childId\|childBranch> [--reason TEXT] [--child-branch B]` | PARENT-side: send-only, posts a `[[ANTIHALL_ARCHIVE_REQUEST]]` message asking the child to archive. Never verifies merged/tested/deployed itself. |
-| `migrate` | Idempotent, non-destructive, count-verified fold of legacy on-disk state into the store. `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` env marks an imported backlog as already-read (see `migrate-state.js --mark-read`, below). |
+| `migrate` | Idempotent, non-destructive, count-verified fold of legacy on-disk state into the store. `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` env marks an imported backlog as already-read (see `migrate-state.js --mark-read`, below). As of v0.57 this also folds in the hash→repoKey mesh migration (see below) inside the same migrate lock. |
+| `send --to <meshId>\|--broadcast --message TEXT [--urgency low\|normal\|high\|urgent]` | **v0.57 mesh, unreleased on `main` (see below).** Daemon-independent — writes the shared per-project store directly. |
+| `roster [--ack]` / `mesh read` | **v0.57 mesh.** Project-scoped registry/broadcast read; `--ack`/`mesh read` clears `broadcastUnread`. |
+| `heartbeat <id> --summary TEXT` | **v0.57 mesh addition** to the existing `heartbeat` verb — also broadcasts a mesh status ping. |
+
+## v0.57 mesh — shared per-project store + all-to-all messaging (SHIPPED on `main`, unreleased — Claude-side only)
+
+**Status check first:** `plugin.json`'s `version` is still `0.56.0` — this has landed on
+`main` but has no `v0.57` git tag or GitHub Release yet, and the Codex/OMX port has **no**
+mesh support at all (deferred to v0.57.1, owner decision O-D3). Do not describe the Codex
+port as mesh-capable.
+
+**What changed.** Before v0.57, the store, the ingest daemon, and the Primary/child registry
+were all keyed **per worktree** — a project with 3 linked worktrees had 3 separate stores that
+could not talk to each other, and each worktree needed its own ingest daemon installed
+separately. v0.57 rekeys everything to a **per-project** identity instead: a `repoKey`
+(`companion/lib/devswarm-repokey.js`, `repoKeyForWorktree`) = a sanitized repo-name basename
+plus a 6-hex suffix, derived from `git rev-parse --git-common-dir` (the SAME main worktree's
+`.git` for every linked worktree of one repo — unlike `--show-toplevel`, which the legacy
+per-worktree identity uses). Every worktree of a project now shares ONE store
+(`store/<repoKey>/`), ONE registry, and ONE ingest daemon — and any worktree can message any
+other directly, not just its own parent/child pair.
+
+**New CLI verbs (daemon-independent — write the shared store directly, no `hivecontrol` call):**
+- `node scripts/devswarm.js send --to <meshId>|--broadcast --message "TEXT" [--urgency low|normal|high|urgent]`
+  — a non-git cwd fails closed (`{ok:false, reason:'no-project'}`) BEFORE any identity is
+  derived; `--from` is always the hardened cwd-derived identity (spoofing a mismatched
+  `--from` is rejected); `--to` is fail-closed against the shared registry (an unregistered
+  meshId is rejected, never silently dropped).
+- `node scripts/devswarm.js roster [--ack]` — this project's shared registry + `working_on` +
+  a `recent[]` broadcast digest. `--ack` clears your own `broadcastUnread` (alias of `mesh read`).
+- `node scripts/devswarm.js mesh read` — same as `roster --ack`.
+- `node scripts/devswarm.js heartbeat <id> --summary "TEXT" [--urgency ...]` — the existing
+  heartbeat verb now ALSO broadcasts a mesh status ping (default urgency `low`) that feeds
+  `roster`'s `working_on` field.
+
+**Surfacing.** `devswarm-parent-inbox.js` now reads ONE per-project summary
+(`summaries/<repoKey>.json`) instead of one per descriptor, and tiers unread-direct segments
+by `urgencyMax`: `urgent`/`high` gets a distinct LOUDEST segment, `low` is table-row-only, and
+the `recent[]` broadcast/roster feed renders advisory-only (never gates a turn). A mesh direct
+addressed to a child's own meshId also surfaces on the child side
+(`devswarm-child-turn.js`, D26) even though it never touches the child's durable NDJSON inbox —
+it lands in the child's own builder-id partition inside the shared store, and the child hook
+reads that same per-project summary for its own entry.
+
+**Daemon.** The ingest daemon is now installed ONE PER PROJECT (`resolveMainWorktree` — the
+project's main worktree, never a linked/child one — `WorkingDirectory`, keyed by `repoKey`).
+Installing/refreshing it first REAPS every legacy per-worktree unit belonging to the repo
+(enumerated via `git worktree list --porcelain`, stopped+unloaded) — a brief buffered ingest
+pause during that handoff is expected (latency, not loss). A two-signal health check
+(`companion/lib/ingest-health.js`, D25 — fresh heartbeat AND a live-pid lock holder, BOTH
+required) backs both the stale-data banner and a cooldown-bounded send-time self-heal that
+every `send`/`inbox pull`/`archive-request` call runs first. `doctor` additionally
+belt-and-suspenders sweeps any legacy per-worktree unit that is already orphaned (worktree
+gone) or redundant (its project's new per-project daemon is confirmed healthy). Windows: the
+ingest daemon itself remains a documented no-op there (mesh store + CLI work fine on Windows).
+
+**Migration.** Old per-worktree `store/<hash>/` data is folded into the new
+`store/<repoKey>/` non-destructively — the legacy store is left byte-for-byte intact as a
+backup — automatically as part of the existing `devswarm.js migrate` (and the updater path).
+
+**Cross-project scoping (#36-STRUCTURAL, D29).** `devswarm-parent-gate.js` and
+`devswarm-parent-inbox.js` both now filter candidate workspaces by comparing
+`repoKeyForWorktree(worktreePath)` against the session's own `repoKey`, replacing the earlier
+spoofable `DEVSWARM_REPO_ID` env-var filter — a project only ever sees its own workspaces.
+
+Full reference, source-line citations, and the exact schema:
+`docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh follow-up" note and §8.8's CLI table.
 
 ## Migrating historical backlog without a false unread wall — `migrate-state.js --mark-read`
 

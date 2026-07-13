@@ -616,18 +616,6 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   const doAck = !!((opts && opts.ack) || flags.ack);
   const unread = !!flags.unread || doAck; // read-primary is inherently unread-then-ack
   const ackAsOwner = !!flags['ack-as-owner'];
-  if (doAck && !ackAsOwner) {
-    const caller = callerIdentity(ctx.env, ctx.cwd);
-    if (caller !== id) {
-      return {
-        ok: false,
-        error: 'ack refused: caller ' + JSON.stringify(caller) + ' does not own workspace '
-          + JSON.stringify(id) + ' (pass --ack-as-owner to override)',
-        id,
-        callerIdentity: caller,
-      };
-    }
-  }
   const cursorPath = primaryCursorPath(home, id);
   const cursor = inboxCursor.readCursor(cursorPath);
   // v0.57 mesh (D24): the Primary read-CLI opens the SAME shared per-project
@@ -637,6 +625,35 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   const s = store.openStore({ home, workspaceId: id, hash: repoKeyForCwd(ctx) || undefined, backend: ctx.backend, env: ctx.env });
   let total, messages, acked;
   try {
+    if (doAck && !ackAsOwner) {
+      const caller = callerIdentity(ctx.env, ctx.cwd);
+      // v0.57 mesh (P0 fix): literal `caller !== id` only holds when the caller's
+      // OWN registered store id equals its worktree-derived meshId — true for a
+      // self-registered Primary, but NEVER true for a child (registered under its
+      // hivecontrol DEVSWARM_BUILDER_ID, a UUID unrelated to meshId — see
+      // docs/KB-devswarm-hivecontrol.md:215). Every real child was refused
+      // reading/acking its OWN inbox by this literal check. Resolve PROVABLE
+      // ownership instead: does the caller's OWN registry entry — found via the
+      // SAME worktree-matching join `resolveMeshTarget` already performs for send
+      // addressing (compare each entry's worktreePath-derived meshId to the
+      // caller's meshId) — carry `id` as ITS registered id? If so the caller,
+      // whatever free-form id it registered under, IS the owner of `id`'s
+      // partition (it is running from that exact worktree). A genuinely different
+      // workspace's cwd resolves to a DIFFERENT registry entry (or none), so this
+      // stays fail-closed for real cross-workspace acks — preserving the v0.56
+      // cross-workspace ack-hazard protection (bug #2) this guard exists for.
+      const ownEntry = resolveMeshTarget(s, caller);
+      const owns = caller === id || (ownEntry && ownEntry.id === id);
+      if (!owns) {
+        return {
+          ok: false,
+          error: 'ack refused: caller ' + JSON.stringify(caller) + ' does not own workspace '
+            + JSON.stringify(id) + ' (pass --ack-as-owner to override)',
+          id,
+          callerIdentity: caller,
+        };
+      }
+    }
     total = s.messageCount(id);
     messages = s.listMessages(id, { sinceCursor: unread ? cursor : 0 });
     if (doAck) {
@@ -1083,7 +1100,21 @@ function cmdMeshRead(flags, ctx) {
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   try {
-    const cursor = typeof s.broadcastCursorValue === 'function' ? s.broadcastCursorValue(from) : 0;
+    // v0.57 mesh (P1 fix, same root cause as the ack-ownership P0): the broadcast
+    // cursor must be keyed by the caller's OWN REGISTERED partition id (d.id) —
+    // the SAME id deriveSummary reads back via store.broadcastCursorValue(d.id)
+    // (devswarm-store.js) — never the raw worktree-derived meshId `from`. These
+    // coincide only for a self-registered Primary; for a child (registered under
+    // its DEVSWARM_BUILDER_ID) they diverge, so acking broadcasts via this ONLY
+    // documented clearing path (D23) advanced a cursor deriveSummary never reads,
+    // leaving broadcastUnread stuck forever despite `ok:true, acked:true`. Resolve
+    // the caller's own registry entry the same way the ack-ownership guard does
+    // (resolveMeshTarget keyed by the caller's meshId); fall back to `from` itself
+    // when unregistered (no store entry at all) — the pre-existing, still-correct
+    // behavior for that case.
+    const ownEntry = resolveMeshTarget(s, from);
+    const cursorKey = ownEntry ? ownEntry.id : from;
+    const cursor = typeof s.broadcastCursorValue === 'function' ? s.broadcastCursorValue(cursorKey) : 0;
     const all = typeof s.listMessages === 'function' ? s.listMessages(store.BROADCAST_PARTITION_ID) : [];
     // Filtered on the PHYSICAL mesh `seq` (storeSeq), matching broadcast_cursors'
     // own semantics (deriveSummary's broadcastUnread, D22/D23) — NOT the
@@ -1091,7 +1122,7 @@ function cmdMeshRead(flags, ctx) {
     const broadcasts = all
       .filter((r) => !r.isHeartbeat && Number.isFinite(r.storeSeq) && r.storeSeq > cursor)
       .map((r) => ({ from: r.sender, message: r.body, timestamp: r.ts, urgency: r.urgency, seq: r.storeSeq }));
-    const newCursor = typeof s.advanceBroadcastCursor === 'function' ? s.advanceBroadcastCursor(from) : cursor;
+    const newCursor = typeof s.advanceBroadcastCursor === 'function' ? s.advanceBroadcastCursor(cursorKey) : cursor;
     store.deriveSummary(s, { home, env: ctx.env, now });
     return { ok: true, action: 'mesh-read', from, acked: true, newCursor, count: broadcasts.length, broadcasts };
   } finally { s.close(); }

@@ -128,6 +128,20 @@ identify → stop → verify recipe: `docs/KB-devswarm-hivecontrol.md` §8.7.2 (
 'hivecontrol.*monitor'` → kill the PID + remove its respawn config → re-run
 `node hooks/doctor.js`).
 
+## Codex mesh support: v0.57.1 (not yet shipped)
+
+The Claude-side plugin shipped a **v0.57 mesh** substrate on `main` (unreleased,
+`plugin.json` still `0.56.0`, no `v0.57` tag yet): a shared per-project `repoKey` store
+(instead of per-worktree), new daemon-independent CLI verbs (`send`/`roster`/`mesh read`/
+`heartbeat --summary`), a ONE-per-project ingest daemon, and a #36-STRUCTURAL cross-project
+scoping fix. **None of this exists on the Codex/OMX port yet** — this SKILL.md and the
+`codex/hooks/hooks.json` registration are unchanged. Codex mesh support is planned for
+**v0.57.1** (owner decision O-D3, deliberately deferred out of v0.57 to ship the Claude-side
+work first). Until v0.57.1 ships, do not tell a Codex user `send`/`roster`/`mesh read` exist
+or that the per-project daemon covers a Codex-run workspace — the CLI reference below is
+still the pre-mesh, per-worktree-store surface. Full detail:
+`docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh follow-up" note.
+
 ## CLI reference — `scripts/devswarm.js`
 
 The structured interface (CLI over MCP) is agent-agnostic — invokable identically from

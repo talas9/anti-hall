@@ -312,6 +312,23 @@ cursor) is guard-blocked in favor of the CLI. anti-hall stays agnostic: the
 consumer owns its done-contract and calls the generic CLI. Run
 `/anti-hall:system-briefing` for a live, derived map of the whole system.
 
+**v0.57 mesh (unreleased, on `main`; Claude-side only — Codex/OMX mesh support is
+deferred to v0.57.1).** Every worktree of one project now shares a SINGLE store keyed by
+a readable `repoKey` (`sanitize(repo-name)-<6hex>` of the git common-dir's realpath, stable
+across every linked worktree, hardened for Windows short-name/casing quirks) instead of a
+store per worktree, so any worktree of the project can message any other directly
+(all-to-all), not just its own parent/child. New daemon-independent CLI verbs: `send --to
+<meshId>|--broadcast --message TEXT [--urgency low|normal|high|urgent]` (spoof-resistant
+`--from`, fail-closed `--to`), `roster [--ack]`, `mesh read`, and `heartbeat --summary TEXT`
+(also broadcasts a mesh status ping). The ingest daemon is now ONE per project (not per
+worktree), reaping legacy per-worktree units before taking over; a two-signal (heartbeat
+freshness + live-pid lock) health check backs both a stale-data banner and send-time
+self-heal; a non-destructive migration folds old per-worktree stores into the new
+per-project one; and a #36-STRUCTURAL fix scopes `devswarm-parent-gate`/
+`devswarm-parent-inbox` to the caller's OWN project via `repoKey` (replacing a spoofable
+env-var filter). Full reference: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh
+follow-up" note.
+
 ---
 
 ## Requirements

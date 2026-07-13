@@ -678,6 +678,217 @@ another monitor consumer is already running** (lockfile), mechanically enforcing
 single-native-consumer invariant — two concurrent `monitor` consumers split the destructive
 queue and silently lose messages.
 
+**v0.57 mesh follow-up (SHIPPED — Claude-side only; Codex/OMX mesh support DEFERRED to
+v0.57.1, owner decision O-D3 — do not describe the Codex port as mesh-capable).** As of this
+writing, `plugin.json` is still `0.56.0` (this work has landed on `main`, unreleased/untagged
+— see `docs/KB.md`'s version row). Everything below replaces the pre-0.57 **per-worktree**
+identity/store/daemon model with a **per-project** one: every linked worktree of one repo now
+shares ONE store, ONE registry, and ONE ingest daemon, and can message every other worktree
+of the same project directly (all-to-all "mesh"), not just its own parent/child pair.
+
+- **`repoKey` — the shared per-project store key primitive
+  (`companion/lib/devswarm-repokey.js`, `repoKeyForWorktree`).** `repoKeyForWorktree(worktree)`
+  = `sanitizeRepoName(basename(dirname(gitCommonDir)))` + `'-'` + first 6 hex chars of
+  `sha256(gitCommonDir)`, where `gitCommonDir` is `git -C <worktree> rev-parse
+  --git-common-dir`, resolved against `worktree` then realpath'd (`gitCommonDir`, L125–156).
+  **Why `--git-common-dir`, not `--show-toplevel`:** `--show-toplevel` is PER-WORKTREE (a
+  linked worktree's toplevel differs from the Primary's — that's what the legacy
+  `worktreeHash()`/`primaryWorkspaceId()` key on, by design, for per-worktree units);
+  `--git-common-dir` resolves to the SAME main worktree's `.git` for EVERY worktree of a
+  project, which is exactly the project-stable identity a SHARED mesh store needs. **Windows
+  hardening (a45563b):** GitHub Actions' `windows-latest` runners expose `%TEMP%` in 8.3
+  short-name form while git-for-Windows' MSYS path layer resolves an absolute
+  `--git-common-dir` through its own long-name-expanding logic, so the default JS
+  `fs.realpathSync()` (which preserves whatever casing/short-name form it's given) can hash
+  the Primary's own worktree and a linked worktree's reported common-dir to two DIFFERENT
+  strings for the identical directory. On win32 the module instead calls
+  `fs.realpathSync.native()` (queries the OS for the true canonical form via
+  `GetFinalPathNameByHandleW`, expanding short names) and then `winCanonicalizeCommonDir()`
+  (strips the `\\?\`/`\\?\UNC\` extended-length prefix, normalizes separators to `/`, drops a
+  trailing separator, lowercases — NTFS is case-insensitive). POSIX is untouched. **Fail-open
+  throughout:** any resolution failure (non-git cwd, missing git binary, unreadable path)
+  returns `null`, never throws — every caller below treats `null` as "mesh dormant" (O-D5),
+  not an error.
+- **The store is now PHYSICALLY PER-PROJECT, not per-worktree.** Every mesh-aware caller
+  (`store.openStore({..., hash: repoKey})`) opens the SAME `store/<repoKey>/devswarm.db` (+
+  journal) regardless of which of the project's worktrees it runs from — replacing the
+  0.54.x–0.56.x per-worktree-hash store. The legacy per-worktree `store/<hash>/` layout (and
+  its `summaries/<hash>.json`) is left in place; see the migration note below.
+- **The mesh CLI — `send` / `roster` / `mesh read` (`scripts/devswarm.js`), Phase 4 (D8).**
+  New, daemon-independent subcommands that write/read this project's shared store DIRECTLY —
+  zero `hivecontrol` calls, so they work even with the ingest daemon stopped:
+  - `send --to <meshId>|--broadcast --message TEXT [--from <id>] [--urgency low|normal|high|urgent]`
+    (`cmdSend`, L969–1049). `repoKey` is resolved from cwd FIRST and a null repoKey returns
+    `{ok:false, reason:'no-project'}` **before any identity is derived** (D28) — a spoofed
+    `DEVSWARM_BUILDER_ID` on a non-git cwd can never even reach `callerIdentity`. `from` is
+    always the hardened, cwd-derived `callerIdentity(env, cwd)` (D18/D19, same primitive the
+    ack-ownership guard uses); an explicit `--from` is accepted only as a redundant
+    declaration that must MATCH, else the send is rejected as spoofing. `--to <meshId>` is
+    **fail-closed** against the shared registry (`resolveMeshTarget`, L952–959, D12a) — a
+    meshId not present in the registry is rejected (`reason:'unregistered-recipient'`), never
+    silently black-holed; a matched target's row is stored under the target's REAL builder-id
+    partition (`target.id`), NOT the meshId itself (D19 — this is the join a recipient's/a
+    child's mesh-direct read below actually reads). `urgency` defaults `normal`, validated
+    against `ALLOWED_URGENCY = ['low','normal','high','urgent']` (L932). Default `type` is
+    `direct` unless `--broadcast`/`--type broadcast`; a broadcast row lands in the shared
+    `BROADCAST_PARTITION_ID = '*mesh-broadcast*'` partition (`companion/lib/devswarm-store.js`
+    L169). Dedupe hash = `meshMessageHash(fields)` (`'mesh:' + sha256(...)`, store.js L198),
+    a namespace disjoint from every other migration/legacy hash prefix.
+  - `roster [--ack]` (`cmdRoster`, L1055–1069) — an ALLOW-listed projection read of THIS
+    project's shared registry: `{repoKey, count, workspaces:[{id, working_on, directUnread,
+    broadcastUnread, urgencyMax}], recent:[...]}`, derived fresh (never a stale cache) each
+    call, keyed purely off cwd (no id argument — project-scoped like `send`).
+  - `mesh read` (a.k.a. `roster --ack`, D23; `cmdMeshRead`, L1077–1098) — lists the CALLER's
+    unseen NON-heartbeat broadcasts (rows with `storeSeq` past the caller's own
+    `broadcast_cursors` position) and then advances that cursor to the shared broadcast
+    partition's current head. This is the ONLY surface that clears `broadcastUnread` for the
+    caller.
+  - `heartbeat --summary TEXT [--urgency ...]` (Phase 4 step 4, D11/D22) now ALSO broadcasts a
+    mesh heartbeat row into the caller's project store — `mtype:'broadcast'`, `is_heartbeat:1`
+    — so `roster`'s `working_on` field for that workspace picks it up (`working_on` matches the
+    LATEST broadcast row where `sender === d.id`, `deriveSummary` L968–971). Default urgency
+    `low` (distinct from `send`'s `normal` default — a routine status ping should not read as
+    equally loud as a deliberate message). A non-git cwd (`repoKey` null) is NOT an error: the
+    base (non-mesh) heartbeat write still succeeds; `meshBroadcast:{ok:false,
+    reason:'no-project'}` in the response explains why the mesh side was skipped.
+  - Message record schema, uniform across `send` and the `heartbeat --summary` broadcast:
+    `{from, to, type:'direct'|'broadcast', message, timestamp, urgency}` (plus the derived
+    `hash`/`isHeartbeat` the store appends internally).
+- **`deriveSummary` mesh-additive fields (`companion/lib/devswarm-store.js` L909–1000, old
+  readers ignore unknown keys).** Per workspace: `directUnread` (alias of the pre-existing
+  `unread`, the wire-schema name), `broadcastUnread` (non-heartbeat broadcast rows past THIS
+  workspace's own broadcast cursor — heartbeats are deliberately EXCLUDED, D22, else it would
+  grow monotonically since every peer heartbeats every turn), `urgencyMax` (the highest
+  urgency among the workspace's PENDING direct rows only). Top-level: `recent[]` = the last
+  `recentCap` (default 50, `DEFAULT_RECENT_CAP`, O-D8 UNRESOLVED-cap, overridable) broadcast
+  rows INCLUDING heartbeats, each as `{from, summary, ts, urgency}` — the roster/FYI feed.
+- **`devswarm-parent-inbox.js` restructured to a per-project summary + urgency tiering + child
+  mesh-direct surfacing (Phase 8).** `summaryPath` is now keyed by `repoKey`
+  (`summaries/<repoKey>.json`), not per-descriptor `hashFromWorkspaceId(d.id)` — the hook reads
+  ONE file per project and iterates every workspace that project's store knows about.
+  Attention items are tiered by `urgencyMax` (`tierOf`, L393–407): `urgent`/`high` gets the
+  LOUDEST, distinct `buildUrgentUnreadSegment` ("STOP and read... FIRST"); `low` is
+  table-row-only (already visible in the live table, deliberately excluded from every textual
+  segment so it doesn't compete for attention); everything else (null/`normal`/unrecognized,
+  including a stuck-only entry with no urgency at all) keeps the pre-existing
+  `buildUnreadSegment` wording byte-for-byte. The Primary's own-unread segment
+  (`buildOwnUnreadSegment`) gets an urgency-aware "URGENT PRIORITY" prefix but — per D4's
+  type-vs-urgency separation — urgency NEVER changes whether a direct message surfaces/gates,
+  only how loud it reads. `recent[]` renders via `buildBroadcastSegment` as an ADVISORY-ONLY
+  feed (`[URGENT]` tag only, never a Stop-gate trigger, "react only if you judge it
+  relevant"). On the child side, `hooks/devswarm-child-turn.js` gained mesh-direct surfacing
+  (D26, `buildMeshDirectSegment`, L192–213): a mesh DIRECT addressed to a child's OWN meshId
+  lands in the child's OWN builder-id partition inside the shared store via the D19 addressing
+  join — but NOT in the child's durable NDJSON inbox (a separate reception path, `inbox
+  pull`'s target) — so the child's turn hook additionally reads its own entry out of the SAME
+  `summaries/<repoKey>.json` projection the Primary reads and surfaces a distinct "DEVSWARM
+  MESH DIRECT" / "DEVSWARM MESH DIRECT — URGENT" segment for it.
+- **ONE ingest daemon per PROJECT, not per worktree (Phase 5, D1/D9).** The installer now
+  resolves the PROJECT identity — `resolveMainWorktree(cwd)` = `dirname(gitCommonDir)`
+  (`companion/install-devswarm-ingest.js` L218–230) — and bakes it as the daemon's
+  `WorkingDirectory`, **never a linked/child worktree** (a child worktree can be removed
+  mid-project; baking it in would kill the whole project's ingest the moment its cwd
+  vanishes). The unit identity (`labelForProject`/`unitForProject`/`cronMarkerForProject`,
+  L214–216) is keyed by `repoKey`, disjointly shaped from a legacy 8-hex per-worktree hash (a
+  repoKey always contains an internal `-`, a legacy hash never does — D28 — so unit-name
+  parsing can never confuse one shape for the other, `listInstalledIngestUnits`). **Reap-
+  before-drain (D9):** before installing/reloading the new per-project unit, the installer
+  enumerates the repo's worktrees via `git worktree list --porcelain` from the main worktree
+  (`listRepoWorktrees`/`reapPlanForRepo`, L263–289 — `worktreeHash` is a one-way sha256 and
+  CANNOT be inverted, so this enumeration is the only correct way to find "which legacy units
+  belong to this repo") and stops+unloads every legacy per-worktree unit it finds
+  (`reapLegacyUnitsForRepo`, L373–390) BEFORE the new per-project daemon goes live. A brief
+  buffered ingest PAUSE during this handoff is EXPECTED — latency, not loss; the ingest
+  daemon's own reap-before-drain probe additionally backs off its first `monitor` call while
+  any legacy holder still looks alive. `doctor`/`update.js` uninstall targets BOTH the current
+  worktree's legacy unit AND the repo's per-project unit (best-effort, an absent one is a
+  harmless no-op).
+- **Health check — TWO independent signals, not freshness-only (D25,
+  `companion/lib/ingest-health.js`, `daemonHealth`, L110–140).** A fresh heartbeat file alone
+  is not proof the daemon is alive (a crash right after its last write leaves a fresh-looking
+  file); a live process can also have a never-yet-written heartbeat. `daemonHealth(home,
+  repoKey)` therefore checks BOTH, pure-fs, no spawn: (1) heartbeat freshness —
+  `heartbeats/ingest-<repoKey>.json`, `now - ts <= 3 min`; (2) a live-pid lock holder —
+  `locks/ingest-project-<repoKey>.lock` (`devswarm-ingest.js`'s per-project lock shape). BOTH
+  must hold for `'healthy'`; either failing (including a missing/unparsable file) is
+  `'stale'`, never silently "assumed healthy." **Windows carve-out (D28):** since the ingest
+  installer is a documented no-op on win32, `daemonHealth` short-circuits to
+  `status:'unsupported'` there — no stale-banner spam, no futile per-turn/per-send installer
+  spawn attempted on a platform that structurally cannot run the daemon. Consumed by BOTH the
+  per-turn stale-data banners (`devswarm-parent-inbox.js`, `devswarm-child-turn.js`) and the
+  CLI's send-time self-heal below, so every consumer agrees on one definition of "alive."
+- **Send-time self-heal (Phase 7, `scripts/devswarm.js` `withSelfHeal`, L418–…).** Every mesh
+  `send`, `inbox pull`'s native drain, and `archive-request` first resolves `repoKey`, checks
+  `daemonHealth`, and — only when the daemon looks stale AND a per-repoKey cooldown file
+  (`self-heal/ingest-<repoKey>.json`, `selfHealCooldownElapsed`/`markSelfHealAttempt`,
+  L318–347) has elapsed — best-effort spawns the (idempotent) per-project installer to
+  (re)install/refresh the daemon. Fail-open: a self-heal failure never blocks the send itself.
+- **Doctor orphan-sweep for legacy per-worktree units (Phase 6, D9/D25/D28,
+  `hooks/lib/doctor-repair.js` `reapOrphanedLegacyUnits`, L358–…, GATED behind the same
+  DevSwarm-active + resolvable-worktree posture every other daemon fix in doctor uses).**
+  Belt-and-suspenders (NOT a replacement for the installer's own reap-before-drain above) —
+  reaps a legacy per-worktree ingest unit ONLY when it is ALREADY orphaned or redundant: (a)
+  its baked worktree no longer resolves at all (genuinely orphaned), OR (b) its worktree's
+  `repoKey` resolves AND that repoKey's per-project daemon is CONFIRMED running+healthy
+  (`projectDaemonHealthy`, L78–…, the SAME two-signal D25 check as `daemonHealth` above) — i.e.
+  the per-project daemon has already taken over, so the legacy unit is pure redundancy. Never
+  touches a repoKey-shaped per-project unit (D28's disjoint regex guarantees `hash===null,
+  repoKey set` is never mistaken for a legacy one) and never the legacy base (un-suffixed)
+  unit, which the existing gated ingest-install section already owns.
+- **Rollback — v0.57 mesh → legacy per-worktree units (`skills/update/scripts/update.js`
+  `rollbackToLegacyUnits`, L617–…, a documented procedure, not automatic).** Uninstalls the
+  current worktree's per-project (repoKey) unit and reinstalls the legacy per-worktree units,
+  confirming each is installed AND has a fresh heartbeat before reporting `viable:true` —
+  otherwise it reports "not viable... safe to re-check shortly," never a false success.
+  Windows: documented no-op (D28, same as the rest of the daemon machinery there).
+  `healIngestDaemon` (same file) now also prefers reading back a PER-PROJECT (repoKey) unit
+  over a legacy one when both could apply, so its own-config classification (`ok`/`wrong-
+  path`/`stale-script`/`absent`) checks the unit actually in charge.
+- **Non-destructive hash → repoKey store migration (Phase 3, D13,
+  `companion/devswarm-migrate.js` `migrateHashStoresToRepoName`/`...Locked`, L580–753).** Reads
+  ONLY legacy 8-hex `store/<hash>/` dirs (`store.listStoreHashes(..., {shape:'legacy'})` —
+  NEVER iterates the repoKey stores this same function creates, so a re-run cannot treat its
+  own output as a source, D13/Fable P2). For each workspace_id found in a legacy store, the
+  repoKey is resolved PER WORKSPACE_ID — never once for the whole legacy store, since one old
+  `DEFAULT_HASH` bucket can hold workspaces belonging to genuinely DIFFERENT repos
+  (D13/Opus-auditor P2) — from THAT workspace's own registry descriptor's `worktreePath`. A
+  workspace with no registry descriptor, no `worktreePath`, or an unresolvable git worktree
+  (e.g. deleted) is SKIPPED and reported with an explicit reason — never guessed at. For every
+  workspace it DOES resolve, it copies: messages (idempotent by hash; a hash-less legacy row
+  gets a stable synthesized hash, `synthRepoKeyMigrateHash`, L580–584, in its OWN disjoint
+  `repokey-migrate:` namespace so it can never collide with `legacy:`/`native:`/
+  `global-migrate:`/`mesh:`), the registry entry, the cursor AND `broadcast_cursors` value
+  (MAX-MERGED, never regressed — safe for a fold where two legacy hashes both route into the
+  SAME repoKey), and the gates — then re-derives `summaries/<repoKey>.json`. **NON-
+  DESTRUCTIVE:** `store/<hash>/` and `summaries/<hash>.json` are left byte-for-byte intact as
+  a backup; this fold runs automatically INSIDE the existing `migrate`/`migrateToStore` call
+  (same migrate lock, no separate step required) but is also callable standalone. Count-
+  verified per workspace before it is marked `verified:true`.
+- **#36-STRUCTURAL cross-project scoping, D29 (REPLACES the spoofable v0.56 env filter
+  `d.repoId !== currentRepoId`, which was in the SAME trust class as the #39 ack-guard
+  env-spoof).** `hooks/devswarm-parent-gate.js` and `hooks/devswarm-parent-inbox.js` both
+  compare each candidate descriptor's `repoKeyForWorktree(d.worktreePath)` against the
+  session's own `selfKey = repoKeyForWorktree(cwd)` (resolved ONCE per hook invocation and
+  memoized per worktreePath, so N siblings sharing one worktree never re-spawn git more than
+  once each) and EXCLUDE the descriptor only when BOTH sides resolve AND differ — fail-open
+  when either is unresolvable, so nothing that surfaced pre-#36 can vanish. `devswarm-parent-
+  gate.js` needs this filter as an EXPLICIT, separate check because it builds its blocking set
+  from the raw, machine-global `readDescriptors()` + per-descriptor `readUnread()` (NOT the
+  per-project summary) — re-scoping the summary alone, as `devswarm-parent-inbox.js` does via
+  its `summaries/<repoKey>.json` keying, does NOT by itself close this gate-path bleed;
+  `devswarm-parent-inbox.js` applies the SAME filter a second time (defense-in-depth) to
+  entries it reads out of the live registry even though its summary file is already
+  project-scoped. Net effect: a project only ever sees its OWN workspaces in the gate/inbox
+  hot paths, closing the confirmed cross-project bleed (#36; ToolFox3 gated on SkyCrew) the
+  earlier `DEVSWARM_REPO_ID` env filter never actually closed.
+- **Codex/OMX mesh support — DEFERRED, not shipped (v0.57.1, owner decision O-D3).** Every
+  item above (`repoKey`, the per-project store, the mesh CLI, the per-project ingest daemon,
+  the doctor orphan-sweep, the migration, and the #36 structural filter) exists ONLY on the
+  Claude-side plugin (`plugins/anti-hall/hooks/`, `plugins/anti-hall/companion/`,
+  `plugins/anti-hall/scripts/devswarm.js`). The Codex port
+  (`plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`) does not yet describe or
+  ship any mesh capability — do not claim otherwise until v0.57.1 lands.
+
 ### 8.7.1 Single-consumer importance (why the read-guard exists)
 
 Stated once, explicitly, because it is the load-bearing invariant behind §8.5's read-guard
@@ -789,7 +1000,11 @@ line-for-line against the current `plugins/anti-hall/scripts/devswarm.js`.
 | `archive <id>` | Archive-by-absence on anti-hall's OWN registry ONLY: moves the descriptor into `archived/` (renames — never unlinks) and tombstones the store registry entry. hivecontrol itself has NO teardown/delete/archive command at any level (§4/§10), so this SURFACES a manual "remove workspace X in the DevSwarm app" step in its response — it never runs an actual delete. | `cmdArchive` L552–575, dispatch L731–735 |
 | `archive-ignore <id>` / `archive-unignore <id>` | Write / remove a per-workspace `archive-ignore/<id>.json` mute of the `devswarm-parent-inbox` archive-ready reminder. | `cmdArchiveIgnore` L577–592, dispatch L736–745 |
 | `archive-request <childId\|childBranch> [--reason TEXT] [--child-branch B]` | **PARENT-side, SEND-ONLY (v0.56.0).** Posts a `[[ANTIHALL_ARCHIVE_REQUEST]]`-prefixed message to the child via `hivecontrol workspace message-child <branch> <msg>`, asking it to archive. Resolves the child branch: explicit `--child-branch` → the descriptor's own `branch` field (if ever set) → a `hivecontrol workspace list children` lookup matching branch/id/worktree → the positional id itself. NEVER verifies merged/tested/deployed itself (that's the parent repo's own policy to enforce first) and NEVER runs `archive` on the child's behalf. Fail-open on a `message-child` spawn error (`ok:false`, never a throw). | `cmdArchiveRequest` L655–674, `resolveChildBranch` L622–647, `ARCHIVE_REQUEST_MARKER`/`buildArchiveRequestMessage` L596–605, dispatch L746–751 |
-| `migrate` | Auto-migrate on-disk state (the JSON descriptor registry + each descriptor's legacy NDJSON inbox/cursor) into the store. Idempotent (dedupe hash from id + line-index + content), NON-DESTRUCTIVE (reads sources only, never deletes/moves/truncates), single-consumer-locked (O_EXCL), and COUNT-VERIFIED (store count must equal distinct legacy lines) before it reports `verified:true`. Picks up `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ` from `ctx.env` (no dedicated `--mark-read` CLI flag on THIS subcommand — that flag lives on the separate `scripts/migrate-state.js` script, §8.7's v0.56.0 note). | `cmdMigrate` L676–678 → `companion/devswarm-migrate.js`, dispatch L756–758 |
+| `migrate` | Auto-migrate on-disk state (the JSON descriptor registry + each descriptor's legacy NDJSON inbox/cursor) into the store. Idempotent (dedupe hash from id + line-index + content), NON-DESTRUCTIVE (reads sources only, never deletes/moves/truncates), single-consumer-locked (O_EXCL), and COUNT-VERIFIED (store count must equal distinct legacy lines) before it reports `verified:true`. As of v0.57 this ALSO folds in the non-destructive hash→repoKey mesh migration (§8.7's v0.57 note) inside the SAME migrate lock. Picks up `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ` from `ctx.env` (no dedicated `--mark-read` CLI flag on THIS subcommand — that flag lives on the separate `scripts/migrate-state.js` script, §8.7's v0.56.0 note). | `cmdMigrate` L921–968 → `companion/devswarm-migrate.js`, dispatch L1182–1184 |
+| `send --to <meshId>\|--broadcast --message TEXT [--from <id>] [--urgency low\|normal\|high\|urgent]` | **v0.57 MESH (SHIPPED — Claude-side only).** Writes THIS project's shared `store/<repoKey>/` DIRECTLY — daemon-independent, zero `hivecontrol` calls (wrapped in send-time self-heal, `withSelfHeal`). `repoKey` is resolved from cwd FIRST; a non-git cwd returns `{ok:false, reason:'no-project'}` before any identity is derived (D28). `--from` is always re-derived from cwd (`callerIdentity`, spoof-resistant); an explicit `--from` must match or the send is rejected. `--to <meshId>` is fail-closed against the shared registry (D12a) — an unregistered meshId is rejected, never silently black-holed; the row lands in the target's REAL builder-id partition (D19), not the meshId itself. Default `urgency` `normal`. | `cmdSend` L969–1049, `resolveMeshTarget` L952–959, dispatch L1185–1189 |
+| `roster [--ack]` | **v0.57 MESH.** ALLOW-listed projection read of this project's shared registry + `working_on` + `recent[]` broadcast digest, derived fresh (never cached). `--ack` is an alias of `mesh read` below — the ONLY surface that clears `broadcastUnread`. | `cmdRoster` L1055–1069, dispatch L1190–1195 |
+| `mesh read` | **v0.57 MESH.** Same as `roster --ack` (D23) — lists the caller's unseen NON-heartbeat broadcasts past its own broadcast cursor, then advances that cursor to head. | `cmdMeshRead` L1077–1098, dispatch L1196–1203 |
+| `heartbeat <id> --summary TEXT [--urgency ...]` | **v0.57 MESH addition to the existing `heartbeat` verb.** `--summary` ALSO broadcasts a mesh heartbeat row (`mtype:'broadcast'`, `is_heartbeat:1`) into this project's shared store — feeds `roster`'s `working_on` field (matched by `sender === d.id`). Default urgency `low`. A non-git cwd does not fail the base heartbeat write; it reports `meshBroadcast:{ok:false, reason:'no-project'}`. | `cmdHeartbeat` L473–543, dispatch L1122–1126 |
 
 **Worked example — a full Primary/child lifecycle end to end:**
 ```bash
@@ -820,6 +1035,21 @@ node scripts/devswarm.js archive-request child-1 --reason "shipped in v1.2.0"
 # CHILD: sees the [[ANTIHALL_ARCHIVE_REQUEST]] marker via its per-turn unread surfacing,
 # confirms with ITS OWN user, then (and only then) archives:
 node scripts/devswarm.js archive child-1              # archive-by-absence + manual-step note
+```
+
+**v0.57 mesh — all-to-all, run from ANY worktree of the same project (Claude-side only):**
+```bash
+# Every worktree of THIS project shares one repoKey store — no register/register-primary
+# needed first; send is daemon-independent and writes the shared store directly.
+node scripts/devswarm.js send --to sibling-worktree --message "picking up the API layer" --urgency normal
+node scripts/devswarm.js send --broadcast --message "starting DB migration, hold off on schema edits" --urgency high
+
+# Any worktree of the SAME project can read the shared roster + unseen broadcasts:
+node scripts/devswarm.js roster                 # {repoKey, workspaces:[...], recent:[...]}
+node scripts/devswarm.js mesh read               # unseen non-heartbeat broadcasts, then acks them
+
+# A routine status ping (also updates roster's working_on for this workspace):
+node scripts/devswarm.js heartbeat sibling-worktree --summary "60% through the API layer"
 ```
 
 Every subcommand above was verified to exist at the cited line by reading the current
