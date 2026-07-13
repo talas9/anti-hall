@@ -7,6 +7,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const path = require('node:path');
 
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 const { sanitizeRepoName, gitCommonDir, repoKeyForWorktree } = repokey;
@@ -64,17 +65,25 @@ test('sanitizeRepoName: a much longer name is capped to 40 chars, no trailing da
 });
 
 test('gitCommonDir: resolves a RELATIVE common-dir (main worktree, bare ".git") against cwd', () => {
+  // Expected is computed via path.resolve (the SAME call gitCommonDir makes)
+  // rather than a hardcoded POSIX literal, since on Windows `path` is
+  // path.win32: a root-relative POSIX-shaped input resolves against the
+  // process's current drive, yielding a native `\`-separated, drive-prefixed
+  // path. Computing expected the same way keeps this test platform-agnostic.
+  const wt = '/Users/dev/anti-hall';
   const R = makeRun('.git');
-  const cd = gitCommonDir('/Users/dev/anti-hall', { io: { run: R.run, fs: identityFs } });
-  assert.equal(cd, '/Users/dev/anti-hall/.git');
+  const cd = gitCommonDir(wt, { io: { run: R.run, fs: identityFs } });
+  assert.equal(cd, path.resolve(wt, '.git'));
   assert.equal(R.calls.length, 1);
-  assert.deepEqual(R.calls[0].args, ['-C', '/Users/dev/anti-hall', 'rev-parse', '--git-common-dir']);
+  assert.deepEqual(R.calls[0].args, ['-C', wt, 'rev-parse', '--git-common-dir']);
 });
 
 test('gitCommonDir: an ABSOLUTE common-dir (linked worktree) is used as-is (still realpath\'d)', () => {
-  const R = makeRun('/Users/dev/anti-hall/.git');
-  const cd = gitCommonDir('/Users/dev/.devswarm/repos/1/abc/anti-hall-wt', { io: { run: R.run, fs: identityFs } });
-  assert.equal(cd, '/Users/dev/anti-hall/.git');
+  const wt = '/Users/dev/.devswarm/repos/1/abc/anti-hall-wt';
+  const rawOut = '/Users/dev/anti-hall/.git';
+  const R = makeRun(rawOut);
+  const cd = gitCommonDir(wt, { io: { run: R.run, fs: identityFs } });
+  assert.equal(cd, path.resolve(wt, rawOut));
 });
 
 test('gitCommonDir: relative-form main worktree and absolute-form linked worktree collapse to the SAME string', () => {
