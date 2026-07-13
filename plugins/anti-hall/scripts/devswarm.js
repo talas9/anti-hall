@@ -74,6 +74,7 @@
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const { spawnSync } = require('child_process');
 
 const store = require('../companion/lib/devswarm-store.js');
 const inboxCursor = require('../companion/lib/devswarm-inbox-cursor.js');
@@ -86,6 +87,8 @@ const migrate = require('../companion/devswarm-migrate.js');
 const pull = require('../companion/lib/devswarm-pull.js');
 const inst = require('../companion/install-devswarm-ingest.js');
 const repokey = require('../companion/lib/devswarm-repokey.js');
+const ingestHealth = require('../companion/lib/ingest-health.js');
+const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
 
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
 // looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
@@ -298,6 +301,130 @@ function upsertStoreRegistry(home, desc, ctx) {
     s.upsertRegistry(desc);
     store.deriveSummary(s, { home, env: ctx && ctx.env });
   } finally { s.close(); }
+}
+
+// ============================================================================
+// Phase 7 (PLAN-v0.57-mesh.md) — send-time self-heal. Invoked BEFORE every
+// send-like verb (mesh `send`, `inbox pull`'s native drain, `archive-request`'s
+// `message-child`): checks THIS project's per-project daemon health
+// (ingestHealth.daemonHealth, D25 — running+healthy, not freshness-only) and,
+// when it looks stale/missing, best-effort spawns the (idempotent) repoKey
+// installer to self-heal it — NEVER blocking the caller's own action, which
+// always proceeds regardless of readiness (the native queue buffers; a
+// send-direct mesh write is daemon-independent by design, D8).
+// ============================================================================
+const SELF_HEAL_COOLDOWN_MS = 60 * 1000; // O-D7
+
+function selfHealCooldownPath(home, repoKey) {
+  return path.join(devswarmRoot(home), 'self-heal', 'ingest-' + repoKey + '.json');
+}
+function selfHealCooldownElapsed(home, repoKey, now, F) {
+  try {
+    const st = JSON.parse((F || fs).readFileSync(selfHealCooldownPath(home, repoKey), 'utf8'));
+    const last = st && Number.isFinite(st.lastAttemptAt) ? st.lastAttemptAt : null;
+    if (last === null) return true;
+    return (now - last) >= SELF_HEAL_COOLDOWN_MS;
+  } catch (_) {
+    return true; // no/unreadable state -> treat as elapsed (heal now)
+  }
+}
+// markSelfHealAttempt — record this attempt's timestamp (atomic tmp+rename),
+// same idiom as hooks/devswarm-parent-inbox.js's markArchiveNudged. Best-effort:
+// a failed write only means a future call may re-attempt sooner than the
+// cooldown intends — never blocks the caller.
+function markSelfHealAttempt(home, repoKey, now, F) {
+  try {
+    const G = F || fs;
+    const p = selfHealCooldownPath(home, repoKey);
+    G.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp';
+    G.writeFileSync(tmp, JSON.stringify({ lastAttemptAt: now }));
+    G.renameSync(tmp, p);
+  } catch (_) {}
+}
+
+// defaultSpawnInstaller(worktree, home, env) — run the plugin's OWN idempotent
+// installer as a subprocess, cwd'd INSIDE the target worktree (so its own
+// resolveMainWorktree/repoKey derivation lands on the SAME project) with HOME
+// threaded — the same spawn shape as hooks/lib/doctor-repair.js's
+// spawnInstaller / skills/update/scripts/update.js's healIngestDaemon.
+function defaultSpawnInstaller(worktree, home, env) {
+  const installerPath = path.join(__dirname, '..', 'companion', 'install-devswarm-ingest.js');
+  try {
+    return spawnSync(process.execPath, [installerPath], {
+      cwd: worktree, env: Object.assign({}, env, { HOME: home }), encoding: 'utf8', timeout: 30000,
+    });
+  } catch (_) {
+    return null;
+  }
+}
+
+// selfHeal(ctx) -> { daemonHealthy?:true, daemonWarning?:string, daemonHealAttempted?:true }
+// NEVER throws (fail-open — a self-heal failure must never block the caller's
+// own action) and never blocks: the caller always proceeds with its own verb
+// regardless of what this returns.
+//   'unsupported-platform' — win32 (D28): no daemon possible there, no spawn.
+//   'no-worktree'          — cwd is not inside a resolvable git worktree; the
+//                             self-heal GATE (isDevswarmActive && a resolved
+//                             worktree) can never open, so no spawn either.
+//   'stale'                — daemon looks stale/missing. Spawns the installer
+//                             ONLY when gated (isDevswarmActive(env) AND the
+//                             worktree resolved, already true by this point)
+//                             AND the cooldown has elapsed; `daemonHealAttempted`
+//                             is set true iff a spawn actually happened.
+function selfHeal(ctx) {
+  try {
+    const platform = (ctx.io && ctx.io.platform) || process.platform;
+    if (platform === 'win32') return { daemonWarning: 'unsupported-platform' };
+
+    const env = ctx.env || process.env;
+    const cwd = ctx.cwd || process.cwd();
+    const home = ctx.home || os.homedir();
+    const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+
+    const resolveWt = (ctx.io && ctx.io.resolveWorktree)
+      || (() => inst.resolveWorktree(cwd) || findGitToplevel(cwd));
+    const worktree = resolveWt(cwd);
+    if (!worktree) return { daemonWarning: 'no-worktree' };
+
+    const resolveKey = (ctx.io && ctx.io.repoKeyForWorktree) || repokey.repoKeyForWorktree;
+    let repoKey = null;
+    try { repoKey = resolveKey(worktree); } catch (_) { repoKey = null; }
+
+    const health = ingestHealth.daemonHealth(home, repoKey, { now, platform, io: ctx.io && ctx.io.health });
+    if (health.status === 'unsupported') return { daemonWarning: 'unsupported-platform' };
+    if (health.status === 'healthy') return { daemonHealthy: true };
+
+    // stale/missing. The SPAWN (never the health read above) is gated.
+    if (!isDevswarmActive(env) || !repoKey) return { daemonWarning: 'stale' };
+
+    const F = (ctx.io && ctx.io.fs) || fs;
+    if (!selfHealCooldownElapsed(home, repoKey, now, F)) {
+      return { daemonWarning: 'stale', daemonHealCooldown: true };
+    }
+    markSelfHealAttempt(home, repoKey, now, F);
+    const spawn = (ctx.io && ctx.io.spawnInstaller) || defaultSpawnInstaller;
+    spawn(worktree, home, env);
+    return { daemonWarning: 'stale', daemonHealAttempted: true };
+  } catch (_) {
+    return {}; // fail-open: self-heal must never throw or block the caller
+  }
+}
+
+// withSelfHeal(fn, ctx) — runs selfHeal(ctx) BEFORE `fn()` (the send-like
+// action), then merges the heal outcome's fields onto `fn()`'s result object
+// (never overwriting the action's own `ok`/`error`/etc. keys). `fn()`'s own
+// result always wins the response; self-heal only ADDS informational fields.
+function withSelfHeal(fn, ctx) {
+  const heal = selfHeal(ctx);
+  const r = fn();
+  if (heal && r && typeof r === 'object') {
+    if (heal.daemonWarning) r.daemonWarning = heal.daemonWarning;
+    if (heal.daemonHealthy) r.daemonHealthy = true;
+    if (heal.daemonHealAttempted) r.daemonHealAttempted = true;
+    if (heal.daemonHealCooldown) r.daemonHealCooldown = true;
+  }
+  return r;
 }
 
 // ----- subcommands -----
@@ -1001,7 +1128,12 @@ function run(argv, ctx0) {
         const sub = positionals[1];
         const id = positionals[2];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const r = cmdInbox(sub, id, flags, ctx);
+        // 'pull' is the NATIVE-DRAIN verb (Phase 7 send-time self-heal, D-O-D7):
+        // self-heal runs BEFORE it, never before the other (non-draining) inbox
+        // subcommands (count/read/ack/messages).
+        const r = sub === 'pull'
+          ? withSelfHeal(() => cmdInbox(sub, id, flags, ctx), ctx)
+          : cmdInbox(sub, id, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'workspaces': {
@@ -1039,7 +1171,8 @@ function run(argv, ctx0) {
       case 'archive-request': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const r = cmdArchiveRequest(id, flags, ctx);
+        // Send-time self-heal (Phase 7): archive-request posts via `message-child`.
+        const r = withSelfHeal(() => cmdArchiveRequest(id, flags, ctx), ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'register-primary': {
@@ -1050,7 +1183,8 @@ function run(argv, ctx0) {
         return { code: 0, result: cmdMigrate(ctx) };
       }
       case 'send': {
-        const r = cmdSend(flags, ctx);
+        // Send-time self-heal (Phase 7): runs before every mesh send.
+        const r = withSelfHeal(() => cmdSend(flags, ctx), ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'roster': {
@@ -1092,4 +1226,5 @@ module.exports = {
   run, parseArgs, one, many, csvList,
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath,
+  selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,
 };

@@ -317,9 +317,44 @@ function main() {
     registerChildDescriptor(env, payload.session_id, payload.cwd, home);
   } catch (_) { /* fail-open: never block a turn on a descriptor write */ }
 
+  // Daemon-LIVENESS staleness banner (Phase 7, PLAN-v0.57-mesh.md D25) — the
+  // SAME warning devswarm-parent-inbox.js renders to the Primary, so a child
+  // sees identical wording when its OWN project's per-project ingest daemon
+  // looks stopped (children depend on that daemon too — it is what drains their
+  // native parent->child queue via `inbox pull`). Lazy/guarded requires (D27):
+  // a missing/corrupt `ingest-health.js`/`devswarm-repokey.js` fails this block
+  // open (no banner), never the whole hook. `status==='healthy'` or
+  // `'unsupported'` (win32, D28) also render nothing.
+  let staleBanner = null;
+  try {
+    const worktree = findGitToplevel(payload.cwd);
+    if (worktree) {
+      let ingestHealthMod = null;
+      try { ingestHealthMod = require('../companion/lib/ingest-health.js'); } catch (_) { ingestHealthMod = null; }
+      let repokeyMod = null;
+      try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
+      if (ingestHealthMod && repokeyMod) {
+        let repoKey = null;
+        try { repoKey = repokeyMod.repoKeyForWorktree(worktree); } catch (_) { repoKey = null; }
+        if (repoKey) {
+          const now = Date.now();
+          let beatTs = null;
+          try {
+            const beat = JSON.parse(fs.readFileSync(ingestHealthMod.ingestHeartbeatPath(home, repoKey), 'utf8'));
+            beatTs = beat && Number.isFinite(beat.ts) ? beat.ts : null;
+          } catch (_) { beatTs = null; }
+          const health = ingestHealthMod.daemonHealth(home, repoKey, { now });
+          if (health.status === 'stale') staleBanner = ingestHealthMod.buildStaleBanner(beatTs, now);
+        }
+      }
+    }
+  } catch (_) { staleBanner = null; }
+
   // REMINDER is always present; append the unread-inbox nudge only when the child's
   // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
-  const segments = [REMINDER, RECEIVE_NUDGE];
+  const segments = [];
+  if (staleBanner) segments.push(staleBanner);
+  segments.push(REMINDER, RECEIVE_NUDGE);
   const info = unreadInfo(env, home);
   if (info) {
     segments.push(buildUnreadSegment(info));

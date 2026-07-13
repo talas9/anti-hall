@@ -452,6 +452,18 @@ function remotePluginVersion(marketplaceDir, exec) {
  * not this update.js's own possibly-stale __dirname, so the installer that
  * actually runs is the one carrying the stable-path fix.
  *
+ * REPOKEY-AWARE (v0.57 mesh Phase 6, D9/D24): spawning the installer on a real
+ * git worktree now ALSO reaps this repo's LEGACY per-worktree unit (D9
+ * reap-before-drain — see install-devswarm-ingest.js's reapLegacyUnitsForRepo,
+ * invoked unconditionally from a resolved worktree) and installs the PER-PROJECT
+ * (repoKey-keyed) unit in its place. Re-checking ONLY the legacy unit after that
+ * spawn would find it GONE (reaped, not fixed) and misreport healed:false
+ * forever. So `bestUnit` below prefers the freshly-installed PROJECT unit
+ * (readInstalledIngestWorkingDir({repoKey})) when repoKey resolves and a project
+ * unit exists, falling back to the LEGACY per-worktree unit otherwise — which
+ * also keeps this fully backward-compatible with a pre-mesh install (no project
+ * unit yet) and with mocked-spawnFn tests that only simulate a legacy-unit fix.
+ *
  * Fully fail-open: ANY error here is reported in `detail` and NEVER thrown — a
  * heal failure must never fail the update itself.
  */
@@ -465,6 +477,7 @@ function healIngestDaemon(opts) {
     const installerPath = path.join(paths.pluginSrcDir, 'companion', 'install-devswarm-ingest.js');
     const repairPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'doctor-repair.js');
     const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const repokeyPath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-repokey.js');
     if (!fs.existsSync(installerPath) || !fs.existsSync(repairPath) || !fs.existsSync(detectPath)) {
       return { attempted: false, healed: false, detail: 'ingest heal skipped: expected plugin files not found under ' + paths.pluginSrcDir };
     }
@@ -480,7 +493,29 @@ function healIngestDaemon(opts) {
       return { attempted: false, healed: false, detail: 'cwd is not a git worktree — ingest heal skipped (gate closed)' };
     }
 
-    const before = readInstalledIngestWorkingDir({ worktree, home });
+    // repoKey (v0.57 mesh): fail-open to null on ANY error (older marketplace
+    // clone pre-dating devswarm-repokey.js, non-resolvable worktree, etc.) — a
+    // null repoKey just means bestUnit below always falls back to the LEGACY
+    // per-worktree reading, i.e. today's pre-mesh behavior, unchanged.
+    let repoKey = null;
+    try {
+      if (fs.existsSync(repokeyPath)) {
+        const repokey = require(repokeyPath);
+        if (typeof repokey.repoKeyForWorktree === 'function') repoKey = repokey.repoKeyForWorktree(worktree);
+      }
+    } catch (_) { repoKey = null; }
+
+    // bestUnit — prefer the PER-PROJECT (repoKey) unit when one exists (the
+    // mesh-era canonical install target); otherwise fall back to the LEGACY
+    // per-worktree unit (pre-mesh, or a mocked test that never writes a project
+    // unit). Never a hard error: readInstalledIngestWorkingDir itself fails open.
+    const bestUnit = () => {
+      const project = repoKey ? readInstalledIngestWorkingDir({ repoKey, home, platform: o.platform }) : { present: false };
+      if (project.present) return project;
+      return readInstalledIngestWorkingDir({ worktree, home, platform: o.platform });
+    };
+
+    const before = bestUnit();
     const cls = classifyIngestUnit({ workingDir: before.workingDir, scriptPath: before.scriptPath, home, env });
     if (cls === 'ok' || cls === 'absent') {
       // 'ok': already healthy — nothing to heal. 'absent': not installed here —
@@ -493,7 +528,7 @@ function healIngestDaemon(opts) {
       cwd, env: Object.assign({}, env, { HOME: home }), encoding: 'utf8', timeout: 30000,
     }));
     spawn(installerPath);
-    const after = readInstalledIngestWorkingDir({ worktree, home });
+    const after = bestUnit();
     const cls2 = classifyIngestUnit({ workingDir: after.workingDir, scriptPath: after.scriptPath, home, env });
     return {
       attempted: true,
@@ -504,6 +539,168 @@ function healIngestDaemon(opts) {
     };
   } catch (e) {
     return { attempted: false, healed: false, detail: 'ingest heal raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Rollback (v0.57 mesh -> legacy per-worktree units) — PLAN-v0.57-mesh.md
+// Phase 6b / D13. Documented + tested, NOT auto-run by `main()`/runUpdate.
+// ---------------------------------------------------------------------------
+
+// HEARTBEAT_STALE_MS — same 3-minute freshness window D25/Phase-7's
+// `daemonHealth` uses for the live ingest daemon; duplicated locally (Phase 7's
+// `companion/lib/ingest-health.js` does not exist yet — this file is disjoint
+// from Phase 7 per the plan's file list) rather than importing a module that
+// may not be present on an older checkout.
+const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
+
+/**
+ * readLegacyHeartbeat(devswarmRootFn, home, hash, now) -> { fresh, ts }
+ * Reads the LEGACY per-worktree daemon heartbeat file
+ * (`<devswarmRoot>/heartbeats/ingest-<hash>.json`, written by
+ * devswarm-ingest.js's writeIngestHeartbeat) and reports freshness. Fail-open:
+ * a missing/corrupt/unparsable file reads as NOT fresh, never throws.
+ */
+function readLegacyHeartbeat(devswarmRootFn, home, hash, now) {
+  try {
+    const p = path.join(devswarmRootFn(home), 'heartbeats', 'ingest-' + String(hash) + '.json');
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const ts = data && Number.isFinite(data.ts) ? data.ts : null;
+    const n = typeof now === 'function' ? now() : Date.now();
+    return { fresh: ts != null && (n - ts) <= HEARTBEAT_STALE_MS, ts };
+  } catch (_) {
+    return { fresh: false, ts: null };
+  }
+}
+
+/**
+ * rollbackToLegacyUnits(opts) -> {
+ *   attempted, viable, repoKey, uninstalled,
+ *   reinstalled: [{ worktree, hash, installed, fresh }],
+ *   detail,
+ * }
+ *
+ * D13/Phase-6b downgrade helper (0.57 mesh -> <=0.56 legacy per-worktree
+ * units), invoked as part of a documented rollback procedure (Phase 11 KB) —
+ * NOT wired into runUpdate/main, and NEVER run automatically.
+ *
+ * Step 1: uninstalls THIS repo's per-project ingest daemon (best-effort — an
+ * absent unit is a harmless no-op).
+ * Step 2: enumerates this repo's worktrees via `git worktree list --porcelain`
+ * from the MAIN worktree (install-devswarm-ingest.js's `reapPlanForRepo` —
+ * the SAME enumeration Phase 5's own reap-before-drain uses; worktreeHash is a
+ * one-way sha256 and can NEVER be inverted back to a worktree path — Gap-2)
+ * and REINSTALLS each one's LEGACY per-worktree unit (the shape a <=0.56
+ * daemon/scheduler expects).
+ * `viable:true` is declared ONLY once every reinstalled unit's legacy
+ * heartbeat file (`heartbeats/ingest-<hash>.json`) reads FRESH — a written
+ * unit is not proof the daemon is actually draining (mirrors D25's "running
+ * AND healthy" posture, not freshness-only). This is a ONE-SHOT check (no
+ * poll/sleep loop) — a caller sees `viable:false` immediately after install
+ * and may re-invoke once the daemon has had time to start.
+ *
+ * NON-DESTRUCTIVE (D13): no `store/<hash>/` directory is ever read, written,
+ * or deleted here — those sources stay exactly as migration (Phase 3) left
+ * them, which is what makes a later re-upgrade's idempotent migration able to
+ * reconverge.
+ *
+ * Fully injectable / fail-open, mirroring healIngestDaemon's own posture:
+ * every real system mutation is behind an override a test replaces with a
+ * mock (`installIngest`, `repokey`, `liveness`, `doUninstallProject`,
+ * `doInstallLegacy`, `readHeartbeat`); production defaults call the REAL
+ * exported install-devswarm-ingest.js functions. Any internal throw is
+ * caught and reported in `detail`, never propagated.
+ *
+ * Windows: documented no-op (D28 — the ingest daemon/scheduler is
+ * unsupported there; nothing to roll back to).
+ */
+function rollbackToLegacyUnits(opts) {
+  const o = opts || {};
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  const platform = o.platform || process.platform;
+  const NOOP = { attempted: false, viable: false, repoKey: null, uninstalled: false, reinstalled: [] };
+  try {
+    if (platform === 'win32') {
+      return Object.assign({}, NOOP, {
+        detail: 'rollback is a documented no-op on win32 (ingest daemon/scheduler unsupported there — D28)',
+      });
+    }
+    const installerPath = path.join(paths.pluginSrcDir, 'companion', 'install-devswarm-ingest.js');
+    const repokeyPath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-repokey.js');
+    const livenessPath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'liveness.js');
+    if (!fs.existsSync(installerPath) || !fs.existsSync(repokeyPath) || !fs.existsSync(livenessPath)) {
+      return Object.assign({}, NOOP, {
+        detail: 'rollback skipped: expected plugin files not found under ' + paths.pluginSrcDir,
+      });
+    }
+    const installIngest = o.installIngest || require(installerPath);
+    const repokey = o.repokey || require(repokeyPath);
+    const liveness = o.liveness || require(livenessPath);
+    const devswarmRootFn = liveness.devswarmRoot;
+
+    const mainWorktree = typeof installIngest.resolveMainWorktree === 'function'
+      ? installIngest.resolveMainWorktree(cwd, o.io)
+      : null;
+    if (!mainWorktree) {
+      return Object.assign({}, NOOP, {
+        detail: 'cwd is not a git worktree — rollback skipped (no project to resolve)',
+      });
+    }
+    const repoKey = typeof repokey.repoKeyForWorktree === 'function'
+      ? repokey.repoKeyForWorktree(mainWorktree, { io: o.io })
+      : null;
+
+    // Step 1: uninstall the per-project daemon (best-effort; an absent unit is
+    // a harmless no-op, matching *UninstallProject's own ignore-err posture).
+    let uninstalled = false;
+    const doUninstallProject = o.doUninstallProject || ((rk) => {
+      if (platform === 'darwin') installIngest.macUninstallProject(rk);
+      else installIngest.linuxUninstallProject(rk);
+    });
+    if (repoKey) {
+      try { doUninstallProject(repoKey); uninstalled = true; } catch (_) { uninstalled = false; }
+    }
+
+    // Step 2: enumerate + reinstall this repo's LEGACY per-worktree units. A
+    // worktree that was removed (`git worktree remove`) simply never appears
+    // in the porcelain listing, so it is skipped for free; a worktree whose
+    // directory vanished WITHOUT `git worktree remove` (still listed,
+    // "prunable") is attempted and its failure is caught per-entry — one bad
+    // worktree never blocks reinstalling the rest.
+    const plan = typeof installIngest.reapPlanForRepo === 'function'
+      ? installIngest.reapPlanForRepo(mainWorktree, { io: o.io })
+      : [];
+    const doInstallLegacy = o.doInstallLegacy || ((wt) => {
+      if (platform === 'darwin') installIngest.macInstall(wt);
+      else installIngest.linuxInstall(wt);
+    });
+    const readHeartbeat = o.readHeartbeat || ((h, hash) => readLegacyHeartbeat(devswarmRootFn, h, hash, o.now));
+
+    const reinstalled = [];
+    for (const entry of plan) {
+      let installed = false;
+      try { doInstallLegacy(entry.worktree); installed = true; } catch (_) { installed = false; }
+      const hb = installed ? readHeartbeat(home, entry.hash) : { fresh: false, ts: null };
+      reinstalled.push({ worktree: entry.worktree, hash: entry.hash, installed, fresh: !!(hb && hb.fresh) });
+    }
+
+    const viable = plan.length > 0 && reinstalled.every((r) => r.installed && r.fresh);
+    return {
+      attempted: true,
+      viable,
+      repoKey,
+      uninstalled,
+      reinstalled,
+      detail: plan.length === 0
+        ? 'no worktrees resolved for this repo — nothing to reinstall (store/<hash>/ sources, if any, are left untouched)'
+        : (viable
+          ? 'rollback viable: ' + reinstalled.length + ' legacy unit(s) reinstalled and confirmed fresh'
+          : 'rollback NOT viable: one or more reinstalled units are not yet confirmed (not installed, or no fresh heartbeat yet) — safe to re-check shortly'),
+    };
+  } catch (e) {
+    return Object.assign({}, NOOP, { detail: 'rollback raised: ' + (e && e.message ? e.message : String(e)) });
   }
 }
 
@@ -734,6 +931,8 @@ module.exports = {
   gitPullFfOnly,
   remotePluginVersion,
   healIngestDaemon,
+  readLegacyHeartbeat,
+  rollbackToLegacyUnits,
   runCheck,
   runUpdate,
   renderHuman,

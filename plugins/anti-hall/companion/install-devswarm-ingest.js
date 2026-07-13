@@ -295,11 +295,6 @@ function defaultSchedRunViaPlan(spec) {
 // logs "[dry-run] would remove ..." instead of unlinking under --dry-run).
 function defaultSchedRm(p) { planRm(p); }
 
-// reapLegacyUnitsForRepo(mainWorktree, opts) -> { plan, stopped } — D9
-// REAP-BEFORE-DRAIN: stops+unloads EVERY legacy per-worktree unit belonging to
-// this repo (reapPlanForRepo) via the SCHEDULER (launchctl unload / systemctl
-// disable+remove / cron-marker removal) — NEVER kill(2).
-//
 // SAFETY (folds the build note "never run the real reap on this machine"):
 // git-worktree ENUMERATION (opts.io.run, consumed by listRepoWorktrees/
 // reapPlanForRepo above) is a distinct, non-destructive concern from the
@@ -312,10 +307,6 @@ function defaultSchedRm(p) { planRm(p); }
 // even a real invocation only ACTUALLY unloads/removes a unit when NOT run
 // with --dry-run, exactly like every other install/uninstall path here.
 //
-// Fail-open per-worktree: one unit that errors while stopping never blocks
-// reaping the rest (matches macInstall's existing "// ignore err" posture on
-// `launchctl unload`).
-//
 // Also unlinks the entry's LEGACY per-worktree ingest LOCK file (locks/ingest-
 // <hash>.lock) — without this, a reaped-but-not-yet-restarted legacy daemon's
 // now-dead pid is left on disk indefinitely, and devswarm-ingest.js's
@@ -326,32 +317,62 @@ function defaultSchedRm(p) { planRm(p); }
 // reap-before-drain path; it is the SAME best-effort file-removal `rm` already
 // used for the unit's plist/service file, so it participates in the identical
 // DRYRUN-aware / fully-mocked-under-test semantics.
-function reapLegacyUnitsForRepo(mainWorktree, opts) {
+//
+// stopLegacyUnitEntry(entry, opts) -> void. Platform-specific STOP (scheduler-based,
+// NEVER kill(2)) for ONE legacy per-worktree ingest unit entry
+// {label, unit, hash, marker?, worktree?}. Extracted so BOTH reap paths reap a
+// unit IDENTICALLY: reapLegacyUnitsForRepo below (the LIVE handoff, git-worktree
+// enumeration, D9) and doctor-repair.js's belt-and-suspenders orphan sweep
+// (Phase 6, readback enumeration via listInstalledIngestUnits — it has no
+// `mainWorktree` to enumerate FROM, only the already-discovered unit itself).
+// `entry.marker` is used when present (reapPlanForRepo always sets it); otherwise
+// it is derived from `entry.unit` (`# ${entry.unit}`, matching
+// cronMarkerForWorktree's own `# ${unitForWorktree(wt)}` shape) — the shape
+// listInstalledIngestUnits' readback always produces for a Linux-sourced entry.
+// Fail-open per call: the caller wraps this in try/catch (one bad entry must
+// never block reaping the rest).
+function stopLegacyUnitEntry(entry, opts) {
   const o = opts || {};
   const platform = o.platform || process.platform;
   const run = (o.io && o.io.schedRun) || defaultSchedRunViaPlan;
   const rm = (o.io && o.io.schedFs) || defaultSchedRm;
+  const marker = entry.marker || (entry.unit ? `# ${entry.unit}` : null);
+  if (platform === 'darwin') {
+    const plist = macPlistPath(entry.label);
+    run({ cmd: 'launchctl', args: ['unload', plist] }); // ignore err — best-effort
+    rm(plist);
+  } else if (platform === 'linux') {
+    // Attempt BOTH mechanisms — each is a harmless no-op when not applicable
+    // (systemctl absent -> failed spawn, ignored; no matching cron marker ->
+    // removeCronEntry reports changed:false). This self-heals reaping without
+    // needing to first detect which scheduler installed the legacy unit.
+    if (entry.unit) {
+      run({ cmd: 'systemctl', args: ['--user', 'disable', '--now', `${entry.unit}.service`] });
+      rm(path.join(unitDir(), `${entry.unit}.service`));
+    }
+    if (marker) {
+      const crRead = run({ cmd: 'crontab', args: ['-l'] });
+      const curCron = (crRead && !crRead.error) ? crRead.stdout : '';
+      const { next, changed } = removeCronEntry(curCron, marker);
+      if (changed) run({ cmd: 'crontab', args: ['-'], input: next });
+    }
+  }
+  if (entry.hash) rm(path.join(devswarmRoot(o.home), 'locks', 'ingest-' + entry.hash + '.lock'));
+}
+
+// reapLegacyUnitsForRepo(mainWorktree, opts) -> { plan, stopped } — D9
+// REAP-BEFORE-DRAIN: stops+unloads EVERY legacy per-worktree unit belonging to
+// this repo (reapPlanForRepo) via stopLegacyUnitEntry (scheduler-based, never
+// kill(2)). Fail-open per-worktree: one unit that errors while stopping never
+// blocks reaping the rest (matches macInstall's existing "// ignore err" posture
+// on `launchctl unload`).
+function reapLegacyUnitsForRepo(mainWorktree, opts) {
+  const o = opts || {};
   const plan = reapPlanForRepo(mainWorktree, o);
   const stopped = [];
   for (const entry of plan) {
     try {
-      if (platform === 'darwin') {
-        const plist = macPlistPath(entry.label);
-        run({ cmd: 'launchctl', args: ['unload', plist] }); // ignore err — best-effort
-        rm(plist);
-      } else if (platform === 'linux') {
-        // Attempt BOTH mechanisms — each is a harmless no-op when not applicable
-        // (systemctl absent -> failed spawn, ignored; no matching cron marker ->
-        // removeCronEntry reports changed:false). This self-heals reaping without
-        // needing to first detect which scheduler installed the legacy unit.
-        run({ cmd: 'systemctl', args: ['--user', 'disable', '--now', `${entry.unit}.service`] });
-        rm(path.join(unitDir(), `${entry.unit}.service`));
-        const crRead = run({ cmd: 'crontab', args: ['-l'] });
-        const curCron = (crRead && !crRead.error) ? crRead.stdout : '';
-        const { next, changed } = removeCronEntry(curCron, entry.marker);
-        if (changed) run({ cmd: 'crontab', args: ['-'], input: next });
-      }
-      rm(path.join(devswarmRoot(o.home), 'locks', 'ingest-' + entry.hash + '.lock'));
+      stopLegacyUnitEntry(entry, o);
       stopped.push(entry);
     } catch (_) { /* fail-open: one bad worktree must never block reaping the rest */ }
   }
@@ -914,7 +935,7 @@ module.exports = {
   // v0.57 mesh (D1/D9/Phase5) — per-project identity + reap-before-drain:
   labelForProject, unitForProject, cronMarkerForProject,
   resolveMainWorktree, listRepoWorktrees, parseWorktreeListPorcelain,
-  reapPlanForRepo, reapLegacyUnitsForRepo,
+  reapPlanForRepo, reapLegacyUnitsForRepo, stopLegacyUnitEntry,
   macInstallProject, macUninstallProject, linuxInstallProject, linuxUninstallProject,
   LEGACY_UNIT_HASH_RE, PROJECT_UNIT_KEY_RE,
 };

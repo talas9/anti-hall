@@ -477,23 +477,30 @@ test('FAIL-OPEN: malformed JSON stdin -> exit 0, no crash', () => {
 });
 
 // ---- daemon-liveness staleness banner (rewired to the ingest daemon's own
-// heartbeat, not summary.json's generatedAt — #21) ----
-// heartbeats/ingest-<hash>.json is rewritten EVERY sweep cycle regardless of
-// whether anything was inserted (writeIngestHeartbeat in devswarm-ingest.js), so a
-// live-but-QUIET daemon (backlog present, no new messages) no longer false-reads
-// as stale via a frozen generatedAt. `hash` = install-devswarm-ingest.js's own
-// worktreeHash() of the git toplevel — the hook resolves it via a pure fs walk
-// from payload.cwd (no git spawn), so passing THIS test process's own cwd (a real
-// git checkout) lets both sides land on the identical hash.
+// heartbeat, not summary.json's generatedAt — #21; RE-KEYED to repoKey —
+// release-gate #23, PLAN-v0.57-mesh.md D25) ----
+// heartbeats/ingest-<repoKey>.json is rewritten EVERY sweep cycle regardless of
+// whether anything was inserted (writeIngestHeartbeat in devswarm-ingest.js), so
+// a live-but-QUIET daemon (backlog present, no new messages) no longer
+// false-reads as stale via a frozen generatedAt. `repoKey` =
+// devswarm-repokey.js's own repoKeyForWorktree() of the git toplevel — the SAME
+// key the v0.57 per-project daemon now writes its heartbeat/lock under. This
+// test process's own cwd (a real git checkout) lets both sides land on the
+// identical repoKey (a real, one-time `git rev-parse --git-common-dir` spawn —
+// same cost the hook itself now pays, see devswarm-parent-inbox.js's staleness
+// block). `REPO_HASH` (the LEGACY worktreeHash) is kept for the back-compat
+// fallback test below.
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000; // must match HEARTBEAT_STALE_MS in the hook
 const REPO_CWD = process.cwd();
 const REPO_HASH = installIngest.worktreeHash(REPO_CWD);
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const REPO_KEY = repokey.repoKeyForWorktree(REPO_CWD);
 // staleBanner(ctx) -> the '⚠ DEVSWARM STALE DATA' segment, or ''.
 function staleBanner(c) {
   return c.split('\n\n').find((s) => s.includes('DEVSWARM STALE DATA')) || '';
 }
 // withCwd(payloadFn) -> payload object carrying this test process's own cwd, so
-// the hook's fs-only worktree resolution lands on REPO_HASH.
+// the hook's worktree resolution lands on REPO_HASH/REPO_KEY.
 function withCwd(payloadFn) {
   return { ...payloadFn(), cwd: REPO_CWD };
 }
@@ -502,28 +509,37 @@ function writeDaemonHeartbeat(home, hash, ts) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify({ ts, workspaceId: 'primary-' + hash, workingDir: REPO_CWD, pid: 1 }));
 }
+// writeDaemonLock(home, repoKey, pid) — the per-project O_EXCL ingest lock
+// (D25's second health signal, devswarm-ingest.js's ingestLockPath project
+// shape). daemonHealth's liveLock check reads only `pid`.
+function writeDaemonLock(home, repoKey, pid) {
+  const p = path.join(swarmDir(home), 'locks', 'ingest-project-' + repoKey + '.lock');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ pid, ts: Date.now(), token: 'test' }));
+}
 
-test('STALE: fresh daemon heartbeat -> NO banner even with an ancient summary.generatedAt (proves the live-but-quiet fix)', () => {
+test('STALE: fresh heartbeat + live lock (repoKey-keyed) -> healthy -> NO banner even with an ancient summary.generatedAt (proves the live-but-quiet fix)', () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: ['a', 'b'], cursor: 0 });
     // generatedAt is WAY past the old threshold -- would have false-alarmed under
     // the pre-#21 mechanism. The heartbeat is fresh, so the rewired banner must not.
     writeSummary(h.home, { generatedAt: Date.now() - HEARTBEAT_STALE_MS * 10, workspaces: { wsA: { unread: 2 } } });
-    writeDaemonHeartbeat(h.home, REPO_HASH, Date.now() - 10 * 1000);
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 10 * 1000);
+    writeDaemonLock(h.home, REPO_KEY, process.pid); // this test process itself — genuinely alive
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
     assert.ok(tableSeg(c).includes('DEVSWARM WORKSPACES'), `table still present; ctx=${c}`);
-    assert.strictEqual(staleBanner(c), '', `fresh heartbeat must not warn; ctx=${c}`);
+    assert.strictEqual(staleBanner(c), '', `healthy daemon must not warn; ctx=${c}`);
   } finally { h.cleanup(); }
 });
 
-test('STALE: heartbeat older than threshold + active descriptor -> banner ABOVE the table', () => {
+test('STALE: heartbeat older than threshold (repoKey-keyed) -> banner ABOVE the table', () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: ['a', 'b'], cursor: 0 });
-    writeDaemonHeartbeat(h.home, REPO_HASH, Date.now() - (HEARTBEAT_STALE_MS + 60 * 1000));
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - (HEARTBEAT_STALE_MS + 60 * 1000));
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
@@ -538,7 +554,7 @@ test('STALE: heartbeat older than threshold + active descriptor -> banner ABOVE 
   } finally { h.cleanup(); }
 });
 
-test('STALE: missing heartbeat file (daemon never wrote one for this worktree) + active descriptor -> banner (additive, does not suppress the unread banner)', () => {
+test('STALE: missing heartbeat file (daemon never wrote one for this project) + active descriptor -> banner (additive, does not suppress the unread banner)', () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: ['a', 'b', 'c'], cursor: 0 });
@@ -584,11 +600,11 @@ test('STALE: cwd with no enclosing git repo (bogus path) -> NO banner, no throw 
   } finally { h.cleanup(); }
 });
 
-test('STALE: malformed heartbeat JSON -> treated as unknown/missing (still warns), no throw', () => {
+test('STALE: malformed heartbeat JSON (repoKey-keyed) -> treated as unknown/missing (still warns), no throw', () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
-    const p = path.join(swarmDir(h.home), 'heartbeats', 'ingest-' + REPO_HASH + '.json');
+    const p = path.join(swarmDir(h.home), 'heartbeats', 'ingest-' + REPO_KEY + '.json');
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, '{not json');
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
@@ -596,6 +612,67 @@ test('STALE: malformed heartbeat JSON -> treated as unknown/missing (still warns
     assert.ok(staleBanner(ctx(r)), `malformed heartbeat treated as missing -> still warns; ctx=${ctx(r)}`);
   } finally { h.cleanup(); }
 });
+
+// ---- D25: daemon health = RUNNING + HEALTHY, not freshness-only ----
+
+test('D25: DEAD process with a still-fresh heartbeat file -> reported NOT-healthy -> banner shown', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 5000); // fresh
+    writeDaemonLock(h.home, REPO_KEY, 999999); // implausible/dead pid
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.ok(staleBanner(ctx(r)), `a dead-process lock must still warn despite a fresh heartbeat; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('D25: LIVE process holding the lock but a MISSING heartbeat -> reported NOT-fresh -> banner shown', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
+    // No heartbeat file written; the lock alone is live.
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.ok(staleBanner(ctx(r)), `a live lock alone (no heartbeat) must still warn; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+// ---- back-compat: repoKey unresolvable -> legacy worktreeHash fallback ----
+
+test('STALE back-compat: repoKey unresolvable (git spawn fails on a bogus .git) -> falls back to the LEGACY worktreeHash-keyed heartbeat (freshness-only)', () => {
+  const h = makeHome();
+  const os = require('os');
+  const bogusRepo = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-bogus-git-'));
+  try {
+    // A `.git` ENTRY exists (pure-fs findGitToplevel resolves it), but it is not
+    // a real git repository -> `git rev-parse --git-common-dir` fails -> repoKey
+    // resolves to null -> the reader falls back to the legacy worktreeHash key.
+    fs.writeFileSync(path.join(bogusRepo, '.git'), 'not a real gitfile');
+    assert.strictEqual(repokey.repoKeyForWorktree(bogusRepo), null, 'precondition: repoKey must be unresolvable for this bogus repo');
+
+    writeWorkspace(h.home, 'wsA', { inbox: ['a'], cursor: 0 });
+    const bogusHash = installIngest.worktreeHash(bogusRepo);
+    writeDaemonHeartbeat(h.home, bogusHash, Date.now() - 10 * 1000); // fresh, legacy-keyed
+
+    const r = testHook(HOOK, { ...payload(), cwd: bogusRepo }, { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(staleBanner(ctx(r)), '', `fresh legacy-keyed heartbeat must still suppress the banner (back-compat); ctx=${ctx(r)}`);
+  } finally { h.cleanup(); try { fs.rmSync(bogusRepo, { recursive: true, force: true }); } catch (_) {} }
+});
+
+// D27 (missing/corrupt helper module fails the block open, never the hook) is
+// NOT exercised here by mutating the real, shared companion/lib/ingest-health.js
+// on disk: `node --test` parallelizes across test FILES (worker threads), and
+// this repo-tree file is required by OTHER test files (tests/companion/
+// ingest-health.test.js, tests/hooks/devswarm-child-turn.test.js) that may be
+// running concurrently — corrupting it here would be flaky-by-construction for
+// the whole suite, not just this file. The lazy `require(...)` IS wrapped in a
+// try/catch in the hook source (see devswarm-parent-inbox.js's staleness
+// block above) — the SAME pattern devswarm-child-turn.js uses, and the SAME
+// require-fails-safely contract asserted directly (no shared-file mutation) in
+// tests/companion/ingest-health.test.js's own "D27 contract" test.
 
 // ---- Primary's OWN inbound unread (#34) — parity: the Primary previously had no
 // visibility into its OWN unread parent/peer backlog (only children's). It is

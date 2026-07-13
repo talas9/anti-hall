@@ -963,6 +963,79 @@ test('healIngestDaemon: gate open + already-stable ("ok") unit under a drift-awa
   }
 });
 
+test('healIngestDaemon: repoKey-aware (v0.57 mesh Phase 6, D9/D24) — after a spawn that reaps the LEGACY unit and installs the PER-PROJECT unit (what the real installer now does on a real git worktree), the FRESH project unit is detected, not the just-reaped legacy one → healed:true', { skip: process.platform === 'win32' }, () => {
+  const installer = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+  const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-repokey-'));
+  const wt = process.cwd(); // a real git worktree (this repo) — repoKey resolves
+  const repoKey = repokey.repoKeyForWorktree(wt);
+  assert.ok(repoKey, 'test precondition: repoKeyForWorktree must resolve for this repo');
+  const staleScript = path.join(home, 'this-script-does-not-exist.js');
+  const realScript = installer.SCRIPT; // a real, existing file on disk
+  const legacyUnitPath = () => (process.platform === 'darwin'
+    ? path.join(home, 'Library', 'LaunchAgents', installer.labelForWorktree(wt) + '.plist')
+    : path.join(home, '.config', 'systemd', 'user', installer.unitForWorktree(wt) + '.service'));
+  const projectUnitPath = () => (process.platform === 'darwin'
+    ? path.join(home, 'Library', 'LaunchAgents', installer.labelForProject(repoKey) + '.plist')
+    : path.join(home, '.config', 'systemd', 'user', installer.unitForProject(repoKey) + '.service'));
+  const writeLegacyUnit = (script) => {
+    if (process.platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installer.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'),
+        installer.buildPlist({ label, exec: process.execPath, script, log: '/tmp/x.log', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installer.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'),
+        installer.buildService({ exec: process.execPath, script, workdir: wt }));
+    }
+  };
+  const writeProjectUnit = (script) => {
+    if (process.platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installer.labelForProject(repoKey);
+      fs.writeFileSync(path.join(dir, label + '.plist'),
+        installer.buildPlist({ label, exec: process.execPath, script, log: '/tmp/x.log', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installer.unitForProject(repoKey);
+      fs.writeFileSync(path.join(dir, unit + '.service'),
+        installer.buildService({ exec: process.execPath, script, workdir: wt }));
+    }
+  };
+  try {
+    writeLegacyUnit(staleScript); // starts out as a drifted LEGACY unit only — no project unit yet
+    let spawnedScript = null;
+    const spawnFn = (script) => {
+      spawnedScript = script;
+      // Simulate exactly what the REAL installer does on a real git worktree
+      // (D9 reap-before-drain): stop+remove the legacy unit, install the
+      // per-project unit instead. NEVER a real launchctl/systemctl spawn here —
+      // this mock IS the reap, no scheduler is touched.
+      try { fs.unlinkSync(legacyUnitPath()); } catch (_) {}
+      writeProjectUnit(realScript);
+    };
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: wt,
+      home,
+      spawnFn,
+    });
+    assert.ok(spawnedScript, 'the installer was spawned for the drifted legacy unit');
+    assert.ok(!fs.existsSync(legacyUnitPath()), 'test precondition: the legacy unit really is gone post-spawn (reaped, not fixed)');
+    assert.ok(fs.existsSync(projectUnitPath()), 'test precondition: the per-project unit really was installed');
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.healed, true, 'the fresh per-project unit is detected — NOT misreported as still-absent because the legacy unit it replaced is gone');
+    assert.match(result.detail, /re-installed/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test('healIngestDaemon: an internal throw is fail-open — never propagates, detail explains it', () => {
   const result = U.healIngestDaemon({
     paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },

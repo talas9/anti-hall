@@ -460,11 +460,13 @@ function main() {
   // banner, no own-unread segment.
   let worktreeHash = null;
   let primaryId = null;
+  let gitTop = null; // hoisted (was block-scoped) — the staleness-banner block
+  // below needs it too, to resolve this turn's repoKey (release-gate #23).
   try {
-    const top = cwd ? findGitToplevel(cwd) : null;
-    worktreeHash = top ? installIngest.worktreeHash(top) : null;
-    primaryId = top ? installIngest.primaryWorkspaceId(top) : null;
-  } catch (_) { worktreeHash = null; primaryId = null; }
+    gitTop = cwd ? findGitToplevel(cwd) : null;
+    worktreeHash = gitTop ? installIngest.worktreeHash(gitTop) : null;
+    primaryId = gitTop ? installIngest.primaryWorkspaceId(gitTop) : null;
+  } catch (_) { worktreeHash = null; primaryId = null; gitTop = null; }
 
   let descriptors = [];
   try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
@@ -557,28 +559,49 @@ function main() {
     }
   } catch (_) { ownUnread = 0; }
 
-  // Daemon-LIVENESS staleness banner (fail-open). Rewired (was: summary.json's
-  // generatedAt, which only advances on inserted>0 and false-reads a live-but-
-  // QUIET daemon as stale) to key off the daemon's own heartbeat instead
-  // (heartbeats/ingest-<hash>.json, rewritten EVERY sweep regardless of inserts —
-  // see writeIngestHeartbeat in devswarm-ingest.js). Gated on rows.length>0 (an
+  // Daemon-LIVENESS staleness banner (fail-open). Gated on rows.length>0 (an
   // active workspace exists, i.e. a daemon is EXPECTED to be running) so an idle
-  // system with no workspaces never false-alarms. The CURRENT worktree hash is
-  // resolved the same way install-devswarm-ingest.js baked it into the daemon's
-  // unit at install time (git-toplevel, hashed via its own worktreeHash) — via a
-  // PURE fs walk (findGitToplevel), never a git spawn. Any failure anywhere in
-  // this block (no cwd, no toplevel found, missing helper export, unreadable
-  // heartbeat file) -> no banner, hook proceeds byte-identical.
+  // system with no workspaces never false-alarms.
+  //
+  // RELEASE-GATE #23 (v0.57 mesh): the per-project ingest daemon now writes its
+  // liveness heartbeat + O_EXCL lock keyed by repoKey (heartbeats/ingest-
+  // <repoKey>.json / locks/ingest-project-<repoKey>.lock — devswarm-ingest.js's
+  // hbHash = repoKey || worktreeHash, PLAN-v0.57-mesh.md D1/D8/D21), NOT the
+  // legacy worktreeHash this banner read pre-mesh. Resolve repoKey the SAME way
+  // the mesh CLI does (repokey.repoKeyForWorktree(gitTop), ONE git spawn — lazy-
+  // required so a missing/corrupt module fails this block open, D27) and, when
+  // it resolves, use the FULL running+healthy check (daemonHealth, D25 — fresh
+  // heartbeat AND a live-pid lock holder, not freshness alone). Only when
+  // repoKey itself is UNRESOLVABLE (non-git cwd already excluded by gitTop above;
+  // this covers git-unavailable / a corrupt .git / a load failure) does this
+  // fall BACK to the legacy freshness-only worktreeHash-keyed read — pre-mesh
+  // back-compat for a heartbeat file an OLDER per-worktree daemon may have left,
+  // which never had a project-shaped lock to check. Any failure anywhere in this
+  // block -> no banner, hook proceeds byte-identical.
   let staleBanner = null;
   try {
-    if (rows.length > 0 && typeof devswarmIngest.ingestHeartbeatPath === 'function') {
-      const hash = worktreeHash; // resolved once above (same per-project key as the summary read)
-      if (hash) {
+    if (rows.length > 0) {
+      let ingestHealthMod = null;
+      try { ingestHealthMod = require('../companion/lib/ingest-health.js'); } catch (_) { ingestHealthMod = null; }
+      let repokeyMod = null;
+      try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
+      let repoKey = null;
+      try { repoKey = (repokeyMod && gitTop) ? repokeyMod.repoKeyForWorktree(gitTop) : null; } catch (_) { repoKey = null; }
+
+      if (ingestHealthMod && repoKey) {
         let beatTs = null;
         try {
-          const beat = JSON.parse(fs.readFileSync(devswarmIngest.ingestHeartbeatPath(home, hash), 'utf8'));
+          const beat = JSON.parse(fs.readFileSync(ingestHealthMod.ingestHeartbeatPath(home, repoKey), 'utf8'));
           beatTs = beat && Number.isFinite(beat.ts) ? beat.ts : null;
         } catch (_) { beatTs = null; } // missing/unreadable/malformed heartbeat -> unknown age
+        const health = ingestHealthMod.daemonHealth(home, repoKey, { now });
+        if (health.status === 'stale') staleBanner = buildStaleBanner(beatTs, now);
+      } else if (typeof devswarmIngest.ingestHeartbeatPath === 'function' && worktreeHash) {
+        let beatTs = null;
+        try {
+          const beat = JSON.parse(fs.readFileSync(devswarmIngest.ingestHeartbeatPath(home, worktreeHash), 'utf8'));
+          beatTs = beat && Number.isFinite(beat.ts) ? beat.ts : null;
+        } catch (_) { beatTs = null; }
         if (beatTs === null || (now - beatTs) > HEARTBEAT_STALE_MS) {
           staleBanner = buildStaleBanner(beatTs, now);
         }

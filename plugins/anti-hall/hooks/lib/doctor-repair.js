@@ -37,11 +37,62 @@ const cp = require('child_process');
 const PLUGIN_ROOT = path.resolve(__dirname, '..', '..'); // hooks/lib -> plugin root
 
 const INGEST_INSTALLER     = path.join(PLUGIN_ROOT, 'companion', 'install-devswarm-ingest.js');
+const INGEST_DAEMON        = path.join(PLUGIN_ROOT, 'companion', 'devswarm-ingest.js');
+const DEVSWARM_REPOKEY     = path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-repokey.js');
 const SUPERVISOR_INSTALLER = path.join(PLUGIN_ROOT, 'companion', 'install-devswarm-supervisor.js');
 const REAPER_INSTALLER     = path.join(PLUGIN_ROOT, 'companion', 'install-reaper.js');
 const STATUSLINE_INSTALLER = path.join(PLUGIN_ROOT, 'statusline', 'install-statusline.js');
 const CODEX_INSTALLER      = path.join(PLUGIN_ROOT, 'codex', 'install-codex.js');
 const MIGRATE_STATE        = path.join(PLUGIN_ROOT, 'scripts', 'migrate-state.js');
+
+// v0.57 mesh Phase 6 (D9/D25/D28) — belt-and-suspenders orphan sweep for LEGACY
+// per-worktree ingest units. A legacy unit's heartbeat/lock are keyed by its own
+// hash; the per-project daemon it may now be redundant with is keyed by repoKey —
+// both are read via the companion modules below, NEVER re-derived here (same
+// discipline as ingestConst() above).
+function ingestDaemonMod() {
+  try { return require(INGEST_DAEMON); } catch (_) { return {}; }
+}
+function repokeyMod() {
+  try { return require(DEVSWARM_REPOKEY); } catch (_) { return {}; }
+}
+function devswarmRootFor(home) {
+  try { return require(path.join(PLUGIN_ROOT, 'companion', 'lib', 'liveness.js')).devswarmRoot(home); } catch (_) { return path.join(home, '.anti-hall', 'devswarm'); }
+}
+// REAP_HEALTH_FRESH_MS — mirrors hooks/devswarm-parent-inbox.js's own
+// HEARTBEAT_STALE_MS (3 min): the per-project daemon rewrites its heartbeat every
+// monitor sweep regardless of inserts, so anything older is very likely dead.
+const REAP_HEALTH_FRESH_MS = 3 * 60 * 1000;
+function isAliveDefault(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
+}
+// projectDaemonHealthy(home, repoKey, now, io) -> bool. D25's TWO-signal health
+// check (freshness-only is NOT proof of life; a dead process can leave a
+// fresh-LOOKING stale file within the window) scoped to what Phase 6 needs: (1)
+// heartbeats/ingest-<repoKey>.json refreshed within REAP_HEALTH_FRESH_MS, AND (2)
+// the per-project O_EXCL ingest lock is held by a LIVE pid (reusing
+// devswarm-ingest.js's own readLockHolder — never re-derived here). Pure fs reads
+// (+ an injectable isAlive probe for tests); never a spawn. Fail-open: any read
+// error -> false (never falsely reports healthy).
+function projectDaemonHealthy(home, repoKey, now, io) {
+  if (!repoKey) return false;
+  const F = (io && io.fs) || fs;
+  const isAlive = (io && io.isAlive) || isAliveDefault;
+  const daemon = ingestDaemonMod();
+  if (typeof daemon.ingestHeartbeatPath !== 'function' || typeof daemon.readLockHolder !== 'function') return false;
+  let fresh = false;
+  try {
+    const beat = JSON.parse(F.readFileSync(daemon.ingestHeartbeatPath(home, repoKey), 'utf8'));
+    fresh = !!(beat && Number.isFinite(beat.ts) && (now - beat.ts) <= REAP_HEALTH_FRESH_MS);
+  } catch (_) { fresh = false; }
+  if (!fresh) return false;
+  try {
+    const lockPath = path.join(devswarmRootFor(home), 'locks', 'ingest-project-' + repoKey + '.lock');
+    const holder = daemon.readLockHolder(lockPath, F);
+    return !!(holder && Number.isFinite(holder.pid) && isAlive(holder.pid));
+  } catch (_) { return false; }
+}
 
 // Friendly (plugin-relative) command strings for the manual-command hints in
 // GATED reports — humans copy these, so keep them repo-relative not absolute.
@@ -78,14 +129,20 @@ function firstLine(s) { return String(s || '').split('\n').find(Boolean) || ''; 
 function errMsg(e) { return (e && e.message) ? e.message : String(e); }
 
 // ---------------------------------------------------------------------------
-// readInstalledIngestWorkingDir({home, platform, worktree}) -> {present, workingDir,
-// scriptPath, source, hash, others}. PER-WORKTREE aware (v0.55+): delegates to the
-// installer's listInstalledIngestUnits (the canonical multi-unit readback) and picks
-// the unit that belongs to the CURRENT worktree so a wrong-path / stale-script unit
-// for THIS repo can be detected and healed WITHOUT touching another repo's unit.
-//   - worktree given -> match the unit whose hash === worktreeHash(worktree), or a
-//     legacy (hash-null) unit whose baked WorkingDirectory IS this worktree.
-//   - no worktree    -> the legacy (hash-null) unit if any, else the only unit.
+// readInstalledIngestWorkingDir({home, platform, worktree|repoKey}) -> {present,
+// workingDir, scriptPath, source, hash, repoKey, others}. PER-WORKTREE aware
+// (v0.55+): delegates to the installer's listInstalledIngestUnits (the canonical
+// multi-unit readback) and picks the unit that belongs to the CURRENT worktree so
+// a wrong-path / stale-script unit for THIS repo can be detected and healed
+// WITHOUT touching another repo's unit.
+//   - o.repoKey given -> match the unit whose repoKey === o.repoKey (v0.57 mesh
+//     Phase 6, D9/D24: the per-project unit install now actually creates —
+//     mutually exclusive with the `worktree` mode below, and used by
+//     update.js's healIngestDaemon so it heals what the installer really
+//     produces post-reap-before-drain, not a unit that was just reaped).
+//   - o.worktree given -> match the unit whose hash === worktreeHash(worktree),
+//     or a legacy (hash-null) unit whose baked WorkingDirectory IS this worktree.
+//   - neither given    -> the legacy (hash-null) unit if any, else the only unit.
 // `others` carries the remaining installed units (OTHER worktrees) for reporting.
 // Fail-open: any error -> present:false with an empty `others`.
 // ---------------------------------------------------------------------------
@@ -93,7 +150,7 @@ function readInstalledIngestWorkingDir(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const platform = o.platform || process.platform;
-  const out = { present: false, workingDir: null, scriptPath: null, source: null, hash: null, others: [] };
+  const out = { present: false, workingDir: null, scriptPath: null, source: null, hash: null, repoKey: null, others: [] };
 
   let units = [];
   try {
@@ -108,7 +165,9 @@ function readInstalledIngestWorkingDir(opts) {
   }
 
   let pick = null;
-  if (o.worktree) {
+  if (o.repoKey) {
+    pick = units.find((u) => u.repoKey === o.repoKey) || null;
+  } else if (o.worktree) {
     // Only a unit that genuinely belongs to THIS worktree may be healed in place.
     pick = units.find((u) => wantHash && u.hash === wantHash)
       || units.find((u) => u.hash === null && u.workingDir && samePath(u.workingDir, o.worktree))
@@ -123,6 +182,7 @@ function readInstalledIngestWorkingDir(opts) {
     out.scriptPath = pick.scriptPath;
     out.source = pick.source;
     out.hash = pick.hash;
+    out.repoKey = pick.repoKey != null ? pick.repoKey : null;
   }
   out.others = units.filter((u) => u !== pick);
   return out;
@@ -255,6 +315,101 @@ function spawnInstaller(script, argv, cwd, env) {
   return cp.spawnSync(process.execPath, [script].concat(argv || []), {
     cwd, env, encoding: 'utf8', timeout: 30000,
   });
+}
+
+// ---------------------------------------------------------------------------
+// reapOrphanedLegacyUnits({home, platform, dryRun, now, io}) ->
+//   [{id, hash, workingDir, status, msg}]  status ∈ 'reaped'|'would-reap'|'kept'|'failed'
+//
+// v0.57 mesh Phase 6 (D9/D25/D28) — BELT-AND-SUSPENDERS sweep for LEGACY
+// per-worktree ingest units that are ALREADY orphaned or REDUNDANT. This is NOT
+// the live reap-before-drain handoff (that already happens INSIDE
+// install-devswarm-ingest.js's install path — see reapLegacyUnitsForRepo — every
+// time the per-project daemon is (re)installed for a repo). This sweep exists for
+// the units that handoff never touched: a worktree that was deleted WITHOUT ever
+// re-running install (no reap trigger fired), or a machine where the install-time
+// stop silently failed (launchctl/systemctl errors are ignored at install time,
+// D9).
+//
+// A legacy unit is reaped when EITHER:
+//   (a) its worktree no longer resolves at all (genuinely orphaned), OR
+//   (b) its worktree still resolves AND the per-project daemon for that
+//       worktree's repoKey is CONFIRMED running+healthy (D25 — freshness AND
+//       lock/process evidence, never freshness alone) — i.e. this legacy unit is
+//       provably redundant.
+// Otherwise it is LEFT IN PLACE (status 'kept') — never reap a legacy unit that
+// might still be the SOLE live drainer of its Primary queue; reaping it then
+// would silently stop ingestion with no replacement.
+//
+// Only units bearing the anti-hall ingest LABEL/UNIT prefix with the LEGACY
+// `-<hash>` shape are candidates (`u.hash != null` — the DISJOINT regex in
+// listInstalledIngestUnits, D28) — a repoKey-shaped per-project unit, or any
+// non-anti-hall scheduler entry, is never enumerated by listInstalledIngestUnits
+// in the first place, so neither is ever a candidate here.
+//
+// Stop is ALWAYS scheduler-based (launchctl unload / systemctl disable / cron-
+// marker removal via stopLegacyUnitEntry) — NEVER kill(2); a currently-live
+// legacy daemon's own finally block releases its lock+store cleanly once its
+// scheduler unit is torn down. `opts.io` (schedRun/schedFs/fs/isAlive) is fully
+// injectable so tests NEVER touch a real launchctl/systemctl/crontab/process —
+// mirrors reapLegacyUnitsForRepo's own opts.io.schedRun/schedFs discipline.
+// Fail-open per unit: one unit that raises while being evaluated/stopped is
+// reported 'failed' and never blocks sweeping the rest.
+function reapOrphanedLegacyUnits(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const platform = o.platform || process.platform;
+  const dryRun = !!o.dryRun;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const results = [];
+
+  let units = [];
+  try {
+    const { listInstalledIngestUnits } = ingestConst();
+    if (typeof listInstalledIngestUnits === 'function') units = listInstalledIngestUnits({ home, platform }) || [];
+  } catch (_) { units = []; }
+
+  // ONLY legacy per-worktree-suffixed units (hash set). Never the ambiguous
+  // legacy BASE unit (hash===null, repoKey===null — owned by the existing GATED
+  // ingest-install section above) and NEVER a repoKey-shaped per-project unit
+  // (hash===null, repoKey set — D28 disjoint regex guarantees this).
+  const candidates = units.filter((u) => u && u.hash != null);
+
+  for (const u of candidates) {
+    const rid = 'reap-legacy-' + u.hash;
+    try {
+      const worktreeGone = !u.workingDir || !insideWorktree(u.workingDir);
+      let reason = null;
+      if (worktreeGone) {
+        reason = 'orphaned — worktree no longer resolves (' + (u.workingDir || 'unset') + ')';
+      } else {
+        let repoKey = null;
+        try {
+          const { repoKeyForWorktree } = repokeyMod();
+          if (typeof repoKeyForWorktree === 'function') repoKey = repoKeyForWorktree(u.workingDir);
+        } catch (_) { repoKey = null; }
+        if (repoKey && projectDaemonHealthy(home, repoKey, now, o.io)) {
+          reason = 'redundant — the per-project daemon for repoKey ' + repoKey + ' is confirmed running+healthy';
+        }
+      }
+      if (!reason) {
+        results.push({ id: rid, hash: u.hash, workingDir: u.workingDir, status: 'kept', msg: 'legacy ingest unit ' + u.hash + ' left in place (worktree resolves, no confirmed-healthy replacement — may still be the sole drainer)' });
+        continue;
+      }
+      if (dryRun) {
+        results.push({ id: rid, hash: u.hash, workingDir: u.workingDir, status: 'would-reap', msg: '[dry-run] would reap legacy ingest unit ' + u.hash + ': ' + reason });
+        continue;
+      }
+      const { stopLegacyUnitEntry } = ingestConst();
+      if (typeof stopLegacyUnitEntry === 'function') {
+        stopLegacyUnitEntry({ label: u.label, unit: u.unit, hash: u.hash }, { platform, home, io: o.io });
+      }
+      results.push({ id: rid, hash: u.hash, workingDir: u.workingDir, status: 'reaped', msg: 'reaped legacy ingest unit ' + u.hash + ' (' + reason + ') via the scheduler (never kill)' });
+    } catch (e) {
+      results.push({ id: rid, hash: u.hash, workingDir: u.workingDir, status: 'failed', msg: 'reap of legacy ingest unit ' + u.hash + ' raised: ' + errMsg(e) });
+    }
+  }
+  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -403,6 +558,35 @@ function runRepairs(opts) {
     }
   }
 
+  // --- Legacy ingest unit orphan sweep: GATED (v0.57 mesh Phase 6, D9/D25/D28) -
+  // Belt-and-suspenders reap of legacy per-worktree units already orphaned or
+  // provably redundant. Distinct from the ingest section above (which heals THIS
+  // worktree's own unit): this sweeps ALL installed legacy units on the machine,
+  // so it stays behind the SAME DevSwarm-active + git-worktree gate as every
+  // other daemon-touching repair (never mutates scheduler state for an idle/non-
+  // DevSwarm session).
+  if (platform === 'win32') {
+    push('reap-legacy-ingest', 'reap-legacy-ingest', 'skipped', 'Windows: no scheduler to reap legacy ingest units from (documented no-op)');
+  } else if (!gateOpen) {
+    push('reap-legacy-ingest', 'reap-legacy-ingest', 'gated', 'legacy-ingest-unit orphan sweep skipped. ' + gatedHint(CMD_INGEST));
+  } else {
+    try {
+      const reapResults = reapOrphanedLegacyUnits({ home, platform, dryRun, env });
+      if (!reapResults.length) {
+        push('reap-legacy-ingest', 'reap-legacy-ingest', 'skipped', 'no legacy per-worktree ingest units installed — nothing to sweep');
+      } else {
+        for (const r of reapResults) {
+          const status = r.status === 'reaped' ? 'fixed'
+            : r.status === 'failed' ? 'failed'
+            : 'skipped'; // 'kept' | 'would-reap' — informational, not a failure
+          push(r.id, 'reap-legacy-ingest', status, r.msg);
+        }
+      }
+    } catch (e) {
+      push('reap-legacy-ingest', 'reap-legacy-ingest', 'failed', 'legacy-ingest-unit orphan sweep raised: ' + errMsg(e));
+    }
+  }
+
   // --- Reaper: REPORT-ONLY (kills orphans on a timer — never auto-installed) -
   if (platform !== 'win32') {
     try {
@@ -432,4 +616,8 @@ function runRepairs(opts) {
   }
 }
 
-module.exports = { readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs };
+module.exports = {
+  readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
+  // v0.57 mesh Phase 6 (D9/D25/D28) — legacy ingest unit orphan sweep:
+  reapOrphanedLegacyUnits, projectDaemonHealthy,
+};

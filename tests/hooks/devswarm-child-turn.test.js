@@ -504,3 +504,87 @@ test('ARCHIVE REQUEST ABSENT: unread messages with no marker -> no archive-reque
     h.cleanup();
   }
 });
+
+// ----- Phase 7 (PLAN-v0.57-mesh.md D25/D26): daemon-liveness STALE banner —
+// the SAME warning devswarm-parent-inbox.js renders to the Primary, surfaced to
+// a CHILD too (children depend on their project's per-project ingest daemon —
+// it drains their native parent->child queue via `inbox pull`). Requires a
+// resolvable git worktree (REPO_CWD), same precondition as the descriptor-
+// registration tests above. -----
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const REPO_KEY = repokey.repoKeyForWorktree(REPO_CWD);
+const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-stale' };
+
+function lockDir(home) {
+  return path.join(home, '.anti-hall', 'devswarm', 'locks');
+}
+function writeDaemonHeartbeat(home, repoKey, ts) {
+  const p = path.join(heartbeatDir(home), 'ingest-' + repoKey + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ ts }));
+}
+function writeDaemonLock(home, repoKey, pid) {
+  const p = path.join(lockDir(home), 'ingest-project-' + repoKey + '.lock');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ pid, ts: Date.now(), token: 'test' }));
+}
+function staleBanner(c) {
+  return c.split('\n\n').find((s) => s.includes('DEVSWARM STALE DATA')) || '';
+}
+
+test('CHILD STALE: healthy daemon (fresh heartbeat + live lock) -> NO banner', () => {
+  const h = makeHome();
+  try {
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 5000);
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(staleBanner(ctx(r)), '', `healthy daemon must not warn; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD STALE: missing heartbeat entirely -> banner surfaced FIRST, above the REMINDER', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const banner = staleBanner(c);
+    assert.ok(banner, `missing heartbeat must warn; ctx=${c}`);
+    assert.ok(/ingest daemon last alive/.test(banner), `banner text; banner=${banner}`);
+    const iBanner = c.indexOf('DEVSWARM STALE DATA');
+    const iReminder = c.indexOf(REMINDER_PHRASE);
+    assert.ok(iBanner >= 0 && iReminder >= 0 && iBanner < iReminder, `banner must sit above the reminder; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD D25: DEAD process with a still-fresh heartbeat file -> reported NOT-healthy -> banner shown', () => {
+  const h = makeHome();
+  try {
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 5000); // fresh
+    writeDaemonLock(h.home, REPO_KEY, 999999); // implausible/dead pid
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.ok(staleBanner(ctx(r)), `a dead-process lock must still warn despite a fresh heartbeat; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD D25: LIVE process holding the lock but a MISSING heartbeat -> reported NOT-fresh -> banner shown', () => {
+  const h = makeHome();
+  try {
+    writeDaemonLock(h.home, REPO_KEY, process.pid); // live, but no heartbeat file
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.ok(staleBanner(ctx(r)), `a live lock alone (no heartbeat) must still warn; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD STALE: cwd not a git worktree -> NO banner, no throw (fail-open)', () => {
+  const h = makeHome();
+  try {
+    // Default promptPayload cwd ('/tmp') has no enclosing .git.
+    const r = testHook(HOOK, promptPayload('sess-stale'), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(staleBanner(ctx(r)), '', `no worktree -> no banner, no throw; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
