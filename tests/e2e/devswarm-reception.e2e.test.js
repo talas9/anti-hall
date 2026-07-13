@@ -113,8 +113,19 @@ test('1 RECEPTION ROUND-TRIP: stubbed ingest -> inbox messages -> read-primary -
 
     // Advance via `inbox read-primary` — the #22 fix also syncs the STORE's OWN
     // cursor (store.setCursor), not just the ack-cursor file, so deriveSummary's
-    // projected unread reflects the read immediately.
-    const readPrimary = H.runCli(home, ['inbox', 'read-primary', id], JOURNAL_ENV);
+    // projected unread reflects the read immediately. The ack-ownership guard
+    // (bug #2) requires the caller's identity to match the target id; identity
+    // derives from cwd (ground truth), NOT a declared DEVSWARM_BUILDER_ID — so
+    // this spawns the CLI subprocess FROM `worktree` itself (cwd has no real
+    // `.git` anywhere in its chain, so callerIdentity's raw-cwd fallback derives
+    // exactly `id`, matching how `installIngest.primaryWorkspaceId(worktree)`
+    // computed it above). This is the Primary reading its OWN inbox from its OWN
+    // worktree, matching the self-ack pattern used for the same call in
+    // tests/scripts/devswarm-cli.test.js (a DECLARED env identity would be
+    // ignored here anyway once cwd genuinely resolves to a workspace — see that
+    // file's env-spoof-closed test — so this deliberately proves identity via
+    // cwd alone, no env declaration at all).
+    const readPrimary = H.runCli(home, ['inbox', 'read-primary', id], JOURNAL_ENV, { cwd: worktree });
     assert.strictEqual(readPrimary.status, 0);
     assert.strictEqual(readPrimary.json.action, 'read-primary');
     assert.strictEqual(readPrimary.json.cursor, 1, 'ack cursor advanced to the current total');

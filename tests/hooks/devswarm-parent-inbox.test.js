@@ -1,8 +1,11 @@
 'use strict';
 // devswarm-parent-inbox (UserPromptSubmit hook). Surfaces real unread/idle
-// DevSwarm workspace state to the PRIMARY, and recommends archiving workspaces the
-// store marked archive_ready — never auto-archiving. Non-DevSwarm / child sessions
-// and malformed stdin are silent no-ops (fail-open, exit 0).
+// DevSwarm workspace state to the PRIMARY, and for workspaces the store marked
+// archive_ready, urges the Primary to verify merged/tested/deployed per its OWN
+// repo policy (this hook never checks that) then run `devswarm.js archive-request
+// <id>` to ask the child to archive — never auto-archiving or archiving mechanically.
+// Non-DevSwarm / child sessions and malformed stdin are silent no-ops (fail-open,
+// exit 0).
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -63,6 +66,7 @@ function writeWorkspace(home, id, opts = {}) {
     inboxPath,
     cursorPath,
   };
+  if (opts.repoId !== undefined) d.repoId = opts.repoId;
   fs.writeFileSync(path.join(root, 'workspaces', id + '.json'), JSON.stringify(d));
   return d;
 }
@@ -202,7 +206,7 @@ test('INJECT: escalated verdict with empty inbox is still surfaced (stuck), no t
 
 // ---- archive-ready recommendation (P1-E) ----
 
-test('ARCHIVE: archive_ready workspace -> INFORM THE USER recommendation (never auto-archive)', () => {
+test('ARCHIVE: archive_ready workspace -> urges verify-per-repo-policy + archive-request recommendation (never auto-archive)', () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
@@ -211,7 +215,10 @@ test('ARCHIVE: archive_ready workspace -> INFORM THE USER recommendation (never 
     const c = ctx(r);
     assert.ok(c.includes('DEVSWARM ARCHIVE-READY'), `expected archive banner; ctx=${c}`);
     assert.ok(c.includes('wsA'), 'must name the workspace');
-    assert.ok(/INFORM THE USER/i.test(c), 'must tell the agent to inform the user');
+    assert.ok(/MERGED \+ TESTED \+ DEPLOYED/.test(c), `must urge verify-per-repo-policy; ctx=${c}`);
+    assert.ok(/per YOUR repo's policy/i.test(c), `must defer to the parent repo's own policy; ctx=${c}`);
+    assert.ok(/archive-request <id>/.test(c), `must recommend the archive-request CLI command; ctx=${c}`);
+    assert.ok(/NEVER archive mechanically/i.test(c), `must warn never to archive mechanically; ctx=${c}`);
     // cooldown state recorded so it does not repeat every turn
     const nudgePath = path.join(h.home, '.anti-hall', 'devswarm', 'archive-nudges', 'wsA.json');
     assert.ok(fs.existsSync(nudgePath), 'archive nudge cooldown must be recorded');
@@ -393,6 +400,64 @@ test('TABLE: coexists with the unread inbox + archive-ready banners (append, no 
   } finally { h.cleanup(); }
 });
 
+// ---- #36 cross-project-bleed fix: repoId-scoped descriptor enumeration ----
+// PRIMARY_ENV carries DEVSWARM_REPO_ID: 'repo-1'. The predicate is exactly
+// "exclude only when BOTH the session's and the descriptor's repoId are present
+// and differ" — fail-open by construction.
+
+test('#36 EXCLUDE: a descriptor with a DIFFERENT repoId than the session is not surfaced at all', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'other-project', { inbox: ['a', 'b'], cursor: 0, repoId: 'repo-2' });
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `a foreign-project descriptor must produce zero output; got ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('#36 INCLUDE (back-compat): a descriptor with NO repoId is still surfaced', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'legacy-desc', { inbox: ['a', 'b'], cursor: 0 }); // no repoId at all
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(c.includes('DEVSWARM PARENT INBOX'), `pre-#36 descriptors must not vanish; ctx=${c}`);
+    assert.ok(c.includes('legacy-desc'), `must name the legacy descriptor; ctx=${c}`);
+    assert.ok(tableRow(c, 'legacy-desc'), `must still get a table row; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('#36 INCLUDE (fail-open): session has NO DEVSWARM_REPO_ID -> filter disabled, all descriptors surfaced', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'foreign', { inbox: ['a', 'b'], cursor: 0, repoId: 'repo-2' });
+    // Manual-supervisor-mode session: active via ANTIHALL_DEVSWARM_SUPERVISOR=on,
+    // no DEVSWARM_REPO_ID at all (not even PRIMARY_ENV's) -> currentRepoId falsy.
+    const r = testHook(HOOK, payload(), {
+      home: h.home,
+      env: { ANTIHALL_DEVSWARM_SUPERVISOR: 'on' },
+      expectJson: true,
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(c.includes('foreign'), `no session repoId must show every descriptor (same as today); ctx=${c}`);
+    assert.ok(tableRow(c, 'foreign'), `must still get a table row; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('#36 INCLUDE: a descriptor with a MATCHING repoId is still surfaced', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'same-project', { inbox: ['a', 'b'], cursor: 0, repoId: 'repo-1' });
+    const r = testHook(HOOK, payload(), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(c.includes('same-project'), `matching repoId must still surface; ctx=${c}`);
+    assert.ok(tableRow(c, 'same-project'), `must still get a table row; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
 // ---- fail-open ----
 
 test('FAIL-OPEN: empty stdin -> exit 0, no crash', () => {
@@ -529,5 +594,76 @@ test('STALE: malformed heartbeat JSON -> treated as unknown/missing (still warns
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     assert.ok(staleBanner(ctx(r)), `malformed heartbeat treated as missing -> still warns; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+// ---- Primary's OWN inbound unread (#34) — parity: the Primary previously had no
+// visibility into its OWN unread parent/peer backlog (only children's). It is
+// ingested by the daemon into the store under workspaceId primary-<worktreeHash>
+// and exposed ONLY via the summary projection (summaries/<hash>.json ->
+// workspaces[primary-<hash>].unread), so these tests write that projection
+// directly under the OWN id, keyed by REPO_HASH (same convention as the STALE
+// banner tests above — the hook resolves worktreeHash from payload.cwd via a
+// pure fs walk, no git spawn).
+const OWN_ID = 'primary-' + REPO_HASH;
+function ownSegment(c) {
+  return segment(c, 'DEVSWARM OWN INBOX');
+}
+
+test('OWN UNREAD: Primary\'s own summary-projected unread -> imperative PRIORITY segment (parity with child wording)', () => {
+  const h = makeHome();
+  try {
+    writeSummary(h.home, { workspaces: { [OWN_ID]: { unread: 4 } } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const own = ownSegment(c);
+    assert.ok(own, `own-unread PRIORITY segment expected; ctx=${c}`);
+    assert.ok(own.includes('4 unread') || own.includes('4 '), `must report own unread count; own=${own}`);
+    assert.ok(/STOP and read your unread parent\/peer message\(s\) FIRST/.test(own), `must use imperative parity wording; own=${own}`);
+    assert.ok(own.includes(OWN_ID), 'must name the own workspace id for the read-primary CLI command');
+    assert.ok(own.includes('inbox read-primary'), `must state the read-primary clear path; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD: coexists with a child unread banner without prefix collision, child wording upgraded to imperative too', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: ['m1', 'm2'], cursor: 0 });
+    writeSummary(h.home, { workspaces: { wsA: { unread: 2 }, [OWN_ID]: { unread: 1 } } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    const own = ownSegment(c);
+    const child = segment(c, 'DEVSWARM PARENT INBOX:');
+    assert.ok(own, `own segment present; ctx=${c}`);
+    assert.ok(child, `child segment present; ctx=${c}`);
+    assert.ok(own.includes('1'), `own unread count; own=${own}`);
+    assert.ok(child.includes('wsA'), `child segment names wsA; child=${child}`);
+    assert.ok(child.includes('2 unread'), `child unread count; child=${child}`);
+    assert.ok(/STOP and read each unread workspace/.test(child), `child unread wording upgraded to imperative; child=${child}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD: no own-primary entry in summary -> no own segment (fail-open), child-only unread still works', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: ['m1'], cursor: 0 });
+    // No summary.json written at all for the resolved worktree hash.
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    assert.strictEqual(ownSegment(c), '', `no own segment when summary missing; ctx=${c}`);
+    assert.ok(c.includes('DEVSWARM PARENT INBOX'), `child unread still surfaced; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD: unresolvable cwd (no git toplevel) -> no own segment, no throw (fail-open)', () => {
+  const h = makeHome();
+  try {
+    writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
+    writeSummary(h.home, { workspaces: { [OWN_ID]: { unread: 3 } } });
+    const r = testHook(HOOK, { ...payload(), cwd: '/definitely-does-not-exist-anti-hall-test-root' },
+      { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(ownSegment(ctx(r)), '', `no cwd resolution -> no own segment; ctx=${ctx(r)}`);
   } finally { h.cleanup(); }
 });

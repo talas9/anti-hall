@@ -56,7 +56,7 @@ with the stated reason "same-model agents share systematic blind spots":
 
 | Roster | Status |
 | --- | --- |
-| Claude-side TRIO (Sonnet 5 Reviewer + Opus Auditor + Codex Critic) | intended default |
+| Claude-side TRIO (Fable-or-Sonnet-5 Reviewer + Opus Auditor + Codex Critic) | intended default |
 | This Codex-native roster (3× `gpt-5.6-sol`) | degraded / last-resort — Codex has no Workflow runtime to fan a round out across model families on its own |
 
 Treat this file's all-`gpt-5.6-sol` roster as the Codex-only floor, not the goal.

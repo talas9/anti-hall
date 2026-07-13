@@ -67,6 +67,16 @@ test('buildService is a continuous Type=simple service with Restart=always (not 
   assert.ok(!/OnUnitActiveSec/.test(unit));
 });
 
+test('buildService wires StandardOutput/StandardError into the stable log (append, not discard)', () => {
+  const unit = m.buildService({ exec: '/usr/bin/node', script: '/x/ingest.js', log: '/x/log' });
+  assert.ok(unit.includes('StandardOutput=append:/x/log'), 'stdout captured, appended');
+  assert.ok(unit.includes('StandardError=append:/x/log'), 'stderr captured, appended');
+  // Default `log` param falls back to the module-level stable LOG constant.
+  const defaulted = m.buildService({ exec: '/n', script: '/s' });
+  assert.ok(defaulted.includes(`StandardOutput=append:${m.LOG}`));
+  assert.ok(defaulted.includes(`StandardError=append:${m.LOG}`));
+});
+
 // P0-2: ExecStart must be systemd-escaped (NOT emit a raw path). systemd does its
 // own tokenizing + $VAR expansion, so ", \, and $ must be escaped or a path can
 // break the token / inject an env expansion.
@@ -90,7 +100,7 @@ test('buildCronLine POSIX single-quotes exec + script (no shell break-out surviv
   // The embedded single-quote is escaped as '\'' so the shell cannot break out.
   assert.ok(line.includes("/tmp/x'\\''; touch /tmp/pwn #/node"), "single-quote must be POSIX-escaped as '\\''");
   assert.ok(!line.includes("x'; touch"), 'no raw quote-close followed by a live command may survive');
-  assert.ok(line.endsWith('>/dev/null 2>&1'));
+  assert.ok(line.endsWith(`>> ${m.shSingleQuote(m.LOG)} 2>&1`), 'appends into the stable log, not /dev/null');
 });
 
 // P0-2 belt: a path with control/quote characters is refused by the emit guard.
@@ -143,9 +153,17 @@ test('buildCronLine prefixes a POSIX single-quoted `cd <worktree> &&` (no shell 
   assert.ok(line.includes("cd '/tmp/wt'\\''; touch /tmp/pwn #'"), "worktree single-quote POSIX-escaped as '\\''");
   assert.ok(!line.includes("cd '/tmp/wt'; touch"), 'no raw quote-close followed by a live command may survive');
   assert.ok(line.includes(' && '), 'the cd is chained before the daemon exec');
-  assert.ok(line.endsWith('>/dev/null 2>&1'), 'redirection preserved');
+  assert.ok(line.endsWith(`>> ${m.shSingleQuote(m.LOG)} 2>&1`), 'redirection into the stable log preserved');
   // No worktree -> no cd prefix (backward compatible with the plain form).
   assert.ok(!/\bcd /.test(m.buildCronLine({ exec: '/n', script: '/s' })), 'omitted when no worktree');
+});
+
+test('buildCronLine / buildService append into a custom `log` path when given (not just the default LOG)', () => {
+  const cronLine = m.buildCronLine({ exec: '/n', script: '/s', log: '/custom/x.log' });
+  assert.ok(cronLine.endsWith(`>> ${m.shSingleQuote('/custom/x.log')} 2>&1`));
+  const svc = m.buildService({ exec: '/n', script: '/s', log: '/custom/x.log' });
+  assert.ok(svc.includes('StandardOutput=append:/custom/x.log'));
+  assert.ok(svc.includes('StandardError=append:/custom/x.log'));
 });
 
 // ---------------------------------------------------------------------------
@@ -327,4 +345,77 @@ test('capability-scan discovers and reports the devswarm-ingest companion', () =
   } finally {
     try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {}
   }
+});
+
+// ---------------------------------------------------------------------------
+// STABLE baked script path (P0 fix): the daemon's launchd/systemd/cron unit must
+// bake the git marketplace clone's copy of devswarm-ingest.js — the exact path
+// update.js `git pull --ff-only`s IN PLACE — NOT a version-pinned cache dir or
+// this installer's own __dirname, either of which the plugin manager can
+// relocate out from under an already-running daemon on update (confirmed root
+// cause of the crash-loop-after-update bug).
+// ---------------------------------------------------------------------------
+
+test('resolveStableScript prefers the marketplace clone devswarm-ingest.js when present', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-stablepath-'));
+  try {
+    const mktCompanion = path.join(home, '.claude', 'plugins', 'marketplaces', 'anti-hall', 'plugins', 'anti-hall', 'companion');
+    fs.mkdirSync(mktCompanion, { recursive: true });
+    const scriptFile = path.join(mktCompanion, 'devswarm-ingest.js');
+    fs.writeFileSync(scriptFile, '// fixture\n');
+    assert.strictEqual(m.resolveStableScript({}, home), scriptFile);
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+test('resolveStableScript returns null (caller falls back to __dirname) when no marketplace clone is present', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-stablepath-none-'));
+  try {
+    assert.strictEqual(m.resolveStableScript({}, home), null);
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+test('resolveStableScript honors ANTIHALL_MARKETPLACE_DIR (same test-only override update.js uses)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-stablepath-override-home-'));
+  const override = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-stablepath-override-'));
+  try {
+    const companion = path.join(override, 'plugins', 'anti-hall', 'companion');
+    fs.mkdirSync(companion, { recursive: true });
+    const scriptFile = path.join(companion, 'devswarm-ingest.js');
+    fs.writeFileSync(scriptFile, '// fixture\n');
+    assert.strictEqual(m.resolveStableScript({ ANTIHALL_MARKETPLACE_DIR: override }, home), scriptFile);
+    // An invalid override (relative / nonexistent) is IGNORED, same as update.js —
+    // falls through to the default (home-derived) location, absent here -> null.
+    assert.strictEqual(m.resolveStableScript({ ANTIHALL_MARKETPLACE_DIR: 'relative/dir' }, home), null);
+  } finally {
+    try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {}
+    try { fs.rmSync(override, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('SCRIPT (module-load-time): resolves to the marketplace clone path when present under HOME, not __dirname/cache', () => {
+  if (process.platform === 'win32') return; // os.homedir() does not honor HOME on win32
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-stablepath-subproc-'));
+  try {
+    const mktCompanion = path.join(home, '.claude', 'plugins', 'marketplaces', 'anti-hall', 'plugins', 'anti-hall', 'companion');
+    fs.mkdirSync(mktCompanion, { recursive: true });
+    const stableScript = path.join(mktCompanion, 'devswarm-ingest.js');
+    fs.writeFileSync(stableScript, '// fixture\n');
+    const out = execFileSync(process.execPath, ['-e', `console.log(require(${JSON.stringify(MOD)}).SCRIPT)`], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home },
+    }).trim();
+    assert.strictEqual(out, stableScript, 'SCRIPT resolves to the STABLE marketplace-clone path, not __dirname');
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+test('SCRIPT (module-load-time): falls back to __dirname/devswarm-ingest.js when no marketplace clone is present under HOME', () => {
+  if (process.platform === 'win32') return; // os.homedir() does not honor HOME on win32
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-stablepath-fallback-'));
+  try {
+    const out = execFileSync(process.execPath, ['-e', `console.log(require(${JSON.stringify(MOD)}).SCRIPT)`], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home },
+    }).trim();
+    assert.strictEqual(out, path.join(path.dirname(MOD), 'devswarm-ingest.js'), 'falls back to the real file next to the installer');
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
 });

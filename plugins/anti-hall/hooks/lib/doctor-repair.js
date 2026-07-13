@@ -12,9 +12,14 @@
 //     supervisor idempotent relaunch when ALREADY installed, codex hook refresh
 //     when a <scope>/.codex/config.toml exists but the hooks are unwired.
 //   GATED — applied only when isDevswarmActive(env) AND resolveWorktree(cwd) is a
-//     real git worktree: ingest daemon install / wrong-path rebind / stale-script,
-//     and supervisor FIRST-install. Gate-fail → status 'gated' + the exact manual
-//     command, never a mutation.
+//     real git worktree: ingest daemon install / wrong-path rebind / stale-script /
+//     unstable-script (config drift — the baked ExecStart script still exists but is
+//     no longer the current stable marketplace-clone path; see resolveStableScript in
+//     install-devswarm-ingest.js and classifyIngestUnit below), and supervisor
+//     FIRST-install. Gate-fail → status 'gated' + the exact manual command, never a
+//     mutation. This mirrors (and is reused by) skills/update/scripts/update.js's own
+//     healIngestDaemon — same classify helpers, same gate — so `doctor --repair` and
+//     `update` migrate a drifted/misconfigured unit the identical way.
 //   REPORT-ONLY — reaper missing (it kills orphans on a timer; never auto-installed).
 //
 // Every fix is wrapped try/catch and FAILS OPEN (a raised fix becomes one
@@ -48,6 +53,22 @@ const CMD_REAPER     = 'node plugins/anti-hall/companion/install-reaper.js';
 // this can't drift from what install actually writes (same discipline as doctor.js).
 function ingestConst() {
   try { return require(INGEST_INSTALLER); } catch (_) { return {}; }
+}
+
+// resolveCurrentStableScript(env, home) -> absolute path | null. Thin, fail-open
+// wrapper around install-devswarm-ingest.js's OWN resolveStableScript (never
+// re-derived here — same discipline as LABEL/UNIT above) so classifyIngestUnit can
+// tell a script that still EXISTS apart from one that is the CURRENT canonical
+// git-marketplace-clone path a fresh install would bake. Returns null (never
+// throws) when the installer can't be required or the marketplace clone isn't on
+// this machine — the caller then skips the drift check entirely (dev-mode/no
+// marketplace has no "stable path" concept to drift from).
+function resolveCurrentStableScript(env, home) {
+  try {
+    const { resolveStableScript } = ingestConst();
+    if (typeof resolveStableScript === 'function') return resolveStableScript(env, home);
+  } catch (_) {}
+  return null;
 }
 
 function readJSON(p) {
@@ -112,10 +133,20 @@ function samePath(a, b) {
 }
 
 // ---------------------------------------------------------------------------
-// classifyIngestUnit({workingDir, scriptPath, home}) ->
-//   'absent' | 'wrong-path' | 'stale-script' | 'ok'
+// classifyIngestUnit({workingDir, scriptPath, home, env}) ->
+//   'absent' | 'wrong-path' | 'stale-script' | 'unstable-script' | 'ok'
 // WRONG-PATH: workingDir absent, equals $HOME, a non-existent path, or NOT inside a
 // git worktree. STALE-SCRIPT: the baked ExecStart script no longer exists on disk.
+// UNSTABLE-SCRIPT (v0.56.0, config drift within the CURRENT scheme): the baked
+// script EXISTS but is not install-devswarm-ingest.js's current
+// resolveStableScript() result — e.g. a unit installed before that fix still
+// points at a version-pinned plugin-cache path the manager can relocate/.bak out
+// from under it on the next update, even though nothing is missing YET. Opt-in:
+// only checked when the caller passes `env` (real callers — runRepairs below,
+// mirrored by update.js's healIngestDaemon — always do); a bare classify call that
+// omits `env` keeps the pre-v0.56.0 existence-only check, so a placeholder
+// scriptPath in a low-level unit test never false-flags against whatever build
+// happens to be marketplace-installed on the machine running the test.
 // ---------------------------------------------------------------------------
 function classifyIngestUnit(opts) {
   const o = opts || {};
@@ -139,6 +170,15 @@ function classifyIngestUnit(opts) {
     let scriptExists = false;
     try { scriptExists = fs.statSync(scriptPath).isFile(); } catch (_) { scriptExists = false; }
     if (!scriptExists) return 'stale-script';
+
+    if (o.env) {
+      const stable = resolveCurrentStableScript(o.env, home);
+      if (stable) {
+        let drifted = false;
+        try { drifted = path.resolve(scriptPath) !== path.resolve(stable); } catch (_) { drifted = false; }
+        if (drifted) return 'unstable-script';
+      }
+    }
   }
   return 'ok';
 }
@@ -336,12 +376,13 @@ function runRepairs(opts) {
         const list = read.others.map((u) => (u.workingDir || '(unknown worktree)')).join(', ');
         push('ingest-others', 'none', 'skipped', read.others.length + ' other ingest unit(s) installed for other worktree(s): ' + list);
       }
-      const cls = classifyIngestUnit({ workingDir: read.workingDir, scriptPath: read.scriptPath, home });
+      const cls = classifyIngestUnit({ workingDir: read.workingDir, scriptPath: read.scriptPath, home, env });
       if (cls === 'ok') {
         push('ingest', 'install-ingest', 'skipped', 'ingest daemon installed and healthy (WorkingDirectory ' + read.workingDir + ')');
       } else {
         const reason = cls === 'absent' ? 'ingest daemon not installed'
           : cls === 'wrong-path' ? 'ingest daemon WorkingDirectory is wrong (' + (read.workingDir || 'unset') + ')'
+          : cls === 'unstable-script' ? 'ingest daemon ExecStart script is not the current stable build (' + (read.scriptPath || 'unset') + ' — pinned to an old/relocatable path)'
           : 'ingest daemon ExecStart script is missing (' + (read.scriptPath || 'unset') + ')';
         if (!gateOpen) {
           push('ingest', 'install-ingest', 'gated', reason + '. ' + gatedHint(CMD_INGEST));
@@ -352,7 +393,7 @@ function runRepairs(opts) {
         } else {
           spawnInstaller(INGEST_INSTALLER, [], cwd, env);
           const read2 = readInstalledIngestWorkingDir({ home, platform, worktree: currentWorktree });
-          const cls2 = classifyIngestUnit({ workingDir: read2.workingDir, scriptPath: read2.scriptPath, home });
+          const cls2 = classifyIngestUnit({ workingDir: read2.workingDir, scriptPath: read2.scriptPath, home, env });
           if (cls2 === 'ok') push('ingest', 'install-ingest', 'fixed', 'ingest daemon (re)installed — WorkingDirectory now ' + read2.workingDir);
           else push('ingest', 'install-ingest', 'failed', 'ingest daemon still ' + cls2 + ' after reinstall');
         }

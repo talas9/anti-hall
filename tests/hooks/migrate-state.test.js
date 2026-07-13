@@ -340,6 +340,44 @@ test('migrateDevswarmStore dryRun: pending flips true -> false after a migrate t
   });
 });
 
+// --- migrateDevswarmStore markRead threading (v0.56.0 opt-in) ---------------
+
+test('migrateDevswarmStore: markRead OFF (default) preserves the legacy (absent -> 0) cursor -- backlog surfaces as unread', () => {
+  withHome((home) => {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    seedDescriptor(home, 'w1', ['m1', 'm2', 'm3']); // no cursorPath -> legacy cursor 0
+
+    const applied = migrateDevswarmStore({});
+    assert.strictEqual(applied.ok, true);
+    assert.strictEqual(applied.markRead, false);
+
+    const sum = storeLib.readSummary(home, 'w1');
+    assert.strictEqual(sum.workspaces.w1.unread, 3, 'DEFAULT: unmarked backlog is a big unread wall');
+  });
+});
+
+test('migrateDevswarmStore: markRead ON via opts advances the cursor -- imported backlog reads unread 0', () => {
+  withHome((home) => {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    seedDescriptor(home, 'w1', ['m1', 'm2', 'm3']);
+
+    const applied = migrateDevswarmStore({ markRead: true });
+    assert.strictEqual(applied.ok, true);
+    assert.strictEqual(applied.markRead, true);
+
+    const sum = storeLib.readSummary(home, 'w1');
+    assert.strictEqual(sum.workspaces.w1.unread, 0, 'markRead: imported backlog reads as already-seen');
+
+    // Idempotent re-run stays at unread 0, no duplicate rows.
+    const applied2 = migrateDevswarmStore({ markRead: true });
+    assert.strictEqual(applied2.ok, true);
+    const sum2 = storeLib.readSummary(home, 'w1');
+    assert.strictEqual(sum2.workspaces.w1.unread, 0);
+    const s = storeLib.openStore({ home, workspaceId: 'w1' });
+    try { assert.strictEqual(s.messageCount('w1'), 3); } finally { s.close(); }
+  });
+});
+
 test('GSD: re-run after a file is re-created with DIFFERENT content migrates the new content (not confused with prior state)', () => {
   const { dir, write, cleanup } = makeTmpDir();
   try {

@@ -43,6 +43,18 @@ const LEGACY_FILES = ['.anti-hall-progress.md', '.anti-hall-history.md'];
  *   NOT YET present in its per-project store. Used by capability-scan.js-style
  *   gap reporting AND by doctor-repair.js's migrationFix re-verify loop.
  *
+ * markRead — OPT-IN (default false; also settable via env
+ *   ANTIHALL_DEVSWARM_MIGRATE_MARK_READ='1', see devswarm-migrate.js's
+ *   resolveMarkRead). A legacy source with no consumed-cursor of its own
+ *   (e.g. a pre-0.54 shell-loop NDJSON) otherwise imports its whole backlog at
+ *   cursor 0, surfacing as a big "unread" wall that can trip the parent
+ *   neglect-gate. When true, the JUST-imported backlog's cursor is advanced to
+ *   its post-import message count so it reads as already-seen; a message that
+ *   arrives after this migration call returns is unaffected and still
+ *   surfaces as unread. Ignored when dryRun is true (nothing is written).
+ *   DEFAULT behavior (markRead absent/false) is unchanged: the legacy cursor
+ *   is preserved exactly as before.
+ *
  *   IDEMPOTENT BY DESIGN (this is the fix for a real bug, not just a docstring):
  *   `pending` must NOT merely count descriptors — a migration is
  *   NON-DESTRUCTIVE, so a descriptor (and its legacy inbox) still exists on disk
@@ -73,7 +85,7 @@ const LEGACY_FILES = ['.anti-hall-progress.md', '.anti-hall-history.md'];
  * Returns the migrate report ({ ok, action:'migrate', ... }) or, in dryRun, a
  * lightweight { action:'migrate', dryRun:true, pending, workspaces, pendingWorkspaces }.
  */
-function migrateDevswarmStore({ dryRun } = {}) {
+function migrateDevswarmStore({ dryRun, markRead } = {}) {
   let mod;
   try {
     mod = require('../companion/devswarm-migrate.js');
@@ -111,7 +123,7 @@ function migrateDevswarmStore({ dryRun } = {}) {
     }
   }
   try {
-    return mod.migrateToStore({});
+    return mod.migrateToStore({ markRead });
   } catch (e) {
     return { ok: false, action: 'migrate', error: e && e.message };
   }
@@ -320,7 +332,12 @@ function migrateGsdPlanning({ dir, dryRun } = {}) {
 // CLI entry point
 // ---------------------------------------------------------------------------
 if (require.main === module) {
-  const dir = process.argv[2] || process.cwd();
+  // --mark-read is an opt-in flag (see migrateDevswarmStore's markRead doc
+  // above) — strip it from argv before reading the positional `dir` arg so
+  // `node migrate-state.js --mark-read` (no dir) still defaults dir to cwd.
+  const argv = process.argv.slice(2);
+  const markReadFlag = argv.includes('--mark-read');
+  const dir = argv.find((a) => a !== '--mark-read') || process.cwd();
   const results = migrateLegacyState({ dir });
 
   const anyFound = results.some((r) => r.action !== 'not-found');
@@ -352,13 +369,16 @@ if (require.main === module) {
   }
 
   // DevSwarm store auto-migration (HOME-scoped, idempotent + non-destructive).
-  const ds = migrateDevswarmStore({});
+  // markReadFlag: true forces the opt-in on; otherwise undefined so the
+  // ANTIHALL_DEVSWARM_MIGRATE_MARK_READ env var (if set) still applies.
+  const ds = migrateDevswarmStore({ markRead: markReadFlag ? true : undefined });
   if (ds && ds.ok && ds.action === 'migrate') {
     if (!ds.workspaces) {
       console.log('DevSwarm store: no on-disk workspace registry to migrate');
     } else {
       console.log('DevSwarm store: migrated ' + ds.workspaces + ' workspace(s) into the ' +
-        ds.backend + ' backend' + (ds.verifiedAll ? ' (all counts verified)' : ' (SOME COUNTS UNVERIFIED — sources kept)'));
+        ds.backend + ' backend' + (ds.verifiedAll ? ' (all counts verified)' : ' (SOME COUNTS UNVERIFIED — sources kept)') +
+        (ds.markRead ? ' [--mark-read: imported backlog marked as already-read]' : ''));
     }
   } else if (ds && ds.locked === false) {
     console.log('DevSwarm store: another migration/consumer holds the lock — skipped this run');

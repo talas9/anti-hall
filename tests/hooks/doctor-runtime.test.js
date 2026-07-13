@@ -231,6 +231,139 @@ test('checkDaemonsRunning: installed ingest unit + injected "running" probe -> P
   } finally { cleanup(); }
 });
 
+// v0.56.0: REPORT-ONLY config-drift flag alongside the RUNNING/dead probe — a
+// unit whose baked ExecStart script still exists but is no longer
+// install-devswarm-ingest.js's current resolveStableScript() result. Never
+// fixes anything (that stays hooks/lib/doctor-repair.js's GATED job); this is
+// purely the diagnostic surface, so it fires even for a RUNNING daemon.
+test('checkDaemonsRunning: RUNNING daemon whose script has drifted from the current stable marketplace path -> additional WARN, report-only', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const platform = process.platform;
+    const wt = path.join(home, 'wt-drift');
+    fs.mkdirSync(wt, { recursive: true });
+    const mpDir = path.join(home, 'mp');
+    const stableDir = path.join(mpDir, 'plugins', 'anti-hall', 'companion');
+    fs.mkdirSync(stableDir, { recursive: true });
+    fs.writeFileSync(path.join(stableDir, 'devswarm-ingest.js'), '// fixture stable script\n');
+    const driftedScript = path.join(home, 'old-cache-dir', 'devswarm-ingest.js'); // never resolved to; just a distinct path
+    if (platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installIngest.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'), installIngest.buildPlist({ label, exec: '/n', script: driftedScript, log: '/l', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installIngest.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'), installIngest.buildService({ exec: '/n', script: driftedScript, workdir: wt }));
+    }
+    const fakeSpawnSync = (cmd) => {
+      if (cmd === 'launchctl') return { status: 0, stdout: 'label = x\n"PID" = 1234;\n' };
+      if (cmd === 'systemctl') return { status: 0, stdout: 'active\n' };
+      return { status: 1, stdout: '' };
+    };
+    const r = D.checkDaemonsRunning(home, { platform, spawnSync: fakeSpawnSync, env: { ANTIHALL_MARKETPLACE_DIR: mpDir } });
+    assert.ok(r.results.some((x) => x.status === D.PASS && /ingest daemon .*RUNNING/.test(x.message)), 'still reports RUNNING:\n' + JSON.stringify(r.results));
+    assert.ok(r.results.some((x) => x.status === D.WARN && /ExecStart script is not the current stable build/.test(x.message)), 'must additionally WARN on script drift:\n' + JSON.stringify(r.results));
+    assert.equal(r.anyRunning, true, 'a drift WARN must never flip anyRunning — report-only, never a fix/restart');
+  } finally { cleanup(); }
+});
+
+test('checkDaemonsRunning: script matches the current stable marketplace path -> no drift WARN', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const platform = process.platform;
+    const wt = path.join(home, 'wt-nodrift');
+    fs.mkdirSync(wt, { recursive: true });
+    const mpDir = path.join(home, 'mp');
+    const stableDir = path.join(mpDir, 'plugins', 'anti-hall', 'companion');
+    fs.mkdirSync(stableDir, { recursive: true });
+    const stableScript = path.join(stableDir, 'devswarm-ingest.js');
+    fs.writeFileSync(stableScript, '// fixture stable script\n');
+    if (platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installIngest.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'), installIngest.buildPlist({ label, exec: '/n', script: stableScript, log: '/l', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installIngest.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'), installIngest.buildService({ exec: '/n', script: stableScript, workdir: wt }));
+    }
+    const fakeSpawnSync = (cmd) => {
+      if (cmd === 'launchctl') return { status: 0, stdout: 'label = x\n"PID" = 1234;\n' };
+      if (cmd === 'systemctl') return { status: 0, stdout: 'active\n' };
+      return { status: 1, stdout: '' };
+    };
+    const r = D.checkDaemonsRunning(home, { platform, spawnSync: fakeSpawnSync, env: { ANTIHALL_MARKETPLACE_DIR: mpDir } });
+    assert.ok(!r.results.some((x) => /ExecStart script is not the current stable build/.test(x.message)), 'no drift WARN expected when the script already matches:\n' + JSON.stringify(r.results));
+  } finally { cleanup(); }
+});
+
+test('checkDaemonsRunning: no ANTIHALL_MARKETPLACE_DIR / no marketplace clone on this fixture home -> no drift WARN (nothing to compare against, fail-open)', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const platform = process.platform;
+    const wt = path.join(home, 'wt-nomp');
+    fs.mkdirSync(wt, { recursive: true });
+    if (platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installIngest.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'), installIngest.buildPlist({ label, exec: '/n', script: '/a.js', log: '/l', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installIngest.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'), installIngest.buildService({ exec: '/n', script: '/a.js', workdir: wt }));
+    }
+    const fakeSpawnSync = (cmd) => {
+      if (cmd === 'launchctl') return { status: 0, stdout: 'label = x\n"PID" = 1234;\n' };
+      if (cmd === 'systemctl') return { status: 0, stdout: 'active\n' };
+      return { status: 1, stdout: '' };
+    };
+    const r = D.checkDaemonsRunning(home, { platform, spawnSync: fakeSpawnSync });
+    assert.ok(!r.results.some((x) => /ExecStart script is not the current stable build/.test(x.message)), 'no resolvable stable script means nothing to compare, must never false-flag:\n' + JSON.stringify(r.results));
+  } finally { cleanup(); }
+});
+
+test('checkDaemonsRunning: resolveStableScript raises -> fail-open, no drift WARN, RUNNING probe still reported, never throws', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = tmpHome();
+  const INGEST_JS_PATH = path.join(ROOT, 'companion', 'install-devswarm-ingest.js');
+  const cacheKey = require.resolve(INGEST_JS_PATH);
+  const original = require.cache[cacheKey].exports.resolveStableScript;
+  require.cache[cacheKey].exports.resolveStableScript = () => { throw new Error('simulated resolveStableScript failure'); };
+  try {
+    const platform = process.platform;
+    const wt = path.join(home, 'wt-throw');
+    fs.mkdirSync(wt, { recursive: true });
+    if (platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installIngest.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'), installIngest.buildPlist({ label, exec: '/n', script: '/a.js', log: '/l', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installIngest.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'), installIngest.buildService({ exec: '/n', script: '/a.js', workdir: wt }));
+    }
+    const fakeSpawnSync = (cmd) => {
+      if (cmd === 'launchctl') return { status: 0, stdout: 'label = x\n"PID" = 1234;\n' };
+      if (cmd === 'systemctl') return { status: 0, stdout: 'active\n' };
+      return { status: 1, stdout: '' };
+    };
+    const r = D.checkDaemonsRunning(home, { platform, spawnSync: fakeSpawnSync });
+    assert.ok(r.results.some((x) => x.status === D.PASS && /ingest daemon .*RUNNING/.test(x.message)), 'a throwing resolveStableScript must never break the primary RUNNING report:\n' + JSON.stringify(r.results));
+    assert.ok(!r.results.some((x) => /ExecStart script is not the current stable build/.test(x.message)), 'a throwing resolveStableScript must fail open — never falsely flag drift:\n' + JSON.stringify(r.results));
+  } finally {
+    require.cache[cacheKey].exports.resolveStableScript = original;
+    cleanup();
+  }
+});
+
 test('checkDaemonsRunning: installed ingest unit + injected "dead" probe -> WARN (installed but not running)', { skip: process.platform === 'win32' }, () => {
   const { home, cleanup } = tmpHome();
   try {
@@ -522,6 +655,10 @@ test('checkNoOtherConsumer: TWO monitor processes -> WARN SECOND CONSUMER (repor
     const line = r.find((x) => /SECOND CONSUMER/.test(x.message));
     assert.ok(line, JSON.stringify(r));
     assert.equal(line.status, D.WARN);
+    assert.match(line.message, /ps aux \| grep 'hivecontrol\.\*monitor'/);
+    assert.match(line.message, /stop the competing process \(`kill <PID>`\)/);
+    assert.match(line.message, /re-run doctor/);
+    assert.match(line.message, /cannot mechanically block or kill an external \(non-tool-call\) consumer/);
   } finally { cleanup(); }
 });
 
@@ -534,6 +671,8 @@ test('checkNoOtherConsumer: a monitor PID with no matching lock holder -> WARN s
     const line = r.find((x) => /SECOND CONSUMER/.test(x.message));
     assert.ok(line, JSON.stringify(r));
     assert.match(line.message, /hold no lock/);
+    assert.match(line.message, /ps aux \| grep 'hivecontrol\.\*monitor'/);
+    assert.match(line.message, /cannot mechanically block or kill an external \(non-tool-call\) consumer/);
   } finally { cleanup(); }
 });
 

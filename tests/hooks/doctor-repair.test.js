@@ -60,6 +60,19 @@ function ingestUnitPath(home, platform) {
   if (platform === 'linux') return path.join(home, '.config', 'systemd', 'user', ingest.UNIT + '.service');
   return null;
 }
+// makeMarketplaceFixture — a throwaway dir shaped like install-devswarm-ingest.js's
+// resolveStableScript() expects (plugins/anti-hall/companion/devswarm-ingest.js
+// under the marketplace root), pointed at via ANTIHALL_MARKETPLACE_DIR (the same
+// test-only override resolveStableScript itself documents honoring) instead of
+// faking a real ~/.claude/plugins/marketplaces/anti-hall on the test machine.
+function makeMarketplaceFixture(tag) {
+  const dir = mkTmp('mp-' + tag);
+  const scriptDir = path.join(dir, 'plugins', 'anti-hall', 'companion');
+  fs.mkdirSync(scriptDir, { recursive: true });
+  const scriptPath = path.join(scriptDir, 'devswarm-ingest.js');
+  fs.writeFileSync(scriptPath, '// fixture stable ingest daemon script\n');
+  return { dir, scriptPath };
+}
 
 // ---------------------------------------------------------------------------
 // 1. classifyIngestUnit — pure logic, all platforms.
@@ -90,6 +103,74 @@ test('classifyIngestUnit: real worktree but missing script -> stale-script', () 
   assert.strictEqual(
     repair.classifyIngestUnit({ workingDir: REPO_ROOT, scriptPath: path.join(REPO_ROOT, 'no-such-script-' + Date.now() + '.js'), home: os.homedir() }),
     'stale-script');
+});
+
+// ---------------------------------------------------------------------------
+// 1b. classifyIngestUnit — v0.56.0 config-drift ('unstable-script'): a baked
+// ExecStart script that still EXISTS but is not install-devswarm-ingest.js's
+// CURRENT resolveStableScript() result (parity with update.js's healIngestDaemon,
+// which reuses this exact classify helper). Opt-in on `env` — see the doc comment
+// on classifyIngestUnit in doctor-repair.js for why.
+// ---------------------------------------------------------------------------
+test('classifyIngestUnit: script exists but drifted from the current stable marketplace path (env passed) -> unstable-script', () => {
+  const mp = makeMarketplaceFixture('drift-a');
+  try {
+    const result = repair.classifyIngestUnit({
+      workingDir: REPO_ROOT, scriptPath: INGEST_JS, home: os.homedir(),
+      env: { ANTIHALL_MARKETPLACE_DIR: mp.dir },
+    });
+    assert.strictEqual(result, 'unstable-script');
+  } finally { rm(mp.dir); }
+});
+
+test('classifyIngestUnit: script IS the current stable marketplace path (env passed) -> ok', () => {
+  const mp = makeMarketplaceFixture('drift-b');
+  try {
+    const result = repair.classifyIngestUnit({
+      workingDir: REPO_ROOT, scriptPath: mp.scriptPath, home: os.homedir(),
+      env: { ANTIHALL_MARKETPLACE_DIR: mp.dir },
+    });
+    assert.strictEqual(result, 'ok');
+  } finally { rm(mp.dir); }
+});
+
+test('classifyIngestUnit: drifted script but NO env passed -> stays ok (opt-in preserves pre-v0.56.0 existence-only check)', () => {
+  const mp = makeMarketplaceFixture('drift-c');
+  try {
+    // Identical to the drift case above MINUS `env` — must NOT flag drift, so a
+    // bare low-level classify call (as every pre-v0.56.0 caller/test makes) is
+    // unaffected by whatever marketplace clone happens to exist on the machine.
+    const result = repair.classifyIngestUnit({ workingDir: REPO_ROOT, scriptPath: INGEST_JS, home: os.homedir() });
+    assert.strictEqual(result, 'ok');
+  } finally { rm(mp.dir); }
+});
+
+test('classifyIngestUnit: env passed but no marketplace clone resolvable (dev-mode) -> stays ok, nothing to compare against', () => {
+  const home = mkTmp('drift-d-home');
+  try {
+    const result = repair.classifyIngestUnit({
+      workingDir: REPO_ROOT, scriptPath: INGEST_JS, home,
+      env: {}, // no ANTIHALL_MARKETPLACE_DIR, and this fixture home has no ~/.claude/plugins/marketplaces/anti-hall
+    });
+    assert.strictEqual(result, 'ok');
+  } finally { rm(home); }
+});
+
+test('classifyIngestUnit: resolveStableScript raises -> fail-open, never throws, no drift falsely applied', () => {
+  const mp = makeMarketplaceFixture('drift-e');
+  const cacheKey = require.resolve(INGEST_JS);
+  const original = require.cache[cacheKey].exports.resolveStableScript;
+  require.cache[cacheKey].exports.resolveStableScript = () => { throw new Error('simulated resolveStableScript failure'); };
+  try {
+    const result = repair.classifyIngestUnit({
+      workingDir: REPO_ROOT, scriptPath: INGEST_JS, home: os.homedir(),
+      env: { ANTIHALL_MARKETPLACE_DIR: mp.dir },
+    });
+    assert.strictEqual(result, 'ok', 'a throwing resolveStableScript must fail open (never propagate, never falsely flag drift)');
+  } finally {
+    require.cache[cacheKey].exports.resolveStableScript = original;
+    rm(mp.dir);
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -267,6 +348,91 @@ test('doctor --dry-run: writes NO repair artifacts (no unit, no statusLine mutat
     assert.ok(!after.statusLine, 'dry-run must not add a statusLine');
     assert.ok(!fs.existsSync(ingestUnitPath(home, process.platform)), 'dry-run must not write the ingest unit');
   } finally { rm(home); rm(cwd); }
+});
+
+// ---------------------------------------------------------------------------
+// 6b. v0.56.0 config-drift (unstable-script) end-to-end through doctor --fix /
+// --dry-run — parity with update.js's healIngestDaemon (same classify, same
+// gate, same reinstall). (a) a drifted unit is migrate-invoked (gate open) /
+// GATED with a distinct reason (gate closed); (b) an already-current unit is
+// left alone (no thrash).
+// ---------------------------------------------------------------------------
+test('(a) doctor --fix: unstable-script unit, DevSwarm INACTIVE -> GATED with the drift reason, no unit rewritten', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('drift-gated');
+  const cwd = makeGitRepo('drift-gated-cwd');
+  // Bake the SAME canonical path resolveWorktree(cwd) will compute inside the
+  // doctor subprocess (realpath-resolved — macOS's TMPDIR is a /var -> /private/var
+  // symlink, so a raw `cwd` here would never string-match `samePath` against it).
+  const wt = ingest.resolveWorktree(cwd) || cwd;
+  const mp = makeMarketplaceFixture('drift-gated');
+  try {
+    seedUserSettings(home);
+    const platform = process.platform;
+    const unitPath = ingestUnitPath(home, platform);
+    fs.mkdirSync(path.dirname(unitPath), { recursive: true });
+    // scriptPath = INGEST_JS (an existing file, but NOT the fixture's "stable" path).
+    const body = platform === 'darwin'
+      ? ingest.buildPlist({ exec: process.execPath, script: INGEST_JS, log: path.join(home, 'l.log'), workdir: wt })
+      : ingest.buildService({ exec: process.execPath, script: INGEST_JS, workdir: wt });
+    fs.writeFileSync(unitPath, body);
+    const before = fs.readFileSync(unitPath, 'utf8');
+
+    const r = runDoctor({ cwd, args: ['--fix'], env: { HOME: home, USERPROFILE: home, ANTIHALL_MARKETPLACE_DIR: mp.dir } });
+    assert.match(r.out, /GATED \[ingest\]/, 'a drifted unit must be GATED when the DevSwarm gate is closed:\n' + r.out);
+    assert.match(r.out, /ExecStart script is not the current stable build/, 'the drift reason must be distinct from "missing":\n' + r.out);
+    assert.strictEqual(fs.readFileSync(unitPath, 'utf8'), before, 'a gated repair must never rewrite the unit');
+  } finally { rm(home); rm(cwd); rm(mp.dir); }
+});
+
+test('(a) doctor --dry-run: unstable-script unit, DevSwarm ACTIVE + worktree -> gate OPENS (would re-install), reason carried, still no artifact mutation', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('drift-open');
+  const cwd = makeGitRepo('drift-open-cwd');
+  const wt = ingest.resolveWorktree(cwd) || cwd; // realpath-resolved, matches the subprocess's own resolveWorktree(cwd)
+  const mp = makeMarketplaceFixture('drift-open');
+  try {
+    seedUserSettings(home);
+    const platform = process.platform;
+    const unitPath = ingestUnitPath(home, platform);
+    fs.mkdirSync(path.dirname(unitPath), { recursive: true });
+    const body = platform === 'darwin'
+      ? ingest.buildPlist({ exec: process.execPath, script: INGEST_JS, log: path.join(home, 'l.log'), workdir: wt })
+      : ingest.buildService({ exec: process.execPath, script: INGEST_JS, workdir: wt });
+    fs.writeFileSync(unitPath, body);
+    const before = fs.readFileSync(unitPath, 'utf8');
+
+    const r = runDoctor({
+      cwd, args: ['--dry-run'],
+      env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_MARKETPLACE_DIR: mp.dir },
+    });
+    assert.match(r.out, /would \(re\)install the ingest daemon from .*\(unstable-script\)/, 'gate must OPEN (would-install) for a drifted-but-present script:\n' + r.out);
+    assert.doesNotMatch(r.out, /GATED \[ingest\]/, 'must NOT be gated when the gate is open');
+    assert.strictEqual(fs.readFileSync(unitPath, 'utf8'), before, 'dry-run must not rewrite the unit');
+  } finally { rm(home); rm(cwd); rm(mp.dir); }
+});
+
+test('(b) doctor --dry-run: script already IS the current stable marketplace path -> classified ok, NO reinstall attempted (no thrash)', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('drift-nothrash');
+  const cwd = makeGitRepo('drift-nothrash-cwd');
+  const wt = ingest.resolveWorktree(cwd) || cwd; // realpath-resolved, matches the subprocess's own resolveWorktree(cwd)
+  const mp = makeMarketplaceFixture('drift-nothrash');
+  try {
+    seedUserSettings(home);
+    const platform = process.platform;
+    const unitPath = ingestUnitPath(home, platform);
+    fs.mkdirSync(path.dirname(unitPath), { recursive: true });
+    // scriptPath = mp.scriptPath — exactly the path resolveStableScript resolves to.
+    const body = platform === 'darwin'
+      ? ingest.buildPlist({ exec: process.execPath, script: mp.scriptPath, log: path.join(home, 'l.log'), workdir: wt })
+      : ingest.buildService({ exec: process.execPath, script: mp.scriptPath, workdir: wt });
+    fs.writeFileSync(unitPath, body);
+
+    const r = runDoctor({
+      cwd, args: ['--dry-run'],
+      env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_MARKETPLACE_DIR: mp.dir },
+    });
+    assert.match(r.out, /skipped \[ingest\] ingest daemon installed and healthy/, 'a script matching the current stable path must classify ok, no thrash:\n' + r.out);
+    assert.doesNotMatch(r.out, /would \(re\)install the ingest daemon/, 'must NOT attempt a reinstall when already current:\n' + r.out);
+  } finally { rm(home); rm(cwd); rm(mp.dir); }
 });
 
 // ---------------------------------------------------------------------------

@@ -201,12 +201,14 @@ function criticBrief(phase) {
 async function reviewerAgent(p, opts) {
   const skipSonnet = !!(opts && opts.skipSonnet);
 
-  // Fable routing is policy-disabled (owner call, 2026-07-02): negative community feedback
-  // reports it as over-restrictive/refusal-prone, and a refusal would pass StructuredOutput
-  // validation as a "successful" verdict rather than triggering fallback. Sonnet 5 is the
-  // primary Reviewer until Fable's track record improves. The availability flag/hook stays
-  // wired for visibility; only the routing decision is disabled here.
-  const tryFable = false && typeof args === 'object' && args !== null && args.fableAvailable === true;
+  // Fable routing re-enabled (owner call, 2026-07-12): the earlier policy-disable
+  // (2026-07-02, over-restrictive/refusal-prone reports) is reversed now that Fable 5 is
+  // available. KNOWN RESIDUAL RISK (accepted by the owner, not mitigated by this code): a
+  // soft refusal can still pass StructuredOutput validation as a "successful" verdict rather
+  // than triggering the fallback below — this branch only catches a null/falsy agent()
+  // result (spawn failure/timeout), not a schema-conformant refusal. Revisit if that
+  // resurfaces as a real problem with Fable 5.
+  const tryFable = typeof args === 'object' && args !== null && args.fableAvailable === true;
   if (tryFable) {
     const fable = await agent(reviewerBrief(p), {
       schema: VERDICT_SCHEMA, run_in_background: true,

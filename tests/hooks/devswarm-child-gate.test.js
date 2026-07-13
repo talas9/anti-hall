@@ -7,12 +7,60 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'devswarm-child-gate.js';
-const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'feat/x' };
+
+// NO_NATIVE_BIN_PATH — a directory that (deliberately) does not exist. The child-
+// gate's STRICT-mode fallback (#29) spawns a bare `hivecontrol` off PATH; without
+// pinning PATH here, tests would inherit the HOST machine's real PATH (isolatedEnv
+// in spawn-hook.js defaults PATH to process.env.PATH) and — on any machine with a
+// real hivecontrol installed (e.g. the DevSwarm app) — would silently spawn the
+// REAL binary during a unit test. Every env below neutralizes PATH to this
+// nonexistent dir by default so the probe deterministically resolves to "no
+// binary" (spawnSync ENOENT -> null -> fail-open) regardless of the host. Tests
+// that specifically exercise the native probe override PATH themselves (see the
+// STRICT tests below, which point PATH at a fake hivecontrol script).
+const NO_NATIVE_BIN_PATH = path.join(os.tmpdir(), 'antihall-child-gate-no-native-bin-default');
+
+const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'feat/x', PATH: NO_NATIVE_BIN_PATH };
+
+// seedDurableUnread(home, id, lines, consumed) — register a child's own durable
+// descriptor inbox (workspaces/<id>.json -> inboxPath/cursorPath) with `lines`
+// total messages and `consumed` already acked, mirroring devswarm-child-turn.test.js's
+// seedChildInbox fixture (same NDJSON + bare-int cursor contract readUnread expects).
+function seedDurableUnread(home, id, lines, consumed) {
+  const dsw = path.join(home, '.anti-hall', 'devswarm');
+  const inboxPath = path.join(dsw, id + '.inbox.ndjson');
+  const cursorPath = path.join(dsw, id + '.cursor.json');
+  fs.mkdirSync(dsw, { recursive: true });
+  fs.writeFileSync(inboxPath, lines.join('\n') + (lines.length ? '\n' : ''));
+  fs.writeFileSync(cursorPath, String(consumed));
+  const wdir = path.join(dsw, 'workspaces');
+  fs.mkdirSync(wdir, { recursive: true });
+  fs.writeFileSync(path.join(wdir, id + '.json'), JSON.stringify({ id, inboxPath, cursorPath }));
+}
+
+// writeFakeHivecontrol(dir, {count, sentinelFile}) -> path. A genuinely EXECUTABLE
+// stand-in for the real `hivecontrol` binary (not just a PATH-existence stub): it
+// appends to sentinelFile (proof it was actually invoked) and prints `count` to
+// stdout, matching the plain-integer shape probeNativeMessageCount parses.
+// Cross-platform: a POSIX shell script (chmod +x) on darwin/linux, a .cmd batch
+// file (Windows PATHEXT resolution) on win32.
+function writeFakeHivecontrol(dir, { count, sentinelFile }) {
+  if (process.platform === 'win32') {
+    const p = path.join(dir, 'hivecontrol.cmd');
+    fs.writeFileSync(p, `@echo off\r\necho invoked>> "${sentinelFile}"\r\necho ${count}\r\n`);
+    return p;
+  }
+  const p = path.join(dir, 'hivecontrol');
+  fs.writeFileSync(p, `#!/bin/sh\necho invoked >> "${sentinelFile}"\necho ${count}\n`);
+  fs.chmodSync(p, 0o755);
+  return p;
+}
 
 function stopPayload(extra) {
   return Object.assign({ hook_event_name: 'Stop', session_id: 's1' }, extra || {});
@@ -23,8 +71,9 @@ function stateFile(home, session) {
 }
 
 // A branch that is isSafeId-clean, so the heartbeat file key == the branch verbatim
-// (heartbeats/main.json) — no sanitize+hash needed in the test.
-const SAFE_CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' };
+// (heartbeats/main.json) — no sanitize+hash needed in the test. PATH pinned to
+// NO_NATIVE_BIN_PATH for the same host-hermeticity reason as CHILD_ENV above.
+const SAFE_CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', PATH: NO_NATIVE_BIN_PATH };
 
 function heartbeatFile(home, key) {
   return path.join(home, '.anti-hall', 'devswarm', 'heartbeats', key + '.json');
@@ -188,6 +237,101 @@ test('FAIL-OPEN: malformed JSON stdin -> exit 0, no block', () => {
     const r = testHookRaw(HOOK, '{bad', { home: h.home, env: CHILD_ENV });
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.stdout, '', `malformed stdin must not block; got: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- #29: inbound gate (unpulled/unread parent messages) -----
+
+test('INBOUND: durable unread>0 -> reason adds the inbox-pull instruction alongside the outbound report demand', () => {
+  const h = makeHome();
+  try {
+    seedDurableUnread(h.home, 'b-1', ['from parent: rebase now'], 0);
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.ok(/inbox pull/.test(r.json.reason), `reason must include the inbound inbox-pull instruction; got=${r.json.reason}`);
+    assert.ok(/message-parent/.test(r.json.reason), 'the outbound report demand must still be present');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('INBOUND CAUGHT UP: durable unread=0 -> no inbound instruction (outbound-only reason)', () => {
+  const h = makeHome();
+  try {
+    seedDurableUnread(h.home, 'b-1', ['from parent: old'], 1);
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.ok(!/inbox pull/.test(r.json.reason), 'caught up (durable) + no native binary on PATH -> no inbound instruction');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('INBOUND CAP: durable unread pending does NOT bypass the shared MAX_BLOCKS cap (no second budget)', () => {
+  const h = makeHome();
+  try {
+    seedDurableUnread(h.home, 'b-1', ['from parent: x'], 0);
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r1.json && r1.json.decision, 'block', 'first stop blocks');
+    const r2 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r2.json && r2.json.decision, 'block', 'second stop blocks');
+    const r3 = testHook(HOOK, stopPayload(), { home: h.home, env });
+    assert.strictEqual(r3.status, 0);
+    assert.strictEqual(r3.stdout, '', 'third stop must yield even with unread pending — the cap is shared, never bypassed');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('STRICT (default ON): no durable descriptor -> a bounded, non-destructive native message-count probe fires and its count drives the inbound reason', () => {
+  const h = makeHome();
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-childgate-strict-'));
+  const sentinel = path.join(bin, 'sentinel.txt');
+  try {
+    writeFakeHivecontrol(bin, { count: 3, sentinelFile: sentinel });
+    const env = Object.assign({}, CHILD_ENV, { PATH: bin });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.ok(fs.existsSync(sentinel), 'the native message-count probe must have been invoked (STRICT default ON)');
+    assert.ok(/inbox pull/.test(r.json.reason), `native backlog must drive the inbound instruction; got=${r.json.reason}`);
+  } finally {
+    h.cleanup();
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('STRICT=0: the native message-count probe is SKIPPED — pure-fs durable-unread check only', () => {
+  const h = makeHome();
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-childgate-strict0-'));
+  const sentinel = path.join(bin, 'sentinel.txt');
+  try {
+    writeFakeHivecontrol(bin, { count: 3, sentinelFile: sentinel });
+    const env = Object.assign({}, CHILD_ENV, { PATH: bin, ANTIHALL_DEVSWARM_CHILD_GATE_STRICT: '0' });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.ok(!fs.existsSync(sentinel), 'STRICT=0 must NEVER spawn the native message-count probe');
+    assert.ok(!/inbox pull/.test(r.json.reason), 'no durable unread + STRICT off -> no inbound instruction, despite a real native backlog');
+  } finally {
+    h.cleanup();
+    fs.rmSync(bin, { recursive: true, force: true });
+  }
+});
+
+test('FAIL-OPEN: native message-count probe has no binary on PATH -> exit 0, block still occurs (outbound reason only), never crashes', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CHILD_ENV, {
+      PATH: path.join(os.tmpdir(), 'antihall-child-gate-nonexistent-bin-dir-zzz'),
+    });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.json && r.json.decision, 'block', 'the outbound forced-ack must still fire');
+    assert.ok(!/inbox pull/.test(r.json.reason), 'an unknown native probe result must never be treated as unread');
   } finally {
     h.cleanup();
   }

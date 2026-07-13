@@ -7,14 +7,21 @@
 // DEVSWARM_SOURCE_BRANCH non-empty). Does two things, both cheap:
 //
 //   1. HEARTBEAT (mechanical). Writes a durable, turn-authored heartbeat at
-//      ~/.anti-hall/devswarm/heartbeats/<branch>.json carrying `ts` = now. This
-//      is authored by THIS turn — proof the child session actually processed a
-//      prompt — and NEVER by a background ticker (PLAN.md "Heartbeat authorship
-//      rule": a daemon-written heartbeat stays "fresh" even while the session it
-//      represents is wedged, producing a false-active read). We assert ONLY what
-//      this turn can truthfully assert (a fresh `ts` plus the env correlators);
-//      progress_pct/phase/wip/blockers are the child's to report and are NOT
-//      fabricated here (absent = unknown).
+//      ~/.anti-hall/devswarm/heartbeats/<DEVSWARM_BUILDER_ID>.json (falling back to
+//      a sanitized <branch> key ONLY when BUILDER_ID is absent) carrying `ts` = now.
+//      Keyed by the child's OWN builder id — NOT DEVSWARM_SOURCE_BRANCH, which is
+//      the PARENT's branch (KB §6) shared by every sibling forked from that parent;
+//      keying by branch would collide all siblings onto one heartbeat file AND
+//      never match what the parent-inbox hook reads (heartbeats/<d.id>.json where
+//      d.id = DEVSWARM_BUILDER_ID — devswarm-parent-inbox.js's readHeartbeat), so
+//      the parent's heartbeat join would always fail. This is authored by THIS
+//      turn — proof the child session actually processed a prompt — and NEVER by a
+//      background ticker (PLAN.md "Heartbeat authorship rule": a daemon-written
+//      heartbeat stays "fresh" even while the session it represents is wedged,
+//      producing a false-active read). We assert ONLY what this turn can
+//      truthfully assert (a fresh `ts` plus the env correlators); progress_pct/
+//      phase/wip/blockers are the child's to report and are NOT fabricated here
+//      (absent = unknown).
 //
 //   2. REMINDER (advisory). Injects a short per-turn nudge to keep the parent
 //      updated (`hivecontrol workspace message-parent`) and to stay responsive
@@ -31,6 +38,24 @@
 //      populated it is a pure no-op. KNOWN GAP (v0.54.2): nothing shipped drains the
 //      child's NATIVE parent->child queue into this durable inbox, so this fires only
 //      once a child-side ingest/drain populates it — see the report/PLAN follow-up.
+//
+//   4. DESCRIPTOR REGISTRATION (mechanical, HOTFIX #31). The parent-inbox hook
+//      (devswarm-parent-inbox.js) and the supervisor sweep both discover children
+//      ONLY through ~/.anti-hall/devswarm/workspaces/*.json descriptors that pass
+//      readDescriptors' filter (d.worktreePath && d.sessionId && isSafeId(d.id) —
+//      companion/devswarm-supervisor.js:89-106). Nothing mechanically WRITES that
+//      descriptor for a child — the per-turn nudges above only tell the child to
+//      run a CLI command, and a child never reliably does. Since this hook is
+//      itself a Node process running on the child's own turn, it writes/refreshes
+//      the child's own descriptor directly via fs (no command execution, no
+//      hivecontrol spawn) every turn: id = DEVSWARM_BUILDER_ID, worktreePath =
+//      resolved from payload.cwd via a pure fs git-toplevel walk (mirrors
+//      devswarm-parent-inbox.js's findGitToplevel), sessionId = payload.session_id.
+//      Idempotent (rewritten every turn) and MERGE-preserving: an existing
+//      inboxPath/cursorPath (e.g. set by a prior `devswarm.js inbox pull`) is never
+//      clobbered, so this hook and the CLI's auto-ensure path converge on the same
+//      inbox file. Skipped (fail-open) when the id is unsafe, no cwd/git-toplevel
+//      resolves, or any fs op errors — never blocks or crashes a turn.
 //
 // Primary / non-DevSwarm sessions and malformed stdin are silent no-ops (no
 // output, exit 0) — byte-identical to dormant. Fail-open on ANY error. Pure
@@ -78,14 +103,21 @@ const RECEIVE_NUDGE =
   'Then read them the non-draining way via `node scripts/devswarm.js inbox read ' +
   '<DEVSWARM_BUILDER_ID>`. Substitute your own DEVSWARM_BUILDER_ID for <...>.';
 
-// heartbeatKey(branch) -> a safe single path segment for the heartbeat filename.
-// PLAN.md keys the heartbeat as heartbeats/<branch>.json; a plain branch like
-// `main` stays clean, but a branch can carry `/` or other chars unsafe as a file
-// name. When the branch is already a safe id we use it verbatim; otherwise we
-// sanitize AND append a short deterministic hash of the RAW branch so two
-// distinct branches that sanitize to the same string (e.g. `a/b` vs `a-b`) can
-// never collide onto one heartbeat file (which would cross-contaminate liveness).
-function heartbeatKey(branch) {
+// heartbeatKey(builderId, branch) -> a safe single path segment for the heartbeat
+// filename. Keyed by the child's OWN DEVSWARM_BUILDER_ID whenever it is a safe id
+// — this is what devswarm-parent-inbox.js's readHeartbeat(home, d.id) looks up
+// (d.id = DEVSWARM_BUILDER_ID), and it is unique PER CHILD, unlike
+// DEVSWARM_SOURCE_BRANCH which is the shared PARENT branch every sibling forked
+// from that parent carries identically (keying by branch would cross-contaminate
+// sibling liveness onto one file AND never match what the parent reads). Falls
+// back to the branch key ONLY when BUILDER_ID is absent/unsafe, preserving the
+// prior sanitize+hash behavior for that legacy path: a plain branch like `main`
+// stays clean, but a branch can carry `/` or other chars unsafe as a file name,
+// so when it isn't already a safe id we sanitize AND append a short deterministic
+// hash of the RAW branch so two distinct branches that sanitize to the same
+// string (e.g. `a/b` vs `a-b`) can never collide onto one heartbeat file.
+function heartbeatKey(builderId, branch) {
+  if (isSafeId(builderId)) return builderId;
   if (isSafeId(branch)) return branch;
   const safe = String(branch).replace(/[^A-Za-z0-9._-]/g, '-').replace(/^\.+/, '_').slice(0, 80) || 'branch';
   const hash = crypto.createHash('sha1').update(String(branch)).digest('hex').slice(0, 8);
@@ -97,7 +129,7 @@ function heartbeatKey(branch) {
 // (a heartbeat-write failure must NEVER block a turn).
 function writeHeartbeat(env, sessionId, home) {
   const branch = env.DEVSWARM_SOURCE_BRANCH;
-  const key = heartbeatKey(branch);
+  const key = heartbeatKey(env.DEVSWARM_BUILDER_ID, branch);
   const dir = path.join(devswarmRoot(home), 'heartbeats');
   const target = path.join(dir, key + '.json');
   // Only what this turn can truthfully assert. `source` marks it turn-authored
@@ -118,14 +150,16 @@ function writeHeartbeat(env, sessionId, home) {
   fs.renameSync(tmp, target);
 }
 
-// unreadParentSegment(env, home) -> string | null. NON-DESTRUCTIVE unread check on
-// the child's OWN durable descriptor inbox (workspaces/<DEVSWARM_BUILDER_ID>.json).
-// Uses the inbox-cursor primitive (pure fs; never drains the native queue, never
-// spawns hivecontrol). Returns a SHORT nudge naming the unread count + the SAFE
-// (non-draining) read path when the durable child inbox has unread message(s);
-// returns null otherwise (empty-when-zero: a child with no populated durable inbox
-// stays a pure no-op). Fail-safe: ANY error -> null (never blocks or crashes a turn).
-function unreadParentSegment(env, home) {
+// unreadInfo(env, home) -> { id, count, lines } | null. NON-DESTRUCTIVE unread
+// check on the child's OWN durable descriptor inbox (workspaces/<DEVSWARM_
+// BUILDER_ID>.json). Uses the inbox-cursor primitive (pure fs; never drains the
+// native queue, never spawns hivecontrol). `lines` is the raw unread NDJSON/text
+// lines, kept so the caller can additionally scan them for the archive-request
+// marker (see ARCHIVE_REQUEST_MARKER below) without a second read. Returns null
+// when there is no unread backlog (empty-when-zero: a child with no populated
+// durable inbox stays a pure no-op). Fail-safe: ANY error -> null (never blocks
+// or crashes a turn).
+function unreadInfo(env, home) {
   try {
     const id = env.DEVSWARM_BUILDER_ID;
     if (typeof id !== 'string' || !isSafeId(id)) return null;
@@ -135,15 +169,124 @@ function unreadParentSegment(env, home) {
     if (!desc || typeof desc !== 'object' || !desc.inboxPath) return null;
     const u = readUnread(desc.inboxPath, desc.cursorPath);
     if (!u.known || u.count <= 0) return null;
-    return (
-      'DEVSWARM CHILD INBOX: you have ' + u.count + ' unread parent message(s). Read '
-      + 'them the SAFE, NON-DRAINING way via the durable inbox cursor — '
-      + '`devswarm.js inbox read ' + id + '` (anti-hall devswarm CLI). Do NOT run '
-      + '`hivecontrol workspace read-messages` or `monitor` — those DESTRUCTIVELY '
-      + 'drain the native queue.'
-    );
+    return { id, count: u.count, lines: u.lines };
   } catch (_) {
     return null;
+  }
+}
+
+// buildUnreadSegment(info) -> string. IMPERATIVE PRIORITY wording (escalated from
+// advisory, #29): a child must not treat parent messages as optional background
+// noise — it is told to stop and address them before continuing.
+function buildUnreadSegment(info) {
+  return (
+    'DEVSWARM CHILD INBOX — PRIORITY: you have ' + info.count + ' unread parent '
+    + 'message(s). STOP and address these parent message(s) FIRST before '
+    + 'continuing. Read them the SAFE, NON-DRAINING way via the durable inbox '
+    + 'cursor — `devswarm.js inbox read ' + info.id + '` (anti-hall devswarm CLI). '
+    + 'Do NOT run `hivecontrol workspace read-messages` or `monitor` — those '
+    + 'DESTRUCTIVELY drain the native queue.'
+  );
+}
+
+// ARCHIVE_REQUEST_MARKER — a parent embeds this literal token in a message body to
+// ask the child to archive its own workspace. A plain substring scan (format-
+// agnostic: works whether the durable line is raw text or NDJSON-wrapped) over the
+// already-fetched unread lines, so detecting it costs no extra read.
+const ARCHIVE_REQUEST_MARKER = '[[ANTIHALL_ARCHIVE_REQUEST]]';
+
+// buildArchiveRequestSegment(id) -> string. A DISTINCT segment from the unread
+// nudge: teardown is never automatic — the child must get its OWN user's
+// confirmation before running the archive command.
+function buildArchiveRequestSegment(id) {
+  return (
+    'DEVSWARM ARCHIVE REQUEST: your parent asks you to archive this workspace. '
+    + 'Confirm with YOUR user, then run `devswarm.js archive ' + id + '`. NEVER '
+    + 'auto-archive.'
+  );
+}
+
+// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
+// looking for a `.git` entry (a directory for a normal checkout, a FILE for a
+// linked worktree/submodule) — the same root `git rev-parse --show-toplevel`
+// would report for that cwd, WITHOUT spawning git. Mirrors devswarm-parent-
+// inbox.js's own findGitToplevel byte-for-byte (kept as a local copy rather than a
+// shared require so this hot per-turn hook's dependency surface stays exactly what
+// it already was — no new cross-file coupling for a few lines of pure fs walk).
+function findGitToplevel(startDir) {
+  try {
+    let dir = path.resolve(String(startDir || ''));
+    if (!dir) return null;
+    for (;;) {
+      try {
+        fs.statSync(path.join(dir, '.git'));
+        return dir;
+      } catch (_) { /* keep walking up */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null; // reached filesystem root, no .git found
+      dir = parent;
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
+// Default inbox/cursor locations for a FRESH descriptor — must match
+// companion/lib/devswarm-pull.js's inboxDefaultPath/cursorDefaultPath byte-for-
+// byte (duplicated in-line rather than required: that module pulls in devswarm-
+// ingest.js + devswarm-store.js, both far heavier than this hot per-turn hook
+// should depend on, and a require-time failure there would throw BEFORE this
+// hook's own try/catch could fail it open). Only used when a descriptor has no
+// inboxPath/cursorPath yet, so a later `devswarm.js inbox pull` (which auto-
+// ensures with the SAME defaults) converges on the identical file.
+function defaultInboxPath(home, id) {
+  return path.join(devswarmRoot(home), 'inbox', id + '.ndjson');
+}
+function defaultCursorPath(home, id) {
+  return path.join(devswarmRoot(home), 'cursors', id + '.cursor');
+}
+
+// registerChildDescriptor(env, sessionId, cwd, home) — mechanically write/refresh
+// this child's own descriptor at workspaces/<id>.json so the parent-inbox hook and
+// the supervisor sweep (both gated on readDescriptors' d.worktreePath && d.sessionId
+// && isSafeId(d.id) filter) can see it. MERGES over any existing descriptor
+// (preserves inboxPath/cursorPath/nudgeCommand already set — e.g. by a prior
+// `inbox pull` — never clobbers them); only id/worktreePath/sessionId are always
+// refreshed from this turn's truthful values. Atomic tmp+rename write, mirroring
+// writeDescriptorAtomic in scripts/devswarm.js. Skips silently (fail-open) when the
+// id is unsafe, sessionId is absent, or no git worktree resolves from cwd — a child
+// running outside a worktree, or a malformed env, must never crash or block a turn.
+function registerChildDescriptor(env, sessionId, cwd, home) {
+  const id = env.DEVSWARM_BUILDER_ID;
+  if (typeof id !== 'string' || !isSafeId(id)) return;
+  if (typeof sessionId !== 'string' || sessionId === '') return;
+  const worktreePath = findGitToplevel(cwd);
+  if (!worktreePath) return;
+
+  const dir = path.join(devswarmRoot(home), 'workspaces');
+  const target = path.join(dir, id + '.json');
+  let existing = null;
+  try { existing = JSON.parse(fs.readFileSync(target, 'utf8')); } catch (_) { existing = null; }
+  const base = existing && typeof existing === 'object' ? existing : {};
+
+  const desc = Object.assign({}, base, { id, worktreePath, sessionId, repoId: env.DEVSWARM_REPO_ID || null });
+  if (desc.inboxPath === undefined || desc.inboxPath === null) desc.inboxPath = defaultInboxPath(home, id);
+  if (desc.cursorPath === undefined || desc.cursorPath === null) desc.cursorPath = defaultCursorPath(home, id);
+  if (desc.nudgeCommand === undefined) desc.nudgeCommand = null;
+
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = target + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(desc));
+  fs.renameSync(tmp, target);
+
+  // Best-effort, non-destructive cursor init (mirrors cmdRegister in
+  // scripts/devswarm.js) so a brand-new descriptor's inbox reads known:true
+  // (0 unread) instead of known:false. Never clobbers an existing cursor file.
+  if (desc.cursorPath && !fs.existsSync(desc.cursorPath)) {
+    try {
+      fs.mkdirSync(path.dirname(desc.cursorPath), { recursive: true });
+      fs.writeFileSync(desc.cursorPath, '0');
+    } catch (_) { /* best-effort; inbox ops still degrade to known:false */ }
   }
 }
 
@@ -161,16 +304,29 @@ function main() {
   if (!isDevswarmActive(env)) return;
   if (!isChildWorkspace(env)) return;
 
+  const home = os.homedir();
+
   // Heartbeat first, isolated so a write failure still lets the reminder through.
   try {
-    writeHeartbeat(env, payload.session_id, os.homedir());
+    writeHeartbeat(env, payload.session_id, home);
   } catch (_) { /* fail-open: never block a turn on a heartbeat write */ }
+
+  // Mechanical descriptor registration (#31 HOTFIX), isolated the same way — a
+  // registration failure must never suppress the reminder/unread segments below.
+  try {
+    registerChildDescriptor(env, payload.session_id, payload.cwd, home);
+  } catch (_) { /* fail-open: never block a turn on a descriptor write */ }
 
   // REMINDER is always present; append the unread-inbox nudge only when the child's
   // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
   const segments = [REMINDER, RECEIVE_NUDGE];
-  const unreadSeg = unreadParentSegment(env, os.homedir());
-  if (unreadSeg) segments.push(unreadSeg);
+  const info = unreadInfo(env, home);
+  if (info) {
+    segments.push(buildUnreadSegment(info));
+    if (info.lines.some((l) => typeof l === 'string' && l.includes(ARCHIVE_REQUEST_MARKER))) {
+      segments.push(buildArchiveRequestSegment(info.id));
+    }
+  }
 
   const out = {
     hookSpecificOutput: {

@@ -210,11 +210,14 @@ orchestrator's model — so set `model` EXPLICITLY on the Reviewer and Auditor a
 (`~/.anti-hall/codex-availability.json`) first; Codex (`agentType:"codex:codex-rescue"`)
 is the DEFAULT for this seat, `{model:"opus"}` is the FALLBACK only, taken only when
 Codex is unavailable. The Reviewer uses `model: "sonnet"` (Sonnet 5) at effort
-`xhigh` — never `max` inside loops (TTFT ~163 s). See `references/ship-it.workflow.js`
-for the canonical spawn. *Fable routing is policy-disabled (2026-07-02, over-restrictive/
-refusal-prone): even when `fable-availability.js` detects Fable 5 is available and threads
-`args.fableAvailable=true`, the Reviewer seat does NOT route to it — Sonnet 5 is the fixed
-primary Reviewer regardless of the flag. Reconsider only if Fable's track record improves.*
+`xhigh` — never `max` inside loops (TTFT ~163 s) — unless Fable is available, in
+which case it tries Fable first. See `references/ship-it.workflow.js`
+for the canonical spawn. *Fable routing is RE-ENABLED (2026-07-12, owner call): the
+earlier policy-disable (2026-07-02, over-restrictive/refusal-prone reports) is reversed
+now that Fable 5 is available. When `fable-availability.js` detects Fable 5 is available
+and threads `args.fableAvailable=true`, the Reviewer seat tries `model: "fable"` FIRST,
+falling back to Sonnet 5 then Opus if Fable returns null/falsy. Revisit if Fable's track
+record regresses.*
 The main thread **stays coordinator**: it synthesizes their
 findings, dispatches fix-waves, and loops to re-debate.
 

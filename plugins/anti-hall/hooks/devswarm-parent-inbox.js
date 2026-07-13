@@ -28,11 +28,14 @@
 //     tell whether the Primary actually acted (cursor advanced) next turn.
 //   - Archive-ready recommendation (P1-E): for each ACTIVE workspace (descriptor
 //     present) the store marked archive_ready, surface a PERSISTENT, per-workspace-
-//     COOLDOWN'd nudge telling the Primary to INFORM THE USER to archive it in the
-//     DevSwarm app. Teardown is GUI-only; this hook NEVER auto-archives and NEVER
-//     removes a descriptor — recommend only. A workspace with an archive-ignore mark
-//     is skipped (still tracked, just not surfaced). Once the user archives it the
-//     descriptor disappears from readDescriptors() and the nudge stops on its own.
+//     COOLDOWN'd nudge URGING the Primary to verify the workspace is merged, tested,
+//     and deployed per the PARENT REPO'S OWN policy (this hook never checks that —
+//     it stays pure fs, no git/test/gh spawn), then run `devswarm.js archive-request
+//     <id>` to ASK THE CHILD to archive. This hook NEVER auto-archives, NEVER
+//     removes a descriptor, and NEVER archives mechanically — the child asks its own
+//     user. A workspace with an archive-ignore mark is skipped (still tracked, just
+//     not surfaced). Once the workspace is archived the descriptor disappears from
+//     readDescriptors() and the nudge stops on its own.
 //
 // INERTNESS (P1-D): with no workspace descriptors and no populated durable inbox,
 // every read returns empty and this hook is a pure no-op. It is NOT self-sufficient
@@ -361,6 +364,9 @@ function logInjection(home, workspaces) {
 }
 
 // buildUnreadSegment(list) -> string. SHORT summary of the unread/idle workspaces.
+// IMPERATIVE wording for the unread case (was advisory "need attention" — #34
+// parity pass): a Primary must not treat a child's unread backlog as optional
+// background noise, same posture as the child's own imperative nudge below.
 function buildUnreadSegment(list) {
   const shown = list.slice(0, MAX_LISTED).map((w) => {
     const parts = [];
@@ -369,24 +375,49 @@ function buildUnreadSegment(list) {
     return w.id + (parts.length ? ' (' + parts.join(', ') + ')' : '');
   });
   const extra = list.length > MAX_LISTED ? ' +' + (list.length - MAX_LISTED) + ' more' : '';
-  return (
+  const anyUnread = list.some((w) => w.unread > 0);
+  let body = (
     'DEVSWARM PARENT INBOX: ' + list.length + ' active workspace(s) need attention — '
     + shown.join('; ') + extra + '. '
-    + 'Read/ack each workspace inbox (or reassign/archive it) so it does not sit '
-    + 'unnoticed off your task list; a workspace flagged stale/escalated has a '
-    + 'wedged child — check on it.'
+  );
+  body += anyUnread
+    ? ('STOP and read each unread workspace\'s inbox message(s) FIRST via '
+      + '`devswarm.js inbox read <id>` before continuing (or reassign/archive it). ')
+    : ('Read/ack each workspace inbox (or reassign/archive it) so it does not sit '
+      + 'unnoticed off your task list. ');
+  body += 'A workspace flagged stale/escalated has a wedged child — check on it.';
+  return body;
+}
+
+// buildOwnUnreadSegment(count, id) -> string. IMPERATIVE PRIORITY wording for the
+// Primary's OWN inbound unread (#34 fix — the Primary previously had no visibility
+// into its own unread parent/peer backlog, only children's). Parity with the
+// child's own imperative nudge (devswarm-child-turn.js buildUnreadSegment:167-176,
+// #29): the Primary must not treat its own unread messages as optional either.
+function buildOwnUnreadSegment(count, id) {
+  return (
+    'DEVSWARM OWN INBOX — PRIORITY: you have ' + count + ' unread parent/peer '
+    + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
+    + 'parent/peer message(s) FIRST before continuing. Read them the SAFE, '
+    + 'NON-DRAINING way — `devswarm.js inbox read-primary ' + id + '` (anti-hall '
+    + 'devswarm CLI). Do NOT run `hivecontrol workspace read-messages` or '
+    + '`monitor` — those DESTRUCTIVELY drain the native queue.'
   );
 }
 
-// buildArchiveSegment(ids) -> string. Recommendation, NOT a block: teardown is
-// GUI-only, so the Primary must inform the USER — it must never auto-archive.
+// buildArchiveSegment(ids) -> string. Recommendation, NOT a command: this hook
+// stays pure-fs (no git/test/gh spawn) and cannot verify merge/test/deploy status
+// itself, so it URGES the Primary to check per the parent repo's OWN policy, then
+// ask the child to archive via the CLI. NEVER archives mechanically or directly.
 function buildArchiveSegment(ids) {
   const shown = ids.slice(0, MAX_LISTED).join(', ');
   const extra = ids.length > MAX_LISTED ? ' (+' + (ids.length - MAX_LISTED) + ' more)' : '';
   return (
     'DEVSWARM ARCHIVE-READY: workspace(s) ' + shown + extra + ' are complete '
-    + '(all required gates met). Teardown is GUI-only — INFORM THE USER to archive '
-    + 'them in the DevSwarm app. NEVER auto-archive or remove a descriptor; recommend only.'
+    + '(all required gates met). VERIFY this workspace is MERGED + TESTED + DEPLOYED '
+    + 'per YOUR repo\'s policy (using your own tooling; anti-hall does not check this), '
+    + 'then run `devswarm.js archive-request <id>` to ask the child to archive. '
+    + 'NEVER archive mechanically; the child asks its user.'
   );
 }
 
@@ -421,13 +452,19 @@ function main() {
   const now = Date.now();
   const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : null;
   // Resolve the CURRENT worktree's hash ONCE (pure fs walk, no git spawn) — it
-  // keys BOTH the per-project summary read AND the daemon-heartbeat staleness
-  // banner below. Fail-open: any failure -> null -> no summary data, no banner.
+  // keys the per-project summary read, the daemon-heartbeat staleness banner
+  // below, AND (#34) the Primary's OWN workspace id (primary-<hash>, the SAME
+  // convention install-devswarm-ingest.js's primaryWorkspaceId + the ingest
+  // daemon already use) so its own inbound unread can be resolved from the same
+  // summary projection. Fail-open: any failure -> null -> no summary data, no
+  // banner, no own-unread segment.
   let worktreeHash = null;
+  let primaryId = null;
   try {
     const top = cwd ? findGitToplevel(cwd) : null;
     worktreeHash = top ? installIngest.worktreeHash(top) : null;
-  } catch (_) { worktreeHash = null; }
+    primaryId = top ? installIngest.primaryWorkspaceId(top) : null;
+  } catch (_) { worktreeHash = null; primaryId = null; }
 
   let descriptors = [];
   try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
@@ -451,8 +488,16 @@ function main() {
     return s;
   }
 
+  // #36 cross-project-bleed fix: exclude a descriptor ONLY when BOTH this
+  // session's and the descriptor's repoId are present and DIFFER — fail-open by
+  // construction. An old descriptor with no repoId (pre-#36) or a session with
+  // no DEVSWARM_REPO_ID (manual supervisor mode) disables the filter entirely,
+  // so nothing that showed before this fix can vanish; it only stops a Primary
+  // in project A from being surfaced project B's workspaces.
+  const currentRepoId = process.env.DEVSWARM_REPO_ID;
   for (const d of descriptors) {
     if (!d || !isSafeId(d.id)) continue;
+    if (currentRepoId && d.repoId && d.repoId !== currentRepoId) continue;
     const summary = summaryForDescriptor(d.id);
     // --- unread / idle ---
     let unread = 0, cursor = 0, total = 0;
@@ -492,6 +537,25 @@ function main() {
       });
     } catch (_) {}
   }
+
+  // --- Primary's OWN inbound unread (#34) ---
+  // Unlike a child, the Primary has no descriptor with its own inboxPath/
+  // cursorPath to read via readUnread — its inbound is ingested by the daemon
+  // directly into the store under workspaceId primary-<worktreeHash> and exposed
+  // ONLY via the summary projection (summaries/<worktreeHash>.json ->
+  // workspaces[primary-<hash>].unread), the SAME projection already read above
+  // for each child's status/gates. Reuses summaryForDescriptor so a primaryId
+  // sharing worktreeHash costs no extra fs read. Fail-open: any failure -> 0.
+  let ownUnread = 0;
+  try {
+    if (primaryId) {
+      const ownSummary = summaryForDescriptor(primaryId);
+      const ownEntry = summaryEntry(ownSummary, primaryId);
+      if (ownEntry && Number.isFinite(ownEntry.unread) && ownEntry.unread > 0) {
+        ownUnread = ownEntry.unread;
+      }
+    }
+  } catch (_) { ownUnread = 0; }
 
   // Daemon-LIVENESS staleness banner (fail-open). Rewired (was: summary.json's
   // generatedAt, which only advances on inserted>0 and false-reads a live-but-
@@ -536,6 +600,12 @@ function main() {
     if (capped) logTableCap(home, rows.length, shown.length);
     if (staleBanner) segments.push(staleBanner);
     segments.push(buildWorkspaceTable(shown, now, capped, rows.length - shown.length));
+  }
+
+  // The Primary's OWN unread is its own top-priority item — surfaced ahead of
+  // the children's unread/idle summary.
+  if (ownUnread > 0 && primaryId) {
+    segments.push(buildOwnUnreadSegment(ownUnread, primaryId));
   }
 
   if (attention.length) {

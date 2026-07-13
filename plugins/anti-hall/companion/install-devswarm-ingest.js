@@ -45,9 +45,38 @@ const { spawnSync } = require('child_process');
 
 const LABEL = 'com.anti-hall.devswarm-ingest';
 const UNIT = 'anti-hall-devswarm-ingest';
-const SCRIPT = path.join(__dirname, 'devswarm-ingest.js');
 const EXEC = process.execPath;
 const HOME = os.homedir();
+
+// resolveStableScript(env, home) -> absolute path | null. Prefers the git
+// marketplace clone's OWN copy of devswarm-ingest.js — the exact path
+// skills/update/scripts/update.js `git pull --ff-only`s IN PLACE (verified:
+// update.js:396 gitPullFfOnly runs against paths.marketplaceDir), so it NEVER
+// moves across an update. That is NOT true of a version-pinned cache dir (a NEW
+// directory per release) or of this installer's OWN __dirname (wherever the
+// plugin manager happened to resolve THIS install run's copy from — not
+// guaranteed stable). A daemon baked from either of those goes stale the moment
+// the plugin manager relocates/.bak's that directory out from under the
+// already-running daemon's launchd/systemd/cron unit — the confirmed root cause
+// of the ingest daemon crash-looping after a plugin update. ANTIHALL_MARKETPLACE_DIR
+// is the SAME test-only override update.js honors, so both stable-path
+// resolutions agree under test. Returns null (never throws) when the marketplace
+// clone isn't present on this machine (e.g. running straight off a git checkout
+// of the repo, not a marketplace install) — the caller then falls back to
+// __dirname, preserving today's dev-mode behavior.
+function resolveStableScript(env, home) {
+  const e = env || {};
+  let marketplaceDir = path.join(home, '.claude', 'plugins', 'marketplaces', 'anti-hall');
+  const override = e.ANTIHALL_MARKETPLACE_DIR;
+  if (override) {
+    try { if (path.isAbsolute(override) && fs.statSync(override).isDirectory()) marketplaceDir = override; } catch (_) {}
+  }
+  const candidate = path.join(marketplaceDir, 'plugins', 'anti-hall', 'companion', 'devswarm-ingest.js');
+  try { if (fs.statSync(candidate).isFile()) return candidate; } catch (_) {}
+  return null;
+}
+
+const SCRIPT = resolveStableScript(process.env, HOME) || path.join(__dirname, 'devswarm-ingest.js');
 const LOG = path.join(HOME, '.anti-hall', 'devswarm-ingest.log');
 const RESTART_SEC = 5; // gap before systemd relaunches the daemon after it exits
 
@@ -224,11 +253,16 @@ function unitDir() { return path.join(HOME, '.config', 'systemd', 'user'); }
 // Type=simple + Restart=always: a long-running daemon that systemd relaunches on
 // exit (the daemon's re-exec-on-exit contract). No .timer — this is a continuous
 // service, not a periodic sweep.
-function buildService({ exec = EXEC, script = SCRIPT, restartSec = RESTART_SEC, workdir } = {}) {
+function buildService({ exec = EXEC, script = SCRIPT, restartSec = RESTART_SEC, workdir, log = LOG } = {}) {
   // WorkingDirectory: systemd otherwise defaults the daemon's cwd to $HOME (not a
   // git repo), so `hivecontrol workspace monitor` can never resolve a workspace.
   // systemd-escaped like ExecStart (systemd tokenizes + does $VAR expansion).
   const workdirLine = workdir ? `WorkingDirectory=${sdQuote(workdir)}\n` : '';
+  // StandardOutput/StandardError: without these, a startup failure (bad
+  // WorkingDirectory, missing script) exits silently — nothing is captured
+  // anywhere. Append (not truncate) into the SAME stable log the macOS plist's
+  // StandardOutPath/StandardErrorPath already use, so both platforms are
+  // diagnosable from one file.
   return `[Unit]
 Description=anti-hall DevSwarm ingest daemon (native monitor -> store)
 
@@ -237,6 +271,8 @@ Type=simple
 ${workdirLine}ExecStart=${sdQuote(exec)} ${sdQuote(script)}
 Restart=always
 RestartSec=${restartSec}
+StandardOutput=append:${log}
+StandardError=append:${log}
 
 [Install]
 WantedBy=default.target
@@ -250,12 +286,14 @@ function hasSystemctl() {
 // lock, so a duplicate launch refuses-and-exits immediately (single-consumer);
 // when the daemon is dead, the next tick takes over. Each path is POSIX
 // single-quoted so no path can inject shell (P0-2).
-function buildCronLine({ exec = EXEC, script = SCRIPT, workdir } = {}) {
+function buildCronLine({ exec = EXEC, script = SCRIPT, workdir, log = LOG } = {}) {
   // cd into the install-time worktree first: cron runs from $HOME (not a git repo),
   // so without this the daemon can never resolve a workspace. The worktree path is
   // POSIX single-quoted like exec/script (no injection hole reintroduced).
   const cd = workdir ? `cd ${shSingleQuote(workdir)} && ` : '';
-  return `* * * * * ${cd}${shSingleQuote(exec)} ${shSingleQuote(script)} >/dev/null 2>&1`;
+  // Append (not discard) into the SAME stable log the plist/service use — a
+  // startup failure on the cron fallback path used to vanish into /dev/null.
+  return `* * * * * ${cd}${shSingleQuote(exec)} ${shSingleQuote(script)} >> ${shSingleQuote(log)} 2>&1`;
 }
 
 // The managed cron marker comment. It is BOTH the idempotence key (a second install
@@ -535,7 +573,7 @@ function main() {
     // to emit a unit/plist/cron entry for a node/script/worktree path carrying
     // control chars or quote characters. Fail-open — log + skip install, exit 0
     // (non-fatal), so a hostile path never yields an unsafe unit and never aborts hard.
-    if (!UNINSTALL && (!pathIsEmittable(EXEC) || !pathIsEmittable(SCRIPT) || !pathIsEmittable(workdir))) {
+    if (!UNINSTALL && (!pathIsEmittable(EXEC) || !pathIsEmittable(SCRIPT) || !pathIsEmittable(workdir) || !pathIsEmittable(LOG))) {
       say('error: node/script/worktree path contains control or quote characters; refusing to emit an unsafe unit. Skipping install (no-op, exit 0).');
       process.exit(0);
       return;
@@ -552,7 +590,8 @@ function main() {
 if (require.main === module) main();
 
 module.exports = {
-  LABEL, UNIT, SCRIPT, RESTART_SEC, CRON_MARKER,
+  LABEL, UNIT, SCRIPT, LOG, RESTART_SEC, CRON_MARKER,
+  resolveStableScript,
   xmlEscape, shSingleQuote, sdQuote, pathIsEmittable, resolveWorktree,
   buildPlist, buildService, buildCronLine, buildCronEntry, mergeCrontab, removeCronEntry,
   worktreeHash, labelForWorktree, unitForWorktree, cronMarkerForWorktree, primaryWorkspaceId,

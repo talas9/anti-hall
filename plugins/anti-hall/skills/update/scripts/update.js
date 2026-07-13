@@ -32,7 +32,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
+const { execFileSync, spawnSync } = require('child_process');
 
 // Bound reads: plugin.json / installed_plugins.json are tiny; CHANGELOG.md can
 // grow but stays well under this. A pathological huge file → treated as unread.
@@ -426,6 +426,88 @@ function remotePluginVersion(marketplaceDir, exec) {
 }
 
 // ---------------------------------------------------------------------------
+// Ingest-daemon heal (Step 5.5) — the update → doctor auto-heal wiring.
+// ---------------------------------------------------------------------------
+
+/**
+ * healIngestDaemon({ paths, env, cwd, spawnFn }) → { attempted, healed, detail }
+ *
+ * Root-cause companion fix (see install-devswarm-ingest.js SCRIPT /
+ * resolveStableScript): a DevSwarm ingest daemon installed BEFORE the installer
+ * baked a STABLE script path (the marketplace clone this very update.js just
+ * `git pull --ff-only`ed IN PLACE) is still pointed at whatever path it was
+ * baked from at install time — a version-pinned cache dir the plugin manager
+ * may have relocated/.bak'd out from under it. A FRESH install after that fix
+ * never goes stale again, but an ALREADY-broken daemon needs a one-time
+ * re-bake. This wires that re-bake into the update itself instead of relying
+ * solely on a human (or an LLM agent following SKILL.md prose) remembering to
+ * run doctor or reinstall.
+ *
+ * GATED the same way hooks/lib/doctor-repair.js gates its own ingest fix
+ * (isDevswarmActive(env) && resolveWorktree(cwd) !== null) — reuses THAT
+ * module's already-tested readInstalledIngestWorkingDir/classifyIngestUnit
+ * (read-only) instead of re-deriving the classification logic here, and only
+ * spawns the (freshly-pulled) installer when the classification is NOT already
+ * 'ok'. Requires from paths.pluginSrcDir (the just-pulled marketplace clone),
+ * not this update.js's own possibly-stale __dirname, so the installer that
+ * actually runs is the one carrying the stable-path fix.
+ *
+ * Fully fail-open: ANY error here is reported in `detail` and NEVER thrown — a
+ * heal failure must never fail the update itself.
+ */
+function healIngestDaemon(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const installerPath = path.join(paths.pluginSrcDir, 'companion', 'install-devswarm-ingest.js');
+    const repairPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'doctor-repair.js');
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    if (!fs.existsSync(installerPath) || !fs.existsSync(repairPath) || !fs.existsSync(detectPath)) {
+      return { attempted: false, healed: false, detail: 'ingest heal skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const installIngest = require(installerPath);
+    const { isDevswarmActive } = require(detectPath);
+    const { readInstalledIngestWorkingDir, classifyIngestUnit } = require(repairPath);
+
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, healed: false, detail: 'not a DevSwarm session — ingest heal skipped (gate closed)' };
+    }
+    const worktree = typeof installIngest.resolveWorktree === 'function' ? installIngest.resolveWorktree(cwd) : null;
+    if (!worktree) {
+      return { attempted: false, healed: false, detail: 'cwd is not a git worktree — ingest heal skipped (gate closed)' };
+    }
+
+    const before = readInstalledIngestWorkingDir({ worktree, home });
+    const cls = classifyIngestUnit({ workingDir: before.workingDir, scriptPath: before.scriptPath, home, env });
+    if (cls === 'ok' || cls === 'absent') {
+      // 'ok': already healthy — nothing to heal. 'absent': not installed here —
+      // first-installing an opt-in daemon unprompted stays the update SKILL's own
+      // explicit, documented step (SKILL.md step 7), not this code path's job.
+      return { attempted: true, healed: true, detail: 'ingest daemon ' + cls + ' — no heal needed' };
+    }
+
+    const spawn = o.spawnFn || ((script) => spawnSync(process.execPath, [script], {
+      cwd, env: Object.assign({}, env, { HOME: home }), encoding: 'utf8', timeout: 30000,
+    }));
+    spawn(installerPath);
+    const after = readInstalledIngestWorkingDir({ worktree, home });
+    const cls2 = classifyIngestUnit({ workingDir: after.workingDir, scriptPath: after.scriptPath, home, env });
+    return {
+      attempted: true,
+      healed: cls2 === 'ok',
+      detail: cls2 === 'ok'
+        ? 're-installed the ingest daemon (was ' + cls + ') — WorkingDirectory now ' + after.workingDir
+        : 'ingest daemon still ' + cls2 + ' after re-install attempt',
+    };
+  } catch (e) {
+    return { attempted: false, healed: false, detail: 'ingest heal raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Orchestration (impure — wires the pure pieces together)
 // ---------------------------------------------------------------------------
 
@@ -539,6 +621,14 @@ function runUpdate(opts) {
   // even when installed is unknown — mirroring the pulled version aids recovery.
   const cache = syncCache(paths, latest, fsImpl);
 
+  // Ingest-daemon heal: only worth attempting once something was actually
+  // synced this run (see healIngestDaemon doc comment for the full root-cause
+  // rationale). Fully fail-open — never affects `stop` or the update's own
+  // success/failure.
+  const ingestHeal = cache.synced
+    ? healIngestDaemon({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, spawnFn: opts.spawnIngestInstaller })
+    : { attempted: false, healed: false, detail: 'no cache sync this run — nothing to heal' };
+
   // Unknown installed version → NEVER 'already up to date'; no delta computable
   // (a null `from` would dump the entire changelog, so suppress it).
   if (!isSemver(installed)) {
@@ -548,6 +638,7 @@ function runUpdate(opts) {
         latest: latest || null,
         updated: false,
         cacheSynced: cache.synced,
+        ingestHeal,
         action: UNKNOWN_INSTALLED_ACTION,
       },
       changelog: '',
@@ -572,6 +663,7 @@ function runUpdate(opts) {
       latest: latest || null,
       updated,
       cacheSynced: cache.synced,
+      ingestHeal,
       action: updated ? 'run /reload-plugins' : 'already up to date',
     },
     changelog,
@@ -641,6 +733,7 @@ module.exports = {
   gitState,
   gitPullFfOnly,
   remotePluginVersion,
+  healIngestDaemon,
   runCheck,
   runUpdate,
   renderHuman,

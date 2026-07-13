@@ -74,9 +74,39 @@ test('default Reviewer path remains Sonnet 5 -> Opus fallback', async () => {
   assert.deepStrictEqual(reviewerModels, ['sonnet', 'opus']);
 });
 
-test('Reviewer skips Fable even when args.fableAvailable=true (policy-disabled), goes Sonnet 5 then Opus', async () => {
+test('Reviewer tries Fable first when args.fableAvailable=true (RE-ENABLED, 2026-07-12) and stops on success', async () => {
   const reviewerModels = [];
   const { promise, calls } = runStubbed(plan({ fableAvailable: true }), (brief, opts, def) => {
+    if (opts && /^phase1:reviewer/.test(opts.label || '')) {
+      reviewerModels.push(opts.model);
+    }
+    return def;
+  });
+  const out = await promise;
+  assert.ok(out.phases.phase1.review);
+  assert.deepStrictEqual(reviewerModels, ['fable'], 'fable must be tried first and succeed with no further fallback');
+  assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'fable'), 'expected an agent() call requesting model:fable');
+});
+
+test('Reviewer falls back Fable -> Sonnet 5 -> Opus when each seat in turn returns null', async () => {
+  const reviewerModels = [];
+  const { promise, calls } = runStubbed(plan({ fableAvailable: true }), (brief, opts, def) => {
+    if (opts && /^phase1:reviewer/.test(opts.label || '')) {
+      reviewerModels.push(opts.model);
+      if (opts.model === 'fable' || opts.model === 'sonnet') return null;
+    }
+    return def;
+  });
+  const out = await promise;
+  assert.ok(out.phases.phase1.review);
+  assert.deepStrictEqual(reviewerModels, ['fable', 'sonnet', 'opus'], 'expected the full Fable -> Sonnet 5 -> Opus fallback chain');
+  assert.ok(calls.logs.some((l) => /Fable Reviewer unavailable/.test(l)));
+  assert.ok(calls.logs.some((l) => /falling back to Opus Reviewer/.test(l)));
+});
+
+test('Reviewer stays on Sonnet 5 -> Opus (no Fable attempt) when args.fableAvailable is not true', async () => {
+  const reviewerModels = [];
+  const { promise, calls } = runStubbed(plan({ fableAvailable: false }), (brief, opts, def) => {
     if (opts && /^phase1:reviewer/.test(opts.label || '')) {
       reviewerModels.push(opts.model);
       if (opts.model === 'sonnet') return null;
@@ -85,9 +115,8 @@ test('Reviewer skips Fable even when args.fableAvailable=true (policy-disabled),
   });
   const out = await promise;
   assert.ok(out.phases.phase1.review);
-  assert.deepStrictEqual(reviewerModels, ['sonnet', 'opus'], 'fable must never be attempted, even with fableAvailable=true');
-  assert.ok(!calls.agents.some((c) => c.opts && c.opts.model === 'fable'), 'no agent() call should ever request model:fable');
-  assert.ok(calls.logs.some((l) => /falling back to Opus Reviewer/.test(l)));
+  assert.deepStrictEqual(reviewerModels, ['sonnet', 'opus'], 'fable must not be attempted when fableAvailable is not true');
+  assert.ok(!calls.agents.some((c) => c.opts && c.opts.model === 'fable'), 'no agent() call should request model:fable when fableAvailable is falsy');
 });
 
 test('B5: build seat tries Codex first; on success implementerModel is "codex"', async () => {

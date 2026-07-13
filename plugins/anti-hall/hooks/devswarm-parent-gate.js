@@ -9,27 +9,33 @@
 // rather than silently abandoned off the Primary's task list.
 //
 // WHAT IT READS (audit P1-C — the Stop path has a ~30s budget and MUST stay
-// cheap): it NEVER re-runs computeLiveness() and NEVER shells out to git. Both
-// signals come from files the supervisor / consumer already wrote:
-//   - UNREAD backlog: the durable NDJSON inbox + its cursor, via the read/ack
-//     primitive (companion/lib/devswarm-inbox-cursor.js readUnread) — pure fs,
-//     the SAME projection the staleness detector consumes, no git.
+// cheap): it NEVER re-runs computeLiveness() and NEVER shells out to git, and
+// NEVER opens the store DB. Signals come from files the supervisor / consumer /
+// ingest daemon already wrote:
+//   - CHILD unread backlog: the durable NDJSON inbox + its cursor, via the
+//     read/ack primitive (companion/lib/devswarm-inbox-cursor.js readUnread) —
+//     pure fs, the SAME projection the staleness detector consumes, no git.
 //   - STALE / ESCALATED: the supervisor's already-written per-workspace verdict
 //     file (companion/lib/liveness.js livenessPathFor -> ~/.anti-hall/devswarm/
 //     liveness/<id>.json). Read-only. `escalated` is terminal/sticky (per
 //     recovery.js) and counts as BLOCKING — same severity class as `stale`,
 //     because escalation means the automatic poke already failed and a human
 //     must look (P1-C default: yes, an escalated child also blocks the gate).
-// summary.json (the Phase-2 aggregate read-surface, P1-B) is the eventual home
-// of these verdicts; in Phase 1 the per-workspace verdict files ARE the
-// supervisor's already-written verdicts, so they are read directly.
+//   - PRIMARY's OWN unread (#34): unlike a child, the Primary has no descriptor
+//     with its own inboxPath/cursorPath — its inbound is ingested by the daemon
+//     directly into the store under workspaceId primary-<worktreeHash> and
+//     exposed ONLY via the per-project summary projection (readOwnUnread reads
+//     summaries/<worktreeHash>.json -> workspaces[primary-<hash>].unread), the
+//     SAME projection devswarm-parent-inbox.js already reads for status/gates. A
+//     single small fs read; still no git, no computeLiveness, no store DB open.
 //
-// INERTNESS (audit P1-D): this hook is a NO-OP until BOTH workspace descriptors
-// exist (~/.anti-hall/devswarm/workspaces/*.json) AND a populated durable inbox
-// exists. A public/standalone anti-hall user with no descriptors and no inbox
-// tooling running gets zero output, exit 0 — byte-identical to today. It is not
-// self-sufficient; it depends on Phase 2's ingest daemon (or a consumer's
-// equivalent) to have anything to act on.
+// INERTNESS (audit P1-D): this hook is a NO-OP until EITHER (a) workspace
+// descriptors exist (~/.anti-hall/devswarm/workspaces/*.json) with a populated
+// durable inbox, OR (b) the Primary's own summary-projected unread is nonzero.
+// A public/standalone anti-hall user with no descriptors, no inbox tooling
+// running, and no own-unread gets zero output, exit 0 — byte-identical to
+// today. It is not self-sufficient; it depends on Phase 2's ingest daemon (or a
+// consumer's equivalent) to have anything to act on.
 //
 // CLEAR PATH (audit P1-A): the non-skip escape is a real inbox read/ack that
 // advances the cursor — the primitive in companion/lib/devswarm-inbox-cursor.js
@@ -47,7 +53,10 @@
 // (clamped 2..5 via ANTIHALL_DEVSWARM_PARENT_GATE_CAP).
 //
 // Contract (Claude Code Stop hook):
-//   stdin  : JSON { session_id?, ... }
+//   stdin  : JSON { session_id?, cwd?, ... } — cwd (when present) resolves the
+//            CURRENT worktree's Primary-own-unread summary (#34); falls back to
+//            process.cwd() when absent, same posture as other Stop hooks
+//            (e.g. task-guard.js documents cwd? as optional on this event).
 //   stdout : JSON {"decision":"block","reason":"..."} to block, or nothing.
 //   exit 0 : always — fail-open on any error so a bug never hard-loops Claude.
 //
@@ -67,7 +76,11 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 // the verdict-file path helper all already exist.
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
-const { livenessPathFor } = require('../companion/lib/liveness.js');
+const { livenessPathFor, devswarmRoot } = require('../companion/lib/liveness.js');
+// primaryWorkspaceId/worktreeHash: the SAME per-worktree Primary-id convention
+// devswarm-parent-inbox.js and the ingest daemon already use (#34 parity — the
+// Primary's OWN unread, resolved below via readOwnUnread).
+const installIngest = require('../companion/install-devswarm-ingest.js');
 
 const GUARD_NAME = 'devswarm-parent-gate';
 const DEFAULT_CAP = 3; // forced-acks per distinct blocking SET
@@ -105,6 +118,58 @@ function stateFileFor(sessionId, home) {
   return path.join(home, '.anti-hall', 'devswarm', 'parent-gate', safe + '.json');
 }
 
+// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
+// looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
+// would report, WITHOUT spawning git (keeps this Stop hook's ~30s budget cheap).
+// Mirrors devswarm-parent-inbox.js / devswarm-child-turn.js byte-for-byte (kept
+// as a local copy rather than a shared require so this hook's dependency surface
+// stays exactly what it already was — no new cross-file coupling for a few lines
+// of pure fs walk).
+function findGitToplevel(startDir) {
+  try {
+    let dir = path.resolve(String(startDir || ''));
+    if (!dir) return null;
+    for (;;) {
+      try {
+        fs.statSync(path.join(dir, '.git'));
+        return dir;
+      } catch (_) { /* keep walking up */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null; // reached filesystem root, no .git found
+      dir = parent;
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
+// readOwnUnread(home, cwd) -> { unread, id }. The Primary's OWN inbound (#34) has
+// no descriptor with an inboxPath/cursorPath to read via readUnread — it is
+// ingested by the daemon directly into the store under workspaceId
+// primary-<worktreeHash> and exposed ONLY via the per-project summary projection
+// (summaries/<worktreeHash>.json -> workspaces[primary-<hash>].unread), the SAME
+// projection devswarm-parent-inbox.js already reads for status/gates. A single
+// small fs read — pure fs, no git spawn, no store DB open — stays within the
+// Stop hook's cheap-read budget. Fail-open: ANY failure -> { unread: 0, id: null }
+// (never blocks or throws on a missing/malformed summary).
+function readOwnUnread(home, cwd) {
+  try {
+    const top = cwd ? findGitToplevel(cwd) : null;
+    if (!top) return { unread: 0, id: null };
+    const id = installIngest.primaryWorkspaceId(top);
+    const hash = installIngest.worktreeHash(top);
+    const p = path.join(devswarmRoot(home), 'summaries', String(hash) + '.json');
+    const raw = String(fs.readFileSync(p, 'utf8')).trim();
+    if (!raw) return { unread: 0, id };
+    const summary = JSON.parse(raw);
+    const entry = summary && summary.workspaces && summary.workspaces[id];
+    const unread = entry && Number.isFinite(entry.unread) && entry.unread > 0 ? entry.unread : 0;
+    return { unread, id };
+  } catch (_) {
+    return { unread: 0, id: null };
+  }
+}
+
 function main() {
   // Read stdin (fd 0 — cross-platform; /dev/stdin is Windows-unsafe).
   let raw = '';
@@ -123,15 +188,35 @@ function main() {
 
   const home = os.homedir();
 
-  // INERT until descriptors exist (P1-D). No descriptors -> nothing to gate.
+  // Primary's OWN inbound unread (#34 parity — the parent is gated on its OWN
+  // unread too, not just children's). `cwd` falls back to process.cwd() when the
+  // payload omits it, same fallback posture other Stop hooks use (e.g.
+  // task-guard.js documents `cwd?` as optional on this event).
+  const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : process.cwd();
+  const own = readOwnUnread(home, cwd);
+
+  // INERT until descriptors exist (P1-D) OR the Primary itself has unread. No
+  // descriptors and no own-unread -> nothing to gate.
   let descriptors = [];
   try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
-  if (descriptors.length === 0) return;
+  if (descriptors.length === 0 && own.unread === 0) return;
 
   // Build the blocking SET: workspaces with unread backlog past their cursor OR a
-  // stale/escalated verdict. All reads are pure fs (no git, no computeLiveness).
+  // stale/escalated verdict, PLUS the Primary's own unread. All reads are pure fs
+  // (no git, no computeLiveness, no store DB open).
   const blocking = [];
+  if (own.unread > 0 && own.id) {
+    blocking.push({ id: own.id, unread: own.unread, status: '' });
+  }
+  // #36 cross-project-bleed fix: exclude a descriptor ONLY when BOTH this
+  // session's and the descriptor's repoId are present and DIFFER — fail-open by
+  // construction. An old descriptor with no repoId (pre-#36) or a session with
+  // no DEVSWARM_REPO_ID (manual supervisor mode) disables the filter entirely,
+  // so nothing that showed before this fix can vanish; it only stops a Primary
+  // in project A from being gated on project B's workspaces.
+  const currentRepoId = process.env.DEVSWARM_REPO_ID;
   for (const d of descriptors) {
+    if (currentRepoId && d.repoId && d.repoId !== currentRepoId) continue;
     let unreadCount = 0;
     try {
       const u = readUnread(d.inboxPath, d.cursorPath);
@@ -188,31 +273,39 @@ function main() {
     fs.writeFileSync(stateFile, JSON.stringify({ sig, blocks: effectiveBlocks + 1 }), 'utf8');
   } catch (_) { return; }
 
-  const reason = buildReason(blocking);
+  const reason = buildReason(blocking, own.id);
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 
-// buildReason(blocking) -> string. Names up to 5 neglected workspaces with their
-// unread counts / verdict status, then states the EXACT non-skip clear path (the
-// read/ack primitive) plus the skip-guard escape. Workspace ids are already
-// path-safe (readDescriptors filters via isSafeId: /^[A-Za-z0-9._-]+$/), so they
-// carry no control chars / injection surface.
-function buildReason(blocking) {
+// buildReason(blocking, ownId) -> string. Names up to 5 neglected workspaces with
+// their unread counts / verdict status, then states the EXACT non-skip clear path
+// for each axis (the child read/ack primitive, plus the distinct Primary-own-
+// inbound read-primary path when ownId is among the blocking set) plus the
+// skip-guard escape. Workspace ids are already path-safe (readDescriptors filters
+// via isSafeId: /^[A-Za-z0-9._-]+$/; ownId comes from primaryWorkspaceId, same
+// charset), so they carry no control chars / injection surface.
+function buildReason(blocking, ownId) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
     if (b.status) bits.push(b.status);
-    return b.id + ' (' + bits.join(', ') + ')';
+    return b.id + (b.id === ownId ? ' (you)' : '') + ' (' + bits.join(', ') + ')';
   }).join('; ');
   const more = blocking.length > 5 ? ' (and ' + (blocking.length - 5) + ' more)' : '';
 
-  const anyUnread = blocking.some((b) => b.unread > 0);
+  const ownEntry = ownId ? blocking.find((b) => b.id === ownId && b.unread > 0) : null;
+  const anyChildUnread = blocking.some((b) => b.unread > 0 && b.id !== ownId);
   const anyStale = blocking.some((b) => b.status === 'stale' || b.status === 'escalated');
 
   let body =
-    'DEVSWARM NEGLECT: ' + blocking.length + ' child workspace(s) still need attention ' +
+    'DEVSWARM NEGLECT: ' + blocking.length + ' workspace(s) still need attention ' +
     'before this Primary turn ends: ' + shown + more + '. ';
-  if (anyUnread) {
+  if (ownEntry) {
+    body +=
+      'YOU (the Primary) have ' + ownEntry.unread + ' unread parent/peer message(s) — ' +
+      'STOP and read them FIRST via `devswarm.js inbox read-primary ' + ownId + '`. ';
+  }
+  if (anyChildUnread) {
     body +=
       'CLEAR the unread backlog by READING each workspace\'s unread inbox message(s), ' +
       'ACTING on them, then ADVANCING its cursor with the read/ack primitive at ' +

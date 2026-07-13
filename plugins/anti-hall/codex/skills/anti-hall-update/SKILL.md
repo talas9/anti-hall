@@ -41,6 +41,30 @@ node "$ANTI_HALL_ROOT/codex/install-codex.js" --global
 
 Do not force-pull, rebase, or delete plugin cache directories. If the update helper reports a dirty tree, diverged branch, offline state, or missing marketplace clone, surface that result and stop.
 
+## DevSwarm ingest daemon durability (auto-heal, gated, fail-open)
+
+`install-devswarm-ingest.js`'s daemon unit used to bake an install-time script path
+(`__dirname`) that could go stale across a plugin update — the plugin manager relocating
+the version-pinned cache dir the daemon was baked from, orphaning/crash-looping the
+daemon. The installer now bakes the **git marketplace clone's own copy** of
+`devswarm-ingest.js` (the exact path the update helper above just `git pull --ff-only`ed
+**in place**), so a fresh install never goes stale again.
+
+Immediately after a cache sync, the update helper (`scripts/update.js`) ALSO attempts to
+heal an already-installed daemon in-process via `healIngestDaemon` — no separate step
+needed. It runs ONLY under the same DevSwarm-session-only gate
+`hooks/lib/doctor-repair.js`'s own gated ingest fix uses
+(`isDevswarmActive(env) && resolveWorktree(cwd) !== null`), and re-runs the
+(freshly-pulled) installer only when the unit is genuinely `wrong-path` or `stale-script`
+— an `ok` or `absent` unit is left untouched. The daemon also now logs
+(startup / lock-refusal / ERROR+stack) to `~/.anti-hall/devswarm-ingest.log` instead of
+discarding output. Reported as `ingestHeal: {attempted, healed, detail}` on the update
+helper's JSON status line (`{installed, latest, updated, cacheSynced, ingestHeal,
+action}`) — absent on a STOP/offline report, since those paths never reach cache sync.
+Gate-closed, nothing-to-heal, or an internal error are all reported and NEVER fatal to
+the update. This is independent of — and does not replace — the ingest-daemon
+install-or-refresh step further below (which also covers a FIRST install).
+
 After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
 
 ```bash

@@ -43,14 +43,24 @@ function isolatedEnv(home, extra) {
   return Object.assign(env, extra || {});
 }
 
-// runCli(home, args, extraEnv) -> { status, stdout, stderr, json }. A real
+// runCli(home, args, extraEnv, opts) -> { status, stdout, stderr, json }. A real
 // `node scripts/devswarm.js <args>` subprocess with the isolated HOME. json is
 // JSON.parse(stdout) or null. Default store backend is feature-detected inside the
 // CLI (sqlite on node>=22.5, journal otherwise) — force with
 // extraEnv.ANTIHALL_DEVSWARM_STORE_BACKEND when a test needs a specific backend.
-function runCli(home, args, extraEnv) {
+//
+// opts.cwd — the subprocess's working directory (default: unset, so it inherits
+// the test runner's own cwd, the repo root). Needed to exercise the CLI's
+// ack-ownership guard truthfully: callerIdentity(env, cwd) derives identity from
+// the REAL process cwd (git-worktree ground truth), so a test that wants to
+// prove a specific worktree's self-ack must actually SPAWN the CLI from that
+// worktree's directory — not merely declare a DEVSWARM_BUILDER_ID in env while
+// running from the repo root, which the guard now correctly refuses to trust
+// (that env-only declaration is exactly the spoof the guard exists to close).
+function runCli(home, args, extraEnv, opts) {
   const res = spawnSync(process.execPath, [CLI, ...args], {
     encoding: 'utf8', env: isolatedEnv(home, extraEnv), timeout: 30000,
+    cwd: (opts && opts.cwd) || undefined,
   });
   let json = null;
   try { json = JSON.parse(res.stdout); } catch (_) { json = null; }

@@ -89,6 +89,45 @@ Pull-not-push: reception latency = one turn (no background child drainer). The d
 the CLI itself runs identically either way. Full detail: `docs/KB-devswarm-hivecontrol.md`
 (v0.54.2 note).
 
+## Always-listening reception + archive flow (Claude-side hooks; CLI is agent-agnostic)
+
+Two v0.56.0 additions, split by what's Claude-only vs. what any agent can invoke:
+
+- **Always-listening reception (Claude-only hooks, for awareness).** `hooks/devswarm-child-turn.js`
+  (child, `UserPromptSubmit`) and `hooks/devswarm-child-gate.js` (child, `Stop`) are **not**
+  registered in `codex/hooks/hooks.json` — like the rest of the layered recovery model, this is
+  Claude-side tooling only. On the Claude side it now (1) mechanically writes/refreshes the
+  child's own descriptor every turn (fixes #31 — the parent previously couldn't discover a
+  child that never itself ran the registration command), and (2) escalates unread-parent
+  messages to IMPERATIVE priority wording, backed by a Stop-gate that force-blocks until the
+  durable inbox shows no unread backlog — with an optional STRICT fallback probe
+  (`ANTIHALL_DEVSWARM_CHILD_GATE_STRICT`, default ON) that additionally checks a bounded,
+  non-destructive `hivecontrol workspace message-count` when the durable check alone shows
+  nothing. No Codex-side equivalent hook exists in this plugin.
+- **Archive flow — agent-agnostic CLI, both roles.** anti-hall never archives mechanically.
+  PARENT role: after verifying merged+tested+deployed **per your own repo's policy** (anti-hall
+  does not check this), run `node scripts/devswarm.js archive-request <childId|childBranch>
+  [--reason TEXT] [--child-branch B]` — SEND-ONLY, posts a `[[ANTIHALL_ARCHIVE_REQUEST]]`
+  message via `hivecontrol workspace message-child`, never archives itself. CHILD role: on
+  seeing that marker in an unread message, confirm with YOUR user, then run
+  `node scripts/devswarm.js archive <id>`. Both verbs are the same agent-agnostic CLI as the
+  rest of `scripts/devswarm.js` — invokable from a Codex session directly. (The CHILD side's
+  automatic marker-detection/surfacing, above, is Claude-only; a Codex-side child would need
+  its own equivalent check, e.g. `inbox read <id>` and a manual scan for the marker string.)
+
+## #32 — retiring a competing native-queue consumer (applies to both agents)
+
+If parent↔child messages seem to vanish or the durable inbox disagrees with what was actually
+sent, the likely cause is a **second process** — outside anti-hall entirely — also calling
+`hivecontrol workspace monitor`/`read-messages` against the same queue (a leftover cron job,
+`launchd`/`systemd`/`pm2` unit, shell loop, or `package.json` script). This is agent-agnostic:
+neither the Claude nor the Codex side of `command-guard.js` can see or block a process outside
+its own tool-call surface. **anti-hall CANNOT mechanically detect or kill an external
+non-tool-call consumer — identification + your own cleanup are the only levers.** Full
+identify → stop → verify recipe: `docs/KB-devswarm-hivecontrol.md` §8.7.2 (`ps aux | grep
+'hivecontrol.*monitor'` → kill the PID + remove its respawn config → re-run
+`node hooks/doctor.js`).
+
 ## CLI reference — `scripts/devswarm.js`
 
 The structured interface (CLI over MCP) is agent-agnostic — invokable identically from
@@ -99,8 +138,23 @@ Subcommands: `register`/`ensure` (write a workspace descriptor), `register-prima
 `heartbeat`, `inbox pull`/`read`/`count`/`ack` (child-side durable-inbox cursor
 primitives), `inbox messages`/`read-primary` (Primary/store non-destructive read — no
 descriptor needed), `workspaces list`, `gate --set/--clear`, `nudge`, `archive`,
-`archive-ignore`/`archive-unignore`, `migrate`. Full table with source-line citations
-and a worked example: `docs/KB-devswarm-hivecontrol.md` §8.8 (or the fuller quick
+`archive-request` (PARENT-side, send-only — see above), `archive-ignore`/
+`archive-unignore`, `migrate` (fold legacy on-disk state into the store; env
+`ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` marks an imported backlog as already-read — see
+`scripts/migrate-state.js --mark-read`, the separate migration script, for the CLI-flag
+form).
+
+**Ack-ownership guard (v0.56.0).** `inbox messages --ack` / `inbox read-primary` refuse
+(`ok:false`, cursor untouched) unless the caller's own identity matches `<id>` — identity
+is derived from **cwd as ground truth**: a git worktree resolves to its own workspace id,
+and a `DEVSWARM_BUILDER_ID` env value naming a *different* workspace is IGNORED (never
+trusted to override), closing an env-spoof path where a workspace could impersonate
+another workspace's identity to ack its cursor. Pass `--ack-as-owner` to override for a
+legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog on
+its behalf).
+
+Full table with source-line citations and a worked example:
+`docs/KB-devswarm-hivecontrol.md` §8.8 (or the fuller quick
 reference in `plugins/anti-hall/skills/devswarm/SKILL.md`).
 
 ## On-demand recovery — devswarm-recover CLI

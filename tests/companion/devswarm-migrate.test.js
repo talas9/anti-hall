@@ -421,6 +421,182 @@ test('two genuinely DISTINCT descriptor lines with identical bodies both migrate
   } finally { rm(home); }
 });
 
+// ---- v0.56.0: opt-in "mark imported backlog as read" (field issue A) -------
+test('markRead OFF (default): unread equals the imported backlog when the legacy source had no consumed-cursor', () => {
+  const home = tmpHome();
+  try {
+    const lines = Array.from({ length: 192 }, (_, i) => 'm' + i);
+    writeWorkspace(home, 'a', { lines }); // no cursor file -> legacy cursor 0
+
+    const rep = migrate.migrateToStore(opts(home));
+    assert.equal(rep.ok, true);
+    assert.equal(rep.markRead, false);
+    const a = rep.migrated.find((m) => m.id === 'a');
+    assert.equal(a.imported, 192);
+    assert.equal(a.cursor, 0, 'DEFAULT preserves the legacy cursor (absent -> 0)');
+    assert.equal(a.markRead, false);
+
+    const sum = storeLib.readSummary(home, 'a');
+    assert.equal(sum.workspaces.a.unread, 192, 'unmarked backlog surfaces as a big unread wall');
+  } finally { rm(home); }
+});
+
+test('markRead ON (opts.markRead): the imported backlog reads as already-seen (unread 0)', () => {
+  const home = tmpHome();
+  try {
+    const lines = Array.from({ length: 192 }, (_, i) => 'm' + i);
+    writeWorkspace(home, 'a', { lines }); // no cursor file -> legacy cursor 0
+
+    const rep = migrate.migrateToStore(Object.assign({}, opts(home), { markRead: true }));
+    assert.equal(rep.ok, true);
+    assert.equal(rep.markRead, true);
+    const a = rep.migrated.find((m) => m.id === 'a');
+    assert.equal(a.imported, 192);
+    assert.equal(a.storeCount, 192);
+    assert.equal(a.cursor, 192, 'cursor advances to the post-import message count');
+    assert.equal(a.markRead, true);
+
+    const s = storeLib.openStore({ home, workspaceId: 'a', backend: 'journal' });
+    try { assert.equal(s.cursorValue('a'), 192); } finally { s.close(); }
+    const sum = storeLib.readSummary(home, 'a');
+    assert.equal(sum.workspaces.a.unread, 0, 'imported backlog reads as already-seen');
+  } finally { rm(home); }
+});
+
+test('markRead ON via env ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1', () => {
+  const home = tmpHome();
+  try {
+    writeWorkspace(home, 'a', { lines: ['m1', 'm2'] });
+    const rep = migrate.migrateToStore({ home, backend: 'journal', env: { ANTIHALL_DEVSWARM_MIGRATE_MARK_READ: '1' } });
+    assert.equal(rep.markRead, true);
+    const sum = storeLib.readSummary(home, 'a');
+    assert.equal(sum.workspaces.a.unread, 0);
+  } finally { rm(home); }
+});
+
+test('markRead does NOT alter the default (unset opts.markRead, no env) path — regression guard', () => {
+  const home = tmpHome();
+  try {
+    writeWorkspace(home, 'a', { lines: ['m1', 'm2', 'm3'], cursor: 1 });
+    const rep = migrate.migrateToStore(opts(home));
+    const a = rep.migrated.find((m) => m.id === 'a');
+    assert.equal(a.cursor, 1, 'legacy cursor 1 preserved exactly as before this feature');
+    const sum = storeLib.readSummary(home, 'a');
+    assert.equal(sum.workspaces.a.unread, 2);
+  } finally { rm(home); }
+});
+
+test('markRead ON: a post-migration NEW message (arriving after the flagged migrate) is still unread', () => {
+  const home = tmpHome();
+  try {
+    writeWorkspace(home, 'a', { lines: ['m1', 'm2'] });
+    migrate.migrateToStore(Object.assign({}, opts(home), { markRead: true }));
+
+    // Simulate a genuinely new message arriving via the normal store path
+    // AFTER the flagged migration ran (not part of the imported backlog).
+    const s = storeLib.openStore({ home, workspaceId: 'a', backend: 'journal' });
+    try { s.appendMessage({ workspaceId: 'a', body: 'new-live-message', hash: 'native:new1' }); }
+    finally { s.close(); }
+    storeLib.deriveSummary(storeLib.openStore({ home, workspaceId: 'a', backend: 'journal' }), { home, workspaceId: 'a', env: {} });
+
+    const sum = storeLib.readSummary(home, 'a');
+    assert.equal(sum.workspaces.a.unread, 1, 'the new post-migration message must still be unread');
+  } finally { rm(home); }
+});
+
+test('markRead ON: idempotent re-run does not regress the cursor or import duplicates', () => {
+  const home = tmpHome();
+  try {
+    writeWorkspace(home, 'a', { lines: ['m1', 'm2', 'm3'] });
+    const r1 = migrate.migrateToStore(Object.assign({}, opts(home), { markRead: true }));
+    const a1 = r1.migrated.find((m) => m.id === 'a');
+    assert.equal(a1.cursor, 3);
+
+    const r2 = migrate.migrateToStore(Object.assign({}, opts(home), { markRead: true }));
+    const a2 = r2.migrated.find((m) => m.id === 'a');
+    assert.equal(a2.imported, 0, 're-run imports nothing new');
+    assert.equal(a2.cursor, 3, 'cursor unchanged (never regresses) on idempotent re-run');
+
+    const s = storeLib.openStore({ home, workspaceId: 'a', backend: 'journal' });
+    try {
+      assert.equal(s.messageCount('a'), 3, 'no duplicate rows');
+      assert.equal(s.cursorValue('a'), 3);
+    } finally { s.close(); }
+  } finally { rm(home); }
+});
+
+test('migrateLegacyInbox: markRead advances the cursor to the imported count (unread 0); default leaves cursor at 0', () => {
+  const home = tmpHome();
+  try {
+    const src = path.join(home, 'stranded.ndjson');
+    fs.writeFileSync(src, 'one\ntwo\nthree\n');
+
+    // DEFAULT: no cursor is set at all (unchanged prior behavior for this path,
+    // which never upserts a registry entry, so unread is read directly off the
+    // store's messageCount/cursorValue rather than the per-workspace summary
+    // projection, which requires a registry entry to derive).
+    const repDefault = migrate.migrateLegacyInbox({ home, backend: 'journal', env: {}, source: src, workspaceId: 'primary-abc123de' });
+    assert.equal(repDefault.markRead, false);
+    const sDefault = storeLib.openStore({ home, workspaceId: 'primary-abc123de', backend: 'journal' });
+    try {
+      assert.equal(sDefault.cursorValue('primary-abc123de'), 0);
+      assert.equal(sDefault.messageCount('primary-abc123de'), 3, 'DEFAULT: imported backlog surfaces as unread (cursor 0, total 3)');
+    } finally { sDefault.close(); }
+
+    // markRead ON for a fresh workspace: cursor advances to the imported count.
+    const src2 = path.join(home, 'stranded2.ndjson');
+    fs.writeFileSync(src2, 'a\nb\n');
+    const repMarked = migrate.migrateLegacyInbox({ home, backend: 'journal', env: {}, source: src2, workspaceId: 'primary-fff123de', markRead: true });
+    assert.equal(repMarked.ok, true);
+    assert.equal(repMarked.markRead, true);
+    const sMarked = storeLib.openStore({ home, workspaceId: 'primary-fff123de', backend: 'journal' });
+    try {
+      assert.equal(sMarked.cursorValue('primary-fff123de'), 2);
+      assert.equal(sMarked.messageCount('primary-fff123de'), 2, 'markRead: cursor equals total -> unread 0');
+    } finally { sMarked.close(); }
+
+    // Idempotent re-run with markRead: still 2 messages, cursor stays at 2.
+    const repAgain = migrate.migrateLegacyInbox({ home, backend: 'journal', env: {}, source: src2, workspaceId: 'primary-fff123de', markRead: true });
+    assert.equal(repAgain.imported, 0);
+    const sAgain = storeLib.openStore({ home, workspaceId: 'primary-fff123de', backend: 'journal' });
+    try {
+      assert.equal(sAgain.messageCount('primary-fff123de'), 2);
+      assert.equal(sAgain.cursorValue('primary-fff123de'), 2);
+    } finally { sAgain.close(); }
+  } finally { rm(home); }
+});
+
+test('migrateGlobalStoreToPerProject: markRead advances the per-project cursor to the post-copy message count', () => {
+  const home = tmpHome();
+  try {
+    const legacyDir = storeLib.storeRootDir(home);
+    const src = storeLib.openStore({ home, backend: 'journal', dir: legacyDir, hash: 'legacy' });
+    try {
+      src.appendMessage({ workspaceId: 'primary-aaaaaaaa', body: 'A1', hash: 'native:a1' });
+      src.appendMessage({ workspaceId: 'primary-aaaaaaaa', body: 'A2', hash: 'native:a2' });
+    } finally { src.close(); }
+
+    const rep = migrate.migrateGlobalStoreToPerProject(Object.assign({}, opts(home), { markRead: true }));
+    assert.equal(rep.ok, true);
+    assert.equal(rep.markRead, true);
+
+    const pa = storeLib.openStore({ home, workspaceId: 'primary-aaaaaaaa', backend: 'journal' });
+    try {
+      assert.equal(pa.messageCount('primary-aaaaaaaa'), 2);
+      assert.equal(pa.cursorValue('primary-aaaaaaaa'), 2, 'cursor advanced to the post-copy count');
+    } finally { pa.close(); }
+  } finally { rm(home); }
+});
+
+test('resolveMarkRead: explicit opts.markRead boolean wins over env; absent falls back to env truthy check', () => {
+  assert.equal(migrate.resolveMarkRead({ markRead: true, env: { ANTIHALL_DEVSWARM_MIGRATE_MARK_READ: '0' } }), true);
+  assert.equal(migrate.resolveMarkRead({ markRead: false, env: { ANTIHALL_DEVSWARM_MIGRATE_MARK_READ: '1' } }), false);
+  assert.equal(migrate.resolveMarkRead({ env: { ANTIHALL_DEVSWARM_MIGRATE_MARK_READ: '1' } }), true);
+  assert.equal(migrate.resolveMarkRead({ env: { ANTIHALL_DEVSWARM_MIGRATE_MARK_READ: 'true' } }), true);
+  assert.equal(migrate.resolveMarkRead({ env: {} }), false);
+  assert.equal(migrate.resolveMarkRead({}), false);
+});
+
 test('one pre-existing native-hash row PLUS two identical-body descriptor lines: one collapses (cross-path dup), the other imports (distinct)', () => {
   const home = tmpHome();
   try {

@@ -423,11 +423,19 @@ prose reminders get ignored; only a mechanical trigger works.
   never runs `computeLiveness`/git on the hot path.
 - `hooks/devswarm-parent-gate.js` (Stop, **Primary only**, capped/loop-safe) — blocks the
   Primary from ending its turn while a child still has unread backlog past its cursor **OR**
-  the supervisor already judged a child stale/escalated. Reads only files (the fs cursor +
-  the supervisor's verdict file) — no git, no live liveness on the ~30 s Stop path.
+  the supervisor already judged a child stale/escalated **OR (v0.56.0) the Primary's OWN
+  summary-projected unread is nonzero** — read from `summary.json`, no DB open, surfaced
+  with the SAME imperative "STOP and read them FIRST via `devswarm.js inbox read-primary
+  <id>`" wording the child gate uses below, so the Primary can no longer sit on its own
+  unread inbound (fixes the confirmed gap where a parent could not see messages sent to
+  it). Reads only files (the fs cursor + the supervisor's verdict file + the summary
+  projection) — no git, no live liveness on the ~30 s Stop path.
 - `hooks/devswarm-child-turn.js` (UserPromptSubmit, **child only**) — writes a
-  turn-authored heartbeat (`heartbeats/<branch>.json`) and reminds the child to report to
-  its parent.
+  turn-authored heartbeat, KEYED BY `DEVSWARM_BUILDER_ID` (`heartbeats/<DEVSWARM_BUILDER_ID>.json`,
+  unique per child; falls back to a sanitized/hashed `<branch>` key only when `DEVSWARM_BUILDER_ID`
+  is absent — keying by the shared parent branch alone would collide every sibling forked
+  from that parent onto one heartbeat file, the pre-0.56.0 bug) and reminds the child to
+  report to its parent.
 - `hooks/devswarm-child-gate.js` (Stop, **child only**, capped) — forces the child to
   self-report to its parent before going idle.
 - `hooks/devswarm-child-role.js` (SessionStart, **child only**) — Layer-1 self-report
@@ -558,12 +566,15 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
   15 minutes?" would only ever re-check on the NEXT turn, which may never come for a
   genuinely wedged session — the whole reason this substrate exists. Keep new
   time/idle-based logic in a companion daemon; keep new turn-boundary logic in a hook.
-- **`devswarm-child-gate` over-nag fix.** The Stop-gate now checks the child's own
-  turn-authored heartbeat (`heartbeats/<branch>.json`, written every turn by
-  `devswarm-child-turn`) before forcing an ack: a heartbeat fresher than 5 minutes means
-  the parent already has the child's current state, so the gate stays silent instead of
-  forcing a duplicate report. The forced-ack path is unchanged for the genuinely
-  unreported case (no heartbeat, or a stale one).
+- **`devswarm-child-gate` heartbeat-freshness check — REVERTED (v0.54.1).** v0.54.0 briefly
+  silenced the Stop-gate when the child's own turn-authored heartbeat
+  (`heartbeats/<DEVSWARM_BUILDER_ID>.json` as of v0.56.0 — see the heartbeat-key fix above;
+  written every turn by `devswarm-child-turn`) was fresher than 5 minutes. That FALSE-SILENCED
+  a child that worked <5 min then stopped WITHOUT calling `message-parent` — a turn-START
+  heartbeat proves only that a turn began, not that the child reported its stop-state.
+  v0.54.1 reverted the freshness check: the gate now ALWAYS demands at least one real report
+  per unchanged blocking state, bounded ONLY by the per-episode cap `MAX_BLOCKS = 2`
+  (`devswarm-child-gate.js` lines 219–221, 87). There is no heartbeat-silencing path.
 - **Child inbox reception — SHIPPED (v0.54.2). `devswarm.js inbox pull <id>` is the drain.**
   `devswarm-child-turn` runs a non-destructive unread check against the child's OWN durable
   descriptor inbox (`workspaces/<DEVSWARM_BUILDER_ID>.json` → `inboxPath`/`cursorPath`, via
@@ -604,6 +615,55 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
   fail-open, and — like the rest of the parent hooks — makes zero git calls or
   `computeLiveness()` invocations on the hot UserPromptSubmit path.
 
+**v0.56.0 follow-up (shipped).** Three refinements closing the reception/teardown loop:
+- **Archive flow — both roles, `archive-request` verb.** `devswarm-parent-inbox.js`'s
+  archive-ready segment (above) already URGES the Primary to check merged/tested/deployed
+  per its OWN repo policy; it now names the concrete follow-up command:
+  `scripts/devswarm.js archive-request <childId|childBranch> [--reason TEXT]
+  [--child-branch B]` (`cmdArchiveRequest`, `plugins/anti-hall/scripts/devswarm.js:563`).
+  SEND-ONLY: resolves the child's branch (explicit `--child-branch` → the descriptor's own
+  `branch` field, if one is ever set → a `hivecontrol workspace list children` lookup by
+  branch/id/worktree → the positional id itself as a last resort — `resolveChildBranch`,
+  `devswarm.js:530`) and posts a `[[ANTIHALL_ARCHIVE_REQUEST]]`-prefixed message via
+  `hivecontrol workspace message-child <branch> <msg>`. It never verifies merged/tested/
+  deployed itself (`ARCHIVE_REQUEST_MARKER`, `devswarm.js:504`; fail-open on a spawn error).
+  On the CHILD side, `hooks/devswarm-child-turn.js` scans its own already-fetched unread
+  lines for that literal marker (`ARCHIVE_REQUEST_MARKER`, `hooks/devswarm-child-turn.js:182`)
+  and, when found, injects a DISTINCT segment (`buildArchiveRequestSegment`,
+  `devswarm-child-turn.js:187`) telling the child to confirm with ITS OWN user, then run
+  `devswarm.js archive <id>` — never auto-archive. anti-hall never archives mechanically on
+  either side of this handshake.
+- **Always-listening reception — mechanical descriptor registration (#31 fix) +
+  IMPERATIVE unread priority.** `hooks/devswarm-child-turn.js` now writes/refreshes the
+  child's OWN descriptor (`workspaces/<DEVSWARM_BUILDER_ID>.json`) every turn
+  (`registerChildDescriptor`, `devswarm-child-turn.js:245`) — fixing #31, where the parent
+  previously could not see all its children because nothing mechanically wrote that
+  descriptor for the child side (only a prose nudge told the child to run a CLI command it
+  never reliably ran). MERGE-preserving: an existing `inboxPath`/`cursorPath` (e.g. set by a
+  prior `inbox pull`) is never clobbered. Separately, the unread-parent-message segment
+  escalated from advisory to **imperative priority** wording (`buildUnreadSegment`,
+  `devswarm-child-turn.js:167`): "STOP and address these parent message(s) FIRST before
+  continuing." The Stop-side gate (`hooks/devswarm-child-gate.js`) backs this with a
+  **STRICT** mode (`strictEnabled`, `devswarm-child-gate.js:135`, env
+  `ANTIHALL_DEVSWARM_CHILD_GATE_STRICT`, default ON i.e. `'1'`; set `'0'` to disable): when
+  the pure-fs durable-inbox check (`readDurableUnread`, `devswarm-child-gate.js:146`) shows
+  nothing, STRICT mode additionally runs ONE bounded, non-destructive `hivecontrol workspace
+  message-count` probe (5 s timeout, `probeNativeMessageCount`, `devswarm-child-gate.js:165`)
+  to catch a native backlog the child never `inbox pull`ed yet — fail-open, any probe
+  error/timeout counts as no-unread, never blocks on an unknown state.
+- **Migration `--mark-read`.** `scripts/migrate-state.js`'s DevSwarm-store fold (part of its
+  normal legacy-state migration, `migrateDevswarmStore`, `migrate-state.js:88`) now accepts
+  `--mark-read` on the CLI (`migrate-state.js:339`) or env `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ`
+  (`resolveMarkRead`, `companion/devswarm-migrate.js:65`; explicit boolean wins, then `'1'`/`'true'`
+  parsed from the env var). OPT-IN, default OFF: a legacy source with no consumed-cursor of
+  its own (e.g. a pre-0.54 shell-loop NDJSON) otherwise imports its whole backlog at cursor
+  `0`, surfacing as a big "unread" wall that can trip the parent neglect-gate on a machine
+  simply catching up on old history. When set, the JUST-imported backlog's cursor is advanced
+  to its post-import message count (`companion/devswarm-migrate.js:281`) so it reads as
+  already-seen; a message arriving AFTER the migration call returns is unaffected. Default
+  behavior (flag/env absent) is byte-for-byte unchanged — the legacy cursor is preserved
+  exactly as before this option existed.
+
 **Auto-safe migration (`companion/devswarm-migrate.js` + `companion/devswarm-ingest.js`).**
 `migrate` (also wired into the updater path, and exposed as `scripts/devswarm.js migrate`)
 dual-reads the existing on-disk state — the JSON registry descriptors + each descriptor's
@@ -642,6 +702,62 @@ be un-marked). This is why:
   (already-drained, safe to read any number of times) or the STORE (same), never the
   native queue directly.
 
+### 8.7.2 Second consumer — how to fix (#32)
+
+The locks in §8.7.1 (the ingest daemon's O_EXCL lock, the child pull's PER-ID O_EXCL lock) only
+prevent **anti-hall's own tooling** from calling `monitor`/`read-messages` twice against the same
+queue. They cannot see, and cannot block, an **EXTERNAL, non-tool-call consumer** — a process
+outside anti-hall's control that independently calls `hivecontrol workspace monitor` or
+`read-messages` against the same queue. That's a structural limit, not a bug: anti-hall's guards
+only intercept commands routed through Claude's/Codex's own tool-call path (`command-guard.js`);
+a bare shell loop, a cron job, a `launchd`/`systemd`/`pm2` unit, or a `package.json` start script
+invoking `hivecontrol` directly never goes through that path at all.
+
+**Symptoms:** parent↔child messages seem to vanish or arrive out of order; the durable inbox
+count and what the child/parent actually said disagree; `devswarm-ingest.js` or `devswarm-pull.js`
+report unexpectedly low/zero inserts despite known outstanding traffic.
+
+**anti-hall CANNOT mechanically block or kill an EXTERNAL non-tool-call consumer — detection plus
+your own action are the only levers.** There is no code path in this plugin that can see a
+process outside its own tool-call surface, let alone terminate one. The fix is manual, and it is
+a PARENT-role action (the parent orchestrator/operator is the one positioned to audit and clean up
+the machine/CI environment a workspace runs in):
+
+1. **Identify.** Look for any process besides the installed ingest daemon (or a child's own
+   bounded `inbox pull`) invoking a consuming native command:
+   ```bash
+   ps aux | grep 'hivecontrol.*monitor'
+   ps aux | grep 'hivecontrol.*read-messages'
+   ```
+   Cross-check against the ONE process that's supposed to be running: the installed ingest
+   daemon's own PID (`devswarm-ingest.js`, discoverable via `listInstalledIngestUnits()` /
+   `node hooks/doctor.js`'s DevSwarm section) or a child's transient `inbox pull` invocation
+   (short-lived, bounded by its 10 s `read-messages` timeout — anything long-lived matching
+   `monitor` that ISN'T the ingest daemon is the second consumer).
+2. **Stop it — kill the process AND remove whatever respawns it,** or it comes back on the next
+   tick:
+   ```bash
+   kill <PID>
+   ```
+   Then remove its respawn source — whichever applies:
+   - a `cron` entry (`crontab -l` / `crontab -e`, delete the matching line),
+   - a `launchd` job (`launchctl list | grep -i devswarm`, `launchctl unload <plist>`, remove the
+     plist),
+   - a `systemd --user` unit (`systemctl --user list-units | grep -i devswarm`, `systemctl --user
+     disable --now <unit>`),
+   - a repo shell loop (a `while true; do hivecontrol workspace monitor; done`-shaped script —
+     stop whatever supervises it, e.g. `pm2 delete`/`tmux kill-session`/a CI job definition),
+   - a `package.json` `start`/`dev`/`watch` script that shells out to `hivecontrol monitor` —
+     remove or gate that call.
+3. **Verify.** Re-run `node plugins/anti-hall/hooks/doctor.js` (silent unless DevSwarm is active;
+   otherwise runs a live behavioral self-test plus a PASS/WARN/FAIL readout per workspace) and
+   confirm reception behaves correctly again — e.g. a fresh `inbox pull`/`inbox messages --unread`
+   count now matches what was actually sent, with no further silent gaps.
+
+This is a detection-and-cleanup problem, not something a future anti-hall release can close by
+itself: **anything that reaches `hivecontrol` outside a Claude/Codex tool call is invisible to
+every guard in this plugin by construction.**
+
 ---
 
 ## 8.8 Full CLI reference — `scripts/devswarm.js`
@@ -657,22 +773,23 @@ line-for-line against the current `plugins/anti-hall/scripts/devswarm.js`.
 
 | Command | Purpose | Source |
 |---|---|---|
-| `register <id> --worktree P --session S [--inbox NDJSON] [--cursor P] [--nudge ARGV]...` | Write/update a workspace descriptor (`workspaces/<id>.json`) + upsert the store registry. `--worktree`/`--session` are REQUIRED for a fresh registration — a descriptor missing either is invisible to the supervisor's `readDescriptors` (which filters on both), so `register` validates the MERGED result and fails closed rather than silently writing a phantom registration. Initializes the durable cursor to `0` if one doesn't already exist (non-destructive — never clobbers an existing cursor). | `cmdRegister` L180–220, dispatch L486–491 |
-| `ensure <id> [--worktree P] [--session S] ...` | Idempotent `register`: if a descriptor already exists it is LEFT UNTOUCHED (only the store registry is re-upserted, refreshing the `summary.json` projection); only a genuinely-absent descriptor goes through full `register` validation. `inbox pull` calls this internally to auto-create a child's descriptor before draining. | `cmdRegister(..., {requireNew:true})` L180–220, dispatch L492–497 |
-| `register-primary [--worktree P] [--session S] [--inbox NDJSON] [--cursor P]` | Register the CURRENT worktree's Primary/parent descriptor under its PER-WORKTREE id `primary-<worktreeHash>` (§8.7's per-project identity — never the old collision-prone hardcoded `'primary'`). `--worktree` defaults to `git rev-parse --show-toplevel` of cwd; `--session` defaults to `DEVSWARM_BUILDER_ID` env or the derived id; `--cursor` defaults to `cursors/<id>.json` (the durable ACK cursor `inbox messages --ack`/`read-primary` advance — a SEPARATE cursor namespace from a child's own descriptor `cursorPath`); `--inbox` optionally points `migrate` at a legacy NDJSON source to fold into this partition. | `cmdRegisterPrimary` L365–382, dispatch L542–545 |
-| `heartbeat <id> [--progress N] [--phase X] [--wip T]... [--blockers T]... [--session S]` | Write a turn-authored heartbeat (`heartbeats/<id>.json`). Only asserts fields the caller actually supplied — NEVER fabricates `progress`/`phase`/`wip`/`blockers` (absent input = `null`/`[]` on write, not a guess). Consumer/session-invoked ONLY — the heartbeat-authorship rule (§8.7) forbids a background ticker ever writing one. | `cmdHeartbeat` L222–251, dispatch L498–502 |
-| `inbox pull <id> [--session S]` | CHILD-side reception drain. Auto-`ensure`s the descriptor, then ONE bounded guard-safe pull: non-destructive `message-count` gate FIRST (count `0` → returns without ever calling `read-messages`); on count `>0`, exactly ONE bounded `read-messages` (10 s finite timeout, never the blocking `monitor`); appends the batch to the durable inbox NDJSON in one atomic write, idempotent by content hash; feeds the store-parity projection with the same hash. | `cmdInboxPull` L261–288 → `companion/lib/devswarm-pull.js` `pullOnce` L177–289 |
-| `inbox read <id>` | CHILD-side cursor read: the unread slice of the durable inbox NDJSON past the descriptor's own `cursorPath`. Requires an existing descriptor with `inboxPath` (`register`/`ensure`/`inbox pull` all create one). | `cmdInbox` 'read' branch L339–342 |
-| `inbox count <id>` | CHILD-side non-destructive unread COUNT only (no message bodies) against the descriptor's inbox. | `cmdInbox` 'count' branch L335–338 |
-| `inbox ack <id> [--to N]` | Advance the descriptor's durable cursor. No `--to` = ack-all (cursor := current total); `--to N` sets an absolute count, clamped to `[0, total]` so an over-ack can never swallow messages that arrive later. This is the parent-gate's non-skip CLEAR path. | `cmdInbox` 'ack' branch L343–355 |
-| `inbox messages <id> [--unread] [--ack] [--json]` | **Primary/store non-destructive READ path.** Reads message BODIES directly from the store (`store.listMessages`) — never touches the native queue, needs NO descriptor (rows are keyed by workspace id regardless of registration, so it works even for an id nothing ever `register`ed). `--unread` returns only messages past the durable ACK cursor at `cursors/<id>.json` (note: this is a DIFFERENT cursor file/namespace than a child descriptor's own `cursorPath` used by `inbox read`/`ack`). `--ack` additionally advances that cursor to the current total in the same call (equivalent to `read-primary`). `--json` is accepted for CLI-invocation parity and is otherwise a no-op — output is always JSON regardless. | `cmdInboxMessages` L298–322, dispatch via `cmdInbox` L326–328 |
-| `inbox read-primary <id>` | Sugar for `inbox messages <id> --unread --ack` under one name — "read what's unread, then advance the ACK cursor," the Primary's one-shot ergonomic. | `cmdInboxMessages(..., {ack:true})` L298–322, dispatch L328 |
-| `workspaces list` | Derive + emit the `summary.json` projection: `{requiredGates, count, workspaces: {...}}`, one entry per registered workspace with `total`/`cursor`/`unread`/`gates`/`archive_ready`. | `cmdWorkspacesList` L384–392, dispatch L510–514 |
-| `gate <id> --set CSV --clear CSV [--by NAME]` | Mark/unmark named completion gates (append-only in the store — a set/clear appends a new timestamped row; current value = latest row per name). anti-hall is agnostic about what any gate MEANS — the consumer defines and sets them (default required set for `archive_ready`: `done,merged,tests_passed`, override via `ANTIHALL_DEVSWARM_REQUIRED_GATES`). `--by` names the setter (default `devswarm-cli`). | `cmdGate` L394–416, dispatch L515–520 |
-| `nudge <id>` | Poke-or-escalate one workspace ON DEMAND, honoring the same persisted attempt-count/cooldown state the automatic supervisor sweep would (reuses `recovery.pokeOrEscalate` — the identical primitive, not a re-implementation). | `cmdNudge` L418–428, dispatch L521–526 |
-| `archive <id>` | Archive-by-absence on anti-hall's OWN registry ONLY: moves the descriptor into `archived/` (renames — never unlinks) and tombstones the store registry entry. hivecontrol itself has NO teardown/delete/archive command at any level (§4/§10), so this SURFACES a manual "remove workspace X in the DevSwarm app" step in its response — it never runs an actual delete. | `cmdArchive` L430–453, dispatch L527–531 |
-| `archive-ignore <id>` / `archive-unignore <id>` | Write / remove a per-workspace `archive-ignore/<id>.json` mute of the `devswarm-parent-inbox` archive-ready reminder. | `cmdArchiveIgnore` L455–470, dispatch L532–541 |
-| `migrate` | Auto-migrate on-disk state (the JSON descriptor registry + each descriptor's legacy NDJSON inbox/cursor) into the store. Idempotent (dedupe hash from id + line-index + content), NON-DESTRUCTIVE (reads sources only, never deletes/moves/truncates), single-consumer-locked (O_EXCL), and COUNT-VERIFIED (store count must equal distinct legacy lines) before it reports `verified:true`. | `cmdMigrate` L472–474 → `companion/devswarm-migrate.js`, dispatch L546–548 |
+| `register <id> --worktree P --session S [--inbox NDJSON] [--cursor P] [--nudge ARGV]...` | Write/update a workspace descriptor (`workspaces/<id>.json`) + upsert the store registry. `--worktree`/`--session` are REQUIRED for a fresh registration — a descriptor missing either is invisible to the supervisor's `readDescriptors` (which filters on both), so `register` validates the MERGED result and fails closed rather than silently writing a phantom registration. Initializes the durable cursor to `0` if one doesn't already exist (non-destructive — never clobbers an existing cursor). | `cmdRegister` L254–294, dispatch L690–695 |
+| `ensure <id> [--worktree P] [--session S] ...` | Idempotent `register`: if a descriptor already exists it is LEFT UNTOUCHED (only the store registry is re-upserted, refreshing the `summary.json` projection); only a genuinely-absent descriptor goes through full `register` validation. `inbox pull` calls this internally to auto-create a child's descriptor before draining. | `cmdRegister(..., {requireNew:true})` L254–294, dispatch L696–701 |
+| `register-primary [--worktree P] [--session S] [--inbox NDJSON] [--cursor P]` | Register the CURRENT worktree's Primary/parent descriptor under its PER-WORKTREE id `primary-<worktreeHash>` (§8.7's per-project identity — never the old collision-prone hardcoded `'primary'`). `--worktree` defaults to `git rev-parse --show-toplevel` of cwd; `--session` defaults to `DEVSWARM_BUILDER_ID` env or the derived id; `--cursor` defaults to `cursors/<id>.json` (the durable ACK cursor `inbox messages --ack`/`read-primary` advance — a SEPARATE cursor namespace from a child's own descriptor `cursorPath`); `--inbox` optionally points `migrate` at a legacy NDJSON source to fold into this partition. | `cmdRegisterPrimary` L476–493, dispatch L752–755 |
+| `heartbeat <id> [--progress N] [--phase X] [--wip T]... [--blockers T]... [--session S]` | Write a turn-authored heartbeat (`heartbeats/<id>.json`). Only asserts fields the caller actually supplied — NEVER fabricates `progress`/`phase`/`wip`/`blockers` (absent input = `null`/`[]` on write, not a guess). Consumer/session-invoked ONLY — the heartbeat-authorship rule (§8.7) forbids a background ticker ever writing one. | `cmdHeartbeat` L296–325, dispatch L702–706 |
+| `inbox pull <id> [--session S]` | CHILD-side reception drain. Auto-`ensure`s the descriptor, then ONE bounded guard-safe pull: non-destructive `message-count` gate FIRST (count `0` → returns without ever calling `read-messages`); on count `>0`, exactly ONE bounded `read-messages` (10 s finite timeout, never the blocking `monitor`); appends the batch to the durable inbox NDJSON in one atomic write, idempotent by content hash; feeds the store-parity projection with the same hash. | `cmdInboxPull` L335–362 → `companion/lib/devswarm-pull.js` `pullOnce` L177–290 |
+| `inbox read <id>` | CHILD-side cursor read: the unread slice of the durable inbox NDJSON past the descriptor's own `cursorPath`. Requires an existing descriptor with `inboxPath` (`register`/`ensure`/`inbox pull` all create one). | `cmdInbox` 'read' branch L450–453 |
+| `inbox count <id>` | CHILD-side non-destructive unread COUNT only (no message bodies) against the descriptor's inbox. | `cmdInbox` 'count' branch L446–449 |
+| `inbox ack <id> [--to N]` | Advance the descriptor's durable cursor. No `--to` = ack-all (cursor := current total); `--to N` sets an absolute count, clamped to `[0, total]` so an over-ack can never swallow messages that arrive later. This is the parent-gate's non-skip CLEAR path. CHILD-side only (operates on the descriptor's own `cursorPath`) — no `callerIdentity` check here, since a descriptor-scoped cursor has no cross-workspace hazard; that hazard lives in `inbox messages --ack`/`read-primary` below, which is store-scoped and keyed by an arbitrary `<id>`. | `cmdInbox` 'ack' branch L454–466 |
+| `inbox messages <id> [--unread] [--ack] [--ack-as-owner] [--json]` | **Primary/store non-destructive READ path.** Reads message BODIES directly from the store (`store.listMessages`) — never touches the native queue, needs NO descriptor (rows are keyed by workspace id regardless of registration, so it works even for an id nothing ever `register`ed). `--unread` returns only messages past the durable ACK cursor at `cursors/<id>.json` (note: this is a DIFFERENT cursor file/namespace than a child descriptor's own `cursorPath` used by `inbox read`/`ack`). `--ack` additionally advances that cursor to the current total in the same call (equivalent to `read-primary`) — **ack-ownership guard (v0.56.0, P0-hardened):** before ANY `--ack`, `cmdInboxMessages` calls `callerIdentity(env, cwd)` and refuses (`ok:false`, cursor left untouched) unless the caller's own identity equals `<id>`, UNLESS `--ack-as-owner` is passed explicitly to override for a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog on its behalf). `callerIdentity` treats **cwd as ground truth**: when cwd resolves to a real git worktree, identity is derived from that worktree and a `DEVSWARM_BUILDER_ID` env var naming a *different* workspace is IGNORED — never trusted to override — closing the env-spoof path where a workspace could set `DEVSWARM_BUILDER_ID=<other-id>` to impersonate another workspace and ack its cursor. `DEVSWARM_BUILDER_ID` is honored as a declared identity only when it can't contradict cwd (cwd already agrees, or cwd resolves to no worktree at all). `--json` is accepted for CLI-invocation parity and is otherwise a no-op — output is always JSON regardless. | `cmdInboxMessages` L393–433, `callerIdentity` L124–139, dispatch via `cmdInbox` L438 |
+| `inbox read-primary <id> [--ack-as-owner]` | Sugar for `inbox messages <id> --unread --ack` under one name — "read what's unread, then advance the ACK cursor," the Primary's one-shot ergonomic. Subject to the SAME ack-ownership guard as `inbox messages --ack` above (it sets `{ack:true}` internally, so `callerIdentity` is checked identically; `--ack-as-owner` overrides identically). | `cmdInboxMessages(..., {ack:true})` L393–433, dispatch L439 |
+| `workspaces list` | Derive + emit the `summary.json` projection: `{requiredGates, count, workspaces: {...}}`, one entry per registered workspace with `total`/`cursor`/`unread`/`gates`/`archive_ready`. | `cmdWorkspacesList` L495–514, dispatch L714–718 |
+| `gate <id> --set CSV --clear CSV [--by NAME]` | Mark/unmark named completion gates (append-only in the store — a set/clear appends a new timestamped row; current value = latest row per name). anti-hall is agnostic about what any gate MEANS — the consumer defines and sets them (default required set for `archive_ready`: `done,merged,tests_passed`, override via `ANTIHALL_DEVSWARM_REQUIRED_GATES`). `--by` names the setter (default `devswarm-cli`). | `cmdGate` L516–538, dispatch L719–724 |
+| `nudge <id>` | Poke-or-escalate one workspace ON DEMAND, honoring the same persisted attempt-count/cooldown state the automatic supervisor sweep would (reuses `recovery.pokeOrEscalate` — the identical primitive, not a re-implementation). | `cmdNudge` L540–550, dispatch L725–730 |
+| `archive <id>` | Archive-by-absence on anti-hall's OWN registry ONLY: moves the descriptor into `archived/` (renames — never unlinks) and tombstones the store registry entry. hivecontrol itself has NO teardown/delete/archive command at any level (§4/§10), so this SURFACES a manual "remove workspace X in the DevSwarm app" step in its response — it never runs an actual delete. | `cmdArchive` L552–575, dispatch L731–735 |
+| `archive-ignore <id>` / `archive-unignore <id>` | Write / remove a per-workspace `archive-ignore/<id>.json` mute of the `devswarm-parent-inbox` archive-ready reminder. | `cmdArchiveIgnore` L577–592, dispatch L736–745 |
+| `archive-request <childId\|childBranch> [--reason TEXT] [--child-branch B]` | **PARENT-side, SEND-ONLY (v0.56.0).** Posts a `[[ANTIHALL_ARCHIVE_REQUEST]]`-prefixed message to the child via `hivecontrol workspace message-child <branch> <msg>`, asking it to archive. Resolves the child branch: explicit `--child-branch` → the descriptor's own `branch` field (if ever set) → a `hivecontrol workspace list children` lookup matching branch/id/worktree → the positional id itself. NEVER verifies merged/tested/deployed itself (that's the parent repo's own policy to enforce first) and NEVER runs `archive` on the child's behalf. Fail-open on a `message-child` spawn error (`ok:false`, never a throw). | `cmdArchiveRequest` L655–674, `resolveChildBranch` L622–647, `ARCHIVE_REQUEST_MARKER`/`buildArchiveRequestMessage` L596–605, dispatch L746–751 |
+| `migrate` | Auto-migrate on-disk state (the JSON descriptor registry + each descriptor's legacy NDJSON inbox/cursor) into the store. Idempotent (dedupe hash from id + line-index + content), NON-DESTRUCTIVE (reads sources only, never deletes/moves/truncates), single-consumer-locked (O_EXCL), and COUNT-VERIFIED (store count must equal distinct legacy lines) before it reports `verified:true`. Picks up `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ` from `ctx.env` (no dedicated `--mark-read` CLI flag on THIS subcommand — that flag lives on the separate `scripts/migrate-state.js` script, §8.7's v0.56.0 note). | `cmdMigrate` L676–678 → `companion/devswarm-migrate.js`, dispatch L756–758 |
 
 **Worked example — a full Primary/child lifecycle end to end:**
 ```bash
@@ -695,6 +812,13 @@ node scripts/devswarm.js inbox read-primary primary-<hash>
 # Consumer marks completion gates; anti-hall derives archive_ready once all are set:
 node scripts/devswarm.js gate child-1 --set done,merged,tests_passed
 node scripts/devswarm.js workspaces list             # archive_ready:true once satisfied
+
+# PARENT: after verifying merged+tested+deployed per ITS OWN repo policy (anti-hall does
+# not check this), ask the child to archive — SEND-ONLY, never archives itself:
+node scripts/devswarm.js archive-request child-1 --reason "shipped in v1.2.0"
+
+# CHILD: sees the [[ANTIHALL_ARCHIVE_REQUEST]] marker via its per-turn unread surfacing,
+# confirms with ITS OWN user, then (and only then) archives:
 node scripts/devswarm.js archive child-1              # archive-by-absence + manual-step note
 ```
 

@@ -555,8 +555,9 @@ test('9 ARCHIVE-READY: all gates met -> parent-inbox recommends the user archive
     const c = ctxOf(r);
     assert.match(c, /DEVSWARM ARCHIVE-READY/);
     assert.match(c, /wsA/);
-    assert.match(c, /INFORM THE USER/i);
-    assert.match(c, /NEVER auto-archive/i);
+    assert.match(c, /VERIFY this workspace is MERGED \+ TESTED \+ DEPLOYED/);
+    assert.match(c, /devswarm\.js archive-request/);
+    assert.match(c, /NEVER archive mechanically/i);
 
     // INVARIANT: anti-hall never removed the descriptor / ran any archive command.
     assert.ok(fs.existsSync(H.descriptorPath(home, 'wsA')), 'descriptor must remain (never auto-removed)');

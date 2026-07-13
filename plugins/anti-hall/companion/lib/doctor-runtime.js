@@ -349,6 +349,7 @@ function checkDaemonsRunning(home, opts) {
   const platform = o.platform || process.platform;
   const spawnSyncFn = o.spawnSync;
   const now = o.now;
+  const env = o.env || process.env;
   const results = [];
   const runningByHash = {};
 
@@ -379,6 +380,29 @@ function checkDaemonsRunning(home, opts) {
       results.push({ status: PASS, message: 'ingest daemon (' + key + ', worktree ' + where + '): RUNNING' });
     } else {
       results.push({ status: WARN, message: 'ingest daemon (' + key + ', worktree ' + where + '): installed but NOT running (dead) — from that worktree: node companion/install-devswarm-ingest.js' });
+    }
+
+    // v0.56.0: REPORT-ONLY config-drift flag (never fixes — that's
+    // hooks/lib/doctor-repair.js's GATED job). A unit whose baked ExecStart
+    // script still EXISTS but is no longer install-devswarm-ingest.js's current
+    // resolveStableScript() result was installed before that fix (or the
+    // marketplace clone has since moved) and can silently crash-loop the next
+    // time the plugin manager relocates the version-pinned path it was baked
+    // from. Fail-open: no resolvable stable script (e.g. dev-mode, no
+    // marketplace clone on this machine) means nothing to compare against.
+    if (u.scriptPath && installIngest && typeof installIngest.resolveStableScript === 'function') {
+      let stable = null;
+      try { stable = installIngest.resolveStableScript(env, home); } catch (_) { stable = null; }
+      if (stable) {
+        let drifted = false;
+        try { drifted = path.resolve(u.scriptPath) !== path.resolve(stable); } catch (_) { drifted = false; }
+        if (drifted) {
+          results.push({
+            status: WARN,
+            message: 'ingest daemon (' + key + ', worktree ' + where + '): ExecStart script is not the current stable build (' + u.scriptPath + ') — run doctor --repair (or reinstall) from that worktree to migrate',
+          });
+        }
+      }
     }
   }
   if (units.length === 0) {
@@ -550,7 +574,13 @@ function checkNoOtherConsumer(home, opts) {
       status: WARN,
       message: 'SECOND CONSUMER detected: ' + monitorCount + ' `hivecontrol workspace monitor` process(es) running'
         + (strayPids.length ? ', PID(s) ' + strayPids.join(',') + ' hold no lock' : '')
-        + ' — the single-consumer invariant may be violated (splits the destructive native queue between consumers; report-only, never auto-killed)',
+        + ' — the single-consumer invariant may be violated (splits the destructive native queue between consumers; report-only, never auto-killed).'
+        + ' To remove it: (1) identify — run `ps aux | grep \'hivecontrol.*monitor\'` to list all consumers;'
+        + ' (2) stop — stop the competing process (`kill <PID>`), and remove its respawn config'
+        + ' (cron entry, launchd/systemd unit, a repo-local shell monitor loop, or a package.json start loop);'
+        + ' (3) verify — re-run doctor; it should report a single consumer (the ingest daemon) or none.'
+        + ' Limitation: anti-hall cannot mechanically block or kill an external (non-tool-call) consumer'
+        + ' — detection and your action are the only levers.',
     });
   } else if (monitorCount === 1) {
     results.push({ status: PASS, message: 'exactly one `hivecontrol workspace monitor` consumer running (matches the lock holder)' });
@@ -577,7 +607,7 @@ function runChecks(opts) {
   catch (e) { results.push({ status: WARN, message: 'DB/store health check raised (fail-open): ' + errMsg(e) }); }
 
   let daemonInfo = { results: [], anyRunning: false, units: [] };
-  try { daemonInfo = checkDaemonsRunning(home, { fsi: F, platform, now, spawnSync: o.spawnSync }); }
+  try { daemonInfo = checkDaemonsRunning(home, { fsi: F, platform, now, spawnSync: o.spawnSync, env }); }
   catch (e) { daemonInfo = { results: [{ status: WARN, message: 'daemon RUNNING check raised (fail-open): ' + errMsg(e) }], anyRunning: false, units: [] }; }
 
   try { results.push(...checkDataStaleness(home, { fsi: F, now, daemonInfo })); }
@@ -588,11 +618,11 @@ function runChecks(opts) {
   try { results.push(...checkNoOtherConsumer(home, { fsi: F, platform, spawnSync: o.spawnSync })); }
   catch (e) { results.push({ status: WARN, message: 'no-other-consumer scan raised (fail-open): ' + errMsg(e) }); }
 
-  // env is accepted (matches doctor-devswarm.js's runChecks signature) but is
-  // NOT used to compute an `active` gate here — doctor.js reuses ITS OWN
-  // already-computed active flag (isDevswarmActive(env) || descriptors present)
-  // to decide whether to print these results, so there is nothing to duplicate.
-  void env;
+  // env is threaded into checkDaemonsRunning (v0.56.0: resolveStableScript
+  // drift comparison) but, beyond that, is still NOT used to compute an
+  // `active` gate here — doctor.js reuses ITS OWN already-computed active flag
+  // (isDevswarmActive(env) || descriptors present) to decide whether to print
+  // these results, so there is nothing to duplicate.
   return { results };
 }
 

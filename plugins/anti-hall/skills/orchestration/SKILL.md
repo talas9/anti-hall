@@ -60,11 +60,11 @@ tokens `haiku`/`sonnet`/`opus`/`fable`, never a versioned model id):
   subagent work.
 - **Opus** — deep analysis; flagship-tier work when Fable is unavailable (the Opus floor
   for debate seats — see the availability fallback matrix in `../MODEL-POLICY.md`).
-- **Fable (flagship)** — policy-disabled as of 2026-07-02 (reported over-restrictive/
-  refusal-prone; see `../MODEL-POLICY.md`) — **not currently routed to anywhere in this
-  plugin**, including debate roles. The Reviewer seat of the ship-it / deadly-loop trio is
-  Sonnet 5. *If Fable's track record improves, reconsider the Reviewer seat for the
-  flagship tier.*
+- **Fable (flagship)** — RE-ENABLED as of 2026-07-12 (owner call, reversing the
+  2026-07-02 policy-disable now that Fable 5 is available; see `../MODEL-POLICY.md`) —
+  routed to the Reviewer seat of the ship-it / deadly-loop trio when `fable-availability.js`
+  reports `args.fableAvailable === true`, falling back to Sonnet 5 then Opus. *Reconsider
+  if Fable's track record regresses.*
 
 Don't send a planning problem to Haiku, or a log-tail to Fable/Opus.
 

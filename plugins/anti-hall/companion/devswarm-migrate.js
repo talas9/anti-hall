@@ -27,6 +27,14 @@
 //     number of distinct non-empty legacy inbox lines for that id before the
 //     migration is reported `verified:true` for that workspace.
 //
+// OPT-IN "mark imported backlog as read" (field issue A, v0.56.0): a legacy
+// source with no consumed-cursor of its own imports its whole backlog at
+// cursor 0, surfacing as a big unread wall that can trip the parent
+// neglect-gate. `opts.markRead` (or env ANTIHALL_DEVSWARM_MIGRATE_MARK_READ) —
+// see resolveMarkRead — advances the cursor to the just-imported message
+// count instead. DEFAULT is false: the legacy cursor is preserved exactly as
+// before. Never marks a message imported by a LATER run as read.
+//
 // Pure Node built-ins. Fail-soft per workspace: one unreadable descriptor/inbox
 // never aborts the whole run.
 
@@ -44,6 +52,21 @@ const MIGRATE_LOCK_STALE_MS = 5 * 60 * 1000;
 
 function migrateLockPath(home) {
   return path.join(devswarmRoot(home), 'locks', 'migrate.lock');
+}
+
+// resolveMarkRead(o) -> bool. OPT-IN "mark imported backlog as read" (field
+// issue A): a legacy source with NO consumed-cursor of its own (e.g. a
+// pre-0.54 shell-loop NDJSON) imports its whole backlog at cursor 0, which
+// then shows up as a big "unread" wall of already-handled history and can trip
+// the parent neglect-gate. An explicit boolean o.markRead wins; otherwise falls
+// back to the env var ANTIHALL_DEVSWARM_MIGRATE_MARK_READ ('1'/'true',
+// case-insensitive) on o.env (else process.env). DEFAULT is false — the
+// current cursor-preserving behavior is UNCHANGED unless a caller opts in.
+function resolveMarkRead(o) {
+  if (o && typeof o.markRead === 'boolean') return o.markRead;
+  const env = (o && o.env) || process.env;
+  const raw = String((env && env.ANTIHALL_DEVSWARM_MIGRATE_MARK_READ) || '').trim().toLowerCase();
+  return raw === '1' || raw === 'true';
 }
 
 function isAliveDefault(pid) {
@@ -186,10 +209,13 @@ function pendingLegacyLines(s, id, lines) {
   return pending;
 }
 
-// migrateOne(s, descriptor, F) -> per-workspace report. Imports the descriptor
-// into the registry, imports its legacy inbox lines (dedupe-hashed), sets the
-// cursor, and count-verifies. Never mutates any source file.
-function migrateOne(s, descriptor, F) {
+// migrateOne(s, descriptor, F, opts) -> per-workspace report. Imports the
+// descriptor into the registry, imports its legacy inbox lines (dedupe-hashed),
+// sets the cursor, and count-verifies. Never mutates any source file.
+// opts.markRead (default false, see resolveMarkRead) — when true, the cursor
+// is advanced to this workspace's post-import message count instead of the
+// legacy cursor, so the just-imported backlog reads as already-seen.
+function migrateOne(s, descriptor, F, opts) {
   const id = descriptor.id;
   s.upsertRegistry(descriptor);
 
@@ -235,18 +261,28 @@ function migrateOne(s, descriptor, F) {
     if (r && r.inserted) imported++;
   }
 
-  // Carry the legacy consumed-count forward as the store cursor (idempotent set).
-  const legacyCursor = readCursor(descriptor.cursorPath, F);
-  s.setCursor(id, legacyCursor);
-
   // Count-verify: the store must now hold exactly as many messages for this id as
   // there are distinct non-empty legacy inbox lines (the inbox we actually read).
   const legacyCount = lines.length;
   const storeCount = s.messageCount(id);
   const verified = storeCount === legacyCount;
 
+  // Carry the legacy consumed-count forward as the store cursor (idempotent
+  // set) — UNLESS opts.markRead is set, in which case advance the cursor to
+  // this workspace's post-import message count (storeCount, a snapshot taken
+  // NOW) instead: the entire backlog THIS migration just imported reads as
+  // already-seen (unread≈0). Math.max never regresses a cursor that was
+  // already further along. A message appended to the store after this call
+  // returns is untouched, so it still surfaces as unread. DEFAULT
+  // (markRead absent/false) is BYTE-FOR-BYTE the old behavior: the legacy
+  // cursor, preserved as-is.
+  const legacyCursor = readCursor(descriptor.cursorPath, F);
+  const markRead = !!(opts && opts.markRead);
+  const cursor = markRead ? Math.max(legacyCursor, storeCount) : legacyCursor;
+  s.setCursor(id, cursor);
+
   return {
-    id, imported, legacyCount, storeCount, cursor: legacyCursor, verified,
+    id, imported, legacyCount, storeCount, cursor, verified, markRead,
   };
 }
 
@@ -260,6 +296,7 @@ function migrateToStore(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const F = (o.io && o.io.fs) || fs;
+  const markRead = resolveMarkRead(o);
 
   const release = (o.io && o.io.lock)
     ? o.io.lock(home)
@@ -273,7 +310,7 @@ function migrateToStore(opts) {
     // non-destructively (the global file is left in place as a backup). This lets a
     // 0.54.x user upgrade to the per-project layout without losing data.
     let globalSplit = null;
-    try { globalSplit = migrateGlobalStoreToPerProject({ home, backend: o.backend, env: o.env, now: o.now, io: o.io }); }
+    try { globalSplit = migrateGlobalStoreToPerProject({ home, backend: o.backend, env: o.env, now: o.now, io: o.io, markRead }); }
     catch (e) { globalSplit = { ok: false, error: String(e && e.message || e) }; }
 
     const descriptors = readDescriptors(home, F).filter((d) => d && isSafeId(d.id));
@@ -282,7 +319,7 @@ function migrateToStore(opts) {
     for (const d of descriptors) {
       const s = store.openStore({ home, workspaceId: d.id, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
       try {
-        migrated.push(migrateOne(s, d, F));
+        migrated.push(migrateOne(s, d, F, { markRead }));
         // (re)derive this project's projection only after its import succeeds.
         store.deriveSummary(s, { home, workspaceId: d.id, env: o.env, now: o.now });
       } catch (e) {
@@ -298,6 +335,7 @@ function migrateToStore(opts) {
       migrated,
       globalSplit,
       verifiedAll,
+      markRead,
     };
   } finally {
     try { release(); } catch (_) {}
@@ -364,6 +402,7 @@ function migrateGlobalStoreToPerProject(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const F = (o.io && o.io.storeFs) || (o.io && o.io.fs) || fs;
+  const markRead = resolveMarkRead(o);
   const presentBackends = legacyGlobalBackendsPresent(home, F);
   if (!presentBackends.length) {
     return { ok: true, action: 'migrate-global', present: false, workspaces: 0, copied: 0 };
@@ -408,9 +447,12 @@ function migrateGlobalStoreToPerProject(opts) {
           if (regEntry) dst.upsertRegistry(regEntry);
           // Cursor: never regress a further-along cursor a prior backend already
           // carried forward for this id — take the max of what's there and what
-          // this backend reports.
+          // this backend reports. OPT-IN markRead additionally advances the
+          // cursor to this workspace's post-copy message count (this run's
+          // imported backlog reads as already-seen); DEFAULT is unchanged.
           const mergedCursor = Math.max(Number(dst.cursorValue(id)) || 0, Number(src.cursorValue(id)) || 0);
-          dst.setCursor(id, mergedCursor);
+          const cursorToSet = markRead ? Math.max(mergedCursor, Number(dst.messageCount(id)) || 0) : mergedCursor;
+          dst.setCursor(id, cursorToSet);
           const gates = src.currentGates(id);
           for (const name of Object.keys(gates)) dst.setGate({ workspaceId: id, name, value: gates[name] });
           store.deriveSummary(dst, { home, workspaceId: id, env: o.env, now: o.now });
@@ -424,6 +466,7 @@ function migrateGlobalStoreToPerProject(opts) {
   return {
     ok: true, action: 'migrate-global', present: true,
     workspaces: idsSeen.size, copied, perWorkspace: Array.from(perWorkspace.values()),
+    markRead,
   };
 }
 
@@ -469,6 +512,7 @@ function migrateLegacyInbox(opts) {
     return { ok: false, action: 'migrate-legacy-inbox', locked: false, error: 'another migration or consumer holds the migrate lock' };
   }
 
+  const markRead = resolveMarkRead(o);
   try {
     // PER-PROJECT: fold into the workspace's OWN physical store.
     const s = store.openStore({ home, workspaceId, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
@@ -482,6 +526,17 @@ function migrateLegacyInbox(opts) {
         const r = s.appendMessage({ workspaceId, body: lines[i], hash: h, ts: Date.now() });
         if (r && r.inserted) imported++;
       }
+      // OPT-IN markRead: this direct-import path never set a cursor before
+      // (there is no descriptor cursorPath to carry forward) — DEFAULT stays
+      // exactly that (no cursor write). When markRead is set, advance the
+      // cursor to at least this workspace's post-import message count so the
+      // just-imported backlog reads as already-seen instead of a big unread
+      // wall; Math.max never regresses a cursor already further along.
+      if (markRead) {
+        const total = s.messageCount(workspaceId);
+        const cur = Number(s.cursorValue(workspaceId)) || 0;
+        s.setCursor(workspaceId, Math.max(cur, total));
+      }
       store.deriveSummary(s, { home, workspaceId, env: o.env, now: o.now });
       // Read-back verify: every source-line hash is now present in the store.
       const have = new Set(s.listMessages(workspaceId).map((m) => m.hash));
@@ -490,7 +545,7 @@ function migrateLegacyInbox(opts) {
     return {
       ok: true, action: 'migrate-legacy-inbox', locked: true, workspaceId, source,
       backend: store.selectBackend({ backend: o.backend, env: o.env }),
-      lines: lines.length, imported, verified,
+      lines: lines.length, imported, verified, markRead,
     };
   } finally {
     try { release(); } catch (_) {}
@@ -501,5 +556,5 @@ module.exports = {
   migrateToStore, migrateOne, migrateLegacyInbox, legacyLineHash, readInbox, readInboxLines,
   acquireMigrateLock, migrateLockPath,
   migrateGlobalStoreToPerProject, legacyGlobalStoreExists, synthGlobalHash,
-  bodyMultisetFor, consumeBody, pendingLegacyLines,
+  bodyMultisetFor, consumeBody, pendingLegacyLines, resolveMarkRead,
 };

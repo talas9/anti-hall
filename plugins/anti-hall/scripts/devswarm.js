@@ -43,6 +43,11 @@
 //   archive-ignore <id> | archive-unignore <id>
 //                  write/remove archive-ignore/<id>.json — the per-workspace ignore
 //                  mark the archive-ready surfacing consults (PLAN.md P1-E).
+//   archive-request <childId|childBranch> [--reason TEXT] [--child-branch B]
+//                  SEND-ONLY: post a parent->child `[[ANTIHALL_ARCHIVE_REQUEST]]`
+//                  message via `message-child <branch> <msg>`. AGNOSTIC — never
+//                  verifies merged/tested/deployed itself; that is the receiving
+//                  parent's own repo policy. Fail-open on spawn error.
 //   migrate        auto-migrate on-disk state (JSON registry + legacy NDJSON inbox)
 //                  into the store. Idempotent, NON-DESTRUCTIVE (never deletes source),
 //                  single-consumer-locked, count-verified before it reports success.
@@ -64,6 +69,74 @@ const { pokeOrEscalate } = require('../companion/lib/recovery.js');
 const migrate = require('../companion/devswarm-migrate.js');
 const pull = require('../companion/lib/devswarm-pull.js');
 const inst = require('../companion/install-devswarm-ingest.js');
+
+// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
+// looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
+// would report, WITHOUT spawning git. Mirrors hooks/devswarm-parent-gate.js /
+// devswarm-parent-inbox.js / devswarm-child-turn.js byte-for-byte (kept as a
+// local copy rather than a shared require, matching their own stated precedent
+// of not adding new cross-file coupling for a few lines of pure fs walk). Used
+// as callerIdentity's git-unavailable fallback so it agrees with the parent-gate
+// hook's own cwd-derivation even when git is not on PATH.
+function findGitToplevel(startDir) {
+  try {
+    let dir = path.resolve(String(startDir || ''));
+    if (!dir) return null;
+    for (;;) {
+      try {
+        fs.statSync(path.join(dir, '.git'));
+        return dir;
+      } catch (_) { /* keep walking up */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null; // reached filesystem root, no .git found
+      dir = parent;
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
+// callerIdentity(env, cwd) -> string. Who is invoking this CLI process, for the
+// ack-ownership check (cross-workspace ack hazard, bug #2).
+//
+// CWD IS GROUND TRUTH (P0 fix): a caller's cwd tells us, mechanically, which
+// worktree/workspace process is actually running. When cwd resolves to a REAL
+// git worktree, identity MUST derive from cwd — a `DEVSWARM_BUILDER_ID` env var
+// that names a DIFFERENT workspace is IGNORED (never trusted to override), so a
+// workspace cannot set `DEVSWARM_BUILDER_ID=<other-id>` (deliberately, or via
+// ordinary env inheritance from a parent process) to impersonate another
+// workspace and advance ITS cursor. `DEVSWARM_BUILDER_ID` is honored as a
+// DECLARED identity only in the two cases where it cannot contradict cwd:
+//   1. cwd resolves to a worktree AND the env value already MATCHES the
+//      cwd-derived id (redundant declaration, not an override).
+//   2. cwd does NOT resolve to any git worktree at all (no ground truth exists
+//      to contradict it) — e.g. a daemon/unit whose cwd defaults to $HOME.
+// Worktree resolution: resolveWorktree(cwd) (git spawn) first, falling back to
+// the PURE-FS findGitToplevel(cwd) above when git is unavailable/unspawnable —
+// this fallback ORDER matters: it keeps callerIdentity agreeing with the
+// parent-gate hook's OWN cwd-derivation (which is pure-fs only, no git spawn)
+// even when git cannot be spawned, instead of silently falling further back to
+// the RAW cwd (which would misidentify a subdirectory as its own worktree and
+// spuriously refuse a legitimate Primary self-ack run from a non-toplevel cwd
+// with git unavailable). Only when NEITHER resolves does cwd fail to resolve to
+// a workspace at all (case 2 above; final fallback = primaryWorkspaceId(raw
+// cwd) so callerIdentity always returns a deterministic non-empty string).
+function callerIdentity(env, cwd) {
+  const bid = env && env.DEVSWARM_BUILDER_ID ? String(env.DEVSWARM_BUILDER_ID) : null;
+  const c = cwd || process.cwd();
+  const wt = inst.resolveWorktree(c) || findGitToplevel(c);
+  if (wt) {
+    // cwd resolves to a real workspace: identity derives from cwd. A mismatching
+    // declared env id is NOT trusted to override it (the spoof this guard exists
+    // to close); a matching one is a no-op (same value either way).
+    return inst.primaryWorkspaceId(wt);
+  }
+  // No ground truth: cwd does not resolve to any workspace. A declared env
+  // identity is trusted here (nothing to contradict it); otherwise fall back to
+  // a deterministic id derived from the raw cwd (fail-open, never null).
+  if (bid) return bid;
+  return inst.primaryWorkspaceId(c);
+}
 
 // ----- paths -----
 function workspacesDir(home) { return path.join(devswarmRoot(home), 'workspaces'); }
@@ -142,9 +215,15 @@ function writeDescriptorAtomic(home, id, desc, F) {
   return p;
 }
 
-// buildDescriptorFromFlags(id, flags, existing) — merge flag values over an
+// buildDescriptorFromFlags(id, flags, existing, env) — merge flag values over an
 // existing descriptor (so ensure/re-register only overrides what was passed).
-function buildDescriptorFromFlags(id, flags, existing) {
+// `repoId` (#36 cross-project-bleed fix) is the one field sourced from BOTH an
+// explicit --repo-id flag AND env.DEVSWARM_REPO_ID: an explicit flag wins (an
+// operator overriding for a one-off registration), otherwise a truthy env value
+// wins (the normal per-session case — hivecontrol sets this for every DevSwarm
+// child + the Primary alike), otherwise the existing descriptor's value (if any)
+// is preserved untouched, same merge-preserve posture as the other fields.
+function buildDescriptorFromFlags(id, flags, existing, env) {
   const base = existing && typeof existing === 'object' ? Object.assign({}, existing) : {};
   base.id = id;
   const worktree = one(flags, 'worktree');
@@ -152,17 +231,21 @@ function buildDescriptorFromFlags(id, flags, existing) {
   const inbox = one(flags, 'inbox');
   const cursor = one(flags, 'cursor');
   const nudge = many(flags, 'nudge');
+  const repoIdFlag = one(flags, 'repo-id');
   if (worktree !== undefined) base.worktreePath = worktree;
   if (session !== undefined) base.sessionId = session;
   if (inbox !== undefined) base.inboxPath = inbox;
   if (cursor !== undefined) base.cursorPath = cursor;
   if (nudge.length) base.nudgeCommand = nudge;
+  if (repoIdFlag !== undefined) base.repoId = repoIdFlag;
+  else if (env && env.DEVSWARM_REPO_ID) base.repoId = env.DEVSWARM_REPO_ID;
   // normalize the fields the store/consumers expect to exist as keys
   if (base.worktreePath === undefined) base.worktreePath = null;
   if (base.sessionId === undefined) base.sessionId = null;
   if (base.inboxPath === undefined) base.inboxPath = null;
   if (base.cursorPath === undefined) base.cursorPath = null;
   if (base.nudgeCommand === undefined) base.nudgeCommand = null;
+  if (base.repoId === undefined) base.repoId = null;
   return base;
 }
 
@@ -187,7 +270,7 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
     upsertStoreRegistry(home, existing, ctx);
     return { ok: true, action: 'exists', id, descriptor: existing };
   }
-  const desc = buildDescriptorFromFlags(id, flags, existing);
+  const desc = buildDescriptorFromFlags(id, flags, existing, ctx.env);
   // Validate the REQUIRED workspace fields before writing. A descriptor missing
   // worktreePath/sessionId is invisible to the supervisor (readDescriptors filters
   // on both), so writing one with null fields and returning ok:true is a silent
@@ -306,10 +389,34 @@ function cmdInboxPull(id, flags, ctx) {
 // is the summary projection's source of truth. Re-derive summary.json in the same
 // call so the persisted projection reflects the drop immediately, not just on the
 // next unrelated store write.
+//
+// Cross-workspace ack hazard (bug #2): this path needs no descriptor and, before
+// this fix, accepted ANY id — so workspace A could `inbox messages B --ack` (or
+// `read-primary B`) and silently advance B's cursor, marking B's own unread as
+// read out from under it. Harmless under today's usage but a live footgun once
+// "all can read all" is common (an observer that reflexively acks someone else's
+// id destroys the owner's unread signal). READ WITHOUT --ack stays OPEN to any id
+// on purpose (that is the cross-workspace visibility feature) — only the ack
+// (mutating) path is gated. `--ack-as-owner` is the explicit operator override for
+// a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's
+// backlog on its behalf).
 function cmdInboxMessages(id, flags, ctx, opts) {
   const home = ctx.home;
   const doAck = !!((opts && opts.ack) || flags.ack);
   const unread = !!flags.unread || doAck; // read-primary is inherently unread-then-ack
+  const ackAsOwner = !!flags['ack-as-owner'];
+  if (doAck && !ackAsOwner) {
+    const caller = callerIdentity(ctx.env, ctx.cwd);
+    if (caller !== id) {
+      return {
+        ok: false,
+        error: 'ack refused: caller ' + JSON.stringify(caller) + ' does not own workspace '
+          + JSON.stringify(id) + ' (pass --ack-as-owner to override)',
+        id,
+        callerIdentity: caller,
+      };
+    }
+  }
   const cursorPath = primaryCursorPath(home, id);
   const cursor = inboxCursor.readCursor(cursorPath);
   const s = store.openStore({ home, workspaceId: id, backend: ctx.backend, env: ctx.env });
@@ -494,6 +601,88 @@ function cmdArchiveIgnore(id, ctx, { set }) {
   return { ok: true, action: 'archive-unignore', id, removed };
 }
 
+// ARCHIVE_REQUEST_MARKER — the mechanical tag a receiving child looks for atop a
+// parent->child message to recognize an archive request (vs. ordinary chatter).
+const ARCHIVE_REQUEST_MARKER = '[[ANTIHALL_ARCHIVE_REQUEST]]';
+
+// buildArchiveRequestMessage(reason) — the exact posted string. `reason` is
+// optional; when omitted the marker + instruction still stand alone.
+function buildArchiveRequestMessage(reason) {
+  const tail = 'your parent asks you to archive this workspace; confirm with your user, then run devswarm.js archive <id>.';
+  return reason
+    ? ARCHIVE_REQUEST_MARKER + ' ' + reason + ' — ' + tail
+    : ARCHIVE_REQUEST_MARKER + ' — ' + tail;
+}
+
+// resolveChildBranch(id, flags, ctx) -> { branch, source, error? }. `message-child`
+// needs a BRANCH (per KB: <branch> IS the hivecontrol workspace identifier — no
+// separate name field), but our OWN descriptor (workspaces/<id>.json) carries no
+// `branch` field today (verified: buildDescriptorFromFlags only ever populates
+// worktreePath/sessionId/inboxPath/cursorPath/nudgeCommand). Resolution order:
+//   1. --child-branch (explicit, always wins)
+//   2. desc.branch, if some future/other write path ever set one (harmless check)
+//   3. `hivecontrol workspace list children` — the JSON shape is not pinned in the
+//      KB (no example payload documented anywhere in this repo), so parse
+//      TOLERANTLY: accept a bare array or a {children:[...]} wrapper, and match an
+//      entry by branch/id equal to our childId OR by worktreePath equal to the
+//      entry's path (the one join key we reliably hold ourselves).
+//   4. the positional `id` itself, taken AS the branch — valid because a caller is
+//      explicitly allowed to pass `<childId|childBranch>` directly, and by this
+//      point `id` has already passed the isSafeId gate the dispatcher applies.
+function resolveChildBranch(id, flags, ctx) {
+  const explicit = one(flags, 'child-branch');
+  if (explicit) return { branch: explicit, source: 'flag' };
+  const home = ctx.home;
+  const desc = readDescriptorFile(home, id);
+  if (desc && desc.branch) return { branch: desc.branch, source: 'descriptor' };
+  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+  const res = run({ args: ['workspace', 'list', 'children'], env: ctx.env });
+  if (res && res.ok) {
+    let list = [];
+    try {
+      const parsed = JSON.parse(res.raw);
+      list = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.children) ? parsed.children : []);
+    } catch (_) { list = []; }
+    const worktree = desc && desc.worktreePath;
+    for (const entry of list) {
+      if (!entry || typeof entry !== 'object') continue;
+      const entryBranch = entry.branch || entry.id || null;
+      if (entryBranch && entryBranch === id) return { branch: entryBranch, source: 'list-children' };
+      if (worktree && entry.path && entry.path === worktree && entryBranch) {
+        return { branch: entryBranch, source: 'list-children' };
+      }
+    }
+  }
+  return { branch: id, source: 'positional' };
+}
+
+// cmdArchiveRequest(id, flags, ctx) — SEND-ONLY. Posts a parent->child archive
+// request via `message-child <branch> <marker + text>`, using the SAME injectable
+// io.run spawn pattern as cmdInboxPull/devswarm-pull.js (pull.defaultRun), so this
+// is testable without touching a real hivecontrol binary. AGNOSTIC: this verb never
+// checks merged/tested/deployed itself — that is the RECEIVING parent's own repo
+// policy to enforce before it ever runs `archive`; we only remind, never gate.
+function cmdArchiveRequest(id, flags, ctx) {
+  const reason = one(flags, 'reason');
+  const resolved = resolveChildBranch(id, flags, ctx);
+  if (!resolved.branch) {
+    return { ok: false, error: 'could not resolve child branch for ' + JSON.stringify(id) + ' — pass --child-branch explicitly' };
+  }
+  const message = buildArchiveRequestMessage(reason);
+  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+  const res = run({ args: ['workspace', 'message-child', resolved.branch, message], env: ctx.env });
+  if (!res || !res.ok) {
+    return {
+      ok: false, error: (res && res.error) || 'message-child failed',
+      id, childBranch: resolved.branch, posted: false, reason: reason || null,
+    };
+  }
+  return {
+    ok: true, id, childBranch: resolved.branch, posted: true, reason: reason || null,
+    reminder: 'Ensure you have verified merged + tested + deployed per your repo policy before archiving.',
+  };
+}
+
 function cmdMigrate(ctx) {
   return migrate.migrateToStore({ home: ctx.home, backend: ctx.backend, env: ctx.env, now: ctx.now });
 }
@@ -564,6 +753,12 @@ function run(argv, ctx0) {
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
         return { code: 0, result: cmdArchiveIgnore(id, ctx, { set: false }) };
       }
+      case 'archive-request': {
+        const id = positionals[1];
+        if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const r = cmdArchiveRequest(id, flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       case 'register-primary': {
         const r = cmdRegisterPrimary(flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
@@ -573,7 +768,7 @@ function run(argv, ctx0) {
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|migrate)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|archive-request|migrate)' } };
     }
   } catch (e) {
     return { code: 2, result: { ok: false, error: String(e && e.message || e) } };

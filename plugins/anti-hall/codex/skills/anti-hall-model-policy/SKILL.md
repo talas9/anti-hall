@@ -22,7 +22,7 @@ Rules:
 
 When this skill coordinates with anti-hall deadly-loop or ship-it, the Claude-side tier token `sonnet` resolves to **Sonnet 5** (`claude-sonnet-5`). Claude-side role assignments:
 
-- Reviewer (deadly-loop/ship-it): `model:"sonnet"` = Sonnet 5, effort `xhigh`
+- Reviewer (deadly-loop/ship-it): `model:"fable"` (Fable 5) when available, else `model:"sonnet"` = Sonnet 5, effort `xhigh`
 - Planning secondary / medium scope: `model:"sonnet"` = Sonnet 5, effort `xhigh`
 - Implementation failover (when Codex unavailable): `model:"sonnet"` = Sonnet 5, effort `high`
 - Main coordinator, planning top-level, deep debug: `model:"opus"` = latest Claude Opus

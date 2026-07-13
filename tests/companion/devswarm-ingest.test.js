@@ -406,6 +406,176 @@ test('runIngestLoop ingests a batch, derives the projection, and replays idempot
   } finally { rm(home); }
 });
 
+test('runIngestLoop SELF-REGISTERS its own primary/worktree id (#34 fix) — Primary sees its OWN inbound unread with NO explicit register/register-primary call anywhere', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const primaryId = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js').primaryWorkspaceId(wt);
+    const batch = JSON.stringify([
+      { fromBranch: 'c', toBranch: primaryId, message: 'msg-one', createdAt: '2026-01-01T00:00:00Z' },
+      { fromBranch: 'c', toBranch: primaryId, message: 'msg-two', createdAt: '2026-01-01T00:00:01Z' },
+    ]);
+    const run = () => ({ ok: true, raw: batch });
+
+    // NO manual upsertRegistry/register-primary anywhere — only runIngestLoop, exactly
+    // as a real daemon starts up. workspaceId is left to derive from the worktree
+    // (primaryWorkspaceId), not passed explicitly, so this exercises the same
+    // derivation main() uses on a real box. Before the fix, deriveSummary's
+    // workspaces{} projection is built ONLY from store.listRegistry() ids, and
+    // nothing on this path ever registered `primary-<hash>` — so
+    // workspaces[primaryId] would never exist and readOwnUnread/own-unread always
+    // read 0 even with real unread messages sitting in the store.
+    const summary = ingest.runIngestLoop({ home, backend: 'journal', worktree: wt, maxIterations: 1, run, sleep: () => {} });
+    assert.equal(summary.started, true);
+    assert.equal(summary.workspaceId, primaryId);
+    assert.equal(summary.stats.inserted, 2);
+
+    const s = storeLib.readSummary(home, primaryId);
+    assert.ok(s, 'a summary projection was written');
+    assert.ok(s.workspaces[primaryId], 'the daemon\'s own primary/worktree id IS present in workspaces{} — was previously never registered, so this key never existed');
+    assert.equal(s.workspaces[primaryId].total, 2);
+    assert.equal(s.workspaces[primaryId].cursor, 0, 'nothing consumed yet');
+    assert.equal(s.workspaces[primaryId].unread, 2, 'unread = appended (2) minus cursor (0)');
+
+    // Advance the cursor (e.g. an inbox ack) and re-derive: unread must reflect
+    // appended-minus-cursor, not just total — proving this is a live projection, not
+    // a hand-written fixture.
+    const s2store = storeLib.openStore({ home, workspaceId: primaryId, backend: 'journal' });
+    try {
+      s2store.setCursor(primaryId, 1);
+      storeLib.deriveSummary(s2store, { home });
+    } finally { s2store.close(); }
+    const s2 = storeLib.readSummary(home, primaryId);
+    assert.equal(s2.workspaces[primaryId].unread, 1, 'unread updates to appended(2) - cursor(1) = 1 after ack');
+  } finally { rm(home); }
+});
+
+test('runIngestLoop: WORKTREE is ground truth over env.DEVSWARM_BUILDER_ID — a daemon that inherits a CHILD id in its env still ingests + self-registers under the resolved worktree\'s primary id, never clobbering the child\'s registry row', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const primaryId = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js').primaryWorkspaceId(wt);
+    const childId = 'child-should-never-be-used';
+
+    // Pre-seed a registry row for the CHILD id, as if that child had already
+    // registered itself (real inboxPath/cursorPath) BEFORE this daemon starts.
+    const seedStore = storeLib.openStore({ home, workspaceId: childId, backend: 'journal' });
+    try {
+      seedStore.upsertRegistry({
+        id: childId, worktreePath: '/some/child/worktree', sessionId: childId,
+        inboxPath: '/some/child/inbox.json', cursorPath: '/some/child/cursor.json', nudgeCommand: null,
+      });
+    } finally { seedStore.close(); }
+
+    const batch = JSON.stringify([
+      { fromBranch: 'c', toBranch: primaryId, message: 'hello', createdAt: '2026-01-01T00:00:00Z' },
+    ]);
+    const run = () => ({ ok: true, raw: batch });
+
+    // env carries a DEVSWARM_BUILDER_ID naming the CHILD — ordinary env inheritance
+    // from a parent process, or a stray export. worktree resolves (wt is a real git
+    // worktree), so it MUST win: identity derives from cwd, not the inherited env.
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', worktree: wt, maxIterations: 1, run, sleep: () => {},
+      env: { DEVSWARM_BUILDER_ID: childId },
+    });
+    assert.equal(summary.started, true);
+    assert.equal(summary.workspaceId, primaryId, 'worktree-derived id wins over env.DEVSWARM_BUILDER_ID');
+    assert.equal(summary.stats.inserted, 1, 'the message was ingested under the worktree-derived partition');
+
+    // Registration + ingest are the SAME id: the primary's own store partition (keyed
+    // by the WORKTREE hash, not the child's id-derived hash) now carries its own row.
+    const reg = storeLib.openStore({ home, workspaceId: primaryId, backend: 'journal' });
+    try {
+      const primaryRow = reg.listRegistry().find((r) => r.id === primaryId);
+      assert.ok(primaryRow, 'the daemon registered under the worktree-derived primary id');
+    } finally { reg.close(); }
+
+    // The child's OWN store partition (a DIFFERENT hash, derived from its own id) must
+    // be untouched — before the fix, an env-first daemon would have opened THIS SAME
+    // partition (workspaceId=childId) and upserted id:childId into it, clobbering the
+    // child's real inboxPath/cursorPath with the daemon's own (null) fields.
+    const childStore = storeLib.openStore({ home, workspaceId: childId, backend: 'journal' });
+    try {
+      const childRow = childStore.listRegistry().find((r) => r.id === childId);
+      assert.ok(childRow, 'the child\'s row still exists — never overwritten');
+      assert.equal(childRow.inboxPath, '/some/child/inbox.json', 'the child\'s registry row was NOT clobbered');
+      assert.equal(childRow.cursorPath, '/some/child/cursor.json', 'the child\'s registry row was NOT clobbered');
+    } finally { childStore.close(); }
+  } finally { rm(home); }
+});
+
+test('runIngestLoop: env.DEVSWARM_BUILDER_ID IS honored when the worktree does not resolve at all (no ground truth to contradict it)', () => {
+  const home = tmpHome();
+  try {
+    const nogit = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-ingest-nogit-'));
+    try {
+      const batch = JSON.stringify([{ fromBranch: 'c', message: 'x', createdAt: '2026-01-01T00:00:00Z' }]);
+      const summary = ingest.runIngestLoop({
+        home, backend: 'journal', worktree: null, cwd: nogit, maxIterations: 1,
+        run: () => ({ ok: true, raw: batch }), sleep: () => {},
+        env: { DEVSWARM_BUILDER_ID: 'declared-id' },
+      });
+      assert.equal(summary.started, true);
+      assert.equal(summary.workspaceId, 'declared-id', 'no worktree to contradict env — the declared id is trusted');
+    } finally { fs.rmSync(nogit, { recursive: true, force: true }); }
+  } finally { rm(home); }
+});
+
+test('runIngestLoop self-registration MERGE-PRESERVES an existing fuller registry row (P2) — a prior register-primary\'s real inboxPath/cursorPath/nudgeCommand survive every subsequent daemon startup instead of being nulled out', () => {
+  const home = tmpHome();
+  try {
+    // Simulate a prior explicit `register-primary` CLI call that wrote a fuller row.
+    const seedStore = storeLib.openStore({ home, workspaceId: 'p', backend: 'journal' });
+    try {
+      seedStore.upsertRegistry({
+        id: 'p', worktreePath: '/real/worktree', sessionId: 'p',
+        inboxPath: '/real/inbox.json', cursorPath: '/real/cursor.json', nudgeCommand: 'echo nudge',
+      });
+    } finally { seedStore.close(); }
+
+    const batch = JSON.stringify([{ fromBranch: 'c', message: 'x', createdAt: '2026-01-01T00:00:00Z' }]);
+    ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1,
+      run: () => ({ ok: true, raw: batch }), sleep: () => {},
+    });
+
+    const s = storeLib.openStore({ home, workspaceId: 'p', backend: 'journal' });
+    try {
+      const row = s.listRegistry().find((r) => r.id === 'p');
+      assert.ok(row, 'the row still exists after the daemon\'s startup self-registration');
+      assert.equal(row.inboxPath, '/real/inbox.json', 'inboxPath preserved, not nulled out');
+      assert.equal(row.cursorPath, '/real/cursor.json', 'cursorPath preserved, not nulled out');
+      assert.equal(row.nudgeCommand, 'echo nudge', 'nudgeCommand preserved, not nulled out');
+    } finally { s.close(); }
+  } finally { rm(home); }
+});
+
+test('runIngestLoop self-registration is FAIL-OPEN — a registry-write error never blocks message ingestion', () => {
+  const home = tmpHome();
+  try {
+    const io = {
+      openStore(args) {
+        const real = storeLib.openStore(args);
+        real.upsertRegistry = function () { throw new Error('registry write boom'); };
+        return real;
+      },
+    };
+    const batch = JSON.stringify([{ fromBranch: 'c', message: 'x', createdAt: '2026-01-01T00:00:00Z' }]);
+    let summary;
+    assert.doesNotThrow(() => {
+      summary = ingest.runIngestLoop({
+        home, backend: 'journal', workspaceId: 'p', maxIterations: 1,
+        run: () => ({ ok: true, raw: batch }), sleep: () => {}, io,
+      });
+    }, 'a self-registration failure must never crash or block the daemon\'s core drain');
+    assert.equal(summary.started, true);
+    assert.equal(summary.stats.inserted, 1, 'the message was still ingested despite the registry-write error');
+    const logContent = fs.readFileSync(ingest.logFilePath(home), 'utf8');
+    assert.match(logContent, /WARN: self-registration failed \(workspaceId=p\): registry write boom/);
+  } finally { rm(home); }
+});
+
 test('runIngestLoop survives a monitor crash (counts the error, keeps looping)', () => {
   const home = tmpHome();
   try {
@@ -483,5 +653,148 @@ test('runIngestLoop still surfaces a NON-lock store error (does not swallow arbi
       home, backend: 'journal', workspaceId: 'p', maxIterations: 2,
       run, sleep: () => {}, restartBackoffMs: 0, io,
     }), /unexpected bug/, 'a non-lock error must still propagate (fail-open is only for the lock signals)');
+  } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// Daemon error/crash logging (P0 fix): a startup or main-loop failure used to
+// exit silently — nothing captured anywhere. Every failure path now appends a
+// timestamped line to ~/.anti-hall/devswarm-ingest.log (the SAME stable log
+// install-devswarm-ingest.js wires launchd/systemd/cron's stdout+stderr into)
+// BEFORE the process would exit non-zero.
+// ---------------------------------------------------------------------------
+
+test('logFilePath matches the installer\'s stable LOG constant (same file both sides write/read)', () => {
+  const installer = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+  const home = tmpHome();
+  try {
+    assert.strictEqual(ingest.logFilePath(home), path.join(home, '.anti-hall', 'devswarm-ingest.log'));
+    // Confirm this derivation is byte-identical to the installer's LOG (built from
+    // os.homedir()) shape: same relative suffix under the home dir.
+    assert.ok(installer.LOG.endsWith(path.join('.anti-hall', 'devswarm-ingest.log')));
+  } finally { rm(home); }
+});
+
+test('appendLog writes a timestamped [ISO] line and appends (never truncates) across multiple calls', () => {
+  const home = tmpHome();
+  try {
+    ingest.appendLog(home, 'first line');
+    ingest.appendLog(home, 'second line');
+    const content = fs.readFileSync(ingest.logFilePath(home), 'utf8');
+    const lines = content.trim().split('\n');
+    assert.equal(lines.length, 2);
+    assert.match(lines[0], /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] first line$/);
+    assert.match(lines[1], /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] second line$/);
+  } finally { rm(home); }
+});
+
+test('appendLog is FAIL-OPEN: a logging failure is swallowed and never throws', () => {
+  const boomFs = {
+    mkdirSync() { throw new Error('disk full'); },
+    appendFileSync() { throw new Error('disk full'); },
+  };
+  assert.doesNotThrow(() => ingest.appendLog('/does/not/matter', 'x', boomFs));
+});
+
+test('runIngestLoop logs the lock-refusal reason to the stable log before returning started:false', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const held = ingest.acquireIngestLock(home, undefined, wt);
+    assert.ok(held, 'pre-held the lock');
+    try {
+      const summary = ingest.runIngestLoop({
+        home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
+        run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
+      });
+      assert.equal(summary.started, false);
+      const logContent = fs.readFileSync(ingest.logFilePath(home), 'utf8');
+      assert.match(logContent, /\[\d{4}-\d{2}-\d{2}T.*\] ingest daemon refused to start: another monitor consumer is already running/);
+    } finally { held(); }
+  } finally { rm(home); }
+});
+
+test('runIngestLoop logs a startup line with worktree + workspaceId once the store opens', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
+    });
+    assert.equal(summary.started, true);
+    const logContent = fs.readFileSync(ingest.logFilePath(home), 'utf8');
+    assert.match(logContent, new RegExp('\\[\\d{4}-\\d{2}-\\d{2}T.*\\] ingest daemon started, worktree=' + wt.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ', workspaceId=p'));
+  } finally { rm(home); }
+});
+
+test('runIngestLoop APPENDS a timestamped ERROR+stack line to the log BEFORE rethrowing a startup (store-open) failure', () => {
+  const home = tmpHome();
+  try {
+    const io = {
+      openStore() { throw new Error('store open boom'); },
+    };
+    assert.throws(() => ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {}, io,
+    }), /store open boom/);
+    const logContent = fs.readFileSync(ingest.logFilePath(home), 'utf8');
+    assert.match(logContent, /^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] ERROR: store open boom$/m, 'the ERROR line carries the message');
+    assert.match(logContent, /Error: store open boom\n\s+at /, 'a stack trace follows the ERROR line');
+  } finally { rm(home); }
+});
+
+test('runIngestLoop APPENDS a timestamped ERROR+stack line for a NON-lock mid-loop failure too, before rethrowing', () => {
+  const home = tmpHome();
+  try {
+    const io = {
+      openStore(args) {
+        const real = storeLib.openStore(args);
+        real.appendMessage = function () { throw new Error('unexpected mid-loop bug'); };
+        return real;
+      },
+    };
+    const run = () => ({ ok: true, raw: JSON.stringify([{ message: 'x', createdAt: '2026-01-01T00:00:00Z' }]) });
+    assert.throws(() => ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 2,
+      run, sleep: () => {}, restartBackoffMs: 0, io,
+    }), /unexpected mid-loop bug/);
+    const logContent = fs.readFileSync(ingest.logFilePath(home), 'utf8');
+    assert.match(logContent, /ERROR: unexpected mid-loop bug/);
+  } finally { rm(home); }
+});
+
+test('runIngestLoop is FAIL-OPEN when the ERROR log write itself fails — the original error still propagates, unmasked', () => {
+  const home = tmpHome();
+  try {
+    const boomLogFs = {
+      mkdirSync() { throw new Error('log disk full'); },
+      appendFileSync() { throw new Error('log disk full'); },
+    };
+    const io = {
+      openStore() { throw new Error('store open boom'); },
+      logFs: boomLogFs,
+    };
+    assert.throws(() => ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {}, io,
+    }), /store open boom/, 'the original error still propagates even though logging it failed');
+  } finally { rm(home); }
+});
+
+test('a lock leaked by NO earlier release is still released when store-open throws (finally always runs)', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const io = { openStore() { throw new Error('store open boom'); } };
+    assert.throws(() => ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {}, io,
+    }));
+    // The lock must have been released in `finally` despite the throw — a fresh
+    // acquire must succeed immediately (no leaked lock forcing a stale-steal wait).
+    const rel = ingest.acquireIngestLock(home, undefined, wt);
+    assert.ok(rel, 'lock was released despite the startup failure — not leaked');
+    rel();
   } finally { rm(home); }
 });

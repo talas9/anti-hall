@@ -28,6 +28,24 @@
 // child skip the nag WITHOUT the turn-start heartbeat's false-silence. Until that
 // exists, the bounded forced-ack is the only correct behavior.
 //
+// INBOUND GATE (#29): alongside the outbound message-parent forcing above, this
+// hook also checks whether the child has unpulled/unread PARENT messages waiting.
+// When it does, the SAME forced-ack reason (still gated by the SAME MAX_BLOCKS
+// cap / state file below — this is not a second, independent budget) is extended
+// to tell the child to `inbox pull` / read / ack the backlog before it stops, so a
+// child cannot go idle sitting on an unread parent message. The check is layered:
+//   1. Durable (pure fs, non-destructive): readUnread() on the child's own
+//      descriptor inbox (workspaces/<id>.json -> inboxPath/cursorPath) — the same
+//      primitive devswarm-child-turn.js already uses.
+//   2. STRICT (default ON; ANTIHALL_DEVSWARM_CHILD_GATE_STRICT=0 disables): when
+//      the durable check finds nothing, ONE bounded, NON-DESTRUCTIVE `hivecontrol
+//      workspace message-count` spawn (finite timeout, NEVER read-messages /
+//      monitor) catches a native backlog the child has never `inbox pull`ed. Only
+//      probed when we are about to block anyway (never on the cap-exhausted
+//      yield path), so a healthy child pays zero extra spawn cost.
+// Fail-open throughout: any probe error/timeout/missing binary -> treated as "no
+// unread" (never blocks on an unknown state).
+//
 // CAPPED + SELF-RESETTING (loop-safe): we block at most MAX_BLOCKS times inside a
 // single stop episode, then yield (allow the stop) so we can NEVER hard-loop the
 // child. The cap is tracked in this hook's OWN DISTINCT state file (separate from
@@ -54,10 +72,13 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 
 const { isDevswarmActive } = require('./lib/devswarm-detect.js');
 const { isChildWorkspace } = require('./lib/devswarm-role.js');
 const { isSkipped } = require('./skip-guard.js');
+const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
+const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 
 // How many times a single stop episode may be forced to heartbeat before we
 // yield. One forced-ack is usually enough; a small budget lets a child that
@@ -104,6 +125,68 @@ function writeState(stateFile, state) {
   } catch (_) {
     return false; // could not persist the cap -> caller fails open (never blocks)
   }
+}
+
+// ONE bounded, NON-DESTRUCTIVE probe timeout — must never wedge a Stop.
+const MESSAGE_COUNT_TIMEOUT_MS = 5000;
+
+// strictEnabled(env) -> bool. ANTIHALL_DEVSWARM_CHILD_GATE_STRICT default ON;
+// '0' disables the native fallback probe (pure-fs durable-unread check only).
+function strictEnabled(env) {
+  const e = env || {};
+  const raw = e.ANTIHALL_DEVSWARM_CHILD_GATE_STRICT;
+  return String(raw === undefined ? '1' : raw).trim() !== '0';
+}
+
+// readDurableUnread(env, home) -> { known, count }. NON-DESTRUCTIVE unread check
+// on the child's OWN durable descriptor inbox (workspaces/<DEVSWARM_BUILDER_ID>
+// .json -> inboxPath/cursorPath), via the same inbox-cursor primitive devswarm-
+// child-turn.js uses. Pure fs — never drains the native queue, never spawns
+// hivecontrol. Fail-safe: ANY error -> { known: false, count: 0 }.
+function readDurableUnread(env, home) {
+  try {
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return { known: false, count: 0 };
+    const descPath = path.join(devswarmRoot(home), 'workspaces', id + '.json');
+    let desc;
+    try { desc = JSON.parse(fs.readFileSync(descPath, 'utf8')); } catch (_) { return { known: false, count: 0 }; }
+    if (!desc || typeof desc !== 'object' || !desc.inboxPath) return { known: false, count: 0 };
+    const u = readUnread(desc.inboxPath, desc.cursorPath);
+    return { known: !!u.known, count: u.known ? u.count : 0 };
+  } catch (_) {
+    return { known: false, count: 0 };
+  }
+}
+
+// probeNativeMessageCount(env) -> int | null. ONE bounded, NON-DESTRUCTIVE
+// `hivecontrol workspace message-count` spawn (finite timeout, NEVER read-messages
+// or monitor). Returns null on any error/timeout/non-zero exit/unparseable output
+// (unknown -> fail-open, never counted as unread).
+function probeNativeMessageCount(env) {
+  try {
+    const r = spawnSync('hivecontrol', ['workspace', 'message-count'], {
+      encoding: 'utf8', timeout: MESSAGE_COUNT_TIMEOUT_MS, env,
+    });
+    if (r.error || r.status !== 0 || r.signal) return null;
+    const m = String(r.stdout || '').trim().match(/-?\d+/);
+    if (!m) return null;
+    const n = parseInt(m[0], 10);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// hasUnreadParentMessages(env, home) -> bool. Durable (pure-fs) check FIRST; when
+// it shows nothing AND STRICT mode is enabled, a bounded native message-count
+// probe catches a backlog the child has never `inbox pull`ed. Fail-open: any probe
+// error -> false (never blocks on an unknown state).
+function hasUnreadParentMessages(env, home) {
+  const durable = readDurableUnread(env, home);
+  if (durable.known && durable.count > 0) return true;
+  if (!strictEnabled(env)) return false;
+  const native = probeNativeMessageCount(env);
+  return Number.isFinite(native) && native > 0;
 }
 
 function main() {
@@ -164,7 +247,17 @@ function main() {
   // would block EVERY Stop forever (fail-closed). Mirrors devswarm-parent-gate.js.
   if (!writeState(stateFile, { blocks: blocks + 1, lastBlockAt: now })) return;
 
+  // INBOUND check only now that we are actually about to block (never on the
+  // cap-exhausted yield path above) — a healthy child never pays the probe cost.
+  const unreadPending = hasUnreadParentMessages(process.env, os.homedir());
+  const inboundPrefix = unreadPending
+    ? 'DEVSWARM CHILD INBOX — you have unpulled/unread parent message(s): run ' +
+      '`node scripts/devswarm.js inbox pull <DEVSWARM_BUILDER_ID>` (or `inbox read` ' +
+      'if already pulled), then `inbox ack` once addressed — BEFORE you stop. '
+    : '';
+
   const reason =
+    inboundPrefix +
     'DEVSWARM CHILD WORKSPACE — before you stop, emit a heartbeat / self-report to ' +
     'your parent orchestrator so you do not silently drop off its radar and later ' +
     'read as stale. Run `hivecontrol workspace message-parent` with a one-line status ' +

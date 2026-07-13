@@ -264,6 +264,30 @@ function resolveMonitorTimeoutSec(explicit, env) {
   return DEFAULT_MONITOR_TIMEOUT_SEC;
 }
 
+// logFilePath(home) — the SAME stable log install-devswarm-ingest.js wires
+// launchd's StandardOutPath/StandardErrorPath, systemd's StandardOutput/
+// StandardError, and the cron fallback's `>> ... 2>&1` into
+// (~/.anti-hall/devswarm-ingest.log). Keeping the path derivation identical on
+// both sides means a startup failure is diagnosable from ONE file regardless of
+// which scheduler launched the daemon.
+function logFilePath(home) {
+  return path.join(home || os.homedir(), '.anti-hall', 'devswarm-ingest.log');
+}
+
+// appendLog(home, line, fsi) — best-effort timestamped append. A startup
+// failure (bad lock, store-open error) used to exit silently, leaving nothing to
+// diagnose; every call here writes a `[ISO] <line>` entry BEFORE the caller acts
+// on the failure. Fully fail-open: a logging failure (disk full, permissions)
+// is swallowed and must NEVER mask or replace the error it was trying to record.
+function appendLog(home, line, fsi) {
+  const F = fsi || fs;
+  try {
+    const p = logFilePath(home);
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    F.appendFileSync(p, '[' + new Date().toISOString() + '] ' + line + '\n');
+  } catch (_) { /* fail-open: a logging failure must never mask the original error */ }
+}
+
 // runIngestLoop(opts) -> summary. The supervised daemon body. Acquires the
 // single-consumer lock (refuses if held), opens the store, then loops:
 //   monitor once -> ingest -> deriveSummary -> (on child exit/crash) backoff and
@@ -278,9 +302,21 @@ function runIngestLoop(opts) {
   // o.cwd/process.cwd(). Both lock keying AND the store partition (workspaceId) derive
   // from it so two daemons for DIFFERENT repos never collide (#15).
   const worktree = ('worktree' in o) ? o.worktree : resolveDaemonWorktree(o.cwd);
+  // WORKTREE IS GROUND TRUTH for this daemon's own identity (mirrors devswarm.js's
+  // callerIdentity P0 fix): a resolved worktree's primaryWorkspaceId is authoritative
+  // over env.DEVSWARM_BUILDER_ID. Without this, a daemon that happens to inherit a
+  // DEVSWARM_BUILDER_ID naming a CHILD workspace (ordinary env inheritance from a
+  // parent process, or a stray export) would ingest AND self-register under that
+  // child's id — clobbering the child's registry row and splitting the store
+  // partition the worktree actually owns. No installed launchd/systemd/cron unit
+  // ever bakes DEVSWARM_BUILDER_ID (audit-confirmed — see buildPlist/buildService/
+  // buildCronLine in install-devswarm-ingest.js), so worktree-derived IS the real
+  // installed daemon's identity; env is trusted ONLY as a fallback when the
+  // worktree does not resolve at all (no ground truth to contradict it). Explicit
+  // o.workspaceId (test override) still wins over both — unchanged.
   const workspaceId = o.workspaceId
-    || (o.env && o.env.DEVSWARM_BUILDER_ID)
     || (worktree ? installIngest.primaryWorkspaceId(worktree) : null)
+    || (o.env && o.env.DEVSWARM_BUILDER_ID)
     || 'primary';
   const hbHash = worktree ? safeWorktreeHash(worktree) : workspaceId;
   const run = o.run || defaultMonitorRun;
@@ -290,17 +326,70 @@ function runIngestLoop(opts) {
   const intervalSec = Number.isFinite(o.intervalSec) ? o.intervalSec : DEFAULT_MONITOR_INTERVAL_SEC;
   const timeoutSec = resolveMonitorTimeoutSec(o.timeoutSec, o.env);
 
+  const logFs = o.io && o.io.logFs;
   const release = (o.io && o.io.lock) ? o.io.lock(home) : acquireIngestLock(home, o.io, worktree);
   if (!release) {
-    return { ok: false, started: false, reason: 'another monitor consumer is already running (ingest lock held)' };
+    const reason = 'another monitor consumer is already running (ingest lock held)';
+    appendLog(home, 'ingest daemon refused to start: ' + reason, logFs);
+    return { ok: false, started: false, reason };
   }
 
   const openStore = (o.io && o.io.openStore) || store.openStore;
-  // PER-PROJECT store: this daemon opens ITS OWN worktree's store, keyed by the
-  // workspaceId it ingests under (primary-<worktreeHash>) -> store/<worktreeHash>/.
-  const s = openStore({ home, workspaceId, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
   const stats = { iterations: 0, inserted: 0, duplicate: 0, errors: 0 };
+  let s = null;
   try {
+    // PER-PROJECT store: this daemon opens ITS OWN worktree's store, keyed by the
+    // workspaceId it ingests under (primary-<worktreeHash>) -> store/<worktreeHash>/.
+    // Opening the store is part of STARTUP (not just the loop), so it lives inside
+    // this try — a startup failure here (bad backend, unwritable store dir) is
+    // logged the same way a mid-loop failure is, instead of exiting silently.
+    s = openStore({ home, workspaceId, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
+    appendLog(home, 'ingest daemon started, worktree=' + (worktree || '(unresolved)') + ', workspaceId=' + workspaceId, logFs);
+
+    // SELF-REGISTRATION (#34 fix): register THIS daemon's own primary/worktree id in
+    // the registry so deriveSummary's workspaces{} projection (which iterates ONLY
+    // store.listRegistry() ids — see devswarm-store.js deriveSummary ~638) actually
+    // includes this daemon's own partition. Without this, nothing on any real
+    // runtime path ever registers `primary-<hash>` (only the CLI's explicit
+    // `register-primary` did) — messages land in the messages table via
+    // appendMessage below, but workspaces['primary-<hash>'] never existed, so
+    // parent-gate's readOwnUnread and parent-inbox's own-unread always read 0 even
+    // with real unread messages sitting in the store. upsertRegistry is an
+    // idempotent UPSERT (ON CONFLICT DO UPDATE — sqlite; latest-row-wins — journal),
+    // so calling it every startup is safe and self-heals a missing/stale row. Only
+    // this daemon's OWN id is registered here — never a child id — and a distinct id
+    // means an existing child registry row is never touched.
+    //
+    // MERGE-PRESERVING (matches hooks/devswarm-child-turn.js's registerChildDescriptor
+    // read-before-write pattern): a prior explicit `register-primary` CLI call may
+    // have written a fuller row (real inboxPath/cursorPath/nudgeCommand). upsertRegistry
+    // itself has no partial-update support (both backends always write all fields —
+    // see devswarm-store.js), so every startup would otherwise null those fields back
+    // out. Read the existing row first and carry its projected fields forward instead
+    // of clobbering them; fail-open to null (the prior, harmless behavior) if the read
+    // itself errors.
+    try {
+      let existing = null;
+      try {
+        const rows = typeof s.listRegistry === 'function' ? s.listRegistry() : [];
+        existing = (rows || []).find((r) => r && String(r.id) === String(workspaceId)) || null;
+      } catch (_) { existing = null; }
+      s.upsertRegistry({
+        id: workspaceId,
+        worktreePath: worktree || null,
+        sessionId: (o.env && o.env.DEVSWARM_BUILDER_ID) || workspaceId || null,
+        inboxPath: existing ? existing.inboxPath : null,
+        cursorPath: existing ? existing.cursorPath : null,
+        nudgeCommand: existing ? existing.nudgeCommand : null,
+      });
+    } catch (e) {
+      // FAIL-OPEN: a registry-write error must NEVER crash or block the daemon's
+      // core drain — messages still get ingested even if self-registration hiccups
+      // (retried every startup, so a transient failure self-heals).
+      appendLog(home, 'WARN: self-registration failed (workspaceId=' + workspaceId + '): '
+        + (e && e.message ? e.message : String(e)), logFs);
+    }
+
     for (let i = 0; i < maxIterations; i++) {
       if (o.shouldStop && o.shouldStop()) break;
       // Heartbeat our lock each iteration so this live, long-lived consumer keeps
@@ -346,8 +435,15 @@ function runIngestLoop(opts) {
       stats.duplicate += ing.duplicate;
       if (ing.inserted > 0) store.deriveSummary(s, { home, env: o.env, now: o.now });
     }
+  } catch (e) {
+    // Startup (store-open) AND main-loop failures land here. Fail-open: APPEND a
+    // timestamped ERROR+stack line BEFORE this rethrows — today a startup failure
+    // exits silently, leaving nothing to diagnose. appendLog is itself fully
+    // try/catch-wrapped and can never mask this rethrow.
+    appendLog(home, 'ERROR: ' + (e && e.message ? e.message : String(e)) + (e && e.stack ? ('\n' + e.stack) : ''), logFs);
+    throw e;
   } finally {
-    try { s.close(); } catch (_) {}
+    try { if (s) s.close(); } catch (_) {}
     try { release(); } catch (_) {}
   }
   return { ok: true, started: true, workspaceId, stats };
@@ -393,10 +489,24 @@ function main() {
   // A real invocation runs unbounded until killed (launchd/systemd re-execs it on
   // exit). workspaceId is the ingesting workspace's own id (DEVSWARM_BUILDER_ID),
   // defaulting to 'primary' outside a workspace.
-  const summary = runIngestLoop({ env: process.env });
+  let summary;
+  try {
+    summary = runIngestLoop({ env: process.env });
+  } catch (_e) {
+    // runIngestLoop already appended a timestamped ERROR+stack line to the log
+    // (fail-open, BEFORE this rethrow) — this catch only turns it into a clean,
+    // controlled non-zero exit instead of falling through to Node's default
+    // uncaught-exception dump (which launchd/systemd/cron may or may not capture
+    // depending on platform).
+    process.exit(1);
+    return;
+  }
   if (!summary.started) {
+    // The lock-refusal case already appended its own log line inside
+    // runIngestLoop (see the `!release` branch above) before returning here.
     fs.writeSync(2, JSON.stringify(summary) + '\n');
     process.exit(1);
+    return;
   }
   process.exit(0);
 }
@@ -410,4 +520,5 @@ module.exports = {
   messageHash, stableJson, normalizeMonitorPayload,
   ingestPayload, defaultMonitorRun, runIngestLoop,
   DEFAULT_MONITOR_TIMEOUT_SEC, resolveMonitorTimeoutSec,
+  logFilePath, appendLog,
 };

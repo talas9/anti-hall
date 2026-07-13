@@ -194,13 +194,16 @@ function buildFormation(a) {
   const mult = (typeof a.multiplier === 'number' && a.multiplier >= 1)
     ? Math.floor(a.multiplier) : 1;
   const codexUp = a.codexAvailable !== false;
-  // Fable routing is policy-disabled (owner call, 2026-07-02): negative community feedback
-  // reports it as over-restrictive/refusal-prone, and a refusal would pass StructuredOutput
-  // validation as a "successful" verdict rather than triggering fallback. Sonnet 5 stays
-  // primary Reviewer regardless of args.fableAvailable until Fable's track record improves.
-  const reviewerModel = false && a.fableAvailable === true ? 'fable' : 'sonnet';
+  // Fable routing re-enabled (owner call, 2026-07-12): the earlier policy-disable
+  // (2026-07-02, over-restrictive/refusal-prone reports) is reversed now that Fable 5 is
+  // available. KNOWN RESIDUAL RISK (accepted by the owner, not mitigated by this code): a
+  // soft refusal can still pass StructuredOutput validation as a "successful" verdict rather
+  // than triggering the Sonnet 5 fallback in investigateAgent() below — that fallback only
+  // catches a null/falsy agent() result (spawn failure/timeout), not a schema-conformant
+  // refusal. Revisit if that resurfaces as a real problem with Fable 5.
+  const reviewerModel = a.fableAvailable === true ? 'fable' : 'sonnet';
   const roles = [
-    // Reviewer = Sonnet 5 (Fable routing disabled, see above).
+    // Reviewer = Fable when available (see above), else Sonnet 5.
     { role: 'reviewer', opts: { model: reviewerModel, effort: 'xhigh' } },
     { role: 'auditor', opts: { model: 'opus', effort: 'high' } },
     {

@@ -37,9 +37,10 @@ agents and converge on a single consolidated answer — not an open-ended loop.
 
 The 3N auditors are split **exactly in thirds** — one third per trio seat:
 
-- **N Reviewers = Sonnet 5 (`model:"sonnet"`), at effort `xhigh`** — correctness /
-  architecture lens. *If Fable returns to general availability, reconsider this seat for
-  the flagship tier.*
+- **N Reviewers = Fable when available (`model:"fable"`), else Sonnet 5 (`model:"sonnet"`),
+  at effort `xhigh`** — correctness / architecture lens. Fable routing is RE-ENABLED (see
+  [MODEL-POLICY.md](../MODEL-POLICY.md)); falls back to Sonnet 5 then Opus if Fable is
+  unavailable or returns null/falsy.
 - **N Auditors = the latest Opus (`model:"opus"`), at full reasoning depth (effort `high`)** — divergent
   regression & coupling lens (a different Claude generation, orthogonal lens).
 - **N Critics = the latest OpenAI Codex** when available — a genuinely different model

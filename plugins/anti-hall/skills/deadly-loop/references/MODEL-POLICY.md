@@ -57,25 +57,32 @@ is Opus — never a weaker/cheaper model.
 | **Auditor** | latest Claude Opus (`model: "opus"`) | `high` | divergent: regression & coupling hunter |
 | **Critic** | Codex pinned to `gpt-5.6-sol` (`codex:codex-rescue`; model pinned via the brief prefix, not the spawn's `model:` option) — unless Codex implemented the diff, then Opus/Sonnet 5 | `xhigh` reasoning (→ `high`) | adversarial failure-mode hunter |
 
-*Fable routing is policy-disabled (2026-07-02): reported over-restrictive/refusal-prone by
-the community, and a soft refusal would pass StructuredOutput validation as a "successful"
-verdict rather than triggering fallback — worse than unavailability. Sonnet 5 is the fixed
-Reviewer model regardless of `args.fableAvailable`; reconsider only if Fable's track record
-improves.*
+*Fable routing is RE-ENABLED (2026-07-12, owner call): the earlier policy-disable
+(2026-07-02, reported over-restrictive/refusal-prone by the community) is reversed now that
+Fable 5 is available. When `fable-availability.js` reports `args.fableAvailable === true`,
+the Reviewer seat tries Fable FIRST, falling back to Sonnet 5 then Opus per the availability
+matrix below. KNOWN RESIDUAL RISK (accepted, not mitigated): a soft refusal can still pass
+StructuredOutput validation as a "successful" verdict rather than triggering fallback — the
+fallback chain only catches a null/falsy `agent()` result (spawn failure/timeout), not a
+schema-conformant refusal. Revisit if that resurfaces as a real problem with Fable 5.*
 
 All three are dispatched **in the SAME message** so they run truly in parallel.
 
 ### Reviewer — correctness / architecture auditor
 
-- **Model:** Sonnet 5 — pass `model: "sonnet"` to the Agent tool (the `sonnet`
-  tier token resolves to Sonnet 5 / `claude-sonnet-5` at runtime; always resolve
-  "latest", never hardcode a version). Fable routing is policy-disabled (see above) —
-  do not route this seat to Fable even when `fableAvailable` is true.
-- **Fable availability (informational only, not currently acted on):** the
-  `fable-availability.js` SessionStart hook still checks
-  `~/.anti-hall/fable-availability.json` once per session for visibility, but neither
-  ship-it.workflow.js nor deadly-loop.workflow.js currently routes the Reviewer seat to
-  Fable regardless of the flag's value — see the policy-disabled note above.
+- **Model:** Sonnet 5 by default — pass `model: "sonnet"` to the Agent tool (the
+  `sonnet` tier token resolves to Sonnet 5 / `claude-sonnet-5` at runtime; always
+  resolve "latest", never hardcode a version). Fable routing is RE-ENABLED (see
+  above) — when `fableAvailable` is true, route this seat to Fable first (`model:
+  "fable"`, effort `xhigh`), falling back to Sonnet 5 then Opus if Fable returns
+  null/falsy.
+- **Fable availability (acted on):** the `fable-availability.js` SessionStart hook
+  checks `~/.claude.json`'s `modelAccessCache`/`additionalModelOptionsCache` once
+  per session and threads `args.fableAvailable=true` into ship-it/deadly-loop
+  Workflow invocations when Fable 5 is actually available. Both
+  ship-it.workflow.js (`reviewerAgent`'s `tryFable` branch) and
+  deadly-loop.workflow.js (`buildFormation`'s `reviewerModel` branch) route the
+  Reviewer seat to Fable when the flag is true — see the re-enabled note above.
 - **Effort:** `xhigh`. `effort` defaults to `high`; `xhigh` is the recommended
   max for agentic/review work. **NEVER use effort `max` for this seat inside
   loops** — Sonnet 5 TTFT at `max` is ~163 s and is cost-prohibitive at loop

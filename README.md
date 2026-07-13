@@ -279,18 +279,29 @@ unread/idle state of active workspaces + recommends archiving a completed one, p
 live per-turn status table of every active workspace — status/finish-rate/unread/
 last-activity, attention-needing rows first) and `devswarm-parent-gate` (blocks the
 Primary from ending a turn while a child has unread backlog or the supervisor judged it
-stale/escalated) on the Primary; `devswarm-child-turn` (turn-authored heartbeat +
+stale/escalated **OR the Primary itself has unread parent/peer messages of its own**,
+with the same imperative "STOP and read them FIRST" wording as the child gate — as of
+v0.56.0 the Primary can no longer silently sit on its own inbound) on the Primary; `devswarm-child-turn` (turn-authored heartbeat +
 reminder to report to the parent, plus a non-destructive surfacing of unread parent
 messages from the child's own durable inbox — the drain that fills that inbox is the
 CLI's `inbox pull`, a bounded guard-safe one-shot: non-destructive `message-count` gate
-first, then at most one bounded `read-messages`, never `monitor`) and `devswarm-child-gate`
-(forced self-report before idling, now silent when the child already heartbeated fresh
-within 5 minutes, fixing an over-nag) on a child. They sit over a dual-backend store
+first, then at most one bounded `read-messages`, never `monitor` — surfaced as IMPERATIVE
+PRIORITY wording, plus detection of a `[[ANTIHALL_ARCHIVE_REQUEST]]` marker in an unread
+message, and mechanical per-turn descriptor registration so the parent can always discover
+this child) and `devswarm-child-gate` (forced self-report before idling; v0.54.0's
+heartbeat-freshness silencing was REVERTED in v0.54.1 — it false-silenced a child that
+worked <5 min then stopped without reporting, so the gate always demands a report per
+unchanged blocking state, bounded only by the per-episode cap `MAX_BLOCKS = 2`; STRICT mode
+backs the durable-inbox check with a bounded native `message-count` probe) on a child. Two
+roles hand off teardown, never mechanically: the Primary verifies merged/tested/deployed
+per its own repo policy, then `devswarm.js archive-request <id>` asks the child to archive;
+the child confirms with its own user, then runs `devswarm.js archive <id>`. They sit over a
+dual-backend store
 (`companion/lib/devswarm-store.js` — feature-detects `node:sqlite`, else an NDJSON
 journal; hooks read only its `summary.json` projection, never the DB), a structured CLI
 (`scripts/devswarm.js` — register/register-primary/heartbeat/inbox
-[pull/read/count/ack/messages/read-primary]/workspaces/gate/nudge/archive/migrate; see
-`docs/KB-devswarm-hivecontrol.md` §8.8 for the full reference), a PER-PROJECT ingest
+[pull/read/count/ack/messages/read-primary]/workspaces/gate/nudge/archive/archive-request/migrate;
+see `docs/KB-devswarm-hivecontrol.md` §8.8 for the full reference), a PER-PROJECT ingest
 daemon (`companion/devswarm-ingest.js`, the one native consumer wrapping `hivecontrol
 workspace monitor` into the store — install ONE per repo/worktree you want covered, via
 `companion/install-devswarm-ingest.js`; auto-installed/refreshed by `/anti-hall:update`

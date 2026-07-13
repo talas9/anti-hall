@@ -68,6 +68,61 @@ surfaces `ok:false` and writes no partial NDJSON. (2) It is pull-not-push: recep
 one child turn (no background child drainer — a child cannot host the blocking `monitor`
 daemon). Full detail: `docs/KB-devswarm-hivecontrol.md` (v0.54.2 note).
 
+## Always-listening reception (child, per turn)
+
+The child-side reception loop above is **continuous, not one-shot**: `hooks/devswarm-child-turn.js`
+fires on every child `UserPromptSubmit` and (1) mechanically writes/refreshes the child's own
+descriptor (`workspaces/<DEVSWARM_BUILDER_ID>.json`) every turn — fixing #31, where the parent
+previously couldn't see all its children because nothing wrote that descriptor for the child
+side — and (2) checks the child's OWN durable inbox for unread parent messages, injecting an
+**IMPERATIVE PRIORITY** segment (not advisory) when `count > 0`: "STOP and address these parent
+message(s) FIRST before continuing." Registration is MERGE-preserving (an existing
+`inboxPath`/`cursorPath` set by a prior `inbox pull` is never clobbered) and fail-open (a
+descriptor-write failure never blocks or crashes the turn).
+
+The **Stop-side gate** (`hooks/devswarm-child-gate.js`) backs this up so a child cannot simply
+ignore the per-turn nudge and go idle: it force-blocks Stop (capped, self-resetting) until the
+child's own durable inbox shows no unread backlog. By default it also runs a bounded **STRICT**
+fallback probe — a single non-destructive `hivecontrol workspace message-count` call (5 s
+timeout) — to catch a native backlog the child never `inbox pull`ed yet; `ANTIHALL_DEVSWARM_CHILD_GATE_STRICT=0`
+disables that fallback probe and leaves only the pure-fs durable-inbox check. Both checks are
+fail-open (any probe error → not blocked).
+
+## Archive flow — both roles
+
+anti-hall never archives a workspace mechanically. Teardown is always a two-sided, human-confirmed
+handoff:
+
+- **PARENT role.** Before asking a child to tear down, the Primary must VERIFY the workspace is
+  merged, tested, and deployed **per the parent repo's OWN policy, using its own tooling** —
+  anti-hall does not and cannot check this (it stays pure fs, no git/test/gh spawn). Once
+  satisfied, run:
+  ```bash
+  node scripts/devswarm.js archive-request <childId|childBranch> [--reason "TEXT"] [--child-branch B]
+  ```
+  This is SEND-ONLY: it resolves the child's branch (explicit `--child-branch`, then the
+  descriptor's own `branch` field if one is ever set, then a `hivecontrol workspace list
+  children` lookup by branch/id/worktree, then finally the positional id itself) and posts a
+  `[[ANTIHALL_ARCHIVE_REQUEST]]`-prefixed message via `hivecontrol workspace message-child
+  <branch> <msg>`. It never verifies merged/tested/deployed itself and never runs `archive` on
+  the child's behalf — fail-open on a spawn error (`ok:false`, never a throw). The Primary is
+  independently nudged toward this flow every turn once the store derives a workspace
+  `archive_ready` (all required completion gates met) — see `devswarm-parent-inbox.js`'s
+  archive-ready segment. **If competing native-queue consumers make reception unreliable, see
+  §8.7.2 in the KB before relying on this flow** — the "second consumer" retirement recipe.
+- **CHILD role.** A child always receives parent messages via the wrapper (`inbox pull`, above)
+  — unread parent messages are surfaced as **PRIORITY** and may interrupt whatever the child is
+  currently doing. On seeing the `[[ANTIHALL_ARCHIVE_REQUEST]]` marker in an unread message
+  (detected by both `devswarm-child-turn.js`'s per-turn scan and the Stop-gate's own check), the
+  child must **confirm with its own user first**, then run:
+  ```bash
+  node scripts/devswarm.js archive <id>
+  ```
+  **NEVER auto-archive.** anti-hall never archives mechanically on either side of this
+  handshake — the CLI only ever archives-by-absence on anti-hall's own registry (moves the
+  descriptor to `archived/`, tombstones the store entry) and surfaces a manual "remove
+  workspace in the DevSwarm app" step, because hivecontrol itself has no teardown command.
+
 ## CLI reference — `scripts/devswarm.js`
 
 THE structured interface (CLI over MCP — owner preference). Every subcommand emits one
@@ -84,14 +139,53 @@ Quick reference:
 | `heartbeat <id> [--progress N] [--phase X] [--wip T]...` | Turn-authored heartbeat — never fabricates unsupplied fields. |
 | `inbox pull <id> [--session S]` | CHILD-side: bounded, guard-safe native-queue drain into the durable inbox (count-gate → at-most-one `read-messages`, never `monitor`). |
 | `inbox read <id>` / `inbox count <id>` / `inbox ack <id> [--to N]` | CHILD-side durable-inbox cursor read/count/advance. |
-| `inbox messages <id> [--unread] [--ack]` | Primary/store non-destructive read — bodies straight from the store, no descriptor needed, never touches the native queue. |
-| `inbox read-primary <id>` | `inbox messages <id> --unread --ack` under one name. |
+| `inbox messages <id> [--unread] [--ack] [--ack-as-owner]` | Primary/store non-destructive read — bodies straight from the store, no descriptor needed, never touches the native queue. **Ack-ownership guard (v0.56.0):** `--ack` refuses (`ok:false`) unless the caller's own identity (derived from cwd — a git worktree resolves to its own workspace id; `DEVSWARM_BUILDER_ID` cannot override a *different* cwd-derived identity, closing an env-spoof path) matches `<id>`. Pass `--ack-as-owner` for a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog). |
+| `inbox read-primary <id> [--ack-as-owner]` | `inbox messages <id> --unread --ack` under one name — same ack-ownership guard as above. |
 | `workspaces list` | Emit the `summary.json` projection. |
 | `gate <id> --set CSV --clear CSV` | Mark/unmark named completion gates (drives `archive_ready`). |
 | `nudge <id>` | Poke-or-escalate one workspace on demand. |
 | `archive <id>` | Archive-by-absence on anti-hall's own registry; surfaces the manual DevSwarm-app removal step. |
 | `archive-ignore <id>` / `archive-unignore <id>` | Mute/unmute the archive-ready reminder for one workspace. |
-| `migrate` | Idempotent, non-destructive, count-verified fold of legacy on-disk state into the store. |
+| `archive-request <childId\|childBranch> [--reason TEXT] [--child-branch B]` | PARENT-side: send-only, posts a `[[ANTIHALL_ARCHIVE_REQUEST]]` message asking the child to archive. Never verifies merged/tested/deployed itself. |
+| `migrate` | Idempotent, non-destructive, count-verified fold of legacy on-disk state into the store. `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` env marks an imported backlog as already-read (see `migrate-state.js --mark-read`, below). |
+
+## Migrating historical backlog without a false unread wall — `migrate-state.js --mark-read`
+
+`scripts/migrate-state.js` (a separate script from `devswarm.js`, run once per repo checkout)
+also auto-migrates the DevSwarm store as part of its normal legacy-state fold. By default an
+imported legacy source with no consumed-cursor of its own (e.g. a pre-0.54 shell-loop NDJSON)
+lands at cursor `0` — its ENTIRE backlog reads as unread, which can trip the parent neglect-gate
+on a machine that's simply catching up on old history, not a genuinely neglected child. Pass
+`--mark-read` (or set env `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1`) to advance the JUST-imported
+backlog's cursor to its post-import message count, so historical migration reads as already-seen:
+
+```bash
+node plugins/anti-hall/scripts/migrate-state.js --mark-read [dir]
+```
+
+Only affects the migration's own DevSwarm-store fold (not the legacy `.anti-hall-progress.md`/
+`.anti-hall-history.md`/`.planning/` copies, which are unconditional and unrelated to read state).
+Any message that arrives AFTER this migration call returns is unaffected and still surfaces as
+unread normally. Default behavior (flag/env absent) is unchanged — the legacy cursor is preserved
+exactly as it was before this option existed.
+
+## #32 — retiring a competing native-queue consumer (PARENT role — read this before archive-request)
+
+If parent↔child reception feels unreliable (messages seem to vanish, or the durable inbox and the
+native queue disagree), the most likely cause is a **second process also draining
+`hivecontrol workspace monitor`/`read-messages` against the same queue** — a leftover cron job, a
+respawning shell loop, a second `pm2`/`launchd`/`systemd` unit, or a `package.json` start script
+someone left running from before this substrate was installed. Per §8.7.1 of the KB, exactly one
+process may ever be the native consumer of a given queue — two concurrent consumers silently SPLIT
+the queue (each drains what the other doesn't see) with no error and no way to recover the split.
+**anti-hall cannot mechanically detect or kill an EXTERNAL, non-tool-call consumer** — that's
+outside any hook's reach. Detection + retirement is a manual, PARENT-role action:
+`docs/KB-devswarm-hivecontrol.md` §8.7.2 has the full identify → stop → verify recipe
+(`ps aux | grep 'hivecontrol.*monitor'` → kill the PID + remove its respawn config → re-run
+`node hooks/doctor.js`). Do this BEFORE relying on `archive-request` or any reception flow above
+if you suspect a second consumer — the guard-redirect and the ingest daemon only protect against
+anti-hall's OWN tooling calling `monitor`/`read-messages` twice; they cannot see a process outside
+anti-hall's control.
 
 ## What this is for
 

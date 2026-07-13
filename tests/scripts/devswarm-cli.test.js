@@ -40,6 +40,43 @@ test('register writes the descriptor + store registry + summary projection', () 
   } finally { rm(home); }
 });
 
+// ---- #36 cross-project-bleed fix: repoId on the descriptor -----------------
+test('register populates repoId from env.DEVSWARM_REPO_ID', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(
+      ['register', 'w-repo', '--worktree', '/wt/w-repo', '--session', 's'],
+      ctx(home, { env: { DEVSWARM_REPO_ID: 'repo-a' } })
+    );
+    assert.equal(r.result.ok, true);
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'w-repo'), 'utf8'));
+    assert.equal(desc.repoId, 'repo-a');
+  } finally { rm(home); }
+});
+
+test('register with NO DEVSWARM_REPO_ID and no --repo-id flag leaves repoId null (fail-open back-compat)', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['register', 'w-norepo', '--worktree', '/wt/w-norepo', '--session', 's'], ctx(home));
+    assert.equal(r.result.ok, true);
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'w-norepo'), 'utf8'));
+    assert.equal(desc.repoId, null);
+  } finally { rm(home); }
+});
+
+test('register --repo-id flag overrides env.DEVSWARM_REPO_ID', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(
+      ['register', 'w-flag', '--worktree', '/wt/w-flag', '--session', 's', '--repo-id', 'repo-flag'],
+      ctx(home, { env: { DEVSWARM_REPO_ID: 'repo-env' } })
+    );
+    assert.equal(r.result.ok, true);
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'w-flag'), 'utf8'));
+    assert.equal(desc.repoId, 'repo-flag');
+  } finally { rm(home); }
+});
+
 test('register rejects an unsafe id (never path-joins hostile input)', () => {
   const home = tmpHome();
   try {
@@ -313,9 +350,14 @@ test('inbox messages reads bodies from the store NON-destructively (no descripto
 
 test('inbox read-primary advances the durable ACK cursor (under cursors/, not store/) and --unread then excludes read', () => {
   const home = tmpHome();
+  // Self-ack: caller identity must equal the target id (bug #2 ownership check),
+  // so inject a matching DEVSWARM_BUILDER_ID for every call against 'primary-x'.
+  // cwd must resolve to NO real git worktree so the declared DEVSWARM_BUILDER_ID
+  // is trusted (ground-truth cwd, not a spoof — see fakeCwd's own comment below).
+  const selfCtx = ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) });
   try {
     seedStore(home, 'primary-x', ['a', 'b']);
-    const r = cli.run(['inbox', 'read-primary', 'primary-x'], ctx(home));
+    const r = cli.run(['inbox', 'read-primary', 'primary-x'], selfCtx);
     assert.equal(r.result.action, 'read-primary');
     assert.equal(r.result.count, 2, 'first read-primary returns both unread');
     assert.equal(r.result.cursor, 2, 'cursor advanced to the total');
@@ -326,12 +368,12 @@ test('inbox read-primary advances the durable ACK cursor (under cursors/, not st
     assert.equal(fs.readFileSync(cursorFile, 'utf8').trim(), '2');
 
     // A follow-up --unread read now excludes the acked messages.
-    const r2 = cli.run(['inbox', 'messages', 'primary-x', '--unread'], ctx(home));
+    const r2 = cli.run(['inbox', 'messages', 'primary-x', '--unread'], selfCtx);
     assert.equal(r2.result.count, 0, 'nothing unread after ack');
 
     // New store rows arrive -> they show as unread past the cursor.
     seedStore(home, 'primary-x', ['a', 'b', 'c']); // 'a','b' dedupe, 'c' is new
-    const r3 = cli.run(['inbox', 'messages', 'primary-x', '--unread'], ctx(home));
+    const r3 = cli.run(['inbox', 'messages', 'primary-x', '--unread'], selfCtx);
     assert.equal(r3.result.count, 1, 'only the newly-appended message is unread');
     assert.equal(r3.result.messages[0].body, 'c');
   } finally { rm(home); }
@@ -350,7 +392,10 @@ test('inbox read-primary drops the PERSISTED projected unread (store cursor, not
     const before = cli.run(['workspaces', 'list', '--workspace', id], ctx(home));
     assert.equal(before.result.workspaces.find((w) => w.id === id).unread, 2, 'baseline: 2 unread before any read');
 
-    const rp = cli.run(['inbox', 'read-primary', id], ctx(home));
+    // Self-ack: caller identity must equal id (bug #2 ownership check). cwd is
+    // the fake, non-existent `wt` itself — it resolves to no real git worktree,
+    // so the declared DEVSWARM_BUILDER_ID is a trusted declaration, not a spoof.
+    const rp = cli.run(['inbox', 'read-primary', id], ctx(home, { env: { DEVSWARM_BUILDER_ID: id }, cwd: wt }));
     assert.equal(rp.result.ok, true);
     assert.equal(rp.result.cursor, 2);
 
@@ -387,6 +432,21 @@ test('register-primary registers the per-worktree Primary descriptor (id = prima
     assert.equal(desc.sessionId, 'sess-primary');
     // store registry + summary reflect it (this Primary's per-project summary)
     assert.ok(storeLib.readSummary(home, expectedId).workspaces[expectedId]);
+  } finally { rm(home); }
+});
+
+test('register-primary populates repoId from env.DEVSWARM_REPO_ID (#36)', () => {
+  const home = tmpHome();
+  try {
+    const wt = '/some/repo/worktree-repoid';
+    const expectedId = inst.primaryWorkspaceId(wt);
+    const r = cli.run(
+      ['register-primary', '--worktree', wt, '--session', 'sess-primary'],
+      ctx(home, { env: { DEVSWARM_REPO_ID: 'repo-primary' } })
+    );
+    assert.equal(r.result.ok, true);
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, expectedId), 'utf8'));
+    assert.equal(desc.repoId, 'repo-primary');
   } finally { rm(home); }
 });
 
@@ -427,6 +487,282 @@ test('register-primary fails soft outside a git worktree when no --worktree is g
       assert.equal(r.result.ok, false);
       assert.match(r.result.error, /git worktree/);
     } finally { rm(nogit); }
+  } finally { rm(home); }
+});
+
+// ---- archive-request ---------------------------------------------------------
+test('archive-request posts the exact marker string via injected io.run, using --child-branch', () => {
+  const home = tmpHome();
+  try {
+    const calls = [];
+    const io = { run: (spec) => { calls.push(spec); return { ok: true, raw: '{}' }; } };
+    const r = cli.run(['archive-request', 'child-1', '--child-branch', 'feature/child-1', '--reason', 'milestone shipped'],
+      ctx(home, { io }));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.id, 'child-1');
+    assert.equal(r.result.childBranch, 'feature/child-1');
+    assert.equal(r.result.posted, true);
+    assert.equal(r.result.reason, 'milestone shipped');
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].args.slice(0, 2), ['workspace', 'message-child']);
+    assert.equal(calls[0].args[2], 'feature/child-1');
+    assert.equal(calls[0].args[3],
+      '[[ANTIHALL_ARCHIVE_REQUEST]] milestone shipped — your parent asks you to archive this workspace; '
+      + 'confirm with your user, then run devswarm.js archive <id>.');
+  } finally { rm(home); }
+});
+
+test('archive-request omits the reason clause when --reason is not given', () => {
+  const home = tmpHome();
+  try {
+    const calls = [];
+    const io = { run: (spec) => { calls.push(spec); return { ok: true, raw: '{}' }; } };
+    const r = cli.run(['archive-request', 'child-1', '--child-branch', 'child-branch-1'], ctx(home, { io }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.reason, null);
+    assert.equal(calls[0].args[3],
+      '[[ANTIHALL_ARCHIVE_REQUEST]] — your parent asks you to archive this workspace; '
+      + 'confirm with your user, then run devswarm.js archive <id>.');
+  } finally { rm(home); }
+});
+
+test('archive-request resolves the branch from the descriptor when it carries one (no --child-branch)', () => {
+  const home = tmpHome();
+  try {
+    // Manually write a descriptor carrying a `branch` field (not populated by any
+    // current register/ensure path, but resolveChildBranch checks for it).
+    fs.mkdirSync(path.dirname(cli.descriptorPath(home, 'child-2')), { recursive: true });
+    fs.writeFileSync(cli.descriptorPath(home, 'child-2'), JSON.stringify({
+      id: 'child-2', worktreePath: '/wt/child-2', sessionId: 's', branch: 'feature/child-2',
+    }));
+    const calls = [];
+    const io = { run: (spec) => { calls.push(spec); return { ok: true, raw: '{}' }; } };
+    const r = cli.run(['archive-request', 'child-2'], ctx(home, { io }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.childBranch, 'feature/child-2');
+    assert.equal(calls[0].args[2], 'feature/child-2');
+  } finally { rm(home); }
+});
+
+test('archive-request falls back to `list children`, matching by worktreePath, when the descriptor has no branch', () => {
+  const home = tmpHome();
+  try {
+    cli.run(['register', 'child-3', '--worktree', '/wt/child-3', '--session', 's'], ctx(home));
+    const calls = [];
+    const io = {
+      run: (spec) => {
+        calls.push(spec);
+        if (spec.args[0] === 'workspace' && spec.args[1] === 'list' && spec.args[2] === 'children') {
+          return { ok: true, raw: JSON.stringify([{ branch: 'feature/child-3', path: '/wt/child-3' }]) };
+        }
+        return { ok: true, raw: '{}' };
+      },
+    };
+    const r = cli.run(['archive-request', 'child-3'], ctx(home, { io }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.childBranch, 'feature/child-3');
+    assert.equal(calls.length, 2, 'list children then message-child');
+    assert.deepEqual(calls[0].args, ['workspace', 'list', 'children']);
+    assert.deepEqual(calls[1].args.slice(0, 3), ['workspace', 'message-child', 'feature/child-3']);
+  } finally { rm(home); }
+});
+
+test('archive-request falls back to `list children`, matching by branch/id equal to the positional', () => {
+  const home = tmpHome();
+  try {
+    const io = {
+      run: (spec) => {
+        if (spec.args[0] === 'workspace' && spec.args[1] === 'list' && spec.args[2] === 'children') {
+          return { ok: true, raw: JSON.stringify({ children: [{ id: 'child-4', branch: 'child-4' }] }) };
+        }
+        return { ok: true, raw: '{}' };
+      },
+    };
+    const r = cli.run(['archive-request', 'child-4'], ctx(home, { io }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.childBranch, 'child-4');
+  } finally { rm(home); }
+});
+
+test('archive-request falls back to treating the positional itself as the branch when nothing else resolves', () => {
+  const home = tmpHome();
+  try {
+    const io = { run: (spec) => ({ ok: true, raw: '[]' }) };
+    const r = cli.run(['archive-request', 'raw-branch-name'], ctx(home, { io }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.childBranch, 'raw-branch-name');
+  } finally { rm(home); }
+});
+
+test('archive-request is fail-open on a message-child spawn error (never throws)', () => {
+  const home = tmpHome();
+  try {
+    const io = { run: (spec) => ({ ok: false, error: 'spawn ENOENT' }) };
+    const r = cli.run(['archive-request', 'child-5', '--child-branch', 'child-5-branch'], ctx(home, { io }));
+    assert.equal(r.code, 2);
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.error, 'spawn ENOENT');
+    assert.equal(r.result.posted, false);
+    assert.equal(r.result.childBranch, 'child-5-branch');
+  } finally { rm(home); }
+});
+
+test('archive-request rejects an unsafe id (never path-joins hostile input)', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['archive-request', '../evil'], ctx(home));
+    assert.equal(r.code, 2);
+    assert.equal(r.result.ok, false);
+  } finally { rm(home); }
+});
+
+test('archive-request never invokes any merge/test/deploy check — only list-children + message-child are spawned', () => {
+  const home = tmpHome();
+  try {
+    const calls = [];
+    const io = {
+      run: (spec) => {
+        calls.push(spec.args.join(' '));
+        if (spec.args[1] === 'list') return { ok: true, raw: '[]' };
+        return { ok: true, raw: '{}' };
+      },
+    };
+    const r = cli.run(['archive-request', 'child-6'], ctx(home, { io }));
+    assert.equal(r.result.ok, true);
+    for (const call of calls) {
+      assert.doesNotMatch(call, /check-merge|merge-from-source|merge-into-source|test|deploy/i);
+    }
+  } finally { rm(home); }
+});
+
+// ---- ack-ownership check (bug #2: cross-workspace ack hazard) --------------
+// `inbox messages <id> --ack` / `inbox read-primary <id>` needs no descriptor and,
+// before the fix, accepted ANY id — letting one workspace silently advance
+// another's cursor. Non-ack reads must stay open to any id (the visibility
+// feature); only the mutating ack path is gated by callerIdentity(env, cwd).
+const REPO_ROOT = path.join(__dirname, '..', '..');
+
+// fakeCwd(home) -> a cwd that resolves to NO git worktree (neither `git
+// rev-parse --show-toplevel` nor the pure-fs `.git` walk-up finds anything,
+// since it — and every ancestor up to the OS tmp root — is a plain tmpdir path
+// with no `.git` anywhere in the chain). Used so these tests can DECLARE an
+// identity via DEVSWARM_BUILDER_ID without it being a spoof: per the P0 fix,
+// env is trusted ONLY when cwd has no ground truth to contradict it. Contrast
+// with the deliberately-uses-the-REAL-repo-cwd test below, which proves the
+// opposite case (env ignored when it disagrees with a REAL resolved cwd).
+function fakeCwd(home) { return path.join(home, 'no-git-here'); }
+
+test('inbox messages --ack: caller acks its OWN id (via DEVSWARM_BUILDER_ID, cwd has no git ground truth) -> ok, cursor advances', () => {
+  const home = tmpHome();
+  try {
+    seedStore(home, 'primary-x', ['a', 'b']);
+    const r = cli.run(['inbox', 'messages', 'primary-x', '--ack'],
+      ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.cursor, 2);
+    assert.equal(fs.readFileSync(cli.primaryCursorPath(home, 'primary-x'), 'utf8').trim(), '2');
+  } finally { rm(home); }
+});
+
+test('inbox messages --ack: caller acks a DIFFERENT id -> refused (ok:false, exit 2, cursor NOT advanced)', () => {
+  const home = tmpHome();
+  try {
+    seedStore(home, 'primary-y', ['a', 'b']);
+    const r = cli.run(['inbox', 'messages', 'primary-y', '--ack'],
+      ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
+    assert.equal(r.code, 2);
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /ack refused/);
+    assert.equal(r.result.callerIdentity, 'primary-x');
+    // no cursor file was ever written for the target — the ack never happened
+    assert.equal(fs.existsSync(cli.primaryCursorPath(home, 'primary-y')), false);
+  } finally { rm(home); }
+});
+
+test('inbox read-primary <otherId>: same ack-ownership refusal as --ack', () => {
+  const home = tmpHome();
+  try {
+    seedStore(home, 'primary-y', ['a', 'b']);
+    const r = cli.run(['inbox', 'read-primary', 'primary-y'],
+      ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
+    assert.equal(r.code, 2);
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /ack refused/);
+    assert.equal(fs.existsSync(cli.primaryCursorPath(home, 'primary-y')), false);
+  } finally { rm(home); }
+});
+
+test('inbox messages --ack --ack-as-owner on a DIFFERENT id -> allowed (explicit operator override)', () => {
+  const home = tmpHome();
+  try {
+    seedStore(home, 'primary-y', ['a', 'b', 'c']);
+    const r = cli.run(['inbox', 'messages', 'primary-y', '--ack', '--ack-as-owner'],
+      ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.cursor, 3);
+    assert.equal(fs.readFileSync(cli.primaryCursorPath(home, 'primary-y'), 'utf8').trim(), '3');
+  } finally { rm(home); }
+});
+
+test('inbox messages <otherId> WITHOUT --ack stays OPEN to any id (non-destructive read preserved)', () => {
+  const home = tmpHome();
+  try {
+    seedStore(home, 'primary-y', ['a', 'b']);
+    const r = cli.run(['inbox', 'messages', 'primary-y'],
+      ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.count, 2);
+    // no ack, no cursor file ever written
+    assert.equal(fs.existsSync(cli.primaryCursorPath(home, 'primary-y')), false);
+
+    // --unread without --ack must ALSO stay open to any id
+    const r2 = cli.run(['inbox', 'messages', 'primary-y', '--unread'],
+      ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
+    assert.equal(r2.result.ok, true);
+    assert.equal(r2.result.count, 2);
+  } finally { rm(home); }
+});
+
+test('inbox messages --ack: a REAL resolvable cwd wins over a mismatching DEVSWARM_BUILDER_ID (env-spoof closed)', () => {
+  const home = tmpHome();
+  try {
+    // The caller's cwd is the REAL anti-hall repo (a real git worktree), so its
+    // ground-truth identity is selfId — NOT the env-declared 'primary-x', which
+    // names a workspace this process is not actually running in. Before the P0
+    // fix this env value silently WON and advanced 'primary-x's cursor; now the
+    // mismatching declaration is ignored and the ack is refused against the
+    // REAL cwd-derived identity instead.
+    const selfId = inst.primaryWorkspaceId(inst.resolveWorktree(REPO_ROOT));
+    seedStore(home, 'primary-x', ['a', 'b']);
+    const r = cli.run(['inbox', 'messages', 'primary-x', '--ack'],
+      ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: REPO_ROOT }));
+    assert.equal(r.result.ok, false, 'env-spoof must NOT override a real, resolvable cwd');
+    assert.equal(r.result.callerIdentity, selfId, 'caller identity is the REAL cwd-derived id, not the spoofed env value');
+    assert.equal(fs.existsSync(cli.primaryCursorPath(home, 'primary-x')), false, 'cursor untouched — no impersonated ack landed');
+  } finally { rm(home); }
+});
+
+test('callerIdentity falls back to primary-<worktreeHash(cwd)> (git toplevel) when DEVSWARM_BUILDER_ID is unset', () => {
+  const home = tmpHome();
+  try {
+    const selfId = inst.primaryWorkspaceId(inst.resolveWorktree(REPO_ROOT));
+    seedStore(home, selfId, ['a', 'b']);
+    // Own id, invoked from a SUBDIRECTORY of the worktree -> still resolves to the
+    // same toplevel-derived id, so a self-ack from any subdir succeeds.
+    const subdir = path.join(REPO_ROOT, 'plugins');
+    const ok = cli.run(['inbox', 'messages', selfId, '--ack'], ctx(home, { env: {}, cwd: subdir }));
+    assert.equal(ok.result.ok, true);
+    assert.equal(ok.result.cursor, 2);
+
+    // A different id, with no DEVSWARM_BUILDER_ID -> refused using the same cwd-derived identity.
+    seedStore(home, 'primary-someone-else', ['x']);
+    const refused = cli.run(['inbox', 'messages', 'primary-someone-else', '--ack'], ctx(home, { env: {}, cwd: REPO_ROOT }));
+    assert.equal(refused.result.ok, false);
+    assert.equal(refused.result.callerIdentity, selfId);
   } finally { rm(home); }
 });
 

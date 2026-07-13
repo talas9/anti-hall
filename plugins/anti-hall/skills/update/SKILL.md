@@ -20,6 +20,12 @@ takes effect in-session — this skill does not over-promise.
   is **HARNESS-OWNED**: the helper reads it, it **never** writes it.
 - **Version authority** — `plugins/anti-hall/.claude-plugin/plugin.json` in the clone.
   `CHANGELOG.md` (repo root) carries one `## <version>` section per release.
+- **DevSwarm ingest daemon's baked script path** — `install-devswarm-ingest.js`'s daemon
+  unit bakes the **marketplace clone's own `companion/devswarm-ingest.js`** (this is the
+  ONE path this skill `git pull --ff-only`s in place — never a version-pinned cache dir,
+  which is a NEW directory per release). That is what makes the daemon survive an update
+  without crash-looping; see step 5's ingest-daemon heal below for the one-time repair of
+  a daemon installed before this fix shipped.
 
 ## What the helper does (`scripts/update.js`)
 
@@ -38,11 +44,33 @@ the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a 
 4. Read the NEW version from the (now-updated) clone `plugin.json`.
 5. If `cache/.../<newver>/` is missing **and** the cache root exists, mirror the clone's
    plugin dir into it so `/reload-plugins` can resolve the new version.
+   - **Ingest-daemon heal (auto, gated, fail-open — `healIngestDaemon`):** immediately
+     after a cache sync, the helper ALSO attempts to heal the DevSwarm ingest daemon's
+     launchd/systemd/cron unit in-process (no separate agent step needed for this part).
+     Root cause: `install-devswarm-ingest.js`'s daemon unit used to bake an install-time
+     script path (`__dirname`) that could go stale across a plugin update — the plugin
+     manager relocating the version-pinned cache dir the daemon was baked from, crash-
+     looping the daemon. The installer now bakes the **git marketplace clone's own copy**
+     of `devswarm-ingest.js` (the exact path this very update step just `git pull
+     --ff-only`ed **in place**) so a fresh install never goes stale again — but a daemon
+     installed *before* this fix shipped is still pointed at a path that may now be gone,
+     and needs a one-time re-bake. `healIngestDaemon` runs ONLY under the same
+     DevSwarm-session-only gate `hooks/lib/doctor-repair.js`'s own GATED ingest fix uses
+     (`isDevswarmActive(env) && resolveWorktree(cwd) !== null`) and reuses that module's
+     already-tested classify/detect helpers rather than re-deriving the logic; it re-runs
+     the (freshly-pulled) installer only when the unit is genuinely `wrong-path` or
+     `stale-script` — an `ok` or `absent` unit is left untouched. Reported as `ingestHeal:
+     {attempted, healed, detail}` on the JSON status line. Gate-closed, nothing-to-heal,
+     or an internal error are all reported and NEVER fatal to the update. This is
+     independent of — and does not replace — step 7's broader, always-refresh install/
+     refresh instruction below (which also covers a FIRST install and the supervisor).
 6. Extract the `CHANGELOG.md` sections strictly between installed (exclusive) and new
    (inclusive) and print them.
 7. Emit a JSON status line + a human summary:
-   `{installed, latest, updated, cacheSynced, action}` where `action` is
-   `run /reload-plugins` | `already up to date` | an error/STOP detail.
+   `{installed, latest, updated, cacheSynced, ingestHeal, action}` where `action` is
+   `run /reload-plugins` | `already up to date` | an error/STOP detail, and `ingestHeal`
+   is `{attempted, healed, detail}` from step 5's auto-heal (absent on a STOP/offline
+   report — those paths never reach cache sync).
 
 Modes:
 - `node scripts/update.js --check` — `git fetch` + compare local vs remote

@@ -6,6 +6,80 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.56.0
+
+**DevSwarm archive handshake (send-only, never mechanical on either side); ack-ownership guard is now cwd-ground-truth (closes an env-spoof cursor-corruption path); the Primary sees its own inbound because the ingest daemon self-registers its own store row; child descriptor registration + heartbeat-key fix close two discovery/collision bugs; doctor/update now heal a drifted ingest script, not just a missing one; the Fable Reviewer seat is back.**
+
+- **Archive handshake (both roles).** New `devswarm.js archive-request <childId|branch>` verb
+  — SEND-ONLY: posts a `[[ANTIHALL_ARCHIVE_REQUEST]]`-marked message to a done child; it never
+  verifies merged/tested/deployed itself (the Primary checks per its OWN repo policy before
+  sending). Child side: `devswarm-child-turn.js` scans unread for the marker and injects a
+  distinct segment telling the child to confirm with ITS user, then run `devswarm.js archive
+  <id>`. anti-hall NEVER archives mechanically on either side.
+- **Ack-ownership guard — cwd-ground-truth (P0-hardened).** `devswarm.js`'s `callerIdentity(env,
+  cwd)` now treats cwd as the source of truth: when cwd resolves to a real git worktree, identity
+  is derived from that worktree and a `DEVSWARM_BUILDER_ID` env var naming a *different*
+  workspace is ignored, never trusted to override — closing the env-spoof path where a workspace
+  could set `DEVSWARM_BUILDER_ID=<other-id>` to impersonate another workspace and ack its cursor
+  (also closes the related env-inheritance case, e.g. a subshell/subagent inheriting a stale
+  builder id). `DEVSWARM_BUILDER_ID` is honored only when it can't contradict cwd — cwd already
+  agrees, or cwd resolves to no worktree at all. The explicit `--ack-as-owner` operator override
+  for a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog) is
+  preserved.
+- **Primary sees its OWN inbound.** `devswarm-parent-inbox.js` + `devswarm-parent-gate.js`: the
+  Primary now surfaces AND Stop-gates on its own unread parent/peer messages, with the same
+  imperative "STOP and read FIRST" wording as the child gate. This actually surfaces end-to-end
+  because the ingest daemon now **self-registers** its own `primary-<hash>` workspace row at
+  startup (merge-preserving — a prior explicit `register-primary` call is never clobbered):
+  previously no runtime path ever created that row, so messages landed in the store but the
+  workspace itself never existed for the summary projection to surface. The daemon's own identity
+  is **worktree-ground-truth** — it registers/ingests under the `primary-<hash>` id derived from
+  ITS OWN resolved worktree, never an inherited child `DEVSWARM_BUILDER_ID` — closing the same
+  class of identity-spoof/inheritance bug the ack-ownership guard closes above.
+- **Child descriptor registration (#31) + imperative unread.** `devswarm-child-turn.js`
+  mechanically writes/refreshes the child's own descriptor every turn (merge-preserving) so the
+  parent can always discover it; unread-parent-message wording escalated advisory → imperative.
+  Child-gate STRICT mode (`ANTIHALL_DEVSWARM_CHILD_GATE_STRICT`, default on) backs the durable-
+  inbox check with one bounded, non-destructive native `message-count` probe (fail-open).
+- **Heartbeat key fix.** `devswarm-child-turn.js`'s `heartbeatKey` now keys by
+  `DEVSWARM_BUILDER_ID` (was the source branch) — sibling children no longer collide and
+  parent-join resolves correctly.
+- **Ingest daemon durability + doctor/update self-heal parity.** `install-devswarm-ingest.js`'s
+  `resolveStableScript` now bakes the daemon's script path to the git marketplace-clone path
+  (updated in place by the updater) instead of the version-pinned cache dir that gets renamed on
+  update — fixes an orphaned crash-loop after an update. The daemon now logs (startup /
+  lock-refusal / ERROR+stack) to `~/.anti-hall/devswarm-ingest.log` (systemd
+  `StandardOutput`/`StandardError` + cron redirect; previously discarded to `/dev/null`).
+  `doctor --repair` and `update.js`'s `healIngestDaemon()` gained a NEW `unstable-script`
+  classification (`classifyIngestUnit`) — the baked `ExecStart` script still exists but no longer
+  matches the current stable path (config drift, not just an absent/wrong-path unit) — and both
+  now detect + migrate it to the stable path, DevSwarm-session-gated, fail-open.
+- **Migration `--mark-read`.** `migrate-state.js` / `devswarm-migrate.js` gained an opt-in
+  flag/env to advance a freshly-imported legacy backlog's cursor to already-seen (default OFF,
+  byte-identical output when absent) so a catch-up migration doesn't trip the parent
+  neglect-gate.
+- **Fable seat re-enabled.** Fable 5 is now available, so the earlier 0.43.2 policy-disable
+  (over-restrictive/refusal-prone per community feedback) is reversed: the deadly-loop / ship-it
+  Reviewer seat once again tries Fable first when `args.fableAvailable === true`, falling back to
+  Sonnet 5 then Opus (fallback chain unchanged). Both Claude (`skills/deadly-loop/references/
+  deadly-loop.workflow.js`, `skills/ship-it/references/ship-it.workflow.js`) and the Codex port
+  (`codex/skills/anti-hall-deadly-loop/SKILL.md`, `codex/skills/anti-hall-model-policy/SKILL.md`).
+- **Doc correction.** Removed the stale claim (across `docs/KB-devswarm-hivecontrol.md`,
+  `README.md`, `llms.txt`, `docs/KB.md`) that `devswarm-child-gate` silences the Stop-gate on a
+  fresh child heartbeat — that behavior was reverted in v0.54.1; the gate always demands a report,
+  bounded only by its per-episode cap.
+- **Codex parity.** Mirror updates in `plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`
+  and the model-policy/deadly-loop Codex skills above.
+- **Cross-project scoping (#36).** DevSwarm workspace descriptors now record their `repoId`
+  (`DEVSWARM_REPO_ID`), and `devswarm-parent-gate` / `devswarm-parent-inbox` filter their per-turn
+  enumeration to the current session's project — a Primary in one project no longer sees, gates on,
+  or is nagged by another project's workspaces. Fail-open + back-compat: an untagged descriptor (or
+  a session with no `DEVSWARM_REPO_ID`) still surfaces exactly as before, and children re-stamp
+  their `repoId` within one turn.
+- Docs sweep: `README.md`, `llms.txt`, `docs/KB-devswarm-hivecontrol.md`, `docs/KB.md`, and
+  `skills/devswarm/SKILL.md` / `skills/update/SKILL.md` updated to match.
+- Full suite: 1486 tests, 1484 pass, 2 skipped (Windows-gated doctor no-ops), 0 fail.
+
 ## 0.55.0
 
 **DevSwarm Primary read path ships (the Primary can finally read its own inbox); per-project ingest daemon fixes multi-repo coverage; a mechanical single-consumer read-guard closes the raw-read bypass; the supervisor actively escalates into the parent's store; and `doctor` now DIAGNOSES then REPAIRS every aspect it safely can.**
