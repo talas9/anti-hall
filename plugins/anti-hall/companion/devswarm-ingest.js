@@ -43,7 +43,12 @@ const installIngest = require('./install-devswarm-ingest.js');
 // the daemon's lock/heartbeat naming AND the physical store it drains INTO are both
 // re-keyed to repoKey, while the SELF-REGISTERED workspaceId stays worktree-hash
 // based (D19 — liveness surfaces are never re-keyed).
-const repokey = require('./lib/devswarm-repokey.js');
+// D27: guarded, NOT a bare require — this module is itself required TOP-LEVEL
+// by hooks (devswarm-parent-inbox.js), whose fail-open guarantee only wraps
+// their own main() call. `repokey` is null on failure; every call site below
+// already fails open (try/catch or a null check) when it is.
+let repokey = null;
+try { repokey = require('./lib/devswarm-repokey.js'); } catch (_) { repokey = null; }
 
 const INGEST_LOCK_STALE_MS = 15 * 60 * 1000; // a monitor consumer is long-lived; only a truly dead/old holder is stolen
 const DEFAULT_MONITOR_INTERVAL_SEC = 3;      // hivecontrol monitor default poll

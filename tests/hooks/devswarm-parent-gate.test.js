@@ -12,32 +12,52 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
+const cp = require('node:child_process');
+const os = require('node:os');
 const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 
 const HOOK = 'devswarm-parent-gate.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + Primary (no SOURCE_BRANCH)
 
-// REPO_CWD/REPO_HASH/OWN_ID — the SAME per-worktree Primary-id convention
-// devswarm-parent-inbox.test.js's STALE section already uses: passing this test
-// process's own cwd (a real git checkout) lets the hook's pure-fs worktree
-// resolution land on this exact hash, so a summary written under it is found.
+// REPO_CWD/REPO_HASH/REPO_KEY/OWN_ID — the SAME per-worktree Primary-id
+// convention devswarm-parent-inbox.test.js's STALE section already uses:
+// passing this test process's own cwd (a real git checkout) lets the hook's
+// pure-fs worktree resolution land on this exact hash, so a summary written
+// under it is found. v0.57 mesh (D1/D24): the own-unread summary is now
+// keyed by REPO_KEY (readOwnUnread prefers repoKey, falling back to the
+// legacy REPO_HASH only when repoKey is unresolvable) — REPO_HASH is kept
+// for OWN_ID (D19: the Primary's addressing/partition id is NOT re-keyed).
 const REPO_CWD = process.cwd();
 const REPO_HASH = installIngest.worktreeHash(REPO_CWD);
+const REPO_KEY = repokey.repoKeyForWorktree(REPO_CWD);
 const OWN_ID = 'primary-' + REPO_HASH;
 
-function stopPayload(sessionId, withCwd) {
+// makeGitRepo() -> a real, minimal git repo dir (git-common-dir resolution
+// needs a real .git; no commit needed for `rev-parse --git-common-dir`).
+// Mirrors tests/companion/install-ingest-repokey.test.js's own helper.
+function makeGitRepo() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-36-repo-'));
+  cp.spawnSync('git', ['init', '-q', dir]);
+  return dir;
+}
+
+function stopPayload(sessionId, withCwd, explicitCwd) {
   const p = { hook_event_name: 'Stop', session_id: sessionId || 'sess-1' };
-  if (withCwd) p.cwd = REPO_CWD;
+  if (explicitCwd !== undefined) p.cwd = explicitCwd;
+  else if (withCwd) p.cwd = REPO_CWD;
   return p;
 }
 
-// writeOwnSummary(home, unread) — the Primary's OWN unread, written to the SAME
-// per-project summary projection path the hook reads (summaries/<hash>.json ->
-// workspaces[primary-<hash>].unread).
-function writeOwnSummary(home, unread) {
+// writeOwnSummary(home, unread, urgencyMax) — the Primary's OWN unread,
+// written to the SAME per-project summary projection path the hook reads
+// (v0.57 mesh: summaries/<REPO_KEY>.json -> workspaces[primary-<hash>].unread).
+function writeOwnSummary(home, unread, urgencyMax) {
   const dir = path.join(home, '.anti-hall', 'devswarm', 'summaries');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, REPO_HASH + '.json'), JSON.stringify({ workspaces: { [OWN_ID]: { unread } } }));
+  const entry = { unread };
+  if (urgencyMax !== undefined) entry.urgencyMax = urgencyMax;
+  fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify({ workspaces: { [OWN_ID]: entry } }));
 }
 
 // Seed a workspace: descriptor + optional inbox/cursor + optional verdict, all
@@ -53,7 +73,7 @@ function seedWorkspace(home, id, opts = {}) {
 
   const descriptor = {
     id,
-    worktreePath: path.join(home, 'wt', id),
+    worktreePath: opts.worktreePath !== undefined ? opts.worktreePath : path.join(home, 'wt', id),
     sessionId: 'child-' + id,
     inboxPath,
     cursorPath,
@@ -260,7 +280,7 @@ test('FAIL-OPEN: malformed own summary.json -> treated as no own-unread; child-o
     seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
     const dir = path.join(h.home, '.anti-hall', 'devswarm', 'summaries');
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, REPO_HASH + '.json'), '{not json');
+    fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), '{not json');
     const r = run(h.home, stopPayload('sess-badsum', true));
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.json && r.json.decision, 'block');
@@ -295,45 +315,77 @@ test('CHILD-ONLY: no cwd in payload (own-unread unresolvable) -> child-only unre
   } finally { h.cleanup(); }
 });
 
-// ---- #36 cross-project-bleed fix: repoId-scoped descriptor enumeration ----
-// PRIMARY_ENV carries DEVSWARM_REPO_ID: 'repo-1'. The predicate is exactly
-// "exclude only when BOTH the session's and the descriptor's repoId are present
-// and differ" — fail-open by construction.
+// ---- #36 cross-project-bleed fix: STRUCTURAL repoKey-scoped descriptor
+// enumeration (D29 — REPLACES the spoofable v0.56 env filter). This loop
+// builds its blocking SET from raw machine-global readDescriptors + readUnread
+// (NOT the per-project summary), so it needs its OWN explicit
+// repoKeyForWorktree(d.worktreePath) === repoKeyForWorktree(cwd) filter —
+// env DEVSWARM_REPO_ID is spoofable and no longer consulted at all. Fail-open:
+// a descriptor is excluded ONLY when BOTH sides resolve a repoKey AND they
+// differ; a null/unresolvable repoKey on either side keeps the descriptor.
 
-test('#36 EXCLUDE: a descriptor with a DIFFERENT repoId than the session is not gated on', () => {
+test('#36 EXCLUDE: a descriptor whose worktree resolves to a DIFFERENT repoKey is not gated on', () => {
   const h = makeHome();
+  const otherRepo = makeGitRepo();
   try {
-    seedWorkspace(h.home, 'other-project', { messages: ['a', 'b'], cursor: 0, repoId: 'repo-2' });
-    const r = run(h.home); // PRIMARY_ENV: repo-1
+    assert.notEqual(repokey.repoKeyForWorktree(otherRepo), REPO_KEY, 'precondition: genuinely different repoKey');
+    seedWorkspace(h.home, 'other-project', { messages: ['a', 'b'], cursor: 0, worktreePath: otherRepo });
+    const r = run(h.home); // cwd falls back to process.cwd() = REPO_CWD -> selfKey = REPO_KEY
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.stdout, '', 'a foreign-project descriptor must never block this session');
+  } finally { h.cleanup(); fs.rmSync(otherRepo, { recursive: true, force: true }); }
+});
+
+test('#36 INCLUDE (same repoKey): a descriptor whose worktree resolves to the SAME repoKey still gates', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'same-project', { messages: ['a', 'b'], cursor: 0, worktreePath: REPO_CWD });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /same-project/);
   } finally { h.cleanup(); }
 });
 
-test('#36 INCLUDE (back-compat): a descriptor with NO repoId still gates', () => {
+test('#36 INCLUDE (fail-open): a descriptor whose worktreePath is unresolvable (non-git) still gates', () => {
   const h = makeHome();
   try {
-    seedWorkspace(h.home, 'legacy-desc', { messages: ['a', 'b'], cursor: 0 }); // no repoId field at all
-    const r = run(h.home); // PRIMARY_ENV: repo-1
+    // The default seedWorkspace worktreePath (home/wt/<id>) does not exist and
+    // is not a git repo -> repoKeyForWorktree resolves null -> filter disabled.
+    seedWorkspace(h.home, 'legacy-desc', { messages: ['a', 'b'], cursor: 0 });
+    const r = run(h.home);
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.json && r.json.decision, 'block', 'pre-#36 descriptors must not vanish from the gate');
+    assert.strictEqual(r.json && r.json.decision, 'block', 'an unresolvable-worktree descriptor must not vanish from the gate');
     assert.match(r.json.reason, /legacy-desc/);
   } finally { h.cleanup(); }
 });
 
-test('#36 INCLUDE (fail-open): session has NO DEVSWARM_REPO_ID -> filter disabled, all descriptors gate', () => {
+test('#36 INCLUDE (fail-open): session cwd is unresolvable (non-git) -> filter disabled, descriptor still gates', () => {
   const h = makeHome();
   try {
-    seedWorkspace(h.home, 'foreign', { messages: ['a', 'b'], cursor: 0, repoId: 'repo-2' });
-    // Manual-supervisor-mode session: active via ANTIHALL_DEVSWARM_SUPERVISOR=on,
-    // no DEVSWARM_REPO_ID at all (not even PRIMARY_ENV's) -> currentRepoId falsy.
-    const r = testHookRaw(HOOK, JSON.stringify(stopPayload()), {
-      home: h.home,
-      env: { ANTIHALL_DEVSWARM_SUPERVISOR: 'on' },
-    });
+    seedWorkspace(h.home, 'child-x', { messages: ['a', 'b'], cursor: 0, worktreePath: REPO_CWD });
+    const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-36-nogit-'));
+    try {
+      assert.strictEqual(repokey.repoKeyForWorktree(bogusCwd), null, 'precondition: session cwd must be genuinely non-git');
+      const r = run(h.home, stopPayload('sess-nogit', false, bogusCwd));
+      assert.strictEqual(r.status, 0);
+      assert.strictEqual(r.json && r.json.decision, 'block', 'an unresolvable session repoKey must not blind the gate to real descriptors');
+      assert.match(r.json.reason, /child-x/);
+    } finally { fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+  } finally { h.cleanup(); }
+});
+
+// env DEVSWARM_REPO_ID is no longer consulted for #36 at all — a mismatching
+// env value must NOT exclude a same-repoKey descriptor (the derived key is
+// ground truth; env was always spoofable, D29).
+test('#36 env DEVSWARM_REPO_ID is IGNORED: a mismatching env repoId does not exclude a same-repoKey descriptor', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'same-project', { messages: ['a', 'b'], cursor: 0, worktreePath: REPO_CWD, repoId: 'repo-999' });
+    const r = run(h.home, stopPayload(), { DEVSWARM_REPO_ID: 'repo-1' }); // deliberately mismatching env
     assert.strictEqual(r.status, 0);
-    assert.strictEqual(r.json && r.json.decision, 'block', 'no session repoId must show every descriptor (same as today)');
-    assert.match(r.json.reason, /foreign/);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'the structural repoKey match must win over any env repoId mismatch');
+    assert.match(r.json.reason, /same-project/);
   } finally { h.cleanup(); }
 });
 

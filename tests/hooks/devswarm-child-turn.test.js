@@ -588,3 +588,122 @@ test('CHILD STALE: cwd not a git worktree -> NO banner, no throw (fail-open)', (
     assert.strictEqual(staleBanner(ctx(r)), '', `no worktree -> no banner, no throw; ctx=${ctx(r)}`);
   } finally { h.cleanup(); }
 });
+
+// ----- D26 (PLAN-v0.57-mesh.md, Phase 8 step 3): mesh DIRECT surfacing. A mesh
+// direct addressed to this child's meshId lands, via the addressing join, in
+// the child's OWN builder-id partition inside the shared store — this hook
+// additionally reads the SAME shared summaries/<repoKey>.json projection the
+// Primary reads, for THIS child's OWN entry's directUnread/urgencyMax, and
+// renders the SAME urgency-tiered nudge (D4). Distinct from the OLD durable-
+// NDJSON-based unreadInfo/buildUnreadSegment reception path above (both can
+// coexist). -----
+
+const meshStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+
+// seedMeshDirect(home, id, count, urgency) — inserts `count` REAL mesh-direct
+// rows addressed to `id` into the shared store (the SAME production
+// appendMeshMessage primitive `mesh send` uses), then re-derives the
+// projection. A DIRECT summary write would be silently overwritten by the
+// hook's OWN registerStoreDescriptor->deriveSummary call (D24 gap-close,
+// which now runs on every child turn BEFORE this block), so the store is the
+// only durable way to seed this scenario.
+function seedMeshDirect(home, id, count, urgency) {
+  const s = meshStore.openStore({ home, workspaceId: id, hash: REPO_KEY });
+  try {
+    for (let i = 0; i < count; i++) {
+      meshStore.appendMeshMessage(s, {
+        from: 'primary-seed', to: id, type: 'direct',
+        message: 'seed message ' + i, urgency: urgency || 'normal',
+        hash: 'seed-' + id + '-' + i,
+      });
+    }
+    meshStore.deriveSummary(s, { home });
+  } finally { s.close(); }
+}
+function meshDirectSegment(c) {
+  return c.split('\n\n').find((s) => s.startsWith('DEVSWARM MESH DIRECT')) || '';
+}
+
+test('D26 MESH DIRECT: this child\'s own directUnread>0 in the shared summary -> surfaced with the standard nudge', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'child-stale', 2, 'normal');
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    const seg = meshDirectSegment(ctx(r));
+    assert.ok(seg, `mesh-direct segment expected; ctx=${ctx(r)}`);
+    assert.ok(seg.includes('2 unread mesh direct'), `must report the count; seg=${seg}`);
+    assert.ok(seg.includes('child-stale'), 'must name this child\'s own id for the read-primary CLI command');
+    assert.ok(seg.includes('inbox read-primary'), `must state the read-primary clear path; seg=${seg}`);
+    assert.ok(!seg.includes('URGENT'), 'a null-urgency mesh direct must not use the URGENT wording');
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT URGENT: urgencyMax urgent/high -> the LOUD URGENT wording (D4)', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'child-stale', 1, 'urgent');
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    const seg = meshDirectSegment(ctx(r));
+    assert.match(seg, /DEVSWARM MESH DIRECT — URGENT/, `seg=${seg}`);
+    assert.match(seg, /STOP and read them FIRST/);
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT ABSENT: no mesh directs at all -> no mesh-direct segment', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(meshDirectSegment(ctx(r)), '', `no mesh directs -> no segment; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT ABSENT: another workspace\'s directUnread in the shared summary does not leak onto this child', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'some-other-child', 5, 'urgent');
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(meshDirectSegment(ctx(r)), '', `a DIFFERENT workspace's unread must not surface here; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT: coexists with the OLD durable-inbox unread segment (both surfaced, no clobber)', () => {
+  const h = makeHome();
+  try {
+    seedMeshDirect(h.home, 'child-1', 1, 'normal');
+    seedChildInbox(h.home, 'child-1', ['from parent: rebase now'], 0);
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-1' },
+    });
+    const c = ctx(r);
+    assert.ok(meshDirectSegment(c), `mesh-direct segment present; ctx=${c}`);
+    assert.ok(/DEVSWARM CHILD INBOX — PRIORITY/.test(c), `durable-inbox segment also present; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('D26 MESH DIRECT: cwd not a git worktree -> no segment, no throw (fail-open)', () => {
+  const h = makeHome();
+  try {
+    // Default promptPayload cwd ('/tmp') has no enclosing .git -> repoKey never
+    // resolves, so there is nothing to seed (registerStoreDescriptor is ALSO a
+    // no-op for the same reason) — this proves the fully-inert path directly.
+    const r = testHook(HOOK, promptPayload('sess-mesh'), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(meshDirectSegment(ctx(r)), '', `unresolvable worktree -> no mesh-direct segment; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+// A raw pre-seeded corrupt summaries/<repoKey>.json is NOT a reachable D26
+// fail-open scenario here: registerStoreDescriptor (D24 gap-close, above)
+// unconditionally re-derives + atomically overwrites that SAME file on every
+// child turn BEFORE the mesh-direct block reads it, healing any pre-existing
+// corruption first. The lazy/guarded-require fail-open contract (D27) IS
+// exercised directly — via an isolated plugin-tree copy, never mutating the
+// shared repo-tree module — in tests/hooks/devswarm-mesh-projection.test.js's
+// "8b" test, which covers BOTH devswarm-parent-inbox.js and
+// devswarm-parent-gate.js; devswarm-child-turn.js's OWN lazy-required
+// ingest-health.js/devswarm-repokey.js block already has direct unit coverage
+// in tests/companion/ingest-health.test.js's "D27 contract" test (same
+// require-fails-safely pattern, asserted without any shared-file mutation).

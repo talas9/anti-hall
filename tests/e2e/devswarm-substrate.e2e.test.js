@@ -44,6 +44,35 @@ const store = require('../../plugins/anti-hall/companion/lib/devswarm-store.js')
 const ingest = require('../../plugins/anti-hall/companion/devswarm-ingest.js');
 const { readDescriptors } = require('../../plugins/anti-hall/companion/devswarm-supervisor.js');
 const { DEFAULT_IDLE_MS } = require('../../plugins/anti-hall/companion/lib/liveness.js');
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+
+// v0.57 mesh (PLAN-v0.57-mesh.md Phase 8): devswarm-parent-inbox.js now reads
+// ONE shared summaries/<repoKey>.json (keyed by repoKeyForWorktree(cwd)), not a
+// per-descriptor durable inbox/cursor file. H.REPO_ROOT (the anti-hall repo's
+// own checkout — a real, stable git worktree) is used as the COMMON cwd for
+// both the CLI calls (which write into store/<repoKey>/) and the hook payload
+// (which reads summaries/<repoKey>.json) below, so both sides agree on repoKey.
+const MESH_CWD = H.REPO_ROOT;
+const MESH_REPO_KEY = repokey.repoKeyForWorktree(MESH_CWD);
+
+// seedStoreUnread(home, id, bodies) — registers `id` and appends `bodies.length`
+// REAL messages into the shared store (the SAME production module/functions
+// devswarm-store.js's own callers use), then re-derives the projection. Unlike
+// a raw NDJSON-file write (the pre-mesh construction), the hook now sources
+// `unread` from the store's OWN tracked cursor, so a test proving the hook
+// surfaces real unread data must land it in the store, not a bypassed file.
+function seedStoreUnread(home, id, bodies, opts) {
+  const s = store.openStore({ home, hash: MESH_REPO_KEY });
+  try {
+    s.upsertRegistry({
+      id, worktreePath: (opts && opts.worktreePath) || MESH_CWD, sessionId: 'sess-' + id,
+      inboxPath: null, cursorPath: null, nudgeCommand: null,
+    });
+    bodies.forEach((body, i) => s.appendMessage({ workspaceId: id, body, hash: 'seed-' + id + '-' + i }));
+    if (opts && Number.isFinite(opts.cursor)) s.setCursor(id, opts.cursor);
+    store.deriveSummary(s, { home });
+  } finally { s.close(); }
+}
 
 // Env presets. isDevswarmActive => DEVSWARM_REPO_ID set; child => SOURCE_BRANCH set.
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' };
@@ -149,17 +178,12 @@ test('1 GUARD: a symlink descriptor (→/dev/zero) does NOT hang the read-messag
 test('2 PARENT-INBOX: injects the exact unread count for a dummy inbox with N unread', () => {
   const home = H.makeHome();
   try {
-    // Register via CLI (inits cursor=0), then append 3 durable messages to the inbox.
-    const inbox = path.join(H.swarmRoot(home), 'inbox', 'wsA.ndjson');
-    const cursor = path.join(H.swarmRoot(home), 'cursor', 'wsA.json');
-    fs.mkdirSync(path.dirname(inbox), { recursive: true });
-    const reg = H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA',
-      '--inbox', inbox, '--cursor', cursor]);
-    assert.ok(reg.json && reg.json.ok, 'register ok');
-    fs.writeFileSync(inbox, ['{"m":1}', '{"m":2}', '{"m":3}'].join('\n') + '\n');
+    // v0.57 mesh (Phase 8): unread now comes from the STORE's own tracked
+    // cursor, not a raw durable NDJSON file — seed 3 real store messages.
+    seedStoreUnread(home, 'wsA', ['{"m":1}', '{"m":2}', '{"m":3}']);
 
     const r = testHook('devswarm-parent-inbox.js',
-      { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi' },
+      { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: MESH_CWD },
       { home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctxOf(r);
@@ -172,9 +196,9 @@ test('2 PARENT-INBOX: injects the exact unread count for a dummy inbox with N un
 test('2 PARENT-INBOX: no attention banner when the inbox is fully consumed (live table still lists the active workspace)', () => {
   const home = H.makeHome();
   try {
-    H.seedWorkspace(home, 'wsA', { inbox: ['{"m":1}', '{"m":2}'], cursor: 2 }); // cursor==total
+    seedStoreUnread(home, 'wsA', ['{"m":1}', '{"m":2}'], { cursor: 2 }); // cursor==total
     const r = testHook('devswarm-parent-inbox.js',
-      { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi' },
+      { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: MESH_CWD },
       { home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const c = ctxOf(r);
@@ -557,18 +581,18 @@ test('8 CLI: register/heartbeat/inbox count/workspaces list/nudge/archive emit w
 //    while a second still-ready workspace keeps being reminded; NEVER auto-archive.
 // ============================================================================
 
-const inboxPayload = () => ({ hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi' });
+// v0.57 mesh (Phase 8): the hook now reads summaries/<repoKey>.json keyed by
+// repoKeyForWorktree(cwd) — payload.cwd must resolve the SAME repoKey the CLI
+// calls below write into (MESH_CWD/MESH_REPO_KEY, declared near seedStoreUnread).
+const inboxPayload = () => ({ hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: MESH_CWD });
 
 test('9 ARCHIVE-READY: all gates met -> parent-inbox recommends the user archive it (never auto-archives)', () => {
   const home = H.makeHome();
   try {
-    // cwd: home (v0.57 mesh, D24) — a plain tmpdir, NOT a git repo, pins
-    // repoKey===null so register/gate write into the SAME legacy per-id hash
-    // store the parent-inbox hook still reads (the hook's OWN repoKey rekey is
-    // Phase 7/8, out of this phase's scope). Without this, the CLI subprocess
-    // would inherit the TEST RUNNER's real repo cwd and write into
-    // store/<repoKey>/, which the hook cannot see yet.
-    const cwd = home;
+    // cwd: MESH_CWD (v0.57 mesh, D24/Phase 8) — a REAL git worktree, so
+    // register/gate write into store/<MESH_REPO_KEY>/, the SAME shared store
+    // devswarm-parent-inbox.js now reads via inboxPayload()'s cwd above.
+    const cwd = MESH_CWD;
     H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA'], undefined, { cwd });
     const g = H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed'], undefined, { cwd });
     assert.ok(g.json && g.json.archive_ready === true, 'store derives archive_ready once all gates met');
@@ -592,8 +616,8 @@ test('9 ARCHIVE-READY: all gates met -> parent-inbox recommends the user archive
 test('9 ARCHIVE-READY: reminder is COOLDOWN\'d (not repeated next turn) but PERSISTS once the cooldown elapses', () => {
   const home = H.makeHome();
   try {
-    // cwd: home — see the D24 comment in the previous test.
-    const cwd = home;
+    // cwd: MESH_CWD — see the D24/Phase 8 comment in the first test of this section.
+    const cwd = MESH_CWD;
     H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA'], undefined, { cwd });
     H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed'], undefined, { cwd });
 
@@ -624,8 +648,8 @@ test('9 ARCHIVE-READY: reminder is COOLDOWN\'d (not repeated next turn) but PERS
 test('9 ARCHIVE-READY: `archive-ignore` suppresses ONE workspace while a second still-ready one keeps being reminded', () => {
   const home = H.makeHome();
   try {
-    // cwd: home — see the D24 comment in the first test of this section.
-    const cwd = home;
+    // cwd: MESH_CWD — see the D24/Phase 8 comment in the first test of this section.
+    const cwd = MESH_CWD;
     H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA'], undefined, { cwd });
     H.runCli(home, ['register', 'wsB', '--worktree', '/wt/wsB', '--session', 'sB'], undefined, { cwd });
     H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed'], undefined, { cwd });

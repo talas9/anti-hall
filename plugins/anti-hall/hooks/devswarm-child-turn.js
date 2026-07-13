@@ -189,6 +189,28 @@ function buildUnreadSegment(info) {
   );
 }
 
+// buildMeshDirectSegment(count, id, urgencyMax) -> string. D26/D4 (Phase 8 step
+// 3): urgency-tiered nudge for a mesh DIRECT addressed to THIS child's meshId —
+// urgent/high gets the LOUDEST imperative wording (parity with the Primary's
+// own buildOwnUnreadSegment posture); everything else (null/'normal'/
+// unrecognized) gets the standard read nudge (edge_cases: unknown -> normal).
+// A DIRECT always surfaces regardless of urgency (D4's type-vs-urgency
+// separation — urgency governs wording/loudness only).
+function buildMeshDirectSegment(count, id, urgencyMax) {
+  const urgent = urgencyMax === 'urgent' || urgencyMax === 'high';
+  if (urgent) {
+    return (
+      'DEVSWARM MESH DIRECT — URGENT: you have ' + count + ' unread mesh direct '
+      + 'message(s) addressed to you. STOP and read them FIRST via `devswarm.js '
+      + 'inbox read-primary ' + id + '` before continuing.'
+    );
+  }
+  return (
+    'DEVSWARM MESH DIRECT: you have ' + count + ' unread mesh direct message(s) '
+    + 'addressed to you. Read them via `devswarm.js inbox read-primary ' + id + '`.'
+  );
+}
+
 // ARCHIVE_REQUEST_MARKER — a parent embeds this literal token in a message body to
 // ask the child to archive its own workspace. A plain substring scan (format-
 // agnostic: works whether the durable line is raw text or NDJSON-wrapped) over the
@@ -258,10 +280,10 @@ function defaultCursorPath(home, id) {
 // running outside a worktree, or a malformed env, must never crash or block a turn.
 function registerChildDescriptor(env, sessionId, cwd, home) {
   const id = env.DEVSWARM_BUILDER_ID;
-  if (typeof id !== 'string' || !isSafeId(id)) return;
-  if (typeof sessionId !== 'string' || sessionId === '') return;
+  if (typeof id !== 'string' || !isSafeId(id)) return null;
+  if (typeof sessionId !== 'string' || sessionId === '') return null;
   const worktreePath = findGitToplevel(cwd);
-  if (!worktreePath) return;
+  if (!worktreePath) return null;
 
   const dir = path.join(devswarmRoot(home), 'workspaces');
   const target = path.join(dir, id + '.json');
@@ -288,6 +310,49 @@ function registerChildDescriptor(env, sessionId, cwd, home) {
       fs.writeFileSync(desc.cursorPath, '0');
     } catch (_) { /* best-effort; inbox ops still degrade to known:false */ }
   }
+  return desc;
+}
+
+// registerStoreDescriptor(desc, home) — v0.57 mesh (D24, Phase 8 gap-close):
+// registerChildDescriptor above (the #31 HOTFIX) writes ONLY the fs descriptor
+// file — under mesh, devswarm-parent-inbox.js discovers workspaces EXCLUSIVELY
+// through the shared store's registry (summaries/<repoKey>.json, Phase 8 step
+// 1), so a child that never happens to run `devswarm.js inbox pull` (the ONLY
+// other path that upserts the store registry, via cmdRegister) would be
+// invisible to the Primary forever — breaking #31's whole "mechanical, no-CLI-
+// dependency" guarantee. This mirrors the ingest daemon's own self-registration
+// (devswarm-ingest.js runIngestLoop: read-existing, merge-preserving, upsert,
+// re-derive) so the SAME mechanical guarantee holds for children under mesh.
+// Best-effort + isolated: ANY failure (missing/corrupt devswarm-repokey.js or
+// devswarm-store.js, unresolvable repoKey, a store-open error) must NEVER
+// block or crash a turn — lazy/guarded requires (D27), swallowed here.
+function registerStoreDescriptor(desc, home) {
+  if (!desc || !desc.id || !desc.worktreePath) return;
+  try {
+    let repokeyMod = null;
+    try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
+    let storeMod = null;
+    try { storeMod = require('../companion/lib/devswarm-store.js'); } catch (_) { storeMod = null; }
+    if (!repokeyMod || !storeMod) return;
+    let repoKey = null;
+    try { repoKey = repokeyMod.repoKeyForWorktree(desc.worktreePath); } catch (_) { repoKey = null; }
+    if (!repoKey) return;
+
+    const s = storeMod.openStore({ home, workspaceId: desc.id, hash: repoKey });
+    try {
+      s.upsertRegistry({
+        id: desc.id,
+        worktreePath: desc.worktreePath,
+        sessionId: desc.sessionId,
+        inboxPath: desc.inboxPath,
+        cursorPath: desc.cursorPath,
+        nudgeCommand: desc.nudgeCommand,
+      });
+      storeMod.deriveSummary(s, { home });
+    } finally {
+      try { s.close(); } catch (_) {}
+    }
+  } catch (_) { /* fail-open: never block a turn on a mesh registration failure */ }
 }
 
 function main() {
@@ -314,7 +379,12 @@ function main() {
   // Mechanical descriptor registration (#31 HOTFIX), isolated the same way — a
   // registration failure must never suppress the reminder/unread segments below.
   try {
-    registerChildDescriptor(env, payload.session_id, payload.cwd, home);
+    const desc = registerChildDescriptor(env, payload.session_id, payload.cwd, home);
+    // v0.57 mesh (D24, Phase 8 gap-close): ALSO mechanically upsert into the
+    // shared store's registry — see registerStoreDescriptor's own doc comment.
+    // Isolated in its OWN try (already internally fail-open) so a store-side
+    // failure can never suppress the fs descriptor write above.
+    try { registerStoreDescriptor(desc, home); } catch (_) {}
   } catch (_) { /* fail-open: never block a turn on a descriptor write */ }
 
   // Daemon-LIVENESS staleness banner (Phase 7, PLAN-v0.57-mesh.md D25) — the
@@ -324,8 +394,11 @@ function main() {
   // native parent->child queue via `inbox pull`). Lazy/guarded requires (D27):
   // a missing/corrupt `ingest-health.js`/`devswarm-repokey.js` fails this block
   // open (no banner), never the whole hook. `status==='healthy'` or
-  // `'unsupported'` (win32, D28) also render nothing.
+  // `'unsupported'` (win32, D28) also render nothing. `worktree`/`repokeyMod`/
+  // `repoKey` are resolved ONCE here and reused below for the D26 mesh-direct
+  // surfacing block (one git spawn, not two).
   let staleBanner = null;
+  let meshDirectSegment = null;
   try {
     const worktree = findGitToplevel(payload.cwd);
     if (worktree) {
@@ -333,28 +406,54 @@ function main() {
       try { ingestHealthMod = require('../companion/lib/ingest-health.js'); } catch (_) { ingestHealthMod = null; }
       let repokeyMod = null;
       try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
-      if (ingestHealthMod && repokeyMod) {
-        let repoKey = null;
-        try { repoKey = repokeyMod.repoKeyForWorktree(worktree); } catch (_) { repoKey = null; }
-        if (repoKey) {
-          const now = Date.now();
-          let beatTs = null;
+      let repoKey = null;
+      try { repoKey = repokeyMod ? repokeyMod.repoKeyForWorktree(worktree) : null; } catch (_) { repoKey = null; }
+
+      if (ingestHealthMod && repoKey) {
+        const now = Date.now();
+        let beatTs = null;
+        try {
+          const beat = JSON.parse(fs.readFileSync(ingestHealthMod.ingestHeartbeatPath(home, repoKey), 'utf8'));
+          beatTs = beat && Number.isFinite(beat.ts) ? beat.ts : null;
+        } catch (_) { beatTs = null; }
+        const health = ingestHealthMod.daemonHealth(home, repoKey, { now });
+        if (health.status === 'stale') staleBanner = ingestHealthMod.buildStaleBanner(beatTs, now);
+      }
+
+      // D26 (Phase 8 step 3): mesh DIRECT surfacing. A mesh direct addressed to
+      // this CHILD's meshId (D19) lands, via the mesh addressing join, in the
+      // child's OWN builder-id partition inside the shared store — but the
+      // child's mechanical read surfaces (this hook) previously read ONLY the
+      // durable NDJSON inbox (unreadInfo below), so a mesh direct was never
+      // seen. Read the SAME shared summaries/<repoKey>.json projection the
+      // Primary reads, for THIS child's OWN builder-id entry's
+      // directUnread/urgencyMax, and render the SAME urgency-tiered nudge
+      // (D4) — projection-only, fail-open, no store DB open.
+      if (repoKey) {
+        const id = env.DEVSWARM_BUILDER_ID;
+        if (typeof id === 'string' && isSafeId(id)) {
           try {
-            const beat = JSON.parse(fs.readFileSync(ingestHealthMod.ingestHeartbeatPath(home, repoKey), 'utf8'));
-            beatTs = beat && Number.isFinite(beat.ts) ? beat.ts : null;
-          } catch (_) { beatTs = null; }
-          const health = ingestHealthMod.daemonHealth(home, repoKey, { now });
-          if (health.status === 'stale') staleBanner = ingestHealthMod.buildStaleBanner(beatTs, now);
+            const p = path.join(devswarmRoot(home), 'summaries', repoKey + '.json');
+            const raw = String(fs.readFileSync(p, 'utf8')).trim();
+            const summary = raw ? JSON.parse(raw) : null;
+            const entry = summary && summary.workspaces && summary.workspaces[id];
+            const directUnread = entry && Number.isFinite(entry.directUnread) ? entry.directUnread
+              : (entry && Number.isFinite(entry.unread) ? entry.unread : 0);
+            if (directUnread > 0) {
+              meshDirectSegment = buildMeshDirectSegment(directUnread, id, entry.urgencyMax || null);
+            }
+          } catch (_) { meshDirectSegment = null; }
         }
       }
     }
-  } catch (_) { staleBanner = null; }
+  } catch (_) { staleBanner = null; meshDirectSegment = null; }
 
   // REMINDER is always present; append the unread-inbox nudge only when the child's
   // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
   const segments = [];
   if (staleBanner) segments.push(staleBanner);
   segments.push(REMINDER, RECEIVE_NUDGE);
+  if (meshDirectSegment) segments.push(meshDirectSegment);
   const info = unreadInfo(env, home);
   if (info) {
     segments.push(buildUnreadSegment(info));

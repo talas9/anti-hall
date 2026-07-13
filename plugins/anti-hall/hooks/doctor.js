@@ -452,6 +452,10 @@ function devswarmHookSelfTests() {
   try {
     // A descriptor + its durable inbox/cursor, mirroring the workspace registry
     // shape readDescriptors() requires (id, worktreePath, sessionId, inbox/cursor).
+    // Consumed by the parent-gate self-test (#4 below) — parent-gate.js's
+    // blocking-set loop is still raw readDescriptors + readUnread, unchanged by
+    // the v0.57 mesh Phase 8 restructure (D29: only its #36 filter predicate
+    // changed, not its data source).
     function writeWorkspace(home, id, opts) {
       const root = path.join(home, '.anti-hall', 'devswarm');
       fs.mkdirSync(path.join(root, 'workspaces'), { recursive: true });
@@ -464,6 +468,27 @@ function devswarmHookSelfTests() {
       fs.writeFileSync(cursorPath, String((opts && opts.cursor) || 0));
       const d = { id, worktreePath: path.join(root, 'wt', id), sessionId: 'sess-' + id, inboxPath, cursorPath };
       fs.writeFileSync(path.join(root, 'workspaces', id + '.json'), JSON.stringify(d));
+    }
+    // v0.57 mesh (PLAN-v0.57-mesh.md Phase 8): devswarm-parent-inbox.js now
+    // reads ONE shared summaries/<repoKey>.json (keyed by repoKeyForWorktree of
+    // the hook payload's OWN `cwd`), not a per-descriptor durable inbox/cursor —
+    // so its self-test needs a RESOLVABLE cwd (ROOT, this plugin's own repo
+    // checkout — always a real git worktree) and a shared-summary write at that
+    // repoKey, not writeWorkspace()'s raw descriptor shape. Lazy/guarded
+    // require (same D27 posture as the hooks themselves): an unresolvable
+    // repokey module fails this self-test to a single, clearly-labelled FAIL
+    // result rather than crashing doctor.js.
+    let meshRepoKey = null;
+    try {
+      const repokey = require('../companion/lib/devswarm-repokey.js');
+      meshRepoKey = repokey.repoKeyForWorktree(ROOT);
+    } catch (_) { meshRepoKey = null; }
+    function writeSharedSummary(home, workspaces) {
+      if (!meshRepoKey) return false;
+      const dir = path.join(home, '.anti-hall', 'devswarm', 'summaries');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, meshRepoKey + '.json'), JSON.stringify({ workspaces }));
+      return true;
     }
     // Force the supervisor ON (mode wins over feature-detect) and clear the
     // hard kill-switch so the self-test verifies the code regardless of the
@@ -496,15 +521,21 @@ function devswarmHookSelfTests() {
     })();
 
     // 3. devswarm-parent-inbox (UserPromptSubmit, Primary): surfaces a neglected
-    //    workspace's unread backlog to the Primary.
+    //    workspace's unread backlog to the Primary. Reads the ONE shared
+    //    summaries/<repoKey>.json (Phase 8) — payload.cwd = ROOT so the hook
+    //    resolves the SAME repoKey writeSharedSummary() wrote under.
     (function () {
       const home = path.join(base, 'parent-inbox'); fs.mkdirSync(home, { recursive: true });
-      writeWorkspace(home, 'wsA', { inbox: ['{"m":1}', '{"m":2}', '{"m":3}'], cursor: 0 });
-      const r = runHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 'pi', prompt: 'hi' }, PRIMARY_ENV(home));
-      const said = /DEVSWARM PARENT INBOX/.test(r.out) && /3 unread/.test(r.out);
-      results.push({ ok: said, msg: said
-        ? 'devswarm-parent-inbox surfaces a workspace unread backlog to the Primary'
-        : 'devswarm-parent-inbox did NOT surface unread backlog to the Primary' });
+      const wrote = writeSharedSummary(home, { wsA: { total: 3, cursor: 0, unread: 3, directUnread: 3 } });
+      if (!wrote) {
+        results.push({ ok: false, msg: 'devswarm-parent-inbox self-test SKIPPED: repoKey unresolvable for ' + ROOT });
+      } else {
+        const r = runHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 'pi', prompt: 'hi', cwd: ROOT }, PRIMARY_ENV(home));
+        const said = /DEVSWARM PARENT INBOX/.test(r.out) && /3 unread/.test(r.out);
+        results.push({ ok: said, msg: said
+          ? 'devswarm-parent-inbox surfaces a workspace unread backlog to the Primary'
+          : 'devswarm-parent-inbox did NOT surface unread backlog to the Primary' });
+      }
     })();
 
     // 4. devswarm-parent-gate (Stop, Primary): blocks the Primary turn while a

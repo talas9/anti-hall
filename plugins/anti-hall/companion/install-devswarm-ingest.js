@@ -43,7 +43,16 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
-const repokey = require('./lib/devswarm-repokey.js');
+// D27 (PLAN-v0.57-mesh.md): guarded, NOT a bare require — this module is
+// itself required TOP-LEVEL by hooks (devswarm-parent-inbox.js/devswarm-
+// parent-gate.js), whose fail-open guarantee only wraps their own main()
+// call, not their top-level requires. A THROWING require here (a corrupt/
+// deleted devswarm-repokey.js) would therefore crash those hooks before
+// fail-open ever engages — exactly the class of bug D27 exists to prevent.
+// `repokey` is null on failure; every call site below already fails open
+// (returns null) when it is.
+let repokey = null;
+try { repokey = require('./lib/devswarm-repokey.js'); } catch (_) { repokey = null; }
 const { devswarmRoot } = require('./lib/liveness.js');
 
 const LABEL = 'com.anti-hall.devswarm-ingest';
@@ -214,6 +223,7 @@ function cronMarkerForProject(repoKey) { return `# ${unitForProject(repoKey)}`; 
 // moment its cwd vanishes). `io.run`/`io.fs` are injectable so this is testable
 // without spawning a real `git` (mirrors devswarm-repokey.js's own posture).
 function resolveMainWorktree(cwd, io) {
+  if (!repokey) return null; // D27 fail-open: corrupt/missing repokey module
   const cd = repokey.gitCommonDir(cwd, { io });
   if (!cd) return null;
   return path.dirname(cd);
@@ -883,7 +893,7 @@ function main() {
     // stays the install-refusal / path-safety gate; `mainWorktree`/`repoKey` are
     // project-wide and are what the NEW per-project unit bakes.
     const mainWorktree = resolveMainWorktree(process.cwd());
-    const repoKey = mainWorktree ? repokey.repoKeyForWorktree(mainWorktree) : null;
+    const repoKey = (mainWorktree && repokey) ? repokey.repoKeyForWorktree(mainWorktree) : null;
     if (mainWorktree && repoKey && pathIsEmittable(mainWorktree)) {
       if (UNINSTALL) {
         // Uninstall targets BOTH the current worktree's legacy per-worktree unit

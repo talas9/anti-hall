@@ -57,26 +57,18 @@ const path = require('path');
 
 const { isDevswarmActive } = require('./lib/devswarm-detect.js');
 const { isChildWorkspace } = require('./lib/devswarm-role.js');
-const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const {
   devswarmRoot,
   livenessPathFor,
   isSafeId,
   DEFAULT_COOLDOWN_MS,
 } = require('../companion/lib/liveness.js');
-const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 // worktreeHash: the SAME per-worktree identity install-devswarm-ingest.js baked
 // into the daemon's unit (and devswarm-ingest.js keys its heartbeat file by).
 // ingestHeartbeatPath: the per-worktree daemon LIVENESS file (rewritten every
 // sweep, even a 0-insert one) — see the staleness banner below.
 const installIngest = require('../companion/install-devswarm-ingest.js');
 const devswarmIngest = require('../companion/devswarm-ingest.js');
-// hashFromWorkspaceId: the per-project store now keys summaries/<hash>.json by
-// EACH descriptor's OWN id (not by the hook's cwd worktree hash) — see the
-// per-descriptor summary resolution below. Same helper the store itself uses to
-// derive/write a workspace's summary, so the hook agrees byte-for-byte on which
-// file holds a given descriptor's data.
-const { hashFromWorkspaceId } = require('../companion/lib/devswarm-store.js');
 
 // A workspace whose supervisor verdict is one of these is idle/stuck (a wedged or
 // escalated child), independent of whether it still has unread backlog.
@@ -103,10 +95,12 @@ const MAX_TABLE_ROWS = 12;
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 
 // summaryPath(home, hash) -> a PER-PROJECT summary file (summaries/<hash>.json).
-// The store writes one summary per project, keyed by hashFromWorkspaceId of the
-// workspace id that project's data belongs to (see summaryForDescriptor in
-// main() — each descriptor resolves its OWN hash, not the hook's cwd worktree
-// hash). `hash` null -> null (readSummary then fails open to "no data").
+// v0.57 mesh (D1/D24/Phase 8 step 1): the store now writes ONE shared summary
+// PER PROJECT, keyed by repoKeyForWorktree(cwd) — NOT per-descriptor
+// hashFromWorkspaceId(d.id) as it was pre-mesh. main() reads this file ONCE
+// (keyed by THIS session's own repoKey) and iterates summary.workspaces for
+// every workspace that project's store knows about. `hash` null -> null
+// (readSummary then fails open to "no data").
 function summaryPath(home, hash) {
   if (!hash) return null;
   return path.join(devswarmRoot(home), 'summaries', String(hash) + '.json');
@@ -389,19 +383,90 @@ function buildUnreadSegment(list) {
   return body;
 }
 
-// buildOwnUnreadSegment(count, id) -> string. IMPERATIVE PRIORITY wording for the
-// Primary's OWN inbound unread (#34 fix — the Primary previously had no visibility
-// into its own unread parent/peer backlog, only children's). Parity with the
-// child's own imperative nudge (devswarm-child-turn.js buildUnreadSegment:167-176,
-// #29): the Primary must not treat its own unread messages as optional either.
-function buildOwnUnreadSegment(count, id) {
+// isHighUrgency(u) -> bool. 'urgent'/'high' both map to the LOUD, imperative
+// tier (D4 — urgency drives visibility, not gating: a mesh DIRECT's urgency
+// selects wording ONLY; it never affects whether the Stop-gate fires).
+function isHighUrgency(u) {
+  return u === 'urgent' || u === 'high';
+}
+
+// tierOf(w) -> 'urgent' | 'low' | 'normal'. Per-workspace attention-item tier
+// (D4, Phase 8 step 2). A stuck-only item (unread<=0, e.g. escalated with an
+// empty inbox) always stays 'normal' — urgency is a property of a pending
+// unread DIRECT message, not of a liveness verdict. A STUCK workspace (Opus-
+// auditor P2) is never demoted to 'low' by its message urgency alone — a
+// wedged/escalated child's liveness escalation must not be dropped from the
+// imperative segment just because its queued message happens to be low-
+// urgency; it still loses to an urgent message (checked first, unaffected).
+function tierOf(w) {
+  if (!(w.unread > 0)) return 'normal';
+  if (isHighUrgency(w.urgencyMax)) return 'urgent';
+  if (w.status && STUCK_STATUSES.has(w.status)) return 'normal';
+  if (w.urgencyMax === 'low') return 'low';
+  return 'normal';
+}
+
+// buildUrgentUnreadSegment(list) -> string. v0.57 mesh (D4, Phase 8 step 2): the
+// LOUDEST tier — workspaces whose unread carries an urgent/high urgencyMax get a
+// DISTINCT, more prominent segment than the standard buildUnreadSegment below
+// (same imperative "STOP and read FIRST" posture as buildOwnUnreadSegment).
+function buildUrgentUnreadSegment(list) {
+  const shown = list.slice(0, MAX_LISTED).map((w) => {
+    const parts = [w.unread + ' unread'];
+    if (w.status && STUCK_STATUSES.has(w.status)) parts.push(w.status);
+    return w.id + ' (' + parts.join(', ') + ')';
+  });
+  const extra = list.length > MAX_LISTED ? ' +' + (list.length - MAX_LISTED) + ' more' : '';
   return (
-    'DEVSWARM OWN INBOX — PRIORITY: you have ' + count + ' unread parent/peer '
+    'DEVSWARM URGENT INBOX: ' + list.length + ' workspace(s) sent an URGENT/HIGH-priority '
+    + 'direct message — ' + shown.join('; ') + extra + '. STOP and read each unread '
+    + 'workspace\'s inbox message(s) FIRST via `devswarm.js inbox read <id>` before '
+    + 'continuing.'
+  );
+}
+
+// buildOwnUnreadSegment(count, id, urgencyMax) -> string. IMPERATIVE PRIORITY
+// wording for the Primary's OWN inbound unread (#34 fix — the Primary previously
+// had no visibility into its own unread parent/peer backlog, only children's).
+// Parity with the child's own imperative nudge (devswarm-child-turn.js
+// buildUnreadSegment:167-176, #29): the Primary must not treat its own unread
+// messages as optional either. v0.57 mesh (D4, Phase 8 step 4): `urgencyMax`
+// (the highest urgency among the Primary's own pending directs, from the
+// summary projection) is HONORED in the wording — urgent/high gets an explicit
+// "URGENT" prefix — but NEVER changes whether this is surfaced; a DIRECT always
+// gates/surfaces regardless of urgency (D4's type-vs-urgency separation —
+// urgency governs tier/loudness only).
+function buildOwnUnreadSegment(count, id, urgencyMax) {
+  const prefix = isHighUrgency(urgencyMax) ? 'DEVSWARM OWN INBOX — URGENT PRIORITY: ' : 'DEVSWARM OWN INBOX — PRIORITY: ';
+  return (
+    prefix + 'you have ' + count + ' unread parent/peer '
     + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
     + 'parent/peer message(s) FIRST before continuing. Read them the SAFE, '
     + 'NON-DRAINING way — `devswarm.js inbox read-primary ' + id + '` (anti-hall '
     + 'devswarm CLI). Do NOT run `hivecontrol workspace read-messages` or '
     + '`monitor` — those DESTRUCTIVELY drain the native queue.'
+  );
+}
+
+// buildBroadcastSegment(rows) -> string. v0.57 mesh (D3/D4/D22/D23/D27, Phase 8
+// step 2): the top-level `recent[]` broadcast/heartbeat feed, rendered ADVISORY
+// ONLY — this is roster/FYI context, NEVER a Stop-gate trigger and NEVER
+// mechanically dispatched ("react only if concerned" is agent judgement, D27 —
+// no concerned-classifier is invented here). A `recent[]` row carries no
+// direct/broadcast discriminator of its own (it is ALWAYS a broadcast-axis row —
+// plain broadcast or heartbeat, D22) so every row renders identically; urgency
+// (urgent/high) only makes a row visually LOUDER via an `[URGENT]` tag — it does
+// not change the advisory framing or gate anything.
+function buildBroadcastSegment(rows) {
+  const shown = rows.slice(-MAX_LISTED).map((r) => {
+    const tag = isHighUrgency(r.urgency) ? '[URGENT] ' : '';
+    const who = r.from != null ? r.from : '?';
+    const body = r.summary != null && r.summary !== '' ? r.summary : '(no summary)';
+    return '- ' + tag + who + ': ' + body;
+  });
+  return (
+    'DEVSWARM BROADCAST (advisory roster/FYI feed — react ONLY if you judge it '
+    + 'relevant; NEVER blocks your turn, regardless of urgency):\n' + shown.join('\n')
   );
 }
 
@@ -451,89 +516,124 @@ function main() {
   const home = os.homedir();
   const now = Date.now();
   const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : null;
-  // Resolve the CURRENT worktree's hash ONCE (pure fs walk, no git spawn) — it
-  // keys the per-project summary read, the daemon-heartbeat staleness banner
-  // below, AND (#34) the Primary's OWN workspace id (primary-<hash>, the SAME
+  // Resolve the CURRENT worktree's identity ONCE. `gitTop`/`worktreeHash`/
+  // `primaryId` are a PURE fs walk + hash (no git spawn) — the legacy identity
+  // AND (#34) the Primary's OWN workspace id (primary-<hash>, the SAME
   // convention install-devswarm-ingest.js's primaryWorkspaceId + the ingest
-  // daemon already use) so its own inbound unread can be resolved from the same
-  // summary projection. Fail-open: any failure -> null -> no summary data, no
-  // banner, no own-unread segment.
+  // daemon already use). `repoKey` (D1/D2, ONE git spawn, lazy-required module
+  // per D27 so a missing/corrupt module fails this open) is the v0.57 mesh
+  // per-PROJECT key that now selects which shared summaries/<repoKey>.json this
+  // hook reads (Phase 8 step 1 — replaces the pre-mesh per-descriptor
+  // hashFromWorkspaceId(d.id) read). Fail-open throughout: any failure -> null
+  // -> no summary data, no banner, no own-unread segment.
   let worktreeHash = null;
   let primaryId = null;
-  let gitTop = null; // hoisted (was block-scoped) — the staleness-banner block
-  // below needs it too, to resolve this turn's repoKey (release-gate #23).
+  let gitTop = null;
   try {
     gitTop = cwd ? findGitToplevel(cwd) : null;
     worktreeHash = gitTop ? installIngest.worktreeHash(gitTop) : null;
     primaryId = gitTop ? installIngest.primaryWorkspaceId(gitTop) : null;
   } catch (_) { worktreeHash = null; primaryId = null; gitTop = null; }
 
-  let descriptors = [];
-  try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
+  let repokeyMod = null;
+  try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
+  let repoKey = null;
+  try { repoKey = (repokeyMod && gitTop) ? repokeyMod.repoKeyForWorktree(gitTop) : null; } catch (_) { repoKey = null; }
 
-  const attention = []; // { id, unread, cursor, total, status }
+  // ONE shared per-project summary read (D1/D24, Phase 8 step 1) — the store
+  // now enumerates ALL of this project's workspaces into summaries/<repoKey>.json;
+  // iterate summary.workspaces below instead of re-reading a summary PER
+  // descriptor (the pre-mesh code double-read/mis-keyed under mesh, since every
+  // caller now shares hash=repoKey — Opus-auditor P1).
+  let summary = null;
+  try { summary = repoKey ? readSummary(home, repoKey) : null; } catch (_) { summary = null; }
+  const summaryWorkspaces = (summary && summary.workspaces && typeof summary.workspaces === 'object')
+    ? summary.workspaces : {};
+
+  const attention = []; // { id, unread, cursor, total, status, urgencyMax }
   const archiveList = [];
   const rows = []; // live-table row per ACTIVE workspace: { id, label, rank, finish, unread, lastActivityTs }
 
-  // Per-descriptor summary cache: the store keys summaries/<hash>.json by EACH
-  // descriptor's OWN id (hashFromWorkspaceId(d.id)), NOT by the hook's cwd
-  // worktree hash — every descriptor other than the one matching cwd would
-  // otherwise silently read the WRONG (cwd's) summary. Cache by hash so two
-  // descriptors sharing a hash only trigger one fs read.
-  const summaryCache = new Map(); // hash -> summary object | null
-  function summaryForDescriptor(id) {
-    const hash = hashFromWorkspaceId(id);
-    if (summaryCache.has(hash)) return summaryCache.get(hash);
-    let s = null;
-    try { s = readSummary(home, hash); } catch (_) { s = null; }
-    summaryCache.set(hash, s);
-    return s;
+  // #36 STRUCTURAL cross-project filter (D29 — REPLACES the spoofable v0.56 env
+  // filter `d.repoId !== currentRepoId`; env DEVSWARM_REPO_ID is in the SAME
+  // trust class as the #39 ack-guard spoof). DEFENSE-IN-DEPTH: step 1's
+  // restructure already scopes enumeration to THIS project's OWN
+  // summaries/<repoKey>.json — a foreign project's workspace cannot land there
+  // via the normal write path — but this explicit per-entry check guards
+  // migration artifacts / future write-path drift the same way the parent-
+  // gate's raw-descriptor loop needs it structurally (that loop is NOT
+  // summary-driven at all). Keep an entry ONLY when its worktreePath resolves
+  // to THIS SAME repoKey, or when EITHER side is unresolvable (fail-open —
+  // nothing that surfaced pre-#36 can vanish). repoKeyForWorktree is memoized
+  // by worktreePath so N workspaces sharing one worktree (siblings of one repo)
+  // never re-spawn git more than once each.
+  const repoKeyCache = new Map(); // worktreePath -> repoKey | null
+  // Seed the cache with the already-resolved repoKey for THIS worktree (P2 —
+  // Codex/Reviewer: most entries share `gitTop` as their worktreePath, so
+  // pre-seeding avoids re-spawning git for the common case; entries on a
+  // different worktree still resolve their own key on first lookup below).
+  if (gitTop) repoKeyCache.set(gitTop, repoKey);
+  function repoKeyOfWorktree(wt) {
+    if (!wt) return null;
+    if (repoKeyCache.has(wt)) return repoKeyCache.get(wt);
+    let k = null;
+    try { k = repokeyMod ? repokeyMod.repoKeyForWorktree(wt) : null; } catch (_) { k = null; }
+    repoKeyCache.set(wt, k);
+    return k;
   }
 
-  // #36 cross-project-bleed fix: exclude a descriptor ONLY when BOTH this
-  // session's and the descriptor's repoId are present and DIFFER — fail-open by
-  // construction. An old descriptor with no repoId (pre-#36) or a session with
-  // no DEVSWARM_REPO_ID (manual supervisor mode) disables the filter entirely,
-  // so nothing that showed before this fix can vanish; it only stops a Primary
-  // in project A from being surfaced project B's workspaces.
-  const currentRepoId = process.env.DEVSWARM_REPO_ID;
-  for (const d of descriptors) {
-    if (!d || !isSafeId(d.id)) continue;
-    if (currentRepoId && d.repoId && d.repoId !== currentRepoId) continue;
-    const summary = summaryForDescriptor(d.id);
-    // --- unread / idle ---
-    let unread = 0, cursor = 0, total = 0;
-    try {
-      const u = readUnread(d.inboxPath, d.cursorPath);
-      unread = u.known ? u.count : 0;
-      cursor = u.cursor;
-      total = u.total;
-    } catch (_) {}
-    const verdict = readVerdictFile(home, d.id);
-    const status = verdictStatus(summary, d.id, verdict);
+  for (const id of Object.keys(summaryWorkspaces)) {
+    if (!isSafeId(id)) continue;
+    // #34/Reviewer P1: the Primary's OWN self-registered entry (primary-<hash>,
+    // written by devswarm-ingest.js's self-registration) lives in this SAME
+    // shared summary alongside real children. It must be surfaced ONLY via the
+    // dedicated ownUnread/buildOwnUnreadSegment path below (which also reads
+    // this same summary), never as a fake "child" in the table/attention/
+    // archive lists — the generic child CLI hints (`inbox read <id>`,
+    // `archive-request <id>`) call readDescriptorFile, which has no entry for
+    // a primary id and fails.
+    if (id === primaryId) continue;
+    const entry = summaryWorkspaces[id];
+    if (!entry || typeof entry !== 'object') continue;
+
+    const dKey = repoKeyOfWorktree(entry.worktreePath);
+    if (repoKey && dKey && dKey !== repoKey) continue; // #36 structural filter
+
+    // --- unread / idle (v0.57 mesh: sourced from the summary projection's own
+    // directUnread/total/cursor — the mesh store's tracked cursor is now
+    // authoritative for direct-message unread, D24; an old-shape entry missing
+    // directUnread falls back to its `unread` alias, same value, edge_cases) ---
+    const unread = Number.isFinite(entry.directUnread) ? entry.directUnread
+      : (Number.isFinite(entry.unread) ? entry.unread : 0);
+    const total = Number.isFinite(entry.total) ? entry.total : 0;
+    const cursor = Number.isFinite(entry.cursor) ? entry.cursor : 0;
+    const urgencyMax = entry.urgencyMax || null;
+
+    const verdict = readVerdictFile(home, id); // still builder-id-keyed (D19)
+    const status = verdictStatus(summary, id, verdict);
     const stuck = status !== null && STUCK_STATUSES.has(status);
     if (unread > 0 || stuck) {
-      attention.push({ id: d.id, unread, cursor, total, status });
+      attention.push({ id, unread, cursor, total, status, urgencyMax });
     }
 
     // --- archive-ready recommendation (P1-E) ---
-    const archiveReady = isArchiveReady(d.id, summary);
+    const archiveReady = isArchiveReady(id, summary);
     try {
-      if (archiveReady && !isArchiveIgnored(home, d.id)
-          && archiveCooldownElapsed(home, d.id, now)) {
-        archiveList.push(d.id);
+      if (archiveReady && !isArchiveIgnored(home, id)
+          && archiveCooldownElapsed(home, id, now)) {
+        archiveList.push(id);
       }
     } catch (_) {}
 
     // --- live-table row (every ACTIVE workspace, every turn) ---
     try {
-      const heartbeat = readHeartbeat(home, d.id);
+      const heartbeat = readHeartbeat(home, id);
       const ds = displayStatus(archiveReady, status);
       rows.push({
-        id: d.id,
+        id,
         label: ds.label,
         rank: ds.rank,
-        finish: finishingRate(summary, d.id, heartbeat),
+        finish: finishingRate(summary, id, heartbeat),
         unread,
         lastActivityTs: lastActivityTs(verdict, heartbeat),
       });
@@ -541,52 +641,50 @@ function main() {
   }
 
   // --- Primary's OWN inbound unread (#34) ---
-  // Unlike a child, the Primary has no descriptor with its own inboxPath/
-  // cursorPath to read via readUnread — its inbound is ingested by the daemon
-  // directly into the store under workspaceId primary-<worktreeHash> and exposed
-  // ONLY via the summary projection (summaries/<worktreeHash>.json ->
-  // workspaces[primary-<hash>].unread), the SAME projection already read above
-  // for each child's status/gates. Reuses summaryForDescriptor so a primaryId
-  // sharing worktreeHash costs no extra fs read. Fail-open: any failure -> 0.
+  // The Primary's inbound is ingested by the daemon directly into the store
+  // under workspaceId primary-<worktreeHash> and exposed via the SAME shared
+  // summary already read above (the daemon self-registers its own id into
+  // THIS project's repoKey-keyed store, D24) — no extra fs read needed.
+  // Fail-open: any failure -> 0.
   let ownUnread = 0;
+  let ownUrgencyMax = null;
   try {
     if (primaryId) {
-      const ownSummary = summaryForDescriptor(primaryId);
-      const ownEntry = summaryEntry(ownSummary, primaryId);
+      const ownEntry = summaryEntry(summary, primaryId);
       if (ownEntry && Number.isFinite(ownEntry.unread) && ownEntry.unread > 0) {
         ownUnread = ownEntry.unread;
+        ownUrgencyMax = ownEntry.urgencyMax || null;
       }
     }
-  } catch (_) { ownUnread = 0; }
+  } catch (_) { ownUnread = 0; ownUrgencyMax = null; }
 
-  // Daemon-LIVENESS staleness banner (fail-open). Gated on rows.length>0 (an
-  // active workspace exists, i.e. a daemon is EXPECTED to be running) so an idle
-  // system with no workspaces never false-alarms.
+  // Daemon-LIVENESS staleness banner (fail-open). Gated on `rows.length>0` (an
+  // active workspace exists, i.e. a daemon is EXPECTED to be running) OR
+  // `gitTop && !repoKey` (the mesh repoKey is unresolvable but this IS a git
+  // worktree — the ONLY scenario the legacy-worktreeHash fallback branch below
+  // is reachable in, since rows can no longer populate without a resolvable
+  // repoKey under the Phase 8 restructure) — so an idle system with no
+  // workspaces AND a resolvable repoKey never false-alarms, while the pre-mesh
+  // legacy-heartbeat back-compat path stays exercised.
   //
   // RELEASE-GATE #23 (v0.57 mesh): the per-project ingest daemon now writes its
   // liveness heartbeat + O_EXCL lock keyed by repoKey (heartbeats/ingest-
   // <repoKey>.json / locks/ingest-project-<repoKey>.lock — devswarm-ingest.js's
   // hbHash = repoKey || worktreeHash, PLAN-v0.57-mesh.md D1/D8/D21), NOT the
-  // legacy worktreeHash this banner read pre-mesh. Resolve repoKey the SAME way
-  // the mesh CLI does (repokey.repoKeyForWorktree(gitTop), ONE git spawn — lazy-
-  // required so a missing/corrupt module fails this block open, D27) and, when
-  // it resolves, use the FULL running+healthy check (daemonHealth, D25 — fresh
-  // heartbeat AND a live-pid lock holder, not freshness alone). Only when
-  // repoKey itself is UNRESOLVABLE (non-git cwd already excluded by gitTop above;
-  // this covers git-unavailable / a corrupt .git / a load failure) does this
-  // fall BACK to the legacy freshness-only worktreeHash-keyed read — pre-mesh
-  // back-compat for a heartbeat file an OLDER per-worktree daemon may have left,
-  // which never had a project-shaped lock to check. Any failure anywhere in this
+  // legacy worktreeHash this banner read pre-mesh. When repoKey resolves, use
+  // the FULL running+healthy check (daemonHealth, D25 — fresh heartbeat AND a
+  // live-pid lock holder, not freshness alone). Only when repoKey itself is
+  // UNRESOLVABLE (non-git cwd already excluded by gitTop above; this covers
+  // git-unavailable / a corrupt .git / a load failure) does this fall BACK to
+  // the legacy freshness-only worktreeHash-keyed read — pre-mesh back-compat
+  // for a heartbeat file an OLDER per-worktree daemon may have left, which
+  // never had a project-shaped lock to check. Any failure anywhere in this
   // block -> no banner, hook proceeds byte-identical.
   let staleBanner = null;
   try {
-    if (rows.length > 0) {
+    if (rows.length > 0 || (gitTop && !repoKey)) {
       let ingestHealthMod = null;
       try { ingestHealthMod = require('../companion/lib/ingest-health.js'); } catch (_) { ingestHealthMod = null; }
-      let repokeyMod = null;
-      try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
-      let repoKey = null;
-      try { repoKey = (repokeyMod && gitTop) ? repokeyMod.repoKeyForWorktree(gitTop) : null; } catch (_) { repoKey = null; }
 
       if (ingestHealthMod && repoKey) {
         let beatTs = null;
@@ -611,28 +709,51 @@ function main() {
 
   const segments = [];
 
-  // Live workspace table FIRST — the always-on status overview the Primary reads
+  // Daemon-freshness staleness banner, when present, is injected FIRST — above
+  // the table AND independent of rows.length (the legacy-fallback back-compat
+  // path can fire the banner even with zero active workspaces, since repoKey —
+  // and therefore the shared summary rows — may be unresolvable in exactly the
+  // scenario that path exists for).
+  if (staleBanner) segments.push(staleBanner);
+
+  // Live workspace table — the always-on status overview the Primary reads
   // every turn. Attention-needed rows (escalated/stale) sort to the top; ties by
-  // unread desc, then id. Capped at MAX_TABLE_ROWS with a logged "+N more". A
-  // daemon-freshness staleness banner, when present, is injected immediately ABOVE
-  // the table so the Primary sees the data may be frozen before reading it.
+  // unread desc, then id. Capped at MAX_TABLE_ROWS with a logged "+N more".
   if (rows.length) {
     rows.sort((a, b) => (a.rank - b.rank) || (b.unread - a.unread) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const capped = rows.length > MAX_TABLE_ROWS;
     const shown = capped ? rows.slice(0, MAX_TABLE_ROWS) : rows;
     if (capped) logTableCap(home, rows.length, shown.length);
-    if (staleBanner) segments.push(staleBanner);
     segments.push(buildWorkspaceTable(shown, now, capped, rows.length - shown.length));
+  }
+
+  // Broadcast/roster feed (D3/D4/D22/D23/D27, Phase 8 step 2) — the shared
+  // summary's top-level `recent[]` (plain broadcasts + heartbeats alike, D22),
+  // rendered ADVISORY ONLY: this is roster/FYI context, NEVER a Stop-gate
+  // trigger and NEVER mechanically dispatched — "react only if concerned" is
+  // left to the model's own judgement (D27, no concerned-classifier invented).
+  if (summary && Array.isArray(summary.recent) && summary.recent.length) {
+    segments.push(buildBroadcastSegment(summary.recent));
   }
 
   // The Primary's OWN unread is its own top-priority item — surfaced ahead of
   // the children's unread/idle summary.
   if (ownUnread > 0 && primaryId) {
-    segments.push(buildOwnUnreadSegment(ownUnread, primaryId));
+    segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax));
   }
 
+  // v0.57 mesh (D4, Phase 8 step 2): tier the child-unread attention list by
+  // urgencyMax — urgent/high gets the LOUDEST buildUrgentUnreadSegment; low is
+  // TABLE-ROW-ONLY (already shown in the live table above, deliberately
+  // excluded from every textual segment); everything else (null/'normal'/
+  // unrecognized, incl. stuck-only entries carrying no urgency at all) keeps
+  // the EXISTING buildUnreadSegment wording byte-for-byte — the back-compat
+  // default (edge_cases: "unknown urgency -> treat as normal").
   if (attention.length) {
-    segments.push(buildUnreadSegment(attention));
+    const urgentList = attention.filter((w) => tierOf(w) === 'urgent');
+    const normalList = attention.filter((w) => tierOf(w) === 'normal');
+    if (urgentList.length) segments.push(buildUrgentUnreadSegment(urgentList));
+    if (normalList.length) segments.push(buildUnreadSegment(normalList));
     // Acceptance telemetry only when there is genuine unread backlog (not merely a
     // sticky escalated verdict with an empty inbox).
     const totalUnread = attention.reduce((s, w) => s + w.unread, 0);

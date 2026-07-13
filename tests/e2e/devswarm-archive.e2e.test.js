@@ -36,6 +36,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const cp = require('node:child_process');
 const { testHook } = require('../helpers/spawn-hook.js');
 const H = require('./helpers.js');
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
@@ -54,6 +55,27 @@ const cliCtx = (home, over) => Object.assign({ home, backend: 'journal', env: {}
 // tests/hooks/devswarm-child-gate.test.js's NO_NATIVE_BIN_PATH.
 const NO_NATIVE_BIN_PATH = path.join(os.tmpdir(), 'antihall-e2e-archive-no-native-bin');
 
+// gitOnlyPath() -> a PATH string containing ONLY git's own directory + the
+// (nonexistent) NO_NATIVE_BIN_PATH — never the host's full real PATH. v0.57
+// mesh (PLAN-v0.57-mesh.md D1/D2): repoKeyForWorktree() spawns a real `git`
+// (unlike the pre-mesh pure-fs readDescriptors path this test used to rely
+// on), so the hermetic NO_NATIVE_BIN_PATH-only env would make `git` ENOENT
+// and repoKey never resolve. Adding ONLY git's directory keeps the SAME "no
+// real hivecontrol reachable" isolation guarantee (no other host binary is
+// exposed) while letting the git spawn succeed. Resolved ONCE (module load).
+function resolveGitDir() {
+  try {
+    const cmd = process.platform === 'win32' ? 'where' : 'which';
+    const r = cp.spawnSync(cmd, ['git'], { encoding: 'utf8' });
+    const first = (r.stdout || '').split(/\r?\n/).find((l) => l.trim());
+    return first ? path.dirname(first.trim()) : null;
+  } catch (_) { return null; }
+}
+const GIT_DIR = resolveGitDir();
+function gitOnlyPath() {
+  return GIT_DIR ? (GIT_DIR + path.delimiter + NO_NATIVE_BIN_PATH) : NO_NATIVE_BIN_PATH;
+}
+
 // ============================================================================
 // 1. CHILD REGISTRATION -> PARENT VISIBILITY (the #31 fix). Nothing but the
 //    child's own turn mechanically writes its descriptor; the parent then
@@ -68,7 +90,7 @@ test('1 REGISTRATION: a child-turn hook run mechanically registers the descripto
       DEVSWARM_REPO_ID: 'repo-1',
       DEVSWARM_SOURCE_BRANCH: 'feature/child-reg-1',
       DEVSWARM_BUILDER_ID: childId,
-      PATH: NO_NATIVE_BIN_PATH,
+      PATH: gitOnlyPath(),
     };
     // cwd = this repo's own worktree (a REAL git repo) so registerChildDescriptor's
     // pure-fs findGitToplevel walk resolves a genuine worktreePath.
@@ -86,12 +108,15 @@ test('1 REGISTRATION: a child-turn hook run mechanically registers the descripto
     assert.strictEqual(desc.sessionId, 'sess-reg-1');
     assert.strictEqual(desc.worktreePath, path.resolve(H.REPO_ROOT));
 
-    // A Primary turn now sees this child in its live status table — the #31 fix:
-    // the parent discovers children ONLY through readDescriptors(), and nothing
-    // else in the shipped system writes that descriptor on the child's behalf.
+    // A Primary turn now sees this child in its live status table. Pre-mesh
+    // (#31 fix) this was via raw readDescriptors(); v0.57 mesh (Phase 8) reads
+    // the shared summaries/<repoKey>.json instead — populated by the SAME
+    // child-turn call above's D24 gap-close (registerStoreDescriptor). cwd
+    // must resolve the SAME repoKey (H.REPO_ROOT, as above) for the Primary
+    // to read the project this child was mechanically registered into.
     const pr = testHook('devswarm-parent-inbox.js',
-      { hook_event_name: 'UserPromptSubmit', session_id: 'primary', prompt: 'hi' },
-      { home, env: { DEVSWARM_REPO_ID: 'repo-1', PATH: NO_NATIVE_BIN_PATH }, expectJson: true });
+      { hook_event_name: 'UserPromptSubmit', session_id: 'primary', prompt: 'hi', cwd: H.REPO_ROOT },
+      { home, env: { DEVSWARM_REPO_ID: 'repo-1', PATH: gitOnlyPath() }, expectJson: true });
     const c = ctxOf(pr);
     assert.match(c, /DEVSWARM WORKSPACES/);
     assert.match(segOf(c, 'DEVSWARM WORKSPACES'), new RegExp(childId), `child must be listed in the live table; ctx=${c}`);

@@ -143,30 +143,43 @@ function findGitToplevel(startDir) {
   }
 }
 
-// readOwnUnread(home, cwd) -> { unread, id }. The Primary's OWN inbound (#34) has
-// no descriptor with an inboxPath/cursorPath to read via readUnread — it is
-// ingested by the daemon directly into the store under workspaceId
-// primary-<worktreeHash> and exposed ONLY via the per-project summary projection
-// (summaries/<worktreeHash>.json -> workspaces[primary-<hash>].unread), the SAME
-// projection devswarm-parent-inbox.js already reads for status/gates. A single
-// small fs read — pure fs, no git spawn, no store DB open — stays within the
-// Stop hook's cheap-read budget. Fail-open: ANY failure -> { unread: 0, id: null }
-// (never blocks or throws on a missing/malformed summary).
-function readOwnUnread(home, cwd) {
+// readOwnUnread(home, cwd, repoKey) -> { unread, id, urgencyMax }. The
+// Primary's OWN inbound (#34) has no descriptor with an inboxPath/cursorPath
+// to read via readUnread — it is ingested by the daemon directly into the
+// store under workspaceId primary-<worktreeHash> and exposed via the
+// per-project summary projection, the SAME projection devswarm-parent-inbox.js
+// reads for status/gates. v0.57 mesh (D1/D24): that summary is now keyed by
+// repoKey (summaries/<repoKey>.json), NOT the legacy worktreeHash. `repoKey` is
+// resolved ONCE by the caller (main(), from `cwd`) and passed in here — a
+// SEPARATE internal resolution from `top` used to spawn git a second time for
+// the logically identical key, since `--git-common-dir` is subdirectory-
+// invariant (Reviewer/Codex P2 dedup) — and falls BACK to the legacy
+// worktreeHash-keyed file only when repoKey itself is unresolvable (pre-mesh
+// back-compat, mirroring devswarm-parent-inbox.js's own staleness-banner
+// fallback). `urgencyMax` (D4, Phase 8 step 4) is the entry's own pending-
+// direct urgency, honored ONLY in wording — a DIRECT always gates regardless
+// of urgency (D4's type-vs-urgency separation). A single small fs read — no
+// store DB open — stays within the Stop hook's cheap-read budget. Fail-open:
+// ANY failure -> { unread: 0, id: null, urgencyMax: null } (never blocks or
+// throws on a missing/malformed summary).
+function readOwnUnread(home, cwd, repoKey) {
   try {
     const top = cwd ? findGitToplevel(cwd) : null;
-    if (!top) return { unread: 0, id: null };
+    if (!top) return { unread: 0, id: null, urgencyMax: null };
     const id = installIngest.primaryWorkspaceId(top);
-    const hash = installIngest.worktreeHash(top);
+    const legacyHash = installIngest.worktreeHash(top);
+
+    const hash = repoKey || legacyHash;
     const p = path.join(devswarmRoot(home), 'summaries', String(hash) + '.json');
     const raw = String(fs.readFileSync(p, 'utf8')).trim();
-    if (!raw) return { unread: 0, id };
+    if (!raw) return { unread: 0, id, urgencyMax: null };
     const summary = JSON.parse(raw);
     const entry = summary && summary.workspaces && summary.workspaces[id];
     const unread = entry && Number.isFinite(entry.unread) && entry.unread > 0 ? entry.unread : 0;
-    return { unread, id };
+    const urgencyMax = (unread > 0 && entry && entry.urgencyMax) ? entry.urgencyMax : null;
+    return { unread, id, urgencyMax };
   } catch (_) {
-    return { unread: 0, id: null };
+    return { unread: 0, id: null, urgencyMax: null };
   }
 }
 
@@ -188,12 +201,25 @@ function main() {
 
   const home = os.homedir();
 
-  // Primary's OWN inbound unread (#34 parity — the parent is gated on its OWN
-  // unread too, not just children's). `cwd` falls back to process.cwd() when the
-  // payload omits it, same fallback posture other Stop hooks use (e.g.
-  // task-guard.js documents `cwd?` as optional on this event).
+  // `cwd` falls back to process.cwd() when the payload omits it, same fallback
+  // posture other Stop hooks use (e.g. task-guard.js documents `cwd?` as
+  // optional on this event).
   const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : process.cwd();
-  const own = readOwnUnread(home, cwd);
+
+  // Resolve repoKey ONCE for this whole hook invocation (v0.57 mesh, D1/D2) —
+  // reused for BOTH the Primary's own-unread summary lookup (readOwnUnread)
+  // AND the #36 structural filter's `selfKey` comparison below (Reviewer/Codex
+  // P2 dedup: these used to spawn `git rev-parse --git-common-dir` twice for
+  // the logically identical key, since it is subdirectory-invariant). Lazy-
+  // required, fail-open (D27): a missing/corrupt module -> null, never throws.
+  let repokeyMod = null;
+  try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
+  let selfKey = null;
+  try { selfKey = repokeyMod ? repokeyMod.repoKeyForWorktree(cwd) : null; } catch (_) { selfKey = null; }
+
+  // Primary's OWN inbound unread (#34 parity — the parent is gated on its OWN
+  // unread too, not just children's).
+  const own = readOwnUnread(home, cwd, selfKey);
 
   // INERT until descriptors exist (P1-D) OR the Primary itself has unread. No
   // descriptors and no own-unread -> nothing to gate.
@@ -203,20 +229,41 @@ function main() {
 
   // Build the blocking SET: workspaces with unread backlog past their cursor OR a
   // stale/escalated verdict, PLUS the Primary's own unread. All reads are pure fs
-  // (no git, no computeLiveness, no store DB open).
+  // (no git, no computeLiveness, no store DB open) — `selfKey` above is the
+  // ONLY repoKey git spawn this hook invocation needs; the #36 structural
+  // filter below reuses it rather than re-resolving.
   const blocking = [];
   if (own.unread > 0 && own.id) {
-    blocking.push({ id: own.id, unread: own.unread, status: '' });
+    blocking.push({ id: own.id, unread: own.unread, status: '', urgencyMax: own.urgencyMax });
   }
-  // #36 cross-project-bleed fix: exclude a descriptor ONLY when BOTH this
-  // session's and the descriptor's repoId are present and DIFFER — fail-open by
-  // construction. An old descriptor with no repoId (pre-#36) or a session with
-  // no DEVSWARM_REPO_ID (manual supervisor mode) disables the filter entirely,
-  // so nothing that showed before this fix can vanish; it only stops a Primary
-  // in project A from being gated on project B's workspaces.
-  const currentRepoId = process.env.DEVSWARM_REPO_ID;
+  // #36 STRUCTURAL cross-project filter (D29 — REPLACES the spoofable v0.56 env
+  // filter `d.repoId !== currentRepoId`; env DEVSWARM_REPO_ID is in the SAME
+  // trust class as the #39 ack-guard spoof). This loop builds its blocking SET
+  // from raw machine-global `readDescriptors` + `readUnread` — NOT the
+  // per-project summary — so it needs its OWN explicit filter (re-scoping the
+  // summary alone, as devswarm-parent-inbox.js does, does NOT close this
+  // gate-path bleed). `selfKey` is resolved ONCE (above, shared with
+  // readOwnUnread); each descriptor's `repoKeyForWorktree(d.worktreePath)` is
+  // memoized by worktreePath so N descriptors sharing one worktree (siblings
+  // of one repo) never re-spawn git more than once each — and is skipped
+  // entirely (Opus-auditor P2) once `selfKey` itself is unresolvable, since the
+  // filter is then disabled for every descriptor regardless of `dKey`. Fail-
+  // open: keep a descriptor when EITHER side is unresolvable (nothing that
+  // showed before this fix can vanish); exclude it ONLY when BOTH resolve AND
+  // differ.
+  const repoKeyCache = new Map(); // worktreePath -> repoKey | null
+  repoKeyCache.set(cwd, selfKey); // seed with the already-resolved key for `cwd`
+  function repoKeyOfWorktree(wt) {
+    if (!wt) return null;
+    if (repoKeyCache.has(wt)) return repoKeyCache.get(wt);
+    let k = null;
+    try { k = repokeyMod ? repokeyMod.repoKeyForWorktree(wt) : null; } catch (_) { k = null; }
+    repoKeyCache.set(wt, k);
+    return k;
+  }
   for (const d of descriptors) {
-    if (currentRepoId && d.repoId && d.repoId !== currentRepoId) continue;
+    const dKey = selfKey ? repoKeyOfWorktree(d && d.worktreePath) : null;
+    if (selfKey && dKey && dKey !== selfKey) continue;
     let unreadCount = 0;
     try {
       const u = readUnread(d.inboxPath, d.cursorPath);
@@ -301,7 +348,12 @@ function buildReason(blocking, ownId) {
     'DEVSWARM NEGLECT: ' + blocking.length + ' workspace(s) still need attention ' +
     'before this Primary turn ends: ' + shown + more + '. ';
   if (ownEntry) {
+    // v0.57 mesh (D4, Phase 8 step 4): urgencyMax is HONORED in wording only —
+    // a DIRECT always gates regardless of urgency (type governs gating; urgency
+    // governs loudness/tier). urgent/high gets an explicit "URGENT" callout.
+    const urgent = ownEntry.urgencyMax === 'urgent' || ownEntry.urgencyMax === 'high';
     body +=
+      (urgent ? 'URGENT — ' : '') +
       'YOU (the Primary) have ' + ownEntry.unread + ' unread parent/peer message(s) — ' +
       'STOP and read them FIRST via `devswarm.js inbox read-primary ' + ownId + '`. ';
   }
