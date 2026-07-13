@@ -535,7 +535,7 @@ test('STALE: fresh heartbeat + live lock (repoKey-keyed) -> healthy -> NO banner
   } finally { h.cleanup(); }
 });
 
-test('STALE: heartbeat older than threshold (repoKey-keyed) -> banner ABOVE the table', () => {
+test('STALE: heartbeat older than threshold (repoKey-keyed) -> banner ABOVE the table', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: ['a', 'b'], cursor: 0 });
@@ -554,7 +554,7 @@ test('STALE: heartbeat older than threshold (repoKey-keyed) -> banner ABOVE the 
   } finally { h.cleanup(); }
 });
 
-test('STALE: missing heartbeat file (daemon never wrote one for this project) + active descriptor -> banner (additive, does not suppress the unread banner)', () => {
+test('STALE: missing heartbeat file (daemon never wrote one for this project) + active descriptor -> banner (additive, does not suppress the unread banner)', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: ['a', 'b', 'c'], cursor: 0 });
@@ -600,7 +600,7 @@ test('STALE: cwd with no enclosing git repo (bogus path) -> NO banner, no throw 
   } finally { h.cleanup(); }
 });
 
-test('STALE: malformed heartbeat JSON (repoKey-keyed) -> treated as unknown/missing (still warns), no throw', () => {
+test('STALE: malformed heartbeat JSON (repoKey-keyed) -> treated as unknown/missing (still warns), no throw', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
@@ -615,7 +615,7 @@ test('STALE: malformed heartbeat JSON (repoKey-keyed) -> treated as unknown/miss
 
 // ---- D25: daemon health = RUNNING + HEALTHY, not freshness-only ----
 
-test('D25: DEAD process with a still-fresh heartbeat file -> reported NOT-healthy -> banner shown', () => {
+test('D25: DEAD process with a still-fresh heartbeat file -> reported NOT-healthy -> banner shown', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
@@ -627,7 +627,7 @@ test('D25: DEAD process with a still-fresh heartbeat file -> reported NOT-health
   } finally { h.cleanup(); }
 });
 
-test('D25: LIVE process holding the lock but a MISSING heartbeat -> reported NOT-fresh -> banner shown', () => {
+test('D25: LIVE process holding the lock but a MISSING heartbeat -> reported NOT-fresh -> banner shown', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   try {
     writeWorkspace(h.home, 'wsA', { inbox: [], cursor: 0 });
