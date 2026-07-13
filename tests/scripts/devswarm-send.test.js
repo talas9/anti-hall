@@ -53,6 +53,22 @@ function seedRegistry(home, repoKey, desc) {
 }
 function fakeCwd(home) { return path.join(home, 'no-git-here'); }
 
+// derivedId(dir) -> the meshId production's own callerIdentity() derives for a
+// REAL git worktree at `dir`: resolveWorktree(dir) (a real `git rev-parse
+// --show-toplevel` spawn) THEN primaryWorkspaceId() on that resolved toplevel
+// — never primaryWorkspaceId(dir) directly on the raw path. On win32, git's
+// MSYS/Cygwin layer expands a short-name %TEMP% path (what mkdtempSync/
+// os.tmpdir() hand back on GH Actions windows-latest runners) to its long-name
+// form before returning --show-toplevel, while primaryWorkspaceId's own
+// fs.realpathSync (unlike devswarm-repokey.js's win32-aware gitCommonDir)
+// PRESERVES whatever short/long-name form its input already had. So
+// primaryWorkspaceId(rawDir) and primaryWorkspaceId(resolveWorktree(rawDir))
+// hash to two DIFFERENT (but both internally-consistent) ids for the identical
+// real directory on Windows. Production always derives via the resolved
+// toplevel (callerIdentity, devswarm.js) — matching that exactly, instead of
+// hashing the raw path, keeps the expectation correct on every platform.
+function derivedId(dir) { return inst.primaryWorkspaceId(inst.resolveWorktree(dir)); }
+
 // ---- repoKey null-cwd (D28 ordering pin) -----------------------------------
 
 test('send from a non-git cwd returns {ok:false,reason:"no-project"} and never emits a from, even with a spoofed DEVSWARM_BUILDER_ID', () => {
@@ -98,7 +114,7 @@ test('send accepts an explicit --from that MATCHES the derived identity (redunda
   const repo = makeGitRepo('redundant');
   try {
     const repoKey = repokey.repoKeyForWorktree(repo);
-    const from = inst.primaryWorkspaceId(repo);
+    const from = derivedId(repo);
     seedRegistry(home, repoKey, { id: 'peer', worktreePath: path.join(repo, 'nope'), sessionId: 's' });
     const r = cli.run(
       ['send', '--from', from, '--broadcast', '--message', 'hi'],
@@ -145,7 +161,7 @@ test('send --to self is rejected', () => {
   const home = tmpHome();
   const repo = makeGitRepo('self');
   try {
-    const self = inst.primaryWorkspaceId(repo);
+    const self = derivedId(repo);
     const r = cli.run(['send', '--to', self, '--message', 'hi'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, false);
     assert.match(r.result.error, /cannot address the sender itself/);
@@ -211,8 +227,8 @@ test('round trip: sending --to <the meshId a peer sent as its from> succeeds and
     const repoKeyChild = repokey.repoKeyForWorktree(childWt);
     assert.equal(repoKeyMain, repoKeyChild, 'linked worktrees of ONE project share the SAME repoKey (D1)');
 
-    const primaryId = inst.primaryWorkspaceId(mainRepo);
-    const childId = inst.primaryWorkspaceId(childWt);
+    const primaryId = derivedId(mainRepo);
+    const childId = derivedId(childWt);
     assert.notEqual(primaryId, childId, 'distinct worktrees derive distinct meshIds');
 
     // Seed BOTH sides' registry entries under their OWN builder-id (the read
@@ -257,7 +273,7 @@ test('a broadcast appears in every workspace\'s broadcastUnread; after mesh read
   const repo = makeGitRepo('broadcast');
   try {
     const repoKey = repokey.repoKeyForWorktree(repo);
-    const sender = inst.primaryWorkspaceId(repo);
+    const sender = derivedId(repo);
     seedRegistry(home, repoKey, { id: sender, worktreePath: repo, sessionId: 's' });
     seedRegistry(home, repoKey, { id: 'peer-1', worktreePath: path.join(os.tmpdir(), 'peer-1-never'), sessionId: 's' });
 

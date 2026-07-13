@@ -208,8 +208,22 @@ test('runIngestLoop backs off (never drains) while a legacy per-worktree holder 
   const linked = addLinkedWorktree(repo, 'backoff');
   try {
     // Seed a LIVE legacy lock for the LINKED worktree (simulating an
-    // un-reaped pre-0.57 daemon still holding it).
-    const legacyLock = ingest.legacyIngestLockPath(home, linked);
+    // un-reaped pre-0.57 daemon still holding it) — KEYED BY THE SAME PATH
+    // FORM probeLegacyHolders itself will see: `git worktree list --porcelain`
+    // (real spawn — no io.run injected below), not the raw `linked` string
+    // this test built via path.join/mkdtempSync. On win32, git/MSYS resolves
+    // %TEMP%'s short-name form (what mkdtempSync hands back on GH Actions
+    // windows-latest) to its long-name form when reporting worktree paths —
+    // the same divergence devswarm-repokey.js's winCanonicalizeCommonDir
+    // exists to close for repoKey, but legacyIngestLockPath's worktreeHash has
+    // no such handling. Seeding at the enumerated (git-reported) path, rather
+    // than reimplementing that canonicalization here, keeps the expectation
+    // self-consistent on every platform (git always lists the main worktree
+    // first, so index 1 is the one linked worktree this repo has).
+    const enumerated = installIngest.listRepoWorktrees(repo, {});
+    assert.equal(enumerated.length, 2, 'main + the one linked worktree');
+    const linkedReported = enumerated[1];
+    const legacyLock = ingest.legacyIngestLockPath(home, linkedReported);
     fs.mkdirSync(path.dirname(legacyLock), { recursive: true });
     fs.writeFileSync(legacyLock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
 
@@ -224,11 +238,7 @@ test('runIngestLoop backs off (never drains) while a legacy per-worktree holder 
     assert.equal(summary.started, false, 'the daemon refuses to start while a legacy holder is live');
     assert.match(summary.reason, /legacy per-worktree ingest holder/);
     assert.equal(summary.liveHolders.length, 1);
-    // realpathSync: `git worktree list --porcelain` reports its OWN canonical
-    // form of the path (e.g. macOS /private/var/... vs the raw /var/... this
-    // test constructed it from) — both hash identically (worktreeHash always
-    // realpaths first), so this compares the SAME canonical directory.
-    assert.equal(summary.liveHolders[0].worktree, fs.realpathSync(linked));
+    assert.equal(summary.liveHolders[0].worktree, linkedReported);
     assert.equal(monitorCalls, 0, 'NEVER calls monitor while blocked — the whole point of reap-before-drain');
     assert.equal(storeOpened, false, 'NEVER opens the store while blocked — no premature self-registration either');
 

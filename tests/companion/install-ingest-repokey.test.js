@@ -253,9 +253,23 @@ test('listInstalledIngestUnits reads back a PER-PROJECT (repoKey) unit alongside
 // ---------------------------------------------------------------------------
 
 test('resolveMainWorktree returns dirname(git-common-dir), via a mocked git spawn — never a linked worktree path', () => {
+  // A hardcoded POSIX literal ('/repo/main') as the expectation breaks on
+  // win32: gitCommonDir's own `path.resolve(wt, rawOut)` step (mirroring
+  // git's real relative/absolute common-dir forms — see devswarm-repokey.js's
+  // header) drive-prefixes a bare '/...'-shaped rawOut against the CURRENT
+  // process's drive on a REAL win32 runner (io.platform is not read by
+  // `path.resolve`/`path.dirname` — those are the OS-native `path` module,
+  // unaffected by the injectable-io platform override that only gates the
+  // win32 realpath-canonicalization branch). Deriving the expectation by
+  // calling the SAME production primitive (repokey.gitCommonDir) with the
+  // identical io/wt, then taking its dirname exactly as resolveMainWorktree
+  // itself does, keeps this self-consistent on every platform.
   const io = { run: (spec) => ({ ok: true, raw: '/repo/main/.git' }), fs: { realpathSync: (p) => p } };
-  const main = m.resolveMainWorktree('/repo/main-wt-feature', io);
-  assert.equal(main, '/repo/main');
+  const wt = '/repo/main-wt-feature';
+  const expectedCommonDir = repokey.gitCommonDir(wt, { io });
+  const main = m.resolveMainWorktree(wt, io);
+  assert.equal(main, path.dirname(expectedCommonDir), 'resolveMainWorktree is exactly dirname(gitCommonDir) for the SAME io');
+  assert.notEqual(main, wt, 'never the linked worktree path itself');
 });
 
 test('resolveMainWorktree fail-opens to null on a non-git cwd', () => {
