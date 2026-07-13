@@ -577,11 +577,32 @@ function cmdHeartbeat(id, flags, ctx) {
       } else {
         const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
         try {
-          const fields = { from: id, to: null, type: 'broadcast', message: String(summaryText), timestamp: now, urgency };
-          const hash = store.meshMessageHash(fields);
-          const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash, isHeartbeat: true }));
-          store.deriveSummary(s, { home, env: ctx.env, now });
-          meshBroadcast = { ok: true, sent: !!res.inserted, seq: res.seq, repoKey };
+          // P0 fix: `sender: id` above feeds recent[]/alreadyReportedThisEpisode()
+          // (hooks/devswarm-child-gate.js's Stop-gate satisfaction check) — an
+          // unvalidated `id` let ANY workspace forge another's "already reported"
+          // row (`node devswarm.js heartbeat <victim-id> --summary ...`), spoofing
+          // the victim's Stop-gate closed without it ever reporting. Same
+          // provable-ownership check cmdSend (D18) and cmdInboxMessages' ack path
+          // (D26) already use: literal self, or the caller's OWN registry entry
+          // (joined by worktree-derived meshId via resolveMeshTarget) carries `id`
+          // as its registered id.
+          const caller = callerIdentity(ctx.env, cwd);
+          const ownEntry = resolveMeshTarget(s, caller);
+          const owns = caller === id || (ownEntry && ownEntry.id === id);
+          if (!owns) {
+            meshBroadcast = {
+              ok: false,
+              error: 'heartbeat --summary refused: caller ' + JSON.stringify(caller)
+                + ' does not own workspace ' + JSON.stringify(id),
+              callerIdentity: caller,
+            };
+          } else {
+            const fields = { from: id, to: null, type: 'broadcast', message: String(summaryText), timestamp: now, urgency };
+            const hash = store.meshMessageHash(fields);
+            const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash, isHeartbeat: true }));
+            store.deriveSummary(s, { home, env: ctx.env, now });
+            meshBroadcast = { ok: true, sent: !!res.inserted, seq: res.seq, repoKey };
+          }
         } finally { s.close(); }
       }
     }
@@ -1321,7 +1342,16 @@ function cmdReconcile(flags, ctx) {
       ok: !!(parsed && parsed.ok),
       imported: (parsed && parsed.imported) || 0,
       duplicate: (parsed && parsed.duplicate) || 0,
-      locked: !!(parsed && parsed.locked),
+      // P1 fix: pullOnce's own contract (devswarm-pull.js) uses `locked===false`
+      // to mean "another consumer holds the lock" (same polarity as migrate-
+      // state.js's `ds.locked===false` convention) — a blind pass-through of
+      // `parsed.locked` was TRUE for an ordinary successful/failed-after-acquire
+      // pull and FALSE only on genuine contention: the opposite of what a reader
+      // of a per-target reconcile result expects from a field named `locked`.
+      // Recompute with the intuitive polarity: true ONLY on the exact
+      // genuine-contention shape pullOnce/`inbox pull` emits.
+      locked: !!(parsed && parsed.ok === false && parsed.locked === false
+        && /holds the lock/i.test(String(parsed.error || ''))),
       error: (parsed && parsed.error)
         || (r && r.error ? String((r.error && r.error.message) || r.error) : null)
         || (parsed ? null : 'reconcile: could not parse inbox-pull subprocess output'),

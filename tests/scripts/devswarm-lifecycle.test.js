@@ -89,16 +89,48 @@ test('reconcile surfaces a per-id lock-skip (locked:true, imported:0) rather tha
   try {
     const repoKey = repokey.repoKeyForWorktree(repo);
     seedRegistry(home, repoKey, { id: 'child-locked', worktreePath: '/wt/locked', sessionId: 's' });
+    // FAITHFUL stand-in for pullOnce's REAL genuine-contention shape
+    // (devswarm-pull.js pullOnce, `!release` branch): `{ok:false, locked:false,
+    // error:'another pull holds the lock'}` — `locked:false` means "did NOT
+    // acquire, another consumer holds it" (same polarity as migrate-state.js's
+    // `ds.locked===false` convention). pullOnce can NEVER emit `locked:true`
+    // together with this error string (locked:true only appears once the lock
+    // WAS acquired) — a `{locked:true, error:'another pull holds the lock'}`
+    // fixture (the pre-fix version of this test) is an IMPOSSIBLE combination
+    // the real code path never produces, making that assertion vacuous.
     const io = {
       spawnReconcile: () => ({
-        status: 2, stdout: JSON.stringify({ ok: false, locked: true, error: 'another pull holds the lock' }), error: null,
+        status: 2, stdout: JSON.stringify({ ok: false, locked: false, error: 'another pull holds the lock' }), error: null,
       }),
     };
     const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io }));
     assert.equal(r.result.ok, true, 'reconcile itself still succeeds even when one target is lock-skipped');
     assert.equal(r.result.imported, 0);
+    // cmdReconcile's OWN `locked` flag is recomputed with the intuitive polarity
+    // (true = genuine contention detected), NOT a blind pass-through of the
+    // subprocess's `locked` field.
     assert.equal(r.result.results[0].locked, true);
     assert.equal(r.result.results[0].ok, false);
+  } finally { rm(home); rm(repo); }
+});
+
+test('reconcile does NOT flag a non-contention hard failure (e.g. message-count spawn error) as locked', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-hardfail');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-hardfail', worktreePath: '/wt/hardfail', sessionId: 's' });
+    // A real post-acquire failure (e.g. message-count failed) reports
+    // locked:true (the lock WAS acquired) per pullOnce's own contract — this
+    // must NOT be confused with genuine lock contention.
+    const io = {
+      spawnReconcile: () => ({
+        status: 2, stdout: JSON.stringify({ ok: false, locked: true, error: 'message-count failed' }), error: null,
+      }),
+    };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.results[0].ok, false);
+    assert.equal(r.result.results[0].locked, false, 'a hard failure after successfully acquiring the lock is not contention');
   } finally { rm(home); rm(repo); }
 });
 

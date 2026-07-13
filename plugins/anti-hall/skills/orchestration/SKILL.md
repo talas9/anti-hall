@@ -223,6 +223,46 @@ The plugin enforces a non-negotiable task-list protocol via two hooks:
   exact same open-task set was already blocked on, the guard does not block again
   (prevents infinite nudge loops). Fail-open on any parse/read error.
 
+## DevSwarm mesh-only messaging (when this session runs inside a DevSwarm workspace)
+
+This skill governs subagent/Workflow fan-out WITHIN one workspace (L2). DevSwarm's own
+Primary→child workspace tier (L1, via `hivecontrol`) is a separate, unbuilt-orchestration
+layer — see the `devswarm` skill. The one place the two intersect: if THIS
+coordinating session happens to be running inside an active DevSwarm workspace
+(`DEVSWARM_REPO_ID` set), anti-hall's shared **mesh store is the SOLE agent-initiated
+messaging channel** for that workspace (v0.58 "mesh-only messaging" — a REPLACE, not an
+addition). Native `hivecontrol workspace message-child`/`message-parent` are guard-blocked
+in ALL contexts, including a subagent this skill dispatches — **do not delegate a
+message-send to a subagent to work around the block; a delegated send writes the native
+queue identically and is blocked the same way.**
+
+**CLI verb surface** (`node scripts/devswarm.js <verb>`, agent-agnostic):
+`send --to-primary --message TEXT [--urgency low|normal|high|urgent]` (direct to the
+Primary) / `send --to <meshId> --message TEXT` (direct to a specific sibling) /
+`send --broadcast --message TEXT` (all-to-all) / `heartbeat <id> --summary TEXT` (status
+ping, also broadcasts) / `roster` / `mesh read` (unseen broadcasts) / `inbox
+read-primary <id>` (Primary's own unread). Lifecycle (`spawn`/`merge`/`reconcile`) is
+covered in the `devswarm` skill, not here — this skill's audience sends/reports, it
+doesn't spawn or merge DevSwarm workspaces itself.
+
+**Role rules:** a CHILD workspace reports to its Primary (`send --to-primary` or
+`heartbeat --summary`) and should keep polling the mesh while resting — the resting-poll
+IS the Tier-0 wake posture (there is no external mechanism that wakes a truly idle Claude
+Code session, `anthropics/claude-code#44380` — do not assume one exists). A PRIMARY checks
+`roster`/`mesh read`/`inbox read-primary <id>` and directs a specific child via
+`send --to <meshId>`. Neither role should treat this as optional busywork: it is the
+only way a sibling/Primary/child learns anything happened.
+
+**Message template** — the same record shape every mesh write uses:
+```json
+{"from": "<meshId>", "to": "<meshId-or-null>", "type": "direct|broadcast", "message": "<text>", "timestamp": 0, "urgency": "low|normal|high|urgent"}
+```
+
+Full detail (guard mechanics, wake-tier caveats, Codex parity, supervisor
+escalate-on-urgent): `devswarm` skill's "v0.58 mesh-only messaging" section and
+`docs/KB-devswarm-hivecontrol.md` §8.7's same-named note. Outside an active DevSwarm
+workspace, none of this applies and this section is inert.
+
 ## Watchdog & heartbeat
 
 ### Heartbeat convention

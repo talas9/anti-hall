@@ -323,13 +323,13 @@ test('readMeshUrgency: resolves repoKey + reads summary, returns this descriptor
     repoKeyForWorktree: (wt) => { seen.wt = wt; return 'myrepo-abc123'; },
     readSummaryForHash: (home, hash) => {
       seen.home = home; seen.hash = hash;
-      return { workspaces: { w1: { urgencyMax: 'urgent', directUnread: 3, broadcastUnread: 1 } } };
+      return { workspaces: { w1: { urgencyMax: 'urgent', broadcastUrgencyMax: 'high', directUnread: 3, broadcastUnread: 1 } } };
     },
   });
   assert.strictEqual(seen.wt, '/wt/w1');
   assert.strictEqual(seen.home, '/home');
   assert.strictEqual(seen.hash, 'myrepo-abc123');
-  assert.deepStrictEqual(urgency, { urgencyMax: 'urgent', directUnread: 3, broadcastUnread: 1 });
+  assert.deepStrictEqual(urgency, { urgencyMax: 'urgent', broadcastUrgencyMax: 'high', directUnread: 3, broadcastUnread: 1 });
 });
 
 test('readMeshUrgency: fail-open — unresolvable repoKey (non-git worktree) -> null, never throws', () => {
@@ -373,6 +373,21 @@ test('isUrgentMesh: only high/urgent qualify; low/normal/absent/null do not', ()
   assert.strictEqual(M.isUrgentMesh({ urgencyMax: null }), false);
   assert.strictEqual(M.isUrgentMesh(null), false);
   assert.strictEqual(M.isUrgentMesh(undefined), false);
+});
+
+// P1 fix: isUrgentMesh must ALSO qualify on broadcastUrgencyMax alone (a
+// broadcast-only unread, no direct message) — pre-fix, isUrgentMesh only ever
+// consulted urgencyMax (direct rows), so an urgent/high broadcast with no
+// pending direct message could never mark the mesh urgent.
+test('isUrgentMesh: broadcastUrgencyMax ALONE (urgencyMax null/absent) also qualifies on high/urgent (P1 fix)', () => {
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: null, broadcastUrgencyMax: 'urgent' }), true);
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: null, broadcastUrgencyMax: 'high' }), true);
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: null, broadcastUrgencyMax: 'normal' }), false);
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: null, broadcastUrgencyMax: 'low' }), false);
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: null, broadcastUrgencyMax: null }), false);
+  // either side alone is sufficient — not an AND.
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: 'urgent', broadcastUrgencyMax: 'low' }), true);
+  assert.strictEqual(M.isUrgentMesh({ urgencyMax: 'low', broadcastUrgencyMax: 'urgent' }), true);
 });
 
 test('sweepOnce: stale descriptor WITH urgent unread in its mesh summary -> escalation notice produced, even though the base poke only nudged', () => {
@@ -506,6 +521,125 @@ test('sweepOnce (real notifyParentEscalation + real store): urgent mesh unread o
     assert.strictEqual(msgs.length, 1, 'exactly one parent notice from the urgency-forced escalate');
     assert.match(msgs[0].body, /child w1 idle/);
     assert.match(msgs[0].body, /reassign or archive/);
+  } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// P1 fix, end-to-end through the REAL chain: real deriveSummary (devswarm-
+// store.js) writes the per-project summaries/<repoKey>.json projection, and
+// the REAL readMeshUrgency (this module, unmocked) reads it back and extracts
+// broadcastUrgencyMax. Only `repoKeyForWorktree` is stubbed to a fixed value
+// (the worktree here is a plain temp dir, not a real git checkout) — every
+// other function in the P1 fix's data path (deriveSummary, readMeshUrgency,
+// isUrgentMesh, sweepOnce) runs UNMOCKED. This proves the fix end to end and
+// is non-vacuous: verified to FAIL on pre-fix code (see task verification).
+// ---------------------------------------------------------------------------
+test('sweepOnce (REAL deriveSummary + REAL readMeshUrgency): an unread urgent NON-heartbeat BROADCAST, with NO direct message at all, still forces escalation (P1 fix)', () => {
+  const storeLib = require(path.join(
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js',
+  ));
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = path.join(home, 'wt');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    writeDescriptor(home, { id: 'w1', worktreePath }, 'w1');
+
+    const repoKey = 'myrepo-abc123';
+    const s = storeLib.openStore({ home, hash: repoKey });
+    try {
+      s.upsertRegistry({ id: 'w1', worktreePath, sessionId: UUID, inboxPath: null, cursorPath: null, nudgeCommand: null });
+      // An urgent BROADCAST, never a direct message — w1's directUnread stays 0.
+      const f = { from: 'someone-else', to: null, type: 'broadcast', message: 'prod is down', timestamp: 1, urgency: 'urgent' };
+      storeLib.appendMeshMessage(s, Object.assign({}, f, { hash: storeLib.meshMessageHash(f) }));
+      storeLib.deriveSummary(s, { home }); // writes summaries/<repoKey>.json — the REAL file readMeshUrgency reads
+    } finally { s.close(); }
+
+    let notifyCalls = 0;
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+        repoKeyForWorktree: () => repoKey, // ONLY the git-dependent repoKey lookup is stubbed
+        notifyParentEscalation: () => { notifyCalls++; },
+      },
+    });
+    assert.strictEqual(res[0].poke.action, 'nudged');
+    assert.strictEqual(notifyCalls, 1, 'an unread urgent broadcast with zero direct messages must still force an escalation');
+  } finally { cleanup(); }
+});
+
+test('sweepOnce (REAL deriveSummary + REAL readMeshUrgency): an unread NORMAL-urgency broadcast (no direct message) -> NO escalation', () => {
+  const storeLib = require(path.join(
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js',
+  ));
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = path.join(home, 'wt');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    writeDescriptor(home, { id: 'w1', worktreePath }, 'w1');
+
+    const repoKey = 'myrepo-abc123';
+    const s = storeLib.openStore({ home, hash: repoKey });
+    try {
+      s.upsertRegistry({ id: 'w1', worktreePath, sessionId: UUID, inboxPath: null, cursorPath: null, nudgeCommand: null });
+      const f = { from: 'someone-else', to: null, type: 'broadcast', message: 'fyi build finished', timestamp: 1, urgency: 'normal' };
+      storeLib.appendMeshMessage(s, Object.assign({}, f, { hash: storeLib.meshMessageHash(f) }));
+      storeLib.deriveSummary(s, { home });
+    } finally { s.close(); }
+
+    let notifyCalls = 0;
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+        repoKeyForWorktree: () => repoKey,
+        notifyParentEscalation: () => { notifyCalls++; },
+      },
+    });
+    assert.strictEqual(res[0].poke.action, 'nudged');
+    assert.strictEqual(notifyCalls, 0, 'a normal-urgency broadcast must never force an escalation');
+  } finally { cleanup(); }
+});
+
+test('sweepOnce (REAL deriveSummary + REAL readMeshUrgency): an unread URGENT HEARTBEAT-only broadcast (no direct message) -> NO escalation (D22 exclusion holds)', () => {
+  const storeLib = require(path.join(
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js',
+  ));
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = path.join(home, 'wt');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    writeDescriptor(home, { id: 'w1', worktreePath }, 'w1');
+
+    const repoKey = 'myrepo-abc123';
+    const s = storeLib.openStore({ home, hash: repoKey });
+    try {
+      s.upsertRegistry({ id: 'w1', worktreePath, sessionId: UUID, inboxPath: null, cursorPath: null, nudgeCommand: null });
+      // A heartbeat carrying urgency:'urgent' — a heartbeat is a normal status
+      // ping (D22) and must NEVER read as an urgent signal, no matter its
+      // nominal urgency field.
+      const hb = { from: 'someone-else', to: null, type: 'broadcast', message: 'still building', timestamp: 1, urgency: 'urgent' };
+      storeLib.appendMeshMessage(s, Object.assign({}, hb, { hash: storeLib.meshMessageHash(hb), isHeartbeat: true }));
+      storeLib.deriveSummary(s, { home });
+    } finally { s.close(); }
+
+    let notifyCalls = 0;
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: () => ({ status: 'stale', lastOutboundTs: 1, staleSince: 1, nudgeAttempts: 0 }),
+        writeVerdict: () => {},
+        pokeOrEscalate: () => ({ action: 'nudged' }),
+        repoKeyForWorktree: () => repoKey,
+        notifyParentEscalation: () => { notifyCalls++; },
+      },
+    });
+    assert.strictEqual(res[0].poke.action, 'nudged');
+    assert.strictEqual(notifyCalls, 0, 'a heartbeat, however urgent its nominal field, must never force an escalation');
   } finally { cleanup(); }
 });
 

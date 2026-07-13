@@ -334,8 +334,10 @@ platform-identical** (both call the same `hivecontrol`):
   happens to exist, so it is now treated exactly like `monitor`. **CORRECTION:** any
   earlier text (in this doc, the `devswarm` skill, or its Codex mirror) describing
   `read-messages` as "evidence-gated" / "allowed when no durable inbox exists" is stale —
-  do not repeat it. Non-destructive `message-count` / `message-parent` / `message-child`
-  are still never touched. Own `devswarm-read-guard` skip name (in skip-guard's
+  do not repeat it. Non-destructive `message-count` is still never touched — **but as of
+  v0.58, `message-parent`/`message-child` are NO LONGER untouched by this same
+  redirect-family of guards; a separate, newer guard branch now blocks them too, see the
+  new bullet below.** Own `devswarm-read-guard` skip name (in skip-guard's
   `DESTRUCTIVE` set — a blanket `all` skip does not silence it). Fires on both platforms:
   `command-guard.js` is a single file shared by the Claude and Codex ports (§8.4), so this
   redirect needs no separate Codex adapter. **Redirect target:**
@@ -375,6 +377,42 @@ platform-identical** (both call the same `hivecontrol`):
     design — a hook bug must never block a turn). Redirect target: `inbox pull`/`read`
     for a child's own inbox, `inbox messages`/`read-primary` for the Primary/store path
     (§8.8).
+- **`command-guard`'s native-SEND block, v0.58 "mesh-only messaging" (SHIPPED — REPLACE, not
+  just redirect).** Where the destructive-read redirect above steers agents away from
+  `monitor`/`read-messages` toward a durable-inbox READ path, this is the SEND-side
+  counterpart: `hivecontrol workspace message-child` and `hivecontrol workspace
+  message-parent` — the two native SEND subcommands — are now UNCONDITIONALLY blocked
+  whenever DevSwarm is active, in ALL contexts (coordinator AND subagent — a delegated
+  send writes the native queue identically). `detectHivectlMessageSend()`
+  (`command-guard.js:232`) mirrors the destructive-read detector's own matching discipline
+  byte-for-byte: quote-neutralized per-segment matching (so `grep 'hivecontrol workspace
+  message-parent' docs/KB.md` never false-positives), command-position anchoring via
+  `effectiveVerb==='hivecontrol'`, and `bash -c`/`eval`/`$()`/backtick unwrap+recursion (a
+  smuggled `$(hivecontrol workspace message-child ...)` still matches). Matched via two
+  dedicated regexes, `HIVECTL_MESSAGE_CHILD`/`HIVECTL_MESSAGE_PARENT` (`command-guard.js:148,150`),
+  modeled exactly on `HIVECTL_MONITOR`/`HIVECTL_READ_MESSAGES` above. Deliberately does
+  **not** match `message-count` (read-only counter) or any lifecycle verb
+  (`create`/`list`/`check-merge`/`merge`) — those are unmatched by construction (disjoint
+  literal text), so `devswarm.js spawn`/`merge` (thin wraps of those, see the v0.58 note in
+  §8.7) keep working. Own skip name `devswarm-send-guard` (independent of both
+  `devswarm-read-guard` and `command-guard`'s own skip — none of the three silences another),
+  honors `DISABLE_ANTIHALL_DEVSWARM=1`. The block reason is a CLOSED-VOCABULARY string
+  (`buildDevswarmSendReason()`, `command-guard.js:267` — never reflects the blocked command
+  or stdin text, injection hygiene) that redirects to the mesh CLI: `node scripts/devswarm.js
+  send --to-primary --message "<text>"` (or `--to <meshId>`) to direct-message, `node
+  scripts/devswarm.js heartbeat <id> --summary "<text>"` to report status. **This is a
+  REPLACE, not a parallel option:** anti-hall's shared mesh store (§8.7's v0.57 mesh, now
+  extended by §8.7's v0.58 note below) becomes the SOLE agent-initiated messaging transport
+  for DevSwarm coordination — native per-worktree messaging (no `from`/`to`/broadcast, no
+  cross-worktree addressing) is superseded, not merely discouraged. Lifecycle verbs
+  (`create`/`list`/`check-merge`/`merge`) are explicitly OUT of scope for this block — see
+  §8.7's v0.58 note for what stays a thin pass-through wrap. Fires on both platforms:
+  `command-guard.js` is the single shared file (§8.4), so a Codex Bash tool call hits the
+  identical block (the DevSwarm-active gate, `hooks/lib/devswarm-detect.js`, keys off
+  `DEVSWARM_REPO_ID`/`ANTIHALL_DEVSWARM_SUPERVISOR`, not the invoking agent) — **but see the
+  v0.58 note's own Codex-parity caveat: the block fires identically, the per-turn
+  proactive reminder that keeps the mesh top-of-mind does NOT**, since the hooks that inject
+  it are Claude-only (unregistered in `codex/hooks/hooks.json`).
 - A **new no-child-child guard** should block `hivecontrol workspace create` when
   `DEVSWARM_SOURCE_BRANCH` is non-empty (child), mirroring the swarm-guard/anti-deep-nesting
   pattern.
@@ -889,6 +927,199 @@ of the same project directly (all-to-all "mesh"), not just its own parent/child 
   (`plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`) does not yet describe or
   ship any mesh capability — do not claim otherwise until v0.57.1 lands.
 
+**v0.58 "mesh-only messaging" (SHIPPED — on `main`, unreleased; `plugin.json` still
+`0.56.0` as of this writing, see `docs/KB.md`'s version row).** Where v0.57 above ADDED the
+mesh as a parallel, daemon-independent transport, v0.58 makes it the ONLY agent-initiated
+transport for DevSwarm coordination — a **REPLACE**, not an additional option.
+
+- **The REPLACE decision.** Native `hivecontrol workspace message-child`/`message-parent` —
+  the two SEND subcommands — are now guard-blocked in ALL contexts (§8.5's new bullet
+  above), redirecting every send to `scripts/devswarm.js`. Every OTHER hivecontrol feature
+  this integration relies on — `create`/`list`/`check-merge`/`merge` (the lifecycle verbs)
+  — is KEPT, unblocked, and now additionally available as a THIN wrap through the CLI (see
+  `spawn`/`merge` below) rather than re-implemented. The rationale (PLAN.md's "Locked
+  design," this session's build record): native per-worktree messaging has no `from`/`to`
+  fields and no broadcast — it cannot address a specific sibling, only a parent/child pair
+  — while the mesh store already had all of that from v0.57. Rather than maintain two
+  competing send paths indefinitely, v0.58 collapses to one.
+- **New/changed CLI verbs (`scripts/devswarm.js`, agent-agnostic — see the Codex-parity
+  note below for what does and doesn't apply to a Codex session).**
+  - `send --to-primary --message TEXT [--urgency ...]` — a third target mode alongside the
+    existing `--to <meshId>`/`--broadcast` (mutually exclusive; `cmdSend`, `devswarm.js:1025`).
+    Resolves the registry entry whose `worktreePath` exactly matches THIS project's main
+    worktree (`resolvePrimaryTarget`, `devswarm.js:1009`, using
+    `install-devswarm-ingest.js`'s `resolveMainWorktree`) — fail-closed
+    (`reason:'primary-unregistered'`) when no Primary is registered yet, never a silent
+    black-hole, same posture as `--to`'s own fail-closed `unregistered-recipient`.
+  - `reconcile` (`cmdReconcile`, `devswarm.js:1299`) — for every registry descriptor of
+    THIS project that carries a `worktreePath`, spawns `node scripts/devswarm.js inbox pull
+    <id>` as a SEPARATE SUBPROCESS with `cwd` set to that worktree
+    (`defaultSpawnReconcile`, `devswarm.js:1276`) — never in-process, since `inbox pull`'s
+    own native spawn resolves its target workspace from the CALLING process's cwd, so an
+    in-process call from the reconciler's own cwd would drain the wrong (the reconciler's
+    own) queue for every descriptor instead of each worktree's own. The existing per-id
+    `O_EXCL` pull lock (`devswarm-pull.js`) serializes a sweep against a live child
+    concurrently pulling its own inbox — surfaced as `locked:true` on that descriptor's
+    result, never silently dropped from the count. One-shot drain of every stranded
+    worktree queue, not a daemon.
+  - `spawn <branch> [hivecontrol create flags...]` (`cmdSpawn`, `devswarm.js:1362`) — a
+    THIN pass-through wrap of `hivecontrol workspace create <branch> ...`: the raw argv
+    tail forwards byte-for-byte (this file's own `--long`-flag parser is deliberately
+    bypassed for this verb, so a short flag like `-p` or a future hivecontrol flag is never
+    swallowed or re-parsed), then best-effort auto-registers the new worktree in the
+    project's shared store registry (store-only — no descriptor file, no `sessionId` yet;
+    the child's own first `inbox pull`/`heartbeat`/`register` fills that in itself, same as
+    every other child). A create failure returns as-is; a registration failure AFTER an
+    already-successful create never rolls back or fails the verb.
+  - `merge [hivecontrol merge-into-source flags...]` (`cmdMergeVerb`, `devswarm.js:1415`) —
+    a THIN wrap of `hivecontrol workspace check-merge` (informational, always run first) +
+    `hivecontrol workspace merge-into-source ...` (pass-through — never re-parses or gates
+    on check-merge's own verdict), then `send --broadcast`s the outcome to the mesh so
+    every peer sees a merge land without polling (best-effort — a broadcast failure never
+    masks the merge's own result). The OTHER merge direction, `merge-from-source`, is
+    untouched — still a raw hivecontrol call.
+  - `roster` fold (`cmdRoster`, `devswarm.js:1187`, `fetchNativeChildren`,
+    `devswarm.js:1165`) — plain `roster` (never `--ack`) now additionally unions a
+    READ-ONLY, bounded (5 s timeout) `hivecontrol workspace list children` view into the
+    projection, so a child hivecontrol spawned but that has never yet self-registered with
+    the store (no `inbox pull`/`heartbeat`/`register` call yet) still shows up
+    (`source:'native'` on that entry) instead of being invisible. Never written back to the
+    store — the store registry stays the single write-owned source of truth; fail-open
+    empty array on any spawn/parse error.
+  - `archive-request <childId> [--reason TEXT]` (`cmdArchiveRequest`, `devswarm.js:937`) —
+    **REVISED from a send-only hivecontrol call to a direct STORE WRITE.** Pre-v0.58 this
+    resolved a child BRANCH (via `--child-branch`, a descriptor field, or a `hivecontrol
+    workspace list children` lookup) and posted through `message-child <branch> <msg>` —
+    the one native-messaging leak the command-guard's verb-anchored matching could never
+    catch (a spawned `message-child` call is invisible to a guard classifying only the
+    Bash tool-call text). v0.58 deletes that lookup + spawn entirely: `id` is already the
+    target's real read partition (the SAME semantics `heartbeat <id>`/`inbox read <id>`
+    already use), so the marker (`[[ANTIHALL_ARCHIVE_REQUEST]]`, now the canonical
+    `store.ARCHIVE_REQUEST_MARKER`, `devswarm-store.js:183`) is appended straight into
+    `id`'s own partition with `urgency:'high'` — zero `hivecontrol` calls, verified by a
+    dedicated e2e test that injects a runner throwing on ANY hivecontrol call
+    (`tests/e2e/devswarm-archive.e2e.test.js`). `--child-branch` is gone (no longer
+    needed — there is no branch resolution left to do).
+  - Uniform message record schema across `send`/`archive-request`/the `merge` broadcast/the
+    `heartbeat --summary` broadcast: `{from, to, type:'direct'|'broadcast', message,
+    timestamp, urgency}` (plus the store's own derived `hash`/`isHeartbeat`).
+- **Per-turn override + wake Tier 0 (mesh-poll resting posture).** DevSwarm's own child
+  spawn uses `--system-prompt-file`, which REPLACES the system prompt — the only lever
+  against that erasure is re-injecting a directive on every subsequent turn, not just at
+  spawn. `hooks/devswarm-child-role.js` (SessionStart, BOTH roles as of v0.58 — previously
+  child-only) injects the full `OVERRIDE_CORE` directive (`devswarm-child-role.js:35`):
+  anti-hall's mesh is the workspace's ONLY messaging channel, native `message-*` sends are
+  blocked, report via `heartbeat <id> --summary`, direct-message via `send --to-primary`/
+  `--to <meshId>`, check in via `roster`/`mesh read`/`inbox read-primary <id>`, and RESTING
+  state = keep polling the mesh rather than idling silently (this IS the Tier-0 wake
+  posture — it replaces the native `monitor` resting state the guard now blocks). A child
+  additionally gets `CHILD_IDLE_LINE` (`devswarm-child-role.js:48`), the self-report nudge
+  this hook already carried, now phrased via `heartbeat --summary` instead of the blocked
+  native call. Every subsequent turn, a terse (≤160-char) `OVERRIDE_REASSERT` re-injects
+  the same core directive: `hooks/devswarm-child-turn.js:101` (child, UserPromptSubmit,
+  unconditional, prepended ahead of the existing `REMINDER`/`RECEIVE_NUDGE` segments) and
+  `hooks/devswarm-parent-inbox.js:113` (Primary, UserPromptSubmit — this is the ONE
+  deliberate departure from that hook's prior "empty stdout when nothing to report"
+  zero-cost contract, a small fixed per-turn cost traded for resistance to model
+  habituation/drift back toward native messaging across many quiet turns). All four
+  strings deliberately avoid the literal substrings `message-child`/`message-parent` (using
+  a `message-*` wildcard form instead) so the hook text itself never re-introduces the
+  blocked native verbs into emitted output — a dedicated fixture asserts no emitted hook
+  text contains either literal.
+- **Honest wake-mechanism caveat (do not overclaim).** The "RESTING state = keep polling
+  the mesh" posture above is the entire Tier-0 wake mechanism this release ships — it
+  relies on the session actually taking another turn. This build's own design record
+  (`PLAN.md`) states plainly, citing GitHub `anthropics/claude-code#44380`, that **no
+  external mechanism wakes a genuinely idle Claude Code session** — there is no push, no
+  MCP notification, nothing that can interrupt a session sitting between turns with no new
+  prompt. A Tier-2 fallback (wrapping the session's own runner process + injecting into its
+  stdin to force a new turn) is explicitly named in the design record as a DEFERRED,
+  NOT-BUILT fallback for if this resting-poll latency proves insufficient in practice — do
+  not describe it as shipped. What v0.58 actually ships is: the mesh directive keeps a
+  session that IS taking turns checking in every turn, and the supervisor's escalate-on-
+  urgent path below is the mechanism for a session that has gone genuinely stale.
+- **Supervisor escalate-on-urgent (Tier 0, additive — `companion/devswarm-supervisor.js`,
+  NEVER kills).** `readMeshUrgency()` (`devswarm-supervisor.js:116`) resolves a stale
+  descriptor's project `repoKey` and reads that project's `summaries/<repoKey>.json` (the
+  same projection the hooks read) for THIS descriptor's own `urgencyMax`/`directUnread`/
+  `broadcastUnread` row; `isUrgentMesh()` (`devswarm-supervisor.js:138`) qualifies only
+  `high`/`urgent` (via `URGENT_TIERS`, `devswarm-supervisor.js:102` — `low`/`normal`/absent
+  do not force anything, relying instead on the agent's own next turn). When a sweep tick
+  finds a stale descriptor with an urgent/high unread, it fires `notifyParentEscalation`
+  (the SAME channel `pokeOrEscalate` itself uses, same store-level hash dedupe) IMMEDIATELY
+  — independent of, and even when, the base `pokeOrEscalate` call on that same tick only
+  nudged (poke budget not yet exhausted). Fail-open throughout (unresolvable repoKey,
+  missing/malformed summary, descriptor absent from the summary all return `null` = "no
+  urgent signal," never throwing out of a sweep tick). This is purely additive to the
+  existing poke/escalate cadence (§8.7's Layer 2/3) — it NEVER resolves a pid and NEVER
+  kills; the on-demand `devswarm-recover.js` CLI remains the only path in this system that
+  ever does.
+- **Daemon — unchanged.** `devswarm-ingest.js` (the one supervised native-`monitor`
+  consumer) and its per-project install/health-check machinery from v0.57 are untouched by
+  v0.58 — the daemon still exists purely to drain the Primary's OWN reception queue
+  (parent-directed native messages arriving from outside anti-hall's own send path); it was
+  never a messaging-fanout mechanism the mesh-only decision needed to touch.
+- **NO MCP — the CLI-over-MCP rationale, restated for this decision specifically.** v0.58
+  considered and explicitly rejected building an MCP server / a daemon-held push mechanism
+  for delivery, per PLAN.md's own "DO NOT BUILD" list. This is the SAME owner-preference
+  rationale already on record for the rest of this CLI (§8.7: "THE structured interface —
+  CLI over MCP, owner preference"): a stable-JSON stdout CLI is invokable identically by
+  either agent (Claude tool-call Bash, or Codex), needs no separate server process, no
+  protocol negotiation, and no additional attack surface — while an MCP server would add
+  exactly those without solving the actual gap (the wake problem above is a Claude Code
+  runtime limitation, not something an MCP tool surface changes; per the honest caveat
+  above, nothing — MCP included — currently wakes a truly idle session).
+- **Codex parity — what's shared vs. Claude-only (be precise; do not claim built parity).**
+  `command-guard.js` is the single shared hook file (§8.4) registered in BOTH
+  `hooks.json`/`codex/hooks/hooks.json` — so the native-SEND guard-block above (§8.5's new
+  bullet) fires identically for a Codex session's Bash tool calls; the DevSwarm-active gate
+  it depends on (`hooks/lib/devswarm-detect.js`) keys off `DEVSWARM_REPO_ID`, which
+  hivecontrol sets per-workspace regardless of which agent runs there, not a Claude-specific
+  signal. The block's own reason string (`buildDevswarmSendReason`) already redirects to
+  the mesh CLI verbs, so a Codex agent that attempts a native send is redirected reactively,
+  at the moment of the attempt. What does **NOT** apply to Codex: the four mechanical
+  override/reassert hooks above (`devswarm-child-role.js`, `devswarm-child-turn.js`,
+  `devswarm-parent-inbox.js`, and the `alreadyReportedThisEpisode` addition to
+  `devswarm-child-gate.js` below) are **Claude-only** — none of the four is registered in
+  `codex/hooks/hooks.json` (confirmed against the current file; only `verify-first-full`,
+  `graphify-session`, `version-alert`, `codex-availability`, `verify-first`,
+  `task-tracker`, `limit-conserve-inject`, `git-guard`, `command-guard`, `graphify-guard`,
+  `merge-gate`, `task-guard`, `tasklist-guard`, `graphify-reminder`, `speculation-guard`,
+  `speculation-judge` are wired there), consistent with every other Claude-only DevSwarm
+  hook already called out in `plugins/anti-hall/codex/README.md`. Net effect: a Codex
+  session in an active DevSwarm workspace is mechanically prevented from sending a native
+  message (guard-blocked, reactive redirect on attempt) but never gets the PROACTIVE
+  per-turn "use the mesh" reminder a Claude session gets, and the supervisor's mesh-urgency
+  escalation above is likewise Claude-only (the supervisor itself is documented
+  Claude-only, §8.7 and `codex/README.md`, since it identity-binds to `claude --resume`
+  processes). The CLI verbs themselves (`send`/`roster`/`mesh read`/`reconcile`/`spawn`/
+  `merge`/`archive-request`) are plain Node scripts with no agent affinity — a Codex agent
+  CAN invoke them directly via Bash, same as the pre-v0.58 CLI (`inbox pull`,
+  `archive-request`'s old form) already was documented as agent-agnostic — but nothing
+  proactively tells it to, and this has not been added to
+  `codex/skills/anti-hall-devswarm/SKILL.md`'s CLI reference as of this writing.
+- **Child-gate "already-reported" satisfaction (builds the v0.54.2 TODO this KB's §8.7
+  noted as "not yet built").** `hooks/devswarm-child-gate.js`'s `alreadyReportedThisEpisode()`
+  (`devswarm-child-gate.js:120`) reads the SAME `summaries/<repoKey>.json` projection
+  (no store DB open — hooks never open the DB) for a `recent[]` row this child itself SENT
+  (`from === DEVSWARM_BUILDER_ID`, timestamped at or after the current stop episode's start)
+  — a REAL mesh `heartbeat --summary`/`send --broadcast` call, never the mechanical
+  turn-start heartbeat FILE (which the v0.54.1 correction in §8.7 already ruled out as a
+  false-silence signal, since it never touches the store). When satisfied AND no KNOWN
+  durable unread backlog is pending (the inbound half of this gate, #29, is unaffected —
+  this satisfaction path only silences the OUTBOUND forcing), the Stop block is skipped
+  entirely for that stop episode. Fail-open: any error (unresolvable repoKey, missing/
+  corrupt summary, unsafe id) returns `false`, never silently skipping a required report.
+- **`deriveSummary` `archive_requested` (additive, `devswarm-store.js:982`).** `true` when
+  an unread DIRECT row addressed to a workspace carries the archive-request marker,
+  scanned over the already-fetched unread rows (zero extra store reads), restricted to
+  `mtype==='direct'` so a native-drained row (`inbox pull`, `mtype` null) can never
+  false-positive even if its body happens to contain the literal marker text.
+  `hooks/devswarm-child-turn.js` reads this flag defensively (undefined on an older
+  store/summary shape is falsy — pure no-op until this field exists) and surfaces the SAME
+  archive-request segment the pre-existing NDJSON-marker scan already produced, deduped so
+  a turn with both signals present never double-pushes the segment.
+
 ### 8.7.1 Single-consumer importance (why the read-guard exists)
 
 Stated once, explicitly, because it is the load-bearing invariant behind §8.5's read-guard
@@ -999,12 +1230,15 @@ line-for-line against the current `plugins/anti-hall/scripts/devswarm.js`.
 | `nudge <id>` | Poke-or-escalate one workspace ON DEMAND, honoring the same persisted attempt-count/cooldown state the automatic supervisor sweep would (reuses `recovery.pokeOrEscalate` — the identical primitive, not a re-implementation). | `cmdNudge` L540–550, dispatch L725–730 |
 | `archive <id>` | Archive-by-absence on anti-hall's OWN registry ONLY: moves the descriptor into `archived/` (renames — never unlinks) and tombstones the store registry entry. hivecontrol itself has NO teardown/delete/archive command at any level (§4/§10), so this SURFACES a manual "remove workspace X in the DevSwarm app" step in its response — it never runs an actual delete. | `cmdArchive` L552–575, dispatch L731–735 |
 | `archive-ignore <id>` / `archive-unignore <id>` | Write / remove a per-workspace `archive-ignore/<id>.json` mute of the `devswarm-parent-inbox` archive-ready reminder. | `cmdArchiveIgnore` L577–592, dispatch L736–745 |
-| `archive-request <childId\|childBranch> [--reason TEXT] [--child-branch B]` | **PARENT-side, SEND-ONLY (v0.56.0).** Posts a `[[ANTIHALL_ARCHIVE_REQUEST]]`-prefixed message to the child via `hivecontrol workspace message-child <branch> <msg>`, asking it to archive. Resolves the child branch: explicit `--child-branch` → the descriptor's own `branch` field (if ever set) → a `hivecontrol workspace list children` lookup matching branch/id/worktree → the positional id itself. NEVER verifies merged/tested/deployed itself (that's the parent repo's own policy to enforce first) and NEVER runs `archive` on the child's behalf. Fail-open on a `message-child` spawn error (`ok:false`, never a throw). | `cmdArchiveRequest` L655–674, `resolveChildBranch` L622–647, `ARCHIVE_REQUEST_MARKER`/`buildArchiveRequestMessage` L596–605, dispatch L746–751 |
+| `archive-request <childId> [--reason TEXT]` | **PARENT-side (REVISED v0.58: STORE WRITE, not a hivecontrol call).** Posts a `[[ANTIHALL_ARCHIVE_REQUEST]]`-prefixed message directly into `<childId>`'s OWN store partition (mesh-direct, `urgency:'high'`) — `childId` is already the target's real read partition, so no branch resolution or registry lookup happens (the old `--child-branch` flag and the `hivecontrol workspace list children` lookup are GONE). ZERO `hivecontrol` calls — closes the one native-messaging leak the command-guard's Bash-text matcher could never see. NEVER verifies merged/tested/deployed itself (that's the parent repo's own policy). | `cmdArchiveRequest` `devswarm.js:937`, `ARCHIVE_REQUEST_MARKER`/`buildArchiveRequestMessage` `devswarm-store.js:183`/`devswarm.js`, dispatch `devswarm.js:1531` |
 | `migrate` | Auto-migrate on-disk state (the JSON descriptor registry + each descriptor's legacy NDJSON inbox/cursor) into the store. Idempotent (dedupe hash from id + line-index + content), NON-DESTRUCTIVE (reads sources only, never deletes/moves/truncates), single-consumer-locked (O_EXCL), and COUNT-VERIFIED (store count must equal distinct legacy lines) before it reports `verified:true`. As of v0.57 this ALSO folds in the non-destructive hash→repoKey mesh migration (§8.7's v0.57 note) inside the SAME migrate lock. Picks up `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ` from `ctx.env` (no dedicated `--mark-read` CLI flag on THIS subcommand — that flag lives on the separate `scripts/migrate-state.js` script, §8.7's v0.56.0 note). | `cmdMigrate` L921–968 → `companion/devswarm-migrate.js`, dispatch L1182–1184 |
-| `send --to <meshId>\|--broadcast --message TEXT [--from <id>] [--urgency low\|normal\|high\|urgent]` | **v0.57 MESH (SHIPPED — Claude-side only).** Writes THIS project's shared `store/<repoKey>/` DIRECTLY — daemon-independent, zero `hivecontrol` calls (wrapped in send-time self-heal, `withSelfHeal`). `repoKey` is resolved from cwd FIRST; a non-git cwd returns `{ok:false, reason:'no-project'}` before any identity is derived (D28). `--from` is always re-derived from cwd (`callerIdentity`, spoof-resistant); an explicit `--from` must match or the send is rejected. `--to <meshId>` is fail-closed against the shared registry (D12a) — an unregistered meshId is rejected, never silently black-holed; the row lands in the target's REAL builder-id partition (D19), not the meshId itself. Default `urgency` `normal`. | `cmdSend` L969–1049, `resolveMeshTarget` L952–959, dispatch L1185–1189 |
-| `roster [--ack]` | **v0.57 MESH.** ALLOW-listed projection read of this project's shared registry + `working_on` + `recent[]` broadcast digest, derived fresh (never cached). `--ack` is an alias of `mesh read` below — the ONLY surface that clears `broadcastUnread`. | `cmdRoster` L1055–1069, dispatch L1190–1195 |
-| `mesh read` | **v0.57 MESH.** Same as `roster --ack` (D23) — lists the caller's unseen NON-heartbeat broadcasts past its own broadcast cursor, then advances that cursor to head. | `cmdMeshRead` L1077–1098, dispatch L1196–1203 |
-| `heartbeat <id> --summary TEXT [--urgency ...]` | **v0.57 MESH addition to the existing `heartbeat` verb.** `--summary` ALSO broadcasts a mesh heartbeat row (`mtype:'broadcast'`, `is_heartbeat:1`) into this project's shared store — feeds `roster`'s `working_on` field (matched by `sender === d.id`). Default urgency `low`. A non-git cwd does not fail the base heartbeat write; it reports `meshBroadcast:{ok:false, reason:'no-project'}`. | `cmdHeartbeat` L473–543, dispatch L1122–1126 |
+| `send --to <meshId>\|--to-primary\|--broadcast --message TEXT [--from <id>] [--urgency low\|normal\|high\|urgent]` | **v0.57 MESH, `--to-primary` added v0.58 (SHIPPED — Claude-side; see the v0.58 note's Codex-parity caveat for what a Codex session actually gets).** Writes THIS project's shared `store/<repoKey>/` DIRECTLY — daemon-independent, zero `hivecontrol` calls (wrapped in send-time self-heal, `withSelfHeal`). `repoKey` is resolved from cwd FIRST; a non-git cwd returns `{ok:false, reason:'no-project'}` before any identity is derived (D28). `--from` is always re-derived from cwd (`callerIdentity`, spoof-resistant); an explicit `--from` must match or the send is rejected. `--to <meshId>` is fail-closed against the shared registry (D12a) — an unregistered meshId is rejected, never silently black-holed; the row lands in the target's REAL builder-id partition (D19), not the meshId itself. `--to-primary` (v0.58) resolves the registry entry whose `worktreePath` matches this project's MAIN worktree (`resolvePrimaryTarget`) — same fail-closed posture (`reason:'primary-unregistered'`). The three target modes are mutually exclusive. Default `urgency` `normal`. | `cmdSend` `devswarm.js:1025`, `resolveMeshTarget` `devswarm.js:993`, `resolvePrimaryTarget` `devswarm.js:1009`, dispatch `devswarm.js:1547` |
+| `roster [--ack]` | **v0.57 MESH; v0.58 adds a read-only native-children FOLD.** ALLOW-listed projection read of this project's shared registry + `working_on` + `recent[]` broadcast digest, derived fresh (never cached). `--ack` is an alias of `mesh read` below — the ONLY surface that clears `broadcastUnread`. As of v0.58, plain `roster` (never `--ack`) additionally unions a bounded, read-only `hivecontrol workspace list children` view — a spawned-but-unregistered child appears (`source:'native'`) instead of being invisible; never written back to the store. | `cmdRoster` `devswarm.js:1187`, `fetchNativeChildren` `devswarm.js:1165`, dispatch `devswarm.js:1552` |
+| `mesh read` | **v0.57 MESH.** Same as `roster --ack` (D23) — lists the caller's unseen NON-heartbeat broadcasts past its own broadcast cursor, then advances that cursor to head. | `cmdMeshRead` `devswarm.js` (`run()` dispatch's `mesh`/`read` sub-branch) |
+| `heartbeat <id> --summary TEXT [--urgency ...]` | **v0.57 MESH addition to the existing `heartbeat` verb.** `--summary` ALSO broadcasts a mesh heartbeat row (`mtype:'broadcast'`, `is_heartbeat:1`) into this project's shared store — feeds `roster`'s `working_on` field (matched by `sender === d.id`). Default urgency `low`. A non-git cwd does not fail the base heartbeat write; it reports `meshBroadcast:{ok:false, reason:'no-project'}`. | `cmdHeartbeat`, dispatch (`heartbeat` case) |
+| `reconcile` | **v0.58, NEW.** Drains every registry descriptor of THIS project (that carries a `worktreePath`) once, via a per-id SUBPROCESS spawn (`inbox pull <id>` with `cwd` = that worktree — never in-process, which would drain the wrong queue). Per-id `O_EXCL` pull lock serializes against a live concurrent pull (`locked:true`, not silently dropped). Not a daemon — a one-shot sweep. | `cmdReconcile` `devswarm.js:1299`, `defaultSpawnReconcile` `devswarm.js:1276`, dispatch `devswarm.js:1566` |
+| `spawn <branch> [hivecontrol create flags...]` | **v0.58, NEW.** THIN pass-through wrap of `hivecontrol workspace create <branch> ...` — the raw argv tail forwards untouched, never re-parsed — then best-effort auto-registers the new worktree in the shared store registry (store-only; the child's own first self-registration call fills in the rest). A create failure returns as-is; a post-create registration failure never rolls back the already-succeeded create. | `cmdSpawn` `devswarm.js:1362`, `resolveCreatedWorktreePath` `devswarm.js:1340`, dispatch `devswarm.js:1570` |
+| `merge [hivecontrol merge-into-source flags...]` | **v0.58, NEW.** THIN wrap of `hivecontrol workspace check-merge` (informational) + `hivecontrol workspace merge-into-source ...` (pass-through), then `send --broadcast`s the outcome to the mesh (best-effort — never masks the merge's own result). `merge-from-source` is untouched, still a raw hivecontrol call. | `cmdMergeVerb` `devswarm.js:1415`, dispatch `devswarm.js:1577` |
 
 **Worked example — a full Primary/child lifecycle end to end:**
 ```bash
@@ -1050,6 +1284,30 @@ node scripts/devswarm.js mesh read               # unseen non-heartbeat broadcas
 
 # A routine status ping (also updates roster's working_on for this workspace):
 node scripts/devswarm.js heartbeat sibling-worktree --summary "60% through the API layer"
+```
+
+**v0.58 mesh-only messaging — the CLI verbs a native `hivecontrol workspace
+message-child`/`message-parent` call is now redirected to, plus the new lifecycle wraps
+(Claude-side; a Codex session can invoke the same script, see the v0.58 note's
+Codex-parity caveat above):**
+```bash
+# A child directs a message straight at the Primary without knowing its meshId:
+node scripts/devswarm.js send --to-primary --message "blocked on schema decision" --urgency high
+
+# Drain every stranded worktree's inbox once (e.g. after a daemon outage) — a one-shot
+# sweep, not a daemon:
+node scripts/devswarm.js reconcile
+
+# Thin pass-through spawn/merge — every hivecontrol flag forwards untouched, then the
+# outcome is auto-registered / broadcast to the mesh:
+node scripts/devswarm.js spawn feature/new-child -p "own the API layer" -a claude
+node scripts/devswarm.js merge
+
+# archive-request is now a direct store write — zero hivecontrol calls, no --child-branch:
+node scripts/devswarm.js archive-request child-1 --reason "shipped in v1.2.0"
+
+# roster now also surfaces a hivecontrol-spawned child that hasn't self-registered yet:
+node scripts/devswarm.js roster                 # entries carry source:'store'|'native'
 ```
 
 Every subcommand above was verified to exist at the cited line by reading the current

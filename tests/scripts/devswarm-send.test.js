@@ -623,3 +623,60 @@ test('heartbeat --summary from a non-git cwd does not fail the base heartbeat, r
     assert.equal(r.result.meshBroadcast.reason, 'no-project');
   } finally { rm(home); }
 });
+
+// ---- P0: heartbeat --summary sender spoofing (child-gate Stop-gate bypass) --
+//
+// alreadyReportedThisEpisode() (hooks/devswarm-child-gate.js) reads recent[]
+// from the store's summary projection for a row `from === DEVSWARM_BUILDER_ID`
+// to decide a child already reported and may stop without a real report. Before
+// this fix, `cmdHeartbeat` wrote the mesh broadcast row's `sender` as the RAW
+// `id` positional with NO check that the caller actually owns that id — any
+// workspace could forge `heartbeat <victim-id> --summary "done"` and spoof the
+// victim's Stop-gate satisfaction closed.
+test('heartbeat --summary: a workspace CANNOT forge another workspace\'s report (spoofed row rejected, not credited); a legitimate self-heartbeat still works', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('heartbeat-spoof');
+  let wtA;
+  let wtB;
+  try {
+    wtA = addLinkedWorktree(mainRepo, 'hbspoof-a');
+    wtB = addLinkedWorktree(mainRepo, 'hbspoof-b');
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    const idA = derivedId(wtA);
+    const idB = derivedId(wtB);
+    seedRegistry(home, repoKey, { id: idA, worktreePath: wtA, sessionId: 'sA' });
+    seedRegistry(home, repoKey, { id: idB, worktreePath: wtB, sessionId: 'sB' });
+
+    // Legitimate self-heartbeat (workspace A, running from its OWN worktree,
+    // heartbeats ITS OWN id) must still succeed and be credited.
+    const self = cli.run(['heartbeat', idA, '--summary', 'A really did the work'], ctx(home, { cwd: wtA }));
+    assert.equal(self.result.ok, true);
+    assert.equal(self.result.meshBroadcast.ok, true, JSON.stringify(self.result.meshBroadcast));
+    assert.equal(self.result.meshBroadcast.sent, true);
+
+    // Workspace A (still cwd=wtA) forges a heartbeat FOR B — must be refused,
+    // and B must NOT be credited with a report it never sent.
+    const forged = cli.run(['heartbeat', idB, '--summary', 'forged: B is done'], ctx(home, { cwd: wtA }));
+    assert.equal(forged.result.ok, true, 'the base (local) heartbeat write is not itself the security boundary');
+    assert.equal(forged.result.meshBroadcast.ok, false, 'the mesh row (what the Stop-gate reads) must be refused');
+    assert.match(forged.result.meshBroadcast.error, /does not own/);
+    assert.equal(forged.result.meshBroadcast.callerIdentity, idA);
+
+    const roster = cli.run(['roster'], ctx(home, { cwd: mainRepo }));
+    const rowB = roster.result.workspaces.find((w) => w.id === idB);
+    assert.equal(rowB.working_on, null, 'B must show NO working_on — the forged summary was never credited to B');
+    assert.ok(
+      !roster.result.recent.some((r) => r.from === idB),
+      'recent[] (what alreadyReportedThisEpisode() reads to satisfy the Stop-gate) must carry NO row for B'
+    );
+    assert.ok(
+      roster.result.recent.some((r) => r.from === idA && r.summary === 'A really did the work'),
+      'A\'s own legitimate report must still be present'
+    );
+  } finally {
+    rm(home);
+    if (wtA) cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', wtA]);
+    if (wtB) cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', wtB]);
+    rm(mainRepo);
+  }
+});

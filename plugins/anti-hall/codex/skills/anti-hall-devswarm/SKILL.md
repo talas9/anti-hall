@@ -59,9 +59,10 @@ UNCONDITIONALLY whenever DevSwarm is active — the original evidence-gated carv
 `read-messages` (`ANTIHALL_DEVSWARM_INBOX_CMD` / a descriptor's `inboxPath`) has been
 removed: a raw native `read-messages` desyncs the durable cursor regardless of whether a
 durable inbox exists, so it is now treated exactly like `monitor`. Non-destructive
-`message-count`/`message-parent`/`message-child` are untouched. Own
-`devswarm-read-guard` skip name (in skip-guard's `DESTRUCTIVE` set — a blanket `all`
-skip does not cover it). Full detail: `docs/KB-devswarm-hivecontrol.md` §8.5.
+`message-count` is untouched — but as of v0.58, `message-parent`/`message-child` are
+**not** untouched anymore, see the next section. Own `devswarm-read-guard` skip name (in
+skip-guard's `DESTRUCTIVE` set — a blanket `all` skip does not cover it). Full detail:
+`docs/KB-devswarm-hivecontrol.md` §8.5.
 
 A second guard closes the RAW-file-read hole (`cat`/`head`/`grep`/… of the durable
 inbox/store — doesn't drain the native queue, but desyncs the durable cursor and
@@ -70,6 +71,34 @@ violates the store's write/derive layering). The shell-verb form is caught by
 `Read`-tool guard (`hooks/inbox-read-guard.js`) is **Claude-only** (not registered in
 `codex/hooks/hooks.json` — it guards Claude's own `Read` tool specifically). Full
 taxonomy: `docs/KB-devswarm-hivecontrol.md` §8.5.
+
+## command-guard's native-SEND block — v0.58 "mesh-only messaging" (applies to Codex too)
+
+A SEPARATE, newer guard branch from the destructive-read redirect above, but with the
+**same shared-file mechanics**: `hivecontrol workspace message-child` and `hivecontrol
+workspace message-parent` — the two native SEND subcommands — are now guard-blocked
+UNCONDITIONALLY whenever DevSwarm is active, in ALL contexts. `command-guard.js` is the
+single file registered on both platforms and the DevSwarm-active gate it depends on
+(`hooks/lib/devswarm-detect.js`) keys off `DEVSWARM_REPO_ID`, which hivecontrol sets
+per-workspace regardless of which agent runs there — **so this block fires identically
+for a Codex session's Bash tool calls**, exactly like the destructive-read redirect
+above. This is a **REPLACE**, not a parallel option: anti-hall's shared mesh store is now
+the SOLE agent-initiated messaging transport for DevSwarm coordination on the Claude
+side — native per-worktree messaging is superseded. Own skip name `devswarm-send-guard`
+(independent of `devswarm-read-guard`), honors `DISABLE_ANTIHALL_DEVSWARM=1`. The block's
+reason redirects to the mesh CLI: `node scripts/devswarm.js send --to-primary --message
+"<text>"` (or `--to <meshId>`) / `node scripts/devswarm.js heartbeat <id> --summary
+"<text>"`.
+
+**What does NOT carry over to Codex:** unlike the guard-block itself, the PROACTIVE
+per-turn reminder that keeps the mesh top-of-mind for a Claude session (injected by
+`devswarm-child-role.js`/`devswarm-child-turn.js`/`devswarm-parent-inbox.js`) is
+Claude-only — none of those three hooks is registered in `codex/hooks/hooks.json` (see
+"Always-listening reception" below, unchanged by v0.58). A Codex agent inside an active
+DevSwarm workspace is therefore mechanically PREVENTED from sending a native message, but
+only learns about the mesh CLI redirect REACTIVELY, at the moment it attempts (and gets
+blocked on) a native send — never proactively. Full detail: `docs/KB-devswarm-hivecontrol.md`
+§8.5's v0.58 bullet and §8.7's "v0.58 mesh-only messaging" note.
 
 ## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
 
@@ -104,16 +133,23 @@ Two v0.56.0 additions, split by what's Claude-only vs. what any agent can invoke
   (`ANTIHALL_DEVSWARM_CHILD_GATE_STRICT`, default ON) that additionally checks a bounded,
   non-destructive `hivecontrol workspace message-count` when the durable check alone shows
   nothing. No Codex-side equivalent hook exists in this plugin.
-- **Archive flow — agent-agnostic CLI, both roles.** anti-hall never archives mechanically.
-  PARENT role: after verifying merged+tested+deployed **per your own repo's policy** (anti-hall
-  does not check this), run `node scripts/devswarm.js archive-request <childId|childBranch>
-  [--reason TEXT] [--child-branch B]` — SEND-ONLY, posts a `[[ANTIHALL_ARCHIVE_REQUEST]]`
-  message via `hivecontrol workspace message-child`, never archives itself. CHILD role: on
+- **Archive flow — REVISED v0.58: now a direct store write, not a hivecontrol call.**
+  anti-hall never archives mechanically. PARENT role: after verifying
+  merged+tested+deployed **per your own repo's policy** (anti-hall does not check this),
+  run `node scripts/devswarm.js archive-request <childId> [--reason TEXT]`. Pre-v0.58 this
+  resolved a child branch and posted via `hivecontrol workspace message-child` — as of
+  v0.58 it instead appends the `[[ANTIHALL_ARCHIVE_REQUEST]]`-marked message DIRECTLY into
+  `<childId>`'s own mesh store partition (zero `hivecontrol` calls; `--child-branch` is
+  gone). **Caveat — this now depends on the same repoKey mesh store the v0.57 mesh note
+  below still describes as not yet officially Codex-documented:** the script itself has no
+  agent affinity (plain Node, no Claude-specific API) and nothing stops a Codex session
+  from invoking it directly, but treat it with the same "not yet promoted for Codex"
+  posture as `send`/`roster`/`mesh read` below until that status changes. CHILD role: on
   seeing that marker in an unread message, confirm with YOUR user, then run
-  `node scripts/devswarm.js archive <id>`. Both verbs are the same agent-agnostic CLI as the
-  rest of `scripts/devswarm.js` — invokable from a Codex session directly. (The CHILD side's
-  automatic marker-detection/surfacing, above, is Claude-only; a Codex-side child would need
-  its own equivalent check, e.g. `inbox read <id>` and a manual scan for the marker string.)
+  `node scripts/devswarm.js archive <id>` (unaffected by v0.58, still agent-agnostic and
+  store-independent). (The CHILD side's automatic marker-detection/surfacing, above, is
+  Claude-only; a Codex-side child would need its own equivalent check, e.g. `inbox read
+  <id>` and a manual scan for the marker string.)
 
 ## #32 — retiring a competing native-queue consumer (applies to both agents)
 
@@ -128,19 +164,35 @@ identify → stop → verify recipe: `docs/KB-devswarm-hivecontrol.md` §8.7.2 (
 'hivecontrol.*monitor'` → kill the PID + remove its respawn config → re-run
 `node hooks/doctor.js`).
 
-## Codex mesh support: v0.57.1 (not yet shipped)
+## Codex mesh support: v0.57.1 (not yet shipped) — v0.58 adds a mechanical exception
 
 The Claude-side plugin shipped a **v0.57 mesh** substrate on `main` (unreleased,
 `plugin.json` still `0.56.0`, no `v0.57` tag yet): a shared per-project `repoKey` store
 (instead of per-worktree), new daemon-independent CLI verbs (`send`/`roster`/`mesh read`/
 `heartbeat --summary`), a ONE-per-project ingest daemon, and a #36-STRUCTURAL cross-project
-scoping fix. **None of this exists on the Codex/OMX port yet** — this SKILL.md and the
-`codex/hooks/hooks.json` registration are unchanged. Codex mesh support is planned for
-**v0.57.1** (owner decision O-D3, deliberately deferred out of v0.57 to ship the Claude-side
-work first). Until v0.57.1 ships, do not tell a Codex user `send`/`roster`/`mesh read` exist
-or that the per-project daemon covers a Codex-run workspace — the CLI reference below is
-still the pre-mesh, per-worktree-store surface. Full detail:
-`docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh follow-up" note.
+scoping fix. **None of this is officially documented/promoted for the Codex/OMX port
+yet** — this SKILL.md's CLI reference below still omits `send`/`roster`/`mesh read` and the
+per-project daemon is not described as covering a Codex-run workspace. Codex mesh support
+as a DOCUMENTED, promoted capability is planned for **v0.57.1** (owner decision O-D3,
+deliberately deferred out of v0.57 to ship the Claude-side work first).
+
+**v0.58 "mesh-only messaging" adds new verbs on the SAME mesh store** (`send --to-primary`,
+`reconcile`, `spawn`, `merge`, and a REVISED `archive-request` that now writes the store
+directly instead of calling hivecontrol) — same documentation-status caveat as the v0.57
+verbs above: technically callable by a Codex session (the script has no agent affinity),
+but not yet promoted here. **The one exception — mechanical, not a documentation
+choice:** v0.58's `command-guard.js` native-SEND block (`message-child`/`message-parent`
+guard-blocked) is NOT gated by this Codex-mesh-support status at all — it fires for a
+Codex session today, unconditionally, because `command-guard.js` is the single shared hook
+file both platforms register (see the section above). A Codex agent in an active DevSwarm
+workspace is mechanically blocked from a native send RIGHT NOW, independent of whether the
+mesh CLI itself is "officially" Codex-supported yet — it just isn't told to use the mesh
+CLI proactively (that reminder is a Claude-only hook, per the section above). Until
+v0.57.1 formally ships, do not tell a Codex user `send`/`roster`/`mesh read`/`reconcile`/
+`spawn`/`merge` are RECOMMENDED for their workflow, and do not claim the per-project daemon
+covers a Codex-run workspace — but do NOT claim the native messaging path still works for
+them either; it does not. Full detail: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh
+follow-up" and "v0.58 mesh-only messaging" notes.
 
 ## CLI reference — `scripts/devswarm.js`
 
@@ -152,11 +204,18 @@ Subcommands: `register`/`ensure` (write a workspace descriptor), `register-prima
 `heartbeat`, `inbox pull`/`read`/`count`/`ack` (child-side durable-inbox cursor
 primitives), `inbox messages`/`read-primary` (Primary/store non-destructive read — no
 descriptor needed), `workspaces list`, `gate --set/--clear`, `nudge`, `archive`,
-`archive-request` (PARENT-side, send-only — see above), `archive-ignore`/
-`archive-unignore`, `migrate` (fold legacy on-disk state into the store; env
-`ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` marks an imported backlog as already-read — see
-`scripts/migrate-state.js --mark-read`, the separate migration script, for the CLI-flag
-form).
+`archive-request` (PARENT-side, REVISED v0.58 to a direct store write — see above),
+`archive-ignore`/`archive-unignore`, `migrate` (fold legacy on-disk state into the store;
+env `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` marks an imported backlog as already-read —
+see `scripts/migrate-state.js --mark-read`, the separate migration script, for the
+CLI-flag form).
+
+**v0.58 mesh verbs — same "not yet promoted for Codex" status as `send`/`roster`/`mesh
+read` above (see "Codex mesh support" section).** `send --to-primary --message TEXT`,
+`reconcile` (one-shot drain of every registered worktree's inbox), `spawn <branch> [...]`
+(thin wrap of `hivecontrol workspace create`), `merge [...]` (thin wrap of `check-merge` +
+`merge-into-source`, then broadcasts). All plain Node, invokable identically from either
+agent — but not yet documented as a recommended Codex workflow.
 
 **Ack-ownership guard (v0.56.0).** `inbox messages --ack` / `inbox read-primary` refuse
 (`ok:false`, cursor untouched) unless the caller's own identity matches `<id>` — identity

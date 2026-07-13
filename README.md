@@ -101,7 +101,7 @@ argued with.
 |------|-------|-----------------|
 | `git-guard` | PreToolUse/Bash | Blocks AI self-credit trailers (in `git commit` **and** in `gh pr/issue/release` `--body`/`--title`) and `--force` pushes (quote-aware, alias-resolving, won't false-block legit pushes); also unwraps `bash -c`/`sh -c`/`zsh -c`/`dash -c`/`ksh -c`/`ash -c` shell wrappers so neither block can be smuggled past it that way |
 | `api-guard` | PreToolUse/Write+Edit+MultiEdit | **The mechanical answer to API hallucination.** Resolves `module.attribute` references in the code-to-be-written against the *installed* `python3`/`node` and blocks the write when a real stdlib/builtin module is missing the attribute (a fabrication). Default scope is **stdlib/builtins** (import-safe). **100% in-scope catch, 0 false positives** on a committed, reproducible bench (`node eval/api-guard-bench.js`). Opt-in `ANTIHALL_API_GUARD_THIRDPARTY=1` also verifies installed **3rd-party** packages (off by default — verifying a package means importing it, which runs its code at edit time). A prompt can be ignored; a blocked Write cannot. Fail-open on any uncertainty; never probes local/relative modules; skip-hatch supported |
-| `command-guard` | PreToolUse/Bash | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload (`agent_id`), not env — works correctly under cmux and other wrappers. Per-segment (quote-aware split on `; && \|\| \|`), so `cd app && npm test` is not a bypass. Under a DevSwarm-active session it also redirects destructive native inbox reads (all contexts, own skip `devswarm-read-guard`): `hivecontrol workspace monitor` AND `read-messages` both block unconditionally (no evidence check — a raw `read-messages` desyncs the durable cursor regardless of whether a durable inbox exists); also blocks a raw shell read (`cat`/`head`/`grep`/…) of the durable inbox/store files, redirecting to `devswarm.js inbox pull/read/messages`; quoted DATA mentions are not false-positives |
+| `command-guard` | PreToolUse/Bash | Keeps the coordinator clean — blocks heavy commands inline, pushes them to subagents. Subagent-aware via payload (`agent_id`), not env — works correctly under cmux and other wrappers. Per-segment (quote-aware split on `; && \|\| \|`), so `cd app && npm test` is not a bypass. Under a DevSwarm-active session it also redirects destructive native inbox reads (all contexts, own skip `devswarm-read-guard`): `hivecontrol workspace monitor` AND `read-messages` both block unconditionally (no evidence check — a raw `read-messages` desyncs the durable cursor regardless of whether a durable inbox exists); also blocks a raw shell read (`cat`/`head`/`grep`/…) of the durable inbox/store files, redirecting to `devswarm.js inbox pull/read/messages`; quoted DATA mentions are not false-positives. **v0.58 mesh-only messaging:** a separate branch (own skip `devswarm-send-guard`) also unconditionally blocks the native SEND subcommands `hivecontrol workspace message-child`/`message-parent` (all contexts), redirecting to `devswarm.js send`/`heartbeat` — lifecycle verbs (`create`/`list`/`check-merge`/`merge`) and `message-count` stay allowed; fires on Codex too (shared file) |
 | `edit-guard` | PreToolUse/Write+Edit+MultiEdit+NotebookEdit | Blocks a COORDINATOR from editing files directly — requires delegating the edit to a subagent (always allowed; DevSwarm-aware block wording). Root-anchored allowlist (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, `.claude/**`, `.omc/**`, `.anti-hall/**`, root `PLAN.md`/`STATE.json`), extensible via `ANTIHALL_EDIT_GUARD_ALLOW`. Skip-guard hatch: `edit-guard`. Shares coordinator/subagent detection with `command-guard` via `coordinator-detect.js`. Fail-open |
 | `model-routing-guard` | PreToolUse/Agent+Task | **Anti-waste routing.** Classifies spawn descriptions by keyword signals (mechanical vs complex) and nudges toward the cheapest model that fits the task shape. Emits an `additionalContext` advisory when an explicit flagship model (`opus`/`fable`) is paired with a purely mechanical task (fetch, grep, build, deploy, etc.). **Strict mode is now the default (v0.35.0+):** omitted-model mechanical spawns are blocked unconditionally — an omitted model inherits the orchestrator's, so on a flagship orchestrator this silently produces an all-flagship swarm. Set `ANTIHALL_MODEL_ROUTING=advisory` to opt out and revert to advisory-only for omitted-model spawns. Row-1 blocks (explicit flagship + mechanical) are downgraded to advisory when a debate role-word (`reviewer`/`auditor`/`critic`/`debate`/`deadly-loop`) appears in the spawn description — TRIO debate seats need flagship models. Fail-open on any error; never blocks unknown model tokens (forward-compat) |
 | `swarm-guard` | PreToolUse/Agent+Task | Anti-fork-bomb: caps spawn rate (20/60 s) and refuses new agents under **real** memory pressure — measures reclaimable memory correctly on macOS (`vm_stat` free+inactive+speculative, correct 16 KB page size on Apple Silicon) and Linux (`/proc/meminfo` MemAvailable), not the misleading `os.freemem()`; a blocked spawn also logs one line to `~/.anti-hall/swarm-trips.log` (observation only — doesn't feed the rate window) |
@@ -328,6 +328,26 @@ per-project one; and a #36-STRUCTURAL fix scopes `devswarm-parent-gate`/
 `devswarm-parent-inbox` to the caller's OWN project via `repoKey` (replacing a spoofable
 env-var filter). Full reference: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh
 follow-up" note.
+
+**v0.58 mesh-only messaging (unreleased, on `main`).** The mesh above is now the **sole**
+agent-initiated messaging transport for DevSwarm — a REPLACE, not an addition: native
+`hivecontrol workspace message-child`/`message-parent` are guard-blocked in all contexts
+(`command-guard.js`, shared file — fires for Codex too, though the proactive per-turn
+reminder to use the mesh instead stays Claude-only), redirecting to the CLI. New/changed
+verbs: `send --to-primary` (direct to the registered Primary, fail-closed if none),
+`reconcile` (one-shot drain of every registered worktree's inbox), `spawn`/`merge` (thin
+pass-through wraps of `hivecontrol workspace create`/`check-merge`+`merge-into-source`,
+then auto-register/broadcast), a `roster` fold of unregistered native children, and
+`archive-request` revised from a hivecontrol send to a direct store write (zero
+`hivecontrol` calls, `--child-branch` removed). Every DevSwarm role gets a per-turn
+COMMUNICATION OVERRIDE re-assertion (mesh-poll RESTING posture = the Tier-0 wake
+mechanism) — with an honest caveat carried straight from the design record: no external
+mechanism wakes a genuinely idle Claude Code session (`anthropics/claude-code#44380`), so
+a Tier-2 runner-wrap fallback is explicitly named as DEFERRED, not built. The liveness
+supervisor additionally escalates-to-parent on an urgent/high mesh unread (still never
+kills). The ingest daemon is unchanged; no MCP server was built (CLI-over-MCP stays the
+rationale). Full reference: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.58 mesh-only
+messaging" note.
 
 ---
 

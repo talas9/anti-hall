@@ -174,12 +174,12 @@ const DEFAULT_RECENT_CAP = 50; // O-D8 (broadcast retention) UNRESOLVED — sane
 // tag a parent's `scripts/devswarm.js archive-request <childId>` prefixes onto
 // a mesh-direct message so a receiving child (and, here, deriveSummary) can
 // recognize an archive request vs. ordinary chatter. This is the ONE canonical
-// copy for this file's own devswarm.js caller (which re-exports/reuses it via
-// `store.ARCHIVE_REQUEST_MARKER` rather than keeping a second local literal);
-// hooks/devswarm-child-turn.js (a different lane, HOOKS NEVER OPEN THE DB —
-// P1-B layering) keeps its OWN identical literal copy rather than requiring
-// this module — both sides MUST stay byte-identical, verified by dedicated
-// tests, since neither reads the other's copy at runtime.
+// copy: this file's own devswarm.js caller re-exports/reuses it via
+// `store.ARCHIVE_REQUEST_MARKER`, and hooks/devswarm-child-turn.js now IMPORTS
+// this exact constant (`require('../companion/lib/devswarm-store.js')`, for
+// the marker string only — it never opens the DB, so P1-B's "HOOKS NEVER OPEN
+// THE DB" layering still holds) rather than keeping a second local literal —
+// a single source of truth, no byte-identical-copy drift risk.
 const ARCHIVE_REQUEST_MARKER = '[[ANTIHALL_ARCHIVE_REQUEST]]';
 
 // ensureMessagesMeshColumns(db) — additive migration for a `messages` table that
@@ -933,7 +933,13 @@ function maxUrgencyOf(rows) {
 // workspace's OWN broadcast_cursors join point — heartbeats EXCLUDED per D22, else
 // it grows monotonically forever since every peer heartbeats every turn),
 // `urgencyMax` (highest urgency among this workspace's PENDING direct rows, from
-// the urgency column only), `working_on` (this workspace's latest heartbeat
+// the urgency column only), `broadcastUrgencyMax` (v0.58 P1 fix — the SAME
+// max-urgency computation as `urgencyMax`, but over this workspace's PENDING
+// NON-heartbeat broadcast rows instead of its direct rows; heartbeats excluded
+// for the same D22 reason as `broadcastUnread` — a heartbeat is a normal status
+// ping, never urgent. Without this, an urgent/high broadcast sitting unread for
+// a stale child could never force a supervisor escalation, since the escalation
+// path only ever consulted direct-row urgency), `working_on` (this workspace's latest heartbeat
 // summary — matched by `sender === d.id`; a caller supplies its own registered id
 // as `from` when heartbeating). Top-level `recent[]` = the last `recentCap`
 // (O-D8 UNRESOLVED broadcast-retention cap; default 50, overridable) broadcast
@@ -984,9 +990,13 @@ function deriveSummary(store, opts) {
     );
 
     const bcCursor = typeof store.broadcastCursorValue === 'function' ? store.broadcastCursorValue(d.id) : 0;
-    const broadcastUnread = broadcastNonHeartbeat.filter(
+    const unreadBroadcastRows = broadcastNonHeartbeat.filter(
       (r) => Number.isFinite(r.storeSeq) && r.storeSeq > bcCursor
-    ).length;
+    );
+    const broadcastUnread = unreadBroadcastRows.length;
+    // broadcastUrgencyMax (v0.58 P1 fix) — reuses maxUrgencyOf, same helper
+    // urgencyMax uses, just scoped to this workspace's unread broadcast rows.
+    const broadcastUrgencyMax = maxUrgencyOf(unreadBroadcastRows);
 
     let working_on = null;
     for (const r of broadcastAll) {
@@ -1004,6 +1014,7 @@ function deriveSummary(store, opts) {
       directUnread: unread,
       broadcastUnread,
       urgencyMax,
+      broadcastUrgencyMax,
       working_on,
       gates,
       archive_ready,

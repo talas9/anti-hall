@@ -40,12 +40,17 @@ const {
 } = require('./lib/liveness.js');
 const { pokeOrEscalate, notifyParentEscalation, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
 // devswarm-repokey.js / devswarm-store.js are required LAZILY (inside
-// readMeshUrgency, not at module top level) so a corrupt/missing dependency
-// fails OPEN at call time (readMeshUrgency's own try/catch -> null, no
-// escalation) instead of throwing out of this module's top-level require —
-// this module is itself required at the TOP LEVEL by hooks/devswarm-parent-gate.js
-// (readDescriptors), so an unconditional require here would crash that hook's
-// module load entirely on a corrupt dependency (D27 fail-open contract).
+// readMeshUrgency, not at module top level). Only the devswarm-repokey.js
+// lazy-require is load-bearing: repokey is NOT otherwise loaded anywhere in
+// this module's top-level require chain, so a corrupt/missing repokey must
+// fail OPEN at call time (readMeshUrgency's own try/catch -> null, no
+// escalation) rather than crash this module's top-level require — this
+// module is itself required at the TOP LEVEL by hooks/devswarm-parent-gate.js
+// (readDescriptors). devswarm-store.js, by contrast, is ALREADY loaded by the
+// time this module finishes loading — recovery.js (required above) top-level-
+// requires devswarm-store.js and predates v0.58, so the store rides in via
+// parent-gate -> supervisor -> recovery -> store regardless. Lazy-requiring it
+// here too is harmless-but-consistent, not load-bearing.
 
 const SWEEP_LOCK_STALE_MS = 5 * 60 * 1000; // a sweep should never run this long; steal a lock older than this
 
@@ -101,8 +106,8 @@ function workspacesDir(home) {
 // NOT force an escalate for them.
 const URGENT_TIERS = new Set(['high', 'urgent']);
 
-// readMeshUrgency(descriptor, home, deps) -> {urgencyMax, directUnread,
-// broadcastUnread} | null. Resolves THIS descriptor's PROJECT repoKey the SAME
+// readMeshUrgency(descriptor, home, deps) -> {urgencyMax, broadcastUrgencyMax,
+// directUnread, broadcastUnread} | null. Resolves THIS descriptor's PROJECT repoKey the SAME
 // way the codebase already does (repoKeyForWorktree — never re-hashed here), then
 // reads that project's mesh-store projection `summaries/<repoKey>.json`
 // (readSummaryForHash — the EXACT file the hooks read; see
@@ -126,6 +131,14 @@ function readMeshUrgency(descriptor, home, deps) {
     if (!w) return null;
     return {
       urgencyMax: w.urgencyMax != null ? String(w.urgencyMax) : null,
+      // broadcastUrgencyMax (v0.58 P1 fix) — deriveSummary's max urgency among
+      // this workspace's UNREAD non-heartbeat BROADCAST rows. Surfaced
+      // separately from urgencyMax (which is direct-only) so isUrgentMesh can
+      // treat an urgent/high broadcast as its own escalation trigger — a
+      // broadcast previously carried no urgency signal at all here, so a
+      // stale child with only an unread urgent broadcast (no direct message)
+      // could never wake the supervisor.
+      broadcastUrgencyMax: w.broadcastUrgencyMax != null ? String(w.broadcastUrgencyMax) : null,
       directUnread: Number.isFinite(w.directUnread) ? w.directUnread : 0,
       broadcastUnread: Number.isFinite(w.broadcastUnread) ? w.broadcastUnread : 0,
     };
@@ -134,9 +147,13 @@ function readMeshUrgency(descriptor, home, deps) {
   }
 }
 
-// isUrgentMesh(urgency) -> bool. `urgency` is readMeshUrgency's return (or null).
+// isUrgentMesh(urgency) -> bool. `urgency` is readMeshUrgency's return (or
+// null). True when EITHER the direct-row urgencyMax OR the broadcast-row
+// broadcastUrgencyMax is high/urgent (v0.58 P1 fix — a broadcast used to
+// carry no urgency signal here at all, so an urgent/high broadcast sitting
+// unread for a stale child could never force an escalation).
 function isUrgentMesh(urgency) {
-  return !!(urgency && URGENT_TIERS.has(urgency.urgencyMax));
+  return !!(urgency && (URGENT_TIERS.has(urgency.urgencyMax) || URGENT_TIERS.has(urgency.broadcastUrgencyMax)));
 }
 
 // readDescriptors(home, fsi) -> [{id, worktreePath, inboxPath, cursorPath, sessionId}].

@@ -189,6 +189,56 @@ for (const B of backends) {
     } finally { s.close(); rm(home); }
   });
 
+  // ---------------------------------------------------------------------
+  // broadcastUrgencyMax (v0.58 P1 fix) — the direct-only urgencyMax above
+  // carries NO signal for an urgent broadcast; a stale child with only an
+  // unread urgent broadcast (no direct message at all) could never wake the
+  // supervisor. broadcastUrgencyMax closes that gap by reusing maxUrgencyOf
+  // over unread NON-heartbeat broadcast rows, mirroring broadcastUnread's own
+  // heartbeat exclusion (D22).
+  // ---------------------------------------------------------------------
+  test(`[${B.name}] broadcastUrgencyMax reflects the highest urgency among a workspace's UNREAD non-heartbeat broadcasts`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w2'));
+      for (const [msg, urgency] of [['a', 'low'], ['b', 'normal'], ['c', 'high']]) {
+        const f = { from: 'w1', to: null, type: 'broadcast', message: msg, timestamp: 1, urgency };
+        store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      }
+      let sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces.w2.broadcastUrgencyMax, 'high');
+      assert.equal(sum.workspaces.w2.urgencyMax, null, 'no PENDING DIRECTS -> urgencyMax stays null even though broadcasts are urgent');
+
+      // w2 ACKs all three broadcasts (D23) -> no pending unread broadcasts -> null.
+      s.advanceBroadcastCursor('w2');
+      sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces.w2.broadcastUnread, 0);
+      assert.equal(sum.workspaces.w2.broadcastUrgencyMax, null, 'no pending unread broadcasts -> broadcastUrgencyMax is null, not a stale value');
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] broadcastUrgencyMax EXCLUDES heartbeats — an urgent heartbeat never counts, matching broadcastUnread's D22 exclusion`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w2'));
+      // An urgent HEARTBEAT (mtype='broadcast' + is_heartbeat=1) -> must be excluded.
+      const hb = { from: 'w1', to: null, type: 'broadcast', message: 'still working', timestamp: 1, urgency: 'urgent' };
+      store.appendMeshMessage(s, Object.assign({}, hb, { hash: store.meshMessageHash(hb), isHeartbeat: true }));
+      let sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces.w2.broadcastUnread, 0, 'a heartbeat never counts toward broadcastUnread');
+      assert.equal(sum.workspaces.w2.broadcastUrgencyMax, null, 'an urgent HEARTBEAT must never surface as broadcastUrgencyMax — it is a normal status ping, not an urgent signal');
+
+      // A genuine (non-heartbeat) normal-urgency broadcast now DOES count, but stays non-urgent.
+      const normal = { from: 'w1', to: null, type: 'broadcast', message: 'fyi', timestamp: 2, urgency: 'normal' };
+      store.appendMeshMessage(s, Object.assign({}, normal, { hash: store.meshMessageHash(normal) }));
+      sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces.w2.broadcastUnread, 1);
+      assert.equal(sum.workspaces.w2.broadcastUrgencyMax, 'normal');
+    } finally { s.close(); rm(home); }
+  });
+
   test(`[${B.name}] ALL SIX wire fields round-trip through appendMeshMessage -> store row -> deriveSummary projection`, () => {
     const home = tmpHome();
     const s = open(home);

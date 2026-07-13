@@ -10,6 +10,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const MOD = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js');
@@ -276,6 +277,51 @@ test('worktreeHash is a stable 8-hex fingerprint; label/unit/primaryWorkspaceId 
   assert.equal(m.unitForWorktree('/repo/a'), m.UNIT + '-' + a);
   assert.equal(m.cronMarkerForWorktree('/repo/a'), '# ' + m.UNIT + '-' + a);
   assert.equal(m.primaryWorkspaceId('/repo/a'), 'primary-' + a);
+});
+
+// ---------------------------------------------------------------------------
+// worktreeHash Windows parity (devswarm-send.test.js CI failure: "--to-primary
+// from the Primary's OWN main worktree is rejected as self-address, even when
+// unregistered" — Windows-only, all node versions). Root cause: `from`
+// (callerIdentity -> resolveWorktree's raw `--show-toplevel` output) and
+// `primaryMeshId` (send --to-primary -> resolveMainWorktree's
+// `dirname(--git-common-dir)`, itself already win32-canonicalized by
+// devswarm-repokey.js's gitCommonDir) fed worktreeHash two DIFFERENTLY-SPELLED
+// strings for the SAME physical main worktree. Plain `fs.realpathSync` (unlike
+// `.native()`) never corrects short-name/casing on Windows, so the two spellings
+// hashed differently and the self-address check (`primaryMeshId === from`)
+// missed, falling through to the unregistered-Primary branch. Fix: worktreeHash
+// now applies the SAME `realpathSync.native()` + `winCanonicalizeCommonDir()`
+// treatment gitCommonDir already uses, gated on win32 and exercised here via an
+// injectable `io` (mirrors devswarm-repokey.test.js's own win32 injection
+// tests) so the mechanism is provable from any host OS.
+// ---------------------------------------------------------------------------
+
+test('worktreeHash: on win32 (forced via io.platform), two differently-spelled realpathSync.native() outputs for the SAME physical directory (extended-length-prefixed backslash form vs plain-with-trailing-slash form) collapse to the IDENTICAL hash via winCanonicalizeCommonDir — the mechanism that fixes the --to-primary self-address CI gap', () => {
+  const fsA = {
+    realpathSync: Object.assign(
+      () => { throw new Error('worktreeHash must prefer realpathSync.native on win32'); },
+      { native: () => '\\\\?\\C:\\Repos\\Alpha' },
+    ),
+  };
+  const fsB = {
+    realpathSync: Object.assign(
+      () => { throw new Error('worktreeHash must prefer realpathSync.native on win32'); },
+      { native: () => 'C:\\Repos\\Alpha\\' },
+    ),
+  };
+  const hashA = m.worktreeHash('C:\\Users\\RUNNER~1\\repo', { io: { fs: fsA, platform: 'win32' } });
+  const hashB = m.worktreeHash('C:/repos/alpha/', { io: { fs: fsB, platform: 'win32' } });
+  assert.match(hashA, /^[0-9a-f]{8}$/);
+  assert.equal(hashA, hashB, 'both spellings of the same real directory must hash identically on win32');
+});
+
+test('worktreeHash: POSIX (forced via io.platform) is left unmodified — plain realpathSync used, no win32 canonicalization applied, matching production behavior on darwin/linux CI', () => {
+  const raw = '/Repos/Alpha';
+  const fsDouble = { realpathSync: (p) => (p === 'whatever' ? raw : path.resolve(p)) };
+  const hash = m.worktreeHash('whatever', { io: { fs: fsDouble, platform: 'linux' } });
+  const expected = crypto.createHash('sha256').update(raw).digest('hex').slice(0, 8);
+  assert.equal(hash, expected);
 });
 
 test('buildPlist embeds the PER-WORKTREE label so a second repo never overwrites the first', () => {

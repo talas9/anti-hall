@@ -179,14 +179,50 @@ function resolveWorktree(cwd) {
 }
 
 // ----- per-worktree identity (multi-repo, additive installs) -----
-// worktreeHash(wt) — an 8-hex fingerprint of the worktree's REAL (symlink-resolved)
-// path. The daemon (devswarm-ingest.js) MUST compute the identical hash from its
-// resolved worktree so their per-worktree lock/label/unit paths agree, so both sides
-// canonicalize via realpathSync first. Fail-open: if realpath can't stat the path
-// (e.g. it doesn't exist yet), fall back to path.resolve so a hash is still produced.
-function worktreeHash(wt) {
+// worktreeHash(wt, opts) — an 8-hex fingerprint of the worktree's REAL
+// (symlink-resolved) path. The daemon (devswarm-ingest.js) MUST compute the
+// identical hash from its resolved worktree so their per-worktree lock/label/
+// unit paths agree, so both sides canonicalize via realpathSync first.
+// Fail-open: if realpath can't stat the path (e.g. it doesn't exist yet),
+// fall back to path.resolve so a hash is still produced.
+//
+// WINDOWS PARITY (CI run — devswarm-send.test.js "to-primary ... self-address,
+// even when unregistered"): two DIFFERENT production call paths can hand this
+// function two DIFFERENT string spellings of the identical real directory —
+// `callerIdentity()` feeds it `git rev-parse --show-toplevel`'s raw output,
+// while `send --to-primary`'s `primaryMeshId` feeds it `resolveMainWorktree()`'s
+// `dirname(--git-common-dir)`. On POSIX both happen to collapse to the same
+// string via plain `fs.realpathSync`. On Windows they do NOT: GH Actions'
+// windows-latest exposes `%TEMP%` in 8.3 short-name form, and plain JS
+// `fs.realpathSync()` (unlike `.native()`) never queries the OS for the true
+// canonical casing/long-name (see devswarm-repokey.js's header comment for the
+// full mechanism — this is the SAME bug class run 29240821071 fixed for
+// `repoKeyForWorktree`). Fix: apply the SAME win32-only treatment here —
+// `realpathSync.native()` (expands short names, queries true casing) then
+// `winCanonicalizeCommonDir()` (strip `\\?\` prefix, forward slashes, drop
+// trailing separator, lowercase) — so two differently-spelled paths that
+// resolve to the same physical directory always hash identically, regardless
+// of which pipeline produced the input string. POSIX is untouched (isWin
+// gates every new line below). `opts.io` ({ fs, platform }) is injectable,
+// mirroring devswarm-repokey.js's own `gitCommonDir(worktree, {io})`, so this
+// win32 path is exercisable/testable from any host OS.
+function worktreeHash(wt, opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  const platform = (o.io && o.io.platform) || process.platform;
+  const isWin = platform === 'win32';
   let p = String(wt || '');
-  try { p = fs.realpathSync(p); } catch (_) { p = path.resolve(p); }
+  try {
+    const nativeRealpath = isWin && F.realpathSync && typeof F.realpathSync.native === 'function'
+      ? F.realpathSync.native
+      : null;
+    p = nativeRealpath ? nativeRealpath(p) : F.realpathSync(p);
+  } catch (_) {
+    p = path.resolve(p);
+  }
+  if (isWin && repokey && typeof repokey.winCanonicalizeCommonDir === 'function') {
+    p = repokey.winCanonicalizeCommonDir(p);
+  }
   return crypto.createHash('sha256').update(p).digest('hex').slice(0, 8);
 }
 // PER-WORKTREE unit identity. Base LABEL/UNIT are kept as the shared PREFIX so a
