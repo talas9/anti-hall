@@ -10,7 +10,16 @@ const assert = require('node:assert');
 const path = require('node:path');
 
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
-const { sanitizeRepoName, gitCommonDir, repoKeyForWorktree } = repokey;
+const { sanitizeRepoName, gitCommonDir, repoKeyForWorktree, winCanonicalizeCommonDir } = repokey;
+
+// expectCommonDir(raw) -> the value gitCommonDir() should return for a given
+// path.resolve()'d string on THIS run's real platform: win32-canonicalized
+// (see winCanonicalizeCommonDir) when actually running on win32, unchanged on
+// POSIX. Lets tests assert against the real behavior instead of assuming the
+// pre-fix POSIX-only identity.
+function expectCommonDir(raw) {
+  return process.platform === 'win32' ? winCanonicalizeCommonDir(raw) : raw;
+}
 
 // makeRun(rawOut, {ok}) -> an injectable git runner that always returns the
 // given raw `--git-common-dir` stdout (or a failure when ok===false).
@@ -73,7 +82,7 @@ test('gitCommonDir: resolves a RELATIVE common-dir (main worktree, bare ".git") 
   const wt = '/Users/dev/anti-hall';
   const R = makeRun('.git');
   const cd = gitCommonDir(wt, { io: { run: R.run, fs: identityFs } });
-  assert.equal(cd, path.resolve(wt, '.git'));
+  assert.equal(cd, expectCommonDir(path.resolve(wt, '.git')));
   assert.equal(R.calls.length, 1);
   assert.deepEqual(R.calls[0].args, ['-C', wt, 'rev-parse', '--git-common-dir']);
 });
@@ -83,7 +92,7 @@ test('gitCommonDir: an ABSOLUTE common-dir (linked worktree) is used as-is (stil
   const rawOut = '/Users/dev/anti-hall/.git';
   const R = makeRun(rawOut);
   const cd = gitCommonDir(wt, { io: { run: R.run, fs: identityFs } });
-  assert.equal(cd, path.resolve(wt, rawOut));
+  assert.equal(cd, expectCommonDir(path.resolve(wt, rawOut)));
 });
 
 test('gitCommonDir: relative-form main worktree and absolute-form linked worktree collapse to the SAME string', () => {
@@ -92,6 +101,58 @@ test('gitCommonDir: relative-form main worktree and absolute-form linked worktre
   const cdMain = gitCommonDir('/Users/dev/anti-hall', { io: { run: mainRun.run, fs: identityFs } });
   const cdLinked = gitCommonDir('/Users/dev/.devswarm/repos/1/abc/anti-hall-wt', { io: { run: linkedRun.run, fs: identityFs } });
   assert.equal(cdMain, cdLinked, 'Phase-0 probe finding: both worktrees of one repo must resolve to the identical common-dir');
+});
+
+// ---- Windows P0 (CI run 29240821071): repoKey NOT stable across linked ----
+// ---- worktrees on real Windows — canonicalization regression coverage.  ----
+// These force the win32 code path via the injectable `io.platform`, so they
+// are deterministic and run on any host OS (no real Windows required) — the
+// realpathSync doubles below ignore their input and return fixed strings, so
+// they exercise ONLY winCanonicalizeCommonDir()/the native-realpath
+// preference, independent of the host's own native `path.resolve` behavior.
+
+test('winCanonicalizeCommonDir: strips \\\\?\\ and \\\\?\\UNC\\ prefixes, lowercases the drive, normalizes separators to "/", drops a trailing separator, lowercases the whole string', () => {
+  assert.equal(winCanonicalizeCommonDir('\\\\?\\C:\\Repos\\Alpha\\.git'), 'c:/repos/alpha/.git');
+  assert.equal(winCanonicalizeCommonDir('C:\\Repos\\Alpha\\.git\\'), 'c:/repos/alpha/.git');
+  assert.equal(winCanonicalizeCommonDir('c:/Repos/Alpha/.git'), 'c:/repos/alpha/.git');
+  assert.equal(winCanonicalizeCommonDir('\\\\?\\UNC\\server\\share\\Repos\\Alpha\\.git'), '//server/share/repos/alpha/.git');
+});
+
+test('gitCommonDir: win32 (forced via io.platform) collapses a \\\\?\\-prefixed uppercase-drive backslash form and a plain lowercase-drive forward-slash form of the SAME common-dir to the identical string', () => {
+  const prefixedUpperBackslash = { realpathSync: () => '\\\\?\\C:\\Repos\\Alpha\\.git' };
+  const plainLowerForwardSlash = { realpathSync: () => 'c:/repos/alpha/.git' };
+  const R = makeRun('.git');
+  const cdA = gitCommonDir('/whatever/a', { io: { run: R.run, fs: prefixedUpperBackslash, platform: 'win32' } });
+  const cdB = gitCommonDir('/whatever/b', { io: { run: R.run, fs: plainLowerForwardSlash, platform: 'win32' } });
+  assert.equal(cdA, cdB);
+  assert.equal(cdA, 'c:/repos/alpha/.git');
+});
+
+test('repoKeyForWorktree: win32 (forced via io.platform) — \\\\?\\-prefixed/uppercase-drive/backslash and plain/lowercase-drive/forward-slash forms of the SAME common-dir yield the IDENTICAL repoKey (Windows P0, CI run 29240821071)', () => {
+  const prefixedUpperBackslash = { realpathSync: () => '\\\\?\\C:\\Repos\\Alpha\\.git' };
+  const plainLowerForwardSlash = { realpathSync: () => 'c:/repos/alpha/.git' };
+  const keyA = repoKeyForWorktree('/whatever/a', { io: { run: makeRun('.git').run, fs: prefixedUpperBackslash, platform: 'win32' } });
+  const keyB = repoKeyForWorktree('/whatever/b', { io: { run: makeRun('.git').run, fs: plainLowerForwardSlash, platform: 'win32' } });
+  assert.equal(keyA, keyB, 'two linked worktrees of ONE repo must derive the SAME repoKey on Windows regardless of which realpath form each call path produced');
+  assert.match(keyA, /^alpha-[0-9a-f]{6}$/);
+});
+
+test('gitCommonDir: win32 (forced) prefers realpathSync.native() over the default realpathSync when both are present on the injected fs', () => {
+  const fsDouble = {
+    realpathSync: Object.assign(
+      () => { throw new Error('default realpathSync must not be called when .native is available on win32'); },
+      { native: () => '\\\\?\\C:\\Repos\\Alpha\\.git' }
+    ),
+  };
+  const R = makeRun('.git');
+  const cd = gitCommonDir('/whatever', { io: { run: R.run, fs: fsDouble, platform: 'win32' } });
+  assert.equal(cd, 'c:/repos/alpha/.git');
+});
+
+test('gitCommonDir: POSIX (forced via io.platform) is left case-sensitive and separator-unmodified — no win32 canonicalization applied', () => {
+  const R = makeRun('.git');
+  const cd = gitCommonDir('/Users/Dev/Anti-Hall', { io: { run: R.run, fs: identityFs, platform: 'linux' } });
+  assert.equal(cd, path.resolve('/Users/Dev/Anti-Hall', '.git'), 'POSIX path casing/separators must be preserved exactly, unlowered');
 });
 
 test('gitCommonDir: git failure (non-git cwd) returns null, never throws', () => {

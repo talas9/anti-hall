@@ -20,6 +20,30 @@
 // LINKED worktree; both forms must collapse to the identical string before
 // hashing, or the two worktrees of one project would derive different keys.
 //
+// WINDOWS P0 (CI run 29240821071): the above collapse is not enough on real
+// Windows. Two real problems compound: (1) `fs.realpathSync()` (the DEFAULT,
+// JS-implemented realpath Node ships) resolves actual symlinks but otherwise
+// PRESERVES whatever casing/short-name form its input string already had —
+// unlike `fs.realpathSync.native()` (libuv -> Win32 `GetFinalPathNameByHandleW`),
+// it never queries the OS for the on-disk canonical form. (2) GitHub Actions'
+// windows-latest runners expose `%TEMP%` in 8.3 SHORT-name form (documented:
+// `C:\Users\RUNNER~1\AppData\Local\Temp`, not `...\runneradmin\...`), which is
+// what `os.tmpdir()`/`fs.mkdtempSync()` build worktree paths from — while git-
+// for-Windows' own MSYS/Cygwin path-translation layer resolves an ABSOLUTE
+// `--git-common-dir` (the form a LINKED worktree reports) through its own
+// long-name-expanding logic. The Primary's own worktree path and the linked
+// worktree's reported common-dir can therefore reach `realpathSync()` as two
+// DIFFERENT strings for the identical physical directory (short-name vs
+// long-name, and/or differing casing) — and the default realpath doesn't
+// correct that, so they hash differently. Fix: on win32, prefer
+// `realpathSync.native()` (it DOES expand short names and query true on-disk
+// casing via `GetFinalPathNameByHandleW`), then canonicalize its output — strip
+// the `\\?\`/`\\?\UNC\` extended-length prefix `.native()` adds, normalize
+// separators to `/`, drop a trailing separator, and lowercase the whole string
+// (NTFS is case-insensitive, the cheap catch-all for any residual case
+// difference) — via `winCanonicalizeCommonDir()` below, BEFORE hashing. POSIX
+// is untouched: case-sensitive, no prefix, default `realpathSync()` as before.
+//
 // The readable-basename prefix satisfies the owner's "use the repo name, don't
 // scramble shit up"; the 6-hex realpath-hash suffix defeats basename collisions
 // (`~/a/app` vs `~/b/app`) and keeps the key filesystem/launchd-label/systemd-unit/
@@ -74,6 +98,27 @@ function defaultRun(spec) {
   }
 }
 
+// winCanonicalizeCommonDir(p) -> a STABLE, worktree-independent form of a
+// win32 realpath, so any worktree of one repo hashes identically regardless
+// of which call path (short-name vs long-name, `\\?\`-prefixed native
+// realpath vs not, differing separator/case) produced the string: strips a
+// leading `\\?\UNC\` or `\\?\` extended-length-path prefix, normalizes every
+// separator to `/`, drops a trailing separator (but keeps a bare drive root's
+// slash, e.g. `c:/`), and lowercases the whole string (NTFS is
+// case-insensitive). Exported so tests can compute matching expectations
+// without duplicating this logic.
+function winCanonicalizeCommonDir(p) {
+  let s = String(p == null ? '' : p);
+  if (s.slice(0, 8).toUpperCase() === '\\\\?\\UNC\\') {
+    s = '\\\\' + s.slice(8);
+  } else if (s.slice(0, 4) === '\\\\?\\') {
+    s = s.slice(4);
+  }
+  s = s.replace(/\\/g, '/');
+  if (s.length > 3 && s.endsWith('/')) s = s.slice(0, -1);
+  return s.toLowerCase();
+}
+
 // gitCommonDir(worktree, {io}) -> the absolute, realpath'd `--git-common-dir`
 // for `worktree`, or null on ANY failure (fail-open — a non-git cwd, a missing
 // git binary, or an unstat-able path must never throw).
@@ -81,6 +126,8 @@ function gitCommonDir(worktree, opts) {
   const o = opts || {};
   const run = (o.io && o.io.run) || defaultRun;
   const F = (o.io && o.io.fs) || fs;
+  const platform = (o.io && o.io.platform) || process.platform;
+  const isWin = platform === 'win32';
   const wt = worktree == null ? '' : String(worktree);
   if (!wt) return null;
   try {
@@ -92,8 +139,17 @@ function gitCommonDir(worktree, opts) {
     // ('.git', from the main worktree) and its absolute form (from a linked
     // worktree) to the identical string (Phase-0 probe finding).
     const resolved = path.resolve(wt, rawOut);
-    const real = F.realpathSync(resolved);
-    return real || null;
+    // On win32, prefer realpathSync.native() — it expands 8.3 short names
+    // (GH Actions' %TEMP% is short-name-shaped) and queries the OS for the
+    // true canonical casing, unlike the default JS realpath (see header
+    // comment). Injected test `fs` doubles rarely carry a `.native`, so this
+    // falls back to the plain injected/real realpathSync when absent.
+    const nativeRealpath = isWin && F.realpathSync && typeof F.realpathSync.native === 'function'
+      ? F.realpathSync.native
+      : null;
+    const real = nativeRealpath ? nativeRealpath(resolved) : F.realpathSync(resolved);
+    if (!real) return null;
+    return isWin ? winCanonicalizeCommonDir(real) : real;
   } catch (_) {
     return null;
   }
@@ -115,4 +171,4 @@ function repoKeyForWorktree(worktree, opts) {
   return `${base}-${suffix}`;
 }
 
-module.exports = { sanitizeRepoName, gitCommonDir, repoKeyForWorktree };
+module.exports = { sanitizeRepoName, gitCommonDir, repoKeyForWorktree, winCanonicalizeCommonDir };
