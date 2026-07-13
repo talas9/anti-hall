@@ -397,14 +397,21 @@ test('6 INGEST: replaying the same native batch inserts 0 the second time (dedup
     ]);
     const run = () => ({ ok: true, raw: batch });
 
+    // worktree: null (v0.57 mesh, D24) pins this daemon call to the LEGACY
+    // hash-based store selection (workspaceId-driven) — this test is about
+    // generic replay-dedupe mechanics, independent of the repoKey rekey
+    // (covered by its own dedicated mesh tests). Without this, the daemon would
+    // resolve a REAL repoKey from the test runner's own cwd (this repo) and
+    // write into store/<repoKey>/ instead of the store/<hashFromWorkspaceId('p')>/
+    // the read-back below targets.
     const first = ingest.runIngestLoop({
-      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, run, sleep: () => {},
+      home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 1, run, sleep: () => {},
     });
     assert.strictEqual(first.started, true);
     assert.strictEqual(first.stats.inserted, 2, 'first ingest inserts both messages');
 
     const second = ingest.runIngestLoop({
-      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, run, sleep: () => {},
+      home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 1, run, sleep: () => {},
     });
     assert.strictEqual(second.stats.inserted, 0, 'replay of the same batch inserts nothing');
     assert.strictEqual(second.stats.duplicate, 2, 'both counted as duplicates');
@@ -491,17 +498,26 @@ test('8 CLI: register/heartbeat/inbox count/workspaces list/nudge/archive emit w
     const cursor = path.join(home, 'cursor.json');
     fs.writeFileSync(inbox, 'x\ny\n');
 
+    // cwd: home (v0.57 mesh, D24) — `home` is a plain tmpdir, NOT a git repo, so
+    // this pins repoKey===null for every store-touching CLI call below,
+    // consistently across register/inbox/workspaces/archive — matching this
+    // test's own '/wt/w' FAKE --worktree flag (no real git repo involved).
+    // Without this, each subprocess would otherwise inherit the TEST RUNNER's
+    // OWN cwd (the real anti-hall repo) and resolve a REAL repoKey, splitting
+    // register's write and workspaces-list's read across two different stores.
+    const cwd = home;
+
     const reg = H.runCli(home, ['register', 'w', '--worktree', '/wt/w', '--session', 's',
-      '--inbox', inbox, '--cursor', cursor, '--nudge', 'poke', '--nudge', 'w']);
+      '--inbox', inbox, '--cursor', cursor, '--nudge', 'poke', '--nudge', 'w'], undefined, { cwd });
     assert.strictEqual(reg.status, 0);
     assert.deepStrictEqual({ ok: reg.json.ok, action: reg.json.action }, { ok: true, action: 'registered' });
 
-    const hb = H.runCli(home, ['heartbeat', 'w', '--progress', '50', '--phase', 'build']);
+    const hb = H.runCli(home, ['heartbeat', 'w', '--progress', '50', '--phase', 'build'], undefined, { cwd });
     assert.strictEqual(hb.status, 0);
     assert.strictEqual(hb.json.action, 'heartbeat');
     assert.strictEqual(hb.json.heartbeat.progress_pct, 50);
 
-    const count = H.runCli(home, ['inbox', 'count', 'w']);
+    const count = H.runCli(home, ['inbox', 'count', 'w'], undefined, { cwd });
     assert.strictEqual(count.status, 0);
     assert.strictEqual(count.json.action, 'count');
     assert.strictEqual(count.json.unread, 2);
@@ -509,19 +525,19 @@ test('8 CLI: register/heartbeat/inbox count/workspaces list/nudge/archive emit w
     // PER-PROJECT: target the 'w' workspace's own store explicitly (the CLI
     // subprocess's cwd is the test runner's cwd, not any worktree tied to 'w', so a
     // flagless `workspaces list` would resolve a different, unrelated project).
-    const list = H.runCli(home, ['workspaces', 'list', '--workspace', 'w']);
+    const list = H.runCli(home, ['workspaces', 'list', '--workspace', 'w'], undefined, { cwd });
     assert.strictEqual(list.status, 0);
     assert.strictEqual(list.json.action, 'workspaces');
     assert.strictEqual(list.json.count, 1);
     assert.strictEqual(list.json.workspaces[0].id, 'w');
 
     // nudge with no nudgeCommand-descriptor escalates; still ok:true, exit 0.
-    const nudge = H.runCli(home, ['nudge', 'w']);
+    const nudge = H.runCli(home, ['nudge', 'w'], undefined, { cwd });
     assert.strictEqual(nudge.status, 0);
     assert.strictEqual(nudge.json.action, 'nudge');
     assert.ok(['nudged', 'escalate'].includes(nudge.json.result.action));
 
-    const archive = H.runCli(home, ['archive', 'w']);
+    const archive = H.runCli(home, ['archive', 'w'], undefined, { cwd });
     assert.strictEqual(archive.status, 0);
     assert.strictEqual(archive.json.action, 'archive');
     assert.strictEqual(archive.json.descriptorArchived, true);
@@ -529,7 +545,7 @@ test('8 CLI: register/heartbeat/inbox count/workspaces list/nudge/archive emit w
     assert.strictEqual(fs.existsSync(H.descriptorPath(home, 'w')), false, 'descriptor moved out of the active set');
 
     // Error shape: inbox on an unregistered workspace -> ok:false + exit 2.
-    const bad = H.runCli(home, ['inbox', 'count', 'ghost']);
+    const bad = H.runCli(home, ['inbox', 'count', 'ghost'], undefined, { cwd });
     assert.strictEqual(bad.status, 2);
     assert.strictEqual(bad.json.ok, false);
   } finally { H.rm(home); }
@@ -546,8 +562,15 @@ const inboxPayload = () => ({ hook_event_name: 'UserPromptSubmit', session_id: '
 test('9 ARCHIVE-READY: all gates met -> parent-inbox recommends the user archive it (never auto-archives)', () => {
   const home = H.makeHome();
   try {
-    H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA']);
-    const g = H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed']);
+    // cwd: home (v0.57 mesh, D24) — a plain tmpdir, NOT a git repo, pins
+    // repoKey===null so register/gate write into the SAME legacy per-id hash
+    // store the parent-inbox hook still reads (the hook's OWN repoKey rekey is
+    // Phase 7/8, out of this phase's scope). Without this, the CLI subprocess
+    // would inherit the TEST RUNNER's real repo cwd and write into
+    // store/<repoKey>/, which the hook cannot see yet.
+    const cwd = home;
+    H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA'], undefined, { cwd });
+    const g = H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed'], undefined, { cwd });
     assert.ok(g.json && g.json.archive_ready === true, 'store derives archive_ready once all gates met');
 
     const r = testHook('devswarm-parent-inbox.js', inboxPayload(),
@@ -569,8 +592,10 @@ test('9 ARCHIVE-READY: all gates met -> parent-inbox recommends the user archive
 test('9 ARCHIVE-READY: reminder is COOLDOWN\'d (not repeated next turn) but PERSISTS once the cooldown elapses', () => {
   const home = H.makeHome();
   try {
-    H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA']);
-    H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed']);
+    // cwd: home — see the D24 comment in the previous test.
+    const cwd = home;
+    H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA'], undefined, { cwd });
+    H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed'], undefined, { cwd });
 
     // Turn 1: surfaced + cooldown recorded.
     const t1 = testHook('devswarm-parent-inbox.js', inboxPayload(),
@@ -599,10 +624,12 @@ test('9 ARCHIVE-READY: reminder is COOLDOWN\'d (not repeated next turn) but PERS
 test('9 ARCHIVE-READY: `archive-ignore` suppresses ONE workspace while a second still-ready one keeps being reminded', () => {
   const home = H.makeHome();
   try {
-    H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA']);
-    H.runCli(home, ['register', 'wsB', '--worktree', '/wt/wsB', '--session', 'sB']);
-    H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed']);
-    H.runCli(home, ['gate', 'wsB', '--set', 'done,merged,tests_passed']);
+    // cwd: home — see the D24 comment in the first test of this section.
+    const cwd = home;
+    H.runCli(home, ['register', 'wsA', '--worktree', '/wt/wsA', '--session', 'sA'], undefined, { cwd });
+    H.runCli(home, ['register', 'wsB', '--worktree', '/wt/wsB', '--session', 'sB'], undefined, { cwd });
+    H.runCli(home, ['gate', 'wsA', '--set', 'done,merged,tests_passed'], undefined, { cwd });
+    H.runCli(home, ['gate', 'wsB', '--set', 'done,merged,tests_passed'], undefined, { cwd });
 
     // Ignore wsA via the real CLI; ensure BOTH cooldowns are elapsed so the only
     // reason wsA is silent is the ignore mark (not a fresh cooldown).

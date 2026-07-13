@@ -86,7 +86,14 @@ test('1 RECEPTION ROUND-TRIP: stubbed ingest -> inbox messages -> read-primary -
 
     // Register the Primary descriptor for this worktree via the REAL CLI (creates
     // both the on-disk descriptor and the store registry row deriveSummary needs).
-    const reg = H.runCli(home, ['register-primary', '--worktree', worktree], JOURNAL_ENV);
+    // cwd: worktree (v0.57 mesh, D24) — `worktree` is deliberately NOT a real git
+    // repo (see mkWorktree's header comment), so this pins repoKey===null for
+    // every store-touching CLI call below, matching the in-process
+    // runIngestLoop call's own null repoKey (same fake `worktree`) — both sides
+    // then consistently fall back to the SAME pre-mesh per-id hash store.
+    // Without this, the subprocess would otherwise inherit the TEST RUNNER's
+    // OWN cwd (the real anti-hall repo) and resolve a DIFFERENT, real repoKey.
+    const reg = H.runCli(home, ['register-primary', '--worktree', worktree], JOURNAL_ENV, { cwd: worktree });
     assert.strictEqual(reg.status, 0, `register-primary ok; stdout=${reg.stdout}`);
     assert.strictEqual(reg.json.id, id, 'derived id matches primaryWorkspaceId(worktree)');
 
@@ -105,7 +112,8 @@ test('1 RECEPTION ROUND-TRIP: stubbed ingest -> inbox messages -> read-primary -
     assert.strictEqual(ing.stats.inserted, 1, 'the stubbed message was ingested into the store');
 
     // Primary reads it via the real CLI (non-destructive `inbox messages`).
-    const msgs = H.runCli(home, ['inbox', 'messages', id, '--json'], JOURNAL_ENV);
+    // cwd: worktree — see the register-primary call above (D24 repoKey parity).
+    const msgs = H.runCli(home, ['inbox', 'messages', id, '--json'], JOURNAL_ENV, { cwd: worktree });
     assert.strictEqual(msgs.status, 0);
     assert.strictEqual(msgs.json.action, 'messages');
     assert.strictEqual(msgs.json.count, 1);

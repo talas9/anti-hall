@@ -39,6 +39,11 @@ const { devswarmRoot } = require('./lib/liveness.js');
 // does NOT run it (main() is guarded by require.main===module) and introduces no
 // cycle (the installer never requires this file).
 const installIngest = require('./install-devswarm-ingest.js');
+// v0.57 mesh (PLAN-v0.57-mesh.md D1/D8/D9/D21): the shared per-project store key —
+// the daemon's lock/heartbeat naming AND the physical store it drains INTO are both
+// re-keyed to repoKey, while the SELF-REGISTERED workspaceId stays worktree-hash
+// based (D19 — liveness surfaces are never re-keyed).
+const repokey = require('./lib/devswarm-repokey.js');
 
 const INGEST_LOCK_STALE_MS = 15 * 60 * 1000; // a monitor consumer is long-lived; only a truly dead/old holder is stolen
 const DEFAULT_MONITOR_INTERVAL_SEC = 3;      // hivecontrol monitor default poll
@@ -55,14 +60,22 @@ const DEFAULT_RESTART_BACKOFF_MS = 2000;     // gap before re-spawning after a m
 // buffers until the next poll and ingestPayload is idempotent by hash.
 const DEFAULT_MONITOR_TIMEOUT_SEC = 30;
 
-// ingestLockPath(home, worktree) — PER-WORKTREE lock so a 2nd daemon for a DIFFERENT
-// repo does not collide on one global O_EXCL lock and refuse-and-exit. When a
-// worktree is given the lock is `locks/ingest-<hash>.lock`; with no worktree it falls
-// back to the legacy global `locks/ingest.lock` (keeps the direct acquireIngestLock
-// unit tests, which never resolve a worktree, on one shared path).
+// ingestLockPath(home, worktree) — PER-PROJECT lock (v0.57 mesh, D1/D9/Phase5): so
+// a 2nd daemon for a DIFFERENT project does not collide on one global O_EXCL lock
+// and refuse-and-exit, while every worktree of the SAME project (linked worktrees
+// share a git-common-dir) contends for the SAME lock — exactly the "ONE daemon per
+// project" invariant. When `worktree` resolves to a real git repo the lock is
+// `locks/ingest-project-<repoKey>.lock`; when repoKey cannot be derived (a fake/
+// non-existent worktree path — the direct unit-test posture) it falls BACK to the
+// legacy per-worktree shape `locks/ingest-<hash>.lock` (fail-open, never throws);
+// with no worktree at all it falls back to the legacy global `locks/ingest.lock`.
 function ingestLockPath(home, worktree) {
   const dir = path.join(devswarmRoot(home), 'locks');
   if (worktree) {
+    try {
+      const repoKey = repokey.repoKeyForWorktree(worktree);
+      if (repoKey) return path.join(dir, 'ingest-project-' + repoKey + '.lock');
+    } catch (_) {}
     try { return path.join(dir, 'ingest-' + installIngest.worktreeHash(worktree) + '.lock'); } catch (_) {}
   }
   return path.join(dir, 'ingest.lock');
@@ -318,7 +331,13 @@ function runIngestLoop(opts) {
     || (worktree ? installIngest.primaryWorkspaceId(worktree) : null)
     || (o.env && o.env.DEVSWARM_BUILDER_ID)
     || 'primary';
-  const hbHash = worktree ? safeWorktreeHash(worktree) : workspaceId;
+  // v0.57 mesh (D1/D8/D21): repoKey is the SHARED-STORE key this daemon drains
+  // into — DISTINCT from `workspaceId` above (the self-registered id, worktree-
+  // hash based, D19 — never re-keyed). null (repoKey unresolvable — a fake/
+  // non-git worktree, the direct unit-test posture) is fail-open: every repoKey
+  // consumer below falls back to its EXISTING pre-mesh behavior.
+  const repoKey = worktree ? safeRepoKey(worktree) : null;
+  const hbHash = repoKey || (worktree ? safeWorktreeHash(worktree) : workspaceId);
   const run = o.run || defaultMonitorRun;
   const sleep = o.sleep || sleepSync;
   const maxIterations = Number.isFinite(o.maxIterations) ? o.maxIterations : Infinity;
@@ -334,16 +353,51 @@ function runIngestLoop(opts) {
     return { ok: false, started: false, reason };
   }
 
+  // REAP-BEFORE-DRAIN PROBE (D9/D21, Phase5 step 3). Before this daemon's FIRST
+  // `monitor`, check EVERY legacy per-worktree lock file belonging to this repo
+  // (enumerated via `git worktree list --porcelain` from the baked Primary
+  // worktree — Gap-2: worktreeHash is one-way and cannot be inverted, so this is
+  // the ONLY correct way to recover "which legacy units belong to this repo").
+  // While ANY legacy holder is still ALIVE, this daemon backs off entirely — it
+  // NEVER opens the store or calls `monitor` — because two concurrent `monitor`
+  // consumers on the SAME Primary native queue would split it between them
+  // (silent loss, the exact single-consumer break the invariant forbids). The
+  // install path (install-devswarm-ingest.js) is expected to stop the legacy
+  // unit BEFORE loading this daemon; this probe is the daemon's OWN independent
+  // verification that the hand-off actually completed (its unload is NOT trusted
+  // to have succeeded — launchctl/systemctl errors are ignored at install time).
+  // Skipped entirely when repoKey is unresolvable (fail-open — nothing to probe
+  // against; matches the direct unit-test posture with a fake worktree).
+  if (repoKey && !(o.io && o.io.skipLegacyProbe)) {
+    const probe = probeLegacyHolders(home, worktree, o.io);
+    if (probe.blocked) {
+      const reason = 'legacy per-worktree ingest holder(s) still alive for this repo — backing off before first drain (reap-before-drain, D9): '
+        + probe.liveHolders.map((h) => h.worktree + ' (pid ' + h.pid + ')').join(', ');
+      appendLog(home, 'ingest daemon refused to start: ' + reason, logFs);
+      try { release(); } catch (_) {}
+      return { ok: false, started: false, reason, liveHolders: probe.liveHolders };
+    }
+  }
+
   const openStore = (o.io && o.io.openStore) || store.openStore;
   const stats = { iterations: 0, inserted: 0, duplicate: 0, errors: 0 };
   let s = null;
   try {
-    // PER-PROJECT store: this daemon opens ITS OWN worktree's store, keyed by the
-    // workspaceId it ingests under (primary-<worktreeHash>) -> store/<worktreeHash>/.
+    // SHARED PER-PROJECT store (D1/D8/D21): this daemon opens the PROJECT's
+    // repoKey-keyed store (store/<repoKey>/) when repoKey resolves — the same
+    // store `mesh send`/`roster`/`register` target — so a native-drained message
+    // lands where every mesh consumer reads it. `workspaceId` (self-registration
+    // id, worktree-hash based, D19) is UNCHANGED — it selects the PARTITION
+    // inside that shared store, not which physical store file is opened.
+    // repoKey===null (unresolvable) falls back to the PRE-MESH behavior
+    // (hash derived from workspaceId) — fail-open, never a hard error.
     // Opening the store is part of STARTUP (not just the loop), so it lives inside
     // this try — a startup failure here (bad backend, unwritable store dir) is
     // logged the same way a mid-loop failure is, instead of exiting silently.
-    s = openStore({ home, workspaceId, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
+    s = openStore({
+      home, workspaceId, hash: repoKey || undefined,
+      backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs),
+    });
     appendLog(home, 'ingest daemon started, worktree=' + (worktree || '(unresolved)') + ', workspaceId=' + workspaceId, logFs);
 
     // SELF-REGISTRATION (#34 fix): register THIS daemon's own primary/worktree id in
@@ -463,6 +517,92 @@ function resolveDaemonWorktree(cwd) {
 function safeWorktreeHash(wt) {
   try { return installIngest.worktreeHash(wt); } catch (_) { return null; }
 }
+// safeRepoKey(wt) — never throws (fail-open; a fake/non-existent worktree path —
+// the direct unit-test posture — yields null, never an error).
+function safeRepoKey(wt) {
+  try { return repokey.repoKeyForWorktree(wt); } catch (_) { return null; }
+}
+
+// legacyIngestLockPath(home, worktree) — the OLD per-worktree lock shape
+// (locks/ingest-<worktreeHash>.lock), used ONLY by the reap-before-drain PROBE
+// below to check whether a legacy per-worktree daemon for a GIVEN worktree of
+// this repo is still alive. Deliberately distinct from ingestLockPath (which now
+// prefers the repoKey shape) — the probe always needs the PRE-MESH name.
+function legacyIngestLockPath(home, worktree) {
+  return path.join(devswarmRoot(home), 'locks', 'ingest-' + installIngest.worktreeHash(worktree) + '.lock');
+}
+
+// readLockHolder(lockPath, F) -> {pid, ts} | null. A tolerant, READ-ONLY
+// inspection of a lock file (never steals/removes it, unlike acquireIngestLock's
+// own steal-rule). A genuinely MISSING file (ENOENT / unreadable) reads as "no
+// holder" — fail-open, nothing was ever locked. An EXISTING but UNPARSEABLE file
+// (including the torn-write window between a live holder's openSync('wx') and
+// writeSync()) does NOT read as absent — it falls back to the file's own MTIME
+// (`ts`, `pid:null`), mirroring acquireIngestLock's own torn-read guard
+// (:150-155), so probeLegacyHolders below can tell a FRESH unparseable lock
+// (probably a live holder mid-write) from a STALE one (probably an abandoned
+// lock from a process that died before ever completing its write).
+function readLockHolder(lockPath, F) {
+  let raw;
+  try { raw = F.readFileSync(lockPath, 'utf8'); } catch (_) { return null; } // ENOENT etc — genuinely no lock
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && Number.isFinite(parsed.pid)) {
+      return { pid: parsed.pid, ts: Number.isFinite(parsed.ts) ? parsed.ts : null };
+    }
+  } catch (_) {}
+  let ts = null;
+  try { ts = F.statSync(lockPath).mtimeMs; } catch (_) {}
+  return { pid: null, ts };
+}
+
+// probeLegacyHolders(home, mainWorktree, io) -> { blocked, liveHolders } — D9
+// REAP-BEFORE-DRAIN PROBE: enumerates this repo's worktrees via `git worktree
+// list --porcelain` (installIngest.listRepoWorktrees; NEVER by inverting the
+// one-way worktreeHash — Gap-2), checks EACH one's LEGACY per-worktree lock
+// file, and reports whether ANY still has a LIVE (or presumed-live) holder
+// (reusing the same isAlive discipline acquireIngestLock's steal-rule uses).
+// `blocked:true` means the caller MUST NOT drain (never open the store, never
+// call `monitor`) — two concurrent native-queue consumers would split it and
+// silently lose messages.
+//
+// mainWorktree is ALWAYS included in the set checked, even when enumeration
+// itself fails or omits it: `git worktree list --porcelain` is a SEPARATE git
+// spawn from the one that resolved repoKey (the precondition for this probe
+// running at all — see runIngestLoop), so it can fail transiently even when
+// this repo's OWN worktree is perfectly resolvable. Without this floor, an
+// enumeration failure would silently skip checking the single most common
+// real-world case mid-migration — a legacy per-worktree daemon still running in
+// THIS SAME worktree — and let the new daemon proceed to drain concurrently
+// with it. A genuinely LINKED worktree's legacy holder remains a residual gap
+// on enumeration failure (Gap-2: the hash cannot be inverted without
+// enumerating) — unchanged, matches the pre-existing fail-open posture there.
+//
+// TORN-READ GUARD: an unparseable lock with a FRESH mtime (age <=
+// INGEST_LOCK_STALE_MS) is presumed a live holder mid-write and blocks; only a
+// STALE unparseable lock (or a genuinely missing one) reads as no holder.
+function probeLegacyHolders(home, mainWorktree, io) {
+  const F = (io && io.fs) || fs;
+  const isAlive = (io && io.isAlive) || isAliveDefault;
+  const now = (io && io.now) || Date.now;
+  // installIngest.listRepoWorktrees expects opts.io.run (matching its own
+  // devswarm-repokey-style injection convention) — NOT opts.run directly.
+  const enumerated = installIngest.listRepoWorktrees(mainWorktree, { io });
+  const worktrees = (mainWorktree && !enumerated.includes(mainWorktree))
+    ? enumerated.concat([mainWorktree])
+    : enumerated;
+  const liveHolders = [];
+  for (const wt of worktrees) {
+    const lockPath = legacyIngestLockPath(home, wt);
+    const holder = readLockHolder(lockPath, F);
+    if (!holder) continue;
+    const alive = holder.pid !== null && isAlive(holder.pid);
+    const freshUnparseable = holder.pid === null
+      && holder.ts !== null && (now() - holder.ts) <= INGEST_LOCK_STALE_MS;
+    if (alive || freshUnparseable) liveHolders.push({ worktree: wt, lockPath, pid: holder.pid });
+  }
+  return { blocked: liveHolders.length > 0, liveHolders };
+}
 
 // writeIngestHeartbeat — atomic (tmp+rename) per-worktree daemon liveness file. Fully
 // fail-open: any error (bad hash, unwritable dir) is swallowed so a heartbeat failure
@@ -521,4 +661,6 @@ module.exports = {
   ingestPayload, defaultMonitorRun, runIngestLoop,
   DEFAULT_MONITOR_TIMEOUT_SEC, resolveMonitorTimeoutSec,
   logFilePath, appendLog,
+  // v0.57 mesh (D9/D21) — reap-before-drain probe:
+  legacyIngestLockPath, readLockHolder, probeLegacyHolders,
 };

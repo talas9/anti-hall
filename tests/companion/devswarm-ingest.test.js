@@ -12,6 +12,8 @@ const path = require('node:path');
 
 const ingest = require('../../plugins/anti-hall/companion/devswarm-ingest.js');
 const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 
 function tmpHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-ingest-'));
@@ -76,7 +78,10 @@ test('runIngestLoop writes a per-worktree daemon heartbeat every sweep (even a q
   const home = tmpHome();
   try {
     const wt = process.cwd();
-    const hash = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js').worktreeHash(wt);
+    // v0.57 mesh (D1/D9/Phase5): the daemon's heartbeat is now keyed by repoKey
+    // (the shared per-project store key) when resolvable — `wt` is a real git
+    // worktree here, so repoKey resolves.
+    const hash = repokey.repoKeyForWorktree(wt);
     const hbPath = ingest.ingestHeartbeatPath(home, hash);
     // A quiet poll (empty batch -> 0 inserts): the heartbeat must STILL be written.
     const summary = ingest.runIngestLoop({
@@ -159,7 +164,7 @@ test('runIngestLoop heartbeats EVERY bounded cycle even when every cycle is quie
   const home = tmpHome();
   try {
     const wt = process.cwd();
-    const hash = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js').worktreeHash(wt);
+    const hash = repokey.repoKeyForWorktree(wt); // v0.57 mesh: heartbeat keyed by repoKey (D1/D9)
     const hbPath = ingest.ingestHeartbeatPath(home, hash);
     let hbWrites = 0;
     // A thin fs proxy: delegates everything to the real fs, only COUNTING renameSync
@@ -197,7 +202,7 @@ test('runIngestLoop heartbeats a message-arrival cycle too (not just quiet cycle
   const home = tmpHome();
   try {
     const wt = process.cwd();
-    const hash = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js').worktreeHash(wt);
+    const hash = repokey.repoKeyForWorktree(wt); // v0.57 mesh: heartbeat keyed by repoKey (D1/D9)
     const hbPath = ingest.ingestHeartbeatPath(home, hash);
     const batch = JSON.stringify([{ fromBranch: 'c', toBranch: 'p', message: 'hi', createdAt: '2026-01-01T00:00:00Z' }]);
     const summary = ingest.runIngestLoop({
@@ -391,14 +396,18 @@ test('runIngestLoop ingests a batch, derives the projection, and replays idempot
     try { reg.upsertRegistry({ id: 'p', worktreePath: '/wt/p', sessionId: 's', inboxPath: null, cursorPath: null, nudgeCommand: null }); }
     finally { reg.close(); }
 
-    const s1 = ingest.runIngestLoop({ home, backend: 'journal', workspaceId: 'p', maxIterations: 1, run, sleep: () => {} });
+    // worktree: null pins this test to the LEGACY hash-based store selection
+    // (workspaceId-driven) — this test is about generic loop mechanics
+    // (ingest/derive/replay), independent of the v0.57 repoKey rekey (which is
+    // covered by its own dedicated tests, tests/companion/devswarm-ingest-mesh.test.js).
+    const s1 = ingest.runIngestLoop({ home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 1, run, sleep: () => {} });
     assert.equal(s1.started, true);
     assert.equal(s1.stats.inserted, 1);
     // projection written to THIS project's summaries/<hash>.json
     assert.ok(storeLib.readSummary(home, 'p').workspaces.p);
 
     // a second run re-observing the same in-flight batch imports nothing new
-    const s2 = ingest.runIngestLoop({ home, backend: 'journal', workspaceId: 'p', maxIterations: 1, run, sleep: () => {} });
+    const s2 = ingest.runIngestLoop({ home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 1, run, sleep: () => {} });
     assert.equal(s2.stats.inserted, 0);
     assert.equal(s2.stats.duplicate, 1);
     const s = storeLib.openStore({ home, workspaceId: 'p', backend: 'journal' });
@@ -410,7 +419,12 @@ test('runIngestLoop SELF-REGISTERS its own primary/worktree id (#34 fix) — Pri
   const home = tmpHome();
   try {
     const wt = process.cwd();
-    const primaryId = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js').primaryWorkspaceId(wt);
+    const primaryId = installIngest.primaryWorkspaceId(wt);
+    // v0.57 mesh (D1/D8/D24): the daemon now opens the SHARED per-project store
+    // (store/<repoKey>/) when repoKey resolves — `primaryId` (worktree-hash
+    // based, D19) stays the SELF-REGISTRATION id/partition INSIDE that store, it
+    // no longer selects which physical store is opened.
+    const repoKey = repokey.repoKeyForWorktree(wt);
     const batch = JSON.stringify([
       { fromBranch: 'c', toBranch: primaryId, message: 'msg-one', createdAt: '2026-01-01T00:00:00Z' },
       { fromBranch: 'c', toBranch: primaryId, message: 'msg-two', createdAt: '2026-01-01T00:00:01Z' },
@@ -430,7 +444,7 @@ test('runIngestLoop SELF-REGISTERS its own primary/worktree id (#34 fix) — Pri
     assert.equal(summary.workspaceId, primaryId);
     assert.equal(summary.stats.inserted, 2);
 
-    const s = storeLib.readSummary(home, primaryId);
+    const s = storeLib.readSummaryForHash(home, repoKey);
     assert.ok(s, 'a summary projection was written');
     assert.ok(s.workspaces[primaryId], 'the daemon\'s own primary/worktree id IS present in workspaces{} — was previously never registered, so this key never existed');
     assert.equal(s.workspaces[primaryId].total, 2);
@@ -440,12 +454,12 @@ test('runIngestLoop SELF-REGISTERS its own primary/worktree id (#34 fix) — Pri
     // Advance the cursor (e.g. an inbox ack) and re-derive: unread must reflect
     // appended-minus-cursor, not just total — proving this is a live projection, not
     // a hand-written fixture.
-    const s2store = storeLib.openStore({ home, workspaceId: primaryId, backend: 'journal' });
+    const s2store = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
     try {
       s2store.setCursor(primaryId, 1);
       storeLib.deriveSummary(s2store, { home });
     } finally { s2store.close(); }
-    const s2 = storeLib.readSummary(home, primaryId);
+    const s2 = storeLib.readSummaryForHash(home, repoKey);
     assert.equal(s2.workspaces[primaryId].unread, 1, 'unread updates to appended(2) - cursor(1) = 1 after ack');
   } finally { rm(home); }
 });
@@ -454,7 +468,11 @@ test('runIngestLoop: WORKTREE is ground truth over env.DEVSWARM_BUILDER_ID — a
   const home = tmpHome();
   try {
     const wt = process.cwd();
-    const primaryId = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js').primaryWorkspaceId(wt);
+    const primaryId = installIngest.primaryWorkspaceId(wt);
+    // v0.57 mesh (D1/D8/D24): the daemon opens the SHARED per-project store
+    // (store/<repoKey>/) — primaryId (worktree-hash based, D19) stays the
+    // self-registration id/partition INSIDE that store.
+    const repoKey = repokey.repoKeyForWorktree(wt);
     const childId = 'child-should-never-be-used';
 
     // Pre-seed a registry row for the CHILD id, as if that child had already
@@ -483,9 +501,10 @@ test('runIngestLoop: WORKTREE is ground truth over env.DEVSWARM_BUILDER_ID — a
     assert.equal(summary.workspaceId, primaryId, 'worktree-derived id wins over env.DEVSWARM_BUILDER_ID');
     assert.equal(summary.stats.inserted, 1, 'the message was ingested under the worktree-derived partition');
 
-    // Registration + ingest are the SAME id: the primary's own store partition (keyed
-    // by the WORKTREE hash, not the child's id-derived hash) now carries its own row.
-    const reg = storeLib.openStore({ home, workspaceId: primaryId, backend: 'journal' });
+    // Registration + ingest are the SAME id: the primary's own store partition (the
+    // SHARED per-project repoKey store, not the child's id-derived legacy hash)
+    // now carries its own row.
+    const reg = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
     try {
       const primaryRow = reg.listRegistry().find((r) => r.id === primaryId);
       assert.ok(primaryRow, 'the daemon registered under the worktree-derived primary id');
@@ -623,8 +642,11 @@ test('runIngestLoop LOGS-AND-CONTINUES on a store-lock ELOCKFS/ELOCKUNAVAIL inst
 
     let summary;
     assert.doesNotThrow(() => {
+      // worktree: null pins this to the LEGACY hash-based store selection
+      // (workspaceId-driven) — this test is about generic lock-error handling,
+      // independent of the v0.57 repoKey rekey.
       summary = ingest.runIngestLoop({
-        home, backend: 'journal', workspaceId: 'p', maxIterations: 3,
+        home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 3,
         run, sleep: () => {}, restartBackoffMs: 0, io,
       });
     }, 'a store-lock fail-closed error must not crash the loop out');

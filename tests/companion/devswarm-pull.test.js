@@ -130,10 +130,14 @@ test('idempotent re-append: the same batch twice -> no duplicate line or store r
   try {
     const { inboxPath } = seedDescriptor(home, 'child-1');
     const R = makeRun({ count: 2, batch: TWO });
-    const r1 = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    // cwd: home (a plain tmpdir, NOT a git repo) pins the v0.57 mesh repoKey
+    // resolution to null so the store parity feed falls back to its PRE-MESH
+    // per-id store — this test is about generic dedupe mechanics, independent of
+    // the repoKey rekey (covered by its own dedicated mesh tests).
+    const r1 = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: home, io: { run: R.run } });
     assert.equal(r1.imported, 2);
     // Re-observe the identical batch (count still >0, so read-messages runs again).
-    const r2 = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run: R.run } });
+    const r2 = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: home, io: { run: R.run } });
     assert.equal(r2.imported, 0, 're-append imports nothing new');
     assert.equal(r2.duplicate, 2, 'both re-observed messages are recognized as duplicates');
     const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');

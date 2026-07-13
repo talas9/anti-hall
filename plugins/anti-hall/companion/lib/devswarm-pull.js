@@ -51,6 +51,12 @@ const {
   normalizeMonitorPayload, messageHash, ingestPayload,
 } = require('../devswarm-ingest.js');
 const store = require('./devswarm-store.js');
+// v0.57 mesh (PLAN-v0.57-mesh.md D1/D8): the parity feed's STORE target re-keys
+// to the SAME shared per-project store the ingest daemon drains into — this
+// child never touches child-side liveness surfaces (descriptor id / heartbeat /
+// durable NDJSON inbox stay UNCHANGED, worktree-hash based, D19); only WHICH
+// physical store the best-effort parity write lands in changes.
+const repokey = require('./devswarm-repokey.js');
 
 const PULL_LOCK_STALE_MS = 60 * 1000;   // a one-shot pull is short-lived; a lock older than this from a dead/unknown holder is stealable
 const READ_TIMEOUT_MS = 10 * 1000;      // the ONE bounded read-messages spawn — finite, never a blocking monitor
@@ -184,6 +190,17 @@ function pullOnce(opts) {
   const io = o.io || {};
   const F = io.fs || fs;
   const run = io.run || defaultRun;
+  // v0.57 mesh (D1/D8): the CALLER's cwd (this child's own worktree — defaults to
+  // process.cwd() when not explicit) selects the SHARED project store the parity
+  // feed writes into. Deliberately NOT threaded through `io.run` above (that key
+  // is the hivecontrol spawn's shape — {args,timeout,env,hivecontrol} — a
+  // DIFFERENT signature from repokey's own git spawn {args,cwd}; reusing it here
+  // would feed a test's hivecontrol mock a call it never expects). null (non-git
+  // cwd) is fail-open — the parity feed then falls back to its PRE-MESH behavior
+  // (hash derived from `id`) below.
+  const cwd = o.cwd || process.cwd();
+  let repoKey = null;
+  try { repoKey = repokey.repoKeyForWorktree(cwd); } catch (_) { repoKey = null; }
 
   if (!isSafeId(id)) return { ok: false, locked: false, error: 'invalid or missing workspace id' };
 
@@ -250,11 +267,18 @@ function pullOnce(opts) {
     // consume; the store projection is a secondary read model. Dedupe is by the SAME
     // messageHash, so a re-ingest OR-IGNOREs — idempotent across both layers.
     try {
-      // PER-PROJECT: the child's own workspaceId selects its physical store.
-      const s = store.openStore({ home, workspaceId: id, backend, env });
+      // v0.57 mesh (D1/D8): the SHARED per-project store (store/<repoKey>/) when
+      // repoKey resolves — `id` (the child's builder-id) still selects the
+      // PARTITION inside that store (unchanged); repoKey===null falls back to
+      // the PRE-MESH per-id store (fail-open). deriveSummary is called WITHOUT
+      // an explicit workspaceId so it targets THIS handle's own hash (repoKey
+      // when set) — passing `workspaceId: id` here would write the projection to
+      // the WRONG (legacy id-hash) summary file even though the messages
+      // landed in the repoKey store.
+      const s = store.openStore({ home, workspaceId: id, hash: repoKey || undefined, backend, env });
       try {
         ingestPayload(s, rRes.raw, { workspaceId: id, now });
-        store.deriveSummary(s, { home, workspaceId: id, env, now });
+        store.deriveSummary(s, { home, env, now });
       } finally { s.close(); }
     } catch (_) { /* durable inbox already persisted; store parity is best-effort */ }
 

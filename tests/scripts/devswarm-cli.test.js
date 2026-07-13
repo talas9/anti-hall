@@ -11,6 +11,7 @@ const path = require('node:path');
 
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
 const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 
 function tmpHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-cli-'));
@@ -18,7 +19,16 @@ function tmpHome() {
   return home;
 }
 function rm(home) { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
-const ctx = (home, over) => Object.assign({ home, backend: 'journal', env: {} }, over || {});
+// v0.57 mesh (D24): default ctx.cwd to a NON-git directory (fakeCwd, defined
+// below — hoisted, safe to reference here) so every test in this file that does
+// NOT explicitly pass its own `cwd` resolves repoKey===null and every
+// D24-rekeyed store caller (register/gate/archive/inbox-messages) falls back to
+// its EXISTING pre-mesh per-id hash selection — this file is about GENERIC CLI
+// mechanics, not the v0.57 mesh rekey itself (which has its own dedicated tests,
+// tests/scripts/devswarm-send.test.js + tests/companion/devswarm-ingest-mesh.test.js).
+// A test that explicitly overrides `cwd` to a REAL git worktree still exercises
+// the repoKey path (Object.assign below lets `over.cwd` win).
+const ctx = (home, over) => Object.assign({ home, backend: 'journal', env: {}, cwd: fakeCwd(home) }, over || {});
 
 test('register writes the descriptor + store registry + summary projection', () => {
   const home = tmpHome();
@@ -215,7 +225,8 @@ test('inbox pull AUTO-ENSURES the descriptor (truthy inboxPath + cursor 0) then 
     const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'child-1'), 'utf8'));
     assert.ok(desc.inboxPath && typeof desc.inboxPath === 'string', 'auto-ensured a truthy inboxPath');
     assert.ok(desc.cursorPath && typeof desc.cursorPath === 'string', 'auto-ensured a cursorPath');
-    assert.equal(desc.worktreePath, process.cwd(), 'worktreePath defaults to the cwd');
+    // ctx() defaults cwd to fakeCwd(home) (v0.57 mesh, D24 — see the ctx() comment above).
+    assert.equal(desc.worktreePath, fakeCwd(home), 'worktreePath defaults to the cwd');
     // ...and the cursor was initialized to 0 (nothing consumed yet).
     assert.equal(fs.readFileSync(desc.cursorPath, 'utf8').trim(), '0', 'cursor initialized to 0');
   } finally { rm(home); }
@@ -323,9 +334,13 @@ test('unknown command reports a closed-vocabulary error + exit 2', () => {
 const inst = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 
 // Seed store rows for a workspace as the ingest daemon would (bodies + hashes).
-function seedStore(home, id, bodies) {
+// opts.hash (v0.57 mesh) lets a test explicitly seed into the SHARED repoKey
+// store instead of the legacy per-id hash bucket — needed when the test's own
+// `ctx.cwd` is a REAL git worktree (so the D24-rekeyed CLI opens the repoKey
+// store, not the legacy one this helper defaults to).
+function seedStore(home, id, bodies, opts) {
   // PER-PROJECT: seed into the SAME per-project store the CLI opens for this id.
-  const s = storeLib.openStore({ home, workspaceId: id, backend: 'journal' });
+  const s = storeLib.openStore({ home, workspaceId: id, hash: opts && opts.hash, backend: 'journal' });
   try { bodies.forEach((b, i) => s.appendMessage({ workspaceId: id, body: b, hash: id + '-h' + i })); }
   finally { s.close(); }
 }
@@ -750,7 +765,11 @@ test('callerIdentity falls back to primary-<worktreeHash(cwd)> (git toplevel) wh
   const home = tmpHome();
   try {
     const selfId = inst.primaryWorkspaceId(inst.resolveWorktree(REPO_ROOT));
-    seedStore(home, selfId, ['a', 'b']);
+    // v0.57 mesh (D24): cwd below is a REAL git worktree (REPO_ROOT/a subdir of
+    // it), so `inbox messages --ack` (cmdInboxMessages, rekeyed) opens the
+    // SHARED repoKey store — seed there, not the legacy per-id hash bucket.
+    const repoKey = repokey.repoKeyForWorktree(REPO_ROOT);
+    seedStore(home, selfId, ['a', 'b'], { hash: repoKey });
     // Own id, invoked from a SUBDIRECTORY of the worktree -> still resolves to the
     // same toplevel-derived id, so a self-ack from any subdir succeeds.
     const subdir = path.join(REPO_ROOT, 'plugins');
@@ -759,7 +778,7 @@ test('callerIdentity falls back to primary-<worktreeHash(cwd)> (git toplevel) wh
     assert.equal(ok.result.cursor, 2);
 
     // A different id, with no DEVSWARM_BUILDER_ID -> refused using the same cwd-derived identity.
-    seedStore(home, 'primary-someone-else', ['x']);
+    seedStore(home, 'primary-someone-else', ['x'], { hash: repoKey });
     const refused = cli.run(['inbox', 'messages', 'primary-someone-else', '--ack'], ctx(home, { env: {}, cwd: REPO_ROOT }));
     assert.equal(refused.result.ok, false);
     assert.equal(refused.result.callerIdentity, selfId);

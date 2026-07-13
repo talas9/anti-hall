@@ -266,11 +266,34 @@ function buildDescriptorFromFlags(id, flags, existing, env) {
   return base;
 }
 
+// repoKeyForCwd(ctx) -> repoKey | null. Fail-open (never throws) resolution of
+// THIS invocation's project key from ctx.cwd (defaulting to process.cwd()) —
+// shared by every D24-rekeyed store caller below (register/gate/archive/inbox
+// messages) so each targets the SAME shared per-project store `send`/`roster`
+// read, instead of the pre-mesh legacy per-id hash bucket. null (non-git cwd)
+// is fail-open: every caller below falls back to its EXISTING pre-mesh hash
+// selection.
+function repoKeyForCwd(ctx) {
+  try { return repokey.repoKeyForWorktree((ctx && ctx.cwd) || process.cwd()); } catch (_) { return null; }
+}
+
 // upsertStoreRegistry — open the store, upsert one descriptor, re-derive summary,
 // close. Kept in one place so every write path refreshes the projection.
+//
+// v0.57 mesh (D24 store-caller re-key): the registry now lands in the SHARED
+// per-project store/<repoKey>/ (when repoKey resolves) — the SAME store `mesh
+// send`'s fail-closed roster (D12a) and `roster` read — instead of the legacy
+// store/<hashFromWorkspaceId(desc.id)>/ bucket, which the mesh CLI never reads.
+// Without this, `register`/`ensure` populate an address book NOTHING looks at
+// and every mesh direct send is rejected as unregistered. `desc.id` (the
+// registry entry's id / self-registration partition, D19) is UNCHANGED — only
+// WHICH physical store is opened changes.
 function upsertStoreRegistry(home, desc, ctx) {
-  // PER-PROJECT: this descriptor's own workspaceId selects its physical store.
-  const s = store.openStore({ home, workspaceId: desc.id, backend: ctx && ctx.backend, env: ctx && ctx.env });
+  const repoKey = repoKeyForCwd(ctx);
+  const s = store.openStore({
+    home, workspaceId: desc.id, hash: repoKey || undefined,
+    backend: ctx && ctx.backend, env: ctx && ctx.env,
+  });
   try {
     s.upsertRegistry(desc);
     store.deriveSummary(s, { home, env: ctx && ctx.env });
@@ -419,8 +442,10 @@ function cmdInboxPull(id, flags, ctx) {
   cmdRegister(id, ensureFlags, ctx, { requireNew: true });
   // ctx.io is undefined in production (real hivecontrol spawn); tests inject
   // { run } so the CLI path is exercised without touching a real binary — same
-  // injection posture as ctx.backend / ctx.now / ctx.env already use.
-  const res = pull.pullOnce({ home, id, env: ctx.env, backend: ctx.backend, now: ctx.now, io: ctx.io });
+  // injection posture as ctx.backend / ctx.now / ctx.env already use. `cwd`
+  // (v0.57 mesh D1/D8) lets pullOnce's parity feed derive this project's
+  // repoKey and land the child's drained messages in the SHARED store.
+  const res = pull.pullOnce({ home, id, env: ctx.env, backend: ctx.backend, now: ctx.now, cwd: worktree, io: ctx.io });
   const out = {
     ok: !!res.ok, action: 'pull', id,
     imported: res.imported || 0, duplicate: res.duplicate || 0,
@@ -478,7 +503,11 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   }
   const cursorPath = primaryCursorPath(home, id);
   const cursor = inboxCursor.readCursor(cursorPath);
-  const s = store.openStore({ home, workspaceId: id, backend: ctx.backend, env: ctx.env });
+  // v0.57 mesh (D24): the Primary read-CLI opens the SAME shared per-project
+  // store the per-project ingest daemon natively drains INTO (D8/D21) — without
+  // this re-key, `inbox messages`/`read-primary` would read the legacy per-id
+  // bucket the daemon no longer writes to and silently see nothing.
+  const s = store.openStore({ home, workspaceId: id, hash: repoKeyForCwd(ctx) || undefined, backend: ctx.backend, env: ctx.env });
   let total, messages, acked;
   try {
     total = s.messageCount(id);
@@ -569,14 +598,28 @@ function cmdWorkspacesList(flags, ctx) {
   // CURRENT worktree's own store (primary-<worktreeHash>) from cwd. Outside a
   // worktree with no flag, fall back to the default bucket (an empty/legacy view).
   let workspaceId = one(flags, 'workspace');
+  const worktreeFlag = one(flags, 'worktree');
+  const worktree = worktreeFlag || inst.resolveWorktree(ctx.cwd || process.cwd());
   if (workspaceId === undefined) {
-    const worktreeFlag = one(flags, 'worktree');
-    const worktree = worktreeFlag || inst.resolveWorktree(ctx.cwd || process.cwd());
     workspaceId = worktree ? inst.primaryWorkspaceId(worktree) : undefined;
   }
-  const s = store.openStore({ home, workspaceId, backend: ctx.backend, env: ctx.env });
+  // v0.57 mesh (D24 store-caller re-key — this call was missed by the original
+  // sweep): target the SAME shared per-project store `register`/`roster`/`gate`/
+  // `archive` all write into (repoKey, when resolvable) — else `workspaces list`
+  // opens the legacy per-id hash bucket while every writer lands in store/<repoKey>/,
+  // so a freshly-registered peer never shows up here (count:0 against a real
+  // roster). Derived from the SAME `worktree` used to derive `workspaceId` above
+  // (an explicit --worktree flag, when given, must win over ctx.cwd for BOTH —
+  // repoKeyForCwd(ctx) alone would ignore the flag and resolve the wrong
+  // project's repoKey whenever the caller's cwd differs from --worktree, e.g. a
+  // subprocess invocation that targets another worktree by flag). Omitting
+  // `workspaceId` from deriveSummary lets it fall back to the opened handle's
+  // own `.hash` (the repoKey) instead of recomputing hashFromWorkspaceId(workspaceId)
+  // and re-targeting the legacy bucket.
+  const repoKey = worktree ? repokey.repoKeyForWorktree(worktree) : repoKeyForCwd(ctx);
+  const s = store.openStore({ home, workspaceId, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
   let sum;
-  try { sum = store.deriveSummary(s, { home, workspaceId, env: ctx.env, now: ctx.now }); }
+  try { sum = store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); }
   finally { s.close(); }
   const workspaces = Object.values(sum.workspaces || {});
   return { ok: true, action: 'workspaces', workspaceId: workspaceId || null, requiredGates: sum.requiredGates, count: workspaces.length, workspaces };
@@ -590,7 +633,9 @@ function cmdGate(id, flags, ctx) {
     return { ok: false, error: 'gate needs --set <csv> and/or --clear <csv>' };
   }
   const setBy = one(flags, 'by') !== undefined ? one(flags, 'by') : 'devswarm-cli';
-  const s = store.openStore({ home, workspaceId: id, backend: ctx.backend, env: ctx.env });
+  // v0.57 mesh (D24): gates land in the SAME shared per-project store the
+  // registry/roster/archive_ready read (repoKey, when resolvable).
+  const s = store.openStore({ home, workspaceId: id, hash: repoKeyForCwd(ctx) || undefined, backend: ctx.backend, env: ctx.env });
   let summary;
   try {
     for (const name of setNames) s.setGate({ workspaceId: id, name, value: true, setBy });
@@ -633,7 +678,11 @@ function cmdArchive(id, ctx) {
       moved = true;
     } catch (_) { moved = false; }
   }
-  const s = store.openStore({ home, workspaceId: id, backend: ctx.backend, env: ctx.env });
+  // v0.57 mesh (D24): tombstone the registry entry in the SAME shared
+  // per-project store `register`/`roster` populate (repoKey, when resolvable) —
+  // else archive silently no-ops against the legacy per-id bucket, leaving the
+  // workspace visible in the roster forever.
+  const s = store.openStore({ home, workspaceId: id, hash: repoKeyForCwd(ctx) || undefined, backend: ctx.backend, env: ctx.env });
   try { s.removeRegistry(id); store.deriveSummary(s, { home, env: ctx.env }); }
   finally { s.close(); }
   return {
