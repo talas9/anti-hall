@@ -58,6 +58,33 @@ const SHORT =
   'TASK-LIST: capture every request as a priority-sorted task; keep statuses ' +
   'current; delegate heavy work; drop nothing.';
 
+// DevSwarm PRIMARY ONLY. FULL/SHORT above — and the ACTIONABLE-NOW dispatch line in
+// freshnessNote() — say "delegate to a background subagent", which is the WRONG
+// primitive for a Primary holding a workspace-scale task. Appended to whatever this
+// hook already injects, and ONLY when the session is a DevSwarm Primary
+// (DEVSWARM_REPO_ID set AND DEVSWARM_SOURCE_BRANCH empty). Outside DevSwarm, and in
+// a CHILD workspace, the injected text is byte-for-byte unchanged. Mirrors rule W in
+// verify-first-full.js.
+const DEVSWARM_PRIMARY =
+  'DEVSWARM PRIMARY — DISPATCH TIER: for each task, CLASSIFY before you dispatch. A ' +
+  'workspace-scale MATTER (a feature/fix/deploy — multi-step, own branch, own review) is ' +
+  'spun as its own CHILD WORKSPACE: `node scripts/devswarm.js spawn <branch> -p "<brief>"`. ' +
+  'Only finer-grained work (a lookup, a single command, a scoped investigation, a review ' +
+  'pass) goes to a background subagent. A workspace-scale task handed to a subagent is the ' +
+  'same failure as leaving it idle.';
+
+// isDevswarmPrimary(env) — DevSwarm active AND root/Primary (not a child workspace).
+// Fail-open to FALSE => the baseline directive only.
+function isDevswarmPrimary(env) {
+  try {
+    const { isDevswarmActive } = require('./lib/devswarm-detect.js');
+    const { isChildWorkspace } = require('./lib/devswarm-role.js');
+    return isDevswarmActive(env) && !isChildWorkspace(env);
+  } catch (_) {
+    return false;
+  }
+}
+
 // Re-inject the FULL directive at most once per this window (ms). Within the
 // window, subsequent turns get only the SHORT one-liner. 6h keeps the full
 // primer fresh across a long session without repeating it every turn.
@@ -426,6 +453,8 @@ try {
     // per-turn baseline lean when there is nothing to nudge about).
     const note = freshnessNote(payload);
     if (note) text = text + ' ' + note;
+    // DevSwarm PRIMARY only: name the workspace tier at the dispatch point.
+    if (isDevswarmPrimary(process.env)) text = text + ' ' + DEVSWARM_PRIMARY;
   }
 
   // Official schema: `hookEventName` is NESTED in `hookSpecificOutput`, not a

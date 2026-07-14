@@ -180,3 +180,45 @@ test('FAIL-OPEN: malformed JSON -> exit 0', () => {
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// DEVSWARM PRIMARY: the per-turn nudge must also name the workspace tier. Every
+// baseline nudge names subagent/Explore/Workflow; for a Primary the TOP tier is a
+// child workspace. Appended (never substituted) so the rotating facet is untouched —
+// and emitted ONLY for a Primary (a CHILD workspace and any non-DevSwarm session get
+// byte-for-byte the pre-fix nudge).
+
+const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-x' }; // no SOURCE_BRANCH -> Primary
+const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' };
+
+test('DEVSWARM PRIMARY: nudge appends the workspace-tier choice rule', () => {
+  const h = makeHome();
+  try {
+    const raw = JSON.stringify(payload());
+    const c = ctx(testHookRaw(HOOK, raw, { home: h.home, env: PRIMARY_ENV }));
+    assert.ok(c.startsWith('VERIFY-FIRST:'), `got: ${c.slice(0, 40)}`);
+    assert.ok(c.includes('DEVSWARM PRIMARY: the workspace is your TOP fan-out tier'),
+      `Primary nudge missing the workspace tier: ${c}`);
+    assert.ok(c.includes('devswarm.js spawn <branch> -p'), `Primary nudge must name the spawn command: ${c}`);
+    assert.ok(/not a subagent/.test(c), `Primary nudge must exclude the subagent for workspace-scale work: ${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('DEVSWARM CHILD + NON-DEVSWARM: nudge is BYTE-FOR-BYTE unchanged (regression guard)', () => {
+  const h = makeHome();
+  try {
+    const raw = JSON.stringify(payload());
+    const plain = ctx(testHookRaw(HOOK, raw, { home: h.home }));
+    const child = ctx(testHookRaw(HOOK, raw, { home: h.home, env: CHILD_ENV }));
+    const primary = ctx(testHookRaw(HOOK, raw, { home: h.home, env: PRIMARY_ENV }));
+    assert.ok(plain.length > 0);
+    assert.strictEqual(child, plain, 'a DevSwarm CHILD must get the byte-identical baseline nudge');
+    assert.ok(!plain.includes('devswarm.js spawn'), 'baseline nudge must not name devswarm.js spawn');
+    // Primary = the SAME rotating facet + the appended workspace rule (nothing else).
+    assert.ok(primary.startsWith(plain + ' '), 'Primary nudge must be the baseline facet + the appended rule');
+  } finally {
+    h.cleanup();
+  }
+});

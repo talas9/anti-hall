@@ -365,3 +365,42 @@ test('FAIL-OPEN: malformed JSON stdin -> FULL (never weaken discipline)', () => 
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// DEVSWARM PRIMARY: the task directive (and the ACTIONABLE-NOW dispatch line) say
+// "delegate to a background subagent" — the WRONG primitive for a Primary holding a
+// workspace-scale task. The workspace tier is appended for a Primary ONLY; a CHILD
+// workspace and any non-DevSwarm session keep the byte-identical baseline text.
+
+const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-x' }; // no SOURCE_BRANCH -> Primary
+const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' };
+
+test('DEVSWARM PRIMARY: directive appends the workspace-tier dispatch rule', () => {
+  const h = makeHome();
+  try {
+    const c = ctx(testHook(HOOK, promptPayload(), { home: h.home, env: PRIMARY_ENV }));
+    assert.ok(c.startsWith(FULL_MARKER), `expected FULL; got: ${c.slice(0, 60)}`);
+    assert.ok(c.includes('DEVSWARM PRIMARY — DISPATCH TIER'), `missing workspace-tier dispatch rule: ${c}`);
+    assert.ok(c.includes('devswarm.js spawn <branch> -p'), `must name the spawn command: ${c}`);
+    assert.ok(/workspace-scale task handed to a subagent is the\s+same failure|workspace-scale task handed to a subagent is the same failure/.test(c),
+      `must forbid subagent-for-workspace-scale: ${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('DEVSWARM CHILD + NON-DEVSWARM: directive is BYTE-FOR-BYTE unchanged (regression guard)', () => {
+  const hp = makeHome();
+  const hc = makeHome();
+  try {
+    const plain = ctx(testHook(HOOK, promptPayload(), { home: hp.home }));
+    const child = ctx(testHook(HOOK, promptPayload(), { home: hc.home, env: CHILD_ENV }));
+    assert.ok(plain.length > 0);
+    assert.strictEqual(child, plain, 'a DevSwarm CHILD must get the byte-identical baseline directive');
+    assert.ok(!plain.includes('devswarm.js spawn'), 'baseline directive must not name devswarm.js spawn');
+    assert.ok(!plain.includes('DEVSWARM'), 'baseline directive must not mention DevSwarm');
+  } finally {
+    hp.cleanup();
+    hc.cleanup();
+  }
+});

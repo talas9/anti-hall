@@ -950,15 +950,44 @@ function main() {
         : '(category: ' + cls.label + ')')
     : '(category: heavy)';
 
-  const reason =
-    'COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
-    'inline in the main coordinator context — they fill the main thread with raw ' +
-    'output and the most counterproductive thing a coordinator can do. ' +
-    'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
-    'spawn a subagent, pass the command, let it run and return only a tight ' +
-    'summary. The coordinator synthesizes the summary; raw output never reaches ' +
-    'the main thread. Heavy command detected ' + detail +
-    ' — delegate to a subagent.';
+  // DevSwarm PRIMARY redirect (lazy-require, fail-open to the baseline wording).
+  // The Primary's TOP fan-out tier is a CHILD WORKSPACE, not a subagent
+  // (docs/KB-devswarm-hivecontrol.md §8.1-8.2). Naming "spawn a subagent" as the
+  // only exit at the exact point the Primary is blocked from running the command
+  // is what drove Primaries to decompose feature-scale work into subagents instead
+  // of workspaces. NOTHING about WHAT is blocked changes — same isHeavyCommand()
+  // decision, same exit 2 — only the redirect text, and only for a Primary. A
+  // DevSwarm CHILD, and any non-DevSwarm session, gets the byte-identical baseline
+  // reason below. No mechanical scale classifier (a false positive would break
+  // legitimate subagent use): the reason states the CHOICE, the model classifies.
+  let devswarmPrimary = false;
+  try {
+    devswarmPrimary =
+      require('./lib/devswarm-detect.js').isDevswarmActive(process.env) &&
+      !require('./lib/devswarm-role.js').isChildWorkspace(process.env);
+  } catch (_) {
+    devswarmPrimary = false;
+  }
+
+  const reason = devswarmPrimary
+    ? ('DEVSWARM COMMAND-DELEGATION RULE: the primary/main orchestrator never runs ' +
+       'heavy/long/state-changing commands inline — raw output floods the main thread. ' +
+       'CHOOSE THE TIER: if this command belongs to a workspace-scale MATTER (a ' +
+       'feature/fix/deploy — multi-step, own branch, own review), spin a CHILD WORKSPACE ' +
+       'and let it own the work end-to-end: `node scripts/devswarm.js spawn <branch> ' +
+       '-p "<brief>"` (guard-exempt, run it inline). ALTERNATIVE, only for genuinely ' +
+       'small/scoped work (one command, a lookup, a scoped check): delegate to a subagent ' +
+       '(cheap model: Haiku or similar) that runs it and returns only a tight summary. Do ' +
+       'NOT hand a workspace-scale matter to a subagent. Heavy command detected ' + detail +
+       ' — spin a workspace, or delegate to a subagent if it is genuinely small.')
+    : ('COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
+       'inline in the main coordinator context — they fill the main thread with raw ' +
+       'output and the most counterproductive thing a coordinator can do. ' +
+       'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
+       'spawn a subagent, pass the command, let it run and return only a tight ' +
+       'summary. The coordinator synthesizes the summary; raw output never reaches ' +
+       'the main thread. Heavy command detected ' + detail +
+       ' — delegate to a subagent.');
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(2);

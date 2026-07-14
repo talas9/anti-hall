@@ -14,6 +14,11 @@
 // Scope = COMMUNICATION ONLY — this never touches or replaces DevSwarm's own
 // task-brief system prompt.
 //
+// v0.59 "self-wake": both roles additionally get the MAILBOX WAKE directive —
+// create a CronCreate job (the only primitive that fires while the REPL is IDLE)
+// that drains this workspace's mailbox. See lib/devswarm-wake.js for the full
+// rationale, the agent-correctness rule, and the interval knob.
+//
 // Safe no-op for non-DevSwarm sessions: no output, exit 0. Pure Node built-ins.
 //
 // Contract (Claude Code SessionStart hook):
@@ -58,8 +63,32 @@ const CHILD_IDLE_LINE =
   'me"` so the parent orchestrator\'s task list stays honest instead of you sitting ' +
   'idle unnoticed.';
 
-function buildAdditionalContext(isChild) {
-  return OVERRIDE_CORE + (isChild ? CHILD_IDLE_LINE : '');
+// MAILBOX WAKE (v0.59): appended for BOTH roles (both have mailboxes). A workspace
+// that finishes its turn goes IDLE and nothing wakes it, so a message landing after
+// that point is never read. The fix is a directive — the agent itself CronList-checks
+// and (re-)creates a Claude `CronCreate` job (the one primitive that fires while the
+// REPL is idle; recurring tasks self-delete after 7 days, so the check is a RENEWAL,
+// not a one-shot create); a hook cannot call a tool. Role-correct by construction:
+// only an agent hivecontrol names as `claude` is told about CronCreate; Codex/other
+// gets the honest "no idle-wake primitive here, drain every turn" line; an unknown
+// agent gets nothing. Text + cron knob live in lib/devswarm-wake.js (shared with
+// devswarm-child-gate.js's bounded Stop re-verify, so the two can never drift).
+//
+// LAZY + GUARDED require (the idiom edit-guard.js / devswarm-child-gate.js already
+// use for their DevSwarm libs): a top-level require sits OUTSIDE main()'s try/catch,
+// so a lib that is missing from a package or throws on load would CRASH this
+// SessionStart hook instead of failing open. Degrade to the pre-wake output (the
+// COMMUNICATION OVERRIDE, no wake directive) — never crash, never block.
+function wakeLine(env, isChild) {
+  try {
+    return require('./lib/devswarm-wake.js').wakeDirective(env, isChild, CLI);
+  } catch (_) {
+    return ''; // fail-open: pre-v0.59 behavior
+  }
+}
+
+function buildAdditionalContext(isChild, env) {
+  return OVERRIDE_CORE + (isChild ? CHILD_IDLE_LINE : '') + wakeLine(env, isChild);
 }
 
 function main() {
@@ -69,7 +98,7 @@ function main() {
 
   if (!isDevswarmActive(process.env)) return;
 
-  const additionalContext = buildAdditionalContext(isChildWorkspace(process.env));
+  const additionalContext = buildAdditionalContext(isChildWorkspace(process.env), process.env);
 
   const out = {
     hookSpecificOutput: {

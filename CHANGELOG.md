@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.59.0
+
+DevSwarm workspace-tier orchestration doctrine, idle self-wake via `CronCreate`, and a P0 edit-guard symlink-bypass fix.
+
+- **DevSwarm workspace-tier doctrine.** A DevSwarm Primary is now proactively directed that its top fan-out tier is a CHILD WORKSPACE (`devswarm.js spawn <branch> -p "<brief>"`), not a subagent; `edit-guard`/`command-guard` redirect the Primary there instead of naming "spawn a subagent" at the exact point it's blocked from working. Injected doctrine only — no mechanical scale classifier. A DevSwarm CHILD and any non-DevSwarm session are byte-identical to before.
+- **DevSwarm idle-wake (`CronCreate`).** A SessionStart directive tells a workspace to self-schedule a recurring mailbox-drain via `CronCreate` (the only primitive that fires while the REPL is idle); default `*/5 * * * *`, tunable via `ANTIHALL_DEVSWARM_WAKE_CRON`. A bounded Stop-gate re-verify on both `devswarm-child-gate` and `devswarm-parent-gate` handles the 7-day cron auto-expiry. Claude-only (gated on `DEVSWARM_AI_AGENT=claude`; Codex is never told to call `CronCreate`).
+- **SECURITY (P0): edit-guard symlink bypass fixed.** The coordinator-artifact allowlist (`PLAN.md`/`STATE.json`, and new `CONTINUE-HERE.md`) matched by path string and could be pointed at a symlink to write through to an arbitrary file. Now rejects any symlinked target or traversed symlinked directory (realpath cross-check, win32-aware); a non-existent file (first `Write`) is still allowed. This closes a pre-existing hole that also affected `PLAN.md`/`STATE.json`.
+- **edit-guard: `CONTINUE-HERE.md` allowlisted.** The session handover is coordinator-authored by design; added to the same root-anchored allowlist (traversal-safe).
+- **Hardening.** `ANTIHALL_DEVSWARM_WAKE_CRON` is now validated per-field against a strict cron charset (blocks prompt-injection via the env var into model-visible directive text); the new devswarm-wake lib is lazy-required + try/caught in all three hooks so a packaging failure fails open instead of crashing SessionStart/Stop.
+- **Docs/KB.** Hivecontrol reference KB updated to v2.3.5 (adds `jira` and `team` command groups, the hidden `workspace search` verb, `DEVSWARM_NO_AUTO_AUTH`); corrected stale "unreleased / still 0.56.0" version claims across llms.txt/README/skills that contradicted the actual shipped version; replaced real captured UUIDs/ports/PIDs in the KB with placeholders (public-repo agnostic rule).
+
 ## 0.58.2
 
 DevSwarm hook parity with Codex, and a documentation correction.

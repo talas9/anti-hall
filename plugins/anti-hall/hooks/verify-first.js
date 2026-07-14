@@ -60,6 +60,30 @@ const NUDGES = [
   "Prefer SHALLOW+WIDE over deep nesting: a subagent is a worker, not a sub-orchestrator - it does the work, it doesn't re-delegate unless told. Route read-only research to Explore (can't recurse). When work is breadth-first and needs 3+ parallel/nested spawns, lift it into ONE deterministic Workflow instead of ad-hoc chains.",
 ];
 
+// DevSwarm PRIMARY ONLY. Every nudge above names subagent/Explore/Workflow as the
+// fan-out targets; for a Primary the TOP tier is a child workspace, and no other
+// injected text says so. Appended (never substituted) so the rotating facet above
+// is unchanged, and emitted ONLY for a Primary — outside DevSwarm and in a CHILD
+// workspace the per-turn text stays byte-for-byte identical. Mirrors rule W in
+// verify-first-full.js.
+const DEVSWARM_PRIMARY_NUDGE =
+  'DEVSWARM PRIMARY: the workspace is your TOP fan-out tier. A workspace-scale MATTER ' +
+  '(a feature/fix/deploy - multi-step, own branch, own review) gets its OWN child workspace: ' +
+  '`node scripts/devswarm.js spawn <branch> -p "<brief>"` - not a subagent. Subagents/Explore/Workflow ' +
+  'are for lookups, single commands, scoped investigations and review passes.';
+
+// isDevswarmPrimary(env) — DevSwarm active AND root/Primary (not a child workspace).
+// Fail-open to FALSE => the baseline nudge only.
+function isDevswarmPrimary(env) {
+  try {
+    const { isDevswarmActive } = require('./lib/devswarm-detect.js');
+    const { isChildWorkspace } = require('./lib/devswarm-role.js');
+    return isDevswarmActive(env) && !isChildWorkspace(env);
+  } catch (_) {
+    return false;
+  }
+}
+
 function main() {
   let input = '';
   try {
@@ -84,7 +108,8 @@ function main() {
     idx = 0;
   }
 
-  const nudge = NUDGES[idx] || NUDGES[0];
+  let nudge = NUDGES[idx] || NUDGES[0];
+  if (isDevswarmPrimary(process.env)) nudge = nudge + ' ' + DEVSWARM_PRIMARY_NUDGE;
 
   // Official schema: `hookEventName` is NESTED in `hookSpecificOutput` (a sibling
   // of `additionalContext`), not a top-level field. KB §1.4 documents

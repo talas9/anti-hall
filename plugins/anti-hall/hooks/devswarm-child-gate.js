@@ -49,6 +49,13 @@
 // Fail-open throughout: any probe error/timeout/missing binary -> treated as "no
 // unread" (never blocks on an unknown state).
 //
+// WAKE RE-VERIFY (v0.59 "self-wake"): whenever this gate ALREADY forces a heartbeat
+// block below, the reason text also re-asserts the MAILBOX WAKE directive
+// (devswarm-child-role.js: CronList-check, then CronCreate the job that is the only
+// primitive firing while the REPL is IDLE). No new state, no new cap — it rides
+// the SAME MAX_BLOCKS-bounded forced-ack this file already has. Claude-only (a
+// Codex workspace has no CronCreate tool, so it never gets the line).
+//
 // CAPPED + SELF-RESETTING (loop-safe): we block at most MAX_BLOCKS times inside a
 // single stop episode, then yield (allow the stop) so we can NEVER hard-loop the
 // child. The cap is tracked in this hook's OWN DISTINCT state file (separate from
@@ -89,6 +96,21 @@ const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 // root, so a relative path in the emitted Stop-block reason is unrunnable
 // there; P1 fix).
 const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+
+// wakeReassertLine(env, isChild) -> the Stop-gate wake re-verify text, or '' when
+// the agent is not Claude (no CronCreate tool) OR the wake lib cannot be loaded.
+// LAZY + GUARDED require (the same idiom as the repokey load below / edit-guard.js):
+// a top-level require sits OUTSIDE main()'s try/catch, so a lib missing from a
+// package or throwing on load would CRASH this Stop hook instead of failing open.
+// Degrade to the pre-wake reason text — never crash, never wedge the stop.
+function wakeReassertLine(env, isChild) {
+  try {
+    const wake = require('./lib/devswarm-wake.js');
+    return wake.isClaudeAgent(env) ? wake.wakeReassert(env, CLI, isChild) : '';
+  } catch (_) {
+    return ''; // fail-open: pre-v0.59 behavior
+  }
+}
 
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
 // looking for a `.git` entry — mirrors devswarm-child-turn.js's/devswarm-parent-
@@ -192,6 +214,13 @@ function writeState(stateFile, state) {
   } catch (_) {
     return false; // could not persist the cap -> caller fails open (never blocks)
   }
+}
+
+// emitBlock(reason) — the ONE place this hook writes its Stop verdict.
+// fs.writeSync(1): a synchronous write to fd 1 — process.stdout.write races the
+// async pipe flush with process.exit() on macOS node 18/20 (project convention).
+function emitBlock(reason) {
+  try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 
 // ONE bounded, NON-DESTRUCTIVE probe timeout — must never wedge a Stop.
@@ -349,6 +378,10 @@ function main() {
       'if already pulled), then `inbox ack` once addressed — BEFORE you stop. '
     : '';
 
+  // WAKE RE-VERIFY (v0.59, reused not re-invented — see header): rides along on
+  // this SAME forced block, bounded by the SAME MAX_BLOCKS cap above. Claude-only.
+  const wakeLine = wakeReassertLine(process.env, true);
+
   const reason =
     inboundPrefix +
     'DEVSWARM CHILD WORKSPACE — before you stop, emit a heartbeat / self-report to ' +
@@ -356,11 +389,10 @@ function main() {
     'read as stale. Run `node ' + CLI + ' heartbeat <DEVSWARM_BUILDER_ID> ' +
     '--summary "<status>"` with a one-line status (e.g. "done — awaiting next task", ' +
     '"blocked on X", or "idle — reassign or archive me"), THEN stop. This keeps the ' +
-    'parent\'s task list honest instead of leaving you unnoticed.';
+    'parent\'s task list honest instead of leaving you unnoticed.' +
+    wakeLine;
 
-  // fs.writeSync(1): a synchronous write to fd 1 — process.stdout.write races the
-  // async pipe flush with process.exit() on macOS node 18/20 (project convention).
-  try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
+  emitBlock(reason);
 }
 
 try {

@@ -1,6 +1,6 @@
 ---
 name: devswarm
-description: Explain and activate anti-hall's optional DevSwarm integration — the hivecontrol reference KB, the (designed, unbuilt) workspace-tier orchestration, and the shipped layered recovery model (child self-report → supervisor poke → escalate-to-parent, automatic path NEVER kills) plus the on-demand devswarm-recover CLI (the only path that ever kills). Use when the user asks "explain the anti-hall DevSwarm integration", "how do I activate the DevSwarm supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supervisor", "recover a stuck DevSwarm workspace", or anything about hivecontrol / DevSwarm workspaces from an anti-hall angle.
+description: Explain and activate anti-hall's optional DevSwarm integration — the hivecontrol reference KB, the workspace-tier orchestration doctrine (a Primary's top fan-out tier is a child workspace, not a subagent — doctrine + guard redirects shipped, no mechanical classifier), and the shipped layered recovery model (child self-report → supervisor poke → escalate-to-parent, automatic path NEVER kills) plus the on-demand devswarm-recover CLI (the only path that ever kills). Use when the user asks "explain the anti-hall DevSwarm integration", "how do I activate the DevSwarm supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supervisor", "recover a stuck DevSwarm workspace", or anything about hivecontrol / DevSwarm workspaces from an anti-hall angle.
 ---
 
 # DevSwarm integration
@@ -17,7 +17,7 @@ project is running DevSwarm, not to this plugin.
 | Addon | Status | Where |
 |---|---|---|
 | **hivecontrol reference KB** | Reference doc | `docs/KB-devswarm-hivecontrol.md` — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the async message-passing coordination model. Repo-clone-only (like all `docs/`, it does not ship with `/plugin install`). |
-| **Workspace-tier orchestration** | **Designed, NOT built** | `docs/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/superpowers/plans/2026-07-06-devswarm-orchestration.md`. Would make the `orchestration` skill workspace-topology-aware (a Primary workspace fans out to child workspaces via `hivecontrol`; children never spawn grandchildren). Do not describe this as active. |
+| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live; mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now told, proactively and at every dispatch point, that a **child workspace** is its top fan-out tier (above subagent/Explore/Workflow) and given the choice rule: `hooks/verify-first-full.js` (rule W, SessionStart), `hooks/verify-first.js` + `hooks/task-tracker.js` (per turn), and the two guard redirects — `hooks/edit-guard.js` / `hooks/command-guard.js` now name `node scripts/devswarm.js spawn <branch> -p "<brief>"` as the Primary's exit instead of "spawn a subagent". Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session see byte-identical output to before. NOT BUILT — there is **no mechanical classifier**: nothing detects "this Agent spawn is workspace-scale" and blocks it (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/superpowers/plans/2026-07-06-devswarm-orchestration.md` (a `devswarm-guard.js` / `devswarm-children.js` enforcement layer) does not exist. Enforcement today = the existing guard BLOCK + a corrected redirect; the tier choice itself is the model's. |
 | **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped** | `companion/devswarm-supervisor.js`, `companion/install-devswarm-supervisor.js`, `companion/lib/{liveness,recovery,target-session,doctor-devswarm}.js`, `hooks/lib/devswarm-detect.js`, `hooks/lib/devswarm-role.js`, `hooks/devswarm-child-role.js`. The automatic background sweep. See "The layered recovery model" below. |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped** | `companion/devswarm-recover.js`. Invoked explicitly, per workspace id, by an operator (or a parent orchestrator acting on an escalation). See "On-demand recovery" below. |
 
@@ -185,12 +185,11 @@ Quick reference:
 | `spawn <branch> [hivecontrol create flags...]` | **v0.58, NEW.** Thin pass-through wrap of `hivecontrol workspace create` (every flag forwards untouched), then best-effort auto-registers the new worktree in the shared store registry. |
 | `merge [hivecontrol merge-into-source flags...]` | **v0.58, NEW.** Thin wrap of `hivecontrol workspace check-merge` + `merge-into-source` (pass-through), then broadcasts the outcome to the mesh. |
 
-## v0.57 mesh — shared per-project store + all-to-all messaging (SHIPPED on `main`, unreleased — Claude-side only)
+## v0.57 mesh — shared per-project store + all-to-all messaging (SHIPPED in v0.58.0 — Claude-side only)
 
-**Status check first:** `plugin.json`'s `version` is still `0.56.0` — this has landed on
-`main` but has no `v0.57` git tag or GitHub Release yet, and the Codex/OMX port has **no**
-mesh support at all (deferred to v0.57.1, owner decision O-D3). Do not describe the Codex
-port as mesh-capable.
+**Status check first:** this mesh substrate shipped in `v0.58.0` (folded in without its own
+`v0.57` git tag or GitHub Release), and the Codex/OMX port has **no** mesh support at all
+(deferred to v0.57.1, owner decision O-D3). Do not describe the Codex port as mesh-capable.
 
 **What changed.** Before v0.57, the store, the ingest daemon, and the Primary/child registry
 were all keyed **per worktree** — a project with 3 linked worktrees had 3 separate stores that
@@ -249,7 +248,7 @@ spoofable `DEVSWARM_REPO_ID` env-var filter — a project only ever sees its own
 Full reference, source-line citations, and the exact schema:
 `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh follow-up" note and §8.8's CLI table.
 
-## v0.58 mesh-only messaging (SHIPPED on `main`, unreleased — Claude-side, see the
+## v0.58 mesh-only messaging (SHIPPED in v0.58.0 — Claude-side, see the
 Codex-parity note below)
 
 v0.57 above ADDED the mesh as a parallel transport; v0.58 makes it the ONLY
@@ -681,9 +680,9 @@ supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supe
 
 ## Relationship to other skills in this plugin
 
-- **orchestration** — today's Workflow-tool + subagent fan-out is unaffected by any of
-  this; the workspace-tier design (unbuilt) would eventually add a DevSwarm-aware branch
-  there.
+- **orchestration** — now DevSwarm-aware: for a Primary it names the child workspace as the
+  tier ABOVE subagent/Explore/Workflow and carries the choice rule. Outside DevSwarm (and in
+  a child workspace) its Workflow-tool + subagent fan-out is unchanged.
 - **doctor** — surfaces the liveness supervisor's per-workspace health as one more
   section, silent when DevSwarm isn't in play.
 - **update** — autonomously installs/refreshes the automatic supervisor AND (as of

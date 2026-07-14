@@ -399,3 +399,147 @@ test('#36 INCLUDE: a descriptor with a MATCHING repoId still gates', () => {
     assert.match(r.json.reason, /same-project/);
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// v0.59 "self-wake" — TEXT-ONLY re-assertion, mirroring devswarm-child-gate.js's
+// reuse pattern exactly: the MAILBOX WAKE line rides along on this SAME neglect-
+// forced-ack, bounded by the SAME per-SET {sig, blocks} cap this file already
+// has. No new state file, no new field. The Primary is the LONGEST-lived DevSwarm
+// session (a child is spun for one matter and archived; the Primary plausibly
+// outlives a cron job's 7-day auto-expiry), so it needs this renewal path most —
+// but it only fires while the gate is ALREADY blocking for a real neglect reason;
+// it is silent on the healthy/no-neglect path (that would need an independent,
+// un-keyed counter — new schema, forbidden).
+// ---------------------------------------------------------------------------
+
+const CLAUDE_PRIMARY_ENV = { DEVSWARM_AI_AGENT: 'claude' };
+const CODEX_PRIMARY_ENV = { DEVSWARM_AI_AGENT: 'codex' };
+
+test('WAKE RE-ASSERT: Claude Primary -> the neglect block reason also carries the CronCreate wake directive (read-primary drain)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 }); // 2 unread
+    const r = run(h.home, stopPayload(), CLAUDE_PRIMARY_ENV);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    const reason = r.json.reason;
+    assert.ok(/MAILBOX WAKE/.test(reason), `reason must re-assert the wake directive; reason=${reason}`);
+    assert.ok(/`CronCreate`/.test(reason), `must name the CronCreate tool; reason=${reason}`);
+    assert.ok(reason.includes('`*/5 * * * *`'), `must carry the default schedule; reason=${reason}`);
+    assert.ok(/inbox read-primary <DEVSWARM_BUILDER_ID>/.test(reason), `Primary must drain with read-primary, not the child pull+read verbs; reason=${reason}`);
+    for (const m of [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)]) {
+      assert.ok(path.isAbsolute(m[1]), `emitted CLI path must be absolute: ${m[1]}`);
+      assert.ok(fs.existsSync(m[1]), `emitted CLI path must exist: ${m[1]}`);
+    }
+  } finally { h.cleanup(); }
+});
+
+test('WAKE INTERVAL: ANTIHALL_DEVSWARM_WAKE_CRON is honored in the Primary re-assertion too', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const env = Object.assign({}, CLAUDE_PRIMARY_ENV, { ANTIHALL_DEVSWARM_WAKE_CRON: '*/1 * * * *' });
+    const r = run(h.home, stopPayload(), env);
+    assert.ok(r.json.reason.includes('`*/1 * * * *`'), `override must be honored; reason=${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+test('WAKE BOUND: rides the SAME per-SET cap the neglect gate already has — no extra block, never wedged', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 }); // 2 unread, unchanging
+    const env = Object.assign({}, CLAUDE_PRIMARY_ENV, { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' });
+    const p = stopPayload('wake-cap-sess');
+    const r1 = run(h.home, p, env);
+    assert.strictEqual(r1.json && r1.json.decision, 'block', 'block #1');
+    assert.ok(/MAILBOX WAKE/.test(r1.json.reason), 'block #1: wake line present');
+    const r2 = run(h.home, p, env);
+    assert.strictEqual(r2.json && r2.json.decision, 'block', 'block #2');
+    assert.ok(/MAILBOX WAKE/.test(r2.json.reason), 'block #2: wake line present');
+    // cap=2 reached -> the SAME cap that already governs the neglect gate silences
+    // both concerns at once; no separate wake-only block exists.
+    const r3 = run(h.home, p, env);
+    assert.strictEqual(r3.status, 0);
+    assert.strictEqual(r3.stdout, '', `must go quiet exactly like the pre-wake gate; got: ${r3.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('CODEX PARITY: a Codex Primary is NEVER told to call CronCreate; the neglect cap is unaffected', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const r = run(h.home, stopPayload(), CODEX_PRIMARY_ENV);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'the neglect block itself is unaffected');
+    assert.ok(!/CronCreate|MAILBOX WAKE/.test(r.json.reason), `Codex must get no wake nag; reason=${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+test('HEALTHY PATH: no neglect -> no block at all, so the wake line does NOT fire either (by design — no independent counter exists to bound it)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 2, verdict: { status: 'alive' } }); // fully acked
+    const r = run(h.home, stopPayload(), CLAUDE_PRIMARY_ENV);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `nothing neglected -> byte-identical no-op (no wake block); got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('NON-DEVSWARM / KILL SWITCH: DISABLE_ANTIHALL_DEVSWARM=1 -> no block at all, even with unread + Claude agent', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const env = Object.assign({}, CLAUDE_PRIMARY_ENV, { DISABLE_ANTIHALL_DEVSWARM: '1' });
+    const r = run(h.home, stopPayload(), env);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `kill switch must silence the hook entirely; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-OPEN: cap state unwritable -> exit 0, never blocks (the wake line rides the SAME persist-or-fail-open path)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const p = stopPayload('unwritable-sess');
+    // Park a DIRECTORY where the state JSON would go, so writeFileSync fails.
+    const stateFilePath = path.join(h.home, '.anti-hall', 'devswarm', 'parent-gate', 'unwritable-sess.json');
+    fs.mkdirSync(stateFilePath, { recursive: true });
+    const r = run(h.home, p, CLAUDE_PRIMARY_ENV);
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `unpersistable cap must fail OPEN (never block); got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+// 7-DAY EXPIRY (scheduled-tasks contract) — same wording contract as the child gate.
+test('WAKE RENEWAL: the Primary re-assertion instructs a CronList RE-VERIFY (re-create if expired), not merely a create', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const r = run(h.home, stopPayload(), CLAUDE_PRIMARY_ENV);
+    const reason = r.json.reason;
+    assert.ok(/`CronList`/.test(reason), `must instruct a CronList verify; reason=${reason}`);
+    assert.ok(/VERIFY|verify/.test(reason), `must be worded as a verify; reason=${reason}`);
+    assert.ok(/RE-CREATE|re-create/i.test(reason), `must instruct re-creation when gone; reason=${reason}`);
+    assert.ok(/expire/i.test(reason) && /7 days/.test(reason), `must state the 7-day auto-expiry; reason=${reason}`);
+    assert.ok(reason.indexOf('`CronList`') < reason.indexOf('`CronCreate`'), `CronList must come before CronCreate; reason=${reason}`);
+  } finally { h.cleanup(); }
+});
+
+// FAIL-OPEN INVARIANT: lib/devswarm-wake.js is loaded LAZILY inside a try/catch. A
+// TOP-LEVEL require would sit OUTSIDE main()'s try/catch, so a lib missing from a
+// package (or throwing on load) would CRASH this Stop hook instead of degrading —
+// verified: pre-fix it exited 1 with an uncaught throw, which on a Stop hook
+// degrades or wedges the user's session. Preload fixture: helpers/break-devswarm-wake.js.
+const BREAK_WAKE = path.join(__dirname, '..', 'helpers', 'break-devswarm-wake.js');
+
+test('FAIL-OPEN: an UNLOADABLE devswarm-wake lib -> the gate still blocks with its PRE-WAKE reason, never crashes', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const env = Object.assign({}, CLAUDE_PRIMARY_ENV, { NODE_OPTIONS: `--require "${BREAK_WAKE}"` });
+    const r = run(h.home, stopPayload(), env);
+    assert.strictEqual(r.status, 0, `must fail OPEN, not crash; stderr=${r.stderr}`);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'the neglect forced-ack itself must survive');
+    assert.ok(!/MAILBOX WAKE/.test(r.json.reason), `the wake line must be dropped, not half-emitted; reason=${r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});

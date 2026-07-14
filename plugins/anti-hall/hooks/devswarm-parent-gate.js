@@ -52,6 +52,20 @@
 // can never hard-loop even if the model ignores the block. Default cap 3
 // (clamped 2..5 via ANTIHALL_DEVSWARM_PARENT_GATE_CAP).
 //
+// WAKE RE-VERIFY (v0.59 "self-wake"): the Primary is the LONGEST-lived DevSwarm
+// session (a child is typically spun for one matter and archived; the Primary
+// plausibly outlives a recurring cron job's 7-day auto-expiry), so it also needs
+// the MAILBOX WAKE re-assertion devswarm-child-role.js hands it at SessionStart
+// (CronList-check, then CronCreate the job that is the only primitive firing
+// while the REPL is IDLE). Text-only, reusing this SAME neglect-forced-ack path
+// and its EXISTING {sig, blocks} state — no new file, no new field, no new cap.
+// This means the wake line rides along ONLY while the Primary is already being
+// blocked for a real neglect reason; it is silent on the healthy/no-neglect path
+// (blocking.length === 0 clears state and returns below) — extending it to that
+// path would need an independent counter un-keyed by the neglect signature, i.e.
+// new schema, which the "no new schema" rule this feature is bound by forbids.
+// Claude-only (CronCreate is a Claude tool).
+//
 // Contract (Claude Code Stop hook):
 //   stdin  : JSON { session_id?, cwd?, ... } — cwd (when present) resolves the
 //            CURRENT worktree's Primary-own-unread summary (#34); falls back to
@@ -82,8 +96,28 @@ const { livenessPathFor, devswarmRoot } = require('../companion/lib/liveness.js'
 // Primary's OWN unread, resolved below via readOwnUnread).
 const installIngest = require('../companion/install-devswarm-ingest.js');
 
+// CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper (see
+// devswarm-child-gate.js's identical const for the P1 rationale: cwd is the
+// project worktree, never the plugin root, so a relative path is unrunnable).
+const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
+
 const GUARD_NAME = 'devswarm-parent-gate';
 const DEFAULT_CAP = 3; // forced-acks per distinct blocking SET
+
+// wakeReassertLine(env, isChild) -> the Stop-gate wake re-verify text, or '' when
+// the agent is not Claude (no CronCreate tool) OR the wake lib cannot be loaded.
+// LAZY + GUARDED require (the same idiom as the repokey load below / edit-guard.js):
+// a top-level require sits OUTSIDE main()'s try/catch, so a lib missing from a
+// package or throwing on load would CRASH this Stop hook instead of failing open.
+// Degrade to the pre-wake reason text — never crash, never wedge the stop.
+function wakeReassertLine(env, isChild) {
+  try {
+    const wake = require('./lib/devswarm-wake.js');
+    return wake.isClaudeAgent(env) ? wake.wakeReassert(env, CLI, isChild) : '';
+  } catch (_) {
+    return ''; // fail-open: pre-v0.59 behavior
+  }
+}
 
 // resolveCap(env) -> int in [2,5]. Absent / non-numeric / out-of-range falls
 // back to the default (fail-open: a typo never disables or unbounds the gate).
@@ -320,7 +354,11 @@ function main() {
     fs.writeFileSync(stateFile, JSON.stringify({ sig, blocks: effectiveBlocks + 1 }), 'utf8');
   } catch (_) { return; }
 
-  const reason = buildReason(blocking, own.id);
+  // WAKE RE-VERIFY (v0.59, reused not re-invented — see header): rides along on
+  // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
+  const wakeLine = wakeReassertLine(process.env, false);
+
+  const reason = buildReason(blocking, own.id) + wakeLine;
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 

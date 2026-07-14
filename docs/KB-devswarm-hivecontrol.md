@@ -5,11 +5,17 @@
 > **`hivecontrol`** CLI, the terminal control surface anti-hall can drive to orchestrate
 > across workspaces. Compiled 2026-07-04 from **20 sources (15 official)** plus **primary
 > evidence gathered by executing `hivecontrol` v2.3.3 and extracting the DevSwarm.app
-> Electron bundle on this machine**.
+> Electron bundle on this machine**. **Re-verified 2026-07-14 against the installed v2.3.5
+> binary** — this pass found the surface materially larger than previously documented: two
+> entire top-level command groups (`jira`, `team`) and one hidden verb (`workspace search`)
+> exist and work, but are **not listed in `hivecontrol --help`'s own top-level output** — see
+> §4.3/§4.4 and §13.
 >
 > **Verify-first headline:** public web sources conclude DevSwarm "has no CLI." That is
-> **false in the strong form** — `hivecontrol` v2.3.3 is real, ships inside `DevSwarm.app`,
-> and is on every workspace's `PATH`. It is simply *undocumented publicly*. Everything in
+> **false in the strong form** — `hivecontrol` v2.3.5 is real, ships inside `DevSwarm.app`,
+> and is on every workspace's `PATH`. It is simply *undocumented publicly* — and, as of the
+> 2026-07-14 pass, **partially undocumented by its own `--help` too** (`jira`/`team`/
+> `workspace search` work but don't appear in the top-level command list). Everything in
 > §4–§7 is **verified by direct local execution / source inspection**, not scraped. Where
 > the two evidence streams diverge, the CLI wins and the divergence is logged in §13.
 >
@@ -22,10 +28,14 @@
 ## Coverage note (verification integrity)
 
 - **20 web/product sources** (15 official: 7 devswarm.ai pages, 6 docs.devswarm.ai pages,
-  2 github.com/devswarm-ai; + 5 community/forum) + **5 primary local-evidence sources** (CLI
-  `--help` v2.3.3, `app.asar` `electron/main.js`, live `DEVSWARM_*` env of this Primary
-  Workspace **plus a live child-workspace probe**, a `hivecontrol repo validate` run, the
-  injected agent system-prompt). Clears the 10-source / 2-official floor comfortably.
+  2 github.com/devswarm-ai; + 5 community/forum) + **6 primary local-evidence sources** (CLI
+  `--help` v2.3.3 → re-verified v2.3.5, `app.asar` `electron/main.js`, live `DEVSWARM_*` env of
+  this Primary Workspace **plus a live child-workspace probe**, a `hivecontrol repo validate`
+  run, the injected agent system-prompt, **and — new in the 2026-07-14 pass — a `grep` sweep of
+  the bundled `devswarm` CLI script itself for `.command("...")`/`new Command("...")`
+  registrations and `DEVSWARM_*` env-var references**, which is how the hidden `jira`/`team`
+  groups and `workspace search` verb were confirmed real rather than guessed). Clears the
+  10-source / 2-official floor comfortably.
 - **Tiering of confidence** (stated, not hidden):
   - **Verified-by-execution** — the entire `hivecontrol` surface (§4), the `.devswarm/config.json`
     schema (§5), the Primary env fingerprint (§6). I ran these.
@@ -50,10 +60,16 @@
   workspace spins up **child workspaces**, assigns scoped tasks, exchanges messages, and
   merges results back [2][3]. It is **powered by the `hivecontrol` CLI** — same name, and the
   CLI is what the in-workspace agent actually calls [P1].
-- **`hivecontrol` v2.3.3** (bundled at `/Applications/DevSwarm.app/Contents/Resources/cli/`,
-  on `PATH`) exposes 4 top-level commands — `workspace`, `repo`, `health`, `open` — with 13
-  `workspace` and 7 `repo` subcommands; **most output JSON for agent parsing** (`configure`/
-  `help`/`--help` print human text) [P1].
+- **`hivecontrol` v2.3.5** (bundled at `/Applications/DevSwarm.app/Contents/Resources/cli/`,
+  on `PATH`) advertises 4 top-level commands in its **own `--help` output** — `workspace`,
+  `repo`, `health`, `open` — with 13 `workspace` and 7 `repo` subcommands. **It actually ships
+  6**: two more groups, `jira` (14 subcommands, Jira issue/sprint/version/worklog CRUD via
+  DevSwarm's stored OAuth) and `team` (5 subgroups: `metrics`, `members`, `workspace`,
+  `session`, `conversation` — org analytics, Team-plan gated), work when invoked directly but
+  are **omitted from the top-level `--help` command list** — genuinely hidden, not merely
+  under-documented. `workspace` also has a 14th, similarly hidden verb: `search` (Team-plan
+  gated). See §4.3/§4.4. **Most output JSON for agent parsing** (`configure`/`help`/`--help`
+  print human text) [P1].
 - **Hierarchy is derived from one text field:** a workspace's `sourceBranch` = its parent's
   branch. **Root/Primary ⇒ `sourceBranch === ""`.** There is no `parentId`/`depth`/`role`
   column [P2]. The live env exposes this as **`DEVSWARM_SOURCE_BRANCH`** (empty = primary).
@@ -72,7 +88,7 @@
 | Name | What it actually is | Relevant here? |
 |---|---|---|
 | **devswarm.ai** (org `devswarm-ai`, bundle id `com.twentyfirstidea.devswarm`) | The commercial multi-workspace AI IDE this KB is about | ✅ **yes** |
-| **`hivecontrol`** (CLI) | The **bundled** DevSwarm CLI (`/Applications/DevSwarm.app/.../cli/hivecontrol`, v2.3.3). `hivecontrol` is a POSIX-sh wrapper that execs the real `devswarm` binary in the same dir (sets `DEVSWARM_INVOKED_AS=hivecontrol`) | ✅ **yes — the control surface** |
+| **`hivecontrol`** (CLI) | The **bundled** DevSwarm CLI (`/Applications/DevSwarm.app/.../cli/hivecontrol`, v2.3.5). `hivecontrol` is a POSIX-sh wrapper that execs the real `devswarm` binary in the same dir (sets `DEVSWARM_INVOKED_AS=hivecontrol`) | ✅ **yes — the control surface** |
 | **"HiveControl"** (feature) | devswarm.ai's marketing name for the parent/child delegation system [2][3] — implemented *by* the `hivecontrol` CLI | ✅ same product |
 | `@devswarm/cli` (npm, by `chad3814`) | Unrelated npm package [20] | ❌ no |
 | `justrach/devswarm` | Unrelated Zig MCP tool (`.devswarm/config.toml`, telemetry) | ❌ no |
@@ -109,7 +125,7 @@ migrations) [P2]:
   migration `0028`): marks the one workspace-per-repo that was created first or whose
   `worktreePath === repo.path`. A UI/onboarding concept — **not** the parent/child graph [P2].
 - **Worktree layout:** `git worktree add` into `~/.devswarm/repos/<seq>/<hex8>/<sanitizedBranch>`
-  (observed live: `~/.devswarm/repos/1/1dd6a56e/probe-devswarm-env-check`) [P2][P3].
+  (observed live: `~/.devswarm/repos/1/<hex8>/probe-devswarm-env-check`) [P2][P3].
 - **Ports:** hard-coded range **2000–9999**, assigned **per-builder in memory** (not
   DB-persisted) [P2].
 - **All user/agent docs are baked into JS string literals** — there are **no** standalone
@@ -118,7 +134,7 @@ migrations) [P2]:
 
 ---
 
-## 4. The `hivecontrol` CLI — command reference (v2.3.3, verified)
+## 4. The `hivecontrol` CLI — command reference (v2.3.5, verified)
 
 > **Re-verified 2026-07-12 against `hivecontrol` v2.3.4 (bumped from 2.3.3 — patch-level
 > only).** Ran `--version` and every `--help` one level deep (`workspace`, `repo`, `health`,
@@ -129,23 +145,47 @@ migrations) [P2]:
 > `update-base`, `-i/-t` on `monitor`). No `--json` flag exists anywhere (JSON is the
 > unconditional default output, confirmed by the top-level help's "All commands return JSON
 > for easy parsing by AI agents" line — not an opt-in flag). No `archive`/`delete`/`status`
-> subcommand exists at any level — the "GUI-only teardown" gap in §10/§8.6 is still real.
-> Everything below this note remains accurate for 2.3.4; only the version pin is stale.
+> subcommand exists at any level (still true at 2.3.5 too) — the "GUI-only teardown" gap in
+> §10/§8.6 is still real.
+>
+> **Re-verified 2026-07-14 against `hivecontrol` v2.3.5 (bumped from 2.3.4) — surface materially
+> larger than the 2.3.3/2.3.4 passes found.** The earlier passes ran `--help` one level deep
+> from the top-level `--help` command LIST and concluded the surface was exhaustive. It wasn't:
+> `hivecontrol --help`'s own "Commands:" section lists only `repo`, `workspace`, `health`,
+> `open`, `help` — but `hivecontrol jira --help` and `hivecontrol team --help` both return real,
+> fully-documented command trees (exit 0), and `hivecontrol workspace search --help` returns a
+> real, fully-documented leaf command not listed in `hivecontrol workspace --help`'s own command
+> list either. Confirmed these aren't a fluke three ways: (1) each returns full `--help` text
+> with its own options/description, not a "command not found" error; (2) `hivecontrol workspace
+> search <query>` (no `--help`) returns a **structured JSON error** (`TEAM_SUBSCRIPTION_REQUIRED`)
+> rather than a CLI usage error, meaning it reached real command-handling code; (3) `grep`ing the
+> bundled `devswarm` script for `new Command("...")` registrations turned up exactly these groups
+> (`jira`, `team`, `search`, plus `workspace`/`repo`'s own known subgroups) and no others — see
+> §4.3/§4.4 for the full `jira`/`team` reference and §4.1 for `workspace search`. Also grepped for
+> `.command("...")` leaf registrations to catch anything `--help` might still be hiding; the two
+> stray `lint`/`serve`/`watch` hits that surfaced were verified to be **example code inside a JS
+> comment**, not registered commands — see the false-lead note in §13. Everything else (§4.1's 13
+> listed `workspace` subcommands, §4.2's 7 `repo` subcommands, all flags) is **byte-for-byte
+> unchanged** from the 2.3.4 pass — same flags, same `-t/--title` on `create`, same `--tree`,
+> same `-w/-y/-s` on `update-base`, same `-i/-t` on `monitor`, no `--json` flag, no
+> `archive`/`delete`/`status` verb at any level.
 
 Bundled at `/Applications/DevSwarm.app/Contents/Resources/cli/{hivecontrol,devswarm}`; on the
 `PATH` of every workspace shell. **Most commands return JSON** for agent parsing (`configure`
 and `help`/`--help` print human-readable text) [P1]. Invoke `hivecontrol --help`.
 
-**Top-level:** `workspace` · `repo` · `health` (exit 0 healthy / 1 unhealthy) · `open [path]`.
+**Top-level, per `hivecontrol --help`'s own command list:** `workspace` · `repo` · `health`
+(exit 0 healthy / 1 unhealthy) · `open [path]`. **Actually 6 — `jira` and `team` also exist and
+work but are absent from this list** (§4.3/§4.4).
 
-### 4.1 `hivecontrol workspace` (13 subcommands)
+### 4.1 `hivecontrol workspace` (13 documented subcommands + 1 hidden)
 
 | Command | Purpose |
 |---|---|
 | `list children [--tree]` | Your direct children (JSON); `--tree` = your subtree as ASCII |
 | `list all [--tree]` | Every workspace in the repo (flat JSON); `--tree` = full ASCII hierarchy |
 | `info [idOrBranch]` | Workspace details (branch, path, agent, terminal, **`sourceBranch`**, children[]); defaults to current |
-| `create <branch>` | Create a workspace. Flags: `-s/--source <branch>` (default: **your current branch**), `-a/--agent <agent>` (default `claude`), `-p/--prompt <text>`, `-t/--title <title>`, `-r/--remote` (use existing remote branch) |
+| `create <branch>` | Create a workspace. Flags: `-s/--source <branch>`, `-a/--agent <agent>` (default `claude`), `-p/--prompt <text>`, `-t/--title <title>`, `-r/--remote` (use existing remote branch). **Default value of `-s/--source` is internally inconsistent in the CLI's own text** — see the callout below the table |
 | `update-title <title>` | Set display title (`-b/--branch` to target another) |
 | `check-merge` | JSON: `isMergeable`, `hasConflicts`, `targetDirectoryClean` + source/current paths. Run **from your workspace dir** |
 | `merge-from-source` | `git merge` source **INTO** current workspace |
@@ -156,6 +196,16 @@ and `help`/`--help` print human-readable text) [P1]. Invoke `hivecontrol --help`
 | `read-messages` | Read unread messages (**marks them read**) |
 | `message-count` | Unread count (does **not** mark read) |
 | `monitor [-i secs] [-t secs]` | Poll for messages until they arrive, then exit with them. `-i/--interval` default **3s**, `-t/--timeout` default none |
+| `search [query] [options]` **(hidden — v2.3.5 finding)** | **Not listed in `hivecontrol workspace --help`'s own command table**, but `hivecontrol workspace search --help` returns full, real help. "Search unified knowledge across your team's workspaces and prompts (Team plan)." Options: `--user <userId>`, `--since <range>` (e.g. `7d`, `30d`), `--status <state>` (`active`\|`archived`\|`any`), `--limit <n>` (default 20), `--explain` (per-result scoring breakdown), `--org <id>`. **Gated**: running it without a Team subscription returns a structured JSON error, `{"success": false, "error": "...requires a Team subscription...", "code": "TEAM_SUBSCRIPTION_REQUIRED", "hint": "..."}`, exit 1 — verified live on this (non-Team) install; the search behavior itself past that gate is **UNVERIFIED** (present in the CLI surface; behavior not verified). Confirmed genuinely part of the product, not a fluke: the bundled `devswarm` script's own baked-in AI-agent system-prompt text (`WORKSPACE_SEARCH_REFERENCE_LINE`/`WORKSPACE_SEARCH_MAPPING_ROW`) references this exact command and is conditionally appended only `if (entitlements.team)`. |
+
+> **`-s/--source` default — the CLI's own text disagrees with itself, both readings verified
+> verbatim, neither edited.** `hivecontrol --help`'s top-level prose says: *"When you create a
+> workspace, it uses YOUR CURRENT BRANCH as source by default."* But `hivecontrol workspace
+> create --help` prints the flag itself as `-s, --source <branch>  Source branch to branch from
+> (default: main)`. Both were captured directly from the v2.3.5 binary in the same session — this
+> is not a KB transcription error, the CLI genuinely says two different things in two different
+> help surfaces. Unverified which one the code actually does when `-s` is omitted; treat as
+> UNVERIFIED and pass `-s/--source` explicitly to avoid relying on either claimed default.
 
 **Key semantics baked into the help** [P1]: *"When you create a workspace, it uses YOUR
 CURRENT BRANCH as source by default. This makes the new workspace a child of your current
@@ -173,6 +223,76 @@ parent)."* `<branch>` **is** the workspace identifier — there is no separate n
 | `port-vars {list,add <NAME>,remove <NAME>}` | Per-workspace unique-port variables |
 | `worktree-include {list,add <PATH>,remove <PATH>}` | Files copied source→workspace at creation (alias: `file-patterns`, deprecated) |
 | `scripts {get,set setup <cmd>,unset setup}` | The setup script (runs in a terminal tab on workspace creation) |
+
+### 4.3 `hivecontrol jira` (14 subcommands) — **hidden group, v2.3.5 finding**
+
+**Not listed in `hivecontrol --help`'s top-level command table**, but `hivecontrol jira --help`
+returns full, real help: *"Read & write Jira issues from the CLI using DevSwarm's stored OAuth
+tokens. All output is JSON."* Confirmed genuinely part of the product (not a fluke or a stub):
+the bundled `devswarm` script's own baked-in AI-agent guidance text (`JIRA_GUIDANCE_SECTION`,
+conditionally appended `if (entitlements.jira)`) tells the in-workspace AI agent to *"prefer
+`hivecontrol jira` over any Atlassian/Jira MCP server."* All subcommands infer the issue key
+from the current branch (e.g. `SWARM-123/...`) when `[key]` is omitted.
+
+| Command | Purpose / flags |
+|---|---|
+| `auth [--start] [--reauth]` | Show auth status. `--start` kicks off OAuth if not signed in; `--reauth` forces disconnect+restart (useful after DevSwarm bumps OAuth scopes) |
+| `disconnect` | Clear stored Jira OAuth tokens |
+| `me` | Show the current authenticated Jira user |
+| `projects` | List Jira projects available to the authenticated user |
+| `get [key]` | Fetch a single issue by key |
+| `search [options]` | Run a JQL search. `--jql <jql>`, `--limit <n>` (default 50), `--next-page-token <token>`, `--fields <list>` (default `summary,status,assignee,priority,issuetype,created,updated,labels,parent`), `--no-scope` (query is auto-scoped to the repo's linked Jira project by default) |
+| `transitions [key]` | List valid status transitions for an issue (names + IDs vary per project workflow) |
+| `create [options]` | Create an issue; returns `{ id, key, self }`. **`--type <type>` and `--summary <text>` are REQUIRED** (verified in source: `.requiredOption(...)`, not just `--help` prose). Also: `--project <key>` (defaults to the repo's linked project), `--description <text>` (markdown-lite: blank-line paragraphs, `## `/`### ` headings, `- ` bullets, `1. ` numbered lists), `--parent <key>`, `--assignee <id>` (or `me`), `--labels <list>` (comma-separated), `--sprint <id>` (numeric), `--fix-version <value...>` (repeatable), `--field <kv...>` (repeatable; JSON-parses values starting with `[`/`{`) |
+| `update [options] [key]` | Partial update — only passed fields are touched. Same field flags as `create` minus `--type`/`--project`/`--parent`/`--assignee` (no `--assignee` here; use `assign` below) |
+| `transition [options] [key]` | `--to <name>` — apply a transition by name (e.g. `"In Review"`); an invalid name's error lists valid transitions |
+| `comment [options] <text>` | `--key <key>` for explicit issue (else branch-inferred) |
+| `assign [options] [key]` | `--me`, `--user <accountId>`, or `--unassign` |
+| `versions {list,create,update}` | `list [projectKey]`; `create` (`--project`, `--name` **required**, `--description`, `--start-date`, `--release-date`, `--released`); `update <id>` (`--name`/`--description`/`--start-date`/`--release-date`, at least one required — release-state changes are deliberately not exposed) |
+| `sprints {boards,list}` | `boards [projectKey]`; `list <boardId>` (`--state active\|closed\|future`) |
+| `worklog {list,add}` | `list [key]`; `add [key]` (`--time <duration>` e.g. `"1h 30m"`, or `--seconds <n>`, `--comment <text>`, `--started <iso>`, defaults to now) |
+
+**Verified env var (new, not previously documented):** `DEVSWARM_NO_AUTO_AUTH` — when a `jira`
+command hits an auth error, the CLI auto-launches the OAuth flow by default; setting
+`DEVSWARM_NO_AUTO_AUTH=1` (or any truthy value other than `"false"`/`"0"`/empty) disables that
+auto-launch (verified in source: `shouldAutoAuth()` reads `process.env.DEVSWARM_NO_AUTO_AUTH`).
+
+> **Documentation bug found in the CLI itself, not this KB — verified in source, not guessed.**
+> The bundled `devswarm` script's own agent-facing guidance text (`JIRA_GUIDANCE_SECTION`, shown
+> to the AI agent inside a DevSwarm workspace) gives the example `hivecontrol jira create -s
+> "<summary>" -d "<description>"`. **`-s`/`-d` are not real flags on `jira create`** — the actual
+> registered options (confirmed via both `--help` and a source grep for `.requiredOption`/
+> `.option` on the `create` command) are the long-form `--summary <text>` and `--description
+> <text>` only; `--type` is also required and isn't mentioned in that example at all. An agent
+> that copies the in-app example verbatim will get a CLI usage error. Use the flags in the table
+> above, not the in-app example.
+
+### 4.4 `hivecontrol team` (5 subgroups) — **hidden group, v2.3.5 finding, Team-plan gated**
+
+**Not listed in `hivecontrol --help`'s top-level command table**, but `hivecontrol team --help`
+returns full, real help: *"Team search, metrics, and analytics. Output is structured JSON
+intended for an AI agent to consume."* Every leaf command below returned real, detailed
+`--help` text on this (non-Team) install; **actually invoking any of them without a Team
+subscription is expected to fail with the same `TEAM_SUBSCRIPTION_REQUIRED` JSON error shape
+observed for `workspace search`** (§4.1) — not independently re-verified per-subcommand here
+(would require running a mutating-adjacent probe against every leaf; the `workspace search`
+probe already established the gate's error shape once, which is sufficient — repeating it 13
+more times adds no new information). Treat every field/response-shape claim below as **present
+in the CLI surface; response payload not verified** (only the `--help` text and the gating
+error class were observed).
+
+| Command | Purpose / flags |
+|---|---|
+| `metrics token-leaderboard [options]` | Token consumption leaderboard per member. Returns `{ entries, nextCursor, totalCount }` (per `--help`; payload unverified). `--since <range>` (default `30d`), `--sort <total_tokens\|cost\|percent_change>` (default `total_tokens`), `--org <id>`, `--project <id\|slug>` |
+| `metrics adoption [options]` | DAU/WAU/MAU, activation rate, engagement tiers, trend. `--since`, `--org`, `--project` (same shape as above) |
+| `metrics kpis [options]` | Avg/peak parallelism, PRs merged/dev/week, KPI cards with sparklines. `--since`, `--org`, `--project` |
+| `metrics summary [options]` | One-call aggregate of the three `metrics` commands above, run in parallel. `--focus <tokens\|adoption\|kpis>` restricts to one area (default: all). `--since`, `--org`, `--project`. Per `--help`: *"returns raw data only"* — no LLM synthesis happens server-side |
+| `members [options]` | List org members. `--search <name>`, `--org <id>` |
+| `workspace info <id> [--org <id>]` | Workspace detail: metadata + recent sessions + founding prompt |
+| `workspace owners <id> [--org <id>]` | Per-workspace user session counts |
+| `session info <id> [--org <id>]` | Session detail with workspace summary + author |
+| `session messages <id> [options]` | Session messages with pagination: `--around <promptId>`, `--before <n>`, `--after <n>`, `--cursor <token>`, `--org <id>` |
+| `conversation list [options]` | Chronological conversation listing. `--workspace <id>`, `--session <id>`, `--user <userId>`, `--since <range>`, `--until <iso>`, `--order asc\|desc` (default `desc`), `--cursor <token>`, `--org <id>` |
 
 ---
 
@@ -208,17 +328,24 @@ meaning [P2]:
 
 | Var | Observed (Primary) | Meaning / use |
 |---|---|---|
-| `DEVSWARM_REPO_ID` | `3f7313be-…` | Present ⇒ **inside DevSwarm** (the "am I in a workspace?" flag) |
+| `DEVSWARM_REPO_ID` | `a1b2c3d4-…` | Present ⇒ **inside DevSwarm** (the "am I in a workspace?" flag) |
 | `DEVSWARM_SOURCE_BRANCH` | **`` (empty)** | **Parent's branch. Empty ⇒ root/Primary; non-empty ⇒ child.** The role signal |
 | `DEVSWARM_DEFAULT_BRANCH` | `main` | Repo default branch |
 | `DEVSWARM_AI_AGENT` | `claude` | Active agent (`claude`/`codex`/`gemini`/…) — selects the OMC vs OMX path |
-| `DEVSWARM_BUILDER_ID` | `1a4a909a-…` | This workspace's DB row id |
-| `DEVSWARM_BUILDER_NAME` | `main-3f7313be` | Derived from branch+repo; use to isolate paths/volumes/db names across workspaces [11] |
-| `DEVSWARM_NAME` | `Term:main-3f7313be` | Terminal/workspace display name |
-| `DEVSWARM_CLI_PORT` / `DEVSWARM_HTTP_PORT` | `47836` | Local HTTP API port the CLI talks to |
+| `DEVSWARM_BUILDER_ID` | `e5f6a7b8-…` | This workspace's DB row id |
+| `DEVSWARM_BUILDER_NAME` | `main-a1b2c3d4` | Derived from branch+repo; use to isolate paths/volumes/db names across workspaces [11] |
+| `DEVSWARM_NAME` | `Term:main-a1b2c3d4` | Terminal/workspace display name |
+| `DEVSWARM_CLI_PORT` / `DEVSWARM_HTTP_PORT` | `<port>` | Local HTTP API port the CLI talks to |
 | `DEVSWARM_SPAWNED` | `1` | **Process-tree bookkeeping — `1` even for Primary. NOT a hierarchy signal** (name is misleading) [P2] |
-| `DEVSWARM_PARENT_PID` | `9687` | Electron parent **PID** (not a parent workspace) [P2] |
+| `DEVSWARM_PARENT_PID` | `<pid>` | Electron parent **PID** (not a parent workspace) [P2] |
 | `DEVSWARM_BUN_PATH`, `DEVSWARM_SHELL_READY_MARKER` | … | Runtime plumbing (bun binary, `🤖 Ready for AI` prompt marker) |
+| `DEVSWARM_NO_AUTO_AUTH` | *(unset)* | **New in the v2.3.5 pass — read by the CLI script itself, not the Electron app**, so it's not part of the live shell fingerprint above (not observed in this Primary's env). Set it (any value other than `"false"`/`"0"`/empty) to stop `hivecontrol jira` from auto-launching an OAuth flow on an auth error. See §4.3 |
+
+> **Not a real env var — ruled out during the v2.3.5 pass.** A `grep` for `DEVSWARM_[A-Z_]+`
+> across the bundled `devswarm` script also matched `DEVSWARM_CLI_REFERENCE`, but that's a local
+> JS `const` identifier (`var DEVSWARM_CLI_REFERENCE = \`hivecontrol workspace create ...\``,
+> baked-in agent-guidance text), never read via `process.env` — checked directly in source. Not
+> an environment variable; listed here only to record that it was checked and excluded.
 
 **Role-detection recipe (for anti-hall):**
 ```
@@ -725,10 +852,11 @@ another monitor consumer is already running** (lockfile), mechanically enforcing
 single-native-consumer invariant — two concurrent `monitor` consumers split the destructive
 queue and silently lose messages.
 
-**v0.57 mesh follow-up (SHIPPED — Claude-side only; Codex/OMX mesh support DEFERRED to
-v0.57.1, owner decision O-D3 — do not describe the Codex port as mesh-capable).** As of this
-writing, `plugin.json` is still `0.56.0` (this work has landed on `main`, unreleased/untagged
-— see `docs/KB.md`'s version row). Everything below replaces the pre-0.57 **per-worktree**
+**v0.57 mesh follow-up (SHIPPED in v0.58.0 — Claude-side only; Codex/OMX mesh support
+DEFERRED to v0.57.1, owner decision O-D3 — do not describe the Codex port as
+mesh-capable).** This work landed without its own `v0.57` git tag — it shipped folded
+into the `v0.58.0` release (see `docs/KB.md`'s version row for the current `plugin.json`
+version). Everything below replaces the pre-0.57 **per-worktree**
 identity/store/daemon model with a **per-project** one: every linked worktree of one repo now
 shares ONE store, ONE registry, and ONE ingest daemon, and can message every other worktree
 of the same project directly (all-to-all "mesh"), not just its own parent/child pair.
@@ -936,8 +1064,8 @@ of the same project directly (all-to-all "mesh"), not just its own parent/child 
   (`plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`) does not yet describe or
   ship any mesh capability — do not claim otherwise until v0.57.1 lands.
 
-**v0.58 "mesh-only messaging" (SHIPPED — on `main`, unreleased; `plugin.json` still
-`0.56.0` as of this writing, see `docs/KB.md`'s version row).** Where v0.57 above ADDED the
+**v0.58 "mesh-only messaging" (SHIPPED in v0.58.0; see `docs/KB.md`'s version row for the
+current `plugin.json` version).** Where v0.57 above ADDED the
 mesh as a parallel, daemon-independent transport, v0.58 makes it the ONLY agent-initiated
 transport for DevSwarm coordination — a **REPLACE**, not an additional option.
 
@@ -1047,6 +1175,15 @@ transport for DevSwarm coordination — a **REPLACE**, not an additional option.
   not describe it as shipped. What v0.58 actually ships is: the mesh directive keeps a
   session that IS taking turns checking in every turn, and the supervisor's escalate-on-
   urgent path below is the mechanism for a session that has gone genuinely stale.
+- **v0.59.0 UPDATE — the Tier-2-shaped gap above is now partially closed, by a different
+  mechanism than the deferred runner-wrap.** `CronCreate` (a Claude Code tool whose jobs
+  fire while the REPL is IDLE) lets a Claude workspace schedule its own recurring
+  mailbox-drain — see `hooks/lib/devswarm-wake.js` and §11. This is still not the
+  runner-wrap/stdin-injection fallback named DEFERRED above (that remains unbuilt), and it
+  is still Claude-only (Codex has no `CronCreate` tool, so it still relies purely on the
+  resting-poll posture); but for a Claude workspace it directly answers "nothing wakes a
+  genuinely idle session" — a scheduled cron tick now does. Treat the caveat above as
+  historically accurate for what v0.58 shipped, not as anti-hall's current state.
 - **Supervisor escalate-on-urgent (Tier 0, additive — `companion/devswarm-supervisor.js`,
   NEVER kills).** `readMeshUrgency()` (`devswarm-supervisor.js:116`) resolves a stale
   descriptor's project `repoKey` and reads that project's `summaries/<repoKey>.json` (the
@@ -1365,10 +1502,22 @@ bounded `message-count`/`read-messages` pair).
 
 ## 10. Gotchas / limitations
 
-- **No public CLI or config docs.** `hivecontrol` and `.devswarm/config.json` are undocumented
-  on the web; the public GitHub repo is "landing + issue tracker" only, no product source [14].
-  Build against the **installed** `--help`, and pin behaviour to the observed version (2.3.3).
+- **No public CLI or config docs — and, per the v2.3.5 pass, the CLI's OWN `--help` is
+  incomplete too.** `hivecontrol` and `.devswarm/config.json` are undocumented on the web; the
+  public GitHub repo is "landing + issue tracker" only, no product source [14]. Beyond that, the
+  installed binary's own `hivecontrol --help` omits two entire command groups (`jira`, `team`)
+  and one verb (`workspace search`) that are real and functional (§4.3/§4.4) — don't treat
+  `--help`'s top-level command list as exhaustive; a source grep for `new Command(...)` is what
+  actually surfaced the full set. Build against the **installed** `--help` (and a source grep
+  where available), and pin behaviour to the observed version (currently 2.3.5).
 - **`worktree-include`: creation-time only, exact-names-only, no retro-sync** [12].
+- **`jira create` requires `--type` and `--summary`; the CLI's own in-app agent guidance text
+  gives a broken example (`-s`/`-d` short flags that don't exist).** See §4.3's callout —
+  verified against the source's `.requiredOption(...)` calls, not just `--help` text.
+- **`team` group and `workspace search` are Team-plan gated.** Every leaf returns real `--help`;
+  actually running one against a non-Team org returns a structured `TEAM_SUBSCRIPTION_REQUIRED`
+  JSON error (verified for `workspace search`; the same gate is expected, not independently
+  re-verified, for each `team` leaf — see §4.4).
 - **No CLI teardown.** No `hivecontrol` command deletes/archives/removes a workspace — cleanup
   (worktree + branch) is **GUI-only** [P1] (archive keeps disk contents, delete removes worktree
   files; both keep git history). Scripted orchestration can create workspaces but not reap them.
@@ -1391,14 +1540,36 @@ bounded `message-count`/`read-messages` pair).
 - **New capability, not a rewrite.** The integration in §8 is additive: a **detection layer**
   (§6 recipe) + a **workspace-tier branch** in the orchestration skill that only activates when
   `DEVSWARM_REPO_ID` is set and role = Primary; otherwise the skill is byte-for-byte today's
-  behaviour. This must land in **both** `plugins/anti-hall/skills/orchestration/SKILL.md` **and**
+  behaviour. This landed in **both** `plugins/anti-hall/skills/orchestration/SKILL.md` **and**
   its Codex mirror `plugins/anti-hall/codex/skills/anti-hall-*/` (dual-platform mandate), with a
   parallel OMC/OMX table (§8.4).
 - **Reuse existing guards** — `git-guard`, `merge-gate`, and the swarm/anti-deep-nesting pattern
   map directly onto the workspace tier (§8.5); the "no child-of-child" rule is the same
   philosophy at a coarser grain.
-- **Concrete follow-up = task #5** (Design DevSwarm-aware workspace-tier orchestration), blocked
-  on this KB. Resolve §8.6's open questions in a brainstorm/plan-mode pass before any code.
+- **SHIPPED in v0.59.0 as injected DOCTRINE, not mechanical enforcement.** A DevSwarm
+  Primary is now told, at SessionStart and at both guard-block points
+  (`hooks/edit-guard.js`/`hooks/command-guard.js`), that a child workspace
+  (`devswarm.js spawn <branch> -p "<brief>"`) is its top fan-out tier ahead of a subagent.
+  There is still **no mechanical scale classifier** — nothing detects "this spawn is
+  workspace-scale" and blocks it (deliberate: a false positive would break legitimate
+  subagent use); the tier choice remains the model's. A DevSwarm **child** workspace and
+  any **non-DevSwarm** session see byte-identical behaviour to before. The fuller
+  enforcement-layer design in `docs/superpowers/specs/2026-07-05-devswarm-orchestration-
+  design.md` + `docs/superpowers/plans/2026-07-06-devswarm-orchestration.md` remains
+  unbuilt; resolving §8.6's open questions in a brainstorm/plan-mode pass is the
+  prerequisite before any of that enforcement layer is coded.
+- **Idle self-wake (SHIPPED in v0.59.0).** §8's "Honest wake-mechanism caveat" gap: a DevSwarm workspace
+  going idle had nothing to wake it when a mesh message landed after its last turn ended.
+  A SessionStart directive (`hooks/lib/devswarm-wake.js`) now tells a Claude workspace to
+  self-schedule a recurring mailbox-drain via the `CronCreate` tool — the only primitive
+  confirmed to fire while the REPL is idle — default `*/5 * * * *`, tunable via
+  `ANTIHALL_DEVSWARM_WAKE_CRON` (cron-charset-validated so the env var cannot smuggle a
+  prompt-injection payload into the model-visible directive). A bounded Stop-gate
+  re-verify on `devswarm-child-gate`/`devswarm-parent-gate` re-creates the job when it has
+  auto-expired (recurring cron tasks self-delete 7 days after creation). Claude-only by
+  construction (`CronCreate` is a Claude tool, not something a hook process can call
+  itself); a Codex/non-Claude workspace gets the honest "no idle-wake primitive, drain
+  every turn" fallback instead of being told to call a tool it doesn't have.
 - **anti-hall's own DevSwarm state** (this session): `.devswarm/config.json` carries
   `worktreeInclude: [".claude/settings.local.json"]` so child workspaces inherit the local
   bypass — a live, working example of the `worktree-include` mechanism this KB documents.
@@ -1407,9 +1578,9 @@ bounded `message-count`/`read-messages` pair).
 
 ## 12. Sources
 
-**Primary evidence — verified on this machine, 2026-07-04 (5):**
-(P1) `hivecontrol --help` / per-subcommand `--help`, **v2.3.3** — full CLI surface, JSON I/O,
-parent-child + coordination protocol ·
+**Primary evidence — verified on this machine, 2026-07-04 (5) + 2026-07-14 (1 more) (6):**
+(P1) `hivecontrol --help` / per-subcommand `--help`, **v2.3.3 → re-verified v2.3.5** — full CLI
+surface, JSON I/O, parent-child + coordination protocol ·
 (P2) DevSwarm.app `app.asar` → `electron/main.js` (zod config schema @25385; system-prompt
 @~75380–75800) + 46 Drizzle migrations — hierarchy=`sourceBranch`, `builderType`, port range
 2000–9999, merge plumbing ·
@@ -1418,7 +1589,13 @@ parent-child + coordination protocol ·
 (`probe/devswarm-env-check`) confirming child `DEVSWARM_SOURCE_BRANCH=main`, the gitignored
 `graphify-out/`, and the parent↔child message loop ·
 (P4) `hivecontrol repo validate` run — confirmed schema/`worktreeInclude` write ·
-(P5) Injected DevSwarm agent system-prompt (this workspace) — NL→CLI mapping, coordination protocol.
+(P5) Injected DevSwarm agent system-prompt (this workspace) — NL→CLI mapping, coordination protocol ·
+(P6, new 2026-07-14) `grep` sweep of the bundled `devswarm` CLI script itself (v2.3.5,
+`/Applications/DevSwarm.app/Contents/Resources/cli/devswarm`) for `.command("...")` /
+`new Command("...")` registrations and `DEVSWARM_[A-Z_]+` references — the source-level
+confirmation that surfaced the hidden `jira`/`team` groups and `workspace search` verb (§4.3/
+§4.4), ruled out `DEVSWARM_CLI_REFERENCE` as a real env var, and confirmed `jira create`'s
+`--type`/`--summary` are `.requiredOption(...)` in code (not just `--help` prose).
 
 **Official — devswarm.ai (7):**
 (1) [DevSwarm homepage](https://devswarm.ai/) ·
@@ -1469,7 +1646,24 @@ parent-child + coordination protocol ·
   re-verify against `--help` after a DevSwarm update. **Re-verified 2026-07-12 at v2.3.4** —
   full `--help` surface (top-level + all `workspace`/`repo` subcommands) is byte-for-byte
   identical in structure to the 2.3.3 surface documented in §4; no new subcommands, flags,
-  or removed commands. Treat the CLI-surface facts as current through 2.3.4.
+  or removed commands (relative to what §4 documented at the time — see the next entry for what
+  that pass actually missed). Treat the CLI-surface facts as current through 2.3.4.
+- **Re-verified 2026-07-14 at v2.3.5 — the "zero surface changes" conclusion of the 2.3.3→2.3.4
+  passes was correct as far as it went, but both passes had scoped their audit to `hivecontrol
+  --help`'s own top-level command LIST and gone one level deep from there. That list was
+  incomplete, so both prior passes inherited the gap.** The v2.3.5 pass instead grepped the
+  bundled `devswarm` script's source for command registrations (`new Command(...)` /
+  `.command(...)`), which is how it found `jira` (14 subcommands) and `team` (5 subgroups) —
+  two entire top-level groups that work when invoked directly but are absent from
+  `hivecontrol --help`'s printed command table — plus a hidden `workspace search` verb absent
+  from `hivecontrol workspace --help`'s own table. All are documented in §4.3/§4.4/§4.1. Also
+  found: the `DEVSWARM_NO_AUTO_AUTH` env var (§6), the `jira create` required-flags fact and the
+  in-app example's `-s`/`-d` bug (§4.3), and confirmed (not assumed) that stray `lint`/`serve`/
+  `watch` grep hits in the same source file are example code inside a JS **comment**, not
+  registered commands — ruled out explicitly rather than silently omitted, so a future pass
+  doesn't have to re-derive that. **Lesson for the next re-verification pass:** don't rely on
+  `--help`'s own command list as the audit boundary; grep the source for command registrations
+  first, then `--help` each one found that way.
 - **Vendor productivity claims** ("5×") are self-reported, not independently benchmarked [5][18];
   the "19% slower" counter-figure is reported by DevSwarm's blog [5] citing METR (2025), not a
   direct METR source here.

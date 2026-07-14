@@ -687,3 +687,72 @@ test('DEVSWARM FILE-READ gate off: inbox cat allowed when DevSwarm inactive', ()
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// WORKSPACE-TIER REDIRECT on the HEAVY-COMMAND block (P0: the block reason used to
+// name "spawn a subagent" as the only exit even for a DevSwarm PRIMARY, at the exact
+// decision point where a workspace-scale matter should have been spun as a child
+// workspace). WHAT is blocked is unchanged (same isHeavyCommand decision, same exit 2);
+// only the redirect TEXT changes, and only for a Primary.
+
+// Heavy-command run under an explicit env (DevSwarm Primary / child / none).
+function runHeavy(command, extraEnv) {
+  const h = makeHome();
+  try {
+    return testHook(HOOK, bashPayload(command), {
+      home: h.home,
+      env: Object.assign({}, COORD, extraEnv || {}),
+    });
+  } finally {
+    h.cleanup();
+  }
+}
+
+const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-x' }; // no SOURCE_BRANCH -> Primary
+const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-x', DEVSWARM_SOURCE_BRANCH: 'feature/y' };
+
+// The exact pre-fix baseline reason (npm run build -> verb npm).
+const BASELINE_REASON =
+  'COMMAND-DELEGATION RULE: heavy/long/state-changing commands must NEVER run ' +
+  'inline in the main coordinator context — they fill the main thread with raw ' +
+  'output and the most counterproductive thing a coordinator can do. ' +
+  'DELEGATE to a subagent (cheap model: Haiku or similar): ' +
+  'spawn a subagent, pass the command, let it run and return only a tight ' +
+  'summary. The coordinator synthesizes the summary; raw output never reaches ' +
+  'the main thread. Heavy command detected (verb: npm) — delegate to a subagent.';
+
+test('DEVSWARM PRIMARY heavy command: still BLOCKED, reason names `devswarm.js spawn` as the primary exit', () => {
+  const r = runHeavy('npm run build', PRIMARY_ENV);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'block decision unchanged for a Primary');
+  const reason = r.json.reason;
+  assert.ok(/devswarm\.js spawn <branch> -p/.test(reason),
+    `Primary reason must name devswarm.js spawn: ${reason}`);
+  assert.ok(/workspace-scale/i.test(reason), `Primary reason must state the choice rule: ${reason}`);
+  assert.ok(reason.indexOf('devswarm.js spawn') < reason.indexOf('subagent'),
+    `workspace exit must precede the subagent alternative: ${reason}`);
+  assert.ok(/Do NOT hand a workspace-scale matter to a subagent/.test(reason),
+    `Primary reason must forbid subagent-for-workspace-scale: ${reason}`);
+  // Classification detail is still carried through unchanged.
+  assert.ok(/\(verb: npm\)/.test(reason), `heavy classification must survive: ${reason}`);
+});
+
+test('DEVSWARM CHILD heavy command: reason is byte-for-byte the baseline (no workspace redirect)', () => {
+  const r = runHeavy('npm run build', CHILD_ENV);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.strictEqual(r.json.reason, BASELINE_REASON);
+});
+
+test('NON-DEVSWARM heavy command: reason is byte-for-byte the baseline (no DevSwarm text)', () => {
+  const r = runHeavy('npm run build');
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.strictEqual(r.json.reason, BASELINE_REASON);
+  assert.ok(!/devswarm/i.test(r.stdout), 'non-DevSwarm output must not mention DevSwarm');
+});
+
+// The redirect points at a command the Primary can actually RUN inline: command-guard's
+// own LIGHT_EXCEPTION must exempt scripts/devswarm.js, or the fix would be a catch-22.
+test('DEVSWARM PRIMARY: the redirect target (`node scripts/devswarm.js spawn ...`) is itself NOT blocked', () => {
+  const r = runHeavy('node scripts/devswarm.js spawn feature/x -p "own the API layer"', PRIMARY_ENV);
+  assert.strictEqual(r.status, 0, `redirect target must run inline; stdout: ${r.stdout}`);
+});

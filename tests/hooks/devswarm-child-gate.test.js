@@ -525,3 +525,142 @@ test('MISMATCH: a DIRECT send (not broadcast/heartbeat) from this child does NOT
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// v0.59 "self-wake" — TEXT-ONLY re-assertion. Whenever this gate is ALREADY
+// forcing a heartbeat block (below), the reason also re-asserts the MAILBOX WAKE
+// directive. No new state, no new cap: it rides the SAME MAX_BLOCKS-bounded
+// forced-ack this file already has. Claude-only (CronCreate is a Claude tool).
+// ---------------------------------------------------------------------------
+
+const CLAUDE_CHILD_ENV = Object.assign({}, CHILD_ENV, { DEVSWARM_AI_AGENT: 'claude' });
+
+test('WAKE RE-ASSERT: Claude child -> the forced-ack reason also carries the CronCreate wake directive', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    const reason = r.json.reason;
+    assert.ok(/MAILBOX WAKE/.test(reason), `reason must re-assert the wake directive; reason=${reason}`);
+    assert.ok(/`CronCreate`/.test(reason), `must name the CronCreate tool; reason=${reason}`);
+    assert.ok(reason.includes('`*/5 * * * *`'), `must carry the default schedule; reason=${reason}`);
+    for (const m of [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)]) {
+      assert.ok(path.isAbsolute(m[1]), `emitted CLI path must be absolute: ${m[1]}`);
+      assert.ok(fs.existsSync(m[1]), `emitted CLI path must exist: ${m[1]}`);
+    }
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('WAKE INTERVAL: ANTIHALL_DEVSWARM_WAKE_CRON is honored in the Stop re-assertion too', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CLAUDE_CHILD_ENV, { ANTIHALL_DEVSWARM_WAKE_CRON: '*/1 * * * *' });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.ok(r.json.reason.includes('`*/1 * * * *`'), `override must be honored; reason=${r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('WAKE BOUND: rides the SAME MAX_BLOCKS cap as the heartbeat forced-ack — no extra block, never wedged', () => {
+  const h = makeHome();
+  try {
+    // Stops 1-2: heartbeat forced-ack (MAX_BLOCKS=2), each also carrying the wake line.
+    const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    assert.ok(/MAILBOX WAKE/.test(r1.json.reason), 'stop 1: wake line present');
+    const r2 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    assert.ok(/MAILBOX WAKE/.test(r2.json.reason), 'stop 2: wake line present');
+    // Stop 3: the SAME cap that already governs the heartbeat forced-ack is
+    // exhausted -> full silence. No separate wake-only block exists.
+    const r3 = testHook(HOOK, stopPayload(), { home: h.home, env: CLAUDE_CHILD_ENV });
+    assert.strictEqual(r3.status, 0);
+    assert.strictEqual(r3.stdout, '', `stop 3 must yield exactly like the pre-wake gate; got: ${r3.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('WAKE RE-ARM: once RESET_MS elapses and the heartbeat cap re-arms, the wake line rides along again', () => {
+  const h = makeHome();
+  try {
+    const p = stateFile(h.home, 's1');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ blocks: 5, lastBlockAt: Date.now() - (6 * 60 * 1000) }));
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'the heartbeat gate re-arms');
+    assert.ok(/MAILBOX WAKE/.test(r.json.reason), `wake line rides the re-armed block; reason=${r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('CODEX PARITY: a Codex child is NEVER told to call CronCreate; its heartbeat cap is unaffected', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_AI_AGENT: 'codex' });
+    const r1 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.ok(!/CronCreate|MAILBOX WAKE/.test(r1.json.reason), `Codex must get no wake nag; reason=${r1.json.reason}`);
+    const r2 = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r2.json && r2.json.decision, 'block', 'second stop still blocks (heartbeat cap)');
+    // Third stop: heartbeat cap exhausted -> silent yield, byte-identical to the
+    // pre-v0.59 behavior (Codex never had a wake mechanism to begin with).
+    const r3 = testHook(HOOK, stopPayload(), { home: h.home, env });
+    assert.strictEqual(r3.stdout, '', `Codex third stop must yield exactly as before; got: ${r3.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('KILL SWITCH: DISABLE_ANTIHALL_DEVSWARM=1 -> no block at all, even for a Claude child', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CLAUDE_CHILD_ENV, { DISABLE_ANTIHALL_DEVSWARM: '1' });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, env });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `kill switch must silence the hook entirely; got: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// 7-DAY EXPIRY (scheduled-tasks contract): a recurring cron task self-deletes 7 days
+// after creation, so a long-lived workspace silently loses its wake job. The Stop
+// re-assertion is therefore a CronList RE-VERIFY (re-create if gone) — that check IS
+// the renewal path, which is why anti-hall needs no 7-day timer or state of its own.
+test('WAKE RENEWAL: the Stop re-assertion instructs a CronList RE-VERIFY (re-create if expired), not merely a create', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
+    const reason = r.json.reason;
+    assert.ok(/`CronList`/.test(reason), `must instruct a CronList verify; reason=${reason}`);
+    assert.ok(/VERIFY|verify/.test(reason), `must be worded as a verify; reason=${reason}`);
+    assert.ok(/RE-CREATE|re-create/i.test(reason), `must instruct re-creation when gone; reason=${reason}`);
+    assert.ok(/expire/i.test(reason) && /7 days/.test(reason), `must state the 7-day auto-expiry; reason=${reason}`);
+    assert.ok(reason.indexOf('`CronList`') < reason.indexOf('`CronCreate`'),
+      `CronList must come before CronCreate; reason=${reason}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// FAIL-OPEN INVARIANT: lib/devswarm-wake.js is loaded LAZILY inside a try/catch. A
+// TOP-LEVEL require would sit OUTSIDE main()'s try/catch, so a lib missing from a
+// package (or throwing on load) would CRASH this Stop hook instead of degrading —
+// verified: pre-fix it exited 1 with an uncaught throw, which on a Stop hook
+// degrades or wedges the user's session. Preload fixture: helpers/break-devswarm-wake.js.
+const BREAK_WAKE = path.join(__dirname, '..', 'helpers', 'break-devswarm-wake.js');
+
+test('FAIL-OPEN: an UNLOADABLE devswarm-wake lib -> the gate still blocks with its PRE-WAKE reason, never crashes', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CLAUDE_CHILD_ENV, { NODE_OPTIONS: `--require "${BREAK_WAKE}"` });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.status, 0, `must fail OPEN, not crash; stderr=${r.stderr}`);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'the heartbeat forced-ack itself must survive');
+    assert.ok(!/MAILBOX WAKE/.test(r.json.reason), `the wake line must be dropped, not half-emitted; reason=${r.json.reason}`);
+  } finally {
+    h.cleanup();
+  }
+});

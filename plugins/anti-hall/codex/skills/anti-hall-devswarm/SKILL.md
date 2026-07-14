@@ -1,6 +1,6 @@
 ---
 name: anti-hall-devswarm
-description: Explain anti-hall's optional DevSwarm integration from Codex — the hivecontrol reference KB, the (designed, unbuilt) workspace-tier orchestration, and the shipped layered recovery model (child self-report registered for both agents → Claude-only supervisor poke → Claude-only escalate-to-parent, automatic path NEVER kills, plus the on-demand devswarm-recover CLI — the only kill path). Use when the user asks about DevSwarm, hivecontrol, or the anti-hall liveness supervisor while working in Codex.
+description: Explain anti-hall's optional DevSwarm integration from Codex — the hivecontrol reference KB, the workspace-tier orchestration doctrine (a Primary's top fan-out tier is a child workspace, not a subagent — doctrine + guard redirect shipped for both agents, no mechanical classifier), and the shipped layered recovery model (child self-report registered for both agents → Claude-only supervisor poke → Claude-only escalate-to-parent, automatic path NEVER kills, plus the on-demand devswarm-recover CLI — the only kill path). Use when the user asks about DevSwarm, hivecontrol, or the anti-hall liveness supervisor while working in Codex.
 ---
 
 # anti-hall DevSwarm integration (Codex view)
@@ -19,7 +19,7 @@ workspace too. What follows is what a Codex user needs to know about the four ad
 | Addon | Status | Where |
 |---|---|---|
 | **hivecontrol reference KB** | Reference doc | `docs/KB-devswarm-hivecontrol.md` — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the parent/child async message-passing model. Includes a parallel OMC/OMX table for the workspace tier (§8.4 of the KB): the workspace-create/merge surface is CLI-identical either way; only the in-workspace fan-out engine differs (Workflow tool + subagents for Claude, `omx team`/workers for Codex). Repo-clone-only — does not ship with a plugin install. |
-| **Workspace-tier orchestration** | **Designed, NOT built** | `docs/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/superpowers/plans/2026-07-06-devswarm-orchestration.md`. Nothing from this plan exists in the repo yet (no `devswarm-guard.js`/`devswarm-children.js`) — do not describe it as active in either OMC or OMX. |
+| **Workspace-tier orchestration** | **Partially shipped: the DOCTRINE is live (both agents); mechanical enforcement is NOT built** | SHIPPED — a DevSwarm **Primary** is now proactively told that a **child workspace** is its top fan-out tier (above subagents) plus the choice rule, and the guard redirect names `node scripts/devswarm.js spawn <branch> -p "<brief>"` instead of "spawn a subagent". This reaches **Codex too**: the injecting hooks (`verify-first-full.js` rule W, `verify-first.js`, `task-tracker.js`) and `command-guard.js` are the SAME files registered in `codex/hooks/hooks.json`. (`edit-guard.js` carries the same redirect but is Claude-only — it is not registered for Codex.) Gated on `isDevswarmActive() && !isChildWorkspace()`, so a CHILD workspace and any non-DevSwarm session are byte-identical to before. NOT BUILT — **no mechanical classifier** blocks a "workspace-scale" subagent spawn (deliberate: false positives would break legitimate subagent use), and the fuller design in `docs/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/superpowers/plans/2026-07-06-devswarm-orchestration.md` (`devswarm-guard.js`/`devswarm-children.js`) still does not exist. |
 | **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped — Claude-only** | `companion/devswarm-supervisor.js` + `install-devswarm-supervisor.js` + `companion/lib/{liveness,recovery,target-session,doctor-devswarm}.js`. The automatic background sweep. Recovers **wedged `claude` sessions specifically** (workaround for `claude-code#39755`) — it identity-binds to `claude -p --resume <uuid>` processes by argv, not Codex sessions. This section explains it for awareness; it is not a Codex-side capability. (`hooks/lib/devswarm-detect.js`/`hooks/lib/devswarm-role.js` are shared env-detection helpers, not supervisor-only — `hooks/devswarm-child-role.js`, the SessionStart child self-report hook, is now registered for **both** agents; see below.) |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped — targets `claude` processes only** | `companion/devswarm-recover.js`, invoked explicitly per workspace id. Still Claude-only in what it targets (see below), but a Codex-side operator can run it. |
 
@@ -174,8 +174,8 @@ identify → stop → verify recipe: `docs/KB-devswarm-hivecontrol.md` §8.7.2 (
 
 ## Codex mesh support: v0.57.1 (not yet shipped) — v0.58 adds a mechanical exception
 
-The Claude-side plugin shipped a **v0.57 mesh** substrate on `main` (unreleased,
-`plugin.json` still `0.56.0`, no `v0.57` tag yet): a shared per-project `repoKey` store
+The Claude-side plugin shipped a **v0.57 mesh** substrate, folded into the **v0.58.0**
+release (no separate `v0.57` tag was ever cut): a shared per-project `repoKey` store
 (instead of per-worktree), new daemon-independent CLI verbs (`send`/`roster`/`mesh read`/
 `heartbeat --summary`), a ONE-per-project ingest daemon, and a #36-STRUCTURAL cross-project
 scoping fix. **None of this is officially documented/promoted for the Codex/OMX port
@@ -301,9 +301,14 @@ DevSwarm is active; `nudged` reports as WARN, not a failure).
 
 ## Anti-hall + OMX workflow mapping
 
-- Workspace tier (unbuilt): would be CLI-identical between agents — `hivecontrol
-  workspace create … -a codex` vs `… -a claude` — only the in-workspace fan-out differs
-  (`omx team`/workers vs Workflow tool + subagents).
+- Workspace tier (doctrine shipped, no mechanical classifier): a Primary's top fan-out
+  tier is a CHILD WORKSPACE — `node scripts/devswarm.js spawn <branch> -p "<brief>"` (thin
+  wrap of `hivecontrol workspace create`) — not a subagent; subagents/`omx team` workers are
+  for lookups, single commands, scoped investigations and review passes. CLI-identical
+  between agents (`… -a codex` vs `… -a claude`); only the in-workspace fan-out differs
+  (`omx team`/workers vs Workflow tool + subagents). The injected doctrine + the
+  `command-guard.js` redirect that name this fire for a Codex Primary too (shared hook
+  files); see `anti-hall-orchestration` for the choice rule.
 - Mechanical per-turn override/reassert hooks (`devswarm-child-role.js`,
   `devswarm-child-turn.js`, `devswarm-parent-inbox.js`, `devswarm-parent-gate.js`,
   `devswarm-child-gate.js`): registered for **both** agents (corrected — see "The layered

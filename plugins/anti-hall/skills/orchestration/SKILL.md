@@ -89,6 +89,24 @@ L3  Workers
       do the actual Bash/edits/tests/research; return tight summaries.
 ```
 
+> **Inside DevSwarm, there is a HIGHER tier above all three, and it is the default for
+> workspace-scale work.** If this session is a DevSwarm **Primary** (`DEVSWARM_REPO_ID`
+> set, `DEVSWARM_SOURCE_BRANCH` empty), the top fan-out primitive is a **child
+> workspace**, not an L2 subagent:
+> `node scripts/devswarm.js spawn <branch> -p "<brief>"`.
+>
+> | Work | Tier |
+> |---|---|
+> | A workspace-scale **matter** — a feature, a fix, a deploy: multi-step, wants its own branch + worktree, its own agent session and token budget, its own review/merge | **Child workspace** (`devswarm.js spawn`) |
+> | A read-only lookup, a single command, a scoped investigation, a review/verify pass, a mechanical transform | Subagent / Explore / Workflow (the L1→L2→L3 hierarchy above) |
+>
+> They **compose, they do not compete**: the Primary splits into workspace-sized chunks;
+> each child then uses subagents *inside* its own workspace (children never spawn
+> grandchildren — shallow + wide at both tiers). A **child** workspace uses the plain
+> hierarchy above and spawns no workspaces. Heuristic source:
+> `docs/KB-devswarm-hivecontrol.md` §8.1–8.2. Handing a workspace-scale matter to a
+> subagent is the failure this note exists to prevent.
+
 For peer coordination among long-lived streams, a team (`TeamCreate` +
 `SendMessage`) beats one-shot `Agent` calls. Use plain `Agent` calls for scope-
 isolated, fire-and-collect work.
@@ -225,9 +243,11 @@ The plugin enforces a non-negotiable task-list protocol via two hooks:
 
 ## DevSwarm mesh-only messaging (when this session runs inside a DevSwarm workspace)
 
-This skill governs subagent/Workflow fan-out WITHIN one workspace (L2). DevSwarm's own
-Primary→child workspace tier (L1, via `hivecontrol`) is a separate, unbuilt-orchestration
-layer — see the `devswarm` skill. The one place the two intersect: if THIS
+This skill governs subagent/Workflow fan-out WITHIN one workspace (L2) **and** — for a
+DevSwarm **Primary** — the tier above it: spinning child workspaces (`devswarm.js spawn`),
+see the DevSwarm note under "Swarm topology for larger work". The *doctrine* for that tier
+is shipped (the injected rule W + the guard redirects); there is no mechanical classifier
+that decides scale for you — see the `devswarm` skill. The other place the two intersect: if THIS
 coordinating session happens to be running inside an active DevSwarm workspace
 (`DEVSWARM_REPO_ID` set), anti-hall's shared **mesh store is the SOLE agent-initiated
 messaging channel** for that workspace (v0.58 "mesh-only messaging" — a REPLACE, not an
@@ -242,8 +262,16 @@ Primary) / `send --to <meshId> --message TEXT` (direct to a specific sibling) /
 `send --broadcast --message TEXT` (all-to-all) / `heartbeat <id> --summary TEXT` (status
 ping, also broadcasts) / `roster` / `mesh read` (unseen broadcasts) / `inbox
 read-primary <id>` (Primary's own unread). Lifecycle (`spawn`/`merge`/`reconcile`) is
-covered in the `devswarm` skill, not here — this skill's audience sends/reports, it
-doesn't spawn or merge DevSwarm workspaces itself.
+covered in full in the `devswarm` skill.
+
+**A PRIMARY DOES spawn workspaces — it is its top fan-out tier** (see the DevSwarm note
+under "Swarm topology for larger work" above). Earlier revisions of this skill disclaimed
+that ("it doesn't spawn or merge DevSwarm workspaces itself"), which left `subagent` as the
+only decomposition primitive a Primary was ever told about — the drift this note exists to
+stop. A Primary facing a workspace-scale matter runs
+`node scripts/devswarm.js spawn <branch> -p "<brief>"` itself (command-guard exempts it —
+run it inline) and later `node scripts/devswarm.js merge`. A CHILD workspace never spawns
+workspaces: it sends/reports and fans out with subagents internally.
 
 **Role rules:** a CHILD workspace reports to its Primary (`send --to-primary` or
 `heartbeat --summary`) and should keep polling the mesh while resting — the resting-poll

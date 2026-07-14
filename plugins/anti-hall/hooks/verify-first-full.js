@@ -45,9 +45,48 @@ const fs = require('fs');
 // verify-first-core.js (shared with verify-first-subagent.js). The ORCHESTRATION
 // DISCIPLINE block below is orchestrator-only and is NOT injected into subagents.
 const { CORE_LINES } = require('./verify-first-core');
-const FULL = [
-  ...CORE_LINES,
-  'ORCHESTRATION DISCIPLINE (always apply; the main thread is a coordinator, not a worker):',
+const ORCH_HEADER =
+  'ORCHESTRATION DISCIPLINE (always apply; the main thread is a coordinator, not a worker):';
+
+// DevSwarm PRIMARY ONLY (rule W below). The rules that follow (A/C/D/F) name
+// subagent / Explore / Workflow as the ONLY fan-out targets and put dispatch
+// pressure on the coordinator ("IDLE NEGLECT"). Inside DevSwarm that doctrine is
+// actively WRONG for a Primary: the top fan-out tier is a CHILD WORKSPACE, and
+// nothing else in the session (DevSwarm's own stock prompt included) ever says so
+// proactively — so a Primary drifts into doing feature-scale work through
+// subagents instead of spinning workspaces. The choice heuristic itself is not new
+// (docs/KB-devswarm-hivecontrol.md §8.1-8.2); this injects it where the pressure is
+// applied. Emitted ONLY when the session is a DevSwarm Primary (DEVSWARM_REPO_ID
+// set AND DEVSWARM_SOURCE_BRANCH empty — see lib/devswarm-detect.js +
+// lib/devswarm-role.js). Outside DevSwarm, and in a CHILD workspace, the injected
+// text is byte-for-byte unchanged.
+//
+// W IS BUDGET-CAPPED AT 86 CHARS (87 incl. its newline) — ARITHMETIC, not taste.
+// W is spliced in ABOVE rule A, so every byte it costs shifts rules A..I DOWN toward
+// the ~10k truncation cap, and the first 10k is ALREADY SATURATED (the payload is
+// ~15.3k). W is therefore strictly ZERO-SUM: n chars of W evict n chars off the tail.
+// Measured against the live baseline: rule H's body ends at 9,907 and rule I's marker
+// sits at 9,908, so W keeps every rule the baseline delivers WHOLE (A..H) and keeps
+// rule I's marker in-window only while it costs <= 87.
+//
+// This ceiling was learned twice. The FIRST cut of this rule ran 1,276 chars and
+// silently evicted rules G, H and I — including G (SYNTHESIZE, NEVER RELAY), which
+// this very file calls "the #1 cause of message-context bloat": it bought the
+// workspace tier by deleting the anti-bloat rule, precisely when the Primary is being
+// told to spawn MORE. A second cut at 183 chars saved G but still evicted H whole.
+//
+// The full copy-pasteable command is DELIBERATELY not repeated here — it would cost
+// ~52 of these 86 chars and evict rule H to say what the Primary is already told
+// EVERY TURN by two hooks that pay no cap: verify-first.js (DEVSWARM_PRIMARY_NUDGE)
+// and task-tracker.js (DEVSWARM_PRIMARY), plus command-guard.js / edit-guard.js at
+// the moment of violation. All four carry `node scripts/devswarm.js spawn <branch>
+// -p "<brief>"` and the full choice rule. W's unique job is the TIER, stated at
+// SessionStart primacy alongside rules A..I — not being the command's only home.
+// tests/hooks/verify-first-full.test.js pins this budget — SHORTEN W, never raise it.
+const ORCH_DEVSWARM_PRIMARY =
+  '  W. DEVSWARM PRIMARY: feature/fix/deploy = CHILD WORKSPACE, NOT a subagent.';
+
+const ORCH_LINES = [
   '  A. COMMAND DELEGATION (TOP RULE): NEVER run verbose/long/state-changing commands (build, test, deploy, push, pull, install, migrate, dumps, bulk scripts) OR broad reads/Grep/Glob/code-nav searches (git grep, find, rg, ag, multi-file sweeps) inline. ALWAYS delegate to a subagent that returns a tight summary. Raw output bloats the orchestrator and INDUCES HALLUCINATION - the failure this plugin prevents.',
   // Rule L is placed here (right after A), OUT of alphabetical order, on purpose:
   // measured SessionStart output is ~15.3k chars, over the ~10k injection cap
@@ -86,7 +125,30 @@ const FULL = [
   '  - /anti-hall:orchestration - full swarm playbook when a task is large enough to plan a fan-out.',
   '  - /anti-hall:deadly-loop - HARDEN risky changes BEFORE merge: cross-file/cross-PR coordination, security-sensitive changes, schema/production-data touches, shell scripts, CI/workflow YAML, LLM-prompt work. Iterative Reviewer+Critic debate + fix waves until zero NEW P0s.',
   '  - /anti-hall:ship-it - ship any change correctly, S/M/L scaled to blast radius: brainstorm + plan IN PLAN MODE (ExitPlanMode is the gate), harden the plan with the deadly-loop BEFORE code, fan large work out as a Workflow swarm, verify each phase with fresh evidence + a vacuous-test guard until zero NEW P0s.',
-].join('\n');
+];
+
+// Baseline (non-DevSwarm and DevSwarm CHILD): byte-for-byte the pre-existing text.
+const FULL = [...CORE_LINES, ORCH_HEADER, ...ORCH_LINES].join('\n');
+// DevSwarm PRIMARY: identical, plus rule W spliced in at the TOP of the
+// orchestration block (before A) — the ~10k additionalContext cap means trailing
+// content can be truncated, so the tier-choice rule sits with the other primacy
+// content, not after it. Splicing it here is what makes W cost the TAIL, which is
+// why W is hard-capped at 184 chars (see the budget note at its definition).
+const FULL_DEVSWARM_PRIMARY =
+  [...CORE_LINES, ORCH_HEADER, ORCH_DEVSWARM_PRIMARY, ...ORCH_LINES].join('\n');
+
+// isDevswarmPrimary(env) — DevSwarm active AND this session is the root/Primary
+// (not a child workspace). Fail-open to FALSE => the baseline text, so any helper
+// error can only ever emit the pre-existing doctrine, never a wrong one.
+function isDevswarmPrimary(env) {
+  try {
+    const { isDevswarmActive } = require('./lib/devswarm-detect.js');
+    const { isChildWorkspace } = require('./lib/devswarm-role.js');
+    return isDevswarmActive(env) && !isChildWorkspace(env);
+  } catch (_) {
+    return false;
+  }
+}
 
 function main() {
   let raw = '';
@@ -123,7 +185,7 @@ function main() {
   const out = {
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: FULL,
+      additionalContext: isDevswarmPrimary(process.env) ? FULL_DEVSWARM_PRIMARY : FULL,
     },
   };
 
