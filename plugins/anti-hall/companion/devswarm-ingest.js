@@ -349,6 +349,23 @@ function runIngestLoop(opts) {
   const backoffMs = Number.isFinite(o.restartBackoffMs) ? o.restartBackoffMs : DEFAULT_RESTART_BACKOFF_MS;
   const intervalSec = Number.isFinite(o.intervalSec) ? o.intervalSec : DEFAULT_MONITOR_INTERVAL_SEC;
   const timeoutSec = resolveMonitorTimeoutSec(o.timeoutSec, o.env);
+  // hardTimeoutMs (P0 fix): a hard OS-level kill bound on the spawned hivecontrol
+  // child (defaultMonitorRun's spawnSync `timeout` option), a margin beyond the
+  // monitor's own soft `-t timeoutSec` deadline. Production (main() below) never
+  // set this before, so a hivecontrol child that doesn't honor its own -t (hang,
+  // wedged subprocess, network stall) blocks spawnSync — and thus this WHOLE
+  // daemon, including its lock heartbeat (heartbeat only advances BETWEEN loop
+  // iterations, see the loop below) — indefinitely. acquireIngestLock's isAlive()
+  // check then correctly (by design, see its STEAL RULE comment) refuses to steal a
+  // lock whose holder is genuinely still alive, so every OTHER starter is refused
+  // for as long as the hang lasts (observed in production: hours, far past
+  // INGEST_LOCK_STALE_MS — see devswarm-ingest.log). Bounding the child lets a
+  // wedged/non-cooperative monitor call be force-killed so the loop can continue
+  // (spawnSync's timeout kill surfaces as res.ok:false via defaultMonitorRun's
+  // existing `r.error` branch -> the existing "crash -> backoff then re-spawn" path
+  // below, unchanged) instead of parking the daemon — and its lock — forever.
+  // Explicit o.hardTimeoutMs (tests / tuning) still wins.
+  const hardTimeoutMs = Number.isFinite(o.hardTimeoutMs) ? o.hardTimeoutMs : (timeoutSec * 1000) + 10000;
 
   const logFs = o.io && o.io.logFs;
   const release = (o.io && o.io.lock) ? o.io.lock(home) : acquireIngestLock(home, o.io, worktree);
@@ -357,6 +374,24 @@ function runIngestLoop(opts) {
     appendLog(home, 'ingest daemon refused to start: ' + reason, logFs);
     return { ok: false, started: false, reason };
   }
+  // SIGNAL-SAFE RELEASE (P0 fix): a normal return/throw already releases the lock
+  // via the `finally` below, but that's ordinary JS control flow — an OS signal
+  // (SIGTERM from launchd stopping/restarting this unit, Ctrl-C, `kill <pid>`)
+  // bypasses it entirely (Node's default SIGTERM/SIGINT disposition is immediate
+  // termination; no finally runs), leaking the lock and forcing every other starter
+  // to wait out the full INGEST_LOCK_STALE_MS window before recovery. SIGTERM/SIGINT
+  // ARE trappable (SIGKILL/a hard OOM-kill genuinely is not — those still rely on
+  // the stale+dead reclaim path in acquireIngestLock, unchanged here), so trap them
+  // and release before exiting. `proc` is injectable via io.process (same DI seam as
+  // io.fs/io.isAlive/io.now/io.lock above) so tests can capture + invoke the handler
+  // deterministically instead of sending a real OS signal to the test worker.
+  const proc = (o.io && o.io.process) || process;
+  const onSignal = function onSignal() {
+    try { release(); } catch (_) {}
+    proc.exit(0);
+  };
+  proc.on('SIGTERM', onSignal);
+  proc.on('SIGINT', onSignal);
 
   // REAP-BEFORE-DRAIN PROBE (D9/D21, Phase5 step 3). Before this daemon's FIRST
   // `monitor`, check EVERY legacy per-worktree lock file belonging to this repo
@@ -380,6 +415,8 @@ function runIngestLoop(opts) {
         + probe.liveHolders.map((h) => h.worktree + ' (pid ' + h.pid + ')').join(', ');
       appendLog(home, 'ingest daemon refused to start: ' + reason, logFs);
       try { release(); } catch (_) {}
+      try { proc.removeListener('SIGTERM', onSignal); } catch (_) {}
+      try { proc.removeListener('SIGINT', onSignal); } catch (_) {}
       return { ok: false, started: false, reason, liveHolders: probe.liveHolders };
     }
   }
@@ -462,7 +499,7 @@ function runIngestLoop(opts) {
       writeIngestHeartbeat(home, hbHash, { workspaceId, workingDir: worktree, now: o.now }, (o.io && o.io.storeFs));
       const res = run({
         hivecontrol: o.hivecontrol, intervalSec,
-        timeoutSec, hardTimeoutMs: o.hardTimeoutMs,
+        timeoutSec, hardTimeoutMs,
       });
       stats.iterations++;
       if (!res.ok) {
@@ -504,6 +541,8 @@ function runIngestLoop(opts) {
   } finally {
     try { if (s) s.close(); } catch (_) {}
     try { release(); } catch (_) {}
+    try { proc.removeListener('SIGTERM', onSignal); } catch (_) {}
+    try { proc.removeListener('SIGINT', onSignal); } catch (_) {}
   }
   return { ok: true, started: true, workspaceId, stats };
 }

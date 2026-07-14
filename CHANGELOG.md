@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.58.1
+
+Fixes a real-world ingest-daemon outage and removes a manual step.
+
+- Ingest daemon could wedge indefinitely: `main()` never passed a hard timeout, so the `spawnSync` running `hivecontrol workspace monitor` had no OS-level kill timeout — only the cooperative `-t` flag handed to hivecontrol. A child that ignores its own `-t` blocks the daemon forever, including its heartbeat; `isAlive()` then correctly refuses to steal a lock whose holder is genuinely alive-but-wedged, so the daemon can never recover (observed: 4,319 consecutive lock refusals over ~15h). Now a hard timeout (cooperative timeout + 10s) backstops the spawn and surfaces as a retryable failure through the existing backoff path.
+- Ingest daemon leaked its lock on signal: no SIGTERM/SIGINT handlers existed, so an OS stop (e.g. launchd restarting the unit) bypassed the `finally` that releases the lock, stranding it for the full stale window. Signals now release the lock before exit.
+- `reconcile` (drains stranded per-worktree native queues into the shared store) now runs AUTOMATICALLY — as a gated `doctor` repair and as a post-update step inside a DevSwarm session — instead of requiring a manual command. It remains idempotent, skips (never races) a worktree a live child is already draining, and honors `--dry-run`/`--check`. The manual verb still works.
+
 ## 0.58.0
 
 **DevSwarm mesh-only messaging: a per-project mesh store becomes the sole agent-initiated messaging transport, mechanically enforced. hivecontrol's per-worktree native messaging is replaced (per-worktree queues, no from/to addressing, no broadcast); every other hivecontrol feature (create/list/check-merge/merge) is kept and thinly wrapped. DevSwarm coordination remains entirely OPTIONAL — dormant with zero behavioral change outside a DevSwarm session.**

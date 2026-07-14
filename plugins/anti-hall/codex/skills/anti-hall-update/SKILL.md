@@ -65,6 +65,25 @@ Gate-closed, nothing-to-heal, or an internal error are all reported and NEVER fa
 the update. This is independent of — and does not replace — the ingest-daemon
 install-or-refresh step further below (which also covers a FIRST install).
 
+## Reconcile (auto, DevSwarm-session-only, fail-open — v0.58.1)
+
+Every update run ALSO drains `node scripts/devswarm.js reconcile` in-process via
+`reconcilePostUpdate` — no separate step needed. `reconcile` (v0.58.0) drains every
+worktree registered in this project's shared store once, recovering messages stranded in
+a per-worktree native hivecontrol queue whose child never ran `inbox pull` itself (e.g. a
+worktree torn down before it drained). Previously a MANUAL-only verb; now auto-run
+whenever `isDevswarmActive(process.env)` — `DEVSWARM_REPO_ID` set, i.e. an actual
+DevSwarm session (do NOT trigger on machine-level descriptor/registry-file presence
+alone) — regardless of whether the cache actually synced this run (unlike the ingest heal
+above: a stranded queue is unrelated to whether the plugin version changed). Safe to
+auto-run: idempotent (content-hash dedup), lock-respecting (a worktree a live child is
+already draining is skipped, never raced), and loss-free (a short-received batch fails
+loud rather than silently dropping messages). Reported as
+`reconcile: {attempted, count, imported, results, detail}` on the JSON status line.
+Gate-closed or an internal error are both reported and NEVER fatal to the update. The
+manual verb (`node scripts/devswarm.js reconcile`) stays available for an on-demand sweep
+outside an update.
+
 After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
 
 ```bash

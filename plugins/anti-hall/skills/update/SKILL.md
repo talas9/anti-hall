@@ -64,13 +64,34 @@ the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a 
      or an internal error are all reported and NEVER fatal to the update. This is
      independent of — and does not replace — step 7's broader, always-refresh install/
      refresh instruction below (which also covers a FIRST install and the supervisor).
+   - **Reconcile (auto, DevSwarm-session-only, fail-open — `reconcilePostUpdate`,
+     v0.58.1):** every update run ALSO drains `node scripts/devswarm.js reconcile`
+     in-process — no separate agent step needed for this part. `reconcile` (v0.58.0)
+     drains every worktree registered in this project's shared store once, recovering
+     messages stranded in a per-worktree native hivecontrol queue whose child never ran
+     `inbox pull` itself (e.g. a worktree torn down before it drained). Previously a
+     MANUAL-only verb; now auto-run whenever `isDevswarmActive(env)` — `DEVSWARM_REPO_ID`
+     set, i.e. an actual DevSwarm session (do NOT trigger on machine-level
+     descriptor/registry-file presence alone) — regardless of whether the cache actually
+     synced this run (unlike the ingest heal above: a stranded queue is unrelated to
+     whether the plugin version changed). Safe to auto-run: idempotent (content-hash
+     dedup — a re-run imports 0 new messages), lock-respecting (a worktree a live child
+     is already draining is skipped via the per-id O_EXCL pull lock, never raced), and
+     loss-free (a short-received batch fails loud rather than silently dropping
+     messages — see `docs/KB-devswarm-hivecontrol.md` §8.8's `reconcile` row). Reported
+     as `reconcile: {attempted, count, imported, results, detail}` on the JSON status
+     line and as a per-worktree breakdown in the human summary. Gate-closed or an
+     internal error are both reported and NEVER fatal to the update. The manual verb
+     (`node scripts/devswarm.js reconcile`) stays available for an on-demand sweep
+     outside an update.
 6. Extract the `CHANGELOG.md` sections strictly between installed (exclusive) and new
    (inclusive) and print them.
 7. Emit a JSON status line + a human summary:
-   `{installed, latest, updated, cacheSynced, ingestHeal, action}` where `action` is
-   `run /reload-plugins` | `already up to date` | an error/STOP detail, and `ingestHeal`
-   is `{attempted, healed, detail}` from step 5's auto-heal (absent on a STOP/offline
-   report — those paths never reach cache sync).
+   `{installed, latest, updated, cacheSynced, ingestHeal, reconcile, action}` where
+   `action` is `run /reload-plugins` | `already up to date` | an error/STOP detail,
+   `ingestHeal` is `{attempted, healed, detail}` from step 5's auto-heal, and `reconcile`
+   is `{attempted, count, imported, results, detail}` from step 5's reconcile auto-heal
+   (both absent on a STOP/offline report — those paths never reach cache sync).
 
 Modes:
 - `node scripts/update.js --check` — `git fetch` + compare local vs remote

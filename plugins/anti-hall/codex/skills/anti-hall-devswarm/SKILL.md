@@ -217,6 +217,14 @@ read` above (see "Codex mesh support" section).** `send --to-primary --message T
 `merge-into-source`, then broadcasts). All plain Node, invokable identically from either
 agent — but not yet documented as a recommended Codex workflow.
 
+**`reconcile` auto-heal (v0.58.1) — a separate, ALREADY-shared code path, not a mesh
+promotion.** `doctor.js` and `update.js` are the SAME scripts on both platforms (see
+`anti-hall-doctor`/`anti-hall-update`), so their `reconcile` auto-heal wiring runs
+identically for a Codex session — subject to the SAME "DevSwarm gate is effectively always
+closed for gpt-5.x Codex/OMX sessions" caveat as every other daemon-touching GATED repair
+(the `DEVSWARM_*` env vars are set only for `claude` child sessions hivecontrol spawns), so
+in practice it stays a no-op there today, same as the ingest/supervisor fixes.
+
 **Ack-ownership guard (v0.56.0).** `inbox messages --ack` / `inbox read-primary` refuse
 (`ok:false`, cursor untouched) unless the caller's own identity matches `<id>` — identity
 is derived from **cwd as ground truth**: a git worktree resolves to its own workspace id,

@@ -44,6 +44,7 @@ const REAPER_INSTALLER     = path.join(PLUGIN_ROOT, 'companion', 'install-reaper
 const STATUSLINE_INSTALLER = path.join(PLUGIN_ROOT, 'statusline', 'install-statusline.js');
 const CODEX_INSTALLER      = path.join(PLUGIN_ROOT, 'codex', 'install-codex.js');
 const MIGRATE_STATE        = path.join(PLUGIN_ROOT, 'scripts', 'migrate-state.js');
+const DEVSWARM_SCRIPT      = path.join(PLUGIN_ROOT, 'scripts', 'devswarm.js');
 
 // v0.57 mesh Phase 6 (D9/D25/D28) — belt-and-suspenders orphan sweep for LEGACY
 // per-worktree ingest units. A legacy unit's heartbeat/lock are keyed by its own
@@ -99,6 +100,7 @@ function projectDaemonHealthy(home, repoKey, now, io) {
 const CMD_INGEST     = 'node plugins/anti-hall/companion/install-devswarm-ingest.js';
 const CMD_SUPERVISOR = 'node plugins/anti-hall/companion/install-devswarm-supervisor.js';
 const CMD_REAPER     = 'node plugins/anti-hall/companion/install-reaper.js';
+const CMD_RECONCILE  = 'node plugins/anti-hall/scripts/devswarm.js reconcile';
 
 // LABEL/UNIT/marker come from the installers themselves — NEVER re-derived here, so
 // this can't drift from what install actually writes (same discipline as doctor.js).
@@ -584,6 +586,51 @@ function runRepairs(opts) {
       }
     } catch (e) {
       push('reap-legacy-ingest', 'reap-legacy-ingest', 'failed', 'legacy-ingest-unit orphan sweep raised: ' + errMsg(e));
+    }
+  }
+
+  // --- Reconcile: GATED (drains stranded per-worktree native hivecontrol queues
+  // into the shared store) ----------------------------------------------------
+  // v0.58.0 shipped `node scripts/devswarm.js reconcile` as a MANUAL-only verb.
+  // Wired here as an auto-heal under the SAME DevSwarm gate as every other
+  // daemon-touching repair above — safe to auto-run because devswarm.js's own
+  // cmdReconcile (and the devswarm-pull.js pullOnce it drives per worktree) is:
+  //   - IDEMPOTENT: pullOnce's collectExistingHashes dedupes every recovered
+  //     message by content hash (devswarm-pull.js) before appending, so a
+  //     re-run imports 0 new messages (already-seen ones count as `duplicate`,
+  //     never re-appended).
+  //   - LOCK-RESPECTING: pullOnce takes the per-id O_EXCL pull lock
+  //     (devswarm-pull.js's acquireExclLock) before touching a worktree's
+  //     queue; a worktree a live child is ALREADY draining is SKIPPED (never
+  //     raced) and surfaced back as `locked:true` on that descriptor's result,
+  //     never silently dropped from the count.
+  //   - LOSS-FREE: pullOnce's own RECONCILIATION check compares the native
+  //     message-count against what actually landed in the durable inbox/store;
+  //     a shortfall fails loud with a `lost` field (devswarm-pull.js) rather
+  //     than silently discarding messages — drained messages land in the
+  //     SHARED store (store.openStore + ingestPayload/deriveSummary), never a
+  //     throwaway.
+  // Gate-fail REPORTS the exact manual command and mutates nothing (never
+  // spawns a single per-worktree drain). --dry-run never spawns either — a
+  // genuine live preview would need a NEW non-destructive count-only mode
+  // cmdReconcile does not have; reporting the action without a per-worktree
+  // preview matches this file's existing ingest/supervisor dry-run precedent
+  // above (which also reports the action, not a live diff).
+  if (!gateOpen) {
+    push('reconcile', 'reconcile', 'gated', 'stranded per-worktree DevSwarm queues not swept. ' + gatedHint(CMD_RECONCILE));
+  } else if (dryRun) {
+    push('reconcile', 'reconcile', 'skipped', '[dry-run] would run reconcile (drain stranded per-worktree native queues into the shared store) from ' + (currentWorktree || cwd));
+  } else {
+    try {
+      const devswarm = require(DEVSWARM_SCRIPT);
+      const { result } = devswarm.run(['reconcile'], { cwd, env, home });
+      if (result && result.ok) {
+        push('reconcile', 'reconcile', 'fixed', 'reconciled ' + result.count + ' worktree(s) — imported ' + result.imported + ' message(s) into the shared store');
+      } else {
+        push('reconcile', 'reconcile', 'failed', 'reconcile failed: ' + ((result && (result.reason || result.error)) || 'unknown error'));
+      }
+    } catch (e) {
+      push('reconcile', 'reconcile', 'failed', 'reconcile raised: ' + errMsg(e));
     }
   }
 

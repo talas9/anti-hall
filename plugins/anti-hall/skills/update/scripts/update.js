@@ -543,6 +543,74 @@ function healIngestDaemon(opts) {
 }
 
 // ---------------------------------------------------------------------------
+// Reconcile heal (post-update) — v0.58.0 shipped `node scripts/devswarm.js
+// reconcile` as a MANUAL-only verb; wired here so `update` drains it too.
+// ---------------------------------------------------------------------------
+
+/**
+ * reconcilePostUpdate({ paths, env, cwd, home, devswarm }) → { attempted, count, imported, results, detail }
+ *
+ * Auto-runs `devswarm.js`'s `reconcile` verb (drains EVERY worktree registered
+ * in the current project's shared store once, recovering messages stranded in
+ * a per-worktree native hivecontrol queue that never got its own `inbox pull`
+ * — e.g. a worktree torn down before it drained itself) as a post-update step,
+ * so a stale queue does not require a human to remember the manual command.
+ *
+ * Gated the SAME DevSwarm-session-only, no-offer, no-ask posture SKILL.md step
+ * 7 already documents for the supervisor/ingest-daemon installs —
+ * isDevswarmActive(env) ONLY (`DEVSWARM_REPO_ID` set, i.e. an actual DevSwarm
+ * session — never machine-level descriptor/registry-file presence alone; the
+ * session might be running outside DevSwarm entirely). Unlike
+ * healIngestDaemon above, this does NOT also require resolveWorktree(cwd): a
+ * cwd that isn't a resolvable git project is already handled harmlessly by
+ * devswarm.js's own cmdReconcile, which reports `{ok:false, reason:'no-project'}`
+ * and mutates nothing rather than needing a duplicate pre-check here.
+ *
+ * Safe to auto-run (see doctor-repair.js's mirrored GATED reconcile repair for
+ * the full verification): idempotent (devswarm-pull.js's pullOnce dedupes by
+ * content hash — a re-run imports 0 new messages), lock-respecting (a
+ * worktree a live child is already draining is skipped via the per-id O_EXCL
+ * pull lock, never raced), and loss-free (a short-received batch fails loud
+ * with a `lost` field rather than silently dropping messages — drained
+ * messages land in the shared store, never a throwaway).
+ *
+ * Fully fail-open: ANY error is reported in `detail` and NEVER thrown — a
+ * reconcile failure must never fail the update itself.
+ */
+function reconcilePostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'reconcile skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — reconcile skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    const { result } = devswarm.run(['reconcile'], { cwd, env, home });
+    if (!result || !result.ok) {
+      return { attempted: true, detail: 'reconcile failed: ' + ((result && (result.reason || result.error)) || 'unknown error') };
+    }
+    return {
+      attempted: true,
+      count: result.count,
+      imported: result.imported,
+      results: result.results,
+      detail: 'reconciled ' + result.count + ' worktree(s) — imported ' + result.imported + ' message(s) into the shared store',
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'reconcile raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Rollback (v0.57 mesh -> legacy per-worktree units) — PLAN-v0.57-mesh.md
 // Phase 6b / D13. Documented + tested, NOT auto-run by `main()`/runUpdate.
 // ---------------------------------------------------------------------------
@@ -826,6 +894,14 @@ function runUpdate(opts) {
     ? healIngestDaemon({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, spawnFn: opts.spawnIngestInstaller })
     : { attempted: false, healed: false, detail: 'no cache sync this run — nothing to heal' };
 
+  // Reconcile: DevSwarm-session-only post-update step (drains stranded per-
+  // worktree native hivecontrol queues into the shared store). Unlike
+  // ingestHeal above, this runs on EVERY update regardless of cache.synced —
+  // stranded messages are unrelated to whether the plugin itself changed
+  // version this run. Fully fail-open — never affects `stop` or the update's
+  // own success/failure (see reconcilePostUpdate's doc comment).
+  const reconcile = reconcilePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+
   // Unknown installed version → NEVER 'already up to date'; no delta computable
   // (a null `from` would dump the entire changelog, so suppress it).
   if (!isSemver(installed)) {
@@ -836,6 +912,7 @@ function runUpdate(opts) {
         updated: false,
         cacheSynced: cache.synced,
         ingestHeal,
+        reconcile,
         action: UNKNOWN_INSTALLED_ACTION,
       },
       changelog: '',
@@ -861,6 +938,7 @@ function runUpdate(opts) {
       updated,
       cacheSynced: cache.synced,
       ingestHeal,
+      reconcile,
       action: updated ? 'run /reload-plugins' : 'already up to date',
     },
     changelog,
@@ -902,6 +980,17 @@ function renderHuman(status, changelog) {
   lines.push('  latest:    ' + (status.latest || '(unknown)'));
   lines.push('  updated:   ' + status.updated + (status.cacheSynced ? ' (cache synced)' : ''));
   lines.push('  action:    ' + status.action);
+  if (status.reconcile && status.reconcile.attempted) {
+    lines.push('  reconcile: ' + status.reconcile.detail);
+    if (Array.isArray(status.reconcile.results) && status.reconcile.results.length) {
+      for (const r of status.reconcile.results) {
+        const bits = ['imported ' + (r.imported || 0), 'duplicate ' + (r.duplicate || 0)];
+        if (r.locked) bits.push('locked — another pull in progress, skipped');
+        if (r.error) bits.push('ERROR: ' + r.error);
+        lines.push('    - ' + r.id + ': ' + bits.join(', '));
+      }
+    }
+  }
   if (changelog) {
     lines.push('');
     lines.push('Changelog delta:');
@@ -931,6 +1020,7 @@ module.exports = {
   gitPullFfOnly,
   remotePluginVersion,
   healIngestDaemon,
+  reconcilePostUpdate,
   readLegacyHeartbeat,
   rollbackToLegacyUnits,
   runCheck,

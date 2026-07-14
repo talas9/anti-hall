@@ -116,8 +116,12 @@ Flags:
   DevSwarm-active session) **AND** `resolveWorktree(cwd)` is a real git worktree. Covers
   the ingest daemon install, the **v0.54.1 wrong-path ingest heal** (a unit whose
   `WorkingDirectory` no longer points inside a worktree is rebuilt from the right one),
-  stale ExecStart script, and the supervisor FIRST-install. When the gate is closed, doctor
-  **reports the gap plus the exact manual command** and mutates nothing.
+  stale ExecStart script, the supervisor FIRST-install, and (**v0.58.1**) **`reconcile`**
+  — draining every stranded per-worktree native hivecontrol queue into the shared store
+  (`node scripts/devswarm.js reconcile`, previously a MANUAL-only verb). Unlike the
+  daemon fixes, `reconcile` never touches launchd/systemd, so it is not a Windows no-op.
+  When the gate is closed, doctor **reports the gap plus the exact manual command** and
+  mutates nothing.
 - **REPORT-ONLY:** the MCP orphan reaper is never auto-installed (it kills orphans on a
   timer) — doctor only prints how to enable it.
 
@@ -131,7 +135,8 @@ a double-refresh is a no-op. `update` refreshes on version change; `doctor` repa
 demand.
 
 Windows: the daemon fixes (ingest / supervisor) are documented no-ops (no built-in
-user-level scheduler / no safe cwd confirm-gate).
+user-level scheduler / no safe cwd confirm-gate). `reconcile` is NOT a Windows no-op — it
+only spawns per-worktree Node subprocesses (no scheduler dependency), so it runs there too.
 
 ## How to run
 

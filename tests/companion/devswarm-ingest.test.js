@@ -139,6 +139,53 @@ test('resolveMonitorTimeoutSec: explicit opts.timeoutSec wins over env and defau
   assert.equal(ingest.resolveMonitorTimeoutSec(undefined, undefined), ingest.DEFAULT_MONITOR_TIMEOUT_SEC);
 });
 
+// P0 FIX (production incident, v0.58.0): a real-world ingest daemon was observed
+// refusing to start for ~15 HOURS straight — thousands of "another monitor consumer
+// is already running" refusals, far past the 15-min INGEST_LOCK_STALE_MS window,
+// with ZERO error/crash lines logged the entire time. Root cause: main() never gave
+// defaultMonitorRun's spawnSync call a `timeout` (hardTimeoutMs), so a hivecontrol
+// child that didn't honor its own soft `-t` deadline could block spawnSync — and
+// thus the WHOLE daemon, including the lock heartbeat that only advances BETWEEN
+// loop iterations — indefinitely. The daemon was then genuinely, correctly reported
+// alive by isAlive() the entire time (working as designed: never steal a live
+// holder), so no OTHER starter could ever reclaim the lock until the wedged process
+// eventually died on its own. This test proves runIngestLoop now bounds every
+// monitor call with a real, finite hardTimeoutMs by default. FAILS on pre-fix code
+// (hardTimeoutMs was always `undefined` there).
+test('runIngestLoop passes a bounded hardTimeoutMs to EVERY monitor call by default (P0 fix — an unbounded/wedged monitor call can no longer block the lock holder forever)', () => {
+  const home = tmpHome();
+  try {
+    const seen = [];
+    const run = (opts) => { seen.push(opts.hardTimeoutMs); return { ok: true, raw: '[]' }; };
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 3,
+      run, sleep: () => {},
+    });
+    assert.equal(summary.started, true);
+    for (const v of seen) {
+      assert.ok(Number.isFinite(v) && v > 0, 'hardTimeoutMs must be a real, positive, finite bound, never undefined/unbounded — got ' + v);
+    }
+    // The hard bound must sit strictly ABOVE the soft -t deadline (else spawnSync
+    // could kill the child before hivecontrol's own timeout ever gets a chance to
+    // return cleanly with an empty/quiet result).
+    assert.ok(seen[0] > ingest.DEFAULT_MONITOR_TIMEOUT_SEC * 1000, 'the hard kill bound leaves headroom above the soft -t deadline');
+  } finally { rm(home); }
+});
+
+test('runIngestLoop: explicit opts.hardTimeoutMs still overrides the new default (tuning/tests unaffected)', () => {
+  const home = tmpHome();
+  try {
+    const seen = [];
+    const run = (opts) => { seen.push(opts.hardTimeoutMs); return { ok: true, raw: '[]' }; };
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1,
+      run, sleep: () => {}, hardTimeoutMs: 5000,
+    });
+    assert.equal(summary.started, true);
+    assert.equal(seen[0], 5000, 'an explicit hardTimeoutMs always wins over the computed default');
+  } finally { rm(home); }
+});
+
 test('defaultMonitorRun: a bounded monitor call that times out with NO messages is NOT an error (empty is normal)', () => {
   // Injectable spawnSync-free check via the real defaultMonitorRun using a stub binary
   // path that fails to spawn is out of scope here (that's an ENOENT -> ok:false, tested
@@ -341,6 +388,163 @@ test('release.heartbeat refreshes the lock ts so a long-lived daemon stays fresh
     const thief = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => t + 1000 });
     assert.equal(thief, null, 'the heartbeat kept the lock fresh -> not stealable');
     rel();
+  } finally { rm(home); }
+});
+
+test('acquireIngestLock RECLAIMS a CORRUPT (non-empty garbage) lock file once its mtime is stale — no crash', () => {
+  const home = tmpHome();
+  try {
+    const p = ingest.ingestLockPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, '{not valid json at all'); // corrupt, not merely empty
+    const mt = fs.statSync(p).mtimeMs;
+    let rel;
+    assert.doesNotThrow(() => {
+      rel = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => mt + 16 * 60 * 1000 });
+      assert.ok(rel, 'a corrupt lock with an OLD mtime is reclaimed, not just an empty one');
+    }, 'a corrupt/unparseable lock record must never crash acquisition');
+    const cur = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.ok(cur.token, 'the reclaimed lock now carries a real token');
+    rel();
+  } finally { rm(home); }
+});
+
+test('acquireIngestLock: TWO concurrent starters racing to steal the SAME stale lock — exactly ONE wins, never both (single-consumer invariant preserved)', () => {
+  const home = tmpHome();
+  try {
+    const p = ingest.ingestLockPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const oldTs = 1000;
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts: oldTs, token: 'dead-holder' }));
+    // Simulate two processes racing on the exact same stale+dead lock: the FIRST
+    // acquireIngestLock's unlinkSync (the steal) is intercepted so a SECOND, fully
+    // independent acquireIngestLock call runs to completion "in between" — exactly
+    // the two-daemons-racing-a-stale-lock scenario the single-consumer invariant
+    // must survive (stealing a lock that's ALREADY been re-claimed by someone else
+    // would split the destructive native queue between two live consumers).
+    let otherRacerRan = false;
+    let otherRacerResult;
+    const racerFs = new Proxy(fs, {
+      get(target, prop) {
+        if (prop === 'unlinkSync') {
+          return function (target_p) {
+            const r = target.unlinkSync(target_p);
+            if (!otherRacerRan && target_p === p) {
+              otherRacerRan = true;
+              // The "other" racer sees the file gone and reclaims it FIRST.
+              otherRacerResult = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => oldTs + 60 * 60 * 1000 });
+            }
+            return r;
+          };
+        }
+        const val = target[prop];
+        return typeof val === 'function' ? val.bind(target) : val;
+      },
+    });
+    const first = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => oldTs + 60 * 60 * 1000, fs: racerFs });
+    assert.ok(otherRacerRan, 'the injected race actually ran');
+    assert.ok(otherRacerResult, 'the OTHER racer (which reclaimed first) got the lock');
+    assert.equal(first, null, 'the ORIGINAL racer must back off once it sees the lock was already re-claimed — never a double-consumer');
+    const cur = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.notEqual(cur.token, 'dead-holder', 'the lock is held by exactly the winning racer');
+    otherRacerResult();
+  } finally { rm(home); }
+});
+
+// P0 FIX (signal-safe release): a normal return/throw already releases the lock via
+// runIngestLoop's `finally`, but that's ordinary JS control flow — an OS SIGTERM
+// (launchd stopping/restarting this unit) or SIGINT (Ctrl-C) bypasses it entirely
+// (Node's default disposition is immediate termination), leaking the lock and
+// forcing every OTHER starter to wait out the full stale window. SIGTERM/SIGINT are
+// trappable (unlike SIGKILL/a hard OOM-kill, which no userland code can intercept —
+// those still rely on the stale+dead reclaim path, unchanged). `io.process` is a
+// fake process-like object (mirrors the file's other io.fs/io.isAlive/io.now DI
+// seams) so this is fully deterministic — no real OS signal is sent to the test
+// worker.
+function fakeProcess() {
+  const handlers = {};
+  let exitCode = null;
+  return {
+    on(sig, fn) { (handlers[sig] = handlers[sig] || []).push(fn); },
+    removeListener(sig, fn) {
+      if (!handlers[sig]) return;
+      handlers[sig] = handlers[sig].filter((h) => h !== fn);
+    },
+    exit(code) { exitCode = code; },
+    listenerCount(sig) { return (handlers[sig] || []).length; },
+    fire(sig) { for (const fn of (handlers[sig] || []).slice()) fn(); },
+    get exitCode() { return exitCode; },
+  };
+}
+
+// These two tests check the lock file's state SYNCHRONOUSLY, mid-loop, in the same
+// tick the signal fires — i.e. strictly BEFORE runIngestLoop's own pre-existing
+// `finally` (which ALSO releases the lock, on ANY normal loop completion, pre-fix
+// included) ever gets a chance to run. That isolates the assertion to the NEW
+// signal-handler code path only — a test that merely checked "is the lock gone
+// after runIngestLoop returns" would pass even on pre-fix code (the ordinary
+// finally already released it once the mocked loop reached maxIterations), so it
+// would NOT be stash-proof.
+test('runIngestLoop releases the lock on SIGTERM IMMEDIATELY, mid-loop — independent of the eventual finally cleanup (was previously UNHANDLED)', () => {
+  const home = tmpHome();
+  const proc = fakeProcess();
+  const lockPath = ingest.ingestLockPath(home);
+  let releasedDuringSignal = null;
+  const run = () => {
+    const before = fs.existsSync(lockPath);
+    proc.fire('SIGTERM'); // simulate the signal arriving while the daemon is mid-poll
+    const after = fs.existsSync(lockPath);
+    releasedDuringSignal = before && !after;
+    return { ok: true, raw: '[]' };
+  };
+  try {
+    // worktree: null forces the SAME legacy global lock path `lockPath` above was
+    // computed with (ingest.ingestLockPath(home) with no worktree arg) — without
+    // this the loop resolves the test process's OWN real git worktree and locks a
+    // DIFFERENT (per-project) file, making the existsSync checks below check the
+    // wrong path entirely.
+    ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: null,
+      run, sleep: () => {}, io: { process: proc },
+    });
+  } finally { rm(home); }
+  assert.equal(proc.exitCode, 0, 'the signal handler called process.exit(0)');
+  assert.equal(releasedDuringSignal, true, 'the lock was gone IMMEDIATELY when the signal fired — released by the SIGTERM handler itself, not merely by the pre-existing finally afterward');
+});
+
+test('runIngestLoop releases the lock on SIGINT IMMEDIATELY, mid-loop (Ctrl-C) — independent of the eventual finally cleanup', () => {
+  const home = tmpHome();
+  const proc = fakeProcess();
+  const lockPath = ingest.ingestLockPath(home);
+  let releasedDuringSignal = null;
+  const run = () => {
+    const before = fs.existsSync(lockPath);
+    proc.fire('SIGINT');
+    const after = fs.existsSync(lockPath);
+    releasedDuringSignal = before && !after;
+    return { ok: true, raw: '[]' };
+  };
+  try {
+    ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: null,
+      run, sleep: () => {}, io: { process: proc },
+    });
+  } finally { rm(home); }
+  assert.equal(proc.exitCode, 0, 'the SIGINT handler called process.exit(0)');
+  assert.equal(releasedDuringSignal, true, 'the lock was gone IMMEDIATELY when the signal fired — released by the SIGINT handler itself');
+});
+
+test('runIngestLoop de-registers its signal handlers on normal completion (no listener leak across daemon lifecycles)', () => {
+  const home = tmpHome();
+  try {
+    const proc = fakeProcess();
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 2,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {}, io: { process: proc },
+    });
+    assert.equal(summary.started, true);
+    assert.equal(proc.listenerCount('SIGTERM'), 0, 'SIGTERM handler removed once the loop completes normally');
+    assert.equal(proc.listenerCount('SIGINT'), 0, 'SIGINT handler removed once the loop completes normally');
   } finally { rm(home); }
 });
 

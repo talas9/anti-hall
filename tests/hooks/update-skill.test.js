@@ -1089,3 +1089,185 @@ test('runUpdate: ingestHeal reports "nothing to heal" when the cache did not syn
     assert.match(status.ingestHeal.detail, /nothing to heal/);
   } finally { t.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// reconcilePostUpdate — v0.58.0's `devswarm.js reconcile` verb, auto-run as a
+// post-update step. Same REAL-plugin-source-tree posture as the healIngestDaemon
+// tests above: paths.pluginSrcDir = this repo's own plugins/anti-hall so the
+// require-and-call wiring against the actual devswarm-detect.js / devswarm.js
+// is exercised, not a hand-rolled stub. `home` is always an isolated tmpdir.
+// ---------------------------------------------------------------------------
+
+test('reconcilePostUpdate: not a DevSwarm session (no DEVSWARM_REPO_ID) -> attempted:false, gate closed', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { run: () => { throw new Error('must not run reconcile when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('reconcilePostUpdate: machine-level descriptor/registry presence alone is NOT enough — only isDevswarmActive(env) opens the gate', () => {
+  // A populated devswarm home (as if descriptors exist on disk) must not matter —
+  // only the env-level DEVSWARM_REPO_ID (an actual active session) does.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-reconcile-machine-'));
+  try {
+    const wsDir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, 'w1.json'), JSON.stringify({ id: 'w1', worktreePath: '/wt/w1' }));
+    const result = U.reconcilePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: {}, // no DEVSWARM_REPO_ID -> not an active session
+      cwd: process.cwd(),
+      home,
+      devswarm: { run: () => { throw new Error('must not run reconcile when the gate is closed'); } },
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not a DevSwarm session/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('reconcilePostUpdate: pulled plugin tree missing scripts/hooks files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree(); // empty marketplace fixture — no scripts/hooks dirs at all
+  try {
+    const result = U.reconcilePostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('reconcilePostUpdate: gate open + empty shared store (real devswarm.js, no mock) -> attempted:true, count:0, imported:0', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-reconcile-empty-'));
+  try {
+    const result = U.reconcilePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), // a real git worktree (this repo)
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.count, 0);
+    assert.strictEqual(result.imported, 0);
+    assert.match(result.detail, /reconciled 0 worktree\(s\)/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('reconcilePostUpdate: gate open + cwd is not a git project -> reconcile itself reports no-project, never throws', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-reconcile-nogit-'));
+  const nogit = fs.mkdtempSync(path.join(os.tmpdir(), 'update-reconcile-nogit-cwd-'));
+  try {
+    const result = U.reconcilePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: nogit,
+      home,
+    });
+    assert.strictEqual(result.attempted, true, 'reconcile WAS attempted (gate was open) — the no-project outcome comes from inside cmdReconcile');
+    assert.match(result.detail, /reconcile failed/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(nogit, { recursive: true, force: true }); }
+});
+
+test('reconcilePostUpdate: an internal throw is fail-open — never propagates, detail explains it', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: { run: () => { throw new Error('reconcile boom'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /reconcile raised/);
+});
+
+// ---------------------------------------------------------------------------
+// runUpdate wiring: reconcile surfaces on the returned status, runs only
+// inside a DevSwarm session, and a reconcile failure never fails the update.
+// ---------------------------------------------------------------------------
+
+test('runUpdate: reconcile is NOT attempted outside a DevSwarm session (default env)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR; // real scripts/hooks tree, so this exercises the GATE, not "files not found"
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status } = U.runUpdate({ paths: p, exec, env: {}, cwd: process.cwd() });
+    assert.ok(status.reconcile, 'reconcile field present on the status object');
+    assert.strictEqual(status.reconcile.attempted, false);
+    assert.match(status.reconcile.detail, /not a DevSwarm session/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: reconcile runs inside a DevSwarm session, regardless of cache.synced (unlike ingestHeal)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.33.0'); // already at latest -> cache does NOT sync this run
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR; // real scripts/hooks tree, so the gate check itself runs
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    fs.mkdirSync(path.join(p.cacheRoot, '0.33.0'), { recursive: true }); // already cached
+    const exec = execStub({ status: '', pull: 'Already up to date.\n' });
+    let called = null;
+    const fakeDevswarm = { run: (argv, ctx) => { called = { argv, ctx }; return { code: 0, result: { ok: true, action: 'reconcile', count: 2, imported: 5, results: [] } }; } };
+    const { status } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: process.cwd(), devswarm: fakeDevswarm });
+    assert.strictEqual(status.cacheSynced, false, 'sanity: this run genuinely did not sync the cache');
+    assert.deepStrictEqual(called.argv, ['reconcile']);
+    assert.strictEqual(status.reconcile.attempted, true);
+    assert.strictEqual(status.reconcile.count, 2);
+    assert.strictEqual(status.reconcile.imported, 5);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: a reconcile failure is reported but never fails the update (fail-open, stop stays false)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR; // real scripts/hooks tree, so the gate opens and devswarm.run is actually called
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const fakeDevswarm = { run: () => { throw new Error('reconcile boom'); } };
+    const { status, stop } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: process.cwd(), devswarm: fakeDevswarm });
+    assert.strictEqual(stop, false, 'a reconcile failure must never trip the STOP contract');
+    assert.strictEqual(status.updated, true, 'the update itself still succeeded');
+    assert.strictEqual(status.reconcile.attempted, false);
+    assert.match(status.reconcile.detail, /reconcile raised/);
+  } finally { t.cleanup(); }
+});
+
+test('renderHuman: prints reconcile summary + per-worktree breakdown when attempted', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    reconcile: {
+      attempted: true, count: 1, imported: 3,
+      detail: 'reconciled 1 worktree(s) — imported 3 message(s) into the shared store',
+      results: [{ id: 'w1', imported: 3, duplicate: 0 }],
+    },
+  };
+  const out = U.renderHuman(status, '');
+  assert.match(out, /reconcile: reconciled 1 worktree\(s\) — imported 3 message\(s\) into the shared store/);
+  assert.match(out, /w1: imported 3, duplicate 0/);
+});
+
+test('renderHuman: omits the reconcile block entirely when not attempted (non-DevSwarm session — no noise)', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    reconcile: { attempted: false, detail: 'not a DevSwarm session — reconcile skipped (gate closed)' },
+  };
+  const out = U.renderHuman(status, '');
+  assert.doesNotMatch(out, /reconcile:/);
+});

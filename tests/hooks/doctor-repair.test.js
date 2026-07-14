@@ -447,3 +447,73 @@ test('doctor --check: no Repair section, exits 0 on a clean fake machine (read-o
     assert.doesNotMatch(r.out, /\nRepair/, '--check must NOT run the repair pass');
   } finally { rm(home); rm(cwd); }
 });
+
+// ---------------------------------------------------------------------------
+// 8. Reconcile (v0.58.0's `devswarm.js reconcile` verb, auto-run here as a
+// GATED repair — v0.58.1). Reconcile itself never touches launchd/systemd (it
+// only spawns per-worktree `inbox pull` subprocesses of THIS SAME plugin's own
+// devswarm.js against the fake HOME's own store), BUT `gateOpen` is shared
+// across ALL GATED repairs in one runRepairs() pass — a real (non-dry-run)
+// `doctor --fix` with the gate open ALSO fires the ingest/supervisor GATED
+// fixes for real, and `launchctl load`/`systemctl` register against the REAL
+// user session regardless of a HOME env override (confirmed the hard way — an
+// earlier draft of this suite left real orphaned `com.anti-hall.devswarm-
+// ingest.*` launchd jobs running on the dev machine after the fake HOME tmpdir
+// was cleaned up). So the "real FIXED run" case below calls
+// `repair.runRepairs()` IN-PROCESS with `platform:'win32'` — ingest/supervisor/
+// reap-legacy-ingest all take their documented win32-skip branch (no spawn),
+// while reconcile (which does not gate on platform) still runs for real. Never
+// use a real, non-dry-run `doctor --fix` subprocess with the gate open here.
+// ---------------------------------------------------------------------------
+function storeDirExists(home) { return fs.existsSync(path.join(home, '.anti-hall', 'devswarm', 'store')); }
+
+test('doctor --fix: DevSwarm INACTIVE -> reconcile is GATED, exact manual command shown, store never opened', () => {
+  const home = mkTmp('recon-gated');
+  const cwd = makeGitRepo('recon-gated-cwd');
+  try {
+    seedUserSettings(home);
+    const r = runDoctor({ cwd, args: ['--fix'], env: { HOME: home, USERPROFILE: home } });
+    assert.match(r.out, /GATED \[reconcile\]/, 'reconcile must be GATED when the DevSwarm gate is closed:\n' + r.out);
+    assert.match(r.out, /Run manually from the worktree: node plugins\/anti-hall\/scripts\/devswarm\.js reconcile/);
+    assert.ok(!storeDirExists(home), 'a gated repair must never open/create the shared store');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('doctor --dry-run: DevSwarm ACTIVE + git worktree -> gate OPENS (would run reconcile), still writes nothing', () => {
+  const home = mkTmp('recon-dry');
+  const cwd = makeGitRepo('recon-dry-cwd');
+  try {
+    seedUserSettings(home);
+    const r = runDoctor({ cwd, args: ['--dry-run'], env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.match(r.out, /\[dry-run\] would run reconcile \(drain stranded per-worktree native queues into the shared store\)/, 'gate must OPEN (would-run) with active DevSwarm + worktree:\n' + r.out);
+    assert.doesNotMatch(r.out, /GATED \[reconcile\]/, 'must NOT be gated when the gate is open');
+    assert.ok(!storeDirExists(home), 'dry-run must never open/create the shared store (no per-worktree drain is ever spawned)');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('runRepairs (in-process, platform=win32 to skip the OTHER daemon-touching GATED repairs — see safety note above): DevSwarm ACTIVE + git worktree -> reconcile actually FIXES (real run, empty registry -> 0 drained)', () => {
+  const home = mkTmp('recon-open');
+  const cwd = makeGitRepo('recon-open-cwd');
+  try {
+    const env = { ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' };
+    const results = repair.runRepairs({ cwd, env, home, dryRun: false, platform: 'win32' });
+    const r = results.find((x) => x.id === 'reconcile');
+    assert.ok(r, 'a reconcile repair result must be present:\n' + JSON.stringify(results, null, 2));
+    assert.strictEqual(r.status, 'fixed', 'reconcile must actually run and succeed when the gate is open:\n' + JSON.stringify(r));
+    assert.match(r.msg, /reconciled 0 worktree\(s\) — imported 0 message\(s\) into the shared store/);
+    assert.ok(storeDirExists(home), 'a real reconcile run DOES open the shared store (unlike gated/dry-run)');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('doctor --check: DevSwarm ACTIVE + git worktree -> reconcile is skipped entirely (pure read-only, no Repair section at all)', () => {
+  const home = mkTmp('recon-check');
+  const cwd = makeGitRepo('recon-check-cwd');
+  try {
+    seedUserSettings(home);
+    const r = runDoctor({ cwd, args: ['--check'], env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.strictEqual(r.code, 0, '--check exits 0:\n' + r.out);
+    assert.doesNotMatch(r.out, /\nRepair/, '--check must NOT run the repair pass, even with the DevSwarm gate open');
+    assert.doesNotMatch(r.out, /\[reconcile\]/, '--check must never mention reconcile');
+    assert.ok(!storeDirExists(home), '--check must never open/create the shared store');
+  } finally { rm(home); rm(cwd); }
+});
