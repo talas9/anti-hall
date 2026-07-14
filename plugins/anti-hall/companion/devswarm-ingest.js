@@ -50,7 +50,7 @@ const installIngest = require('./install-devswarm-ingest.js');
 let repokey = null;
 try { repokey = require('./lib/devswarm-repokey.js'); } catch (_) { repokey = null; }
 
-const INGEST_LOCK_STALE_MS = 15 * 60 * 1000; // a monitor consumer is long-lived; only a truly dead/old holder is stolen
+const INGEST_LOCK_STALE_MS = 15 * 60 * 1000; // a monitor consumer is long-lived; used to judge an UNKNOWN holder's liveness — a KNOWN-dead holder is reclaimed immediately regardless of this window (see acquireIngestLock's P1-B steal rule)
 const DEFAULT_MONITOR_INTERVAL_SEC = 3;      // hivecontrol monitor default poll
 const DEFAULT_RESTART_BACKOFF_MS = 2000;     // gap before re-spawning after a monitor exit/crash
 // DEFAULT_MONITOR_TIMEOUT_SEC — the bounded `-t` timeout given to EVERY `hivecontrol
@@ -106,12 +106,17 @@ function isAliveDefault(pid) {
 // calls each loop to REFRESH its own lock timestamp, so a healthy long-lived
 // consumer is never seen as stale (and thus never stolen).
 //
-// STEAL RULE (data-loss guard): a lock is stolen ONLY when it is BOTH stale AND
-// not held by a live process — i.e. the holder is DEAD or UNKNOWN. A KNOWN-LIVE
-// holder is NEVER stolen even if its timestamp looks old, because stealing from a
-// live `hivecontrol workspace monitor` consumer would split the destructive
-// native queue between two daemons and silently lose messages. Requiring BOTH
-// conditions (never one alone) is the fix for the "stale-steals-a-live-daemon" bug.
+// STEAL RULE (data-loss guard): a KNOWN-LIVE holder is NEVER stolen, however old
+// its timestamp looks — stealing from a live `hivecontrol workspace monitor`
+// consumer would split the destructive native queue between two daemons and
+// silently lose messages. A holder with a KNOWN pid confirmed DEAD is reclaimed
+// IMMEDIATELY (P1-B) — a dead process can never come back, so there is nothing to
+// gain by waiting out the staleness window. An UNKNOWN holder (an unparseable/
+// torn lock record with no pid to check) still needs BOTH stale AND not-alive
+// before reclaim, since its liveness can only be inferred from mtime, never
+// confirmed. This covers both the earlier "stale-steals-a-live-daemon" bug (never
+// steal a live or unconfirmed holder) and the "leaked lock stranded ingestion for
+// 15 minutes" bug (a confirmed-dead holder no longer waits out the window).
 function acquireIngestLock(home, io, worktree) {
   const F = (io && io.fs) || fs;
   const isAlive = (io && io.isAlive) || isAliveDefault;
@@ -160,11 +165,21 @@ function acquireIngestLock(home, io, worktree) {
         try { holderTs = F.statSync(p).mtimeMs; } catch (_) { holderTs = null; }
       }
       const alive = holderPid !== null && isAlive(holderPid); // a KNOWN-live holder
+      // P1-B fix: a holder with a KNOWN pid that is confirmed DEAD can never come
+      // back — reclaim it IMMEDIATELY, without waiting out the staleness window.
+      // (Previously a lock leaked by a killed daemon stranded ingestion for up to
+      // INGEST_LOCK_STALE_MS ~15min: Node cannot run a SIGTERM/SIGINT handler
+      // while the event loop is blocked inside spawnSync, so a daemon killed mid-
+      // spawn never got a chance to release its own lock — see runIngestLoop's
+      // signal-handler comment. hardTimeoutMs bounds how long that block can last;
+      // this dead-holder-immediate-reclaim is what actually closes the leaked-lock
+      // window for every OTHER starter once the holder is confirmed gone.) An
+      // UNKNOWN holder (unparseable/torn record, no pid to check) still needs BOTH
+      // stale AND not-alive before reclaim — unchanged from before.
+      const knownDead = holderPid !== null && !alive;
       const stale = holderTs === null || (now() - holderTs) > INGEST_LOCK_STALE_MS;
-      // Steal ONLY a stale lock whose holder is NOT alive (dead or unknown pid).
-      // Never steal from a live holder, however old its timestamp looks.
-      if (stale && !alive) { try { F.unlinkSync(p); } catch (_) {} continue; }
-      return null; // live holder, or a fresh lock -> refuse
+      if (knownDead || (stale && !alive)) { try { F.unlinkSync(p); } catch (_) {} continue; }
+      return null; // live holder, or a fresh/unknown lock -> refuse
     }
   }
   return null;
@@ -262,7 +277,14 @@ function defaultMonitorRun(opts) {
       encoding: 'utf8',
       timeout: Number.isFinite(o.hardTimeoutMs) ? o.hardTimeoutMs : undefined,
     });
-    if (r.error) return { ok: false, raw: '', error: String(r.error.message || r.error) };
+    // A spawn error (including a hardTimeoutMs kill) does NOT mean stdout is empty —
+    // Node's spawnSync PRESERVES whatever the child already wrote before it was
+    // killed (verified: an ETIMEDOUT result still carries r.stdout). `hivecontrol
+    // workspace monitor` is DESTRUCTIVE — it pops messages off the native queue as
+    // it prints them — so discarding r.stdout here would silently and PERMANENTLY
+    // lose whatever batch was drained right before the kill fired (P1-A fix). The
+    // caller (runIngestLoop) still ingests this raw output even though ok is false.
+    if (r.error) return { ok: false, raw: String(r.stdout || ''), error: String(r.error.message || r.error) };
     return { ok: true, raw: String(r.stdout || ''), error: null };
   } catch (e) {
     return { ok: false, raw: '', error: String(e && e.message || e) };
@@ -374,15 +396,23 @@ function runIngestLoop(opts) {
     appendLog(home, 'ingest daemon refused to start: ' + reason, logFs);
     return { ok: false, started: false, reason };
   }
-  // SIGNAL-SAFE RELEASE (P0 fix): a normal return/throw already releases the lock
-  // via the `finally` below, but that's ordinary JS control flow — an OS signal
-  // (SIGTERM from launchd stopping/restarting this unit, Ctrl-C, `kill <pid>`)
-  // bypasses it entirely (Node's default SIGTERM/SIGINT disposition is immediate
-  // termination; no finally runs), leaking the lock and forcing every other starter
-  // to wait out the full INGEST_LOCK_STALE_MS window before recovery. SIGTERM/SIGINT
-  // ARE trappable (SIGKILL/a hard OOM-kill genuinely is not — those still rely on
-  // the stale+dead reclaim path in acquireIngestLock, unchanged here), so trap them
-  // and release before exiting. `proc` is injectable via io.process (same DI seam as
+  // SIGNAL HANDLER (kept, but NOT relied on for correctness — see below). A normal
+  // return/throw already releases the lock via the `finally` below; these handlers
+  // additionally trap SIGTERM (launchd stopping/restarting this unit) and SIGINT
+  // (Ctrl-C) so a release ALSO happens on that path, WHEN THE HANDLER ACTUALLY GETS
+  // A CHANCE TO RUN. It does not always get that chance: Node cannot execute a JS
+  // signal handler while the event loop is blocked inside a synchronous call, and
+  // this daemon spends its entire risky window blocked inside `spawnSync` (the
+  // monitor child call below). A signal that arrives during that window is simply
+  // not delivered to this handler until spawnSync returns — so this handler CANNOT
+  // close the leaked-lock window for that case (Node does not preempt a blocking
+  // syscall to dispatch a JS signal handler). What actually guarantees recovery
+  // from a lock left behind by a killed daemon is dead-holder-immediate-reclaim in
+  // acquireIngestLock (P1-B, see its STEAL RULE comment above), combined with
+  // hardTimeoutMs (below) bounding how long the spawnSync block itself can last.
+  // These handlers remain useful — and harmless — for the ordinary case where the
+  // daemon is signaled OUTSIDE the blocking spawn (e.g. between iterations), so
+  // they stay registered. `proc` is injectable via io.process (same DI seam as
   // io.fs/io.isAlive/io.now/io.lock above) so tests can capture + invoke the handler
   // deterministically instead of sending a real OS signal to the test worker.
   const proc = (o.io && o.io.process) || process;
@@ -502,34 +532,45 @@ function runIngestLoop(opts) {
         timeoutSec, hardTimeoutMs,
       });
       stats.iterations++;
+      // P1-A fix: a FAILED attempt (timeout/crash) can still carry drained stdout —
+      // `hivecontrol workspace monitor` is DESTRUCTIVE (it pops messages off the
+      // native queue as it prints them), and Node's spawnSync preserves whatever
+      // the child already wrote before it was killed. Ingest that output
+      // UNCONDITIONALLY whenever non-empty, BEFORE the ok-check below, so a
+      // killed-mid-print monitor call never discards messages that were already
+      // popped off the native queue — they would otherwise be lost forever (the
+      // next poll cannot re-observe them). The attempt still counts as a failure
+      // for backoff purposes afterward (see the `!res.ok` check below).
+      if (res.raw) {
+        let ing;
+        try {
+          ing = ingestPayload(s, res.raw, { workspaceId, now: o.now });
+        } catch (e) {
+          // STORE-LOCK FAIL-CLOSED errors must not CRASH-LOOP the daemon. appendMessage
+          // fails closed on ELOCKFS (a genuine fs/EPERM error on the messages lock) and
+          // ELOCKUNAVAIL (contention budget exhausted) — correct, but if that throw
+          // propagates out of the loop the daemon exits and is re-exec'd every RESTART_SEC,
+          // hammering the same wedged lock. The native queue BUFFERS until the next monitor
+          // poll and replay is idempotent by hash, so on these two known-retryable lock
+          // signals we LOG and CONTINUE to the next poll instead of crashing. Any OTHER
+          // error still propagates (fail-open is only for the lock signals, not arbitrary bugs).
+          if (e && (e.code === 'ELOCKFS' || e.code === 'ELOCKUNAVAIL')) {
+            stats.errors++;
+            try { fs.writeSync(2, 'devswarm-ingest: store lock ' + e.code + ' — skipping this batch, replaying next poll (idempotent by hash)\n'); } catch (_) {}
+            if (i + 1 < maxIterations) sleep(backoffMs);
+            continue;
+          }
+          throw e;
+        }
+        stats.inserted += ing.inserted;
+        stats.duplicate += ing.duplicate;
+        if (ing.inserted > 0) store.deriveSummary(s, { home, env: o.env, now: o.now });
+      }
       if (!res.ok) {
         stats.errors++;
         if (i + 1 < maxIterations) sleep(backoffMs); // crash -> backoff then re-spawn
         continue;
       }
-      let ing;
-      try {
-        ing = ingestPayload(s, res.raw, { workspaceId, now: o.now });
-      } catch (e) {
-        // STORE-LOCK FAIL-CLOSED errors must not CRASH-LOOP the daemon. appendMessage
-        // fails closed on ELOCKFS (a genuine fs/EPERM error on the messages lock) and
-        // ELOCKUNAVAIL (contention budget exhausted) — correct, but if that throw
-        // propagates out of the loop the daemon exits and is re-exec'd every RESTART_SEC,
-        // hammering the same wedged lock. The native queue BUFFERS until the next monitor
-        // poll and replay is idempotent by hash, so on these two known-retryable lock
-        // signals we LOG and CONTINUE to the next poll instead of crashing. Any OTHER
-        // error still propagates (fail-open is only for the lock signals, not arbitrary bugs).
-        if (e && (e.code === 'ELOCKFS' || e.code === 'ELOCKUNAVAIL')) {
-          stats.errors++;
-          try { fs.writeSync(2, 'devswarm-ingest: store lock ' + e.code + ' — skipping this batch, replaying next poll (idempotent by hash)\n'); } catch (_) {}
-          if (i + 1 < maxIterations) sleep(backoffMs);
-          continue;
-        }
-        throw e;
-      }
-      stats.inserted += ing.inserted;
-      stats.duplicate += ing.duplicate;
-      if (ing.inserted > 0) store.deriveSummary(s, { home, env: o.env, now: o.now });
     }
   } catch (e) {
     // Startup (store-open) AND main-loop failures land here. Fail-open: APPEND a

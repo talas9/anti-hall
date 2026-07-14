@@ -626,6 +626,13 @@ function runRepairs(opts) {
       const { result } = devswarm.run(['reconcile'], { cwd, env, home });
       if (result && result.ok) {
         push('reconcile', 'reconcile', 'fixed', 'reconciled ' + result.count + ' worktree(s) — imported ' + result.imported + ' message(s) into the shared store');
+      } else if (result && result.lost) {
+        // P1 fix: a reconcile that LOST messages (real shortfall, distinct
+        // from a benign `locked` contention skip) must never be reported as
+        // fixed — that would tell the user everything is fine while
+        // messages actually vanished. cmdReconcile now returns ok:false with
+        // a `lost` total whenever ANY target reports a shortfall.
+        push('reconcile', 'reconcile', 'failed', 'reconcile LOST ' + result.lost + ' message(s) across ' + (result.count || 0) + ' worktree(s) — see per-worktree detail: ' + CMD_RECONCILE);
       } else {
         push('reconcile', 'reconcile', 'failed', 'reconcile failed: ' + ((result && (result.reason || result.error)) || 'unknown error'));
       }

@@ -111,6 +111,52 @@ test('reconcile surfaces a per-id lock-skip (locked:true, imported:0) rather tha
     // subprocess's `locked` field.
     assert.equal(r.result.results[0].locked, true);
     assert.equal(r.result.results[0].ok, false);
+    // P1 fix: benign contention must NEVER read as a loss — `lost` stays 0 both
+    // per-target and in the aggregate.
+    assert.equal(r.result.lost, 0, 'a merely-locked (contended) target is not a loss');
+    assert.equal(r.result.results[0].lost, 0);
+  } finally { rm(home); rm(repo); }
+});
+
+// P1 fix (v0.58.1): cmdReconcile used to copy only ok/imported/duplicate/locked/error
+// from each per-target subprocess result — DROPPING `lost` and `nativeCount` entirely
+// — and then ALWAYS returned aggregate ok:true regardless of what any target actually
+// reported. A lossy child pull (pullOnce's real shortfall shape, devswarm-pull.js
+// ~line 299: `{ok:false, locked:true, nativeCount:2, lost:2}`) therefore vanished
+// without a trace: the aggregate said ok:true, the per-target row said ok:false with
+// no `lost` field anywhere — the single worst failure mode for a substrate whose
+// whole job is "never silently lose a message". This test reproduces that EXACT
+// subprocess payload and proves it survives all the way to the top.
+test('reconcile: a target that reports a REAL message loss (lost>0, pullOnce shortfall shape) is NEVER swallowed — aggregate ok:false, lost/nativeCount surfaced per-target AND summed at the top', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-lossy');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-lossy', worktreePath: '/wt/lossy', sessionId: 's' });
+    seedRegistry(home, repoKey, { id: 'child-clean', worktreePath: '/wt/clean', sessionId: 's' });
+    const io = {
+      spawnReconcile: (d) => {
+        if (d.id === 'child-lossy') {
+          // The REAL shape pullOnce/`inbox pull` emits on a genuine shortfall
+          // (devswarm-pull.js's reconciliation check, ~line 299-306).
+          return { status: 2, stdout: JSON.stringify({ ok: false, locked: true, imported: 0, duplicate: 0, nativeCount: 2, lost: 2 }), error: null };
+        }
+        return { status: 0, stdout: JSON.stringify({ ok: true, imported: 1, duplicate: 0, nativeCount: 1, locked: true, lost: 0 }), error: null };
+      },
+    };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, false, 'aggregate ok MUST be false when ANY target lost messages — this is the exact P1: pre-fix it was hardcoded true');
+    assert.equal(r.result.lost, 2, 'the aggregate must surface the SUMMED loss, not silently drop it');
+    const lossy = r.result.results.find((x) => x.id === 'child-lossy');
+    assert.ok(lossy, 'the lossy target must still appear in the per-target results');
+    assert.equal(lossy.lost, 2, 'per-target lost must be propagated from the subprocess JSON, not dropped');
+    assert.equal(lossy.nativeCount, 2, 'per-target nativeCount must be propagated from the subprocess JSON, not dropped');
+    assert.equal(lossy.ok, false);
+    const clean = r.result.results.find((x) => x.id === 'child-clean');
+    assert.equal(clean.lost, 0, 'a clean target reports lost:0, never contaminated by a sibling loss');
+    assert.equal(clean.ok, true);
+    // imported still sums correctly across both targets (unrelated to the loss fix).
+    assert.equal(r.result.imported, 1);
   } finally { rm(home); rm(repo); }
 });
 

@@ -29,7 +29,7 @@ takes effect in-session — this skill does not over-promise.
 
 ## What the helper does (`scripts/update.js`)
 
-Pure Node ≥ 18 built-ins, cross-platform (Windows included), fail-open
+Pure Node ≥ 22 built-ins, cross-platform (Windows included), fail-open
 (report-don't-break). It makes **no writes outside the marketplace clone and stdout** —
 the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a **new**
 `cache/.../<newver>/` dir (it never deletes or overwrites another version dir).

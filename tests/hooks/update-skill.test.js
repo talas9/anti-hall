@@ -1173,6 +1173,35 @@ test('reconcilePostUpdate: gate open + cwd is not a git project -> reconcile its
   } finally { fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(nogit, { recursive: true, force: true }); }
 });
 
+// P1 fix (v0.58.1): reconcilePostUpdate used to fall straight to a generic
+// "reconcile failed: unknown error" whenever `result.ok` was false — and
+// cmdReconcile itself used to ALWAYS return ok:true, so a real per-target
+// message loss never even reached this branch, it just read as success. Now
+// that cmdReconcile returns ok:false + a `lost` total on a genuine shortfall,
+// this proves the update flow surfaces the loss count (not a generic
+// "unknown error"), marks the outcome as attempted-but-NOT-success, and — per
+// reconcilePostUpdate's own fail-open contract — never throws.
+test('reconcilePostUpdate: a reconcile with a REAL per-target message loss -> attempted:true, NOT the success template, loss count surfaced, never throws', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 1, imported: 0, lost: 2,
+          results: [{ id: 'child-lossy', worktreePath: '/wt/lossy', ok: false, imported: 0, duplicate: 0, nativeCount: 2, lost: 2, locked: true, error: null }],
+        },
+      }),
+    },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.strictEqual(result.lost, 2, 'the loss count must be surfaced on the returned status object');
+  assert.doesNotMatch(result.detail, /^reconciled \d+ worktree/, 'a lossy reconcile must NEVER read as the success template');
+  assert.match(result.detail, /LOST 2 message/i, 'the loss count must appear in the human detail, not a generic "unknown error"');
+});
+
 test('reconcilePostUpdate: an internal throw is fail-open — never propagates, detail explains it', () => {
   const result = U.reconcilePostUpdate({
     paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },

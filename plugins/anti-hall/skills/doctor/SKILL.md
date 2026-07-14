@@ -154,6 +154,6 @@ node "${CLAUDE_PLUGIN_ROOT}/hooks/doctor.js" --check   # pure read-only (CI)
 Add `--quiet` for just the one-line verdict. Exit code is non-zero if any critical check
 (or repair) fails, so it is scriptable in CI too — use `--check` there to keep it read-only.
 
-After relaying the report, if anything failed: the most common fix is **Node missing/<18**
-(install Node ≥ 18) or **no statusLine** (repair mode installs it automatically, or run the
+After relaying the report, if anything failed: the most common fix is **Node missing/<22**
+(install Node ≥ 22) or **no statusLine** (repair mode installs it automatically, or run the
 `install-statusline` skill, then restart).

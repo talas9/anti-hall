@@ -660,6 +660,12 @@ function cmdInboxPull(id, flags, ctx) {
     ok: !!res.ok, action: 'pull', id,
     imported: res.imported || 0, duplicate: res.duplicate || 0,
     nativeCount: res.nativeCount || 0, locked: !!res.locked,
+    // P1 fix: pullOnce's loss check (devswarm-pull.js) sets `lost` when the
+    // native message-count exceeds what actually landed durably — this MUST
+    // survive the subprocess boundary (cmdReconcile spawns this exact verb
+    // and parses its stdout JSON) or a real shortfall silently vanishes
+    // before the reconciler ever sees it.
+    lost: res.lost || 0,
   };
   if (res.error) out.error = res.error;
   return out;
@@ -1337,6 +1343,14 @@ function cmdReconcile(flags, ctx) {
       ok: !!(parsed && parsed.ok),
       imported: (parsed && parsed.imported) || 0,
       duplicate: (parsed && parsed.duplicate) || 0,
+      nativeCount: (parsed && parsed.nativeCount) || 0,
+      // P1 fix: pullOnce's loss check (devswarm-pull.js ~line 299) reports a
+      // REAL shortfall (native message-count > what actually landed durably)
+      // via `lost`. Previously dropped here entirely, so a lossy child pull
+      // (e.g. `{ok:false, locked:true, nativeCount:2, lost:2}`) vanished
+      // without a trace and the aggregate below still reported `ok:true`.
+      // Distinct from `locked` (benign contention skip, never a loss).
+      lost: (parsed && parsed.lost) || 0,
       // P1 fix: pullOnce's own contract (devswarm-pull.js) uses `locked===false`
       // to mean "another consumer holds the lock" (same polarity as migrate-
       // state.js's `ds.locked===false` convention) — a blind pass-through of
@@ -1353,7 +1367,12 @@ function cmdReconcile(flags, ctx) {
     });
   }
   const imported = results.reduce((acc, r) => acc + (r.imported || 0), 0);
-  return { ok: true, action: 'reconcile', repoKey, count: results.length, imported, results };
+  // P1 fix: aggregate `ok` must NOT be true when ANY target actually lost
+  // messages — a lossy pull is a real shortfall, not a benign skip (that is
+  // what `locked` is for). Silently returning ok:true here is what let
+  // doctor/update report a lossy reconcile as "fixed"/success upstream.
+  const lost = results.reduce((acc, r) => acc + (r.lost || 0), 0);
+  return { ok: lost === 0, action: 'reconcile', repoKey, count: results.length, imported, lost, results };
 }
 
 // resolveCreatedWorktreePath(res) -> string | null. TOLERANT best-effort parse

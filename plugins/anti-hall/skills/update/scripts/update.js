@@ -596,12 +596,23 @@ function reconcilePostUpdate(opts) {
     const devswarm = o.devswarm || require(devswarmPath);
     const { result } = devswarm.run(['reconcile'], { cwd, env, home });
     if (!result || !result.ok) {
-      return { attempted: true, detail: 'reconcile failed: ' + ((result && (result.reason || result.error)) || 'unknown error') };
+      // P1 fix: a reconcile that LOST messages (real shortfall — distinct
+      // from a benign `locked` contention skip) must surface the loss count
+      // rather than falling through to a generic "unknown error" that reads
+      // as success-adjacent. cmdReconcile now returns ok:false + a `lost`
+      // total whenever ANY target reports a shortfall. Still fully
+      // fail-open — this NEVER throws, and the caller never fails the
+      // update itself over a reconcile outcome (see doc comment above).
+      const detail = result && result.lost
+        ? 'reconcile LOST ' + result.lost + ' message(s) across ' + (result.count || 0) + ' worktree(s)'
+        : 'reconcile failed: ' + ((result && (result.reason || result.error)) || 'unknown error');
+      return { attempted: true, count: result && result.count, lost: result && result.lost, results: result && result.results, detail };
     }
     return {
       attempted: true,
       count: result.count,
       imported: result.imported,
+      lost: result.lost || 0,
       results: result.results,
       detail: 'reconciled ' + result.count + ' worktree(s) — imported ' + result.imported + ' message(s) into the shared store',
     };
@@ -986,6 +997,7 @@ function renderHuman(status, changelog) {
       for (const r of status.reconcile.results) {
         const bits = ['imported ' + (r.imported || 0), 'duplicate ' + (r.duplicate || 0)];
         if (r.locked) bits.push('locked — another pull in progress, skipped');
+        if (r.lost) bits.push('LOST ' + r.lost);
         if (r.error) bits.push('ERROR: ' + r.error);
         lines.push('    - ' + r.id + ': ' + bits.join(', '));
       }

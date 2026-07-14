@@ -248,6 +248,35 @@ test('inbox pull is idempotent about the descriptor (re-pull leaves an existing 
   } finally { rm(home); }
 });
 
+// P1 fix (v0.58.1): `inbox pull`'s own JSON output (cmdInboxPull) is the exact
+// payload `reconcile` parses off the subprocess it spawns per worktree
+// (defaultSpawnReconcile spawns `node devswarm.js inbox pull <id>` and JSON.parses
+// its stdout) — so pullOnce's `lost` field MUST survive into this output, or a real
+// (non-mocked) reconcile run has nothing to propagate no matter how cmdReconcile
+// itself is fixed. Drives a genuine pullOnce shortfall (message-count says 2,
+// read-messages returns an unhandled shape normalizeMonitorPayload can't recover)
+// through the REAL `inbox pull` CLI verb, exactly as devswarm-pull.test.js does at
+// the pullOnce layer directly.
+test('inbox pull surfaces a REAL pullOnce shortfall as `lost` on the CLI\'s own JSON output (the exact payload reconcile\'s subprocess spawn parses)', () => {
+  const home = tmpHome();
+  try {
+    const io = {
+      run: (s) => {
+        const sub = s.args[1];
+        if (sub === 'message-count') return { ok: true, raw: '2', error: null };
+        // An unhandled batch shape -> normalizeMonitorPayload recovers nothing,
+        // so pullOnce's reconciliation check (recovered < nativeCount) fires.
+        if (sub === 'read-messages') return { ok: true, raw: JSON.stringify({ items: [{ message: 'a' }, { message: 'b' }] }), error: null };
+        return { ok: false, raw: '', error: 'unexpected subcommand ' + sub };
+      },
+    };
+    const r = cli.run(['inbox', 'pull', 'child-lossy'], ctx(home, { io }));
+    assert.equal(r.result.ok, false, 'a real shortfall must not report success');
+    assert.equal(r.result.nativeCount, 2);
+    assert.equal(r.result.lost, 2, 'the lost field must be present on the CLI JSON output, not just on pullOnce\'s in-process return value');
+  } finally { rm(home); }
+});
+
 test('workspaces list emits the derived projection (PER-PROJECT, targeted by --workspace)', () => {
   const home = tmpHome();
   try {

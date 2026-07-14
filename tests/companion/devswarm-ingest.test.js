@@ -326,17 +326,112 @@ test('acquireIngestLock RECLAIMS a dead + stale holder', () => {
   } finally { rm(home); }
 });
 
-test('acquireIngestLock does NOT steal a dead holder whose lock is still FRESH', () => {
+// P1-B FIX (v0.58.1): a lock leaked by a killed daemon used to be reclaimable only
+// once BOTH stale AND dead — stranding ingestion for up to INGEST_LOCK_STALE_MS
+// (~15min) behind a holder that could never come back (Node cannot run a
+// SIGTERM/SIGINT handler while the event loop is blocked inside spawnSync, so a
+// daemon killed mid-spawn never gets a chance to release its own lock). A holder
+// with a KNOWN pid confirmed DEAD is now reclaimed IMMEDIATELY, without waiting
+// out the staleness window. FAILS on pre-fix code (which required stale && !alive
+// and refused this exact dead-but-fresh case).
+test('acquireIngestLock RECLAIMS a DEAD holder IMMEDIATELY even when its lock is still FRESH (P1-B fix)', () => {
   const home = tmpHome();
   try {
     const p = ingest.ingestLockPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const ts = 100000;
     fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'fresh-dead' }));
-    // Dead but NOT yet stale (heartbeat window not elapsed) -> both conditions
-    // required, so refuse rather than steal.
+    // Dead AND NOT stale (heartbeat window not elapsed) -> reclaimed immediately;
+    // a dead pid can never come back, so there is nothing to gain by waiting.
     const rel = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => ts + 1000 });
-    assert.equal(rel, null, 'a fresh lock is not stolen even from a dead holder');
+    assert.ok(rel, 'a dead holder is reclaimed immediately, even with a fresh timestamp');
+    const cur = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.notEqual(cur.token, 'fresh-dead', 'the reclaimed lock is now ours');
+    rel();
+  } finally { rm(home); }
+});
+
+// A genuinely UNKNOWN holder (no pid to check — unparseable/torn record) is a
+// DIFFERENT case from a KNOWN-dead pid: liveness can only be inferred from mtime,
+// never confirmed, so it still needs BOTH stale AND not-alive before reclaim —
+// unchanged by P1-B. Covered by the TORN/EMPTY-lock tests below.
+
+test('acquireIngestLock: TWO concurrent starters racing a DEAD-but-FRESH lock (P1-B immediate-reclaim path) — exactly ONE wins, never both', () => {
+  const home = tmpHome();
+  try {
+    const p = ingest.ingestLockPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const ts = 100000; // fresh — NOT past INGEST_LOCK_STALE_MS
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'dead-holder' }));
+    // Simulate two processes racing on the exact same dead-but-fresh lock (mirrors
+    // the existing stale-lock race test below, but exercises the NEW immediate-
+    // reclaim branch specifically — staleness never enters into it here). isAlive
+    // is pid-aware (dead only for the original holder's pid 4242) rather than a
+    // blanket `false`: a blanket false would also mis-report the WINNING racer's
+    // own real process as dead once the losing racer re-reads the file on its
+    // second attempt, causing it to wrongly steal the winner's fresh lock right
+    // back — an artifact of the mock, not a real possibility (a process can never
+    // observe its own live pid as dead).
+    const isAliveExceptOriginal = (pid) => pid !== 4242;
+    let otherRacerRan = false;
+    let otherRacerResult;
+    const racerFs = new Proxy(fs, {
+      get(target, prop) {
+        if (prop === 'unlinkSync') {
+          return function (target_p) {
+            const r = target.unlinkSync(target_p);
+            if (!otherRacerRan && target_p === p) {
+              otherRacerRan = true;
+              otherRacerResult = ingest.acquireIngestLock(home, { isAlive: isAliveExceptOriginal, now: () => ts + 1000 });
+            }
+            return r;
+          };
+        }
+        const val = target[prop];
+        return typeof val === 'function' ? val.bind(target) : val;
+      },
+    });
+    const first = ingest.acquireIngestLock(home, { isAlive: isAliveExceptOriginal, now: () => ts + 1000, fs: racerFs });
+    assert.ok(otherRacerRan, 'the injected race actually ran');
+    assert.ok(otherRacerResult, 'the OTHER racer (which reclaimed first) got the lock');
+    assert.equal(first, null, 'the ORIGINAL racer must back off once it sees the lock was already re-claimed — never a double-consumer, even on the not-yet-stale immediate-reclaim path');
+    const cur = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.notEqual(cur.token, 'dead-holder', 'the lock is held by exactly the winning racer');
+    otherRacerResult();
+  } finally { rm(home); }
+});
+
+test('runIngestLoop: a DEAD-but-FRESH lock is reclaimed immediately and the daemon STARTS (P1-B, full daemon-level proof)', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const p = ingest.ingestLockPath(home, wt);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const ts = 100000; // fresh, NOT stale
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'dead-holder' }));
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
+      io: { isAlive: () => false, now: () => ts + 1000 },
+    });
+    assert.equal(summary.started, true, 'the daemon starts immediately once the dead holder is confirmed dead, without waiting out the staleness window');
+  } finally { rm(home); }
+});
+
+test('runIngestLoop: an ALIVE holder still REFUSES the daemon (single-consumer invariant preserved by the P1-B fix)', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const p = ingest.ingestLockPath(home, wt);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const ts = 1000; // old, but the holder is ALIVE — must never be stolen
+    fs.writeFileSync(p, JSON.stringify({ pid: 4242, ts, token: 'live-holder' }));
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
+      io: { isAlive: () => true, now: () => ts + 60 * 60 * 1000 },
+    });
+    assert.equal(summary.started, false, 'a live holder is never stolen, so the daemon correctly refuses to start');
   } finally { rm(home); }
 });
 
@@ -384,9 +479,12 @@ test('release.heartbeat refreshes the lock ts so a long-lived daemon stays fresh
     assert.equal(rel.heartbeat(t), true, 'heartbeat refreshed our own lock');
     const cur = JSON.parse(fs.readFileSync(ingest.ingestLockPath(home), 'utf8'));
     assert.equal(cur.ts, t, 'the lock ts advanced to the heartbeat time');
-    // A would-be thief checking at this moment sees a fresh (refreshed) lock.
-    const thief = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => t + 1000 });
-    assert.equal(thief, null, 'the heartbeat kept the lock fresh -> not stealable');
+    // A would-be thief checking at this moment: the holder is a REAL live process
+    // (our own test pid), so the default isAlive() correctly reports it as alive
+    // and refuses regardless of how fresh/stale the heartbeat looks (P1-B's
+    // immediate-reclaim path only ever applies to a CONFIRMED-dead pid).
+    const thief = ingest.acquireIngestLock(home, { now: () => t + 1000 });
+    assert.equal(thief, null, 'a live holder (even freshly heartbeated) is never stolen');
     rel();
   } finally { rm(home); }
 });
@@ -421,7 +519,14 @@ test('acquireIngestLock: TWO concurrent starters racing to steal the SAME stale 
     // independent acquireIngestLock call runs to completion "in between" — exactly
     // the two-daemons-racing-a-stale-lock scenario the single-consumer invariant
     // must survive (stealing a lock that's ALREADY been re-claimed by someone else
-    // would split the destructive native queue between two live consumers).
+    // would split the destructive native queue between two live consumers). isAlive
+    // is pid-aware (dead only for the original holder's pid 4242) rather than a
+    // blanket `false`: a blanket false would also mis-report the WINNING racer's
+    // own real process as dead once the losing racer re-reads the file on its
+    // second attempt (P1-B's immediate-reclaim path), wrongly stealing the
+    // winner's fresh lock right back — an artifact of the mock, not a real
+    // possibility (a process can never observe its own live pid as dead).
+    const isAliveExceptOriginal = (pid) => pid !== 4242;
     let otherRacerRan = false;
     let otherRacerResult;
     const racerFs = new Proxy(fs, {
@@ -432,7 +537,7 @@ test('acquireIngestLock: TWO concurrent starters racing to steal the SAME stale 
             if (!otherRacerRan && target_p === p) {
               otherRacerRan = true;
               // The "other" racer sees the file gone and reclaims it FIRST.
-              otherRacerResult = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => oldTs + 60 * 60 * 1000 });
+              otherRacerResult = ingest.acquireIngestLock(home, { isAlive: isAliveExceptOriginal, now: () => oldTs + 60 * 60 * 1000 });
             }
             return r;
           };
@@ -441,7 +546,7 @@ test('acquireIngestLock: TWO concurrent starters racing to steal the SAME stale 
         return typeof val === 'function' ? val.bind(target) : val;
       },
     });
-    const first = ingest.acquireIngestLock(home, { isAlive: () => false, now: () => oldTs + 60 * 60 * 1000, fs: racerFs });
+    const first = ingest.acquireIngestLock(home, { isAlive: isAliveExceptOriginal, now: () => oldTs + 60 * 60 * 1000, fs: racerFs });
     assert.ok(otherRacerRan, 'the injected race actually ran');
     assert.ok(otherRacerResult, 'the OTHER racer (which reclaimed first) got the lock');
     assert.equal(first, null, 'the ORIGINAL racer must back off once it sees the lock was already re-claimed — never a double-consumer');
@@ -796,6 +901,74 @@ test('runIngestLoop self-registration is FAIL-OPEN — a registry-write error ne
     assert.equal(summary.stats.inserted, 1, 'the message was still ingested despite the registry-write error');
     const logContent = fs.readFileSync(ingest.logFilePath(home), 'utf8');
     assert.match(logContent, /WARN: self-registration failed \(workspaceId=p\): registry write boom/);
+  } finally { rm(home); }
+});
+
+// P1-A FIX (v0.58.1, message-loss guard): `hivecontrol workspace monitor` is
+// DESTRUCTIVE — it pops messages off the native queue as it prints them. Node's
+// spawnSync PRESERVES whatever a child already wrote to stdout before it was
+// killed (verified: an ETIMEDOUT result still carries r.stdout). Pre-fix,
+// defaultMonitorRun discarded r.stdout on ANY spawn error (including a
+// hardTimeoutMs kill), and runIngestLoop skipped ingestion whenever `!res.ok` —
+// so a monitor call that drained a real batch and THEN hung past its hard
+// timeout would have its already-popped messages thrown away and PERMANENTLY
+// lost (the native queue cannot re-deliver what it already handed out). FAILS on
+// pre-fix code on both counts: defaultMonitorRun returned raw:'' on r.error, and
+// runIngestLoop never even looked at res.raw when !res.ok.
+test('defaultMonitorRun preserves stdout when the child is killed by hardTimeoutMs (spawnSync ETIMEDOUT) — P1-A fix', () => {
+  if (process.platform === 'win32') return; // POSIX shebang script; not exercised on win32
+  const home = tmpHome();
+  try {
+    const scriptPath = path.join(home, 'fake-hivecontrol.js');
+    // Ignores whatever argv it's invoked with ('workspace monitor -i N -t N') —
+    // writes a valid batch SYNCHRONOUSLY (fs.writeSync, guaranteed-flushed), then
+    // blocks well past the hardTimeoutMs below so spawnSync is forced to kill it.
+    fs.writeFileSync(scriptPath,
+      '#!/usr/bin/env node\n'
+      + 'require("fs").writeSync(1, JSON.stringify([{message:"drained-before-kill"}]));\n'
+      + 'setTimeout(function(){}, 60000);\n');
+    fs.chmodSync(scriptPath, 0o755);
+
+    const res = ingest.defaultMonitorRun({ hivecontrol: scriptPath, hardTimeoutMs: 2000 });
+
+    assert.equal(res.ok, false, 'a killed/timed-out child is still a failed attempt');
+    assert.ok(res.error, 'the spawn error (ETIMEDOUT) is surfaced');
+    assert.notEqual(res.raw, '', 'stdout the child already wrote before being killed must be PRESERVED, not discarded');
+    assert.deepEqual(JSON.parse(res.raw), [{ message: 'drained-before-kill' }], 'the exact batch drained before the kill is intact');
+  } finally { rm(home); }
+});
+
+test('runIngestLoop ingests stdout from a FAILED (ok:false) attempt instead of discarding it — P1-A fix', () => {
+  const home = tmpHome();
+  try {
+    // Register 'p' so a successful projection can be built off the ingested batch.
+    const reg = storeLib.openStore({ home, workspaceId: 'p', backend: 'journal' });
+    try { reg.upsertRegistry({ id: 'p', worktreePath: '/wt/p', sessionId: 's', inboxPath: null, cursorPath: null, nudgeCommand: null }); }
+    finally { reg.close(); }
+
+    // Simulates exactly what defaultMonitorRun now returns when spawnSync hits its
+    // hard timeout (ETIMEDOUT) but the killed child had ALREADY written a valid
+    // batch to stdout before being killed — ok:false AND non-empty raw, together.
+    const batch = JSON.stringify([
+      { fromBranch: 'c', toBranch: 'p', message: 'drained-before-timeout', createdAt: '2026-01-01T00:00:00Z' },
+    ]);
+    const run = () => ({ ok: false, raw: batch, error: 'ETIMEDOUT' });
+
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', worktree: null, maxIterations: 1,
+      run, sleep: () => {}, restartBackoffMs: 0,
+    });
+
+    assert.equal(summary.started, true);
+    // The message already popped off the destructive native queue before the
+    // timeout fired must NOT be discarded just because the attempt failed.
+    assert.equal(summary.stats.inserted, 1, 'stdout from a failed/timed-out attempt is still ingested, not thrown away');
+    // The attempt still counts as a failure for backoff/retry purposes — a
+    // timeout is still a timeout even though its stdout happened to be salvaged.
+    assert.equal(summary.stats.errors, 1, 'a failed attempt still counts as an error for backoff, even though its stdout was salvaged');
+
+    const s = storeLib.openStore({ home, workspaceId: 'p', backend: 'journal' });
+    try { assert.equal(s.messageCount('p'), 1); } finally { s.close(); }
   } finally { rm(home); }
 });
 

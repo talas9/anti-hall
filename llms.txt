@@ -13,7 +13,7 @@
 > DevSwarm is in use, feature-gated like the OMC integration) that detects a wedged
 > DevSwarm workspace session and pokes/escalates it (never kills — a separate on-demand
 > CLI is the only path that ever kills). All hooks are pure Node.js (built-ins only) and run on macOS,
-> Linux, and Windows; the one prerequisite is Node >= 18 on PATH.
+> Linux, and Windows; the one prerequisite is Node >= 22 on PATH.
 
 anti-hall targets four failure modes of coding assistants: eagerness (acting before
 investigating), hallucination (stating unverified facts as truth), fix-before-diagnosis
@@ -40,7 +40,7 @@ Codex global activation:
 node plugins/anti-hall/codex/install-codex.js --global
 ```
 
-Requires Node.js >= 18 on PATH; without it the hooks silently no-op. Updates via the
+Requires Node.js >= 22 on PATH; without it the hooks silently no-op. Updates via the
 `/plugin` manager; updates pull on restart if autoUpdate is enabled (or via the /plugin manager).
 
 ## DevSwarm coordination (optional)

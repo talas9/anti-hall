@@ -28,7 +28,7 @@ claude --plugin-dir /path/to/anti-hall
 
 ## Requirements
 
-> **Node.js >= 18 on `PATH` is the one hard prerequisite.** Every hook and the
+> **Node.js >= 22 on `PATH` is the one hard prerequisite.** Every hook and the
 > statusline are pure Node.js (built-ins only) and are launched as
 > `node "<plugin>/hooks/<name>.js"`. Claude Code does NOT guarantee a user-installed
 > `node` on the hook shell's `PATH`, and this plugin does not bundle one. If `node`

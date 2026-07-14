@@ -25,6 +25,8 @@ const REPO_ROOT = path.join(__dirname, '..', '..');
 const DOCTOR_JS = path.join(REPO_ROOT, 'plugins', 'anti-hall', 'hooks', 'doctor.js');
 const REPAIR_JS = path.join(REPO_ROOT, 'plugins', 'anti-hall', 'hooks', 'lib', 'doctor-repair.js');
 const INGEST_JS = path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js');
+const STORE_JS = path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js');
+const DEVSWARM_SCRIPT_FOR_TEST = path.join(REPO_ROOT, 'plugins', 'anti-hall', 'scripts', 'devswarm.js');
 
 const repair = require(REPAIR_JS);
 const ingest = require(INGEST_JS);
@@ -494,6 +496,29 @@ test('doctor --dry-run: DevSwarm ACTIVE + git worktree -> gate OPENS (would run 
 test('runRepairs (in-process, platform=win32 to skip the OTHER daemon-touching GATED repairs — see safety note above): DevSwarm ACTIVE + git worktree -> reconcile actually FIXES (real run, empty registry -> 0 drained)', () => {
   const home = mkTmp('recon-open');
   const cwd = makeGitRepo('recon-open-cwd');
+  // Backend-agnostic instrumentation (CI fix, node 18/20 red): the sqlite
+  // backend eagerly `mkdirSync`s the store dir on open (devswarm-store.js
+  // openSqlite), so `storeDirExists()` used to prove "the store was really
+  // opened" — but the journal backend (the ONLY backend on node 18/20, which
+  // lack node:sqlite) performs ZERO fs writes for an all-read pass against an
+  // EMPTY registry (its mkdir only runs inside `append()`, on an actual
+  // write). For this exact empty-registry/0-drained scenario the journal
+  // backend leaves no directory artifact at all even though openStore WAS
+  // genuinely called — so asserting on a directory is backend-dependent and
+  // false on node 18/20. Assert on the production primitive itself instead
+  // (same monkeypatch pattern as classifyIngestUnit's resolveStableScript
+  // override above): wrap store.openStore to record that it was actually
+  // invoked, then delegate to the real implementation. True on BOTH
+  // backends, and still distinguishes this real run from the gated/dry-run
+  // cases above, which never call openStore at all.
+  const storeCacheKey = require.resolve(STORE_JS);
+  require(STORE_JS); // ensure cached under storeCacheKey before patching
+  const originalOpenStore = require.cache[storeCacheKey].exports.openStore;
+  let openStoreCalled = false;
+  require.cache[storeCacheKey].exports.openStore = (opts) => {
+    openStoreCalled = true;
+    return originalOpenStore(opts);
+  };
   try {
     const env = { ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' };
     const results = repair.runRepairs({ cwd, env, home, dryRun: false, platform: 'win32' });
@@ -501,8 +526,50 @@ test('runRepairs (in-process, platform=win32 to skip the OTHER daemon-touching G
     assert.ok(r, 'a reconcile repair result must be present:\n' + JSON.stringify(results, null, 2));
     assert.strictEqual(r.status, 'fixed', 'reconcile must actually run and succeed when the gate is open:\n' + JSON.stringify(r));
     assert.match(r.msg, /reconciled 0 worktree\(s\) — imported 0 message\(s\) into the shared store/);
-    assert.ok(storeDirExists(home), 'a real reconcile run DOES open the shared store (unlike gated/dry-run)');
-  } finally { rm(home); rm(cwd); }
+    assert.strictEqual(openStoreCalled, true, 'a real reconcile run DOES open the shared store (unlike gated/dry-run)');
+  } finally {
+    require.cache[storeCacheKey].exports.openStore = originalOpenStore;
+    rm(home); rm(cwd);
+  }
+});
+
+// P1 fix (v0.58.1): doctor's GATED reconcile repair used to read only
+// `result.ok` — and cmdReconcile used to ALWAYS return ok:true regardless of
+// whether any target actually lost messages, so a lossy auto-repair was
+// reported as `status:'fixed'` (mutating nothing, telling the user everything
+// is fine, while messages were silently gone). cmdReconcile now returns
+// ok:false + a `lost` total whenever any target reports a shortfall; this
+// proves doctor's repair layer honors that and reports `failed`, with the
+// loss count in the message — never silently upgraded to `fixed`.
+test('doctor --fix: reconcile with a REAL per-worktree message loss -> reported as FAILED (never "fixed"), loss count surfaced in the message', () => {
+  const home = mkTmp('recon-lossy');
+  const cwd = makeGitRepo('recon-lossy-cwd');
+  const devswarmCacheKey = require.resolve(DEVSWARM_SCRIPT_FOR_TEST);
+  require(DEVSWARM_SCRIPT_FOR_TEST); // ensure cached before patching
+  const originalRun = require.cache[devswarmCacheKey].exports.run;
+  require.cache[devswarmCacheKey].exports.run = (argv) => {
+    if (argv[0] === 'reconcile') {
+      return {
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 1, imported: 0, lost: 2,
+          results: [{ id: 'child-lossy', worktreePath: '/wt/lossy', ok: false, imported: 0, duplicate: 0, nativeCount: 2, lost: 2, locked: true, error: null }],
+        },
+      };
+    }
+    return originalRun(argv);
+  };
+  try {
+    const env = { ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' };
+    const results = repair.runRepairs({ cwd, env, home, dryRun: false, platform: 'win32' });
+    const r = results.find((x) => x.id === 'reconcile');
+    assert.ok(r, 'a reconcile repair result must be present:\n' + JSON.stringify(results, null, 2));
+    assert.strictEqual(r.status, 'failed', 'a lossy reconcile must NEVER be reported as fixed:\n' + JSON.stringify(r));
+    assert.match(r.msg, /LOST 2 message/i, 'the loss count must be surfaced in the repair message, not swallowed into "unknown error":\n' + r.msg);
+  } finally {
+    require.cache[devswarmCacheKey].exports.run = originalRun;
+    rm(home); rm(cwd);
+  }
 });
 
 test('doctor --check: DevSwarm ACTIVE + git worktree -> reconcile is skipped entirely (pure read-only, no Repair section at all)', () => {

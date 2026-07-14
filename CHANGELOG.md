@@ -8,11 +8,17 @@ the update.
 
 ## 0.58.1
 
-Fixes a real-world ingest-daemon outage and removes a manual step.
+Fixes a real-world ingest-daemon outage, a message-loss gap in its own fix, a slow lock
+recovery path, dishonest reconcile reporting, and removes a manual step. Raises the Node
+floor to 22.
 
 - Ingest daemon could wedge indefinitely: `main()` never passed a hard timeout, so the `spawnSync` running `hivecontrol workspace monitor` had no OS-level kill timeout — only the cooperative `-t` flag handed to hivecontrol. A child that ignores its own `-t` blocks the daemon forever, including its heartbeat; `isAlive()` then correctly refuses to steal a lock whose holder is genuinely alive-but-wedged, so the daemon can never recover (observed: 4,319 consecutive lock refusals over ~15h). Now a hard timeout (cooperative timeout + 10s) backstops the spawn and surfaces as a retryable failure through the existing backoff path.
 - Ingest daemon leaked its lock on signal: no SIGTERM/SIGINT handlers existed, so an OS stop (e.g. launchd restarting the unit) bypassed the `finally` that releases the lock, stranding it for the full stale window. Signals now release the lock before exit.
+- Message loss fixed: the hard timeout above (and any other retryable failure) discarded the killed monitor's stdout outright — but `hivecontrol workspace monitor` is DESTRUCTIVE, popping messages off the native queue as it prints them, so whatever it had already drained before being killed was gone for good. `spawnSync` preserves stdout written before a kill; that output is now ingested unconditionally whenever non-empty, even when the attempt is otherwise treated as a retryable failure.
+- Ingest lock: a lock whose holder pid is confirmed dead is now reclaimed immediately instead of waiting out the full 15-minute stale window. Signal handlers (previous bullet) are not what guarantees this recovery path — Node cannot dispatch a JS signal handler while the event loop is blocked inside `spawnSync`, which is where this daemon spends its entire risky window, so a daemon killed mid-spawn never gets a chance to run its own handler. Dead-holder-immediate-reclaim in the lock acquisition path is what actually closes the leaked-lock window for every other starter.
+- `reconcile` no longer reports success while losing messages: a per-worktree `lost` count (from a real native-queue shortfall, distinct from a benign `locked` contention skip) now propagates all the way up — including across the `inbox pull` subprocess boundary that previously dropped it — and the aggregate `reconcile` result is no longer `ok:true` when any worktree lost messages. `doctor` now reports `failed` (not `fixed`) with the loss count, and `update` reports a not-success detail with the loss count, instead of both silently reading a lossy reconcile as clean.
 - `reconcile` (drains stranded per-worktree native queues into the shared store) now runs AUTOMATICALLY — as a gated `doctor` repair and as a post-update step inside a DevSwarm session — instead of requiring a manual command. It remains idempotent, skips (never races) a worktree a live child is already draining, and honors `--dry-run`/`--check`. The manual verb still works.
+- **Node 22 is now the minimum** (was 18). Node 18 and 20 are past EOL, and Claude Code's own npm package already requires Node 22+. CI matrix is now Node 22/24 across ubuntu/macos/windows.
 
 ## 0.58.0
 
