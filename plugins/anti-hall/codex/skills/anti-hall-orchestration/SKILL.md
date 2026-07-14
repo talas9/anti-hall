@@ -26,7 +26,7 @@ Codex does not have Claude Workflow JS. For 3+ parallel/nested work units, use a
 
 ## Inside DevSwarm: the workspace is the TOP fan-out tier
 
-If this session is a DevSwarm **Primary** (`DEVSWARM_REPO_ID` set, `DEVSWARM_SOURCE_BRANCH` empty), a subagent is **not** your top decomposition primitive — a **child workspace** is. The shared hooks that inject this doctrine (`verify-first-full.js`, `verify-first.js`, `task-tracker.js`) and the shared `command-guard.js` heavy-command redirect are the SAME files Codex registers in `codex/hooks/hooks.json`, so this fires for a Codex Primary too.
+If this session is a DevSwarm **Primary** (`DEVSWARM_REPO_ID` set, `DEVSWARM_SOURCE_BRANCH` empty), a subagent is **not** your top decomposition primitive — a **child workspace** is. The shared hooks that inject this doctrine (`verify-first-orch.js`, `verify-first.js`, `task-tracker.js`) and the shared `command-guard.js` heavy-command redirect are the SAME files Codex registers in `codex/hooks/hooks.json`, so this fires for a Codex Primary too.
 
 | Work | Tier |
 | --- | --- |

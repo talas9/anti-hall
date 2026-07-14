@@ -6,6 +6,18 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.60.0
+
+Orchestration doctrine actually reaches the model now — it was silently spilling to a file — plus DevSwarm status idle-demotion.
+
+- **The orchestration ruleset was reaching NO session inline.** Hook `additionalContext` is capped at ~10,000 chars per hook command; the cap's failure mode is **spill-to-file, not truncation** (first-party documented) — a payload over the cap delivers only the first ~2,000 chars inline plus a file path the model must choose to open, so the tail effectively never lands. `verify-first-full.js` had grown to ~15,323 chars, so rules A–N (the orchestration/delegation ruleset) and the DevSwarm-Primary workspace-tier rule W reached no session inline.
+- **Split into two SessionStart hooks.** `verify-first-full.js` now carries the core Iron-Law + rationalization-table + Positive Rules + Scope & Fidelity + the disciplines/skills index (~7.7k chars); the new `verify-first-orch.js` carries the orchestration ruleset (rules A–N + the Primary-gated rule W, ~7.7-8.1k chars). Both clear the cap; both now land 100% inline; zero content dropped. Registered on both the Claude plugin and the Codex port.
+- Reverted two prior cap-driven micro-optimizations that turned out to be cargo-cult, since they optimized position within a truncation window that never actually existed: rule L restored to its natural alphabetical slot, rule W restored to its full content (workspace = top fan-out tier, the spawn command, the choice rule, the failure mode).
+- Added `tests/hooks/injection-cap.test.js` — runs every context-injecting hook and asserts each emitted payload is `<=10,000` chars, so a future re-spill regression fails CI instead of silently degrading doctrine delivery.
+- **DevSwarm status table: idle demotion.** A workspace idle beyond `ANTIHALL_DEVSWARM_IDLE_MS` (default 6h) is now relabeled `active`→`idle` in the parent-inbox live status table — view-only (no delete, no gate change, no row removal), so a workspace that finished hours ago stops reading as "active" forever. Never overrides `escalated`/`stale`/`archive-ready`.
+- Corrected `docs/KB.md`/`docs/KB-claude-codex.md` (the injection-cap behavior is spill-to-file with a first-party citation, replacing an earlier inaccurate plain-truncation claim and a circular self-citation) and fixed stale doc references to rule W now that it lives in `verify-first-orch.js`.
+- **Synced the Codex-port manifest.** `plugins/anti-hall/.codex-plugin/plugin.json` had silently frozen at `0.52.0` for 10+ releases because it was missing from the release checklist — bumped to match, and `RELEASING.md` step 1 now bumps both manifests together so this can't recur.
+
 ## 0.59.0
 
 DevSwarm workspace-tier orchestration doctrine, idle self-wake via `CronCreate`, and a P0 edit-guard symlink-bypass fix.

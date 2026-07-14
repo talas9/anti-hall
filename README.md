@@ -174,7 +174,7 @@ is meant to prevent. anti-hall enforces this at two levels:
 
 **For itself:** the plugin minimizes its own footprint in your conversation:
 - `task-tracker` is **throttled** — full directive once per ~6h window, one-liner after (~68% per-turn reduction, ≈693 B → ≈223 B steady-state).
-- `verify-first-full.js` (SessionStart) carries the full Iron-Law + orchestration protocol; `verify-first-subagent.js` (SubagentStart) re-injects the Iron Law into every spawned subagent (omitting the orchestration/delegate block so workers don't recurse); shared core in `verify-first-core.js`. `/anti-hall:doctor` reports the exact byte size of the SessionStart injection, so any footprint change stays visible and auditable.
+- The SessionStart injection is split across **two** hooks so each clears the ~10k per-hook cap (over which Claude Code spills the overflow to a file instead of delivering it inline): `verify-first-full.js` carries the Iron-Law foundation + the disciplines/skills index, and `verify-first-orch.js` carries the orchestration ruleset (rules A–N + DevSwarm rule W). `verify-first-subagent.js` (SubagentStart) re-injects the Iron Law into every spawned subagent (omitting the orchestration/delegate block so workers don't recurse); shared core in `verify-first-core.js`. `/anti-hall:doctor` reports the exact byte size of the SessionStart injection, so any footprint change stays visible and auditable.
 - `/anti-hall:doctor` **measures** the context footprint — reports SessionStart / per-turn / per-Stop injection sizes in bytes + estimated tokens, so the cost is visible and auditable.
 
 ---

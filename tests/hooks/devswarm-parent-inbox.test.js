@@ -369,6 +369,145 @@ test('TABLE: renders correct rows/columns for varied status + gates + unread, so
   } finally { h.cleanup(); }
 });
 
+// ---- idle demotion (registry-staleness fix) ----
+//
+// The default "active" label is otherwise permanent: the completion gates
+// (done/merged/tests_passed) are only ever set by the manual `devswarm.js gate`
+// verb, and a row is only ever removed by an explicit manual `archive` — so a
+// long-verified-done-but-never-archived workspace rendered "active" forever.
+// This VIEW-ONLY fix demotes a long-idle row (by the already-computed
+// lastActivityTs) to "idle" in the live table. It must never delete/archive the
+// row, never touch gates, and must never outrank escalated/stale/archive-ready.
+
+test('IDLE: row whose lastActivityTs is older than the default cutoff -> labeled idle, not active', () => {
+  const h = makeHome();
+  try {
+    writeVerdict(h.home, 'wsOld', { lastOutboundTs: Date.now() - 7 * 60 * 60 * 1000 }); // 7h ago, > 6h default
+    writeSharedSummary(h.home, { wsOld: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsOld');
+    assert.ok(/\|\s*wsOld\s*\|\s*idle\s*\|/.test(row), `stale-activity row must show idle; row=${row}`);
+    assert.ok(!/\bactive\b/.test(row), `must NOT still say active; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('IDLE: row with recent activity stays active (unchanged)', () => {
+  const h = makeHome();
+  try {
+    writeVerdict(h.home, 'wsFresh', { lastOutboundTs: Date.now() - 5 * 60 * 1000 }); // 5m ago
+    writeSharedSummary(h.home, { wsFresh: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsFresh');
+    assert.ok(/\|\s*wsFresh\s*\|\s*active\s*\|/.test(row), `fresh-activity row must stay active; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('IDLE: escalated row that is ALSO long-idle stays escalated (precedence preserved, not demoted)', () => {
+  const h = makeHome();
+  try {
+    writeVerdict(h.home, 'wsEsc', { status: 'escalated', lastOutboundTs: Date.now() - 30 * 60 * 60 * 1000 }); // 30h ago
+    writeSharedSummary(h.home, { wsEsc: { total: 1, cursor: 0, unread: 1, directUnread: 1 } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsEsc');
+    assert.ok(/\|\s*wsEsc\s*\|\s*escalated\s*\|/.test(row), `escalated must NOT be demoted to idle; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('IDLE: stale row that is ALSO long-idle stays stale (precedence preserved, not demoted)', () => {
+  const h = makeHome();
+  try {
+    writeVerdict(h.home, 'wsStaleOld', { status: 'stale', lastOutboundTs: Date.now() - 30 * 60 * 60 * 1000 }); // 30h ago
+    writeSharedSummary(h.home, { wsStaleOld: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsStaleOld');
+    assert.ok(/\|\s*wsStaleOld\s*\|\s*stale\s*\|/.test(row), `stale must NOT be demoted to idle; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('IDLE: archive-ready row that is ALSO long-idle stays archive-ready (precedence preserved, not demoted)', () => {
+  const h = makeHome();
+  try {
+    writeVerdict(h.home, 'wsArchOld', { lastOutboundTs: Date.now() - 30 * 60 * 60 * 1000 }); // 30h ago
+    writeSharedSummary(h.home, { wsArchOld: { archive_ready: true } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsArchOld');
+    assert.ok(/\|\s*wsArchOld\s*\|\s*archive-ready\s*\|/.test(row), `archive-ready must NOT be demoted to idle; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('IDLE: ANTIHALL_DEVSWARM_IDLE_MS override honored (shorter cutoff demotes sooner)', () => {
+  const h = makeHome();
+  try {
+    writeVerdict(h.home, 'wsShortCutoff', { lastOutboundTs: Date.now() - 2 * 60 * 1000 }); // 2m ago
+    writeSharedSummary(h.home, { wsShortCutoff: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
+    const r = testHook(HOOK, withCwd(payload), {
+      home: h.home, env: { ...PRIMARY_ENV, ANTIHALL_DEVSWARM_IDLE_MS: '60000' }, expectJson: true, // 1m cutoff
+    });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsShortCutoff');
+    assert.ok(/\|\s*wsShortCutoff\s*\|\s*idle\s*\|/.test(row), `2m-idle must demote under a 1m override; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('IDLE: garbage ANTIHALL_DEVSWARM_IDLE_MS -> falls back to default (6h), no crash', () => {
+  const h = makeHome();
+  try {
+    // 2h idle: would stay active under the 6h default, would demote under any
+    // small cutoff. Asserting "still active" proves the garbage value was
+    // rejected in favor of the (much larger) default, not silently coerced to 0.
+    writeVerdict(h.home, 'wsGarbageEnv', { lastOutboundTs: Date.now() - 2 * 60 * 60 * 1000 });
+    writeSharedSummary(h.home, { wsGarbageEnv: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
+    const r = testHook(HOOK, withCwd(payload), {
+      home: h.home, env: { ...PRIMARY_ENV, ANTIHALL_DEVSWARM_IDLE_MS: 'not-a-number' }, expectJson: true,
+    });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsGarbageEnv');
+    assert.ok(/\|\s*wsGarbageEnv\s*\|\s*active\s*\|/.test(row), `garbage env must fall back to default cutoff; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('IDLE: no activity signal at all -> stays active (unchanged fail-open default, byte-identical to pre-fix)', () => {
+  const h = makeHome();
+  try {
+    // No writeVerdict/writeHeartbeat at all -> lastActivityTs is null.
+    writeSharedSummary(h.home, { wsNoSignal: { total: 2, cursor: 2, unread: 0, directUnread: 0 } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsNoSignal');
+    assert.ok(/\|\s*wsNoSignal\s*\|\s*active\s*\|/.test(row), `no-signal row must stay active; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('IDLE: demoted row is never removed from the registry/summary — no archive/delete side effect', () => {
+  const h = makeHome();
+  try {
+    writeVerdict(h.home, 'wsIdleKept', { lastOutboundTs: Date.now() - 10 * 60 * 60 * 1000 }); // 10h ago
+    writeSharedSummary(h.home, { wsIdleKept: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
+    const summaryFile = path.join(swarmDir(h.home), 'summaries', REPO_KEY + '.json');
+    const before = fs.readFileSync(summaryFile, 'utf8');
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    // Row still present (demoted, not disappeared) in this turn's table.
+    const row = tableRow(ctx(r), 'wsIdleKept');
+    assert.ok(row, `idle row must remain visible in the table, not vanish; ctx=${ctx(r)}`);
+    assert.ok(/\bidle\b/.test(row), `row; row=${row}`);
+    // The hook is read-only w.r.t. the registry: the summary file this hook
+    // reads from is byte-identical after the run (no archive/delete side effect
+    // was written back through it).
+    const after = fs.readFileSync(summaryFile, 'utf8');
+    assert.strictEqual(after, before, 'summary/registry file must be unchanged by a read-only view hook');
+    // No archive-ignore or archive-nudge state was written for this workspace
+    // either — nothing in this hook's idle path calls the archive machinery.
+    assert.strictEqual(fs.existsSync(path.join(swarmDir(h.home), 'archive-ignore', 'wsIdleKept.json')), false);
+    assert.strictEqual(fs.existsSync(path.join(swarmDir(h.home), 'archive-nudges', 'wsIdleKept.json')), false);
+  } finally { h.cleanup(); }
+});
+
 test('TABLE: no active workspaces -> no table, ONLY the terse override re-assertion', () => {
   const h = makeHome();
   try {

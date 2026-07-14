@@ -42,3 +42,8 @@ SKILLOPT-DEPLOYMENT.md
 .devswarm/
 # ad-hoc scratch prompts — never ship
 sanity_prompt.txt
+
+# local error logs / planning artifacts — may contain account/auth traces, never ship
+error.log
+PLAN.md
+PLAN-*.md

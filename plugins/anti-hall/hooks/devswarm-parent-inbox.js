@@ -107,6 +107,32 @@ const MAX_TABLE_ROWS = 12;
 // based banner this replaces.)
 const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 
+// How long a row may sit with no fresh activity signal (lastActivityTs — the
+// SAME per-row freshness value already computed for the table's "last" column,
+// reused here rather than re-derived) before this VIEW demotes its default
+// "active" label to "idle". This is a display-only demotion (registry-staleness
+// fix): nothing here archives, deletes, or touches gates — a workspace stuck in
+// the default "active" label forever (because gates are only ever set by the
+// manual `devswarm.js gate` verb and rows are only ever removed by manual
+// `archive`) was misleading the Primary into treating a long-dormant workspace
+// as current. 6 hours is a defensible default: long enough that a normal lull
+// between turns/sessions never false-positives, short enough that a workspace
+// idle since yesterday reads as "idle", not "active", on today's first turn.
+// Override via ANTIHALL_DEVSWARM_IDLE_MS (ms, not seconds — this file already
+// keeps every other threshold in raw ms, e.g. HEARTBEAT_STALE_MS above; distinct
+// from the unrelated ANTIHALL_DEVSWARM_IDLE_SEC read by devswarm-supervisor.js,
+// which governs the liveness supervisor's nudge/escalate cadence, not this
+// view's label).
+const DEFAULT_IDLE_MS = 6 * 60 * 60 * 1000;
+
+// idleThresholdMs() -> ms. Reads ANTIHALL_DEVSWARM_IDLE_MS; absent, non-numeric,
+// or non-positive -> DEFAULT_IDLE_MS. Never throws.
+function idleThresholdMs() {
+  const raw = process.env.ANTIHALL_DEVSWARM_IDLE_MS;
+  const n = parseInt(raw, 10);
+  return (Number.isFinite(n) && n > 0) ? n : DEFAULT_IDLE_MS;
+}
+
 // OVERRIDE_REASSERT — terse (<=160 char) per-turn re-assertion of the SessionStart
 // COMMUNICATION OVERRIDE (devswarm-child-role.js, both roles): DevSwarm's own
 // `--system-prompt-file` REPLACES the system prompt at every child spawn, and a
@@ -280,16 +306,26 @@ function finishingRate(summary, id, heartbeat) {
   return '—';
 }
 
-// displayStatus(archiveReady, status) -> { label, rank }. Collapses the raw verdict
-// enum into the four surfaced states and assigns a sort rank so attention-needed
-// workspaces sort first: escalated (0) > stale (1, incl. nudged) > archive-ready
-// (2) > active (3). escalated outranks archive-ready: a wedged child needing a
-// human beats a tidy teardown recommendation.
-function displayStatus(archiveReady, status) {
+// displayStatus(archiveReady, status, activityTs, now) -> { label, rank }.
+// Collapses the raw verdict enum into the five surfaced states and assigns a
+// sort rank so attention-needed workspaces sort first: escalated (0) > stale
+// (1, incl. nudged) > archive-ready (2) > idle (3) > active (4). escalated
+// outranks archive-ready: a wedged child needing a human beats a tidy teardown
+// recommendation. `idle` (registry-staleness fix) is a VIEW-ONLY demotion of the
+// "active" default for a row whose lastActivityTs is older than
+// idleThresholdMs() — it never overrides escalated/stale (a wedged/stuck child
+// is never "merely idle") or archive-ready (a done workspace should read as
+// archive-ready, not idle, even though it is typically also long-idle).
+// activityTs null/non-finite (no activity signal yet) -> stays "active", same
+// as before this change (fail toward the prior default, not a guess).
+function displayStatus(archiveReady, status, activityTs, now) {
   if (status === 'escalated') return { label: 'escalated', rank: 0 };
   if (status === 'stale' || status === 'nudged') return { label: 'stale', rank: 1 };
   if (archiveReady) return { label: 'archive-ready', rank: 2 };
-  return { label: 'active', rank: 3 };
+  if (Number.isFinite(activityTs) && Number.isFinite(now) && (now - activityTs) >= idleThresholdMs()) {
+    return { label: 'idle', rank: 3 };
+  }
+  return { label: 'active', rank: 4 };
 }
 
 // buildWorkspaceTable(rows, now, capped, hidden) -> string. Compact markdown table
@@ -655,14 +691,15 @@ function main() {
     // --- live-table row (every ACTIVE workspace, every turn) ---
     try {
       const heartbeat = readHeartbeat(home, id);
-      const ds = displayStatus(archiveReady, status);
+      const activityTs = lastActivityTs(verdict, heartbeat);
+      const ds = displayStatus(archiveReady, status, activityTs, now);
       rows.push({
         id,
         label: ds.label,
         rank: ds.rank,
         finish: finishingRate(summary, id, heartbeat),
         unread,
-        lastActivityTs: lastActivityTs(verdict, heartbeat),
+        lastActivityTs: activityTs,
       });
     } catch (_) {}
   }

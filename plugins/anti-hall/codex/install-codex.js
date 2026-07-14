@@ -60,6 +60,7 @@ function group(matcher, files, timeout) {
 const ANTI_HALL_HOOKS = {
   SessionStart: [
     group(null, ['verify-first-full.js'], 10),
+    group(null, ['verify-first-orch.js'], 10),
     group(null, ['graphify-session.js'], 10),
     group(null, ['devswarm-child-role.js'], 10),
     group(null, ['version-alert.js'], 10),
