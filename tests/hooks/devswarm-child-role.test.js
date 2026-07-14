@@ -368,7 +368,12 @@ test('WAKE CRON: a VALID override is still honored (the charset check must not o
 // package (or throwing on load) would CRASH this SessionStart hook instead of
 // degrading — verified: pre-fix this exited 1 with an uncaught throw.
 const BREAK_WAKE = path.join(__dirname, '..', 'helpers', 'break-devswarm-wake.js');
-const BREAK_ENV = { NODE_OPTIONS: `--require "${BREAK_WAKE}"` };
+// Node's NODE_OPTIONS parser treats backslash as an escape char, so a raw Windows
+// path (D:\...\break-devswarm-wake.js) has its separators EATEN before --require can
+// resolve it (child exits 1 with MODULE_NOT_FOUND, before the hook body runs). Forward
+// slashes are backslash-free and Node accepts them for require on Windows; on POSIX the
+// replace is a no-op. (file:// URLs are NOT an option — --require's CJS loader rejects them.)
+const BREAK_ENV = { NODE_OPTIONS: `--require "${BREAK_WAKE.replace(/\\/g, '/')}"` };
 
 test('FAIL-OPEN: an UNLOADABLE devswarm-wake lib -> hook still exits 0 and emits its pre-wake output', () => {
   const h = makeHome();

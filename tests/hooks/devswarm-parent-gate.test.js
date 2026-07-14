@@ -528,7 +528,11 @@ test('WAKE RENEWAL: the Primary re-assertion instructs a CronList RE-VERIFY (re-
 // package (or throwing on load) would CRASH this Stop hook instead of degrading —
 // verified: pre-fix it exited 1 with an uncaught throw, which on a Stop hook
 // degrades or wedges the user's session. Preload fixture: helpers/break-devswarm-wake.js.
-const BREAK_WAKE = path.join(__dirname, '..', 'helpers', 'break-devswarm-wake.js');
+// Forward-slash the path: Node's NODE_OPTIONS parser eats backslashes (escape char), so
+// a raw Windows path (D:\...\break-devswarm-wake.js) is mangled before --require resolves
+// it -> MODULE_NOT_FOUND, child exits 1 before the hook body runs. Forward slashes are
+// backslash-free and Node accepts them for require on Windows; on POSIX this is a no-op.
+const BREAK_WAKE = path.join(__dirname, '..', 'helpers', 'break-devswarm-wake.js').replace(/\\/g, '/');
 
 test('FAIL-OPEN: an UNLOADABLE devswarm-wake lib -> the gate still blocks with its PRE-WAKE reason, never crashes', () => {
   const h = makeHome();
