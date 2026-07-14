@@ -1,6 +1,6 @@
 ---
 name: anti-hall-devswarm
-description: Explain anti-hall's optional DevSwarm integration from Codex — the hivecontrol reference KB, the (designed, unbuilt) workspace-tier orchestration, and the shipped layered recovery model (Claude-side companion: child self-report → supervisor poke → escalate-to-parent, automatic path NEVER kills, plus the on-demand devswarm-recover CLI — the only kill path). Use when the user asks about DevSwarm, hivecontrol, or the anti-hall liveness supervisor while working in Codex.
+description: Explain anti-hall's optional DevSwarm integration from Codex — the hivecontrol reference KB, the (designed, unbuilt) workspace-tier orchestration, and the shipped layered recovery model (child self-report registered for both agents → Claude-only supervisor poke → Claude-only escalate-to-parent, automatic path NEVER kills, plus the on-demand devswarm-recover CLI — the only kill path). Use when the user asks about DevSwarm, hivecontrol, or the anti-hall liveness supervisor while working in Codex.
 ---
 
 # anti-hall DevSwarm integration (Codex view)
@@ -20,7 +20,7 @@ workspace too. What follows is what a Codex user needs to know about the four ad
 |---|---|---|
 | **hivecontrol reference KB** | Reference doc | `docs/KB-devswarm-hivecontrol.md` — the `hivecontrol` CLI surface, `.devswarm/config.json` schema, `DEVSWARM_*` env vars, and the parent/child async message-passing model. Includes a parallel OMC/OMX table for the workspace tier (§8.4 of the KB): the workspace-create/merge surface is CLI-identical either way; only the in-workspace fan-out engine differs (Workflow tool + subagents for Claude, `omx team`/workers for Codex). Repo-clone-only — does not ship with a plugin install. |
 | **Workspace-tier orchestration** | **Designed, NOT built** | `docs/superpowers/specs/2026-07-05-devswarm-orchestration-design.md` + `docs/superpowers/plans/2026-07-06-devswarm-orchestration.md`. Nothing from this plan exists in the repo yet (no `devswarm-guard.js`/`devswarm-children.js`) — do not describe it as active in either OMC or OMX. |
-| **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped — Claude-only** | `companion/devswarm-supervisor.js` + `install-devswarm-supervisor.js` + `companion/lib/{liveness,recovery,target-session,doctor-devswarm}.js` + `hooks/lib/devswarm-detect.js` + `hooks/lib/devswarm-role.js` + `hooks/devswarm-child-role.js`. The automatic background sweep. Recovers **wedged `claude` sessions specifically** (workaround for `claude-code#39755`) — it identity-binds to `claude -p --resume <uuid>` processes by argv, not Codex sessions. This section explains it for awareness; it is not a Codex-side capability. |
+| **Liveness supervisor (detect → poke → escalate, never kills)** | **Shipped — Claude-only** | `companion/devswarm-supervisor.js` + `install-devswarm-supervisor.js` + `companion/lib/{liveness,recovery,target-session,doctor-devswarm}.js`. The automatic background sweep. Recovers **wedged `claude` sessions specifically** (workaround for `claude-code#39755`) — it identity-binds to `claude -p --resume <uuid>` processes by argv, not Codex sessions. This section explains it for awareness; it is not a Codex-side capability. (`hooks/lib/devswarm-detect.js`/`hooks/lib/devswarm-role.js` are shared env-detection helpers, not supervisor-only — `hooks/devswarm-child-role.js`, the SessionStart child self-report hook, is now registered for **both** agents; see below.) |
 | **On-demand recovery CLI (the ONLY kill path)** | **Shipped — targets `claude` processes only** | `companion/devswarm-recover.js`, invoked explicitly per workspace id. Still Claude-only in what it targets (see below), but a Codex-side operator can run it. |
 
 ## The layered recovery model, for Codex users
@@ -30,11 +30,13 @@ process alive, listener dead, no crash for a restarter to catch, no timeout even
 generate a new turn (`anthropics/claude-code#39755`, related `#28482`/`#33949`). The
 automatic path handles this in three escalating layers and **never kills anything**:
 
-1. **Child self-report** — the child workspace's own Claude-side `SessionStart` hook
-   (`hooks/devswarm-child-role.js`) reminds an idle child to proactively message its
-   parent via `hivecontrol workspace message-parent`. Cooperative only — doesn't help a
-   truly wedged child, which is what the next two layers are for. Codex has no
-   equivalent hook; this only fires for a Claude session with `DEVSWARM_SOURCE_BRANCH` set.
+1. **Child self-report** — the child workspace's `SessionStart` hook
+   (`hooks/devswarm-child-role.js`) reminds an idle child to proactively report to its
+   parent via the mesh CLI. Cooperative only — doesn't help a truly wedged child, which
+   is what the next two layers are for. As of this port it is registered in
+   `codex/hooks/hooks.json` too (same file, unmodified — its gate is
+   `DEVSWARM_SOURCE_BRANCH` non-empty, which hivecontrol sets identically for a Codex
+   workspace); it fires for **either** agent whenever it is a DevSwarm child session.
 2. **Supervisor poke** — the background sweep detects a `stale` workspace (both outbound
    signals idle past threshold, plus a pending unread backlog) and fires an optional
    descriptor-supplied `nudgeCommand`, persisting verdict `nudged`.
@@ -90,15 +92,21 @@ reason redirects to the mesh CLI: `node scripts/devswarm.js send --to-primary --
 "<text>"` (or `--to <meshId>`) / `node scripts/devswarm.js heartbeat <id> --summary
 "<text>"`.
 
-**What does NOT carry over to Codex:** unlike the guard-block itself, the PROACTIVE
-per-turn reminder that keeps the mesh top-of-mind for a Claude session (injected by
-`devswarm-child-role.js`/`devswarm-child-turn.js`/`devswarm-parent-inbox.js`) is
-Claude-only — none of those three hooks is registered in `codex/hooks/hooks.json` (see
-"Always-listening reception" below, unchanged by v0.58). A Codex agent inside an active
-DevSwarm workspace is therefore mechanically PREVENTED from sending a native message, but
-only learns about the mesh CLI redirect REACTIVELY, at the moment it attempts (and gets
-blocked on) a native send — never proactively. Full detail: `docs/KB-devswarm-hivecontrol.md`
-§8.5's v0.58 bullet and §8.7's "v0.58 mesh-only messaging" note.
+**Now carries over to Codex too (corrected):** the PROACTIVE per-turn reminder that keeps
+the mesh top-of-mind (injected by `devswarm-child-role.js`/`devswarm-child-turn.js`/
+`devswarm-parent-inbox.js`) was previously undocumented for Codex on the premise that these
+hooks' gating `DEVSWARM_*` env vars were Claude-only. That premise was wrong —
+`docs/KB-devswarm-hivecontrol.md` §6/§8.7 (live-verified env fingerprint) states
+`DEVSWARM_REPO_ID`/`DEVSWARM_SOURCE_BRANCH`/`DEVSWARM_BUILDER_ID` are set by hivecontrol
+per-workspace regardless of agent — `DEVSWARM_AI_AGENT` is the separate var naming
+claude vs codex — the same fact §8.5/§8.7 already established for `command-guard.js`'s own
+DevSwarm gate above. All three hooks (plus the SessionStart `devswarm-child-role.js` and
+the Stop-side `devswarm-parent-gate.js`/`devswarm-child-gate.js`) are now registered in
+`codex/hooks/hooks.json`, unmodified, alongside the guard-block. A Codex agent inside an
+active DevSwarm workspace is therefore mechanically PREVENTED from sending a native message
+AND gets the same proactive mesh reminder every turn that a Claude session gets — see
+"Always-listening reception" below. Full detail: `docs/KB-devswarm-hivecontrol.md` §8.5's
+v0.58 bullet and §8.7's "v0.58 mesh-only messaging" note.
 
 ## Child-side reception — `devswarm.js inbox pull` (shipped, v0.54.2)
 
@@ -118,21 +126,21 @@ Pull-not-push: reception latency = one turn (no background child drainer). The d
 the CLI itself runs identically either way. Full detail: `docs/KB-devswarm-hivecontrol.md`
 (v0.54.2 note).
 
-## Always-listening reception + archive flow (Claude-side hooks; CLI is agent-agnostic)
+## Always-listening reception + archive flow (registered for both agents; CLI is agent-agnostic)
 
-Two v0.56.0 additions, split by what's Claude-only vs. what any agent can invoke:
+Two v0.56.0 additions:
 
-- **Always-listening reception (Claude-only hooks, for awareness).** `hooks/devswarm-child-turn.js`
-  (child, `UserPromptSubmit`) and `hooks/devswarm-child-gate.js` (child, `Stop`) are **not**
-  registered in `codex/hooks/hooks.json` — like the rest of the layered recovery model, this is
-  Claude-side tooling only. On the Claude side it now (1) mechanically writes/refreshes the
-  child's own descriptor every turn (fixes #31 — the parent previously couldn't discover a
-  child that never itself ran the registration command), and (2) escalates unread-parent
-  messages to IMPERATIVE priority wording, backed by a Stop-gate that force-blocks until the
-  durable inbox shows no unread backlog — with an optional STRICT fallback probe
-  (`ANTIHALL_DEVSWARM_CHILD_GATE_STRICT`, default ON) that additionally checks a bounded,
-  non-destructive `hivecontrol workspace message-count` when the durable check alone shows
-  nothing. No Codex-side equivalent hook exists in this plugin.
+- **Always-listening reception (now registered on both platforms).** `hooks/devswarm-child-turn.js`
+  (child, `UserPromptSubmit`) and `hooks/devswarm-child-gate.js` (child, `Stop`) were previously
+  undocumented for Codex on the disproven "Claude-only env var" premise (see the correction
+  above) — they are now registered in `codex/hooks/hooks.json`, the same unmodified files. For
+  either agent it now (1) mechanically writes/refreshes the child's own descriptor every turn
+  (fixes #31 — the parent previously couldn't discover a child that never itself ran the
+  registration command), and (2) escalates unread-parent messages to IMPERATIVE priority
+  wording, backed by a Stop-gate that force-blocks until the durable inbox shows no unread
+  backlog — with an optional STRICT fallback probe (`ANTIHALL_DEVSWARM_CHILD_GATE_STRICT`,
+  default ON) that additionally checks a bounded, non-destructive `hivecontrol workspace
+  message-count` when the durable check alone shows nothing.
 - **Archive flow — REVISED v0.58: now a direct store write, not a hivecontrol call.**
   anti-hall never archives mechanically. PARENT role: after verifying
   merged+tested+deployed **per your own repo's policy** (anti-hall does not check this),
@@ -147,9 +155,9 @@ Two v0.56.0 additions, split by what's Claude-only vs. what any agent can invoke
   posture as `send`/`roster`/`mesh read` below until that status changes. CHILD role: on
   seeing that marker in an unread message, confirm with YOUR user, then run
   `node scripts/devswarm.js archive <id>` (unaffected by v0.58, still agent-agnostic and
-  store-independent). (The CHILD side's automatic marker-detection/surfacing, above, is
-  Claude-only; a Codex-side child would need its own equivalent check, e.g. `inbox read
-  <id>` and a manual scan for the marker string.)
+  store-independent). (The CHILD side's automatic marker-detection/surfacing, above, runs via
+  `devswarm-child-turn.js`, now registered for both agents — no manual scan needed on Codex
+  either.)
 
 ## #32 — retiring a competing native-queue consumer (applies to both agents)
 
@@ -296,9 +304,15 @@ DevSwarm is active; `nudged` reports as WARN, not a failure).
 - Workspace tier (unbuilt): would be CLI-identical between agents — `hivecontrol
   workspace create … -a codex` vs `… -a claude` — only the in-workspace fan-out differs
   (`omx team`/workers vs Workflow tool + subagents).
-- Layered recovery model + on-demand CLI: Claude-only in what they target, as above. No
-  Codex-side equivalent exists in this plugin, though the CLI is invokable from either side.
+- Mechanical per-turn override/reassert hooks (`devswarm-child-role.js`,
+  `devswarm-child-turn.js`, `devswarm-parent-inbox.js`, `devswarm-parent-gate.js`,
+  `devswarm-child-gate.js`): registered for **both** agents (corrected — see "The layered
+  recovery model, for Codex users" above).
+- Liveness supervisor + on-demand recovery CLI: still Claude-only in what they target — the
+  supervisor identity-binds to `claude --resume` processes specifically. No Codex-side
+  equivalent exists in this plugin, though the recovery CLI script itself is invokable from
+  either side (see the on-demand recovery section above).
 
 Anti-hall does not replace OMX. Anti-hall supplies verify-first policy, the reference KB,
-and (for the Claude side) the layered recovery model; OMX supplies Codex-native
-orchestration/workflow runtime.
+and (for both agents) the mechanical per-turn recovery hooks; the liveness supervisor stays
+Claude-side. OMX supplies Codex-native orchestration/workflow runtime.

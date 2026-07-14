@@ -1,10 +1,21 @@
 'use strict';
-// Phase-1 wiring: the four mechanical DevSwarm hooks must be REGISTERED in the
-// Claude hooks.json under the correct events, coexisting with (not replacing)
-// the pre-existing hooks. The Codex port intentionally does NOT mirror them —
-// DevSwarm is Claude-side (its DEVSWARM_* env vars are only set for the `claude`
-// child sessions hivecontrol spawns), matching the existing devswarm-child-role
-// omission and the liveness supervisor's documented Claude-only status.
+// Phase-1 wiring: the four mechanical DevSwarm hooks (plus devswarm-parent-gate.js,
+// the Primary-side Stop sibling of devswarm-child-gate.js) must be REGISTERED in
+// the Claude hooks.json under the correct events, coexisting with (not replacing)
+// the pre-existing hooks.
+//
+// The Codex port MIRRORS these same five files verbatim (corrected — a prior
+// version of this suite asserted the Codex port does NOT mirror them, reasoning
+// that DevSwarm's gating DEVSWARM_* env vars were set only for `claude` child
+// sessions; that premise was disproven against docs/KB-devswarm-hivecontrol.md
+// §6/§8.7's live-verified env fingerprint: DEVSWARM_REPO_ID/DEVSWARM_SOURCE_BRANCH/
+// DEVSWARM_BUILDER_ID are set by hivecontrol per-workspace regardless of which
+// agent runs there — DEVSWARM_AI_AGENT is the separate var naming claude vs codex.
+// All five files (including the SessionStart devswarm-child-role.js) are now
+// registered verbatim in codex/hooks/hooks.json. The liveness supervisor
+// (companion/devswarm-supervisor.js) remains genuinely Claude-only — it
+// identity-binds to `claude --resume` processes specifically — and is out of
+// scope for this file.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -68,19 +79,50 @@ test('coexistence: the pre-existing UserPromptSubmit + Stop hooks are untouched 
   assert.strictEqual(stop.filter((c) => /devswarm-child-gate\.js/.test(c)).length, 1);
 });
 
-test('Codex port does NOT mirror the Phase-1 DevSwarm hooks (Claude-side, not applicable)', () => {
+test('Codex port mirrors the five Phase-1 DevSwarm hooks on the matching events', () => {
   const cfg = JSON.parse(fs.readFileSync(CODEX_HOOKS_JSON, 'utf8'));
-  const all = [
-    ...commandsFor(cfg, 'UserPromptSubmit'),
-    ...commandsFor(cfg, 'Stop'),
-    ...commandsFor(cfg, 'SessionStart'),
-    ...commandsFor(cfg, 'PreToolUse'),
-  ].join('\n');
-  // Same treatment as the existing devswarm-child-role omission: no DevSwarm
-  // parent/child hook is wired into the Codex port.
-  assert.doesNotMatch(all, /devswarm-parent-inbox\.js/);
-  assert.doesNotMatch(all, /devswarm-child-turn\.js/);
-  assert.doesNotMatch(all, /devswarm-parent-gate\.js/);
-  assert.doesNotMatch(all, /devswarm-child-gate\.js/);
-  assert.doesNotMatch(all, /devswarm-child-role\.js/);
+  const sessionStart = commandsFor(cfg, 'SessionStart');
+  const ups = commandsFor(cfg, 'UserPromptSubmit');
+  const stop = commandsFor(cfg, 'Stop');
+
+  assert.ok(sessionStart.some((c) => /devswarm-child-role\.js/.test(c)), 'child-role not registered on Codex SessionStart');
+  assert.ok(ups.some((c) => /devswarm-parent-inbox\.js/.test(c)), 'parent-inbox not registered on Codex UserPromptSubmit');
+  assert.ok(ups.some((c) => /devswarm-child-turn\.js/.test(c)), 'child-turn not registered on Codex UserPromptSubmit');
+  assert.ok(stop.some((c) => /devswarm-parent-gate\.js/.test(c)), 'parent-gate not registered on Codex Stop');
+  assert.ok(stop.some((c) => /devswarm-child-gate\.js/.test(c)), 'child-gate not registered on Codex Stop');
+
+  // Correct-event discipline mirrors the Claude-side test above: the Stop gates
+  // must not sit on UserPromptSubmit/SessionStart and vice versa.
+  assert.ok(!ups.some((c) => /devswarm-(parent|child)-gate\.js/.test(c)), 'a Stop-gate is wrongly on Codex UserPromptSubmit');
+  assert.ok(!stop.some((c) => /devswarm-(parent-inbox|child-turn|child-role)\.js/.test(c)), 'an UPS/SessionStart hook is wrongly on Codex Stop');
+  assert.ok(!sessionStart.some((c) => /devswarm-(parent-inbox|child-turn|parent-gate|child-gate)\.js/.test(c)), 'a non-SessionStart hook is wrongly on Codex SessionStart');
+
+  // Every command uses the ${PLUGIN_ROOT} shape the rest of the Codex file uses
+  // (never ${CLAUDE_PLUGIN_ROOT}) — reuse of the SAME shared hook files, no fork.
+  for (const c of [...sessionStart, ...ups, ...stop].filter((c) => /devswarm-(parent|child)-/.test(c))) {
+    assert.match(c, /\$\{PLUGIN_ROOT\}\/hooks\/devswarm-/, `Codex Phase-1 hook not using PLUGIN_ROOT: ${c}`);
+    assert.doesNotMatch(c, /CLAUDE_PLUGIN_ROOT/, `Codex Phase-1 hook wrongly using CLAUDE_PLUGIN_ROOT: ${c}`);
+  }
+});
+
+test('install-codex.js generates the same five Phase-1 DevSwarm hook registrations', () => {
+  const { spawnSync } = require('node:child_process');
+  const os = require('node:os');
+  const installer = path.join(PLUGIN, 'codex', 'install-codex.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-devswarm-codex-install-'));
+  try {
+    const r = spawnSync(process.execPath, [installer], { cwd: tmp, encoding: 'utf8' });
+    assert.strictEqual(r.status, 0, r.stderr || r.stdout);
+    const cfg = JSON.parse(fs.readFileSync(path.join(tmp, '.codex', 'hooks.json'), 'utf8'));
+    const sessionStart = commandsFor(cfg, 'SessionStart');
+    const ups = commandsFor(cfg, 'UserPromptSubmit');
+    const stop = commandsFor(cfg, 'Stop');
+    assert.ok(sessionStart.some((c) => /devswarm-child-role\.js/.test(c)));
+    assert.ok(ups.some((c) => /devswarm-parent-inbox\.js/.test(c)));
+    assert.ok(ups.some((c) => /devswarm-child-turn\.js/.test(c)));
+    assert.ok(stop.some((c) => /devswarm-parent-gate\.js/.test(c)));
+    assert.ok(stop.some((c) => /devswarm-child-gate\.js/.test(c)));
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
+  }
 });

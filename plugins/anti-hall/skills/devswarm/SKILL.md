@@ -309,18 +309,24 @@ no attack surface beyond what already exists) — and per the honest caveat abov
 MCP included, currently wakes a truly idle session, so an MCP server would not have solved
 the actual gap.
 
-**Codex parity — precise, not aspirational.** `command-guard.js`'s native-SEND block is
-shared and fires identically for Codex (see above). What does **NOT** apply to Codex: the
-four override/reassert hooks (`devswarm-child-role.js`, `devswarm-child-turn.js`,
-`devswarm-parent-inbox.js`, and the child-gate's new "already-reported" satisfaction path)
-are Claude-only — none is registered in `codex/hooks/hooks.json`. A Codex agent in an
-active DevSwarm workspace is mechanically prevented from sending a native message but never
-gets the proactive per-turn "use the mesh" reminder, and the supervisor's mesh-urgency
-escalation is likewise Claude-only (the supervisor already identity-binds to `claude
---resume` processes). The CLI verbs themselves are plain Node scripts a Codex session can
-invoke directly via Bash — nothing agent-specific about the script — but nothing proactively
-tells it to, and `codex/skills/anti-hall-devswarm/SKILL.md` has not yet been updated to
-recommend them (see that file for its own current framing).
+**Codex parity — precise, not aspirational (corrected).** `command-guard.js`'s native-SEND
+block is shared and fires identically for Codex (see above). A prior version of this note
+claimed the five override/reassert hooks (`devswarm-child-role.js`, `devswarm-child-turn.js`,
+`devswarm-parent-inbox.js`, `devswarm-parent-gate.js`, `devswarm-child-gate.js`) were
+Claude-only because their gating `DEVSWARM_*` env vars were assumed Claude-specific — that
+premise was disproven: `docs/KB-devswarm-hivecontrol.md` §6/§8.7's live-verified env
+fingerprint states `DEVSWARM_REPO_ID`/`DEVSWARM_SOURCE_BRANCH`/`DEVSWARM_BUILDER_ID` are set
+by hivecontrol per-workspace regardless of agent (`DEVSWARM_AI_AGENT` is the separate var
+naming claude vs codex) — the exact same fact this doc already relies on for
+`command-guard.js`'s own DevSwarm gate above. All five hooks are now registered, unmodified,
+in `codex/hooks/hooks.json`. A Codex agent in an active DevSwarm workspace is therefore
+mechanically prevented from sending a native message AND gets the proactive per-turn "use
+the mesh" reminder, same as a Claude session. What remains genuinely Claude-only: the
+liveness supervisor and its mesh-urgency escalation (it identity-binds to `claude --resume`
+processes specifically) and the on-demand `devswarm-recover.js` CLI's own target (a Codex
+operator can still invoke the script, but only against a `claude` workspace). The CLI verbs
+themselves are plain Node scripts a Codex session can invoke directly via Bash — nothing
+agent-specific about the script.
 
 **Child-gate "already-reported" satisfaction.** `hooks/devswarm-child-gate.js` now skips
 its Stop-block entirely, for the current stop episode, when the child's own mesh summary

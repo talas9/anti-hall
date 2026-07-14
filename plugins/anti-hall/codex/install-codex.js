@@ -38,21 +38,30 @@ function group(matcher, files, timeout) {
 // - fable-availability.js is deliberately omitted: it probes ~/.claude.json for a
 //   Claude Fable model entitlement (Claude Reviewer-seat fallback only), which is
 //   irrelevant to gpt-5.x Codex/OMX sessions.
-// - The DevSwarm hooks are deliberately NOT mirrored: the SessionStart
-//   devswarm-child-role.js and the Phase-1 parent/child pair
-//   (UserPromptSubmit: devswarm-parent-inbox.js, devswarm-child-turn.js;
-//   Stop: devswarm-parent-gate.js, devswarm-child-gate.js). NOT APPLICABLE to
-//   Codex — DevSwarm is hivecontrol's Claude-side worktree orchestration: the
-//   gating DEVSWARM_* env vars (DEVSWARM_REPO_ID / DEVSWARM_SOURCE_BRANCH) are
-//   set only for the `claude` child sessions hivecontrol spawns, so these hooks
-//   would be permanently inert in a gpt-5.x Codex/OMX session. This matches the
-//   liveness supervisor's documented Claude-only status (codex/README.md) and
-//   the existing devswarm-child-role omission; a Codex-side equivalent would be
-//   a separate effort keyed to Codex's own session/transcript model.
+// - The DevSwarm per-turn override/reassert hooks (SessionStart devswarm-child-
+//   role.js; UserPromptSubmit devswarm-parent-inbox.js/devswarm-child-turn.js;
+//   Stop devswarm-parent-gate.js/devswarm-child-gate.js) ARE mirrored here
+//   (corrected — a prior version of this comment claimed the gating DEVSWARM_*
+//   env vars were Claude-only; that was disproven: docs/KB-devswarm-hivecontrol.md
+//   §6/§8.7, from a live-verified env fingerprint, states DEVSWARM_REPO_ID /
+//   DEVSWARM_SOURCE_BRANCH / DEVSWARM_BUILDER_ID are set by hivecontrol
+//   per-workspace regardless of which agent runs there — DEVSWARM_AI_AGENT is
+//   the SEPARATE var naming claude vs codex. command-guard.js's own DevSwarm gate
+//   already relies on this same env and is proven to fire identically on Codex.
+//   These five files are registered VERBATIM, unmodified, from ${HOOK_ROOT} —
+//   same shared-file reuse as every other hook here — because their
+//   hookSpecificOutput.additionalContext (SessionStart/UserPromptSubmit) and
+//   {decision:"block"} (Stop) contracts, and the payload fields they read
+//   (session_id/cwd/transcript_path), already match what verify-first-full.js/
+//   task-tracker.js/task-guard.js/tasklist-guard.js prove works on Codex today.
+//   The liveness SUPERVISOR (companion/devswarm-supervisor.js) remains
+//   Claude-only — unrelated to this hook set, it identity-binds to `claude
+//   --resume` processes specifically (codex/README.md).
 const ANTI_HALL_HOOKS = {
   SessionStart: [
     group(null, ['verify-first-full.js'], 10),
     group(null, ['graphify-session.js'], 10),
+    group(null, ['devswarm-child-role.js'], 10),
     group(null, ['version-alert.js'], 10),
     group(null, ['codex-availability.js'], 10),
   ],
@@ -60,6 +69,8 @@ const ANTI_HALL_HOOKS = {
     group(null, ['verify-first.js'], 10),
     group(null, ['task-tracker.js'], 10),
     group(null, ['limit-conserve-inject.js'], 10),
+    group(null, ['devswarm-parent-inbox.js'], 10),
+    group(null, ['devswarm-child-turn.js'], 10),
   ],
   PreToolUse: [
     group('Bash', ['git-guard.js'], 10),
@@ -73,6 +84,8 @@ const ANTI_HALL_HOOKS = {
     group(null, ['graphify-reminder.js'], 30),
     group(null, ['speculation-guard.js'], 30),
     group(null, ['speculation-judge.js'], 30),
+    group(null, ['devswarm-parent-gate.js'], 30),
+    group(null, ['devswarm-child-gate.js'], 30),
   ],
 };
 

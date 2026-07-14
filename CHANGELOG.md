@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.58.2
+
+DevSwarm hook parity with Codex, and a documentation correction.
+
+- The five DevSwarm hooks (`devswarm-child-role` on SessionStart, `devswarm-parent-inbox` + `devswarm-child-turn` on UserPromptSubmit, `devswarm-parent-gate` + `devswarm-child-gate` on Stop) are now registered for the Codex port, using the same shared hook files Claude uses — zero changes to the hooks themselves, pure registration.
+- Corrects a false claim that had propagated through the docs unverified: these hooks were described as Claude-only because their `DEVSWARM_*` env gate supposedly only applied to `claude` sessions. It does not — hivecontrol sets `DEVSWARM_REPO_ID`/`DEVSWARM_SOURCE_BRANCH`/`DEVSWARM_BUILDER_ID` per workspace regardless of which agent runs there (`DEVSWARM_AI_AGENT` names the agent). The gap was wiring, not capability. A test that asserted the gap has been flipped into a parity test.
+- Still Claude-only, and structurally so: the liveness supervisor and the on-demand `devswarm-recover` CLI, which identity-bind to `claude --resume` processes by argv.
+
 ## 0.58.1
 
 Fixes a real-world ingest-daemon outage, a message-loss gap in its own fix, a slow lock
