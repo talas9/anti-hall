@@ -6,6 +6,21 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.61.0
+
+**DevSwarm mesh self-heal — instructions now reliably reach child workspaces; the substrate detects, routes around, migrates, and surfaces the mis-registration/misroute failure modes that could silently strand messages.**
+
+- **Drain-aware routing.** A `send`/mesh delivery now resolves to the partition a child is actually draining (not just the first matching registry row), plus a **phantom-only rescue**: on a child's very first mechanical self-register (`SessionStart`), any backlog that landed in a stranded pre-registration phantom partition is forwarded into the child's real partition — closing the class of bug where a message existed but no live session ever drained it.
+- **Pure mesh-health projection.** `computeSummary` (the store's pure summary projection) now derives `orphans[]` (message partitions with real unread backlog and no live workspace attached) and `staleRegistryPartitions[]` (a registry row whose worktree no longer exists on disk) — surface-only, never auto-deleted.
+- **New read verbs.** `diagnose` (read-only mesh-health detail: split/duplicate detection, orphans, stale partitions) and `healthcheck [--json]` (pass/fail over the same data, exit 0/2 — for monitors, CI, and the ingest daemon) join the CLI. `healthcheck` without `--json` prints one compact human-readable line.
+- **Register-time dedup with a noise filter.** A child re-registering from the same worktree now folds onto its existing partition instead of forking a duplicate, forwarding real backlog via a new `isForwardable` filter that skips poke/hash-mirror junk and forwards only genuine directs.
+- **Parent-inbox surfacing.** `devswarm-parent-inbox` now surfaces orphans and stale registry partitions to the Primary alongside the existing per-workspace status table — capped, read-only, never a delete or gate change.
+- **Migration: `foldMeshDuplicates`.** Folds every prior store shape (phantom rows, dual/legacy pairs, subdir-split registrations, stale entries) onto one canonical survivor per worktree, keyed by **git-toplevel canonical identity** (a child registered from a subdirectory now resolves to the same mesh identity as its toplevel). Idempotent, non-destructive (forward-before-tombstone; message rows are never deleted), fail-open. Wired into both `update.js` (runs post-update) and `doctor`'s auto-safe repair (dry-run detect doubles as a read-only mesh-shape check under `--check`, then applies).
+- **Pure reads.** `roster`, `workspaces list`, and `diagnose` no longer write `summary.json` as a side effect — they are now genuinely read-only.
+- **Docs.** The DevSwarm `SKILL.md` (Claude and Codex mirrors) gained a full "daemon + CLI ops reference" section — every CLI verb, the daemons, how to read mesh health without hand-reading the store, and self-heal behavior.
+
+This is a fix-and-capability release (minor bump).
+
 ## 0.60.0
 
 Orchestration doctrine actually reaches the model now — it was silently spilling to a file — plus DevSwarm status idle-demotion.

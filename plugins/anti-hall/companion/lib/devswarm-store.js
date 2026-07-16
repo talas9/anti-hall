@@ -41,6 +41,24 @@ const path = require('path');
 const crypto = require('crypto');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
 
+// worktreeRealPath (install-devswarm-ingest.js) — the CANONICAL real-path resolver
+// used for stale-worktree detection (A3). Required fail-open (the installer guards
+// its own `main()` behind `require.main === module`, so requiring it is side-effect
+// free — same precedent as lib/recovery.js's `require('../install-devswarm-ingest.js')`).
+// It NEVER throws / returns null: on a realpath failure it falls back to
+// path.resolve, so a vanished worktree still yields a (non-existent) resolved path —
+// which is exactly why staleRegistryPartitions must do an EXPLICIT fs.existsSync on
+// the resolved path rather than relying on this returning null.
+let ingestIdentity = null;
+try { ingestIdentity = require('../install-devswarm-ingest.js'); } catch (_) { ingestIdentity = null; }
+function resolveWorktreeReal(wt, fsi) {
+  const F = fsi || fs;
+  if (ingestIdentity && typeof ingestIdentity.worktreeRealPath === 'function') {
+    try { return ingestIdentity.worktreeRealPath(wt, { io: { fs: F } }); } catch (_) { /* fall through */ }
+  }
+  try { return path.resolve(String(wt == null ? '' : wt)); } catch (_) { return String(wt == null ? '' : wt); }
+}
+
 const DEFAULT_REQUIRED_GATES = ['done', 'merged', 'tests_passed'];
 
 // ----- paths (PHYSICALLY PER-PROJECT) -----
@@ -201,6 +219,23 @@ function ensureMessagesMeshColumns(db) {
   }
 }
 
+// ensureRegistryWriteSeqColumn(db) — additive migration for a `registry` table
+// that pre-dates the v0.61.0 write_seq column (money-path residual close: a
+// same-millisecond re-register can't be distinguished from a stale phantom by
+// updated_at alone, since both land on the same ms — see removeRegistryIf).
+// A brand new table already has the column via CREATE TABLE; this is a no-op
+// there. For an EXISTING table missing it, ALTER TABLE ADD COLUMN (nullable —
+// never a destructive rewrite, never touches an existing row's data). Runs on
+// EVERY store open (idempotent PRAGMA check) so an old store transparently
+// gains the column the next time /update, doctor, or any CLI verb opens it.
+function ensureRegistryWriteSeqColumn(db) {
+  let cols = [];
+  try { cols = db.prepare('PRAGMA table_info(registry);').all().map((r) => String(r.name)); } catch (_) { return; }
+  if (!cols.includes('write_seq')) {
+    try { db.exec('ALTER TABLE registry ADD COLUMN write_seq INTEGER;'); } catch (_) { /* best-effort, fail-open */ }
+  }
+}
+
 // meshMessageHash(fields) -> 'mesh:<sha256>'. The DISJOINT dedupe namespace for
 // STORE-DIRECT mesh sends (D7) — over sender+recipient+mtype+urgency+message+
 // timestamp, so two DISTINCT broadcasts never collapse under UNIQUE(hash)/journal
@@ -341,9 +376,25 @@ function openSqlite(home, workspaceId, opts) {
     'CREATE TABLE IF NOT EXISTS registry ('
     + ' id TEXT PRIMARY KEY,'
     + ' worktree_path TEXT, session_id TEXT, inbox_path TEXT,'
-    + ' cursor_path TEXT, nudge_command TEXT, updated_at INTEGER'
+    + ' cursor_path TEXT, nudge_command TEXT, updated_at INTEGER,'
+    // write_seq (v0.61.0, nullable) — a per-row monotonic write counter, bumped
+    // on EVERY upsert regardless of wall-clock ms. See removeRegistryIf below.
+    + ' write_seq INTEGER'
     + ');'
   );
+  ensureRegistryWriteSeqColumn(db); // additive migration for a table that pre-dates write_seq
+  // hasWriteSeq (fail-open capability probe): the ALTER above is best-effort
+  // (ensureRegistryWriteSeqColumn swallows its own errors). Re-read the ACTUAL
+  // schema via PRAGMA table_info rather than trusting the ALTER succeeded — if
+  // it failed for a reason OTHER than "column already exists" (locked/corrupt/
+  // read-only DB), `write_seq` genuinely does not exist and every write below
+  // MUST avoid referencing it, or the store would throw on the next upsert/
+  // delete instead of degrading to pre-0.61.0 behavior.
+  let hasWriteSeq = false;
+  try {
+    hasWriteSeq = db.prepare('PRAGMA table_info(registry);').all()
+      .some((r) => String(r.name) === 'write_seq');
+  } catch (_) { hasWriteSeq = false; }
   db.exec(
     'CREATE TABLE IF NOT EXISTS cursors ('
     + ' workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER'
@@ -369,6 +420,11 @@ function openSqlite(home, workspaceId, opts) {
     backend: 'sqlite',
     workspaceId: workspaceId != null ? String(workspaceId) : null,
     hash,
+    // hasWriteSeq: observed (not assumed) — true only if PRAGMA table_info
+    // actually reported the column. Gates write_seq use in upsertRegistry/
+    // removeRegistryIf below so a store that could not gain the column (locked/
+    // corrupt/read-only DB) degrades to pre-0.61.0 behavior instead of throwing.
+    hasWriteSeq,
     // listWorkspaceIds() -> distinct workspace ids present anywhere in this store
     // (messages/registry/cursors/gates). Used by the global->per-project migration
     // to split a legacy multi-workspace store file. Pure read.
@@ -421,12 +477,37 @@ function openSqlite(home, workspaceId, opts) {
       return { inserted: true, seq: got ? Number(got.seq) : null };
     },
     upsertRegistry(d) {
+      // write_seq (v0.61.0 money-path residual close): bumped on EVERY upsert,
+      // computed INSIDE this single statement so concurrent writer PROCESSES
+      // can't race a JS read-then-increment (same atomicity argument as
+      // appendMeshRow's seq subquery, D6). COALESCE(registry.write_seq,0)+1
+      // starts a pre-migration NULL row at 1 on its first post-migration upsert.
+      //
+      // hasWriteSeq false (fail-open): the column genuinely does not exist (the
+      // ALTER in ensureRegistryWriteSeqColumn failed for a non-"already exists"
+      // reason — locked/corrupt/read-only DB). Use the exact pre-0.61.0 INSERT/
+      // UPDATE shape WITHOUT the column, byte-identical to legacy behavior,
+      // instead of referencing a column that isn't there.
+      if (!hasWriteSeq) {
+        db.prepare(
+          'INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at)'
+          + ' VALUES (?, ?, ?, ?, ?, ?, ?)'
+          + ' ON CONFLICT(id) DO UPDATE SET worktree_path=excluded.worktree_path, session_id=excluded.session_id,'
+          + ' inbox_path=excluded.inbox_path, cursor_path=excluded.cursor_path,'
+          + ' nudge_command=excluded.nudge_command, updated_at=excluded.updated_at;'
+        ).run(
+          String(d.id), nOrNull(d.worktreePath), nOrNull(d.sessionId), nOrNull(d.inboxPath),
+          nOrNull(d.cursorPath), serializeCmd(d.nudgeCommand), Date.now()
+        );
+        return;
+      }
       db.prepare(
-        'INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at)'
-        + ' VALUES (?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq)'
+        + ' VALUES (?, ?, ?, ?, ?, ?, ?, 1)'
         + ' ON CONFLICT(id) DO UPDATE SET worktree_path=excluded.worktree_path, session_id=excluded.session_id,'
         + ' inbox_path=excluded.inbox_path, cursor_path=excluded.cursor_path,'
-        + ' nudge_command=excluded.nudge_command, updated_at=excluded.updated_at;'
+        + ' nudge_command=excluded.nudge_command, updated_at=excluded.updated_at,'
+        + ' write_seq=COALESCE(registry.write_seq,0)+1;'
       ).run(
         String(d.id), nOrNull(d.worktreePath), nOrNull(d.sessionId), nOrNull(d.inboxPath),
         nOrNull(d.cursorPath), serializeCmd(d.nudgeCommand), Date.now()
@@ -434,6 +515,51 @@ function openSqlite(home, workspaceId, opts) {
     },
     removeRegistry(id) {
       db.prepare('DELETE FROM registry WHERE id = ?;').run(String(id));
+    },
+    // removeRegistryIf(id, guard) -> true iff a row was deleted. The ATOMIC
+    // conditional tombstone that closes the fold's delete-race TOCTOU (P1a): the
+    // guard-check and the delete are ONE statement, so a row a child re-registered
+    // (a NEW session_id, or a re-written updated_at) in the window between the fold's
+    // classification and here CANNOT be deleted. The guard PINS the snapshot exactly:
+    //   { sessionId:<snapshot session|null>, updatedAt:<snapshot updatedAt|null> }
+    // Delete only if the CURRENT row still has that same session_id AND updated_at.
+    // `IS` is SQLite's NULL-safe equality, so a null snapshot updatedAt matches ONLY a
+    // row whose updated_at is STILL null — a null snapshot that gained a real timestamp
+    // is a re-register and the WHERE fails (P2). NB a store-only phantom legitimately
+    // carries a (stale) session_id; the "is this a distinct live child" question is
+    // answered upstream by the descriptor-file check, NOT by session_id here.
+    removeRegistryIf(id, guard) {
+      const g = guard || {};
+      const snapUpd = (g.updatedAt == null) ? null : Number(g.updatedAt);
+      const snapSess = (g.sessionId != null && String(g.sessionId) !== '') ? String(g.sessionId) : null;
+      // guardHasWriteSeq: the `writeSeq` KEY's presence on the GUARD OBJECT (not
+      // its value) gates whether the write_seq guard applies at all — a caller
+      // that never supplies the key (a pre-v0.61.0 call site) gets EXACTLY the
+      // old sessionId+updatedAt-only guard, byte-identical, so no existing
+      // caller/test regresses. A caller that DOES supply it (foldGroupIntoSurvivor,
+      // always — via listRegistry()'s writeSeq) gets the tightened check below —
+      // UNLESS the store itself lacks the column (hasWriteSeq false, capability
+      // probe from openSqlite), in which case a supplied writeSeq key is IGNORED
+      // and the store falls back to the legacy guard too (fail-open: never emit
+      // write_seq in SQL when the column is absent).
+      const guardHasWriteSeq = hasWriteSeq && Object.prototype.hasOwnProperty.call(g, 'writeSeq');
+      if (!guardHasWriteSeq) {
+        const r = db.prepare(
+          'DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ?;'
+        ).run(String(id), snapSess, snapUpd);
+        return r.changes > 0;
+      }
+      // snapWriteSeq (v0.61.0 P3 close): a SAME-MILLISECOND live re-register keeps
+      // updated_at identical, so the ms-based guard alone still matches and would
+      // wrongly delete the now-live row. write_seq is bumped on EVERY upsert
+      // regardless of wall-clock time, so a same-ms re-register still advances it,
+      // making the WHERE fail. `IS` is NULL-safe: a null snapshot (pre-migration
+      // row, never re-upserted) matches ONLY a still-NULL current write_seq.
+      const snapWriteSeq = (g.writeSeq == null) ? null : Number(g.writeSeq);
+      const r = db.prepare(
+        'DELETE FROM registry WHERE id = ? AND session_id IS ? AND updated_at IS ? AND write_seq IS ?;'
+      ).run(String(id), snapSess, snapUpd, snapWriteSeq);
+      return r.changes > 0;
     },
     setCursor(id, value) {
       const v = clampInt(value);
@@ -539,6 +665,17 @@ function rowToDescriptor(r) {
     inboxPath: r.inbox_path || null,
     cursorPath: r.cursor_path || null,
     nudgeCommand: deserializeCmd(r.nudge_command),
+    // updatedAt (drain-recency signal for resolveMeshTarget's freshest-live tie-
+    // break): the wall-clock ms of the row's last upsert. A live session re-registers
+    // its OWN partition every turn, so its row's updatedAt keeps advancing; a
+    // stranded/stale duplicate stops advancing. Additive — legacy consumers ignore it.
+    updatedAt: Number.isFinite(Number(r.updated_at)) ? Number(r.updated_at) : null,
+    // writeSeq (v0.61.0 — the fold's same-ms race guard snapshot; see
+    // removeRegistryIf). null on a pre-migration row never re-upserted since.
+    // NB: `r.write_seq == null` (not Number.isFinite(Number(...))) — Number(null)
+    // is 0, which IS finite, so that pattern would wrongly turn a genuine SQL NULL
+    // (a pre-migration row never re-upserted since) into 0 instead of null.
+    writeSeq: (r.write_seq == null) ? null : Number(r.write_seq),
   };
 }
 
@@ -670,6 +807,62 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     return out;
   }
 
+  // reduceRegistry() -> the current active descriptor set (unsorted). Latest op per
+  // id wins. An unconditional `remove` tombstones; a CONDITIONAL remove
+  // (`ifUpdatedAt`/`ifSessionId`, written by removeRegistryIf) tombstones ONLY if the
+  // surviving upsert STILL matches that snapshot's session_id AND updatedAt (NULL-safe)
+  // — so a live re-register that raced the fold's tombstone (landed just before the
+  // remove op in the log, or in the sub-syscall window) SURVIVES here (P1a/P2). Shared
+  // by listRegistry and removeRegistryIf's under-lock re-read.
+  function reduceRegistry() {
+    const latest = new Map();
+    // writeSeqById (v0.61.0 — money-path residual close, P3) — a running per-id
+    // counter bumped on EVERY upsert op encountered in log order (never on a
+    // remove). Mirrors the sqlite backend's write_seq column: a same-millisecond
+    // LIVE re-register still advances this counter even though updatedAt (ms) is
+    // unchanged, so the guard below can tell it apart from a genuinely stable
+    // phantom (see removeRegistryIf).
+    const writeSeqById = new Map();
+    for (const row of readAll(files.registry)) {
+      if (!row || row.id == null) continue;
+      const id = String(row.id);
+      if (row._op === 'remove' && (row.ifUpdatedAt !== undefined || row.ifSessionId !== undefined)) {
+        const prev = latest.get(id);
+        const prevLive = !!(prev && prev._op !== 'remove');
+        const prevUpd = prevLive && Number.isFinite(Number(prev.updatedAt)) ? Number(prev.updatedAt) : null;
+        const prevSess = prevLive && prev.sessionId != null && String(prev.sessionId) !== '' ? String(prev.sessionId) : null;
+        const prevWriteSeq = prevLive && writeSeqById.has(id) ? writeSeqById.get(id) : null;
+        const ifUpd = row.ifUpdatedAt == null ? null : Number(row.ifUpdatedAt);
+        const ifSess = row.ifSessionId == null ? null : String(row.ifSessionId);
+        // ifWriteSeq undefined -> a tombstone op written before this write_seq guard
+        // existed skips the write_seq check entirely (never regresses an
+        // already-shipped tombstone's matching behavior).
+        const ifWriteSeq = row.ifWriteSeq === undefined ? undefined : (row.ifWriteSeq == null ? null : Number(row.ifWriteSeq));
+        const writeSeqOk = ifWriteSeq === undefined || prevWriteSeq === ifWriteSeq;
+        if (prevLive && prevUpd === ifUpd && prevSess === ifSess && writeSeqOk) latest.set(id, { id, _op: 'remove' }); // guard matches -> tombstone
+        // else: guard no longer matches (re-registered/re-written) -> IGNORE, keep prev
+        continue;
+      }
+      if (row._op === 'upsert') writeSeqById.set(id, (writeSeqById.get(id) || 0) + 1);
+      latest.set(id, row); // upsert OR legacy unconditional remove
+    }
+    const out = [];
+    for (const [id, row] of latest.entries()) {
+      if (row._op === 'remove') continue;
+      out.push({
+        id: row.id,
+        worktreePath: row.worktreePath || null,
+        sessionId: row.sessionId || null,
+        inboxPath: row.inboxPath || null,
+        cursorPath: row.cursorPath || null,
+        nudgeCommand: (row.nudgeCommand === undefined ? null : row.nudgeCommand),
+        updatedAt: Number.isFinite(Number(row.updatedAt)) ? Number(row.updatedAt) : null,
+        writeSeq: writeSeqById.has(id) ? writeSeqById.get(id) : null,
+      });
+    }
+    return out;
+  }
+
   return {
     backend: 'journal',
     workspaceId: workspaceId != null ? String(workspaceId) : null,
@@ -764,6 +957,60 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     removeRegistry(id) {
       append(files.registry, { id: String(id), _op: 'remove', updatedAt: Date.now() });
     },
+    // removeRegistryIf(id, guard) -> true iff a tombstone was appended (an attempted
+    // removal that PASSED the guard). Closes the fold delete-race TOCTOU (P1a/P2) on
+    // the journal — an append-only log where "latest op per id wins" (listRegistry).
+    // The guard PINS the snapshot exactly ({ sessionId, updatedAt }). Two layers make
+    // it race-free:
+    //   1. Under the existing store lock, RE-READ the current reduced row; if its
+    //      session_id or updatedAt no longer equals the snapshot (NULL-safe — a null
+    //      snapshot updatedAt that gained a real timestamp is a re-register, P2), do
+    //      NOT tombstone (return false -> the fold LEAVES the row).
+    //   2. The tombstone is a CONDITIONAL remove op (`ifUpdatedAt`/`ifSessionId`):
+    //      reduceRegistry honors it ONLY if the surviving upsert STILL matches that
+    //      snapshot, so a live re-register that lands in the sub-syscall window between
+    //      the re-read and the append (or any time after) WINS at read time — never
+    //      lost. (A store-only phantom may carry a stale session_id; "distinct live
+    //      child?" is decided upstream by the descriptor-file check, not here.)
+    removeRegistryIf(id, guard) {
+      const g = guard || {};
+      const snapUpd = (g.updatedAt == null) ? null : Number(g.updatedAt);
+      const snapSess = (g.sessionId != null && String(g.sessionId) !== '') ? String(g.sessionId) : null;
+      // hasWriteSeq: the `writeSeq` KEY's presence (not its value) gates whether the
+      // write_seq guard applies at all — a caller that never supplies the key (a
+      // pre-v0.61.0 call site) gets EXACTLY the old sessionId+updatedAt-only guard,
+      // byte-identical (including the tombstone op's on-disk shape — no `ifWriteSeq`
+      // field appended), so no existing caller/test regresses. A caller that DOES
+      // supply it (foldGroupIntoSurvivor, always — via listRegistry()'s writeSeq)
+      // gets the tightened check below.
+      const hasWriteSeq = Object.prototype.hasOwnProperty.call(g, 'writeSeq');
+      // snapWriteSeq (v0.61.0 P3 close): a SAME-MILLISECOND live re-register keeps
+      // updatedAt identical, so the ms-based guard alone still matches and would
+      // wrongly delete the now-live row. write_seq is bumped on every upsert
+      // regardless of wall-clock time, so a same-ms re-register still advances it.
+      const snapWriteSeq = hasWriteSeq ? ((g.writeSeq == null) ? null : Number(g.writeSeq)) : undefined;
+      return withMessagesLock(() => {
+        let cur = null;
+        for (const d of reduceRegistry()) { if (String(d.id) === String(id)) { cur = d; break; } }
+        if (!cur) return false; // vanished -> nothing to tombstone
+        const curSess = (cur.sessionId != null && String(cur.sessionId) !== '') ? String(cur.sessionId) : null;
+        if (curSess !== snapSess) return false; // session changed (re-registered) in the window
+        const curUpd = Number.isFinite(Number(cur.updatedAt)) ? Number(cur.updatedAt) : null;
+        if (curUpd !== snapUpd) return false; // re-written in the window (null->value included, P2)
+        if (hasWriteSeq) {
+          const curWriteSeq = (cur.writeSeq == null) ? null : Number(cur.writeSeq);
+          if (curWriteSeq !== snapWriteSeq) return false; // re-registered SAME-MS in the window (P3)
+        }
+        const op = {
+          id: String(id), _op: 'remove',
+          ifUpdatedAt: snapUpd, ifSessionId: snapSess,
+          updatedAt: Date.now(),
+        };
+        if (hasWriteSeq) op.ifWriteSeq = snapWriteSeq;
+        append(files.registry, op);
+        return true;
+      });
+    },
     setCursor(id, value) {
       append(files.cursors, { workspaceId: String(id), value: clampInt(value), updatedAt: Date.now() });
     },
@@ -802,25 +1049,9 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
       return head;
     },
     listRegistry() {
-      // Reduce the append-only log to the current active set: latest row per id
-      // wins; a `remove` op tombstones it.
-      const latest = new Map();
-      for (const row of readAll(files.registry)) {
-        if (!row || row.id == null) continue;
-        latest.set(String(row.id), row);
-      }
-      const out = [];
-      for (const row of latest.values()) {
-        if (row._op === 'remove') continue;
-        out.push({
-          id: row.id,
-          worktreePath: row.worktreePath || null,
-          sessionId: row.sessionId || null,
-          inboxPath: row.inboxPath || null,
-          cursorPath: row.cursorPath || null,
-          nudgeCommand: (row.nudgeCommand === undefined ? null : row.nudgeCommand),
-        });
-      }
+      // Reduce the append-only log (shared reduceRegistry — conditional-remove
+      // aware), then id-ASC sort (drain-recency parity with the sqlite backend).
+      const out = reduceRegistry();
       out.sort((a, b) => String(a.id).localeCompare(String(b.id)));
       return out;
     },
@@ -982,19 +1213,39 @@ function maxUrgencyOf(rows) {
 // as `from` when heartbeating). Top-level `recent[]` = the last `recentCap`
 // (O-D8 UNRESOLVED broadcast-retention cap; default 50, overridable) broadcast
 // rows INCLUDING heartbeats, as `{from, summary, ts, urgency}` (roster state).
-function deriveSummary(store, opts) {
+// summaryHashFor(store, o) — which per-project hash this projection targets:
+// explicit opts.workspaceId wins, else the handle's workspaceId, else its hash (a
+// handle always carries a hash). Shared by computeSummary (to read the anti-spam
+// sidecar) and deriveSummary (to write both the summary and the sidecar).
+function summaryHashFor(store, o) {
+  return (o && o.workspaceId != null)
+    ? hashFromWorkspaceId(o.workspaceId)
+    : (store && store.hash != null ? String(store.hash)
+      : hashFromWorkspaceId(store && store.workspaceId));
+}
+
+// computeSummary(store, opts) -> the summary PROJECTION object. PURE: zero disk
+// writes, zero mtime changes, no fs side effects at all (it only READS the store +
+// the on-disk worktree paths). This is the side-effect-free half of deriveSummary —
+// extracted so Phase B can build a read-only `diagnose` on top of it. `deriveSummary`
+// = this + the atomic summary write. Every existing projection field is produced
+// here BYTE-IDENTICALLY to the pre-split deriveSummary.
+//
+// ADDITIVE surface-only fields (A2/A3 — omitted entirely when empty so an existing
+// no-orphan/no-stale summary stays byte-identical for existing readers):
+//   orphans[]                 — {id, messageCount, unread}: partitions with real
+//                               unread but no live registry row.
+//   staleRegistryPartitions[] — {id, worktreePath, unread}: registry rows whose
+//                               worktreePath no longer exists on disk.
+// Both are computed fresh each call from current store state (NO persisted cooldown
+// state). NEVER auto-forwarded / auto-deleted — surface only (owner no-delete rule).
+function computeSummary(store, opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const F = o.fsi || fs;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const requiredGates = Array.isArray(o.requiredGates) ? o.requiredGates : requiredGatesFrom(o.env);
   const recentCap = Number.isFinite(o.recentCap) && o.recentCap > 0 ? Math.floor(o.recentCap) : DEFAULT_RECENT_CAP;
-  // Which per-project summary file: explicit opts.workspaceId wins, else the
-  // handle's workspaceId, else its hash (a handle always carries a hash).
-  const hash = (o.workspaceId != null)
-    ? hashFromWorkspaceId(o.workspaceId)
-    : (store && store.hash != null ? String(store.hash)
-      : hashFromWorkspaceId(store && store.workspaceId));
 
   // The shared broadcast partition — read ONCE, reused for every workspace's
   // broadcastUnread/working_on AND the top-level recent[]. Ordered by insertion
@@ -1003,8 +1254,11 @@ function deriveSummary(store, opts) {
   const broadcastAll = typeof store.listMessages === 'function' ? store.listMessages(BROADCAST_PARTITION_ID) : [];
   const broadcastNonHeartbeat = broadcastAll.filter((r) => !r.isHeartbeat);
 
+  const registry = store.listRegistry();
+  const registryIds = new Set(registry.map((d) => String(d.id)));
+
   const workspaces = {};
-  for (const d of store.listRegistry()) {
+  for (const d of registry) {
     if (!isSafeId(d.id)) continue; // never project an unsafe id
     if (d.id === BROADCAST_PARTITION_ID) continue; // defense-in-depth: the shared broadcast partition is NEVER a real workspace (isSafeId already excludes '*', kept explicit)
     const total = store.messageCount(d.id);
@@ -1068,6 +1322,76 @@ function deriveSummary(store, opts) {
   }));
 
   const summary = { generatedAt: now, requiredGates: requiredGates.slice(), workspaces, recent };
+
+  // ---- A2 orphan detection (surface-only) --------------------------------
+  // orphan ids = listWorkspaceIds() − registry ids − BROADCAST_PARTITION_ID,
+  // filtered to messageCount > cursorValue (REAL unread). listWorkspaceIds() already
+  // enumerates every partition with any message/cursor/gate/registry row on BOTH
+  // backends — no new primitive. Surface only: NEVER auto-forwarded or deleted.
+  const orphans = [];
+  let allPartitionIds = [];
+  try { allPartitionIds = typeof store.listWorkspaceIds === 'function' ? store.listWorkspaceIds() : []; } catch (_) { allPartitionIds = []; }
+  for (const raw of allPartitionIds) {
+    const id = String(raw);
+    if (id === BROADCAST_PARTITION_ID) continue;
+    if (registryIds.has(id)) continue;      // has a live registry row -> not orphaned
+    if (!isSafeId(id)) continue;            // defense-in-depth (parity with the workspaces loop)
+    let total = 0; let cursor = 0;
+    try { total = store.messageCount(id); } catch (_) { total = 0; }
+    try { cursor = store.cursorValue(id); } catch (_) { cursor = 0; }
+    const unread = Math.max(0, total - cursor);
+    if (unread <= 0) continue;              // real unread only
+    orphans.push({ id, messageCount: total, unread });
+  }
+
+  // ---- A3 stale-registry-partition detection (critic P1#3) ---------------
+  // registry rows whose worktreePath can no longer be verified on disk. Because
+  // worktreeRealPath falls back to path.resolve on realpath failure (never throws /
+  // null), detection is an EXPLICIT fs.existsSync on the resolved path — not a
+  // reliance on the resolver signalling absence. Surface only: never collapsed/routed.
+  const staleRegistryPartitions = [];
+  for (const d of registry) {
+    const id = String(d.id);
+    if (id === BROADCAST_PARTITION_ID) continue;
+    if (!isSafeId(id)) continue;
+    const wt = d.worktreePath;
+    if (wt == null || String(wt) === '') continue; // no path recorded -> nothing to verify
+    let exists = true;
+    try { exists = F.existsSync(resolveWorktreeReal(wt, F)); } catch (_) { exists = true; } // fail-open: never false-flag on an fs error
+    if (exists) continue;
+    let total = 0; let cursor = 0;
+    try { total = store.messageCount(id); } catch (_) { total = 0; }
+    try { cursor = store.cursorValue(id); } catch (_) { cursor = 0; }
+    const unread = Math.max(0, total - cursor);
+    // A DRAINED stale row (unread:0) is NOT stuck — surfacing it makes parent-inbox
+    // falsely warn it "still hold[s] unread". Only surface a stale row that genuinely
+    // still holds unread (parity with the orphans filter above).
+    if (unread <= 0) continue;
+    staleRegistryPartitions.push({ id, worktreePath: wt, unread });
+  }
+
+  // Surface the additive fields ONLY when non-empty, so a no-orphan/no-stale project
+  // produces a byte-identical summary for existing readers. Surface-only: never
+  // auto-forwarded / auto-deleted. (No persisted cooldown state — any surfacing
+  // de-dup is a trivial render-time cap in Phase D, not a state machine here.)
+  if (orphans.length) summary.orphans = orphans;
+  if (staleRegistryPartitions.length) summary.staleRegistryPartitions = staleRegistryPartitions;
+
+  return summary;
+}
+
+// deriveSummary(store, opts) = computeSummary (pure) + the existing atomic
+// summary.json write. BYTE-IDENTICAL to the pre-split behavior for every existing
+// field/write (the additive orphans[]/staleRegistryPartitions[] keys are omitted
+// when empty, so a no-orphan/no-stale project produces the exact same on-disk
+// artifact as before). Write is ATOMIC (tmp + rename) so a hook read never observes
+// a partial file.
+function deriveSummary(store, opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const F = o.fsi || fs;
+  const summary = computeSummary(store, o);
+  const hash = summaryHashFor(store, o);
   writeSummaryAtomicForHash(home, hash, summary, F);
   return summary;
 }
@@ -1134,7 +1458,7 @@ module.exports = {
   storeDirForHash, sqlitePathForHash, journalDirForHash, summaryPathForHash,
   requiredGatesFrom, selectBackend, sqliteAvailable,
   openStore, openSqlite, openJournal,
-  deriveSummary, writeSummaryAtomic, readSummary, readSummaryForHash,
+  computeSummary, deriveSummary, writeSummaryAtomic, readSummary, readSummaryForHash,
   // mesh (v0.57, D3-D7/D22/D23):
   BROADCAST_PARTITION_ID, meshMessageHash, appendMeshMessage,
   // v0.58 (archive-request store write, deriveSummary archive_requested):

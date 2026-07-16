@@ -464,6 +464,106 @@ test('a child registered via `inbox pull` from a git SUBDIRECTORY is addressable
   }
 });
 
+// Regression (P1, live spawn test): TWO registry rows for ONE worktreePath — a
+// `spawn` phantom keyed BY the meshId with `sessionId:null` (no live session
+// draining it), and the child's own self-registration keyed by its builder-id
+// with a real sessionId. BOTH resolve to the same meshId (resolveMeshTarget
+// recomputes it from worktreePath), so `send --to <meshId>` must pick the LIVE
+// row, not whichever the id-sort happens to surface first. Before the fix,
+// resolveMeshTarget returned the first match by listRegistry id-order: when the
+// `primary-<hash>` phantom sorted before the live builder-id row, the send was
+// delivered into the phantom's partition (which no live session reads) — silent
+// message loss. This asserts delivery into the LIVE row's real read partition
+// REGARDLESS of insertion/sort order (both orderings exercised).
+test('send --to a meshId with a phantom (sessionId:null) AND a live row for the same worktree delivers to the LIVE partition, regardless of id-sort order', () => {
+  for (const liveId of ['1beee115-2959-4e42-948f-ecf0ecc144d9', 'zzz-live-worker']) {
+    const home = tmpHome();
+    const mainRepo = makeGitRepo('phantom-live');
+    let childWt = null;
+    try {
+      childWt = addLinkedWorktree(mainRepo, 'phantom-live-child');
+      const repoKey = repokey.repoKeyForWorktree(mainRepo);
+      const childWorktree = inst.resolveWorktree(childWt);
+      const meshId = inst.primaryWorkspaceId(childWorktree); // the phantom's id == the meshId
+      // Phantom: exactly what cmdSpawn's best-effort auto-register writes.
+      seedRegistry(home, repoKey, { id: meshId, worktreePath: childWorktree, sessionId: null });
+      // Live: the child's own self-registration under its builder-id, SAME worktreePath.
+      // liveId is chosen to sort BEFORE (hex UUID) then AFTER ('zzz-...') the
+      // 'primary-<hash>' phantom, so the id-sort order is flipped across the loop —
+      // the fix must deliver to the live row in BOTH.
+      seedRegistry(home, repoKey, { id: liveId, worktreePath: childWorktree, sessionId: 'live-session' });
+
+      const r = cli.run(['send', '--to', meshId, '--message', 'reach the live child'], ctx(home, { cwd: mainRepo }));
+      assert.equal(r.result.ok, true, 'send must succeed for liveId=' + liveId + ': ' + JSON.stringify(r.result));
+
+      const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+      try {
+        const livePartition = s.listMessages(liveId);
+        const phantomPartition = s.listMessages(meshId);
+        assert.equal(livePartition.length, 1, 'the message must land in the LIVE partition (liveId=' + liveId + ')');
+        assert.equal(livePartition[0].body, 'reach the live child');
+        assert.equal(phantomPartition.length, 0, 'the phantom (sessionId:null) partition must receive NOTHING (liveId=' + liveId + ')');
+      } finally { s.close(); }
+    } finally {
+      rm(home);
+      if (childWt) { cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', childWt]); }
+      rm(mainRepo);
+    }
+  }
+});
+
+// P1 (updatedAt-tie drain-correlated tie-break): two LIVE rows for one worktree with
+// EQUAL updatedAt (a same-ms register race). id-ASC order is drain-AGNOSTIC — pre-fix
+// the tie kept the id-first row (`aaa-stale`), so a send could land in a partition no
+// live session drains. The fix breaks the tie by the DRAIN-CORRELATED cursor: the row
+// whose inbox cursor is higher has READ more messages (it is the one being drained), so
+// `zzz-draining` must win REGARDLESS of id order. Both backends.
+for (const B of (function () { const a = [{ name: 'journal', backend: 'journal' }]; if (storeLib.sqliteAvailable()) a.push({ name: 'sqlite', backend: 'sqlite' }); return a; })()) {
+  const bctx = (home, over) => Object.assign({ home, backend: B.backend, env: {} }, over || {});
+  test(`[${B.name}] send: updatedAt tie among live rows breaks by higher cursor (drain signal), not id-ASC`, () => {
+    const home = tmpHome();
+    const mainRepo = makeGitRepo('tie-' + B.name);
+    let childWt = null;
+    try {
+      childWt = addLinkedWorktree(mainRepo, 'tie-child');
+      const repoKey = repokey.repoKeyForWorktree(mainRepo);
+      const childWorktree = inst.resolveWorktree(childWt);
+      const meshId = inst.primaryWorkspaceId(childWorktree);
+      const STALE = 'aaa-stale';       // sorts FIRST in id-ASC (pre-fix winner)
+      const DRAINING = 'zzz-draining'; // sorts LAST, but higher cursor -> the drained row
+
+      // Force IDENTICAL updatedAt on both rows (same-ms register race) by pinning
+      // Date.now across both upserts; then give DRAINING a strictly higher cursor.
+      const realNow = Date.now;
+      Date.now = () => 1700000000000;
+      try {
+        const s = storeLib.openStore({ home, hash: repoKey, backend: B.backend });
+        try {
+          s.upsertRegistry({ id: STALE, worktreePath: childWorktree, sessionId: 'stale-sess' });
+          s.upsertRegistry({ id: DRAINING, worktreePath: childWorktree, sessionId: 'draining-sess' });
+          s.setCursor(STALE, 0);
+          s.setCursor(DRAINING, 5); // read more -> the partition a live session is draining
+        } finally { s.close(); }
+      } finally { Date.now = realNow; }
+
+      const r = cli.run(['send', '--to', meshId, '--message', 'to the drained row'], bctx(home, { cwd: mainRepo }));
+      assert.equal(r.result.ok, true, 'send must succeed: ' + JSON.stringify(r.result));
+
+      const s = storeLib.openStore({ home, hash: repoKey, backend: B.backend });
+      try {
+        assert.deepStrictEqual(s.listMessages(DRAINING).map((m) => m.body), ['to the drained row'],
+          'the higher-cursor (drained) row wins the updatedAt tie');
+        assert.deepStrictEqual(s.listMessages(STALE).map((m) => m.body), [],
+          'the id-first-but-stale row receives nothing');
+      } finally { s.close(); }
+    } finally {
+      rm(home);
+      if (childWt) { cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', childWt]); }
+      rm(mainRepo);
+    }
+  });
+}
+
 // ---- broadcast + mesh read / roster --ack (D23) -----------------------------
 
 test('a broadcast appears in every workspace\'s broadcastUnread; after mesh read the caller\'s returns to 0 while an un-acked peer still shows it unread (D23)', () => {

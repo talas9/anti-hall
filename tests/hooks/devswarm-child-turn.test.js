@@ -949,3 +949,56 @@ test('MISMATCH FIX: REMINDER names heartbeat --summary as satisfying the Stop-ga
     h.cleanup();
   }
 });
+
+// ----- P0 (money path): SessionStart phantom-rescue. cmdSpawn registers a spawn
+// phantom ({id:meshId, sessionId:null}); a Primary `send --to <meshId>` issued
+// BEFORE the child exists lands in that dead phantom partition. The child reads mesh
+// directs by its DEVSWARM_BUILDER_ID, so it never sees them until a fold runs. Pre-fix
+// the fold ran ONLY via a later CLI `inbox pull` (cmdRegister) — NOT guaranteed on the
+// child's first turn. This wires the identical retireWorktreeDuplicates fold into the
+// mechanical SessionStart store-register path, so the phantom's real directs are
+// forwarded into the child's builder-id partition and the phantom is tombstoned on the
+// child's FIRST self-register. -----
+const instP0 = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+
+test('P0 phantom-rescue: the SessionStart store-register FOLDS a same-worktree spawn phantom — forwards its real directs into the child\'s builder-id partition and tombstones the phantom, deterministically (not only on a later inbox pull)', () => {
+  const h = makeHome();
+  const BUILDER = 'child-p0-rescue-builder';
+  try {
+    const mesh = instP0.primaryWorkspaceId(instP0.resolveWorktree(REPO_CWD)); // the spawn phantom's id
+    // Seed the phantom row (exactly what cmdSpawn's best-effort auto-register writes:
+    // store-only, NO on-disk descriptor, sessionId null) PLUS a real mesh direct that a
+    // Primary `send --to <mesh>` landed in the phantom partition before the child existed.
+    {
+      const s = meshStore.openStore({ home: h.home, workspaceId: mesh, hash: REPO_KEY });
+      try {
+        s.upsertRegistry({ id: mesh, worktreePath: REPO_CWD, sessionId: null, inboxPath: null, cursorPath: null, nudgeCommand: null });
+        const fields = { from: 'primary-sender', to: mesh, type: 'direct', message: 'landed-in-phantom', urgency: 'normal', hash: 'p0-phantom-direct' };
+        meshStore.appendMeshMessage(s, fields);
+        meshStore.deriveSummary(s, { home: h.home });
+      } finally { s.close(); }
+    }
+
+    const r = testHook(HOOK, promptPayload('sess-p0', REPO_CWD), {
+      home: h.home, expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: BUILDER },
+    });
+    assert.strictEqual(r.status, 0);
+
+    const s = meshStore.openStore({ home: h.home, workspaceId: BUILDER, hash: REPO_KEY });
+    try {
+      // (a) FORWARDED: the phantom's real direct now sits in the child's OWN partition.
+      const childBodies = s.listMessages(BUILDER, {}).map((m) => m.body);
+      assert.ok(childBodies.includes('landed-in-phantom'),
+        'the phantom\'s real direct must be forwarded into the child\'s builder-id partition on first self-register; got ' + JSON.stringify(childBodies));
+      // (b) TOMBSTONED: the store-only phantom row is gone from the registry.
+      const stillPhantom = s.listRegistry().some((d) => String(d.id) === String(mesh));
+      assert.ok(!stillPhantom, 'the spawn phantom row must be tombstoned after the fold');
+      // (c) NON-DESTRUCTIVE: the phantom partition's original message rows are preserved.
+      assert.deepStrictEqual(s.listMessages(mesh, {}).map((m) => m.body), ['landed-in-phantom'],
+        'the retired partition\'s message rows are preserved (forwarded, never deleted)');
+    } finally { s.close(); }
+  } finally {
+    h.cleanup();
+  }
+});

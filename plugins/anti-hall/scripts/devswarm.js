@@ -355,6 +355,395 @@ function upsertStoreRegistry(home, desc, ctx) {
   } finally { s.close(); }
 }
 
+// isForwardable(msg) — retire-forward NOISE FILTER (#67). retireWorktreeDuplicates
+// re-appends a duplicate partition's unread backlog into the survivor as fresh
+// directs; forward ONLY a REAL actionable direct. Native ingest
+// (devswarm-ingest.js / devswarm-pull.js) writes body+hash ONLY, so a stale
+// `[Primary poke]` mirror or a `{_h:"native:..."}` hash-mirror row reads back as
+// mtype:null / sender:null — forwarding those resurrects dead pokes into the live
+// partition (proven harmful on a real store). A forwardable row must be a real
+// mesh direct: mtype==='direct' (one check that excludes broadcast, heartbeat, AND
+// every null-mtype native/poke/hash-mirror row) with a non-empty sender AND
+// recipient. A legitimately-forwarded direct (appendMeshMessage sets all three)
+// still passes, so real traffic is never over-filtered.
+function isForwardable(msg) {
+  if (!msg || msg.isHeartbeat) return false;
+  if (msg.mtype !== 'direct') return false;
+  const sender = msg.sender != null ? String(msg.sender).trim() : '';
+  const recipient = msg.recipient != null ? String(msg.recipient).trim() : '';
+  return sender !== '' && recipient !== '';
+}
+
+// retireWorktreeDuplicates(home, keepDesc, ctx) — DELIVERY-CONVERGENCE reconcile
+// (v0.55.x P0 message-loss fix). A DevSwarm child registers under its builder-id
+// (the per-project substrate scheme — a free-form id that is NOT the worktree's own
+// meshId). An OLDER duplicate row for the SAME worktree can still be LIVE in the
+// shared registry: a legacy hivecontrol-native `<label>-<repoId8>` registration, or
+// a pre-register `primary-<hash>` spawn phantom. Both hash (via their worktreePath)
+// to the SAME meshId as the child's own row, so `resolveMeshTarget` has TWO rows
+// resolving to this worktree and can route a `send` into the duplicate's partition —
+// which no live session ever drains (the child reads its OWN builder-id partition)
+// -> silent message loss.
+//
+// On self-register this RETIREs every OTHER same-worktree row so exactly ONE row
+// (the caller's own builder-id — the partition the child actually reads) survives,
+// making send-target and child-drain CONVERGE on ONE partition. Retire = the
+// sanctioned registry tombstone (store.removeRegistry — a `remove` op in the
+// append-only journal, a registry-row delete in sqlite); the `messages` rows are a
+// DIFFERENT table and are NEVER deleted. Before tombstoning, every UNREAD direct
+// message already sitting in the retired partition is FORWARDED into the surviving
+// partition (re-appended with the survivor as recipient, hash recomputed from the
+// new fields so a re-run OR-IGNOREs) so the cutover — and the entire backlog a child
+// silently lost while both rows were live — orphans NOTHING. If forwarding a row's
+// backlog throws, that duplicate is LEFT in place (never tombstoned) so no unread is
+// stranded; a later self-register retries it.
+//
+// GATED to builder-id self-registrations (keepDesc.id !== the worktree's meshId): a
+// meshId-keyed register (the Primary's `register-primary`, or the spawn phantom) must
+// NEVER retire the child's live builder-id row, so those paths are a deliberate
+// no-op. Idempotent (a tombstoned row is gone from listRegistry, so a re-run finds
+// nothing) and FAIL-OPEN (any error is swallowed — a reconcile failure must never
+// crash the child's register / SessionStart or block its turn).
+function retireWorktreeDuplicates(home, keepDesc, ctx) {
+  try {
+    if (!keepDesc || !keepDesc.worktreePath || !keepDesc.id) return null;
+    const keepMesh = inst.primaryWorkspaceId(keepDesc.worktreePath);
+    if (!keepMesh) return null;
+    // A meshId-keyed row (Primary / spawn phantom) must not retire a child's live
+    // builder-id row — only a builder-id self-register (id !== the worktree meshId)
+    // is the NEW scheme this reconcile is for.
+    if (String(keepDesc.id) === String(keepMesh)) return null;
+    // P1 (mis-retire hardening): match same-worktree candidates by the CANONICAL
+    // real-path (worktreeRealPath — the collision-free pre-image of the hash), NOT
+    // the 8-hex worktreeHash/meshId. A sha256-slice hash can (astronomically, but on
+    // a money path "can" is disqualifying) collide two DISTINCT worktrees onto one
+    // meshId; matching the resolved real path instead makes a mis-identification
+    // impossible. The SHARED canonicalWorktreeRealPath (also used by
+    // foldMeshDuplicates) is the collision-free pre-image of canonicalMeshId's hash,
+    // so the two paths cannot diverge. Fail-open null (unresolvable) -> no-op.
+    const keepReal = canonicalWorktreeRealPath(keepDesc.worktreePath);
+    if (!keepReal) return null;
+    const repoKey = repoKeyForCwd(ctx);
+    const s = store.openStore({
+      home, workspaceId: keepDesc.id, hash: repoKey || undefined,
+      backend: ctx && ctx.backend, env: ctx && ctx.env,
+    });
+    let result;
+    try {
+      // Candidate set = every OTHER registry row for the SAME physical worktree
+      // (matched by the SHARED canonicalWorktreeRealPath — the collision-free
+      // pre-image of the hash, NOT the 8-hex meshId, so a sha256-slice hash can
+      // never mis-identify two DISTINCT worktrees onto one meshId; fail-open null
+      // -> this row is skipped). The forward-then-tombstone body is the SHARED
+      // foldGroupIntoSurvivor primitive (also used by foldMeshDuplicates).
+      const candidates = [];
+      for (const d of s.listRegistry()) {
+        if (!d || d.id == null || String(d.id) === String(keepDesc.id)) continue;
+        if (!d.worktreePath) continue;
+        if (canonicalWorktreeRealPath(d.worktreePath) !== keepReal) continue; // SAME physical worktree only (no hash-collision class)
+        candidates.push(d);
+      }
+      result = foldGroupIntoSurvivor(s, home, keepDesc.id, candidates);
+      if (result.retired.length) store.deriveSummary(s, { home, env: ctx && ctx.env });
+    } finally { s.close(); }
+    const { retired, left, forwardFailed, forwarded } = result;
+    if (!retired.length && !left.length && !forwarded && !forwardFailed.length) return null;
+    const out = { retired, forwarded };
+    if (left.length) out.left = left;
+    if (forwardFailed.length) out.forwardFailed = forwardFailed;
+    return out;
+  } catch (_) { return null; } // fail-open: reconcile must never crash the caller
+}
+
+// foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) — the SHARED
+// forward-then-tombstone primitive used by BOTH retireWorktreeDuplicates (one
+// caller's worktree) and foldMeshDuplicates (the whole registry). For each
+// candidate row (already filtered to belong with `survivorId`):
+//   1. FORWARD its UNREAD direct backlog into the survivor (re-appended with the
+//      survivor as recipient, hash recomputed so a re-run OR-IGNOREs), so the
+//      cutover orphans NOTHING. Best-effort per row: on ANY forward error, DO NOT
+//      tombstone — the row is LEFT (recorded in forwardFailed + a stderr warning,
+//      never silently swallowed) so no unread is stranded (a later pass retries).
+//   2. TOMBSTONE only a row we can prove is NOT a distinct live child — a
+//      store-only row (spawn phantom / ingested legacy hivecontrol-native
+//      registration) with NO on-disk per-project descriptor. A candidate that HAS
+//      a descriptor could be a distinct live child draining its OWN partition, so
+//      it is LEFT (recorded in `left`), never tombstoned — losing a message by
+//      mis-retiring is far worse than leaving a duplicate row (P1 hardening).
+// `opts.dryRun` classifies (which rows WOULD retire/left) without forwarding or
+// tombstoning — used by the doctor `fold-mesh-duplicates` detect() so it shares
+// this ONE classification instead of a second reimplementation. NEVER throws on a
+// row (each is try/wrapped by the caller's own fold body / fail-open).
+function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
+  const dryRun = !!(opts && opts.dryRun);
+  const retired = [];
+  const left = [];
+  const forwardFailed = [];
+  let forwarded = 0;
+  for (const d of candidates) {
+    if (!d || d.id == null || String(d.id) === String(survivorId)) continue;
+    if (dryRun) {
+      // read-only classification: a store-only row WOULD be tombstoned; a
+      // descriptor-backed one WOULD be left (never collapsed).
+      if (readDescriptorFile(home, d.id)) { left.push(d.id); continue; }
+      retired.push(d.id);
+      continue;
+    }
+    let forwardOk = true;
+    try {
+      const since = s.cursorValue(d.id);
+      for (const m of s.listMessages(d.id, { sinceCursor: since })) {
+        if (!isForwardable(m)) continue; // #67: forward only a real actionable direct — skips broadcast/heartbeat AND stale native poke/hash-mirror rows (mtype/sender null)
+        const fields = {
+          from: m.sender, to: survivorId, type: 'direct',
+          message: m.body, timestamp: m.ts, urgency: m.urgency || 'normal',
+        };
+        const hash = store.meshMessageHash(fields);
+        const r = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+        if (r && r.inserted) forwarded++;
+      }
+    } catch (_) { forwardOk = false; }
+    if (!forwardOk) {
+      forwardFailed.push(String(d.id));
+      try {
+        process.stderr.write('[devswarm] foldGroupIntoSurvivor: forward FAILED for '
+          + String(d.id) + ' — row LEFT in place (not tombstoned); fold incomplete\n');
+      } catch (_) {}
+      continue;
+    }
+    if (readDescriptorFile(home, d.id)) { left.push(d.id); continue; }
+    // P1a/P2/P3 race close: ATOMIC conditional tombstone. removeRegistryIf deletes
+    // ONLY if the row is STILL EXACTLY the one we classified — its session_id AND
+    // updatedAt AND writeSeq all still equal our snapshot (NULL-safe, so a null
+    // snapshot updatedAt/writeSeq that gained a real value, or a NEW session_id,
+    // counts as a re-register). sqlite: one atomic DELETE ... WHERE; journal: an
+    // under-lock re-read + a conditional (`ifUpdatedAt`/`ifSessionId`/`ifWriteSeq`)
+    // remove op reduceRegistry ignores if a re-register raced it. A child that
+    // re-registered in the window (child-turn writes its descriptor THEN its store
+    // row) is now re-written -> NOT deleted -> LEFT (a later fold re-evaluates);
+    // forward-before-tombstone already ran and is idempotent, so nothing is
+    // orphaned. (Descriptor-backed rows were already LEFT above — this pins the
+    // store-only phantom, which may itself carry a stale session_id.)
+    // P3 (v0.61.0 money-path residual): writeSeq is a per-row monotonic counter
+    // bumped on EVERY upsert regardless of wall-clock ms — closes the LAST gap
+    // where a live child re-registers the SAME id/sessionId within the SAME
+    // millisecond as the snapshot (updatedAt alone can't distinguish that from a
+    // stable phantom; writeSeq still advances).
+    const removed = s.removeRegistryIf(d.id, { sessionId: d.sessionId, updatedAt: d.updatedAt, writeSeq: d.writeSeq });
+    if (!removed) { left.push(d.id); continue; }
+    retired.push(d.id);
+  }
+  return { retired, left, forwardFailed, forwarded };
+}
+
+// canonicalWorktreeRealPath(worktreePath) — the collision-FREE real-path pre-image
+// of canonicalMeshId's 8-hex hash: canonicalize to the GIT TOPLEVEL first
+// (resolveCallerWorktree — IDENTICAL resolution to canonicalMeshId below), then take
+// its resolved real path (inst.worktreeRealPath). By construction
+// canonicalMeshId(wt) === `primary-<first 8 hex of sha256(canonicalWorktreeRealPath(wt))>`,
+// so two rows share a canonicalMeshId BUCKET iff this real path hashes to the same
+// 8-hex — but they are the SAME physical worktree ONLY iff these real-path STRINGS
+// are EQUAL. An 8-hex sha256 slice can (astronomically, but on a money path "can" is
+// disqualifying) collide two DISTINCT toplevels onto ONE meshId, so grouping by the
+// hash alone can bucket two UNRELATED worktrees together; comparing this real-path
+// string-for-string is the collision-proof discriminator. This is the ONE helper
+// BOTH retireWorktreeDuplicates (per-register) and foldMeshDuplicates (project-wide
+// migration) match candidates with, so the fold can never again silently merge
+// distinct worktrees the way a hash-only grouping did. Fail-open null (falsy path)
+// -> callers treat it as "cannot confirm same worktree" (never merge).
+function canonicalWorktreeRealPath(worktreePath) {
+  if (!worktreePath) return null;
+  const top = resolveCallerWorktree(worktreePath) || worktreePath;
+  return inst.worktreeRealPath(top) || null;
+}
+
+// canonicalMeshId(worktreePath) — the meshId a row groups under. Canonicalizes to
+// the row's GIT TOPLEVEL first (resolveCallerWorktree — git rev-parse
+// --show-toplevel, pure-fs findGitToplevel fallback), so a legacy SUBDIR-SPLIT row
+// (a child that registered from a git subdirectory — its raw real-path hashes to a
+// DIFFERENT meshId than the toplevel's, invisible to plain-hash grouping) folds
+// onto its toplevel. Falls back to the raw worktreePath when it does not resolve
+// (a vanished path — already surfaced by staleRegistryPartitions — or a non-git
+// dir), which reproduces the pre-existing plain-hash grouping exactly for every
+// row that is already a toplevel. Submodules resolve to their OWN toplevel -> a
+// submodule is correctly NOT merged with its parent.
+function canonicalMeshId(worktreePath) {
+  const top = resolveCallerWorktree(worktreePath) || worktreePath;
+  return inst.primaryWorkspaceId(top);
+}
+
+// groupRegistryByMeshId(registry) -> Map<meshId, {meshId, ids[], rows[], liveRows}>.
+// The ONE grouping implementation shared by cmdDiagnose (split detection) AND
+// foldMeshDuplicates (canonical fold) — grouping key is canonicalMeshId so both
+// see subdir-splits folded onto their toplevel identically.
+function groupRegistryByMeshId(registry) {
+  const byMesh = new Map();
+  for (const d of registry) {
+    if (!d || !d.worktreePath) continue;
+    const meshId = canonicalMeshId(d.worktreePath);
+    if (!meshId) continue;
+    let g = byMesh.get(meshId);
+    if (!g) { g = { meshId, ids: [], rows: [], liveRows: 0 }; byMesh.set(meshId, g); }
+    g.ids.push(d.id);
+    g.rows.push(d);
+    if (d.sessionId != null && String(d.sessionId) !== '') g.liveRows++;
+  }
+  return byMesh;
+}
+
+// pickSurvivor(s, group) — the SAME freshest-live selection resolveMeshTarget uses
+// (greatest registry updatedAt among LIVE rows; cursor-value tiebreak; else the
+// first row — the phantom, pre-self-register), generalized to a canonical group's
+// OWN rows (which include subdir-split rows resolveMeshTarget's plain-hash match
+// would miss). The survivor is the partition a live session actually drains.
+function pickSurvivor(s, group) {
+  let firstMatch = null;
+  let bestLive = null;
+  for (const d of group.rows) {
+    if (!d) continue;
+    if (firstMatch === null) firstMatch = d;
+    if (d.sessionId == null || String(d.sessionId) === '') continue; // not live
+    if (bestLive === null) { bestLive = d; continue; }
+    const a = Number.isFinite(d.updatedAt) ? d.updatedAt : -1;
+    const b = Number.isFinite(bestLive.updatedAt) ? bestLive.updatedAt : -1;
+    if (a > b) { bestLive = d; continue; }
+    if (a === b && meshCursorValue(s, d.id) > meshCursorValue(s, bestLive.id)) bestLive = d;
+  }
+  return bestLive || firstMatch;
+}
+
+// rekeySubdirRegistryRows(s, dryRun) — P1b: reconcile the two identity views so a
+// subdir-registered row is addressable by its TOPLEVEL meshId. resolveMeshTarget
+// (send) matches a row by inst.primaryWorkspaceId(d.worktreePath) — the RAW stored
+// path — while the fold groups by canonicalMeshId (git TOPLEVEL). An OLD store's row
+// registered from a git SUBDIR stored a raw-subdir path whose meshId != its toplevel
+// meshId, so `send --to <toplevel meshId>` failed closed as unregistered-recipient,
+// and a LONE such row is skipped by the >=2 fold. Re-key it IN PLACE: rewrite the
+// stored worktreePath to its canonical git toplevel, so the raw-path meshId
+// resolveMeshTarget hashes BECOMES the toplevel meshId. This is a registry UPDATE
+// (same id) — the partition (d.id, where the row's messages live) is UNCHANGED, so NO
+// message move is needed; and it makes send + fold agree on ONE identity. A submodule
+// resolves to its OWN toplevel and keeps a DISTINCT meshId (never merged into the
+// parent). Non-git / unresolvable paths are left as-is (raw path IS their own meshId).
+// Returns the count of re-keyed ids. dryRun classifies without writing (doctor detect).
+function rekeySubdirRegistryRows(s, dryRun) {
+  let rekeyed = 0;
+  for (const d of s.listRegistry()) {
+    if (!d || !d.worktreePath || d.id == null) continue;
+    const top = resolveCallerWorktree(d.worktreePath);
+    if (!top) continue; // non-git / unresolvable -> raw path is already its own meshId
+    const canonMesh = inst.primaryWorkspaceId(top);
+    if (!canonMesh || inst.primaryWorkspaceId(d.worktreePath) === canonMesh) continue; // already canonical
+    rekeyed++;
+    if (dryRun) continue;
+    s.upsertRegistry({
+      id: d.id,
+      worktreePath: top, // rewritten to the canonical git toplevel (send+fold now agree)
+      sessionId: d.sessionId,
+      inboxPath: d.inboxPath,
+      cursorPath: d.cursorPath,
+      nudgeCommand: d.nudgeCommand,
+    });
+  }
+  return rekeyed;
+}
+
+// foldMeshDuplicates(home, ctx) — MIGRATION generalization of
+// retireWorktreeDuplicates over the WHOLE registry (not one live caller's
+// worktree). Groups every registry row by canonical (git-toplevel) mesh identity
+// and, for each group with 2+ rows, forwards every non-survivor's real direct
+// backlog into the survivor and tombstones the store-only duplicates (leaving
+// descriptor-backed ones), via the SHARED foldGroupIntoSurvivor primitive. This
+// folds the prior mesh forms an OLD store accumulated — phantom rows, dual/legacy
+// pairs, SUBDIR-SPLIT pairs — that the drain-only `reconcile` never dedups.
+//   - Idempotent (hash-dedup forward + tombstone-of-absent -> a re-run finds no
+//     store-only duplicate left, so retired:[]), fail-open (never throws),
+//     non-destructive (forward-before-tombstone; message rows are NEVER deleted).
+//   - Orphan partitions / stale-registry rows are DELIBERATELY untouched — they are
+//     surface-only by explicit design (computeSummary's no-delete posture); this
+//     only collapses same-worktree DUPLICATE registrations.
+//   - `ctx.dryRun` classifies without writing (doctor detect()).
+// Returns { ok, retired[], forwarded, folded, [left[]], [forwardFailed[]] }.
+function foldMeshDuplicates(home, ctx) {
+  const c = ctx || {};
+  const dryRun = !!c.dryRun;
+  try {
+    const repoKey = repoKeyForCwd(c);
+    // NEVER open/create the shared store just to look for duplicates. A missing
+    // repoKey (non-git cwd) or an absent per-project store dir means there is no
+    // registry to fold — return a clean no-op WITHOUT calling openStore (which
+    // would create the dir; doctor's repair/--check store-untouched invariant).
+    if (!repoKey) return { ok: true, retired: [], forwarded: 0, folded: 0 };
+    let storeExists = false;
+    try { storeExists = fs.existsSync(store.storeDirForHash(home, repoKey)); } catch (_) { storeExists = false; }
+    if (!storeExists) return { ok: true, retired: [], forwarded: 0, folded: 0 };
+    const s = store.openStore({ home, hash: repoKey, backend: c.backend, env: c.env });
+    const retired = [];
+    const left = [];
+    const forwardFailed = [];
+    let forwarded = 0;
+    let folded = 0; // canonical groups that had ≥1 duplicate acted on
+    let meshIdCollisions = 0; // meshId buckets spanning ≥2 DISTINCT canonical worktrees
+    let rekeyed = 0; // P1b: subdir rows re-keyed to their canonical toplevel worktreePath
+    try {
+      // P1b FIRST: re-key any subdir-registered row to its toplevel worktreePath so
+      // resolveMeshTarget (send) and the fold agree on ONE identity — including a LONE
+      // subdir row the >=2 fold below never touches. Re-key is an in-place registry
+      // update (same id/partition), so the fresh listRegistry the fold reads next just
+      // sees canonical paths (grouping is by canonicalMeshId either way — unaffected).
+      rekeyed = rekeySubdirRegistryRows(s, dryRun);
+      const byMesh = groupRegistryByMeshId(s.listRegistry());
+      for (const g of byMesh.values()) {
+        if (g.rows.length < 2) continue; // fast skip: a lone row cannot have a duplicate
+        // COLLISION GUARD (P0): a canonicalMeshId bucket is keyed by an 8-hex sha256
+        // slice, which can (astronomically) collide two DISTINCT worktrees onto ONE
+        // meshId. Fold ONLY within a real-path-identical sub-group — NEVER
+        // merge/forward/tombstone across two distinct worktrees that merely share the
+        // 8-hex. Sub-partition by the collision-free canonicalWorktreeRealPath (the
+        // SAME comparison retireWorktreeDuplicates uses); an unresolvable path gets its
+        // OWN singleton key so it is never merged with anything.
+        const bySamePath = new Map(); // canonicalRealPath -> rows[]
+        for (const d of g.rows) {
+          const real = canonicalWorktreeRealPath(d.worktreePath);
+          const key = real || (' unresolved:' + String(d.id));
+          let sub = bySamePath.get(key);
+          if (!sub) { sub = []; bySamePath.set(key, sub); }
+          sub.push(d);
+        }
+        if (bySamePath.size > 1) {
+          meshIdCollisions++;
+          try {
+            process.stderr.write('[devswarm] foldMeshDuplicates: meshId ' + String(g.meshId)
+              + ' bucket spans ' + bySamePath.size + ' DISTINCT canonical worktrees (8-hex hash collision)'
+              + ' — folding each in isolation, NEVER across\n');
+          } catch (_) {}
+        }
+        for (const rows of bySamePath.values()) {
+          if (rows.length < 2) continue; // no duplicate within this real worktree
+          const survivor = pickSurvivor(s, { rows });
+          if (!survivor || survivor.id == null) continue; // nothing live/first to keep -> skip
+          const candidates = rows.filter((d) => d && String(d.id) !== String(survivor.id));
+          const r = foldGroupIntoSurvivor(s, home, survivor.id, candidates, { dryRun });
+          forwarded += r.forwarded;
+          for (const x of r.retired) retired.push(x);
+          for (const x of r.left) left.push(x);
+          for (const x of r.forwardFailed) forwardFailed.push(x);
+          if (r.retired.length || r.left.length || r.forwardFailed.length) folded++;
+        }
+      }
+      if (!dryRun && retired.length) store.deriveSummary(s, { home, env: c.env });
+    } finally { s.close(); }
+    const out = { ok: true, retired, forwarded, folded };
+    if (left.length) out.left = left;
+    if (forwardFailed.length) out.forwardFailed = forwardFailed;
+    if (meshIdCollisions) out.meshIdCollisions = meshIdCollisions;
+    if (rekeyed) out.rekeyed = rekeyed;
+    return out;
+  } catch (_) {
+    return { ok: true, retired: [], forwarded: 0, folded: 0 }; // fail-open: migration must never crash update/doctor
+  }
+}
+
 // ============================================================================
 // Phase 7 (PLAN-v0.57-mesh.md) — send-time self-heal. Invoked BEFORE every
 // send-like verb (mesh `send`, `inbox pull`'s native drain, `archive-request`'s
@@ -485,9 +874,15 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   const existing = readDescriptorFile(home, id);
   if (requireNew && existing) {
     // ensure: idempotent — leave the on-disk descriptor untouched, but still
-    // re-upsert the store registry so the projection reflects it.
+    // re-upsert the store registry so the projection reflects it. Also reconcile
+    // any legacy/phantom duplicate row for this SAME worktree every time (the
+    // steady-state child path: `inbox pull` auto-ensures each turn), so a
+    // duplicate created AFTER the child's first register is still retired.
     upsertStoreRegistry(home, existing, ctx);
-    return { ok: true, action: 'exists', id, descriptor: existing };
+    const retire = retireWorktreeDuplicates(home, existing, ctx);
+    const out = { ok: true, action: 'exists', id, descriptor: existing };
+    if (retire) { out.retiredDuplicates = retire.retired; out.forwardedMessages = retire.forwarded; if (retire.left) out.leftDuplicates = retire.left; if (retire.forwardFailed) out.forwardFailed = retire.forwardFailed; }
+    return out;
   }
   const desc = buildDescriptorFromFlags(id, flags, existing, ctx.env);
   // Validate the REQUIRED workspace fields before writing. A descriptor missing
@@ -519,7 +914,14 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
     } catch (_) { /* best-effort init; inbox ops still work once a cursor exists */ }
   }
   upsertStoreRegistry(home, desc, ctx);
-  return { ok: true, action: existing ? 'updated' : 'registered', id, descriptor: desc };
+  // Retire any legacy/phantom duplicate row for this SAME worktree so exactly one
+  // row (this builder-id — the partition the child reads) survives, forwarding the
+  // duplicate's unread backlog first (no orphaned messages). No-op unless a
+  // duplicate exists; gated to builder-id self-registers inside the helper.
+  const retire = retireWorktreeDuplicates(home, desc, ctx);
+  const out = { ok: true, action: existing ? 'updated' : 'registered', id, descriptor: desc };
+  if (retire) { out.retiredDuplicates = retire.retired; out.forwardedMessages = retire.forwarded; if (retire.left) out.leftDuplicates = retire.left; if (retire.forwardFailed) out.forwardFailed = retire.forwardFailed; }
+  return out;
 }
 
 function cmdHeartbeat(id, flags, ctx) {
@@ -852,7 +1254,9 @@ function cmdWorkspacesList(flags, ctx) {
   const repoKey = worktree ? repokey.repoKeyForWorktree(worktree) : repoKeyForCwd(ctx);
   const s = store.openStore({ home, workspaceId, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
   let sum;
-  try { sum = store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); }
+  // #62: a READ verb must not mutate — use the PURE computeSummary (zero summary.json
+  // write) instead of deriveSummary (which surprised users by writing on a read).
+  try { sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now }); }
   finally { s.close(); }
   const workspaces = Object.values(sum.workspaces || {});
   return { ok: true, action: 'workspaces', workspaceId: workspaceId || null, requiredGates: sum.requiredGates, count: workspaces.length, workspaces };
@@ -1023,13 +1427,64 @@ function hasFlag(flags, name) {
 // (it is derived from the REGISTERED worktree path, never from any caller's
 // env). This is the D19 join: `--to <meshId>` resolves to the target's real
 // read partition (`d.id`, the builder-id), NOT the meshId itself.
+// meshCursorValue(storeHandle, id) -> the row's durable inbox cursor as a finite
+// number, or -1 (unreadable/absent). A safe wrapper over the store's cursorValue
+// primitive (both backends expose it) used ONLY as the updatedAt-tie drain signal
+// in resolveMeshTarget — never throws (a cursor read must not break addressing).
+function meshCursorValue(storeHandle, id) {
+  try {
+    const v = storeHandle.cursorValue(id);
+    return Number.isFinite(v) ? v : -1;
+  } catch (_) { return -1; }
+}
+
 function resolveMeshTarget(storeHandle, meshId) {
   if (!meshId) return null;
+  // A single worktreePath can carry MORE THAN ONE registry row that ALL resolve to
+  // the same meshId. Concretely observed: the `spawn` phantom (keyed BY the meshId,
+  // `sessionId:null`, no live session draining it) AND the child's own self-
+  // registration (keyed by its builder-id, a real `sessionId`); and — the P0 case
+  // this fix closes — TWO *live* builder-id rows for one worktree (a child that re-
+  // registered under a NEW builder-id while an older builder-id row is still live,
+  // OR a same-worktree duplicate the retire reconcile deliberately LEFT rather than
+  // risk mis-tombstoning a distinct child, P1). listRegistry orders by id-sort, so a
+  // bare "first live by id-ASC" is an id-ordering ACCIDENT: it can hand the send to a
+  // STRANDED row that no live session drains -> silent message loss (verified repro,
+  // both backends).
+  //
+  // ROUTE TO THE PARTITION THE CHILD ACTUALLY DRAINS, independent of retire timing/
+  // success. The deterministic, store-native, drain-correlated signal: among LIVE
+  // rows (non-empty sessionId), the one with the GREATEST registry `updatedAt`. A
+  // live child re-registers its OWN partition every turn (inbox pull auto-ensures),
+  // so the drained row's updatedAt keeps advancing; a stale/stranded duplicate stops
+  // advancing the moment its session dies. Freshest-live is therefore the row a live
+  // session is currently maintaining = the one it drains. The phantom (sessionId
+  // null) is excluded by the liveness filter outright. Ties (equal/absent updatedAt)
+  // fall back to id-ASC order (first encountered), and when NO row is live yet we
+  // fall back to the first match (only the phantom exists, pre-self-register) — so
+  // this is a strict refinement of the prior "prefer live" behavior, never worse.
+  let firstMatch = null;
+  let bestLive = null;
   for (const d of storeHandle.listRegistry()) {
     if (!d || !d.worktreePath) continue;
-    if (inst.primaryWorkspaceId(d.worktreePath) === String(meshId)) return d;
+    if (inst.primaryWorkspaceId(d.worktreePath) !== String(meshId)) continue;
+    if (firstMatch === null) firstMatch = d; // first match (phantom) — fallback when nothing is live
+    if (d.sessionId == null || String(d.sessionId) === '') continue; // not live -> never a drain target
+    if (bestLive === null) { bestLive = d; continue; }
+    const a = Number.isFinite(d.updatedAt) ? d.updatedAt : -1;
+    const b = Number.isFinite(bestLive.updatedAt) ? bestLive.updatedAt : -1;
+    if (a > b) { bestLive = d; continue; } // strictly fresher live row wins
+    if (a === b) {
+      // updatedAt TIE (same-ms register race, devswarm-store.js upsert): id-ASC order
+      // is drain-AGNOSTIC and can hand the send to a stale row that merely sorts first
+      // (e.g. `aaa-stale` over `zzz-draining`). Break the tie by a DRAIN-CORRELATED
+      // signal instead — the row whose inbox cursor is higher has actually READ more
+      // messages, so it is the one a live session is currently draining. Only fall back
+      // to id-ASC-first (keep the current bestLive) if the cursors are also equal.
+      if (meshCursorValue(storeHandle, d.id) > meshCursorValue(storeHandle, bestLive.id)) bestLive = d;
+    }
   }
-  return null;
+  return bestLive || firstMatch;
 }
 
 // cmdSend(flags, ctx) — send --from <id> --to <meshId>|--broadcast --message
@@ -1209,7 +1664,8 @@ function cmdRoster(flags, ctx) {
   if (!repoKey) return { ok: false, reason: 'no-project' };
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   let sum;
-  try { sum = store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); }
+  // #62: a READ verb must not mutate — PURE computeSummary (no summary.json write).
+  try { sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now }); }
   finally { s.close(); }
   const workspaces = Object.values(sum.workspaces || {}).map((w) => ({
     id: w.id, working_on: w.working_on, directUnread: w.directUnread,
@@ -1231,6 +1687,132 @@ function cmdRoster(flags, ctx) {
     });
   }
   return { ok: true, action: 'roster', repoKey, count: workspaces.length, workspaces, recent: sum.recent || [] };
+}
+
+// cmdDiagnose(flags, ctx) — READ-ONLY mesh-health projection (#62). Uses the PURE
+// store.computeSummary (ZERO summary.json write) plus the shared registry to show,
+// per worktree: each registry row (id, worktreePath, sessionId, unread, live?),
+// which partition a `send` to that worktree's meshId resolves to (resolveMeshTarget
+// — the SAME freshest-live routing `send` uses), the orphan partitions +
+// stale-registry rows computeSummary surfaces (Phase A), and any worktree carrying
+// 2+ LIVE rows flagged as a "split" (the un-converged case a submodule / separate
+// git root shows up as — surfaced here, NEVER auto-merged). Project-scoped like
+// roster (no id arg, keyed off cwd's repoKey). Purity is the point: an orchestrator
+// can SEE mesh state without the read itself mutating anything.
+// computeDiagnosis(s, ctx) — the ONE mesh-health computation shared by cmdDiagnose,
+// cmdHealthcheck (#71), and the doctor mesh-shape CHECK. Takes an OPEN store handle
+// `s` (pure — computeSummary NEVER writes summary.json) and returns the fully
+// derived pieces; callers add their own envelope + presentation. Groups via the
+// shared groupRegistryByMeshId (canonical git-toplevel identity, so subdir-splits
+// fold), so `send --to <meshId>` routing (resolveMeshTarget) and split detection
+// agree with the fold. Adds two aggregate counts not surfaced by `diagnose`'s object
+// today: `phantoms` (rows with no live sessionId) and `unreadTotal` (Σ directUnread).
+function computeDiagnosis(s, ctx) {
+  const c = ctx || {};
+  const sum = store.computeSummary(s, { home: c.home, env: c.env, now: c.now });
+  const registry = s.listRegistry();
+  const byMesh = groupRegistryByMeshId(registry);
+  const meshTargets = [];
+  const splits = [];
+  for (const g of byMesh.values()) {
+    const target = resolveMeshTarget(s, g.meshId); // the partition `send --to <meshId>` lands in
+    const split = g.liveRows >= 2;
+    if (split) splits.push(g.meshId);
+    meshTargets.push({ meshId: g.meshId, resolvesTo: target ? target.id : null, ids: g.ids, liveRows: g.liveRows, split });
+  }
+  const workspaces = sum.workspaces || {};
+  const rows = registry.filter((d) => d && d.id != null).map((d) => {
+    const w = workspaces[d.id] || {};
+    return {
+      id: d.id,
+      worktreePath: d.worktreePath || null,
+      sessionId: d.sessionId || null,
+      live: d.sessionId != null && String(d.sessionId) !== '',
+      unread: Number.isFinite(w.unread) ? w.unread : 0,
+    };
+  });
+  const phantoms = rows.filter((r) => !r.live).length;
+  let unreadTotal = 0;
+  for (const id of Object.keys(workspaces)) {
+    const w = workspaces[id];
+    if (w && Number.isFinite(w.directUnread)) unreadTotal += w.directUnread;
+  }
+  return {
+    sum, registry: rows, meshTargets, splits,
+    orphans: sum.orphans || [],
+    staleRegistryPartitions: sum.staleRegistryPartitions || [],
+    phantoms, unreadTotal,
+  };
+}
+
+function cmdDiagnose(flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, reason: 'no-project' };
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  let d;
+  try { d = computeDiagnosis(s, { home, env: ctx.env, now: ctx.now }); } finally { s.close(); }
+  return {
+    ok: true, action: 'diagnose', repoKey,
+    count: d.registry.length, registry: d.registry,
+    meshTargets: d.meshTargets, splits: d.splits,
+    orphans: d.orphans,
+    staleRegistryPartitions: d.staleRegistryPartitions,
+  };
+}
+
+// cmdHealthcheck(flags, ctx) — #71: a scriptable PASS/FAIL gate over the SAME data
+// `diagnose` computes (computeDiagnosis — one source, two presentations). Unlike
+// `diagnose` (always ok:true — a report), this turns mesh-shape drift into an exit
+// signal: ok/exit 0 when healthy, ok:false/exit non-zero when degraded.
+//   counts = { orphans, stale, splits, phantoms, unreadTotal }.
+//   degraded iff orphans>0 || stale>0 || splits>0 (STRUCTURAL drift only) —
+//   phantoms (a spawn-time placeholder, benign/transient) and unreadTotal (normal
+//   mailbox backlog) are reported for visibility but NEVER gate, so a freshly-
+//   spawned worktree does not trip a false "degraded". Pure read (zero writes).
+function cmdHealthcheck(flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, reason: 'no-project' };
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  let d;
+  try { d = computeDiagnosis(s, { home, env: ctx.env, now: ctx.now }); } finally { s.close(); }
+  const counts = {
+    orphans: d.orphans.length,
+    stale: d.staleRegistryPartitions.length,
+    splits: d.splits.length,
+    phantoms: d.phantoms,
+    unreadTotal: d.unreadTotal,
+  };
+  const degraded = counts.orphans > 0 || counts.stale > 0 || counts.splits > 0;
+  return {
+    ok: !degraded, action: 'healthcheck', repoKey,
+    status: degraded ? 'degraded' : 'ok',
+    counts,
+    detail: {
+      orphans: d.orphans,
+      staleRegistryPartitions: d.staleRegistryPartitions,
+      splits: d.splits,
+    },
+  };
+}
+
+// healthcheckHumanLine(result) — the DEFAULT (non-`--json`) render of `healthcheck`:
+// one compact line. `--json` prints the raw JSON object (main() decides which).
+function healthcheckHumanLine(r) {
+  if (!r || typeof r !== 'object') return String(r);
+  if (r.reason === 'no-project') return 'healthcheck: no-project (cwd is not inside a DevSwarm project)';
+  const c = r.counts || {};
+  const parts = [
+    'orphans=' + (c.orphans || 0),
+    'stale=' + (c.stale || 0),
+    'splits=' + (c.splits || 0),
+    'phantoms=' + (c.phantoms || 0),
+    'unread=' + (c.unreadTotal || 0),
+  ];
+  return 'healthcheck: ' + (r.status || (r.ok ? 'ok' : 'degraded')) + ' [' + parts.join(' ') + ']';
 }
 
 // cmdMeshRead(flags, ctx) — a.k.a. `roster --ack` (D23). Lists the CALLER's
@@ -1599,6 +2181,17 @@ function run(argv, ctx0) {
         const r = hasFlag(flags, 'ack') ? cmdMeshRead(flags, ctx) : cmdRoster(flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
+      case 'diagnose': {
+        // READ-ONLY mesh-health projection (#62) — pure, never writes summary.json.
+        const r = cmdDiagnose(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'healthcheck': {
+        // #71: pass/fail gate over the SAME data diagnose computes — pure read,
+        // exit 0 = healthy, non-zero = degraded (for monitors/CI/daemon).
+        const r = cmdHealthcheck(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       case 'mesh': {
         const sub = positionals[1];
         if (sub === 'read') {
@@ -1625,7 +2218,7 @@ function run(argv, ctx0) {
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|archive-request|migrate|send|roster|mesh|reconcile|spawn|merge)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|archive-request|migrate|send|roster|diagnose|healthcheck|mesh|reconcile|spawn|merge)' } };
     }
   } catch (e) {
     return { code: 2, result: { ok: false, error: String(e && e.message || e) } };
@@ -1635,8 +2228,13 @@ function run(argv, ctx0) {
 function main() {
   const argv = process.argv.slice(2);
   const { code, result } = run(argv);
+  // `healthcheck` (no --json) prints ONE compact human line; every other verb —
+  // and `healthcheck --json` — prints the raw JSON object. This is the only verb
+  // with a human-line mode (there is no prior --json/--human precedent in this CLI).
+  const wantHuman = argv[0] === 'healthcheck' && !argv.includes('--json');
+  const out = wantHuman ? healthcheckHumanLine(result) : JSON.stringify(result);
   // fs.writeSync(1, ...) per repo rule (macOS node 18/20 exit-vs-async-flush race).
-  fs.writeSync(1, JSON.stringify(result) + '\n');
+  fs.writeSync(1, out + '\n');
   process.exit(code);
 }
 
@@ -1647,6 +2245,9 @@ if (require.main === module) {
 module.exports = {
   run, parseArgs, one, many, csvList,
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
+  retireWorktreeDuplicates,
+  foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
+  computeDiagnosis, healthcheckHumanLine,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath,
   selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,
 };

@@ -202,36 +202,128 @@ covers a Codex-run workspace — but do NOT claim the native messaging path stil
 them either; it does not. Full detail: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.57 mesh
 follow-up" and "v0.58 mesh-only messaging" notes.
 
-## CLI reference — `scripts/devswarm.js`
+## Operating the mesh: daemon + CLI reference
 
-The structured interface (CLI over MCP) is agent-agnostic — invokable identically from
-a Codex or Claude session (`node "$ANTI_HALL_ROOT/scripts/devswarm.js" <cmd> ...`, with
-`$ANTI_HALL_ROOT` resolved as shown below).
-Subcommands: `register`/`ensure` (write a workspace descriptor), `register-primary`
-(register the CURRENT worktree's Primary under its per-worktree id `primary-<hash>`),
-`heartbeat`, `inbox pull`/`read`/`count`/`ack` (child-side durable-inbox cursor
-primitives), `inbox messages`/`read-primary` (Primary/store non-destructive read — no
-descriptor needed), `workspaces list`, `gate --set/--clear`, `nudge`, `archive`,
-`archive-request` (PARENT-side, REVISED v0.58 to a direct store write — see above),
-`archive-ignore`/`archive-unignore`, `migrate` (fold legacy on-disk state into the store;
-env `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` marks an imported backlog as already-read —
-see `scripts/migrate-state.js --mark-read`, the separate migration script, for the
-CLI-flag form).
+The structured interface (CLI over MCP) is agent-agnostic — invokable identically from a
+Codex or Claude session (`node "$ANTI_HALL_ROOT/scripts/devswarm.js" <cmd> ...`, with
+`$ANTI_HALL_ROOT` resolved as shown below). This is the complete operational reference so
+nothing here is ever improvised against raw sqlite/NDJSON. Every verb emits one JSON line
+on stdout, exit `0`=`ok:true`/`2`=`ok:false`; every `<id>` is `isSafeId`-gated
+(`^[A-Za-z0-9._-]+$`). Full narrative + source-line citations + a worked lifecycle example:
+`docs/KB-devswarm-hivecontrol.md` §8.8 (or the identical fuller reference in
+`plugins/anti-hall/skills/devswarm/SKILL.md`, the Claude mirror of this skill).
 
-**v0.58 mesh verbs — same "not yet promoted for Codex" status as `send`/`roster`/`mesh
-read` above (see "Codex mesh support" section).** `send --to-primary --message TEXT`,
-`reconcile` (one-shot drain of every registered worktree's inbox), `spawn <branch> [...]`
-(thin wrap of `hivecontrol workspace create`), `merge [...]` (thin wrap of `check-merge` +
-`merge-into-source`, then broadcasts). All plain Node, invokable identically from either
-agent — but not yet documented as a recommended Codex workflow.
+### The daemons
 
-**`reconcile` auto-heal (v0.58.1) — a separate, ALREADY-shared code path, not a mesh
+| Daemon | Purpose | Health signal | Install |
+|---|---|---|---|
+| **Ingest daemon** (`companion/devswarm-ingest.js`) | The ONE native consumer — wraps `hivecontrol workspace monitor` under an O_EXCL single-consumer lock and folds every drained message into the shared per-project store. Agent-agnostic (it just wraps hivecontrol; nothing about it cares which agent runs in a workspace). Never run manually. | Two-signal health (`companion/lib/ingest-health.js`'s `daemonHealth`): `healthy` requires BOTH a fresh heartbeat AND a live-pid lock holder; otherwise `stale`; `unsupported` on win32. | `node companion/install-devswarm-ingest.js` (`--uninstall`/`--dry-run`). macOS LaunchAgent / Linux systemd `--user` service (`Restart=always`, cron fallback) / Windows no-op. Log: `~/.anti-hall/devswarm-ingest.log`. **PER-PROJECT** — install once per repo. |
+| **Liveness supervisor** (`companion/devswarm-supervisor.js`) | Opt-in periodic sweep (default 90s): computes liveness per published descriptor, pokes then escalates a stale workspace — **never kills**. **Claude-only in what it targets** — it identity-binds to `claude --resume` processes by argv, so a Codex workspace is outside its recovery surface even though the sweep itself runs the same way. | Verdict file `~/.anti-hall/devswarm/liveness/<id>.json`. | `node companion/install-devswarm-supervisor.js` (`--uninstall`/`--dry-run`). Claude-side setup; see "Activation" below. |
+
+Both installers are re-run automatically by the `update` skill whenever it detects an
+active DevSwarm session. The **on-demand `devswarm-recover.js` CLI** (the only path that
+ever kills a process) is a third, explicitly-invoked script — Claude-side tooling (it
+resumes a `claude` process), but a Codex-side operator can still invoke it directly
+against a `claude` workspace's id (see "On-demand recovery" below).
+
+### Every CLI verb — `scripts/devswarm.js`
+
+Agent-agnostic (plain Node, no Claude-specific API) unless noted. **Promotion-status
+caveat:** the v0.57/v0.58 mesh verbs (`send`, `roster`, `mesh read`, `heartbeat
+--summary`, `diagnose`, `healthcheck`, `reconcile`, `spawn`, `merge`, and the REVISED
+`archive-request`) are technically callable identically from a Codex session — nothing
+in the script itself is Claude-specific — but are **not yet officially promoted/
+recommended for a Codex workflow** (see "Codex mesh support" above); the table below is
+the operational truth regardless of promotion status.
+
+| Verb | Exact args | What it does | When an agent uses it | Read-only / Writes |
+|---|---|---|---|---|
+| `register <id> --worktree P --session S [--inbox P] [--cursor P] [--nudge T]...` | `--worktree`/`--session` **required** | Write a workspace descriptor + upsert the store registry; retires same-worktree duplicate rows. | Explicit first registration of a workspace. | **Writes.** |
+| `ensure <id> [--worktree P] [--session S] [--inbox P] [--cursor P]` | none required | Idempotent register-if-absent; re-upserts + retires duplicates every call. | Steady-state self-heal (what `inbox pull` auto-runs every turn). | **Writes.** |
+| `register-primary [--worktree P] [--session S] [--inbox P] [--cursor P]` | none required | Register the CURRENT worktree's Primary descriptor under `primary-<hash>`. | Primary one-time setup, or ahead of `migrate`. | **Writes.** |
+| `heartbeat <id> [--progress N] [--phase X] [--wip T]... [--blockers T]... [--session S] [--summary TEXT [--urgency ...]]` | none required; `--summary` opts into a mesh broadcast | Turn-authored heartbeat file; `--summary` also broadcasts a mesh status ping (ownership-checked). | Every turn, self-reported status. | **Writes.** |
+| `inbox pull <id> [--session S]` | none required | CHILD-side: auto-ensures the descriptor, ONE bounded guard-safe native-queue drain (count-gate → at-most-one `read-messages`, never `monitor`) into the durable inbox + store. Runs send-time daemon self-heal first. | Every child turn — the sanctioned way to receive. | **Writes.** |
+| `inbox read <id>` | none | Durable-inbox cursor read, no ack. | Check what's pending without consuming it. | Read-only. |
+| `inbox count <id>` | none | Durable-inbox unread count only. | Cheap pre-check before `inbox read`. | Read-only. |
+| `inbox ack <id> [--to N]` | `--to` = ack to absolute count; omitted = ack-all | Advance the durable-inbox cursor. | After processing durable-inbox messages. | **Writes.** |
+| `inbox messages <id> [--unread] [--ack] [--ack-as-owner]` | none | Primary/store non-destructive read — no descriptor needed, never touches the native queue. **Ack-ownership guard (v0.56.0):** `--ack` refuses unless the caller's own cwd-derived identity provably owns `<id>` (`DEVSWARM_BUILDER_ID` cannot override a different cwd-derived identity). `--ack-as-owner` overrides for a legitimate cross-workspace ack. | Primary/observer reading a workspace's store-backed inbox. | Read-only unless `--ack` (then **writes**). |
+| `inbox read-primary <id> [--ack-as-owner]` | none | `inbox messages <id> --unread --ack` under one name. | Primary consuming+acking in one call. | **Writes.** |
+| `workspaces list [--workspace <id>] [--worktree P]` | none | Emit the `summary.json` projection. Pure `computeSummary` read (#62 fix — no longer writes on a plain read). | Full projection dump including gates/`archive_ready`. | **Read-only.** |
+| `gate <id> --set CSV --clear CSV` | at least one required | Mark/unmark named completion gates; drives `archive_ready`. | Consumer marking `done`/`merged`/`tests_passed` etc. | **Writes.** |
+| `nudge <id>` | none | Poke-or-escalate one workspace on demand. | Manual on-demand nudge outside the automatic sweep. | **Writes.** |
+| `archive <id>` | none | Archive-by-absence: descriptor to `archived/`, tombstone the registry row; surfaces a manual DevSwarm-app removal step. | Workspace lifecycle complete (CHILD role, after confirming with your user). | **Writes.** |
+| `archive-ignore <id>` / `archive-unignore <id>` | none | Mute/unmute the archive-ready reminder. | Suppress a nag already triaged. | **Writes.** |
+| `archive-request <childId> [--reason TEXT]` | none required | Direct STORE WRITE (v0.58, zero `hivecontrol` calls): posts `[[ANTIHALL_ARCHIVE_REQUEST]]` straight into `childId`'s own partition. Never verifies merged/tested/deployed itself. | PARENT asking a child to archive, after verifying per your own policy. | **Writes.** |
+| `migrate` | none | Idempotent, non-destructive, count-verified fold of legacy on-disk state into the store. `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` marks imported backlog as already-read. | Upgrading from a pre-store install, or recovering a stranded legacy inbox. | **Writes.** |
+| `send --to <meshId>\|--to-primary\|--broadcast --message TEXT [--from <id>] [--urgency low\|normal\|high\|urgent]` | exactly one of `--to`/`--to-primary`/`--broadcast`; `--message` required | Daemon-independent direct write into the shared store — the mesh's SOLE agent-initiated messaging transport. Fail-closed on an unregistered target; `--from` must match derived identity if given. | Any agent-to-agent or agent-to-Primary message. | **Writes.** |
+| `roster [--ack]` | none | This project's registry + `working_on` + a `recent[]` broadcast digest, folded with a read-only native-children view. Pure `computeSummary` read. | Get the current mesh state / who's doing what. | **Read-only** (plain); **writes** the broadcast cursor with `--ack`. |
+| `mesh read` | none | Alias of `roster --ack`. | Same as `roster --ack`, named for discovery. | **Writes.** |
+| `diagnose` | none | **Read-only mesh-health projection.** Per-row live/unread state, `send`-routing resolution, orphan partitions, stale registry rows, split worktrees. Pure read, zero writes. | Debugging "why didn't my message arrive", or pre-fold inspection. | **Read-only.** |
+| `healthcheck [--json]` | none | **Scriptable PASS/FAIL gate over the same data `diagnose` computes.** `{ok, status:'ok'\|'degraded', counts:{orphans,stale,splits,phantoms,unreadTotal}}`. Degraded iff `orphans>0 \|\| stale>0 \|\| splits>0` (phantoms/unreadTotal never gate). No `--json` prints one compact human line. | Monitors/CI wanting a pass/fail exit code, or a quick status line. | **Read-only.** |
+| `reconcile` | none | Drains every registered worktree's inbox once (per-id subprocess, cwd'd into that worktree). Does NOT dedup/fold registry rows. Auto-run by `update`/`doctor --fix`, both DevSwarm-session-gated (see the auto-heal note below). | Sweeping stranded per-worktree native queues into the shared store on demand. | **Writes.** |
+| `spawn <branch> [hivecontrol create flags...]` | pass-through | Thin wrap of `hivecontrol workspace create`, then best-effort auto-registers the new worktree in the shared registry. | Primary creating a new child workspace. | **Writes.** |
+| `merge [hivecontrol merge-into-source flags...]` | pass-through | Thin wrap of `hivecontrol workspace check-merge` + `merge-into-source`, then broadcasts the outcome. | Child finishing / shipping upstream. | **Writes.** |
+
+`roster`, `diagnose`, and `healthcheck` are the three pure-read, no-id, project-scoped
+verbs — reach for these together for mesh state without touching anything.
+
+**`reconcile`/fold auto-heal — a separate, ALREADY-shared code path, not a mesh
 promotion.** `doctor.js` and `update.js` are the SAME scripts on both platforms (see
-`anti-hall-doctor`/`anti-hall-update`), so their `reconcile` auto-heal wiring runs
-identically for a Codex session — subject to the SAME "DevSwarm gate is effectively always
-closed for gpt-5.x Codex/OMX sessions" caveat as every other daemon-touching GATED repair
-(the `DEVSWARM_*` env vars are set only for `claude` child sessions hivecontrol spawns), so
-in practice it stays a no-op there today, same as the ingest/supervisor fixes.
+`anti-hall-doctor`/`anti-hall-update`), so their `reconcile` + `foldMeshDuplicates`
+auto-heal wiring runs identically for a Codex session — subject to the SAME "DevSwarm
+gate is effectively always closed for gpt-5.x Codex/OMX sessions" caveat as every other
+daemon-touching GATED repair (the `DEVSWARM_*` env vars are set only for `claude` child
+sessions hivecontrol spawns), so in practice it stays a no-op there today, same as the
+ingest/supervisor fixes.
+
+### How to READ mesh health — never hand-read the store
+
+Use `diagnose` (full detail) or `healthcheck` (pass/fail + exit code) — **never** open
+the sqlite/NDJSON store files directly (`cat`/`grep`/a raw file read against
+`~/.anti-hall/devswarm/store/**` or `inbox/**`). The store is backend-selectable
+(NDJSON journal or sqlite via `ANTIHALL_DEVSWARM_STORE_BACKEND`), a raw read bypasses the
+cursor/derive layering the CLI's own read verbs keep consistent, and the store may
+literally be the append-only journal backend that only `companion/lib/devswarm-store.js`
+knows how to interpret correctly. Mechanically enforced on both platforms:
+`command-guard.js` blocks raw shell reads of these paths (shared hook, fires identically
+for a Codex Bash call); the Claude-only `hooks/inbox-read-guard.js` additionally blocks
+Claude's own `Read` tool. This is a real-incident lesson, not a hypothetical: a real
+DevSwarm Primary fell back to querying raw sqlite because the CLI hadn't yet surfaced
+`roster`/`diagnose`/`healthcheck` clearly enough — don't repeat that.
+
+### Self-heal behavior — don't hand-fix the registry
+
+The mesh self-heals continuously; never manually "fix" a duplicate registration, a stuck
+daemon, or a stale row:
+
+- **Register-time dedup** (`retireWorktreeDuplicates`, inside every `register`/`ensure`
+  call — including the auto-`ensure` every `inbox pull` performs): folds a duplicate/
+  phantom/subdir-split row for the SAME worktree into the caller's own live partition,
+  forwarding unread backlog first, never touching a row with its own on-disk descriptor.
+- **Orphans/stale rows surface, never auto-fix** — `diagnose`/`healthcheck`'s
+  `orphans[]`/`staleRegistryPartitions[]` are deliberately never auto-forwarded or
+  auto-deleted, only surfaced for a human/parent to see.
+- **Send-time daemon self-heal.** `send`/`inbox pull`/`archive-request` each check this
+  project's ingest-daemon health first; if stale/missing and DevSwarm is active, they
+  best-effort re-spawn the installer (60s cooldown) — never blocking the caller's own
+  action.
+- **Updater/doctor fold sweep** (`update` and `doctor --repair`): runs `reconcile` then
+  `foldMeshDuplicates` — the same dedup generalized over the whole registry — as an
+  AUTO-SAFE pure store operation (no DevSwarm-active gate needed for the fold itself).
+
+An agent's job is to call the CLI normally — register/`ensure`/`inbox pull` self-heal on
+every call, `update`/`doctor` sweep the rest — never to open the store and patch a row by
+hand.
+
+### Messaging rule
+
+The mesh is the **ONLY** agent-initiated messaging channel on either platform. Native
+`hivecontrol workspace message-child`/`message-parent` are guard-blocked unconditionally
+whenever DevSwarm is active (`command-guard.js`, shared — fires identically for Codex).
+Report via `heartbeat <id> --summary TEXT`; direct-message via `send --to-primary`/`send
+--to <meshId>`; broadcast via `send --broadcast`; check mesh state via
+`roster`/`diagnose`/`healthcheck`/`inbox read-primary <id>` — subject to the promotion-
+status caveat above for a Codex session today.
 
 **Ack-ownership guard (v0.56.0).** `inbox messages --ack` / `inbox read-primary` refuse
 (`ok:false`, cursor untouched) unless the caller's own identity matches `<id>` — identity
@@ -241,10 +333,6 @@ trusted to override), closing an env-spoof path where a workspace could imperson
 another workspace's identity to ack its cursor. Pass `--ack-as-owner` to override for a
 legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog on
 its behalf).
-
-Full table with source-line citations and a worked example:
-`docs/KB-devswarm-hivecontrol.md` §8.8 (or the fuller quick
-reference in `plugins/anti-hall/skills/devswarm/SKILL.md`).
 
 ## On-demand recovery — devswarm-recover CLI
 

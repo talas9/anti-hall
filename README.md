@@ -266,6 +266,18 @@ plugin depends on it.
   native `hivecontrol` children), `mesh read`, `heartbeat --summary`, `inbox
   pull/read/read-primary`. Every message row carries `{from, to, type, message, timestamp,
   urgency}`.
+- **Mesh self-heal (v0.61.0).** Drain-aware routing delivers to the partition a child
+  actually drains, plus a phantom-only rescue on a child's first registration; a pure
+  `computeSummary` projection derives `orphans[]` (unread partition, no live workspace)
+  and `staleRegistryPartitions[]` (registry row whose worktree is gone); new read-only
+  `diagnose` and `healthcheck [--json]` (pass/fail, exit 0/2, for monitors/CI) verbs;
+  register-time dedup with an `isForwardable` noise filter (forwards only real directs,
+  never poke/hash-mirror junk); `foldMeshDuplicates` migrates every prior store shape
+  (phantom/dual/subdir-split/stale) onto one canonical git-toplevel identity, wired into
+  both `update` (post-update) and `doctor`'s auto-safe repair (dry-run doubles as a
+  read-only mesh-shape check); `roster`/`workspaces list`/`diagnose` are now pure reads
+  (no `summary.json` write side-effect); orphans/stale partitions surface to the Primary
+  via `devswarm-parent-inbox` (capped, read-only).
 - **Guard-blocked native messaging** — `hivecontrol workspace message-child`/
   `message-parent` are unconditionally blocked and redirected to the mesh CLI, which is
   the sole agent-initiated messaging transport once DevSwarm is active.

@@ -621,6 +621,58 @@ function reconcilePostUpdate(opts) {
   }
 }
 
+/**
+ * foldMeshPostUpdate({ paths, env, cwd, home, devswarm }) → { attempted, retired, forwarded, folded, left, detail }
+ *
+ * #70 migration: fold ALL prior mesh forms an OLD store accumulated (phantom rows,
+ * dual/legacy pairs, subdir-splits) into one canonical survivor per worktree — the
+ * dedup the drain-only `reconcile` above never does. Runs ONCE per repo in the same
+ * post-update pass, immediately after reconcile (drain first so a stranded queue's
+ * messages exist to be forwarded, then fold). Same DevSwarm-session-only gate as
+ * reconcilePostUpdate; idempotent (a re-run tombstones nothing left) and fully
+ * fail-open (never throws — a fold outcome must NEVER fail the update itself).
+ */
+function foldMeshPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'fold skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — fold skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.foldMeshDuplicates !== 'function') {
+      return { attempted: false, detail: 'fold skipped: this devswarm.js build has no foldMeshDuplicates' };
+    }
+    const r = devswarm.foldMeshDuplicates(home, { cwd, env }) || {};
+    const retired = Array.isArray(r.retired) ? r.retired.length : 0;
+    const left = Array.isArray(r.left) ? r.left.length : 0;
+    const rekeyed = Number.isFinite(r.rekeyed) ? r.rekeyed : 0; // P1b: subdir rows re-keyed to their toplevel
+    return {
+      attempted: true,
+      retired,
+      forwarded: r.forwarded || 0,
+      folded: r.folded || 0,
+      left,
+      rekeyed,
+      detail: 'folded ' + retired + ' duplicate mesh row(s) into their canonical survivor'
+        + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
+        + (rekeyed ? ' — re-keyed ' + rekeyed + ' subdir row(s) to their toplevel' : '')
+        + (left ? ' — ' + left + ' descriptor-backed row(s) left in place' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'fold raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Rollback (v0.57 mesh -> legacy per-worktree units) — PLAN-v0.57-mesh.md
 // Phase 6b / D13. Documented + tested, NOT auto-run by `main()`/runUpdate.
@@ -912,6 +964,10 @@ function runUpdate(opts) {
   // version this run. Fully fail-open — never affects `stop` or the update's
   // own success/failure (see reconcilePostUpdate's doc comment).
   const reconcile = reconcilePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // #70: fold prior mesh forms (phantom/dual/subdir-split) into canonical
+  // survivors — after reconcile drains, so stranded messages exist to forward.
+  // Same gate + fail-open posture; never affects `stop` or the update's success.
+  const fold = foldMeshPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
 
   // Unknown installed version → NEVER 'already up to date'; no delta computable
   // (a null `from` would dump the entire changelog, so suppress it).
@@ -924,6 +980,7 @@ function runUpdate(opts) {
         cacheSynced: cache.synced,
         ingestHeal,
         reconcile,
+        fold,
         action: UNKNOWN_INSTALLED_ACTION,
       },
       changelog: '',
@@ -950,6 +1007,7 @@ function runUpdate(opts) {
       cacheSynced: cache.synced,
       ingestHeal,
       reconcile,
+      fold,
       action: updated ? 'run /reload-plugins' : 'already up to date',
     },
     changelog,
@@ -1003,6 +1061,9 @@ function renderHuman(status, changelog) {
       }
     }
   }
+  if (status.fold && status.fold.attempted) {
+    lines.push('  fold:      ' + status.fold.detail);
+  }
   if (changelog) {
     lines.push('');
     lines.push('Changelog delta:');
@@ -1033,6 +1094,7 @@ module.exports = {
   remotePluginVersion,
   healIngestDaemon,
   reconcilePostUpdate,
+  foldMeshPostUpdate,
   readLegacyHeartbeat,
   rollbackToLegacyUnits,
   runCheck,

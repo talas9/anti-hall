@@ -591,7 +591,69 @@ function checkNoOtherConsumer(home, opts) {
 }
 
 // ---------------------------------------------------------------------------
-// runChecks — orchestrates checks 1-4 (the gated set doctor.js wires into its
+// check 6: mesh-shape drift (#70/#71) — READ-ONLY. Reuses devswarm.js's
+// `healthcheck` (which sits on the SAME computeDiagnosis/computeSummary as
+// `diagnose` and the fold's detect — one computation, never a fourth). Reports
+// the THIS-project (cwd repoKey) orphan/stale/split counts; a dry-run fold adds
+// the un-resolvable `left` list (2 descriptor-backed rows on one meshId — surfaced,
+// never silently absorbed). Project-scoped: a non-git cwd is silently skipped.
+// Advisory only (WARN, never FAIL) — matches the no-delete surface-only posture.
+// ---------------------------------------------------------------------------
+function checkMeshShape(home, opts) {
+  const o = opts || {};
+  const cwd = o.cwd || process.cwd();
+  const env = o.env || process.env;
+  const F = o.fsi || fs;
+  const results = [];
+
+  // NEVER open/create the shared store just to check it — doctor --check is a pure
+  // read-only path (see doctor-repair.js's header + the --check invariant test). If
+  // this project's per-repoKey store dir does not exist yet, there is no mesh to
+  // diagnose, so skip BEFORE any store.openStore (which would create the dir).
+  let repoKey = null;
+  try {
+    const rk = require('./devswarm-repokey.js');
+    repoKey = cwd && typeof rk.repoKeyForWorktree === 'function' ? rk.repoKeyForWorktree(cwd) : null;
+  } catch (_) { repoKey = null; }
+  if (!repoKey) return results; // non-git cwd -> nothing to check
+  let storeExists = false;
+  try { storeExists = F.existsSync(store.storeDirForHash(home, repoKey)); } catch (_) { storeExists = false; }
+  if (!storeExists) return results;
+
+  let devswarm = null;
+  try { devswarm = require('../../scripts/devswarm.js'); } catch (_) { devswarm = null; }
+  if (!devswarm || typeof devswarm.run !== 'function') return results; // fail-open
+
+  let r = null;
+  try { r = (devswarm.run(['healthcheck', '--json'], { cwd, env, home, backend: o.backend }) || {}).result; }
+  catch (_) { r = null; }
+  if (!r || r.reason === 'no-project' || r.ok === undefined) return results; // not a DevSwarm project cwd -> nothing to report
+
+  const c = r.counts || {};
+  const drift = (c.orphans || 0) + (c.stale || 0) + (c.splits || 0);
+
+  let leftIds = [];
+  try {
+    const fr = typeof devswarm.foldMeshDuplicates === 'function'
+      ? devswarm.foldMeshDuplicates(home, { cwd, env, backend: o.backend, dryRun: true })
+      : null;
+    if (fr && Array.isArray(fr.left)) leftIds = fr.left;
+  } catch (_) { leftIds = []; }
+
+  if (drift === 0 && leftIds.length === 0) {
+    results.push({ status: PASS, message: 'mesh shape: no drift (orphans=0 stale=0 splits=0)' });
+  } else {
+    let msg = 'mesh shape DRIFT: ' + (c.orphans || 0) + ' orphan partition(s), ' + (c.stale || 0)
+      + ' stale registry row(s), ' + (c.splits || 0) + ' split worktree(s)';
+    if (leftIds.length) msg += '; ' + leftIds.length + ' un-resolvable dual row(s) LEFT in place (' + leftIds.join(', ') + ')';
+    msg += ' — run doctor --repair to fold duplicates (orphans/stale are surface-only, never auto-deleted)';
+    results.push({ status: WARN, message: msg });
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
+// runChecks — orchestrates checks 1-4 + 6 (the gated set doctor.js wires into its
 // existing DevSwarm section).
 // ---------------------------------------------------------------------------
 function runChecks(opts) {
@@ -617,6 +679,9 @@ function runChecks(opts) {
 
   try { results.push(...checkNoOtherConsumer(home, { fsi: F, platform, spawnSync: o.spawnSync })); }
   catch (e) { results.push({ status: WARN, message: 'no-other-consumer scan raised (fail-open): ' + errMsg(e) }); }
+
+  try { results.push(...checkMeshShape(home, { cwd: o.cwd, env, backend: o.backend })); }
+  catch (e) { results.push({ status: WARN, message: 'mesh-shape check raised (fail-open): ' + errMsg(e) }); }
 
   // env is threaded into checkDaemonsRunning (v0.56.0: resolveStableScript
   // drift comparison) but, beyond that, is still NOT used to compute an
@@ -809,7 +874,9 @@ module.exports = {
   enumerateProcesses, checkDaemonsRunning,
   // check 4
   checkNoOtherConsumer,
-  // orchestration (checks 1-4)
+  // check 6 (mesh-shape drift, #70/#71)
+  checkMeshShape,
+  // orchestration (checks 1-4 + 6)
   runChecks,
   // check 5
   readEnabledPlugins, readInstalledPluginPaths, extractHookEntries, scanForeignConflicts,

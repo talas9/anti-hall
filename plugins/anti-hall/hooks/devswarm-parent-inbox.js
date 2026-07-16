@@ -95,6 +95,9 @@ const MAX_LISTED = 6; // cap workspaces named inline to keep additionalContext s
 // inline lists. Rows past this cap are folded into a "+N more" note and the cap is
 // logged (never silently truncated).
 const MAX_TABLE_ROWS = 12;
+// Cap for the orphan/stale-registry mesh-issue lines below (LEAN surfacing —
+// this cap is the ONLY anti-spam; no persisted first-seen/cooldown state).
+const MAX_MESH_ISSUES = 5;
 // How long the daemon LIVENESS HEARTBEAT (heartbeats/ingest-<hash>.json, written by
 // writeIngestHeartbeat in devswarm-ingest.js) may sit un-refreshed before the
 // staleness banner fires. Unlike summary.json's generatedAt (only advances on
@@ -564,6 +567,49 @@ function buildStaleBanner(beatTs, now) {
   );
 }
 
+// buildOrphansSegment(list) -> string | null. list = summary.orphans[] (Phase A
+// computeSummary's A2 detection): mesh partitions with REAL unread but no live
+// registry row to read them — a stranded message a Primary would otherwise never
+// see, one root cause of "children waiting, Primary does nothing". Read-only
+// surface: never auto-forwarded/deleted/routed. Sorted by unread desc, capped at
+// MAX_MESH_ISSUES with a "+K more" suffix (the only anti-spam — no persisted
+// cooldown state). Returns null if nothing survives id-safety filtering.
+function buildOrphansSegment(list) {
+  const safe = list.filter((o) => o && o.id != null && isSafeId(String(o.id)));
+  if (!safe.length) return null;
+  safe.sort((a, b) => (Number(b.unread) || 0) - (Number(a.unread) || 0));
+  const shown = safe.slice(0, MAX_MESH_ISSUES).map(
+    (o) => o.id + ' (' + (Number.isFinite(o.unread) ? o.unread : 0) + ' unread)'
+  );
+  const extra = safe.length > MAX_MESH_ISSUES ? ' +' + (safe.length - MAX_MESH_ISSUES) + ' more' : '';
+  return (
+    '⚠ DEVSWARM ORPHANED MESH: ' + safe.length + ' partition(s) with unread but no live workspace '
+    + 'to read them — ' + shown.join(', ') + extra + '. Investigate/re-address; nothing is currently '
+    + 'watching this inbox.'
+  );
+}
+
+// buildStaleRegistrySegment(list) -> string | null. list =
+// summary.staleRegistryPartitions[] (Phase A computeSummary's A3 detection):
+// registry rows whose worktreePath no longer exists on disk but still hold
+// unread — a dead-but-unread partition invisible without this line. Read-only
+// surface: never auto-forwarded/deleted/removed from the registry. Sorted by
+// unread desc, capped at MAX_MESH_ISSUES.
+function buildStaleRegistrySegment(list) {
+  const safe = list.filter((s) => s && s.id != null && isSafeId(String(s.id)));
+  if (!safe.length) return null;
+  safe.sort((a, b) => (Number(b.unread) || 0) - (Number(a.unread) || 0));
+  const shown = safe.slice(0, MAX_MESH_ISSUES).map(
+    (s) => s.id + ' (' + (Number.isFinite(s.unread) ? s.unread : 0) + ' unread)'
+  );
+  const extra = safe.length > MAX_MESH_ISSUES ? ' +' + (safe.length - MAX_MESH_ISSUES) + ' more' : '';
+  return (
+    '⚠ DEVSWARM STALE WORKSPACE(S): ' + safe.length + ' workspace(s) whose worktree is gone but '
+    + 'still hold unread — ' + shown.join(', ') + extra + '. Investigate or clean up the registry '
+    + 'entry.'
+  );
+}
+
 function main() {
   // Parse stdin for `cwd` — the ONE field this hook needs from the payload (to
   // resolve the CURRENT worktree's daemon heartbeat below); every other field is
@@ -794,6 +840,24 @@ function main() {
     if (capped) logTableCap(home, rows.length, shown.length);
     segments.push(buildWorkspaceTable(shown, now, capped, rows.length - shown.length));
   }
+
+  // Stuck-mesh surfacing (LEAN, read-only) — orphans[]/staleRegistryPartitions[]
+  // are additive summary fields (Phase A) surfaced ONLY when non-empty, so an
+  // older summary.json or a clean mesh renders NOTHING extra here (fail-open,
+  // byte-identical for a non-DevSwarm session and a clean mesh). No writes, no
+  // auto-forward, no delete — the MAX_MESH_ISSUES cap above is the only anti-spam.
+  try {
+    if (summary && Array.isArray(summary.orphans) && summary.orphans.length) {
+      const seg = buildOrphansSegment(summary.orphans);
+      if (seg) segments.push(seg);
+    }
+  } catch (_) {}
+  try {
+    if (summary && Array.isArray(summary.staleRegistryPartitions) && summary.staleRegistryPartitions.length) {
+      const seg = buildStaleRegistrySegment(summary.staleRegistryPartitions);
+      if (seg) segments.push(seg);
+    }
+  } catch (_) {}
 
   // Broadcast/roster feed (D3/D4/D22/D23/D27, Phase 8 step 2) — the shared
   // summary's top-level `recent[]` (plain broadcasts + heartbeats alike, D22),

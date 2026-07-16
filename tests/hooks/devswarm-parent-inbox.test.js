@@ -120,6 +120,11 @@ function writeSharedSummary(home, workspacesRaw, extra) {
     workspaces,
     recent: (extra && extra.recent) || [],
   };
+  // orphans/staleRegistryPartitions (Phase A computeSummary) are additive and
+  // OMITTED when absent, so a caller that never sets them writes the exact
+  // pre-Phase-A shape (needed for the byte-identical-when-clean assertion).
+  if (extra && extra.orphans !== undefined) obj.orphans = extra.orphans;
+  if (extra && extra.staleRegistryPartitions !== undefined) obj.staleRegistryPartitions = extra.staleRegistryPartitions;
   fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify(obj));
 }
 function writeVerdict(home, id, verdict) {
@@ -1182,5 +1187,157 @@ test('P1 FIX: archive-ready segment carries an ABSOLUTE, existing devswarm.js pa
     writeSharedSummary(h.home, { wsA: { archive_ready: true } });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assertAbsoluteExistingCliPaths(segment(ctx(r), 'DEVSWARM ARCHIVE-READY'));
+  } finally { h.cleanup(); }
+});
+
+// ---- stuck-mesh surfacing (orphans[] / staleRegistryPartitions[], Phase A) ----
+// LEAN render-only additions: computeSummary's A2 (orphaned partitions with real
+// unread but no live registry row) and A3 (registry rows whose worktreePath no
+// longer exists) are additive summary fields. This hook only RENDERS them —
+// no writes, no auto-forward/delete, no persisted cooldown state; the
+// MAX_MESH_ISSUES cap is the only anti-spam.
+
+function orphanSeg(c) {
+  return segment(c, '⚠ DEVSWARM ORPHANED MESH');
+}
+function staleRegistrySeg(c) {
+  return segment(c, '⚠ DEVSWARM STALE WORKSPACE(S)');
+}
+
+test('ORPHANS: summary.orphans -> renders orphan line with ids + unread counts', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {}, {
+      orphans: [
+        { id: 'orphan-a', messageCount: 5, unread: 5 },
+        { id: 'orphan-b', messageCount: 2, unread: 2 },
+      ],
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const seg = orphanSeg(c);
+    assert.ok(seg, `expected orphan segment; ctx=${c}`);
+    assert.ok(seg.includes('orphan-a (5 unread)'), `must name orphan-a with its unread; seg=${seg}`);
+    assert.ok(seg.includes('orphan-b (2 unread)'), `must name orphan-b with its unread; seg=${seg}`);
+    assert.ok(/no live workspace/.test(seg), `must explain no live reader; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE-REGISTRY: summary.staleRegistryPartitions -> renders stale-workspace line with ids + unread counts', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {}, {
+      staleRegistryPartitions: [
+        { id: 'gone-ws', worktreePath: '/no/such/path', unread: 3 },
+      ],
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const seg = staleRegistrySeg(c);
+    assert.ok(seg, `expected stale-registry segment; ctx=${c}`);
+    assert.ok(seg.includes('gone-ws (3 unread)'), `must name gone-ws with its unread; seg=${seg}`);
+    assert.ok(/worktree is gone/.test(seg), `must explain the worktree is gone; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
+test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to the pre-Phase-A output (no new segments)', () => {
+  const h = makeHome();
+  try {
+    // Fresh heartbeat + live lock (this test process's own pid) deterministically
+    // suppresses the daemon staleness banner (same technique as the STALE suite
+    // above), so the only variable segment is the CLI's own absolute path.
+    writeSharedSummary(h.home, { wsA: { total: 2, cursor: 0, unread: 2, directUnread: 2 } });
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 10 * 1000);
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const cliPath = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'devswarm.js');
+    const expected = [
+      OVERRIDE_REASSERT,
+      'DEVSWARM WORKSPACES (live — refreshed every turn):\n'
+        + '| workspace | status | finish | unread | last |\n'
+        + '|---|---|---|---|---|\n'
+        + '| wsA | active | — | 2 | — |',
+      'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — wsA (2 unread). '
+        + 'STOP and read each unread workspace\'s inbox message(s) FIRST via `node '
+        + cliPath + ' inbox read <id>` before continuing (or reassign/archive it). '
+        + 'A workspace flagged stale/escalated has a wedged child — check on it.',
+    ].join('\n\n');
+    assert.strictEqual(c, expected, `clean summary must be byte-identical to pre-Phase-A output; ctx=${c}`);
+    assert.ok(!c.includes('ORPHANED MESH'), 'no orphan segment expected');
+    assert.ok(!c.includes('STALE WORKSPACE(S)'), 'no stale-registry segment expected');
+  } finally { h.cleanup(); }
+});
+
+test('ORPHANS+STALE: non-DevSwarm session with both fields populated -> unchanged no-op, no throw', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {}, {
+      orphans: [{ id: 'orphan-a', messageCount: 1, unread: 1 }],
+      staleRegistryPartitions: [{ id: 'gone-ws', worktreePath: '/no/such/path', unread: 1 }],
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home }); // no DEVSWARM env
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `expected empty stdout; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('ORPHANS: cap at MAX_MESH_ISSUES(5) -> shows 5, sorted by unread desc, "+K more" for the rest', () => {
+  const h = makeHome();
+  try {
+    const orphans = [];
+    for (let i = 0; i < 8; i++) orphans.push({ id: 'orphan-' + i, messageCount: i + 1, unread: i + 1 });
+    writeSharedSummary(h.home, {}, { orphans });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    const seg = orphanSeg(c);
+    assert.ok(seg, `expected orphan segment; ctx=${c}`);
+    // Highest-unread 5 (orphan-7..orphan-3) shown; the rest folded into "+3 more".
+    for (const id of ['orphan-7', 'orphan-6', 'orphan-5', 'orphan-4', 'orphan-3']) {
+      assert.ok(seg.includes(id), `${id} must be shown (top-5 by unread); seg=${seg}`);
+    }
+    for (const id of ['orphan-2', 'orphan-1', 'orphan-0']) {
+      assert.ok(!seg.includes(id), `${id} must be folded into "+more"; seg=${seg}`);
+    }
+    assert.ok(/\+3 more/.test(seg), `expected "+3 more" suffix; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
+test('STALE-REGISTRY: cap at MAX_MESH_ISSUES(5) -> shows 5 + "+K more"', () => {
+  const h = makeHome();
+  try {
+    const staleRegistryPartitions = [];
+    for (let i = 0; i < 7; i++) {
+      staleRegistryPartitions.push({ id: 'gone-' + i, worktreePath: '/no/such/' + i, unread: i + 1 });
+    }
+    writeSharedSummary(h.home, {}, { staleRegistryPartitions });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    const seg = staleRegistrySeg(c);
+    assert.ok(seg, `expected stale-registry segment; ctx=${c}`);
+    assert.ok(/\+2 more/.test(seg), `expected "+2 more" suffix; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
+test('ORPHANS+STALE: malformed/absent fields -> no throw, nothing extra rendered', () => {
+  const h = makeHome();
+  try {
+    // orphans is not an array at all (malformed shape); staleRegistryPartitions
+    // is an array of garbage entries (missing/unsafe id) — both must be silently
+    // dropped, never thrown.
+    writeSharedSummary(h.home, { wsA: { total: 1, cursor: 0, unread: 1, directUnread: 1 } }, {
+      orphans: 'not-an-array',
+      staleRegistryPartitions: [{ unread: 5 }, { id: '../../etc/passwd', unread: 5 }, null],
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(!c.includes('ORPHANED MESH'), `malformed orphans must render nothing; ctx=${c}`);
+    assert.ok(!c.includes('STALE WORKSPACE(S)'), `all-unsafe stale entries must render nothing; ctx=${c}`);
+    // The rest of the hook still functions normally (unaffected by the malformed fields).
+    assert.ok(c.includes('DEVSWARM PARENT INBOX'), `unrelated segments must still render; ctx=${c}`);
   } finally { h.cleanup(); }
 });

@@ -648,7 +648,7 @@ function devswarmHookSelfTests() {
     let dr = null, runtimeReport = null;
     if (fs.existsSync(runtimeModPath)) {
       try { dr = require(runtimeModPath); } catch (_) { dr = null; } // fail-open: a broken check never breaks doctor
-      if (dr) { try { runtimeReport = dr.runChecks({ home: os.homedir(), env: process.env }); } catch (_) { runtimeReport = null; } }
+      if (dr) { try { runtimeReport = dr.runChecks({ home: os.homedir(), env: process.env, cwd: process.cwd() }); } catch (_) { runtimeReport = null; } }
     }
     if (dr && runtimeReport) {
       for (const r of runtimeReport.results) {

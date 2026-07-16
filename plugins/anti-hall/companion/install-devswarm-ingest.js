@@ -206,7 +206,15 @@ function resolveWorktree(cwd) {
 // gates every new line below). `opts.io` ({ fs, platform }) is injectable,
 // mirroring devswarm-repokey.js's own `gitCommonDir(worktree, {io})`, so this
 // win32 path is exercisable/testable from any host OS.
-function worktreeHash(wt, opts) {
+// worktreeRealPath(wt, opts) — the CANONICAL real-path string that worktreeHash
+// hashes (its collision-free pre-image). Two differently-spelled paths for the same
+// physical directory (POSIX symlinks; win32 8.3 short-names / casing) normalize to
+// the SAME string here, while two DISTINCT directories NEVER collide (unlike the
+// 8-hex hash, which is a lossy sha256 slice). Callers that must decide "is this the
+// SAME worktree" — retireWorktreeDuplicates' candidate match — compare THIS instead
+// of the hash, so a hash collision can never mis-identify (and thus mis-tombstone) a
+// row for a different worktree. Same fail-open + win32 treatment worktreeHash used.
+function worktreeRealPath(wt, opts) {
   const o = opts || {};
   const F = (o.io && o.io.fs) || fs;
   const platform = (o.io && o.io.platform) || process.platform;
@@ -223,7 +231,10 @@ function worktreeHash(wt, opts) {
   if (isWin && repokey && typeof repokey.winCanonicalizeCommonDir === 'function') {
     p = repokey.winCanonicalizeCommonDir(p);
   }
-  return crypto.createHash('sha256').update(p).digest('hex').slice(0, 8);
+  return p;
+}
+function worktreeHash(wt, opts) {
+  return crypto.createHash('sha256').update(worktreeRealPath(wt, opts)).digest('hex').slice(0, 8);
 }
 // PER-WORKTREE unit identity. Base LABEL/UNIT are kept as the shared PREFIX so a
 // second repo's install creates a NEW unit (different hash), never overwriting the
@@ -976,7 +987,7 @@ module.exports = {
   resolveStableScript,
   xmlEscape, shSingleQuote, sdQuote, pathIsEmittable, resolveWorktree,
   buildPlist, buildService, buildCronLine, buildCronEntry, mergeCrontab, removeCronEntry,
-  worktreeHash, labelForWorktree, unitForWorktree, cronMarkerForWorktree, primaryWorkspaceId,
+  worktreeHash, worktreeRealPath, labelForWorktree, unitForWorktree, cronMarkerForWorktree, primaryWorkspaceId,
   listInstalledIngestUnits,
   // v0.57 mesh (D1/D9/Phase5) — per-project identity + reap-before-drain:
   labelForProject, unitForProject, cronMarkerForProject,

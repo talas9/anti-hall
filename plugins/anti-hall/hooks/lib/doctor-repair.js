@@ -462,6 +462,25 @@ function runRepairs(opts) {
     return { pending: !!(r && r.pending), detail: (r && r.workspaces || 0) + ' workspace(s)' };
   }, () => require(MIGRATE_STATE).migrateDevswarmStore({}));
 
+  // #70: fold ALL prior mesh forms (phantom rows, dual/legacy pairs, subdir-splits)
+  // into one canonical survivor per worktree. A PURE store read+write (forward-then-
+  // tombstone, message rows NEVER deleted) — so AUTO-SAFE, not GATED (no daemon /
+  // scheduler side effect; same posture as migrate-devswarm-store above). Reuses
+  // devswarm.js's foldMeshDuplicates for BOTH the dry-run detect and the apply — one
+  // code path, idempotent (a re-run tombstones nothing left), fail-open.
+  migrationFix('fold-mesh-duplicates', 'fold-mesh-duplicates', () => {
+    const r = require(DEVSWARM_SCRIPT).foldMeshDuplicates(home, { cwd, env, dryRun: true });
+    const n = (r && Array.isArray(r.retired)) ? r.retired.length : 0;
+    const leftN = (r && Array.isArray(r.left)) ? r.left.length : 0;
+    const rekeyN = (r && Number.isFinite(r.rekeyed)) ? r.rekeyed : 0; // P1b: subdir rows to re-key to their toplevel
+    return {
+      pending: n > 0 || rekeyN > 0,
+      detail: (n > 0 ? (n + ' duplicate mesh row(s) to fold') : (rekeyN + ' subdir mesh row(s) to re-key'))
+        + (n > 0 && rekeyN ? ' + ' + rekeyN + ' subdir re-key' : '')
+        + (leftN ? ' (' + leftN + ' descriptor-backed left in place)' : ''),
+    };
+  }, () => require(DEVSWARM_SCRIPT).foldMeshDuplicates(home, { cwd, env }));
+
   // --- AUTO-SAFE: statusline-if-missing ------------------------------------
   try {
     const sl = scanStatusLine(cwd, home);

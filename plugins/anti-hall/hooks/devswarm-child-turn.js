@@ -386,6 +386,23 @@ function registerStoreDescriptor(desc, home) {
     } finally {
       try { s.close(); } catch (_) {}
     }
+
+    // P0 phantom-rescue (money path): on the child's FIRST mechanical self-register,
+    // fold any same-worktree spawn phantom (`cmdSpawn` registers {id:meshId,
+    // sessionId:null}) into THIS builder-id partition — forward its real directs, then
+    // tombstone the phantom. A Primary `send --to <meshId>` issued before the child
+    // existed lands in that dead phantom partition; without this the rescue only ran if
+    // a later CLI `inbox pull` happened to hit cmdRegister's identical fold (NOT
+    // guaranteed on the child's first turn) -> silent message loss. Reuse the CLI's
+    // retireWorktreeDuplicates VERBATIM (no logic duplication); it self-gates
+    // (no-op for a meshId-keyed row, only tombstones a descriptor-less phantom) and is
+    // fully fail-open. Own try so a rescue failure never blocks or crashes a turn.
+    try {
+      const cliMod = require('../scripts/devswarm.js');
+      if (cliMod && typeof cliMod.retireWorktreeDuplicates === 'function') {
+        cliMod.retireWorktreeDuplicates(home, desc, { cwd: desc.worktreePath, env: process.env });
+      }
+    } catch (_) { /* fail-open: phantom-rescue must never block a turn */ }
   } catch (_) { /* fail-open: never block a turn on a mesh registration failure */ }
 }
 
