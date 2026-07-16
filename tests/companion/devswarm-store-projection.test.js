@@ -43,6 +43,27 @@ function walk(dir, base) {
 // reproduce it byte-for-byte. Both backends produced the identical string.
 const GOLDEN = '{"generatedAt":1234567890,"requiredGates":["done","merged","tests_passed"],"workspaces":{"a":{"id":"a","worktreePath":"<HOME>/wt-a","sessionId":"sess-a","inboxPath":"/inbox/a","cursorPath":"/cursor/a","nudgeCommand":null,"total":1,"cursor":0,"unread":1,"directUnread":1,"broadcastUnread":0,"urgencyMax":"normal","broadcastUrgencyMax":null,"working_on":null,"gates":{},"archive_ready":false,"archive_requested":false}},"recent":[]}';
 
+// normalizeHomeForGolden(raw, home) -> `raw` with every occurrence of `home`
+// collapsed to `<HOME>`, comparable cross-platform against the forward-slash
+// GOLDEN literal above. `raw` is JSON TEXT, not the parsed string: a literal
+// backslash inside a JSON string is emitted doubled (`\\`), so on win32 a
+// naive `raw.split(home)` never matches (home has single backslashes, raw has
+// doubled ones) and the worktreePath separator itself (`path.join(home,
+// 'wt-a')`) is backslash- not forward-slash-joined. Fix: collapse JSON's
+// doubled backslash escaping down to a single logical backslash first, THEN
+// normalize every separator (both sides) to '/', THEN substitute. This is a
+// no-op on posix (no backslashes to collapse or normalize). It does NOT need
+// to canonicalize 8.3 short names (e.g. win32 CI's `RUNNER~1`): `home` and
+// the stored worktreePath both derive from the identical JS string
+// (`path.join(home, 'wt-a')`, never realpath'd by deriveSummary — see A1's
+// comment above), so whatever spelling `home` has, the emitted path carries
+// the same spelling verbatim.
+function normalizeHomeForGolden(raw, home) {
+  const rawUnescaped = raw.replace(/\\\\/g, '\\').split('\\').join('/');
+  const homeNorm = home.split('\\').join('/');
+  return rawUnescaped.split(homeNorm).join('<HOME>');
+}
+
 // buildGoldenFixture(s, home) — the fixture the GOLDEN was captured from: one
 // registered workspace whose worktreePath EXISTS on disk (so it is never flagged
 // stale) with a single unread direct message (so the sole partition is registered ->
@@ -72,7 +93,7 @@ for (const B of backends) {
       buildGoldenFixture(s, home);
       store.deriveSummary(s, { home, now: 1234567890 });
       const raw = fs.readFileSync(store.summaryPath(home), 'utf8');
-      const norm = raw.split(home).join('<HOME>');
+      const norm = normalizeHomeForGolden(raw, home);
       assert.equal(norm, GOLDEN);
     } finally { s.close(); rm(home); }
   });
