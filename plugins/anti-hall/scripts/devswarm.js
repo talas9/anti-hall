@@ -126,6 +126,7 @@ const inst = require('../companion/install-devswarm-ingest.js');
 const repokey = require('../companion/lib/devswarm-repokey.js');
 const ingestHealth = require('../companion/lib/ingest-health.js');
 const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
+const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
 
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
 // looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
@@ -365,13 +366,18 @@ function upsertStoreRegistry(home, desc, ctx) {
 // mesh direct: mtype==='direct' (one check that excludes broadcast, heartbeat, AND
 // every null-mtype native/poke/hash-mirror row) with a non-empty sender AND
 // recipient. A legitimately-forwarded direct (appendMeshMessage sets all three)
-// still passes, so real traffic is never over-filtered.
+// still passes, so real traffic is never over-filtered. This structural rule
+// now lives in companion/lib/devswarm-noise.js (isForwardableRow) purely so
+// it can be extracted and re-tested in one place — it is otherwise VERBATIM
+// unchanged from the original #67 check and is deliberately NOT body-text
+// filtered (see that module's own comment). devswarm-parent-gate.js's
+// realUnread count applies the SEPARATE POKE_PREFIX text check (isNoiseText)
+// to a DIFFERENT row shape (descriptor durable-inbox NDJSON, no
+// mtype/sender/recipient at all, so it has no structural signal to use
+// instead) — the two checks share only the POKE_PREFIX constant, not this
+// structural rule.
 function isForwardable(msg) {
-  if (!msg || msg.isHeartbeat) return false;
-  if (msg.mtype !== 'direct') return false;
-  const sender = msg.sender != null ? String(msg.sender).trim() : '';
-  const recipient = msg.recipient != null ? String(msg.recipient).trim() : '';
-  return sender !== '' && recipient !== '';
+  return isForwardableRow(msg);
 }
 
 // retireWorktreeDuplicates(home, keepDesc, ctx) — DELIVERY-CONVERGENCE reconcile
@@ -912,6 +918,33 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
       fs.mkdirSync(path.dirname(desc.cursorPath), { recursive: true });
       fs.writeFileSync(desc.cursorPath, '0');
     } catch (_) { /* best-effort init; inbox ops still work once a cursor exists */ }
+  }
+  // Initialize an EMPTY durable inbox file IF it does not already exist — so a
+  // freshly-registered child reads as known:true/0-unread (confirmed-empty)
+  // rather than known:false (unreadable/absent, devswarm-parent-gate.js's
+  // Stop-hook gate's genuine-anomaly signal). Without this, "just registered,
+  // never messaged" and "genuinely neglected, inbox never written" are the
+  // SAME fs state (cursor present, inbox absent) and the gate cannot tell them
+  // apart. TRUNCATION-PROOF CREATE (P0 data-loss fix, hardened): a plain
+  // `existsSync` + `writeFileSync` (default flag 'w', which TRUNCATES) is a
+  // TOCTOU race — a concurrent devswarm-pull.js drain (companion/lib/devswarm-
+  // pull.js) can create + durably append to this SAME inboxPath, under its OWN
+  // per-id lock that register never takes, in the window between the
+  // existsSync check and the write, and the truncating write then ERASES that
+  // real content. An earlier fix used `wx` (exclusive create, fails closed on
+  // EEXIST), but O_EXCL exclusivity is documented as unreliable over some
+  // network filesystems (NFS). `a` (append) sidesteps this entirely: it opens
+  // for append and CREATES the file if absent, and appending '' never
+  // truncates existing content on ANY filesystem — no reliance on O_EXCL
+  // exclusivity at all. So this can NEVER clobber a pull-written inbox, race
+  // or no race, on any filesystem. Cross-platform (supported on win32/macOS/
+  // linux). Fail-open: any error (permissions etc.) is swallowed — best-effort
+  // init only; append mode does not throw on an already-existing file.
+  if (desc.inboxPath) {
+    try {
+      fs.mkdirSync(path.dirname(desc.inboxPath), { recursive: true });
+      fs.writeFileSync(desc.inboxPath, '', { flag: 'a' });
+    } catch (_) { /* fail-open: best-effort init only, non-fatal to registration */ }
   }
   upsertStoreRegistry(home, desc, ctx);
   // Retire any legacy/phantom duplicate row for this SAME worktree so exactly one

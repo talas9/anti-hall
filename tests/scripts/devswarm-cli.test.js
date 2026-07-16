@@ -50,7 +50,94 @@ test('register writes the descriptor + store registry + summary projection', () 
   } finally { rm(home); }
 });
 
+// ---- P0 DATA-LOSS RACE: register's inbox precreate must be non-truncating --
+// cmdRegister's inbox precreate used to be `if (!existsSync) writeFileSync(p,
+// '')` — a classic TOCTOU: the existsSync check and the truncating write are
+// two separate syscalls, so a concurrent devswarm-pull.js drain (which creates
+// + durably appends to the SAME inboxPath, under its own per-id lock that
+// register never takes) can create the file with real content in the window
+// between them, and register's writeFileSync('') (default flag 'w', which
+// truncates) then ERASES it. Reproduced deterministically here by injecting the
+// "concurrent pull" write inside the SAME mkdirSync call cmdRegister makes
+// right before its own write — this lands exactly in the TOCTOU window
+// regardless of which write strategy cmdRegister uses, so this ALSO proves the
+// atomic `wx`-flag fix (no separate existsSync check, no truncation possible):
+// pre-fix this test fails (final content == '', data lost); post-fix it
+// passes (the concurrently-written message survives, register's own write
+// no-ops on EEXIST).
+test('P0 DATA-LOSS RACE (fail-first / proof): a concurrent inbox create+append racing register must never be truncated', () => {
+  const home = tmpHome();
+  try {
+    // inbox and cursor live under DIFFERENT directories so the cursor-init
+    // block's own mkdirSync (which runs FIRST, before the inbox block) can
+    // never accidentally match the intercept below and fire too early.
+    const inbox = path.join(home, 'race-inbox', 'inbox.ndjson');
+    const cursor = path.join(home, 'race-cursor', 'cursor.json');
+    const realMkdirSync = fs.mkdirSync;
+    let injected = false;
+    fs.mkdirSync = function (dir, opts) {
+      const r = realMkdirSync.call(fs, dir, opts);
+      // Fire exactly once, only for the inbox's own directory (never the
+      // cursor's, and never any OTHER caller's mkdirSync elsewhere in the
+      // same register() call) — simulates a concurrent devswarm-pull.js
+      // drain that creates the inbox and durably appends a real message
+      // in the race window between register's existence check and its
+      // (pre-fix, non-atomic) truncating write.
+      if (!injected && dir === path.dirname(inbox)) {
+        injected = true;
+        fs.writeFileSync(inbox, JSON.stringify({ _h: 'native:race1', message: 'do not lose me' }) + '\n');
+      }
+      return r;
+    };
+    try {
+      cli.run(['register', 'race-a', '--worktree', '/wt/race-a', '--session', 's',
+        '--inbox', inbox, '--cursor', cursor], ctx(home));
+    } finally {
+      fs.mkdirSync = realMkdirSync;
+    }
+    assert.ok(injected, 'the race must actually have been injected (mkdirSync for the inbox dir must fire)');
+    const finalContent = fs.readFileSync(inbox, 'utf8');
+    assert.notStrictEqual(finalContent, '', 'the concurrently-durably-appended message must survive registration; got an EMPTY (truncated) inbox — DATA LOSS');
+    assert.ok(finalContent.includes('do not lose me'), `durable message content must be preserved; got: ${finalContent}`);
+  } finally { rm(home); }
+});
+
 // ---- #36 cross-project-bleed fix: repoId on the descriptor -----------------
+// ---- P1 TRUNCATION-PROOF PRECREATE (hardened): register's inbox precreate --
+// used to use `wx` (exclusive create, fails closed on EEXIST). O_EXCL
+// exclusivity is documented as unreliable over some network filesystems, so
+// the precreate now uses append mode (`a`) instead: it creates the file if
+// absent, and appending '' can never truncate existing content on ANY
+// filesystem, with no reliance on O_EXCL at all — proven here with a plain
+// (non-race) re-register over a pre-existing populated inbox.
+test('register re-run: a PRE-EXISTING durable inbox with real content survives a plain re-register (append-create never truncates)', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'reg-inbox', 'inbox.ndjson');
+    const cursor = path.join(home, 'reg-cursor', 'cursor.json');
+    fs.mkdirSync(path.dirname(inbox), { recursive: true });
+    fs.writeFileSync(inbox, JSON.stringify({ _h: 'native:d1', message: 'already here' }) + '\n');
+    cli.run(['register', 'reg-a', '--worktree', '/wt/reg-a', '--session', 's',
+      '--inbox', inbox, '--cursor', cursor], ctx(home));
+    const finalContent = fs.readFileSync(inbox, 'utf8');
+    assert.ok(finalContent.includes('already here'),
+      `pre-existing durable inbox content must survive register; got: ${finalContent}`);
+  } finally { rm(home); }
+});
+
+test('register fresh: a genuinely-absent inbox is still created, empty', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'reg2-inbox', 'inbox.ndjson');
+    const cursor = path.join(home, 'reg2-cursor', 'cursor.json');
+    assert.ok(!fs.existsSync(inbox), 'precondition: inbox must not exist yet');
+    cli.run(['register', 'reg-b', '--worktree', '/wt/reg-b', '--session', 's',
+      '--inbox', inbox, '--cursor', cursor], ctx(home));
+    assert.ok(fs.existsSync(inbox), 'a genuinely absent inbox must be created by register');
+    assert.strictEqual(fs.readFileSync(inbox, 'utf8'), '', 'a freshly-created inbox must be empty');
+  } finally { rm(home); }
+});
+
 test('register populates repoId from env.DEVSWARM_REPO_ID', () => {
   const home = tmpHome();
   try {

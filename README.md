@@ -348,7 +348,9 @@ feature-gated hooks are the trigger: `devswarm-parent-inbox` (surfaces each turn
 unread/idle state of active workspaces + recommends archiving a completed one, plus a
 live per-turn status table of every active workspace — status/finish-rate/unread/
 last-activity, attention-needing rows first) and `devswarm-parent-gate` (blocks the
-Primary from ending a turn while a child has unread backlog or the supervisor judged it
+Primary from ending a turn while a child has REAL unread backlog — as of v0.61.1, noise
+like a mirrored `[Primary poke]` is excluded via a shared classifier, closing a
+ghost-workspace nag loop — or the supervisor judged it
 stale/escalated **OR the Primary itself has unread parent/peer messages of its own**,
 with the same imperative "STOP and read them FIRST" wording as the child gate — as of
 v0.56.0 the Primary can no longer silently sit on its own inbound) on the Primary; `devswarm-child-turn` (turn-authored heartbeat +

@@ -75,6 +75,28 @@ function readUnread(inboxPath, cursorPath, fsi) {
   };
 }
 
+// readUnreadMessages(inboxPath, cursorPath, fsi) ->
+//   { rows: (object|null)[], count, known }.
+// The SAME unread slice as readUnread(), with each line additionally
+// JSON-parsed. A line that fails to parse (or parses to a non-object, e.g. a
+// bare number) is represented as `null` in `rows` — index-aligned with the
+// unread slice, never dropped — so a caller distinguishing "no timestamp on
+// this row" from "row missing entirely" can still tell the two apart if it
+// ever needs to. `known` mirrors readUnread()'s own meaning (false = the
+// cursor/inbox could not be conclusively read; treat as unknown, not empty).
+function readUnreadMessages(inboxPath, cursorPath, fsi) {
+  const u = readUnread(inboxPath, cursorPath, fsi);
+  const rows = u.lines.map((line) => {
+    try {
+      const o = JSON.parse(line);
+      return (o && typeof o === 'object') ? o : null;
+    } catch (_) {
+      return null;
+    }
+  });
+  return { rows, count: u.count, known: u.known };
+}
+
 // ackTo(cursorPath, n, fsi, inboxPath?) -> int. Set the cursor to an absolute
 // consumed-count `n`, clamped to [0, total]. Clamping to the current message total
 // prevents an over-ack (n > total) from silently swallowing messages that arrive
@@ -106,6 +128,7 @@ module.exports = {
   countMessages,
   readCursor,
   readUnread,
+  readUnreadMessages,
   ackTo,
   advanceCursor,
 };

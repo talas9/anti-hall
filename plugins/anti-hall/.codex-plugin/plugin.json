@@ -1,6 +1,6 @@
 {
   "name": "anti-hall",
-  "version": "0.61.0",
+  "version": "0.61.1",
   "description": "Verify-first discipline for Codex. Bundles Codex-native skills plus an installer for the Codex hook subset that can be enforced today: session/prompt nudges, a codex-availability PATH probe, shell-command guards, Stop guards, graphify reminders, task discipline, and speculation checks. Claude Code plugin files are kept separate and unchanged.",
   "author": {
     "name": "Mohammed Talas",

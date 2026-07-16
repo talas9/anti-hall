@@ -434,6 +434,55 @@ test('REGISTER MERGE: an existing inboxPath/cursorPath (e.g. from a prior `inbox
   }
 });
 
+// ---- P1 TRUNCATION-PROOF PRECREATE (hardened): register's inbox precreate --
+// used to use `wx` (exclusive create, fails closed on EEXIST). O_EXCL
+// exclusivity is documented as unreliable over some network filesystems, so
+// the precreate now uses append mode (`a`) instead: it creates the file if
+// absent, and appending '' can never truncate existing content on ANY
+// filesystem, with no reliance on O_EXCL at all.
+test('REGISTER re-run: a PRE-EXISTING durable inbox with real content survives re-registration (append-create never truncates)', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    const customInbox = path.join(h.home, '.anti-hall', 'devswarm', 'durable.inbox.ndjson');
+    const customCursor = path.join(h.home, '.anti-hall', 'devswarm', 'durable.cursor.json');
+    fs.mkdirSync(path.dirname(customInbox), { recursive: true });
+    fs.writeFileSync(customInbox, JSON.stringify({ _h: 'native:d1', message: 'do not lose me' }) + '\n');
+    fs.writeFileSync(path.join(wdir, 'reg-child2.json'), JSON.stringify({
+      id: 'reg-child2', worktreePath: '/stale/path', sessionId: 'stale-sess',
+      inboxPath: customInbox, cursorPath: customCursor,
+    }));
+
+    const r = testHook(HOOK, promptPayload('sess-new2', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'reg-child2' },
+    });
+    assert.strictEqual(r.status, 0);
+    const finalContent = fs.readFileSync(customInbox, 'utf8');
+    assert.ok(finalContent.includes('do not lose me'),
+      `durable inbox content must survive re-registration; got: ${finalContent}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('REGISTER fresh: a genuinely-absent inbox is still created, empty, at the default path', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-fresh', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'reg-fresh' },
+    });
+    assert.strictEqual(r.status, 0);
+    const inboxPath = path.join(h.home, '.anti-hall', 'devswarm', 'inbox', 'reg-fresh.ndjson');
+    assert.ok(fs.existsSync(inboxPath), 'a genuinely absent inbox must be created on register');
+    assert.strictEqual(fs.readFileSync(inboxPath, 'utf8'), '', 'a freshly-created inbox must be empty');
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('FAIL-OPEN: workspaces dir unwritable -> exit 0, no crash, reminder still emitted', () => {
   const h = makeHome();
   try {

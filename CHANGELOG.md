@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.61.1
+
+DevSwarm neglect-gate over-nag fix + registration inbox hardening.
+
+- **Parent-gate (Stop hook) now counts only REAL unread.** The DEVSWARM NEGLECT gate previously blocked on the raw unread line-count, so a "ghost" workspace whose entire backlog was the Primary's own `[Primary poke]` message mirrored back nagged on every Stop — a closed feedback loop (the nag prompts a poke, the poke refreshes the backlog). It now excludes system-generated poke/mirror noise via a shared classifier (`companion/lib/devswarm-noise.js` `isNoiseText`) and blocks iff realUnread > 0 or the workspace is stale/escalated. The message-age/freshness axis was dropped — a ghost's unread is *fresh* poke traffic, so freshness never excluded it. Fail-open: an unreadable inbox or an unparseable row still blocks.
+- **Registration precreates an empty durable inbox.** A freshly-registered child now reads as known/empty (0 unread, no nag) instead of absent (`known:false`), closing a false-silence hole where a genuinely-neglected child with an absent inbox was indistinguishable from a fresh one. The inbox is created with a truncation-proof append-mode open (`{flag:'a'}`) — it can never clobber a concurrent `devswarm-pull` drain on any filesystem, avoiding the O_EXCL/NFS unreliability of an earlier `wx` approach. Applied at both the per-turn hook registration path and the CLI register path; the descriptor is now published after the inbox/cursor init to close a transient discovery window.
+
+Behavioral fix to existing DevSwarm coordination — no new hooks, skills, or disciplines.
+
 ## 0.61.0
 
 **DevSwarm mesh self-heal — instructions now reliably reach child workspaces; the substrate detects, routes around, migrates, and surfaces the mis-registration/misroute failure modes that could silently strand messages.**

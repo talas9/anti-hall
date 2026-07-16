@@ -602,7 +602,15 @@ prose reminders get ignored; only a mechanical trigger works.
   with the SAME imperative "STOP and read them FIRST via `devswarm.js inbox read-primary
   <id>`" wording the child gate uses below, so the Primary can no longer sit on its own
   unread inbound (fixes the confirmed gap where a parent could not see messages sent to
-  it). Reads only files (the fs cursor + the supervisor's verdict file + the summary
+  it). **v0.61.1 real-unread fix:** the "unread backlog" clause above now counts only
+  REAL unread — system-generated poke/mirror noise is excluded via the shared
+  `companion/lib/devswarm-noise.js` `isNoiseText` classifier — closing a ghost-workspace
+  feedback loop where a backlog consisting solely of the Primary's own `[Primary poke]`
+  mirrored back nagged on every Stop. An unparseable row or unreadable inbox still counts
+  as real (fail-open). Registration also now precreates an empty durable inbox (both the
+  per-turn hook path and the CLI `register`/`ensure` path) so a freshly-registered child
+  reads as known/empty rather than absent, closing a false-silence hole. Reads only files
+  (the fs cursor + the supervisor's verdict file + the summary
   projection) — no git, no live liveness on the ~30 s Stop path.
 - `hooks/devswarm-child-turn.js` (UserPromptSubmit, **child only**) — writes a
   turn-authored heartbeat, KEYED BY `DEVSWARM_BUILDER_ID` (`heartbeats/<DEVSWARM_BUILDER_ID>.json`,

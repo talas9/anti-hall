@@ -84,6 +84,16 @@ function seedWorkspace(home, id, opts = {}) {
   if (opts.messages != null) {
     fs.writeFileSync(inboxPath, opts.messages.map((m) => JSON.stringify({ m })).join('\n') + '\n');
   }
+  // messageRows — full control over each inbox line's raw JSON (e.g. a
+  // `createdAt` timestamp), used by the message-freshness (P0) tests below
+  // instead of the bare `{m}` shape `opts.messages` writes.
+  if (opts.messageRows != null) {
+    fs.writeFileSync(inboxPath, opts.messageRows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  }
+  // rawLines — literal (possibly non-JSON) line content, for malformed-inbox tests.
+  if (opts.rawLines != null) {
+    fs.writeFileSync(inboxPath, opts.rawLines.join('\n') + '\n');
+  }
   if (opts.cursor != null) fs.writeFileSync(cursorPath, String(opts.cursor));
   if (opts.verdict != null) {
     const lp = path.join(root, 'liveness', id + '.json');
@@ -546,4 +556,271 @@ test('FAIL-OPEN: an UNLOADABLE devswarm-wake lib -> the gate still blocks with i
   } finally {
     h.cleanup();
   }
+});
+
+// ---------------------------------------------------------------------------
+// GHOST-WORKSPACE FIX (P0) — replaces the REJECTED message/child-freshness
+// approach (failed review twice: freshness suppresses real neglect, AND the
+// ghosts' unread is actually FRESH `[Primary poke]` traffic, so a freshness
+// check never even fires on the real ghost case). The gate now counts only
+// REAL unread — rows classified as system-generated poke/mirror NOISE
+// (companion/lib/devswarm-noise.js isNoiseText) are excluded from realUnread.
+// isNoiseText is a SEPARATE, text-based check from scripts/devswarm.js's #67
+// isForwardable (a structural mtype/sender/recipient rule applied to STORE
+// rows, which carry no text signal of their own) — the two are NOT the same
+// classifier layered on different shapes, and after the P0-3 revert
+// isForwardableRow is PURELY STRUCTURAL: it does not consume POKE_PREFIX at
+// all — only isNoiseText does (see devswarm-noise.js's own header). The two
+// checks merely live in the same module. A workspace whose unread
+// is ALL noise -> realUnread 0 -> no longer nags. Message/child AGE plays NO
+// part in this decision.
+// ---------------------------------------------------------------------------
+
+test('GHOST FIX: unread is entirely noise ([Primary poke] rows) -> realUnread 0 -> NOT in blocking set (no nag)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ghost1', {
+      messageRows: [
+        { _h: 'native:aaa', message: '[Primary poke] wake up', createdAt: new Date().toISOString() },
+        { _h: 'native:bbb', message: '[Primary poke] wake up again', createdAt: new Date().toISOString() },
+      ],
+      cursor: 0,
+      verdict: { status: 'alive' },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `an all-noise unread backlog must not nag; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-FIRST PROOF: the ghost fixture actually has a nonzero RAW unread count (the bug this fix removes)', () => {
+  const h = makeHome();
+  try {
+    const seeded = seedWorkspace(h.home, 'ghost1raw', {
+      messageRows: [{ _h: 'native:aaa', message: '[Primary poke] wake up', createdAt: new Date().toISOString() }],
+      cursor: 0,
+      verdict: { status: 'alive' },
+    });
+    const inboxCursor = require('../../plugins/anti-hall/companion/lib/devswarm-inbox-cursor.js');
+    const u = inboxCursor.readUnread(seeded.inboxPath, seeded.cursorPath);
+    assert.strictEqual(u.known, true);
+    assert.strictEqual(u.count, 1, 'the raw line-count classifier the OLD code used would have blocked on this');
+  } finally { h.cleanup(); }
+});
+
+test('REAL: unread has a genuine inbound message -> BLOCKS', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'real1', {
+      messageRows: [{ _h: 'native:ccc', message: 'status: finished the migration, needs review', createdAt: new Date().toISOString() }],
+      cursor: 0,
+      verdict: { status: 'alive' },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a genuine inbound message must block');
+    assert.match(r.json.reason, /real1/);
+    assert.match(r.json.reason, /1 unread/);
+  } finally { h.cleanup(); }
+});
+
+// P0-1 investigated: isNoiseText is a PREFIX check (trimStart+startsWith), not
+// a substring/contains check. A genuine child message that merely mentions or
+// quotes the poke phrase mid-body (not at the very start) must never be
+// misclassified as noise and dropped from realUnread.
+test('P0-1: a genuine message that MENTIONS the poke phrase mid-body (not at the start) is NOT treated as noise -> BLOCKS', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'echo1', {
+      messageRows: [
+        { _h: 'native:e1', message: 'FYI the previous note said "[Primary poke]" but this is a real status update' },
+      ],
+      cursor: 0,
+      verdict: { status: 'alive' },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a genuine message merely echoing the phrase mid-body must still block');
+    assert.match(r.json.reason, /echo1/);
+    assert.match(r.json.reason, /1 unread/, 'the mid-body echo must count as real, not be excluded as noise');
+  } finally { h.cleanup(); }
+});
+
+test('MIXED: poke noise + one real direct -> BLOCKS (real present), and unread count excludes the noise', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'mixed1', {
+      messageRows: [
+        { _h: 'native:d1', message: '[Primary poke] wake up' },
+        { _h: 'native:d2', message: 'status: blocked on review' },
+        { _h: 'native:d3', message: '[Primary poke] wake up again' },
+      ],
+      cursor: 0,
+      verdict: { status: 'alive' },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a real message among noise must still block');
+    assert.match(r.json.reason, /mixed1/);
+    assert.match(r.json.reason, /1 unread/, 'the displayed count must exclude the 2 noise rows');
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-OPEN: an unparseable/malformed unread row -> BLOCKS (never assumed noise)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'malformed1', {
+      rawLines: ['not-json-at-all', 'also not json {{'],
+      cursor: 0,
+      verdict: { status: 'alive' },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'malformed unread rows must never be read as confirmed-noise');
+    assert.match(r.json.reason, /malformed1/);
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-OPEN: an unread row with no recognizable message text -> BLOCKS (ambiguous is real, not noise)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'notext1', {
+      messageRows: [{ _h: 'native:e1', status: 'delivered' }], // no `message` field at all
+      cursor: 0,
+      verdict: { status: 'alive' },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a row with no message text must count as real, not noise');
+    assert.match(r.json.reason, /notext1/);
+  } finally { h.cleanup(); }
+});
+
+test('stale/escalated with all-noise unread -> STILL BLOCKS (never "merely noisy")', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'wedged1', {
+      messageRows: [{ _h: 'native:f1', message: '[Primary poke] wake up' }],
+      cursor: 0,
+      verdict: { status: 'stale' },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a wedged (stale) child blocks regardless of unread content');
+    assert.match(r.json.reason, /wedged1/);
+    assert.match(r.json.reason, /stale/);
+  } finally { h.cleanup(); }
+});
+
+test('escalated with all-noise unread -> STILL BLOCKS', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'esc1', {
+      messageRows: [{ _h: 'native:g1', message: '[Primary poke] wake up' }],
+      cursor: 0,
+      verdict: { status: 'escalated' },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'an escalated child blocks regardless of unread content');
+    assert.match(r.json.reason, /esc1/);
+    assert.match(r.json.reason, /escalated/);
+  } finally { h.cleanup(); }
+});
+
+// FAIL-OPEN = BLOCK on an UNREADABLE inbox (Codex P0 #2): a descriptor whose
+// inbox FILE demonstrably EXISTS but cannot be conclusively read (here: its
+// cursor is corrupt) must never silently read as "0 unread, no problem" — it
+// blocks.
+test('FAIL-OPEN: inbox file EXISTS but is unreadable (corrupt cursor) -> BLOCKS, not silently dropped', () => {
+  const h = makeHome();
+  try {
+    const seeded = seedWorkspace(h.home, 'unreadable1', {
+      messageRows: [{ _h: 'native:h1', message: 'status: real content sitting behind a corrupt cursor' }],
+      verdict: { status: 'alive' },
+      // deliberately no `cursor` opt — write a corrupt cursor file directly below.
+    });
+    fs.writeFileSync(seeded.cursorPath, 'not-a-number-and-not-json');
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'an unreadable inbox with real content behind it must never be silently dropped');
+    assert.match(r.json.reason, /unreadable1/);
+  } finally { h.cleanup(); }
+});
+
+// FAIL-OPEN = BLOCK on an ABSENT inbox, unconditionally (spec-literal
+// known:false -> block; P0-2 fix). An absent inbox is now a genuine anomaly,
+// NOT the routine signature of a fresh child — scripts/devswarm.js's register
+// precreates an EMPTY inbox file (see the test directly below), so a
+// descriptor that STILL has no inbox file can only mean: a pre-fix legacy
+// child, a failed inbox write, or a native backlog that was never
+// inbox-pulled. Any of those is exactly the kind of silent neglect this gate
+// exists to catch — silently reading it as "0 unread" would defeat the gate.
+test('FAIL-OPEN (P0-2): a descriptor whose inbox file is genuinely ABSENT (known:false) BLOCKS unconditionally, not silently dropped', () => {
+  const h = makeHome();
+  try {
+    // No messages/messageRows/rawLines opt -> seedWorkspace never creates the
+    // inbox file, simulating a descriptor that was never register-precreated
+    // (or whose precreate failed) and whose native backlog was never pulled.
+    seedWorkspace(h.home, 'absent1', { cursor: 0, verdict: { status: 'alive' } });
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'an absent inbox must never be silently read as 0 unread');
+    assert.match(r.json.reason, /absent1/);
+  } finally { h.cleanup(); }
+});
+
+// registerRealChild(home, id, sessionId) — drives the REAL production
+// registration entry point: devswarm-child-turn.js's UserPromptSubmit hook
+// (registerChildDescriptor), NOT a hand-seeded descriptor. This is the path a
+// genuine DevSwarm child actually goes through on its very first turn, BEFORE
+// it ever calls `devswarm.js inbox pull` (a separate, later, CLI-driven
+// registration path with its own precreate — cmdRegister/cmdInboxPull in
+// scripts/devswarm.js — that a prior fix round mistakenly treated as the ONLY
+// production entry point; a test that only exercises cmdRegister therefore
+// misses the real per-turn hook path entirely).
+function registerRealChild(home, id, sessionId) {
+  const r = testHook('devswarm-child-turn.js', {
+    hook_event_name: 'UserPromptSubmit', session_id: sessionId || ('sess-' + id), prompt: 'go', cwd: REPO_CWD,
+  }, {
+    home,
+    env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id },
+  });
+  assert.strictEqual(r.status, 0, 'devswarm-child-turn hook must exit 0');
+  return r;
+}
+
+function realChildDescriptor(home, id) {
+  const p = path.join(home, '.anti-hall', 'devswarm', 'workspaces', id + '.json');
+  return JSON.parse(fs.readFileSync(p, 'utf8'));
+}
+
+test('NO-OP (regression guard, REAL registration path): a child registered via the actual devswarm-child-turn UserPromptSubmit hook does not nag', () => {
+  const h = makeHome();
+  try {
+    registerRealChild(h.home, 'fresh-real1');
+    const desc = realChildDescriptor(h.home, 'fresh-real1');
+    assert.ok(desc.inboxPath, 'the real registration path must assign an inboxPath');
+    assert.ok(fs.existsSync(desc.inboxPath), 'the real registration path must precreate the inbox file (not just the cursor)');
+    assert.strictEqual(fs.readFileSync(desc.inboxPath, 'utf8'), '', 'a freshly-registered inbox must be precreated EMPTY, not written to');
+
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `a freshly-registered (real-path) child must not block; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-OPEN (P0-2, REAL registration path): a real child whose inbox file is later REMOVED still BLOCKS unconditionally', () => {
+  const h = makeHome();
+  try {
+    registerRealChild(h.home, 'removed-real1');
+    const desc = realChildDescriptor(h.home, 'removed-real1');
+    assert.ok(fs.existsSync(desc.inboxPath), 'precondition: the real registration path must have precreated the inbox');
+    fs.unlinkSync(desc.inboxPath); // simulate a genuinely-absent inbox (removed / pre-fix legacy child)
+
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'an inbox removed AFTER real registration must still block, not silently read as 0 unread');
+    assert.match(r.json.reason, /removed-real1/);
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-OPEN: no verdict file at all for a descriptor with real unread -> STILL blocks (never silently suppressed)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'noverdict1', { messages: ['a', 'b', 'c'], cursor: 0 }); // no verdict seeded at all
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a missing verdict must never suppress a real unread backlog');
+    assert.match(r.json.reason, /noverdict1/);
+  } finally { h.cleanup(); }
 });

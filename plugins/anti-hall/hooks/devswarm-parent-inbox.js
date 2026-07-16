@@ -75,6 +75,13 @@ const {
 // sweep, even a 0-insert one) — see the staleness banner below.
 const installIngest = require('../companion/install-devswarm-ingest.js');
 const devswarmIngest = require('../companion/devswarm-ingest.js');
+// idleThresholdMs / lastActivityTs / readHeartbeat: this view's own "is this
+// workspace idle" signal, consumed ONLY here (see that module's header) — NOT
+// shared with devswarm-parent-gate.js's Stop-hook neglect gate, which was
+// deliberately kept OFF freshness/age (a freshness-based exclusion was tried
+// there and rejected on review; the gate classifies unread CONTENT instead,
+// via companion/lib/devswarm-noise.js).
+const freshness = require('./lib/devswarm-freshness.js');
 
 // CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
 // from this hook's own on-disk location. The Primary's cwd is its own project
@@ -125,16 +132,10 @@ const HEARTBEAT_STALE_MS = 3 * 60 * 1000;
 // keeps every other threshold in raw ms, e.g. HEARTBEAT_STALE_MS above; distinct
 // from the unrelated ANTIHALL_DEVSWARM_IDLE_SEC read by devswarm-supervisor.js,
 // which governs the liveness supervisor's nudge/escalate cadence, not this
-// view's label).
-const DEFAULT_IDLE_MS = 6 * 60 * 60 * 1000;
-
-// idleThresholdMs() -> ms. Reads ANTIHALL_DEVSWARM_IDLE_MS; absent, non-numeric,
-// or non-positive -> DEFAULT_IDLE_MS. Never throws.
-function idleThresholdMs() {
-  const raw = process.env.ANTIHALL_DEVSWARM_IDLE_MS;
-  const n = parseInt(raw, 10);
-  return (Number.isFinite(n) && n > 0) ? n : DEFAULT_IDLE_MS;
-}
+// view's label). The threshold + activity-signal math now live in the
+// freshness module (see the `freshness` require above); this display-only
+// "idle" label is NOT consumed by devswarm-parent-gate.js's Stop-hook neglect
+// gate — see that require's own comment.
 
 // OVERRIDE_REASSERT — terse (<=160 char) per-turn re-assertion of the SessionStart
 // COMMUNICATION OVERRIDE (devswarm-child-role.js, both roles): DevSwarm's own
@@ -169,9 +170,6 @@ function archiveIgnorePath(home, id) {
 }
 function archiveNudgePath(home, id) {
   return path.join(devswarmRoot(home), 'archive-nudges', String(id) + '.json');
-}
-function heartbeatPathFor(home, id) {
-  return path.join(devswarmRoot(home), 'heartbeats', String(id) + '.json');
 }
 
 // readSummary(home) -> parsed object | null. summary.json is the derived hook
@@ -249,28 +247,9 @@ function verdictStatus(summary, id, verdict) {
   return null;
 }
 
-// readHeartbeat(home, id) -> parsed heartbeat | null. The turn-authored heartbeat
-// (heartbeats/<id>.json) carries progress_pct + ts. Read-only fs; tolerant of a
-// missing / malformed file (fail toward "no heartbeat").
-function readHeartbeat(home, id) {
-  try {
-    const b = JSON.parse(fs.readFileSync(heartbeatPathFor(home, id), 'utf8'));
-    return b && typeof b === 'object' ? b : null;
-  } catch (_) {
-    return null;
-  }
-}
-
-// lastActivityTs(verdict, heartbeat) -> ms | null. The most recent activity signal
-// already persisted for the workspace: the liveness verdict's lastOutboundTs
-// (transcript/git activity) and the heartbeat's ts, whichever is newer. Never
-// spawns git — reads only what the supervisor / a heartbeat already wrote.
-function lastActivityTs(verdict, heartbeat) {
-  const a = verdict && Number.isFinite(verdict.lastOutboundTs) ? verdict.lastOutboundTs : 0;
-  const b = heartbeat && Number.isFinite(heartbeat.ts) ? heartbeat.ts : 0;
-  const best = Math.max(a, b);
-  return best > 0 ? best : null;
-}
+// readHeartbeat / lastActivityTs now live in the SHARED freshness module (see
+// the `freshness` require above) — called at their use sites below as
+// `freshness.readHeartbeat` / `freshness.lastActivityTs`.
 
 // formatRelative(ts, now) -> compact relative age ("18m", "2h", "3d", "5s") or "—"
 // when the signal is unknown. Clamps a future ts to 0 (never a negative age).
@@ -325,7 +304,7 @@ function displayStatus(archiveReady, status, activityTs, now) {
   if (status === 'escalated') return { label: 'escalated', rank: 0 };
   if (status === 'stale' || status === 'nudged') return { label: 'stale', rank: 1 };
   if (archiveReady) return { label: 'archive-ready', rank: 2 };
-  if (Number.isFinite(activityTs) && Number.isFinite(now) && (now - activityTs) >= idleThresholdMs()) {
+  if (Number.isFinite(activityTs) && Number.isFinite(now) && (now - activityTs) >= freshness.idleThresholdMs(process.env)) {
     return { label: 'idle', rank: 3 };
   }
   return { label: 'active', rank: 4 };
@@ -736,8 +715,8 @@ function main() {
 
     // --- live-table row (every ACTIVE workspace, every turn) ---
     try {
-      const heartbeat = readHeartbeat(home, id);
-      const activityTs = lastActivityTs(verdict, heartbeat);
+      const heartbeat = freshness.readHeartbeat(home, id);
+      const activityTs = freshness.lastActivityTs(verdict, heartbeat);
       const ds = displayStatus(archiveReady, status, activityTs, now);
       rows.push({
         id,

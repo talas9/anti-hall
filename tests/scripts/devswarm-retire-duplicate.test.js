@@ -411,4 +411,48 @@ for (const B of backends) {
       rm(main); rm(child); rm(home);
     }
   });
+
+  // Anti-over-reach regression: a STRUCTURALLY-VALID direct (real mtype='direct',
+  // real sender+recipient — i.e. it actually went through mesh `send`) must be
+  // forwarded even if its body happens to start with the `[Primary poke]` text
+  // marker (a human quoting/echoing that exact phrase, or any other legitimate
+  // reason). The #67 rule classifies noise STRUCTURALLY on the store shape
+  // (mtype/sender/recipient); it must never ALSO body-filter a row that already
+  // passed that structural check — that filter belongs only to the Stop-hook gate's
+  // descriptor-inbox rows, which have no structural signal to use instead. Fail-
+  // first: an earlier revision of this filter added a belt-and-suspenders
+  // isNoiseText(msg.body) check to isForwardableRow that wrongly rejected this row.
+  test(`[${B.name}] #67 anti-over-reach: a structurally-valid direct whose body starts with the poke marker text IS still forwarded`, () => {
+    const home = tmpHome();
+    const main = makeGitRepo('n67-overreach-' + B.name);
+    const child = addLinkedWorktree(main, 'c');
+    try {
+      const repoKey = repokey.repoKeyForWorktree(child);
+      const childTop = topOf(child);
+      seedB(home, repoKey, { id: LEGACY_ID, worktreePath: childTop, sessionId: 'legacy-sess' });
+      {
+        const s = storeLib.openStore({ home, hash: repoKey, backend: B.backend });
+        try {
+          const fields = {
+            from: 'peer-sender', to: LEGACY_ID, type: 'direct',
+            message: '[Primary poke] this is actually a genuine direct, not a mirror',
+            timestamp: Date.now(), urgency: 'normal',
+          };
+          storeLib.appendMeshMessage(s, Object.assign({}, fields, { hash: storeLib.meshMessageHash(fields) }));
+        } finally { s.close(); }
+      }
+      const reg = cli.run(['register', CHILD_ID, '--worktree', childTop, '--session', 'child-sess'], bctx(home, { cwd: child }));
+      assert.strictEqual(reg.result.ok, true);
+      assert.deepStrictEqual(reg.result.retiredDuplicates, [LEGACY_ID], 'legacy row retired');
+      assert.strictEqual(reg.result.forwardedMessages, 1, 'the structurally-valid direct IS forwarded despite its body text');
+      const survivor = bodiesB(home, repoKey, CHILD_ID);
+      assert.ok(
+        survivor.some((b) => b.indexOf('this is actually a genuine direct') !== -1),
+        'a real mesh direct is never dropped just because its body starts with the poke marker'
+      );
+    } finally {
+      cp.spawnSync('git', ['-C', main, 'worktree', 'remove', '--force', child]);
+      rm(main); rm(child); rm(home);
+    }
+  });
 }

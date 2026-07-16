@@ -330,20 +330,59 @@ function registerChildDescriptor(env, sessionId, cwd, home) {
   if (desc.cursorPath === undefined || desc.cursorPath === null) desc.cursorPath = defaultCursorPath(home, id);
   if (desc.nudgeCommand === undefined) desc.nudgeCommand = null;
 
-  fs.mkdirSync(dir, { recursive: true });
-  const tmp = target + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(desc));
-  fs.renameSync(tmp, target);
-
   // Best-effort, non-destructive cursor init (mirrors cmdRegister in
   // scripts/devswarm.js) so a brand-new descriptor's inbox reads known:true
   // (0 unread) instead of known:false. Never clobbers an existing cursor file.
+  // Runs BEFORE the descriptor is published below (see that comment for why).
   if (desc.cursorPath && !fs.existsSync(desc.cursorPath)) {
     try {
       fs.mkdirSync(path.dirname(desc.cursorPath), { recursive: true });
       fs.writeFileSync(desc.cursorPath, '0');
     } catch (_) { /* best-effort; inbox ops still degrade to known:false */ }
   }
+  // Co-located TRUNCATION-PROOF precreate of an EMPTY durable inbox file (P0-2
+  // fix, real production path): this hook — NOT cmdRegister in
+  // scripts/devswarm.js — is the mechanical, per-turn, hook-driven
+  // registration entry point every real child actually goes through first
+  // (fires on EVERY UserPromptSubmit turn, before a child ever runs the
+  // separate CLI `devswarm.js inbox pull`). Without this, a genuinely
+  // registered child's inbox stays ABSENT (known:false) until its first
+  // `inbox pull`, so devswarm-parent-gate.js's Stop-hook gate — which blocks
+  // unconditionally on known:false — nags on every real child's early turns.
+  // Mirrors cmdRegister's own SAME hardened fix (P0 data-loss race): an
+  // earlier version used `wx` (exclusive create, fails closed on EEXIST), but
+  // O_EXCL exclusivity is documented as unreliable over some network
+  // filesystems (NFS). `a` (append) opens for append and CREATES the file if
+  // absent, and appending '' never truncates existing content on ANY
+  // filesystem — no reliance on O_EXCL exclusivity at all — so this can NEVER
+  // clobber a concurrently pull-written inbox. Cross-platform (supported on
+  // win32/macOS/linux). Fail-open: any error is swallowed — best-effort init
+  // only, and inbox ops still degrade to known:false if it never succeeds.
+  // Runs BEFORE the descriptor is published below (see that comment for why).
+  if (desc.inboxPath) {
+    try {
+      fs.mkdirSync(path.dirname(desc.inboxPath), { recursive: true });
+      fs.writeFileSync(desc.inboxPath, '', { flag: 'a' });
+    } catch (_) { /* fail-open: best-effort init only, non-fatal to registration */ }
+  }
+
+  // Publish the descriptor LAST, only after the cursor/inbox init above has
+  // run. The descriptor is what makes this child DISCOVERABLE to the parent-
+  // gate and supervisor sweep (both gated on readDescriptors' worktreePath &&
+  // sessionId filter) — publishing it FIRST left a transient window where a
+  // just-discoverable child's inbox did not exist yet, which
+  // devswarm-parent-gate.js's Stop-hook gate reads as known:false (its
+  // genuine-anomaly signal) and blocks on, even though the child is about to
+  // create its own empty inbox one statement later. Reordering closes that
+  // window: by the time the descriptor is visible, the inbox/cursor already
+  // exist. `dir` (the workspaces directory the descriptor itself lives under)
+  // is independent of inboxPath/cursorPath (which live under devswarmRoot's
+  // own inbox/ and cursors/ dirs), so this reorder has no other dependency.
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = target + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(desc));
+  fs.renameSync(tmp, target);
+
   return desc;
 }
 

@@ -13,8 +13,22 @@
 // NEVER opens the store DB. Signals come from files the supervisor / consumer /
 // ingest daemon already wrote:
 //   - CHILD unread backlog: the durable NDJSON inbox + its cursor, via the
-//     read/ack primitive (companion/lib/devswarm-inbox-cursor.js readUnread) —
-//     pure fs, the SAME projection the staleness detector consumes, no git.
+//     read/ack primitive (companion/lib/devswarm-inbox-cursor.js
+//     readUnreadMessages) — pure fs, the SAME projection the staleness
+//     detector consumes, no git. Only REAL unread counts toward blocking — a
+//     row classified as system-generated poke/mirror noise (companion/lib/
+//     devswarm-noise.js isNoiseText) is excluded, so a "ghost" workspace whose
+//     entire unread backlog is the Primary's own poke bouncing back no longer
+//     nags. FAIL-OPEN: `known:false` (cursor/inbox not conclusively readable,
+//     INCLUDING an absent inbox file) always blocks unconditionally — never
+//     silently reads as "0 unread". A freshly-registered child does NOT hit
+//     this: scripts/devswarm.js's register precreates an EMPTY inbox file
+//     (alongside the cursor it already precreated), so "just registered,
+//     never messaged" reads as known:true/0-unread (confirmed-empty), not
+//     known:false — a descriptor whose inbox is genuinely absent is therefore
+//     a real anomaly (e.g. a pre-fix legacy child, or a failed inbox write),
+//     not routine startup, and must block. A row that fails to parse is
+//     likewise never treated as confirmed-noise — it counts toward realUnread.
 //   - STALE / ESCALATED: the supervisor's already-written per-workspace verdict
 //     file (companion/lib/liveness.js livenessPathFor -> ~/.anti-hall/devswarm/
 //     liveness/<id>.json). Read-only. `escalated` is terminal/sticky (per
@@ -89,8 +103,22 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 // REUSE (never reimplement): descriptor discovery, the read/ack primitive, and
 // the verdict-file path helper all already exist.
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
-const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
+const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.js');
 const { livenessPathFor, devswarmRoot } = require('../companion/lib/liveness.js');
+// POKE_PREFIX text check (companion/lib/devswarm-noise.js isNoiseText) —
+// applied HERE to descriptor durable-inbox NDJSON rows' `.message` (a shape
+// with no mtype/sender/recipient at all — see that module's header for why
+// this gate uses text while scripts/devswarm.js's isForwardable (#67) uses a
+// purely structural check over STORE rows instead). GHOST-WORKSPACE fix: a
+// workspace's unread backlog that is ENTIRELY noise (the Primary's own poke
+// bouncing back, never a genuine message) no longer nags — see realUnread
+// below. Message AGE plays no part in this decision (a prior version of this
+// fix keyed exclusion on message/child freshness instead; that failed review
+// twice — a ghost's unread is actually FRESH poke traffic, so freshness never
+// excluded it, and freshness also risked suppressing a genuinely fresh unread
+// on an idle-but-alive child. CONTENT, not age, is the only signal that
+// distinguishes real neglect from noise).
+const { isNoiseText } = require('../companion/lib/devswarm-noise.js');
 // primaryWorkspaceId/worktreeHash: the SAME per-worktree Primary-id convention
 // devswarm-parent-inbox.js and the ingest daemon already use (#34 parity — the
 // Primary's OWN unread, resolved below via readOwnUnread).
@@ -132,8 +160,8 @@ function resolveCap(env) {
 
 // readVerdictStatus(id, home) -> string | null. Reads ONLY the supervisor's
 // already-written per-workspace verdict file (no computeLiveness, no git).
-// Absent / unreadable / malformed -> null (fail-safe: no verdict = not blocking
-// on the liveness axis).
+// Absent / unreadable / malformed -> null (fail-safe: no verdict = not
+// blocking on the liveness axis).
 function readVerdictStatus(id, home) {
   try {
     const p = livenessPathFor(id, home); // throws on an unsafe id
@@ -298,17 +326,57 @@ function main() {
   for (const d of descriptors) {
     const dKey = selfKey ? repoKeyOfWorktree(d && d.worktreePath) : null;
     if (selfKey && dKey && dKey !== selfKey) continue;
-    let unreadCount = 0;
+
+    // realUnread (P0 fix): count only unread rows classified REAL — excludes
+    // system-generated poke/mirror noise (isNoiseText — see the require
+    // above). A workspace whose unread is ALL noise (a "ghost" repeatedly
+    // poked by this same gate, whose only "unread" is that poke bouncing
+    // back) no longer nags.
+    //
+    // FAIL-OPEN TO BLOCK (Codex P0 #2): unknown/unreadable beats silently
+    // dropping a real neglect signal.
+    //   - a row that fails to parse (malformed JSON / non-object) -> counts
+    //     toward realUnread (never assumed noise).
+    //   - `known:false` (cursor/inbox not conclusively readable, INCLUDING an
+    //     absent inbox file) -> ALWAYS blocks, unconditionally, per spec. A
+    //     corrupt cursor, an unreadable inbox behind a real file, or an
+    //     absent inbox must never read as "0 unread". This does NOT nag a
+    //     freshly-registered child: scripts/devswarm.js's register now
+    //     precreates an EMPTY inbox file (alongside the cursor), so "just
+    //     registered, never messaged" reads as known:true/0-unread
+    //     (confirmed-empty), not known:false. An absent inbox at this point
+    //     is therefore a genuine anomaly (a pre-fix legacy child, or a failed
+    //     inbox write) that must not be silently swallowed.
+    // Only a row that PARSES and whose message text POSITIVELY matches the
+    // noise marker is excluded — everything else (including an ambiguous
+    // parsed row with no recognizable text field) counts as real.
+    let realUnread = 0;
+    let unreadUnknown = false;
     try {
-      const u = readUnread(d.inboxPath, d.cursorPath);
-      if (u && u.known && u.count > 0) unreadCount = u.count;
-    } catch (_) { /* unreadable inbox -> fail-safe: no unread */ }
+      const u = readUnreadMessages(d.inboxPath, d.cursorPath);
+      if (!u || !u.known) {
+        unreadUnknown = true;
+      } else {
+        for (const row of u.rows) {
+          if (row === null) { realUnread++; continue; } // unparseable -> fail open (real)
+          if (isNoiseText(row.message)) continue; // positively-classified noise -> excluded
+          realUnread++;
+        }
+      }
+    } catch (_) {
+      unreadUnknown = true; // hard failure reading the primitive itself -> fail open
+    }
 
     const status = readVerdictStatus(d.id, home);
     const staleOrEscalated = status === 'stale' || status === 'escalated';
 
-    if (unreadCount > 0 || staleOrEscalated) {
-      blocking.push({ id: String(d.id), unread: unreadCount, status: staleOrEscalated ? status : '' });
+    if (unreadUnknown || realUnread > 0 || staleOrEscalated) {
+      blocking.push({
+        id: String(d.id),
+        unread: realUnread,
+        unknown: unreadUnknown,
+        status: staleOrEscalated ? status : '',
+      });
     }
   }
 
@@ -321,12 +389,12 @@ function main() {
   }
 
   // Signature of the blocking SET. The cap RESETS whenever this changes (P1: cap
-  // resets when the unread SET changes). Includes unread counts AND verdict
-  // status so a new message, a fresh stale/escalation, or a partial ack all
-  // re-open the small budget.
+  // resets when the unread SET changes). Includes unread counts, the unknown
+  // flag, AND verdict status so a new message, a fresh stale/escalation, an
+  // inbox becoming (un)readable, or a partial ack all re-open the small budget.
   const sig = crypto.createHash('sha1').update(
     blocking
-      .map((b) => b.id + '\x00' + b.unread + '\x00' + b.status)
+      .map((b) => b.id + '\x00' + b.unread + '\x00' + (b.unknown ? '1' : '0') + '\x00' + b.status)
       .sort()
       .join('\x1f')
   ).digest('hex');
@@ -373,13 +441,14 @@ function buildReason(blocking, ownId) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
+    if (b.unknown) bits.push('inbox unreadable'); // fail-open: unknown, not silently dropped
     if (b.status) bits.push(b.status);
     return b.id + (b.id === ownId ? ' (you)' : '') + ' (' + bits.join(', ') + ')';
   }).join('; ');
   const more = blocking.length > 5 ? ' (and ' + (blocking.length - 5) + ' more)' : '';
 
   const ownEntry = ownId ? blocking.find((b) => b.id === ownId && b.unread > 0) : null;
-  const anyChildUnread = blocking.some((b) => b.unread > 0 && b.id !== ownId);
+  const anyChildUnread = blocking.some((b) => (b.unread > 0 || b.unknown) && b.id !== ownId);
   const anyStale = blocking.some((b) => b.status === 'stale' || b.status === 'escalated');
 
   let body =
