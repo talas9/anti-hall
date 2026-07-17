@@ -12,11 +12,13 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
+const crypto = require('node:crypto');
 
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
 const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 const inst = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const liveness = require('../../plugins/anti-hall/companion/lib/liveness.js');
 
 function tmpHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-lifecycle-'));
@@ -485,5 +487,711 @@ test('roster fold fails open: a native `list children` spawn error never breaks 
     assert.equal(r.result.ok, true);
     assert.equal(r.result.workspaces.length, 1);
     assert.equal(r.result.workspaces[0].id, 'child-only');
+  } finally { rm(home); rm(repo); }
+});
+
+// ============================================================================
+// FEATURE 3: roster archive-candidate surfacing (read-only hints + archived/
+// dir listing). No new heavy work, no subprocess beyond what cmdRoster
+// already does; nothing is written back — the `archive`/`unarchive` verbs
+// remain the only mutators.
+// ============================================================================
+
+test('roster hints a row `worktree-gone` when the descriptor worktreePath no longer exists on disk', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('roster-hint-gone');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const goneDir = path.join(os.tmpdir(), 'anti-hall-does-not-exist-' + Date.now());
+    seedRegistry(home, repoKey, { id: 'child-gone', worktreePath: goneDir, sessionId: 's' });
+    const io = { run: () => { throw new Error('hivecontrol not installed'); } };
+    const r = cli.run(['roster'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true);
+    const row = r.result.workspaces.find((w) => w.id === 'child-gone');
+    assert.ok(row, 'row must be present');
+    assert.ok(row.hints.includes('worktree-gone'), 'a missing worktreePath must be hinted');
+  } finally { rm(home); rm(repo); }
+});
+
+test('roster does NOT hint `worktree-gone` when the worktreePath still exists on disk', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('roster-hint-present');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-live', worktreePath: repo, sessionId: 's' });
+    const io = { run: () => { throw new Error('hivecontrol not installed'); } };
+    const r = cli.run(['roster'], ctx(home, { cwd: repo, io }));
+    const row = r.result.workspaces.find((w) => w.id === 'child-live');
+    assert.ok(row);
+    assert.ok(!row.hints.includes('worktree-gone'), 'an existing worktreePath must not be flagged');
+  } finally { rm(home); rm(repo); }
+});
+
+test('roster hints `idle Nd` from the persisted liveness verdict\'s lastOutboundTs (read-only reuse, no new computation)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('roster-hint-idle');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-idle', worktreePath: repo, sessionId: 's' });
+    const now = Date.now();
+    const threeDaysAgo = now - 3 * 86400000;
+    liveness.writeVerdict('child-idle', { status: 'stale', lastOutboundTs: threeDaysAgo }, home);
+    const io = { run: () => { throw new Error('hivecontrol not installed'); } };
+    const r = cli.run(['roster'], ctx(home, { cwd: repo, io, now }));
+    const row = r.result.workspaces.find((w) => w.id === 'child-idle');
+    assert.ok(row);
+    assert.ok(row.hints.includes('idle 3d'), 'expected an idle-days hint derived from lastOutboundTs, got: ' + JSON.stringify(row.hints));
+  } finally { rm(home); rm(repo); }
+});
+
+test('roster lists an already-archived id (read-only archived/ dir scan) labeled [archived], never folding it back into the live projection', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('roster-archived-scan');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-live', worktreePath: repo, sessionId: 's' });
+    // Simulate a prior `archive <id>` run: a descriptor moved into archived/,
+    // with no store registry row for it (cmdArchive's own real end-state).
+    fs.mkdirSync(cli.archivedDir(home), { recursive: true });
+    fs.writeFileSync(path.join(cli.archivedDir(home), 'child-archived.json'),
+      JSON.stringify({ id: 'child-archived', worktreePath: '/wt/gone', sessionId: 's', ownerKey: repoKey }));
+    const io = { run: () => { throw new Error('hivecontrol not installed'); } };
+    const r = cli.run(['roster'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true);
+    const archivedRow = r.result.workspaces.find((w) => w.id === 'child-archived');
+    assert.ok(archivedRow, 'an archived id must still be visible on the roster');
+    assert.equal(archivedRow.source, 'archived');
+    assert.ok(archivedRow.hints.includes('archived'));
+    // never re-registered / written back into the store registry itself
+    // (only the roster's OUTPUT array is annotated -- the read stays pure).
+    const s2 = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    let sum;
+    try { sum = storeLib.computeSummary(s2, { home }); } finally { s2.close(); }
+    assert.ok(!sum.workspaces || !sum.workspaces['child-archived'],
+      'roster must never write an archived id back into the store registry');
+  } finally { rm(home); rm(repo); }
+});
+
+test('roster archived-dir scan fails open when archived/ does not exist at all', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('roster-archived-absent');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-live', worktreePath: repo, sessionId: 's' });
+    assert.equal(fs.existsSync(cli.archivedDir(home)), false);
+    const io = { run: () => { throw new Error('hivecontrol not installed'); } };
+    const r = cli.run(['roster'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.workspaces.length, 1);
+  } finally { rm(home); rm(repo); }
+});
+
+// ============================================================================
+// FIX 2 (Task 5): parent-driven reap + reconcile-active. Both are CONFIRM-FIRST
+// (dry-run by default, --yes to apply), project-scoped, and reuse cmdArchive's
+// proven move+tombstone. reap-stale must NEVER archive a fresh-heartbeat or a
+// live-worktree+recent-activity workspace.
+// FIX 3 (Task 6): a heartbeat CLEARS the persisted stale verdict (CLI level).
+// ============================================================================
+
+function regWs(home, repo, id, worktree) {
+  return cli.run(['register', id, '--worktree', worktree, '--session', 's'], ctx(home, { cwd: repo }));
+}
+function writeHeartbeatFile(home, id, ts) {
+  fs.mkdirSync(cli.heartbeatsDir(home), { recursive: true });
+  fs.writeFileSync(path.join(cli.heartbeatsDir(home), id + '.json'), JSON.stringify({ id, ts }));
+}
+
+test('FIX 2: reap-stale dry-run lists stale-no-heartbeat workspaces only; a fresh-heartbeat stale workspace is skipped', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reap-dry');
+  try {
+    const now = Date.now();
+    regWs(home, repo, 'ws-stale', '/wt/stale');   // nonexistent worktree -> no recent activity
+    regWs(home, repo, 'ws-fresh', '/wt/fresh');
+    regWs(home, repo, 'ws-alive', '/wt/alive');
+    liveness.writeVerdict('ws-stale', { status: 'stale', lastOutboundTs: 5 }, home);
+    liveness.writeVerdict('ws-fresh', { status: 'stale', lastOutboundTs: 5 }, home);
+    liveness.writeVerdict('ws-alive', { status: 'alive', lastOutboundTs: now }, home);
+    writeHeartbeatFile(home, 'ws-fresh', now - 30 * 1000); // fresh -> proof of life
+    const r = cli.run(['reap-stale'], ctx(home, { cwd: repo, now }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.dryRun, true);
+    assert.deepEqual(r.result.candidates.map((c) => c.id), ['ws-stale']);
+    assert.ok(r.result.skipped.some((s) => s.id === 'ws-fresh' && s.reason === 'fresh-heartbeat'),
+      'a fresh-heartbeat stale workspace must be skipped, not reaped');
+    // dry-run must NOT have archived anything
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-stale')), true, 'dry-run must not move the descriptor');
+  } finally { rm(home); rm(repo); }
+});
+
+test('FIX 2: reap-stale --yes archives the stale-no-heartbeat workspace and NEVER the fresh-heartbeat one', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reap-apply');
+  try {
+    const now = Date.now();
+    regWs(home, repo, 'ws-stale', '/wt/stale');
+    regWs(home, repo, 'ws-fresh', '/wt/fresh');
+    liveness.writeVerdict('ws-stale', { status: 'stale', lastOutboundTs: 5 }, home);
+    liveness.writeVerdict('ws-fresh', { status: 'escalated', lastOutboundTs: 5 }, home);
+    writeHeartbeatFile(home, 'ws-fresh', now - 30 * 1000);
+    const r = cli.run(['reap-stale', '--yes'], ctx(home, { cwd: repo, now }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.dryRun, false);
+    assert.deepEqual(r.result.archived.map((a) => a.id), ['ws-stale']);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-stale')), false, 'ws-stale descriptor must be moved out of workspaces/');
+    assert.equal(fs.existsSync(path.join(cli.archivedDir(home), 'ws-stale.json')), true);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-fresh')), true, 'a fresh-heartbeat workspace must NEVER be reaped');
+  } finally { rm(home); rm(repo); }
+});
+
+test('FIX 2: reap-stale on a non-git cwd returns no-project (project scoped)', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['reap-stale'], ctx(home, { cwd: fakeCwd(home) }));
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.reason, 'no-project');
+  } finally { rm(home); }
+});
+
+test('FIX 2: reconcile-active dry-run archives only ids OUTSIDE the active set, never one inside it', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-active-dry');
+  try {
+    regWs(home, repo, 'ws-a', '/wt/a');
+    regWs(home, repo, 'ws-b', '/wt/b');
+    regWs(home, repo, 'ws-c', '/wt/c');
+    const r = cli.run(['reconcile-active', '--active', 'ws-a,ws-b'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.dryRun, true);
+    assert.deepEqual(r.result.candidates.map((c) => c.id).sort(), ['ws-c']);
+    assert.deepEqual(r.result.kept.sort(), ['ws-a', 'ws-b']);
+  } finally { rm(home); rm(repo); }
+});
+
+test('FIX 2: reconcile-active --yes archives only the non-active workspace; active ones are untouched', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-active-apply');
+  try {
+    regWs(home, repo, 'ws-a', '/wt/a');
+    regWs(home, repo, 'ws-b', '/wt/b');
+    regWs(home, repo, 'ws-c', '/wt/c');
+    const r = cli.run(['reconcile-active', '--active', 'ws-a', '--active', 'ws-b', '--yes'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true);
+    assert.deepEqual(r.result.archived.map((a) => a.id), ['ws-c']);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-c')), false, 'the non-active workspace must be archived');
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-a')), true, 'an active workspace must NEVER be archived');
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-b')), true, 'an active workspace must NEVER be archived');
+  } finally { rm(home); rm(repo); }
+});
+
+test('FIX 2: reconcile-active matches an active id by SHORT PREFIX (spares it), never archiving a prefixed active workspace', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-active-prefix');
+  try {
+    regWs(home, repo, 'ws-keepme', '/wt/keep');
+    regWs(home, repo, 'ws-dropme', '/wt/drop');
+    // supply only a short prefix of the id we want to KEEP
+    const r = cli.run(['reconcile-active', '--active', 'ws-keep', '--yes'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true);
+    assert.deepEqual(r.result.archived.map((a) => a.id), ['ws-dropme']);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-keepme')), true, 'a prefix-matched active workspace must be spared');
+  } finally { rm(home); rm(repo); }
+});
+
+test('FIX 2: reconcile-active REFUSES an empty active set unless --allow-empty (no accidental archive-everything)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-active-empty');
+  try {
+    regWs(home, repo, 'ws-a', '/wt/a');
+    const r = cli.run(['reconcile-active'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /non-empty --active/);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-a')), true, 'nothing must be archived on a refused empty set');
+  } finally { rm(home); rm(repo); }
+});
+
+test('FIX 3: a heartbeat CLEARS a persisted stale verdict -> the workspace reads active (CLI level)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('hb-clears');
+  try {
+    const now = Date.now();
+    regWs(home, repo, 'ws-hb', '/wt/hb');
+    liveness.writeVerdict('ws-hb', { status: 'stale', lastOutboundTs: 5, staleSince: 5, nudgeAttempts: 2 }, home);
+    const r = cli.run(['heartbeat', 'ws-hb'], ctx(home, { cwd: repo, now }));
+    assert.equal(r.result.ok, true);
+    const v = JSON.parse(fs.readFileSync(liveness.livenessPathFor('ws-hb', home), 'utf8'));
+    assert.equal(v.status, 'alive', 'a heartbeat must clear the stale verdict to alive');
+    assert.equal(v.staleSince, null);
+    assert.equal(v.nudgeAttempts, 0, 'the nudge budget is reset by proof-of-life');
+  } finally { rm(home); rm(repo); }
+});
+
+// ============================================================================
+// FIX WAVE: P1-3 / P1-5 / P1-6 / P2-9 (P1-1/P1-2 covered in devswarm-send.test.js;
+// P1-7 in tests/companion/liveness.test.js)
+// ============================================================================
+
+// P1-6: register --worktree pointing into a DIFFERENT git project than the
+// invoking cwd is REFUSED (both repo keys resolve and differ) — otherwise repoA
+// could register repoB's descriptor with ownerKey=A and later reap/reconcile
+// repoB out from under it.
+test('P1-6: cross-project register --worktree (repoB from repoA cwd) is rejected', () => {
+  const home = tmpHome();
+  const repoA = makeGitRepo('xproj-a');
+  const repoB = makeGitRepo('xproj-b');
+  try {
+    const r = cli.run(['register', 'ws-x', '--worktree', repoB, '--session', 's'], ctx(home, { cwd: repoA }));
+    assert.equal(r.result.ok, false, 'a cross-project register must be refused');
+    assert.match(r.result.error, /different project|cross-project/);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-x')), false, 'no descriptor may be written on a refused cross-project register');
+  } finally { rm(home); rm(repoA); rm(repoB); }
+});
+
+test('P1-6: register --worktree of the SAME project as cwd is still accepted', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('xproj-same');
+  try {
+    const r = cli.run(['register', 'ws-same', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, 'same-project register must still work');
+  } finally { rm(home); rm(repo); }
+});
+
+// P1-3: a tombstone-write failure mid-archive (simulated ENOSPC — the summary
+// path is a directory so deriveSummary's atomic rename fails) must ROLL BACK:
+// the active descriptor stays, and the registry row is revived (all-or-nothing).
+test('P1-3: archive rolls back on a tombstone-write failure — descriptor + registry left intact', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('archive-rollback');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const reg = cli.run(['register', 'ws-roll', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    assert.equal(reg.result.ok, true);
+    assert.equal(reg.result.descriptor.ownerKey, repoKey);
+    // Sabotage the summary write path: replace summaries/<repoKey>.json with a
+    // NON-EMPTY directory so deriveSummary's rename-onto-target fails (portable
+    // stand-in for the ENOSPC this machine actually hit).
+    const sumPath = storeLib.summaryPathForHash(home, repoKey);
+    fs.mkdirSync(path.dirname(sumPath), { recursive: true });
+    try { fs.rmSync(sumPath, { force: true }); } catch (_) {}
+    fs.mkdirSync(sumPath, { recursive: true });
+    fs.writeFileSync(path.join(sumPath, 'blocker'), 'x');
+
+    const r = cli.run(['archive', 'ws-roll'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, false, 'archive must fail when the tombstone write fails');
+    assert.equal(r.result.descriptorArchived, false);
+    assert.match(r.result.error, /rolled back|nothing archived/);
+
+    // ROLLBACK invariants: active descriptor still present, NOT moved to archived/.
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-roll')), true, 'the active descriptor must survive a rolled-back archive');
+    assert.equal(fs.existsSync(path.join(cli.archivedDir(home), 'ws-roll.json')), false, 'nothing may be left in archived/ after rollback');
+
+    // Registry row revived (undo the directory sabotage first so we can read it).
+    fs.rmSync(sumPath, { recursive: true, force: true });
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try { assert.ok(s.listRegistry().some((w) => w.id === 'ws-roll'), 'the registry row must be revived (all-or-nothing)'); }
+    finally { s.close(); }
+  } finally { rm(home); rm(repo); }
+});
+
+// P1-5: the archive critical section re-validates INSIDE the per-id lock,
+// immediately before the mutation. When the revalidate predicate reports the
+// workspace went live, the archive is SKIPPED — nothing is moved or tombstoned.
+// This is the exact seam cmdReapStale wires to close the reap TOCTOU.
+test('P1-5: cmdArchive SKIPS (no move, no tombstone) when the in-lock revalidate reports the workspace went live', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reap-revalidate');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const reg = cli.run(['register', 'ws-live', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    assert.equal(reg.result.ok, true);
+    let called = 0;
+    const r = cli.cmdArchive('ws-live', ctx(home, { cwd: repo }), { revalidate: () => { called++; return 'fresh-heartbeat'; } });
+    assert.equal(called, 1, 'revalidate must run exactly once, inside the critical section');
+    assert.equal(r.ok, true);
+    assert.equal(r.skipped, true, 'a workspace that went live must be skipped');
+    assert.equal(r.reason, 'fresh-heartbeat');
+    assert.equal(r.descriptorArchived, false);
+    // Nothing archived: descriptor stays active, registry row survives.
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-live')), true);
+    assert.equal(fs.existsSync(path.join(cli.archivedDir(home), 'ws-live.json')), false);
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try { assert.ok(s.listRegistry().some((w) => w.id === 'ws-live'), 'the registry row must survive a skipped archive'); }
+    finally { s.close(); }
+  } finally { rm(home); rm(repo); }
+});
+
+test('P1-5: cmdArchive PROCEEDS when the revalidate returns falsy (no skip)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reap-proceed');
+  try {
+    cli.run(['register', 'ws-go', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    const r = cli.cmdArchive('ws-go', ctx(home, { cwd: repo }), { revalidate: () => null });
+    assert.equal(r.ok, true);
+    assert.ok(!r.skipped, 'a null revalidate must not skip');
+    assert.equal(r.descriptorArchived, true, 'the archive must proceed');
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-go')), false, 'the descriptor must be moved out of workspaces/');
+  } finally { rm(home); rm(repo); }
+});
+
+// P2-9: the roster's read-only split-brain fallback must NOT materialize a store.
+// With no hash-bucket primary present, the fallback probes via a summary READ
+// (readSummaryForHash) and creates nothing.
+test('P2-9: roster fallback does not create the hash-bucket store dir when no split-brain primary exists', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('roster-nocreate');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const mainWorktree = inst.resolveMainWorktree(repo);
+    const primaryMeshId = inst.primaryWorkspaceId(mainWorktree);
+    const fallbackHash = storeLib.hashFromWorkspaceId(primaryMeshId);
+    assert.notEqual(fallbackHash, repoKey, 'precondition: fallback hash differs from repoKey');
+    const fallbackDir = storeLib.storeDirForHash(home, fallbackHash);
+    assert.equal(fs.existsSync(fallbackDir), false, 'precondition: fallback store dir absent');
+
+    const io = { run: () => { throw new Error('hivecontrol not installed'); } };
+    const r = cli.run(['roster'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true);
+    assert.equal(fs.existsSync(fallbackDir), false, 'the roster fallback must NOT materialize the hash-bucket store dir');
+  } finally { rm(home); rm(repo); }
+});
+
+// P1-8: the ownerKey forward-migration backfills a descriptor missing ownerKey and
+// is idempotent (a re-run changes nothing). Fail-open, no-delete.
+test('P1-8: migrateOwnerKeys backfills a missing ownerKey and is idempotent', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('ownerkey-migrate');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    // Register normally, then STRIP ownerKey to simulate a pre-migration descriptor.
+    cli.run(['register', 'ws-mig', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    const dp = cli.descriptorPath(home, 'ws-mig');
+    const d = JSON.parse(fs.readFileSync(dp, 'utf8'));
+    delete d.ownerKey;
+    fs.writeFileSync(dp, JSON.stringify(d));
+
+    const first = cli.migrateOwnerKeys(home, { cwd: repo });
+    assert.equal(first.backfilled, 1, 'the missing ownerKey must be backfilled');
+    const after = JSON.parse(fs.readFileSync(dp, 'utf8'));
+    assert.equal(after.ownerKey, repoKey, 'ownerKey must be backfilled to the resolved repoKey');
+
+    const second = cli.migrateOwnerKeys(home, { cwd: repo });
+    assert.equal(second.backfilled, 0, 'a re-run must backfill nothing (idempotent)');
+    assert.equal(second.rehomed, 0);
+  } finally { rm(home); rm(repo); }
+});
+
+// P2-11: cmdHeartbeat must compute `pending` from the descriptor's real unread
+// backlog (mirroring computeLiveness's `hbBacklog.known && lines.length>0`), not
+// hardcode pending:false — so the two verdict-write paths agree.
+test('P2-11: heartbeat writes pending computed from the real backlog, not a hardcoded false', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('hb-pending');
+  try {
+    const inbox = path.join(home, 'inbox.ndjson');
+    const cursor = path.join(home, 'cursor');
+    fs.writeFileSync(inbox, JSON.stringify({ m: 1 }) + '\n' + JSON.stringify({ m: 2 }) + '\n');
+    fs.writeFileSync(cursor, '0');
+    cli.run(['register', 'ws-p', '--worktree', repo, '--session', 's', '--inbox', inbox, '--cursor', cursor], ctx(home, { cwd: repo }));
+
+    cli.run(['heartbeat', 'ws-p'], ctx(home, { cwd: repo }));
+    const v = JSON.parse(fs.readFileSync(liveness.livenessPathFor('ws-p', home), 'utf8'));
+    assert.equal(v.pending, true, 'pending must reflect the 2 unread messages past the cursor');
+
+    // Cursor caught up -> pending false on the next heartbeat.
+    fs.writeFileSync(cursor, '2');
+    cli.run(['heartbeat', 'ws-p'], ctx(home, { cwd: repo }));
+    const v2 = JSON.parse(fs.readFileSync(liveness.livenessPathFor('ws-p', home), 'utf8'));
+    assert.equal(v2.pending, false, 'a caught-up cursor must yield pending:false');
+  } finally { rm(home); rm(repo); }
+});
+
+// P2-10: concurrent heartbeats must not collide on a shared <id>.json.tmp — each
+// write uses a unique temp name, so a burst of heartbeats all succeed and the
+// final durable file is intact.
+test('P2-10: a burst of heartbeats (unique temp names) all succeed with an intact final file', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('hb-tmp');
+  try {
+    cli.run(['register', 'ws-b', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    for (let i = 0; i < 20; i++) {
+      const r = cli.run(['heartbeat', 'ws-b', '--progress', String(i)], ctx(home, { cwd: repo }));
+      assert.equal(r.result.ok, true);
+    }
+    const beat = JSON.parse(fs.readFileSync(path.join(cli.heartbeatsDir(home), 'ws-b.json'), 'utf8'));
+    assert.equal(beat.id, 'ws-b');
+    // No stray .tmp files left behind in the heartbeats dir.
+    const leftovers = fs.readdirSync(cli.heartbeatsDir(home)).filter((n) => n.includes('.tmp'));
+    assert.equal(leftovers.length, 0, 'no staged temp files may leak');
+  } finally { rm(home); rm(repo); }
+});
+
+// ============================================================================
+// Consolidated fix pass (feat/devswarm-primary-lifecycle re-review):
+// G1 fail-closed per-id lock, G2 crash-safe archive recovery-intent, G3
+// ensure/archive hash-bucket-vs-cross-project, GH1 stranded-workspace
+// visibility, GH2 migrateOwnerKeys raw active enumeration.
+// ============================================================================
+const recovery = require('../../plugins/anti-hall/companion/lib/recovery.js');
+function writeActiveDesc(home, id, d) {
+  const p = cli.descriptorPath(home, id);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(d));
+  return p;
+}
+
+// --- G1: withIdLock fails CLOSED (mutation must NOT run under a held lock) ---
+test('G1: cmdArchive does NOT mutate when the per-id lock is held by another op (fail-closed)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('g1-archive');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    writeActiveDesc(home, 'ws1', { id: 'ws1', worktreePath: repo, sessionId: 's', ownerKey: repoKey });
+    seedRegistry(home, repoKey, { id: 'ws1', worktreePath: repo, sessionId: 's' });
+    const release = recovery.acquireLock('ws1', home);
+    assert.equal(typeof release, 'function', 'precondition: the lock is held');
+    try {
+      const r = cli.cmdArchive('ws1', ctx(home, { cwd: repo }));
+      assert.equal(r.ok, false);
+      assert.equal(r.lockBusy, true, 'a held lock must surface lockBusy, not run unlocked');
+      assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws1')), true,
+        'the active descriptor must remain — the mutation did NOT proceed');
+    } finally { release(); }
+    // Once the lock is released the same archive proceeds normally.
+    const r2 = cli.cmdArchive('ws1', ctx(home, { cwd: repo }));
+    assert.equal(r2.ok, true);
+    assert.equal(r2.descriptorArchived, true);
+  } finally { rm(home); rm(repo); }
+});
+
+test('G1: cmdRegister ensure returns lockBusy (no descriptor write) under a held lock', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('g1-reg');
+  try {
+    const release = recovery.acquireLock('ws-new', home);
+    try {
+      const r = cli.run(['register', 'ws-new', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+      assert.equal(r.result.ok, false);
+      assert.equal(r.result.lockBusy, true);
+      assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-new')), false,
+        'no descriptor may be written while the lock is held');
+    } finally { release(); }
+  } finally { rm(home); rm(repo); }
+});
+
+// --- G3: archive re-homes a hash-bucket stranded ws; rejects a real repoKey ---
+test('G3: cmdArchive RE-HOMES a hash-bucket-stranded workspace (not rejected) and archives it', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('g3-hb');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const hashKey = storeLib.hashFromWorkspaceId('ws-hb');
+    assert.notEqual(hashKey, repoKey);
+    writeActiveDesc(home, 'ws-hb', { id: 'ws-hb', worktreePath: repo, sessionId: 's', ownerKey: hashKey });
+    seedRegistry(home, hashKey, { id: 'ws-hb', worktreePath: repo, sessionId: 's' });
+    const r = cli.cmdArchive('ws-hb', ctx(home, { cwd: repo }));
+    assert.equal(r.ok, true, 'hash-bucket-stranded archive must heal, not reject: ' + JSON.stringify(r));
+    assert.equal(r.descriptorArchived, true);
+    // the row must be tombstoned in the RE-HOMED (repoKey) store, not left live in the hash bucket
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    let sum; try { sum = storeLib.computeSummary(s, { home }); } finally { s.close(); }
+    assert.ok(!sum.workspaces || !sum.workspaces['ws-hb'], 'the re-homed row must be tombstoned');
+  } finally { rm(home); rm(repo); }
+});
+
+test('G3: cmdArchive REJECTS a descriptor whose ownerKey is a REAL different repoKey (genuine cross-project)', () => {
+  const home = tmpHome();
+  const repoA = makeGitRepo('g3-A');
+  const repoB = makeGitRepo('g3-B');
+  try {
+    const keyB = repokey.repoKeyForWorktree(repoB);
+    writeActiveDesc(home, 'ws-x', { id: 'ws-x', worktreePath: repoB, sessionId: 's', ownerKey: keyB, repoKey: keyB });
+    seedRegistry(home, keyB, { id: 'ws-x', worktreePath: repoB, sessionId: 's' });
+    const r = cli.cmdArchive('ws-x', ctx(home, { cwd: repoA }));
+    assert.equal(r.ok, false);
+    assert.match(String(r.error), /does not belong to the current project/);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-x')), true, 'cross-project archive must not remove the descriptor');
+  } finally { rm(home); rm(repoA); rm(repoB); }
+});
+
+test('G3: ensure RE-HOMES a hash-bucket-stranded descriptor and REJECTS a real cross-project ownerKey', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('g3e');
+  const repoB = makeGitRepo('g3eB');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const keyB = repokey.repoKeyForWorktree(repoB);
+    const hashKey = storeLib.hashFromWorkspaceId('ws-e');
+    // (a) hash-bucket stranded -> ensure heals
+    writeActiveDesc(home, 'ws-e', { id: 'ws-e', worktreePath: repo, sessionId: 's', ownerKey: hashKey });
+    seedRegistry(home, hashKey, { id: 'ws-e', worktreePath: repo, sessionId: 's' });
+    const r = cli.run(['ensure', 'ws-e'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, 'ensure must heal the hash bucket: ' + JSON.stringify(r.result));
+    assert.equal(r.result.descriptor.ownerKey, repoKey);
+    // (b) real cross-project ownerKey (worktree in project B) -> ensure from A rejects
+    writeActiveDesc(home, 'ws-e2', { id: 'ws-e2', worktreePath: repoB, sessionId: 's', ownerKey: keyB, repoKey: keyB });
+    seedRegistry(home, keyB, { id: 'ws-e2', worktreePath: repoB, sessionId: 's' });
+    const r2 = cli.run(['ensure', 'ws-e2'], ctx(home, { cwd: repo }));
+    assert.equal(r2.result.ok, false, 'ensure must reject a genuine cross-project descriptor');
+    assert.match(String(r2.result.error), /different project|does not belong/);
+  } finally { rm(home); rm(repo); rm(repoB); }
+});
+
+// --- GH1: a hash-bucket-stranded workspace becomes visible to the mesh callers ---
+test('GH1: a hash-bucket-stranded workspace is visible to reconcile, workspaces-list, and gate', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('gh1');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const hashKey = storeLib.hashFromWorkspaceId('ws-str');
+    writeActiveDesc(home, 'ws-str', { id: 'ws-str', worktreePath: repo, sessionId: 's', ownerKey: hashKey });
+    seedRegistry(home, hashKey, { id: 'ws-str', worktreePath: repo, sessionId: 's' });
+    // reconcile: the stranded child's pull IS spawned
+    const spawned = [];
+    const io = { spawnReconcile: (d) => { spawned.push(d.id); return { status: 0, stdout: JSON.stringify({ ok: true, imported: 0 }), error: null }; } };
+    const rr = cli.run(['reconcile'], ctx(home, { cwd: repo, io }));
+    assert.equal(rr.result.count, 1);
+    assert.deepEqual(spawned, ['ws-str'], 'reconcile must spawn the stranded child pull');
+    // workspaces-list: counted (not undercounted). Re-strand first to prove list ALSO heals.
+    const home2 = tmpHome();
+    try {
+      writeActiveDesc(home2, 'ws-str2', { id: 'ws-str2', worktreePath: repo, sessionId: 's', ownerKey: storeLib.hashFromWorkspaceId('ws-str2') });
+      seedRegistry(home2, storeLib.hashFromWorkspaceId('ws-str2'), { id: 'ws-str2', worktreePath: repo, sessionId: 's' });
+      const wl = cli.cmdWorkspacesList({}, ctx(home2, { cwd: repo }));
+      assert.equal(wl.count, 1, 'workspaces-list must not undercount a stranded workspace');
+      assert.ok((wl.workspaces || []).some((w) => w.id === 'ws-str2'));
+    } finally { rm(home2); }
+    // gate: tracked:true (heals per-id before opening the store)
+    const home3 = tmpHome();
+    try {
+      writeActiveDesc(home3, 'ws-str3', { id: 'ws-str3', worktreePath: repo, sessionId: 's', ownerKey: storeLib.hashFromWorkspaceId('ws-str3') });
+      seedRegistry(home3, storeLib.hashFromWorkspaceId('ws-str3'), { id: 'ws-str3', worktreePath: repo, sessionId: 's' });
+      const g = cli.cmdGate('ws-str3', { set: ['done'] }, ctx(home3, { cwd: repo }));
+      assert.equal(g.tracked, true, 'gate must see the re-homed stranded workspace');
+    } finally { rm(home3); }
+  } finally { rm(home); rm(repo); }
+});
+
+// --- GH2: migrateOwnerKeys enumerates ACTIVE descriptors lacking sessionId ---
+test('GH2: migrateOwnerKeys migrates an ACTIVE descriptor that has no sessionId', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('gh2');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const hashKey = storeLib.hashFromWorkspaceId('ws-ns');
+    // active descriptor, hash-bucket ownerKey, NO sessionId (readDescriptors would skip it)
+    writeActiveDesc(home, 'ws-ns', { id: 'ws-ns', worktreePath: repo, ownerKey: hashKey });
+    seedRegistry(home, hashKey, { id: 'ws-ns', worktreePath: repo });
+    const r = cli.migrateOwnerKeys(home, { cwd: repo });
+    assert.equal(r.scanned, 1, 'the sessionId-less active descriptor must be enumerated');
+    assert.equal(r.rehomed, 1, 'and re-homed out of the hash bucket');
+    const after = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'ws-ns'), 'utf8'));
+    assert.equal(after.ownerKey, repoKey);
+  } finally { rm(home); rm(repo); }
+});
+
+// --- G2: crash-safe archive rollback persists a recovery-intent on double failure ---
+test('G2: cmdArchive persists a recovery-intent and reports failure when tombstone AND revive both fail; applyRecoveryIntents revives', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('g2');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    writeActiveDesc(home, 'ws-crash', { id: 'ws-crash', worktreePath: repo, sessionId: 's', ownerKey: repoKey });
+    seedRegistry(home, repoKey, { id: 'ws-crash', worktreePath: repo, sessionId: 's' });
+
+    // Force: removeRegistry lands (tombstone), the module-level deriveSummary
+    // (what cmdArchive calls after removeRegistry) throws (ENOSPC-like), and the
+    // rollback revive s.upsertRegistry ALSO throws -> split-brain averted only by
+    // the durable recovery-intent marker. listRegistry stays real so
+    // registryRowPresent correctly reports the row as tombstoned (absent).
+    const origOpen = storeLib.openStore;
+    const origDerive = storeLib.deriveSummary;
+    let failWrites = true;
+    storeLib.deriveSummary = (...a) => { if (failWrites) throw new Error('ENOSPC (simulated)'); return origDerive(...a); };
+    storeLib.openStore = (opts) => {
+      const s = origOpen(opts);
+      const realUpsert = s.upsertRegistry.bind(s);
+      s.upsertRegistry = (...a) => { if (failWrites) throw new Error('ENOSPC (simulated)'); return realUpsert(...a); };
+      return s;
+    };
+    let r;
+    try {
+      r = cli.cmdArchive('ws-crash', ctx(home, { cwd: repo }));
+    } finally { storeLib.openStore = origOpen; storeLib.deriveSummary = origDerive; }
+
+    assert.equal(r.ok, false, 'archive must report failure, not success');
+    assert.equal(r.recoveryIntent, true, 'a lingering recovery-intent must be flagged');
+    assert.equal(fs.existsSync(cli.recoveryIntentPath(home, 'ws-crash')), true,
+      'the recovery-intent marker must persist on disk');
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-crash')), true,
+      'the active descriptor must remain (rollback dropped the archived link)');
+
+    // Now the store writes work again: doctor/next-run discharges the intent.
+    const rec = cli.applyRecoveryIntents(home, { cwd: repo, backend: 'journal' });
+    assert.equal(rec.revived, 1, 'the tombstoned row must be revived from the marker');
+    assert.equal(fs.existsSync(cli.recoveryIntentPath(home, 'ws-crash')), false, 'the marker is cleared after a verified revive');
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    let rows; try { rows = s.listRegistry(); } finally { s.close(); }
+    assert.ok(rows.some((x) => x && x.id === 'ws-crash'), 'the registry row is live again');
+  } finally { rm(home); rm(repo); }
+});
+
+test('G2: a successful archive leaves NO recovery-intent marker behind', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('g2-clean');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    writeActiveDesc(home, 'ws-ok', { id: 'ws-ok', worktreePath: repo, sessionId: 's', ownerKey: repoKey });
+    seedRegistry(home, repoKey, { id: 'ws-ok', worktreePath: repo, sessionId: 's' });
+    const r = cli.cmdArchive('ws-ok', ctx(home, { cwd: repo }));
+    assert.equal(r.ok, true);
+    assert.equal(fs.existsSync(cli.recoveryIntentPath(home, 'ws-ok')), false, 'the marker must be discharged on success');
+  } finally { rm(home); rm(repo); }
+});
+
+// --- P1: a stale recovery-intent marker must NOT clobber a legitimately
+// re-registered workspace's fresh registry row ---
+// Repro: a marker is captured from descriptor A (pre-archive), but the archive
+// never actually finished tombstoning+clearing (crash between the two). Before
+// doctor/next-run gets to applyRecoveryIntents, the SAME id is legitimately
+// re-registered with fresh descriptor B (ids are deterministic — e.g. the
+// inbox-pull ensure-path recreates the same id every turn) and its own correct
+// registry row. `activeExists` alone can't distinguish "archive never finished"
+// from "archive finished, then id was re-registered" — both leave an active
+// descriptor at `id`. Without a fingerprint check, applyRecoveryIntents would
+// upsert the STALE marker.descriptor (A), clobbering the fresh row (B).
+test('G2/P1: a stale recovery-intent marker does NOT clobber a re-registered workspace with fresh content', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('g2-p1-clobber');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const id = 'ws-reregistered';
+
+    // Descriptor A: the pre-archive snapshot captured into the marker.
+    const descA = { id, worktreePath: repo, sessionId: 'session-A', ownerKey: repoKey };
+    const fpA = crypto.createHash('sha256').update(JSON.stringify(descA)).digest('hex');
+
+    // Simulate cmdArchive crashing AFTER writing the recovery-intent marker but
+    // BEFORE clearing it (marker on disk, referencing descriptor A).
+    fs.mkdirSync(path.dirname(cli.recoveryIntentPath(home, id)), { recursive: true });
+    fs.writeFileSync(cli.recoveryIntentPath(home, id), JSON.stringify({
+      id, ownerKey: repoKey, op: 'archive', descriptor: descA, fingerprint: fpA, ts: Date.now(),
+    }));
+
+    // The SAME id is now legitimately re-registered with FRESH descriptor B and
+    // its own correct (fresh) registry row — unrelated to the crashed archive.
+    const descB = { id, worktreePath: repo, sessionId: 'session-B', ownerKey: repoKey };
+    writeActiveDesc(home, id, descB);
+    seedRegistry(home, repoKey, descB);
+
+    const rec = cli.applyRecoveryIntents(home, { cwd: repo, backend: 'journal' });
+    assert.equal(rec.revived, 0, 'the stale marker must NOT be treated as a revive');
+    assert.equal(fs.existsSync(cli.recoveryIntentPath(home, id)), false, 'the stale marker must be cleared');
+
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    let rows; try { rows = s.listRegistry(); } finally { s.close(); }
+    const live = rows.filter((x) => x && x.id === id);
+    assert.equal(live.length, 1, 'exactly one live row for this id');
+    assert.equal(live[0].sessionId, 'session-B', 'the FRESH registry row (B) must survive untouched — NOT clobbered by the stale marker (A: session-A)');
   } finally { rm(home); rm(repo); }
 });

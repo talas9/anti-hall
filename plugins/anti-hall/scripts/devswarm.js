@@ -111,15 +111,17 @@
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const store = require('../companion/lib/devswarm-store.js');
 const inboxCursor = require('../companion/lib/devswarm-inbox-cursor.js');
 const {
   isSafeId, devswarmRoot, livenessPathFor,
+  writeVerdict, hasFreshHeartbeat, worktreeActivityMtime, unreadBacklog, DEFAULT_IDLE_MS,
 } = require('../companion/lib/liveness.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
-const { pokeOrEscalate } = require('../companion/lib/recovery.js');
+const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
 const migrate = require('../companion/devswarm-migrate.js');
 const pull = require('../companion/lib/devswarm-pull.js');
 const inst = require('../companion/install-devswarm-ingest.js');
@@ -127,6 +129,56 @@ const repokey = require('../companion/lib/devswarm-repokey.js');
 const ingestHealth = require('../companion/lib/ingest-health.js');
 const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
 const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
+
+// ---------------------------------------------------------------------------
+// Per-id advisory lock (P1-4/P1-5/P1-1/P1-2). REUSES recovery.js's acquireLock
+// (atomic O_EXCL create of locks/<id>.lock carrying {pid,ts,token}, dead/stale-
+// holder steal, release unlinks ONLY when the on-disk token is still ours) so a
+// descriptor+registry mutation (register / archive / unarchive / reap / re-home)
+// for ONE workspace id is never interleaved across processes. acquireLock is
+// NON-BLOCKING (returns null on a live fresh holder); acquireIdLock adds a
+// BOUNDED sync retry (Atomics.wait — cross-platform, no busy-spin) so the common
+// case — the other critical section finishing in a few ms — actually serializes,
+// then FAILS OPEN (proceeds UNLOCKED) rather than ever wedging a legitimate
+// action. The lock is best-effort mutual exclusion layered UNDER the existing
+// inode/ownership re-checks, never a hard gate.
+// Monotonic per-process counter for unique staged temp filenames (P2-10).
+let heartbeatTmpCounter = 0;
+function acquireIdLock(id, home, opts) {
+  const o = opts || {};
+  const budgetMs = Number.isFinite(o.budgetMs) ? o.budgetMs : 2000;
+  const stepMs = 25;
+  const deadline = Date.now() + budgetMs;
+  for (;;) {
+    let release = null;
+    try { release = acquireLock(id, home); } catch (_) { release = null; }
+    if (typeof release === 'function') return release;
+    if (Date.now() >= deadline) return null; // fail-open: proceed unlocked
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stepMs); } catch (_) { /* sleep best-effort */ }
+  }
+}
+// withIdLock(id, home, fn, opts) — run fn() under the per-id lock, ALWAYS
+// releasing in finally. FAILS CLOSED (G1): if the lock cannot be acquired within
+// acquireIdLock's budget (a live, fresh holder is mid-mutation), fn is NOT run —
+// running it unlocked would silently defeat the register/archive/reap/re-home
+// serialization the lock exists for. Returns a `{ok:false, lockBusy:true}`
+// surface the caller reports (never treated as success). This is safe against a
+// permanent wedge because acquireLock (recovery.js) STEALS a dead holder's lock
+// and any lock older than LOCK_STALE_MS (15min) — so only a genuinely live-
+// contended mutation is refused, and the caller may retry.
+function withIdLock(id, home, fn, opts) {
+  const release = acquireIdLock(id, home, opts);
+  if (typeof release !== 'function') {
+    return {
+      ok: false,
+      lockBusy: true,
+      id,
+      error: 'workspace ' + JSON.stringify(id) + ' is locked by another operation in progress; retry shortly',
+    };
+  }
+  try { return fn(); }
+  finally { try { release(); } catch (_) { /* stale/not-ours */ } }
+}
 
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
 // looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
@@ -214,6 +266,26 @@ function callerIdentity(env, cwd) {
 // ----- paths -----
 function workspacesDir(home) { return path.join(devswarmRoot(home), 'workspaces'); }
 function archivedDir(home) { return path.join(devswarmRoot(home), 'archived'); }
+function checkedArchivedDir(home, { create = false, F } = {}) {
+  const G = F || fs;
+  const dir = archivedDir(home);
+  let st;
+  try { st = G.lstatSync(dir); }
+  catch (e) {
+    if (!e || e.code !== 'ENOENT') return { ok: false, path: dir, error: String(e && e.message || e) };
+    if (!create) return { ok: true, path: dir, exists: false };
+    try {
+      G.mkdirSync(dir, { recursive: true });
+      st = G.lstatSync(dir);
+    } catch (mkdirError) {
+      return { ok: false, path: dir, error: String(mkdirError && mkdirError.message || mkdirError) };
+    }
+  }
+  if (!st.isDirectory() || st.isSymbolicLink()) {
+    return { ok: false, path: dir, error: 'archived path is not a real directory' };
+  }
+  return { ok: true, path: dir, exists: true };
+}
 function heartbeatsDir(home) { return path.join(devswarmRoot(home), 'heartbeats'); }
 function archiveIgnoreDir(home) { return path.join(devswarmRoot(home), 'archive-ignore'); }
 function descriptorPath(home, id) { return path.join(workspacesDir(home), id + '.json'); }
@@ -221,6 +293,48 @@ function descriptorPath(home, id) { return path.join(workspacesDir(home), id + '
 // ALLOW location for the read-guard, deliberately NOT under store/ or inbox/ (which
 // hold the message trail itself). A bare integer = consumed message count.
 function primaryCursorPath(home, id) { return path.join(devswarmRoot(home), 'cursors', id + '.json'); }
+
+// ----- G2 crash-safe archive: recovery-intent markers -----
+// A durable per-id marker written BEFORE cmdArchive tombstones a registry row and
+// cleared only after the archive fully completes OR the registry row is verifiably
+// restored. Its purpose: if the in-process rollback ALSO fails (e.g. ENOSPC
+// defeats the revive upsert), or the process is killed between the tombstone and
+// its clearance, a durable record survives so doctor/next-run can revive the row
+// — closing the split-brain window (active descriptor + tombstoned registry) the
+// P1-3 all-or-nothing sequence otherwise leaves if rollback is swallowed.
+function recoveryIntentDir(home) { return path.join(devswarmRoot(home), 'recovery-intent'); }
+function recoveryIntentPath(home, id) { return path.join(recoveryIntentDir(home), id + '.json'); }
+// descriptorFingerprint(desc) -> sha256 hex of the exact descriptor JSON bytes at
+// marker-write time. Lets applyRecoveryIntents tell "archive never finished"
+// (descriptor unchanged since the marker was written) apart from "this id was
+// re-registered with fresh content after a crashed archive" (descriptor rewritten
+// -> new hash) — the ambiguity that let a stale marker clobber a legitimately
+// re-registered workspace's fresh registry row.
+function descriptorFingerprint(desc) {
+  try { return crypto.createHash('sha256').update(JSON.stringify(desc)).digest('hex'); }
+  catch (_) { return null; }
+}
+function writeRecoveryIntent(home, id, payload) {
+  const dir = recoveryIntentDir(home);
+  fs.mkdirSync(dir, { recursive: true });
+  const p = recoveryIntentPath(home, id);
+  const tmp = p + '.' + process.pid + '.' + (heartbeatTmpCounter++) + '.tmp';
+  try { fs.writeFileSync(tmp, JSON.stringify(payload)); fs.renameSync(tmp, p); }
+  catch (e) { try { fs.unlinkSync(tmp); } catch (_) {} throw e; }
+}
+function clearRecoveryIntent(home, id) {
+  try { fs.unlinkSync(recoveryIntentPath(home, id)); } catch (_) { /* absent = already clear */ }
+}
+// registryRowPresent — re-open the store and confirm id is a LIVE (non-tombstoned)
+// registry row. A pure fold read (listRegistry), never a summary write, so it is
+// safe to call on the rollback path where deriveSummary is the op that failed.
+function registryRowPresent(home, id, ownerKey, ctx) {
+  try {
+    const s = store.openStore({ home, workspaceId: id, hash: ownerKey, backend: ctx.backend, env: ctx.env });
+    try { return (s.listRegistry() || []).some((r) => r && String(r.id) === String(id)); }
+    finally { s.close(); }
+  } catch (_) { return false; }
+}
 
 // ----- tiny flag parser -----
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
@@ -272,10 +386,40 @@ function csvList(flags, name) {
 
 // ----- descriptor io -----
 function readDescriptorFile(home, id, F) {
+  const state = readDescriptorPathState(descriptorPath(home, id), F);
+  return state.error ? null : state.descriptor;
+}
+function readDescriptorPathState(p, F) {
+  const G = F || fs;
   try {
-    const d = JSON.parse((F || fs).readFileSync(descriptorPath(home, id), 'utf8'));
-    return d && typeof d === 'object' ? d : null;
-  } catch (_) { return null; }
+    const st = G.lstatSync(p);
+    if (!st.isFile() || st.isSymbolicLink()) {
+      return { exists: true, descriptor: null, error: 'descriptor path is not a regular file' };
+    }
+    const d = JSON.parse(G.readFileSync(p, 'utf8'));
+    if (!d || typeof d !== 'object' || Array.isArray(d)) {
+      return { exists: true, descriptor: null, error: 'descriptor is not a JSON object' };
+    }
+    return { exists: true, descriptor: d, error: null };
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return { exists: false, descriptor: null, error: null };
+    return { exists: true, descriptor: null, error: String(e && e.message || e) };
+  }
+}
+function descriptorStructuralRepoKey(desc) {
+  if (!desc || typeof desc !== 'object') return null;
+  if (typeof desc.repoKey === 'string' && desc.repoKey) return desc.repoKey;
+  try { return desc.worktreePath ? repokey.repoKeyForWorktree(desc.worktreePath) : null; }
+  catch (_) { return null; }
+}
+function descriptorFreshRepoKey(desc) {
+  if (!desc || typeof desc !== 'object' || !desc.worktreePath) return null;
+  try { return repokey.repoKeyForWorktree(desc.worktreePath); }
+  catch (_) { return null; }
+}
+function descriptorPhysicalOwnerKey(desc) {
+  if (desc && typeof desc.ownerKey === 'string' && desc.ownerKey) return desc.ownerKey;
+  return descriptorStructuralRepoKey(desc);
 }
 function writeDescriptorAtomic(home, id, desc, F) {
   const G = F || fs;
@@ -332,6 +476,9 @@ function buildDescriptorFromFlags(id, flags, existing, env) {
 function repoKeyForCwd(ctx) {
   try { return repokey.repoKeyForWorktree((ctx && ctx.cwd) || process.cwd()); } catch (_) { return null; }
 }
+function storeOwnerKeyFor(id, ctx) {
+  return repoKeyForCwd(ctx) || store.hashFromWorkspaceId(id);
+}
 
 // upsertStoreRegistry — open the store, upsert one descriptor, re-derive summary,
 // close. Kept in one place so every write path refreshes the projection.
@@ -345,15 +492,144 @@ function repoKeyForCwd(ctx) {
 // registry entry's id / self-registration partition, D19) is UNCHANGED — only
 // WHICH physical store is opened changes.
 function upsertStoreRegistry(home, desc, ctx) {
-  const repoKey = repoKeyForCwd(ctx);
+  const ownerKey = desc.ownerKey || storeOwnerKeyFor(desc.id, ctx);
   const s = store.openStore({
-    home, workspaceId: desc.id, hash: repoKey || undefined,
+    home, workspaceId: desc.id, hash: ownerKey,
     backend: ctx && ctx.backend, env: ctx && ctx.env,
   });
   try {
     s.upsertRegistry(desc);
     store.deriveSummary(s, { home, env: ctx && ctx.env });
   } finally { s.close(); }
+}
+
+// ---------------------------------------------------------------------------
+// STORE RE-HOME (P1-1 / P1-2). A descriptor registered while repoKey was
+// transiently null lands its registry row + any messages in the LEGACY hash
+// bucket store/<hashFromWorkspaceId(id)>/ — a bucket the Primary's real read
+// verbs (`inbox messages`/`read-primary`, keyed off repoKey) never open, so a
+// "healed" send into it is a SILENT BLACK HOLE, and once ownerKey=hash is
+// persisted the ensure path REJECTS ("does not belong to the current project")
+// and locks the workspace out of its own inbox. rehomeCore MIGRATES the registry
+// row + pending messages + read cursor from the hash bucket into the resolved
+// store/<repoKey>/ and rewrites ownerKey=repoKey. ATOMIC + FAIL-OPEN +
+// NO-DELETE-until-copy-verified: it copies/upserts into the repoKey store,
+// VERIFIES every source hash + the registry row landed, and ONLY THEN tombstones
+// the hash-bucket registry row (the message rows are append-only and never
+// deleted — OR-IGNORE dedup makes a re-run idempotent). MUST be called with the
+// per-id lock held (call sites wrap it). Never throws.
+//
+// Broadcasts/heartbeats live in the SHARED BROADCAST_PARTITION_ID (not per-id)
+// and are deliberately NOT re-homed here — only the per-id direct backlog +
+// registry row (the addressed traffic the black hole affected) moves.
+function rehomeCore(home, id, repoKey, ctx) {
+  const out = { rehomed: false, movedMessages: 0, movedRegistry: false };
+  if (!repoKey) return out;
+  const hashKey = store.hashFromWorkspaceId(id);
+  if (!hashKey || hashKey === repoKey) return out; // already colocated / nothing to move
+  let hashStore = null;
+  let repoStore = null;
+  try {
+    // The hash bucket may not exist (descriptor-only split-brain) — openStore
+    // materializes it, but only when we have already decided a re-home is
+    // warranted (a persisted ownerKey=hash marker), so this is not a spurious
+    // create. Guard the whole body fail-open regardless.
+    hashStore = store.openStore({ home, workspaceId: id, hash: hashKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
+    repoStore = store.openStore({ home, workspaceId: id, hash: repoKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
+
+    // 1) Registry row: prefer the hash-bucket row; fall back to the on-disk
+    //    descriptor when the store row is absent (descriptor-only split-brain).
+    let regRow = null;
+    try { regRow = (hashStore.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null; } catch (_) { regRow = null; }
+    let regFromHash = !!regRow;
+    if (!regRow) {
+      const d = readDescriptorFile(home, id);
+      if (d && String(d.id) === String(id)) regRow = d;
+    }
+    // Nothing stranded in the hash bucket AND no descriptor to seed a row from:
+    // this is NOT a split-brain — do NOT upsert a stub into the repoKey store
+    // (that would CLOBBER a legitimately repoKey-registered row). No-op.
+    if (!regRow) return out;
+    const rehomedReg = Object.assign({}, regRow);
+    rehomedReg.id = id;
+    rehomedReg.ownerKey = repoKey;
+    if (descriptorFreshRepoKey(rehomedReg) === repoKey) rehomedReg.repoKey = repoKey;
+    repoStore.upsertRegistry(rehomedReg);
+
+    // 2) Pending direct backlog for THIS partition (id). appendMeshRow OR-IGNOREs
+    //    on hash, so a re-run never duplicates.
+    let msgs = [];
+    try { msgs = hashStore.listMessages(id, { sinceCursor: 0 }) || []; } catch (_) { msgs = []; }
+    for (const m of msgs) {
+      repoStore.appendMeshRow({
+        workspaceId: id, ts: m.ts, hash: m.hash, body: m.body,
+        sender: m.sender, recipient: m.recipient, mtype: m.mtype,
+        urgency: m.urgency, isHeartbeat: m.isHeartbeat,
+      });
+    }
+
+    // 3) Carry the read cursor forward so already-acked messages don't resurface.
+    try {
+      const hashCursor = hashStore.cursorValue(id) || 0;
+      const repoCursor = repoStore.cursorValue(id) || 0;
+      if (hashCursor > repoCursor) repoStore.setCursor(id, hashCursor);
+    } catch (_) { /* cursor carry is best-effort */ }
+
+    // 4) VERIFY the copy landed BEFORE removing anything (no-delete-until-verified).
+    const repoHashes = new Set((repoStore.listMessages(id, { sinceCursor: 0 }) || []).map((r) => r.hash).filter((h) => h != null));
+    const allMsgsPresent = msgs.every((m) => m.hash == null || repoHashes.has(m.hash));
+    const regPresent = (repoStore.listRegistry() || []).some((r) => r && String(r.id) === String(id));
+    if (!allMsgsPresent || !regPresent) {
+      // Verification failed — LEAVE the hash bucket intact (fail-open, zero loss);
+      // a later attempt retries. Reader falls back to current resolution meanwhile.
+      return out;
+    }
+
+    // 5) Copy verified — tombstone ONLY the hash-bucket registry row (message
+    //    rows stay; append-only, dedup-safe), and only when the row actually came
+    //    FROM the hash bucket (a descriptor-only re-home has nothing to tombstone).
+    //    Refresh both projections.
+    if (regFromHash) { try { hashStore.removeRegistry(id); } catch (_) { /* tombstone best-effort; verified copy already durable */ } }
+    try { store.deriveSummary(hashStore, { home, env: ctx && ctx.env }); } catch (_) {}
+    try { store.deriveSummary(repoStore, { home, env: ctx && ctx.env }); } catch (_) {}
+
+    // 6) Rewrite the descriptor's persisted ownership so ensure stops rejecting.
+    const desc = readDescriptorFile(home, id);
+    if (desc && String(desc.id) === String(id)) {
+      desc.ownerKey = repoKey;
+      if (descriptorFreshRepoKey(desc) === repoKey) desc.repoKey = repoKey;
+      try { writeDescriptorAtomic(home, id, desc); } catch (_) { /* descriptor rewrite best-effort; store already re-homed */ }
+    }
+    out.rehomed = true;
+    out.movedMessages = msgs.length;
+    out.movedRegistry = regFromHash;
+    return out;
+  } catch (_) {
+    return out; // fail-open: a re-home hiccup must never break the caller's verb
+  } finally {
+    if (hashStore) { try { hashStore.close(); } catch (_) {} }
+    if (repoStore) { try { repoStore.close(); } catch (_) {} }
+  }
+}
+
+// maybeRehomeToCwdProject(home, id, ctx) — the descriptor-signalled trigger: if
+// the CURRENT cwd resolves a repoKey AND the on-disk descriptor's persisted
+// ownerKey equals the legacy hash bucket key (the split-brain marker), re-home
+// under the per-id lock. Returns the rehomeCore result, or null when no re-home
+// applies. Shared by the ensure/read paths.
+function maybeRehomeToCwdProject(home, id, ctx) {
+  const repoKey = repoKeyForCwd(ctx);
+  if (!repoKey) return null;
+  const hashKey = store.hashFromWorkspaceId(id);
+  if (!hashKey || hashKey === repoKey) return null;
+  const desc = readDescriptorFile(home, id);
+  const storedOwnerKey = desc && typeof desc.ownerKey === 'string' && desc.ownerKey ? desc.ownerKey : null;
+  if (storedOwnerKey !== hashKey) return null; // not stranded in the hash bucket
+  const r = withIdLock(id, home, () => rehomeCore(home, id, repoKey, ctx));
+  // withIdLock now fails closed (G1): a lock-busy return is NOT a re-home result
+  // — normalize to null so callers' `rh && rh.rehomed` guard reads it as "no
+  // re-home this call" (the read/send/gate path fail-opens and retries later).
+  return (r && r.lockBusy) ? null : r;
 }
 
 // isForwardable(msg) — retire-forward NOISE FILTER (#67). retireWorktreeDuplicates
@@ -874,19 +1150,113 @@ function withSelfHeal(fn, ctx) {
   return r;
 }
 
+// precreateCursorAndInbox(desc) — idempotent, non-destructive precreate of a
+// descriptor's CURRENT cursorPath/inboxPath. Shared by cmdRegister's create
+// path AND its ensure/exists path (a descriptor whose inbox/cursor was
+// repointed to a new path — e.g. a worktree-local `.devswarm-temp/inbox.ndjson`
+// override — must get this precreate too: without it the cursor never gets
+// created, `inbox count/read` returns known:false forever, and
+// devswarm-parent-gate.js's Stop-hook gate reads that as "inbox unreadable"
+// for what is actually a live, active workspace. Path-agnostic: works for the
+// central-store default path (devswarmRoot/inbox|cursors/<id>) exactly the
+// same as any custom repointed path — never special-cased.
+//
+// Initialize the durable cursor to 0 (nothing consumed yet) IF it does not
+// already exist — so `inbox count/read` immediately reports all messages as
+// unread. Without a cursor file, unreadBacklog returns known:false (a
+// fail-safe for the liveness path) which would read as "nothing pending".
+// NON-DESTRUCTIVE: never clobbers an existing cursor.
+//
+// Initialize an EMPTY durable inbox file IF it does not already exist — so a
+// freshly-registered child reads as known:true/0-unread (confirmed-empty)
+// rather than known:false (unreadable/absent, devswarm-parent-gate.js's
+// Stop-hook gate's genuine-anomaly signal). Without this, "just registered,
+// never messaged" and "genuinely neglected, inbox never written" are the
+// SAME fs state (cursor present, inbox absent) and the gate cannot tell them
+// apart. TRUNCATION-PROOF CREATE (P0 data-loss fix, hardened): a plain
+// `existsSync` + `writeFileSync` (default flag 'w', which TRUNCATES) is a
+// TOCTOU race — a concurrent devswarm-pull.js drain (companion/lib/devswarm-
+// pull.js) can create + durably append to this SAME inboxPath, under its OWN
+// per-id lock that register never takes, in the window between the
+// existsSync check and the write, and the truncating write then ERASES that
+// real content. An earlier fix used `wx` (exclusive create, fails closed on
+// EEXIST), but O_EXCL exclusivity is documented as unreliable over some
+// network filesystems (NFS). `a` (append) sidesteps this entirely: it opens
+// for append and CREATES the file if absent, and appending '' never
+// truncates existing content on ANY filesystem — no reliance on O_EXCL
+// exclusivity at all. So this can NEVER clobber a pull-written inbox, race
+// or no race, on any filesystem. Cross-platform (supported on win32/macOS/
+// linux). Fail-open: any error (permissions etc.) is swallowed — best-effort
+// init only; append mode does not throw on an already-existing file.
+function precreateCursorAndInbox(desc) {
+  if (desc.cursorPath) {
+    try {
+      fs.mkdirSync(path.dirname(desc.cursorPath), { recursive: true });
+      fs.writeFileSync(desc.cursorPath, '0', { flag: 'wx' });
+    } catch (_) { /* fail-open: best-effort init only, non-fatal (matches inbox block below) */ }
+  }
+  if (desc.inboxPath) {
+    try {
+      fs.mkdirSync(path.dirname(desc.inboxPath), { recursive: true });
+      fs.writeFileSync(desc.inboxPath, '', { flag: 'a' });
+    } catch (_) { /* fail-open: best-effort init only, non-fatal to registration */ }
+  }
+}
+
 // ----- subcommands -----
+// cmdRegister — the WHOLE descriptor+registry mutation runs under the per-id
+// lock (P1-4): register / ensure serialize against a concurrent archive/reap for
+// the same id, so archive can never delete a descriptor register replaced after
+// archive's inode check, and ensure never interleaves with a re-home.
 function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   const home = ctx.home;
-  const existing = readDescriptorFile(home, id);
+  return withIdLock(id, home, () => {
+  let existing = readDescriptorFile(home, id);
   if (requireNew && existing) {
-    // ensure: idempotent — leave the on-disk descriptor untouched, but still
-    // re-upsert the store registry so the projection reflects it. Also reconcile
+    // ensure: idempotent — preserve the descriptor fields, backfilling only a
+    // structurally-proven legacy ownerKey, then re-upsert the store registry. Also reconcile
     // any legacy/phantom duplicate row for this SAME worktree every time (the
     // steady-state child path: `inbox pull` auto-ensures each turn), so a
     // duplicate created AFTER the child's first register is still retired.
+    //
+    // FIX (split-brain gate nag): this branch used to skip the cursor/inbox
+    // precreate entirely (only the CREATE path below ran it). A descriptor
+    // repointed to a path whose cursor was never created then stayed
+    // known:false forever, even though `inbox pull` re-enters THIS branch
+    // every turn — the ensure path must precreate too, using the descriptor's
+    // CURRENT (possibly repointed) paths, not whatever this call's flags say.
+    const currentRepoKey = repoKeyForCwd(ctx);
+    // P1-1/P1-2 RE-HOME: if the descriptor is stranded in the legacy hash bucket
+    // (persisted ownerKey === hashFromWorkspaceId(id)) and this project's repoKey
+    // now resolves, MIGRATE its registry row + messages into store/<repoKey>/ and
+    // rewrite ownerKey=repoKey BEFORE the ownership check below — so ensure no
+    // longer rejects the workspace from its own inbox. Lock already held.
+    let rehomed = null;
+    {
+      const storedOwnerKeyPre = typeof existing.ownerKey === 'string' && existing.ownerKey ? existing.ownerKey : null;
+      const hashKey = store.hashFromWorkspaceId(id);
+      if (currentRepoKey && storedOwnerKeyPre === hashKey && hashKey !== currentRepoKey) {
+        rehomed = rehomeCore(home, id, currentRepoKey, ctx);
+        if (rehomed && rehomed.rehomed) existing = readDescriptorFile(home, id) || existing;
+      }
+    }
+    const currentOwnerKey = currentRepoKey || store.hashFromWorkspaceId(id);
+    const storedOwnerKey = typeof existing.ownerKey === 'string' && existing.ownerKey ? existing.ownerKey : null;
+    const provenOwnerKey = storedOwnerKey || descriptorStructuralRepoKey(existing);
+    const activeLegacyPerId = !storedOwnerKey && !provenOwnerKey && currentRepoKey === null;
+    if ((!provenOwnerKey && !activeLegacyPerId) || (provenOwnerKey && provenOwnerKey !== currentOwnerKey)) {
+      return { ok: false, error: 'existing descriptor does not belong to the current project' };
+    }
+    const ensured = Object.assign({}, existing);
+    if (!storedOwnerKey) ensured.ownerKey = currentOwnerKey;
+    if (currentRepoKey && descriptorFreshRepoKey(ensured) === currentRepoKey) ensured.repoKey = currentRepoKey;
+    writeDescriptorAtomic(home, id, ensured);
+    existing = ensured;
+    precreateCursorAndInbox(existing);
     upsertStoreRegistry(home, existing, ctx);
     const retire = retireWorktreeDuplicates(home, existing, ctx);
     const out = { ok: true, action: 'exists', id, descriptor: existing };
+    if (rehomed && rehomed.rehomed) out.rehomed = { movedMessages: rehomed.movedMessages, movedRegistry: rehomed.movedRegistry };
     if (retire) { out.retiredDuplicates = retire.retired; out.forwardedMessages = retire.forwarded; if (retire.left) out.leftDuplicates = retire.left; if (retire.forwardFailed) out.forwardFailed = retire.forwardFailed; }
     return out;
   }
@@ -907,45 +1277,25 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
         + ' (required workspace fields; a descriptor without them is ignored by the supervisor)',
     };
   }
+  const currentRepoKey = repoKeyForCwd(ctx);
+  const worktreeRepoKey = descriptorFreshRepoKey(desc);
+  // P1-6 CROSS-PROJECT GUARD: reject a register whose --worktree lives in a
+  // DIFFERENT git project than the invoking cwd. Both keys must resolve AND
+  // differ to reject (a null on either side is the legitimate transient-null or
+  // non-git case handled elsewhere) — otherwise repoA could register repoB's
+  // descriptor with ownerKey=A, letting A's reap/reconcile archive B's workspace.
+  if (currentRepoKey && worktreeRepoKey && currentRepoKey !== worktreeRepoKey) {
+    return {
+      ok: false,
+      error: 'register --worktree ' + JSON.stringify(desc.worktreePath)
+        + ' belongs to a different project (' + worktreeRepoKey + ') than the current cwd (' + currentRepoKey
+        + ') — cross-project registration is refused',
+    };
+  }
+  if (currentRepoKey && worktreeRepoKey === currentRepoKey) desc.repoKey = currentRepoKey;
+  desc.ownerKey = currentRepoKey || store.hashFromWorkspaceId(id);
   writeDescriptorAtomic(home, id, desc);
-  // Initialize the durable cursor to 0 (nothing consumed yet) IF it does not
-  // already exist — so `inbox count/read` immediately reports all messages as
-  // unread. Without a cursor file, unreadBacklog returns known:false (a
-  // fail-safe for the liveness path) which would read as "nothing pending".
-  // NON-DESTRUCTIVE: never clobbers an existing cursor.
-  if (desc.cursorPath && !fs.existsSync(desc.cursorPath)) {
-    try {
-      fs.mkdirSync(path.dirname(desc.cursorPath), { recursive: true });
-      fs.writeFileSync(desc.cursorPath, '0');
-    } catch (_) { /* best-effort init; inbox ops still work once a cursor exists */ }
-  }
-  // Initialize an EMPTY durable inbox file IF it does not already exist — so a
-  // freshly-registered child reads as known:true/0-unread (confirmed-empty)
-  // rather than known:false (unreadable/absent, devswarm-parent-gate.js's
-  // Stop-hook gate's genuine-anomaly signal). Without this, "just registered,
-  // never messaged" and "genuinely neglected, inbox never written" are the
-  // SAME fs state (cursor present, inbox absent) and the gate cannot tell them
-  // apart. TRUNCATION-PROOF CREATE (P0 data-loss fix, hardened): a plain
-  // `existsSync` + `writeFileSync` (default flag 'w', which TRUNCATES) is a
-  // TOCTOU race — a concurrent devswarm-pull.js drain (companion/lib/devswarm-
-  // pull.js) can create + durably append to this SAME inboxPath, under its OWN
-  // per-id lock that register never takes, in the window between the
-  // existsSync check and the write, and the truncating write then ERASES that
-  // real content. An earlier fix used `wx` (exclusive create, fails closed on
-  // EEXIST), but O_EXCL exclusivity is documented as unreliable over some
-  // network filesystems (NFS). `a` (append) sidesteps this entirely: it opens
-  // for append and CREATES the file if absent, and appending '' never
-  // truncates existing content on ANY filesystem — no reliance on O_EXCL
-  // exclusivity at all. So this can NEVER clobber a pull-written inbox, race
-  // or no race, on any filesystem. Cross-platform (supported on win32/macOS/
-  // linux). Fail-open: any error (permissions etc.) is swallowed — best-effort
-  // init only; append mode does not throw on an already-existing file.
-  if (desc.inboxPath) {
-    try {
-      fs.mkdirSync(path.dirname(desc.inboxPath), { recursive: true });
-      fs.writeFileSync(desc.inboxPath, '', { flag: 'a' });
-    } catch (_) { /* fail-open: best-effort init only, non-fatal to registration */ }
-  }
+  precreateCursorAndInbox(desc);
   upsertStoreRegistry(home, desc, ctx);
   // Retire any legacy/phantom duplicate row for this SAME worktree so exactly one
   // row (this builder-id — the partition the child reads) survives, forwarding the
@@ -955,6 +1305,7 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   const out = { ok: true, action: existing ? 'updated' : 'registered', id, descriptor: desc };
   if (retire) { out.retiredDuplicates = retire.retired; out.forwardedMessages = retire.forwarded; if (retire.left) out.leftDuplicates = retire.left; if (retire.forwardFailed) out.forwardFailed = retire.forwardFailed; }
   return out;
+  });
 }
 
 function cmdHeartbeat(id, flags, ctx) {
@@ -982,9 +1333,48 @@ function cmdHeartbeat(id, flags, ctx) {
     sessionId: one(flags, 'session') !== undefined ? one(flags, 'session') : null,
   };
   const p = path.join(dir, id + '.json');
-  const tmp = p + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(beat));
-  fs.renameSync(tmp, p);
+  // P2-10: a UNIQUE staged temp per write (pid + hrtime + an in-process counter)
+  // — a shared `<id>.json.tmp` let two concurrent heartbeats race, one rename
+  // consuming the other's temp -> ENOENT. Uniqueness is derived from
+  // process.pid + process.hrtime.bigint() (monotonic, per-process) + a counter,
+  // deliberately NOT Math.random()/Date.now() (constrained/collision-prone here).
+  const tmp = p + '.' + process.pid + '.' + process.hrtime.bigint().toString(36) + '.' + (heartbeatTmpCounter++) + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(beat));
+    fs.renameSync(tmp, p);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch (_) {} // never leak a staged temp on failure
+    throw e;
+  }
+
+  // P2-11: compute `pending` the SAME way computeLiveness does on its fresh-
+  // heartbeat short-circuit (liveness.js: `hbBacklog.known && lines.length>0`) so
+  // the two verdict-write paths AGREE — the old hardcoded `pending:false` here
+  // disagreed with the supervisor's recompute, flapping the parent-gate signal.
+  let pending = false;
+  try {
+    const descForPending = readDescriptorFile(home, id);
+    if (descForPending) {
+      const backlog = unreadBacklog(descForPending.inboxPath, descForPending.cursorPath);
+      pending = !!(backlog.known && backlog.lines.length > 0);
+    }
+  } catch (_) { pending = false; /* fail-open: pending defaults to false on any read error */ }
+
+  // v0.62 heartbeat-alive decouple (owner-approved — see liveness.js header): a
+  // heartbeat is emitted only by this workspace's OWN live session, so receiving
+  // one is definitive proof the env is ALIVE. Immediately CLEAR the persisted
+  // liveness verdict to `alive` (resetting any stale/nudged/escalated flag +
+  // nudge attempts) so the parent-gate and roster reflect liveness at once,
+  // without waiting for the next supervisor sweep. The verdict's own
+  // fresh-heartbeat short-circuit keeps it alive on subsequent recomputes.
+  // Fail-open: an unsafe id (writeVerdict throws) or any fs error is swallowed —
+  // the base heartbeat above already succeeded and must remain non-fatal.
+  try {
+    writeVerdict(id, {
+      status: 'alive', lastOutboundTs: now, staleSince: null,
+      nudgeAttempts: 0, nudgedAt: null, pending, heartbeatTs: now,
+    }, home);
+  } catch (_) { /* fail-open: verdict refresh is best-effort, never breaks a heartbeat */ }
 
   // v0.57 mesh (PLAN-v0.57-mesh.md D11/D22, Phase 4 step 4): `--summary TEXT`
   // ALSO broadcasts a mesh heartbeat row into THIS project's SHARED
@@ -1083,8 +1473,10 @@ function cmdInboxPull(id, flags, ctx) {
     cursor: [pull.cursorDefaultPath(home, id)],
   };
   // requireNew: idempotent — leaves an existing descriptor (and its inboxPath)
-  // untouched; only CREATES one when absent. Ignore the register result and pull.
-  cmdRegister(id, ensureFlags, ctx, { requireNew: true });
+  // untouched; only CREATES one when absent. Ownership failure must stop the
+  // pull before it reads or mutates the inbox.
+  const ensured = cmdRegister(id, ensureFlags, ctx, { requireNew: true });
+  if (!ensured.ok) return Object.assign({}, ensured, { action: 'pull', id });
   // ctx.io is undefined in production (real hivecontrol spawn); tests inject
   // { run } so the CLI path is exercised without touching a real binary — same
   // injection posture as ctx.backend / ctx.now / ctx.env already use. `cwd`
@@ -1142,6 +1534,13 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   const ackAsOwner = !!flags['ack-as-owner'];
   const cursorPath = primaryCursorPath(home, id);
   const cursor = inboxCursor.readCursor(cursorPath);
+  // P1-1/P1-2 RE-HOME (read path): if this workspace is still stranded in the
+  // legacy hash bucket (persisted ownerKey=hash) while repoKey now resolves, its
+  // messages are in a bucket the repoKey-keyed read below would never open — a
+  // silent black hole. Migrate them (registry row + backlog + cursor) into
+  // store/<repoKey>/ FIRST so the read that follows actually sees them. Best-
+  // effort + under the per-id lock; a no-op when not stranded.
+  try { maybeRehomeToCwdProject(home, id, ctx); } catch (_) { /* fail-open: read proceeds regardless */ }
   // v0.57 mesh (D24): the Primary read-CLI opens the SAME shared per-project
   // store the per-project ingest daemon natively drains INTO (D8/D21) — without
   // this re-key, `inbox messages`/`read-primary` would read the legacy per-id
@@ -1285,6 +1684,11 @@ function cmdWorkspacesList(flags, ctx) {
   // own `.hash` (the repoKey) instead of recomputing hashFromWorkspaceId(workspaceId)
   // and re-targeting the legacy bucket.
   const repoKey = worktree ? repokey.repoKeyForWorktree(worktree) : repoKeyForCwd(ctx);
+  // GH1: re-home any hash-bucket-stranded child of THIS project BEFORE the summary
+  // read, so a stranded workspace is not silently undercounted. Scope the sweep to
+  // the SAME project the store below opens (an explicit --worktree wins over cwd).
+  try { rehomeStrandedProjectDescriptors(home, worktree ? Object.assign({}, ctx, { cwd: worktree }) : ctx); }
+  catch (_) { /* fail-open: the list read proceeds regardless */ }
   const s = store.openStore({ home, workspaceId, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
   let sum;
   // #62: a READ verb must not mutate — use the PURE computeSummary (zero summary.json
@@ -1303,6 +1707,11 @@ function cmdGate(id, flags, ctx) {
     return { ok: false, error: 'gate needs --set <csv> and/or --clear <csv>' };
   }
   const setBy = one(flags, 'by') !== undefined ? one(flags, 'by') : 'devswarm-cli';
+  // GH1: re-home a hash-bucket-stranded workspace into store/<repoKey>/ BEFORE
+  // opening the store — otherwise the gate lands in / reads from the wrong store,
+  // the workspace shows tracked:false, and the gate silently no-ops. Best-effort
+  // + under the per-id lock (held internally); a no-op when not stranded.
+  try { maybeRehomeToCwdProject(home, id, ctx); } catch (_) { /* fail-open: gate proceeds */ }
   // v0.57 mesh (D24): gates land in the SAME shared per-project store the
   // registry/roster/archive_ready read (repoKey, when resolvable).
   const s = store.openStore({ home, workspaceId: id, hash: repoKeyForCwd(ctx) || undefined, backend: ctx.backend, env: ctx.env });
@@ -1333,33 +1742,316 @@ function cmdNudge(id, flags, ctx) {
   return { ok: true, action: 'nudge', id, result: res };
 }
 
-function cmdArchive(id, ctx) {
+// cmdArchive(id, ctx, opts) — archive a workspace descriptor + tombstone its
+// registry row. The WHOLE descriptor+registry mutation runs under the per-id lock
+// (P1-4) so a concurrent register/reap for the same id can never interleave.
+// opts.revalidate(desc) (P1-5): an optional predicate run INSIDE the critical
+// section, immediately before any mutation — return a truthy reason to SKIP the
+// archive (used by the reaper to bail out on a workspace that went live between
+// candidate collection and the archive call). All-or-nothing (P1-3): the active
+// descriptor hardlink is RETAINED until the registry tombstone is durable, then
+// the active descriptor is unlinked LAST; any mid-sequence failure ROLLS BACK.
+function cmdArchive(id, ctx, opts) {
   const home = ctx.home;
-  const desc = readDescriptorFile(home, id);
-  // Non-destructive: MOVE the descriptor into archived/ (never unlink outright),
-  // then tombstone the store registry (append-only remove). Archival-by-absence
-  // is the designed teardown signal (Verified fact #3).
-  let moved = false;
-  if (desc) {
-    try {
-      const adir = archivedDir(home);
-      fs.mkdirSync(adir, { recursive: true });
-      fs.renameSync(descriptorPath(home, id), path.join(adir, id + '.json'));
-      moved = true;
-    } catch (_) { moved = false; }
+  const revalidate = opts && typeof opts.revalidate === 'function' ? opts.revalidate : null;
+  return withIdLock(id, home, () => {
+  const activePath = descriptorPath(home, id);
+  const archiveDirState = checkedArchivedDir(home, { create: true });
+  if (!archiveDirState.ok) {
+    return { ok: false, action: 'archive', id, descriptorArchived: false, error: 'unsafe archived directory: ' + archiveDirState.error };
   }
-  // v0.57 mesh (D24): tombstone the registry entry in the SAME shared
-  // per-project store `register`/`roster` populate (repoKey, when resolvable) —
-  // else archive silently no-ops against the legacy per-id bucket, leaving the
-  // workspace visible in the roster forever.
-  const s = store.openStore({ home, workspaceId: id, hash: repoKeyForCwd(ctx) || undefined, backend: ctx.backend, env: ctx.env });
-  try { s.removeRegistry(id); store.deriveSummary(s, { home, env: ctx.env }); }
-  finally { s.close(); }
+  const archivedPath = path.join(archiveDirState.path, id + '.json');
+  const activeState = readDescriptorPathState(activePath);
+  if (activeState.error) {
+    return {
+      ok: false, action: 'archive', id, descriptorArchived: false,
+      error: 'failed to read existing descriptor: ' + activeState.error,
+    };
+  }
+  let desc = activeState.descriptor;
+  if (!activeState.exists) {
+    const archivedState = readDescriptorPathState(archivedPath);
+    if (archivedState.error) {
+      return {
+        ok: false, action: 'archive', id, descriptorArchived: false,
+        error: 'failed to read archived descriptor: ' + archivedState.error,
+      };
+    }
+    desc = archivedState.descriptor;
+  }
+  const currentRepoKey = repoKeyForCwd(ctx);
+  const currentOwnerKey = currentRepoKey || store.hashFromWorkspaceId(id);
+  let ownerKey = currentOwnerKey;
+  if (desc) {
+    if (!isSafeId(desc.id) || String(desc.id) !== String(id) || !desc.worktreePath) {
+      return { ok: false, action: 'archive', id, descriptorArchived: false, error: 'descriptor identity does not match workspace ' + JSON.stringify(id) };
+    }
+    // G3 RE-HOME (archive path, P1-1/P1-2): a descriptor stranded in the legacy
+    // hash bucket (persisted ownerKey === hashFromWorkspaceId(id)) whose project
+    // now resolves must be HEALED before archiving — otherwise the ownership
+    // check below rejects the workspace from its OWN project, and even if it
+    // passed the tombstone would land in the hash bucket while the live row
+    // (already re-homed by a prior read/send) sits in store/<repoKey>/, silently
+    // leaving it un-archived. Mirrors the ensure branch's re-home. Only the hash-
+    // bucket marker heals; a REAL differing repoKey (genuine cross-project) is
+    // NOT === hashKey, so it falls through to the reject below (P1-6 extended to
+    // archive). Lock already held (cmdArchive runs inside withIdLock).
+    if (activeState.exists) {
+      const storedOwnerKeyPre = typeof desc.ownerKey === 'string' && desc.ownerKey ? desc.ownerKey : null;
+      const hashKey = store.hashFromWorkspaceId(id);
+      if (currentRepoKey && storedOwnerKeyPre === hashKey && hashKey !== currentRepoKey) {
+        const rh = rehomeCore(home, id, currentRepoKey, ctx);
+        if (rh && rh.rehomed) {
+          const reread = readDescriptorFile(home, id);
+          if (reread && String(reread.id) === String(id)) desc = reread;
+        }
+      }
+    }
+    const storedOwnerKey = typeof desc.ownerKey === 'string' && desc.ownerKey ? desc.ownerKey : null;
+    const structuralRepoKey = descriptorStructuralRepoKey(desc);
+    const freshRepoKey = descriptorFreshRepoKey(desc);
+    const activeLegacyPerId = activeState.exists && !storedOwnerKey && !structuralRepoKey && currentRepoKey === null;
+    ownerKey = storedOwnerKey || structuralRepoKey || (activeLegacyPerId ? currentOwnerKey : null);
+    if (!ownerKey || ownerKey !== currentOwnerKey) {
+      return {
+        ok: false, action: 'archive', id, descriptorArchived: false,
+        error: 'descriptor does not belong to the current project',
+      };
+    }
+    if (activeState.exists && !storedOwnerKey) {
+      desc.ownerKey = currentOwnerKey;
+      ownerKey = currentOwnerKey;
+      if (currentRepoKey && freshRepoKey === currentRepoKey) desc.repoKey = currentRepoKey;
+      try { writeDescriptorAtomic(home, id, desc); }
+      catch (e) {
+        return {
+          ok: false, action: 'archive', id, descriptorArchived: false,
+          error: 'failed to persist descriptor project identity: ' + String(e && e.message || e),
+        };
+      }
+    }
+  }
+  // P1-5 TOCTOU re-validation: re-check the safety condition INSIDE the critical
+  // section, immediately before any mutation. A heartbeat/activity that arrived
+  // after the caller collected this as a candidate makes the workspace live again
+  // -> SKIP (never archive a now-live workspace). No-op when no predicate given.
+  if (revalidate) {
+    let skipReason = null;
+    try { skipReason = revalidate(desc); } catch (_) { skipReason = null; }
+    if (skipReason) {
+      return { ok: true, action: 'archive', id, descriptorArchived: false, skipped: true, reason: String(skipReason) };
+    }
+  }
+  // P1-3 ALL-OR-NOTHING: link the descriptor into archived/ (keeping the ACTIVE
+  // descriptor in place), tombstone the registry, and ONLY THEN unlink the active
+  // descriptor. A failure at any step ROLLS BACK so archive is never half-applied
+  // (the ENOSPC hazard: unlink-then-tombstone left descriptor archived + registry
+  // live = split-brain).
+  let linked = false; // archived hardlink created, active still present
+  let moved = false;  // active descriptor unlinked -> fully archived
+  if (activeState.exists) {
+    try {
+      try { fs.linkSync(activePath, archivedPath); }
+      catch (e) {
+        if (!e || e.code !== 'EEXIST') throw e;
+      }
+      const activeStat = fs.lstatSync(activePath);
+      const archivedStat = fs.lstatSync(archivedPath);
+      if (activeStat.dev !== archivedStat.dev || activeStat.ino !== archivedStat.ino) {
+        throw new Error('archived descriptor already exists and is not the active descriptor');
+      }
+      linked = true;
+    } catch (e) {
+      return {
+        ok: false, action: 'archive', id, descriptorArchived: false,
+        error: 'failed to link descriptor into archived/: ' + String(e && e.message || e),
+      };
+    }
+  }
+  // G2 crash-safe: persist a recovery-intent marker BEFORE tombstoning. If the
+  // in-process rollback below ALSO fails (ENOSPC defeats the revive upsert) OR the
+  // process is killed mid-sequence, this durable marker lets doctor/next-run
+  // revive the registry row — closing the split-brain window (active descriptor +
+  // tombstoned registry) that swallowing a revive failure would otherwise leave.
+  // Only meaningful when we have a descriptor to revive from.
+  if (desc) {
+    try { writeRecoveryIntent(home, id, { id, ownerKey, op: 'archive', descriptor: desc, fingerprint: descriptorFingerprint(desc), ts: Date.now() }); }
+    catch (e) {
+      // Cannot even record the intent — do NOT tombstone (we would have no
+      // crash-safe record). Roll back the link and abort; nothing was archived.
+      if (linked && activeState.exists) { try { fs.unlinkSync(archivedPath); } catch (_) {} }
+      return {
+        ok: false, action: 'archive', id, descriptorArchived: false,
+        error: 'failed to persist archive recovery-intent (nothing archived): ' + String(e && e.message || e),
+      };
+    }
+  }
+  // v0.57 mesh (D24): tombstone the registry entry in the SAME shared per-project
+  // store `register`/`roster` populate (repoKey, when resolvable). Done BEFORE the
+  // active unlink so an ENOSPC/IO failure here leaves BOTH the descriptor and the
+  // registry row intact.
+  try {
+    const s = store.openStore({ home, workspaceId: id, hash: ownerKey, backend: ctx.backend, env: ctx.env });
+    try { s.removeRegistry(id); store.deriveSummary(s, { home, env: ctx.env }); }
+    finally { s.close(); }
+  } catch (e) {
+    // ROLLBACK. The failure may have hit AFTER removeRegistry appended its
+    // tombstone (e.g. the subsequent deriveSummary write failed on ENOSPC), so
+    // REVIVE the registry row (upsert wins as the newest op — a no-op if the
+    // tombstone never landed) and drop the archived hardlink. Net result: the
+    // active descriptor + a live registry row remain, exactly as before the call.
+    let revived = false;
+    if (desc) {
+      try {
+        const s2 = store.openStore({ home, workspaceId: id, hash: ownerKey, backend: ctx.backend, env: ctx.env });
+        try { s2.upsertRegistry(desc); }
+        finally { s2.close(); }
+        // VERIFY the row is live again (pure fold read; deriveSummary intentionally
+        // skipped — it is what failed). A verified restore is the ONLY thing that
+        // clears the recovery-intent.
+        revived = registryRowPresent(home, id, ownerKey, ctx);
+      } catch (_) { revived = false; }
+    }
+    if (linked && activeState.exists) { try { fs.unlinkSync(archivedPath); } catch (_) {} }
+    if (desc && !revived) {
+      // Revive ALSO failed — do NOT swallow. Leave the recovery-intent in place so
+      // doctor/next-run restores the row; report a HARD error (split-brain averted
+      // only by the durable marker, not by an in-process rollback).
+      return {
+        ok: false, action: 'archive', id, descriptorArchived: false, recoveryIntent: true,
+        error: 'failed to tombstone registry AND failed to revive it — recovery-intent persisted for repair: ' + String(e && e.message || e),
+      };
+    }
+    clearRecoveryIntent(home, id);
+    return {
+      ok: false, action: 'archive', id, descriptorArchived: false,
+      error: 'failed to tombstone registry (rolled back — nothing archived): ' + String(e && e.message || e),
+    };
+  }
+  // Registry tombstone is durable — unlink the active descriptor LAST.
+  if (activeState.exists) {
+    try { fs.unlinkSync(activePath); moved = true; }
+    catch (e) {
+      // The active unlink failed AFTER a durable tombstone. REVIVE the registry row
+      // (upsert wins as the newest op) and drop the archived link so we restore the
+      // pre-archive all-or-nothing state instead of stranding a registry-less live
+      // descriptor. Report failure; the caller can retry.
+      let revived = false;
+      if (desc) {
+        try {
+          const s2 = store.openStore({ home, workspaceId: id, hash: ownerKey, backend: ctx.backend, env: ctx.env });
+          try { s2.upsertRegistry(desc); store.deriveSummary(s2, { home, env: ctx.env }); }
+          finally { s2.close(); }
+          revived = registryRowPresent(home, id, ownerKey, ctx);
+        } catch (_) { revived = false; }
+      }
+      if (linked) { try { fs.unlinkSync(archivedPath); } catch (_) {} }
+      if (desc && !revived) {
+        // Revive ALSO failed — leave the recovery-intent for doctor/next-run.
+        return {
+          ok: false, action: 'archive', id, descriptorArchived: false, recoveryIntent: true,
+          error: 'failed to remove active descriptor after tombstone AND failed to revive registry — recovery-intent persisted for repair: ' + String(e && e.message || e),
+        };
+      }
+      clearRecoveryIntent(home, id);
+      return {
+        ok: false, action: 'archive', id, descriptorArchived: false,
+        error: 'failed to remove active descriptor after tombstone (registry revived — nothing archived): ' + String(e && e.message || e),
+      };
+    }
+  }
+  // Archive fully completed — the recovery-intent is discharged.
+  clearRecoveryIntent(home, id);
   return {
     ok: true, action: 'archive', id, descriptorArchived: moved,
     manualStep: 'hivecontrol has no teardown command — REMOVE workspace ' + id +
       ' in the DevSwarm app (archive keeps disk contents; never delete without confirmation).',
   };
+  });
+}
+
+// cmdUnarchive(id, ctx) — reverse of cmdArchive: link the descriptor back into
+// workspaces/, remove the archived recovery anchor, then re-upsert the store
+// registry (append-only:
+// a fresh upsertRegistry after a prior removeRegistry simply wins as the
+// newest op for this id, reviving the tombstoned row — same latest-op-wins
+// mechanics cmdArchive itself relies on). Non-destructive, id-safe (the
+// dispatcher gates `id` through isSafeId before this is ever called, same as
+// `archive`). For undoing a wrong `archive`.
+function cmdUnarchive(id, ctx) {
+  const home = ctx.home;
+  // P1-4: unarchive mutates the same descriptor+registry pair as register/archive
+  // — run it under the SAME per-id lock so the three can never interleave.
+  return withIdLock(id, home, () => {
+  const archiveDirState = checkedArchivedDir(home);
+  if (!archiveDirState.ok) {
+    return { ok: false, action: 'unarchive', id, error: 'unsafe archived directory: ' + archiveDirState.error };
+  }
+  const archivedPath = path.join(archiveDirState.path, id + '.json');
+  const activePath = descriptorPath(home, id);
+  const archivedState = readDescriptorPathState(archivedPath);
+  if (archivedState.error) {
+    return { ok: false, action: 'unarchive', id, error: 'failed to read archived descriptor: ' + archivedState.error };
+  }
+  const activeState = archivedState.exists ? null : readDescriptorPathState(activePath);
+  if (activeState && activeState.error) {
+    return { ok: false, action: 'unarchive', id, error: 'failed to read restored descriptor: ' + activeState.error };
+  }
+  if (!archivedState.exists && (!activeState || !activeState.exists)) {
+    return { ok: false, action: 'unarchive', id, error: 'no archived descriptor for workspace ' + JSON.stringify(id) };
+  }
+  const desc = archivedState.exists ? archivedState.descriptor : activeState.descriptor;
+  if (!isSafeId(desc.id) || String(desc.id) !== String(id) || !desc.worktreePath) {
+    return { ok: false, action: 'unarchive', id, error: 'archived descriptor identity does not match workspace ' + JSON.stringify(id) };
+  }
+  const currentOwnerKey = storeOwnerKeyFor(id, ctx);
+  const ownerKey = descriptorPhysicalOwnerKey(desc);
+  if (!ownerKey || ownerKey !== currentOwnerKey) {
+    return { ok: false, action: 'unarchive', id, error: 'archived descriptor does not belong to the current project' };
+  }
+  if (archivedState.exists) {
+    try {
+      fs.mkdirSync(workspacesDir(home), { recursive: true });
+      try { fs.linkSync(archivedPath, activePath); }
+      catch (e) {
+        if (!e || e.code !== 'EEXIST') throw e;
+      }
+      const archivedStat = fs.lstatSync(archivedPath);
+      const activeStat = fs.lstatSync(activePath);
+      if (archivedStat.dev !== activeStat.dev || archivedStat.ino !== activeStat.ino) {
+        return { ok: false, action: 'unarchive', id, error: 'active descriptor already exists and is not the archived recovery anchor' };
+      }
+      try { fs.unlinkSync(archivedPath); }
+      catch (e) {
+        try { fs.unlinkSync(activePath); } catch (_) {}
+        return { ok: false, action: 'unarchive', id, error: 'failed to move descriptor out of archived/: ' + String(e && e.message || e) };
+      }
+    } catch (e) {
+      return {
+        ok: false, action: 'unarchive', id,
+        error: 'failed to prepare descriptor restore: ' + String(e && e.message || e),
+      };
+    }
+  }
+  if (desc.ownerKey !== ownerKey) {
+    desc.ownerKey = ownerKey;
+    try { writeDescriptorAtomic(home, id, desc); }
+    catch (e) {
+      return { ok: false, action: 'unarchive', id, error: 'failed to persist descriptor store ownership: ' + String(e && e.message || e) };
+    }
+  }
+  try {
+    const s = store.openStore({ home, workspaceId: desc.id, hash: ownerKey, backend: ctx.backend, env: ctx.env });
+    try {
+      s.upsertRegistry(desc);
+      store.deriveSummary(s, { home, env: ctx.env });
+    } finally { s.close(); }
+  }
+  catch (e) {
+    return { ok: false, action: 'unarchive', id, error: 'failed to revive registry: ' + String(e && e.message || e) };
+  }
+  return { ok: true, action: 'unarchive', id, descriptorRestored: true };
+  });
 }
 
 function cmdArchiveIgnore(id, ctx, { set }) {
@@ -1431,6 +2123,214 @@ function cmdArchiveRequest(id, flags, ctx) {
 
 function cmdMigrate(ctx) {
   return migrate.migrateToStore({ home: ctx.home, backend: ctx.backend, env: ctx.env, now: ctx.now });
+}
+
+// migrateOwnerKeys(home, ctx0) — P1-8 forward-migration for the `ownerKey`
+// descriptor field (per the persisted-shape-migration mandate). IDEMPOTENT,
+// FAIL-OPEN, NO-DELETE, safe to run repeatedly; shipped in BOTH the update path
+// AND doctor. For every descriptor (ACTIVE and ARCHIVED):
+//   - backfills a MISSING ownerKey using the SAME resolution `register` uses
+//     (worktree-derived repoKey if resolvable, else structural repoKey, else the
+//     id-derived hash bucket key), and
+//   - HEALS prior hash-bucket split-brain: an ACTIVE descriptor whose ownerKey is
+//     the legacy hash bucket while its worktree now resolves a real repoKey is
+//     re-homed via rehomeCore (registry row + messages migrated, ownerKey
+//     rewritten). ARCHIVED descriptors are only field-backfilled — never
+//     re-homed, because their registry row is already tombstoned and reviving it
+//     would silently un-archive the workspace.
+// Each descriptor is processed under its own per-id lock. Never throws.
+function migrateOwnerKeys(home, ctx0) {
+  const ctx = Object.assign({ home, env: process.env }, ctx0 || {});
+  const dryRun = !!(ctx0 && ctx0.dryRun);
+  const out = { ok: true, action: 'migrate-owner-keys', dryRun, scanned: 0, backfilled: 0, rehomed: 0, errors: 0 };
+  const seen = new Set();
+  const writeAt = (p, desc) => {
+    const tmp = p + '.' + process.pid + '.' + (heartbeatTmpCounter++) + '.tmp';
+    try { fs.writeFileSync(tmp, JSON.stringify(desc)); fs.renameSync(tmp, p); }
+    catch (e) { try { fs.unlinkSync(tmp); } catch (_) {} throw e; }
+  };
+  const consider = (rawDesc, isArchived, archivedPath) => {
+    if (!rawDesc || !isSafeId(rawDesc.id) || !rawDesc.worktreePath) return;
+    if (seen.has(rawDesc.id)) return;
+    seen.add(rawDesc.id);
+    out.scanned++;
+    try {
+      withIdLock(rawDesc.id, home, () => {
+        // Re-read under the lock so we never overwrite a concurrent live mutation.
+        let live = isArchived ? null : readDescriptorFile(home, rawDesc.id);
+        let target = descriptorPath(home, rawDesc.id);
+        if (!live && isArchived) {
+          const st = readDescriptorPathState(archivedPath);
+          if (st.descriptor) { live = st.descriptor; target = archivedPath; }
+        }
+        if (!live) return;
+        const hashKey = store.hashFromWorkspaceId(live.id);
+        const freshRepoKey = descriptorFreshRepoKey(live);
+        const storedOwnerKey = typeof live.ownerKey === 'string' && live.ownerKey ? live.ownerKey : null;
+        // Heal ACTIVE hash-bucket split-brain (never archived — see header).
+        if (!isArchived && storedOwnerKey === hashKey && freshRepoKey && freshRepoKey !== hashKey) {
+          if (dryRun) { out.rehomed++; return; } // detect-only: count the candidate
+          const rh = rehomeCore(home, live.id, freshRepoKey, ctx);
+          if (rh && rh.rehomed) { out.rehomed++; return; } // rehomeCore already rewrote ownerKey
+          return;
+        }
+        // Backfill a MISSING ownerKey (both active + archived).
+        if (!storedOwnerKey) {
+          if (dryRun) { out.backfilled++; return; } // detect-only: count the candidate
+          const resolved = freshRepoKey || descriptorStructuralRepoKey(live) || hashKey;
+          live.ownerKey = resolved;
+          if (freshRepoKey && freshRepoKey === resolved) live.repoKey = freshRepoKey;
+          writeAt(target, live);
+          out.backfilled++;
+        }
+      });
+    } catch (_) { out.errors++; }
+  };
+  // GH2: enumerate ACTIVE descriptors via a RAW workspacesDir listing (same
+  // pattern as the archived branch below) — NOT readDescriptors, which filters on
+  // sessionId/worktreePath and so SKIPS the very legacy descriptors (no sessionId)
+  // this migration exists to backfill/re-home.
+  try {
+    const wd = workspacesDir(home);
+    let names = [];
+    try { names = fs.readdirSync(wd); } catch (_) { names = []; }
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      const st = readDescriptorPathState(path.join(wd, n));
+      if (st.descriptor) consider(st.descriptor, false, null);
+    }
+  } catch (_) {}
+  try {
+    const ad = checkedArchivedDir(home);
+    if (ad.ok && ad.exists) {
+      let names = [];
+      try { names = fs.readdirSync(ad.path); } catch (_) { names = []; }
+      for (const n of names) {
+        if (!/\.json$/.test(n)) continue;
+        const ap = path.join(ad.path, n);
+        const st = readDescriptorPathState(ap);
+        if (st.descriptor) consider(st.descriptor, true, ap);
+      }
+    }
+  } catch (_) {}
+  return out;
+}
+
+// applyRecoveryIntents(home, ctx0) — G2 doctor/next-run companion for cmdArchive's
+// crash-safe recovery-intent markers. A marker lingers only when a prior archive
+// tombstoned the registry row but its in-process rollback/clear did NOT complete
+// (revive also failed, or the process was killed mid-sequence). For each marker,
+// under the per-id lock, restore consistency:
+//   - active descriptor STILL present  -> the archive never finished the destructive
+//     unlink; re-upsert the registry row so active+registry are consistent again.
+//   - active descriptor already GONE    -> the destructive step completed; the
+//     consistent end-state is registry-tombstoned. Do NOT un-archive; just clear the
+//     stale marker (mirrors migrateOwnerKeys' archived-descriptor no-revive rule).
+// IDEMPOTENT, FAIL-OPEN, NO-DELETE. dryRun counts pending markers without touching.
+function applyRecoveryIntents(home, ctx0) {
+  const ctx = Object.assign({ home, env: process.env }, ctx0 || {});
+  const dryRun = !!(ctx0 && ctx0.dryRun);
+  const out = { ok: true, action: 'recover-archive-intent', dryRun, pending: 0, revived: 0, cleared: 0, errors: 0 };
+  const dir = recoveryIntentDir(home);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (_) { return out; }
+  for (const n of names) {
+    if (!/\.json$/.test(n)) continue;
+    const id = n.slice(0, -5);
+    if (!isSafeId(id)) continue;
+    let marker = null;
+    try { marker = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); } catch (_) { marker = null; }
+    const usable = marker && marker.descriptor && typeof marker.descriptor === 'object'
+      && typeof marker.ownerKey === 'string' && marker.ownerKey
+      && String(marker.id) === String(id);
+    if (!usable) {
+      // An unreadable/malformed marker carries nothing to revive from — clear it.
+      if (!dryRun) { clearRecoveryIntent(home, id); out.cleared++; }
+      continue;
+    }
+    out.pending++;
+    if (dryRun) continue;
+    withIdLock(id, home, () => {
+      const active = readDescriptorFile(home, id);
+      if (!active) {
+        // Archive completed the destructive unlink — do NOT resurrect it.
+        clearRecoveryIntent(home, id);
+        out.cleared++;
+        return;
+      }
+      // P1 fix: a marker with no identity check would revive `marker.descriptor`
+      // blindly whenever ANY active descriptor exists at this id — including one
+      // that was legitimately RE-REGISTERED with fresh content after a crashed
+      // archive (ids are deterministic, so the same id can come back to life).
+      // That clobbered the fresh registry row with the stale pre-archive one.
+      // Only revive when the current active descriptor's fingerprint matches the
+      // one captured at marker-write time (archive genuinely never finished).
+      if (typeof marker.fingerprint === 'string' && marker.fingerprint) {
+        const currentFp = descriptorFingerprint(active);
+        if (currentFp !== marker.fingerprint) {
+          // The id was re-registered since the marker was written — the newer
+          // register already wrote a correct row. Marker is stale: clear, don't upsert.
+          clearRecoveryIntent(home, id);
+          out.cleared++;
+          return;
+        }
+      } else {
+        // Backward-compat: a marker written before the fingerprint field existed.
+        // Unverifiable — only revive if the registry row is genuinely absent; if a
+        // row already exists (fresh or otherwise), never blind-clobber it.
+        if (registryRowPresent(home, id, marker.ownerKey, ctx)) {
+          clearRecoveryIntent(home, id);
+          out.cleared++;
+          return;
+        }
+      }
+      let revived = false;
+      try {
+        const s = store.openStore({ home, workspaceId: id, hash: marker.ownerKey, backend: ctx.backend, env: ctx.env });
+        try { s.upsertRegistry(marker.descriptor); store.deriveSummary(s, { home, env: ctx.env }); }
+        finally { s.close(); }
+        revived = registryRowPresent(home, id, marker.ownerKey, ctx);
+      } catch (_) { revived = false; }
+      if (revived) { clearRecoveryIntent(home, id); out.revived++; }
+      else out.errors++; // still failing (e.g. ENOSPC persists) — leave the marker
+    });
+  }
+  return out;
+}
+
+// rehomeStrandedProjectDescriptors(home, ctx) -> count re-homed. GH1 multi-id
+// re-home pass for callers with NO single target id (cmdReconcile / cmdWorkspaces
+// list): raw-scan the active workspaces dir and re-home EVERY descriptor that is
+// (a) stranded in the legacy hash bucket (persisted ownerKey === hashFromWorkspaceId(id))
+// AND (b) whose OWN worktree resolves to THIS invocation's project repoKey — so a
+// hash-bucket-stranded child of this project becomes visible to the listRegistry/
+// summary read that follows, instead of silently undercounting / never draining.
+// Constraint (b) is what keeps this from dragging another project's descriptor into
+// this cwd's store. Reuses rehomeCore under the per-id lock; fail-open per id.
+function rehomeStrandedProjectDescriptors(home, ctx) {
+  const repoKey = repoKeyForCwd(ctx);
+  if (!repoKey) return 0;
+  let names = [];
+  try { names = fs.readdirSync(workspacesDir(home)); } catch (_) { return 0; }
+  let rehomed = 0;
+  for (const n of names) {
+    if (!/\.json$/.test(n)) continue;
+    const id = n.slice(0, -5);
+    if (!isSafeId(id)) continue;
+    const desc = readDescriptorFile(home, id);
+    if (!desc || String(desc.id) !== String(id) || !desc.worktreePath) continue;
+    const storedOwnerKey = typeof desc.ownerKey === 'string' && desc.ownerKey ? desc.ownerKey : null;
+    const hashKey = store.hashFromWorkspaceId(id);
+    if (storedOwnerKey !== hashKey || hashKey === repoKey) continue; // not stranded
+    let fresh = null;
+    try { fresh = descriptorFreshRepoKey(desc); } catch (_) { fresh = null; }
+    if (fresh !== repoKey) continue; // only heal descriptors whose worktree is THIS project
+    try {
+      const rh = withIdLock(id, home, () => rehomeCore(home, id, repoKey, ctx));
+      if (rh && rh.rehomed) rehomed++;
+    } catch (_) { /* fail-open: a re-home hiccup must never break the sweep */ }
+  }
+  return rehomed;
 }
 
 // ============================================================================
@@ -1597,6 +2497,23 @@ function cmdSend(flags, ctx) {
   }
 
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  // P1-1/P1-2 RE-HOME (send path): if the Primary is stranded in the legacy hash
+  // bucket, MIGRATE it into store/<repoKey>/ BEFORE resolving/delivering, so the
+  // message lands in the SAME store the Primary's own read verbs open — the old
+  // "Fix 1" band-aid delivered into the hash bucket instead, a silent black hole
+  // the Primary's repoKey-keyed reads never drained. GATED exactly like the read
+  // path (maybeRehomeToCwdProject): a healthy, already-colocated Primary is a
+  // no-op here — no descriptor rewrite, no registry re-upsert, no false
+  // `rehomedFromHashBucket:true` on the hot path. Best-effort + under the
+  // per-id lock (held internally by maybeRehomeToCwdProject); only a genuinely
+  // hash-bucket-stranded Primary re-homes.
+  let rehomedSend = false;
+  if (toPrimaryFlag) {
+    try {
+      const rh = maybeRehomeToCwdProject(home, primaryMeshId, ctx);
+      rehomedSend = !!(rh && rh.rehomed);
+    } catch (_) { /* fail-open: send proceeds and fail-closes below if still unresolved */ }
+  }
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   try {
     let targetPartition = null;
@@ -1604,7 +2521,8 @@ function cmdSend(flags, ctx) {
       // Fail-closed addressing (D12a): a --to naming a meshId not present in the
       // shared registry is rejected outright — never a silent black-hole. Same
       // posture for --to-primary: an unregistered Primary is a fail-closed error,
-      // never a silent black-hole either.
+      // never a silent black-hole either. After a re-home (above) the Primary's
+      // row is now in THIS repoKey store, so this resolve finds it.
       const target = toPrimaryFlag ? resolveMeshTarget(s, primaryMeshId) : resolveMeshTarget(s, toFlag);
       if (!target) {
         return toPrimaryFlag
@@ -1634,6 +2552,7 @@ function cmdSend(flags, ctx) {
       ok: true, action: 'send', from,
       to: type === 'direct' ? (toPrimaryFlag ? primaryMeshId : toFlag) : null, type, urgency,
       sent: !!res.inserted, seq: res.seq,
+      rehomedFromHashBucket: rehomedSend || undefined,
     };
   } finally { s.close(); }
 }
@@ -1690,6 +2609,36 @@ function fetchNativeChildren(ctx) {
 // child not yet matched by worktreePath against the store set (i.e. one that
 // has never registered itself via inbox pull/heartbeat/register) is appended
 // as a minimal entry so it is still VISIBLE on the roster instead of invisible.
+// rosterIdleDays(home, id, now) — READ-ONLY reuse of the persisted liveness
+// verdict (the SAME `livenessPathFor`/JSON shape `computeLiveness` itself
+// reads, liveness.js:129) to surface "days since last activity" on the
+// roster, without any new heavy computation. Returns null (never fabricated)
+// when no verdict exists yet or it carries no usable timestamp.
+function rosterIdleDays(home, id, now) {
+  try {
+    const v = JSON.parse(fs.readFileSync(livenessPathFor(id, home), 'utf8'));
+    if (v && Number.isFinite(v.lastOutboundTs)) {
+      const days = Math.floor(((Number.isFinite(now) ? now : Date.now()) - v.lastOutboundTs) / 86400000);
+      if (days >= 0) return days;
+    }
+  } catch (_) { /* no verdict yet / unreadable — fail-open, no fabricated value */ }
+  return null;
+}
+
+// cmdRoster's per-row hints (archive-candidate surfacing, read-only): does
+// NOT gate/skip anything and writes nothing — purely annotates the SAME
+// projection so a human can decide whether to run the already-shipped
+// `archive <id>` verb. `worktree-gone` = the descriptor's worktreePath no
+// longer exists on disk (existsSync, same check style as elsewhere in this
+// file). `idle Nd` = days since last liveness activity, when known.
+function rosterHints(home, id, worktreePath, now) {
+  const hints = [];
+  if (worktreePath && !fs.existsSync(worktreePath)) hints.push('worktree-gone');
+  const idleDays = rosterIdleDays(home, id, now);
+  if (idleDays !== null) hints.push('idle ' + idleDays + 'd');
+  return hints;
+}
+
 function cmdRoster(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
@@ -1700,10 +2649,12 @@ function cmdRoster(flags, ctx) {
   // #62: a READ verb must not mutate — PURE computeSummary (no summary.json write).
   try { sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now }); }
   finally { s.close(); }
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
   const workspaces = Object.values(sum.workspaces || {}).map((w) => ({
     id: w.id, working_on: w.working_on, directUnread: w.directUnread,
     broadcastUnread: w.broadcastUnread, urgencyMax: w.urgencyMax,
     worktreePath: w.worktreePath || null, source: 'store',
+    hints: rosterHints(home, w.id, w.worktreePath, now),
   }));
   // Dedup by CANONICAL identity (inst.primaryWorkspaceId, which realpath-
   // normalizes before hashing), not raw string equality — the same fix class
@@ -1713,10 +2664,70 @@ function cmdRoster(flags, ctx) {
   const nativeChildren = fetchNativeChildren(ctx);
   for (const child of nativeChildren) {
     if (child.path && knownIds.has(inst.primaryWorkspaceId(child.path))) continue; // already represented via the store
+    const id = child.branch || child.id || null;
     workspaces.push({
-      id: child.branch || child.id || null, working_on: null,
+      id, working_on: null,
       directUnread: null, broadcastUnread: null, urgencyMax: null,
       worktreePath: child.path || null, source: 'native',
+      hints: rosterHints(home, id, child.path || null, now),
+    });
+  }
+  // Fix 1 (split-brain heal, READ-ONLY): a Primary registered into the LEGACY
+  // hash bucket store/<hashFromWorkspaceId(primary-<hash>)>/ (when repoKey was
+  // transiently null at register time) is invisible to the repoKey-keyed
+  // computeSummary above — the roster would read "no primary". If this project's
+  // Primary is NOT already represented, fold in its hash-bucket entry so it is
+  // surfaced (labeled source:'store-fallback'). Pure read: never writes into
+  // either store. Fail-open: any error leaves the base roster untouched.
+  //
+  // P2-9: read the hash bucket's ALREADY-DERIVED summary.json via
+  // store.readSummaryForHash — NOT openStore()+computeSummary, which MATERIALIZES
+  // the bucket (dir/DB/WAL/schema) as a side effect of a pure read verb. A bucket
+  // that does not exist reads as null (no fold), creating nothing.
+  try {
+    const main = inst.resolveMainWorktree(cwd);
+    if (main) {
+      const primaryMeshId = inst.primaryWorkspaceId(main);
+      const fallbackHash = store.hashFromWorkspaceId(primaryMeshId);
+      const alreadyKnown = knownIds.has(primaryMeshId) || workspaces.some((w) => w.id === primaryMeshId);
+      if (fallbackHash && fallbackHash !== repoKey && !alreadyKnown) {
+        const sum2 = store.readSummaryForHash(home, fallbackHash);
+        const pw = sum2 && sum2.workspaces && sum2.workspaces[primaryMeshId];
+        if (pw) {
+          workspaces.push({
+            id: pw.id, working_on: pw.working_on, directUnread: pw.directUnread,
+            broadcastUnread: pw.broadcastUnread, urgencyMax: pw.urgencyMax,
+            worktreePath: pw.worktreePath || null, source: 'store-fallback',
+            hints: rosterHints(home, pw.id, pw.worktreePath, now),
+          });
+        }
+      }
+    }
+  } catch (_) { /* fail-open: the split-brain fallback fold never breaks the base roster */ }
+  // Read-only, fail-open scan of archived/ so an already-archived id stays
+  // VISIBLE on the roster (labeled, never re-written — archived/ remains a
+  // pure move target; this never folds back into the store registry).
+  const knownRosterIds = new Set(workspaces.map((w) => w.id).filter(Boolean));
+  let archivedNames = [];
+  const archiveDirState = checkedArchivedDir(home);
+  if (archiveDirState.ok && archiveDirState.exists) {
+    try { archivedNames = fs.readdirSync(archiveDirState.path); } catch (_) { archivedNames = []; }
+  }
+  for (const n of archivedNames) {
+    if (!/\.json$/.test(n)) continue;
+    const id = n.slice(0, -'.json'.length);
+    if (knownRosterIds.has(id)) continue;
+    try {
+      if (!isSafeId(id)) continue;
+      const state = readDescriptorPathState(path.join(archiveDirState.path, n));
+      const d = state.descriptor;
+      if (!d || String(d.id) !== id || !d.worktreePath) continue;
+      const archivedOwnerKey = descriptorPhysicalOwnerKey(d);
+      if (!archivedOwnerKey || archivedOwnerKey !== repoKey) continue;
+    } catch (_) { continue; }
+    workspaces.push({
+      id, working_on: null, directUnread: null, broadcastUnread: null, urgencyMax: null,
+      worktreePath: null, source: 'archived', hints: ['archived'],
     });
   }
   return { ok: true, action: 'roster', repoKey, count: workspaces.length, workspaces, recent: sum.recent || [] };
@@ -1939,6 +2950,11 @@ function cmdReconcile(flags, ctx) {
   const repoKey = repokey.repoKeyForWorktree(cwd);
   if (!repoKey) return { ok: false, reason: 'no-project' };
 
+  // GH1: re-home any hash-bucket-stranded child of THIS project into store/<repoKey>/
+  // BEFORE the listRegistry sweep — otherwise a stranded child is invisible to
+  // listRegistry, its `inbox pull` is never spawned, and its backlog never drains.
+  try { rehomeStrandedProjectDescriptors(home, ctx); } catch (_) { /* fail-open: reconcile proceeds */ }
+
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   let descriptors;
   try { descriptors = s.listRegistry(); } finally { s.close(); }
@@ -1988,6 +3004,174 @@ function cmdReconcile(flags, ctx) {
   // doctor/update report a lossy reconcile as "fixed"/success upstream.
   const lost = results.reduce((acc, r) => acc + (r.lost || 0), 0);
   return { ok: lost === 0, action: 'reconcile', repoKey, count: results.length, imported, lost, results };
+}
+
+// readPersistedVerdictStatus(id, home) -> status string | null. READ-ONLY reuse
+// of the supervisor's already-written per-workspace verdict file (the SAME
+// livenessPathFor/JSON shape computeLiveness reads). No git, no computeLiveness,
+// no store DB open. null when absent/unreadable/unsafe id (fail-safe: no verdict
+// = not a reap candidate on the liveness axis).
+function readPersistedVerdictStatus(id, home) {
+  try {
+    const v = JSON.parse(fs.readFileSync(livenessPathFor(id, home), 'utf8'));
+    return v && typeof v.status === 'string' ? v.status : null;
+  } catch (_) { return null; }
+}
+
+// hasRecentWorktreeActivity(worktreePath, now, idleMs) -> bool. A SAFETY guard for
+// the reaper: true iff the worktree still exists on disk AND has a git commit
+// within idleMs. worktreeActivityMtime returns the last git-commit ts (or null
+// when there is no reliable git signal), so a live-but-recently-committed worktree
+// is never reaped even if a stale verdict lingers from before that activity.
+function hasRecentWorktreeActivity(worktreePath, now, idleMs) {
+  if (!worktreePath) return false;
+  let exists = false;
+  try { exists = fs.existsSync(worktreePath); } catch (_) { exists = false; }
+  if (!exists) return false;
+  const wMtime = worktreeActivityMtime(worktreePath);
+  return wMtime !== null && (now - wMtime) <= idleMs;
+}
+
+// projectScopedDescriptors(home, repoKey) -> [descriptor] belonging to THIS
+// project (physical ownerKey === repoKey), path-safe id + worktreePath present.
+// Shared by cmdReapStale and cmdReconcileActive so both scope IDENTICALLY to how
+// cmdRoster/cmdArchive scope (descriptorPhysicalOwnerKey === repoKey).
+function projectScopedDescriptors(home, repoKey) {
+  let descriptors = [];
+  try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
+  return descriptors.filter((d) =>
+    d && isSafeId(d.id) && d.worktreePath && descriptorPhysicalOwnerKey(d) === repoKey);
+}
+
+// cmdReapStale(flags, ctx) — parent-driven reaper. Archives THIS project's
+// workspaces whose persisted liveness verdict is stale/escalated AND which have
+// NO fresh heartbeat (definitive proof-of-life) AND no live-worktree+recent-git
+// activity. CONFIRM-FIRST (destructive-ish state change): dry-run/preview by
+// default (lists what WOULD be archived); requires an explicit --yes / --confirm
+// to actually archive. Reuses the proven cmdArchive move+tombstone path per id
+// (which re-validates ownership on apply). Project-scoped; requires a git cwd.
+function cmdReapStale(flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, reason: 'no-project' };
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const idleMs = Number.isFinite(ctx.idleThresholdMs) ? ctx.idleThresholdMs : DEFAULT_IDLE_MS;
+  const confirm = hasFlag(flags, 'yes') || hasFlag(flags, 'confirm');
+
+  const candidates = [];
+  const skipped = [];
+  for (const d of projectScopedDescriptors(home, repoKey)) {
+    const status = readPersistedVerdictStatus(d.id, home);
+    const stale = status === 'stale' || status === 'escalated';
+    if (!stale) continue;
+    // SAFETY 1: a fresh heartbeat is definitive proof the env is ALIVE — NEVER reap.
+    if (hasFreshHeartbeat(d.id, home, { now })) { skipped.push({ id: d.id, reason: 'fresh-heartbeat' }); continue; }
+    // SAFETY 2: a live worktree with recent git activity is not abandoned — NEVER reap.
+    if (hasRecentWorktreeActivity(d.worktreePath, now, idleMs)) { skipped.push({ id: d.id, reason: 'recent-activity' }); continue; }
+    candidates.push({ id: d.id, status, worktreePath: d.worktreePath });
+  }
+
+  if (!confirm) {
+    return {
+      ok: true, action: 'reap-stale', repoKey, dryRun: true,
+      count: candidates.length, candidates, skipped,
+      note: 'dry-run: pass --yes (or --confirm) to archive these workspaces',
+    };
+  }
+  const archived = [];
+  for (const c of candidates) {
+    // P1-5: cmdArchive re-validates the safety condition INSIDE its per-id lock,
+    // immediately before the archive — so a workspace that heartbeats or commits
+    // between candidate collection and here is SKIPPED, not wrong-archived.
+    const r = cmdArchive(c.id, ctx, {
+      revalidate: (desc) => {
+        const nowR = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+        const statusR = readPersistedVerdictStatus(c.id, home);
+        if (statusR !== 'stale' && statusR !== 'escalated') return 'became-live';
+        if (hasFreshHeartbeat(c.id, home, { now: nowR })) return 'fresh-heartbeat';
+        if (hasRecentWorktreeActivity(c.worktreePath, nowR, idleMs)) return 'recent-activity';
+        // P1-6: re-check structural ownership so a re-keyed/cross-project
+        // descriptor is never archived out from under its real project.
+        if (desc && descriptorPhysicalOwnerKey(desc) !== repoKey) return 'ownership-changed';
+        return null;
+      },
+    });
+    if (r && r.skipped) { skipped.push({ id: c.id, reason: r.reason }); continue; }
+    archived.push({ id: c.id, ok: !!r.ok, error: r.error || null });
+  }
+  return {
+    ok: archived.every((a) => a.ok), action: 'reap-stale', repoKey, dryRun: false,
+    count: archived.length, archived, skipped,
+  };
+}
+
+// cmdReconcileActive(flags, ctx) — reconcile the live roster against an explicit
+// ACTIVE set. Archives every CURRENT (non-archived) workspace of THIS project NOT
+// in the supplied --active id set. Backs the "user says what is still active"
+// flow (e.g. from a screenshot). Ids match by FULL id OR a short prefix (how the
+// roster displays them) — matching is generous on purpose (a match SPARES a
+// workspace, the safe direction: an active workspace is NEVER archived). Refuses
+// an EMPTY active set unless --allow-empty (an omitted set must not archive every
+// workspace by accident). CONFIRM-FIRST: dry-run by default, --yes/--confirm to
+// apply. Reuses cmdArchive per id. Project-scoped; requires a git cwd.
+function cmdReconcileActive(flags, ctx) {
+  const home = ctx.home;
+  const cwd = ctx.cwd || process.cwd();
+  const repoKey = repokey.repoKeyForWorktree(cwd);
+  if (!repoKey) return { ok: false, reason: 'no-project' };
+  const confirm = hasFlag(flags, 'yes') || hasFlag(flags, 'confirm');
+
+  const activeTokens = csvList(flags, 'active');
+  // Optional stdin ids (opt-in only, never auto-read — a blocking fd 0 read on a
+  // tty must never wedge the CLI): `--stdin` reads newline/space/comma-separated
+  // ids from fd 0. ctx.io.stdin (a string) is the test-injection seam.
+  if (hasFlag(flags, 'stdin') || (ctx.io && typeof ctx.io.stdin === 'string')) {
+    let raw = '';
+    if (ctx.io && typeof ctx.io.stdin === 'string') raw = ctx.io.stdin;
+    else { try { raw = String(fs.readFileSync(0, 'utf8')); } catch (_) { raw = ''; } }
+    for (const tok of raw.split(/[\s,]+/)) { const t = tok.trim(); if (t && !activeTokens.includes(t)) activeTokens.push(t); }
+  }
+  if (activeTokens.length === 0 && !hasFlag(flags, 'allow-empty')) {
+    return {
+      ok: false, action: 'reconcile-active', repoKey,
+      error: 'reconcile-active requires a non-empty --active <id,...> set (pass --allow-empty to archive ALL current workspaces)',
+    };
+  }
+
+  const activeMatches = (id) => {
+    for (const t of activeTokens) {
+      if (!t) continue;
+      if (id === t) return true;
+      if (t.length >= 4 && id.startsWith(t)) return true; // short prefix (roster/8-hex spelling)
+      if (t.length >= 8 && id.includes(t)) return true;    // 8-hex embedded in primary-<hex>
+    }
+    return false;
+  };
+
+  const candidates = [];
+  const kept = [];
+  for (const d of projectScopedDescriptors(home, repoKey)) {
+    if (activeMatches(d.id)) { kept.push(d.id); continue; }
+    candidates.push({ id: d.id, worktreePath: d.worktreePath });
+  }
+
+  if (!confirm) {
+    return {
+      ok: true, action: 'reconcile-active', repoKey, dryRun: true,
+      active: activeTokens, kept, count: candidates.length, candidates,
+      note: 'dry-run: pass --yes (or --confirm) to archive these workspaces',
+    };
+  }
+  const archived = [];
+  for (const c of candidates) {
+    const r = cmdArchive(c.id, ctx);
+    archived.push({ id: c.id, ok: !!r.ok, error: r.error || null });
+  }
+  return {
+    ok: archived.every((a) => a.ok), action: 'reconcile-active', repoKey, dryRun: false,
+    active: activeTokens, kept, count: archived.length, archived,
+  };
 }
 
 // resolveCreatedWorktreePath(res) -> string | null. TOLERANT best-effort parse
@@ -2175,7 +3359,14 @@ function run(argv, ctx0) {
       case 'archive': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        return { code: 0, result: cmdArchive(id, ctx) };
+        const r = cmdArchive(id, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'unarchive': {
+        const id = positionals[1];
+        if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const r = cmdUnarchive(id, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
       }
       case 'archive-ignore': {
         const id = positionals[1];
@@ -2202,6 +3393,11 @@ function run(argv, ctx0) {
       }
       case 'migrate': {
         return { code: 0, result: cmdMigrate(ctx) };
+      }
+      case 'migrate-owner-keys': {
+        // P1-8 forward-migration (idempotent, fail-open, no-delete). Exposed as a
+        // verb so update/doctor/an operator can run it directly.
+        return { code: 0, result: migrateOwnerKeys(ctx.home, ctx) };
       }
       case 'send': {
         // Send-time self-heal (Phase 7): runs before every mesh send.
@@ -2237,6 +3433,14 @@ function run(argv, ctx0) {
         const r = cmdReconcile(flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
+      case 'reap-stale': {
+        const r = cmdReapStale(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'reconcile-active': {
+        const r = cmdReconcileActive(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       case 'spawn': {
         // THIN pass-through (PLAN.md): the RAW argv tail (never our own `--long`
         // flag parser, which would swallow a `--prompt`/`--title`/etc. token and
@@ -2251,7 +3455,7 @@ function run(argv, ctx0) {
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|archive-ignore|archive-unignore|archive-request|migrate|send|roster|diagnose|healthcheck|mesh|reconcile|spawn|merge)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge)' } };
     }
   } catch (e) {
     return { code: 2, result: { ok: false, error: String(e && e.message || e) } };
@@ -2283,4 +3487,7 @@ module.exports = {
   computeDiagnosis, healthcheckHumanLine,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath,
   selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,
+  migrateOwnerKeys, rehomeCore, withIdLock, cmdArchive,
+  applyRecoveryIntents, recoveryIntentPath, rehomeStrandedProjectDescriptors,
+  cmdWorkspacesList, cmdGate, cmdReconcile, cmdRegister,
 };

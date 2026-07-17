@@ -6,10 +6,24 @@
 // mtime AND git/worktree activity) are PRESENT and each idle past the threshold,
 // AND the workspace has a pending unread backlog past its cursor. A workspace idle
 // because it has nothing to do is NOT stale. Fail direction = NOT stale (never
-// nominate a healthy workspace for a kill). The inbound heartbeat is deliberately
-// NOT used — it is blind to this failure mode (the wedged child stopped consuming
-// inbound too). Liveness is uuid-SCOPED: only <sessionId>.jsonl is stat'd, so a
-// busy colliding sibling session in the shared encoded dir cannot mask staleness.
+// nominate a healthy workspace for a kill). Liveness is uuid-SCOPED: only
+// <sessionId>.jsonl is stat'd, so a busy colliding sibling session in the shared
+// encoded dir cannot mask staleness.
+//
+// HEARTBEAT = definitive proof-of-life (v0.62, owner-approved — supersedes the
+// prior "inbound heartbeat deliberately NOT used" guard). A heartbeat is emitted
+// ONLY by the workspace's OWN live session (scripts/devswarm.js cmdHeartbeat
+// writes heartbeats/<id>.json); an archived/frozen/dead env emits NOTHING, so a
+// FRESH heartbeat (within heartbeatFreshMs) is definitive proof the env is ALIVE.
+// The two axes are DECOUPLED: "env alive" (a heartbeat proves it) vs "agent making
+// progress" (the outbound-idle + backlog signal below). A fresh heartbeat CLEARS
+// the stale/nudged/escalated verdict for coordination + archive purposes and
+// short-circuits BEFORE any recompute (see computeLiveness). No-progress detection
+// remains a SEPARATE, non-archiving signal — it is expressed ONLY as the `stale`
+// verdict here and NEVER fires while a fresh heartbeat is present, so a heartbeating
+// workspace can never be force-archived or nudged-as-gone. The old fear (a wedged
+// agent emits heartbeats without real work) is handled by keeping no-progress a
+// distinct, advisory signal, not by ignoring the heartbeat's liveness proof.
 //
 // `escalated` is terminal (short-circuited). `nudged` is a HOLD state entered by
 // the automatic path's poke (recovery.js's pokeOrEscalate — never a kill): while
@@ -28,6 +42,11 @@ const { projectDirFor } = require('./target-session.js');
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
 const DEFAULT_COOLDOWN_MS = 10 * 60 * 1000;
 const DEFAULT_NUDGE_WINDOW_MS = 3 * 60 * 1000; // how long a poke stays "in effect" before falling through
+// DEFAULT_HEARTBEAT_FRESH_MS — how recently a heartbeat must have been recorded to
+// count as PROOF the env is alive. Matched to DEFAULT_IDLE_MS (15 min) so the
+// "fresh heartbeat" window aligns with the same idle horizon the staleness detector
+// uses: a session that heartbeats at least once per idle window is provably alive.
+const DEFAULT_HEARTBEAT_FRESH_MS = DEFAULT_IDLE_MS;
 const GIT_TIMEOUT_MS = 4000;
 
 // isSafeId(id) -> bool. A descriptor id must be a single safe path segment before
@@ -46,6 +65,51 @@ function devswarmRoot(home) {
 function livenessPathFor(id, home) {
   if (!isSafeId(id)) throw new Error('unsafe workspace id: ' + JSON.stringify(id));
   return path.join(devswarmRoot(home), 'liveness', String(id) + '.json');
+}
+// heartbeatPathFor(id, home) — the durable heartbeat file scripts/devswarm.js
+// cmdHeartbeat writes (heartbeats/<id>.json). SAME id-safety gate as
+// livenessPathFor (never path.join an unsafe id).
+function heartbeatPathFor(id, home) {
+  if (!isSafeId(id)) throw new Error('unsafe workspace id: ' + JSON.stringify(id));
+  return path.join(devswarmRoot(home), 'heartbeats', String(id) + '.json');
+}
+// heartbeatTs(id, home, fsi) -> ms | null. The recorded `ts` from
+// heartbeats/<id>.json (cmdHeartbeat writes `ts: now`), falling back to the
+// file's mtime if the JSON is torn/missing the field. null when absent /
+// unreadable / unsafe id. Pure fs, never throws.
+function heartbeatTs(id, home, fsi) {
+  const F = fsi || fs;
+  let p;
+  try { p = heartbeatPathFor(id, home); } catch (_) { return null; }
+  try {
+    const beat = JSON.parse(F.readFileSync(p, 'utf8'));
+    if (beat && Number.isFinite(beat.ts)) return beat.ts;
+  } catch (_) { /* torn/absent JSON -> fall back to mtime */ }
+  try { return F.statSync(p).mtimeMs; } catch (_) { return null; }
+}
+// isFreshBeat(ts, now, freshMs) -> bool. The ONE freshness rule, shared by
+// hasFreshHeartbeat and computeLiveness's heartbeat short-circuit so both agree.
+// P1-7: require `0 < ts <= now` BEFORE applying the window — a FUTURE ts (clock
+// skew, a forged/typo'd beat) makes `now - ts` NEGATIVE, which trivially passes
+// `<= freshMs` and would mark the workspace "provably alive" until that future
+// time, indefinitely suppressing the stale gate + reaper. A future or non-positive
+// ts is NOT fresh (treated as no proof-of-life at all).
+function isFreshBeat(ts, now, freshMs) {
+  if (ts === null || !Number.isFinite(ts) || ts <= 0) return false;
+  if (ts > now) return false; // future ts is not proof of present life
+  return (now - ts) <= freshMs;
+}
+
+// hasFreshHeartbeat(id, home, opts) -> bool. True iff a heartbeat for `id` was
+// recorded within `freshMs` of `now`. Definitive proof-of-life: a heartbeat is
+// emitted ONLY by the workspace's own live session, so a fresh one means the env
+// is ALIVE (see the header's HEARTBEAT decouple note). opts: { now, freshMs, fs }.
+function hasFreshHeartbeat(id, home, opts) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const freshMs = Number.isFinite(o.freshMs) ? o.freshMs : DEFAULT_HEARTBEAT_FRESH_MS;
+  const ts = heartbeatTs(id, home, o.fs);
+  return isFreshBeat(ts, now, freshMs);
 }
 
 // transcriptMtime(projectDir, sessionId, fsi) -> ms | null. uuid-SCOPED: stats
@@ -119,6 +183,7 @@ function computeLiveness(opts) {
   const now = opts.now || Date.now();
   const idle = Number.isFinite(opts.idleThresholdMs) ? opts.idleThresholdMs : DEFAULT_IDLE_MS;
   const nudgeWindowMs = Number.isFinite(opts.nudgeWindowMs) ? opts.nudgeWindowMs : DEFAULT_NUDGE_WINDOW_MS;
+  const heartbeatFreshMs = Number.isFinite(opts.heartbeatFreshMs) ? opts.heartbeatFreshMs : DEFAULT_HEARTBEAT_FRESH_MS;
   const home = opts.home || os.homedir();
   const runners = opts.runners || {};
   const fsi = runners.fs || fs;
@@ -131,6 +196,29 @@ function computeLiveness(opts) {
   const nudgedAt = (prev && Number.isFinite(prev.nudgedAt)) ? prev.nudgedAt : null;
   const priorStaleSince = (prev && Number.isFinite(prev.staleSince)) ? prev.staleSince : null;
   const priorOutbound = (prev && Number.isFinite(prev.lastOutboundTs)) ? prev.lastOutboundTs : null;
+
+  // HEARTBEAT proof-of-life short-circuit (v0.62 decouple — see header). A FRESH
+  // heartbeat is definitive proof the env is ALIVE, so it CLEARS the verdict to
+  // `alive` and resets the nudge/stale state — even a sticky `escalated`, because a
+  // heartbeating env is by definition not the abandoned/wedged case escalation
+  // exists for. This is checked BEFORE the escalated short-circuit so a heartbeat
+  // that arrives after escalation still recovers the workspace. lastOutboundTs is
+  // set to the heartbeat ts (the session's own emission IS outbound activity), so
+  // no git spawn is needed on this path. `pending` is the cheap fs backlog read
+  // (no git) — a heartbeating workspace with real unread is still alive, and the
+  // unread is surfaced (coordination axis) without ever being nudged-as-gone.
+  const beatTs = heartbeatTs(descriptor.id, home, fsi);
+  if (isFreshBeat(beatTs, now, heartbeatFreshMs)) { // P1-7: a future/non-positive ts is NOT fresh
+    const hbBacklog = unreadBacklog(descriptor.inboxPath, descriptor.cursorPath, fsi);
+    return {
+      status: 'alive',
+      lastOutboundTs: Math.max(beatTs, priorOutbound || 0) || beatTs,
+      staleSince: null,
+      nudgeAttempts: 0,
+      nudgedAt: null,
+      pending: hbBacklog.known && hbBacklog.lines.length > 0,
+    };
+  }
 
   // P2-13 TERMINAL short-circuit: `escalated` is sticky — return it unchanged,
   // never re-stat, so the sweep stops re-targeting a workspace a human must handle.
@@ -192,6 +280,8 @@ function writeVerdict(id, verdict, home, fsi) {
 }
 
 module.exports = {
-  DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS, isSafeId, devswarmRoot, livenessPathFor, projectDirFor,
+  DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS, DEFAULT_HEARTBEAT_FRESH_MS,
+  isSafeId, devswarmRoot, livenessPathFor, heartbeatPathFor, projectDirFor,
   transcriptMtime, worktreeActivityMtime, unreadBacklog, computeLiveness, writeVerdict,
+  heartbeatTs, hasFreshHeartbeat, isFreshBeat,
 };

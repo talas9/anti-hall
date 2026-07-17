@@ -673,6 +673,53 @@ function foldMeshPostUpdate(opts) {
   }
 }
 
+/**
+ * ownerKeyMigratePostUpdate({ paths, env, cwd, home, devswarm }) →
+ *   { attempted, scanned, backfilled, rehomed, errors, detail }
+ *
+ * P1-8 persisted-shape forward-migration for the new `ownerKey` descriptor field.
+ * Backfills ownerKey on every existing descriptor (active AND archived) and heals
+ * prior hash-bucket split-brain via re-home. Runs on EVERY update (not gated on
+ * cache.synced — an existing store predates the field regardless of whether the
+ * plugin changed version this run). Same DevSwarm-session-only gate + fully
+ * fail-open posture as fold/reconcile; NEVER throws, never affects the update's
+ * own success. Idempotent (a re-run backfills/re-homes nothing).
+ */
+function ownerKeyMigratePostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'ownerKey migrate skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — ownerKey migrate skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.migrateOwnerKeys !== 'function') {
+      return { attempted: false, detail: 'ownerKey migrate skipped: this devswarm.js build has no migrateOwnerKeys' };
+    }
+    const r = devswarm.migrateOwnerKeys(home, { env, cwd }) || {};
+    return {
+      attempted: true,
+      scanned: r.scanned || 0,
+      backfilled: r.backfilled || 0,
+      rehomed: r.rehomed || 0,
+      errors: r.errors || 0,
+      detail: 'ownerKey migrate: scanned ' + (r.scanned || 0) + ', backfilled ' + (r.backfilled || 0)
+        + ', re-homed ' + (r.rehomed || 0) + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'ownerKey migrate raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Rollback (v0.57 mesh -> legacy per-worktree units) — PLAN-v0.57-mesh.md
 // Phase 6b / D13. Documented + tested, NOT auto-run by `main()`/runUpdate.
@@ -968,6 +1015,9 @@ function runUpdate(opts) {
   // survivors — after reconcile drains, so stranded messages exist to forward.
   // Same gate + fail-open posture; never affects `stop` or the update's success.
   const fold = foldMeshPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // P1-8: backfill the new `ownerKey` descriptor field + heal prior hash-bucket
+  // split-brain. Same gate + fail-open posture; never affects the update's success.
+  const ownerKeyMigrate = ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
 
   // Unknown installed version → NEVER 'already up to date'; no delta computable
   // (a null `from` would dump the entire changelog, so suppress it).
@@ -981,6 +1031,7 @@ function runUpdate(opts) {
         ingestHeal,
         reconcile,
         fold,
+        ownerKeyMigrate,
         action: UNKNOWN_INSTALLED_ACTION,
       },
       changelog: '',
@@ -1008,6 +1059,7 @@ function runUpdate(opts) {
       ingestHeal,
       reconcile,
       fold,
+      ownerKeyMigrate,
       action: updated ? 'run /reload-plugins' : 'already up to date',
     },
     changelog,
@@ -1095,6 +1147,7 @@ module.exports = {
   healIngestDaemon,
   reconcilePostUpdate,
   foldMeshPostUpdate,
+  ownerKeyMigratePostUpdate,
   readLegacyHeartbeat,
   rollbackToLegacyUnits,
   runCheck,

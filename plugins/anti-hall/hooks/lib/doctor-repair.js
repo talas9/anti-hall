@@ -481,6 +481,32 @@ function runRepairs(opts) {
     };
   }, () => require(DEVSWARM_SCRIPT).foldMeshDuplicates(home, { cwd, env }));
 
+  // P1-8: backfill the new `ownerKey` descriptor field on every descriptor
+  // (active AND archived) + heal prior hash-bucket split-brain via re-home. A
+  // pure descriptor/store forward-migration (idempotent, fail-open, NO-DELETE) —
+  // AUTO-SAFE, same posture as fold-mesh-duplicates. Reuses devswarm.js's
+  // migrateOwnerKeys for BOTH the dry-run detect and the apply (one code path).
+  migrationFix('owner-key-migrate', 'owner-key-migrate', () => {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.migrateOwnerKeys !== 'function') return { pending: false, detail: 'build has no migrateOwnerKeys' };
+    const r = dw.migrateOwnerKeys(home, { cwd, env, dryRun: true }) || {};
+    const n = (r.backfilled || 0) + (r.rehomed || 0);
+    return { pending: n > 0, detail: (r.backfilled || 0) + ' ownerKey backfill + ' + (r.rehomed || 0) + ' re-home' };
+  }, () => require(DEVSWARM_SCRIPT).migrateOwnerKeys(home, { cwd, env }));
+
+  // G2: discharge any lingering cmdArchive recovery-intent marker (a prior archive
+  // whose registry tombstone landed but whose in-process rollback/clear did not —
+  // ENOSPC or a process kill). A pure store re-upsert (revive) or a stale-marker
+  // clear, idempotent + fail-open + NO-DELETE — AUTO-SAFE, same posture as the
+  // owner-key migration. Reuses devswarm.js's applyRecoveryIntents for BOTH the
+  // dry-run detect and the apply (one code path).
+  migrationFix('recover-archive-intent', 'recover-archive-intent', () => {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.applyRecoveryIntents !== 'function') return { pending: false, detail: 'build has no applyRecoveryIntents' };
+    const r = dw.applyRecoveryIntents(home, { cwd, env, dryRun: true }) || {};
+    return { pending: (r.pending || 0) > 0, detail: (r.pending || 0) + ' archive recovery-intent(s)' };
+  }, () => require(DEVSWARM_SCRIPT).applyRecoveryIntents(home, { cwd, env }));
+
   // --- AUTO-SAFE: statusline-if-missing ------------------------------------
   try {
     const sl = scanStatusLine(cwd, home);

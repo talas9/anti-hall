@@ -104,7 +104,7 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 // the verdict-file path helper all already exist.
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.js');
-const { livenessPathFor, devswarmRoot } = require('../companion/lib/liveness.js');
+const { livenessPathFor, devswarmRoot, hasFreshHeartbeat } = require('../companion/lib/liveness.js');
 // POKE_PREFIX text check (companion/lib/devswarm-noise.js isNoiseText) —
 // applied HERE to descriptor durable-inbox NDJSON rows' `.message` (a shape
 // with no mtype/sender/recipient at all — see that module's header for why
@@ -368,7 +368,19 @@ function main() {
     }
 
     const status = readVerdictStatus(d.id, home);
-    const staleOrEscalated = status === 'stale' || status === 'escalated';
+    let staleOrEscalated = status === 'stale' || status === 'escalated';
+    // v0.62 heartbeat-alive decouple (owner-approved — see liveness.js header): a
+    // FRESH heartbeat is definitive proof the env is ALIVE (emitted only by the
+    // workspace's OWN live session), so it must NOT be nudged as gone/stale/
+    // escalated. Suppress ONLY the liveness axis — a live, heartbeating workspace
+    // with REAL unread still gates (that is genuine coordination neglect, a
+    // separate axis), so realUnread/unreadUnknown are untouched here. A single
+    // cheap fs read (heartbeats/<id>.json), no git/computeLiveness/store-DB open,
+    // so the Stop hook's cheap-read budget is preserved. Fail-open: if the read
+    // throws, staleOrEscalated is left as-is (never silently un-blocks a wedge).
+    if (staleOrEscalated) {
+      try { if (hasFreshHeartbeat(d.id, home)) staleOrEscalated = false; } catch (_) {}
+    }
 
     if (unreadUnknown || realUnread > 0 || staleOrEscalated) {
       blocking.push({

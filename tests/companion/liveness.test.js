@@ -254,3 +254,114 @@ test('writeVerdict round-trips atomically and nudgeAttempts persists into comput
     assert.strictEqual(onDisk.nudgeAttempts, 2);
   } finally { cleanup(); }
 });
+
+// ============================================================================
+// FIX 3 (Task 6): heartbeat = definitive proof-of-life. A FRESH heartbeat CLEARS
+// the stale/escalated verdict for coordination + archive purposes (the two axes
+// — "env alive" vs "agent progress" — are decoupled). See the liveness.js header.
+// ============================================================================
+
+// writeHeartbeat(home, id, ageMs) — mirror scripts/devswarm.js cmdHeartbeat's
+// durable heartbeats/<id>.json write (ts = when the beat was emitted).
+function writeHeartbeat(home, id, ageMs) {
+  const p = M.heartbeatPathFor(id, home);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const ts = Date.now() - (typeof ageMs === 'number' ? ageMs : 0);
+  fs.writeFileSync(p, JSON.stringify({ id, ts, state_ts: ts, source: 'cli-heartbeat' }));
+  return ts;
+}
+
+test('hasFreshHeartbeat: a recent beat is fresh, an old one and an absent one are not', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeHeartbeat(home, 'hb1', 60 * 1000); // 1m ago
+    assert.strictEqual(M.hasFreshHeartbeat('hb1', home), true);
+    writeHeartbeat(home, 'hb2', 60 * 60 * 1000); // 1h ago (past the 15m window)
+    assert.strictEqual(M.hasFreshHeartbeat('hb2', home), false);
+    assert.strictEqual(M.hasFreshHeartbeat('never', home), false);
+  } finally { cleanup(); }
+});
+
+test('FIX 3: a FRESH heartbeat clears a persisted STALE verdict -> computeLiveness reads alive', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    // Descriptor that WOULD compute stale (both signals idle + pending backlog).
+    const d = seed(home, { id: 'hbstale', transcriptAgeMs: 40 * 60 * 1000, inboxLines: [{ m: 'x' }], cursor: 0 });
+    M.writeVerdict('hbstale', { status: 'stale', lastOutboundTs: 5, staleSince: 5 }, home);
+    // Without a heartbeat: still stale.
+    const before = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => Date.now() - 40 * 60 * 1000 } });
+    assert.strictEqual(before.status, 'stale');
+    // A fresh heartbeat is definitive proof of life -> clears to alive.
+    writeHeartbeat(home, 'hbstale', 30 * 1000);
+    const after = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => Date.now() - 40 * 60 * 1000 } });
+    assert.strictEqual(after.status, 'alive');
+    assert.strictEqual(after.staleSince, null);
+    // pending is still surfaced (coordination axis) even though it's alive.
+    assert.strictEqual(after.pending, true);
+  } finally { cleanup(); }
+});
+
+test('FIX 3: a FRESH heartbeat clears even a sticky ESCALATED verdict (heartbeat proves the env recovered)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seed(home, { id: 'hbesc', transcriptAgeMs: 40 * 60 * 1000, inboxLines: [], cursor: 0 });
+    M.writeVerdict('hbesc', { status: 'escalated', lastOutboundTs: 5, staleSince: 5 }, home);
+    writeHeartbeat(home, 'hbesc', 30 * 1000);
+    let statted = false;
+    const v = M.computeLiveness({
+      descriptor: d, home, idleThresholdMs: IDLE,
+      runners: { gitCommitTs: () => { statted = true; return Date.now() - 40 * 60 * 1000; } },
+    });
+    assert.strictEqual(v.status, 'alive', 'a fresh heartbeat must recover even an escalated verdict');
+    assert.strictEqual(statted, false, 'the heartbeat short-circuit needs no git recompute');
+  } finally { cleanup(); }
+});
+
+test('FIX 3: a STALE heartbeat does NOT clear a stale verdict (no false proof-of-life)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seed(home, { id: 'hbold', transcriptAgeMs: 40 * 60 * 1000, inboxLines: [{ m: 'x' }], cursor: 0 });
+    M.writeVerdict('hbold', { status: 'stale', lastOutboundTs: 5, staleSince: 5 }, home);
+    writeHeartbeat(home, 'hbold', 60 * 60 * 1000); // 1h ago -> not fresh
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => Date.now() - 40 * 60 * 1000 } });
+    assert.strictEqual(v.status, 'stale', 'an OLD heartbeat is not proof of life and must not clear staleness');
+  } finally { cleanup(); }
+});
+
+// P1-7: a FUTURE heartbeat ts must NOT count as fresh. A future ts makes
+// (now - ts) negative, which trivially satisfied the old `<= freshMs` check and
+// would mark the workspace "provably alive" until that future time — indefinitely
+// suppressing the stale gate + reaper. Guarded by isFreshBeat's `0 < ts <= now`.
+test('P1-7: a FUTURE heartbeat ts is NOT fresh (hasFreshHeartbeat)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeHeartbeat(home, 'fut', -60 * 60 * 1000); // ts 1h in the FUTURE
+    assert.strictEqual(M.hasFreshHeartbeat('fut', home), false, 'a future heartbeat must not be treated as fresh');
+    // A far-future beat is likewise not fresh.
+    writeHeartbeat(home, 'fut2', -365 * 24 * 60 * 60 * 1000);
+    assert.strictEqual(M.hasFreshHeartbeat('fut2', home), false);
+  } finally { cleanup(); }
+});
+
+test('P1-7: isFreshBeat rejects future / non-positive ts, accepts a recent past ts', () => {
+  const now = 1_000_000_000;
+  const freshMs = 15 * 60 * 1000;
+  assert.strictEqual(M.isFreshBeat(now - 1000, now, freshMs), true, 'a recent past ts is fresh');
+  assert.strictEqual(M.isFreshBeat(now + 1000, now, freshMs), false, 'a future ts is not fresh');
+  assert.strictEqual(M.isFreshBeat(now, now, freshMs), true, 'ts === now is fresh (boundary)');
+  assert.strictEqual(M.isFreshBeat(0, now, freshMs), false, 'a zero ts is not fresh');
+  assert.strictEqual(M.isFreshBeat(-5, now, freshMs), false, 'a negative ts is not fresh');
+  assert.strictEqual(M.isFreshBeat(null, now, freshMs), false, 'an absent ts is not fresh');
+  assert.strictEqual(M.isFreshBeat(now - freshMs - 1, now, freshMs), false, 'a ts past the window is not fresh');
+});
+
+test('P1-7: a FUTURE heartbeat does NOT short-circuit computeLiveness to alive (stays stale)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seed(home, { id: 'futwedge', transcriptAgeMs: 40 * 60 * 1000, inboxLines: [{ m: 'x' }], cursor: 0 });
+    M.writeVerdict('futwedge', { status: 'stale', lastOutboundTs: 5, staleSince: 5 }, home);
+    writeHeartbeat(home, 'futwedge', -60 * 60 * 1000); // 1h in the FUTURE
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => Date.now() - 40 * 60 * 1000 } });
+    assert.strictEqual(v.status, 'stale', 'a future heartbeat must not be accepted as proof-of-life');
+  } finally { cleanup(); }
+});

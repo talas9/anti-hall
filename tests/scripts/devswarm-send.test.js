@@ -836,3 +836,156 @@ test('heartbeat --summary: a workspace CANNOT forge another workspace\'s report 
     rm(mainRepo);
   }
 });
+
+// ============================================================================
+// FIX 1 (Task 4): split-brain "no primary set". Registration can land a Primary
+// in the LEGACY hash bucket store/<hashFromWorkspaceId(primary-<hash>)>/ when
+// repoKey was transiently null at register time; the READ paths (send
+// --to-primary resolution + roster) opened ONLY store/<repoKey>/, so a validly-
+// registered Primary was invisible -> "primary-unregistered". The read-path
+// fallback must heal it (resolve from the hash bucket) WITHOUT any write during a
+// roster (pure read) and deliver a send into the bucket the entry lives in.
+// ============================================================================
+
+// seedHashBucket(home, primaryId, desc) — seed the Primary registry into the
+// LEGACY hash bucket (NOT the repoKey store), reproducing the split-brain.
+// Also writes the on-disk descriptor with ownerKey=hash: production's own
+// cmdRegister ALWAYS writes the descriptor (writeDescriptorAtomic) with a
+// matching ownerKey BEFORE the registry upsert (upsertStoreRegistry), so a
+// hash-bucket-only registry row with no/mismatched descriptor never occurs in
+// real split-brain — and the gated re-home trigger (maybeRehomeToCwdProject,
+// shared by both the read path and, since Concern D, the send path) keys
+// specifically off the descriptor's persisted ownerKey === the hash bucket key.
+function seedHashBucket(home, primaryId, desc) {
+  const hash = storeLib.hashFromWorkspaceId(primaryId);
+  const s = storeLib.openStore({ home, hash, backend: 'journal' });
+  // Derive the summary too — production ALWAYS writes summaries/<hash>.json when a
+  // descriptor registers (upsertStoreRegistry -> deriveSummary), and the roster's
+  // read-only split-brain fallback (P2-9) reads that derived summary via
+  // readSummaryForHash rather than materializing the store.
+  try { s.upsertRegistry(desc); storeLib.deriveSummary(s, { home }); } finally { s.close(); }
+  const descPath = cli.descriptorPath(home, primaryId);
+  fs.mkdirSync(path.dirname(descPath), { recursive: true });
+  fs.writeFileSync(descPath, JSON.stringify(Object.assign({}, desc, { ownerKey: hash })));
+  return hash;
+}
+
+// P1-1/P1-2 (supersedes the old read-only "FIX 1" band-aid): send --to-primary
+// now RE-HOMES a hash-bucket Primary into store/<repoKey>/ and delivers THERE —
+// where the Primary's own reads look — instead of delivering into the hash bucket
+// (which the repoKey-keyed reads never drained: a silent black hole).
+test('P1-1/P1-2: send --to-primary RE-HOMES a hash-bucket Primary into the repoKey store and delivers there (not the hash bucket)', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('splitbrain-send-main');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'splitbrain-send-child');
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    const mainWorktree = inst.resolveMainWorktree(mainRepo);
+    const primaryId = inst.primaryWorkspaceId(mainWorktree);
+    // Split-brain: the Primary is in the HASH bucket, NOT store/<repoKey>/.
+    const hash = seedHashBucket(home, primaryId, { id: primaryId, worktreePath: mainWorktree, sessionId: 's' });
+    assert.notEqual(hash, repoKey, 'precondition: hash bucket differs from repoKey bucket');
+    // The repoKey store has NO primary row -> pre-fix this returned primary-unregistered.
+    const r = cli.run(['send', '--to-primary', '--message', 'healed status'], ctx(home, { cwd: childWt }));
+    assert.equal(r.result.ok, true, 'send --to-primary must re-home the Primary, not fail primary-unregistered');
+    assert.equal(r.result.to, primaryId);
+    assert.equal(r.result.rehomedFromHashBucket, true);
+    // Message must land in the repoKey store — where the Primary's read-primary reads.
+    const sRepo = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const msgs = sRepo.listMessages(primaryId);
+      assert.equal(msgs.length, 1, 'the re-homed message must live in the repoKey store the Primary reads');
+      assert.equal(msgs[0].body, 'healed status');
+    } finally { sRepo.close(); }
+    // The hash-bucket registry row must be tombstoned (re-home migrated it out).
+    const sHash = storeLib.openStore({ home, hash, backend: 'journal' });
+    try {
+      assert.ok(!sHash.listRegistry().some((w) => w.id === primaryId), 'hash-bucket registry row must be tombstoned after re-home');
+    } finally { sHash.close(); }
+    // And the Primary is now readable via the Primary's real read verb (no black hole).
+    const rr = cli.run(['inbox', 'read-primary', primaryId], ctx(home, { cwd: mainRepo }));
+    assert.equal(rr.result.ok, true);
+    assert.ok(rr.result.messages.some((m) => m.body === 'healed status'), 'read-primary must surface the re-homed message');
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+// Concern D (re-review): cmdSend's --to-primary path used to call rehomeCore
+// UNCONDITIONALLY on every send, so a HEALTHY Primary (already correctly
+// registered in the repoKey store, ownerKey=repoKey) falsely reported
+// rehomedFromHashBucket:true and had its descriptor rewritten + registry
+// re-upserted + deriveSummary re-run on every single send — write
+// amplification on the hot path plus misleading telemetry. The fix routes
+// the send-path re-home through the SAME gated wrapper the read path already
+// uses (maybeRehomeToCwdProject), which no-ops unless the descriptor's
+// persisted ownerKey actually equals the legacy hash bucket key.
+test('send --to-primary on a HEALTHY primary (already registered in the repoKey store) does NOT report rehomedFromHashBucket and does NOT rewrite the descriptor', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('healthy-send-main');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'healthy-send-child');
+    const reg = cli.run(['register-primary'], ctx(home, { cwd: mainRepo }));
+    assert.equal(reg.result.ok, true, 'register-primary must succeed: ' + JSON.stringify(reg.result));
+    const primaryId = reg.result.id;
+    const descPath = cli.descriptorPath(home, primaryId);
+    const before = fs.readFileSync(descPath, 'utf8');
+    const beforeMtime = fs.statSync(descPath).mtimeMs;
+
+    const r = cli.run(['send', '--to-primary', '--message', 'healthy status'], ctx(home, { cwd: childWt }));
+    assert.equal(r.result.ok, true, 'send --to-primary must succeed against a healthy, already-registered Primary: ' + JSON.stringify(r.result));
+    assert.notEqual(r.result.rehomedFromHashBucket, true, 'a HEALTHY primary must NOT report rehomedFromHashBucket:true');
+
+    const after = fs.readFileSync(descPath, 'utf8');
+    const afterMtime = fs.statSync(descPath).mtimeMs;
+    assert.equal(after, before, 'a healthy send must NOT rewrite the primary descriptor (no re-home should have run)');
+    assert.equal(afterMtime, beforeMtime, 'descriptor mtime must be unchanged — no write occurred');
+
+    // The message must still be delivered correctly.
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const msgs = s.listMessages(primaryId);
+      assert.equal(msgs.length, 1);
+      assert.equal(msgs[0].body, 'healthy status');
+    } finally { s.close(); }
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+test('FIX 1: roster surfaces a Primary registered ONLY in the legacy hash bucket (labeled store-fallback), read-only', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('splitbrain-roster-main');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    const mainWorktree = inst.resolveMainWorktree(mainRepo);
+    const primaryId = inst.primaryWorkspaceId(mainWorktree);
+    const hash = seedHashBucket(home, primaryId, { id: primaryId, worktreePath: mainWorktree, sessionId: 's' });
+    const io = { run: () => { throw new Error('hivecontrol not installed'); } };
+    const r = cli.run(['roster'], ctx(home, { cwd: mainRepo, io }));
+    assert.equal(r.result.ok, true);
+    const row = r.result.workspaces.find((w) => w.id === primaryId);
+    assert.ok(row, 'the hash-bucket Primary must be visible on the roster (no more "no primary set")');
+    assert.equal(row.source, 'store-fallback');
+    // Pure read: the fallback must NEVER write the primary into the repoKey store.
+    const sRepo = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    let sum;
+    try { sum = storeLib.computeSummary(sRepo, { home }); } finally { sRepo.close(); }
+    assert.ok(!sum.workspaces || !sum.workspaces[primaryId], 'roster fallback must not fold the hash-bucket primary into the repoKey store');
+  } finally { rm(home); rm(mainRepo); }
+});
+
+test('FIX 1: a normally-registered Primary (repoKey store) is NOT double-listed by the fallback', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('splitbrain-nodupe-main');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    const mainWorktree = inst.resolveMainWorktree(mainRepo);
+    const primaryId = inst.primaryWorkspaceId(mainWorktree);
+    seedRegistry(home, repoKey, { id: primaryId, worktreePath: mainWorktree, sessionId: 's' });
+    const io = { run: () => { throw new Error('hivecontrol not installed'); } };
+    const r = cli.run(['roster'], ctx(home, { cwd: mainRepo, io }));
+    const rows = r.result.workspaces.filter((w) => w.id === primaryId);
+    assert.equal(rows.length, 1, 'a repoKey-store primary must appear exactly once (fallback suppressed)');
+    assert.equal(rows[0].source, 'store');
+  } finally { rm(home); rm(mainRepo); }
+});

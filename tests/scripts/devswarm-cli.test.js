@@ -12,6 +12,7 @@ const path = require('node:path');
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
 const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const pullLib = require('../../plugins/anti-hall/companion/lib/devswarm-pull.js');
 
 function tmpHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-cli-'));
@@ -43,6 +44,7 @@ test('register writes the descriptor + store registry + summary projection', () 
     // descriptor on disk, sessionId populated (closes the null-gap)
     const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'w1'), 'utf8'));
     assert.equal(desc.sessionId, 'sess-1');
+    assert.equal(desc.ownerKey, storeLib.hashFromWorkspaceId('w1'));
     assert.deepEqual(desc.nudgeCommand, ['echo', 'poke']);
     // store registry + summary reflect it (this workspace's PER-PROJECT summary)
     const sum = storeLib.readSummary(home, 'w1');
@@ -135,6 +137,86 @@ test('register fresh: a genuinely-absent inbox is still created, empty', () => {
       '--inbox', inbox, '--cursor', cursor], ctx(home));
     assert.ok(fs.existsSync(inbox), 'a genuinely absent inbox must be created by register');
     assert.strictEqual(fs.readFileSync(inbox, 'utf8'), '', 'a freshly-created inbox must be empty');
+  } finally { rm(home); }
+});
+
+// ---- P1 fail-OPEN cursor precreate (regression guard): the cursor half of
+// precreateCursorAndInbox() must swallow ANY write error (EACCES/ENOSPC/
+// EROFS/EPERM/etc), not just re-throw non-EEXIST errors. This helper now runs
+// on EVERY `inbox pull` via cmdRegister's ensure branch, so a transient,
+// non-EEXIST cursor-write error must never abort the pull/register — same
+// fail-open posture as the inbox block right below it and as the original
+// v0.61.1 precreate.
+test('register: a non-EEXIST cursor-write error is swallowed (fail-open), never aborts registration', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'facc-inbox', 'inbox.ndjson');
+    const cursor = path.join(home, 'facc-cursor', 'cursor.json');
+    const origWriteFileSync = fs.writeFileSync;
+    fs.writeFileSync = function (file, data, opts) {
+      if (file === cursor && opts && opts.flag === 'wx') {
+        const err = new Error('simulated permission failure');
+        err.code = 'EACCES';
+        throw err;
+      }
+      return origWriteFileSync.call(fs, file, data, opts);
+    };
+    let r;
+    try {
+      r = cli.run(['register', 'facc', '--worktree', '/wt/facc', '--session', 's',
+        '--inbox', inbox, '--cursor', cursor], ctx(home));
+    } finally {
+      fs.writeFileSync = origWriteFileSync;
+    }
+    assert.equal(r.result.ok, true, 'a non-EEXIST cursor-write error must not abort registration');
+    assert.equal(r.result.action, 'registered');
+    // the cursor file itself was never created (the injected error prevented it) —
+    // proves the error was genuinely swallowed, not silently side-stepped.
+    assert.ok(!fs.existsSync(cursor), 'precondition check: the injected error really did block the cursor write');
+  } finally { rm(home); }
+});
+
+test('inbox pull: a non-EEXIST cursor-write error in the ensure branch is swallowed, pull still proceeds', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'facc2-inbox', 'inbox.ndjson');
+    const cursor = path.join(home, 'facc2-cursor', 'cursor.json');
+    fs.mkdirSync(path.dirname(cursor), { recursive: true });
+    const origWriteFileSync = fs.writeFileSync;
+    let attempted = false;
+    fs.writeFileSync = function (file, data, opts) {
+      if (String(file).endsWith(path.join('facc2-cursor', 'cursor.json')) && opts && opts.flag === 'wx') {
+        attempted = true;
+        const err = new Error('simulated read-only filesystem');
+        err.code = 'EROFS';
+        throw err;
+      }
+      return origWriteFileSync.call(fs, file, data, opts);
+    };
+    const io = { run: (s) => (s.args[1] === 'message-count' ? { ok: true, raw: '0' } : { ok: false, error: 'unexpected' }) };
+    let r;
+    try {
+      r = cli.run(['register', 'facc2', '--worktree', '/wt/facc2', '--session', 's', '--inbox', inbox, '--cursor', cursor], ctx(home));
+      assert.equal(r.result.ok, true, 'initial register must succeed despite the injected cursor error');
+      r = cli.run(['inbox', 'pull', 'facc2'], ctx(home, { io }));
+    } finally {
+      fs.writeFileSync = origWriteFileSync;
+    }
+    assert.ok(attempted, 'precondition: the ensure branch must have re-attempted the cursor precreate');
+    assert.equal(r.result.ok, true, 'inbox pull must proceed past a swallowed non-EEXIST cursor error in the ensure branch');
+  } finally { rm(home); }
+});
+
+test('register: an EXISTING cursor is never clobbered by precreate (idempotent wx create)', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'noclob-inbox', 'inbox.ndjson');
+    const cursor = path.join(home, 'noclob-cursor', 'cursor.json');
+    fs.mkdirSync(path.dirname(cursor), { recursive: true });
+    fs.writeFileSync(cursor, '7');
+    cli.run(['register', 'noclob', '--worktree', '/wt/noclob', '--session', 's',
+      '--inbox', inbox, '--cursor', cursor], ctx(home));
+    assert.equal(fs.readFileSync(cursor, 'utf8'), '7', 'an existing cursor value must never be clobbered by precreate');
   } finally { rm(home); }
 });
 
@@ -231,6 +313,76 @@ test('ensure is idempotent: existing descriptor untouched, store re-upserted', (
     const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'w'), 'utf8'));
     assert.equal(desc.worktreePath, '/wt/w'); // NOT overwritten
     assert.equal(desc.sessionId, 's1');
+  } finally { rm(home); }
+});
+
+// ---- FIX 2: ensure/exists branch must precreate the cursor/inbox too -------
+// cmdRegister's `requireNew && existing` early-return (~L881-891) used to skip
+// the cursor/inbox precreate block entirely (~L916-948, only reached on the
+// CREATE path). A descriptor whose inbox/cursor was repointed to a path where
+// the cursor file never got created (e.g. a worktree-local override) then
+// stays known:false forever, even though `inbox pull` re-runs this SAME ensure
+// branch every single turn — this is the real cause of a LIVE workspace's gate
+// nagging "inbox unreadable". Both fixtures below: (1) a worktree-local path
+// (the reported esim-v2 shape), (2) the canonical central-store default path
+// (`pull.inboxDefaultPath`/`cursorDefaultPath`, what `inbox pull` seeds a
+// brand-new descriptor with) -- the fix must be path-agnostic, not special-
+// cased to either.
+function repointDescriptor(home, id, inboxPath, cursorPath) {
+  const p = cli.descriptorPath(home, id);
+  const desc = JSON.parse(fs.readFileSync(p, 'utf8'));
+  desc.inboxPath = inboxPath;
+  desc.cursorPath = cursorPath;
+  fs.writeFileSync(p, JSON.stringify(desc));
+}
+
+test('ensure precreates cursor/inbox for an existing descriptor repointed to a WORKTREE-LOCAL path, without truncating existing inbox content', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'wt', '.devswarm-temp', 'inbox.ndjson');
+    const cursor = path.join(home, 'wt', '.devswarm-temp', 'cursor.json');
+    cli.run(['register', 'w', '--worktree', '/wt/w', '--session', 's'], ctx(home));
+    // Repoint AFTER register (simulates a worktree-local override applied post-
+    // registration) — bypasses cmdRegister's create-path precreate, which only
+    // ever ran against the descriptor's ORIGINAL (unset) paths.
+    repointDescriptor(home, 'w', inbox, cursor);
+    // Pre-seed the inbox with REAL content (never created via register, since
+    // it now points elsewhere) to prove the fix's precreate never truncates it.
+    fs.mkdirSync(path.dirname(inbox), { recursive: true });
+    fs.writeFileSync(inbox, JSON.stringify({ id: 'm1', ts: 1 }) + '\n');
+    // Reproduction: cursor absent -> known:false (the live-workspace bug: the
+    // gate reads "inbox unreadable" even though the workspace is active).
+    const before = cli.run(['inbox', 'count', 'w'], ctx(home));
+    assert.equal(before.result.known, false);
+    // Exercise the EXACT branch `inbox pull`'s every-turn auto-ensure hits
+    // (cmdRegister's requireNew && existing early-return).
+    const r = cli.run(['ensure', 'w', '--worktree', '/wt/w', '--session', 's'], ctx(home));
+    assert.equal(r.result.action, 'exists');
+    assert.equal(fs.existsSync(cursor), true, 'ensure must precreate the cursor for a repointed existing descriptor');
+    const after = cli.run(['inbox', 'count', 'w'], ctx(home));
+    assert.equal(after.result.known, true);
+    assert.equal(after.result.total, 1, 'the pre-existing inbox content must be preserved, never truncated');
+  } finally { rm(home); }
+});
+
+test('ensure precreates cursor/inbox for an existing descriptor on the CENTRAL-STORE default path too (path-agnostic)', () => {
+  const home = tmpHome();
+  try {
+    const inbox = pullLib.inboxDefaultPath(home, 'w2');
+    const cursor = pullLib.cursorDefaultPath(home, 'w2');
+    cli.run(['register', 'w2', '--worktree', '/wt/w2', '--session', 's', '--inbox', inbox, '--cursor', cursor], ctx(home));
+    // Simulate the cursor having been lost (or never precreated, e.g. an
+    // earlier init attempt failed) while the descriptor itself survives.
+    fs.rmSync(cursor);
+    fs.writeFileSync(inbox, JSON.stringify({ id: 'm1', ts: 1 }) + '\n', { flag: 'a' });
+    const before = cli.run(['inbox', 'count', 'w2'], ctx(home));
+    assert.equal(before.result.known, false);
+    const r = cli.run(['ensure', 'w2', '--worktree', '/wt/w2', '--session', 's'], ctx(home));
+    assert.equal(r.result.action, 'exists');
+    assert.equal(fs.existsSync(cursor), true, 'ensure must precreate the cursor on the central-store default path too');
+    const after = cli.run(['inbox', 'count', 'w2'], ctx(home));
+    assert.equal(after.result.known, true);
+    assert.equal(after.result.total, 1, 'the pre-existing inbox content must be preserved, never truncated');
   } finally { rm(home); }
 });
 
@@ -395,6 +547,190 @@ test('archive tombstones the registry, moves the descriptor, surfaces the manual
     const list = cli.run(['workspaces', 'list', '--workspace', 'w'], ctx(home));
     assert.equal(list.result.count, 0);
   } finally { rm(home); }
+});
+
+test('archive: a failed descriptor move must NOT tombstone the registry (no split-brain)', (t) => {
+  const home = tmpHome();
+  try {
+    cli.run(['register', 'w', '--worktree', '/wt/w', '--session', 's'], ctx(home));
+    // Force ONLY the exclusive descriptor link into archived/ to fail.
+    const origLink = fs.linkSync.bind(fs);
+    t.mock.method(fs, 'linkSync', (from, to) => {
+      if (String(to).endsWith(path.join('archived', 'w.json'))) {
+        throw new Error('boom: simulated link failure');
+      }
+      return origLink(from, to);
+    });
+    const r = cli.run(['archive', 'w'], ctx(home));
+    t.mock.reset();
+    // Fail-safe: the descriptor must still be present in workspaces/ (move
+    // never happened) AND the registry must NOT have been tombstoned -- that
+    // split-brain (descriptor present + registry gone) is exactly what leaves
+    // the gate nagging forever while the roster row silently vanishes. A
+    // failed archive is reported ok:false, never a silent partial success.
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.descriptorArchived, false);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'w')), true, 'descriptor must remain in workspaces/ on a failed move');
+    const list = cli.run(['workspaces', 'list', '--workspace', 'w'], ctx(home));
+    assert.equal(list.result.count, 1, 'registry must NOT be tombstoned when the descriptor move failed');
+  } finally { rm(home); }
+});
+
+test('archive then unarchive round-trips the descriptor back into workspaces/ and revives the registry row', () => {
+  const home = tmpHome();
+  try {
+    cli.run(['register', 'w', '--worktree', '/wt/w', '--session', 's'], ctx(home));
+    const archived = cli.run(['archive', 'w'], ctx(home));
+    assert.equal(archived.result.ok, true);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'w')), false);
+    assert.equal(fs.existsSync(path.join(cli.archivedDir(home), 'w.json')), true);
+    assert.equal(cli.run(['workspaces', 'list', '--workspace', 'w'], ctx(home)).result.count, 0);
+
+    const unarchived = cli.run(['unarchive', 'w'], ctx(home));
+    assert.equal(unarchived.result.ok, true);
+    assert.equal(unarchived.result.descriptorRestored, true);
+    // descriptor moved back (not left behind in archived/)
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'w')), true, 'descriptor must be restored to workspaces/');
+    assert.equal(fs.existsSync(path.join(cli.archivedDir(home), 'w.json')), false, 'archived copy must be moved out, not duplicated');
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'w'), 'utf8'));
+    assert.equal(desc.worktreePath, '/wt/w');
+    assert.equal(desc.sessionId, 's');
+    assert.equal(desc.ownerKey, storeLib.hashFromWorkspaceId('w'));
+    // registry row revived (latest-op-wins upsert after the earlier tombstone)
+    const list = cli.run(['workspaces', 'list', '--workspace', 'w'], ctx(home));
+    assert.equal(list.result.count, 1, 'unarchive must revive the tombstoned registry row');
+    assert.deepEqual(list.result.workspaces.map((ws) => ws.id), ['w']);
+  } finally { rm(home); }
+});
+
+test('unarchive on an id with no archived descriptor fails soft (no crash, no phantom restore)', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['unarchive', 'never-archived'], ctx(home));
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /no archived descriptor/);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'never-archived')), false);
+  } finally { rm(home); }
+});
+
+test('unarchive refuses a legacy archived descriptor with no ownerKey and no derivable repo key', () => {
+  const home = tmpHome();
+  try {
+    fs.mkdirSync(cli.archivedDir(home), { recursive: true });
+    fs.writeFileSync(path.join(cli.archivedDir(home), 'legacy.json'), JSON.stringify({
+      id: 'legacy', worktreePath: '/definitely/not/a/git/worktree', sessionId: 's',
+    }));
+    const r = cli.run(['unarchive', 'legacy'], ctx(home));
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /does not belong to the current project/);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'legacy')), false);
+  } finally { rm(home); }
+});
+
+test('archive rejects an archived-directory symlink without writing through it', () => {
+  const home = tmpHome();
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-archive-outside-'));
+  try {
+    cli.run(['register', 'w', '--worktree', '/wt/w', '--session', 's'], ctx(home));
+    fs.symlinkSync(outside, cli.archivedDir(home));
+    const r = cli.run(['archive', 'w'], ctx(home));
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /unsafe archived directory/);
+    assert.equal(fs.existsSync(path.join(outside, 'w.json')), false);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'w')), true);
+  } finally { rm(home); rm(outside); }
+});
+
+// cmdUnarchive moves the descriptor via linkSync+unlinkSync (an exclusive
+// same-filesystem move — linkSync fails closed on EEXIST instead of
+// renameSync's silent overwrite), NOT renameSync. A prior version of this
+// test mocked fs.renameSync, which cmdUnarchive never calls on this path — the
+// mock never fired, so the test never actually exercised a real failure path.
+//
+// These structural-repo cases use a real git repo; the generic lifecycle test
+// above covers the per-id fallback through its persisted physical ownerKey.
+test('unarchive: linkSync failure must NOT revive the registry (symmetric fail-safe with archive)', (t) => {
+  const home = tmpHome();
+  const repo = makeGitRepoArchive('unarchive-link-fail');
+  try {
+    cli.run(['register', 'w', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    cli.run(['archive', 'w'], ctx(home, { cwd: repo }));
+    const origLink = fs.linkSync.bind(fs);
+    t.mock.method(fs, 'linkSync', (from, to) => {
+      if (String(to).endsWith(path.join('workspaces', 'w.json'))) {
+        throw new Error('boom: simulated link failure');
+      }
+      return origLink(from, to);
+    });
+    const r = cli.run(['unarchive', 'w'], ctx(home, { cwd: repo }));
+    t.mock.reset();
+    assert.equal(r.result.ok, false);
+    // archived copy left in place (never lost), never phantom-restored to workspaces/
+    assert.equal(fs.existsSync(path.join(cli.archivedDir(home), 'w.json')), true, 'archived descriptor must remain in place on a failed move');
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'w')), false, 'descriptor must not appear in workspaces/ on a failed move');
+    const list = cli.run(['workspaces', 'list', '--workspace', 'w'], ctx(home, { cwd: repo }));
+    assert.equal(list.result.count, 0, 'registry must stay tombstoned when the move-back failed');
+  } finally { rm(home); rm(repo); }
+});
+
+test('unarchive: link succeeds but unlinkSync(archivedPath) fails rolls back W and leaves the registry tombstoned; retry succeeds', (t) => {
+  const home = tmpHome();
+  const repo = makeGitRepoArchive('unarchive-unlink-fail');
+  try {
+    cli.run(['register', 'w', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    cli.run(['archive', 'w'], ctx(home, { cwd: repo }));
+    const archivedPath = path.join(cli.archivedDir(home), 'w.json');
+    const activePath = cli.descriptorPath(home, 'w');
+    const origUnlink = fs.unlinkSync.bind(fs);
+    t.mock.method(fs, 'unlinkSync', (p) => {
+      if (String(p) === archivedPath) {
+        throw new Error('boom: simulated unlink failure');
+      }
+      return origUnlink(p);
+    });
+    const r = cli.run(['unarchive', 'w'], ctx(home, { cwd: repo }));
+    t.mock.reset();
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /failed to move descriptor out of archived/);
+    assert.equal(fs.existsSync(archivedPath), true, 'archived descriptor must remain in place (unlink failed)');
+    assert.equal(fs.existsSync(activePath), false, 'the workspaces hardlink must be rolled back');
+    let list = cli.run(['workspaces', 'list', '--workspace', 'w'], ctx(home, { cwd: repo }));
+    assert.equal(list.result.count, 0, 'registry must stay tombstoned until the move completes');
+    const retry = cli.run(['unarchive', 'w'], ctx(home, { cwd: repo }));
+    assert.equal(retry.result.ok, true, 'a retry after rollback must complete');
+    assert.equal(fs.existsSync(archivedPath), false, 'retry must finish removing the archived copy');
+    assert.equal(fs.existsSync(activePath), true);
+    list = cli.run(['workspaces', 'list', '--workspace', 'w'], ctx(home, { cwd: repo }));
+    assert.equal(list.result.count, 1);
+  } finally { rm(home); rm(repo); }
+});
+
+// Fix C requirement: a retry must be idempotent even WITHOUT going through a
+// mocked failure first — simulate the exact interrupted state directly (both
+// hardlinks present, same inode, registry not yet revived) and confirm
+// unarchive recognizes it as already-restored rather than erroring on
+// linkSync EEXIST.
+test('unarchive: recovers a pre-existing same-inode interrupted state (activePath already hardlinked to archivedPath)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepoArchive('unarchive-same-inode');
+  try {
+    cli.run(['register', 'w', '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    cli.run(['archive', 'w'], ctx(home, { cwd: repo }));
+    const archivedPath = path.join(cli.archivedDir(home), 'w.json');
+    const activePath = cli.descriptorPath(home, 'w');
+    // simulate an interrupted prior unarchive: the link into workspaces/
+    // already happened, but nothing else (registry not revived, archived/
+    // copy not removed yet).
+    fs.mkdirSync(path.dirname(activePath), { recursive: true });
+    fs.linkSync(archivedPath, activePath);
+    const r = cli.run(['unarchive', 'w'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, 'must recognize the same-inode interrupted state as already-restored, not error on EEXIST');
+    assert.equal(r.result.descriptorRestored, true);
+    assert.equal(fs.existsSync(activePath), true);
+    assert.equal(fs.existsSync(archivedPath), false, 'the archived copy must be cleaned up on recovery');
+    const list = cli.run(['workspaces', 'list', '--workspace', 'w'], ctx(home, { cwd: repo }));
+    assert.equal(list.result.count, 1, 'registry must be revived on recovery');
+  } finally { rm(home); rm(repo); }
 });
 
 test('archive-ignore writes then archive-unignore removes the mark', () => {

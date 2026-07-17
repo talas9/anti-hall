@@ -824,3 +824,85 @@ test('FAIL-OPEN: no verdict file at all for a descriptor with real unread -> STI
     assert.match(r.json.reason, /noverdict1/);
   } finally { h.cleanup(); }
 });
+
+// ============================================================================
+// FIX 3 (Task 6): a FRESH heartbeat is definitive proof-of-life, so the parent
+// gate must NOT nudge such a workspace as gone/stale/escalated. Only the
+// LIVENESS axis is suppressed — a heartbeating workspace with REAL unread still
+// gates (a separate coordination concern).
+// FIX 2c (Task 5): an ARCHIVED workspace (descriptor moved out of workspaces/)
+// is excluded from the gate scan entirely.
+// ============================================================================
+
+function writeHeartbeat(home, id, ts) {
+  const dir = path.join(home, '.anti-hall', 'devswarm', 'heartbeats');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, id + '.json'), JSON.stringify({ id, ts: (typeof ts === 'number' ? ts : Date.now()) }));
+}
+function archiveDescriptor(home, id) {
+  const root = path.join(home, '.anti-hall', 'devswarm');
+  const adir = path.join(root, 'archived');
+  fs.mkdirSync(adir, { recursive: true });
+  fs.renameSync(path.join(root, 'workspaces', id + '.json'), path.join(adir, id + '.json'));
+}
+
+test('FIX 3: a fresh-heartbeat workspace with a STALE verdict is NOT nudged (liveness axis suppressed)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws-hb', { messages: ['a'], cursor: 1, verdict: { status: 'stale' } }); // stale, no unread
+    writeHeartbeat(h.home, 'ws-hb', Date.now()); // fresh proof-of-life
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', 'a fresh-heartbeat workspace must not be nudged as gone/stale');
+  } finally { h.cleanup(); }
+});
+
+test('FIX 3 control: the SAME stale workspace WITHOUT a fresh heartbeat DOES block', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws-hb', { messages: ['a'], cursor: 1, verdict: { status: 'stale' } });
+    // no heartbeat written
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /stale/);
+  } finally { h.cleanup(); }
+});
+
+test('FIX 3: an OLD heartbeat does NOT suppress the stale nudge (no false proof-of-life)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws-hb', { messages: ['a'], cursor: 1, verdict: { status: 'stale' } });
+    writeHeartbeat(h.home, 'ws-hb', Date.now() - 60 * 60 * 1000); // 1h ago -> not fresh
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a stale heartbeat is not proof of life');
+    assert.match(r.json.reason, /stale/);
+  } finally { h.cleanup(); }
+});
+
+test('FIX 3: a fresh heartbeat does NOT suppress a REAL unread backlog (only the liveness axis)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws-hb2', { messages: ['a', 'b'], cursor: 0, verdict: { status: 'stale' } }); // 2 unread + stale
+    writeHeartbeat(h.home, 'ws-hb2', Date.now());
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'real unread on a live workspace still gates');
+    assert.match(r.json.reason, /2 unread/);
+    assert.doesNotMatch(r.json.reason, /stale/, 'the liveness axis is suppressed by the fresh heartbeat, but unread still blocks');
+  } finally { h.cleanup(); }
+});
+
+test('FIX 2c: an ARCHIVED workspace is EXCLUDED from the parent-gate scan (never nudged)', () => {
+  const h = makeHome();
+  try {
+    // ws-archived WOULD block (stale + unread) but is archived (descriptor moved
+    // out of workspaces/ into archived/ — cmdArchive's real end-state).
+    seedWorkspace(h.home, 'ws-archived', { messages: ['a', 'b'], cursor: 0, verdict: { status: 'stale' } });
+    // ws-live genuinely blocks, so the gate is ACTIVE (not trivially inert).
+    seedWorkspace(h.home, 'ws-live', { messages: ['x'], cursor: 0 }); // 1 unread
+    archiveDescriptor(h.home, 'ws-archived');
+    const r = run(h.home);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'the live workspace must still gate');
+    assert.match(r.json.reason, /ws-live/);
+    assert.doesNotMatch(r.json.reason, /ws-archived/, 'an archived workspace must never appear in the neglect set');
+  } finally { h.cleanup(); }
+});
