@@ -278,6 +278,13 @@ plugin depends on it.
   read-only mesh-shape check); `roster`/`workspaces list`/`diagnose` are now pure reads
   (no `summary.json` write side-effect); orphans/stale partitions surface to the Primary
   via `devswarm-parent-inbox` (capped, read-only).
+- **Mesh self-heal follow-ups (v0.62.0).** `unarchive <id>` reverses `archive`; a new
+  `migrate-owner-keys` forward-migration backfills/re-homes a descriptor's `ownerKey`
+  (idempotent, fail-open, no-delete; wired into `update`/`doctor`); `reap-stale
+  [--yes|--confirm]` dry-run-reaps descriptors verdicted stale/escalated, gated by a
+  fresh-heartbeat/recent-git-activity safety check; `reconcile-active [--active id,...]
+  [--allow-empty] [--stdin] [--yes|--confirm]` archives every current workspace of a
+  project NOT in an explicit "still active" set.
 - **Guard-blocked native messaging** — `hivecontrol workspace message-child`/
   `message-parent` are unconditionally blocked and redirected to the mesh CLI, which is
   the sole agent-initiated messaging transport once DevSwarm is active.

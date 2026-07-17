@@ -979,6 +979,54 @@ test('G1: cmdRegister ensure returns lockBusy (no descriptor write) under a held
   } finally { rm(home); rm(repo); }
 });
 
+// --- G5 (P1c): rekeySubdirRegistryRows serializes its read-modify-write under the
+// per-id lock. A subdir-registered row is re-keyed to its git toplevel by
+// foldMeshDuplicates; while another op holds that id's lock the rewrite MUST NOT
+// happen (fail-closed skip, no unlocked stale write), and MUST proceed once released.
+test('G5: foldMeshDuplicates rekey does NOT rewrite a subdir row while its per-id lock is held, and rewrites it once released', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('g5-rekey');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const subdir = path.join(repo, 'pkg', 'app');
+    fs.mkdirSync(subdir, { recursive: true });
+    const expectedTop = String(cp.spawnSync('git', ['-C', subdir, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' }).stdout || '').trim();
+    assert.ok(expectedTop && expectedTop !== subdir, 'precondition: the git toplevel differs from the subdir');
+
+    // The row is registered from the SUBDIR (raw-path meshId != toplevel meshId) — the exact
+    // shape rekeySubdirRegistryRows exists to canonicalize. Carry real fields it must preserve.
+    const id = 'sub-child';
+    seedRegistry(home, repoKey, { id, worktreePath: subdir, sessionId: 's-real', inboxPath: '/real/inbox', cursorPath: '/real/cursor' });
+
+    const readRow = () => {
+      const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+      try { return s.listRegistry().find((r) => String(r.id) === id); } finally { s.close(); }
+    };
+
+    // (a) lock HELD by another op -> rekey is skipped, the subdir path is UNCHANGED (no unlocked write).
+    const release = recovery.acquireLock(id, home);
+    assert.equal(typeof release, 'function', 'precondition: the per-id lock is held');
+    let held;
+    try {
+      held = cli.foldMeshDuplicates(home, { cwd: repo, env: {}, backend: 'journal' });
+      assert.equal(held.ok, true, 'fold itself still succeeds when a rekey target is lock-skipped');
+      assert.ok(!held.rekeyed, 'a lock-contended row must NOT be counted as re-keyed: ' + JSON.stringify(held));
+      const row = readRow();
+      assert.equal(row.worktreePath, subdir, 'the row must remain on its subdir path — no unlocked rewrite under a held lock');
+      assert.equal(row.sessionId, 's-real', 'no field may be mutated while the lock is held');
+    } finally { release(); }
+
+    // (b) lock RELEASED -> the same fold re-keys the row to the canonical toplevel, preserving the carried fields.
+    const done = cli.foldMeshDuplicates(home, { cwd: repo, env: {}, backend: 'journal' });
+    assert.equal(done.ok, true);
+    assert.equal(done.rekeyed, 1, 'once unlocked exactly one subdir row is re-keyed: ' + JSON.stringify(done));
+    const after = readRow();
+    assert.equal(after.worktreePath, expectedTop, 'the row must now be canonicalized to the git toplevel');
+    assert.equal(after.sessionId, 's-real', 'the re-key must preserve sessionId (read-modify-write, not a null-blind write)');
+    assert.equal(after.inboxPath, '/real/inbox', 'the re-key must preserve the real durable inboxPath');
+  } finally { rm(home); rm(repo); }
+});
+
 // --- G3: archive re-homes a hash-bucket stranded ws; rejects a real repoKey ---
 test('G3: cmdArchive RE-HOMES a hash-bucket-stranded workspace (not rejected) and archives it', () => {
   const home = tmpHome();

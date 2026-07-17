@@ -908,24 +908,67 @@ function pickSurvivor(s, group) {
 // resolves to its OWN toplevel and keeps a DISTINCT meshId (never merged into the
 // parent). Non-git / unresolvable paths are left as-is (raw path IS their own meshId).
 // Returns the count of re-keyed ids. dryRun classifies without writing (doctor detect).
-function rekeySubdirRegistryRows(s, dryRun) {
+//
+// P1c (v0.62.0 lock hardening): the APPLY path is a per-id read-modify-write —
+// it carries d.sessionId/inboxPath/cursorPath/nudgeCommand forward so the rekey
+// only rewrites worktreePath. That snapshot is read from listRegistry() OUTSIDE
+// any lock, so a concurrent register/ensure/heartbeat/re-home for the SAME id
+// (each of which runs under withIdLock and can update those very fields) could
+// land BETWEEN this snapshot and the upsert — and the upsert would then clobber
+// the concurrent update back to the STALE snapshot values (a classic lost
+// update: e.g. a child that just registered its real durable inboxPath gets it
+// nulled out). foldMeshDuplicates is invoked from doctor's repair (apply) with
+// NO id lock held, so this race is genuinely reachable against a live child.
+// Fix: run each row's write under withIdLock(id) AND re-derive from a FRESH
+// in-lock re-read of the row (the lock only serializes the write window; writing
+// the pre-lock snapshot would still lose the update). A lock-busy row (another
+// op mid-mutation) is SKIPPED and surfaced, never written unlocked — the rekey
+// is idempotent, so the next doctor run re-detects and re-keys it. dryRun takes
+// no lock (pure classification, no write). NB no deadlock: foldMeshDuplicates
+// holds no per-id lock when it calls this, so the per-id acquire here is never
+// re-entrant.
+function rekeySubdirRegistryRows(s, home, dryRun) {
   let rekeyed = 0;
-  for (const d of s.listRegistry()) {
-    if (!d || !d.worktreePath || d.id == null) continue;
-    const top = resolveCallerWorktree(d.worktreePath);
-    if (!top) continue; // non-git / unresolvable -> raw path is already its own meshId
+  // needsRekey(row) -> canonical toplevel path to write, or null if the row is
+  // already canonical / non-git / unresolvable. The SAME classification is used
+  // for the outer snapshot pass and the in-lock re-read so both agree.
+  const needsRekey = (row) => {
+    if (!row || !row.worktreePath || row.id == null) return null;
+    const top = resolveCallerWorktree(row.worktreePath);
+    if (!top) return null; // non-git / unresolvable -> raw path is already its own meshId
     const canonMesh = inst.primaryWorkspaceId(top);
-    if (!canonMesh || inst.primaryWorkspaceId(d.worktreePath) === canonMesh) continue; // already canonical
-    rekeyed++;
-    if (dryRun) continue;
-    s.upsertRegistry({
-      id: d.id,
-      worktreePath: top, // rewritten to the canonical git toplevel (send+fold now agree)
-      sessionId: d.sessionId,
-      inboxPath: d.inboxPath,
-      cursorPath: d.cursorPath,
-      nudgeCommand: d.nudgeCommand,
+    if (!canonMesh || inst.primaryWorkspaceId(row.worktreePath) === canonMesh) return null; // already canonical
+    return top;
+  };
+  for (const d of s.listRegistry()) {
+    if (!needsRekey(d)) continue;
+    if (dryRun) { rekeyed++; continue; }
+    const r = withIdLock(d.id, home, () => {
+      // Re-read the CURRENT row under the lock — a concurrent mutator may have
+      // changed worktreePath/sessionId/inboxPath/... (or removed the row) since
+      // the snapshot above. Never write stale snapshot fields.
+      const cur = s.listRegistry().find((x) => x && String(x.id) === String(d.id));
+      const curTop = needsRekey(cur);
+      if (!curTop) return { rekeyed: false }; // row vanished, or already canonical now
+      s.upsertRegistry({
+        id: cur.id,
+        worktreePath: curTop, // rewritten to the canonical git toplevel (send+fold now agree)
+        sessionId: cur.sessionId,
+        inboxPath: cur.inboxPath,
+        cursorPath: cur.cursorPath,
+        nudgeCommand: cur.nudgeCommand,
+      });
+      return { rekeyed: true };
     });
+    if (r && r.lockBusy) {
+      // Surfaced, NOT silently dropped: idempotent, so the next fold/doctor run re-keys it.
+      try {
+        process.stderr.write('[devswarm] rekeySubdirRegistryRows: id ' + JSON.stringify(d.id)
+          + ' is locked by another operation in progress — skipped this pass (re-keyed on the next run)\n');
+      } catch (_) {}
+      continue;
+    }
+    if (r && r.rekeyed) rekeyed++;
   }
   return rekeyed;
 }
@@ -973,7 +1016,7 @@ function foldMeshDuplicates(home, ctx) {
       // subdir row the >=2 fold below never touches. Re-key is an in-place registry
       // update (same id/partition), so the fresh listRegistry the fold reads next just
       // sees canonical paths (grouping is by canonicalMeshId either way — unaffected).
-      rekeyed = rekeySubdirRegistryRows(s, dryRun);
+      rekeyed = rekeySubdirRegistryRows(s, home, dryRun);
       const byMesh = groupRegistryByMeshId(s.listRegistry());
       for (const g of byMesh.values()) {
         if (g.rows.length < 2) continue; // fast skip: a lone row cannot have a duplicate
@@ -3231,6 +3274,18 @@ function cmdSpawn(rest, ctx) {
       const repoKey = repoKeyForCwd(ctx);
       const s = store.openStore({ home: ctx.home, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
       try {
+        // No per-id lock here (verified race-free, NOT an oversight): `meshId` is
+        // derived from a worktreePath `hivecontrol workspace create` JUST minted
+        // above — a brand-new id no other process has seen yet. This is a blind
+        // SEED insert (all descriptor fields null), not a read-modify-write, so
+        // there is no snapshot to lose. No concurrent writer can touch this id at
+        // this instant: a second `spawn` of the same branch fails at the `create`
+        // call above (worktree already exists) and never reaches here, and the
+        // workspace's own child cannot `register` until it is launched in the
+        // freshly-created worktree — strictly AFTER this call returns. That later
+        // child register runs under withIdLock and upserts its real inbox over this
+        // placeholder; the two are ordered, never interleaved. A lock would guard
+        // nothing (see rekeySubdirRegistryRows for a case that genuinely needs one).
         s.upsertRegistry({ id: meshId, worktreePath, sessionId: null, inboxPath: null, cursorPath: null, nudgeCommand: null });
         store.deriveSummary(s, { home: ctx.home, env: ctx.env, now: ctx.now });
         registered = true;

@@ -6,6 +6,10 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.62.1
+
+Follow-up hardening: `rekeySubdirRegistryRows` now serialized under the per-id lock with an in-lock re-read (closes a lost-update race vs concurrent register/ensure/heartbeat/re-home in doctor's fold path); `cmdSpawn` confirmed race-free (documented). Docs: devswarm verb tables (KB §8.8, READMEs, llms.txt) updated with diagnose/healthcheck/unarchive/migrate-owner-keys/reap-stale/reconcile-active.
+
 ## 0.62.0
 
 DevSwarm Primary-orchestrator lifecycle: heals the split-brain "no primary set" failure mode, adds parent-driven archiving of abandoned/reconciled workspaces, and decouples heartbeat-alive from stale/escalated liveness verdicts.
