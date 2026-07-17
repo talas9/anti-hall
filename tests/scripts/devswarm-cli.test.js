@@ -1204,3 +1204,56 @@ test('parseArgs handles --k=v, repeatable, and bare flags', () => {
   assert.deepEqual(cli.many(flags, 'b'), ['2', '3']);
   assert.equal(cli.one(flags, 'json'), undefined); // bare boolean -> no value
 });
+
+// F-B regression (v0.61.2): cmdRegister's descriptor write (writeDescriptorAtomic,
+// unconditional) and its registry write (upsertRegistry, guarded by F2) used to
+// diverge on a same-id path change — writeDescriptorAtomic always moved the
+// descriptor to the new worktree, but the registry upsert (no opts) silently
+// SKIPPED under the F2 id-collision guard (an existing row for this id already
+// maps to a DIFFERENT non-null worktree_path), and cmdRegister returned
+// {ok:true, action:'updated'} without checking. Re-registering an EXISTING id at
+// a NEW same-project worktree is a legitimate flow (cross-project is already
+// rejected by the P1-6 guard), so the fix passes allowPathChange:true for it.
+test('F-B: re-registering an EXISTING id at a NEW same-project worktree keeps descriptor AND registry in sync; cross-project change is still rejected', () => {
+  const home = tmpHome();
+  const repo = makeGitRepoArchive('f-b-same-project');
+  const linked = path.join(path.dirname(repo), path.basename(repo) + '-linked');
+  cpArchive.spawnSync('git', ['-C', repo, 'worktree', 'add', '-q', linked, '-b', 'f-b-branch']);
+  const otherRepo = makeGitRepoArchive('f-b-other-project');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const linkedKey = repokey.repoKeyForWorktree(linked);
+    assert.equal(linkedKey, repoKey, 'precondition: a linked worktree of the same repo must share repoKey');
+
+    // Initial registration at the MAIN worktree path.
+    const r1 = cli.run(['register', 'ws-fb', '--worktree', repo, '--session', 's1'], ctx(home, { cwd: repo }));
+    assert.equal(r1.result.ok, true);
+    assert.equal(r1.result.descriptor.worktreePath, repo);
+
+    // Re-register the SAME id at a NEW worktree path — the LINKED worktree of the
+    // SAME project (same repoKey). This is the legitimate owner re-registration
+    // flow F-B fixes.
+    const r2 = cli.run(['register', 'ws-fb', '--worktree', linked, '--session', 's1'], ctx(home, { cwd: linked }));
+    assert.equal(r2.result.ok, true, 'a same-project path change must succeed: ' + JSON.stringify(r2.result));
+    assert.equal(r2.result.descriptor.worktreePath, linked, 'descriptor must reflect the NEW path');
+
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'ws-fb'), 'utf8'));
+    assert.equal(desc.worktreePath, linked);
+
+    // Registry row must ALSO reflect the new path — no descriptor/registry divergence.
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const row = s.listRegistry().find((x) => x.id === 'ws-fb');
+      assert.ok(row, 'registry row must exist');
+      assert.equal(row.worktreePath, linked, 'registry row must reflect the NEW path — must not diverge from the descriptor');
+    } finally { s.close(); }
+
+    // Cross-project change is still rejected — the P1-6 guard fires BEFORE
+    // allowPathChange is ever reached.
+    const r3 = cli.run(['register', 'ws-fb', '--worktree', otherRepo, '--session', 's1'], ctx(home, { cwd: linked }));
+    assert.equal(r3.result.ok, false, 'a cross-project path change must still be rejected');
+    assert.match(String(r3.result.error), /different project|cross-project/);
+    const descAfterReject = JSON.parse(fs.readFileSync(cli.descriptorPath(home, 'ws-fb'), 'utf8'));
+    assert.equal(descAfterReject.worktreePath, linked, 'a rejected cross-project register must not move the descriptor');
+  } finally { rm(home); rm(repo); rm(otherRepo); }
+});

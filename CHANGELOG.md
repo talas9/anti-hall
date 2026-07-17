@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.62.2
+
+DevSwarm store deep hardening — closes a third unlocked registry writer plus consistency/robustness gaps found across multiple review rounds.
+
+- **Concurrency: third unlocked registry writer now locked.** `registerStoreDescriptor` now runs under the same per-id lock as `upsertRegistry`/`rekeySubdirRegistryRows`, closing the last unserialized write path into the registry.
+- **Consistency: `upsertRegistry` path-change guard.** A same-id write that would silently change `worktree_path` (sqlite and journal backends alike) is now rejected by default with an explicit `true`/`false` return so callers can detect a skip, instead of silently clobbering a different worktree's registration; opt-in via `allowPathChange`.
+- **Robustness: truncated/malformed `DEVSWARM_BUILDER_ID` defense.** `registerChildDescriptor` no longer writes a phantom row under a bad id — it recovers the full id when possible, and falls back to non-destructive same-worktree phantom retirement (truncation-signal only) that forwards any unread direct messages to the survivor before archiving.
+- **Caller fixes for legitimate path changes.** `cmdRegister` keeps descriptor and registry consistent on owner re-register; `rehomeCore` now compares `worktree_path` + `sessionId` before tombstoning the source, preventing an orphaned row; migrate verification no longer reports success when the underlying registry write was silently skipped by the new path-change guard.
+
+2130 tests (up from 2117 in v0.62.1). Behavioral fix/hardening release (patch bump) — no new hooks, skills, or disciplines.
+
 ## 0.62.1
 
 Follow-up hardening: `rekeySubdirRegistryRows` now serialized under the per-id lock with an in-lock re-read (closes a lost-update race vs concurrent register/ensure/heartbeat/re-home in doctor's fold path); `cmdSpawn` confirmed race-free (documented). Docs: devswarm verb tables (KB §8.8, READMEs, llms.txt) updated with diagnose/healthcheck/unarchive/migrate-owner-keys/reap-stale/reconcile-active.

@@ -622,3 +622,40 @@ test('one pre-existing native-hash row PLUS two identical-body descriptor lines:
     } finally { s.close(); }
   } finally { rm(home); }
 });
+
+// F-C regression (v0.61.2): migrateOne must NOT report `verified` when the
+// registry upsert was silently skipped by the F2 id-collision guard (an
+// existing row for this id already maps to a DIFFERENT non-null
+// worktree_path). Previously `verified` only checked message-count equality,
+// so a genuine registry-write skip went unnoticed and migrate falsely
+// reported success even though the registry row never reflected the
+// migrated descriptor's worktreePath.
+test('F-C: migrateOne reports verified:false (not a false success) when the registry upsert is skipped by a path-conflicting existing row', () => {
+  const home = tmpHome();
+  try {
+    writeWorkspace(home, 'a', { lines: ['m1', 'm2'], cursor: 0 }); // descriptor worktreePath = '/wt/a'
+
+    // Seed a CONFLICTING registry row for the SAME id at a DIFFERENT worktreePath,
+    // in the SAME store partition migrateToStore will open (workspaceId: 'a') —
+    // this is exactly what trips the F2 guard inside upsertRegistry.
+    const seed = storeLib.openStore({ home, workspaceId: 'a', backend: 'journal' });
+    try { seed.upsertRegistry({ id: 'a', worktreePath: '/wt/a-CONFLICT', sessionId: 'other-sess' }); }
+    finally { seed.close(); }
+
+    const rep = migrate.migrateToStore(opts(home));
+    const a = rep.migrated.find((m) => m.id === 'a');
+    assert.equal(a.verified, false, 'must NOT report verified over an unconfirmed/skipped registry write');
+    assert.match(String(a.error), /registry upsert skipped/);
+    // Messages still import normally — only the registry write was guarded.
+    assert.equal(a.storeCount, 2);
+    assert.equal(rep.verifiedAll, false, 'the overall migrate report must reflect the unverified workspace');
+
+    // The pre-existing conflicting row must be untouched (the guard did its job —
+    // no silent clobber of the first path's mapping).
+    const s2 = storeLib.openStore({ home, workspaceId: 'a', backend: 'journal' });
+    try {
+      const row = s2.listRegistry().find((r) => r.id === 'a');
+      assert.equal(row.worktreePath, '/wt/a-CONFLICT', 'existing conflicting row must be preserved, not clobbered');
+    } finally { s2.close(); }
+  } finally { rm(home); }
+});

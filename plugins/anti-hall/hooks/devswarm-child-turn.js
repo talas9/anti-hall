@@ -82,6 +82,23 @@ const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 const { ARCHIVE_REQUEST_MARKER } = require('../companion/lib/devswarm-store.js');
 
+// FULL_UUID_RE / TRUNCATED_UUID_RE (F3 defensive hardening) — narrow UUID-shape
+// detectors for ONE proven failure mode: hivecontrol's DEVSWARM_BUILDER_ID (a
+// UUID per docs/KB-devswarm-hivecontrol.md:215) arriving TRUNCATED by a few
+// trailing hex chars — an env-plumbing bug OUTSIDE anti-hall (hivecontrol sets
+// the var) that a live incident proved happens: the last UUID segment lost its
+// final 2 chars (`c45c1d4196ac` -> `c45c1d4196`), and registerChildDescriptor
+// below then wrote a phantom workspace descriptor under that short id every
+// turn — a SECOND, dead-inbox roster entry alongside the real one — because it
+// trusted the env var as a filename with zero shape validation. Deliberately
+// narrow: only an id that is otherwise EXACTLY UUID-shaped (four hyphens in the
+// 8-4-4-4-N positions) but whose LAST group is short (1-11 hex instead of the
+// required 12) trips TRUNCATED_UUID_RE — a plain mnemonic id like `child-1` or
+// `b-1` (used throughout this file's own tests, and any future non-UUID scheme)
+// never matches either pattern and is completely unaffected.
+const FULL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const TRUNCATED_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1,11}$/i;
+
 // CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
 // from this hook's own on-disk location. A DevSwarm child's cwd is its PROJECT
 // WORKTREE, not the plugin root — a relative "scripts/devswarm.js" string in
@@ -313,9 +330,43 @@ function defaultCursorPath(home, id) {
 // id is unsafe, sessionId is absent, or no git worktree resolves from cwd — a child
 // running outside a worktree, or a malformed env, must never crash or block a turn.
 function registerChildDescriptor(env, sessionId, cwd, home) {
-  const id = env.DEVSWARM_BUILDER_ID;
+  let id = env.DEVSWARM_BUILDER_ID;
   if (typeof id !== 'string' || !isSafeId(id)) return null;
   if (typeof sessionId !== 'string' || sessionId === '') return null;
+
+  // F3 defensive fix: a truncated hivecontrol builder id must never be trusted
+  // as a filename — writing under it every turn creates a NEW phantom
+  // descriptor (dead inbox/cursor paths) that still passes readDescriptors'
+  // filter (worktreePath && sessionId && isSafeId(id)), split-braining the
+  // real child's registration across two files. Recover the TRUE id when this
+  // turn's OWN sessionId (payload.session_id — a value this hook already
+  // trusts, NOT derived from the suspect env var) is a full UUID that the
+  // truncated id is a strict prefix of: that is exactly the observed failure
+  // shape (a real UUID sliced short by whatever set the env var), so sessionId
+  // IS the correct id. That is the only safe recovery source available at this
+  // layer; if it doesn't hold, skip registration entirely this turn rather
+  // than write a known-bad id (fail-open — never crash/block a turn on a
+  // malformed env var; the next turn gets another chance).
+  if (TRUNCATED_UUID_RE.test(id) && !FULL_UUID_RE.test(id)) {
+    if (FULL_UUID_RE.test(sessionId) && sessionId !== id && sessionId.indexOf(id) === 0) {
+      try {
+        process.stderr.write('[devswarm-child-turn] DEVSWARM_BUILDER_ID ' + JSON.stringify(id)
+          + ' looks truncated (UUID-shaped, short last group) — recovered the full id '
+          + JSON.stringify(sessionId) + ' from this turn\'s own sessionId; registering under '
+          + 'the recovered id instead of writing a phantom.\n');
+      } catch (_) {}
+      id = sessionId;
+    } else {
+      try {
+        process.stderr.write('[devswarm-child-turn] DEVSWARM_BUILDER_ID ' + JSON.stringify(id)
+          + ' looks truncated (UUID-shaped, short last group) and no full id could be safely '
+          + 'recovered from this turn\'s sessionId — skipping descriptor registration this turn '
+          + 'rather than writing a phantom.\n');
+      } catch (_) {}
+      return null;
+    }
+  }
+
   const worktreePath = findGitToplevel(cwd);
   if (!worktreePath) return null;
 
@@ -383,7 +434,117 @@ function registerChildDescriptor(env, sessionId, cwd, home) {
   fs.writeFileSync(tmp, JSON.stringify(desc));
   fs.renameSync(tmp, target);
 
+  // F3 defensive fix, part 2: retire any OTHER descriptor file in this SAME
+  // dir that shares this worktreePath but carries a DIFFERENT id — the
+  // phantom-duplicate shape cmdRegister's retireWorktreeDuplicates already
+  // dedups at the STORE-registry layer (scripts/devswarm.js ~line 1343), but
+  // that helper explicitly LEAVES any row backed by an on-disk descriptor file
+  // (foldGroupIntoSurvivor: "a candidate that HAS a descriptor ... is LEFT,
+  // never tombstoned" — it only tombstones store-only rows). The truncation
+  // incident's phantom IS a real descriptor FILE (dead inbox/cursor paths but
+  // otherwise well-formed), so it survives that layer untouched forever. This
+  // auto-cleans it on the NEXT real registration for the same worktree.
+  try { retirePhantomWorktreeDuplicates(dir, id, worktreePath, home, env); }
+  catch (_) { /* fail-open: phantom retirement must never block a turn */ }
+
   return desc;
+}
+
+// retirePhantomWorktreeDuplicates(dir, keepId, worktreePath, home, env) — scan
+// the workspaces/ dir for OTHER *.json descriptors pointing at the SAME
+// worktreePath as `keepId` (the child that just registered/refreshed) and
+// retire any that are PROVEN phantoms. "Proven" is deliberately narrow (HARD
+// RULE: never delete a descriptor that could be live):
+//   - the candidate's id is itself UUID-shaped-but-short (TRUNCATED_UUID_RE
+//     and not FULL_UUID_RE) — malformed on its face, a self-contained signal
+//     that needs no cross-system assumption to trust.
+// P1 FIX (ground-truth audit): this used to ALSO retire on `id !== sessionId`
+// alone, reasoning a live registration always has id === sessionId. That is
+// FALSE in the general case — auditing every real descriptor under
+// ~/.anti-hall/devswarm/workspaces/ showed 100% have id !== sessionId
+// (sessionId is null or a DIFFERENT Claude-session UUID; descriptor `id` is
+// the workspace/builder id, a distinct namespace — see
+// docs/KB-devswarm-hivecontrol.md). Using that as a retirement trigger meant
+// a genuinely-live workspace merely sharing a worktreePath with the
+// registering child would be wrongly archived. Truncation-shape is the ONLY
+// retirement signal now; id/sessionId equality is irrelevant either way.
+// "Retire" = the SAME sanctioned archive path cmdRegister/cmdArchive use
+// (hardlink into archived/, tombstone the store registry row, THEN unlink the
+// active file) — NEVER a raw fs.unlinkSync of anything that could be live
+// data. cmdArchive re-validates the SAME proof INSIDE its own per-id lock
+// (opts.revalidate) immediately before mutating, closing the race where a
+// candidate becomes self-consistent between this scan and the archive call.
+// No deadlock: registerChildDescriptor (the sole caller) holds no lock of its
+// own — cmdArchive's withIdLock(candidateId, ...) is keyed on the CANDIDATE's
+// id, which is by construction different from `keepId`, so this can never
+// contend with a lock this call already holds. Fail-open throughout: any
+// require/read/archive failure is swallowed by the caller's own try/catch.
+// F-A (v0.61.2): a truncated-id phantom retired here CAN still hold unread
+// direct messages — mesh routes traffic via the registry/worktree, not the
+// phantom's (dead) inboxPath, so a message can land in the phantom's store
+// partition even though nothing ever reads its descriptor inbox. cmdArchive
+// (unlike foldGroupIntoSurvivor, used by retireWorktreeDuplicates/
+// foldMeshDuplicates) does NOT forward unread directs — it only tombstones the
+// registry row. So BEFORE archiving a candidate here, forward its unread
+// backlog into the surviving real workspace (`keepId`) using the SAME shared
+// foldGroupIntoSurvivor forward step those other paths already use (reused,
+// not reimplemented) — then archive. If forwarding fails, the candidate is
+// left in place (NOT archived) so its unread backlog is never lost; a later
+// turn retries.
+function retirePhantomWorktreeDuplicates(dir, keepId, worktreePath, home, env) {
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (_) { return; }
+  let cliMod = null;
+  let storeMod = null;
+  let repokeyMod = null;
+  let s = null; // lazily-opened shared store, reused across candidates for this call
+  try {
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      const candId = n.slice(0, -5);
+      if (candId === keepId) continue; // never touch our own just-written file
+      if (!isSafeId(candId)) continue; // never path.join / archive an unsafe name
+      let cand = null;
+      try { cand = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); } catch (_) { continue; }
+      if (!cand || typeof cand !== 'object') continue;
+      if (cand.worktreePath !== worktreePath) continue; // different worktree — not our concern
+      if (cand.id == null || String(cand.id) !== candId) continue; // filename/id mismatch — be conservative, leave it
+      const idLooksTruncated = TRUNCATED_UUID_RE.test(candId) && !FULL_UUID_RE.test(candId);
+      if (!idLooksTruncated) continue; // not proven-corrupt — could be a distinct live child, never retire
+      if (!cliMod) {
+        try { cliMod = require('../scripts/devswarm.js'); } catch (_) { cliMod = null; }
+        if (!cliMod || typeof cliMod.cmdArchive !== 'function') return; // can't retire safely -> no-op
+      }
+      // Forward this candidate's unread directs into keepId BEFORE archiving.
+      // Best-effort store/repoKey resolution mirrors registerStoreDescriptor
+      // below (lazy, guarded requires) — any resolution failure aborts THIS
+      // candidate's archive (fail-open toward never losing a message, not
+      // toward always retiring the phantom).
+      let forwardOk = false;
+      if (typeof cliMod.foldGroupIntoSurvivor === 'function') {
+        if (!storeMod) { try { storeMod = require('../companion/lib/devswarm-store.js'); } catch (_) { storeMod = null; } }
+        if (!repokeyMod) { try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; } }
+        if (storeMod) {
+          try {
+            let repoKey = null;
+            if (repokeyMod) { try { repoKey = repokeyMod.repoKeyForWorktree(worktreePath); } catch (_) { repoKey = null; } }
+            if (!s) s = storeMod.openStore({ home, workspaceId: keepId, hash: repoKey || undefined, env });
+            const result = cliMod.foldGroupIntoSurvivor(s, home, keepId, [cand]);
+            forwardOk = !(result && result.forwardFailed && result.forwardFailed.length);
+          } catch (_) { forwardOk = false; }
+        }
+      }
+      if (!forwardOk) continue; // abort archive for this candidate — never lose its unread backlog
+      try {
+        cliMod.cmdArchive(candId, { home, cwd: worktreePath, env }, {
+          revalidate: (d) => (d && !(TRUNCATED_UUID_RE.test(String(d.id)) && !FULL_UUID_RE.test(String(d.id))))
+            ? 'now-consistent' : null,
+        });
+      } catch (_) { /* fail-open: a single candidate's archive failure must not block the rest */ }
+    }
+  } finally {
+    if (s) { try { s.close(); } catch (_) {} }
+  }
 }
 
 // registerStoreDescriptor(desc, home) — v0.57 mesh (D24, Phase 8 gap-close):
@@ -411,19 +572,50 @@ function registerStoreDescriptor(desc, home) {
     try { repoKey = repokeyMod.repoKeyForWorktree(desc.worktreePath); } catch (_) { repoKey = null; }
     if (!repoKey) return;
 
-    const s = storeMod.openStore({ home, workspaceId: desc.id, hash: repoKey });
-    try {
-      s.upsertRegistry({
-        id: desc.id,
-        worktreePath: desc.worktreePath,
-        sessionId: desc.sessionId,
-        inboxPath: desc.inboxPath,
-        cursorPath: desc.cursorPath,
-        nudgeCommand: desc.nudgeCommand,
-      });
-      storeMod.deriveSummary(s, { home });
-    } finally {
-      try { s.close(); } catch (_) {}
+    // P1c (v0.62.2 lock hardening): registerStoreDescriptor is a THIRD writer of
+    // this SAME registry row (id/worktree_path/session_id/inbox_path/cursor_path),
+    // alongside cmdRegister and rekeySubdirRegistryRows — BOTH of which run their
+    // upsertRegistry write under withIdLock(id). This one didn't, so it could race
+    // either of those (classic lost-update: a concurrent register/rekey's write
+    // gets clobbered back to this call's stale-relative-to-that-write values, or
+    // vice versa). Lazy-require devswarm.js for `withIdLock` (guarded, same
+    // fail-open posture as the repokey/store requires above; ALSO reused below for
+    // the phantom-rescue call, so only one require). No deadlock: this hook's
+    // main() is the sole entry point into registerStoreDescriptor and holds no
+    // lock of its own (writeHeartbeat/registerChildDescriptor above only touch the
+    // fs descriptor file, never the per-id registry lock), so this is never
+    // re-entrant into an already-held lock for this id.
+    let cliMod = null;
+    try { cliMod = require('../scripts/devswarm.js'); } catch (_) { cliMod = null; }
+    if (!cliMod || typeof cliMod.withIdLock !== 'function') return; // can't lock -> skip the write rather than proceed unlocked
+
+    const lockResult = cliMod.withIdLock(desc.id, home, () => {
+      const s = storeMod.openStore({ home, workspaceId: desc.id, hash: repoKey });
+      try {
+        s.upsertRegistry({
+          id: desc.id,
+          worktreePath: desc.worktreePath,
+          sessionId: desc.sessionId,
+          inboxPath: desc.inboxPath,
+          cursorPath: desc.cursorPath,
+          nudgeCommand: desc.nudgeCommand,
+        });
+        storeMod.deriveSummary(s, { home });
+      } finally {
+        try { s.close(); } catch (_) {}
+      }
+      return { ok: true };
+    });
+    if (lockResult && lockResult.lockBusy) {
+      // FAIL CLOSED on the write (never proceed unlocked), but never block/crash
+      // the turn: surfaced to stderr, and this hook runs every turn — the next
+      // turn's call retries. Idempotent (upsertRegistry is a plain field write).
+      try {
+        process.stderr.write('[devswarm-child-turn] registerStoreDescriptor: id '
+          + JSON.stringify(desc.id) + ' is locked by another operation in progress'
+          + ' — skipped this turn (retried next turn)\n');
+      } catch (_) {}
+      return;
     }
 
     // P0 phantom-rescue (money path): on the child's FIRST mechanical self-register,
@@ -437,8 +629,9 @@ function registerStoreDescriptor(desc, home) {
     // (no-op for a meshId-keyed row, only tombstones a descriptor-less phantom) and is
     // fully fail-open. Own try so a rescue failure never blocks or crashes a turn.
     try {
-      const cliMod = require('../scripts/devswarm.js');
-      if (cliMod && typeof cliMod.retireWorktreeDuplicates === 'function') {
+      // Reuse the SAME cliMod handle required above for withIdLock (already
+      // confirmed truthy at this point, since we returned earlier otherwise).
+      if (typeof cliMod.retireWorktreeDuplicates === 'function') {
         cliMod.retireWorktreeDuplicates(home, desc, { cwd: desc.worktreePath, env: process.env });
       }
     } catch (_) { /* fail-open: phantom-rescue must never block a turn */ }

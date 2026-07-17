@@ -491,15 +491,22 @@ function storeOwnerKeyFor(id, ctx) {
 // and every mesh direct send is rejected as unregistered. `desc.id` (the
 // registry entry's id / self-registration partition, D19) is UNCHANGED — only
 // WHICH physical store is opened changes.
-function upsertStoreRegistry(home, desc, ctx) {
+// opts (F-B, v0.61.2): forwarded verbatim to the store's upsertRegistry — in
+// particular opts.allowPathChange, the F2 guard's explicit same-id path-change
+// opt-in (see devswarm-store.js's upsertRegistry comment). Returns the store
+// call's result (true = written, false = the F2 guard silently skipped the
+// write) so a caller that assumes success (cmdRegister) can detect a skip
+// instead of reporting a false ok:true with a descriptor/registry divergence.
+function upsertStoreRegistry(home, desc, ctx, opts) {
   const ownerKey = desc.ownerKey || storeOwnerKeyFor(desc.id, ctx);
   const s = store.openStore({
     home, workspaceId: desc.id, hash: ownerKey,
     backend: ctx && ctx.backend, env: ctx && ctx.env,
   });
   try {
-    s.upsertRegistry(desc);
+    const wrote = s.upsertRegistry(desc, opts);
     store.deriveSummary(s, { home, env: ctx && ctx.env });
+    return wrote;
   } finally { s.close(); }
 }
 
@@ -578,10 +585,32 @@ function rehomeCore(home, id, repoKey, ctx) {
     // 4) VERIFY the copy landed BEFORE removing anything (no-delete-until-verified).
     const repoHashes = new Set((repoStore.listMessages(id, { sinceCursor: 0 }) || []).map((r) => r.hash).filter((h) => h != null));
     const allMsgsPresent = msgs.every((m) => m.hash == null || repoHashes.has(m.hash));
-    const regPresent = (repoStore.listRegistry() || []).some((r) => r && String(r.id) === String(id));
+    // F-D (v0.61.2): a row for `id` reading present is NOT proof the upsert above
+    // actually applied — the F2 id-collision guard (upsertRegistry) silently skips
+    // when a DIFFERENT non-null worktree_path already occupies this id, and a stale/
+    // conflicting row still satisfies a bare `.some(id===id)` check. Compare the
+    // fields the upsert was supposed to write, not just id presence, so a guard-
+    // skipped write is caught here BEFORE the source is tombstoned as verified.
+    const destRow = (repoStore.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null;
+    const regPresent = !!destRow
+      && (destRow.worktreePath || null) === (rehomedReg.worktreePath || null)
+      && (destRow.sessionId || null) === (rehomedReg.sessionId || null);
     if (!allMsgsPresent || !regPresent) {
       // Verification failed — LEAVE the hash bucket intact (fail-open, zero loss);
       // a later attempt retries. Reader falls back to current resolution meanwhile.
+      // F-D: distinguish a genuine CONFLICT (a destination row exists but does not
+      // match — the F2 guard skipped the upsert) from a plain not-yet-verified
+      // state (no destination row at all) — surface it on `out` + stderr instead
+      // of a silent no-op, so the conflict is observable rather than swallowed.
+      if (destRow && !regPresent) {
+        out.regConflict = true;
+        try {
+          process.stderr.write('[devswarm] rehomeCore: id ' + JSON.stringify(String(id))
+            + ' — destination already has a CONFLICTING registry row (worktreePath/sessionId'
+            + ' mismatch, likely the F2 id-collision guard skipping the upsert); source NOT'
+            + ' tombstoned, conflict surfaced.\n');
+        } catch (_) {}
+      }
       return out;
     }
 
@@ -957,7 +986,7 @@ function rekeySubdirRegistryRows(s, home, dryRun) {
         inboxPath: cur.inboxPath,
         cursorPath: cur.cursorPath,
         nudgeCommand: cur.nudgeCommand,
-      });
+      }, { allowPathChange: true }); // F2 guard bypass: intentional same-id subdir->toplevel rewrite, not a hash collision
       return { rekeyed: true };
     });
     if (r && r.lockBusy) {
@@ -1339,7 +1368,22 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   desc.ownerKey = currentRepoKey || store.hashFromWorkspaceId(id);
   writeDescriptorAtomic(home, id, desc);
   precreateCursorAndInbox(desc);
-  upsertStoreRegistry(home, desc, ctx);
+  // F-B (v0.61.2): re-registering an EXISTING id at a NEW same-project worktree
+  // is a legitimate supported flow (cross-project is already rejected above by
+  // the P1-6 guard) — pass allowPathChange:true so the F2 id-collision guard
+  // does not silently skip the registry write while the descriptor above has
+  // already moved to the new path, which would leave them divergent. Check the
+  // return: false means the store genuinely skipped the write (should not
+  // happen with allowPathChange:true short of a store-internal bug) — never
+  // report ok:true over an unconfirmed registry write.
+  const registryWritten = upsertStoreRegistry(home, desc, ctx, { allowPathChange: true });
+  if (registryWritten === false) {
+    return {
+      ok: false, id,
+      error: 'registry upsert was skipped for ' + JSON.stringify(id)
+        + ' — descriptor and registry are now out of sync (retry required)',
+    };
+  }
   // Retire any legacy/phantom duplicate row for this SAME worktree so exactly one
   // row (this builder-id — the partition the child reads) survives, forwarding the
   // duplicate's unread backlog first (no orphaned messages). No-op unless a

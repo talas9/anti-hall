@@ -85,6 +85,37 @@ for (const B of backends) {
     } finally { s.close(); rm(home); }
   });
 
+  // F2 (P3, low-prob but in-scope): `id` is an 8-hex sha256(realpath) slice — a
+  // hash COLLISION between two distinct worktree paths is astronomically
+  // unlikely but possible. upsertRegistry must refuse to silently clobber an
+  // existing id's worktree_path with a DIFFERENT one, while a same-path update
+  // (the normal case) and the explicit rekey opt-in both still work.
+  test(`[${B.name}] F2: upsertRegistry refuses to clobber an existing id mapped to a DIFFERENT worktreePath, but a same-path update still applies`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('collide', { worktreePath: '/wt/first' }));
+
+      // A second upsert for the SAME id with a DIFFERENT worktreePath must be
+      // refused — the existing mapping survives, no field from it lands.
+      s.upsertRegistry(descriptor('collide', { worktreePath: '/wt/second', sessionId: 'sess-should-not-land' }));
+      let row = s.listRegistry().find((d) => d.id === 'collide');
+      assert.equal(row.worktreePath, '/wt/first', 'the FIRST worktreePath must survive a different-path upsert');
+      assert.equal(row.sessionId, 'sess-collide', 'no field from the refused upsert may land, not even sessionId');
+
+      // A same-id, SAME-path update (ordinary field refresh) must still apply.
+      s.upsertRegistry(descriptor('collide', { worktreePath: '/wt/first', sessionId: 'sess-refreshed' }));
+      row = s.listRegistry().find((d) => d.id === 'collide');
+      assert.equal(row.sessionId, 'sess-refreshed', 'a same-path update must still take effect');
+
+      // The explicit opt-in (rekeySubdirRegistryRows' own bypass) still permits an
+      // intentional same-id path rewrite.
+      s.upsertRegistry(descriptor('collide', { worktreePath: '/wt/rekeyed', sessionId: 'sess-refreshed' }), { allowPathChange: true });
+      row = s.listRegistry().find((d) => d.id === 'collide');
+      assert.equal(row.worktreePath, '/wt/rekeyed', 'allowPathChange:true must permit an intentional path rewrite');
+    } finally { s.close(); rm(home); }
+  });
+
   test(`[${B.name}] listMessages returns bodies in order; sinceCursor excludes acked (read-back round-trip)`, () => {
     const home = tmpHome();
     const s = open(home);

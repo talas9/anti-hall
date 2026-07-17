@@ -476,7 +476,49 @@ function openSqlite(home, workspaceId, opts) {
       const got = db.prepare('SELECT seq FROM messages WHERE id = ?;').get(Number(r.lastInsertRowid));
       return { inserted: true, seq: got ? Number(got.seq) : null };
     },
-    upsertRegistry(d) {
+    upsertRegistry(d, opts) {
+      // F2 id-collision guard (P3, low-prob but in-scope): `id` is an 8-hex
+      // sha256(realpath) slice (primaryWorkspaceId) — a COLLISION between two
+      // DISTINCT worktree paths hashing to the same id is astronomically
+      // unlikely but possible, and a blind `ON CONFLICT(id) DO UPDATE` would
+      // silently clobber the FIRST path's descriptor with the second's. Guard:
+      // if a row already exists for this id with a DIFFERENT non-null
+      // worktree_path than the incoming one, do NOT overwrite — warn to
+      // stderr and skip (least-destructive: preserves the existing mapping
+      // rather than erroring out of a fail-open registration/reconcile path).
+      // A same-id/same-path update (the normal case — field refresh, ensure,
+      // re-home) is untouched; this only trips on an ACTUAL path mismatch for
+      // the same id.
+      //
+      // opts.allowPathChange (explicit opt-in, default false): rekeySubdirRegistryRows
+      // deliberately rewrites worktreePath for an EXISTING id (a subdir path -> its
+      // own git toplevel, same physical worktree, self-correcting a legacy
+      // mis-registration) — that is a KNOWN, intentional same-id path change, not a
+      // hash collision, so it passes this flag to bypass the guard. No other caller
+      // sets it; every other upsertRegistry call site writes either a brand-new id
+      // or the SAME worktreePath it already had.
+      const allowPathChange = !!(opts && opts.allowPathChange);
+      const incomingPath = nOrNull(d.worktreePath);
+      if (incomingPath != null && !allowPathChange) {
+        let existingPath = null;
+        try {
+          const row = db.prepare('SELECT worktree_path FROM registry WHERE id = ?;').get(String(d.id));
+          existingPath = row ? row.worktree_path : null;
+        } catch (_) { existingPath = null; }
+        if (existingPath != null && existingPath !== incomingPath) {
+          try {
+            process.stderr.write('[devswarm-store] upsertRegistry: id ' + JSON.stringify(String(d.id))
+              + ' already maps to worktree_path ' + JSON.stringify(existingPath)
+              + ' — refusing to overwrite with a DIFFERENT path ' + JSON.stringify(incomingPath)
+              + ' (possible id hash collision); existing mapping preserved.\n');
+          } catch (_) {}
+          return false; // F-B/F-C/F-D (v0.61.2): explicit false signals a guard-skipped
+          // write (as opposed to undefined, indistinguishable from a normal void
+          // return) so callers that assume success (cmdRegister/migrate/rehomeCore)
+          // can detect a silent skip instead of reporting a false ok:true/verified.
+        }
+      }
+
       // write_seq (v0.61.0 money-path residual close): bumped on EVERY upsert,
       // computed INSIDE this single statement so concurrent writer PROCESSES
       // can't race a JS read-then-increment (same atomicity argument as
@@ -499,7 +541,7 @@ function openSqlite(home, workspaceId, opts) {
           String(d.id), nOrNull(d.worktreePath), nOrNull(d.sessionId), nOrNull(d.inboxPath),
           nOrNull(d.cursorPath), serializeCmd(d.nudgeCommand), Date.now()
         );
-        return;
+        return true;
       }
       db.prepare(
         'INSERT INTO registry (id, worktree_path, session_id, inbox_path, cursor_path, nudge_command, updated_at, write_seq)'
@@ -512,6 +554,7 @@ function openSqlite(home, workspaceId, opts) {
         String(d.id), nOrNull(d.worktreePath), nOrNull(d.sessionId), nOrNull(d.inboxPath),
         nOrNull(d.cursorPath), serializeCmd(d.nudgeCommand), Date.now()
       );
+      return true;
     },
     removeRegistry(id) {
       db.prepare('DELETE FROM registry WHERE id = ?;').run(String(id));
@@ -942,7 +985,42 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
       };
       return withRetriedMessagesLock(critical);
     },
-    upsertRegistry(d) {
+    upsertRegistry(d, opts) {
+      // F2 id-collision guard (P3, low-prob but in-scope) — mirrors the sqlite
+      // backend's guard (same rationale: an 8-hex sha256(realpath) slice id
+      // COULD collide between two distinct worktree paths). The journal backend
+      // is append-then-reduce rather than a blind SQL overwrite, but the effect
+      // at read time (listRegistry/reduceRegistry, "latest op per id wins") is
+      // the same silent clobber, so the guard belongs here too: if the CURRENT
+      // reduced row for this id already has a DIFFERENT non-null worktreePath
+      // than the incoming one, skip appending this upsert (warn to stderr)
+      // rather than let it become the new "latest" and silently displace the
+      // first path's mapping. A same-id/same-path update is unaffected.
+      //
+      // opts.allowPathChange — same explicit opt-in as the sqlite backend (see
+      // its comment): rekeySubdirRegistryRows's intentional same-id subdir->toplevel
+      // rewrite passes this to bypass the guard; no other caller sets it.
+      const allowPathChange = !!(opts && opts.allowPathChange);
+      const incomingPath = nOrNull(d.worktreePath);
+      if (incomingPath != null && !allowPathChange) {
+        let existingPath = null;
+        try {
+          for (const row of reduceRegistry()) {
+            if (row && String(row.id) === String(d.id)) { existingPath = nOrNull(row.worktreePath); break; }
+          }
+        } catch (_) { existingPath = null; }
+        if (existingPath != null && existingPath !== incomingPath) {
+          try {
+            process.stderr.write('[devswarm-store] upsertRegistry: id ' + JSON.stringify(String(d.id))
+              + ' already maps to worktreePath ' + JSON.stringify(existingPath)
+              + ' — refusing to overwrite with a DIFFERENT path ' + JSON.stringify(incomingPath)
+              + ' (possible id hash collision); existing mapping preserved.\n');
+          } catch (_) {}
+          return false; // F-B/F-C/F-D (v0.61.2): explicit false signals a guard-skipped
+          // write — mirrors the sqlite backend's return so callers can tell a
+          // silent skip apart from a normal successful append.
+        }
+      }
       append(files.registry, {
         id: String(d.id),
         worktreePath: nOrNull(d.worktreePath),
@@ -953,6 +1031,7 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
         _op: 'upsert',
         updatedAt: Date.now(),
       });
+      return true;
     },
     removeRegistry(id) {
       append(files.registry, { id: String(id), _op: 'remove', updatedAt: Date.now() });

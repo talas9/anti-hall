@@ -12,6 +12,7 @@ const path = require('node:path');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 const { readDescriptors } = require('../../plugins/anti-hall/companion/devswarm-supervisor.js');
+const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 
 const HOOK = 'devswarm-child-turn.js';
 // Stable substring surviving the v0.58 hook-text sweep (the OLD marker,
@@ -1047,6 +1048,282 @@ test('P0 phantom-rescue: the SessionStart store-register FOLDS a same-worktree s
       assert.deepStrictEqual(s.listMessages(mesh, {}).map((m) => m.body), ['landed-in-phantom'],
         'the retired partition\'s message rows are preserved (forwarded, never deleted)');
     } finally { s.close(); }
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- F1 (P1, v0.62.2 lock hardening): registerStoreDescriptor is a THIRD writer
+// of the shared registry row for an id (alongside cmdRegister and
+// rekeySubdirRegistryRows, both of which take the per-id lock) — it must ALSO run
+// its upsertRegistry write under withIdLock(id), never unlocked, mirroring G1/G5. -----
+const recoveryP1c = require('../../plugins/anti-hall/companion/lib/recovery.js');
+
+test('F1: registerStoreDescriptor does NOT write the shared registry while the id\'s lock is held, and writes it once released', () => {
+  const h = makeHome();
+  const BUILDER = 'child-f1-lock';
+  try {
+    const readRow = () => {
+      const s = meshStore.openStore({ home: h.home, workspaceId: BUILDER, hash: REPO_KEY });
+      try { return s.listRegistry().find((r) => String(r.id) === BUILDER) || null; } finally { s.close(); }
+    };
+    assert.strictEqual(readRow(), null, 'precondition: no row for this id yet');
+
+    // (a) lock HELD by another op -> the hook's mechanical self-register must skip
+    // the store-registry write entirely (fail-closed, not an unlocked write).
+    const release = recoveryP1c.acquireLock(BUILDER, h.home);
+    assert.equal(typeof release, 'function', 'precondition: the per-id lock is held');
+    try {
+      const r = testHook(HOOK, promptPayload('sess-f1', REPO_CWD), {
+        home: h.home, expectJson: true,
+        env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: BUILDER },
+      });
+      assert.strictEqual(r.status, 0, 'a lock-busy registration must never crash/block the turn');
+      assert.strictEqual(readRow(), null,
+        'no registry row may be written while the id\'s lock is held by another operation');
+    } finally { release(); }
+
+    // (b) lock RELEASED -> the identical turn now writes the row normally.
+    const r2 = testHook(HOOK, promptPayload('sess-f1', REPO_CWD), {
+      home: h.home, expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: BUILDER },
+    });
+    assert.strictEqual(r2.status, 0);
+    const row = readRow();
+    assert.ok(row, 'once unlocked, the mechanical self-register writes the row');
+    assert.strictEqual(row.worktreePath, REPO_CWD);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- F3 (defensive hardening): a live incident showed hivecontrol's
+// DEVSWARM_BUILDER_ID (a UUID) arriving TRUNCATED by a couple of trailing hex
+// chars. registerChildDescriptor used to trust it as a filename with zero shape
+// validation, writing a phantom descriptor (dead inbox/cursor paths) under the
+// short id every turn. Two hardenings: (1) a UUID-shaped-but-short id is either
+// corrected to the full id (recovered from this turn's OWN sessionId, when it
+// proves the truncation) or skipped outright — never written verbatim; (2) any
+// OTHER same-worktree descriptor file whose OWN id is itself truncated
+// (TRUNCATED_UUID_RE and not FULL_UUID_RE) is retired via the sanctioned
+// archive path on the next real registration. (P1 fix: retirement used to
+// ALSO fire on id !== sessionId alone — ground-truth audit showed 100% of
+// real descriptors have id !== sessionId by design, so that trigger falsely
+// retired healthy same-worktree workspaces. Truncation-shape is now the ONLY
+// signal.) -----
+
+const TRUNCATED_ID = 'aaaaaaaa-bbbb-cccc-dddd-c45c1d4196'; // 10 hex in last group (2 short)
+const FULL_ID = 'aaaaaaaa-bbbb-cccc-dddd-c45c1d4196ac'; // the real, untruncated UUID
+
+test('F3 VALIDATE: a truncated UUID-shaped DEVSWARM_BUILDER_ID is corrected to the full id recovered from this turn\'s own sessionId, never written verbatim', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(FULL_ID, REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: TRUNCATED_ID },
+    });
+    assert.strictEqual(r.status, 0, 'must exit 0 (fail-open)');
+
+    assert.ok(!fs.existsSync(workspaceDescPath(h.home, TRUNCATED_ID)),
+      'the truncated id must NEVER get its own phantom descriptor file');
+    const descPath = workspaceDescPath(h.home, FULL_ID);
+    assert.ok(fs.existsSync(descPath), 'the recovered full id must get the real descriptor');
+    const desc = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    assert.strictEqual(desc.id, FULL_ID);
+    assert.strictEqual(desc.sessionId, FULL_ID);
+
+    const seen = readDescriptors(h.home);
+    assert.ok(!seen.some((d) => d.id === TRUNCATED_ID), 'the parent-facing view must never see the truncated id');
+    assert.ok(seen.some((d) => d.id === FULL_ID), 'the parent-facing view must see the recovered full id');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F3 VALIDATE: a truncated UUID-shaped DEVSWARM_BUILDER_ID with NO recoverable full id is skipped, not written under the bad id', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('unrelated-session-does-not-extend-it', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: TRUNCATED_ID },
+    });
+    assert.strictEqual(r.status, 0, 'must exit 0 (fail-open)');
+    assert.ok(!fs.existsSync(workspaceDescPath(h.home, TRUNCATED_ID)),
+      'with no safe recovery available, no phantom descriptor may be written under the truncated id');
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    const names = fs.existsSync(wdir) ? fs.readdirSync(wdir) : [];
+    assert.deepStrictEqual(names, [], 'nothing at all should be written this turn when recovery is impossible');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F3 RETIRE: registering a real child auto-retires a PROVEN same-worktree phantom descriptor (id is itself TRUNCATED-UUID-shaped), non-destructively', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    // Seed the phantom exactly as the incident produced it: a real fs descriptor
+    // (so it passes readDescriptors' filter and looks live-ish) whose OWN id is
+    // itself UUID-shaped-but-short — the truncation signature, and the ONLY
+    // retirement signal after the P1 fix.
+    const phantomId = TRUNCATED_ID;
+    fs.writeFileSync(path.join(wdir, phantomId + '.json'), JSON.stringify({
+      id: phantomId, worktreePath: path.resolve(REPO_CWD), sessionId: 'phantom-dup-1-full-session-id',
+      inboxPath: path.join(h.home, '.anti-hall', 'devswarm', 'inbox', phantomId + '.ndjson'),
+      cursorPath: path.join(h.home, '.anti-hall', 'devswarm', 'cursors', phantomId + '.cursor'),
+    }));
+    assert.ok(fs.existsSync(path.join(wdir, phantomId + '.json')), 'precondition: phantom descriptor seeded');
+
+    const r = testHook(HOOK, promptPayload('real-child-99', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-99' },
+    });
+    assert.strictEqual(r.status, 0);
+
+    // The REAL child's own descriptor is untouched.
+    const realDesc = JSON.parse(fs.readFileSync(workspaceDescPath(h.home, 'real-child-99'), 'utf8'));
+    assert.strictEqual(realDesc.id, 'real-child-99');
+    assert.strictEqual(realDesc.sessionId, 'real-child-99');
+
+    // The phantom's ACTIVE descriptor is gone (retired), never raw-deleted: it
+    // must have been moved into archived/ (cmdArchive's sanctioned path), not
+    // simply unlinked with no trace.
+    assert.ok(!fs.existsSync(path.join(wdir, phantomId + '.json')),
+      'the proven phantom\'s active descriptor must be retired');
+    const archivedPath = path.join(h.home, '.anti-hall', 'devswarm', 'archived', phantomId + '.json');
+    assert.ok(fs.existsSync(archivedPath),
+      'retirement must be a non-destructive archive (hardlink into archived/), not a raw unlink');
+
+    const seen = readDescriptors(h.home);
+    assert.ok(!seen.some((d) => d.id === phantomId), 'the retired phantom must no longer surface to the parent');
+    assert.ok(seen.some((d) => d.id === 'real-child-99'), 'the real child must still surface to the parent');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F3 RETIRE P1 FIX: a HEALTHY same-worktree descriptor with id !== sessionId (both full UUIDs, distinct namespaces — the NORMAL shape for every real descriptor) is NOT retired', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    // This is the shape of essentially every live descriptor in production:
+    // `id` is the workspace/builder id, `sessionId` is a DIFFERENT Claude
+    // session UUID (or null) — a different namespace entirely, per
+    // docs/KB-devswarm-hivecontrol.md. It must never be treated as a phantom
+    // signal on its own.
+    const otherId = 'bbbbbbbb-1111-2222-3333-444444444444';
+    const otherSessionId = 'cccccccc-5555-6666-7777-888888888888';
+    fs.writeFileSync(path.join(wdir, otherId + '.json'), JSON.stringify({
+      id: otherId, worktreePath: path.resolve(REPO_CWD), sessionId: otherSessionId,
+      inboxPath: path.join(h.home, '.anti-hall', 'devswarm', 'inbox', otherId + '.ndjson'),
+      cursorPath: path.join(h.home, '.anti-hall', 'devswarm', 'cursors', otherId + '.cursor'),
+    }));
+
+    const r = testHook(HOOK, promptPayload('real-child-101', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-101' },
+    });
+    assert.strictEqual(r.status, 0);
+
+    assert.ok(fs.existsSync(path.join(wdir, otherId + '.json')),
+      'a healthy descriptor with id !== sessionId must never be retired merely for sharing a worktree');
+    const archivedPath = path.join(h.home, '.anti-hall', 'devswarm', 'archived', otherId + '.json');
+    assert.ok(!fs.existsSync(archivedPath), 'must not have been archived either');
+    const seen = readDescriptors(h.home);
+    assert.ok(seen.some((d) => d.id === otherId), 'the untouched descriptor must still surface to the parent');
+    assert.ok(seen.some((d) => d.id === 'real-child-101'), 'the real child must still surface to the parent');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F3 RETIRE: a same-worktree descriptor whose id === its own sessionId (could be a distinct live child) is LEFT untouched', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    const otherId = 'other-live-child-1';
+    fs.writeFileSync(path.join(wdir, otherId + '.json'), JSON.stringify({
+      id: otherId, worktreePath: path.resolve(REPO_CWD), sessionId: otherId,
+    }));
+
+    const r = testHook(HOOK, promptPayload('real-child-100', REPO_CWD), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-100' },
+    });
+    assert.strictEqual(r.status, 0);
+
+    assert.ok(fs.existsSync(path.join(wdir, otherId + '.json')),
+      'a descriptor whose id === its own sessionId must never be retired, even if it shares a worktree');
+    const seen = readDescriptors(h.home);
+    assert.ok(seen.some((d) => d.id === otherId), 'the untouched descriptor must still surface to the parent');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// F-A regression (v0.61.2): retirePhantomWorktreeDuplicates used to call
+// cmdArchive DIRECTLY, which (unlike foldGroupIntoSurvivor, used by
+// retireWorktreeDuplicates/foldMeshDuplicates) does NOT forward unread direct
+// messages before tombstoning the registry row. A truncated-id phantom CAN
+// still hold an unread direct (mesh routes via registry/worktree, not the
+// phantom's dead inboxPath), so retiring it via the old path silently dropped
+// that message. The fix forwards via the SAME shared foldGroupIntoSurvivor
+// primitive before archiving.
+test('F-A RETIRE: a truncated-id phantom holding an unread direct is retired WITHOUT losing the message (forwarded into the survivor)', () => {
+  const h = makeHome();
+  try {
+    const wdir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    const phantomId = TRUNCATED_ID;
+    fs.writeFileSync(path.join(wdir, phantomId + '.json'), JSON.stringify({
+      id: phantomId, worktreePath: path.resolve(REPO_CWD), sessionId: 'phantom-dup-1-full-session-id',
+      inboxPath: path.join(h.home, '.anti-hall', 'devswarm', 'inbox', phantomId + '.ndjson'),
+      cursorPath: path.join(h.home, '.anti-hall', 'devswarm', 'cursors', phantomId + '.cursor'),
+    }));
+    assert.ok(fs.existsSync(path.join(wdir, phantomId + '.json')), 'precondition: phantom descriptor seeded');
+
+    // Seed an UNREAD direct addressed to the phantom's own partition — mesh
+    // routes via the registry/worktree, not the phantom's dead inboxPath, so
+    // this is reachable even though nothing ever reads the phantom's descriptor
+    // inbox. Seeded into the SAME store partition (hash=repoKey for REPO_CWD)
+    // production code opens.
+    const repoKey = repokey.repoKeyForWorktree(path.resolve(REPO_CWD));
+    assert.ok(repoKey, 'precondition: REPO_CWD must resolve a repoKey');
+    const seedStore = storeLib.openStore({ home: h.home, workspaceId: phantomId, hash: repoKey, backend: 'journal' });
+    try {
+      const fields = { from: 'someone', to: phantomId, type: 'direct', message: 'unread-for-phantom', timestamp: Date.now() };
+      storeLib.appendMeshMessage(seedStore, Object.assign({}, fields, { hash: storeLib.meshMessageHash(fields) }));
+    } finally { seedStore.close(); }
+
+    // Force the SAME backend the seed store used (journal) for the hook
+    // subprocess too — production auto-selects sqlite-when-available, which
+    // would otherwise silently diverge from a hand-forced 'journal' seed
+    // depending on the Node version running the suite (18/20 lack node:sqlite,
+    // 22/24 have it), making the message land in a store the hook never reads.
+    const r = testHook(HOOK, promptPayload('real-child-fa', REPO_CWD), {
+      home: h.home,
+      env: {
+        DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'real-child-fa',
+        ANTIHALL_DEVSWARM_STORE_BACKEND: 'journal',
+      },
+    });
+    assert.strictEqual(r.status, 0);
+
+    // Phantom retired (same sanctioned archive path as F3).
+    assert.ok(!fs.existsSync(path.join(wdir, phantomId + '.json')), 'the proven phantom must still be retired');
+    const archivedPath = path.join(h.home, '.anti-hall', 'devswarm', 'archived', phantomId + '.json');
+    assert.ok(fs.existsSync(archivedPath), 'retirement must remain a non-destructive archive');
+
+    // The unread message must have been FORWARDED into the real child's own
+    // partition — not lost.
+    const readStore = storeLib.openStore({ home: h.home, workspaceId: 'real-child-fa', hash: repoKey, backend: 'journal' });
+    let bodies;
+    try { bodies = readStore.listMessages('real-child-fa', {}).map((m) => m.body); }
+    finally { readStore.close(); }
+    assert.ok(bodies.includes('unread-for-phantom'), 'the phantom\'s unread direct must be forwarded into the survivor, not dropped: ' + JSON.stringify(bodies));
   } finally {
     h.cleanup();
   }

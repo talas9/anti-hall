@@ -218,7 +218,15 @@ function pendingLegacyLines(s, id, lines) {
 // legacy cursor, so the just-imported backlog reads as already-seen.
 function migrateOne(s, descriptor, F, opts) {
   const id = descriptor.id;
-  s.upsertRegistry(descriptor);
+  // F-C (v0.61.2): capture upsertRegistry's own success signal instead of
+  // assuming it applied. The F2 id-collision guard returns false (rather than
+  // throwing) when an existing row for this id already maps to a DIFFERENT
+  // non-null worktree_path — migrate cannot tell whether that conflict is an
+  // intentional path change or a genuine collision, so (unlike cmdRegister's
+  // proven same-project re-register, which opts in via allowPathChange) the
+  // safe choice here is to NOT bypass the guard, and instead let `verified`
+  // below reflect the skip rather than falsely reporting success.
+  const registryWritten = s.upsertRegistry(descriptor);
 
   // Read the legacy inbox with an explicit readability signal. A MISSING/unreadable
   // inbox must NEVER be treated as a genuinely-empty one: both look like 0 lines,
@@ -264,9 +272,13 @@ function migrateOne(s, descriptor, F, opts) {
 
   // Count-verify: the store must now hold exactly as many messages for this id as
   // there are distinct non-empty legacy inbox lines (the inbox we actually read).
+  // ALSO require the registry upsert to have actually applied (registryWritten !==
+  // false) — a message-count match alone does not prove the registry row landed;
+  // the F2 guard can skip that write while messages import normally.
   const legacyCount = lines.length;
   const storeCount = s.messageCount(id);
-  const verified = storeCount === legacyCount;
+  const registryVerified = registryWritten !== false;
+  const verified = storeCount === legacyCount && registryVerified;
 
   // Carry the legacy consumed-count forward as the store cursor (idempotent
   // set) — UNLESS opts.markRead is set, in which case advance the cursor to
@@ -282,9 +294,14 @@ function migrateOne(s, descriptor, F, opts) {
   const cursor = markRead ? Math.max(legacyCursor, storeCount) : legacyCursor;
   s.setCursor(id, cursor);
 
-  return {
+  const report = {
     id, imported, legacyCount, storeCount, cursor, verified, markRead,
   };
+  if (!registryVerified) {
+    report.error = 'registry upsert skipped for ' + JSON.stringify(id)
+      + ': an existing row already maps to a different worktree_path (possible id collision or an unintended path change) — not overwritten';
+  }
+  return report;
 }
 
 // migrateToStore({ home, backend, env, now, io }) -> report object.

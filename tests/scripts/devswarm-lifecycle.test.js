@@ -1138,6 +1138,58 @@ test('GH2: migrateOwnerKeys migrates an ACTIVE descriptor that has no sessionId'
   } finally { rm(home); rm(repo); }
 });
 
+// F-D regression (v0.61.2): rehomeCore's verify gate used to only check that
+// SOME row for `id` existed in the destination store — a guard-skipped upsert
+// (F2 id-collision guard: destination already has a row for this id at a
+// DIFFERENT worktreePath) still reads "present" under a bare id-presence
+// check, so verification falsely passed and the source (hash-bucket) row was
+// tombstoned — orphaning it, since the destination row never actually got
+// re-homed. The fix compares worktreePath + sessionId, not just id presence,
+// and now surfaces the conflict (`out.regConflict`) instead of silently
+// reporting a no-op.
+test('F-D: rehomeCore does NOT tombstone the source when the destination has a CONFLICTING row for the same id (no orphan, conflict surfaced)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('fd-conflict');
+  try {
+    const id = 'ws-fd';
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const hashKey = storeLib.hashFromWorkspaceId(id);
+    assert.notEqual(hashKey, repoKey);
+
+    // Source: a hash-bucket-stranded row + a pending message, exactly the
+    // split-brain shape rehomeCore is meant to heal.
+    writeActiveDesc(home, id, { id, worktreePath: repo, sessionId: 's-real', ownerKey: hashKey });
+    seedRegistry(home, hashKey, { id, worktreePath: repo, sessionId: 's-real' });
+    const hs = storeLib.openStore({ home, hash: hashKey, backend: 'journal' });
+    try { hs.appendMessage({ workspaceId: id, body: 'pending-1', hash: 'h-pending-1' }); }
+    finally { hs.close(); }
+
+    // Destination: a PRE-EXISTING CONFLICTING row for the SAME id at a DIFFERENT
+    // worktreePath — this is what makes upsertRegistry's F2 guard skip the write
+    // rehomeCore attempts.
+    seedRegistry(home, repoKey, { id, worktreePath: '/some/other/conflicting/path', sessionId: 's-conflict' });
+
+    const r = cli.rehomeCore(home, id, repoKey, ctx(home, { cwd: repo }));
+    assert.equal(r.rehomed, false, 'must NOT report success over a guard-skipped registry write');
+    assert.equal(r.regConflict, true, 'the conflict must be surfaced, not silently swallowed');
+
+    // Source row must still be present — NOT tombstoned (no orphan).
+    const hsAfter = storeLib.openStore({ home, hash: hashKey, backend: 'journal' });
+    try {
+      const row = hsAfter.listRegistry().find((x) => String(x.id) === id);
+      assert.ok(row, 'the hash-bucket source row must NOT be tombstoned when the destination conflicts');
+      assert.equal(row.worktreePath, repo);
+    } finally { hsAfter.close(); }
+
+    // Destination's pre-existing conflicting row must be untouched (F2 did its job).
+    const dsAfter = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const drow = dsAfter.listRegistry().find((x) => String(x.id) === id);
+      assert.equal(drow.worktreePath, '/some/other/conflicting/path', 'the conflicting destination row must be preserved');
+    } finally { dsAfter.close(); }
+  } finally { rm(home); rm(repo); }
+});
+
 // --- G2: crash-safe archive rollback persists a recovery-intent on double failure ---
 test('G2: cmdArchive persists a recovery-intent and reports failure when tombstone AND revive both fail; applyRecoveryIntents revives', () => {
   const home = tmpHome();
