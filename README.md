@@ -350,8 +350,9 @@ live per-turn status table of every active workspace — status/finish-rate/unre
 last-activity, attention-needing rows first) and `devswarm-parent-gate` (blocks the
 Primary from ending a turn while a child has REAL unread backlog — as of v0.61.1, noise
 like a mirrored `[Primary poke]` is excluded via a shared classifier, closing a
-ghost-workspace nag loop — or the supervisor judged it
-stale/escalated **OR the Primary itself has unread parent/peer messages of its own**,
+ghost-workspace nag loop — or the supervisor judged it stale/escalated, except (v0.62.0)
+a fresh heartbeat now overrides a stale/escalated verdict as definitive proof-of-life
+**OR the Primary itself has unread parent/peer messages of its own**,
 with the same imperative "STOP and read them FIRST" wording as the child gate — as of
 v0.56.0 the Primary can no longer silently sit on its own inbound) on the Primary; `devswarm-child-turn` (turn-authored heartbeat +
 reminder to report to the parent, plus a non-destructive surfacing of unread parent
