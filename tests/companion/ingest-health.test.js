@@ -25,10 +25,10 @@ function tmpHome() {
 }
 function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
 
-function writeHeartbeat(home, repoKey, ts) {
+function writeHeartbeat(home, repoKey, ts, pid) {
   const p = health.ingestHeartbeatPath(home, repoKey);
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ ts }));
+  fs.writeFileSync(p, JSON.stringify(pid === undefined ? { ts } : { ts, pid }));
 }
 function writeLock(home, repoKey, pid) {
   const p = health.ingestProjectLockPath(home, repoKey);
@@ -41,14 +41,30 @@ function writeLock(home, repoKey, pid) {
 // (no dependency on a real OS pid's liveness).
 // ---------------------------------------------------------------------------
 
-test('daemonHealth: fresh heartbeat + live-pid lock -> healthy', () => {
+test('daemonHealth: fresh heartbeat + live-pid lock (same incarnation, matching pid) -> healthy', () => {
   const home = tmpHome();
   try {
     const now = Date.now();
-    writeHeartbeat(home, 'proj-abc', now - 5000);
+    writeHeartbeat(home, 'proj-abc', now - 5000, 4242);
     writeLock(home, 'proj-abc', 4242);
     const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'linux', io: { isAlive: () => true } });
     assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true });
+  } finally { rm(home); }
+});
+
+test('daemonHealth SAME-INCARNATION GUARD: fresh heartbeat from a PRIOR daemon (pid A) + a live lock now held by a DIFFERENT pid (B) -> stale, not healthy', () => {
+  const home = tmpHome();
+  try {
+    const now = Date.now();
+    // Heartbeat still fresh (A wrote it recently before exiting/dying), but
+    // the lock is now held by an unrelated pid B that has not yet written
+    // its own heartbeat — mixing the two signals must NOT read as healthy.
+    writeHeartbeat(home, 'proj-abc', now - 5000, 111111);
+    writeLock(home, 'proj-abc', 222222);
+    const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'linux', io: { isAlive: () => true } });
+    assert.strictEqual(r.status, 'stale', 'a fresh heartbeat + live lock from TWO DIFFERENT pids must never report healthy');
+    assert.strictEqual(r.fresh, true);
+    assert.strictEqual(r.liveLock, true);
   } finally { rm(home); }
 });
 
@@ -171,7 +187,7 @@ test('selfHeal: healthy daemon -> daemonHealthy:true, no spawn attempted', () =>
         spawnInstaller: () => { spawned++; },
       },
     };
-    writeHeartbeat(home, 'proj-x', Date.now() - 5000);
+    writeHeartbeat(home, 'proj-x', Date.now() - 5000, 111);
     writeLock(home, 'proj-x', 111);
     const r = cli.selfHeal(ctx);
     assert.deepStrictEqual(r, { daemonHealthy: true });

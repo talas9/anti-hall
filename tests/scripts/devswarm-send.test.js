@@ -178,6 +178,94 @@ test('send --to an unregistered meshId is rejected fail-closed (D12a)', () => {
   } finally { rm(home); rm(repo); }
 });
 
+// ---- send --to a ROSTER id (P0 addressing footgun fix) ---------------------
+// resolveMeshTarget ONLY ever matched `--to` against a row's worktree-derived
+// meshId — but `roster` (before this fix) never printed that meshId, only
+// each row's own `id`, so a human/agent copying the id THEY WERE SHOWN into
+// `--to` failed closed as unregistered-recipient even though the workspace
+// was registered. Fixed by resolveSendTarget: fall back to an exact match on
+// the row's own `id` when the meshId pass finds nothing.
+
+test('send --to resolves a roster id to the correct meshId partition (a plain builder-id, distinct from its worktree meshId)', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('roster-id-addr-main');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'roster-id-addr-child');
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    const childMeshId = derivedId(childWt);
+    // The everyday case: a child self-registers under its own builder-id
+    // ('child-x'), NOT its worktree-derived meshId.
+    assert.notEqual('child-x', childMeshId, 'precondition: id must differ from meshId to actually exercise the fallback');
+    seedRegistry(home, repoKey, { id: 'child-x', worktreePath: childWt, sessionId: 's' });
+
+    // roster must show BOTH the id it already showed and the meshId a sender
+    // would otherwise need to copy.
+    const rosterR = cli.run(['roster'], ctx(home, { cwd: mainRepo }));
+    assert.equal(rosterR.result.ok, true);
+    const row = rosterR.result.workspaces.find((w) => w.id === 'child-x');
+    assert.ok(row, 'roster must list the registered id');
+    assert.equal(row.meshId, childMeshId, 'roster must surface the meshId alongside id (Claim 1b)');
+
+    // A sender copies the ROSTER id (not the meshId) into --to.
+    const r = cli.run(['send', '--to', 'child-x', '--message', 'hi'], ctx(home, { cwd: mainRepo }));
+    assert.equal(r.result.ok, true, 'a roster id must resolve, not fail closed: ' + JSON.stringify(r.result));
+    assert.equal(r.result.reason, undefined);
+
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const msgs = s.listMessages('child-x');
+      assert.equal(msgs.length, 1, 'the message must land in the id partition roster showed, zero loss');
+      assert.equal(msgs[0].body, 'hi');
+    } finally { s.close(); }
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+test('send --to a real worktree meshId still resolves via the pre-existing meshId match (back-compat, unaffected by the id-fallback)', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('meshid-backcompat-main');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'meshid-backcompat-child');
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    const childMeshId = derivedId(childWt);
+    // Registered by its OWN meshId as the row's id too (the register-primary /
+    // meshId-keyed style row) — the ORIGINAL matching path this fix must not disturb.
+    seedRegistry(home, repoKey, { id: childMeshId, worktreePath: childWt, sessionId: 's' });
+    const r = cli.run(['send', '--to', childMeshId, '--message', 'hi'], ctx(home, { cwd: mainRepo }));
+    assert.equal(r.result.ok, true, 'existing meshId addressing must keep working: ' + JSON.stringify(r.result));
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      assert.equal(s.listMessages(childMeshId).length, 1);
+    } finally { s.close(); }
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+test('resolveSendTarget fails closed with a CLEAR ambiguous reason rather than silently picking a candidate (defense-in-depth: id is the registry PRIMARY KEY in a real store, so this exercises the guard directly against a corrupted/duplicated read)', () => {
+  const fakeStore = {
+    listRegistry: () => [
+      { id: 'dup-id', worktreePath: '/wt/a', sessionId: 's' },
+      { id: 'dup-id', worktreePath: '/wt/b', sessionId: 's' },
+    ],
+  };
+  const resolved = cli.resolveSendTarget(fakeStore, 'dup-id');
+  assert.equal(resolved.ambiguous, true);
+  assert.equal(resolved.target, null, 'an ambiguous match must never silently pick a candidate');
+  assert.deepEqual(resolved.candidates, ['dup-id', 'dup-id']);
+});
+
+test('resolveSendTarget returns a clean single match (not ambiguous) for the normal, non-corrupted case', () => {
+  const fakeStore = {
+    listRegistry: () => [
+      { id: 'child-only', worktreePath: '/wt/only', sessionId: 's' },
+    ],
+  };
+  const resolved = cli.resolveSendTarget(fakeStore, 'child-only');
+  assert.equal(resolved.ambiguous, false);
+  assert.ok(resolved.target);
+  assert.equal(resolved.target.id, 'child-only');
+});
+
 // ---- send --to-primary (v0.58, PLAN.md CLI VERB CONTRACT) ------------------
 
 test('send --to-primary resolves the registry entry whose worktreePath is the MAIN worktree and delivers there, from a CHILD linked worktree', () => {

@@ -570,10 +570,15 @@ const CHILD_ENV = { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', 
 function lockDir(home) {
   return path.join(home, '.anti-hall', 'devswarm', 'locks');
 }
-function writeDaemonHeartbeat(home, repoKey, ts) {
+function writeDaemonHeartbeat(home, repoKey, ts, pid) {
   const p = path.join(heartbeatDir(home), 'ingest-' + repoKey + '.json');
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ ts }));
+  // pid is optional: a caller asserting 'healthy' must pass the SAME pid it
+  // wrote into the lock (writeDaemonLock) — ingest-health.js's daemonHealth
+  // requires the heartbeat and lock to agree on pid (SAME-INCARNATION guard)
+  // before reporting healthy; real production writers (devswarm-ingest.js)
+  // always stamp both records from the same process.pid already.
+  fs.writeFileSync(p, JSON.stringify(pid === undefined ? { ts } : { ts, pid }));
 }
 function writeDaemonLock(home, repoKey, pid) {
   const p = path.join(lockDir(home), 'ingest-project-' + repoKey + '.lock');
@@ -587,7 +592,7 @@ function staleBanner(c) {
 test('CHILD STALE: healthy daemon (fresh heartbeat + live lock) -> NO banner', () => {
   const h = makeHome();
   try {
-    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 5000);
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 5000, process.pid); // SAME pid as the lock below — one incarnation
     writeDaemonLock(h.home, REPO_KEY, process.pid);
     const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
     assert.strictEqual(r.status, 0);

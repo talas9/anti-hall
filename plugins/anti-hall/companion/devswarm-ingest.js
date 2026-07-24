@@ -50,6 +50,17 @@ const installIngest = require('./install-devswarm-ingest.js');
 let repokey = null;
 try { repokey = require('./lib/devswarm-repokey.js'); } catch (_) { repokey = null; }
 
+// B1 self-heal hardening: structured logging via the shared C0 logger when
+// present, falling back to a console.error-only no-frills shim so this daemon
+// never depends on that module existing (tests exercise both cases).
+let alog;
+try { alog = require('./lib/anti-hall-log.js'); } catch (_) {
+  alog = {
+    logError: function () { try { console.error.apply(console, arguments); } catch (_e) {} },
+    logEvent: function () {},
+  };
+}
+
 const INGEST_LOCK_STALE_MS = 15 * 60 * 1000; // a monitor consumer is long-lived; used to judge an UNKNOWN holder's liveness — a KNOWN-dead holder is reclaimed immediately regardless of this window (see acquireIngestLock's P1-B steal rule)
 const DEFAULT_MONITOR_INTERVAL_SEC = 3;      // hivecontrol monitor default poll
 const DEFAULT_RESTART_BACKOFF_MS = 2000;     // gap before re-spawning after a monitor exit/crash
@@ -100,23 +111,186 @@ function isAliveDefault(pid) {
   try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
 }
 
+// defaultKillProcess(pid, sig) — the only place in this file that sends a
+// non-probe signal. process.kill maps SIGKILL to TerminateProcess on win32
+// (no guard needed there); the caller always wraps this in try/catch (ESRCH if
+// the pid already exited between the isAlive() probe and this call, EPERM if
+// disallowed).
+function defaultKillProcess(pid, sig) {
+  process.kill(pid, sig);
+  return true;
+}
+
+// defaultProcessStartTimeMs(pid) -> epoch ms the OS reports pid as having
+// started, or null when it cannot be determined (no such pid, platform probe
+// failed/unavailable). PID-REUSE GUARD (see isHolderHeartbeatStale below): a
+// dead daemon's leaked lock/heartbeat freezes with the OLD pid baked into both
+// records; once the OS later hands that SAME pid number to an unrelated live
+// process (a shell, editor, another Claude session), `isAlive(pid)` reports
+// true and the frozen records still "match" by content alone — content can
+// never distinguish "still the same process, just wedged" from "a totally
+// different process that coincidentally got the recycled pid". Only the OS
+// itself can answer that, via the process's actual start time. Best-effort by
+// design: an unresolvable start time must NEVER be treated as proof of
+// identity (see the caller's fail-toward-never-kill handling of null).
+function defaultProcessStartTimeMs(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return null;
+  try {
+    if (process.platform === 'linux') {
+      // Pure fs, no spawn: /proc/<pid>/stat field 22 (starttime, in clock
+      // ticks since boot) + /proc/stat's `btime` (boot time, epoch seconds).
+      // `comm` (field 2) is parenthesized and may itself contain spaces/
+      // parens, so split on the LAST ')' rather than naively splitting on
+      // spaces (mirrors the same defensive parse other /proc readers use).
+      const stat = fs.readFileSync('/proc/' + pid + '/stat', 'utf8');
+      const idx = stat.lastIndexOf(')');
+      if (idx === -1) return null;
+      const rest = stat.slice(idx + 2).trim().split(/\s+/);
+      // rest[0] is field 3 (state); starttime is field 22 overall -> index 19
+      // in this 0-based `rest` array (22 - 3 = 19).
+      const ticks = Number(rest[19]);
+      const statRaw = fs.readFileSync('/proc/stat', 'utf8');
+      const btimeLine = statRaw.split('\n').find((l) => l.startsWith('btime '));
+      const btime = btimeLine ? Number(btimeLine.trim().split(/\s+/)[1]) : NaN;
+      if (!Number.isFinite(ticks) || !Number.isFinite(btime)) return null;
+      const USER_HZ = 100; // near-universal on modern Linux; no sysconf in pure Node — best-effort
+      const ms = (btime * 1000) + Math.round((ticks / USER_HZ) * 1000);
+      return Number.isFinite(ms) ? ms : null;
+    }
+    if (process.platform === 'darwin') {
+      const r = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', timeout: 5000 });
+      if (r.error || r.status !== 0) return null;
+      const out = String(r.stdout || '').trim();
+      if (!out) return null;
+      const t = Date.parse(out);
+      return Number.isFinite(t) ? t : null;
+    }
+    if (process.platform === 'win32') {
+      const r = spawnSync('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        '(Get-Process -Id ' + Number(pid) + ' -ErrorAction Stop).StartTime.ToUniversalTime().ToString("o")',
+      ], { encoding: 'utf8', timeout: 5000 });
+      if (r.error || r.status !== 0) return null;
+      const out = String(r.stdout || '').trim();
+      if (!out) return null;
+      const t = Date.parse(out);
+      return Number.isFinite(t) ? t : null;
+    }
+  } catch (_) { return null; }
+  return null; // unknown platform — cannot resolve, fail toward never-kill
+}
+
+// resolveLockHbHash(worktree) -> the SAME hash the ingest daemon's OWN
+// liveness heartbeat file is keyed by (repoKey when resolvable, else the
+// legacy worktreeHash) — mirrors runIngestLoop's own `hbHash = repoKey ||
+// safeWorktreeHash(worktree)` (below). Since the ingest lock is itself
+// per-project (ingestLockPath), the CURRENT holder of a given lock is, by
+// construction, the one daemon that would be writing heartbeats/ingest-
+// <hash>.json for that same hash — so this is a safe way to find the
+// wedged-candidate's own heartbeat file without knowing its pid's identity
+// any more precisely than "whoever holds this lock". Never throws.
+function resolveLockHbHash(worktree) {
+  return safeRepoKey(worktree) || safeWorktreeHash(worktree);
+}
+
+// isHolderHeartbeatStale(home, worktree, nowMs, F, io, holderPid) -> bool. H2
+// heartbeat-aware steal (see acquireIngestLock's STEAL RULE comment below):
+// reads the would-be-stolen LIVE holder's own daemon heartbeat (heartbeats/
+// ingest-<hash>.json, rewritten every sweep by writeIngestHeartbeat) and
+// reports whether it has gone stale beyond INGEST_LOCK_STALE_MS — i.e. the
+// daemon is wedged (its event loop can no longer run even the per-iteration
+// heartbeat write, e.g. blocked inside a hung child spawnSync — H3), not
+// merely busy.
+//
+// PID-IDENTITY GUARD (two independent checks, both required before "stale"
+// can mean anything, since the SIGKILL this gates is irreversible):
+//   1. The heartbeat file is keyed by HASH, not by pid — it can carry a
+//      DIFFERENT pid than `holderPid` (the CURRENT lock holder we are
+//      considering killing): a leftover record from a prior daemon instance
+//      that used the same hash, or any other mismatch. A heartbeat is only
+//      evidence about the pid it ITSELF claims to be; judging a different
+//      holderPid's liveness from it would be a category error. Concrete
+//      repro this closes: a stale heartbeat recorded {pid:111111} plus a
+//      live, healthy lock holder {pid:424242} — without this check the
+//      staleness of the UNRELATED 111111 heartbeat wrongly condemned the
+//      live 424242 holder.
+//   2. Even when the pid matches, a stale heartbeat + a currently-"alive"
+//      holderPid is ALSO exactly what PID REUSE looks like: the original
+//      daemon died, leaked its lock+heartbeat (both frozen with its old pid),
+//      and the OS later handed that SAME pid number to an unrelated live
+//      process (a shell, editor, another Claude session). Positively confirm
+//      the CURRENTLY-alive process at holderPid could actually BE the one
+//      that wrote this heartbeat: its OS-reported start time must be AT OR
+//      BEFORE the heartbeat's own last-good `ts` — a process that started
+//      AFTER this heartbeat was last written cannot possibly be the process
+//      that wrote it (see defaultProcessStartTimeMs above).
+//
+// FAIL TOWARD NEVER-KILL: any inconclusive signal (no worktree/hash to
+// derive, no heartbeat file yet, malformed JSON, missing ts, pid mismatch,
+// unresolvable start time) returns false. This mirrors the existing STEAL
+// RULE's own asymmetry between a KNOWN-dead pid (reclaim immediately) and an
+// UNKNOWN one (needs both stale AND not-alive). `io.heartbeatStale`, when a
+// function, is an explicit test override (used to exercise the steal/refuse
+// branches without needing a real heartbeat file on disk in every test) —
+// it is trusted as-is and skips the pid/start-time checks below (a test
+// asserting its own override's contract is expected to encode them itself).
+function isHolderHeartbeatStale(home, worktree, nowMs, F, io, holderPid) {
+  const override = io && typeof io.heartbeatStale === 'function' ? io.heartbeatStale : null;
+  if (override) {
+    try { return !!override(home, worktree, nowMs, holderPid); } catch (_) { return false; }
+  }
+  const hash = resolveLockHbHash(worktree);
+  if (!hash) return false;
+  try {
+    const raw = F.readFileSync(ingestHeartbeatPath(home, hash), 'utf8');
+    const beat = JSON.parse(raw);
+    const ts = beat && Number.isFinite(beat.ts) ? beat.ts : null;
+    if (ts === null) return false; // can't prove staleness -> never kill
+    const beatPid = beat && Number.isFinite(beat.pid) ? beat.pid : null;
+    if (holderPid != null && (beatPid === null || beatPid !== holderPid)) return false; // wrong pid's heartbeat -> never kill
+    if ((nowMs - ts) <= INGEST_LOCK_STALE_MS) return false; // not stale
+    const startTimeOf = (io && io.startTimeOf) || defaultProcessStartTimeMs;
+    let startedAt = null;
+    try { startedAt = startTimeOf(holderPid); } catch (_) { startedAt = null; }
+    if (!Number.isFinite(startedAt)) return false; // can't confirm identity -> never kill
+    if (startedAt > ts) return false; // this pid postdates the heartbeat -> likely a reused pid, not the same process -> never kill
+    return true;
+  } catch (_) {
+    return false; // missing/unreadable heartbeat -> never kill (fail toward safety)
+  }
+}
+
 // acquireIngestLock(home, io) -> release() | null. null => another monitor
 // consumer holds the lock; the daemon MUST refuse to start (single-consumer
 // invariant). The returned release() carries a `.heartbeat()` the live daemon
 // calls each loop to REFRESH its own lock timestamp, so a healthy long-lived
 // consumer is never seen as stale (and thus never stolen).
 //
-// STEAL RULE (data-loss guard): a KNOWN-LIVE holder is NEVER stolen, however old
-// its timestamp looks — stealing from a live `hivecontrol workspace monitor`
-// consumer would split the destructive native queue between two daemons and
-// silently lose messages. A holder with a KNOWN pid confirmed DEAD is reclaimed
-// IMMEDIATELY (P1-B) — a dead process can never come back, so there is nothing to
-// gain by waiting out the staleness window. An UNKNOWN holder (an unparseable/
-// torn lock record with no pid to check) still needs BOTH stale AND not-alive
-// before reclaim, since its liveness can only be inferred from mtime, never
-// confirmed. This covers both the earlier "stale-steals-a-live-daemon" bug (never
-// steal a live or unconfirmed holder) and the "leaked lock stranded ingestion for
-// 15 minutes" bug (a confirmed-dead holder no longer waits out the window).
+// STEAL RULE (data-loss guard): a KNOWN-LIVE holder is NEVER stolen merely for
+// looking stale by lock timestamp — stealing from a live `hivecontrol workspace
+// monitor` consumer would split the destructive native queue between two
+// daemons and silently lose messages. A holder with a KNOWN pid confirmed DEAD
+// is reclaimed IMMEDIATELY (P1-B) — a dead process can never come back, so
+// there is nothing to gain by waiting out the staleness window. An UNKNOWN
+// holder (an unparseable/torn lock record with no pid to check) still needs
+// BOTH stale AND not-alive before reclaim, since its liveness can only be
+// inferred from mtime, never confirmed. This covers both the earlier
+// "stale-steals-a-live-daemon" bug (never steal a live or unconfirmed holder)
+// and the "leaked lock stranded ingestion for 15 minutes" bug (a confirmed-dead
+// holder no longer waits out the window).
+//
+// H2 heartbeat-aware steal (self-heal hardening): a KNOWN-LIVE holder is a
+// SEPARATE case from "confirmed dead" — it is either genuinely busy or WEDGED
+// (blocked inside a hung child call, e.g. spawnSync — H3 — with an event loop
+// that can no longer run its own per-sweep heartbeat write OR respond to
+// SIGTERM). isHolderHeartbeatStale distinguishes the two using the holder's
+// OWN daemon liveness heartbeat (independent of the lock's own timestamp,
+// which release.heartbeat can refresh even while the loop body is about to
+// wedge): a live pid whose heartbeat is positively confirmed stale is
+// SIGKILLed (SIGTERM is undeliverable to a wedged loop) and the lock reclaimed;
+// a live pid with a fresh heartbeat, or one whose heartbeat cannot be read at
+// all, is left alone exactly as before this fix (fail-open toward never
+// killing).
 function acquireIngestLock(home, io, worktree) {
   const F = (io && io.fs) || fs;
   const isAlive = (io && io.isAlive) || isAliveDefault;
@@ -179,7 +353,58 @@ function acquireIngestLock(home, io, worktree) {
       const knownDead = holderPid !== null && !alive;
       const stale = holderTs === null || (now() - holderTs) > INGEST_LOCK_STALE_MS;
       if (knownDead || (stale && !alive)) { try { F.unlinkSync(p); } catch (_) {} continue; }
-      return null; // live holder, or a fresh/unknown lock -> refuse
+      // H2 heartbeat-aware steal: a KNOWN-LIVE holder is still NEVER stolen
+      // merely for looking stale by lock-ts (see this function's own STEAL RULE
+      // header comment) — but "live" alone does not mean "healthy". If the
+      // holder's OWN daemon heartbeat proves it is WEDGED (isHolderHeartbeatStale
+      // above), SIGTERM cannot land on it (Node cannot preempt a blocked event
+      // loop to dispatch a signal handler — see runIngestLoop's SIGNAL HANDLER
+      // comment / H3's hardTimeoutMs), so SIGKILL is the only way to actually
+      // free the lock. A FRESH heartbeat (busy-but-live) is NEVER touched —
+      // isHolderHeartbeatStale's fail-toward-never-kill contract guarantees this
+      // branch only fires on a POSITIVELY CONFIRMED stale heartbeat, never an
+      // inconclusive read.
+      //
+      // REQUIRE `stale` (the LOCK's own timestamp, computed above) TOO — not
+      // heartbeat-staleness alone. The daemon's own loop refreshes the lock ts
+      // via release.heartbeat() EVERY iteration (runIngestLoop, before the
+      // separate per-sweep writeIngestHeartbeat call), and writeIngestHeartbeat
+      // is fully fail-open (any write error is swallowed). So a daemon that is
+      // genuinely alive and looping — NOT wedged — can still show a stale
+      // OWN-heartbeat file if only that separate heartbeat write path breaks
+      // (e.g. its directory becomes unwritable) while the lock ts keeps
+      // refreshing fine. Without also requiring the lock ts to be stale, that
+      // failure alone would get a perfectly healthy consumer SIGKILLed and its
+      // lock stolen — the exact single-consumer-split this lock exists to
+      // prevent. A TRULY wedged daemon (blocked inside a hung child call) can't
+      // run ANY part of its loop body, so both signals go stale together —
+      // requiring both costs nothing in the genuine-wedge case this branch
+      // exists to catch.
+      if (alive && stale && isHolderHeartbeatStale(home, worktree, now(), F, io, holderPid)) {
+        const killFn = (io && io.kill) || defaultKillProcess;
+        let killErr = null;
+        try { killFn(holderPid, 'SIGKILL'); } catch (e) { killErr = e; }
+        const ctx = { pid: holderPid, lockPath: p, staleMs: INGEST_LOCK_STALE_MS };
+        // Only reclaim when the kill actually landed (no error) OR the pid was
+        // already gone (ESRCH — it exited between our isAlive() probe and this
+        // call, so there is nothing left to protect). Any OTHER kill error
+        // (EPERM, etc.) means we do NOT know the holder is actually dead — the
+        // live process keeps running, so deleting its lock here would let a
+        // contender acquire a SECOND, concurrent lock on top of a still-alive
+        // holder (the exact single-consumer break this lock exists to
+        // prevent). Refuse in that case rather than reclaim unconditionally.
+        const killSucceededOrAlreadyGone = !killErr || killErr.code === 'ESRCH';
+        if (killErr) {
+          alog.logError('lock', 'steal-kill-wedged-holder', killErr, ctx);
+        } else {
+          alog.logEvent('lock', 'steal-kill-wedged-holder', 'warn',
+            'reclaimed ingest lock from a live-but-wedged holder (stale own heartbeat) via SIGKILL', ctx);
+        }
+        if (!killSucceededOrAlreadyGone) return null; // kill did not confirm the holder is gone -> refuse, never reclaim
+        try { F.unlinkSync(p); } catch (_) {}
+        continue; // reclaim: loop back and re-attempt openSync('wx')
+      }
+      return null; // live-and-responsive holder, or a fresh/unknown lock -> refuse
     }
   }
   return null;
@@ -557,6 +782,7 @@ function runIngestLoop(opts) {
           if (e && (e.code === 'ELOCKFS' || e.code === 'ELOCKUNAVAIL')) {
             stats.errors++;
             try { fs.writeSync(2, 'devswarm-ingest: store lock ' + e.code + ' — skipping this batch, replaying next poll (idempotent by hash)\n'); } catch (_) {}
+            alog.logError('ingest', 'ingest-payload-retryable', e, { workspaceId, code: e.code });
             if (i + 1 < maxIterations) sleep(backoffMs);
             continue;
           }
@@ -566,8 +792,17 @@ function runIngestLoop(opts) {
         stats.duplicate += ing.duplicate;
         if (ing.inserted > 0) store.deriveSummary(s, { home, env: o.env, now: o.now });
       }
+      // H3: `!res.ok` covers both a genuine monitor crash AND a hardTimeoutMs
+      // kill (the spawnSync `timeout` option in defaultMonitorRun — see its own
+      // and hardTimeoutMs's comments above). Either way this is a TRANSIENT,
+      // already-handled condition — res.raw was already ingested above when
+      // non-empty, and the loop backs off then continues to the next poll
+      // (graceful degrade, never a hang) — but it must be OBSERVABLE, not just
+      // silently absorbed into stats.errors.
       if (!res.ok) {
         stats.errors++;
+        alog.logError('ingest', 'monitor-run-failed', new Error(res.error || 'monitor run failed (no error detail)'),
+          { workspaceId, hardTimeoutMs, timeoutSec });
         if (i + 1 < maxIterations) sleep(backoffMs); // crash -> backoff then re-spawn
         continue;
       }
@@ -578,10 +813,17 @@ function runIngestLoop(opts) {
     // exits silently, leaving nothing to diagnose. appendLog is itself fully
     // try/catch-wrapped and can never mask this rethrow.
     appendLog(home, 'ERROR: ' + (e && e.message ? e.message : String(e)) + (e && e.stack ? ('\n' + e.stack) : ''), logFs);
+    alog.logError('ingest', 'run-ingest-loop-fatal', e, { workspaceId });
     throw e;
   } finally {
-    try { if (s) s.close(); } catch (_) {}
-    try { release(); } catch (_) {}
+    // Adaptive hardening (item 4): these were previously bare `catch (_) {}` —
+    // a close/release failure during shutdown is unexpected (not one of the
+    // documented "expected absent/torn state" cases elsewhere in this file) and
+    // is now logged for diagnosis. Still fully fail-open: logging never throws
+    // (alog's own contract) and this finally block must still complete its
+    // cleanup regardless of any one step's outcome.
+    try { if (s) s.close(); } catch (e) { alog.logError('ingest', 'store-close-failed', e, { workspaceId }); }
+    try { release(); } catch (e) { alog.logError('lock', 'release-failed', e, { workspaceId }); }
     try { proc.removeListener('SIGTERM', onSignal); } catch (_) {}
     try { proc.removeListener('SIGINT', onSignal); } catch (_) {}
   }

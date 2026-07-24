@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.63.0
+
+DevSwarm mesh usability + self-healing hardening — addresses real parent/child coordination footguns found running a Primary + child workspace, plus new adaptive/self-healing infrastructure.
+
+- **Send addressing: `send --to` now accepts the roster `id`, not only the internal meshId.** `resolveSendTarget` tries the worktree-derived meshId first (full back-compat) then falls back to an exact registry-`id` match, with an `ambiguous-recipient` guard that fails closed rather than silently picking. `roster` now surfaces each row's `meshId`.
+- **Reconcile self-heal: mis-keyed registry rows are healed, not silently rejected.** A row whose stored path drifted from its descriptor's real worktreePath is corrected in place; a row physically in the wrong store is rehomed (no-delete, message-preserving, idempotent) via a `healRegistry` pre-pass in `cmdReconcile`. The aggregate `ok` now requires `rejected===0`, so a per-row ownership rejection can no longer be masked as success.
+- **Self-healing migration in doctor + update.** `doctor --repair` and the updater run the registry heal sweep (idempotent, fail-open, no-delete, skips malformed stores) so a broken store is repaired on update/health-check.
+- **Ingest daemon self-heal.** A wedged-but-alive ingest daemon (blocked event loop, SIGTERM undeliverable) whose own liveness heartbeat is confirmed stale is SIGKILLed and its lock reclaimed — never a fresh-heartbeat daemon (fails toward never-kill on any inconclusive read). The Primary's roster projection refreshes itself (`deriveSummary`) when the daemon is unhealthy, with a non-destructive empty-store guard.
+- **Structured error-logging foundation.** New central JSONL logger (`companion/lib/anti-hall-log.js`) — fail-open, size-bounded/rotating — wired into ingest/lock/parent-inbox error paths; previously-swallowed catches now log. (Cross-component wiring + an analyze-from-here `--logs` CLI land in a follow-up.)
+- **Parent/child SKILL clarity.** The devswarm skill (Claude + Codex mirror) now spells out addressing, identity (`inbox read-primary` vs `$DEVSWARM_BUILDER_ID`), the mutating-ack path, and an edge-case→remedy table.
+
+2176 tests (up from 2130 in v0.62.2), 0 fail. Minor bump — new self-healing capability + logging foundation; no destructive paths (all heals are no-delete, message-preserving, idempotent, fail-open).
+
 ## 0.62.2
 
 DevSwarm store deep hardening — closes a third unlocked registry writer plus consistency/robustness gaps found across multiple review rounds.

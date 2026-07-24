@@ -811,10 +811,17 @@ const HEARTBEAT_STALE_MS = 3 * 60 * 1000; // must match HEARTBEAT_STALE_MS in th
 function staleBanner(c) {
   return c.split('\n\n').find((s) => s.includes('DEVSWARM STALE DATA')) || '';
 }
-function writeDaemonHeartbeat(home, hash, ts) {
+function writeDaemonHeartbeat(home, hash, ts, pid) {
   const p = path.join(swarmDir(home), 'heartbeats', 'ingest-' + hash + '.json');
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, JSON.stringify({ ts, workspaceId: 'primary-' + hash, workingDir: REPO_CWD, pid: 1 }));
+  // pid defaults to 1 (an implausible/unrelated daemon pid) so callers that
+  // don't care about the SAME-INCARNATION guard (ingest-health.js daemonHealth)
+  // keep their existing behavior; a caller asserting the daemon reads
+  // 'healthy' must pass the SAME pid it wrote into the lock (writeDaemonLock)
+  // — real production writers (devswarm-ingest.js) always stamp both records
+  // with their own process.pid, so a genuinely healthy daemon's heartbeat and
+  // lock pids always already match.
+  fs.writeFileSync(p, JSON.stringify({ ts, workspaceId: 'primary-' + hash, workingDir: REPO_CWD, pid: pid === undefined ? 1 : pid }));
 }
 // writeDaemonLock(home, repoKey, pid) — the per-project O_EXCL ingest lock
 // (D25's second health signal, devswarm-ingest.js's ingestLockPath project
@@ -831,7 +838,7 @@ test('STALE: fresh heartbeat + live lock (repoKey-keyed) -> healthy -> NO banner
     writeSharedSummary(h.home, { wsA: { total: 2, cursor: 0, unread: 2, directUnread: 2 } }, {
       generatedAt: Date.now() - HEARTBEAT_STALE_MS * 10,
     });
-    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 10 * 1000);
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 10 * 1000, process.pid); // SAME pid as the lock below — one incarnation
     writeDaemonLock(h.home, REPO_KEY, process.pid); // this test process itself — genuinely alive
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
@@ -1249,7 +1256,7 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
     // suppresses the daemon staleness banner (same technique as the STALE suite
     // above), so the only variable segment is the CLI's own absolute path.
     writeSharedSummary(h.home, { wsA: { total: 2, cursor: 0, unread: 2, directUnread: 2 } });
-    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 10 * 1000);
+    writeDaemonHeartbeat(h.home, REPO_KEY, Date.now() - 10 * 1000, process.pid); // SAME pid as the lock below — one incarnation
     writeDaemonLock(h.home, REPO_KEY, process.pid);
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);

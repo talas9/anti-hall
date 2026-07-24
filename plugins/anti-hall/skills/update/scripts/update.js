@@ -720,6 +720,81 @@ function ownerKeyMigratePostUpdate(opts) {
   }
 }
 
+/**
+ * healRegistryPostUpdate({ paths, env, cwd, home, devswarm }) →
+ *   { attempted, checked, healed, rehomed, stores, detail }
+ *
+ * Claim 3 self-heal forward-migration. Sweeps EVERY per-project store's
+ * registry (via devswarm-store.js's listStoreHashes enumeration) for a row
+ * whose descriptor's own real worktreePath disagrees with the store it is
+ * physically sitting in — rehomed out (message-preserving, zero loss) — or
+ * carries a stale persisted ownerKey/repoKey/registry worktree_path — healed
+ * in place. This heals the real breakage class the Claim 3 fix targets: a row
+ * left under the WRONG per-project store (e.g. a submodule split, or a stray
+ * row left by an earlier bug/race) whose descriptor structurally belongs
+ * somewhere else. Reuses devswarm.js's own exported healRegistry(home,
+ * repoKey, ctx) for the ACTUAL heal decision (see rehomeMiskeyedRow's doc
+ * comment for the full tree) — this wrapper only enumerates every store to
+ * sweep, mirroring ownerKeyMigratePostUpdate's own enumerate-and-apply shape.
+ *
+ * Same DevSwarm-session-only gate + fully fail-open posture as
+ * reconcile/fold/ownerKeyMigrate above: NEVER throws, never affects the
+ * update's own success/failure. NO-DELETE (healRegistry's own contract never
+ * deletes a message, only tombstones a row after its content is verified-
+ * copied) and idempotent (a re-run heals/rehomes nothing further — proven by
+ * devswarm-lifecycle.test.js's own healRegistry idempotency test; this
+ * wrapper only adds enumeration, not new heal logic).
+ */
+function healRegistryPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    const storePath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-store.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath) || !fs.existsSync(storePath)) {
+      return { attempted: false, detail: 'heal-registry-rows skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — heal-registry-rows skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.healRegistry !== 'function') {
+      return { attempted: false, detail: 'heal-registry-rows skipped: this devswarm.js build has no healRegistry' };
+    }
+    const devstore = o.devswarmStore || require(storePath);
+    let hashes = [];
+    try { hashes = devstore.listStoreHashes(home) || []; } catch (_) { hashes = []; }
+    let checked = 0, healed = 0, rehomed = 0;
+    const stores = [];
+    for (const repoKey of hashes) {
+      let r = null;
+      try { r = devswarm.healRegistry(home, repoKey, { cwd, env }); } catch (_) { r = null; }
+      if (!r) continue;
+      checked += r.checked || 0;
+      healed += r.healed || 0;
+      rehomed += r.rehomed || 0;
+      const rowIds = (r.rows || [])
+        .filter((row) => row && (row.healedDescriptor || row.healedRegistryPath || row.rehomed))
+        .map((row) => (row.id == null ? '?' : row.id));
+      if (rowIds.length) stores.push({ repoKey, rows: rowIds });
+    }
+    return {
+      attempted: true,
+      checked, healed, rehomed, stores,
+      detail: healed === 0 && rehomed === 0
+        ? 'checked ' + checked + ' registry row(s) across ' + hashes.length + ' store(s) — nothing mis-keyed/stale'
+        : 'healed ' + healed + ' + rehomed ' + rehomed + ' of ' + checked + ' registry row(s) across ' + hashes.length + ' store(s)',
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'heal-registry-rows raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Rollback (v0.57 mesh -> legacy per-worktree units) — PLAN-v0.57-mesh.md
 // Phase 6b / D13. Documented + tested, NOT auto-run by `main()`/runUpdate.
@@ -1018,6 +1093,10 @@ function runUpdate(opts) {
   // P1-8: backfill the new `ownerKey` descriptor field + heal prior hash-bucket
   // split-brain. Same gate + fail-open posture; never affects the update's success.
   const ownerKeyMigrate = ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // Claim 3 self-heal: sweep every per-project store registry for a mis-keyed/
+  // stale row via devswarm.js's healRegistry. Same gate + fail-open posture;
+  // never affects the update's success.
+  const healRegistryRows = healRegistryPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
 
   // Unknown installed version → NEVER 'already up to date'; no delta computable
   // (a null `from` would dump the entire changelog, so suppress it).
@@ -1032,6 +1111,7 @@ function runUpdate(opts) {
         reconcile,
         fold,
         ownerKeyMigrate,
+        healRegistryRows,
         action: UNKNOWN_INSTALLED_ACTION,
       },
       changelog: '',
@@ -1060,6 +1140,7 @@ function runUpdate(opts) {
       reconcile,
       fold,
       ownerKeyMigrate,
+      healRegistryRows,
       action: updated ? 'run /reload-plugins' : 'already up to date',
     },
     changelog,
@@ -1116,6 +1197,14 @@ function renderHuman(status, changelog) {
   if (status.fold && status.fold.attempted) {
     lines.push('  fold:      ' + status.fold.detail);
   }
+  if (status.healRegistryRows && status.healRegistryRows.attempted) {
+    lines.push('  heal-registry-rows: ' + status.healRegistryRows.detail);
+    if (Array.isArray(status.healRegistryRows.stores) && status.healRegistryRows.stores.length) {
+      for (const s of status.healRegistryRows.stores) {
+        lines.push('    - ' + s.repoKey + ': ' + s.rows.join(', '));
+      }
+    }
+  }
   if (changelog) {
     lines.push('');
     lines.push('Changelog delta:');
@@ -1148,6 +1237,7 @@ module.exports = {
   reconcilePostUpdate,
   foldMeshPostUpdate,
   ownerKeyMigratePostUpdate,
+  healRegistryPostUpdate,
   readLegacyHeartbeat,
   rollbackToLegacyUnits,
   runCheck,

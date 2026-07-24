@@ -529,74 +529,93 @@ function upsertStoreRegistry(home, desc, ctx, opts) {
 // Broadcasts/heartbeats live in the SHARED BROADCAST_PARTITION_ID (not per-id)
 // and are deliberately NOT re-homed here — only the per-id direct backlog +
 // registry row (the addressed traffic the black hole affected) moves.
-function rehomeCore(home, id, repoKey, ctx) {
+// rehomeAcrossStores(home, id, fromKey, toKey, ctx) — the GENERALIZED move
+// primitive rehomeCore (below) and the Claim 3 self-heal helpers both share:
+// migrate id's registry row + pending direct backlog + read cursor from
+// store/<fromKey>/ into store/<toKey>/. Same contract as the original
+// rehomeCore body: ATOMIC-per-step, FAIL-OPEN, NO-DELETE-until-copy-verified
+// (a message row is NEVER deleted — append-only, OR-IGNORE dedup makes a
+// re-run idempotent; the SOURCE's registry row is tombstoned ONLY after the
+// destination copy is verified present, and only when it actually came FROM
+// the source store rather than being seeded from a descriptor-only
+// fallback). MUST be called with the per-id lock held (call sites wrap it).
+// Never throws.
+function rehomeAcrossStores(home, id, fromKey, toKey, ctx) {
   const out = { rehomed: false, movedMessages: 0, movedRegistry: false };
-  if (!repoKey) return out;
-  const hashKey = store.hashFromWorkspaceId(id);
-  if (!hashKey || hashKey === repoKey) return out; // already colocated / nothing to move
-  let hashStore = null;
-  let repoStore = null;
+  if (!fromKey || !toKey || fromKey === toKey) return out; // already colocated / nothing to move
+  let fromStore = null;
+  let toStore = null;
   try {
-    // The hash bucket may not exist (descriptor-only split-brain) — openStore
+    // The source bucket may not exist (descriptor-only split-brain) — openStore
     // materializes it, but only when we have already decided a re-home is
-    // warranted (a persisted ownerKey=hash marker), so this is not a spurious
-    // create. Guard the whole body fail-open regardless.
-    hashStore = store.openStore({ home, workspaceId: id, hash: hashKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
-    repoStore = store.openStore({ home, workspaceId: id, hash: repoKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
+    // warranted, so this is not a spurious create. Guard the whole body
+    // fail-open regardless.
+    fromStore = store.openStore({ home, workspaceId: id, hash: fromKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
+    toStore = store.openStore({ home, workspaceId: id, hash: toKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
 
-    // 1) Registry row: prefer the hash-bucket row; fall back to the on-disk
+    // 1) Registry row: prefer the source-store row; fall back to the on-disk
     //    descriptor when the store row is absent (descriptor-only split-brain).
     let regRow = null;
-    try { regRow = (hashStore.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null; } catch (_) { regRow = null; }
-    let regFromHash = !!regRow;
+    try { regRow = (fromStore.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null; } catch (_) { regRow = null; }
+    let regFromSource = !!regRow;
     if (!regRow) {
       const d = readDescriptorFile(home, id);
       if (d && String(d.id) === String(id)) regRow = d;
     }
-    // Nothing stranded in the hash bucket AND no descriptor to seed a row from:
-    // this is NOT a split-brain — do NOT upsert a stub into the repoKey store
-    // (that would CLOBBER a legitimately repoKey-registered row). No-op.
+    // Nothing stranded in the source store AND no descriptor to seed a row
+    // from: this is NOT a split-brain — do NOT upsert a stub into the
+    // destination store (that would CLOBBER a legitimately-registered row). No-op.
     if (!regRow) return out;
     const rehomedReg = Object.assign({}, regRow);
     rehomedReg.id = id;
-    rehomedReg.ownerKey = repoKey;
-    if (descriptorFreshRepoKey(rehomedReg) === repoKey) rehomedReg.repoKey = repoKey;
-    repoStore.upsertRegistry(rehomedReg);
+    rehomedReg.ownerKey = toKey;
+    if (descriptorFreshRepoKey(rehomedReg) === toKey) rehomedReg.repoKey = toKey;
+    toStore.upsertRegistry(rehomedReg);
 
-    // 2) Pending direct backlog for THIS partition (id). appendMeshRow OR-IGNOREs
-    //    on hash, so a re-run never duplicates.
+    // 2) Pending direct backlog for THIS partition (id) — ONLY the source's
+    //    UNREAD tail (sinceCursor: fromCursor), never its already-read history.
+    //    appendMeshRow OR-IGNOREs on hash, so a re-run never duplicates.
+    //
+    //    MESSAGE-LOSS FIX (P0): a read cursor is a POSITIONAL index into ONE
+    //    specific ordered list — it is meaningless once copied onto a
+    //    DIFFERENT list. Concrete repro this closes: destination already has
+    //    an unread [X] at cursor 0; source has [A,B] at cursor 1 (A read, B
+    //    unread). Copying source's FULL history (both A and B) after X
+    //    produces [X,A,B], and merging cursors via max(0,1)=1 marks position 1
+    //    (X) as already-read — X was NEVER delivered to the reader. There is
+    //    no cursor value over the merged list that can correctly mark "A read,
+    //    X and B unread" when X sorts before A. The only safe fix: copy just
+    //    the source's UNREAD tail (so every appended row is genuinely unread)
+    //    and leave the destination's OWN cursor completely untouched — its
+    //    pre-existing rows keep exactly the read/unread status they already
+    //    had, and the newly-appended rows are correctly unread too.
+    let fromCursor = 0;
+    try { fromCursor = fromStore.cursorValue(id) || 0; } catch (_) { fromCursor = 0; }
     let msgs = [];
-    try { msgs = hashStore.listMessages(id, { sinceCursor: 0 }) || []; } catch (_) { msgs = []; }
+    try { msgs = fromStore.listMessages(id, { sinceCursor: fromCursor }) || []; } catch (_) { msgs = []; }
     for (const m of msgs) {
-      repoStore.appendMeshRow({
+      toStore.appendMeshRow({
         workspaceId: id, ts: m.ts, hash: m.hash, body: m.body,
         sender: m.sender, recipient: m.recipient, mtype: m.mtype,
         urgency: m.urgency, isHeartbeat: m.isHeartbeat,
       });
     }
 
-    // 3) Carry the read cursor forward so already-acked messages don't resurface.
-    try {
-      const hashCursor = hashStore.cursorValue(id) || 0;
-      const repoCursor = repoStore.cursorValue(id) || 0;
-      if (hashCursor > repoCursor) repoStore.setCursor(id, hashCursor);
-    } catch (_) { /* cursor carry is best-effort */ }
-
-    // 4) VERIFY the copy landed BEFORE removing anything (no-delete-until-verified).
-    const repoHashes = new Set((repoStore.listMessages(id, { sinceCursor: 0 }) || []).map((r) => r.hash).filter((h) => h != null));
-    const allMsgsPresent = msgs.every((m) => m.hash == null || repoHashes.has(m.hash));
+    // 3) VERIFY the copy landed BEFORE removing anything (no-delete-until-verified).
+    const destHashes = new Set((toStore.listMessages(id, { sinceCursor: 0 }) || []).map((r) => r.hash).filter((h) => h != null));
+    const allMsgsPresent = msgs.every((m) => m.hash == null || destHashes.has(m.hash));
     // F-D (v0.61.2): a row for `id` reading present is NOT proof the upsert above
     // actually applied — the F2 id-collision guard (upsertRegistry) silently skips
     // when a DIFFERENT non-null worktree_path already occupies this id, and a stale/
     // conflicting row still satisfies a bare `.some(id===id)` check. Compare the
     // fields the upsert was supposed to write, not just id presence, so a guard-
     // skipped write is caught here BEFORE the source is tombstoned as verified.
-    const destRow = (repoStore.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null;
+    const destRow = (toStore.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null;
     const regPresent = !!destRow
       && (destRow.worktreePath || null) === (rehomedReg.worktreePath || null)
       && (destRow.sessionId || null) === (rehomedReg.sessionId || null);
     if (!allMsgsPresent || !regPresent) {
-      // Verification failed — LEAVE the hash bucket intact (fail-open, zero loss);
+      // Verification failed — LEAVE the source store intact (fail-open, zero loss);
       // a later attempt retries. Reader falls back to current resolution meanwhile.
       // F-D: distinguish a genuine CONFLICT (a destination row exists but does not
       // match — the F2 guard skipped the upsert) from a plain not-yet-verified
@@ -605,7 +624,7 @@ function rehomeCore(home, id, repoKey, ctx) {
       if (destRow && !regPresent) {
         out.regConflict = true;
         try {
-          process.stderr.write('[devswarm] rehomeCore: id ' + JSON.stringify(String(id))
+          process.stderr.write('[devswarm] rehomeAcrossStores: id ' + JSON.stringify(String(id))
             + ' — destination already has a CONFLICTING registry row (worktreePath/sessionId'
             + ' mismatch, likely the F2 id-collision guard skipping the upsert); source NOT'
             + ' tombstoned, conflict surfaced.\n');
@@ -614,31 +633,198 @@ function rehomeCore(home, id, repoKey, ctx) {
       return out;
     }
 
-    // 5) Copy verified — tombstone ONLY the hash-bucket registry row (message
+    // 4) Copy verified — tombstone ONLY the source-store registry row (message
     //    rows stay; append-only, dedup-safe), and only when the row actually came
-    //    FROM the hash bucket (a descriptor-only re-home has nothing to tombstone).
+    //    FROM the source store (a descriptor-only re-home has nothing to tombstone).
     //    Refresh both projections.
-    if (regFromHash) { try { hashStore.removeRegistry(id); } catch (_) { /* tombstone best-effort; verified copy already durable */ } }
-    try { store.deriveSummary(hashStore, { home, env: ctx && ctx.env }); } catch (_) {}
-    try { store.deriveSummary(repoStore, { home, env: ctx && ctx.env }); } catch (_) {}
+    if (regFromSource) { try { fromStore.removeRegistry(id); } catch (_) { /* tombstone best-effort; verified copy already durable */ } }
+    try { store.deriveSummary(fromStore, { home, env: ctx && ctx.env }); } catch (_) {}
+    try { store.deriveSummary(toStore, { home, env: ctx && ctx.env }); } catch (_) {}
 
-    // 6) Rewrite the descriptor's persisted ownership so ensure stops rejecting.
+    // 5) Rewrite the descriptor's persisted ownership so ensure stops rejecting.
     const desc = readDescriptorFile(home, id);
     if (desc && String(desc.id) === String(id)) {
-      desc.ownerKey = repoKey;
-      if (descriptorFreshRepoKey(desc) === repoKey) desc.repoKey = repoKey;
+      desc.ownerKey = toKey;
+      if (descriptorFreshRepoKey(desc) === toKey) desc.repoKey = toKey;
       try { writeDescriptorAtomic(home, id, desc); } catch (_) { /* descriptor rewrite best-effort; store already re-homed */ }
     }
     out.rehomed = true;
     out.movedMessages = msgs.length;
-    out.movedRegistry = regFromHash;
+    out.movedRegistry = regFromSource;
     return out;
   } catch (_) {
     return out; // fail-open: a re-home hiccup must never break the caller's verb
   } finally {
-    if (hashStore) { try { hashStore.close(); } catch (_) {} }
-    if (repoStore) { try { repoStore.close(); } catch (_) {} }
+    if (fromStore) { try { fromStore.close(); } catch (_) {} }
+    if (toStore) { try { toStore.close(); } catch (_) {} }
   }
+}
+
+// rehomeCore(home, id, repoKey, ctx) — the pre-existing legacy-hash-bucket ->
+// repoKey re-home (P1-1/P1-2). Now a thin wrapper over the generalized
+// rehomeAcrossStores: identical external behavior/signature (every existing
+// caller/test is unaffected), source is always the legacy per-id hash bucket.
+function rehomeCore(home, id, repoKey, ctx) {
+  if (!repoKey) return { rehomed: false, movedMessages: 0, movedRegistry: false };
+  return rehomeAcrossStores(home, id, store.hashFromWorkspaceId(id), repoKey, ctx);
+}
+
+// rehomeMiskeyedRow(home, id, storeRepoKey, ctx) — Claim 3 SELF-HEALING fix.
+// The decision for ONE registry row currently living in store/<storeRepoKey>/:
+// read its descriptor and compute a FRESH structural repoKey from the
+// descriptor's OWN real worktreePath via descriptorFreshRepoKey — deliberately
+// NOT descriptorStructuralRepoKey, which prefers a PERSISTED `desc.repoKey`
+// field that can go stale relative to the worktree's actual, current git
+// identity (e.g. a submodule split: the same worktreePath's git-common-dir
+// changes without the descriptor's persisted ownerKey/repoKey being updated
+// to match) — descriptorFreshRepoKey always re-derives from the live path, so
+// this is the ONE independently-verifiable fact about "which project does
+// this id's real worktree belong to today", ORTHOGONAL to whatever a stale
+// registry worktree_path snapshot (what a reconcile-spawned subprocess's cwd
+// is set from, defaultSpawnReconcile) or a stale persisted field might claim.
+//
+//   - freshRepoKey === storeRepoKey: the row IS correctly homed in the store
+//     it is already sitting in — a prior false-negative here was purely a
+//     stale-metadata artifact. Heal any stale persisted ownerKey/repoKey field
+//     on the descriptor IN PLACE (no store move) so a later `ensure`
+//     ownership check (cmdRegister) never mismatches on this id again.
+//   - freshRepoKey resolves to a DIFFERENT, valid repoKey: the row is
+//     genuinely mis-keyed — physically living in the WRONG store. REHOME it
+//     via rehomeAcrossStores (message-preserving, merge-safe, no delete).
+//   - freshRepoKey does not resolve at all (non-git cwd / vanished
+//     worktree): leave the row exactly as-is — there is no independently
+//     verifiable ground truth to correct it against.
+//
+// Runs under the per-id lock (serializes against a concurrent register/
+// heartbeat/rehome for the same id) and is FAIL-OPEN throughout: any error
+// leaves the row untouched; this function never throws, so a heal attempt
+// can never break the caller (reconcile/doctor/update) it runs inside of.
+// Idempotent: re-running against an already-healed/already-correct row is a
+// no-op both times.
+function rehomeMiskeyedRow(home, id, storeRepoKey, ctx) {
+  const fallback = { id, rehomed: false, healedDescriptor: false, reason: null };
+  if (!storeRepoKey || !id || !isSafeId(String(id))) return Object.assign({}, fallback, { reason: 'unsafe-or-missing-key' });
+  try {
+    return withIdLock(String(id), home, () => {
+      const out = { id, rehomed: false, healedDescriptor: false, reason: null };
+      const desc = readDescriptorFile(home, id);
+      if (!desc || String(desc.id) !== String(id) || !desc.worktreePath) {
+        out.reason = 'no-descriptor';
+        return out;
+      }
+      // IDENTITY GUARD (P0 fix): the descriptor file is keyed by `id` ALONE and
+      // can have been overwritten by a LATER, unrelated registration that reused
+      // the same id (id collision / a stale row never cleaned up) — its
+      // worktreePath/sessionId then belong to a DIFFERENT live session than the
+      // row physically sitting in storeRepoKey today. Trusting that descriptor
+      // as ground truth would rehome the OLD row's real content (its own
+      // sessionId, its own messages) into the NEW session's store under the
+      // shared id — a foreign-descriptor takeover of a legitimate row. Positively
+      // confirm the row currently in storeRepoKey is still the SAME entity the
+      // descriptor describes before acting on it: proceed ONLY when both sides
+      // carry a live (non-null, non-empty) sessionId AND they positively agree
+      // — the one case independently verifiable as "same entity, stale
+      // metadata". A null/empty sessionId on EITHER side is never a wildcard
+      // match (P1 fix): e.g. curRow {sessionId:null} vs a foreign desc
+      // {sessionId:'foreign-session'} must never fall through as "unconfirmed,
+      // proceed" — that would silently accept a genuinely foreign descriptor
+      // and steal/misroute the row's real content. Anything short of a
+      // confirmed positive match — either side null/empty, or a straight
+      // mismatch — refuses (fail-open, no-op) rather than move/overwrite.
+      let curRow = null;
+      try {
+        const cs = store.openStore({ home, hash: storeRepoKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
+        try { curRow = (cs.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null; }
+        finally { try { cs.close(); } catch (_) {} }
+      } catch (_) { curRow = null; }
+      if (curRow) {
+        const curSid = curRow.sessionId != null && String(curRow.sessionId) !== '' ? String(curRow.sessionId) : null;
+        const descSid = desc.sessionId != null && String(desc.sessionId) !== '' ? String(desc.sessionId) : null;
+        const confirmedMatch = curSid !== null && descSid !== null && curSid === descSid;
+        if (!confirmedMatch) {
+          out.reason = 'descriptor-identity-mismatch';
+          return out;
+        }
+      }
+      const freshRepoKey = descriptorFreshRepoKey(desc);
+      if (!freshRepoKey) { out.reason = 'unresolvable'; return out; }
+      if (freshRepoKey === storeRepoKey) {
+        const storedOwnerKey = typeof desc.ownerKey === 'string' && desc.ownerKey ? desc.ownerKey : null;
+        const storedRepoKey = typeof desc.repoKey === 'string' && desc.repoKey ? desc.repoKey : null;
+        if (storedOwnerKey !== storeRepoKey || storedRepoKey !== storeRepoKey) {
+          const healedDesc = Object.assign({}, desc, { ownerKey: storeRepoKey, repoKey: storeRepoKey });
+          try { writeDescriptorAtomic(home, id, healedDesc); out.healedDescriptor = true; }
+          catch (_) { out.reason = 'descriptor-write-failed'; }
+        }
+        // ALSO heal a stale REGISTRY worktree_path: the row physically sitting
+        // in THIS store must reflect the descriptor's real, current
+        // worktreePath — otherwise a reconcile-spawned subprocess's cwd (set
+        // from the registry row, defaultSpawnReconcile) keeps using the stale
+        // path forever, re-triggering the exact false-negative this heal
+        // exists to prevent, on every single reconcile run. We have already
+        // independently verified (via the descriptor, the per-id authoritative
+        // record) that `id` genuinely belongs here — the SAME "known,
+        // intentional same-id path change, not a hash collision" posture
+        // rekeySubdirRegistryRows already uses `allowPathChange:true` for.
+        let s = null;
+        try {
+          s = store.openStore({ home, hash: storeRepoKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
+          const row = (s.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null;
+          if (row && row.worktreePath !== desc.worktreePath) {
+            const fixedRow = Object.assign({}, row, { worktreePath: desc.worktreePath });
+            const written = s.upsertRegistry(fixedRow, { allowPathChange: true });
+            if (written) {
+              out.healedRegistryPath = true;
+              try { store.deriveSummary(s, { home, env: ctx && ctx.env }); } catch (_) {}
+            }
+          }
+        } catch (_) { /* best-effort: descriptor healing above already landed */ }
+        finally { if (s) { try { s.close(); } catch (_) {} } }
+        return out;
+      }
+      // Genuinely mis-keyed: physically living in storeRepoKey's store, but the
+      // descriptor's own real worktreePath structurally belongs to
+      // freshRepoKey instead.
+      const r = rehomeAcrossStores(home, id, storeRepoKey, freshRepoKey, ctx);
+      out.rehomed = !!r.rehomed;
+      out.movedMessages = r.movedMessages || 0;
+      out.movedRegistry = !!r.movedRegistry;
+      if (r.regConflict) out.regConflict = true;
+      if (!r.rehomed && !r.regConflict) out.reason = 'rehome-not-applied';
+      return out;
+    });
+  } catch (_) {
+    return Object.assign({}, fallback, { reason: 'heal-error' }); // fail-open: a heal hiccup must never break the caller
+  }
+}
+
+// healRegistry(home, repoKey, ctx) — Claim 3 (d): the ONE exported sweep
+// `doctor`, `update.js`'s repair pass, and `cmdReconcile`'s own self-heal
+// pre-pass all share: runs rehomeMiskeyedRow over EVERY row currently in
+// store/<repoKey>/'s registry. FAIL-OPEN per row (one row's error never
+// aborts the sweep) and idempotent (a second run over an already-healed
+// registry heals/rehomes nothing further — every row that needed correcting
+// on the first pass already agrees with a fresh recompute on the second).
+function healRegistry(home, repoKey, ctx) {
+  const out = { repoKey, checked: 0, healed: 0, rehomed: 0, skipped: 0, rows: [] };
+  if (!repoKey) return out;
+  let rows = [];
+  try {
+    const s = store.openStore({ home, hash: repoKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
+    try { rows = s.listRegistry() || []; } finally { s.close(); }
+  } catch (_) { rows = []; }
+  for (const row of rows) {
+    if (!row || row.id == null || !isSafeId(String(row.id))) { out.skipped++; continue; }
+    out.checked++;
+    let r;
+    try { r = rehomeMiskeyedRow(home, String(row.id), repoKey, ctx); }
+    catch (_) { r = { id: row.id, rehomed: false, healedDescriptor: false, reason: 'heal-error' }; }
+    if (r.rehomed) out.rehomed++;
+    else if (r.healedDescriptor || r.healedRegistryPath) out.healed++;
+    else out.skipped++;
+    out.rows.push(r);
+  }
+  return out;
 }
 
 // maybeRehomeToCwdProject(home, id, ctx) — the descriptor-signalled trigger: if
@@ -2507,6 +2693,75 @@ function resolveMeshTarget(storeHandle, meshId) {
   return bestLive || firstMatch;
 }
 
+// resolveSendTarget(storeHandle, arg) -> { target, ambiguous, candidates }.
+//
+// `send --to <arg>` addressing footgun (P0 fix): resolveMeshTarget ONLY matches
+// `arg` against each row's WORKTREE-DERIVED meshId — but `roster` (below)
+// surfaced each row's own `id` (its REAL read partition, the value cmdSend
+// actually delivers into) and never its meshId (only `diagnose` showed that).
+// A human/agent that copies a roster `id` into `--to` therefore failed closed
+// as `unregistered-recipient` even though the workspace IS registered.
+//
+// Fix: when the EXISTING meshId pass finds nothing, fall back to an EXACT
+// match against each row's own `id` — the row IS the partition (`target.id`
+// is exactly what cmdSend delivers into today), so an id match resolves
+// directly to it with zero ambiguity about WHICH partition receives the
+// message. `id` is the registry's PRIMARY KEY (devswarm-store.js: `id TEXT
+// PRIMARY KEY`) — one row per id, enforced by the store itself — so this can
+// never actually be ambiguous within a single store's listRegistry(); the
+// ambiguity guard below is defense-in-depth only (a corrupted/duplicated
+// registry read must fail loud with a clear reason, never silently pick one
+// candidate over another).
+//
+// The pre-existing meshId path is computed FIRST and a caller already
+// addressing by meshId with no distinct exact-id row sees identical behavior
+// to before this fix. SHADOW GUARD (P0): an exact-id match is no longer
+// returned unconditionally without checking the meshId pass — if BOTH resolve
+// and they name DIFFERENT rows, that is a genuine collision (row A's real id
+// equals row B's derived meshId) and must fail loud as ambiguous rather than
+// silently preferring the meshId match and shadowing the exact-id row.
+function resolveSendTarget(storeHandle, arg) {
+  const byMesh = resolveMeshTarget(storeHandle, arg);
+  if (!arg) return byMesh ? { target: byMesh, ambiguous: false, candidates: null } : { target: null, ambiguous: false, candidates: null };
+  const idMatches = [];
+  for (const d of storeHandle.listRegistry()) {
+    if (d && d.id != null && String(d.id) === String(arg)) idMatches.push(d);
+  }
+  // EXACT-ID-vs-MESH-ID SHADOW GUARD (P0 fix): an unambiguous exact `id` match
+  // must never be silently shadowed by a DIFFERENT row's derived meshId — e.g.
+  // row A has id:"foo" and row B's worktreePath derives meshId:"foo". Only
+  // short-circuit on byMesh when it is not itself already an idMatches
+  // candidate under a different identity than a genuine exact-id match.
+  if (idMatches.length === 1) {
+    // Compare by `id` (the registry primary key), not object reference —
+    // resolveMeshTarget and this loop both re-read storeHandle.listRegistry()
+    // independently, so the SAME underlying row can come back as two distinct
+    // object instances.
+    const sameRow = byMesh && String(byMesh.id) === String(idMatches[0].id);
+    // A phantom/live PAIR for the SAME worktree (byMesh preferring the live
+    // row over a phantom whose id happens to equal the queried meshId) is
+    // NOT a collision — resolveMeshTarget already deliberately picks the live
+    // row for exactly this case, and idMatches[0] (the phantom) is itself one
+    // of the candidates that pass belonged to that same worktree group. Only
+    // treat this as a genuine collision when idMatches[0] belongs to a
+    // DIFFERENT worktree than the one `arg` (as a meshId) actually derives
+    // to — i.e. its own worktree's derived meshId does not even match `arg`.
+    let ownMeshId = null;
+    try { ownMeshId = idMatches[0].worktreePath ? inst.primaryWorkspaceId(idMatches[0].worktreePath) : null; } catch (_) { ownMeshId = null; }
+    const sameWorktreeGroup = ownMeshId != null && String(ownMeshId) === String(arg);
+    if (byMesh && !sameRow && !sameWorktreeGroup) {
+      return { target: null, ambiguous: true, candidates: [idMatches[0].id, byMesh.id] };
+    }
+    if (byMesh && sameWorktreeGroup && !sameRow) return { target: byMesh, ambiguous: false, candidates: null };
+    return { target: idMatches[0], ambiguous: false, candidates: null };
+  }
+  if (idMatches.length > 1) {
+    return { target: null, ambiguous: true, candidates: idMatches.map((d) => d.id) };
+  }
+  if (byMesh) return { target: byMesh, ambiguous: false, candidates: null };
+  return { target: null, ambiguous: false, candidates: null };
+}
+
 // cmdSend(flags, ctx) — send --from <id> --to <meshId>|--broadcast --message
 // TEXT [--urgency low|normal|high|urgent]. Opens store/<repoKey>/ directly.
 //
@@ -2605,42 +2860,90 @@ function cmdSend(flags, ctx) {
   try {
     let targetPartition = null;
     if (type === 'direct') {
-      // Fail-closed addressing (D12a): a --to naming a meshId not present in the
-      // shared registry is rejected outright — never a silent black-hole. Same
-      // posture for --to-primary: an unregistered Primary is a fail-closed error,
-      // never a silent black-hole either. After a re-home (above) the Primary's
-      // row is now in THIS repoKey store, so this resolve finds it.
-      const target = toPrimaryFlag ? resolveMeshTarget(s, primaryMeshId) : resolveMeshTarget(s, toFlag);
-      if (!target) {
-        return toPrimaryFlag
-          ? {
+      // Fail-closed addressing (D12a): a --to naming neither a registered meshId
+      // NOR a registered row id is rejected outright — never a silent
+      // black-hole. Same posture for --to-primary: an unregistered Primary is a
+      // fail-closed error, never a silent black-hole either. After a re-home
+      // (above) the Primary's row is now in THIS repoKey store, so this resolve
+      // finds it.
+      if (toPrimaryFlag) {
+        const target = resolveMeshTarget(s, primaryMeshId);
+        if (!target) {
+          return {
             ok: false, reason: 'primary-unregistered',
             error: 'send --to-primary: no registered Primary workspace for this project (run `register-primary` first)',
-          }
-          : {
+          };
+        }
+        targetPartition = target.id;
+      } else {
+        // resolveSendTarget (P0 addressing fix): tries the meshId match FIRST
+        // (unchanged), then falls back to an exact match against a row's own
+        // `id` — the value `roster` now prints alongside meshId, so a copied
+        // roster id addresses correctly instead of failing closed.
+        const resolved = resolveSendTarget(s, toFlag);
+        if (resolved.ambiguous) {
+          return {
+            ok: false, reason: 'ambiguous-recipient',
+            error: 'send --to ' + JSON.stringify(toFlag) + ' matches more than one registered workspace row ('
+              + resolved.candidates.join(', ') + ') — this should never happen (id is the registry primary key); '
+              + 'address a specific meshId instead',
+          };
+        }
+        if (!resolved.target) {
+          return {
             ok: false, reason: 'unregistered-recipient',
             error: 'send --to ' + JSON.stringify(toFlag) + ' is not a registered mesh workspace',
           };
+        }
+        // The row's workspace_id is the target's REAL read partition — its
+        // builder-id (target.id), NOT the meshId (D19 child-delivery join): this
+        // is what lands a mesh direct in the exact partition the recipient (or a
+        // child's builder-id read surface, D26) actually reads.
+        targetPartition = resolved.target.id;
       }
-      // The row's workspace_id is the target's REAL read partition — its
-      // builder-id (target.id), NOT the meshId (D19 child-delivery join): this
-      // is what lands a mesh direct in the exact partition the recipient (or a
-      // child's builder-id read surface, D26) actually reads.
-      targetPartition = target.id;
     }
-    const fields = {
-      from, to: type === 'direct' ? targetPartition : null,
-      type, message: String(message), timestamp: now, urgency,
+    const doAppend = () => {
+      const fields = {
+        from, to: type === 'direct' ? targetPartition : null,
+        type, message: String(message), timestamp: now, urgency,
+      };
+      const hash = store.meshMessageHash(fields);
+      const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+      store.deriveSummary(s, { home, env: ctx.env, now });
+      return {
+        ok: true, action: 'send', from,
+        to: type === 'direct' ? (toPrimaryFlag ? primaryMeshId : toFlag) : null, type, urgency,
+        sent: !!res.inserted, seq: res.seq,
+        rehomedFromHashBucket: rehomedSend || undefined,
+      };
     };
-    const hash = store.meshMessageHash(fields);
-    const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
-    store.deriveSummary(s, { home, env: ctx.env, now });
-    return {
-      ok: true, action: 'send', from,
-      to: type === 'direct' ? (toPrimaryFlag ? primaryMeshId : toFlag) : null, type, urgency,
-      sent: !!res.inserted, seq: res.seq,
-      rehomedFromHashBucket: rehomedSend || undefined,
-    };
+    if (type === 'direct') {
+      // MESSAGE-LOSS FIX (P1): rehomeAcrossStores always runs under
+      // withIdLock(id) (rehomeMiskeyedRow/rehomeCore) while it snapshots this
+      // store's messages for `targetPartition` and then tombstones its
+      // registry row — but this send was previously entirely unlocked, so it
+      // could append a message into `s` AFTER rehome's snapshot but BEFORE its
+      // tombstone; message rows are append-only (never deleted), so that
+      // append survives here while the registry row that would have made it
+      // reachable is gone — permanently orphaned in the old store. Serializing
+      // on the SAME per-id lock forces this append to wait out any in-flight
+      // rehome of this exact id. Re-check the row is still HERE once the lock
+      // is ours: a rehome that completed while we waited has already moved it
+      // to another store, and appending here regardless would just re-create
+      // the same orphan one step later.
+      return withIdLock(String(targetPartition), home, () => {
+        const stillHere = (s.listRegistry() || []).some((row) => row && String(row.id) === String(targetPartition));
+        if (!stillHere) {
+          return {
+            ok: false, reason: 'unregistered-recipient',
+            error: 'send target ' + JSON.stringify(targetPartition) + ' is no longer registered in this '
+              + 'project store (likely re-homed to another project store mid-send) — retry',
+          };
+        }
+        return doAppend();
+      });
+    }
+    return doAppend();
   } finally { s.close(); }
 }
 
@@ -2726,6 +3029,20 @@ function rosterHints(home, id, worktreePath, now) {
   return hints;
 }
 
+// rosterMeshId(worktreePath) -> the SAME raw worktree-derived meshId
+// resolveMeshTarget's own matching loop computes (`inst.primaryWorkspaceId
+// (d.worktreePath)`, no toplevel canonicalization) — NOT `canonicalMeshId`
+// (the toplevel-folded value `diagnose`'s split-detection/grouping uses,
+// which is a DIFFERENT value for a subdir-registered row). Surfacing THIS
+// exact value is what closes the send addressing footgun (P0): a value
+// copied from here into `send --to <meshId>` is guaranteed to hit
+// resolveMeshTarget's existing meshId-hash match path. null when there is no
+// worktreePath to derive one from (a phantom/native-only/archived row).
+function rosterMeshId(worktreePath) {
+  if (!worktreePath) return null;
+  try { return inst.primaryWorkspaceId(worktreePath); } catch (_) { return null; }
+}
+
 function cmdRoster(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
@@ -2741,6 +3058,7 @@ function cmdRoster(flags, ctx) {
     id: w.id, working_on: w.working_on, directUnread: w.directUnread,
     broadcastUnread: w.broadcastUnread, urgencyMax: w.urgencyMax,
     worktreePath: w.worktreePath || null, source: 'store',
+    meshId: rosterMeshId(w.worktreePath),
     hints: rosterHints(home, w.id, w.worktreePath, now),
   }));
   // Dedup by CANONICAL identity (inst.primaryWorkspaceId, which realpath-
@@ -2756,6 +3074,7 @@ function cmdRoster(flags, ctx) {
       id, working_on: null,
       directUnread: null, broadcastUnread: null, urgencyMax: null,
       worktreePath: child.path || null, source: 'native',
+      meshId: rosterMeshId(child.path || null),
       hints: rosterHints(home, id, child.path || null, now),
     });
   }
@@ -2785,6 +3104,7 @@ function cmdRoster(flags, ctx) {
             id: pw.id, working_on: pw.working_on, directUnread: pw.directUnread,
             broadcastUnread: pw.broadcastUnread, urgencyMax: pw.urgencyMax,
             worktreePath: pw.worktreePath || null, source: 'store-fallback',
+            meshId: rosterMeshId(pw.worktreePath),
             hints: rosterHints(home, pw.id, pw.worktreePath, now),
           });
         }
@@ -2814,7 +3134,7 @@ function cmdRoster(flags, ctx) {
     } catch (_) { continue; }
     workspaces.push({
       id, working_on: null, directUnread: null, broadcastUnread: null, urgencyMax: null,
-      worktreePath: null, source: 'archived', hints: ['archived'],
+      worktreePath: null, source: 'archived', meshId: null, hints: ['archived'],
     });
   }
   return { ok: true, action: 'roster', repoKey, count: workspaces.length, workspaces, recent: sum.recent || [] };
@@ -3042,6 +3362,17 @@ function cmdReconcile(flags, ctx) {
   // listRegistry, its `inbox pull` is never spawned, and its backlog never drains.
   try { rehomeStrandedProjectDescriptors(home, ctx); } catch (_) { /* fail-open: reconcile proceeds */ }
 
+  // Claim 3 self-heal pre-pass: heal a row whose descriptor's own real
+  // worktreePath disagrees with the store it is physically sitting in
+  // (healRegistry/rehomeMiskeyedRow) BEFORE listing targets — a correctly-
+  // owned row with stale persisted ownerKey/repoKey metadata is corrected in
+  // place (still targeted, correctly, by THIS sweep); a genuinely mis-keyed
+  // row is rehomed OUT into its real store and correctly excluded from this
+  // project's targets (it will be reconciled by ITS OWN project instead).
+  // Fail-open: a heal-pass hiccup must never abort reconcile itself.
+  let healed = null;
+  try { healed = healRegistry(home, repoKey, ctx); } catch (_) { healed = null; }
+
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   let descriptors;
   try { descriptors = s.listRegistry(); } finally { s.close(); }
@@ -3090,7 +3421,24 @@ function cmdReconcile(flags, ctx) {
   // what `locked` is for). Silently returning ok:true here is what let
   // doctor/update report a lossy reconcile as "fixed"/success upstream.
   const lost = results.reduce((acc, r) => acc + (r.lost || 0), 0);
-  return { ok: lost === 0, action: 'reconcile', repoKey, count: results.length, imported, lost, results };
+  // Claim 3 (c) fix: aggregate `ok` must ALSO go false when a target was
+  // REJECTED by the ensure ownership check the self-heal pre-pass above could
+  // not resolve (a genuinely-foreign descriptor, or a heal that itself
+  // failed) — this class of failure previously left `lost` at 0 for that row
+  // (it is a rejection, not a native-pull shortfall), so `lost===0` alone
+  // could read the whole reconcile as healthy while a row was silently left
+  // broken. Matched the SAME way `locked` above is recomputed (a targeted
+  // regex over the subprocess's own error string, not a blanket `!ok` count —
+  // a native-tool failure unrelated to ownership, e.g. `message-count
+  // failed`, is a pre-existing, deliberately-tolerated failure mode of the
+  // pull layer and must NOT newly flip this aggregate).
+  const rejected = results.filter((r) => !r.ok && /does not belong to the current project/.test(String(r.error || ''))).length;
+  const out = {
+    ok: lost === 0 && rejected === 0, action: 'reconcile', repoKey,
+    count: results.length, imported, lost, rejected, results,
+  };
+  if (healed) out.healed = healed;
+  return out;
 }
 
 // readPersistedVerdictStatus(id, home) -> status string | null. READ-ONLY reuse
@@ -3584,9 +3932,11 @@ module.exports = {
   retireWorktreeDuplicates,
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
   computeDiagnosis, healthcheckHumanLine,
+  resolveMeshTarget, resolveSendTarget,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath,
   selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,
-  migrateOwnerKeys, rehomeCore, withIdLock, cmdArchive,
+  migrateOwnerKeys, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive,
   applyRecoveryIntents, recoveryIntentPath, rehomeStrandedProjectDescriptors,
   cmdWorkspacesList, cmdGate, cmdReconcile, cmdRegister,
+  descriptorFreshRepoKey, descriptorStructuralRepoKey,
 };

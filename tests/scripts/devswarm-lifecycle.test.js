@@ -225,6 +225,154 @@ test('reconcile spawns a REAL subprocess per worktree (default path, no injectio
 });
 
 // ============================================================================
+// reconcile self-heal (Claim 3): a row whose stored registry worktree_path
+// disagrees with its descriptor's real worktreePath (e.g. a submodule-split
+// restructure) used to compute the ensure ownership check's `currentRepoKey`
+// from the STALE registry-derived spawn cwd, mismatch the descriptor's real
+// (structural) owner key, and fail-reject a CORRECTLY-owned row with
+// {ok:false, error:'existing descriptor does not belong to the current
+// project'} — while `lost` stayed 0 for that row, so the aggregate
+// `reconcile.ok` could read true even though a row was silently left broken.
+// ============================================================================
+
+test('Claim 3(a)/(c): reconcile heals a correctly-owned row whose registry worktree_path has drifted from its descriptor\'s real worktreePath, instead of rejecting it as foreign, and the aggregate reflects a genuinely healthy sweep', () => {
+  const home = tmpHome();
+  const repoA = makeGitRepo('claim3-owner-a');
+  const repoB = makeGitRepo('claim3-owner-b');
+  try {
+    const repoKeyA = repokey.repoKeyForWorktree(repoA);
+
+    // The registry row (what a reconcile spawn's cwd is set from) is STALE —
+    // it still points at repoB — but the descriptor, the per-id authoritative
+    // record, genuinely and currently belongs to repoA (ownerKey already
+    // correctly repoKeyA). This is the exact "registry disagrees with the
+    // descriptor's real worktreePath" divergence Claim 3 describes.
+    seedRegistry(home, repoKeyA, { id: 'y', worktreePath: repoB, sessionId: 's1' });
+    fs.mkdirSync(path.dirname(cli.descriptorPath(home, 'y')), { recursive: true });
+    fs.writeFileSync(cli.descriptorPath(home, 'y'), JSON.stringify({
+      id: 'y', worktreePath: repoA, sessionId: 's1',
+      inboxPath: path.join(home, '.anti-hall', 'devswarm', 'inbox-y.ndjson'),
+      cursorPath: path.join(home, '.anti-hall', 'devswarm', 'cursor-y.json'),
+      nudgeCommand: null, repoId: null, ownerKey: repoKeyA, repoKey: repoKeyA,
+    }));
+
+    // In-process stand-in for the real subprocess spawn (mirrors the "message-
+    // count"-mocked `inbox pull` injection pattern already used elsewhere in
+    // this suite) — exercises the REAL cmdRegister ensure ownership check via
+    // the REAL cmdReconcile/cmdInboxPull call chain, deterministically.
+    const nativeIo = { run: (s) => (s.args[1] === 'message-count' ? { ok: true, raw: '0' } : { ok: false, error: 'x' }) };
+    const io = {
+      spawnReconcile: (d, innerCtx) => {
+        const r = cli.run(['inbox', 'pull', d.id], Object.assign({}, innerCtx, { cwd: d.worktreePath, io: nativeIo }));
+        return { status: r.code, stdout: JSON.stringify(r.result), error: null };
+      },
+    };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repoA, io }));
+    const row = r.result.results.find((x) => x.id === 'y');
+    assert.ok(row, 'the row must still be targeted by this project\'s own reconcile');
+    assert.equal(row.ok, true, 'a correctly-owned row must NOT be rejected as foreign: ' + JSON.stringify(row));
+    assert.doesNotMatch(String(row.error || ''), /does not belong to the current project/);
+    assert.equal(r.result.rejected, 0);
+    assert.equal(r.result.ok, true, 'aggregate reconcile.ok must reflect a genuinely healthy reconcile');
+    assert.ok(r.result.healed, 'reconcile must report the heal-pass summary');
+    assert.equal(r.result.healed.healed, 1, 'exactly one row (the stale registry path) must have been healed in place');
+    assert.equal(r.result.healed.rehomed, 0, 'a correctly-owned row must be healed in place, never rehomed');
+
+    // Self-healing, not a one-turn workaround: the registry worktree_path
+    // itself is corrected, so a SECOND reconcile spawns with the right cwd.
+    const s = storeLib.openStore({ home, hash: repoKeyA, backend: 'journal' });
+    try {
+      const after = (s.listRegistry() || []).find((x) => x.id === 'y');
+      assert.equal(after.worktreePath, repoA, 'the stale registry worktree_path must be corrected to the descriptor\'s real path');
+    } finally { s.close(); }
+  } finally { rm(home); rm(repoA); rm(repoB); }
+});
+
+test('Claim 3(b): reconcile REHOMES a genuinely mis-keyed row (physically living in the WRONG store) with ZERO message loss, merging into its real store', () => {
+  const home = tmpHome();
+  const repoA = makeGitRepo('claim3-miskey-a');
+  const repoB = makeGitRepo('claim3-miskey-b');
+  try {
+    const repoKeyA = repokey.repoKeyForWorktree(repoA);
+    const repoKeyB = repokey.repoKeyForWorktree(repoB);
+
+    // 'z' is correctly registered at repoB — its true, structural home.
+    const reg = cli.run(['register', 'z', '--worktree', repoB, '--session', 's2'], ctx(home, { cwd: repoB }));
+    assert.equal(reg.result.ok, true);
+
+    // A STRAY registry row for 'z' ALSO physically lives in store A — a
+    // genuinely mis-keyed row (some earlier bug/race left it there), plus a
+    // pending message that arrived into the WRONG bucket — must survive.
+    seedRegistry(home, repoKeyA, { id: 'z', worktreePath: repoB, sessionId: 's2' });
+    const sA0 = storeLib.openStore({ home, hash: repoKeyA, backend: 'journal' });
+    try {
+      sA0.appendMeshRow({
+        workspaceId: 'z', ts: Date.now(), hash: 'stray-hash-1', body: 'stray message',
+        sender: 'someone', recipient: 'z', mtype: 'direct', urgency: 'normal', isHeartbeat: false,
+      });
+    } finally { sA0.close(); }
+
+    const io = { spawnReconcile: () => ({ status: 0, stdout: JSON.stringify({ ok: true, imported: 0 }), error: null }) };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repoA, io }));
+    assert.equal(r.result.ok, true, 'reconcile must not be poisoned by healing away a mis-keyed row: ' + JSON.stringify(r.result));
+    assert.equal(r.result.rejected, 0);
+    assert.equal(r.result.results.some((x) => x.id === 'z'), false,
+      'a genuinely mis-keyed row must be rehomed OUT before targets are computed — never targeted by this project\'s reconcile');
+    assert.ok(r.result.healed);
+    assert.equal(r.result.healed.rehomed, 1);
+
+    const sA = storeLib.openStore({ home, hash: repoKeyA, backend: 'journal' });
+    try {
+      assert.equal((sA.listRegistry() || []).some((x) => x.id === 'z'), false, 'the mis-keyed registry row must be gone from the wrong store');
+    } finally { sA.close(); }
+    const sB = storeLib.openStore({ home, hash: repoKeyB, backend: 'journal' });
+    try {
+      const msgs = sB.listMessages('z');
+      assert.ok(msgs.some((m) => m.body === 'stray message'), 'the stray message must have migrated into the correct store — zero loss');
+      assert.ok((sB.listRegistry() || []).some((x) => x.id === 'z'), 'the registry row must now live in the correct store');
+    } finally { sB.close(); }
+  } finally { rm(home); rm(repoA); rm(repoB); }
+});
+
+test('Claim 3(d): healRegistry/rehomeMiskeyedRow is idempotent — a second pass over an already-healed registry heals and rehomes nothing further', () => {
+  const home = tmpHome();
+  const repoA = makeGitRepo('claim3-idem-a');
+  const repoB = makeGitRepo('claim3-idem-b');
+  try {
+    const repoKeyA = repokey.repoKeyForWorktree(repoA);
+    const repoKeyB = repokey.repoKeyForWorktree(repoB);
+
+    // A correctly-owned row with a stale registry path (heals in place).
+    seedRegistry(home, repoKeyA, { id: 'y', worktreePath: repoB, sessionId: 's1' });
+    fs.mkdirSync(path.dirname(cli.descriptorPath(home, 'y')), { recursive: true });
+    fs.writeFileSync(cli.descriptorPath(home, 'y'), JSON.stringify({
+      id: 'y', worktreePath: repoA, sessionId: 's1',
+      inboxPath: path.join(home, '.anti-hall', 'devswarm', 'inbox-y.ndjson'),
+      cursorPath: path.join(home, '.anti-hall', 'devswarm', 'cursor-y.json'),
+      nudgeCommand: null, repoId: null, ownerKey: repoKeyA, repoKey: repoKeyA,
+    }));
+
+    // A genuinely mis-keyed row (rehomes out).
+    cli.run(['register', 'z', '--worktree', repoB, '--session', 's2'], ctx(home, { cwd: repoB }));
+    seedRegistry(home, repoKeyA, { id: 'z', worktreePath: repoB, sessionId: 's2' });
+
+    const first = cli.healRegistry(home, repoKeyA, ctx(home, { cwd: repoA }));
+    assert.equal(first.healed, 1, 'y heals in place on the first pass');
+    assert.equal(first.rehomed, 1, 'z rehomes out on the first pass');
+
+    const second = cli.healRegistry(home, repoKeyA, ctx(home, { cwd: repoA }));
+    assert.equal(second.checked, 1, 'only y remains a row of this store on the second pass — z is already gone');
+    assert.equal(second.rehomed, 0, 'a second pass rehomes nothing further');
+    assert.equal(second.healed, 0, 'a second pass heals nothing further — y already agrees with a fresh recompute');
+
+    // The rehomed-into store (B) is also stable under a repeat heal pass.
+    const thirdOnB = cli.healRegistry(home, repoKeyB, ctx(home, { cwd: repoB }));
+    assert.equal(thirdOnB.rehomed, 0, 'z is already correctly homed in store B — no further rehome');
+    assert.equal(thirdOnB.healed, 0);
+  } finally { rm(home); rm(repoA); rm(repoB); }
+});
+
+// ============================================================================
 // spawn
 // ============================================================================
 

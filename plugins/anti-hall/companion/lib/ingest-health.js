@@ -117,26 +117,46 @@ function daemonHealth(home, repoKey, opts) {
   const isAlive = (o.io && o.io.isAlive) || isAliveDefault;
 
   let fresh = false;
+  let beatPid = null;
   if (repoKey) {
     try {
       const raw = F.readFileSync(ingestHeartbeatPath(home, repoKey), 'utf8');
       const beat = JSON.parse(raw);
       const ts = beat && Number.isFinite(beat.ts) ? beat.ts : null;
+      beatPid = beat && Number.isFinite(beat.pid) ? beat.pid : null;
       fresh = ts !== null && (now - ts) <= HEARTBEAT_STALE_MS;
     } catch (_) { fresh = false; } // missing/unreadable/malformed = NOT-fresh (D25)
   }
 
   let liveLock = false;
+  let lockPid = null;
   if (repoKey) {
     try {
       const raw = F.readFileSync(ingestProjectLockPath(home, repoKey), 'utf8');
       const holder = JSON.parse(raw);
-      const pid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
-      liveLock = pid !== null && isAlive(pid);
+      lockPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
+      liveLock = lockPid !== null && isAlive(lockPid);
     } catch (_) { liveLock = false; } // missing/unreadable/malformed = NOT-live (D25)
   }
 
-  return { status: (fresh && liveLock) ? 'healthy' : 'stale', fresh, liveLock };
+  // SAME-INCARNATION GUARD: fresh + liveLock alone can still mix TWO different
+  // daemon incarnations — e.g. daemon A's heartbeat (still fresh) plus daemon
+  // B's lock (live pid, B just started and hasn't written its own first
+  // heartbeat yet). Combining A's freshness with B's liveness reports
+  // "healthy" for a process (B) whose own health was never actually checked;
+  // once A's heartbeat goes stale, the steal path in acquireIngestLock
+  // (devswarm-ingest.js) refuses to reclaim because ITS pid check (against the
+  // CURRENT holder, B) never matches A's leftover heartbeat pid either — so a
+  // stopped/wedged B can be reported healthy (or refused-for-reclaim)
+  // indefinitely. Requiring the heartbeat's own claimed pid to equal the live
+  // lock holder's pid binds both signals to the SAME incarnation before
+  // either can count toward 'healthy'. Writers already agree on this: both
+  // devswarm-ingest.js's writeIngestHeartbeat and its lock record stamp
+  // `pid: process.pid` from the same process, so a genuinely healthy daemon's
+  // own heartbeat and lock always carry matching pids already.
+  const sameIncarnation = beatPid !== null && lockPid !== null && beatPid === lockPid;
+
+  return { status: (fresh && liveLock && sameIncarnation) ? 'healthy' : 'stale', fresh, liveLock };
 }
 
 module.exports = {

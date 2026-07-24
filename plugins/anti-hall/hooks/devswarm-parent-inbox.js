@@ -83,6 +83,19 @@ const devswarmIngest = require('../companion/devswarm-ingest.js');
 // via companion/lib/devswarm-noise.js).
 const freshness = require('./lib/devswarm-freshness.js');
 
+// B1 self-heal hardening (H4): structured logging via the shared C0 logger
+// when present, falling back to a console.error-only shim so this hook never
+// depends on that module existing — this hook's own fail-open contract
+// (Contract block above: "exit 0: always") must never regress on a missing
+// logger.
+let alog;
+try { alog = require('../companion/lib/anti-hall-log.js'); } catch (_) {
+  alog = {
+    logError: function () { try { console.error.apply(console, arguments); } catch (_e) {} },
+    logEvent: function () {},
+  };
+}
+
 // CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
 // from this hook's own on-disk location. The Primary's cwd is its own project
 // worktree, not the plugin root, so a bare/relative "devswarm.js" reference in
@@ -627,6 +640,77 @@ function main() {
   try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
   let repoKey = null;
   try { repoKey = (repokeyMod && gitTop) ? repokeyMod.repoKeyForWorktree(gitTop) : null; } catch (_) { repoKey = null; }
+
+  // H4 fallback (daemon-down parent-inbox freeze): readSummary() below only
+  // reads the store's MATERIALIZED cache (summaries/<repoKey>.json). That cache
+  // is normally kept fresh by the ingest daemon's own deriveSummary call after
+  // each drained batch (devswarm-ingest.js's runIngestLoop, `ing.inserted > 0`
+  // branch) — but when the daemon itself is down, NOTHING refreshes it anymore
+  // and this view freezes on whatever the daemon last wrote before it died
+  // (the roster looks frozen even though the underlying store rows may have
+  // moved via some other writer, e.g. devswarm-pull.js/devswarm-migrate.js).
+  // Before reading, check daemonHealth() (Phase 7, D25 — fresh heartbeat AND a
+  // live-pid lock holder) and, if NOT healthy, refresh the projection ourselves
+  // via the SAME store.deriveSummary(s, {home}) call devswarm-child-turn.js's
+  // registerStoreDescriptor already makes (mirrors devswarm-pull.js's own
+  // direct, unlocked deriveSummary call — no locking needed for this
+  // read+atomic-write projection refresh, see devswarm-pull.js's comment).
+  // This refreshes ONLY the derived summary.json PROJECTION from whatever rows
+  // already sit in the store — it does NOT touch the native hivecontrol queue,
+  // so it cannot un-freeze a roster whose staleness is caused by a dead
+  // NATIVE-QUEUE reader (that still requires the daemon/monitor to drain it);
+  // it only heals staleness caused by a dead PROJECTION writer. Best-effort +
+  // fully fail-open: any failure here must never block a turn or crash this
+  // hook — readSummary() below still runs regardless and returns whatever is
+  // on disk (possibly still stale, possibly null).
+  if (repoKey) {
+    try {
+      let ingestHealthMod = null;
+      try { ingestHealthMod = require('../companion/lib/ingest-health.js'); } catch (_) { ingestHealthMod = null; }
+      if (ingestHealthMod) {
+        const health = ingestHealthMod.daemonHealth(home, repoKey, { now });
+        if (health.status !== 'healthy') {
+          let storeMod = null;
+          try { storeMod = require('../companion/lib/devswarm-store.js'); } catch (_) { storeMod = null; }
+          if (storeMod) {
+            const s = storeMod.openStore({ home, workspaceId: primaryId || repoKey, hash: repoKey });
+            try {
+              // NON-DESTRUCTIVE GUARD: deriveSummary computes its projection
+              // PURELY from this store's own registry/message rows (devswarm-
+              // store.js's computeSummary) — it has no knowledge of, and cannot
+              // merge with, whatever is already on disk at summaries/<repoKey>.json.
+              // If this store handle is backed by a genuinely EMPTY store (no
+              // registry rows, no message/cursor/gate rows for ANY workspace —
+              // e.g. this project's store file was never created, or was reset,
+              // while an out-of-band writer still populated summary.json), a
+              // blind deriveSummary call would silently OVERWRITE a possibly
+              // richer existing cache with an empty one — net data LOSS for a
+              // read-only hook whose whole contract is fail-open/additive. Only
+              // refresh when the store demonstrably has SOMETHING to derive
+              // FROM (skip is the fail-safe default — readSummary() below still
+              // returns whatever was already cached).
+              let hasRows = false;
+              try {
+                const reg = typeof s.listRegistry === 'function' ? s.listRegistry() : [];
+                hasRows = Array.isArray(reg) && reg.length > 0;
+              } catch (_) { hasRows = false; }
+              if (!hasRows) {
+                try {
+                  const ids = typeof s.listWorkspaceIds === 'function' ? s.listWorkspaceIds() : [];
+                  hasRows = Array.isArray(ids) && ids.length > 0;
+                } catch (_) { /* hasRows stays whatever it already was */ }
+              }
+              if (hasRows) storeMod.deriveSummary(s, { home });
+            } finally {
+              try { s.close(); } catch (_) {}
+            }
+          }
+        }
+      }
+    } catch (e) {
+      alog.logError('parent-inbox', 'derive-summary-fallback', e, { repoKey });
+    }
+  }
 
   // ONE shared per-project summary read (D1/D24, Phase 8 step 1) — the store
   // now enumerates ALL of this project's workspaces into summaries/<repoKey>.json;

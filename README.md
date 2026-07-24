@@ -285,6 +285,16 @@ plugin depends on it.
   fresh-heartbeat/recent-git-activity safety check; `reconcile-active [--active id,...]
   [--allow-empty] [--stdin] [--yes|--confirm]` archives every current workspace of a
   project NOT in an explicit "still active" set.
+- **Mesh usability + self-heal (v0.63.0).** `send --to` now accepts the roster `id` (not
+  only the internal meshId), falling back from a meshId match to an exact registry-`id`
+  match with an `ambiguous-recipient` fail-closed guard; `roster` surfaces each row's
+  `meshId`. `reconcile` gained a `healRegistry` pre-pass that corrects a mis-keyed
+  registry row in place or rehomes one physically in the wrong store (no-delete,
+  message-preserving, idempotent) instead of silently rejecting it; the aggregate `ok`
+  now requires `rejected===0`. A wedged-but-alive ingest daemon whose own heartbeat is
+  confirmed stale is SIGKILLed and its lock reclaimed (never a fresh-heartbeat daemon).
+  New structured JSONL logger (`companion/lib/anti-hall-log.js`, fail-open,
+  size-bounded/rotating) wired into ingest/lock/parent-inbox error paths.
 - **Guard-blocked native messaging** — `hivecontrol workspace message-child`/
   `message-parent` are unconditionally blocked and redirected to the mesh CLI, which is
   the sole agent-initiated messaging transport once DevSwarm is active.

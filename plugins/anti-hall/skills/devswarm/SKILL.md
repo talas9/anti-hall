@@ -197,12 +197,12 @@ recovery" below) is a third, explicitly-invoked script, not a daemon.
 | `archive-request <childId> [--reason TEXT]` | none required | Direct STORE WRITE (v0.58, zero `hivecontrol` calls): posts a `[[ANTIHALL_ARCHIVE_REQUEST]]` mesh-direct message straight into `childId`'s own partition. Never verifies merged/tested/deployed itself — that stays the parent's own repo policy. | PARENT asking a child to archive, after verifying merged+tested+deployed per your own policy. | **Writes.** |
 | `migrate` | none | Idempotent, non-destructive, count-verified fold of legacy on-disk JSON registry + NDJSON inbox into the store (single-consumer-locked). `ANTIHALL_DEVSWARM_MIGRATE_MARK_READ=1` marks an imported backlog as already-read. | Upgrading from a pre-store install, or recovering a stranded legacy inbox. | **Writes.** |
 | `migrate-owner-keys` | none | **Forward-migration (v0.62.0), idempotent/fail-open/no-delete.** Scans every active + archived descriptor once: backfills a missing `ownerKey` (from a fresh structural repo-key resolution, falling back to the legacy hash) and re-homes an ACTIVE descriptor still stranded under a stale hash-keyed store bucket into its fresh `repoKey`-keyed bucket (never touches archived rows for re-home — only active ones can silently black-hole reads). Wired into both `update.js` (post-update) and `doctor`'s auto-safe repair, so most stores self-heal without ever calling this by hand. | Manually forcing the ownerKey backfill/re-home outside an `update`/`doctor` run, or auditing a store's ownerKey health. | **Writes** (descriptor + registry). |
-| `send --to <meshId>\|--to-primary\|--broadcast --message TEXT [--from <id>] [--urgency low\|normal\|high\|urgent]` | exactly one of `--to`/`--to-primary`/`--broadcast`; `--message` required | Daemon-independent direct write into the shared store — the mesh's SOLE agent-initiated messaging transport (native `message-child`/`message-parent` are guard-blocked). Fail-closed on an unregistered `--to`/`--to-primary` target; `--from` must match the derived identity if given (spoofing rejected). | Any agent-to-agent or agent-to-Primary message. | **Writes.** |
-| `roster [--ack]` | none | ALLOW-listed projection: this project's registry + `working_on` + a `recent[]` broadcast digest, folded with a read-only native-children view (a spawned-but-unregistered child still appears, `source:'native'`). Pure `computeSummary` read. | Get the current mesh state / who's doing what. | **Read-only** (plain); **writes** the caller's own broadcast cursor with `--ack`. |
+| `send --to <meshId-or-id>\|--to-primary\|--broadcast --message TEXT [--from <id>] [--urgency low\|normal\|high\|urgent]` | exactly one of `--to`/`--to-primary`/`--broadcast`; `--message` required | Daemon-independent direct write into the shared store — the mesh's SOLE agent-initiated messaging transport (native `message-child`/`message-parent` are guard-blocked). **`--to` accepts EITHER a row's `meshId` (worktree-derived) OR its `id` (the registry's own primary key — the value `roster` prints in the `id` column, and the value a workspace actually reads from).** Both resolve to the exact same partition; try meshId first, then fall back to an exact `id` match (v0.62 fix — a `roster`-copied `id` used to fail closed as `unregistered-recipient` even though the workspace WAS registered). Fail-closed on an unregistered `--to`/`--to-primary` target; `--from` must match the derived identity if given (spoofing rejected). | Any agent-to-agent or agent-to-Primary message — see "Addressing & identity" below for exactly which roster field to copy. | **Writes.** |
+| `roster [--ack]` | none | ALLOW-listed projection: this project's registry + `working_on` + a `recent[]` broadcast digest, folded with a read-only native-children view (a spawned-but-unregistered child still appears, `source:'native'`). Every row prints BOTH `id` (its real read partition) and `meshId` (its worktree-derived address) — either one addresses it correctly via `send --to`. Pure `computeSummary` read (always a LIVE on-demand store query, never a cached/stale projection — see "stale ingest daemon" in the edge-case table below). | Get the current mesh state / who's doing what, and the addressing fields to copy into `send --to`. | **Read-only** (plain); **writes** the caller's own broadcast cursor with `--ack`. |
 | `mesh read` | none | Alias of `roster --ack` — same read, plus clears the caller's own `broadcastUnread`. | Same as `roster --ack`, named for discovery. | **Writes** (broadcast cursor). |
 | `diagnose` | none | **Read-only mesh-health projection.** Per-registry-row live/unread state, which partition a `send` to each worktree's meshId resolves to, orphan partitions, stale registry rows, and split worktrees (2+ live rows sharing one meshId). Pure `computeSummary` + registry read — zero writes. "Purity is the point": an agent can SEE mesh state without the read itself mutating anything. | Debugging "why didn't my message arrive", or pre-fold inspection. | **Read-only.** |
 | `healthcheck [--json]` | none | **Scriptable PASS/FAIL gate over the SAME data `diagnose` computes** (one shared `computeDiagnosis`, two presentations). `{ok, status:'ok'\|'degraded', counts:{orphans,stale,splits,phantoms,unreadTotal}, detail:{...}}`. `degraded` iff `orphans>0 \|\| stale>0 \|\| splits>0` (structural drift only — `phantoms`/`unreadTotal` are reported but never gate, so a freshly-`spawn`ed worktree never trips a false degraded). No `--json` prints one compact human line, e.g. `healthcheck: ok [orphans=0 stale=0 splits=0 phantoms=0 unread=0]`. | Monitors/CI/daemons wanting a pass/fail exit code, or a quick human status line without parsing `diagnose`'s full detail. | **Read-only.** |
-| `reconcile` | none | Drains every registered worktree's inbox once (per-id subprocess, cwd'd into that worktree — never in-process, so it drains the RIGHT queue). Does **not** dedup/fold registry rows (that's `foldMeshDuplicates`, self-heal only, below). Auto-run by `update` and by `doctor --fix`, both DevSwarm-session-gated. | Sweeping stranded per-worktree native queues into the shared store on demand. | **Writes** (drains messages into the store). |
+| `reconcile` | none | Drains every registered worktree's inbox once (per-id subprocess, cwd'd into that worktree — never in-process, so it drains the RIGHT queue), after first running a mis-keyed/stray-row heal pre-pass (`healRegistry`, see "Self-heal behavior" below). Does **not** dedup/fold registry rows (that's `foldMeshDuplicates`, self-heal only, below — a separate pass). Auto-run by `update` and by `doctor --fix`, both DevSwarm-session-gated. | Sweeping stranded per-worktree native queues into the shared store on demand. | **Writes** (drains messages into the store; heals/rehomes mis-keyed rows). |
 | `reap-stale [--yes\|--confirm]` | project-scoped (requires a git cwd); confirm flag gates the actual archive | **PARENT-driven reaper (v0.62.0).** Scopes to THIS project's descriptors whose persisted liveness verdict is `stale`/`escalated`, then applies two hard safety gates before ever proposing one: SAFETY 1 — a fresh heartbeat means definitely-alive, never reap; SAFETY 2 — recent git activity in the worktree means not abandoned, never reap. Without `--yes`/`--confirm`, returns a dry-run `{candidates, skipped}` list only. With it, archives each surviving candidate via `cmdArchive`'s own `revalidate` hook, which re-checks liveness/ownership immediately before the archive (so a workspace that heartbeats between listing and archiving is skipped, not wrong-archived). | A Primary/parent clearing genuinely-abandoned child workspaces without babysitting each one by hand. | **Read-only in dry-run; writes (archives) with `--yes`/`--confirm`.** |
 | `reconcile-active [--active id,...] [--allow-empty] [--stdin] [--yes\|--confirm]` | `--active` required unless `--allow-empty`; ids match by full id or a >=4-char prefix/>=8-char embedded-hex substring (roster-display-friendly) | **Parent-driven reconciliation against an explicit "still active" set (v0.62.0)** — e.g. from a roster screenshot. Archives every current (non-archived) workspace of THIS project NOT in `--active` (or piped via `--stdin`); a match always SPARES a workspace (the safe direction — an active one is never archived). Refuses an empty active set unless `--allow-empty` is passed explicitly (guards against accidentally archiving everything). Dry-run by default; `--yes`/`--confirm` applies. | Reconciling the mesh against a known-good "what's actually still running" list. | **Read-only in dry-run; writes (archives) with `--yes`/`--confirm`.** |
 | `spawn <branch> [hivecontrol create flags...]` | pass-through — hivecontrol's own flags, unparsed | Thin wrap of `hivecontrol workspace create` (every flag forwards byte-for-byte), then best-effort auto-registers the new worktree in the shared registry (a phantom row, `sessionId:null`, filled in by the child's own first self-register). | Primary creating a new child workspace — this is the workspace-tier spawn command. | **Writes** (hivecontrol side-effects + a registry phantom row). |
@@ -213,6 +213,55 @@ verbs (the "read-only trio") — worth reaching for together when an agent just 
 know the current mesh state without touching anything. `workspaces list` and `inbox
 messages`/`read-primary` are id- or scope-specific reads; `mesh read` and `roster --ack`
 are the only surfaces that clear `broadcastUnread`.
+
+### Addressing & identity — a plain how-to for BOTH roles
+
+This section exists because a copy-paste-shaped mistake here used to fail closed silently
+(v0.62 addressing fix) or ack the wrong workspace's inbox. Read it before your first
+`send`/`inbox read-primary` call in a new workspace.
+
+**Addressing (`send --to`) — which roster field to copy, either role.** Run `roster`
+first. Each row has BOTH an `id` field and a `meshId` field — **copy either one** into
+`--to <value>`; both resolve to the identical delivery partition (`resolveSendTarget`
+tries `meshId` first, then falls back to an exact `id` match — see the CLI table above).
+There is no "wrong" field to copy between the two; the only wrong move is inventing a
+value that isn't literally present in a `roster` row (that fails closed as
+`unregistered-recipient`, see the table below). A CHILD messaging its own parent should
+use `--to-primary` instead of looking up the Primary's id at all — it self-resolves the
+current worktree's Primary, no roster lookup needed.
+
+**Identity — which id to pass where:**
+
+- **`inbox read-primary <id>` (PARENT/Primary role only).** `<id>` is the Primary's OWN
+  cwd-derived identity — the exact `primary-<hash>` value `register-primary` registered
+  it under (derived from the current worktree, not chosen freely). This is the Primary
+  reading + acking ITS OWN inbox, never a child's.
+- **A CHILD must self-register before its first ack.** This happens automatically, every
+  time, as a side effect of `node scripts/devswarm.js inbox pull <DEVSWARM_BUILDER_ID>`
+  (it auto-ensures the child's own descriptor before draining) — `DEVSWARM_BUILDER_ID` is
+  the child's own hivecontrol-assigned identity env var, always available in a spawned
+  workspace. A child never needs to call `register`/`ensure` by hand first; `inbox pull`
+  already does it every turn.
+- **The ack path — know which calls MUTATE:**
+  - `inbox messages <id>` alone is **READ-ONLY** — bodies straight from the store, cursor
+    untouched.
+  - `inbox messages <id> --ack` **MUTATES** (advances the durable cursor + refreshes
+    `summary.json`) — and is ownership-gated (see the edge-case table below).
+  - `inbox read-primary <id>` is `inbox messages <id> --unread --ack` under one name — it
+    **ALWAYS MUTATES** (it IS the ack-in-one-call convenience verb). Add
+    `--ack-as-owner` only for a legitimate cross-workspace ack (e.g. a supervisor or
+    Primary clearing a DIFFERENT, dead workspace's backlog on its behalf) — it bypasses
+    the ownership check but still mutates identically.
+
+### Edge cases — symptom to remedy
+
+| Situation | Symptom | Remedy |
+|---|---|---|
+| **Unregistered recipient** | `send --to X` returns `{ok:false, reason:'unregistered-recipient'}` | `X` isn't a real `id`/`meshId` in this project's registry. Run `roster`, copy an actual `id` or `meshId` from a live row, and re-send. |
+| **Ownership mismatch** | `inbox messages/read-primary --ack` returns `ack refused: caller "<X>" does not own workspace "<id>" (pass --ack-as-owner to override)` | You're acking a workspace's inbox from a cwd that doesn't provably own it. If this genuinely is a legitimate cross-workspace ack (supervisor/Primary clearing another workspace's backlog), add `--ack-as-owner`; otherwise pass the CORRECT `<id>` — your own cwd-derived one. |
+| **Mis-keyed / stray registry row** | A workspace looks missing or duplicated across `roster`/`diagnose`, or `reconcile`'s output shows non-zero `healed`/`rehomed` counts | Self-heals automatically — never hand-edit the store. `reconcile` runs a heal pre-pass on every call; `node hooks/doctor.js --fix` and the `update` skill also sweep EVERY per-project store for this on every run. Trigger one on demand if you don't want to wait for the next `update`/`doctor` pass. |
+| **Stale ingest daemon** | New native messages from a sender aren't showing up in `roster`/`diagnose`, even though the sender confirms it sent them | `roster`/`diagnose`/`healthcheck` always read the shared store LIVE (a pure on-demand query, never a stale cache) — they faithfully show whatever has ALREADY landed; a stale/dead ingest daemon only stops NEW native messages from landing. Restart it: `node companion/install-devswarm-ingest.js` (or let the DevSwarm-gated auto-heal in `node hooks/doctor.js --fix` / the `update` skill do it — both re-run this installer automatically inside an active session). |
+| **Idle child, no task** | A child workspace has nothing to do and is sitting unattended | Layer 1 self-report: the child runs `heartbeat <id> --summary "idle — reassign me or archive me"` (see "The layered recovery model" below). The Primary then either assigns new work via `send --to <id>` or, once merged/tested/deployed per its own policy, requests archive via `archive-request <childId>`. |
 
 ### How to READ mesh health — never hand-read the store
 
@@ -263,6 +312,18 @@ registration, a stuck daemon, or a stale row:
   the WHOLE registry, not just one caller's own worktree — automatically. The fold is a
   pure store read+write (AUTO-SAFE, no daemon/scheduler touch, no DevSwarm-active gate
   needed); daemon install/relaunch repairs stay GATED to an active DevSwarm session.
+- **Mis-keyed/stray registry row heal (v0.62 Claim 3 fix).** A row can end up physically
+  sitting in the WRONG per-project store (e.g. a submodule split, or a stray copy left by
+  an earlier bug/race) while its descriptor's own real worktree path structurally belongs
+  to a different, current project. `reconcile` runs a heal pre-pass
+  (`healRegistry`/`rehomeMiskeyedRow`) on EVERY call, before computing its drain targets,
+  so a correctly-owned-but-stale row is healed in place and a genuinely mis-keyed row is
+  rehomed OUT — message-preserving, zero loss, never deleted. `node hooks/doctor.js --fix`
+  and the `update` skill ALSO sweep every per-project store for this directly (not just
+  as a side effect of running `reconcile`), on every run — AUTO-SAFE (pure store
+  read+write, no DevSwarm-active gate needed in `doctor`; `update`'s own wrapper is gated
+  the same way as its sibling `reconcile`/fold/ownerKey steps). Idempotent — a second
+  sweep over an already-healed store heals/rehomes nothing further.
 
 So: register/`ensure`/`inbox pull` self-heal on every call, and `update`/`doctor` sweep
 the rest on their own cadence. An agent's job is to call the CLI normally — never to

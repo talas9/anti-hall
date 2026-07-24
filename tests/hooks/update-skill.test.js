@@ -21,6 +21,9 @@ const path = require('node:path');
 const os = require('node:os');
 
 const U = require('../../plugins/anti-hall/skills/update/scripts/update.js');
+const devswarmCli = require('../../plugins/anti-hall/scripts/devswarm.js');
+const devswarmStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const devswarmRepokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -1299,4 +1302,277 @@ test('renderHuman: omits the reconcile block entirely when not attempted (non-De
   };
   const out = U.renderHuman(status, '');
   assert.doesNotMatch(out, /reconcile:/);
+});
+
+// ---------------------------------------------------------------------------
+// healRegistryPostUpdate — Claim 3 self-heal MIGRATION, auto-run as a
+// post-update step. Same REAL-plugin-source-tree posture as reconcilePostUpdate's
+// own tests: paths.pluginSrcDir = this repo's own plugins/anti-hall so the
+// require-and-call wiring against the actual devswarm-detect.js / devswarm.js /
+// devswarm-store.js is exercised, not a hand-rolled stub. `home` is always an
+// isolated tmpdir. The heal DECISION itself (rehomeMiskeyedRow) is already
+// covered by devswarm-lifecycle.test.js's own Claim 3 tests — these tests prove
+// the update.js INTEGRATION: the DevSwarm gate, enumeration across every
+// per-project store, idempotency through this entry point, and a synthetic
+// mis-keyed row rehomed with zero message loss.
+// ---------------------------------------------------------------------------
+
+function makeGitRepoForUpdate(tag) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-repo-' + tag + '-'));
+  require('node:child_process').spawnSync('git', ['init', '-q', dir]);
+  require('node:child_process').spawnSync('git', ['-C', dir, 'config', 'user.email', 'a@b.c']);
+  require('node:child_process').spawnSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'README.md'), tag);
+  require('node:child_process').spawnSync('git', ['-C', dir, 'add', '.']);
+  require('node:child_process').spawnSync('git', ['-C', dir, 'commit', '-q', '-m', 'init']);
+  return dir;
+}
+
+test('healRegistryPostUpdate: not a DevSwarm session (no DEVSWARM_REPO_ID) -> attempted:false, gate closed', () => {
+  const result = U.healRegistryPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { healRegistry: () => { throw new Error('must not run heal-registry-rows when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('healRegistryPostUpdate: pulled plugin tree missing scripts/companion files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree(); // empty marketplace fixture — no scripts/companion dirs at all
+  try {
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('healRegistryPostUpdate: gate open + no DevSwarm store at all (real devswarm.js, no mock) -> attempted:true, checked:0, healed:0, rehomed:0', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-empty-'));
+  try {
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.checked, 0);
+    assert.strictEqual(result.healed, 0);
+    assert.strictEqual(result.rehomed, 0);
+    assert.match(result.detail, /0 store\(s\)/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healRegistryPostUpdate: gate open + a synthetic mis-keyed row -> REHOMED with ZERO message loss, then a second pass is IDEMPOTENT (real devswarm.js + devswarm-store.js, no mock)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-fix-'));
+  const repoA = makeGitRepoForUpdate('a');
+  const repoB = makeGitRepoForUpdate('b');
+  try {
+    const repoKeyA = devswarmRepokey.repoKeyForWorktree(repoA);
+    const repoKeyB = devswarmRepokey.repoKeyForWorktree(repoB);
+
+    // 'z' is correctly registered at repoB — its true, structural home.
+    const reg = devswarmCli.run(['register', 'z', '--worktree', repoB, '--session', 's2'], { home, env: {}, cwd: repoB });
+    assert.strictEqual(reg.result.ok, true);
+
+    // A STRAY registry row for 'z' ALSO physically lives in store A, plus a
+    // pending message that arrived into the WRONG bucket — must survive.
+    const sA0 = devswarmStore.openStore({ home, hash: repoKeyA });
+    try {
+      sA0.upsertRegistry({ id: 'z', worktreePath: repoB, sessionId: 's2' });
+      sA0.appendMeshRow({
+        workspaceId: 'z', ts: Date.now(), hash: 'update-stray-hash-1', body: 'update stray message',
+        sender: 'someone', recipient: 'z', mtype: 'direct', urgency: 'normal', isHeartbeat: false,
+      });
+    } finally { sA0.close(); }
+
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repoA,
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.rehomed, 1, JSON.stringify(result));
+    assert.ok(Array.isArray(result.stores) && result.stores.some((s) => s.repoKey === repoKeyA && s.rows.includes('z')),
+      'the healed store + row id must be reported: ' + JSON.stringify(result.stores));
+    assert.match(result.detail, /rehomed 1/);
+
+    const sA = devswarmStore.openStore({ home, hash: repoKeyA });
+    try {
+      assert.strictEqual((sA.listRegistry() || []).some((x) => x.id === 'z'), false, 'the mis-keyed registry row must be gone from the wrong store');
+    } finally { sA.close(); }
+    const sB = devswarmStore.openStore({ home, hash: repoKeyB });
+    try {
+      const msgs = sB.listMessages('z');
+      assert.ok(msgs.some((m) => m.body === 'update stray message'), 'the stray message must have migrated into the correct store — zero loss');
+      assert.ok((sB.listRegistry() || []).some((x) => x.id === 'z'), 'the registry row must now live in the correct store');
+    } finally { sB.close(); }
+
+    // Idempotency THROUGH THE UPDATE ENTRY POINT: a second pass over the
+    // now-healed stores must heal/rehome nothing further.
+    const second = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repoA,
+      home,
+    });
+    assert.strictEqual(second.healed, 0, 'a second pass must heal nothing further:\n' + JSON.stringify(second));
+    assert.strictEqual(second.rehomed, 0, 'a second pass must rehome nothing further:\n' + JSON.stringify(second));
+    assert.match(second.detail, /nothing mis-keyed\/stale/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repoA, { recursive: true, force: true });
+    fs.rmSync(repoB, { recursive: true, force: true });
+  }
+});
+
+test('healRegistryPostUpdate: a per-store throw is fail-open — never propagates, that store just contributes 0, attempted stays true', () => {
+  // Isolated home with ONE real per-project store (via the real devswarm.js +
+  // devswarm-store.js) so listStoreHashes finds a real repoKey to iterate, and
+  // the fake healRegistry below is actually exercised — not skipped over an
+  // empty enumeration, which would prove nothing about fail-open.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-throw-'));
+  const repo = makeGitRepoForUpdate('throw');
+  try {
+    const reg = devswarmCli.run(['register', 'w', '--worktree', repo, '--session', 's1'], { home, env: {}, cwd: repo });
+    assert.strictEqual(reg.result.ok, true);
+
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+      devswarm: { healRegistry: () => { throw new Error('heal boom'); } },
+    });
+    // The enumeration loop's own try/catch fails open PER STORE (mirrors
+    // healRegistry's own per-row fail-open contract) — a single store's throw
+    // never propagates out; attempted stays true with 0 counted for that
+    // store, never a thrown exception reaching the caller.
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.checked, 0);
+    assert.strictEqual(result.healed, 0);
+    assert.strictEqual(result.rehomed, 0);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('runUpdate: healRegistryRows is NOT attempted outside a DevSwarm session (default env)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status } = U.runUpdate({ paths: p, exec, env: {}, cwd: process.cwd() });
+    assert.ok(status.healRegistryRows, 'healRegistryRows field present on the status object');
+    assert.strictEqual(status.healRegistryRows.attempted, false);
+    assert.match(status.healRegistryRows.detail, /not a DevSwarm session/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: healRegistryRows runs inside a DevSwarm session, regardless of cache.synced', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.33.0'); // already at latest -> cache does NOT sync this run
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    fs.mkdirSync(path.join(p.cacheRoot, '0.33.0'), { recursive: true });
+    const exec = execStub({ status: '', pull: 'Already up to date.\n' });
+    let called = false;
+    const fakeDevswarm = {
+      run: (argv, ctx) => ({ code: 0, result: { ok: true, action: 'reconcile', count: 0, imported: 0, results: [] } }),
+      foldMeshDuplicates: () => ({ retired: [], left: [] }),
+      migrateOwnerKeys: () => ({ scanned: 0, backfilled: 0, rehomed: 0 }),
+      healRegistry: () => { called = true; return { checked: 0, healed: 0, rehomed: 0, skipped: 0, rows: [] }; },
+    };
+    const { status } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: process.cwd(), devswarm: fakeDevswarm });
+    assert.strictEqual(status.cacheSynced, false, 'sanity: this run genuinely did not sync the cache');
+    assert.strictEqual(called, true, 'healRegistry must actually run when the gate is open');
+    assert.strictEqual(status.healRegistryRows.attempted, true);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: a healRegistryRows failure is reported but never fails the update (fail-open, stop stays false)', () => {
+  const t = makeTree();
+  // VACUOUS-TEST FIX: without an isolated `home` seeded with a real store,
+  // `healRegistryPostUpdate` -> `devstore.listStoreHashes(home)` defaults
+  // `home` to `os.homedir()` (the real machine's actual home), resolves
+  // `hashes` to `[]` on any box with no `~/.anti-hall/devswarm/store/`
+  // entries, and the enumeration loop below never iterates — the throwing
+  // `healRegistry` mock is then NEVER invoked, so every assertion here passed
+  // trivially regardless of whether the fail-open behavior under test
+  // actually works. Seed one real per-project store under a temp `home` (same
+  // pattern as the sibling 'per-store throw is fail-open' test above) and
+  // pass that `home` through runUpdate so the mock is provably exercised.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-runupdate-throw-'));
+  const repo = makeGitRepoForUpdate('runupdate-throw');
+  try {
+    const reg = devswarmCli.run(['register', 'w', '--worktree', repo, '--session', 's1'], { home, env: {}, cwd: repo });
+    assert.strictEqual(reg.result.ok, true);
+
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    let called = false;
+    const fakeDevswarm = {
+      run: () => ({ code: 0, result: { ok: true, action: 'reconcile', count: 0, imported: 0, results: [] } }),
+      foldMeshDuplicates: () => ({ retired: [], left: [] }),
+      migrateOwnerKeys: () => ({ scanned: 0, backfilled: 0, rehomed: 0 }),
+      healRegistry: () => { called = true; throw new Error('heal boom'); },
+    };
+    const { status, stop } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: repo, home, devswarm: fakeDevswarm });
+    assert.strictEqual(called, true, 'the throwing healRegistry mock must actually be invoked — otherwise this test proves nothing');
+    assert.strictEqual(stop, false, 'a heal-registry-rows failure must never trip the STOP contract');
+    assert.strictEqual(status.updated, true, 'the update itself still succeeded');
+    assert.strictEqual(status.healRegistryRows.attempted, true, 'the enumeration loop fails open per-store, not at the attempted level');
+    assert.strictEqual(status.healRegistryRows.checked, 0, 'the throw happens before this store contributes a count');
+  } finally {
+    t.cleanup();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('renderHuman: prints heal-registry-rows summary + per-store row list when attempted', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    healRegistryRows: {
+      attempted: true, checked: 2, healed: 0, rehomed: 1,
+      detail: 'healed 0 + rehomed 1 of 2 registry row(s) across 2 store(s)',
+      stores: [{ repoKey: 'stale-repo-abc123', rows: ['z'] }],
+    },
+  };
+  const out = U.renderHuman(status, '');
+  assert.match(out, /heal-registry-rows: healed 0 \+ rehomed 1 of 2 registry row\(s\) across 2 store\(s\)/);
+  assert.match(out, /stale-repo-abc123: z/);
+});
+
+test('renderHuman: omits the heal-registry-rows block entirely when not attempted (non-DevSwarm session — no noise)', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    healRegistryRows: { attempted: false, detail: 'not a DevSwarm session — heal-registry-rows skipped (gate closed)' },
+  };
+  const out = U.renderHuman(status, '');
+  assert.doesNotMatch(out, /heal-registry-rows:/);
 });

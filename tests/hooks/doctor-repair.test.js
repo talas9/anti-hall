@@ -30,6 +30,9 @@ const DEVSWARM_SCRIPT_FOR_TEST = path.join(REPO_ROOT, 'plugins', 'anti-hall', 's
 
 const repair = require(REPAIR_JS);
 const ingest = require(INGEST_JS);
+const cli = require(DEVSWARM_SCRIPT_FOR_TEST);
+const storeLib = require(STORE_JS);
+const repokey = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-repokey.js'));
 
 function mkTmp(tag) { return fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-repair-' + tag + '-')); }
 function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
@@ -583,4 +586,115 @@ test('doctor --check: DevSwarm ACTIVE + git worktree -> reconcile is skipped ent
     assert.doesNotMatch(r.out, /\[reconcile\]/, '--check must never mention reconcile');
     assert.ok(!storeDirExists(home), '--check must never open/create the shared store');
   } finally { rm(home); rm(cwd); }
+});
+
+// ---------------------------------------------------------------------------
+// heal-registry-rows (Claim 3 self-heal MIGRATION) — AUTO-SAFE, no DevSwarm
+// gate needed (pure store read+write, no daemon/scheduler side effect).
+// doctor-repair.js's own enumeration wiring around devswarm.js's exported
+// healRegistry: sweeps every per-project store found via devswarm-store.js's
+// listStoreHashes. The heal DECISION itself (rehomeMiskeyedRow) is already
+// covered by devswarm-lifecycle.test.js's own Claim 3 tests — these tests
+// prove the doctor INTEGRATION: enumeration across stores, idempotency
+// through the runRepairs() entry point, dry-run never mutating, and a
+// synthetic mis-keyed row rehomed with zero message loss.
+// ---------------------------------------------------------------------------
+
+// NOTE: no `backend` override anywhere below — doctor-repair.js's real
+// heal-registry-rows call (dw.healRegistry(home, repoKey, { cwd, env })) never
+// forces a backend either, so these tests must resolve the SAME auto-selected
+// backend (sqlite when node:sqlite is available, journal otherwise) as the
+// production code path, seed/verify through it consistently.
+function seedRegistryRow(home, repoKey, desc) {
+  const s = storeLib.openStore({ home, hash: repoKey });
+  try { s.upsertRegistry(desc); } finally { s.close(); }
+}
+
+test('runRepairs: heal-registry-rows -> no DevSwarm store at all -> skipped, "0 store(s)", never creates one', () => {
+  const home = mkTmp('heal-none');
+  const cwd = makeGitRepo('heal-none-cwd');
+  try {
+    const results = repair.runRepairs({ cwd, env: {}, home, dryRun: false, platform: 'win32' });
+    const r = results.find((x) => x.id === 'heal-registry-rows');
+    assert.ok(r, 'a heal-registry-rows result must be present:\n' + JSON.stringify(results, null, 2));
+    assert.strictEqual(r.status, 'skipped');
+    assert.match(r.msg, /0 store\(s\)/);
+    assert.ok(!storeDirExists(home), 'nothing to heal must never create a store dir');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('runRepairs: heal-registry-rows --dry-run reports the action and never mutates the store', () => {
+  const home = mkTmp('heal-dry');
+  const repoA = makeGitRepo('heal-dry-a');
+  const repoB = makeGitRepo('heal-dry-b');
+  try {
+    const repoKeyA = repokey.repoKeyForWorktree(repoA);
+    const reg = cli.run(['register', 'z', '--worktree', repoB, '--session', 's2'], { home, env: {}, cwd: repoB });
+    assert.strictEqual(reg.result.ok, true);
+    // A stray copy of 'z' also physically lives in store A (mis-keyed).
+    seedRegistryRow(home, repoKeyA, { id: 'z', worktreePath: repoB, sessionId: 's2' });
+
+    const results = repair.runRepairs({ cwd: repoA, env: {}, home, dryRun: true, platform: 'win32' });
+    const r = results.find((x) => x.id === 'heal-registry-rows');
+    assert.ok(r, 'a heal-registry-rows result must be present:\n' + JSON.stringify(results, null, 2));
+    assert.strictEqual(r.status, 'skipped');
+    assert.match(r.msg, /\[dry-run\] would sweep/);
+
+    const sA = storeLib.openStore({ home, hash: repoKeyA });
+    try {
+      assert.strictEqual((sA.listRegistry() || []).some((x) => x.id === 'z'), true, 'dry-run must never mutate the store — the stray row must still be there');
+    } finally { sA.close(); }
+  } finally { rm(home); rm(repoA); rm(repoB); }
+});
+
+test('runRepairs: heal-registry-rows REHOMES a synthetic mis-keyed row across per-project stores with ZERO message loss (real --fix run), then IS IDEMPOTENT on a second pass', () => {
+  const home = mkTmp('heal-fix');
+  const repoA = makeGitRepo('heal-fix-a');
+  const repoB = makeGitRepo('heal-fix-b');
+  try {
+    const repoKeyA = repokey.repoKeyForWorktree(repoA);
+    const repoKeyB = repokey.repoKeyForWorktree(repoB);
+
+    // 'z' is correctly registered at repoB — its true, structural home.
+    const reg = cli.run(['register', 'z', '--worktree', repoB, '--session', 's2'], { home, env: {}, cwd: repoB });
+    assert.strictEqual(reg.result.ok, true);
+
+    // A STRAY registry row for 'z' ALSO physically lives in store A — this is
+    // the exact breakage class the migration heals — plus a pending message
+    // that arrived into the WRONG bucket, which must survive intact.
+    seedRegistryRow(home, repoKeyA, { id: 'z', worktreePath: repoB, sessionId: 's2' });
+    const sA0 = storeLib.openStore({ home, hash: repoKeyA });
+    try {
+      sA0.appendMeshRow({
+        workspaceId: 'z', ts: Date.now(), hash: 'doctor-stray-hash-1', body: 'doctor stray message',
+        sender: 'someone', recipient: 'z', mtype: 'direct', urgency: 'normal', isHeartbeat: false,
+      });
+    } finally { sA0.close(); }
+
+    const results = repair.runRepairs({ cwd: repoA, env: {}, home, dryRun: false, platform: 'win32' });
+    const r = results.find((x) => x.id === 'heal-registry-rows');
+    assert.ok(r, 'a heal-registry-rows result must be present:\n' + JSON.stringify(results, null, 2));
+    assert.strictEqual(r.status, 'fixed', JSON.stringify(r));
+    assert.match(r.msg, /rehomed 1/);
+    assert.match(r.msg, /z@/, 'the healed row id + its (wrong) store key must be reported: ' + r.msg);
+
+    const sA = storeLib.openStore({ home, hash: repoKeyA });
+    try {
+      assert.strictEqual((sA.listRegistry() || []).some((x) => x.id === 'z'), false, 'the mis-keyed registry row must be gone from the wrong store');
+    } finally { sA.close(); }
+    const sB = storeLib.openStore({ home, hash: repoKeyB });
+    try {
+      const msgs = sB.listMessages('z');
+      assert.ok(msgs.some((m) => m.body === 'doctor stray message'), 'the stray message must have migrated into the correct store — zero loss');
+      assert.ok((sB.listRegistry() || []).some((x) => x.id === 'z'), 'the registry row must now live in the correct store');
+    } finally { sB.close(); }
+
+    // Idempotency THROUGH THE DOCTOR ENTRY POINT: a second --fix pass over the
+    // now-healed stores must heal/rehome nothing further.
+    const second = repair.runRepairs({ cwd: repoA, env: {}, home, dryRun: false, platform: 'win32' });
+    const r2 = second.find((x) => x.id === 'heal-registry-rows');
+    assert.ok(r2, 'a heal-registry-rows result must be present on the second pass');
+    assert.strictEqual(r2.status, 'skipped', 'a second pass over an already-healed set of stores must heal nothing further:\n' + JSON.stringify(r2));
+    assert.match(r2.msg, /nothing mis-keyed\/stale/);
+  } finally { rm(home); rm(repoA); rm(repoB); }
 });

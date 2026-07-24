@@ -45,6 +45,7 @@ const STATUSLINE_INSTALLER = path.join(PLUGIN_ROOT, 'statusline', 'install-statu
 const CODEX_INSTALLER      = path.join(PLUGIN_ROOT, 'codex', 'install-codex.js');
 const MIGRATE_STATE        = path.join(PLUGIN_ROOT, 'scripts', 'migrate-state.js');
 const DEVSWARM_SCRIPT      = path.join(PLUGIN_ROOT, 'scripts', 'devswarm.js');
+const DEVSWARM_STORE       = path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-store.js');
 
 // v0.57 mesh Phase 6 (D9/D25/D28) — belt-and-suspenders orphan sweep for LEGACY
 // per-worktree ingest units. A legacy unit's heartbeat/lock are keyed by its own
@@ -506,6 +507,75 @@ function runRepairs(opts) {
     const r = dw.applyRecoveryIntents(home, { cwd, env, dryRun: true }) || {};
     return { pending: (r.pending || 0) > 0, detail: (r.pending || 0) + ' archive recovery-intent(s)' };
   }, () => require(DEVSWARM_SCRIPT).applyRecoveryIntents(home, { cwd, env }));
+
+  // Claim 3 self-heal MIGRATION: sweep EVERY per-project store's registry for a
+  // row whose descriptor's own real worktreePath disagrees with the store it
+  // is physically sitting in (mis-keyed — rehomed out, zero message loss) or
+  // carries a stale persisted ownerKey/repoKey/registry worktree_path (healed
+  // in place). Heals the real breakage class this migration targets: a row
+  // living under store/<staleRepoKey>/ whose descriptor's worktreePath
+  // structurally belongs to a DIFFERENT, current repoKey (e.g. a submodule
+  // split, or a stray row left by an earlier bug/race). Reuses devswarm.js's
+  // own exported healRegistry(home, repoKey, ctx) — the ONE heal primitive the
+  // core Claim 3 fix built (see rehomeMiskeyedRow's doc comment for the full
+  // decision tree: correctly-homed-but-stale vs genuinely-mis-keyed vs
+  // unresolvable/left-untouched) — this integration layer does not reimplement
+  // any of that decision logic, it only ENUMERATES every store to sweep.
+  //
+  // Pure store read+write (descriptor field heal + registry upsert, or a
+  // message-preserving rehome) — no daemon/scheduler side effect, so this is
+  // AUTO-SAFE, same posture as fold-mesh-duplicates/owner-key-migrate above
+  // (NOT gated on isDevswarmActive/resolveWorktree). NO-DELETE: healRegistry's
+  // own contract never deletes a message, only tombstones a registry row AFTER
+  // its content has been verified-copied into the correct store (the same
+  // precedent rehomeCore/foldMeshDuplicates already use).
+  //
+  // healRegistry has no separate dry-run mode of its own (each row's fix IS
+  // the detection — there is no side-effect-free way to preview it without
+  // literally computing what the real pass would do), so — same precedent as
+  // the reconcile GATED repair below, which also cannot preview a per-worktree
+  // drain without running it — --dry-run reports the action without scanning,
+  // rather than using the generic migrationFix() dual-detect helper.
+  // listStoreHashes/healRegistry both fail-open ([] / a zero-count result) on
+  // an unparseable store, so a store this sweep cannot read is SKIPPED, never
+  // wiped. Idempotent: a second sweep over an already-healed store finds
+  // nothing left to heal (verified by devswarm-lifecycle.test.js's own
+  // healRegistry idempotency test; this integration only adds enumeration).
+  if (dryRun) {
+    push('heal-registry-rows', 'heal-registry-rows', 'skipped', '[dry-run] would sweep every per-project store registry for mis-keyed/stale rows (devswarm.js healRegistry)');
+  } else {
+    try {
+      const dw = require(DEVSWARM_SCRIPT);
+      if (typeof dw.healRegistry !== 'function') {
+        push('heal-registry-rows', 'heal-registry-rows', 'skipped', 'build has no healRegistry — nothing to sweep');
+      } else {
+        let hashes = [];
+        try { hashes = require(DEVSWARM_STORE).listStoreHashes(home) || []; } catch (_) { hashes = []; }
+        let checked = 0, healed = 0, rehomed = 0;
+        const healedRows = [];
+        for (const repoKey of hashes) {
+          let r = null;
+          try { r = dw.healRegistry(home, repoKey, { cwd, env }); } catch (_) { r = null; }
+          if (!r) continue;
+          checked += r.checked || 0;
+          healed += r.healed || 0;
+          rehomed += r.rehomed || 0;
+          for (const row of (r.rows || [])) {
+            if (row && (row.healedDescriptor || row.healedRegistryPath || row.rehomed)) {
+              healedRows.push((row.id == null ? '?' : row.id) + '@' + repoKey);
+            }
+          }
+        }
+        if (healed === 0 && rehomed === 0) {
+          push('heal-registry-rows', 'heal-registry-rows', 'skipped', 'checked ' + checked + ' registry row(s) across ' + hashes.length + ' store(s) — nothing mis-keyed/stale');
+        } else {
+          push('heal-registry-rows', 'heal-registry-rows', 'fixed', 'healed ' + healed + ' + rehomed ' + rehomed + ' of ' + checked + ' registry row(s) across ' + hashes.length + ' store(s): ' + healedRows.join(', '));
+        }
+      }
+    } catch (e) {
+      push('heal-registry-rows', 'heal-registry-rows', 'failed', 'heal-registry-rows raised: ' + errMsg(e));
+    }
+  }
 
   // --- AUTO-SAFE: statusline-if-missing ------------------------------------
   try {
