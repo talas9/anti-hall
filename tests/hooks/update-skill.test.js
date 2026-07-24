@@ -1484,7 +1484,25 @@ test('runUpdate: healRegistryRows is NOT attempted outside a DevSwarm session (d
 
 test('runUpdate: healRegistryRows runs inside a DevSwarm session, regardless of cache.synced', () => {
   const t = makeTree();
+  // VACUOUS-TEST FIX (mirrors the sibling 'a healRegistryRows failure is
+  // reported...' test below): without an isolated `home` seeded with a real
+  // store, `healRegistryPostUpdate` -> `devstore.listStoreHashes(home)`
+  // defaults `home` to `os.homedir()` (the REAL machine's actual home). On a
+  // box that runs live DevSwarm sessions, `~/.anti-hall/devswarm/store/`
+  // already has real per-project store dirs, so the enumeration loop finds
+  // one BY ACCIDENT and the fake `healRegistry` gets called — the test only
+  // passes because of ambient machine state, not because the gate/wiring
+  // under test actually works. On a clean CI checkout (no such directory),
+  // `hashes` resolves to `[]`, the loop never iterates, and `called` stays
+  // false — this is exactly the CI-only failure this fix addresses. Seed one
+  // real per-project store under a temp `home` and pass it through so the
+  // mock is provably exercised regardless of the host machine's state.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-runupdate-'));
+  const repo = makeGitRepoForUpdate('runupdate');
   try {
+    const reg = devswarmCli.run(['register', 'w', '--worktree', repo, '--session', 's1'], { home, env: {}, cwd: repo });
+    assert.strictEqual(reg.result.ok, true);
+
     writePluginJson(t.marketplaceDir, '0.33.0');
     writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
     writeInstalled(t.root, '0.33.0'); // already at latest -> cache does NOT sync this run
@@ -1500,11 +1518,15 @@ test('runUpdate: healRegistryRows runs inside a DevSwarm session, regardless of 
       migrateOwnerKeys: () => ({ scanned: 0, backfilled: 0, rehomed: 0 }),
       healRegistry: () => { called = true; return { checked: 0, healed: 0, rehomed: 0, skipped: 0, rows: [] }; },
     };
-    const { status } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: process.cwd(), devswarm: fakeDevswarm });
+    const { status } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: repo, home, devswarm: fakeDevswarm });
     assert.strictEqual(status.cacheSynced, false, 'sanity: this run genuinely did not sync the cache');
     assert.strictEqual(called, true, 'healRegistry must actually run when the gate is open');
     assert.strictEqual(status.healRegistryRows.attempted, true);
-  } finally { t.cleanup(); }
+  } finally {
+    t.cleanup();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
 });
 
 test('runUpdate: a healRegistryRows failure is reported but never fails the update (fail-open, stop stays false)', () => {

@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.63.1
+
+CI-green patch for v0.63.0 — two test-only fixes; no production behavior change.
+
+- **Hermetic migration-gate test.** `update-skill.test.js`'s "healRegistry runs inside a DevSwarm session" test no longer depends on the ambient machine having real `~/.anti-hall/devswarm/store/` entries — it now seeds an isolated temp `home` (matching its sibling tests), so it exercises the gate deterministically on a clean checkout instead of passing by accident of local state.
+- **Windows skip for the daemonHealth-healthy H4 case.** On Windows the ingest daemon is a documented no-op (`daemonHealth()` returns `unsupported`), so the "healthy daemon → don't refresh summary" assertion is structurally unreachable there; the test now carries the same `{ skip: win32 }` guard its sibling daemonHealth tests already use. Windows behavior is intentionally unchanged (the per-turn `deriveSummary` fallback keeps the Windows parent inbox fresh).
+
+Verified under a clean isolated HOME with DEVSWARM_* unset (mimicking a fresh CI checkout): 2176 pass, 0 fail, 2 skip.
+
 ## 0.63.0
 
 DevSwarm mesh usability + self-healing hardening — addresses real parent/child coordination footguns found running a Primary + child workspace, plus new adaptive/self-healing infrastructure.

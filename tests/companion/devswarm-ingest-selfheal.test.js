@@ -367,7 +367,17 @@ test('H4: daemonHealth NOT healthy (no heartbeat/lock) -> the hook refreshes sum
   } finally { rm(home); }
 });
 
-test('H4: daemonHealth healthy (fresh heartbeat + live lock) -> the hook does NOT touch the store / summary.json', () => {
+// win32 skip: daemonHealth() short-circuits to status:'unsupported' on win32
+// (ingest-health.js D28 carve-out — the ingest daemon installer is a documented
+// no-op there, so a "healthy" daemon is structurally impossible). The hook then
+// takes `health.status !== 'healthy'` -> TRUE and (correctly, for Windows) fires
+// the self-heal deriveSummary fallback, materializing summary.json — the exact
+// opposite of what this "healthy -> don't touch" case asserts. The premise is
+// untestable on win32 (mirrors the D25 daemonHealth tests already win32-skipped
+// in tests/hooks/devswarm-parent-inbox.test.js); the OTHER H4 cases hold on
+// win32 unchanged (NOT-healthy still fires; the empty-store non-destructive
+// guard still skips).
+test('H4: daemonHealth healthy (fresh heartbeat + live lock) -> the hook does NOT touch the store / summary.json', { skip: process.platform === 'win32' }, () => {
   const h = makeHome();
   const home = h.home;
   try {
