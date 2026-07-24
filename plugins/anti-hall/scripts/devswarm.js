@@ -57,6 +57,11 @@
 //   migrate        auto-migrate on-disk state (JSON registry + legacy NDJSON inbox)
 //                  into the store. Idempotent, NON-DESTRUCTIVE (never deletes source),
 //                  single-consumer-locked, count-verified before it reports success.
+//   logs [--repo K] [--component C] [--min-level L] [--since 30m|2h|1d] [--limit N]
+//                  READ-ONLY analysis of the shared central JSONL error/event log
+//                  (companion/lib/anti-hall-log.js). One central stream across every
+//                  project, so a Primary can triage a child's recent failures FROM
+//                  HERE. Filterable + rolled up by component/level. Never writes.
 //   send --to <meshId>|--to-primary|--broadcast --message TEXT [--from <id>] [--urgency ...]
 //                  v0.57 MESH (PLAN-v0.57-mesh.md Phase 4, D8): writes THIS project's
 //                  shared store/<repoKey>/ DIRECTLY — daemon-independent, ZERO
@@ -129,6 +134,12 @@ const repokey = require('../companion/lib/devswarm-repokey.js');
 const ingestHealth = require('../companion/lib/ingest-health.js');
 const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
 const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
+// Shared structured JSONL logger (C0). Console fallback so a missing/older
+// companion never breaks the CLI — logging is strictly additive and fail-open;
+// alog.logError NEVER throws into a caller and NEVER changes control flow.
+let alog;
+try { alog = require('../companion/lib/anti-hall-log'); }
+catch (_) { alog = { logError() { try { console.error.apply(console, arguments); } catch (_e) {} }, logEvent() {} }; }
 
 // ---------------------------------------------------------------------------
 // Per-id advisory lock (P1-4/P1-5/P1-1/P1-2). REUSES recovery.js's acquireLock
@@ -785,6 +796,44 @@ function rehomeMiskeyedRow(home, id, storeRepoKey, ctx) {
       // Genuinely mis-keyed: physically living in storeRepoKey's store, but the
       // descriptor's own real worktreePath structurally belongs to
       // freshRepoKey instead.
+      //
+      // FIRST-PASS DETERMINISM (P0 self-heal reliability). The row physically in
+      // storeRepoKey may carry a STALE worktree_path SNAPSHOT — an older path the
+      // registry captured before the worktree moved / was re-derived — while the
+      // descriptor (the per-id authoritative record we JUST identity-confirmed
+      // via the sessionId positive match above) carries the real, CURRENT
+      // worktreePath. rehomeAcrossStores rebuilds the destination row FROM the
+      // source registry row, so it would carry that stale path forward. When a
+      // CANONICAL copy already sits in freshRepoKey's store holding the current
+      // path, the destination's F2 id-collision guard then refuses the upsert
+      // (stale != current, non-null) and the whole re-home fails its regPresent
+      // verification — surfaced as regConflict today, and as the literal
+      // reason:'rehome-not-applied' in the pre-F-D code (the shape observed live:
+      // a legacy bare-hash stray with the canonical copy already in the named
+      // store, rehoming only AFTER an unrelated metadata upsert happened to
+      // rewrite the stale path). The redundant stray is otherwise LEFT stranded
+      // on EVERY heal pass, converging only by external side-effect — not the
+      // deterministic single automatic pass self-heal promises.
+      //
+      // Normalize the source row's worktree_path to the descriptor's verified
+      // current path FIRST (allowPathChange:true — the SAME "known, intentional
+      // same-id path change, not a hash collision" opt-in the freshRepoKey ===
+      // storeRepoKey branch above already uses, justified identically: the
+      // descriptor has independently confirmed this id's entity belongs here),
+      // so rehomeAcrossStores builds the destination row with the current path,
+      // matches the canonical copy, and converges in THIS single pass. No-delete
+      // (only an in-place path refresh on a row about to be tombstoned anyway),
+      // idempotent (a row already carrying the current path is untouched), and
+      // fail-open (any error just falls through to the pre-fix behavior).
+      try {
+        const ns = store.openStore({ home, hash: storeRepoKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
+        try {
+          const srow = (ns.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null;
+          if (srow && srow.worktreePath !== desc.worktreePath) {
+            ns.upsertRegistry(Object.assign({}, srow, { worktreePath: desc.worktreePath }), { allowPathChange: true });
+          }
+        } finally { try { ns.close(); } catch (_) {} }
+      } catch (_) { /* best-effort: rehomeAcrossStores still runs; a stale path only risks the pre-fix regConflict */ }
       const r = rehomeAcrossStores(home, id, storeRepoKey, freshRepoKey, ctx);
       out.rehomed = !!r.rehomed;
       out.movedMessages = r.movedMessages || 0;
@@ -1805,6 +1854,21 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   const doAck = !!((opts && opts.ack) || flags.ack);
   const unread = !!flags.unread || doAck; // read-primary is inherently unread-then-ack
   const ackAsOwner = !!flags['ack-as-owner'];
+  // Claim 4 (ack-as-owner UX guard): `--ack-as-owner` is ONLY meaningful on a
+  // MUTATING ack (it bypasses the cross-workspace ownership gate below). On the
+  // non-acking `inbox messages` read path (no --ack, not the read-primary
+  // wrapper) the flag reads as "ack on someone's behalf" but does NOTHING — a
+  // silent no-op that leaves the operator believing the backlog was cleared.
+  // Warn to stderr (non-fatal, control-flow unchanged: this stays a pure read)
+  // and point at the verb that actually acks.
+  if (ackAsOwner && !doAck) {
+    try {
+      process.stderr.write('[devswarm] inbox messages ' + JSON.stringify(String(id))
+        + ' --ack-as-owner did NOT ack — `messages` is read-only. To ack on the'
+        + " owner's behalf use `inbox read-primary " + String(id)
+        + ' --ack-as-owner` (or add --ack).\n');
+    } catch (_) {}
+  }
   const cursorPath = primaryCursorPath(home, id);
   const cursor = inboxCursor.readCursor(cursorPath);
   // P1-1/P1-2 RE-HOME (read path): if this workspace is still stranded in the
@@ -3747,7 +3811,101 @@ function cmdMergeVerb(rest, ctx) {
   };
 }
 
+// parseSinceDuration(raw) -> milliseconds | null. Accepts a bare number (ms) or
+// a <number><unit> duration with unit ms/s/m/h/d (e.g. '30m', '2h', '1d'). null
+// on an unparseable value — the caller then omits the `since` filter (fail-open).
+function parseSinceDuration(raw) {
+  if (raw == null) return null;
+  const str = String(raw).trim();
+  if (str === '') return null;
+  const m = str.match(/^(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?$/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 0) return null;
+  const unit = (m[2] || 'ms').toLowerCase();
+  const mult = unit === 'd' ? 86400000 : unit === 'h' ? 3600000 : unit === 'm' ? 60000 : unit === 's' ? 1000 : 1;
+  return n * mult;
+}
+
+// cmdLogs(flags, ctx) — read the central DevSwarm JSONL log via the shared
+// logger's readRecent() and return a concise, filterable summary so a Primary
+// can analyze a child project's recent errors/events FROM HERE (the logger is a
+// single central stream across every project, so one call spans them all).
+// Filters: --repo <repoKey>, --component <name>, --min-level
+// debug|info|warn|error, --since <dur> (e.g. 30m / 2h / 1d, or bare ms),
+// --limit N (default 50, newest-last). READ-ONLY: never writes, never throws.
+function cmdLogs(flags, ctx) {
+  const opts = {};
+  const repo = one(flags, 'repo');
+  if (repo !== undefined) opts.repoKey = repo;
+  const component = one(flags, 'component');
+  if (component !== undefined) opts.component = component;
+  const minLevel = one(flags, 'min-level');
+  if (minLevel !== undefined) opts.minLevel = minLevel;
+  const sinceMs = parseSinceDuration(one(flags, 'since'));
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  if (sinceMs != null) opts.sinceMs = now - sinceMs;
+  let limit = 50;
+  const limitRaw = one(flags, 'limit');
+  if (limitRaw !== undefined) {
+    const n = Number(limitRaw);
+    if (Number.isFinite(n) && n >= 0) limit = Math.floor(n);
+  }
+  opts.limit = limit;
+  let entries = [];
+  try { entries = alog.readRecent(opts) || []; } catch (_) { entries = []; }
+  // Concise rollups a Primary actually wants over the returned slice.
+  const byComponent = {};
+  const byLevel = {};
+  for (const e of entries) {
+    if (!e) continue;
+    const c = e.component != null ? String(e.component) : '(none)';
+    byComponent[c] = (byComponent[c] || 0) + 1;
+    const lv = e.level != null ? String(e.level) : '(none)';
+    byLevel[lv] = (byLevel[lv] || 0) + 1;
+  }
+  let logFile = null;
+  try { logFile = alog.logFilePath(); } catch (_) { logFile = null; }
+  return {
+    ok: true, action: 'logs', logFile,
+    filters: {
+      repoKey: opts.repoKey != null ? opts.repoKey : null,
+      component: opts.component != null ? opts.component : null,
+      minLevel: opts.minLevel != null ? opts.minLevel : null,
+      sinceMs: opts.sinceMs != null ? opts.sinceMs : null,
+      limit,
+    },
+    count: entries.length,
+    byComponent, byLevel,
+    entries,
+  };
+}
+
 // ----- dispatch -----
+// logVerbOutcome(op, id, r, ctx) — Csh logger wiring. Emits ONE structured
+// error entry to the central JSONL log when a wired verb (send / reconcile /
+// inbox pull|messages|read-primary / register|ensure) returns an unsuccessful
+// result (ok:false or a swallowed exception), so a Primary can later run
+// `devswarm logs` and analyze a child project's recent failures from here.
+// STRICTLY ADDITIVE: pure logging, it NEVER alters control flow or the returned
+// result and NEVER throws (alog is fail-open, and this is fully try-guarded).
+// repoKey is resolved fail-open from cwd; meshId carries the verb's target id
+// when the verb has one (send/inbox/register), null otherwise (reconcile).
+function logVerbOutcome(op, id, r, ctx) {
+  try {
+    if (!r || r.ok) return;
+    let repoKey = null;
+    try { repoKey = repoKeyForCwd(ctx); } catch (_) { repoKey = null; }
+    const msg = (r.error != null ? String(r.error) : (r.reason != null ? String(r.reason) : 'verb returned ok:false'));
+    alog.logError('devswarm-cli', op, msg, {
+      repoKey,
+      meshId: id != null ? String(id) : null,
+      reason: r.reason != null ? String(r.reason) : undefined,
+      msg,
+    });
+  } catch (_) { /* fail-open: logging must never break the verb */ }
+}
+
 // run(argv, ctx) -> { code, result }. ctx: { home, env, backend, now } (all
 // injectable for tests). NEVER throws — any internal error becomes a
 // { ok:false, error } result with exit code 2.
@@ -3761,12 +3919,14 @@ function run(argv, ctx0) {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
         const r = cmdRegister(id, flags, ctx);
+        logVerbOutcome('register', id, r, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'ensure': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
         const r = cmdRegister(id, flags, ctx, { requireNew: true });
+        logVerbOutcome('ensure', id, r, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'heartbeat': {
@@ -3784,6 +3944,11 @@ function run(argv, ctx0) {
         const r = sub === 'pull'
           ? withSelfHeal(() => cmdInbox(sub, id, flags, ctx), ctx)
           : cmdInbox(sub, id, flags, ctx);
+        // Csh: wire only the mesh READ verbs the task names (pull/messages/
+        // read-primary); count/read/ack are the descriptor durable-inbox path.
+        if (sub === 'pull' || sub === 'messages' || sub === 'read-primary') {
+          logVerbOutcome('inbox-' + sub, id, r, ctx);
+        }
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'workspaces': {
@@ -3841,6 +4006,11 @@ function run(argv, ctx0) {
       case 'migrate': {
         return { code: 0, result: cmdMigrate(ctx) };
       }
+      case 'logs': {
+        // READ-ONLY central-log analysis (Csh). Filterable summary of the shared
+        // JSONL error/event stream so a Primary can triage a child's failures.
+        return { code: 0, result: cmdLogs(flags, ctx) };
+      }
       case 'migrate-owner-keys': {
         // P1-8 forward-migration (idempotent, fail-open, no-delete). Exposed as a
         // verb so update/doctor/an operator can run it directly.
@@ -3849,6 +4019,7 @@ function run(argv, ctx0) {
       case 'send': {
         // Send-time self-heal (Phase 7): runs before every mesh send.
         const r = withSelfHeal(() => cmdSend(flags, ctx), ctx);
+        logVerbOutcome('send', one(flags, 'to'), r, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'roster': {
@@ -3878,6 +4049,7 @@ function run(argv, ctx0) {
       }
       case 'reconcile': {
         const r = cmdReconcile(flags, ctx);
+        logVerbOutcome('reconcile', null, r, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'reap-stale': {
@@ -3902,9 +4074,17 @@ function run(argv, ctx0) {
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge)' } };
     }
   } catch (e) {
+    // Csh: an internal exception used to be swallowed silently into { ok:false }.
+    // Log it (fail-open, control flow unchanged) so a Primary can surface it via
+    // `devswarm logs`. Best-effort repoKey from cwd; op = the verb that threw.
+    try {
+      let repoKey = null;
+      try { repoKey = repoKeyForCwd(ctx); } catch (_) { repoKey = null; }
+      alog.logError('devswarm-cli', String(cmd || 'unknown'), e, { repoKey });
+    } catch (_) { /* logging must never mask the original error */ }
     return { code: 2, result: { ok: false, error: String(e && e.message || e) } };
   }
 }
@@ -3938,5 +4118,6 @@ module.exports = {
   migrateOwnerKeys, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive,
   applyRecoveryIntents, recoveryIntentPath, rehomeStrandedProjectDescriptors,
   cmdWorkspacesList, cmdGate, cmdReconcile, cmdRegister,
+  cmdLogs, cmdInboxMessages, parseSinceDuration,
   descriptorFreshRepoKey, descriptorStructuralRepoKey,
 };

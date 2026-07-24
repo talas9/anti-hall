@@ -7,6 +7,16 @@
 //   instead. Silent pass-through in subagent context. Mirrors command-guard.js, but
 //   for the Edit-family tools instead of Bash.
 //
+//   TWO EXEMPTIONS keep it from firing on legitimate orchestrator work:
+//     1) PLAN MODE (payload.permission_mode === 'plan') — a read-only planning
+//        session drafting docs/scratch/plan artifacts. NARROWED: source files are
+//        STILL blocked in plan mode (see isPlanMode / isLikelySource / main()),
+//        because plan mode is gate-based, not a toolset removal, so edit-guard
+//        keeps its source-file gate as defense-in-depth.
+//     2) ORCHESTRATOR-ARTIFACT ALLOWLIST — plan/state/handover/memory files the
+//        coordinator owns directly (see DEFAULT_ALLOW / isAllowed). Applies in any
+//        mode.
+//
 // COORDINATOR vs SUBAGENT DETECTION
 //   Shared with command-guard.js — see hooks/coordinator-detect.js for the full
 //   rationale (payload agent_id/agent_type is the reliable signal; entrypoint is a
@@ -50,10 +60,27 @@ const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 // subagent has seen the coordinator's conversation, so delegating it produces
 // a worse handover than the coordinator writing it directly (same rationale
 // as PLAN.md/STATE.json below). Bare filename => root-anchored (see isAllowed).
+//
+// ORCHESTRATOR ARTIFACTS (why each is coordinator-owned, never a source file):
+//   - 'plan.md' (lowercase): the plan file is a planning artifact, not code —
+//     ship-it-guard.js treats both 'PLAN.md' and 'plan.md' as the plan; the
+//     allowlist only had the uppercase form, so a Primary drafting a lowercase
+//     'plan.md' was wrongly blocked. Root-anchored bare filename.
+//   - '*.continue-here.md': prefixed handover variants (e.g.
+//     'session.continue-here.md') are the same class as root 'CONTINUE-HERE.md'
+//     — a coordinator's own synthesis of its own conversation. '.md' only and
+//     root-anchored (bare pattern), so no source file qualifies.
+//   - '**/.claude/projects/**/memory/**': Claude Code's per-project memory
+//     store (MEMORY.md + linked notes). It lives OUTSIDE the repo cwd (under
+//     ~/.claude/...), so a cwd-relative '.claude/**' glob does NOT reach it —
+//     this leading-'**' pattern matches the '../…/.claude/projects/<slug>/memory/…'
+//     shape. Scoped to the memory subtree only (never general source).
 const DEFAULT_ALLOW = [
   'CLAUDE.md', 'AGENTS.md', 'GEMINI.md',
   '.claude/**', '.omc/**', '.anti-hall/**',
-  'PLAN.md', 'STATE.json', 'CONTINUE-HERE.md',
+  'PLAN.md', 'plan.md', 'STATE.json', 'CONTINUE-HERE.md',
+  '*.continue-here.md',
+  '**/.claude/projects/**/memory/**',
 ];
 
 // Cross-platform basename: handle both / and \ path separators (mirrors
@@ -225,6 +252,35 @@ function allowlistIsHonest(filePath, cwd) {
   }
 }
 
+// isLikelySource(filePath) — best-effort "this is real code, not a doc/scratch/
+// plan artifact" classifier. Used ONLY to NARROW the plan-mode exemption so a
+// plan-mode session can draft docs/scratch/plan files but is STILL blocked from an
+// undelegated write to a source file (defense-in-depth: plan mode does not hard-
+// remove Write from the toolset — docs/KB-model-modes.md — so edit-guard keeps its
+// source-file gate even there). Matches (1) a known code DIRECTORY anywhere in the
+// path, or (2) a source-code file EXTENSION. Docs (.md/.mdx/.txt/.rst/…) are
+// intentionally NOT source. Allowlisted artifacts have already exited before this
+// is reached, so it only ever classifies non-allowlisted paths.
+const SOURCE_DIRS = /(^|[\\/])(plugins|scripts|hooks|companion|statusline|tests)[\\/]/i;
+const SOURCE_EXT = /\.(js|mjs|cjs|jsx|ts|tsx|py|sh|go|rs|c|h|cpp|java|rb)$/i;
+function isLikelySource(filePath) {
+  if (!filePath) return false;
+  const norm = String(filePath).replace(/\\/g, '/');
+  return SOURCE_DIRS.test(norm) || SOURCE_EXT.test(norm);
+}
+
+// isPlanMode(payload) — true when the session is in Claude Code PLAN MODE.
+// The harness sets `permission_mode` on the PreToolUse payload (one of
+// 'default' | 'acceptEdits' | 'plan' | 'auto' | 'dontAsk' | 'bypassPermissions';
+// see docs/KB-model-modes.md §on permission modes). It is a top-level,
+// harness-controlled field — NOT part of tool_input and not model/tool-settable,
+// so it is the same trust class as tool_name / agent_id. Case-insensitive for
+// safety; any non-string is not plan mode.
+function isPlanMode(payload) {
+  const m = payload && payload.permission_mode;
+  return typeof m === 'string' && m.toLowerCase() === 'plan';
+}
+
 function main() {
   // Read stdin first (fail-open on any read error).
   let raw = '';
@@ -261,6 +317,25 @@ function main() {
   // An allowlist match is honored ONLY when the path is honest (not a symlink /
   // reparse point, and not reached through one) — see allowlistIsHonest().
   if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+
+  // PLAN MODE (NARROWED): a plan-mode session is doing read-only planning, so
+  // drafting a doc/scratch/plan artifact is legitimate orchestrator work and the
+  // guard firing there is the reported false positive (a DevSwarm Primary in plan
+  // mode blocked from Writing its own plan file). But plan mode does NOT hard-remove
+  // Write from the toolset — it is enforced by a system-prompt instruction + the
+  // standing permission-prompt gate (docs/KB-model-modes.md) — so edit-guard KEEPS
+  // its source-file gate even in plan mode: the exemption applies ONLY when the
+  // target is not likely source. This closes the abuse vector where a plan-mode
+  // session could otherwise slip an undelegated source write past the delegation
+  // gate. Runs AFTER the allowlist check, so a symlinked allowlisted lookalike
+  // (isAllowed but dishonest) has already failed to exit and, being a NON-source
+  // NAME, must ALSO pass the honesty check here before plan mode can allow it —
+  // otherwise the plan-mode path would reopen the symlink bypass the allowlist line
+  // guards against. permission_mode is harness-set (see isPlanMode), so it cannot
+  // be spoofed via tool_input.
+  if (isPlanMode(payload) && !isLikelySource(filePath) && allowlistIsHonest(filePath, cwd)) {
+    process.exit(0);
+  }
 
   // DevSwarm-aware wording switch (lazy-require, mirrors this file's pattern).
   let devswarmActive = false;

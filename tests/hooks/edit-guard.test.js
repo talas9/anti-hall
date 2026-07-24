@@ -169,6 +169,172 @@ for (const p of CONTINUE_HERE_LOOKALIKES_BLOCKED) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// PLAN MODE (permission_mode === 'plan'), NARROWED. A read-only planning session
+// drafting docs/scratch/plan artifacts must NOT be blocked — the reported false
+// positive (a DevSwarm Primary in plan mode blocked from Writing its own plan
+// file). BUT plan mode is gate-based, not a toolset removal, so edit-guard keeps
+// its source-file gate even in plan mode (defense-in-depth): a plan-mode write to
+// a SOURCE file is STILL blocked. permission_mode is harness-set, not
+// model/tool-controllable.
+
+// planPayload(tool, file): an edit payload marked as a plan-mode session.
+function planPayload(tool, filePath) {
+  const p = editPayload(tool, { filePath });
+  p.permission_mode = 'plan';
+  return p;
+}
+
+// Plan mode + a NON-source, non-allowlisted path (doc/scratch) -> ALLOWED.
+const PLAN_NONSOURCE_ALLOWED = ['docs/notes.md', 'scratch/notes.txt', 'design/spec.rst'];
+for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+  test(`PLAN MODE non-source: ${tool} on docs/notes.md -> ALLOWED`, () => {
+    const r = runCoord(planPayload(tool, 'docs/notes.md'));
+    assert.strictEqual(r.status, 0, `plan-mode doc edit must pass; stdout: ${r.stdout}`);
+  });
+}
+for (const p of PLAN_NONSOURCE_ALLOWED) {
+  test(`PLAN MODE non-source: Write on ${p} -> ALLOWED`, () => {
+    const r = runCoord(planPayload('Write', p));
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  });
+}
+
+test("PLAN MODE case-insensitive: permission_mode:'Plan' + doc -> ALLOWED", () => {
+  const p = editPayload('Write', { filePath: 'docs/notes.md' });
+  p.permission_mode = 'Plan';
+  const r = runCoord(p);
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+// ABUSE VECTOR CLOSED: plan mode must STILL block a SOURCE file. Covers both the
+// extension signal (src/app.js) and the code-directory signal (plugins/scripts/...).
+const PLAN_SOURCE_BLOCKED = [
+  'src/app.js',
+  'plugins/anti-hall/scripts/foo.js',
+  'plugins/anti-hall/hooks/edit-guard.js',
+  'scripts/build.sh',
+  'companion/x.py',
+  'statusline/render.ts',
+];
+for (const tool of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit']) {
+  test(`PLAN MODE source: ${tool} on plugins/anti-hall/scripts/foo.js -> STILL BLOCKED`, () => {
+    const r = runCoord(planPayload(tool, 'plugins/anti-hall/scripts/foo.js'));
+    assert.strictEqual(r.status, 2, `plan-mode SOURCE edit must block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+for (const p of PLAN_SOURCE_BLOCKED) {
+  test(`PLAN MODE source: Write on ${p} -> STILL BLOCKED`, () => {
+    const r = runCoord(planPayload('Write', p));
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+
+// SYMLINK HONESTY holds in plan mode too: a NON-source-NAMED file (isLikelySource
+// false) that is actually a SYMLINK to a source file must NOT slip through the
+// plan-mode exemption — the exemption also requires allowlistIsHonest(). Without
+// that guard the plan-mode path would reopen the symlink bypass.
+test('PLAN MODE symlink: a non-source-named symlink -> a source file -> BLOCKED', { skip: process.platform === 'win32' }, () => {
+  const p = makeProject();
+  try {
+    const target = path.join(p.dir, 'command-guard.js');
+    fs.writeFileSync(target, 'ORIGINAL\n', 'utf8');
+    fs.symlinkSync(target, path.join(p.dir, 'notes.md')); // .md name, points at source
+    const h = makeHome();
+    try {
+      const payload = editPayload('Write', { filePath: path.join(p.dir, 'notes.md'), cwd: p.dir });
+      payload.permission_mode = 'plan';
+      const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 2, `symlinked plan-mode write must block; stdout: ${r.stdout}`);
+      assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+    } finally {
+      h.cleanup();
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+// REGRESSION: outside plan mode, a source-file edit is STILL blocked. This is the
+// no-relaxation anchor for the plan-mode exemption — 'default'/'acceptEdits'/absent
+// permission_mode must not slip a source write past the delegation gate.
+for (const mode of ['default', 'acceptEdits', 'bypassPermissions']) {
+  test(`NOT PLAN MODE (permission_mode:'${mode}'): src edit STILL BLOCKED`, () => {
+    const p = editPayload('Edit', { filePath: 'src/app.js' });
+    p.permission_mode = mode;
+    const r = runCoord(p);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+
+test('NO permission_mode field: src edit STILL BLOCKED (unchanged baseline)', () => {
+  const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }));
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+});
+
+// ---------------------------------------------------------------------------
+// NEW ORCHESTRATOR-ARTIFACT ALLOWLIST ENTRIES (outside plan mode). Each is a
+// coordinator-owned plan/handover/memory artifact, never source.
+
+const NEW_ARTIFACT_ALLOWED = [
+  'plan.md',                       // lowercase plan file (ship-it-guard convention)
+  'session.continue-here.md',      // prefixed handover variant at root
+  '.continue-here.md',             // empty-prefix handover variant at root
+];
+for (const p of NEW_ARTIFACT_ALLOWED) {
+  test(`NEW ALLOWLIST: coordinator + Write on root ${p} -> ALLOWED`, () => {
+    const r = runCoord(editPayload('Write', { filePath: p }));
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  });
+}
+
+// The new artifact patterns must NOT over-relax: nested/lookalike source paths
+// that merely resemble them are STILL blocked.
+const NEW_ARTIFACT_BLOCKED = [
+  'src/nested/plan.md',            // lowercase plan.md is root-anchored (bare)
+  'src/session.continue-here.md',  // nested continue-here variant, not root
+  'src/plan.md.js',                // suffix lookalike, real source
+  'memory/app.js',                 // a 'memory' dir that is NOT the .claude memory store
+  'src/.claude/memory/app.js',     // '.claude/memory' but not '.claude/projects/*/memory'
+];
+for (const p of NEW_ARTIFACT_BLOCKED) {
+  test(`NEW ALLOWLIST NOT OVER-RELAXED: coordinator + Write on ${p} -> BLOCKED`, () => {
+    const r = runCoord(editPayload('Write', { filePath: p }));
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+
+// Claude Code per-project MEMORY store lives OUTSIDE the repo cwd (~/.claude/...),
+// so the cwd-relative '.claude/**' glob cannot reach it. The '**/.claude/projects/
+// **/memory/**' entry matches that out-of-cwd shape. Hermetic: a real cwd dir plus
+// a sibling home tree holding the memory file, referenced by absolute path.
+test('MEMORY STORE (out-of-cwd .claude/projects/*/memory): coordinator + Write -> ALLOWED', () => {
+  const proj = makeProject(); // acts as the session cwd
+  const homeTree = makeProject();
+  try {
+    const memDir = path.join(homeTree.dir, '.claude', 'projects', 'slug', 'memory');
+    fs.mkdirSync(memDir, { recursive: true });
+    const memFile = path.join(memDir, 'MEMORY.md');
+    fs.writeFileSync(memFile, '# memory\n', 'utf8');
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, editPayload('Write', { filePath: memFile, cwd: proj.dir }),
+        { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 0, `out-of-cwd memory write must pass; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+    }
+  } finally {
+    proj.cleanup();
+    homeTree.cleanup();
+  }
+});
+
 test("SKIP: writeSkip({'edit-guard': future}) -> allow", () => {
   const h = makeHome();
   try {

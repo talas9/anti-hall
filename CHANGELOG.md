@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.64.0
+
+DevSwarm self-heal reliability + observability, plus an edit-guard plan-mode fix.
+
+- **Reconcile self-heal now works on the first pass.** `rehomeMiskeyedRow` normalizes a genuinely mis-keyed row's stored `worktree_path` to the descriptor's verified current path before rehoming, so a row stranded in a legacy bare-hash store no longer no-ops on the first `healRegistry` pass. No-delete, idempotent, fail-open; regression-tested for single-pass rehome + zero message loss.
+- **Doctor daemon-liveness gate.** `doctor --fix` no longer reports the ingest daemon "healthy" from install-shape alone — it checks the two-signal liveness primitive (fresh heartbeat + live-pid lock) and, when install-ok-but-dead, takes the reinstall path with a distinct dead-daemon reason instead of masking it. Win32's documented no-op is respected.
+- **Structured error logging wired in.** The ingest/lock/send/reconcile/inbox/register error paths (including a previously-swallowed top-level catch) now emit to the central JSONL logger, and two read-only surfaces expose it: `devswarm.js logs` (filter by --repo/--component/--min-level/--since/--limit) and `doctor --logs` — so a Primary can analyze a child project's recent failures from one place.
+- **`inbox messages --ack-as-owner` UX guard.** Passing `--ack-as-owner` without `--ack` now warns clearly that it did NOT ack (and points to `read-primary … --ack-as-owner`) instead of silently staying read-only.
+- **Child ack-path e2e coverage.** Added the missing test: a child with a distinct `DEVSWARM_BUILDER_ID` self-registers via `inbox pull` then acks via `read-primary --ack-as-owner`.
+- **edit-guard plan-mode false-positive fixed.** The coordinator edit-guard no longer blocks the orchestrator's own plan/scratch/handoff/memory writes (added `plan.md`, `*.continue-here.md`, and the out-of-cwd Claude memory store to the allowlist) and exempts plan mode — while STILL blocking undelegated source-file edits in any mode (symlink-honesty preserved).
+
+2224 tests, 0 fail. Minor bump — self-heal reliability + observability + a guard-UX fix; all new paths are fail-open and control-flow-neutral.
+
 ## 0.63.1
 
 CI-green patch for v0.63.0 — two test-only fixes; no production behavior change.

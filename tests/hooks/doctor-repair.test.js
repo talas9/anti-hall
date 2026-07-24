@@ -430,14 +430,122 @@ test('(b) doctor --dry-run: script already IS the current stable marketplace pat
       ? ingest.buildPlist({ exec: process.execPath, script: mp.scriptPath, log: path.join(home, 'l.log'), workdir: wt })
       : ingest.buildService({ exec: process.execPath, script: mp.scriptPath, workdir: wt });
     fs.writeFileSync(unitPath, body);
+    // Claim 5 H1: install-shape 'ok' alone is no longer enough to report healthy —
+    // back this fixture with a genuinely fresh heartbeat + live-pid lock holder so
+    // "no thrash" is testing what it claims (an actually-alive, up-to-date daemon),
+    // not just an install-shape coincidence.
+    const repoKey = repokey.repoKeyForWorktree(wt);
+    const hb = heartbeatPathFor(home, repoKey);
+    const lock = projectLockPathFor(home, repoKey);
+    fs.mkdirSync(path.dirname(hb), { recursive: true });
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(hb, JSON.stringify({ ts: Date.now(), pid: process.pid }));
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
 
     const r = runDoctor({
       cwd, args: ['--dry-run'],
       env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_MARKETPLACE_DIR: mp.dir },
     });
-    assert.match(r.out, /skipped \[ingest\] ingest daemon installed and healthy/, 'a script matching the current stable path must classify ok, no thrash:\n' + r.out);
+    assert.match(r.out, /skipped \[ingest\] ingest daemon installed and healthy/, 'a script matching the current stable path AND alive must classify ok, no thrash:\n' + r.out);
     assert.doesNotMatch(r.out, /would \(re\)install the ingest daemon/, 'must NOT attempt a reinstall when already current:\n' + r.out);
   } finally { rm(home); rm(cwd); rm(mp.dir); }
+});
+
+// ---------------------------------------------------------------------------
+// 6c. Claim 5 H1 — daemon-LIVENESS gate. classifyIngestUnit is install-SHAPE
+// only (WorkingDirectory/ExecStart on disk); a well-formed unit whose daemon
+// is dead/wedged must NOT be reported skipped/healthy. These tests use a
+// legacy-shaped (base LABEL/UNIT, no suffix) fixture unit — install-shape
+// 'ok' via the SAME construction as the existing "healthy fixture" test above
+// — and control ONLY the heartbeat/lock files projectDaemonHealthy reads, so
+// the liveness signal alone drives the outcome.
+// ---------------------------------------------------------------------------
+function heartbeatPathFor(home, repoKey) {
+  return path.join(home, '.anti-hall', 'devswarm', 'heartbeats', 'ingest-' + repoKey + '.json');
+}
+function projectLockPathFor(home, repoKey) {
+  return path.join(home, '.anti-hall', 'devswarm', 'locks', 'ingest-project-' + repoKey + '.lock');
+}
+function writeOkIngestUnitFixture(home, cwd) {
+  const platform = process.platform;
+  const wt = ingest.resolveWorktree(cwd) || cwd; // realpath-resolved, matches the subprocess's own resolveWorktree(cwd)
+  const unitPath = ingestUnitPath(home, platform);
+  fs.mkdirSync(path.dirname(unitPath), { recursive: true });
+  const body = platform === 'darwin'
+    ? ingest.buildPlist({ exec: process.execPath, script: INGEST_JS, log: path.join(home, 'l.log'), workdir: wt })
+    : ingest.buildService({ exec: process.execPath, script: INGEST_JS, workdir: wt });
+  fs.writeFileSync(unitPath, body);
+  return { unitPath, repoKey: repokey.repoKeyForWorktree(wt) };
+}
+
+test('doctor --fix: install-shape ok but NO heartbeat/lock at all (daemon never ran) -> GATED as NOT ALIVE, never reported healthy', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('live-none-gated');
+  const cwd = makeGitRepo('live-none-gated-cwd');
+  try {
+    seedUserSettings(home);
+    const { unitPath } = writeOkIngestUnitFixture(home, cwd);
+    const before = fs.readFileSync(unitPath, 'utf8');
+
+    const r = runDoctor({ cwd, args: ['--fix'], env: { HOME: home, USERPROFILE: home } });
+    assert.doesNotMatch(r.out, /ingest daemon installed and healthy/, 'a dead daemon must never be reported healthy:\n' + r.out);
+    assert.match(r.out, /GATED \[ingest\]/, 'a dead daemon behind a closed gate must be GATED, not skipped:\n' + r.out);
+    assert.match(r.out, /NOT ALIVE/, 'the gated reason must call out liveness, not install-shape:\n' + r.out);
+    assert.strictEqual(fs.readFileSync(unitPath, 'utf8'), before, 'a gated repair must never rewrite the unit');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('doctor --dry-run: install-shape ok but STALE heartbeat (daemon crashed after its last write) -> gate OPENS, would reinstall as dead-daemon', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('live-stale-open');
+  const cwd = makeGitRepo('live-stale-open-cwd');
+  try {
+    seedUserSettings(home);
+    const { unitPath, repoKey } = writeOkIngestUnitFixture(home, cwd);
+    const hb = heartbeatPathFor(home, repoKey);
+    fs.mkdirSync(path.dirname(hb), { recursive: true });
+    // 10 minutes old — well past the 3-minute HEARTBEAT_STALE window.
+    fs.writeFileSync(hb, JSON.stringify({ ts: Date.now() - 10 * 60 * 1000, pid: 999999 }));
+    const before = fs.readFileSync(unitPath, 'utf8');
+
+    const r = runDoctor({ cwd, args: ['--dry-run'], env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.match(r.out, /would \(re\)install the ingest daemon from .*\(dead-daemon\)/, 'a stale heartbeat must trigger the dead-daemon reinstall path:\n' + r.out);
+    assert.doesNotMatch(r.out, /GATED \[ingest\]/, 'must NOT be gated when the gate is open');
+    assert.doesNotMatch(r.out, /ingest daemon installed and healthy/);
+    assert.strictEqual(fs.readFileSync(unitPath, 'utf8'), before, 'dry-run must never rewrite the unit');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('doctor --fix: install-shape ok + FRESH heartbeat + a live-pid lock holder -> reported healthy, no reinstall (liveness true path)', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('live-ok');
+  const cwd = makeGitRepo('live-ok-cwd');
+  try {
+    seedUserSettings(home);
+    const { unitPath, repoKey } = writeOkIngestUnitFixture(home, cwd);
+    const hb = heartbeatPathFor(home, repoKey);
+    const lock = projectLockPathFor(home, repoKey);
+    fs.mkdirSync(path.dirname(hb), { recursive: true });
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(hb, JSON.stringify({ ts: Date.now(), pid: process.pid }));
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+    const before = fs.readFileSync(unitPath, 'utf8');
+
+    const r = runDoctor({ cwd, args: ['--fix'], env: { HOME: home, USERPROFILE: home } });
+    assert.match(r.out, /skipped \[ingest\] ingest daemon installed and healthy/, 'a fresh heartbeat + live lock holder must classify healthy:\n' + r.out);
+    assert.doesNotMatch(r.out, /GATED \[ingest\]/);
+    assert.doesNotMatch(r.out, /NOT ALIVE/);
+    assert.strictEqual(fs.readFileSync(unitPath, 'utf8'), before, 'a healthy daemon must never be reinstalled');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('doctor --check: install-shape ok but dead daemon -> --check stays pure read-only (no Repair section, no liveness mention)', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('live-check');
+  const cwd = makeGitRepo('live-check-cwd');
+  try {
+    seedUserSettings(home);
+    const r = runDoctor({ cwd, args: ['--check'], env: { HOME: home, USERPROFILE: home } });
+    assert.strictEqual(r.code, 0, '--check exits 0:\n' + r.out);
+    assert.doesNotMatch(r.out, /\nRepair/, '--check must never run the repair pass, even with a dead daemon');
+    assert.doesNotMatch(r.out, /NOT ALIVE/);
+  } finally { rm(home); rm(cwd); }
 });
 
 // ---------------------------------------------------------------------------

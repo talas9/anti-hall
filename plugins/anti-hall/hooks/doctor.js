@@ -28,6 +28,13 @@ const QUIET = process.argv.includes('--quiet');
 const CHECK   = process.argv.includes('--check');
 const DRYRUN  = process.argv.includes('--dry-run');
 const DO_REPAIR = !CHECK; // default, --fix, --repair, --dry-run repair; --check does not
+// --logs: opt-in section that reads + summarizes recent warn/error entries from the
+// CENTRAL anti-hall-log (companion/lib/anti-hall-log.js, C0) so a Primary orchestrator
+// can see a child project's failures from one place without tailing the raw JSONL
+// itself. Additive to the normal report (does not replace/skip anything above); never
+// affects the exit code (report-only, same posture as the reaper/foreign-conflict
+// sections) — a logged error is history, not a live guard failure THIS run.
+const LOGS = process.argv.includes('--logs');
 
 const C = process.stdout.isTTY
   ? { g:'\x1b[32m', r:'\x1b[31m', y:'\x1b[33m', d:'\x1b[2m', b:'\x1b[1m', c:'\x1b[36m', x:'\x1b[0m' }
@@ -782,6 +789,58 @@ head('Foreign skill/hook conflict scan');
     else ok(r.message);
   }
 })();
+
+// --- 6g2. --logs (OPT-IN): recent central anti-hall-log errors, by component ---
+// Surfaces companion/lib/anti-hall-log.js's readRecent() output so a Primary
+// orchestrator can see a child project's recent failures from one `doctor --logs`
+// call instead of tailing ~/.anti-hall/logs/devswarm.jsonl by hand. Lazy require
+// with a console/no-op fallback (matches the fail-open posture of every other
+// optional companion require above): if the logger module is missing/broken this
+// section degrades to a single INFO line, never a crash or a FAIL — a doctor run
+// must never break because its OWN diagnostics-reading helper is unavailable.
+// Report-only: never touches pass/fail (only warnl/infol), same posture as the
+// reaper/foreign-conflict sections — a logged error is history, not a live guard
+// failure this run.
+if (LOGS) {
+  head('Logs (--logs: recent anti-hall-log entries)');
+  (function logsSection() {
+    let logMod;
+    try {
+      logMod = require(path.join(ROOT, 'companion', 'lib', 'anti-hall-log.js'));
+    } catch (e) {
+      logMod = { readRecent: () => [], logDir: () => null }; // console/no-op fallback — never breaks doctor
+      warnl('anti-hall-log module unavailable (' + (e && e.message) + ') — showing nothing (fail-open)');
+    }
+    let dir = null;
+    try { dir = typeof logMod.logDir === 'function' ? logMod.logDir() : null; } catch (_) { dir = null; }
+    let entries = [];
+    try { entries = logMod.readRecent({ minLevel: 'warn', limit: 200 }) || []; } catch (e) {
+      warnl('reading the central anti-hall log raised (fail-open): ' + (e && e.message));
+      entries = [];
+    }
+    if (!entries.length) {
+      infol('no warn/error entries in the central anti-hall log' + (dir ? ' (' + dir + ')' : ''));
+      return;
+    }
+    const byComponent = {};
+    for (const e of entries) {
+      const c = (e && e.component) || '(unknown)';
+      byComponent[c] = (byComponent[c] || 0) + 1;
+    }
+    const compSummary = Object.keys(byComponent).sort().map((c) => `${c}:${byComponent[c]}`).join(', ');
+    warnl(`${entries.length} warn/error entries in the central anti-hall log across ${Object.keys(byComponent).length} component(s) — ${compSummary}` + (dir ? ` (${dir})` : ''));
+    // Most recent 10, newest-last (readRecent's own ordering) shown oldest-of-the-
+    // slice-first so the report reads top-to-bottom in the order they happened.
+    const SHOWN = 10;
+    const recent = entries.slice(-SHOWN);
+    if (entries.length > recent.length) infol(`showing the most recent ${recent.length} of ${entries.length} — re-run with a narrower window if you built one, or read the file directly for the rest`);
+    for (const e of recent) {
+      const repoTag = e && e.repoKey ? ' repoKey=' + e.repoKey : '';
+      const msg = (e && (e.msg || (e.err && e.err.message))) || '(no message)';
+      warnl(`[${(e && e.ts) || '?'}] ${(e && e.level) || '?'} ${(e && e.component) || '?'}/${(e && e.op) || '?'}${repoTag}: ${String(msg).split('\n')[0]}`);
+    }
+  })();
+}
 
 // --- 6h. Repair pass (default / --fix / --repair / --dry-run; SKIPPED on --check) ---
 // doctor now DIAGNOSES then REPAIRS. runRepairs applies AUTO-SAFE fixes always

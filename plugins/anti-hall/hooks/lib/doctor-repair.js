@@ -416,8 +416,11 @@ function reapOrphanedLegacyUnits(opts) {
 }
 
 // ---------------------------------------------------------------------------
-// runRepairs({cwd, env, home, dryRun}) -> [{id, action, status, msg}]
+// runRepairs({cwd, env, home, dryRun, platform, io}) -> [{id, action, status, msg}]
 //   status ∈ 'fixed' | 'gated' | 'skipped' | 'failed'
+//   `io` ({fs, isAlive}) is threaded to the ingest daemon-liveness check
+//   (projectDaemonHealthy) and the legacy-unit orphan sweep — optional, tests
+//   only; omitted in production so both use real fs/process.kill.
 // ---------------------------------------------------------------------------
 function runRepairs(opts) {
   const o = opts || {};
@@ -649,24 +652,59 @@ function runRepairs(opts) {
         push('ingest-others', 'none', 'skipped', read.others.length + ' other ingest unit(s) installed for other worktree(s): ' + list);
       }
       const cls = classifyIngestUnit({ workingDir: read.workingDir, scriptPath: read.scriptPath, home, env });
+
+      // Claim 5 H1 — daemon-LIVENESS gate. classifyIngestUnit is install-SHAPE
+      // only (WorkingDirectory/ExecStart on disk) — it has no opinion on whether
+      // the process behind that shape is actually alive. A launchd/systemd unit
+      // can be perfectly well-formed while its daemon is crashed, OOM-killed, or
+      // wedged (backoff-looping without ever re-acquiring its lock), and
+      // classifyIngestUnit alone would still report 'ok', so doctor would print
+      // "healthy" over a dead daemon. Gate 'ok' behind the SAME two-signal
+      // liveness check (fresh heartbeat + a live-pid lock holder) the legacy-unit
+      // orphan sweep above already trusts (projectDaemonHealthy) — never
+      // freshness alone (a dead process can leave a fresh-looking heartbeat
+      // file within the staleness window). repoKey comes off the installed unit
+      // when it's a per-project unit (the common case); a legacy (hash-only)
+      // unit carries no repoKey of its own, so it is derived from the worktree
+      // the same way reapOrphanedLegacyUnits does. `alive` is only meaningful
+      // when cls==='ok' — a unit with a shape problem is reported with ITS OWN
+      // reason below, never masked by a liveness message.
+      let alive = true;
       if (cls === 'ok') {
+        let repoKeyForHealth = read.repoKey;
+        if (!repoKeyForHealth && currentWorktree) {
+          try {
+            const { repoKeyForWorktree } = repokeyMod();
+            if (typeof repoKeyForWorktree === 'function') repoKeyForHealth = repoKeyForWorktree(currentWorktree);
+          } catch (_) {}
+        }
+        alive = !!(repoKeyForHealth && projectDaemonHealthy(home, repoKeyForHealth, Date.now(), o.io));
+      }
+
+      if (cls === 'ok' && alive) {
         push('ingest', 'install-ingest', 'skipped', 'ingest daemon installed and healthy (WorkingDirectory ' + read.workingDir + ')');
       } else {
+        const deadDaemon = cls === 'ok' && !alive; // install-shape fine, liveness check failed
         const reason = cls === 'absent' ? 'ingest daemon not installed'
           : cls === 'wrong-path' ? 'ingest daemon WorkingDirectory is wrong (' + (read.workingDir || 'unset') + ')'
           : cls === 'unstable-script' ? 'ingest daemon ExecStart script is not the current stable build (' + (read.scriptPath || 'unset') + ' — pinned to an old/relocatable path)'
-          : 'ingest daemon ExecStart script is missing (' + (read.scriptPath || 'unset') + ')';
+          : cls === 'stale-script' ? 'ingest daemon ExecStart script is missing (' + (read.scriptPath || 'unset') + ')'
+          : 'ingest daemon is installed but NOT ALIVE (stale heartbeat / lock not held by a live process — WorkingDirectory ' + read.workingDir + ')';
         if (!gateOpen) {
           push('ingest', 'install-ingest', 'gated', reason + '. ' + gatedHint(CMD_INGEST));
         } else if (dryRun) {
           let wt = cwd;
           try { const { resolveWorktree } = ingestConst(); wt = resolveWorktree(cwd) || cwd; } catch (_) {}
-          push('ingest', 'install-ingest', 'skipped', '[dry-run] would (re)install the ingest daemon from ' + wt + ' (' + cls + ')');
+          push('ingest', 'install-ingest', 'skipped', '[dry-run] would (re)install the ingest daemon from ' + wt + ' (' + (deadDaemon ? 'dead-daemon' : cls) + ')');
         } else {
           spawnInstaller(INGEST_INSTALLER, [], cwd, env);
           const read2 = readInstalledIngestWorkingDir({ home, platform, worktree: currentWorktree });
           const cls2 = classifyIngestUnit({ workingDir: read2.workingDir, scriptPath: read2.scriptPath, home, env });
-          if (cls2 === 'ok') push('ingest', 'install-ingest', 'fixed', 'ingest daemon (re)installed — WorkingDirectory now ' + read2.workingDir);
+          // A relaunch fixes the SHAPE immediately; it cannot prove the new
+          // incarnation is alive within this same pass (the daemon has not had a
+          // chance to write its first heartbeat yet) — so re-verification here,
+          // like every other cls branch above, checks install-shape only.
+          if (cls2 === 'ok') push('ingest', 'install-ingest', 'fixed', 'ingest daemon (re)installed — WorkingDirectory now ' + read2.workingDir + (deadDaemon ? ' (was installed but not alive; scheduler unit relaunched)' : ''));
           else push('ingest', 'install-ingest', 'failed', 'ingest daemon still ' + cls2 + ' after reinstall');
         }
       }
