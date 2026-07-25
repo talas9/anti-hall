@@ -63,6 +63,33 @@ const CHILD_IDLE_LINE =
   'me"` so the parent orchestrator\'s task list stays honest instead of you sitting ' +
   'idle unnoticed.';
 
+// CHILD_QUESTION_LINE / PARENT_QUESTION_LINE — the blocking-question escalation
+// protocol, condensed from skills/devswarm/SKILL.md "Blocking questions — CHILD
+// asks, PARENT answers (never child -> human)". That section is the canonical
+// wording; this is a faithful TL;DR so it reaches every workspace at birth
+// instead of living only in a skill a session may never read. Must never
+// contradict the SKILL — if the two ever diverge, the SKILL wins and this must
+// be re-condensed from it, not the other way round. Reuses the `send --to-primary`
+// verb already given in OVERRIDE_CORE rather than repeating the CLI path, to stay
+// tight against the ~10k hook-injection cap (Claude Code caps additionalContext
+// per hook and spills overflow to a file — see verify-first-full.js header).
+const CHILD_QUESTION_LINE =
+  ' BLOCKED ON A DECISION? Never ask the human directly, never halt all work — a ' +
+  'question parks ONE sub-task, not the workspace. Send it to the parent with the ' +
+  '`send --to-primary` command above, message = what\'s blocked / options / your ' +
+  'recommendation / the DEFAULT you\'ll take / your deadline. Keep working every ' +
+  'other unblocked item meanwhile. DEFAULT-AND-PROCEED: no reply by your deadline ' +
+  '-> take that default, proceed, and flag it LOUDLY as an explicit assumption in ' +
+  'your report — never silently. Hard-stop ONLY for a destructive/irreversible ' +
+  'action you\'re not authorized to take: park + report, do not guess a default. ' +
+  'Ladder: child -> parent -> human, never child -> human.';
+
+const PARENT_QUESTION_LINE =
+  ' BLOCKED-QUESTION REPLIES: a child\'s question means YOU decide from the plan ' +
+  'context, replying via `send --to <meshId>`; escalate to the human only for a ' +
+  'genuine human call (destructive/irreversible, scope-changing, unsafe to assume). ' +
+  'Ladder: child -> parent -> human, never child -> human.';
+
 // MAILBOX WAKE (v0.59): appended for BOTH roles (both have mailboxes). A workspace
 // that finishes its turn goes IDLE and nothing wakes it, so a message landing after
 // that point is never read. The fix is a directive — the agent itself CronList-checks
@@ -88,7 +115,10 @@ function wakeLine(env, isChild) {
 }
 
 function buildAdditionalContext(isChild, env) {
-  return OVERRIDE_CORE + (isChild ? CHILD_IDLE_LINE : '') + wakeLine(env, isChild);
+  return OVERRIDE_CORE +
+    (isChild ? CHILD_QUESTION_LINE : PARENT_QUESTION_LINE) +
+    (isChild ? CHILD_IDLE_LINE : '') +
+    wakeLine(env, isChild);
 }
 
 function main() {

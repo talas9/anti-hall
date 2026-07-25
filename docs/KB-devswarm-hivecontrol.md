@@ -1362,6 +1362,52 @@ every guard in this plugin by construction.**
 
 ---
 
+### 8.7.3 Blocking questions — CHILD/PARENT protocol (documentation convention, NOT mechanically
+enforced)
+
+**Status, stated plainly (unlike most of §8.7, nothing below is code-enforced or hook-injected
+— it is a written skill convention only).** The shipped mesh (§8.7's v0.57/v0.58 substrate)
+gives a child a channel to reach its parent; it never said what a child should DO the moment it
+hits a decision it cannot make alone. Left unaddressed that produces exactly the failure mode
+async delegation exists to avoid: a spawned child asks a blocking question and stops working
+entirely, and if several children do this at once, all progress serializes through a human —
+defeating the point of the workspace tier (§8.1). This is a real owner-reported gap, not a
+hypothetical.
+
+The protocol lives in full, per-role, in both skill files (kept in parity):
+`plugins/anti-hall/skills/devswarm/SKILL.md`'s "Blocking questions — CHILD asks, PARENT
+answers" section and its Codex mirror,
+`plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`. Summary:
+
+- **CHILD:** never ask the human directly and never halt all work — a question parks ONE
+  sub-task, not the workspace. Send it via `send --to-primary --urgency high --message "<...>"`
+  with five required parts (what's blocked / options considered / recommendation / the default
+  to take if unanswered / the deadline), keep working every other unblocked item, and
+  **DEFAULT-AND-PROCEED** if no reply lands by the stated deadline — taking the named default,
+  proceeding, and flagging it LOUDLY as an explicit assumption in the final report. The one
+  exception: a destructive/irreversible action the child isn't authorized to take (delete data,
+  force-push, kill a process, a production write) is parked and reported (`--urgency urgent`)
+  but never defaulted — it waits for an explicit answer.
+- **PARENT:** keep a mailbox-wake running (`inbox read-primary <id>` on a schedule, reinforced
+  by the existing per-turn mesh reminder — §8.7's v0.58 note) so a child question doesn't sit
+  unseen; an unanswered child question is a PARENT failure, not a child stall. Answer decisively
+  from the plan/intent context already held. Escalate to the human ONLY for a genuine human call
+  (destructive/irreversible action, product/scope decision, or an assumption unsafe to make).
+  **The escalation ladder is child → parent → human, never child → human.** Reply on the mesh
+  directly to the asking child (`send --to <meshId>`), not a broadcast.
+
+This reuses only already-shipped, already-documented CLI verbs (`send --to-primary`, `send
+--to <meshId>`, `inbox read-primary` — all in the CLI table at §8.8) — no new subcommand, no
+new guard, no new hook. It is a **behavioral convention an agent is told to follow**, the same
+category as the KB's own "How to READ mesh health" guidance elsewhere in this document —
+distinct from the mechanically-enforced guard branches (command-guard's native-SEND block,
+the Stop-side child gate, etc.) documented throughout the rest of §8.7. Nothing currently
+mechanically verifies a child actually included all five required parts of a blocking-question
+message, or that a parent actually replied before a child's stated deadline — that enforcement
+gap is honest and open, not silently assumed closed.
+
+---
+
 ## 8.8 Full CLI reference — `scripts/devswarm.js`
 
 THE structured interface (CLI over MCP — owner preference; every subcommand below is a

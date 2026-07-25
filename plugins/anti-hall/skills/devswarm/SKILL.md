@@ -153,6 +153,70 @@ handoff:
   descriptor to `archived/`, tombstones the store entry) and surfaces a manual "remove
   workspace in the DevSwarm app" step, because hivecontrol itself has no teardown command.
 
+## Blocking questions — CHILD asks, PARENT answers (never child → human)
+
+A gap the mesh above doesn't close by itself: nothing so far tells a CHILD what to DO
+the instant it hits a decision it cannot make alone. Left unaddressed this reproduces
+the exact failure the async mesh exists to avoid — several children each block on a
+question and stop working, and all progress serializes through a human, which defeats
+the entire point of the delegation. This is the missing protocol. Distinct from the
+"idle child, no task" edge case above (a child with literally nothing to do) — this is
+a child mid-task that hit a decision point and still has other work it could be doing.
+
+### CHILD rules
+
+1. **Never ask the human directly. Never halt all work.** A question parks ONE
+   sub-task inside your workspace, not the whole workspace.
+2. **Send the question to the parent, not the terminal:**
+   ```bash
+   node scripts/devswarm.js send --to-primary --urgency high --message "<structured question>"
+   ```
+   The message MUST contain all five parts, every time:
+   - **(a) what is blocked** — one line.
+   - **(b) the options considered.**
+   - **(c) your recommendation.**
+   - **(d) the DEFAULT you will take if unanswered.**
+   - **(e) the deadline** — when you'll proceed under that default (DevSwarm has no
+     scheduler, so this is self-enforced on your own next turns, not a real timer).
+3. **Continue working every other unblocked item** while the question sits in the
+   parent's inbox — this is what stops several parked questions from serializing.
+4. **DEFAULT-AND-PROCEED.** If no reply has landed by your stated deadline, take the
+   default you already named, proceed, and flag it LOUDLY in your final report as an
+   explicit, named assumption — e.g. "proceeded under assumption X; unanswered question
+   Y (sent <when>, no reply by <deadline>)." Never proceed silently on an unstated
+   default, and never let a parked question quietly decay unreported. This is what
+   makes deadlock structurally impossible: every blocked path has a scripted exit,
+   taken or reported, no exceptions.
+5. **The ONE thing a child may hard-stop for:** a destructive/irreversible action it is
+   not authorized to take — deleting data, a force-push, killing a process, a
+   production write. For that class ONLY, park it and report it (same structured
+   message, `--urgency urgent`) but do **not** guess a default and do **not**
+   proceed — wait for an explicit answer. Every other blocking question gets a
+   default and a deadline per rule 4.
+
+### PARENT rules
+
+1. **Keep a mailbox-wake running.** Poll `node scripts/devswarm.js inbox read-primary
+   <id>` on a schedule (the per-turn mesh reminder in "v0.58 mesh-only messaging"
+   below reinforces this) so child questions are actually SEEN while you're otherwise
+   idle. An unanswered child question is a **PARENT failure**, not a child stall.
+2. **Answer decisively**, from the plan/intent context you already hold — you usually
+   already know the answer the child lacks; that's why the child asked you and not its
+   own user.
+3. **Escalate to the human ONLY for a genuine human call:** a destructive/irreversible
+   action, a product/scope decision, or anything where proceeding under any assumption
+   would be unsafe or would make the finished work useless if the guess is wrong.
+4. **The escalation ladder is child → parent → human. NEVER child → human.** A child
+   that skips the parent and asks its own user directly has broken the protocol — the
+   parent exists to absorb the decisions a child can't make, forwarding only the
+   genuinely human ones.
+5. **Reply on the mesh, to that child specifically:**
+   ```bash
+   node scripts/devswarm.js send --to <meshId> --message "<answer>"
+   ```
+   not a broadcast — a parked question is addressed to one child, and the answer
+   should be too.
+
 ## Operating the mesh: daemon + CLI reference
 
 This is the complete operational reference for a workspace agent: the two background

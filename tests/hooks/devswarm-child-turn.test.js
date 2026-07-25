@@ -646,6 +646,66 @@ test('CHILD STALE: cwd not a git worktree -> NO banner, no throw (fail-open)', (
   } finally { h.cleanup(); }
 });
 
+// ----- v0.66 monitor-outcome FAULT banner (daemonHealth() status:'failed' —
+// alive but `hivecontrol workspace monitor` is failing, ingesting NOTHING).
+// Strictly MORE severe than 'stale': the SAME wiring slot renders
+// buildMonitorFaultBanner() instead of buildStaleBanner() when status is
+// 'failed'. daemonHealth's status is a single mutually-exclusive string (see
+// its own doc comment / companion/lib/ingest-health.js), so 'failed' and
+// 'stale' can never both be true for one call — these tests lock in that only
+// the monitor-fault wording renders for 'failed', never the stale wording,
+// and vice versa. -----
+function writeDaemonHeartbeatFull(home, repoKey, fields) {
+  const p = path.join(heartbeatDir(home), 'ingest-' + repoKey + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(fields));
+}
+function monitorFaultBanner(c) {
+  return c.split('\n\n').find((s) => s.includes('DEVSWARM INGEST FAILING')) || '';
+}
+
+test('CHILD MONITOR-FAULT: alive (fresh heartbeat + live lock) but monitor failing past threshold -> monitor-fault banner, NOT the stale banner', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 5, // >= MONITOR_FAILURE_FAIL_THRESHOLD (3)
+      lastMonitorOkMs: null,
+      lastMonitorErrorCode: 'ENOENT',
+    });
+    writeDaemonLock(h.home, REPO_KEY, process.pid); // SAME pid -> same incarnation, baseHealthy
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const banner = monitorFaultBanner(c);
+    assert.ok(banner, `monitor-failing daemon must render the monitor-fault banner; ctx=${c}`);
+    assert.ok(/hivecontrol workspace monitor/.test(banner), banner);
+    assert.ok(/5x/.test(banner), banner);
+    assert.ok(/anti-hall:doctor/.test(banner), banner);
+    assert.strictEqual(staleBanner(c), '', `must NOT also render the stale banner; ctx=${c}`);
+    // exactly ONE banner segment, never two.
+    const bannerSegs = c.split('\n\n').filter((s) => s.includes('DEVSWARM STALE DATA') || s.includes('DEVSWARM INGEST FAILING'));
+    assert.strictEqual(bannerSegs.length, 1, `exactly one banner must render; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD MONITOR-FAULT: healthy monitor (consecutiveMonitorFailures:0) -> neither banner renders', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 0,
+      lastMonitorOkMs: Date.now(),
+    });
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    const r = testHook(HOOK, promptPayload('sess-stale', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.strictEqual(staleBanner(c), '', `healthy daemon must not warn stale; ctx=${c}`);
+    assert.strictEqual(monitorFaultBanner(c), '', `healthy daemon must not warn monitor-fault either; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
 // ----- D26 (PLAN-v0.57-mesh.md, Phase 8 step 3): mesh DIRECT surfacing. A mesh
 // direct addressed to this child's meshId lands, via the addressing join, in
 // the child's OWN builder-id partition inside the shared store — this hook

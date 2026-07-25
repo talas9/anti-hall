@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.65.0
+
+DevSwarm daemon reliability — the ingest daemon now recovers itself, reports honestly when it cannot, and children never block the swarm on a question.
+
+- **Root cause fixed: the ingest daemon was alive but ingesting nothing.** It spawned `hivecontrol` by bare name while its service manager supplied only a minimal PATH, so every monitor cycle failed with ENOENT — invisibly, because the error was swallowed. The binary is now discovered at install time and baked into the generated launchd/systemd/cron unit (never a hardcoded path), and the daemon resolves it from an explicit option, the `ANTIHALL_DEVSWARM_HIVECONTROL` env var, or PATH. Found by the error logging shipped in v0.64.0.
+- **Permanent faults no longer storm.** ENOENT/EACCES/ENOTDIR are configuration faults, not transient ones: they now escalate through a capped backoff and log on state transitions plus a periodic rollup instead of once per retry. The backoff is sliced so the heartbeat keeps being written — a backing-off daemon is never mistaken for a dead one.
+- **Stale locks self-heal.** Orphaned ingest locks are swept on daemon start, a recycled pid no longer blocks restart forever, and a zombie holder is reclaimed without signalling anything. Every removal requires positive OS confirmation of death, reuse, or defunct state; an inconclusive read never authorizes removal, and unknown holder states block by default rather than falling through.
+- **`doctor --reclaim-ingest-lock`** — an explicit, opt-in path to sweep orphaned locks and reclaim a contended ingest lock, then reinstall. Never runs automatically.
+- **Health stops lying.** The heartbeat now records the monitor outcome, so a daemon that is alive but failing every cycle is reported as a FAILURE by `doctor` and surfaced in-session by a one-line banner, instead of reading as RUNNING. Heartbeats written by older daemons lack these fields and are treated as unknown, never as a fault.
+- **Reaper detection.** Installing now detects a memory-guard/reaper script that would kill the daemon (a service-managed daemon is parented to init, so orphan sweeps target it) and reports the file and the exact allowlist entry to add. Detect-and-report only — it never edits anything outside the repo.
+- **Children never block the swarm on a question.** A child now forwards a decision to its parent with its options, its recommendation and the default it will take, keeps working every other item, and proceeds on that stated default if unanswered — flagging the assumption loudly. Only an unauthorized destructive action is a hard stop. The ladder is child -> parent -> human, never child -> human. Injected into every workspace session, and documented in the devswarm skill on both ports.
+
+2329 tests, 0 fail. Minor bump — daemon self-heal, honest health reporting, one new opt-in doctor flag; all new paths are fail-open and no path removes registry or message data.
+
 ## 0.64.0
 
 DevSwarm self-heal reliability + observability, plus an edit-guard plan-mode fix.

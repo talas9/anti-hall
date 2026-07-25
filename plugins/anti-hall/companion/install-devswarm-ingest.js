@@ -178,6 +178,146 @@ function resolveWorktree(cwd) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// hivecontrol RESOLUTION (v0.66) — the DURABLE half of the ENOENT-storm fix
+// ---------------------------------------------------------------------------
+// launchd/systemd/cron hand a unit a MINIMAL default PATH (observed on every
+// installed daemon via `ps eww`: PATH=/usr/bin:/bin:/usr/sbin:/sbin) and the
+// installed plists carried NO EnvironmentVariables key at all — so the daemon's
+// bare-name `hivecontrol` spawn failed ENOENT on every single poll.
+//
+// A hand-patched unit does NOT survive: anything that reconciles the install
+// (doctor --repair's ingest section, the update script) regenerates the unit
+// from buildPlist()/buildService() and unload/loads it, silently discarding the
+// patch. The resolution therefore has to live HERE, in the builders, so every
+// regeneration reproduces it byte-for-byte.
+//
+// DISCOVERED, NEVER ASSUMED: the path comes from the user's own login shell
+// (`command -v hivecontrol`) or from an explicit ANTIHALL_DEVSWARM_HIVECONTROL
+// env var. There are deliberately NO hardcoded install roots and no per-OS path
+// tables in this file — this is a public, machine-agnostic repo, and a binary we
+// cannot find is REPORTED, never guessed at.
+const HIVECONTROL_BIN_NAME = 'hivecontrol';
+const HIVECONTROL_ENV_VAR = 'ANTIHALL_DEVSWARM_HIVECONTROL';
+// The scheduler's own minimal default PATH, which the resolved bin dir is
+// PREPENDED to (never replaced — the daemon still spawns `git`, `ps`, etc).
+const MINIMAL_UNIT_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+// The installer itself may run with a minimal PATH (it is spawned by doctor,
+// by the update script, or by a scheduler), so a plain `command -v` in OUR
+// process env is not sufficient — the lookup is done in the USER's login shell.
+const LOOKUP_TIMEOUT_MS = 10000;
+
+// defaultLookupRun({cmd,args}) -> {ok, raw}. Injectable (opts.io.lookupRun) so
+// tests NEVER spawn a real shell. Bounded by LOOKUP_TIMEOUT_MS, enforced with
+// killSignal:'SIGKILL' — an interactive login shell (macOS default $SHELL=zsh,
+// attempt #1 below uses `-lic`) can IGNORE the default SIGTERM outright (job-
+// control shells do; verified: `spawnSync('/bin/zsh',['-ic','sleep N'],{timeout})`
+// with the default killSignal never returns), so plain `timeout:` alone is not
+// actually a bound. stdio stdin is explicitly 'ignore' so a shell that prompts
+// interactively can never block waiting on input either.
+function defaultLookupRun(spec) {
+  const o = spec || {};
+  try {
+    const r = spawnSync(o.cmd, o.args || [], {
+      encoding: 'utf8',
+      timeout: LOOKUP_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    if (r.error) return { ok: false, raw: '' };
+    return { ok: r.status === 0, raw: String(r.stdout || '') };
+  } catch (_) {
+    return { ok: false, raw: '' };
+  }
+}
+
+// firstBinLine(raw) -> the first absolute path whose basename is exactly the
+// binary name. An interactive login shell prints rc noise/warnings alongside the
+// answer, so the output is FILTERED rather than trusted wholesale — and the
+// basename check means a noise line can never masquerade as a resolution.
+function firstBinLine(raw) {
+  const lines = String(raw || '').split('\n');
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t || !path.isAbsolute(t)) continue;
+    if (path.basename(t) !== HIVECONTROL_BIN_NAME) continue;
+    return t;
+  }
+  return null;
+}
+
+// isExecutableFile(p, F) -> bool. Never throws.
+function isExecutableFile(p, F) {
+  const fsi = F || fs;
+  try { if (!fsi.statSync(p).isFile()) return false; } catch (_) { return false; }
+  try { fsi.accessSync(p, fs.constants.X_OK); } catch (_) { return false; }
+  return true;
+}
+
+// resolveHivecontrolPath({env, io, platform}) -> absolute path | null. Order:
+//   1. an explicit ANTIHALL_DEVSWARM_HIVECONTROL (absolute + executable),
+//   2. `command -v hivecontrol` in the user's LOGIN shell (interactive first —
+//      many users export PATH from an interactive rc, not a profile — then
+//      login-only, then a plain /bin/sh lookup as the last resort).
+// Returns null when nothing resolves; the caller then installs ANYWAY and warns
+// (a daemon with no baked path still runs, still holds its lock and heartbeat,
+// and is now VISIBLY degraded to doctor — strictly better than no daemon).
+// Fail-open: never throws. win32 -> null (the installer is a no-op there).
+function resolveHivecontrolPath(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const F = (o.io && o.io.fs) || fs;
+  const platform = o.platform || process.platform;
+  if (platform === 'win32') return null;
+  try {
+    const explicit = env[HIVECONTROL_ENV_VAR];
+    if (typeof explicit === 'string' && explicit.trim() && path.isAbsolute(explicit.trim())
+      && isExecutableFile(explicit.trim(), F)) return explicit.trim();
+    const run = (o.io && o.io.lookupRun) || defaultLookupRun;
+    const shell = (typeof env.SHELL === 'string' && path.isAbsolute(env.SHELL)) ? env.SHELL : '/bin/sh';
+    const cmd = 'command -v ' + HIVECONTROL_BIN_NAME;
+    const attempts = [
+      { cmd: shell, args: ['-lic', cmd] },
+      { cmd: shell, args: ['-lc', cmd] },
+      { cmd: '/bin/sh', args: ['-c', cmd] },
+    ];
+    for (const a of attempts) {
+      let r = null;
+      try { r = run(a); } catch (_) { r = null; }
+      if (!r || !r.ok) continue;
+      const p = firstBinLine(r.raw);
+      if (p && isExecutableFile(p, F)) return p;
+    }
+  } catch (_) { /* fail-open: an install must never abort on a lookup failure */ }
+  return null;
+}
+
+// unitEnvFor(hivecontrolPath) -> {PATH, ANTIHALL_DEVSWARM_HIVECONTROL} | null.
+// PURE and DETERMINISTIC (same input -> byte-identical output), which is what
+// makes the generated unit byte-stable across the repeated reconcile/regenerate
+// cycles that silently reverted every hand-patched plist.
+//
+// BOTH keys are emitted on purpose: PATH alone would fix only this ONE lookup
+// (and only while the CLI stays put), whereas the explicit absolute binary in
+// ANTIHALL_DEVSWARM_HIVECONTROL is what the daemon actually spawns.
+function unitEnvFor(hivecontrolPath) {
+  if (!hivecontrolPath || !path.isAbsolute(String(hivecontrolPath))) return null;
+  const bin = String(hivecontrolPath);
+  const dir = path.dirname(bin);
+  const parts = [dir].concat(MINIMAL_UNIT_PATH.split(':').filter((p) => p && p !== dir));
+  const out = {};
+  out.PATH = parts.join(':');
+  out[HIVECONTROL_ENV_VAR] = bin;
+  return out;
+}
+
+// RESOLVED_HIVECONTROL — resolved ONCE per installer run (in main(), before any
+// install branch) and consumed as the default by buildPlist/buildService/
+// buildCronLine, so every unit shape agrees without threading a parameter
+// through a dozen call sites. Stays null under test (main() never runs), so the
+// builders' pre-v0.66 output is unchanged unless a test passes one explicitly.
+let RESOLVED_HIVECONTROL = null;
+
 // ----- per-worktree identity (multi-repo, additive installs) -----
 // worktreeHash(wt, opts) — an 8-hex fingerprint of the worktree's REAL
 // (symlink-resolved) path. The daemon (devswarm-ingest.js) MUST compute the
@@ -515,12 +655,24 @@ function macPlistPath(label) { return path.join(HOME, 'Library', 'LaunchAgents',
 // KeepAlive (not StartInterval): the ingest daemon runs continuously, so launchd
 // must relaunch it whenever it exits — the "re-exec on exit" contract the daemon
 // expects. RunAtLoad starts it at load/login.
-function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG, workdir } = {}) {
+function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG, workdir, hivecontrol = RESOLVED_HIVECONTROL } = {}) {
   // WorkingDirectory: launchd otherwise defaults the daemon's cwd to $HOME (not a
   // git repo) and `hivecontrol workspace monitor` fails "Not in a git repository",
   // draining nothing. Baking the install-time worktree lets the daemon resolve it.
   const workdirKey = workdir
     ? `  <key>WorkingDirectory</key>\n  <string>${xmlEscape(workdir)}</string>\n`
+    : '';
+  // EnvironmentVariables (v0.66): launchd gives a unit a MINIMAL PATH that does
+  // not contain the DevSwarm CLI, and this plist carried no environment at all —
+  // so every `hivecontrol workspace monitor` spawn failed ENOENT. Emitted in a
+  // FIXED key order from a pure function of `hivecontrol`, so regenerating the
+  // unit (doctor --repair / update reconcile) reproduces it byte-for-byte instead
+  // of dropping it. Omitted entirely when the binary could not be resolved.
+  const env = pathIsEmittable(hivecontrol || '') ? unitEnvFor(hivecontrol) : null;
+  const envKey = env
+    ? '  <key>EnvironmentVariables</key>\n  <dict>\n'
+      + Object.keys(env).sort().map((k) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(env[k])}</string>\n`).join('')
+      + '  </dict>\n'
     : '';
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -533,7 +685,7 @@ function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG, wo
     <string>${xmlEscape(exec)}</string>
     <string>${xmlEscape(script)}</string>
   </array>
-${workdirKey}  <key>KeepAlive</key>
+${workdirKey}${envKey}  <key>KeepAlive</key>
   <true/>
   <key>RunAtLoad</key>
   <true/>
@@ -570,11 +722,30 @@ function unitDir() { return path.join(HOME, '.config', 'systemd', 'user'); }
 // Type=simple + Restart=always: a long-running daemon that systemd relaunches on
 // exit (the daemon's re-exec-on-exit contract). No .timer — this is a continuous
 // service, not a periodic sweep.
-function buildService({ exec = EXEC, script = SCRIPT, restartSec = RESTART_SEC, workdir, log = LOG } = {}) {
+// sdEnvValue(s) — systemd Environment= value quoting. systemd does NOT do $VAR
+// expansion inside Environment= (unlike ExecStart), but it DOES expand `%`
+// specifiers, and an unquoted value cannot contain whitespace — so quote, escape
+// \ and ", and double every % per systemd.unit(5).
+function sdEnvValue(s) {
+  return `"` + String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/%/g, '%%') + `"`;
+}
+
+function buildService({ exec = EXEC, script = SCRIPT, restartSec = RESTART_SEC, workdir, log = LOG, hivecontrol = RESOLVED_HIVECONTROL } = {}) {
   // WorkingDirectory: systemd otherwise defaults the daemon's cwd to $HOME (not a
   // git repo), so `hivecontrol workspace monitor` can never resolve a workspace.
   // systemd-escaped like ExecStart (systemd tokenizes + does $VAR expansion).
   const workdirLine = workdir ? `WorkingDirectory=${sdQuote(workdir)}\n` : '';
+  // Environment= (v0.66): systemd --user services inherit a minimal PATH that
+  // does not contain the DevSwarm CLI — the systemd-side equivalent of the
+  // launchd EnvironmentVariables fix above. Same pure, fixed-order derivation,
+  // so a regenerated unit is byte-identical.
+  const unitEnv = pathIsEmittable(hivecontrol || '') ? unitEnvFor(hivecontrol) : null;
+  const envLines = unitEnv
+    ? Object.keys(unitEnv).sort().map((k) => `Environment=${sdEnvValue(k + '=' + unitEnv[k])}\n`).join('')
+    : '';
   // StandardOutput/StandardError: without these, a startup failure (bad
   // WorkingDirectory, missing script) exits silently — nothing is captured
   // anywhere. Append (not truncate) into the SAME stable log the macOS plist's
@@ -585,7 +756,7 @@ Description=anti-hall DevSwarm ingest daemon (native monitor -> store)
 
 [Service]
 Type=simple
-${workdirLine}ExecStart=${sdQuote(exec)} ${sdQuote(script)}
+${workdirLine}${envLines}ExecStart=${sdQuote(exec)} ${sdQuote(script)}
 Restart=always
 RestartSec=${restartSec}
 StandardOutput=append:${log}
@@ -603,14 +774,23 @@ function hasSystemctl() {
 // lock, so a duplicate launch refuses-and-exits immediately (single-consumer);
 // when the daemon is dead, the next tick takes over. Each path is POSIX
 // single-quoted so no path can inject shell (P0-2).
-function buildCronLine({ exec = EXEC, script = SCRIPT, workdir, log = LOG } = {}) {
+function buildCronLine({ exec = EXEC, script = SCRIPT, workdir, log = LOG, hivecontrol = RESOLVED_HIVECONTROL } = {}) {
   // cd into the install-time worktree first: cron runs from $HOME (not a git repo),
   // so without this the daemon can never resolve a workspace. The worktree path is
   // POSIX single-quoted like exec/script (no injection hole reintroduced).
   const cd = workdir ? `cd ${shSingleQuote(workdir)} && ` : '';
+  // Environment assignment prefix (v0.66): cron's default PATH is even narrower
+  // than launchd's, so the cron fallback needs the same baked resolution the
+  // plist/service get. `VAR=value cmd` is a POSIX assignment prefix (scoped to
+  // this command only); every value is single-quoted exactly like exec/script.
+  // parseCronCommand's readback strips these back off — keep the two in sync.
+  const unitEnv = pathIsEmittable(hivecontrol || '') ? unitEnvFor(hivecontrol) : null;
+  const envPrefix = unitEnv
+    ? Object.keys(unitEnv).sort().map((k) => `${k}=${shSingleQuote(unitEnv[k])} `).join('')
+    : '';
   // Append (not discard) into the SAME stable log the plist/service use — a
   // startup failure on the cron fallback path used to vanish into /dev/null.
-  return `* * * * * ${cd}${shSingleQuote(exec)} ${shSingleQuote(script)} >> ${shSingleQuote(log)} 2>&1`;
+  return `* * * * * ${cd}${envPrefix}${shSingleQuote(exec)} ${shSingleQuote(script)} >> ${shSingleQuote(log)} 2>&1`;
 }
 
 // The managed cron marker comment. It is BOTH the idempotence key (a second install
@@ -781,7 +961,13 @@ function parseCronCommand(cmd) {
   const out = { workingDir: null, scriptPath: null };
   const cd = cmd.match(/cd\s+('((?:[^'\\]|\\.)*)')\s*&&/);
   if (cd) out.workingDir = cd[2].replace(/'\\''/g, "'");
-  const afterCd = cd ? cmd.slice(cmd.indexOf('&&') + 2) : cmd;
+  let afterCd = cd ? cmd.slice(cmd.indexOf('&&') + 2) : cmd;
+  // Strip the v0.66 `VAR='value' ` assignment prefix buildCronLine may emit
+  // (PATH / ANTIHALL_DEVSWARM_HIVECONTROL) BEFORE tokenizing — otherwise those
+  // quoted values would be read as the exec/script tokens and every consumer of
+  // this readback (doctor's install-shape classifier) would see a bogus script
+  // path. A line without any prefix is unaffected (the regex matches empty).
+  afterCd = afterCd.replace(/^\s*(?:[A-Za-z_][A-Za-z0-9_]*=(?:'(?:[^'\\]|\\.)*'|[^\s']*)\s+)*/, '');
   const toks = afterCd.match(/'((?:[^'\\]|\\.)*)'/g) || [];
   if (toks.length >= 2) out.scriptPath = firstShToken(toks[1]);
   return out;
@@ -890,6 +1076,125 @@ function listInstalledIngestUnits(opts) {
   return units; // win32 / unknown: no installed unit is readable
 }
 
+// ----- memory-guard / reaper detection (v0.65, DETECT-AND-REPORT ONLY) -----
+//
+// WHY THIS EXISTS (confirmed field incident, not a hypothetical): a locally
+// installed memory-guard script's "runaway node" post-pass SIGKILLs every
+// non-allowlisted node process whose PPID is 1. A launchd LaunchAgent (and a
+// systemd --user service, and a cron-launched process) ALWAYS has PPID 1, so
+// this ingest daemon matches that orphan-sweep exactly — it was SIGKILLed
+// (exit -9) mid-run, leaked its lock, and the scheduler's relaunch-on-exit
+// then turned that into a refuse -> exit(1) -> relaunch loop. The daemon-side
+// half of that failure is fixed by the lock reclaim/sweep work in
+// devswarm-ingest.js; this half makes the REMAINING external cause VISIBLE at
+// install time on any machine, instead of only on the one where a human
+// happened to hand-edit the guard.
+//
+// DETECT AND REPORT ONLY — by design, and non-negotiable. This NEVER rewrites,
+// patches, or creates anything outside the repo: the guard script belongs to
+// the user, may be under their own version control, and silently editing a
+// process-killing script on their behalf is exactly the class of change that
+// must stay human-initiated. The output names the file, the allowlist variable
+// and what to add; the human decides.
+//
+// Fail-open in every direction: no scripts dir, no matching script, an
+// unreadable file, or any thrown error -> `{found:false}` and total silence.
+
+const REAPER_NAME_RE = /(memguard|memory-?guard|reaper|memcheck)/i;
+// A candidate is only treated as a reaper if it actually KILLS something —
+// name alone is not evidence (a `*-memcheck.sh` that only prints must not
+// trigger a scary warning).
+const REAPER_KILL_RE = /\b(pkill|kill\s+-9|kill\s+-KILL|SIGKILL)\b/;
+// The allowlist variable an operator would extend, e.g. `MCP_ALLOWLIST='...'`.
+//
+// THIS IS ALSO THE FALSE-POSITIVE FILTER, not just a nicety (caught by running
+// the detector against a real machine before shipping it). There are two kinds
+// of reaper, and only ONE of them can ever hit this daemon:
+//   * kill-by-EXCLUSION ("kill every node process EXCEPT these"): the daemon is
+//     killed unless it is allowlisted. Dangerous — this is the one to report.
+//     It necessarily has an allowlist variable, since that is how it decides.
+//   * kill-by-INCLUSION ("kill only processes matching these MCP signatures"):
+//     the daemon never matches the include pattern, so it is never a target. It
+//     has no allowlist at all.
+// Requiring a named allowlist variable therefore both (a) suppresses the
+// inclusion-model false positive and (b) guarantees the advice we print names a
+// variable that actually exists in that file. Telling someone to add
+// 'devswarm-ingest' to an INCLUSION reaper's match pattern would be worse than
+// silence — it would turn a harmless script into one that hunts this daemon.
+const REAPER_ALLOWLIST_VAR_RE = /^[\s]*([A-Za-z_][A-Za-z0-9_]*ALLOW(?:LIST|ED)?[A-Za-z0-9_]*)\s*=/m;
+// The token that must appear in that allowlist for this daemon to survive.
+const REAPER_DAEMON_TOKEN = 'devswarm-ingest';
+const REAPER_MAX_FILES = 40;          // bound the scan
+const REAPER_MAX_BYTES = 512 * 1024;  // never slurp a huge file
+
+// claudeScriptsDir(home) — where Claude Code users keep helper scripts. This is
+// the ONLY directory scanned; nothing else on the machine is read.
+function claudeScriptsDir(home) { return path.join(home || HOME, '.claude', 'scripts'); }
+
+// detectReaperGuard({home, scriptsDir, fsi}) -> {
+//   found, file, allowlisted, allowlistVar, needsAction, scanned
+// }. `needsAction` is the single field a caller should branch on: a reaper that
+// would kill this daemon exists AND it does not allowlist it. Exported so
+// doctor can surface the identical finding without duplicating the heuristic.
+function detectReaperGuard(opts) {
+  const o = opts || {};
+  const F = o.fsi || fs;
+  const out = { found: false, file: null, allowlisted: false, allowlistVar: null, needsAction: false, scanned: 0 };
+  let dir;
+  try { dir = o.scriptsDir || claudeScriptsDir(o.home); } catch (_) { return out; }
+  let names;
+  try { names = F.readdirSync(dir); } catch (_) { return out; } // no scripts dir -> nothing to say
+  for (const raw of (names || [])) {
+    if (out.scanned >= REAPER_MAX_FILES) break;
+    const name = String(raw);
+    // Backups of a guard (`*.bak-*`) are not the live guard — reporting them
+    // would produce a warning the user cannot act on.
+    if (/\.bak/i.test(name)) continue;
+    if (!REAPER_NAME_RE.test(name)) continue;
+    out.scanned++;
+    const full = path.join(dir, name);
+    let body;
+    try {
+      const st = F.statSync(full);
+      if (!st.isFile() || st.size > REAPER_MAX_BYTES) continue;
+      body = F.readFileSync(full, 'utf8');
+    } catch (_) { continue; } // unreadable -> silently skip
+    if (!REAPER_KILL_RE.test(body)) continue; // names itself a reaper but kills nothing -> not our concern
+    const varMatch = body.match(REAPER_ALLOWLIST_VAR_RE);
+    if (!varMatch) continue; // kill-by-INCLUSION reaper (or unrecognizable): cannot target this daemon -> silent
+    const allowlisted = body.indexOf(REAPER_DAEMON_TOKEN) !== -1;
+    // Report the WORST case found: an already-protective guard must never mask
+    // a second, unprotective one.
+    if (!out.found || (out.allowlisted && !allowlisted)) {
+      out.found = true;
+      out.file = full;
+      out.allowlisted = allowlisted;
+      out.allowlistVar = varMatch[1];
+    }
+  }
+  out.needsAction = out.found && !out.allowlisted;
+  return out;
+}
+
+// reaperWarningLines(detection) -> string[]. Empty unless action is genuinely
+// needed, so a caller can `for (const l of reaperWarningLines(d)) say(l)`
+// unconditionally.
+function reaperWarningLines(detection) {
+  const d = detection || {};
+  if (!d.needsAction || !d.file || !d.allowlistVar) return [];
+  const varName = d.allowlistVar;
+  return [
+    '(warn) a process-reaping guard script was found that does NOT allowlist this daemon:',
+    `  ${d.file}`,
+    `  The ingest daemon is started by launchd/systemd/cron, so it ALWAYS runs with PPID 1 —`,
+    `  i.e. it looks exactly like an "orphaned node process" to a runaway/orphan sweep and can`,
+    `  be SIGKILLed mid-run (this has happened: the daemon then leaks its lock and the`,
+    `  scheduler's relaunch-on-exit turns it into a refuse->exit->relaunch loop).`,
+    `  FIX (manual, by you — anti-hall never edits files outside its own repo): add`,
+    `  '${REAPER_DAEMON_TOKEN}' to ${varName} in that script, then reload the guard.`,
+  ];
+}
+
 // ----- Windows -----
 function windowsNoop() {
   say(
@@ -907,6 +1212,34 @@ function main() {
   try {
     if (process.platform === 'win32') return windowsNoop();
     if (!fs.existsSync(SCRIPT)) { say(`error: ingest daemon script not found at ${SCRIPT}`); process.exit(1); return; }
+    // Report (never fix) a local process-reaper that would SIGKILL this daemon.
+    // Emitted BEFORE the install branches so it is shown regardless of which
+    // path (per-project / legacy per-worktree / cron fallback) is taken, and
+    // skipped on --uninstall where it would be pure noise. Fully fail-open.
+    if (!UNINSTALL) {
+      try { for (const line of reaperWarningLines(detectReaperGuard({ home: HOME }))) say(line); } catch (_) {}
+      // v0.66: DISCOVER the hivecontrol binary ONCE, before any unit is built,
+      // so buildPlist/buildService/buildCronLine all bake the identical resolved
+      // path + PATH. Deterministic on a given machine => a regenerated unit is
+      // byte-identical (the property that makes this survive the reconcile that
+      // silently reverted every hand-patched plist). Fail-open: an unresolvable
+      // binary still installs the daemon — it just warns and the daemon runs
+      // visibly degraded (backed-off, and reported by doctor) instead of
+      // ENOENT-storming every 2 seconds.
+      try {
+        RESOLVED_HIVECONTROL = resolveHivecontrolPath({ env: process.env });
+      } catch (_) { RESOLVED_HIVECONTROL = null; }
+      if (RESOLVED_HIVECONTROL) {
+        say(`resolved ${HIVECONTROL_BIN_NAME}: ${RESOLVED_HIVECONTROL} (baked into the unit as ${HIVECONTROL_ENV_VAR} + PATH)`);
+      } else {
+        say(`(warn) could not resolve the ${HIVECONTROL_BIN_NAME} CLI via your login shell (\`command -v ${HIVECONTROL_BIN_NAME}\`).`);
+        say(`  A scheduler-launched daemon gets a MINIMAL PATH (${MINIMAL_UNIT_PATH}), so without a baked`);
+        say(`  path every \`${HIVECONTROL_BIN_NAME} workspace monitor\` call fails ENOENT and NOTHING is ingested.`);
+        say(`  FIX: install/expose the DevSwarm CLI on your login shell's PATH, or export`);
+        say(`  ${HIVECONTROL_ENV_VAR}=/absolute/path/to/${HIVECONTROL_BIN_NAME} and re-run this installer.`);
+        say('  Installing anyway (the daemon runs in degraded mode and doctor will report it).');
+      }
+    }
     // Resolve the worktree the daemon must run FROM (see resolveWorktree). Only for
     // install — uninstall must still tear the unit down regardless of cwd. If cwd is
     // not inside a git worktree, do NOT install a non-draining daemon: fail open —
@@ -995,4 +1328,9 @@ module.exports = {
   reapPlanForRepo, reapLegacyUnitsForRepo, stopLegacyUnitEntry,
   macInstallProject, macUninstallProject, linuxInstallProject, linuxUninstallProject,
   LEGACY_UNIT_HASH_RE, PROJECT_UNIT_KEY_RE,
+  // v0.65 — memory-guard/reaper detection (DETECT-AND-REPORT ONLY; doctor reuses these):
+  detectReaperGuard, reaperWarningLines, claudeScriptsDir, REAPER_DAEMON_TOKEN,
+  // v0.66 — hivecontrol discovery + baked unit environment:
+  HIVECONTROL_BIN_NAME, HIVECONTROL_ENV_VAR, MINIMAL_UNIT_PATH,
+  resolveHivecontrolPath, unitEnvFor, firstBinLine, sdEnvValue, parseCronCommand,
 };

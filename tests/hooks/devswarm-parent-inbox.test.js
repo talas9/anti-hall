@@ -975,6 +975,139 @@ test('STALE back-compat: repoKey unresolvable (git spawn fails on a bogus .git) 
   } finally { h.cleanup(); try { fs.rmSync(bogusRepo, { recursive: true, force: true }); } catch (_) {} }
 });
 
+// ----- v0.66 monitor-outcome FAULT banner (daemonHealth() status:'failed' —
+// alive but `hivecontrol workspace monitor` is failing, ingesting NOTHING).
+// Strictly MORE severe than 'stale': the SAME wiring slot renders
+// buildMonitorFaultBanner() instead of buildStaleBanner() when status is
+// 'failed'. daemonHealth's status is a single mutually-exclusive string (see
+// its own doc comment / companion/lib/ingest-health.js), so 'failed' and
+// 'stale' can never both be true for one call — these tests lock in that only
+// the monitor-fault wording renders for 'failed', never the stale wording,
+// and vice versa. -----
+function writeDaemonHeartbeatFull(home, hash, fields) {
+  const p = path.join(swarmDir(home), 'heartbeats', 'ingest-' + hash + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(fields));
+}
+function monitorFaultBanner(c) {
+  return c.split('\n\n').find((s) => s.includes('DEVSWARM INGEST FAILING')) || '';
+}
+
+test('MONITOR-FAULT: alive (fresh heartbeat + live lock) but monitor failing past threshold -> monitor-fault banner, NOT the stale banner', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, { wsA: { total: 2, cursor: 0, unread: 2, directUnread: 2 } });
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 5, // >= MONITOR_FAILURE_FAIL_THRESHOLD (3)
+      lastMonitorOkMs: null,
+      lastMonitorErrorCode: 'ENOENT',
+    });
+    writeDaemonLock(h.home, REPO_KEY, process.pid); // SAME pid -> same incarnation, baseHealthy
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    const banner = monitorFaultBanner(c);
+    assert.ok(banner, `monitor-failing daemon must render the monitor-fault banner; ctx=${c}`);
+    assert.ok(/hivecontrol workspace monitor/.test(banner), banner);
+    assert.ok(/5x/.test(banner), banner);
+    assert.ok(/anti-hall:doctor/.test(banner), banner);
+    assert.strictEqual(staleBanner(c), '', `must NOT also render the stale banner; ctx=${c}`);
+    // Banner must sit ABOVE the live workspace table, same slot as the stale banner.
+    const iBanner = c.indexOf('DEVSWARM INGEST FAILING');
+    const iTable = c.indexOf('DEVSWARM WORKSPACES');
+    assert.ok(iBanner >= 0 && iTable >= 0 && iBanner < iTable, `banner above table; ctx=${c}`);
+    // exactly ONE banner segment, never two.
+    const bannerSegs = c.split('\n\n').filter((s) => s.includes('DEVSWARM STALE DATA') || s.includes('DEVSWARM INGEST FAILING'));
+    assert.strictEqual(bannerSegs.length, 1, `exactly one banner must render; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('MONITOR-FAULT: healthy monitor (consecutiveMonitorFailures:0) -> neither banner renders', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, { wsA: { total: 2, cursor: 0, unread: 2, directUnread: 2 } });
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 0,
+      lastMonitorOkMs: Date.now(),
+    });
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.strictEqual(staleBanner(c), '', `healthy daemon must not warn stale; ctx=${c}`);
+    assert.strictEqual(monitorFaultBanner(c), '', `healthy daemon must not warn monitor-fault either; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+// ---- H4 fallback (daemon-down parent-inbox freeze) interaction with the NEW
+// 'failed' status: a monitor-failing daemon PREVIOUSLY read as 'healthy'
+// (heartbeat+lock both fine) so it never tripped the `status !== 'healthy'`
+// self-heal fallback above; it NOW reads 'failed', so it newly triggers that
+// fallback too. This is DESIRABLE — a daemon ingesting nothing means its own
+// periodic deriveSummary calls (devswarm-ingest.js's runIngestLoop, gated on
+// `ing.inserted > 0`) have also stopped, so the materialized projection would
+// otherwise freeze exactly like the pre-existing 'stale' case; the Primary
+// refreshing its own projection from the store's rows is correct. These two
+// tests lock in that: (1) with rows present, the fallback actually refreshes
+// the projection from the store; (2) with an EMPTY store, the non-destructive
+// has-rows guard still prevents a blind overwrite of a richer cache. ----
+const h4Store = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+function seedRegistryRow(home, id, worktreePath) {
+  const s = h4Store.openStore({ home, workspaceId: id, hash: REPO_KEY });
+  try {
+    s.upsertRegistry({ id, worktreePath: worktreePath || REPO_CWD, sessionId: null, inboxPath: null, cursorPath: null, nudgeCommand: null });
+  } finally { s.close(); }
+}
+function readRawSummary(home) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(swarmDir(home), 'summaries', REPO_KEY + '.json'), 'utf8'));
+  } catch (_) { return null; }
+}
+
+test('H4 x failed: status:"failed" + store WITH rows -> deriveSummary refreshes the projection from the store', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    // Stale on-disk projection that does NOT reflect the store's real rows.
+    writeSharedSummary(h.home, {});
+    seedRegistryRow(h.home, 'wsFromStore', REPO_CWD); // store has a real row this projection doesn't know about yet
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 5,
+      lastMonitorOkMs: null,
+      lastMonitorErrorCode: 'ENOENT',
+    });
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const raw = readRawSummary(h.home);
+    assert.ok(raw && raw.workspaces && Object.prototype.hasOwnProperty.call(raw.workspaces, 'wsFromStore'),
+      `'failed' status must trigger the H4 fallback and refresh the projection from the store; raw=${JSON.stringify(raw)}`);
+  } finally { h.cleanup(); }
+});
+
+test('H4 x failed: status:"failed" + EMPTY store -> non-destructive guard prevents blanking a richer existing cache', { skip: process.platform === 'win32' }, () => {
+  const h = makeHome();
+  try {
+    // Richer existing projection, but the store backing THIS repoKey is empty
+    // (e.g. store file never created / reset) — an out-of-band writer left it.
+    writeSharedSummary(h.home, { wsRicher: { total: 3, cursor: 0, unread: 3, directUnread: 3 } });
+    writeDaemonHeartbeatFull(h.home, REPO_KEY, {
+      ts: Date.now() - 5000, pid: process.pid,
+      consecutiveMonitorFailures: 5,
+      lastMonitorOkMs: null,
+      lastMonitorErrorCode: 'ENOENT',
+    });
+    writeDaemonLock(h.home, REPO_KEY, process.pid);
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const raw = readRawSummary(h.home);
+    assert.ok(raw && raw.workspaces && Object.prototype.hasOwnProperty.call(raw.workspaces, 'wsRicher'),
+      `an empty store must NOT blank/overwrite the existing richer cache; raw=${JSON.stringify(raw)}`);
+  } finally { h.cleanup(); }
+});
+
 // D27 (missing/corrupt helper module fails the block open, never the hook) is
 // NOT exercised here by mutating the real, shared companion/lib/ingest-health.js
 // on disk: `node --test` parallelizes across test FILES (worker threads), and

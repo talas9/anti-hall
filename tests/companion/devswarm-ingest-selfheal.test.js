@@ -133,7 +133,17 @@ test('H2 (a1): FRESH lock ts + STALE own-heartbeat is NEVER killed — a healthy
   } finally { rm(home); }
 });
 
-test('H2 (a2): PID-REUSE GUARD — a stale heartbeat matching the holder pid is NOT enough to kill when the pid started AFTER the heartbeat was last written (likely a recycled pid, not the original daemon)', () => {
+// v0.65 UPDATE to this case. The kill-side assertion is UNCHANGED and remains
+// the point of the test: a pid whose start time postdates the record can never
+// be SIGKILLed, because it is provably not the process that wrote it. What
+// CHANGED is the lock-file side: proving the recorded pid is a RECYCLED one
+// also proves the original holder is gone, so the lock it left behind is an
+// orphan and is now reclaimed (see classifyLockHolder's 'reused' state).
+// Before v0.65 the daemon refused here forever — a recycled pid number on a
+// leaked lock permanently wedged every restart, which is precisely the field
+// failure this release fixes. Reclaiming is signal-free: nothing is sent to the
+// unrelated live process that happens to hold that pid number now.
+test('H2 (a2): PID-REUSE GUARD — a pid that started AFTER the record was written is NEVER killed, and the orphaned lock it "holds" is reclaimed without any signal', () => {
   const home = tmpHome();
   try {
     const lockPath = ingest.ingestLockPath(home, WT);
@@ -159,10 +169,12 @@ test('H2 (a2): PID-REUSE GUARD — a stale heartbeat matching the holder pid is 
     };
 
     const rel = ingest.acquireIngestLock(home, io, WT);
-    assert.equal(rel, null, 'a pid whose start time postdates the heartbeat is never treated as the original (possibly-wedged) holder');
-    assert.equal(killed, false, 'no kill is ever attempted against a pid that could not have written this heartbeat');
+    assert.equal(killed, false, 'no kill is ever attempted against a pid that could not have written this record');
+    assert.ok(rel, 'the orphan left by the (long-gone) original holder is reclaimed instead of wedging every restart');
     const held = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
-    assert.equal(held.pid, 987654, 'the lock record is untouched — never stolen from an unconfirmed holder');
+    assert.equal(held.pid, process.pid, 'the reclaimed lock is now genuinely ours');
+    assert.notEqual(held.token, 'wedged', 'the leaked record was replaced, not merged into');
+    rel();
   } finally { rm(home); }
 });
 

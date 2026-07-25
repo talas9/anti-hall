@@ -96,6 +96,413 @@ function projectDaemonHealthy(home, repoKey, now, io) {
   } catch (_) { return false; }
 }
 
+// ---------------------------------------------------------------------------
+// v0.66 MONITOR-OUTCOME FAULT (the "alive but ingesting nothing" case)
+// ---------------------------------------------------------------------------
+// projectDaemonHealthy above answers "is a process alive and heartbeating" — it
+// CANNOT answer "is that process actually draining anything". The field defect:
+// the daemon wrote its heartbeat unconditionally BEFORE each monitor call, so a
+// daemon whose every `hivecontrol workspace monitor` spawn failed ENOENT (bare
+// binary name + the scheduler's minimal PATH) heartbeat happily forever and
+// doctor reported it "installed and healthy" while it ingested exactly nothing.
+//
+// The daemon now stamps its monitor OUTCOME into the same heartbeat
+// (consecutiveMonitorFailures / lastMonitorOkMs / lastMonitorErrorCode /
+// hivecontrolBin / daemonPath — see devswarm-ingest.js writeIngestHeartbeat).
+//
+// FAIL-OPEN ON LEGACY: a heartbeat WITHOUT these fields (a daemon from an older
+// build that has not been relaunched yet) is UNKNOWN, never a fault. Only a
+// POSITIVE, above-threshold failure count — or a positively stale last-success
+// alongside a recorded failure — is ever reported.
+const MONITOR_FAILURE_FAIL_THRESHOLD = 3;      // consecutive failures before this is a FAULT, not a blip
+const MONITOR_OK_STALE_MS = 10 * 60 * 1000;    // a recorded last-success older than this, while failing, is also a fault
+
+// monitorFaultFor(home, repoKey, now, io) -> null | {consecutive, code, bin, daemonPath, lastOkMs, reason}
+// Pure fs, never throws, null on ANY doubt (missing file, unparsable JSON,
+// missing fields, below threshold).
+function monitorFaultFor(home, repoKey, now, io) {
+  if (!repoKey) return null;
+  const F = (io && io.fs) || fs;
+  const daemon = ingestDaemonMod();
+  if (typeof daemon.ingestHeartbeatPath !== 'function') return null;
+  let beat = null;
+  try { beat = JSON.parse(F.readFileSync(daemon.ingestHeartbeatPath(home, repoKey), 'utf8')); } catch (_) { return null; }
+  if (!beat || typeof beat !== 'object') return null;
+  // LEGACY GUARD: the field must be PRESENT and numeric. `undefined` (older
+  // daemon) is unknown -> never a fault.
+  if (!Number.isFinite(beat.consecutiveMonitorFailures)) return null;
+  const consecutive = beat.consecutiveMonitorFailures;
+  const lastOkMs = Number.isFinite(beat.lastMonitorOkMs) ? beat.lastMonitorOkMs : null;
+  const okStale = consecutive > 0 && lastOkMs !== null && (now - lastOkMs) > MONITOR_OK_STALE_MS;
+  if (consecutive < MONITOR_FAILURE_FAIL_THRESHOLD && !okStale) return null;
+  return {
+    consecutive,
+    code: typeof beat.lastMonitorErrorCode === 'string' ? beat.lastMonitorErrorCode : null,
+    error: typeof beat.lastMonitorError === 'string' ? beat.lastMonitorError : null,
+    bin: typeof beat.hivecontrolBin === 'string' ? beat.hivecontrolBin : null,
+    binSource: typeof beat.hivecontrolSource === 'string' ? beat.hivecontrolSource : null,
+    daemonPath: typeof beat.daemonPath === 'string' ? beat.daemonPath : null,
+    lastOkMs,
+    okStale,
+  };
+}
+
+// monitorFaultReason(fault) -> the operator-facing FAILURE line. Names the
+// resolved binary, the daemon's ACTUAL inherited PATH when the daemon recorded
+// one, and the remedy (which is exactly what the reinstall below performs).
+function monitorFaultReason(fault, workingDir) {
+  const f = fault || {};
+  return 'ingest daemon is RUNNING but its `hivecontrol workspace monitor` calls are FAILING ('
+    + f.consecutive + ' consecutive' + (f.code ? ', ' + f.code : '')
+    + (f.lastOkMs === null ? ', no successful poll since start' : (f.okStale ? ', last success ' + Math.round((Date.now() - f.lastOkMs) / 60000) + 'm ago' : ''))
+    + ') — it is alive but ingesting NOTHING'
+    + '. binary=' + (f.bin || 'hivecontrol') + (f.binSource ? ' (' + f.binSource + ')' : '')
+    + (f.daemonPath ? '; daemon PATH=' + f.daemonPath : '')
+    + (workingDir ? '; WorkingDirectory ' + workingDir : '')
+    + '. Reinstalling bakes the resolved absolute binary + PATH into the scheduler unit; or export '
+    + 'ANTIHALL_DEVSWARM_HIVECONTROL=/absolute/path/to/hivecontrol and reinstall.';
+}
+
+// ---------------------------------------------------------------------------
+// v0.65.0 `doctor --reclaim-ingest-lock` (explicit, opt-in, human-invoked —
+// mirrors devswarm-recover being on-demand only). Field evidence: 52 dead-owner
+// ingest locks where a plain reinstall NEVER cleared the lock, because
+// devswarm-ingest.js's own acquireIngestLock() correctly REFUSES to reclaim a
+// lock whose recorded pid reads as "alive" — and a pid that has been REUSED by
+// an unrelated live process (the original ingest daemon died; the OS later
+// handed that same pid number to a shell/editor/other session) reads as
+// exactly that: alive. acquireIngestLock's fail-toward-never-kill posture is
+// correct for its own AUTOMATIC callers (an ambiguous signal must never
+// auto-reclaim) — but it means a pid-reuse-stuck lock, or one whose holder is a
+// zombie/defunct process (still "alive" to kill(pid,0), never checked by
+// acquireIngestLock at all), stays stuck FOREVER without a human explicitly
+// authorizing the stronger check. This section adds exactly that check, gated
+// behind the explicit --reclaim-ingest-lock flag ONLY (never wired into the
+// default/auto repair pass in runRepairs above).
+//
+// Safety invariant (identical to the module's other lock-touching code): a
+// lock file may be REMOVED only when its recorded pid is CONFIRMED dead,
+// CONFIRMED a zombie/defunct process (still "exists" to kill(pid,0) but can
+// never do anything again — only its parent can reap it, so it can never be
+// the live original holder either), or CONFIRMED pid-reuse (its OS start time
+// postdates the lock's own recorded ts — the ORIGINAL holder cannot have
+// written this lock file with a pid that did not exist yet). A process is
+// NEVER signalled here for any of those three cases (nothing alive needs
+// killing to explain them). The one signal-capable case — a LIVE holder whose
+// OWN heartbeat proves it is wedged — is handled by reusing
+// devswarm-ingest.js's own acquireIngestLock() verbatim (never reimplemented),
+// since that already SIGKILLs only after the same two-signal confirmation this
+// file's safety contract requires. Any inconclusive read (missing pid, missing
+// ts, an unresolvable start time) leaves the lock untouched — fail toward
+// NEVER removing/signalling, matching every other lock-touching path here.
+// ---------------------------------------------------------------------------
+
+// isReclaimable(daemon, state) -> bool. devswarm-ingest.js's own classify
+// states that authorize removal are 'dead' | 'reused' | 'zombie'
+// (RECLAIMABLE_HOLDER_STATES) — prefers a real exported
+// isReclaimableHolderState() the instant one exists, falling back to the same
+// 3-state check here in the meantime (that build's own state-NAME contract is
+// already something this file depends on regardless, e.g. the report
+// messages below spell 'dead'/'reused'/'zombie'/'torn-stale' literally, so
+// this adds no new coupling beyond what already exists).
+// RECLAIM_WEDGE_GRACE_FALLBACK_MS / defaultReclaimSleep — see
+// reclaimCurrentProjectLock's SLEEP/WAKE GRACE WINDOW comment below. `io.sleep`
+// is a test-injection seam (mirrors io.fs/io.now elsewhere in this file);
+// production has no override and gets a real synchronous wait. Mirrors
+// devswarm-ingest.js's own sleepSync (Atomics.wait on a SharedArrayBuffer — no
+// external deps, cross-platform).
+function defaultReclaimSleep(ms) {
+  try { const sab = new Int32Array(new SharedArrayBuffer(4)); Atomics.wait(sab, 0, 0, Math.max(0, ms | 0)); } catch (_) {}
+}
+// Fallback only for a build whose devswarm-ingest.js does not export
+// DEFAULT_MONITOR_TIMEOUT_SEC — kept in the same units/formula as that
+// module's own hardTimeoutMs default (see reclaimCurrentProjectLock).
+const RECLAIM_WEDGE_GRACE_FALLBACK_MS = 40000;
+
+function isReclaimable(daemon, state) {
+  if (daemon && typeof daemon.isReclaimableHolderState === 'function') {
+    try { return !!daemon.isReclaimableHolderState(state); } catch (_) { /* fall through to the local check */ }
+  }
+  return state === 'dead' || state === 'reused' || state === 'zombie';
+}
+
+// listIngestLockFiles(home, F) -> absolute paths of every ingest lock file
+// under the locks dir. Prefers devswarm-ingest.js's OWN ingestLocksDir() +
+// INGEST_LOCK_NAME_RE (v0.65 daemon-reliability) for byte-identical matching —
+// falls back to an equivalent local dir/regex only if that build predates
+// those exports. Never matches an unrelated lock file. Fail-open: an
+// unreadable/absent locks dir yields [].
+function listIngestLockFiles(home, F) {
+  const daemon = ingestDaemonMod();
+  let dir = null;
+  try { dir = typeof daemon.ingestLocksDir === 'function' ? daemon.ingestLocksDir(home) : null; } catch (_) { dir = null; }
+  if (!dir) dir = path.join(devswarmRootFor(home), 'locks');
+  const re = (daemon.INGEST_LOCK_NAME_RE instanceof RegExp) ? daemon.INGEST_LOCK_NAME_RE : /^ingest(-[^.]+)?\.lock$/;
+  let names = [];
+  try { names = F.readdirSync(dir); } catch (_) { return []; }
+  return names.filter((n) => re.test(n)).map((n) => path.join(dir, n));
+}
+
+// sweepOrphanedIngestLockFiles({home, dryRun, io}) -> [{id, lockPath, verdict,
+// status, msg}] status ∈ 'fixed' | 'skipped' | 'failed'. A thin doctor-report
+// adapter over devswarm-ingest.js's OWN sweepOrphanedIngestLocks (v0.65
+// daemon-reliability — classifyLockHolder + isReclaimableHolderState, bounded,
+// anchored lock-name matching, structured logging) — the actual dead/reused/
+// zombie/torn-stale decision and removal are REUSED VERBATIM, never
+// reimplemented here. Machine-wide (every worktree/project's ingest lock, not
+// just the caller's cwd — see reclaimIngestLocks below for the cwd-scoped
+// counterpart that additionally handles the wedged-heartbeat+SIGKILL case).
+// NEVER signals a process (neither this adapter nor the daemon's own sweep
+// ever does). `--dry-run` has no non-destructive mode on the daemon side to
+// call into (same precedent as this file's own reconcile dry-run), so it is
+// previewed here via the same read-only classifyLockHolder the real sweep
+// itself uses — never removes anything.
+function sweepOrphanedIngestLockFiles(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const dryRun = !!o.dryRun;
+  const io = o.io;
+  const F = (io && io.fs) || fs;
+  const now = (io && io.now) || Date.now;
+  const daemon = ingestDaemonMod();
+  if (typeof daemon.readLockHolder !== 'function' || typeof daemon.classifyLockHolder !== 'function') {
+    return [{ id: 'reclaim-sweep', lockPath: null, verdict: null, status: 'failed', msg: 'devswarm-ingest.js does not export readLockHolder/classifyLockHolder in this build — cannot safely sweep, nothing touched' }];
+  }
+
+  if (!dryRun) {
+    if (typeof daemon.sweepOrphanedIngestLocks !== 'function') {
+      return [{ id: 'reclaim-sweep', lockPath: null, verdict: null, status: 'failed', msg: 'devswarm-ingest.js does not export sweepOrphanedIngestLocks in this build — cannot safely sweep, nothing touched' }];
+    }
+    let result = null;
+    // allowTornStale: true — this whole call is reachable ONLY via the
+    // explicit, human-invoked `doctor --reclaim-ingest-lock` flag (see
+    // reclaimIngestLocks below), never from the automatic per-daemon-start
+    // sweep (runIngestLoop omits this option entirely) — so a torn/zero-byte
+    // lock with no provable holder identity may still be swept HERE under
+    // explicit operator action, matching this feature's existing contract.
+    try { result = daemon.sweepOrphanedIngestLocks(home, io, null, { allowTornStale: true }); } catch (e) {
+      return [{ id: 'reclaim-sweep', lockPath: null, verdict: null, status: 'failed', msg: 'sweepOrphanedIngestLocks raised: ' + errMsg(e) }];
+    }
+    const out = [];
+    for (const r of ((result && result.reaped) || [])) {
+      out.push({ id: 'reclaim-sweep-' + path.basename(r.lockPath), lockPath: r.lockPath, verdict: r.reason, status: 'fixed', msg: 'reclaimed ' + r.lockPath + ' (' + r.reason + ')' });
+    }
+    if (result && Number.isFinite(result.kept) && result.kept > 0) {
+      out.push({ id: 'reclaim-sweep-summary', lockPath: null, verdict: null, status: 'skipped', msg: result.kept + ' other ingest lock(s) kept — live/plausible or unconfirmable, left untouched' });
+    }
+    return out;
+  }
+
+  // --dry-run PREVIEW: read-only, mirrors the real sweep's own eligibility rule
+  // (isReclaimableHolderState(state) OR state === 'torn-stale') without ever
+  // calling the mutating sweepOrphanedIngestLocks.
+  const results = [];
+  for (const lockPath of listIngestLockFiles(home, F)) {
+    const rid = 'reclaim-sweep-' + path.basename(lockPath);
+    let holder = null;
+    try { holder = daemon.readLockHolder(lockPath, F); } catch (e) {
+      results.push({ id: rid, lockPath, verdict: null, status: 'failed', msg: lockPath + ' raised while reading: ' + errMsg(e) });
+      continue;
+    }
+    if (!holder) continue; // genuinely absent (ENOENT) — nothing to report
+    let cls = null;
+    try { cls = daemon.classifyLockHolder(holder, now(), io); } catch (e) {
+      results.push({ id: rid, lockPath, verdict: null, status: 'failed', msg: lockPath + ' raised while classifying: ' + errMsg(e) });
+      continue;
+    }
+    const sweepable = isReclaimable(daemon, cls.state) || cls.state === 'torn-stale';
+    if (!sweepable) {
+      results.push({ id: rid, lockPath, verdict: null, status: 'skipped', msg: lockPath + ' kept — holder state "' + cls.state + '"' });
+      continue;
+    }
+    results.push({ id: rid, lockPath, verdict: cls.state, status: 'skipped', msg: '[dry-run] would reclaim ' + lockPath + ' (' + cls.state + ')' });
+  }
+  return results;
+}
+
+// reclaimCurrentProjectLock({home, currentWorktree, dryRun, io}) -> {lockPath,
+// verdict, status, msg}. The cwd-scoped counterpart to the sweep above.
+// devswarm-ingest.js's own acquireIngestLock() (v0.65) now handles EVERY
+// removal-authorizing case itself — dead / pid-reused / zombie (via
+// classifyLockHolder, reclaimed immediately, no signal) AND a live holder
+// confirmed WEDGED via its own stale heartbeat (SIGKILL, the one signal-
+// capable case) — refusing only a genuinely live, healthy holder. So this
+// function delegates the actual mutating decision to it ENTIRELY, never
+// reimplementing any of that logic; it only reads the lock first (to report
+// "nothing present" distinctly) and — for reporting/dry-run purposes only —
+// previews the verdict via the same read-only classifyLockHolder.
+function reclaimCurrentProjectLock(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const currentWorktree = o.currentWorktree;
+  const dryRun = !!o.dryRun;
+  const io = o.io;
+  const F = (io && io.fs) || fs;
+  const now = (io && io.now) || Date.now;
+  const daemon = ingestDaemonMod();
+  if (typeof daemon.ingestLockPath !== 'function' || typeof daemon.readLockHolder !== 'function') {
+    return { lockPath: null, verdict: null, status: 'failed', msg: 'devswarm-ingest.js does not export ingestLockPath/readLockHolder in this build — cannot safely reclaim' };
+  }
+  const lockPath = daemon.ingestLockPath(home, currentWorktree);
+  let holder = null;
+  try { holder = daemon.readLockHolder(lockPath, F); } catch (e) {
+    return { lockPath, verdict: null, status: 'failed', msg: lockPath + ' raised while reading: ' + errMsg(e) };
+  }
+  if (!holder) return { lockPath, verdict: null, status: 'skipped', msg: 'no ingest lock file present for this worktree (' + lockPath + ') — nothing to reclaim' };
+
+  // Read-only preview of the verdict (never removes/signals anything itself) —
+  // used for an accurate report message either way, and as the dry-run answer
+  // for the dead/reused/zombie cases (the wedged-heartbeat case has no
+  // non-mutating preview available — same precedent as the sweep above).
+  let verdict = null;
+  if (typeof daemon.classifyLockHolder === 'function') {
+    try {
+      const cls = daemon.classifyLockHolder(holder, now(), io);
+      if (isReclaimable(daemon, cls.state)) verdict = cls.state;
+    } catch (_) { verdict = null; }
+  }
+
+  if (dryRun) {
+    if (verdict) return { lockPath, verdict, status: 'skipped', msg: '[dry-run] would reclaim ' + lockPath + ' (' + verdict + ')' };
+    return { lockPath, verdict: null, status: 'skipped', msg: '[dry-run] would probe ' + lockPath + " via the daemon's own dead/reused/zombie/wedged-heartbeat liveness test (refuses a live, healthy holder)" };
+  }
+
+  if (typeof daemon.acquireIngestLock !== 'function') {
+    return { lockPath, verdict: null, status: 'failed', msg: 'devswarm-ingest.js does not export acquireIngestLock in this build — cannot safely reclaim' };
+  }
+
+  // SLEEP/WAKE GRACE WINDOW (P0 fix). `verdict` is null here means the preview
+  // classification found no confirmed dead/reused/zombie reason — the pid
+  // reads alive, so acquireIngestLock's own wedged-heartbeat check is what
+  // decides next, and THAT check is signal-capable (SIGKILL). It currently
+  // decides "wedged" from a single already-on-disk timestamp snapshot: a
+  // machine sleep/suspend longer than INGEST_LOCK_STALE_MS makes a genuinely
+  // healthy holder's lock AND heartbeat both look stale the INSTANT the
+  // machine wakes — before its loop gets a chance to run release.heartbeat()
+  // again (which happens at the top of every iteration, but a daemon that was
+  // blocked inside its one long-running child call when the machine slept
+  // stays blocked, post-wake, for up to that call's own hardTimeoutMs before
+  // it can reach the top of the loop again — see devswarm-ingest.js's
+  // runIngestLoop/acquireIngestLock comments).
+  //
+  // Re-observe the SAME lock file's own record after a real-time grace window
+  // sized to that same hardTimeoutMs bound, and require it to be UNCHANGED
+  // (identical pid + ts) before ever calling the signal-capable path. A
+  // holder that resumed and made progress will have refreshed its lock ts by
+  // then — this is NOT wedged, so refuse without ever risking a kill. Only a
+  // holder whose lock is STILL frozen after waiting out that same window is
+  // allowed through to acquireIngestLock's own (already stricter) heartbeat
+  // check. `io.sleep` / `io.reclaimGraceMs` are test-injection seams (fail
+  // toward the grace check firing on any read error, i.e. we do NOT skip the
+  // wait — an ambiguous re-read must never be treated as "unchanged, still
+  // wedged" any more readily than before this fix).
+  if (!verdict) {
+    const timeoutSec = Number.isFinite(daemon.DEFAULT_MONITOR_TIMEOUT_SEC) ? daemon.DEFAULT_MONITOR_TIMEOUT_SEC : null;
+    const defaultGraceMs = timeoutSec !== null ? (timeoutSec * 1000) + 10000 : RECLAIM_WEDGE_GRACE_FALLBACK_MS;
+    const graceMs = Number.isFinite(io && io.reclaimGraceMs) ? io.reclaimGraceMs : defaultGraceMs;
+    const sleepFn = (io && typeof io.sleep === 'function') ? io.sleep : defaultReclaimSleep;
+    try { sleepFn(graceMs); } catch (_) {}
+    let holderAfter = null;
+    try { holderAfter = daemon.readLockHolder(lockPath, F); } catch (_) { holderAfter = null; }
+    const unchanged = !!(holderAfter && holderAfter.pid === holder.pid && holderAfter.ts === holder.ts);
+    if (!unchanged) {
+      return { lockPath, verdict: null, status: 'skipped', msg: lockPath + ' holder refreshed its lock during the reclaim grace window — not wedged (was likely just resuming from a sleep/suspend), left untouched' };
+    }
+  }
+
+  let release = null;
+  try { release = daemon.acquireIngestLock(home, io, currentWorktree); } catch (e) {
+    return { lockPath, verdict: null, status: 'failed', msg: 'acquireIngestLock raised while probing ' + lockPath + ': ' + errMsg(e) };
+  }
+  if (release) {
+    try { release(); } catch (_) {}
+    return { lockPath, verdict: verdict || 'wedged', status: 'fixed', msg: 'reclaimed ' + lockPath + " via the daemon's own dead/reused/zombie/wedged-heartbeat liveness test (" + (verdict || 'wedged') + ')' };
+  }
+  return { lockPath, verdict: null, status: 'skipped', msg: lockPath + ' is held by a live, healthy holder — left untouched (never reclaim a live daemon)' };
+}
+
+// reclaimIngestLocks({cwd, env, home, dryRun, platform, io}) ->
+//   [{id, action, status, msg}]   status ∈ 'fixed' | 'skipped' | 'failed'
+// The full `doctor --reclaim-ingest-lock` pass: (a) sweep every installed
+// ingest lock machine-wide for a confirmed dead/zombie/reused holder, (b)
+// additionally reclaim THIS worktree's own project lock via the
+// wedged-heartbeat+SIGKILL path when neither of those apply, (c) trigger the
+// existing reinstall (install-devswarm-ingest.js) ONLY when something was
+// actually reclaimed for THIS worktree — never thrash an already-clean or
+// already-healthy daemon. EXPLICIT, OPT-IN ONLY: this function is never called
+// from runRepairs()'s default/--fix/--dry-run pass — only doctor.js's
+// --reclaim-ingest-lock flag calls it, exactly like devswarm-recover is
+// on-demand only.
+function reclaimIngestLocks(opts) {
+  const o = opts || {};
+  const cwd = o.cwd || process.cwd();
+  const env = o.env || process.env;
+  const home = o.home || os.homedir();
+  const dryRun = !!o.dryRun;
+  const platform = o.platform || process.platform;
+  const io = o.io;
+  const results = [];
+  const push = (id, action, status, msg) => results.push({ id, action, status, msg });
+
+  if (platform === 'win32') {
+    push('reclaim-ingest-lock', 'reclaim-ingest-lock', 'skipped', 'Windows: ingest daemon is a documented no-op — nothing to reclaim, never flapped');
+    return results;
+  }
+
+  // (a) machine-wide sweep — never signals, only removes a confirmed-abandoned lock.
+  const sweep = sweepOrphanedIngestLockFiles({ home, dryRun, io });
+  for (const s of sweep) push(s.id, 'reclaim-ingest-lock-sweep', s.status, s.msg);
+
+  // (b) this worktree's own project lock.
+  let currentWorktree = null;
+  try { const { resolveWorktree } = ingestConst(); if (typeof resolveWorktree === 'function') currentWorktree = resolveWorktree(cwd); } catch (_) {}
+  let currentLockPath = null;
+  let currentFixed = false;
+  let currentVerdict = null;
+  if (!currentWorktree) {
+    push('reclaim-current-lock', 'reclaim-ingest-lock', 'skipped', 'cwd is not inside a resolvable git worktree — no per-project lock to reclaim from here');
+  } else {
+    const r = reclaimCurrentProjectLock({ home, currentWorktree, dryRun, io });
+    currentLockPath = r.lockPath;
+    currentFixed = r.status === 'fixed';
+    currentVerdict = r.verdict || null;
+    push('reclaim-current-lock', 'reclaim-ingest-lock', r.status, r.msg);
+  }
+
+  // (c) reinstall — ONLY when the sweep or (b) actually reclaimed (or, in
+  // dry-run, PROVABLY would have reclaimed — see the `verdict` field's own
+  // doc comment above for why the wedged-heartbeat case is excluded from that
+  // dry-run claim) THIS worktree's own lock. A sweep hit on some OTHER
+  // project's lock never triggers a reinstall here — each repo heals its own
+  // daemon, same discipline as runRepairs' own ingest section.
+  const sweptCurrentEntry = currentLockPath != null ? sweep.find((s) => s.lockPath === currentLockPath) : null;
+  const sweptCurrent = !!(sweptCurrentEntry && sweptCurrentEntry.status === 'fixed');
+  const wouldReclaimCurrent = !!(sweptCurrentEntry && sweptCurrentEntry.verdict) || !!currentVerdict;
+  if (!currentFixed && !sweptCurrent && !wouldReclaimCurrent) {
+    push('reclaim-reinstall', 'install-ingest', 'skipped', 'nothing was reclaimed for this worktree — reinstall not triggered (never thrash an already-clean/healthy daemon)');
+  } else if (!currentWorktree) {
+    push('reclaim-reinstall', 'install-ingest', 'skipped', 'cwd is not inside a resolvable git worktree — cannot reinstall from here');
+  } else if (dryRun) {
+    push('reclaim-reinstall', 'install-ingest', 'skipped', '[dry-run] would (re)install the ingest daemon after reclaiming its lock');
+  } else {
+    // `io.install` (tests only) intercepts the real spawnInstaller call — this
+    // is the ONE step in this whole file that genuinely registers a real
+    // launchd/systemd job against the REAL user session regardless of any HOME
+    // env override (same caveat doctor-repair.test.js's own reconcile suite
+    // documents for the exact same reason), so a hermetic test must NEVER let
+    // this branch reach the real spawnInstaller — it injects io.install
+    // instead. Production never sets io.install, so this is unchanged there.
+    const install = (io && typeof io.install === 'function') ? io.install : () => spawnInstaller(INGEST_INSTALLER, [], cwd, env);
+    let r = null;
+    try { r = install(); } catch (e) { r = { error: e }; }
+    const ok = !!(r && !r.error && r.status === 0);
+    push('reclaim-reinstall', 'install-ingest', ok ? 'fixed' : 'failed',
+      'reinstalled the ingest daemon after reclaiming its lock (exit ' + (r && r.status) + ')' + (r && r.error ? ' — ' + errMsg(r.error) : ''));
+  }
+
+  return results;
+}
+
 // Friendly (plugin-relative) command strings for the manual-command hints in
 // GATED reports — humans copy these, so keep them repo-relative not absolute.
 const CMD_INGEST     = 'node plugins/anti-hall/companion/install-devswarm-ingest.js';
@@ -670,6 +1077,13 @@ function runRepairs(opts) {
       // when cls==='ok' — a unit with a shape problem is reported with ITS OWN
       // reason below, never masked by a liveness message.
       let alive = true;
+      // v0.66: a SECOND, independent gate on top of liveness — the daemon can be
+      // alive, heartbeating, holding its lock, and still draining NOTHING
+      // because every monitor spawn fails (see monitorFaultFor above). Reported
+      // as its own distinct FAILURE reason rather than a generic "not alive",
+      // and healed by the same (re)install, which is genuinely the remedy: the
+      // installer bakes the resolved binary + PATH into the regenerated unit.
+      let monitorFault = null;
       if (cls === 'ok') {
         let repoKeyForHealth = read.repoKey;
         if (!repoKeyForHealth && currentWorktree) {
@@ -679,13 +1093,17 @@ function runRepairs(opts) {
           } catch (_) {}
         }
         alive = !!(repoKeyForHealth && projectDaemonHealthy(home, repoKeyForHealth, Date.now(), o.io));
+        if (alive) {
+          try { monitorFault = monitorFaultFor(home, repoKeyForHealth, Date.now(), o.io); } catch (_) { monitorFault = null; }
+        }
       }
 
-      if (cls === 'ok' && alive) {
+      if (cls === 'ok' && alive && !monitorFault) {
         push('ingest', 'install-ingest', 'skipped', 'ingest daemon installed and healthy (WorkingDirectory ' + read.workingDir + ')');
       } else {
         const deadDaemon = cls === 'ok' && !alive; // install-shape fine, liveness check failed
-        const reason = cls === 'absent' ? 'ingest daemon not installed'
+        const reason = monitorFault ? monitorFaultReason(monitorFault, read.workingDir)
+          : cls === 'absent' ? 'ingest daemon not installed'
           : cls === 'wrong-path' ? 'ingest daemon WorkingDirectory is wrong (' + (read.workingDir || 'unset') + ')'
           : cls === 'unstable-script' ? 'ingest daemon ExecStart script is not the current stable build (' + (read.scriptPath || 'unset') + ' — pinned to an old/relocatable path)'
           : cls === 'stale-script' ? 'ingest daemon ExecStart script is missing (' + (read.scriptPath || 'unset') + ')'
@@ -695,7 +1113,7 @@ function runRepairs(opts) {
         } else if (dryRun) {
           let wt = cwd;
           try { const { resolveWorktree } = ingestConst(); wt = resolveWorktree(cwd) || cwd; } catch (_) {}
-          push('ingest', 'install-ingest', 'skipped', '[dry-run] would (re)install the ingest daemon from ' + wt + ' (' + (deadDaemon ? 'dead-daemon' : cls) + ')');
+          push('ingest', 'install-ingest', 'skipped', '[dry-run] would (re)install the ingest daemon from ' + wt + ' (' + (monitorFault ? 'monitor-failing' : deadDaemon ? 'dead-daemon' : cls) + ')');
         } else {
           spawnInstaller(INGEST_INSTALLER, [], cwd, env);
           const read2 = readInstalledIngestWorkingDir({ home, platform, worktree: currentWorktree });
@@ -823,8 +1241,44 @@ function runRepairs(opts) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// checkMemguardReaperRisk({modPath, home}) -> {atRisk, message, file} | null.
+// A user-machine reaper/memguard LaunchAgent (documented in this project's own
+// operator notes, entirely OUTSIDE this repo) can SIGKILL any non-allowlisted
+// `node` process once a process-count cap trips. A launchd-spawned ingest
+// daemon's PPID is 1 by construction on macOS (launchd IS pid 1) — exactly
+// what such a reaper's own "kill any remaining orphan (PPID==1) node process"
+// pass targets — so an ingest daemon absent from that reaper's allowlist can
+// be killed out from under a healthy install with no anti-hall-side signal at
+// all. `modPath` defaults to install-devswarm-ingest.js — the REAL home of
+// detectReaperGuard/reaperWarningLines (v0.65 memory-guard/reaper detection;
+// that file's own comment says "doctor reuses these") — and is overridable
+// ONLY for tests, so a fixture module can be exercised without ever touching
+// that file. Fully defensive (typeof-checked + try/catch at every step) so an
+// older build missing these exports degrades to silent (null), never a crash.
+function checkMemguardReaperRisk(opts) {
+  const o = opts || {};
+  const modPath = o.modPath || INGEST_INSTALLER;
+  let mod = null;
+  try { mod = require(modPath); } catch (_) { return null; }
+  if (typeof mod.detectReaperGuard !== 'function' || typeof mod.reaperWarningLines !== 'function') return null;
+  let detection = null;
+  try { detection = mod.detectReaperGuard({ home: o.home || os.homedir() }); } catch (_) { return null; }
+  let lines = [];
+  try { lines = mod.reaperWarningLines(detection) || []; } catch (_) { lines = []; }
+  if (!lines.length) return null; // no action needed, or the helper itself declined — stay silent
+  return { atRisk: true, message: lines.join('\n'), file: (detection && detection.file) || null };
+}
+
 module.exports = {
   readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
   // v0.57 mesh Phase 6 (D9/D25/D28) — legacy ingest unit orphan sweep:
   reapOrphanedLegacyUnits, projectDaemonHealthy,
+  // v0.65.0 `doctor --reclaim-ingest-lock` (explicit, opt-in):
+  reclaimIngestLocks, sweepOrphanedIngestLockFiles, reclaimCurrentProjectLock,
+  // v0.65.0 memguard-reaper risk surfacing (report-only, defensive):
+  checkMemguardReaperRisk,
+  // v0.66 — "alive but ingesting nothing" (monitor-outcome) detection:
+  monitorFaultFor, monitorFaultReason,
+  MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS,
 };

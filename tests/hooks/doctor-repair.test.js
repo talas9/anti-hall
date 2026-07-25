@@ -549,6 +549,127 @@ test('doctor --check: install-shape ok but dead daemon -> --check stays pure rea
 });
 
 // ---------------------------------------------------------------------------
+// 6d. v0.66 — "ALIVE BUT INGESTING NOTHING". The daemon wrote its heartbeat
+// BEFORE each monitor call, unconditionally, so a daemon whose every
+// `hivecontrol workspace monitor` spawn failed ENOENT (bare binary name + the
+// scheduler's minimal PATH) still satisfied the liveness gate above and doctor
+// reported it "installed and healthy" while it ingested exactly nothing. The
+// heartbeat now carries the monitor OUTCOME; doctor must FAIL on it — and must
+// stay silent for a legacy heartbeat that predates those fields.
+// ---------------------------------------------------------------------------
+
+test('monitorFaultFor: a LEGACY heartbeat (no monitor fields) is UNKNOWN -> never a fault (fail-open)', () => {
+  const home = mkTmp('mf-legacy');
+  try {
+    const repoKey = 'proj-abc123';
+    const hb = heartbeatPathFor(home, repoKey);
+    fs.mkdirSync(path.dirname(hb), { recursive: true });
+    fs.writeFileSync(hb, JSON.stringify({ ts: Date.now(), pid: process.pid, workspaceId: 'p' }));
+    assert.strictEqual(repair.monitorFaultFor(home, repoKey, Date.now()), null,
+      'an older daemon that never wrote these fields must never be condemned');
+    // Missing file / unparsable JSON / no repoKey are all UNKNOWN too.
+    assert.strictEqual(repair.monitorFaultFor(home, 'no-such-key', Date.now()), null);
+    fs.writeFileSync(hb, 'not json');
+    assert.strictEqual(repair.monitorFaultFor(home, repoKey, Date.now()), null);
+    assert.strictEqual(repair.monitorFaultFor(home, null, Date.now()), null);
+  } finally { rm(home); }
+});
+
+test('monitorFaultFor: healthy counters -> null; a below-threshold blip -> null; sustained failures -> FAULT', () => {
+  const home = mkTmp('mf-thresh');
+  try {
+    const repoKey = 'proj-abc123';
+    const hb = heartbeatPathFor(home, repoKey);
+    fs.mkdirSync(path.dirname(hb), { recursive: true });
+    const now = Date.now();
+    const write = (o) => fs.writeFileSync(hb, JSON.stringify(Object.assign({ ts: now, pid: process.pid }, o)));
+
+    write({ consecutiveMonitorFailures: 0, lastMonitorOkMs: now - 1000 });
+    assert.strictEqual(repair.monitorFaultFor(home, repoKey, now), null, 'a draining daemon is never a fault');
+
+    write({ consecutiveMonitorFailures: 1, lastMonitorOkMs: now - 1000 });
+    assert.strictEqual(repair.monitorFaultFor(home, repoKey, now), null, 'a single transient blip is not a fault');
+
+    write({
+      consecutiveMonitorFailures: repair.MONITOR_FAILURE_FAIL_THRESHOLD,
+      lastMonitorOkMs: null, lastMonitorErrorCode: 'ENOENT',
+      hivecontrolBin: 'hivecontrol', hivecontrolSource: 'path',
+      daemonPath: '/usr/bin:/bin:/usr/sbin:/sbin',
+    });
+    const fault = repair.monitorFaultFor(home, repoKey, now);
+    assert.ok(fault, 'sustained failures ARE a fault');
+    assert.strictEqual(fault.code, 'ENOENT');
+    assert.strictEqual(fault.daemonPath, '/usr/bin:/bin:/usr/sbin:/sbin');
+    const reason = repair.monitorFaultReason(fault, '/w');
+    assert.match(reason, /RUNNING but/, 'the reason distinguishes this from a dead daemon');
+    assert.match(reason, /hivecontrol/, 'the reason names the resolved binary');
+    assert.match(reason, /\/usr\/bin:\/bin:\/usr\/sbin:\/sbin/, "the reason names the daemon's actual PATH");
+    assert.match(reason, /ANTIHALL_DEVSWARM_HIVECONTROL/, 'the reason names the remedy');
+
+    // Second trigger: a positively STALE last-success while still failing.
+    write({ consecutiveMonitorFailures: 1, lastMonitorOkMs: now - (repair.MONITOR_OK_STALE_MS + 60000) });
+    assert.ok(repair.monitorFaultFor(home, repoKey, now), 'a long-stale last-success while failing is also a fault');
+  } finally { rm(home); }
+});
+
+test('doctor --fix: alive + heartbeating but MONITOR FAILING -> reported as a FAILURE, never healthy', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('mf-alive-failing');
+  const cwd = makeGitRepo('mf-alive-failing-cwd');
+  try {
+    seedUserSettings(home);
+    const { unitPath, repoKey } = writeOkIngestUnitFixture(home, cwd);
+    const hb = heartbeatPathFor(home, repoKey);
+    const lock = projectLockPathFor(home, repoKey);
+    fs.mkdirSync(path.dirname(hb), { recursive: true });
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    // FRESH heartbeat + a live-pid lock (this daemon passes the liveness gate)
+    // — but every monitor call is failing with a configuration error.
+    fs.writeFileSync(hb, JSON.stringify({
+      ts: Date.now(), pid: process.pid, workspaceId: 'p',
+      consecutiveMonitorFailures: 120, lastMonitorOkMs: null, lastMonitorErrorCode: 'ENOENT',
+      lastMonitorError: 'spawnSync hivecontrol ENOENT',
+      hivecontrolBin: 'hivecontrol', hivecontrolSource: 'path',
+      daemonPath: '/usr/bin:/bin:/usr/sbin:/sbin',
+    }));
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+    const before = fs.readFileSync(unitPath, 'utf8');
+
+    const r = runDoctor({ cwd, args: ['--fix'], env: { HOME: home, USERPROFILE: home } });
+    assert.doesNotMatch(r.out, /ingest daemon installed and healthy/,
+      'a daemon that ingests nothing must NEVER be reported healthy:\n' + r.out);
+    assert.match(r.out, /GATED \[ingest\]/, 'behind a closed gate it is GATED with the real reason:\n' + r.out);
+    assert.match(r.out, /RUNNING but its .*monitor.* calls are FAILING/, 'names the actual fault:\n' + r.out);
+    assert.match(r.out, /ENOENT/, 'names the error code:\n' + r.out);
+    assert.match(r.out, /daemon PATH=\/usr\/bin:\/bin/, "names the daemon's actual PATH:\n" + r.out);
+    assert.strictEqual(fs.readFileSync(unitPath, 'utf8'), before, 'a gated repair must never rewrite the unit');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('doctor --fix: alive + monitor SUCCEEDING -> still reported healthy (no false positive)', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('mf-alive-ok');
+  const cwd = makeGitRepo('mf-alive-ok-cwd');
+  try {
+    seedUserSettings(home);
+    const { repoKey } = writeOkIngestUnitFixture(home, cwd);
+    const hb = heartbeatPathFor(home, repoKey);
+    const lock = projectLockPathFor(home, repoKey);
+    fs.mkdirSync(path.dirname(hb), { recursive: true });
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(hb, JSON.stringify({
+      ts: Date.now(), pid: process.pid,
+      consecutiveMonitorFailures: 0, lastMonitorOkMs: Date.now() - 2000,
+      hivecontrolBin: '/opt/dv/bin/hivecontrol', hivecontrolSource: 'env',
+    }));
+    fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+
+    const r = runDoctor({ cwd, args: ['--fix'], env: { HOME: home, USERPROFILE: home } });
+    assert.match(r.out, /skipped \[ingest\] ingest daemon installed and healthy/,
+      'a genuinely draining daemon stays healthy:\n' + r.out);
+    assert.doesNotMatch(r.out, /calls are FAILING/);
+  } finally { rm(home); rm(cwd); }
+});
+
+// ---------------------------------------------------------------------------
 // 7. Backward-compat: --check is PURE read-only (no Repair section, exit 0).
 // ---------------------------------------------------------------------------
 test('doctor --check: no Repair section, exits 0 on a clean fake machine (read-only)', () => {

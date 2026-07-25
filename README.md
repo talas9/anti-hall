@@ -306,6 +306,23 @@ plugin depends on it.
   `devswarm.js logs` (filter by `--repo`/`--component`/`--min-level`/`--since`/`--limit`)
   and `doctor --logs`. `inbox messages --ack-as-owner` without `--ack` now warns it did
   NOT ack instead of silently staying read-only.
+- **Daemon reliability + honest health (v0.65.0).** Root-caused an ingest daemon that was
+  RUNNING but ingesting nothing: it spawned `hivecontrol` by bare name under the service
+  manager's minimal `PATH` and failed every cycle with a swallowed ENOENT. The binary is
+  now resolved at install time and baked into the generated launchd/systemd/cron unit
+  (never a hardcoded path). ENOENT/EACCES/ENOTDIR now escalate through a capped backoff
+  instead of storming the log, while the heartbeat keeps writing. Orphaned ingest locks
+  self-heal on daemon start (positive OS confirmation required before any removal); the
+  new `doctor --reclaim-ingest-lock` is an explicit, opt-in sweep-and-reinstall path,
+  never automatic. The heartbeat now records the monitor outcome, so an alive-but-failing
+  daemon is reported as a `doctor` FAILURE and surfaced by a one-line in-session banner
+  instead of reading as healthy; a heartbeat missing these fields (pre-upgrade daemon) is
+  treated as unknown, never a fault. Install now also detects a memory-guard/reaper
+  script that would kill the service-managed daemon and reports the exact allowlist entry
+  to add (detect-and-report only). Separately, a DevSwarm child now forwards a decision to
+  its parent with its recommendation and default, keeps working every other item, and
+  proceeds on that default if unanswered — never blocking the swarm on a question; only an
+  unauthorized destructive action is a hard stop.
 - **Guard-blocked native messaging** — `hivecontrol workspace message-child`/
   `message-parent` are unconditionally blocked and redirected to the mesh CLI, which is
   the sole agent-initiated messaging transport once DevSwarm is active.

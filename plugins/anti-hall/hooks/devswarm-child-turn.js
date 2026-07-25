@@ -705,7 +705,13 @@ function main() {
           beatTs = beat && Number.isFinite(beat.ts) ? beat.ts : null;
         } catch (_) { beatTs = null; }
         const health = ingestHealthMod.daemonHealth(home, repoKey, { now });
-        if (health.status === 'stale') staleBanner = ingestHealthMod.buildStaleBanner(beatTs, now);
+        // v0.66: 'failed' (alive but ingesting nothing) is strictly MORE severe
+        // than 'stale' (not alive) — daemonHealth's own status is a single
+        // mutually-exclusive enum value (never both at once, see its own
+        // comment), but the 'failed' check is still checked FIRST so precedence
+        // is explicit and only ONE banner ever renders in this slot.
+        if (health.status === 'failed') staleBanner = ingestHealthMod.buildMonitorFaultBanner(health.monitorFault);
+        else if (health.status === 'stale') staleBanner = ingestHealthMod.buildStaleBanner(beatTs, now);
       }
 
       // D26 (Phase 8 step 3): mesh DIRECT surfacing. A mesh direct addressed to

@@ -35,6 +35,16 @@ const DO_REPAIR = !CHECK; // default, --fix, --repair, --dry-run repair; --check
 // affects the exit code (report-only, same posture as the reaper/foreign-conflict
 // sections) — a logged error is history, not a live guard failure THIS run.
 const LOGS = process.argv.includes('--logs');
+// --reclaim-ingest-lock (v0.65.0): EXPLICIT, OPT-IN, human-invoked ONLY — never
+// wired into the default/--fix/--dry-run repair pass above. Mirrors
+// devswarm-recover being the one path allowed to forcibly reclaim. Sweeps every
+// installed ingest lock for a CONFIRMED dead/zombie/pid-reused holder (never
+// signals a process) and additionally reclaims THIS worktree's own project lock
+// via devswarm-ingest.js's own wedged-heartbeat+SIGKILL liveness test, then
+// triggers the existing reinstall path ONLY if something for this worktree was
+// actually reclaimed. Runs independently of --check/--fix/--dry-run; --dry-run
+// (if also passed) is still honored as a preview that writes nothing.
+const RECLAIM_INGEST_LOCK = process.argv.includes('--reclaim-ingest-lock');
 
 const C = process.stdout.isTTY
   ? { g:'\x1b[32m', r:'\x1b[31m', y:'\x1b[33m', d:'\x1b[2m', b:'\x1b[1m', c:'\x1b[36m', x:'\x1b[0m' }
@@ -868,6 +878,47 @@ if (DO_REPAIR) {
     else infol('skipped ' + label);
   }
 }
+
+// --- 6i. --reclaim-ingest-lock (EXPLICIT, OPT-IN ONLY; see the flag's own doc
+// comment above). Independent of --check/--fix/--dry-run — this section runs
+// purely off the presence of --reclaim-ingest-lock. `failed` drives the exit
+// code exactly like the repair pass above; `fixed`/`skipped` do not.
+// ---------------------------------------------------------------------------
+if (RECLAIM_INGEST_LOCK) {
+  head('Reclaim ingest lock' + (DRYRUN ? ' (dry-run — no changes written)' : '') + ' [explicit --reclaim-ingest-lock]');
+  let reclaimed = [];
+  try {
+    reclaimed = require('./lib/doctor-repair.js').reclaimIngestLocks({
+      cwd: process.cwd(), env: process.env, home: os.homedir(), dryRun: DRYRUN,
+    });
+  } catch (e) {
+    bad('reclaim-ingest-lock pass raised (fail-open): ' + (e && e.message));
+  }
+  if (reclaimed.length === 0 && fail === 0) infol('nothing swept or reclaimed');
+  for (const r of reclaimed) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('RECLAIMED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else infol('skipped ' + label);
+  }
+}
+
+// --- 6j. memguard-reaper risk (REPORT-ONLY, CONDITIONAL) ---------------------
+// See doctor-repair.js's checkMemguardReaperRisk for the full rationale (a
+// user-machine reaper/memguard LaunchAgent can SIGKILL an unallowlisted,
+// launchd-spawned ingest daemon whose PPID is 1 by construction on macOS).
+// Delegated to that ONE helper (fully defensive + fail-open there) so this
+// call site can never crash doctor.js; stays SILENT (no section at all) when
+// no detection helper is present in this build, per this feature's contract.
+// Report-only: never touches pass/fail (only warnl), same posture as the
+// reaper/foreign-conflict sections above.
+(function memguardReaperRiskSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkMemguardReaperRisk({}); } catch (_) { result = null; }
+  if (!result) return;
+  head('memguard-reaper risk');
+  warnl(result.message + (result.file ? ' (' + result.file + ')' : ''));
+})();
 
 // --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0

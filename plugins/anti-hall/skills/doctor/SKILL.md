@@ -71,6 +71,25 @@ gated the same way):
    `listInstalledIngestUnits`) and the supervisor: `launchctl list` / `systemctl
    --user is-active` / (cron fallback) heartbeat-or-`ps`. Distinguishes
    installed-but-DEAD (WARN) from not-installed (INFO, not a warning).
+   **v0.66 — alive but ingesting nothing:** a daemon can be RUNNING (fresh
+   heartbeat, live-pid lock) while every `hivecontrol workspace monitor` spawn
+   it makes still FAILS (a permanent config fault, e.g. ENOENT/EACCES/ENOTDIR
+   — commonly a bare binary name plus the scheduler's minimal `PATH`). The
+   heartbeat now carries the monitor OUTCOME (`consecutiveMonitorFailures` /
+   `lastMonitorOkMs` / `lastMonitorErrorCode` — see `devswarm-ingest.js`'s
+   `writeIngestHeartbeat`), and repair mode reports this as its own **FAILURE**
+   (not "installed and healthy") once 3+ consecutive failures are recorded, or
+   the last success is >10min stale while still failing — reinstalling bakes
+   the resolved absolute binary + `PATH` into the regenerated unit, which is
+   the actual remedy. A heartbeat missing these fields (an older daemon build
+   that has not been relaunched yet) is UNKNOWN, never a fault. The SAME
+   verdict (same thresholds, same missing-fields=UNKNOWN rule — one shared
+   predicate, `hooks/lib/doctor-repair.js`'s exported `monitorFaultFor()`) also
+   drives the **in-session hot-path banner**: `companion/lib/ingest-health.js`'s
+   `daemonHealth()` returns `status:'failed'` (distinct from `'healthy'` and
+   `'stale'`) for this case, and `buildMonitorFaultBanner()` renders the
+   one-line in-session warning — so a daemon that is alive-but-broken is never
+   misreported as a mere staleness blip.
 4. **No other consumer** — reads the per-worktree ingest lock(s) and cross-checks
    against a `ps` scan for `hivecontrol workspace monitor` processes; more than
    one, or one holding no lock, is a high-severity WARN (report-only — the

@@ -35,6 +35,15 @@ function writeLock(home, repoKey, pid) {
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify({ pid, ts: Date.now(), token: 'test' }));
 }
+// writeHeartbeatFull — full control over the heartbeat's raw fields, for the
+// v0.66 monitor-outcome fault tests below (consecutiveMonitorFailures /
+// lastMonitorOkMs / lastMonitorErrorCode — see devswarm-ingest.js's
+// writeIngestHeartbeat and hooks/lib/doctor-repair.js's monitorFaultFor).
+function writeHeartbeatFull(home, repoKey, fields) {
+  const p = health.ingestHeartbeatPath(home, repoKey);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(fields));
+}
 
 // ---------------------------------------------------------------------------
 // daemonHealth() — the two D25 signals in isolation, injectable io throughout
@@ -48,7 +57,7 @@ test('daemonHealth: fresh heartbeat + live-pid lock (same incarnation, matching 
     writeHeartbeat(home, 'proj-abc', now - 5000, 4242);
     writeLock(home, 'proj-abc', 4242);
     const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'linux', io: { isAlive: () => true } });
-    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true });
+    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null });
   } finally { rm(home); }
 });
 
@@ -117,7 +126,7 @@ test('daemonHealth: malformed heartbeat/lock JSON -> both signals fail closed, n
     fs.writeFileSync(p2, '{also not json');
     assert.doesNotThrow(() => {
       const r = health.daemonHealth(home, 'proj-abc', { now: Date.now(), platform: 'linux' });
-      assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false });
+      assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false, monitorFault: null });
     });
   } finally { rm(home); }
 });
@@ -126,7 +135,7 @@ test('daemonHealth: repoKey null -> stale, no throw (nothing to check)', () => {
   const home = tmpHome();
   try {
     const r = health.daemonHealth(home, null, { now: Date.now(), platform: 'linux' });
-    assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false });
+    assert.deepStrictEqual(r, { status: 'stale', fresh: false, liveLock: false, monitorFault: null });
   } finally { rm(home); }
 });
 
@@ -137,8 +146,126 @@ test('daemonHealth: win32 -> unsupported (D28), regardless of heartbeat/lock sta
     writeHeartbeat(home, 'proj-abc', now - 5000);
     writeLock(home, 'proj-abc', 4242);
     const r = health.daemonHealth(home, 'proj-abc', { now, platform: 'win32', io: { isAlive: () => true } });
-    assert.deepStrictEqual(r, { status: 'unsupported', fresh: false, liveLock: false });
+    assert.deepStrictEqual(r, { status: 'unsupported', fresh: false, liveLock: false, monitorFault: null });
   } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// v0.66 MONITOR-OUTCOME FAULT — daemonHealth() reusing hooks/lib/doctor-
+// repair.js's EXPORTED monitorFaultFor() (same MONITOR_FAILURE_FAIL_THRESHOLD
+// / MONITOR_OK_STALE_MS thresholds, same missing-fields=UNKNOWN rule — never
+// duplicated in ingest-health.js). See doctor-repair.js's own
+// MONITOR_FAILURE_FAIL_THRESHOLD (3) / MONITOR_OK_STALE_MS (10min) constants.
+// ---------------------------------------------------------------------------
+
+test('daemonHealth v0.66: alive (fresh heartbeat + live lock, same incarnation) but monitor failing past threshold -> status:"failed", not "stale"/"healthy"', () => {
+  const home = tmpHome();
+  try {
+    const now = Date.now();
+    writeHeartbeatFull(home, 'proj-mon', {
+      ts: now - 5000, pid: 4242,
+      consecutiveMonitorFailures: 5, // >= MONITOR_FAILURE_FAIL_THRESHOLD (3)
+      lastMonitorOkMs: null,
+      lastMonitorErrorCode: 'ENOENT',
+    });
+    writeLock(home, 'proj-mon', 4242);
+    const r = health.daemonHealth(home, 'proj-mon', { now, platform: 'linux', io: { isAlive: () => true } });
+    assert.strictEqual(r.status, 'failed', 'a daemon alive but ingesting nothing must never read as merely stale or healthy');
+    assert.strictEqual(r.fresh, true);
+    assert.strictEqual(r.liveLock, true);
+    assert.ok(r.monitorFault, 'monitorFault must be populated');
+    assert.strictEqual(r.monitorFault.consecutive, 5);
+    assert.strictEqual(r.monitorFault.code, 'ENOENT');
+    const banner = health.buildMonitorFaultBanner(r.monitorFault);
+    assert.ok(!banner.includes('\n'), 'banner must be a single line (10k injection cap)');
+    assert.ok(/hivecontrol workspace monitor/.test(banner), banner);
+    assert.ok(/anti-hall:doctor/.test(banner), banner);
+    assert.ok(/5x/.test(banner), banner);
+  } finally { rm(home); }
+});
+
+test('daemonHealth v0.66: alive + monitor healthy (consecutiveMonitorFailures:0) -> unchanged status:"healthy", monitorFault:null', () => {
+  const home = tmpHome();
+  try {
+    const now = Date.now();
+    writeHeartbeatFull(home, 'proj-mon-ok', {
+      ts: now - 5000, pid: 4242,
+      consecutiveMonitorFailures: 0,
+      lastMonitorOkMs: now - 1000,
+      lastMonitorErrorCode: null,
+    });
+    writeLock(home, 'proj-mon-ok', 4242);
+    const r = health.daemonHealth(home, 'proj-mon-ok', { now, platform: 'linux', io: { isAlive: () => true } });
+    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null });
+  } finally { rm(home); }
+});
+
+test('daemonHealth v0.66 BACK-COMPAT: a LEGACY heartbeat (pre-v0.66 daemon, no monitor fields at all) -> unchanged prior behavior, status:"healthy", monitorFault:null (never a fault)', () => {
+  const home = tmpHome();
+  try {
+    const now = Date.now();
+    // Exactly what an OLDER daemon build's writeIngestHeartbeat produced:
+    // only ts/workspaceId/workingDir/pid — no consecutiveMonitorFailures et al.
+    writeHeartbeatFull(home, 'proj-legacy', { ts: now - 5000, pid: 4242, workspaceId: 'ws', workingDir: '/tmp/x' });
+    writeLock(home, 'proj-legacy', 4242);
+    const r = health.daemonHealth(home, 'proj-legacy', { now, platform: 'linux', io: { isAlive: () => true } });
+    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null });
+  } finally { rm(home); }
+});
+
+test('daemonHealth v0.66: monitor failures below threshold (a blip, not a fault) with no stale last-ok -> unchanged status:"healthy"', () => {
+  const home = tmpHome();
+  try {
+    const now = Date.now();
+    writeHeartbeatFull(home, 'proj-blip', {
+      ts: now - 5000, pid: 4242,
+      consecutiveMonitorFailures: 2, // below MONITOR_FAILURE_FAIL_THRESHOLD (3)
+      lastMonitorOkMs: now - 30000, // recent, not stale
+      lastMonitorErrorCode: 'ETIMEDOUT',
+    });
+    writeLock(home, 'proj-blip', 4242);
+    const r = health.daemonHealth(home, 'proj-blip', { now, platform: 'linux', io: { isAlive: () => true } });
+    assert.deepStrictEqual(r, { status: 'healthy', fresh: true, liveLock: true, monitorFault: null });
+  } finally { rm(home); }
+});
+
+test('daemonHealth v0.66: monitor NOT baseHealthy (dead lock holder) -> stays "stale", never checks monitor fields', () => {
+  const home = tmpHome();
+  try {
+    const now = Date.now();
+    writeHeartbeatFull(home, 'proj-dead', {
+      ts: now - 5000, pid: 4242,
+      consecutiveMonitorFailures: 99, // would be a fault IF baseHealthy — must never surface here
+      lastMonitorOkMs: null,
+      lastMonitorErrorCode: 'ENOENT',
+    });
+    writeLock(home, 'proj-dead', 4242); // present, but holder reported dead below
+    const r = health.daemonHealth(home, 'proj-dead', { now, platform: 'linux', io: { isAlive: () => false } });
+    assert.deepStrictEqual(r, { status: 'stale', fresh: true, liveLock: false, monitorFault: null });
+  } finally { rm(home); }
+});
+
+test('daemonHealth v0.66: win32 -> unchanged no-op regardless of monitor-fault fields (D28 preserved)', () => {
+  const home = tmpHome();
+  try {
+    const now = Date.now();
+    writeHeartbeatFull(home, 'proj-win', {
+      ts: now - 5000, pid: 4242,
+      consecutiveMonitorFailures: 99,
+      lastMonitorOkMs: null,
+      lastMonitorErrorCode: 'ENOENT',
+    });
+    writeLock(home, 'proj-win', 4242);
+    const r = health.daemonHealth(home, 'proj-win', { now, platform: 'win32', io: { isAlive: () => true } });
+    assert.deepStrictEqual(r, { status: 'unsupported', fresh: false, liveLock: false, monitorFault: null });
+  } finally { rm(home); }
+});
+
+test('buildMonitorFaultBanner: null/malformed fault never throws, still names the remedy', () => {
+  assert.doesNotThrow(() => {
+    const banner = health.buildMonitorFaultBanner(null);
+    assert.ok(/anti-hall:doctor/.test(banner), banner);
+  });
 });
 
 test('buildStaleBanner: renders a relative age and points to the remedy', () => {

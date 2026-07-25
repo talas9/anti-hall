@@ -20,6 +20,15 @@
 // NOT-fresh / NOT-live respectively — fail-open means "never throw", NEVER
 // "assume healthy" (D25 fixes exactly this "missing == healthy" contradiction).
 //
+// v0.66 MONITOR-OUTCOME FAULT: BOTH signals above can hold (fresh heartbeat,
+// live-pid lock, same incarnation — otherwise 'healthy') while the daemon's
+// `hivecontrol workspace monitor` spawn fails every cycle (a permanent config
+// fault, e.g. ENOENT/EACCES/ENOTDIR) — alive, but ingesting NOTHING. Reported
+// as its own status:'failed' (see daemonHealth below), reusing hooks/lib/
+// doctor-repair.js's EXPORTED monitorFaultFor() (same thresholds, same
+// missing-fields=UNKNOWN rule — never duplicated here) so the hot-path banner
+// and doctor's repair verdict can never drift apart.
+//
 // WINDOWS CARVE-OUT (D28): the ingest installer is a documented no-op on win32
 // (install-devswarm-ingest.js), so the daemon heartbeat is NEVER fresh there.
 // `daemonHealth` short-circuits to `status:'unsupported'` on win32 so callers
@@ -101,16 +110,46 @@ function buildStaleBanner(beatTs, now) {
   );
 }
 
-// daemonHealth(home, repoKey, opts) -> { status, fresh, liveLock }
-//   status: 'healthy'     — fresh heartbeat AND a live-pid lock holder
-//           'stale'       — either signal fails (incl. repoKey null/unresolved)
+// doctorRepairMod() — lazy, fail-open require of hooks/lib/doctor-repair.js's
+// EXPORTED monitorFaultFor() (v0.66 "alive but ingesting nothing" detection —
+// see that module's own comment for the field/threshold rationale). Reused
+// rather than re-implemented here so the MONITOR_FAILURE_FAIL_THRESHOLD /
+// MONITOR_OK_STALE_MS constants and the missing-fields=UNKNOWN rule live in
+// exactly ONE place — this hot-path banner and doctor's repair verdict can
+// never drift apart. Safe to require top-down: doctor-repair.js's own
+// MODULE-LEVEL code only requires os/fs/path/child_process (every other
+// cross-module require in it — devswarm-ingest.js, scripts/devswarm.js, etc,
+// one of which itself requires THIS file — is lazy, inside function bodies,
+// so no load-time cycle exists; see the coherence-gap note in daemonHealth
+// below). Required LAZILY here too (mirrors doctor-repair.js's own
+// ingestDaemonMod()/repokeyMod() pattern) so the two per-turn hot-path hooks
+// that require THIS file pay nothing when the monitor-fault branch is never
+// reached (win32 / repoKey-null / not-baseHealthy).
+function doctorRepairMod() {
+  try { return require(path.join(__dirname, '..', '..', 'hooks', 'lib', 'doctor-repair.js')); } catch (_) { return {}; }
+}
+
+// daemonHealth(home, repoKey, opts) -> { status, fresh, liveLock, monitorFault }
+//   status: 'healthy'     — fresh heartbeat AND a live-pid lock holder, monitor OK
+//           'failed'      — (v0.66) same liveness signals as 'healthy', but the
+//                           daemon's `hivecontrol workspace monitor` spawn is
+//                           FAILING past doctor-repair.js's monitorFaultFor()
+//                           threshold — alive, but ingesting NOTHING. Deliberately
+//                           NOT folded into 'stale': the liveness signals here are
+//                           positively fine (fresh heartbeat, live-pid lock, same
+//                           incarnation) — reporting 'stale' would contradict that
+//                           and mislead the (accurate, very-recent) relative age in
+//                           buildStaleBanner. A heartbeat missing the v0.66 monitor
+//                           fields (pre-v0.66 daemon) is UNKNOWN, never 'failed'
+//                           (fail-open — see monitorFaultFor's own LEGACY GUARD).
+//           'stale'       — either base signal fails (incl. repoKey null/unresolved)
 //           'unsupported' — win32 (D28); the daemon cannot run there at all
 // Pure fs; fail-open throughout — any read/parse error degrades the SPECIFIC
 // signal to false, never throws the whole call.
 function daemonHealth(home, repoKey, opts) {
   const o = opts || {};
   const platform = o.platform || process.platform;
-  if (platform === 'win32') return { status: 'unsupported', fresh: false, liveLock: false };
+  if (platform === 'win32') return { status: 'unsupported', fresh: false, liveLock: false, monitorFault: null };
 
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const F = (o.io && o.io.fs) || fs;
@@ -155,8 +194,46 @@ function daemonHealth(home, repoKey, opts) {
   // `pid: process.pid` from the same process, so a genuinely healthy daemon's
   // own heartbeat and lock always carry matching pids already.
   const sameIncarnation = beatPid !== null && lockPid !== null && beatPid === lockPid;
+  const baseHealthy = fresh && liveLock && sameIncarnation;
 
-  return { status: (fresh && liveLock && sameIncarnation) ? 'healthy' : 'stale', fresh, liveLock };
+  // v0.66 MONITOR-OUTCOME FAULT: checked ONLY when baseHealthy — an
+  // unhealthy/mismatched-incarnation heartbeat's monitor fields are not
+  // trustworthy anyway (same gating doctor-repair.js's own runRepairs uses:
+  // `if (alive) { monitorFault = monitorFaultFor(...) }`). monitorFaultFor is
+  // itself fail-open (never throws, null on any doubt including a legacy
+  // heartbeat missing the v0.66 fields), so this try/catch is belt-and-
+  // suspenders against a missing/broken doctor-repair.js module.
+  let monitorFault = null;
+  if (baseHealthy && repoKey) {
+    try {
+      const dr = doctorRepairMod();
+      if (typeof dr.monitorFaultFor === 'function') {
+        monitorFault = dr.monitorFaultFor(home, repoKey, now, o.io) || null;
+      }
+    } catch (_) { monitorFault = null; }
+  }
+
+  const status = monitorFault ? 'failed' : (baseHealthy ? 'healthy' : 'stale');
+  return { status, fresh, liveLock, monitorFault };
+}
+
+// buildMonitorFaultBanner(fault) -> a short, ONE-LINE, actionable banner for
+// the v0.66 monitor-outcome fault (daemonHealth() status:'failed') — the
+// daemon is alive but its `hivecontrol workspace monitor` calls are failing,
+// so it is ingesting NOTHING. Deliberately terser than doctor-repair.js's own
+// monitorFaultReason() (that one is a one-shot CLI report; this is injected
+// into every session turn under the shared ~10k-char hook-injection cap).
+// `fault` is the object returned by doctor-repair.js's monitorFaultFor()
+// (daemonHealth()'s own `.monitorFault` field) — never throws on a null/
+// malformed fault, matching buildStaleBanner's own fail-open contract.
+function buildMonitorFaultBanner(fault) {
+  const f = fault || {};
+  const consecutive = Number.isFinite(f.consecutive) ? f.consecutive : '?';
+  return (
+    '⚠ DEVSWARM INGEST FAILING: daemon is alive but `hivecontrol workspace monitor` has failed '
+    + consecutive + 'x in a row' + (f.code ? ' (' + f.code + ')' : '')
+    + ' — ingesting NOTHING. Run /anti-hall:doctor to repair the ingest daemon.'
+  );
 }
 
 module.exports = {
@@ -165,4 +242,5 @@ module.exports = {
   ingestProjectLockPath,
   daemonHealth,
   buildStaleBanner,
+  buildMonitorFaultBanner,
 };

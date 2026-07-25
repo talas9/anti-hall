@@ -52,10 +52,20 @@ every PER-PROJECT store `store/<hash>/` (sqlite `quick_check` via an isolated
 `--no-warnings` read-only probe, journal torn-line scan, store↔summary parity),
 data staleness (gated on the daemon RUNNING + unread backlog —
 never flags an idle system), daemons RUNNING vs merely installed (report-only, never
-restarts), and a no-other-consumer scan for a stray `hivecontrol workspace monitor`
-process (report-only, never kills). Since the DevSwarm gate is effectively always closed
-on Codex sessions, these four checks are effectively always silent there too (correct —
-DevSwarm liveness is a Claude-child-session concern). Separately, an **unconditional**
+restarts) — **including (v0.66) the "alive but ingesting nothing" case**: a daemon can be
+RUNNING (fresh heartbeat, live-pid lock) while every `hivecontrol workspace monitor` spawn
+still FAILS (a permanent config fault, e.g. ENOENT/EACCES/ENOTDIR); the heartbeat carries
+the monitor outcome (`consecutiveMonitorFailures`/`lastMonitorOkMs`/`lastMonitorErrorCode`),
+and doctor reports this as its own FAILURE (not "healthy") once 3+ consecutive failures are
+recorded or the last success is >10min stale while still failing — a heartbeat missing
+these fields (older daemon build) is UNKNOWN, never a fault. The same shared predicate
+(`hooks/lib/doctor-repair.js`'s exported `monitorFaultFor()`) also drives the in-session
+hot-path banner on the Claude side (`companion/lib/ingest-health.js`'s `daemonHealth()`
+returns `status:'failed'`, distinct from `'healthy'`/`'stale'`) — and a no-other-consumer
+scan for a stray `hivecontrol workspace monitor` process (report-only, never kills). Since
+the DevSwarm gate is effectively always closed on Codex sessions, these checks are
+effectively always silent there too (correct — DevSwarm liveness is a Claude-child-session
+concern). Separately, an **unconditional**
 foreign skill/hook conflict scan runs regardless of DevSwarm state, cross-referencing
 other enabled plugins' `hooks.json`/skills against anti-hall's own; only plugin name +
 event + matcher + hook basename are ever reported (never full command strings or file
