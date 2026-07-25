@@ -3617,8 +3617,19 @@ function cmdMeshRead(flags, ctx) {
 // the resolved node binary, so no shell is needed here — same posture as this
 // file's own `defaultSpawnInstaller` a few hundred lines up, which spawns
 // itself the identical way.
+// WINDOWS BUG (CI run investigated for v0.66.1): `HOME` alone does NOT
+// redirect a Node child's `os.homedir()` on win32 — Node reads `USERPROFILE`
+// there (POSIX-only reads `$HOME`; see Node's os.homedir() docs). This
+// subprocess's own `cmdInboxPull`/`pullOnce` call resolves ITS `home` via
+// exactly that same `ctx.home || os.homedir()` fallback, so on Windows the
+// spawned `inbox pull` silently ignored `ctx.home` and fell back to the
+// REAL OS home directory instead — breaking the one guarantee this spawn
+// exists to provide (the child observes the SAME devswarm root, including
+// the SAME per-id pull lock, as the caller) whenever `ctx.home` differs from
+// the live process's actual home. Same fix hooks/doctor.js's own child-env
+// builder (CHILD_ENV/PRIMARY_ENV) already applies for the identical reason.
 function defaultSpawnReconcile(d, ctx) {
-  const env = Object.assign({}, ctx.env || process.env, { HOME: ctx.home });
+  const env = Object.assign({}, ctx.env || process.env, { HOME: ctx.home, USERPROFILE: ctx.home });
   if (ctx.backend) env.ANTIHALL_DEVSWARM_STORE_BACKEND = ctx.backend;
   try {
     return spawnSync(process.execPath, [__filename, 'inbox', 'pull', d.id], {

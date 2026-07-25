@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.66.1
+
+CI-green patch for v0.66.0 — a genuine Windows bug in the reconcile spawn path, no behavior change on POSIX.
+
+- **Fixed a real Windows bug in `devswarm reconcile`'s spawned pull.** The reconcile sweep spawns `inbox pull` as a subprocess and threads the caller's `home` through by setting only the `HOME` env var. Node's `os.homedir()` does not read `HOME` on win32 (it reads `USERPROFILE`), so on Windows that subprocess silently fell back to the real OS home directory instead of the one the caller intended — breaking the guarantee that the spawned pull observes the same devswarm root (including the same per-id lock) as its caller whenever the two differ. Now sets `USERPROFILE` alongside `HOME`, matching the precedent already used elsewhere in this codebase for the identical reason.
+- Two supervisor reconcile-sweep tests spawn the real entry script with an overridden `HOME` to isolate themselves; they had the same one-sided `HOME`-only gap, so on Windows they silently operated against the real OS home directory instead of their own isolated fixture — observing stale state (or none) rather than what the test set up. Fixed the same way, in the tests themselves.
+- Swept the rest of v0.66.0's new/changed tests for the same class (binary spawns, cwd-based project resolution, path-separator assumptions); no other instances found.
+
 ## 0.66.0
 
 Closes a family of failure classes found by design review rather than by tripping over them: code that reported success it had not observed, and recovery that only ran if something else happened to trigger it.

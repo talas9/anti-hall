@@ -420,7 +420,18 @@ test('main() as a real entry-script process: reconcile-sweep runs, persists cool
   const repo = makeGitRepo();
   try {
     registerRealDescriptor(home, 'entry-ws', repo);
-    const env = Object.assign({}, process.env, { HOME: home });
+    // USERPROFILE alongside HOME: on win32, Node's os.homedir() (what main()
+    // calls with no override) reads USERPROFILE, never HOME (POSIX-only).
+    // Without it, this subprocess falls back to the REAL runner home dir on
+    // Windows instead of this test's isolated `home` — readDescriptors then
+    // sees whatever (or nothing) is really there, and any descriptor a PRIOR
+    // test in the same run leaked into that real home (itself a casualty of
+    // this exact same one-sided override, same bug) can leave a dangling
+    // worktreePath that no longer resolves to a repoKey, surfacing as
+    // 'no-resolvable-projects' instead of the deterministic result asserted
+    // below. Setting both makes this hermetic on every platform, not just
+    // empirically green on POSIX.
+    const env = Object.assign({}, process.env, { HOME: home, USERPROFILE: home });
     delete env.DEVSWARM_REPO_ID; delete env.DEVSWARM_BUILDER_ID; delete env.DEVSWARM_PRIMARY;
     delete env.DEVSWARM_SESSION_ID; delete env.DEVSWARM_REPO_KEY;
 
@@ -453,7 +464,9 @@ test('main(): the env off-switch disables reconcile even with descriptors and no
   const repo = makeGitRepo();
   try {
     registerRealDescriptor(home, 'off-ws', repo);
-    const env = Object.assign({}, process.env, { HOME: home, ANTIHALL_DEVSWARM_RECONCILE_SWEEP: 'off' });
+    // USERPROFILE alongside HOME — see the identical note in the entry-script
+    // test above (win32's os.homedir() ignores HOME).
+    const env = Object.assign({}, process.env, { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_RECONCILE_SWEEP: 'off' });
     delete env.DEVSWARM_REPO_ID; delete env.DEVSWARM_BUILDER_ID; delete env.DEVSWARM_PRIMARY;
     delete env.DEVSWARM_SESSION_ID; delete env.DEVSWARM_REPO_KEY;
     const r = cp.spawnSync(process.execPath, [SUPERVISOR_SCRIPT], { encoding: 'utf8', env, timeout: 30000 });
