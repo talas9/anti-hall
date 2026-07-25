@@ -323,6 +323,23 @@ plugin depends on it.
   its parent with its recommendation and default, keeps working every other item, and
   proceeds on that default if unanswered — never blocking the swarm on a question; only an
   unauthorized destructive action is a hard stop.
+- **Loss accounting + one health definition + honest success shapes (v0.66.0).** A
+  monitor batch that arrives but fails to parse (shape change, stderr contamination, a
+  truncating timeout) is now logged and quarantined to disk instead of silently vanishing
+  via the consume-on-read native queue; a well-formed empty result is still normal. Doctor
+  no longer asserts health from a weaker second definition that omitted the pid guard and
+  monitor-fault check — reaping now uses the one shared `daemonHealth` definition
+  everywhere. Project identity now resolves via the git superproject from inside a
+  submodule and refuses on an unresolvable context instead of quietly keying off the
+  submodule or falling back to a legacy store. `heartbeat`, `reconcile`, and other paths
+  no longer report `ok` while a mesh broadcast failed or individual targets crashed/timed
+  out; a genuinely absent hivecontrol is a benign skip, not a failure. A cooldown-gated
+  reconcile sweep now runs on its own on the existing supervisor (same single-consumer
+  lock as the drains) instead of waiting for an update or manual repair. `devswarm logs`
+  and `doctor --logs` now read rotated log history; the rotation lock records its owner
+  instead of being stolen on age alone; the Primary's own unreadable inbox is surfaced
+  instead of silently counting zero; the singleton supervisor unit now carries the same
+  resolved `hivecontrol` path as the per-project units.
 - **Guard-blocked native messaging** — `hivecontrol workspace message-child`/
   `message-parent` are unconditionally blocked and redirected to the mesh CLI, which is
   the sole agent-initiated messaging transport once DevSwarm is active.

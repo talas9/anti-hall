@@ -39,6 +39,7 @@ const {
   DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS,
 } = require('./lib/liveness.js');
 const { pokeOrEscalate, notifyParentEscalation, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
+const alog = require('./lib/anti-hall-log.js'); // leaf module (fs/os/path only) — safe at top level, no cycle risk
 // devswarm-repokey.js / devswarm-store.js are required LAZILY (inside
 // readMeshUrgency, not at module top level). Only the devswarm-repokey.js
 // lazy-require is load-bearing: repokey is NOT otherwise loaded anywhere in
@@ -51,6 +52,16 @@ const { pokeOrEscalate, notifyParentEscalation, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFA
 // requires devswarm-store.js and predates v0.58, so the store rides in via
 // parent-gate -> supervisor -> recovery -> store regardless. Lazy-requiring it
 // here too is harmless-but-consistent, not load-bearing.
+//
+// scripts/devswarm.js (the reconcile-sweep's CLI entry point, C4 below) is
+// required LAZILY INSIDE reconcileSweepIfDue for a STRONGER reason than the
+// two above: it is genuinely CIRCULAR — scripts/devswarm.js itself top-level-
+// requires THIS module (for readDescriptors). A top-level require here would
+// deadlock into Node's partial-exports behavior whenever THIS module is the
+// one first loaded as `require.main` (i.e. run directly by launchd/systemd/
+// cron, exactly how install-devswarm-supervisor.js deploys it): see the
+// module.exports/require.main reordering note at the bottom of this file for
+// why that specific direction is otherwise unsafe.
 
 const SWEEP_LOCK_STALE_MS = 5 * 60 * 1000; // a sweep should never run this long; steal a lock older than this
 
@@ -283,6 +294,211 @@ function sweepOnce(opts) {
   return results;
 }
 
+// ============================================================================
+// RECONCILE SWEEP (C4 — trigger-less recovery). Verified: `devswarm.js
+// reconcile` (drains stranded per-worktree native queues into the shared
+// store) was MANUAL-only — `update` runs it post-update and `doctor` only
+// under an explicit --fix gate; this periodic liveness sweep never ran it at
+// all. Field consequence: 1,440 messages sat stranded across 23 worktrees
+// until an update happened to run reconcile (the recovery itself, once
+// triggered, was lossless — the gap was purely "nothing triggers it
+// automatically"). This gives the ALREADY-installed periodic supervisor a
+// COOLDOWN-GATED sweep that periodically invokes the EXISTING reconcile entry
+// point (scripts/devswarm.js's `run(['reconcile'], ctx)` — the exact
+// programmatic call doctor-repair.js already makes) — no new recovery
+// mechanism, no parallel lock, no reimplementation of the drain itself.
+//
+// LOCK REUSE (hard constraint): `run(['reconcile'])` -> cmdReconcile spawns
+// `inbox pull <id>` as a subprocess per descriptor, cwd=that worktree, which
+// runs cmdInboxPull -> devswarm-pull.js's pullOnce -> acquireExclLock (the
+// SAME per-id O_EXCL `openSync(p,'wx')` lock a live child's own `inbox pull`
+// already uses). This sweep therefore acquires that SAME lock via the SAME
+// existing call path — it never opens a lock of its own — so it cannot race a
+// live drain: whichever of the two (this sweep's subprocess, or a live
+// child's own pull) gets there first wins the lock; the other observes
+// `locked:true` in cmdReconcile's per-target result and is skipped for THIS
+// tick, never blocked on, never corrupted.
+//
+// NON-DESTRUCTIVE + IDEMPOTENT: reconcile/inbox-pull never deletes source
+// messages (verified: no unlink/rm of message data anywhere in
+// devswarm-pull.js — only lock-file bookkeeping); re-running it on an
+// already-drained project is a no-op (imported:0).
+//
+// BOUNDED: (1) cooldown-gated — at most one reconcile-sweep attempt per
+// RECONCILE_SWEEP_COOLDOWN_MS (default 15min, env-tunable, floor 5min so a
+// typo'd override can never turn this into a per-tick hammer); (2) capped —
+// at most MAX_RECONCILE_PROJECTS_PER_TICK distinct projects per attempt (a
+// project skipped this tick is simply retried on a later cooldown-gated
+// tick — never lossy, just deferred); (3) each underlying `inbox pull`
+// subprocess already carries its own 30s spawn timeout (defaultSpawnReconcile
+// in scripts/devswarm.js) — this sweep inherits that bound for free by
+// reusing the same call path rather than reimplementing it.
+//
+// FAIL-OPEN throughout: this feature must never crash or hang the liveness
+// sweep it rides alongside. Every layer (state read/write, repoKey
+// resolution, the reconcile call itself) is individually try/caught; a
+// failure anywhere degrades to "skip this tick", never a thrown error.
+// ============================================================================
+
+const DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS = 15 * 60 * 1000; // 15 min
+const RECONCILE_SWEEP_STATE_FILE = 'reconcile-sweep-state.json';
+// Soft bound on distinct PROJECTS (repoKeys) reconciled in one tick — keeps a
+// single tick's worst-case latency bounded even on a machine with many active
+// projects. Not env-tunable (deliberately small, fixed surface area): a
+// project excluded this tick is picked up on a later cooldown-gated tick, so
+// this is a fairness/latency cap, never a lossiness risk.
+const MAX_RECONCILE_PROJECTS_PER_TICK = 10;
+
+function reconcileSweepStatePath(home) {
+  return path.join(devswarmRoot(home), RECONCILE_SWEEP_STATE_FILE);
+}
+
+// reconcileSweepEnabled(env) — off / hard-kill gates, PLUS its own dedicated
+// sub-toggle so an owner can keep the liveness sweep (poke/escalate) while
+// opting OUT of the automatic reconcile invocation specifically (e.g. while
+// diagnosing a reconcile-side issue) without disabling the whole supervisor.
+function reconcileSweepEnabled(env) {
+  const e = env || process.env;
+  if (!supervisorEnabled(e)) return false;
+  return String(e.ANTIHALL_DEVSWARM_RECONCILE_SWEEP || 'auto').trim().toLowerCase() !== 'off';
+}
+
+// resolveReconcileCooldownMs(env) -> ms, floor 5min (see BOUNDED above).
+function resolveReconcileCooldownMs(env) {
+  const sec = parseEnvNum(env || process.env, 'ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC',
+    DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS / 1000, { min: 300 });
+  return sec * 1000;
+}
+
+// readReconcileSweepState/writeReconcileSweepState — a small, independent,
+// additive state file (NOT the liveness verdict, NOT the sweep lock) tracking
+// only `{ lastRunAt }`. Fail-open: unreadable/corrupt/absent -> lastRunAt:0,
+// i.e. "never run" -> ELIGIBLE NOW. This fails open TOWARD sweeping, not away
+// from it — deliberately the opposite polarity of e.g. the parent-gate's
+// unknown-blocks convention, because running reconcile is itself safe,
+// idempotent, and non-destructive (see header), so the worse failure mode
+// here is staying silent (the ORIGINAL C4 bug), not sweeping an extra time.
+function readReconcileSweepState(home, F) {
+  try {
+    const parsed = JSON.parse(F.readFileSync(reconcileSweepStatePath(home), 'utf8'));
+    return { lastRunAt: Number.isFinite(parsed && parsed.lastRunAt) ? parsed.lastRunAt : 0 };
+  } catch (_) {
+    return { lastRunAt: 0 };
+  }
+}
+function writeReconcileSweepState(home, F, state) {
+  try {
+    const p = reconcileSweepStatePath(home);
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + process.pid;
+    F.writeFileSync(tmp, JSON.stringify(state));
+    F.renameSync(tmp, p); // atomic — a crash mid-write can never leave a torn state file
+  } catch (_) { /* fail-open: rate-limiting is best-effort only, never load-bearing for correctness */ }
+}
+
+// distinctRepoKeys(descriptors, deps) -> [{repoKey, worktreePath}], one
+// representative worktreePath per distinct repoKey. `deps.repoKeyForWorktree`
+// is injectable (tests); default lazily requires devswarm-repokey.js (same
+// lazy-require discipline readMeshUrgency above already uses — repokey is not
+// otherwise on this module's top-level require chain). Fail-open per
+// descriptor: an unresolvable repoKey (non-git worktree, missing git binary)
+// is skipped, never thrown — this signal only exists to discover WHICH
+// projects are active; the real reconcile call re-derives its own repoKey
+// from cwd independently regardless of what we pass in here.
+function distinctRepoKeys(descriptors, deps) {
+  const d = deps || {};
+  const resolve = d.repoKeyForWorktree || function (wt) {
+    try { return require('./lib/devswarm-repokey.js').repoKeyForWorktree(wt); } catch (_) { return null; }
+  };
+  const seen = new Map();
+  for (const desc of (descriptors || [])) {
+    if (!desc || !desc.worktreePath) continue;
+    let key = null;
+    try { key = resolve(desc.worktreePath); } catch (_) { key = null; }
+    if (!key || seen.has(key)) continue;
+    seen.set(key, desc.worktreePath);
+  }
+  const out = [];
+  for (const [repoKey, worktreePath] of seen) out.push({ repoKey, worktreePath });
+  return out;
+}
+
+// reconcileSweepIfDue(opts) -> { ran, reason? } | { ran:true, projects,
+// skipped, results }. Never throws. opts: { home, env, now, cooldownMs,
+// maxProjectsPerTick, deps: { fs, readDescriptors, repoKeyForWorktree,
+// readReconcileSweepState, writeReconcileSweepState, runReconcile } } — all
+// injectable so tests never spawn a real subprocess or touch real git.
+function reconcileSweepIfDue(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const deps = o.deps || {};
+  const F = deps.fs || fs;
+
+  try {
+    if (!reconcileSweepEnabled(env)) return { ran: false, reason: 'disabled' };
+
+    const cooldownMs = Number.isFinite(o.cooldownMs) ? o.cooldownMs : resolveReconcileCooldownMs(env);
+    const state = (deps.readReconcileSweepState || readReconcileSweepState)(home, F);
+    if ((now - state.lastRunAt) < cooldownMs) return { ran: false, reason: 'cooldown' };
+
+    const descriptors = (deps.readDescriptors || readDescriptors)(home, F);
+    if (!descriptors || !descriptors.length) return { ran: false, reason: 'no-descriptors' };
+
+    const projects = distinctRepoKeys(descriptors, deps);
+    if (!projects.length) return { ran: false, reason: 'no-resolvable-projects' };
+
+    // Persist BEFORE running (mirrors devswarm-parent-gate.js's persist-
+    // before-block ordering): a slow or crashing reconcile call still honors
+    // the cooldown for the NEXT tick rather than being retried every tick.
+    (deps.writeReconcileSweepState || writeReconcileSweepState)(home, F, { lastRunAt: now });
+
+    const cap = Number.isFinite(o.maxProjectsPerTick) ? o.maxProjectsPerTick : MAX_RECONCILE_PROJECTS_PER_TICK;
+    const targets = projects.slice(0, Math.max(0, cap));
+
+    // runReconcile(worktreePath) -> the reconcile call result shape ({ok,
+    // count, imported, lost, rejected, ...} — see scripts/devswarm.js's
+    // cmdReconcile) or { ok:false, error } on failure. LAZY require (see the
+    // top-of-file comment): scripts/devswarm.js top-level-requires THIS
+    // module, so requiring it here at call time (never at module top level)
+    // is what keeps the cycle from ever observing partial exports.
+    const runReconcile = deps.runReconcile || function (worktreePath) {
+      const devswarmCli = require('../scripts/devswarm.js');
+      const { result } = devswarmCli.run(['reconcile'], { home, env, cwd: worktreePath });
+      return result;
+    };
+
+    const results = [];
+    let anyLost = false;
+    for (const t of targets) {
+      let result = null;
+      try {
+        result = runReconcile(t.worktreePath);
+      } catch (e) {
+        result = { ok: false, error: String(e && e.message || e) };
+      }
+      if (result && result.lost) anyLost = true;
+      results.push({ repoKey: t.repoKey, worktreePath: t.worktreePath, result });
+    }
+
+    // OBSERVE, DON'T ASSERT: log exactly what the (real, already-executed)
+    // reconcile calls reported — never a claim of health beyond what was
+    // actually returned. `warn` when any target reported a real loss
+    // shortfall (cmdReconcile's own `lost` field — a genuine shortfall, never
+    // a benign lock-contention skip), `info` otherwise.
+    try {
+      alog.logEvent('devswarm-supervisor', 'reconcile-sweep', anyLost ? 'warn' : 'info',
+        'reconcile-sweep: ' + targets.length + ' project(s) attempted' + (projects.length > targets.length ? ', ' + (projects.length - targets.length) + ' deferred to a later tick' : ''),
+        { results: results.map((r) => ({ repoKey: r.repoKey, ok: !!(r.result && r.result.ok), imported: (r.result && r.result.imported) || 0, lost: (r.result && r.result.lost) || 0 })) });
+    } catch (_) { /* logging must never break the sweep */ }
+
+    return { ran: true, projects: targets.length, skipped: projects.length - targets.length, results };
+  } catch (e) {
+    return { ran: false, error: String(e && e.message || e) };
+  }
+}
+
 function main() {
   let release = null;
   try {
@@ -294,7 +510,11 @@ function main() {
       home, idleThresholdMs: t.idleThresholdMs, cooldownMs: t.cooldownMs,
       nudgeMaxAttempts: t.nudgeMaxAttempts, nudgeWindowMs: t.nudgeWindowMs, nudgeCooldownMs: t.nudgeCooldownMs,
     });
-    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length }) + '\n');
+    // Reconcile sweep (C4) rides INSIDE the same single-flight sweep-lock hold
+    // as the liveness sweep above — never a parallel/independent lock — so two
+    // overlapping supervisor ticks can never both attempt it at once either.
+    const reconcile = reconcileSweepIfDue({ home });
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, reconcile }) + '\n');
   } catch (_) {
     // absolute fail-safe: never throw out of the sweep
   } finally {
@@ -303,9 +523,30 @@ function main() {
   }
 }
 
-if (require.main === module) main();
-
+// module.exports MUST be assigned BEFORE the require.main-gated main() call
+// below, NOT after (the pre-C4 order). Reasoning: main() (via
+// reconcileSweepIfDue's lazy require) can now load scripts/devswarm.js, which
+// itself top-level-requires THIS module (`const { readDescriptors } =
+// require('../companion/devswarm-supervisor.js')`, line ~128 of that file) —
+// genuinely circular. When THIS module is `require.main` (the real deployment
+// shape: launchd/systemd/cron invoke `node devswarm-supervisor.js` directly),
+// Node reaches the `if (require.main === module) main()` line DURING this
+// module's own top-level execution — if module.exports were assigned AFTER
+// that line (as it was pre-C4), scripts/devswarm.js's require of this module
+// mid-main() would observe the DEFAULT EMPTY exports object (not yet
+// reassigned), silently binding its own `readDescriptors` to `undefined` for
+// the rest of its lifetime. That specific landmine was latent-but-harmless
+// pre-C4 (nothing this module's own runtime code ever required
+// scripts/devswarm.js), but C4's reconcile-sweep is exactly the code path
+// that can now trigger it — so the export assignment is reordered ahead of
+// the main() call, closing it unconditionally rather than relying on this
+// particular call graph never exercising it.
 module.exports = {
   workspacesDir, readDescriptors, supervisorEnabled, sweepLockPath, acquireSweepLock, sweepOnce,
   parseEnvNum, resolveThresholdsFromEnv, readMeshUrgency, isUrgentMesh, URGENT_TIERS,
+  reconcileSweepIfDue, reconcileSweepEnabled, resolveReconcileCooldownMs, distinctRepoKeys,
+  reconcileSweepStatePath, readReconcileSweepState, writeReconcileSweepState,
+  DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS, MAX_RECONCILE_PROJECTS_PER_TICK,
 };
+
+if (require.main === module) main();

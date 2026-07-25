@@ -659,38 +659,87 @@ function stableJson(obj) {
   } catch (_) { return '""'; }
 }
 
-// normalizeMonitorPayload(raw) -> message object[]. hivecontrol emits JSON by
-// default (no --json flag). The exact monitor batch SHAPE is not pinned in the
-// KB, so parse tolerantly: accept a JSON string OR an already-parsed value, and
-// unwrap the plausible shapes — an array, `{ messages: [...] }`, `{ data: [...] }`,
-// or a single message object. Anything unparseable -> [] (fail-soft; a bad batch
-// never crashes the loop).
-function normalizeMonitorPayload(raw) {
+// parseMonitorPayload(raw) -> { messages, recognized }. hivecontrol emits JSON
+// by default (no --json flag). The exact monitor batch SHAPE is not pinned in
+// the KB, so parse tolerantly: accept a JSON string OR an already-parsed
+// value, and unwrap the plausible shapes — an array, `{ messages: [...] }`,
+// `{ data: [...] }`, or a single message object. `recognized` is true whenever
+// `raw` parsed cleanly into one of those known container shapes, EVEN WHEN
+// that shape legitimately yields zero messages (an empty `[]`/`{messages:[]}`/
+// `{data:[]}` is a normal "nothing arrived this window" result, not a loss —
+// B1 POLARITY CARE: only unparseable JSON or a value matching none of the
+// known shapes is `recognized: false`, which is what B1 loss-detection below
+// keys off of). Anything unparseable -> `{ messages: [], recognized: false }`
+// (fail-soft; a bad batch never crashes the loop).
+function parseMonitorPayload(raw) {
   let val = raw;
   if (typeof raw === 'string') {
     const t = raw.trim();
-    if (t === '') return [];
-    try { val = JSON.parse(t); } catch (_) { return []; }
+    if (t === '') return { messages: [], recognized: true };
+    try { val = JSON.parse(t); } catch (_) { return { messages: [], recognized: false }; }
   }
-  if (Array.isArray(val)) return val.filter((x) => x && typeof x === 'object');
+  if (Array.isArray(val)) return { messages: val.filter((x) => x && typeof x === 'object'), recognized: true };
   if (val && typeof val === 'object') {
-    if (Array.isArray(val.messages)) return val.messages.filter((x) => x && typeof x === 'object');
-    if (Array.isArray(val.data)) return val.data.filter((x) => x && typeof x === 'object');
+    if (Array.isArray(val.messages)) return { messages: val.messages.filter((x) => x && typeof x === 'object'), recognized: true };
+    if (Array.isArray(val.data)) return { messages: val.data.filter((x) => x && typeof x === 'object'), recognized: true };
     // A single message object (has any of the known message fields).
-    if ('message' in val || 'fromBranch' in val || 'toBranch' in val) return [val];
+    if ('message' in val || 'fromBranch' in val || 'toBranch' in val) return { messages: [val], recognized: true };
   }
-  return [];
+  return { messages: [], recognized: false };
 }
 
-// ingestPayload(s, raw, opts) -> { total, inserted, duplicate }. Normalizes a
-// monitor batch and appends each message to the store keyed by the ingesting
-// workspace id, deduped by content hash. Re-ingesting the same batch inserts 0
-// (replay idempotence).
+// normalizeMonitorPayload(raw) -> message object[]. Thin wrapper over
+// parseMonitorPayload kept for backward compatibility (exported, used
+// directly by tests) — callers that need the `recognized` distinction (B1
+// loss-detection) call parseMonitorPayload directly instead.
+function normalizeMonitorPayload(raw) {
+  return parseMonitorPayload(raw).messages;
+}
+
+// rawIsSubstantive(raw) -> bool. Mirrors normalizeMonitorPayload's own
+// whitespace-empty short-circuit (`t === '' -> []`) so the two never disagree
+// on what counts as "the ordinary empty poll window" (POLARITY CARE — must
+// NOT flag a genuinely empty poll as a loss). A non-string `raw` (an
+// already-parsed value, as some direct callers/tests pass) is substantive
+// whenever it is not null/undefined — there is no "whitespace" concept for a
+// parsed object, so any real value handed in is a real payload to account for.
+function rawIsSubstantive(raw) {
+  if (typeof raw === 'string') return raw.trim() !== '';
+  return raw != null;
+}
+
+// ingestPayload(s, raw, opts) -> { total, inserted, duplicate, lossy }.
+// Normalizes a monitor batch and appends each message to the store keyed by
+// the ingesting workspace id, deduped by content hash. Re-ingesting the same
+// batch inserts 0 (replay idempotence).
+//
+// B1 LOSS-EVENT DETECTION: `hivecontrol workspace monitor` is DESTRUCTIVE — it
+// pops messages off the native queue as it prints them, so by the time `raw`
+// reaches this function those messages are ALREADY GONE from the source of
+// truth. If `raw` carries substantive bytes (not the ordinary empty/whitespace
+// quiet-poll case) AND parseMonitorPayload could not even RECOGNIZE its shape
+// — an output-shape change, stderr contamination, or a hardTimeoutMs kill
+// mid-print (truncated JSON) — that batch's content is now UNRECOVERABLE: the
+// next poll cannot re-observe it. `lossy` surfaces this to the caller
+// (runIngestLoop), which owns home/logging/quarantine, so this function
+// itself stays a pure transform with no fs/log side effects.
+//
+// POLARITY CARE (P1 fix): a raw payload that PARSES into one of the known
+// container shapes but legitimately yields ZERO messages — `[]`,
+// `{"messages":[]}`, `{"data":[]}` — is NOT lossy. hivecontrol's monitor
+// verb "polls... then exits with them" (KB-devswarm-hivecontrol.md §4.1) and
+// always emits JSON (no --json flag; JSON is the unconditional default per
+// its own --help text) — a "nothing arrived this window" response is
+// plausibly one of these well-formed empty containers, not raw silence. Only
+// a payload that is UNPARSEABLE or matches NONE of the known shapes
+// (`parseMonitorPayload(...).recognized === false`) is flagged lossy — that
+// is the case that actually indicates lost/corrupted bytes, not a quiet poll.
 function ingestPayload(s, raw, opts) {
   const o = opts || {};
   const workspaceId = String(o.workspaceId);
   const now = Number.isFinite(o.now) ? o.now : Date.now();
-  const messages = normalizeMonitorPayload(raw);
+  const parsed = parseMonitorPayload(raw);
+  const messages = parsed.messages;
   let inserted = 0;
   let duplicate = 0;
   for (const m of messages) {
@@ -702,7 +751,65 @@ function ingestPayload(s, raw, opts) {
     });
     if (r && r.inserted) inserted++; else duplicate++;
   }
-  return { total: messages.length, inserted, duplicate };
+  const lossy = messages.length === 0 && rawIsSubstantive(raw) && !parsed.recognized;
+  return { total: messages.length, inserted, duplicate, lossy };
+}
+
+// quarantineDir(home) — where a lossy batch's raw bytes are preserved (B1).
+function quarantineDir(home) {
+  return path.join(devswarmRoot(home), 'quarantine');
+}
+
+// QUARANTINE BOUNDS (P1 fix — was previously unbounded: no cap, no pruning, no
+// rate-limit, no dedup). `QUARANTINE_MAX_FILES` bounds disk growth by
+// REFUSING further writes once reached — it never prunes/deletes an existing
+// file (the repo's no-delete invariant: an automated job must not remove
+// forensic evidence a human may still need). `QUARANTINE_MAX_BODY_BYTES`
+// bounds each individual file's size (a truncated diagnostic prefix is still
+// enough to identify the shape that broke).
+const QUARANTINE_MAX_FILES = 20;
+const QUARANTINE_MAX_BODY_BYTES = 64 * 1024;
+
+// quarantineCapacityReached(home, fsi) -> bool. Fails OPEN to `false` (never
+// blocks a write over a readdir error) — refusing a write because we could
+// not even confirm the directory is full would silently drop what might be
+// the only surviving evidence of a real loss.
+function quarantineCapacityReached(home, fsi) {
+  const F = fsi || fs;
+  try {
+    const dir = quarantineDir(home);
+    return F.readdirSync(dir).length >= QUARANTINE_MAX_FILES;
+  } catch (_) {
+    return false;
+  }
+}
+
+// quarantineLossyMonitorBatch(home, raw, tag, fsi) -> path | null. Best-effort
+// write of the UNRECOVERABLE raw bytes (see ingestPayload's `lossy` doc above)
+// to a timestamped file so a human/tool can inspect what the native queue
+// actually emitted. Fully fail-open on the WRITE itself (a quarantine-write
+// failure — disk full, unwritable dir — must never crash the ingest loop);
+// the caller logs the loss via the shared structured logger regardless of
+// whether this write succeeds, so the loss is never silent even if this
+// returns null. Returns null (writes nothing) once QUARANTINE_MAX_FILES is
+// reached — existing files are left untouched, never pruned/deleted.
+function quarantineLossyMonitorBatch(home, raw, tag, fsi) {
+  const F = fsi || fs;
+  try {
+    const dir = quarantineDir(home);
+    F.mkdirSync(dir, { recursive: true });
+    if (quarantineCapacityReached(home, F)) return null;
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+    let body = typeof raw === 'string' ? raw : stableJson(raw);
+    if (Buffer.byteLength(body, 'utf8') > QUARANTINE_MAX_BODY_BYTES) {
+      body = Buffer.from(body, 'utf8').slice(0, QUARANTINE_MAX_BODY_BYTES).toString('utf8') + '\n...[truncated at ' + QUARANTINE_MAX_BODY_BYTES + ' bytes]';
+    }
+    const p = path.join(dir, 'lost-batch-' + String(tag || 'unknown') + '-' + stamp + '-' + process.pid + '.raw');
+    F.writeFileSync(p, body);
+    return p;
+  } catch (_) {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1136,7 +1243,17 @@ function runIngestLoop(opts) {
   }
 
   const openStore = (o.io && o.io.openStore) || store.openStore;
-  const stats = { iterations: 0, inserted: 0, duplicate: 0, errors: 0 };
+  const stats = { iterations: 0, inserted: 0, duplicate: 0, errors: 0, lossEvents: 0 };
+  // QUARANTINE RATE LIMIT (P1 fix, paired with the file-count/body-size caps on
+  // quarantineLossyMonitorBatch itself): at most one quarantine WRITE + one
+  // 'error'-level log line per QUARANTINE_RATE_LIMIT_MS, no matter how fast the
+  // loop cycles (a fast-returning/hot-spinning monitor call must not turn into
+  // a write-per-poll log storm). stats.lossEvents still counts every real loss
+  // occurrence; only the WRITE/LOG side is throttled, with suppressed
+  // occurrences rolled into the next line that does fire.
+  const QUARANTINE_RATE_LIMIT_MS = 30 * 1000;
+  let lastQuarantineWriteAt = null;
+  let quarantineSuppressedCount = 0;
   let s = null;
   try {
     // SHARED PER-PROJECT store (D1/D8/D21): this daemon opens the PROJECT's
@@ -1293,6 +1410,42 @@ function runIngestLoop(opts) {
         stats.inserted += ing.inserted;
         stats.duplicate += ing.duplicate;
         if (ing.inserted > 0) store.deriveSummary(s, { home, env: o.env, now: o.now });
+        // B1 LOSS EVENT: `raw` was substantive (not the ordinary empty/
+        // whitespace quiet-poll case — see ingestPayload's own doc) but
+        // normalized to ZERO messages. The native queue already popped these
+        // bytes; there is nothing left to retry. Quarantine what we have and
+        // log it via the shared structured logger so this is never a silent,
+        // permanent loss (a truncated hardTimeoutMs-killed print, stderr
+        // contamination, or an output-shape change would otherwise vanish
+        // with nothing but a bumped counter to show for it).
+        if (ing.lossy) {
+          stats.lossEvents++;
+          const nowMs = Number.isFinite(o.now) ? o.now : Date.now();
+          const dueForWrite = lastQuarantineWriteAt === null || (nowMs - lastQuarantineWriteAt) >= QUARANTINE_RATE_LIMIT_MS;
+          if (!dueForWrite) {
+            // Rate-limited: count it, but do not write another file or emit
+            // another log line this window — the next line that does fire
+            // rolls this occurrence into its suppressed-count.
+            quarantineSuppressedCount++;
+          } else {
+            const rawBody = typeof res.raw === 'string' ? res.raw : stableJson(res.raw);
+            const byteLen = Buffer.byteLength(rawBody, 'utf8');
+            const capped = quarantineCapacityReached(home, (o.io && o.io.storeFs));
+            const qPath = capped ? null : quarantineLossyMonitorBatch(home, res.raw, hbHash, (o.io && o.io.storeFs));
+            const suppressed = quarantineSuppressedCount;
+            alog.logEvent('ingest', 'monitor-batch-normalized-to-zero', 'error',
+              'hivecontrol monitor returned ' + byteLen + ' non-empty byte(s) but the batch shape was unrecognized '
+                + '(unparseable, or parseable JSON matching none of the known batch shapes) — the native queue is '
+                + 'destructive so this batch is otherwise UNRECOVERABLE'
+                + (qPath ? '; quarantined to ' + qPath
+                  : (capped ? ' (quarantine directory at its ' + QUARANTINE_MAX_FILES + '-file cap — not written, existing files preserved)'
+                    : ' (quarantine write also failed — see raw byte length above)'))
+                + (suppressed > 0 ? '; ' + suppressed + ' additional loss event(s) suppressed since the last quarantine write/log (rate-limited to 1 per ' + Math.round(QUARANTINE_RATE_LIMIT_MS / 1000) + 's)' : ''),
+              { workspaceId, bytes: byteLen, quarantinePath: qPath, quarantineCapped: capped, suppressedSinceLastLog: suppressed });
+            lastQuarantineWriteAt = nowMs;
+            quarantineSuppressedCount = 0;
+          }
+        }
       }
       // H3: `!res.ok` covers both a genuine monitor crash AND a hardTimeoutMs
       // kill (the spawnSync `timeout` option in defaultMonitorRun — see its own
@@ -1746,6 +1899,9 @@ module.exports = {
   ingestLockPath, ingestHeartbeatPath, acquireIngestLock,
   messageHash, stableJson, normalizeMonitorPayload,
   ingestPayload, defaultMonitorRun, runIngestLoop,
+  // v0.66 — B1 destructive-read loss detection + quarantine:
+  rawIsSubstantive, quarantineDir, quarantineLossyMonitorBatch,
+  quarantineCapacityReached, QUARANTINE_MAX_FILES, QUARANTINE_MAX_BODY_BYTES,
   DEFAULT_MONITOR_TIMEOUT_SEC, resolveMonitorTimeoutSec,
   logFilePath, appendLog,
   // v0.57 mesh (D9/D21) — reap-before-drain probe:

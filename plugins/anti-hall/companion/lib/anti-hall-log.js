@@ -75,12 +75,22 @@ function rotateLockPath() {
   return path.join(logDir(), 'devswarm.jsonl.rotate.lock');
 }
 
-// acquireRotateLock() -> true iff THIS call won the right to perform the
-// rotate (stat->rename) below; false means another process is rotating
-// concurrently right now (EEXIST) OR the lock could not be created at all
-// (fail-open — either way, skip rotation this cycle and just append).
-// O_EXCL makes the create+check atomic at the OS level, closing the
-// concurrent-rotation race: without this, N processes can all observe
+// isRotateLockHolderAlive(pid) -> bool. Same isAlive discipline as every other
+// lock in this codebase (devswarm-pull.js's acquireExclLock, recovery.js's
+// acquireLock, devswarm-supervisor.js's acquireSweepLock): process.kill(pid,0)
+// throws ESRCH for a gone pid; EPERM means it exists but we may not signal it
+// (still "alive").
+function isRotateLockHolderAlive(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
+}
+
+// acquireRotateLock() -> a per-acquisition TOKEN STRING iff THIS call won the
+// right to perform the rotate (stat->rename) below; null means another
+// process is rotating concurrently right now (EEXIST) OR the lock could not
+// be created at all (fail-open — either way, skip rotation this cycle and
+// just append). O_EXCL makes the create+check atomic at the OS level, closing
+// the concurrent-rotation race: without this, N processes can all observe
 // "over the bound" via statSync, then all renameSync the SAME target ->
 // each rename after the first clobbers the previous rotate's `.1`, so a
 // 32-process concurrent-rotation repro can lose the current file's content
@@ -89,18 +99,33 @@ function rotateLockPath() {
 // returns) lands either in the pre-rotation file (which the winner then
 // renames intact into `.1`) or in the fresh post-rotation file created by
 // the winner — never lost either way.
+//
+// The lock file's CONTENT ({pid, ts, token}) is what lets a waiter tell a
+// merely-slow-but-alive holder apart from a genuinely abandoned one (C2 fix —
+// see acquireRotateLockBlocking below); a bare empty marker file (the pre-fix
+// shape) carried no pid at all, so staleness was the ONLY signal a waiter had.
 function acquireRotateLock() {
+  const ts = Date.now();
+  const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
   try {
     const fd = fs.openSync(rotateLockPath(), 'wx');
-    fs.closeSync(fd);
-    return true;
+    try { fs.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token })); } finally { fs.closeSync(fd); }
+    return token;
   } catch (_) {
-    return false; // held by another process, or creation failed — skip rotation this cycle
+    return null; // held by another process, or creation failed — skip rotation this cycle
   }
 }
 
-function releaseRotateLock() {
-  try { fs.unlinkSync(rotateLockPath()); } catch (_) { /* fail-open */ }
+// releaseRotateLock(token) — unlinks the lock file ONLY when its on-disk token
+// still matches the one THIS acquisition wrote (mirrors every other lock's
+// release() in this codebase). Never unlinks a lock some OTHER acquisition
+// (e.g. a waiter that dead-or-stale-reclaimed ours after we somehow vanished)
+// now owns.
+function releaseRotateLock(token) {
+  try {
+    const cur = JSON.parse(fs.readFileSync(rotateLockPath(), 'utf8'));
+    if (cur && cur.token === token) fs.unlinkSync(rotateLockPath());
+  } catch (_) { /* fail-open: not ours / unreadable — leave it; a later dead-or-stale reclaim cleans it up */ }
 }
 
 // Both bounds are deliberately small: the ENTIRE locked section (stat, maybe
@@ -124,38 +149,79 @@ function sleepBriefly(ms) {
   } catch (_) { /* proceed without the micro-sleep */ }
 }
 
-// acquireRotateLockBlocking() -> true iff the lock was acquired (possibly
-// after reclaiming a stale lock file left by a crashed holder); false if the
-// wait budget expired first. Bounded, not indefinite: a logging call must
-// never hang the caller forever waiting on a lock (fail-open) — see
-// writeEntry, which proceeds WITHOUT the lock (accepting the pre-fix race
-// only in this rare, bounded-timeout edge case) rather than blocking.
+// acquireRotateLockBlocking() -> the acquisition TOKEN STRING iff the lock was
+// acquired (possibly after reclaiming a dead-or-stale lock file left by a
+// crashed holder); null if the wait budget expired first. Bounded, not
+// indefinite: a logging call must never hang the caller forever waiting on a
+// lock (fail-open) — see writeEntry, which proceeds WITHOUT the lock
+// (accepting the pre-fix race only in this rare, bounded-timeout edge case)
+// rather than blocking.
 //
 // THE DEADLINE CHECK MUST RUN ON EVERY ITERATION, BEFORE ANY `continue` —
 // this is not merely defensive: a PERSISTENTLY unwritable/unreadable log
 // directory (e.g. the fail-open test's blocked-directory scenario, or a real
-// permissions error) makes BOTH acquireRotateLock() AND the statSync() below
-// fail on EVERY single iteration. An earlier version `continue`d straight
-// from the statSync catch without ever reaching a deadline check — with a
-// persistent (not transient) failure that is a genuine 100%-CPU infinite
-// loop, not a rare race, since neither failing call ever yields or changes
-// outcome. The deadline is now checked immediately after the acquire
-// attempt, before anything else, so it is reachable on every iteration
-// regardless of which branch below is taken.
+// permissions error) makes BOTH acquireRotateLock() AND the readFileSync()
+// below fail on EVERY single iteration. An earlier version `continue`d
+// straight from the read-failure catch without ever reaching a deadline
+// check — with a persistent (not transient) failure that is a genuine
+// 100%-CPU infinite loop, not a rare race, since neither failing call ever
+// yields or changes outcome. The deadline is now checked immediately after
+// the acquire attempt, before anything else, so it is reachable on every
+// iteration regardless of which branch below is taken.
+//
+// C2 FIX — DEAD-OR-STALE, NOT STALENESS ALONE. The pre-fix version reclaimed
+// on mtime-staleness alone (>3s), with no pid/liveness check at all: a winner
+// merely DESCHEDULED (GC pause, VM pause, OS scheduling jitter) mid rotate for
+// slightly over 3s had its lock STOLEN by a waiter, and the two then raced
+// stat->rename->append against each other — exactly the `.1` clobber this
+// lock exists to prevent (the bug-E shape). The fix matches the STEAL RULE
+// already used by this codebase's OTHER short-critical-section, fs-race-
+// sensitive locks (devswarm-pull.js's acquireExclLock / devswarm-ingest.js's
+// acquireIngestLock — deliberately NOT the longer-running-operation locks'
+// `dead || stale` OR-rule, which accepts stealing from a live-but-ancient
+// holder as a hard TTL backstop): reclaim ONLY when the lock is BOTH stale
+// AND not held by a live process. A KNOWN-LIVE holder — however old its
+// timestamp looks — is NEVER stolen; the bounded 300ms wait budget above
+// (ROTATE_LOCK_WAIT_MS, far shorter than the 3s STALE_MS bound, so this
+// deadline is what actually triggers for a live-but-slow holder) is what
+// bounds a waiter's patience instead, degrading to the pre-existing,
+// documented "append unlocked" fallback rather than a steal-and-collide.
 function acquireRotateLockBlocking() {
   const deadline = Date.now() + ROTATE_LOCK_WAIT_MS;
   for (;;) {
-    if (acquireRotateLock()) return true;
-    if (Date.now() >= deadline) return false;
+    const token = acquireRotateLock();
+    if (token) return token;
+    if (Date.now() >= deadline) return null;
     try {
-      const st = fs.statSync(rotateLockPath());
-      if (Date.now() - st.mtimeMs > ROTATE_LOCK_STALE_MS) {
+      let holder = null;
+      try { holder = JSON.parse(fs.readFileSync(rotateLockPath(), 'utf8')); } catch (_) { holder = null; }
+      const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
+      let holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
+      if (holderTs === null) {
+        // TORN-READ GUARD (mirrors devswarm-pull.js's acquireExclLock): a live
+        // winner is briefly a 0-byte file between openSync('wx') and the
+        // writeSync that fills in {pid, ts, token} above. A reader that
+        // catches that window must NOT treat the lock as ownerless/ancient —
+        // fall back to the file's own mtime so a fresh-but-still-empty lock
+        // still reads as fresh, not stale.
+        try { holderTs = fs.statSync(rotateLockPath()).mtimeMs; } catch (_) { holderTs = null; }
+      }
+      const alive = holderPid !== null && isRotateLockHolderAlive(holderPid);
+      const isStale = holderTs === null || (Date.now() - holderTs) > ROTATE_LOCK_STALE_MS;
+      // See this function's header: reclaim ONLY when BOTH stale AND not
+      // alive. A holder we cannot positively identify (corrupt/legacy lock
+      // content with no parseable pid) counts as "not alive" here, so it
+      // still degrades to the pre-fix staleness-only behavior once genuinely
+      // stale — never a regression for that already-tolerated case.
+      if (isStale && !alive) {
         try { fs.unlinkSync(rotateLockPath()); } catch (_) {}
         continue; // reclaimed (or someone else did) — retry the create immediately; the deadline check above runs again next iteration
       }
+      // live holder, or a fresh-but-indeterminate lock -> fall through to the
+      // sleep below and retry rather than stealing it.
     } catch (_) {
       // lock file vanished (released) between our failed create and this
-      // stat, OR this stat itself failed (e.g. unwritable/unreadable
+      // read, OR this read itself failed (e.g. unwritable/unreadable
       // directory) — either way, fall through to the sleep below and retry
       // rather than looping back immediately (see this function's own
       // header comment for why an unconditional `continue` here is unsafe).
@@ -261,16 +327,16 @@ function writeEntry(entry) {
 
     // Hold the rotate lock across BOTH the rotate-check/rename AND this
     // writer's own append — see rotateIfNeededLocked's comment for the race
-    // this closes. `locked` can be false only after the bounded wait budget
+    // this closes. `token` is null only after the bounded wait budget
     // expires (fail-open: proceed unlocked rather than hang the caller
     // forever); that residual window is the same pre-fix race, now rare and
     // time-bounded instead of the default behavior.
-    const locked = acquireRotateLockBlocking();
+    const token = acquireRotateLockBlocking();
     try {
       rotateIfNeededLocked(target, nextLineLen);
       fs.appendFileSync(target, line, 'utf8');
     } finally {
-      if (locked) releaseRotateLock();
+      if (token) releaseRotateLock(token);
     }
   } catch (_) {
     // fail-open: logging must never throw into or crash the caller.
@@ -303,6 +369,34 @@ function logEvent(component, op, level, msg, ctx) {
   }
 }
 
+// parseLogFile(filePath) -> array of parsed entries in on-disk order.
+// Tolerates a corrupt/truncated trailing line (or any malformed line,
+// anywhere in the file) by skipping just that line, and a missing/unreadable
+// file by returning []. Shared by readRecent for BOTH the current file and
+// (C1 fix, below) the rotated `.1` file — a fail-open per-file read, never a
+// thrown error either way.
+function parseLogFile(filePath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(filePath, 'utf8');
+  } catch (_) {
+    return [];
+  }
+  const lines = raw.split('\n');
+  const out = [];
+  for (const line of lines) {
+    if (!line || !line.trim()) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(line);
+    } catch (_) {
+      continue; // corrupt/truncated line — skip, don't fail the whole read
+    }
+    out.push(parsed);
+  }
+  return out;
+}
+
 // readRecent(opts = {}) -> array of parsed entries, newest-last (i.e. in the
 // same chronological order they were written), filtered by opts:
 //   limit     — max number of entries returned (the MOST RECENT `limit`, still newest-last)
@@ -313,31 +407,38 @@ function logEvent(component, op, level, msg, ctx) {
 //   repoKey   — exact match against entry.repoKey
 //   component — exact match against entry.component
 //   minLevel  — keep entries whose level rank >= minLevel's rank (debug < info < warn < error)
-// Tolerates a corrupt/truncated trailing line (or any malformed line,
-// anywhere in the file) by skipping just that line. Reads ONLY the current
-// file (devswarm.jsonl) — the rotated `.1` file is history, intentionally
-// out of scope for a "recent" query.
+//
+// C1 FIX — ALSO CONSULTS THE ROTATED `.1` FILE WHEN THE REQUESTED WINDOW
+// PREDATES THE CURRENT FILE. Rotation happens at a size bound (MAX_LOG_BYTES),
+// so the highest-volume period — a failure storm — is precisely what gets
+// rotated OUT of the current file and into `.1` first. A caller triaging
+// "what happened in the last hour" right after such a storm would have seen
+// only the sparse post-rotation tail and silently under-reported the
+// incident. Now: whenever the current file's own content cannot possibly
+// satisfy the requested `sinceMs` cutoff or `limit` count on its own, `.1` is
+// also read and merged in (older-first, since rotation is a point-in-time cut
+// — `.1`'s entries always chronologically precede the current file's), then
+// the SAME filters below run over the union before the final limit-slice.
+// Bounded: at most one extra file is ever read, never a deeper history walk.
+// Fail-open on a missing/corrupt `.1` (parseLogFile already tolerates both).
 function readRecent(opts) {
   const o = opts || {};
-  let raw;
-  try {
-    raw = fs.readFileSync(logFilePath(), 'utf8');
-  } catch (_) {
-    return [];
+  const current = parseLogFile(logFilePath());
+
+  let needRotated = false;
+  if (o.sinceMs !== undefined && Number.isFinite(o.sinceMs)) {
+    const earliestTs = current.length ? Date.parse(current[0] && current[0].ts) : NaN;
+    if (current.length === 0 || !Number.isFinite(earliestTs) || earliestTs > o.sinceMs) {
+      needRotated = true; // the window reaches back before what the current file even starts at
+    }
+  }
+  if (Number.isFinite(o.limit) && o.limit >= 0 && current.length < o.limit) {
+    needRotated = true; // the current file alone cannot supply the requested count
   }
 
-  const lines = raw.split('\n');
-  const entries = [];
-  for (const line of lines) {
-    if (!line || !line.trim()) continue;
-    let parsed;
-    try {
-      parsed = JSON.parse(line);
-    } catch (_) {
-      continue; // corrupt/truncated line — skip, don't fail the whole read
-    }
-    entries.push(parsed);
-  }
+  const entries = needRotated
+    ? parseLogFile(rotatedFilePath()).concat(current) // older (.1) first, newer (current) last
+    : current;
 
   let filtered = entries;
 

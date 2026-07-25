@@ -42,11 +42,20 @@
 //     summaries/<worktreeHash>.json -> workspaces[primary-<hash>].unread), the
 //     SAME projection devswarm-parent-inbox.js already reads for status/gates. A
 //     single small fs read; still no git, no computeLiveness, no store DB open.
+//     C3 FIX (polarity parity): an own-summary that is genuinely UNREADABLE
+//     (exists but corrupt/truncated — e.g. the daemon crashed mid-write) now
+//     surfaces as an explicit unknown/blocking entry, matching the child
+//     axis's known:false-always-blocks discipline below, instead of silently
+//     reading as "0 unread". A summary that has simply NEVER been derived yet
+//     (ENOENT — routine for a brand-new project) stays confirmed-empty, never
+//     unknown — see readOwnUnread's own header for the full distinction.
 //
 // INERTNESS (audit P1-D): this hook is a NO-OP until EITHER (a) workspace
 // descriptors exist (~/.anti-hall/devswarm/workspaces/*.json) with a populated
-// durable inbox, OR (b) the Primary's own summary-projected unread is nonzero.
-// A public/standalone anti-hall user with no descriptors, no inbox tooling
+// durable inbox, (b) the Primary's own summary-projected unread is nonzero, OR
+// (c) the Primary's own summary is unreadable in the genuinely-anomalous C3
+// sense above (never for a plain ENOENT). A public/standalone anti-hall user
+// with no descriptors, no inbox tooling
 // running, and no own-unread gets zero output, exit 0 — byte-identical to
 // today. It is not self-sufficient; it depends on Phase 2's ingest daemon (or a
 // consumer's equivalent) to have anything to act on.
@@ -205,7 +214,7 @@ function findGitToplevel(startDir) {
   }
 }
 
-// readOwnUnread(home, cwd, repoKey) -> { unread, id, urgencyMax }. The
+// readOwnUnread(home, cwd, repoKey) -> { unread, id, urgencyMax, unknown }. The
 // Primary's OWN inbound (#34) has no descriptor with an inboxPath/cursorPath
 // to read via readUnread — it is ingested by the daemon directly into the
 // store under workspaceId primary-<worktreeHash> and exposed via the
@@ -221,27 +230,79 @@ function findGitToplevel(startDir) {
 // fallback). `urgencyMax` (D4, Phase 8 step 4) is the entry's own pending-
 // direct urgency, honored ONLY in wording — a DIRECT always gates regardless
 // of urgency (D4's type-vs-urgency separation). A single small fs read — no
-// store DB open — stays within the Stop hook's cheap-read budget. Fail-open:
-// ANY failure -> { unread: 0, id: null, urgencyMax: null } (never blocks or
-// throws on a missing/malformed summary).
+// store DB open — stays within the Stop hook's cheap-read budget.
+//
+// C3 FIX — POLARITY PARITY WITH THE CHILD AXIS BELOW. A child's unknown-unread
+// (known:false — an inbox that cannot be conclusively read, INCLUDING a
+// genuinely absent file) ALWAYS blocks (see the #36 loop below). Pre-fix, this
+// function instead swallowed EVERY failure — including the daemon simply being
+// down mid-write, leaving a truncated/corrupt summary — into the SAME
+// `{unread:0}` shape as "confirmed nothing pending", so the Primary's own
+// neglected inbox went invisible exactly when something was actually wrong.
+// The fix distinguishes:
+//   - ENOENT (the summary has never been derived for this project at all —
+//     e.g. the very first session, or genuinely no mesh traffic ever) stays
+//     `unknown:false`/confirmed-empty. This is the ROUTINE, expected state
+//     (nothing precreates this file the way register precreates a child's
+//     inbox), so treating it as an anomaly would nag every brand-new
+//     DevSwarm-active Primary on its very first Stop — the reads above the
+//     empty-current-file case are still resolvable (no project / no id at all)
+//     also stay `unknown:false` for the same "nothing to check" reason.
+//   - ANY OTHER read/parse failure (EACCES, EISDIR, a torn zero-byte write,
+//     corrupt/truncated JSON, an unexpected shape) means a summary WAS
+//     reachable enough to attempt and something is now genuinely wrong — that
+//     IS the "daemon crashed mid-write" anomaly this fix targets, so it comes
+//     back `unknown:true` and main() below folds it into the blocking set,
+//     never silently reading it as a healthy zero.
 function readOwnUnread(home, cwd, repoKey) {
-  try {
-    const top = cwd ? findGitToplevel(cwd) : null;
-    if (!top) return { unread: 0, id: null, urgencyMax: null };
-    const id = installIngest.primaryWorkspaceId(top);
-    const legacyHash = installIngest.worktreeHash(top);
+  const top = cwd ? findGitToplevel(cwd) : null;
+  if (!top) return { unread: 0, id: null, urgencyMax: null, unknown: false };
 
+  let id = null;
+  try { id = installIngest.primaryWorkspaceId(top); } catch (_) { id = null; }
+  if (!id) return { unread: 0, id: null, urgencyMax: null, unknown: false };
+
+  try {
+    let legacyHash = null;
+    try { legacyHash = installIngest.worktreeHash(top); } catch (_) { legacyHash = null; }
     const hash = repoKey || legacyHash;
+    if (!hash) return { unread: 0, id, urgencyMax: null, unknown: false };
+
     const p = path.join(devswarmRoot(home), 'summaries', String(hash) + '.json');
-    const raw = String(fs.readFileSync(p, 'utf8')).trim();
-    if (!raw) return { unread: 0, id, urgencyMax: null };
-    const summary = JSON.parse(raw);
-    const entry = summary && summary.workspaces && summary.workspaces[id];
+
+    let raw;
+    try {
+      raw = fs.readFileSync(p, 'utf8');
+    } catch (e) {
+      // ENOENT = routine "never derived yet" -> confirmed-empty, not unknown.
+      // Anything else (EACCES, EISDIR, ...) means something is actually wrong.
+      return { unread: 0, id, urgencyMax: null, unknown: !!(e && e.code !== 'ENOENT') };
+    }
+
+    const trimmed = String(raw).trim();
+    if (!trimmed) {
+      // A zero-byte file is the SAME torn-write window every O_EXCL lock in
+      // this codebase treats as ambiguous (devswarm-pull.js's own TORN-READ
+      // GUARD) — a derive-in-progress write, not a confirmed-empty summary.
+      // Fail open TOWARD unknown here, never toward a silent 0.
+      return { unread: 0, id, urgencyMax: null, unknown: true };
+    }
+
+    const summary = JSON.parse(trimmed); // throws on corrupt/truncated JSON -> caught below
+    if (!summary || typeof summary !== 'object' || typeof summary.workspaces !== 'object' || !summary.workspaces) {
+      return { unread: 0, id, urgencyMax: null, unknown: true }; // parses, but not the expected shape
+    }
+
+    const entry = summary.workspaces[id];
     const unread = entry && Number.isFinite(entry.unread) && entry.unread > 0 ? entry.unread : 0;
     const urgencyMax = (unread > 0 && entry && entry.urgencyMax) ? entry.urgencyMax : null;
-    return { unread, id, urgencyMax };
+    return { unread, id, urgencyMax, unknown: false };
   } catch (_) {
-    return { unread: 0, id: null, urgencyMax: null };
+    // Any unanticipated failure past the ENOENT-tolerant read above means a
+    // summary WAS reachable enough to attempt reading/parsing and something
+    // still went wrong — the C3 anomaly class. Fail toward unknown (surfaced),
+    // never toward a silent healthy-looking 0.
+    return { unread: 0, id, urgencyMax: null, unknown: true };
   }
 }
 
@@ -283,11 +344,15 @@ function main() {
   // unread too, not just children's).
   const own = readOwnUnread(home, cwd, selfKey);
 
-  // INERT until descriptors exist (P1-D) OR the Primary itself has unread. No
-  // descriptors and no own-unread -> nothing to gate.
+  // INERT until descriptors exist (P1-D) OR the Primary itself has unread OR
+  // its own summary is unreadable in a genuinely anomalous way (C3 — see
+  // readOwnUnread's header: `own.unknown` is only ever true when something
+  // WAS derivable and is now broken, never for the routine "never derived
+  // yet" ENOENT case, so this override can never make a vanilla/never-touched
+  // DevSwarm Primary noisy).
   let descriptors = [];
   try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
-  if (descriptors.length === 0 && own.unread === 0) return;
+  if (descriptors.length === 0 && own.unread === 0 && !own.unknown) return;
 
   // Build the blocking SET: workspaces with unread backlog past their cursor OR a
   // stale/escalated verdict, PLUS the Primary's own unread. All reads are pure fs
@@ -297,6 +362,11 @@ function main() {
   const blocking = [];
   if (own.unread > 0 && own.id) {
     blocking.push({ id: own.id, unread: own.unread, status: '', urgencyMax: own.urgencyMax });
+  } else if (own.unknown && own.id) {
+    // C3 fix: align polarity with the child #36 loop's known:false handling
+    // below — an unreadable/corrupt own-summary (e.g. the daemon crashed
+    // mid-write) surfaces as an explicit unknown, never a silent "0 unread".
+    blocking.push({ id: own.id, unread: 0, unknown: true, status: '' });
   }
   // #36 STRUCTURAL cross-project filter (D29 — REPLACES the spoofable v0.56 env
   // filter `d.repoId !== currentRepoId`; env DEVSWARM_REPO_ID is in the SAME
@@ -459,14 +529,23 @@ function buildReason(blocking, ownId) {
   }).join('; ');
   const more = blocking.length > 5 ? ' (and ' + (blocking.length - 5) + ' more)' : '';
 
-  const ownEntry = ownId ? blocking.find((b) => b.id === ownId && b.unread > 0) : null;
+  const ownEntry = ownId ? blocking.find((b) => b.id === ownId && (b.unread > 0 || b.unknown)) : null;
   const anyChildUnread = blocking.some((b) => (b.unread > 0 || b.unknown) && b.id !== ownId);
   const anyStale = blocking.some((b) => b.status === 'stale' || b.status === 'escalated');
 
   let body =
     'DEVSWARM NEGLECT: ' + blocking.length + ' workspace(s) still need attention ' +
     'before this Primary turn ends: ' + shown + more + '. ';
-  if (ownEntry) {
+  if (ownEntry && ownEntry.unknown) {
+    // C3 fix: the own-summary projection could not be conclusively read (e.g.
+    // the daemon crashed mid-write) — surfaced as an explicit unknown, never
+    // silently treated as "nothing pending".
+    body +=
+      'YOUR OWN inbound status could not be confirmed (own-summary unreadable or corrupt — ' +
+      'possibly a daemon problem) — treat this as UNKNOWN, not "no messages". Check explicitly via ' +
+      '`devswarm.js inbox read-primary ' + ownId + '` (and `devswarm.js healthcheck` / `devswarm.js logs` ' +
+      'to check the daemon) before assuming there is nothing pending. ';
+  } else if (ownEntry) {
     // v0.57 mesh (D4, Phase 8 step 4): urgencyMax is HONORED in wording only —
     // a DIRECT always gates regardless of urgency (type governs gating; urgency
     // governs loudness/tier). urgent/high gets an explicit "URGENT" callout.

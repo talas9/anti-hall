@@ -191,6 +191,37 @@ function withIdLock(id, home, fn, opts) {
   finally { try { release(); } catch (_) { /* stale/not-ours */ } }
 }
 
+// SYNTHETIC_SESSION_PREFIX / isLiveSessionId (A6, v0.66 review): a registry
+// row's `sessionId` is the ONLY liveness signal every mesh-addressing/fold
+// primitive in this file reads (resolveMeshTarget, pickSurvivor,
+// groupRegistryByMeshId, computeDiagnosis, rehomeMiskeyedRow's identity
+// confirmation) — "non-empty sessionId" == "a real session is running this
+// workspace". cmdInboxPull's auto-ensure/self-register path used to MINT a
+// sessionId from `id` itself when neither `--session` nor
+// DEVSWARM_BUILDER_ID was supplied, so a reconcile-spawned phantom (a bare
+// registry seed with no live session behind it at all) became permanently
+// "live" the instant it was auto-ensured — `resolveMeshTarget` could then
+// route a `send` to a partition nothing will ever drain.
+//
+// Fix: mint a value carrying this PREFIX instead of the bare id (still
+// non-empty/truthy, satisfying cmdRegister's own "register requires
+// --session" validation — a descriptor with a null/empty sessionId is
+// rejected outright at creation, so leaving it null is not viable without
+// also relaxing that unrelated invariant), and make the shared liveness
+// predicate EXCLUDE it explicitly. POLARITY WARNING (named in the review):
+// the live filter is "sessionId non-empty" — a marker string would still
+// read as live unless every liveness check is updated to exclude it
+// deliberately, which is why every liveness check-site in THIS file below is
+// migrated to call this one predicate instead of re-deriving the same
+// "non-empty" test inline.
+const SYNTHETIC_SESSION_PREFIX = 'unclaimed:';
+function isLiveSessionId(sessionId) {
+  if (sessionId == null) return false;
+  const s = String(sessionId);
+  if (s === '') return false;
+  return !s.startsWith(SYNTHETIC_SESSION_PREFIX);
+}
+
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
 // looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
 // would report, WITHOUT spawning git. Mirrors hooks/devswarm-parent-gate.js /
@@ -257,6 +288,24 @@ function resolveCallerWorktree(cwd) {
   const c = cwd || process.cwd();
   return inst.resolveWorktree(c) || findGitToplevel(c) || null;
 }
+// callerIdentityDetailed(env, cwd) -> { identity, kind }. Same resolution as
+// callerIdentity below, but ALSO names WHICH of the three legs produced the
+// identity (A7, v0.66 review) — 'resolved' (cwd matched a real git worktree —
+// independently-verifiable ground truth), 'declared' (no worktree ground
+// truth, but a DEVSWARM_BUILDER_ID env value was trusted — a legitimate,
+// still-meaningful declaration), or 'unresolvable' (neither — the raw-cwd-
+// hash fallback: this identity carries NO independently-verifiable ground
+// truth at all, the ambiguous case a caller-ownership refusal reason must be
+// able to name explicitly instead of collapsing into the same generic "does
+// not own workspace" text as a genuine mismatch).
+function callerIdentityDetailed(env, cwd) {
+  const bid = env && env.DEVSWARM_BUILDER_ID ? String(env.DEVSWARM_BUILDER_ID) : null;
+  const c = cwd || process.cwd();
+  const wt = resolveCallerWorktree(c);
+  if (wt) return { identity: inst.primaryWorkspaceId(wt), kind: 'resolved' };
+  if (bid) return { identity: bid, kind: 'declared' };
+  return { identity: inst.primaryWorkspaceId(c), kind: 'unresolvable' };
+}
 function callerIdentity(env, cwd) {
   const bid = env && env.DEVSWARM_BUILDER_ID ? String(env.DEVSWARM_BUILDER_ID) : null;
   const c = cwd || process.cwd();
@@ -273,6 +322,32 @@ function callerIdentity(env, cwd) {
   if (bid) return bid;
   return inst.primaryWorkspaceId(c);
 }
+// ownershipRefusalCause(callerKind, ownEntry) -> a stable reason string naming
+// WHICH leg of the ownership check failed (A7): the caller's own identity had
+// no verifiable ground truth at all ('unresolvable-caller-identity'), the
+// caller resolved fine but has no registry entry of its own in this store
+// ('caller-not-registered'), or the caller IS registered but under a
+// DIFFERENT id than the one it tried to act on ('ownership-mismatch').
+function ownershipRefusalCause(callerKind, ownEntry) {
+  if (callerKind === 'unresolvable') return 'unresolvable-caller-identity';
+  if (!ownEntry) return 'caller-not-registered';
+  return 'ownership-mismatch';
+}
+
+// BENIGN_MESH_BROADCAST_REASONS — meshBroadcast failure `reason` values that
+// must NEVER escalate cmdHeartbeat's top-level `ok` (see its use at the end
+// of cmdHeartbeat). Both are DELIBERATE, tested exceptions:
+//   - 'no-project': O-D5 "mesh dormant" — a non-git cwd is an ordinary
+//     environment fact, not a caller mistake.
+//   - ownershipRefusalCause()'s closed set: a working security control
+//     refusing a (possibly forged) broadcast is not this call's own local-
+//     write failure — devswarm-send.test.js's "forged" test explicitly
+//     documents "the base (local) heartbeat write is not itself the
+//     security boundary" and asserts ok:true through this exact path.
+const BENIGN_MESH_BROADCAST_REASONS = new Set([
+  'no-project',
+  'unresolvable-caller-identity', 'caller-not-registered', 'ownership-mismatch',
+]);
 
 // ----- paths -----
 function workspacesDir(home) { return path.join(devswarmRoot(home), 'workspaces'); }
@@ -749,8 +824,8 @@ function rehomeMiskeyedRow(home, id, storeRepoKey, ctx) {
         finally { try { cs.close(); } catch (_) {} }
       } catch (_) { curRow = null; }
       if (curRow) {
-        const curSid = curRow.sessionId != null && String(curRow.sessionId) !== '' ? String(curRow.sessionId) : null;
-        const descSid = desc.sessionId != null && String(desc.sessionId) !== '' ? String(desc.sessionId) : null;
+        const curSid = isLiveSessionId(curRow.sessionId) ? String(curRow.sessionId) : null;
+        const descSid = isLiveSessionId(desc.sessionId) ? String(desc.sessionId) : null;
         const confirmedMatch = curSid !== null && descSid !== null && curSid === descSid;
         if (!confirmedMatch) {
           out.reason = 'descriptor-identity-mismatch';
@@ -1132,7 +1207,7 @@ function groupRegistryByMeshId(registry) {
     if (!g) { g = { meshId, ids: [], rows: [], liveRows: 0 }; byMesh.set(meshId, g); }
     g.ids.push(d.id);
     g.rows.push(d);
-    if (d.sessionId != null && String(d.sessionId) !== '') g.liveRows++;
+    if (isLiveSessionId(d.sessionId)) g.liveRows++;
   }
   return byMesh;
 }
@@ -1148,7 +1223,7 @@ function pickSurvivor(s, group) {
   for (const d of group.rows) {
     if (!d) continue;
     if (firstMatch === null) firstMatch = d;
-    if (d.sessionId == null || String(d.sessionId) === '') continue; // not live
+    if (!isLiveSessionId(d.sessionId)) continue; // not live (A6: excludes the synthetic auto-ensure marker too)
     if (bestLive === null) { bestLive = d; continue; }
     const a = Number.isFinite(d.updatedAt) ? d.updatedAt : -1;
     const b = Number.isFinite(bestLive.updatedAt) ? bestLive.updatedAt : -1;
@@ -1328,8 +1403,13 @@ function foldMeshDuplicates(home, ctx) {
     if (meshIdCollisions) out.meshIdCollisions = meshIdCollisions;
     if (rekeyed) out.rekeyed = rekeyed;
     return out;
-  } catch (_) {
-    return { ok: true, retired: [], forwarded: 0, folded: 0 }; // fail-open: migration must never crash update/doctor
+  } catch (e) {
+    // A5(b): fail-open means "never THROW into update/doctor" — it does NOT
+    // mean "report success for a run that raised". A caught exception here
+    // previously reported ok:true with an empty retired/forwarded/folded set,
+    // indistinguishable from "nothing needed folding". Report the failure;
+    // control flow is unchanged (still returns normally, never throws).
+    return { ok: false, error: String(e && e.message || e), retired: [], forwarded: 0, folded: 0 };
   }
 }
 
@@ -1434,7 +1514,30 @@ function selfHeal(ctx) {
     }
     markSelfHealAttempt(home, repoKey, now, F);
     const spawn = (ctx.io && ctx.io.spawnInstaller) || defaultSpawnInstaller;
-    spawn(worktree, home, env);
+    const spawnResult = spawn(worktree, home, env);
+    // A5(a): the installer spawn's own outcome used to be discarded entirely —
+    // an installer failing on EVERY attempt was silently retried forever with
+    // nothing surfaced. Capture + report it. `defaultSpawnInstaller` returns
+    // either `null` (the spawn itself threw — caught there) or a real
+    // spawnSync result (`.error` set on a genuine spawn failure, `.status`
+    // non-zero on the installer's own non-zero exit). A test/injected
+    // `spawnInstaller` double that returns `undefined` (no signal either way —
+    // the common "just count the call" convention used throughout this
+    // codebase's own test suite) is NOT treated as a failure: only a
+    // POSITIVE signal (an explicit null, an `.error`, or a non-zero
+    // `.status`) counts, per the fail-open-on-ambiguity posture.
+    const spawnFailed = spawnResult === null
+      || !!(spawnResult && (spawnResult.error
+        || (Number.isFinite(spawnResult.status) && spawnResult.status !== 0)));
+    if (spawnFailed) {
+      try {
+        const detail = (spawnResult && spawnResult.error)
+          ? String((spawnResult.error && spawnResult.error.message) || spawnResult.error)
+          : (spawnResult === null ? 'installer spawn threw' : ('installer exited with status ' + spawnResult.status));
+        alog.logError('devswarm-cli', 'self-heal-installer', detail, { repoKey });
+      } catch (_) { /* logging must never break self-heal */ }
+      return { daemonWarning: 'stale', daemonHealAttempted: true, daemonHealFailed: true };
+    }
     return { daemonWarning: 'stale', daemonHealAttempted: true };
   } catch (_) {
     return {}; // fail-open: self-heal must never throw or block the caller
@@ -1739,13 +1842,19 @@ function cmdHeartbeat(id, flags, ctx) {
           // (D26) already use: literal self, or the caller's OWN registry entry
           // (joined by worktree-derived meshId via resolveMeshTarget) carries `id`
           // as its registered id.
-          const caller = callerIdentity(ctx.env, cwd);
+          const callerInfo = callerIdentityDetailed(ctx.env, cwd);
+          const caller = callerInfo.identity;
           const ownEntry = resolveMeshTarget(s, caller);
           const owns = caller === id || (ownEntry && ownEntry.id === id);
           if (!owns) {
+            // A7: name WHICH leg failed instead of one generic message for
+            // an unresolvable identity, an unregistered caller, AND a genuine
+            // mismatch alike.
+            const cause = ownershipRefusalCause(callerInfo.kind, ownEntry);
             meshBroadcast = {
               ok: false,
-              error: 'heartbeat --summary refused: caller ' + JSON.stringify(caller)
+              reason: cause,
+              error: 'heartbeat --summary refused (' + cause + '): caller ' + JSON.stringify(caller)
                 + ' does not own workspace ' + JSON.stringify(id),
               callerIdentity: caller,
             };
@@ -1760,7 +1869,19 @@ function cmdHeartbeat(id, flags, ctx) {
       }
     }
   }
-  return { ok: true, action: 'heartbeat', id, heartbeat: beat, meshBroadcast };
+  // P1 fix: cmdHeartbeat's top-level `ok` (and therefore the CLI exit code —
+  // see the 'heartbeat' dispatcher case's `code: r.ok ? 0 : 2`) used to be
+  // hardcoded `true` regardless of `meshBroadcast`'s outcome, so a genuinely
+  // BAD invocation (e.g. `--urgency bogus`) still reported success end-to-end
+  // — invisible to any standard exit-code check. Fold in a HARD meshBroadcast
+  // failure (any `ok:false` whose `reason` is not in the deliberately-benign
+  // BENIGN_MESH_BROADCAST_REASONS set above) so a real caller mistake is no
+  // longer silently masked, while the two documented/tested benign shapes
+  // (no-project dormancy, ownership-refusal-as-security-control) keep the
+  // base heartbeat reporting `ok:true`, unchanged.
+  const hardMeshFailure = !!(meshBroadcast && meshBroadcast.ok === false
+    && !BENIGN_MESH_BROADCAST_REASONS.has(meshBroadcast.reason));
+  return { ok: !hardMeshFailure, action: 'heartbeat', id, heartbeat: beat, meshBroadcast };
 }
 
 // cmdInboxPull(id, flags, ctx) — child-side reception drain. AUTO-ENSURES the
@@ -1774,9 +1895,22 @@ function cmdHeartbeat(id, flags, ctx) {
 function cmdInboxPull(id, flags, ctx) {
   const home = ctx.home;
   const root = devswarmRoot(home);
+  // A6 fix: when NEITHER an explicit --session NOR DEVSWARM_BUILDER_ID names a
+  // real session, do NOT mint the sessionId from `id` itself (that made a
+  // bare, un-claimed auto-ensured/reconcile-spawned registry seed read as
+  // permanently "live" everywhere liveness is checked, since `sessionId`
+  // is the ONLY liveness signal — e.g. resolveMeshTarget could then route a
+  // `send` to a partition nothing actually drains). Fall back to the
+  // SYNTHETIC_SESSION_PREFIX marker instead: still non-empty/truthy (so
+  // cmdRegister's own "register requires --session" validation is satisfied
+  // and the descriptor stays writable/visible to the supervisor), but
+  // isLiveSessionId() explicitly excludes this exact prefix, so every
+  // liveness-driven mesh primitive in this file correctly treats this row as
+  // NOT live until a real session (a genuine --session or
+  // DEVSWARM_BUILDER_ID) claims it.
   const session = one(flags, 'session')
     || (ctx.env && ctx.env.DEVSWARM_BUILDER_ID)
-    || id;
+    || (SYNTHETIC_SESSION_PREFIX + id);
   // Register the RESOLVED git worktree, NOT the raw cwd — the SAME canonical
   // primitive callerIdentity uses (resolveCallerWorktree). A child that runs
   // `inbox pull` from a git SUBDIRECTORY must register the toplevel, so the
@@ -1878,15 +2012,49 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   // store/<repoKey>/ FIRST so the read that follows actually sees them. Best-
   // effort + under the per-id lock; a no-op when not stranded.
   try { maybeRehomeToCwdProject(home, id, ctx); } catch (_) { /* fail-open: read proceeds regardless */ }
+  // A1(c) fix: repoKeyForCwd(ctx) collapsing to null must not silently open a
+  // DIFFERENT store than the one `id` is ACTUALLY registered under. Compare
+  // against `id`'s own descriptor (when one exists) — its structurally-derived
+  // repoKey (descriptorFreshRepoKey, re-derived from the descriptor's real,
+  // current worktreePath — the SAME independently-verifiable ground truth
+  // rehomeMiskeyedRow uses) names which project `id` genuinely belongs to.
+  // Only refuse when that ground truth POSITIVELY names a real, resolvable
+  // project this invocation's own repoKey resolution does NOT agree with —
+  // this is the concrete symptom the review names: a caller whose OWN cwd
+  // resolution fails/drifts (a submodule miscount, an invocation from the
+  // wrong directory, git transiently unavailable) silently falls back to the
+  // legacy per-id hash bucket and reports `ok:true, total:0, messages:[]`,
+  // reading as "not registered" for a workspace that IS registered elsewhere.
+  // An id with NO descriptor, or whose descriptor's own worktree is itself
+  // unresolvable (the legacy/no-project mode this CLI has always supported,
+  // exercised extensively by this suite's default non-git `ctx()` cwd), is
+  // UNCHANGED — this must never turn the sanctioned "no project at all"
+  // fallback into a hard failure.
+  const callerRepoKeyForRead = repoKeyForCwd(ctx);
+  const descForRead = readDescriptorFile(home, id);
+  const descRepoKeyForRead = descForRead ? descriptorFreshRepoKey(descForRead) : null;
+  if (descRepoKeyForRead && descRepoKeyForRead !== callerRepoKeyForRead) {
+    return {
+      ok: false, id,
+      reason: 'project-context-mismatch',
+      error: 'workspace ' + JSON.stringify(id) + ' is registered under project ' + JSON.stringify(descRepoKeyForRead)
+        + (callerRepoKeyForRead
+          ? (', but the current context resolves to a DIFFERENT project ' + JSON.stringify(callerRepoKeyForRead))
+          : ', but the current context could not resolve a project (non-git cwd?)')
+        + ' — run this from within that project\'s worktree to read its inbox',
+    };
+  }
   // v0.57 mesh (D24): the Primary read-CLI opens the SAME shared per-project
   // store the per-project ingest daemon natively drains INTO (D8/D21) — without
   // this re-key, `inbox messages`/`read-primary` would read the legacy per-id
   // bucket the daemon no longer writes to and silently see nothing.
-  const s = store.openStore({ home, workspaceId: id, hash: repoKeyForCwd(ctx) || undefined, backend: ctx.backend, env: ctx.env });
+  const s = store.openStore({ home, workspaceId: id, hash: callerRepoKeyForRead || undefined, backend: ctx.backend, env: ctx.env });
   let total, messages, acked;
   try {
     if (doAck && !ackAsOwner) {
-      const caller = callerIdentity(ctx.env, ctx.cwd);
+      const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
+      const caller = callerInfo.identity;
+      const callerKind = callerInfo.kind;
       // v0.57 mesh (P0 fix): literal `caller !== id` only holds when the caller's
       // OWN registered store id equals its worktree-derived meshId — true for a
       // self-registered Primary, but NEVER true for a child (registered under its
@@ -1905,9 +2073,13 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       const ownEntry = resolveMeshTarget(s, caller);
       const owns = caller === id || (ownEntry && ownEntry.id === id);
       if (!owns) {
+        // A7: name WHICH leg failed (same classification as the heartbeat
+        // --summary refusal above).
+        const cause = ownershipRefusalCause(callerKind, ownEntry);
         return {
           ok: false,
-          error: 'ack refused: caller ' + JSON.stringify(caller) + ' does not own workspace '
+          reason: cause,
+          error: 'ack refused (' + cause + '): caller ' + JSON.stringify(caller) + ' does not own workspace '
             + JSON.stringify(id) + ' (pass --ack-as-owner to override)',
           id,
           callerIdentity: caller,
@@ -2049,9 +2221,28 @@ function cmdGate(id, flags, ctx) {
   // the workspace shows tracked:false, and the gate silently no-ops. Best-effort
   // + under the per-id lock (held internally); a no-op when not stranded.
   try { maybeRehomeToCwdProject(home, id, ctx); } catch (_) { /* fail-open: gate proceeds */ }
+  // A1(c) fix: the SAME project-context-mismatch guard as cmdInboxMessages —
+  // see its comment for the full rationale. An id whose descriptor names a
+  // real, resolvable project that disagrees with (or is unreachable from)
+  // this invocation's own cwd resolution must fail closed instead of
+  // silently gating the legacy/wrong store and reporting tracked:false.
+  const callerRepoKeyForGate = repoKeyForCwd(ctx);
+  const descForGate = readDescriptorFile(home, id);
+  const descRepoKeyForGate = descForGate ? descriptorFreshRepoKey(descForGate) : null;
+  if (descRepoKeyForGate && descRepoKeyForGate !== callerRepoKeyForGate) {
+    return {
+      ok: false, id,
+      reason: 'project-context-mismatch',
+      error: 'workspace ' + JSON.stringify(id) + ' is registered under project ' + JSON.stringify(descRepoKeyForGate)
+        + (callerRepoKeyForGate
+          ? (', but the current context resolves to a DIFFERENT project ' + JSON.stringify(callerRepoKeyForGate))
+          : ', but the current context could not resolve a project (non-git cwd?)')
+        + ' — run this from within that project\'s worktree to gate it',
+    };
+  }
   // v0.57 mesh (D24): gates land in the SAME shared per-project store the
   // registry/roster/archive_ready read (repoKey, when resolvable).
-  const s = store.openStore({ home, workspaceId: id, hash: repoKeyForCwd(ctx) || undefined, backend: ctx.backend, env: ctx.env });
+  const s = store.openStore({ home, workspaceId: id, hash: callerRepoKeyForGate || undefined, backend: ctx.backend, env: ctx.env });
   let summary;
   try {
     for (const name of setNames) s.setGate({ workspaceId: id, name, value: true, setBy });
@@ -2059,8 +2250,14 @@ function cmdGate(id, flags, ctx) {
     summary = store.deriveSummary(s, { home, env: ctx.env, now: ctx.now });
   } finally { s.close(); }
   const ws = (summary.workspaces || {})[id];
+  // A5(c): an untracked id (no registry row in this project's summary — e.g. a
+  // stray/typo'd/never-registered id) must NOT report ok:true — the set/clear
+  // calls above landed in the store's gate table regardless, but with no
+  // registry row for `id` nothing ever surfaces them (deriveSummary only
+  // projects gates for rows it enumerates), so the caller's gate silently
+  // no-ops. `tracked` already carried this signal; `ok` now agrees with it.
   return {
-    ok: true, action: 'gate', id, set: setNames, cleared: clearNames,
+    ok: !!ws, action: 'gate', id, set: setNames, cleared: clearNames,
     gates: ws ? ws.gates : undefined,
     archive_ready: ws ? ws.archive_ready : undefined,
     tracked: !!ws,
@@ -2444,18 +2641,39 @@ function cmdArchiveRequest(id, flags, ctx) {
   const from = callerIdentity(ctx.env, cwd);
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
 
-  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
-  try {
-    const fields = { from, to: id, type: 'direct', message, timestamp: now, urgency: 'high' };
-    const hash = store.meshMessageHash(fields);
-    const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
-    store.deriveSummary(s, { home, env: ctx.env, now });
-    return {
-      ok: true, action: 'archive-request', id, childId: id, posted: true,
-      sent: !!res.inserted, seq: res.seq, reason: reason || null,
-      reminder: 'Ensure you have verified merged + tested + deployed per your repo policy before archiving.',
-    };
-  } finally { s.close(); }
+  // A3 (partial fix, v0.66 review): serialize against a concurrent rehome/
+  // retire of THIS SAME id — the SAME per-id lock cmdSend's orphan-race fix
+  // uses — so a rehomeAcrossStores that migrates id's registry row + backlog
+  // to ANOTHER project's store cannot interleave between this call's store
+  // resolution and its append (the "rehoming" leg of the reported defect;
+  // once inside the lock, no concurrent mutator of this id can run, since
+  // every mutator — register/archive/rehome — takes the identical lock).
+  //
+  // Deliberately UNCHANGED for a childId that carries NO registry row in this
+  // store at all: unlike `send --to <meshId>`, archive-request has never
+  // required registry membership — `id` IS its own read partition by design
+  // (the SAME semantics `heartbeat <id>`/`inbox read <id>` already use; see
+  // this function's own header comment) — and this is an explicitly TESTED
+  // contract ("archive-request makes ZERO hivecontrol calls" /
+  // devswarm-cli.test.js posts to an id that was never registered and expects
+  // ok:true). A genuinely typo'd or already-retired childId is therefore
+  // STILL NOT detectable here: both states are represented identically as
+  // "no registry row", and retiring a row (foldGroupIntoSurvivor) tombstones
+  // it outright with no redirect record to consult — see openConcerns.
+  return withIdLock(String(id), home, () => {
+    const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+    try {
+      const fields = { from, to: id, type: 'direct', message, timestamp: now, urgency: 'high' };
+      const hash = store.meshMessageHash(fields);
+      const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+      store.deriveSummary(s, { home, env: ctx.env, now });
+      return {
+        ok: true, action: 'archive-request', id, childId: id, posted: true,
+        sent: !!res.inserted, seq: res.seq, reason: reason || null,
+        reminder: 'Ensure you have verified merged + tested + deployed per your repo policy before archiving.',
+      };
+    } finally { s.close(); }
+  });
 }
 
 function cmdMigrate(ctx) {
@@ -2550,6 +2768,10 @@ function migrateOwnerKeys(home, ctx0) {
       }
     }
   } catch (_) {}
+  // A5(b): errors were counted but never reflected in `ok` — a caller checking
+  // top-level ok saw success even when every single descriptor failed to
+  // migrate. `out.ok` was seeded true at construction; correct it here.
+  out.ok = out.errors === 0;
   return out;
 }
 
@@ -2632,6 +2854,9 @@ function applyRecoveryIntents(home, ctx0) {
       else out.errors++; // still failing (e.g. ENOSPC persists) — leave the marker
     });
   }
+  // A5(b): same fix as migrateOwnerKeys — errors were counted but never
+  // reflected in `ok`.
+  out.ok = out.errors === 0;
   return out;
 }
 
@@ -2739,7 +2964,7 @@ function resolveMeshTarget(storeHandle, meshId) {
     if (!d || !d.worktreePath) continue;
     if (inst.primaryWorkspaceId(d.worktreePath) !== String(meshId)) continue;
     if (firstMatch === null) firstMatch = d; // first match (phantom) — fallback when nothing is live
-    if (d.sessionId == null || String(d.sessionId) === '') continue; // not live -> never a drain target
+    if (!isLiveSessionId(d.sessionId)) continue; // not live (A6: excludes the synthetic auto-ensure marker) -> never a drain target
     if (bestLive === null) { bestLive = d; continue; }
     const a = Number.isFinite(d.updatedAt) ? d.updatedAt : -1;
     const b = Number.isFinite(bestLive.updatedAt) ? bestLive.updatedAt : -1;
@@ -3242,7 +3467,7 @@ function computeDiagnosis(s, ctx) {
       id: d.id,
       worktreePath: d.worktreePath || null,
       sessionId: d.sessionId || null,
-      live: d.sessionId != null && String(d.sessionId) !== '',
+      live: isLiveSessionId(d.sessionId),
       unread: Number.isFinite(w.unread) ? w.unread : 0,
     };
   });
@@ -3474,31 +3699,48 @@ function cmdReconcile(flags, ctx) {
       // genuine-contention shape pullOnce/`inbox pull` emits.
       locked: !!(parsed && parsed.ok === false && parsed.locked === false
         && /holds the lock/i.test(String(parsed.error || ''))),
+      // v0.66 P0-2 fix: `hivecontrol` (the native DevSwarm.app CLI) is an
+      // OPTIONAL runtime dependency — CI runners (ubuntu/macos/windows) never
+      // have it on PATH, so pullOnce's very first native call (message-count,
+      // devswarm-pull.js ~line 224) fails with the exact, stable Node spawn
+      // shape `spawnSync hivecontrol ENOENT` (or EACCES/ENOTDIR for a broken
+      // install) surfaced verbatim as `parsed.error`. That is an ENVIRONMENT
+      // fact, not a reconcile defect — same benign-skip posture as `locked`
+      // (lock contention): known, recognized, and MUST NOT fail the sweep.
+      // A different failure at any OTHER hivecontrol call site, or any error
+      // string that doesn't match this exact spawn-failure shape, still fails
+      // `ok` normally (deny-list polarity preserved).
+      hivecontrolMissing: !!(parsed && parsed.ok === false
+        && /^spawnSync\s+\S*hivecontrol\S*\s+(ENOENT|EACCES|ENOTDIR)\b/i.test(String(parsed.error || ''))),
       error: (parsed && parsed.error)
         || (r && r.error ? String((r.error && r.error.message) || r.error) : null)
         || (parsed ? null : 'reconcile: could not parse inbox-pull subprocess output'),
     });
   }
   const imported = results.reduce((acc, r) => acc + (r.imported || 0), 0);
-  // P1 fix: aggregate `ok` must NOT be true when ANY target actually lost
-  // messages — a lossy pull is a real shortfall, not a benign skip (that is
-  // what `locked` is for). Silently returning ok:true here is what let
-  // doctor/update report a lossy reconcile as "fixed"/success upstream.
   const lost = results.reduce((acc, r) => acc + (r.lost || 0), 0);
-  // Claim 3 (c) fix: aggregate `ok` must ALSO go false when a target was
-  // REJECTED by the ensure ownership check the self-heal pre-pass above could
-  // not resolve (a genuinely-foreign descriptor, or a heal that itself
-  // failed) — this class of failure previously left `lost` at 0 for that row
-  // (it is a rejection, not a native-pull shortfall), so `lost===0` alone
-  // could read the whole reconcile as healthy while a row was silently left
-  // broken. Matched the SAME way `locked` above is recomputed (a targeted
-  // regex over the subprocess's own error string, not a blanket `!ok` count —
-  // a native-tool failure unrelated to ownership, e.g. `message-count
-  // failed`, is a pre-existing, deliberately-tolerated failure mode of the
-  // pull layer and must NOT newly flip this aggregate).
+  // rejected: surfaced for VISIBILITY only (a targeted regex over the
+  // subprocess's own error string) — NOT the basis for `ok` below anymore
+  // (A4, 3rd recurrence at this site): an allow-listed regex necessarily
+  // misses every OTHER failure shape (a spawn crash, a timeout, an ENOENT
+  // vanished-worktree cwd, unparseable stdout) — each of THOSE left `parsed`
+  // null, `r.ok` false, yet neither `lost` nor this regex counted them, so
+  // `lost===0 && rejected===0` could read an all-targets-failed sweep as a
+  // healthy `imported:0`.
   const rejected = results.filter((r) => !r.ok && /does not belong to the current project/.test(String(r.error || ''))).length;
+  // A4 FIX: aggregate `ok` is a DENY-list of benignity, not an allow-list of
+  // known failure shapes — every row must be genuinely `ok:true`, OR match
+  // ONE of the two recognized benign skips this file already computes with
+  // intuitive polarity (`locked:true` — genuine pull-lock contention, never a
+  // loss; `hivecontrolMissing:true` — v0.66 P0-2, the optional native binary
+  // is absent from this environment, e.g. every CI runner). Any other
+  // false-`ok` row (rejection, lossy pull, crash, timeout, a DIFFERENT ENOENT
+  // not matching the exact hivecontrol-spawn shape, unparseable stdout —
+  // anything at all) fails the aggregate. Never add a third allow-listed
+  // failure regex here.
+  const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true);
   const out = {
-    ok: lost === 0 && rejected === 0, action: 'reconcile', repoKey,
+    ok: allRowsOkOrBenign, action: 'reconcile', repoKey,
     count: results.length, imported, lost, rejected, results,
   };
   if (healed) out.healed = healed;
@@ -3932,7 +4174,24 @@ function run(argv, ctx0) {
       case 'heartbeat': {
         const id = positionals[1];
         if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        return { code: 0, result: cmdHeartbeat(id, flags, ctx) };
+        const r = cmdHeartbeat(id, flags, ctx);
+        // A5(b)/(d) + P1 fix: the exit code derives from `r.ok` (every other
+        // verb already does this) instead of a hardcoded 0. This is NO LONGER
+        // a no-op: cmdHeartbeat's own top-level `ok` now folds in a HARD
+        // meshBroadcast failure (e.g. an invalid --urgency value) — see
+        // BENIGN_MESH_BROADCAST_REASONS + cmdHeartbeat's own return statement
+        // for the exact, deliberately-narrow escalation rule. The two
+        // documented/tested benign shapes (no-project dormancy, ownership-
+        // refusal-as-security-control — devswarm-send.test.js's "forged"/
+        // "no-project" cases) still keep `ok:true` alongside an explicit
+        // `meshBroadcast.ok:false`, unchanged, so a caller that cares about
+        // JUST the broadcast outcome can still check `meshBroadcast.ok`
+        // directly. A broadcast-specific refusal/failure — previously
+        // invisible to `devswarm logs` entirely — is surfaced there too.
+        if (r && r.meshBroadcast && r.meshBroadcast.ok === false) {
+          logVerbOutcome('heartbeat-broadcast', id, r.meshBroadcast, ctx);
+        }
+        return { code: r.ok ? 0 : 2, result: r };
       }
       case 'inbox': {
         const sub = positionals[1];
@@ -4004,17 +4263,26 @@ function run(argv, ctx0) {
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'migrate': {
-        return { code: 0, result: cmdMigrate(ctx) };
+        // A5(b): exit code now reflects `ok` (migrateToStore genuinely returns
+        // ok:false on lock contention) instead of a hardcoded 0.
+        const r = cmdMigrate(ctx);
+        return { code: r && r.ok ? 0 : 2, result: r };
       }
       case 'logs': {
         // READ-ONLY central-log analysis (Csh). Filterable summary of the shared
         // JSONL error/event stream so a Primary can triage a child's failures.
-        return { code: 0, result: cmdLogs(flags, ctx) };
+        // A5(b): derives from `ok` for dispatcher consistency (cmdLogs is a
+        // pure read that never itself fails, so this is a no-op today).
+        const r = cmdLogs(flags, ctx);
+        return { code: r && r.ok ? 0 : 2, result: r };
       }
       case 'migrate-owner-keys': {
         // P1-8 forward-migration (idempotent, fail-open, no-delete). Exposed as a
         // verb so update/doctor/an operator can run it directly.
-        return { code: 0, result: migrateOwnerKeys(ctx.home, ctx) };
+        // A5(b): exit code now reflects `ok` (migrateOwnerKeys sets ok:false
+        // when any descriptor failed to migrate) instead of a hardcoded 0.
+        const r = migrateOwnerKeys(ctx.home, ctx);
+        return { code: r && r.ok ? 0 : 2, result: r };
       }
       case 'send': {
         // Send-time self-heal (Phase 7): runs before every mesh send.

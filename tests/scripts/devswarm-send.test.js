@@ -868,6 +868,25 @@ test('heartbeat --summary from a non-git cwd does not fail the base heartbeat, r
   } finally { rm(home); }
 });
 
+// P1 fix: an invalid --urgency is a genuine caller mistake (unlike the
+// deliberately-benign no-project/ownership-refusal shapes above) — it must
+// now fail the WHOLE heartbeat call (top-level ok:false, CLI exit code 2),
+// not just be visible inside meshBroadcast to a caller that specifically
+// checks it.
+test('heartbeat --summary --urgency <invalid> FAILS the whole call (top-level ok:false, exit code 2) — a hard caller mistake, not a benign shape', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('heartbeat-bad-urgency');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'w1', worktreePath: repo, sessionId: 's' });
+    const r = cli.run(['heartbeat', 'w1', '--summary', 'x', '--urgency', 'bogus'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, false, 'a bad --urgency must fail the top-level result, not just meshBroadcast');
+    assert.equal(r.result.meshBroadcast.ok, false);
+    assert.match(r.result.meshBroadcast.error, /--urgency must be one of/);
+    assert.equal(r.code, 2, 'the CLI exit code must reflect the failure');
+  } finally { rm(home); rm(repo); }
+});
+
 // ---- P0: heartbeat --summary sender spoofing (child-gate Stop-gate bypass) --
 //
 // alreadyReportedThisEpisode() (hooks/devswarm-child-gate.js) reads recent[]

@@ -149,7 +149,35 @@ function gitCommonDir(worktree, opts) {
       : null;
     const real = nativeRealpath ? nativeRealpath(resolved) : F.realpathSync(resolved);
     if (!real) return null;
-    return isWin ? winCanonicalizeCommonDir(real) : real;
+    const canon = isWin ? winCanonicalizeCommonDir(real) : real;
+    // SUBMODULE FIX (A1a, v0.66 review): git's on-disk submodule layout ALWAYS
+    // nests a submodule's own `--git-common-dir` under
+    // `<superproject>/.git/modules/<name>` (verified live: a real `git submodule
+    // add` reproduces this exactly). `basename(dirname(canon))` then reads as the
+    // literal 'modules' — NOT a project name — so a caller running from inside a
+    // submodule derived repoKey `modules-<hash>`, silently keying every store
+    // operation to the WRONG project. Detect this SPECIFIC on-disk shape (a
+    // `/modules/` segment immediately under a `.git` segment) — never guess off
+    // the basename alone, since a repo could coincidentally be named 'modules' —
+    // then re-resolve against the SUPERPROJECT's own worktree via
+    // `--show-superproject-working-tree`, which is verified to report the
+    // superproject root from inside ANY submodule and EMPTY from a normal
+    // repo/the superproject itself (so recursion terminates: the superproject's
+    // own probe returns empty and this branch is skipped on the recursive call).
+    // Fail-open: if the probe cannot confirm a superproject, fall through to the
+    // pre-fix (submodule-local) resolution rather than losing resolution
+    // entirely — matches this function's existing null-on-any-failure contract.
+    if (/[/\\]\.git[/\\]modules[/\\]/.test(canon)) {
+      try {
+        const superR = run({ args: ['-C', wt, 'rev-parse', '--show-superproject-working-tree'], cwd: wt });
+        const superWt = superR && superR.ok ? String(superR.raw || '').trim() : '';
+        if (superWt && superWt !== wt) {
+          const superCd = gitCommonDir(superWt, opts);
+          if (superCd) return superCd;
+        }
+      } catch (_) { /* fall through to the submodule-local resolution below */ }
+    }
+    return canon;
   } catch (_) {
     return null;
   }

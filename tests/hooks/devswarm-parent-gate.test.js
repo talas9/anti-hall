@@ -284,7 +284,12 @@ test('NO-OP: own-unread absent (no summary) AND no descriptors -> inert (P1-D pr
   } finally { h.cleanup(); }
 });
 
-test('FAIL-OPEN: malformed own summary.json -> treated as no own-unread; child-only unread still gates', () => {
+// C3 FIX: a malformed (corrupt-but-EXISTING) own summary used to be silently
+// swallowed into "no own-unread" — the exact polarity bug fixed here. It must
+// now surface as an explicit UNKNOWN own-status entry (never the old "YOU
+// (the Primary) have N unread..." wording, which implies a KNOWN count), in
+// addition to the child-only unread still gating as before.
+test('C3 FIX: malformed own summary.json -> surfaces as an explicit UNKNOWN own-status (never silently "no own-unread"); child-only unread still gates', () => {
   const h = makeHome();
   try {
     seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
@@ -295,7 +300,10 @@ test('FAIL-OPEN: malformed own summary.json -> treated as no own-unread; child-o
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.match(r.json.reason, /ws1/);
-    assert.ok(!/YOU \(the Primary\)/.test(r.json.reason), `malformed own summary must not gate on own-unread; reason=${r.json.reason}`);
+    assert.ok(!/YOU \(the Primary\) have \d+ unread/.test(r.json.reason), `a corrupt summary must never be reported as a KNOWN unread count; reason=${r.json.reason}`);
+    assert.match(r.json.reason, /YOUR OWN inbound status could not be confirmed/, `must surface the own-summary as UNKNOWN; reason=${r.json.reason}`);
+    assert.match(r.json.reason, /UNKNOWN/, `must explicitly say UNKNOWN, not imply a known zero; reason=${r.json.reason}`);
+    assert.ok(r.json.reason.includes('inbox read-primary ' + OWN_ID), `must still state the read-primary check path; reason=${r.json.reason}`);
   } finally { h.cleanup(); }
 });
 

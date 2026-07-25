@@ -58,41 +58,41 @@ function ingestDaemonMod() {
 function repokeyMod() {
   try { return require(DEVSWARM_REPOKEY); } catch (_) { return {}; }
 }
+// B2: lazy require of the ONE shared health definition (companion/lib/
+// ingest-health.js) — see projectDaemonHealthy below for why this replaced a
+// locally-duplicated, WEAKER check.
+function ingestHealthMod() {
+  try { return require(path.join(PLUGIN_ROOT, 'companion', 'lib', 'ingest-health.js')); } catch (_) { return {}; }
+}
 function devswarmRootFor(home) {
   try { return require(path.join(PLUGIN_ROOT, 'companion', 'lib', 'liveness.js')).devswarmRoot(home); } catch (_) { return path.join(home, '.anti-hall', 'devswarm'); }
 }
-// REAP_HEALTH_FRESH_MS — mirrors hooks/devswarm-parent-inbox.js's own
-// HEARTBEAT_STALE_MS (3 min): the per-project daemon rewrites its heartbeat every
-// monitor sweep regardless of inserts, so anything older is very likely dead.
-const REAP_HEALTH_FRESH_MS = 3 * 60 * 1000;
-function isAliveDefault(pid) {
-  if (!Number.isFinite(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
-}
-// projectDaemonHealthy(home, repoKey, now, io) -> bool. D25's TWO-signal health
-// check (freshness-only is NOT proof of life; a dead process can leave a
-// fresh-LOOKING stale file within the window) scoped to what Phase 6 needs: (1)
-// heartbeats/ingest-<repoKey>.json refreshed within REAP_HEALTH_FRESH_MS, AND (2)
-// the per-project O_EXCL ingest lock is held by a LIVE pid (reusing
-// devswarm-ingest.js's own readLockHolder — never re-derived here). Pure fs reads
-// (+ an injectable isAlive probe for tests); never a spawn. Fail-open: any read
-// error -> false (never falsely reports healthy).
+// projectDaemonHealthy(home, repoKey, now, io) -> bool.
+//
+// B2 FIX: this used to be a LOCALLY-DUPLICATED, WEAKER reimplementation of
+// companion/lib/ingest-health.js's own daemonHealth() — it lacked BOTH the
+// same-incarnation pid guard (a fresh heartbeat from a PRIOR daemon incarnation
+// plus a live lock held by a DIFFERENT, newer incarnation used to read as
+// "healthy" here even though neither signal was ever checked against the
+// other) AND the v0.66 monitor-outcome-fault check (a daemon that is alive and
+// heartbeating but whose every `hivecontrol workspace monitor` spawn is
+// failing — see monitorFaultFor below — used to read as "healthy" here too).
+// ingest-health.js's own header comment explicitly promises every consumer
+// agrees on ONE definition of "the daemon is alive"; this function was the one
+// consumer that did not. reapOrphanedLegacyUnits (below) trusts a `true` here
+// to justify REAPING a legacy unit as "redundant" — a false-positive healthy
+// verdict there authorizes stopping the sole real drainer for that repo.
+//
+// Now a thin delegate: ONLY `status === 'healthy'` from the shared
+// daemonHealth() counts. Fail-open unchanged (any read/require error -> false,
+// never a confident "healthy").
 function projectDaemonHealthy(home, repoKey, now, io) {
   if (!repoKey) return false;
-  const F = (io && io.fs) || fs;
-  const isAlive = (io && io.isAlive) || isAliveDefault;
-  const daemon = ingestDaemonMod();
-  if (typeof daemon.ingestHeartbeatPath !== 'function' || typeof daemon.readLockHolder !== 'function') return false;
-  let fresh = false;
   try {
-    const beat = JSON.parse(F.readFileSync(daemon.ingestHeartbeatPath(home, repoKey), 'utf8'));
-    fresh = !!(beat && Number.isFinite(beat.ts) && (now - beat.ts) <= REAP_HEALTH_FRESH_MS);
-  } catch (_) { fresh = false; }
-  if (!fresh) return false;
-  try {
-    const lockPath = path.join(devswarmRootFor(home), 'locks', 'ingest-project-' + repoKey + '.lock');
-    const holder = daemon.readLockHolder(lockPath, F);
-    return !!(holder && Number.isFinite(holder.pid) && isAlive(holder.pid));
+    const health = ingestHealthMod();
+    if (typeof health.daemonHealth !== 'function') return false;
+    const result = health.daemonHealth(home, repoKey, { now, io });
+    return !!(result && result.status === 'healthy');
   } catch (_) { return false; }
 }
 
@@ -1066,23 +1066,29 @@ function runRepairs(opts) {
       // can be perfectly well-formed while its daemon is crashed, OOM-killed, or
       // wedged (backoff-looping without ever re-acquiring its lock), and
       // classifyIngestUnit alone would still report 'ok', so doctor would print
-      // "healthy" over a dead daemon. Gate 'ok' behind the SAME two-signal
-      // liveness check (fresh heartbeat + a live-pid lock holder) the legacy-unit
-      // orphan sweep above already trusts (projectDaemonHealthy) — never
-      // freshness alone (a dead process can leave a fresh-looking heartbeat
-      // file within the staleness window). repoKey comes off the installed unit
-      // when it's a per-project unit (the common case); a legacy (hash-only)
-      // unit carries no repoKey of its own, so it is derived from the worktree
-      // the same way reapOrphanedLegacyUnits does. `alive` is only meaningful
-      // when cls==='ok' — a unit with a shape problem is reported with ITS OWN
+      // "healthy" over a dead daemon. Gate 'ok' behind the SAME shared
+      // daemonHealth() the legacy-unit orphan sweep's projectDaemonHealthy (and
+      // ingest-health.js's own hot-path banner) all trust — never freshness
+      // alone (a dead process can leave a fresh-looking heartbeat file within
+      // the staleness window). repoKey comes off the installed unit when it's a
+      // per-project unit (the common case); a legacy (hash-only) unit carries
+      // no repoKey of its own, so it is derived from the worktree the same way
+      // reapOrphanedLegacyUnits does. `alive` is only meaningful when
+      // cls==='ok' — a unit with a shape problem is reported with ITS OWN
       // reason below, never masked by a liveness message.
-      let alive = true;
-      // v0.66: a SECOND, independent gate on top of liveness — the daemon can be
-      // alive, heartbeating, holding its lock, and still draining NOTHING
-      // because every monitor spawn fails (see monitorFaultFor above). Reported
-      // as its own distinct FAILURE reason rather than a generic "not alive",
-      // and healed by the same (re)install, which is genuinely the remedy: the
+      //
+      // B2: this used to chain projectDaemonHealthy() (liveness only) +
+      // monitorFaultFor() (a SECOND, separate call) — two calls into what is
+      // now ONE shared daemonHealth() check, so this report and
+      // projectDaemonHealthy can never drift on what "alive" means again.
+      // status:'healthy' or 'failed' both mean the base liveness signals
+      // (fresh heartbeat + live-pid lock + same incarnation) are POSITIVELY
+      // confirmed — 'failed' additionally means the daemon is alive but
+      // draining nothing (v0.66 monitor-outcome fault), reported as its own
+      // distinct FAILURE reason below rather than a generic "not alive", and
+      // healed by the same (re)install, which is genuinely the remedy: the
       // installer bakes the resolved binary + PATH into the regenerated unit.
+      let alive = true;
       let monitorFault = null;
       if (cls === 'ok') {
         let repoKeyForHealth = read.repoKey;
@@ -1092,9 +1098,17 @@ function runRepairs(opts) {
             if (typeof repoKeyForWorktree === 'function') repoKeyForHealth = repoKeyForWorktree(currentWorktree);
           } catch (_) {}
         }
-        alive = !!(repoKeyForHealth && projectDaemonHealthy(home, repoKeyForHealth, Date.now(), o.io));
-        if (alive) {
-          try { monitorFault = monitorFaultFor(home, repoKeyForHealth, Date.now(), o.io); } catch (_) { monitorFault = null; }
+        if (repoKeyForHealth) {
+          try {
+            const healthMod = ingestHealthMod();
+            const result = typeof healthMod.daemonHealth === 'function'
+              ? healthMod.daemonHealth(home, repoKeyForHealth, { now: Date.now(), io: o.io })
+              : null;
+            alive = !!(result && (result.status === 'healthy' || result.status === 'failed'));
+            monitorFault = (result && result.status === 'failed') ? result.monitorFault : null;
+          } catch (_) { alive = false; monitorFault = null; }
+        } else {
+          alive = false;
         }
       }
 

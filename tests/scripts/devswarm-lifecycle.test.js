@@ -215,12 +215,66 @@ test('reconcile spawns a REAL subprocess per worktree (default path, no injectio
     // cleanly on every platform (an empty env can break a real Node child
     // process on Windows, e.g. missing SystemRoot) — this test proves the
     // SUBPROCESS PLUMBING (spawn args/cwd), not native hivecontrol behavior.
+    // v0.66 P0-2 fix (devswarm.js cmdReconcile): the aggregate `ok` folds in
+    // the underlying subprocess's own outcome, BUT a hivecontrol-absent
+    // ENOENT (pullOnce's first native call, absent on every CI runner) is a
+    // recognized BENIGN skip — same posture as `locked` — so the aggregate
+    // stays `true` on a machine with no hivecontrol AND on this dev machine
+    // (which has it). This is the exact case the reviewer flagged: don't
+    // weaken this assertion away to hide the regression, fix the aggregate.
     const r = cli.run(['reconcile'], ctx(home, { cwd: repo, env: process.env }));
-    assert.equal(r.result.ok, true);
+    assert.equal(r.result.ok, true, 'a hivecontrol-absent target is a benign skip, not a reconcile failure — ' + JSON.stringify(r.result));
     assert.equal(r.result.count, 1);
     assert.equal(r.result.results[0].id, 'child-real');
     assert.equal(r.result.results[0].worktreePath, repo);
     assert.equal(typeof r.result.results[0].ok, 'boolean', 'the subprocess ran to completion and emitted a parseable JSON envelope');
+  } finally { rm(home); rm(repo); }
+});
+
+// v0.66 P0-2 regression test: BEFORE this fix, cmdReconcile's stricter
+// every-row-ok-or-locked aggregate treated a hivecontrol-absent target
+// (the exact CI-runner shape) as a hard failure, breaking this
+// previously-CI-safe suite the instant it ran anywhere without the
+// optional native `hivecontrol` binary on PATH. Injects the EXACT JSON
+// pullOnce/`inbox pull` emits on that native ENOENT (devswarm-pull.js
+// ~line 224-226) — no real subprocess/hivecontrol dependency, hermetic.
+test('P0-2: reconcile aggregate ok stays true when a target only failed because hivecontrol is absent from PATH (benign environment skip, not a real failure)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-hivecontrol-missing');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-nohive', worktreePath: '/wt/nohive', sessionId: 's' });
+    const io = {
+      spawnReconcile: () => ({
+        status: 1,
+        stdout: JSON.stringify({ ok: false, locked: true, error: 'spawnSync hivecontrol ENOENT' }),
+        error: null,
+      }),
+    };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.results[0].hivecontrolMissing, true, 'the row must be classified as a hivecontrol-absent benign skip');
+    assert.equal(r.result.results[0].ok, false, 'the row itself is still honestly reported as not-ok');
+    assert.equal(r.result.ok, true, 'the AGGREGATE must not fail the whole reconcile over a missing optional binary');
+    assert.equal(r.result.lost, 0, 'a hivecontrol-absent skip is never counted as a loss');
+  } finally { rm(home); rm(repo); }
+});
+
+test('P0-2: reconcile aggregate ok is FALSE for a genuine ENOENT that is NOT the hivecontrol-spawn shape (e.g. a vanished worktree cwd) — the benign class must not over-match', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-other-enoent');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'child-other', worktreePath: '/wt/other', sessionId: 's' });
+    const io = {
+      spawnReconcile: () => ({
+        status: 1,
+        stdout: '',
+        error: { message: 'spawnSync /some/worktree/path ENOENT' },
+      }),
+    };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.results[0].hivecontrolMissing, false, 'an unrelated ENOENT must never be folded into the hivecontrol-missing benign class');
+    assert.equal(r.result.ok, false, 'a genuine, unrecognized failure must still fail the aggregate');
   } finally { rm(home); rm(repo); }
 });
 

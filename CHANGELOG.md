@@ -6,6 +6,19 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.66.0
+
+Closes a family of failure classes found by design review rather than by tripping over them: code that reported success it had not observed, and recovery that only ran if something else happened to trigger it.
+
+- **A destructive read can no longer lose messages silently.** The native queue is consume-on-read, so a monitor batch that arrived but failed to parse — a shape change, stderr contamination, a timeout truncating the JSON mid-print — was gone with nothing logged. Such a batch is now logged and quarantined to disk. A well-formed empty result is still treated as normal, so an idle poll does not create an error storm.
+- **Health is no longer asserted from a weaker second definition.** Doctor carried its own daemon-health check that omitted the pid guard and the monitor-fault check, and used it to reap a unit as "confirmed running and healthy" — which meant a daemon that was alive but ingesting nothing could authorize reaping the only real drainer. There is now one definition, used by every consumer.
+- **Project identity resolves properly, or refuses.** Identity was derived from the working directory, so from inside a submodule it keyed off the submodule, and from a non-git directory it fell back to a legacy store and reported live workspaces as unregistered — a confident wrong answer with no error. Submodules now resolve via the superproject, and an unresolvable context refuses instead of quietly reading somewhere else.
+- **Success no longer hides a nested failure.** `heartbeat` returned ok while its mesh broadcast had failed; reconcile's aggregate reported success while individual targets had crashed or timed out; several paths returned ok from a caught exception. These now reflect what actually happened, with a genuinely absent hivecontrol treated as a known-benign skip rather than a failure.
+- **Recovery runs on its own.** Stranded messages previously sat until an update or an explicit repair happened to invoke reconcile. A cooldown-gated sweep now runs on the existing supervisor, using the same single-consumer lock as the drains so it cannot race a live one.
+- **Smaller repairs.** `devswarm logs` and `doctor --logs` now read rotated history, so the highest-volume period of an incident is no longer the part that is missing; the log rotation lock records its owner instead of being stolen on age alone; the Primary's own unreadable inbox is surfaced instead of silently counting zero; the singleton supervisor unit now carries the same resolved binary path as the per-project units, which is why its subprocesses kept failing after those were fixed.
+
+2382 tests, 0 fail. Verified with the tooling binary both present and absent, since several of these paths behave differently when it cannot be found.
+
 ## 0.65.0
 
 DevSwarm daemon reliability — the ingest daemon now recovers itself, reports honestly when it cannot, and children never block the swarm on a question.
