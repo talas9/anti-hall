@@ -39,7 +39,7 @@ test('modelAccessCache entitled:true fable entry => available:true and additiona
     const r = testHook(HOOK, PAYLOAD, { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0, `exit 0; stderr: ${r.stderr}`);
     assert.ok(hasContext(r), `expected additionalContext; stdout: ${r.stdout}`);
-    assert.match(r.json.hookSpecificOutput.additionalContext, /Fable 5 is available/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /Fable is available/);
     const state = readState(h);
     assert.strictEqual(state.available, true);
     assert.strictEqual(state.source, 'modelAccessCache');

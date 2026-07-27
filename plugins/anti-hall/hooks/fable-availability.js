@@ -13,9 +13,9 @@ const os = require('os');
 const CLAUDE_JSON = path.join(os.homedir(), '.claude.json');
 const STATE_FILE = path.join(os.homedir(), '.anti-hall', 'fable-availability.json');
 const CONTEXT =
-  "Fable 5 is available this session (per ~/.claude.json). Fable routing is RE-ENABLED per " +
+  "Fable is available this session (per ~/.claude.json). Fable routing is RE-ENABLED per " +
   "MODEL-POLICY.md (2026-07-12) -- pass args.fableAvailable=true into ship-it/deadly-loop " +
-  "Workflow invocations so the Reviewer seat tries Fable first, falling back to Sonnet 5 then " +
+  "Workflow invocations so the Reviewer seat tries Fable first, falling back to Sonnet then " +
   "Opus. Revisit if Fable's track record regresses.";
 
 function hasFable(value) {

@@ -245,10 +245,10 @@ Recognised labels and their segment triggers:
 
 | Label | Trigger segment | Example model ids |
 |---|---|---|
-| `Fable` | `fable` | `claude-fable-5` |
-| `Opus` | `opus` | `claude-opus-4-8` |
-| `Sonnet` | `sonnet` | `claude-sonnet-4-6` |
-| `Haiku` | `haiku` | `claude-haiku-4-5-20251001` |
+| `Fable` | `fable` | `claude-fable-*` |
+| `Opus` | `opus` | `claude-opus-*` |
+| `Sonnet` | `sonnet` | `claude-sonnet-*` |
+| `Haiku` | `haiku` | `claude-haiku-*` |
 
 `Fable` is checked first so future `claude-fable-*` ids resolve correctly.
 Any model id where the tier word is a **substring of another segment** (e.g.

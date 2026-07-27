@@ -60,7 +60,7 @@ function plan(extra = {}) {
   };
 }
 
-test('default Reviewer path remains Sonnet 5 -> Opus fallback', async () => {
+test('default Reviewer path remains Sonnet -> Opus fallback', async () => {
   const reviewerModels = [];
   const { promise } = runStubbed(plan(), (brief, opts, def) => {
     if (opts && /^phase1:reviewer/.test(opts.label || '')) {
@@ -88,7 +88,7 @@ test('Reviewer tries Fable first when args.fableAvailable=true (RE-ENABLED, 2026
   assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'fable'), 'expected an agent() call requesting model:fable');
 });
 
-test('Reviewer falls back Fable -> Sonnet 5 -> Opus when each seat in turn returns null', async () => {
+test('Reviewer falls back Fable -> Sonnet -> Opus when each seat in turn returns null', async () => {
   const reviewerModels = [];
   const { promise, calls } = runStubbed(plan({ fableAvailable: true }), (brief, opts, def) => {
     if (opts && /^phase1:reviewer/.test(opts.label || '')) {
@@ -99,12 +99,12 @@ test('Reviewer falls back Fable -> Sonnet 5 -> Opus when each seat in turn retur
   });
   const out = await promise;
   assert.ok(out.phases.phase1.review);
-  assert.deepStrictEqual(reviewerModels, ['fable', 'sonnet', 'opus'], 'expected the full Fable -> Sonnet 5 -> Opus fallback chain');
+  assert.deepStrictEqual(reviewerModels, ['fable', 'sonnet', 'opus'], 'expected the full Fable -> Sonnet -> Opus fallback chain');
   assert.ok(calls.logs.some((l) => /Fable Reviewer unavailable/.test(l)));
   assert.ok(calls.logs.some((l) => /falling back to Opus Reviewer/.test(l)));
 });
 
-test('Reviewer stays on Sonnet 5 -> Opus (no Fable attempt) when args.fableAvailable is not true', async () => {
+test('Reviewer stays on Sonnet -> Opus (no Fable attempt) when args.fableAvailable is not true', async () => {
   const reviewerModels = [];
   const { promise, calls } = runStubbed(plan({ fableAvailable: false }), (brief, opts, def) => {
     if (opts && /^phase1:reviewer/.test(opts.label || '')) {
@@ -128,7 +128,7 @@ test('B5: build seat tries Codex first; on success implementerModel is "codex"',
   assert.strictEqual(buildCall.opts.agentType, 'codex:codex-rescue');
 });
 
-test('B5: build seat falls back to Sonnet 5 when Codex is unavailable, and marks implementerModel accordingly', async () => {
+test('B5: build seat falls back to Sonnet when Codex is unavailable, and marks implementerModel accordingly', async () => {
   const { promise, calls } = runStubbed(plan(), (brief, opts, def) => {
     if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // Codex build fails
     return def;
@@ -152,10 +152,10 @@ test('B5: RESULT_SCHEMA requires implementerModel with enum [codex, sonnet]', as
   assert.deepStrictEqual(Array.from(buildCall.opts.schema.properties.implementerModel.enum), ['codex', 'sonnet']);
 });
 
-test('B5: Reviewer skips its own Sonnet 5 attempt and goes straight to Opus when this phase was built by Sonnet 5 (cross-model self-review guard)', async () => {
+test('B5: Reviewer skips its own Sonnet attempt and goes straight to Opus when this phase was built by Sonnet (cross-model self-review guard)', async () => {
   const reviewerModels = [];
   const { promise, calls } = runStubbed(plan(), (brief, opts, def) => {
-    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet 5 build fallback
+    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet build fallback
     if (opts && /^phase1:reviewer/.test(opts.label || '')) {
       reviewerModels.push(opts.model);
     }
@@ -164,11 +164,11 @@ test('B5: Reviewer skips its own Sonnet 5 attempt and goes straight to Opus when
   const out = await promise;
   assert.strictEqual(out.phases.phase1.build.implementerModel, 'sonnet');
   assert.ok(out.phases.phase1.review);
-  assert.deepStrictEqual(reviewerModels, ['opus'], 'Reviewer must skip Sonnet 5 entirely and go straight to Opus');
-  assert.ok(calls.logs.some((l) => /Reviewer skipping Sonnet 5.*cross-model self-review guard/.test(l)));
+  assert.deepStrictEqual(reviewerModels, ['opus'], 'Reviewer must skip Sonnet entirely and go straight to Opus');
+  assert.ok(calls.logs.some((l) => /Reviewer skipping Sonnet.*cross-model self-review guard/.test(l)));
 });
 
-test('B5: Reviewer still tries Sonnet 5 normally when Codex built the phase (no self-review conflict)', async () => {
+test('B5: Reviewer still tries Sonnet normally when Codex built the phase (no self-review conflict)', async () => {
   const reviewerModels = [];
   const { promise } = runStubbed(plan(), (brief, opts, def) => {
     if (opts && /^phase1:reviewer/.test(opts.label || '')) {
@@ -178,7 +178,7 @@ test('B5: Reviewer still tries Sonnet 5 normally when Codex built the phase (no 
   });
   const out = await promise;
   assert.strictEqual(out.phases.phase1.build.implementerModel, 'codex');
-  assert.deepStrictEqual(reviewerModels, ['sonnet'], 'Codex built the phase, so Sonnet 5 Reviewer runs normally');
+  assert.deepStrictEqual(reviewerModels, ['sonnet'], 'Codex built the phase, so Sonnet Reviewer runs normally');
 });
 
 test('build effort: defaults to medium (Codex) when phase does not specify phase.effort', async () => {
@@ -189,9 +189,9 @@ test('build effort: defaults to medium (Codex) when phase does not specify phase
   assert.strictEqual(buildCall.opts.effort, 'medium');
 });
 
-test('build effort: defaults to high on the Sonnet-5-fallback branch when phase does not specify phase.effort', async () => {
+test('build effort: defaults to high on the Sonnet-fallback branch when phase does not specify phase.effort', async () => {
   const { promise, calls } = runStubbed(plan(), (brief, opts, def) => {
-    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet 5 build fallback
+    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet build fallback
     return def;
   });
   await promise;
@@ -216,7 +216,7 @@ test('build effort: phase.effort override is respected on the Codex-primary bran
   assert.strictEqual(buildCall.opts.effort, 'xhigh');
 });
 
-test('build effort: phase.effort override is respected on the Sonnet-5-fallback branch', async () => {
+test('build effort: phase.effort override is respected on the Sonnet-fallback branch', async () => {
   const hardRiskPlan = {
     parallelGroups: [[{
       label: 'phase1',
@@ -226,7 +226,7 @@ test('build effort: phase.effort override is respected on the Sonnet-5-fallback 
     }]],
   };
   const { promise, calls } = runStubbed(hardRiskPlan, (brief, opts, def) => {
-    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet 5 build fallback
+    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet build fallback
     return def;
   });
   await promise;
@@ -331,6 +331,69 @@ test('FIX3: Sonnet-built phase (Codex unavailable) ⇒ the Codex Critic is allow
   assert.ok(calls.agents.some((c) => c.opts && c.opts.label === 'phase1:critic' &&
     c.opts.agentType === 'codex:codex-rescue'),
     'Sonnet built the phase, so the Codex Critic is not a self-review and should run');
+});
+
+// ---- SEAT CENSUS: a dead seat must block convergence, even with zero P0/P1 -----
+test('SEAT CENSUS: a dead seat (auditor) blocks convergence even when every live seat reports clean', async () => {
+  const { promise } = runStubbed(plan(), (brief, opts, def) => {
+    if (opts && opts.label === 'phase1:auditor') return null; // auditor seat dies, no fallback exists for it
+    return def;
+  });
+  const out = await promise;
+  const gate = out.phases.phase1.gate;
+  assert.ok(gate, 'phase result must carry a gate summary');
+  assert.strictEqual(gate.newP0, 0);
+  assert.strictEqual(gate.newP1, 0);
+  assert.strictEqual(gate.totalSeats, 3);
+  assert.strictEqual(gate.liveSeats, 2);
+  assert.strictEqual(gate.deadSeats, 1);
+  assert.strictEqual(gate.degraded, true);
+  assert.strictEqual(gate.converged, false,
+    'a round that lost a seat can NEVER converge, even when zero P0/P1 were reported — missing coverage must not read as a pass');
+  assert.ok(out.phases.phase1.seatReports.some((r) => /^auditor: DEAD\/DEGRADED$/.test(r)));
+});
+
+test('SEAT CENSUS: all three seats live and clean ⇒ deadSeats:0 and converged:true', async () => {
+  const { promise } = runStubbed(plan(), undefined);
+  const out = await promise;
+  const gate = out.phases.phase1.gate;
+  assert.strictEqual(gate.totalSeats, 3);
+  assert.strictEqual(gate.liveSeats, 3);
+  assert.strictEqual(gate.deadSeats, 0);
+  assert.strictEqual(gate.degraded, false);
+  assert.strictEqual(gate.converged, true);
+});
+
+// ---- codexAvailable gate: mirrors deadly-loop's codexUp fail-open flag --------
+test('codexAvailable===false routes the Critic to an Opus adversarial persona (mirrors deadly-loop), independent of the self-review guard', async () => {
+  const criticCalls = [];
+  const { promise, calls } = runStubbed(plan({ codexAvailable: false }), (brief, opts, def) => {
+    // Force the build to fall back to Sonnet so the self-review guard (skipCodex) does
+    // NOT also explain an Opus Critic here — isolates the codexAvailable branch.
+    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null;
+    if (opts && /:critic/.test(opts.label || '')) criticCalls.push({ opts, brief });
+    return def;
+  });
+  const out = await promise;
+  assert.strictEqual(out.phases.phase1.build.implementerModel, 'sonnet', 'Codex build must be forced unavailable for this test to isolate the codexAvailable branch');
+  assert.ok(!calls.agents.some((c) => c.opts && /:critic/.test(c.opts.label || '') && c.opts.agentType === 'codex:codex-rescue'),
+    'Codex must not be attempted for the Critic seat when codexAvailable===false');
+  assert.ok(criticCalls.some((c) => c.opts.model === 'opus' && /opus-adversarial/.test(c.opts.label || '')),
+    'Critic must be seated as Opus (adversarial) when codexAvailable===false');
+  assert.ok(criticCalls.some((c) => /PERSONA: you are the adversarial break-it critic/.test(c.brief)),
+    'the Opus stand-in must carry the adversarial break-it persona, mirroring deadly-loop.workflow.js');
+  assert.ok(calls.logs.some((l) => /Critic skipping Codex.*codexAvailable===false/.test(l)));
+});
+
+test('codexAvailable default (unset) still attempts the Codex Critic when the build did not self-review-conflict', async () => {
+  const { promise, calls } = runStubbed(plan(), (brief, opts, def) => {
+    if (opts && opts.label === 'phase1' && opts.agentType === 'codex:codex-rescue') return null; // force Sonnet build
+    return def;
+  });
+  const out = await promise;
+  assert.strictEqual(out.phases.phase1.build.implementerModel, 'sonnet');
+  assert.ok(calls.agents.some((c) => c.opts && c.opts.label === 'phase1:critic' && c.opts.agentType === 'codex:codex-rescue'),
+    'codexAvailable fail-open default (true) must still attempt the Codex Critic seat');
 });
 
 test('determinism: no Date.now/Math.random/argless new Date anywhere in ship-it.workflow.js (code, not the doc comment describing the rule)', () => {

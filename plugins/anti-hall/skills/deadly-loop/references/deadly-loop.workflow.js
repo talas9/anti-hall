@@ -30,8 +30,8 @@
 //
 // MODEL INVARIANT: select models LATEST-AT-CALL-TIME — use ONLY tier tokens in agent()
 //   options (model:'opus'/'sonnet'/'haiku', agentType:'codex:codex-rescue').
-//   'sonnet' resolves to Sonnet 5 at runtime. NEVER hardcode a versioned/dated model id
-//   anywhere (script, briefs, or schemas). NEVER use effort:'max' for Sonnet 5 inside
+//   'sonnet' resolves to Sonnet at runtime. NEVER hardcode a versioned/dated model id
+//   anywhere (script, briefs, or schemas). NEVER use effort:'max' for Sonnet inside
 //   loops — TTFT ~163s; the ceiling inside any loop is 'xhigh'.
 //   The host resolves each tier token to today's flagship build at call time.
 //
@@ -56,7 +56,7 @@
 //     respawnQuota: 1,                  // drift respawns allowed PER SEAT this round
 //     seats: [ ... ],                   // OPTIONAL formation override (verbatim); else derived
 //     codexAvailable: true,             // false => Codex critic becomes Opus adversarial persona
-//     fableAvailable: true,             // true => Reviewer tries Fable before Sonnet 5
+//     fableAvailable: true,             // true => Reviewer tries Fable before Sonnet
 //   }
 //   If `args` is undefined the workflow exits with a usage note (no guessing).
 
@@ -182,11 +182,11 @@ function contextBrief(a) {
 
 // ---- Formation: build the trio (x multiplier) ------------------------------
 // Role models per MODEL-POLICY.md canon:
-//   Reviewer = Sonnet 5 by default, or Fable when args.fableAvailable === true
+//   Reviewer = Sonnet by default, or Fable when args.fableAvailable === true
 //   (correctness/architecture, effort xhigh — never max in loops),
 //   Auditor = Opus (regression/coupling, effort high),
 //   Critic = Codex (codex:codex-rescue, adversarial — unless Codex implemented the diff,
-//   then Opus/Sonnet 5). If codexAvailable === false the Critic degrades to an Opus
+//   then Opus/Sonnet). If codexAvailable === false the Critic degrades to an Opus
 //   adversarial persona. If args.seats is given, use it verbatim.
 function buildFormation(a) {
   if (Array.isArray(a.seats) && a.seats.length > 0) return a.seats;
@@ -195,15 +195,15 @@ function buildFormation(a) {
     ? Math.floor(a.multiplier) : 1;
   const codexUp = a.codexAvailable !== false;
   // Fable routing re-enabled (owner call, 2026-07-12): the earlier policy-disable
-  // (2026-07-02, over-restrictive/refusal-prone reports) is reversed now that Fable 5 is
+  // (2026-07-02, over-restrictive/refusal-prone reports) is reversed now that Fable is
   // available. KNOWN RESIDUAL RISK (accepted by the owner, not mitigated by this code): a
   // soft refusal can still pass StructuredOutput validation as a "successful" verdict rather
-  // than triggering the Sonnet 5 fallback in investigateAgent() below — that fallback only
+  // than triggering the Sonnet fallback in investigateAgent() below — that fallback only
   // catches a null/falsy agent() result (spawn failure/timeout), not a schema-conformant
-  // refusal. Revisit if that resurfaces as a real problem with Fable 5.
+  // refusal. Revisit if that resurfaces as a real problem with Fable.
   const reviewerModel = a.fableAvailable === true ? 'fable' : 'sonnet';
   const roles = [
-    // Reviewer = Fable when available (see above), else Sonnet 5.
+    // Reviewer = Fable when available (see above), else Sonnet.
     { role: 'reviewer', opts: { model: reviewerModel, effort: 'xhigh' } },
     { role: 'auditor', opts: { model: 'opus', effort: 'high' } },
     {
@@ -271,7 +271,7 @@ function investigateBrief(seat, a, packText, driftReason) {
 // role-defined opts. B4/B5 fix: Phase 2b (Argue) must retry with whichever
 // model actually answered in 2a, not the original (possibly-dead) seat opts,
 // and an Opus fallback must use its OWN effort tier, never inherit a spread
-// `effort:'xhigh'` meant for the Sonnet-5 seat it replaced.
+// `effort:'xhigh'` meant for the Sonnet seat it replaced.
 async function investigateAgent(seat, a, packText, driftReason, labelSuffix) {
   const label = seat.label + (labelSuffix || '');
   let brief = investigateBrief(seat, a, packText, driftReason);
@@ -290,7 +290,7 @@ async function investigateAgent(seat, a, packText, driftReason, labelSuffix) {
   if (seat.role !== 'reviewer' || !seat.opts) return { report: r, resolvedOpts: seat.opts };
   if (seat.opts.model === 'fable') {
     log('round ' + a.round + ': Fable Reviewer unavailable for "' + label +
-      '" — falling back to Sonnet 5 Reviewer (MODEL-POLICY matrix).');
+      '" — falling back to Sonnet Reviewer (MODEL-POLICY matrix).');
     const sonnetOpts = { model: 'sonnet', effort: 'xhigh' };
     const sonnet = await agent(brief, {
       ...sonnetOpts, label: label + '(sonnet-fallback)', schema: VERDICT_SCHEMA,
@@ -303,7 +303,7 @@ async function investigateAgent(seat, a, packText, driftReason, labelSuffix) {
     '" — falling back to Opus Reviewer (MODEL-POLICY matrix).');
   // Fresh options object — no spread from seat.opts, so Opus gets its OWN
   // effort tier (high, matching the Auditor seat) instead of silently
-  // inheriting the Sonnet-5 Reviewer's effort:'xhigh'.
+  // inheriting the Sonnet Reviewer's effort:'xhigh'.
   const opusOpts = { model: 'opus', effort: 'high' };
   const opusReport = await agent(brief, {
     ...opusOpts, label: label + '(opus-fallback)', schema: VERDICT_SCHEMA,

@@ -26,7 +26,7 @@ const DOWNSHIFT_DIRECTIVE =
   'MAIN-MODEL DOWNSHIFT: if the main agent is on the flagship model ' +
   '(Claude Opus or Codex gpt-5.6-sol), switch it to the cheaper 1M-context variant ' +
   'to preserve the flagship weekly bucket — ' +
-  'Claude → Sonnet 5 (1M context), Codex → gpt-5.6-terra (1M context). ' +
+  'Claude → Sonnet (1M context), Codex → gpt-5.6-terra (1M context). ' +
   'NEVER downshift to a sub-1M model (e.g. gpt-5.4-mini has only 400k context). ' +
   'Keep the flagship for delegated hard-reasoning subagents and on-demand escalation. ' +
   'The agent cannot self-switch models (/model is a user action) — ' +

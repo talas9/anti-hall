@@ -82,6 +82,12 @@ const devswarmIngest = require('../companion/devswarm-ingest.js');
 // there and rejected on review; the gate classifies unread CONTENT instead,
 // via companion/lib/devswarm-noise.js).
 const freshness = require('./lib/devswarm-freshness.js');
+// devswarm-names.js (task #6): READ-ONLY on this hot path — readName() is a
+// pure fs projection read (never a hivecontrol spawn), matching this file's
+// own "fs-backed projections only" contract for a UserPromptSubmit hook that
+// fires every turn. Writers (spawn seed + reconcile backfill) live in
+// scripts/devswarm.js, off this hot path.
+const names = require('../companion/lib/devswarm-names.js');
 
 // B1 self-heal hardening (H4): structured logging via the shared C0 logger
 // when present, falling back to a console.error-only shim so this hook never
@@ -333,8 +339,13 @@ function buildWorkspaceTable(rows, now, capped, hidden) {
     '|---|---|---|---|---|',
   ];
   for (const r of rows) {
+    // Task #6: "name (shortid)" when a name is cached, else the bare UUID
+    // (names.displayName's own fallback). Escape a literal `|` in the name
+    // (free-text from a brief/hivecontrol title) so it can never break this
+    // markdown table's column structure.
+    const workspaceCol = names.displayName(r.id, r.wsName).replace(/\|/g, '\\|');
     lines.push(
-      '| ' + r.id + ' | ' + r.label + ' | ' + r.finish + ' | ' + r.unread
+      '| ' + workspaceCol + ' | ' + r.label + ' | ' + r.finish + ' | ' + r.unread
       + ' | ' + formatRelative(r.lastActivityTs, now) + ' |'
     );
   }
@@ -809,6 +820,11 @@ function main() {
         finish: finishingRate(summary, id, heartbeat),
         unread,
         lastActivityTs: activityTs,
+        // wsName (task #6): cached human display name, read-only fs
+        // projection lookup ONLY — never a hivecontrol spawn on this
+        // every-turn hot path. null when not yet cached (buildWorkspaceTable
+        // falls back to the bare id via names.displayName).
+        wsName: names.readName(home, id),
       });
     } catch (_) {}
   }

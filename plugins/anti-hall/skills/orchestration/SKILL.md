@@ -61,9 +61,9 @@ tokens `haiku`/`sonnet`/`opus`/`fable`, never a versioned model id):
 - **Opus** — deep analysis; flagship-tier work when Fable is unavailable (the Opus floor
   for debate seats — see the availability fallback matrix in `../MODEL-POLICY.md`).
 - **Fable (flagship)** — RE-ENABLED as of 2026-07-12 (owner call, reversing the
-  2026-07-02 policy-disable now that Fable 5 is available; see `../MODEL-POLICY.md`) —
+  2026-07-02 policy-disable now that Fable is available; see `../MODEL-POLICY.md`) —
   routed to the Reviewer seat of the ship-it / deadly-loop trio when `fable-availability.js`
-  reports `args.fableAvailable === true`, falling back to Sonnet 5 then Opus. *Reconsider
+  reports `args.fableAvailable === true`, falling back to Sonnet then Opus. *Reconsider
   if Fable's track record regresses.*
 
 Don't send a planning problem to Haiku, or a log-tail to Fable/Opus.
@@ -152,7 +152,7 @@ concurrently and you get cross-model diversity (different training, different bl
 spots). Good splits:
 - Implementation slices: some files to Claude agents, others to Codex.
 - Review/debate: spread the seats across models (this is exactly the
-  `../MODEL-POLICY.md` trio roster — Sonnet 5 Reviewer + Opus Auditor + Codex Critic).
+  `../MODEL-POLICY.md` trio roster — Sonnet Reviewer + Opus Auditor + Codex Critic).
 - A second opinion on a hard diagnosis: ask both, compare.
 Balance by load (don't pile everything on one pool) and by fit. If the fact is
 missing/stale, fall back to the live probe in `../MODEL-POLICY.md`; if Codex is
@@ -160,8 +160,11 @@ unavailable, fall back to Claude-only (divergent personas for adversarial roles)
 
 For big/parallel work, PREFER the Workflow tool with a **saved** deadly-loop/ship-it
 template (`.claude/workflows/deadly-loop*.js` / `ship-it*.js`) over ad-hoc inline
-Agent fan-out — a saved workflow gives the Critic seat's `codexUp` wiring enforced
-mechanics, where an inline Skill-driven fan-out only has LLM-followed guidance.
+Agent fan-out — a saved workflow mechanically enforces the seat census (`deadSeats` /
+`degraded`, which blocks `converged`), where an inline Skill-driven fan-out only has
+LLM-followed guidance. `codexAvailable` itself is still a caller-supplied flag
+(fail-open to true), not a functional probe — a null Codex spawn at runtime is the
+real backstop either way.
 
 ## Keep command output OFF the main thread
 

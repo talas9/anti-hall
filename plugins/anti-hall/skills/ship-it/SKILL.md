@@ -179,7 +179,7 @@ describe the behavior for a scenario, that's the hole the deadly-loop will find 
 PLAN.md** using the Workflow tool to fan out a parallel `parallel([...])` barrier stage with
 the three concurrent TRIO seats:
 
-- **Reviewer agent** (Sonnet 5 `model:"sonnet"`, effort `xhigh`): read `PLAN.md`,
+- **Reviewer agent** (Sonnet `model:"sonnet"`, effort `xhigh`): read `PLAN.md`,
   audit for narrow vision / missed blast radius, unsound phase decomposition or sequencing,
   schema/migration/rollback gaps, assumptions stated as fact without evidence, and whether the
   `## Goal coverage` map's every intent clause is actually backed by a real phase's `acceptance:`
@@ -209,14 +209,14 @@ orchestrator's model — so set `model` EXPLICITLY on the Reviewer and Auditor a
 `agentType` for the Critic. Read the `codex-availability` fact
 (`~/.anti-hall/codex-availability.json`) first; Codex (`agentType:"codex:codex-rescue"`)
 is the DEFAULT for this seat, `{model:"opus"}` is the FALLBACK only, taken only when
-Codex is unavailable. The Reviewer uses `model: "sonnet"` (Sonnet 5) at effort
+Codex is unavailable. The Reviewer uses `model: "sonnet"` (Sonnet) at effort
 `xhigh` — never `max` inside loops (TTFT ~163 s) — unless Fable is available, in
 which case it tries Fable first. See `references/ship-it.workflow.js`
 for the canonical spawn. *Fable routing is RE-ENABLED (2026-07-12, owner call): the
 earlier policy-disable (2026-07-02, over-restrictive/refusal-prone reports) is reversed
-now that Fable 5 is available. When `fable-availability.js` detects Fable 5 is available
+now that Fable is available. When `fable-availability.js` detects Fable is available
 and threads `args.fableAvailable=true`, the Reviewer seat tries `model: "fable"` FIRST,
-falling back to Sonnet 5 then Opus if Fable returns null/falsy. Revisit if Fable's track
+falling back to Sonnet then Opus if Fable returns null/falsy. Revisit if Fable's track
 record regresses.*
 The main thread **stays coordinator**: it synthesizes their
 findings, dispatches fix-waves, and loops to re-debate.

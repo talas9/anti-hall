@@ -20,11 +20,13 @@ Rules:
 
 ## Claude-side mapping (when coordinating with Claude agents)
 
-When this skill coordinates with anti-hall deadly-loop or ship-it, the Claude-side tier token `sonnet` resolves to **Sonnet 5** (`claude-sonnet-5`). Claude-side role assignments:
+When this skill coordinates with anti-hall deadly-loop or ship-it, the Claude-side tier token `sonnet` resolves to **the latest Sonnet** at runtime. Claude-side role assignments:
 
-- Reviewer (deadly-loop/ship-it): `model:"fable"` (Fable 5) when available, else `model:"sonnet"` = Sonnet 5, effort `xhigh`
-- Planning secondary / medium scope: `model:"sonnet"` = Sonnet 5, effort `xhigh`
-- Implementation failover (when Codex unavailable): `model:"sonnet"` = Sonnet 5, effort `high`
-- Main coordinator, planning top-level, deep debug: `model:"opus"` = latest Claude Opus
+- Reviewer (deadly-loop/ship-it): `model:"fable"` (Fable) when available, else `model:"sonnet"` = Sonnet, effort `xhigh`
+- Planning secondary / medium scope: `model:"sonnet"` = Sonnet, effort `xhigh`
+- Implementation failover (when Codex unavailable): `model:"sonnet"` = Sonnet, effort `high`
+- Main coordinator, planning top-level, deep debug: `model:"opus"` = Opus
 
-Cross-model rule: if Codex implements, Claude (Sonnet 5 or Opus) reviews. If Sonnet 5 implements, Codex or Opus reviews. No agent reviews its own implementation.
+Cross-model rule: if Codex implements, Claude (Sonnet or Opus) reviews. If Sonnet implements, Codex or Opus reviews. No agent reviews its own implementation.
+
+**Never pin a model version.** Route by tier token (`opus`/`sonnet`/`haiku`/`fable`) — the harness resolves each to the newest model in that family. A version number written into a policy, prompt, or workflow goes stale the day a new model ships.

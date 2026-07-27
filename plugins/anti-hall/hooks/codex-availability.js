@@ -19,11 +19,16 @@ const os = require('os');
 
 const STATE_FILE = path.join(os.homedir(), '.anti-hall', 'codex-availability.json');
 const CONTEXT =
-  "Codex binary detected on PATH (per a SessionStart PATH probe). This proves the " +
-  "binary is reachable, NOT that it is authenticated/ready -- if a Codex spawn " +
-  "returns null at runtime, take the documented Opus/Sonnet fallback. Prefer " +
+  "Codex binary detected on PATH (per a SessionStart PATH probe). This is NECESSARY " +
+  "BUT NOT SUFFICIENT -- it does NOT prove Codex is authenticated or functional, only " +
+  "that a spawn is worth ATTEMPTING. If a Codex spawn returns null at runtime, take " +
+  "the documented Opus/Sonnet fallback -- that null-check is still the real backstop " +
+  "no matter what this probe says. Workflow scripts have no filesystem and cannot read " +
+  "this fact themselves -- pass args.codexAvailable=true into ship-it/deadly-loop " +
+  "Workflow invocations (same pattern as args.fableAvailable) so the Critic seat " +
+  "attempts agentType:'codex:codex-rescue' first. Outside a Workflow, prefer " +
   "agentType:'codex:codex-rescue' for the deadly-loop/ship-it Critic seat, and for " +
-  "everyday correctness-review plus a share of implementation load. Coordinators " +
+  "everyday correctness-review plus a share of implementation load; coordinators there " +
   "should read ~/.anti-hall/codex-availability.json instead of re-probing.";
 
 // isRealExecutable(candidate, isWin) -- true only if `candidate` is a REGULAR

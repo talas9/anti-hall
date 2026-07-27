@@ -47,3 +47,6 @@ sanity_prompt.txt
 error.log
 PLAN.md
 PLAN-*.md
+
+# claude-flow local tooling state
+.claude-flow/

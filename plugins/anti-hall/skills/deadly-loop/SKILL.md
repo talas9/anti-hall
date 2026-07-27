@@ -7,7 +7,7 @@ description: Iterative TRIO-debate + fix-wave protocol for hardening non-trivial
 
 Spend 1-2 hours of agent compute to ship a clean change rather than 1-2 weeks of post-merge incident response.
 
-This skill uses a shared TRIO debate roster defined in `references/MODEL-POLICY.md` (Reviewer = Sonnet 5 `model:"sonnet"` at effort `xhigh`; Auditor = latest Opus `model:"opus"`, divergent regression/coupling lens, effort `high`; Critic = latest OpenAI Codex at `xhigh` reasoning, with an Opus divergent-persona fallback). Read that file before dispatching any round so the model selection, the availability fallback matrix, the round governance, and the spawn mechanics are correct.
+This skill uses a shared TRIO debate roster defined in `references/MODEL-POLICY.md` (Reviewer = Sonnet `model:"sonnet"` at effort `xhigh`; Auditor = latest Opus `model:"opus"`, divergent regression/coupling lens, effort `high`; Critic = latest OpenAI Codex at `xhigh` reasoning, with an Opus divergent-persona fallback). Read that file before dispatching any round so the model selection, the availability fallback matrix, the round governance, and the spawn mechanics are correct.
 
 ## When to use this skill
 
@@ -37,7 +37,7 @@ Before invoking the deadly loop, ensure:
 2. A **canonical handoff doc** exists or will be created (e.g., `docs/<date>-<feature>-session-handoff.md`).
 3. The owner has authorized at least one full iteration (each round is ~5-30 min of agent compute).
 4. A verification preamble + branch/SHA check is in effect for every spawned agent (see Phase A3).
-5. The debate roster from `references/MODEL-POLICY.md` is resolved — read the `codex-availability` fact (`~/.anti-hall/codex-availability.json`) first; fall back to the live OS-agnostic Node probe in `references/MODEL-POLICY.md` only if that fact is absent/stale — so you know which row of the availability fallback matrix applies. When Codex is available, the Critic seat MUST spawn `agentType:'codex:codex-rescue'`, not degrade to Opus. (Fable routing is RE-ENABLED — see `references/MODEL-POLICY.md` — the Reviewer seat routes to `fable` when `args.fableAvailable === true`, falling back to Sonnet 5 then Opus.)
+5. The debate roster from `references/MODEL-POLICY.md` is resolved — read the `codex-availability` fact (`~/.anti-hall/codex-availability.json`) first; fall back to the live OS-agnostic Node probe in `references/MODEL-POLICY.md` only if that fact is absent/stale — so you know which row of the availability fallback matrix applies. When Codex is available, the Critic seat MUST spawn `agentType:'codex:codex-rescue'`, not degrade to Opus. (Fable routing is RE-ENABLED — see `references/MODEL-POLICY.md` — the Reviewer seat routes to `fable` when `args.fableAvailable === true`, falling back to Sonnet then Opus.)
 
 ## The pattern at a glance
 
@@ -129,7 +129,7 @@ The orchestrator dispatching the agent fills `<expected_dir>`, `<branch>`, `<sha
 
 A TRIO of three parallel agents dispatched in the **same message** (roster + availability fallback matrix + exact spawn syntax in `references/MODEL-POLICY.md`):
 
-- **Reviewer** — Fable when available (`model:"fable"`) at effort `xhigh`, else Sonnet 5 (`model:"sonnet"`) (Fable routing is RE-ENABLED — see `references/MODEL-POLICY.md`). Correctness / architecture auditor.
+- **Reviewer** — Fable when available (`model:"fable"`) at effort `xhigh`, else Sonnet (`model:"sonnet"`) (Fable routing is RE-ENABLED — see `references/MODEL-POLICY.md`). Correctness / architecture auditor.
 - **Auditor** — latest Opus (`model:"opus"`) at full reasoning depth (effort `high`). Divergent: regression & coupling hunter (hunts what broke ELSEWHERE — regressions in unchanged code, wrong cross-module/cross-PR coupling, fixes that undid earlier fixes, merge-order cross-reference breaks).
 - **Critic** — latest OpenAI Codex at `xhigh` reasoning **when available** (canonical Codex spawn form in `references/MODEL-POLICY.md`); otherwise an Opus with a divergent adversarial "failure-mode hunter" persona.
 
@@ -455,7 +455,7 @@ Avoid:
 - **Sending the trio (Reviewer + Auditor + Critic) in separate messages** — they run sequentially that way, tripling wall time. Always dispatch ALL THREE in one message.
 - **Single-seat re-audit after a fix wave** — a single-seat re-run is allowed ONLY for evidence-adjudication with no code/plan change in between; ANY fix wave ⇒ the FULL TRIO re-runs next round (per the round governance in `references/MODEL-POLICY.md`).
 - **Granting a final GO on a DEGRADED round** — a round where a seat stayed dead after its one retry can drive a fix wave but NEVER grants a final GO; the missing seat must sit in a full follow-up round first.
-- **Downgrading debate agents without checking availability** — walk the availability fallback matrix in `references/MODEL-POLICY.md`: if Sonnet 5 is unavailable the Reviewer falls back to Opus; if Codex is unavailable the Critic becomes an Opus with a divergent adversarial persona — NOT a weaker/cheaper model. The floor for every seat is Opus. A weaker model's debate depth is substantially shallower; use cheap models only for wave fix children, never for round debate agents. If a flagship seat is rate-limited, wait and retry rather than silently degrading.
+- **Downgrading debate agents without checking availability** — walk the availability fallback matrix in `references/MODEL-POLICY.md`: if Sonnet is unavailable the Reviewer falls back to Opus; if Codex is unavailable the Critic becomes an Opus with a divergent adversarial persona — NOT a weaker/cheaper model. The floor for every seat is Opus. A weaker model's debate depth is substantially shallower; use cheap models only for wave fix children, never for round debate agents. If a flagship seat is rate-limited, wait and retry rather than silently degrading.
 - **Stopping after Round 1 GO** — sometimes Round 1 misses things only Round 2 catches once you have a baseline. The first GO from ALL THREE seats (non-degraded) is the gate, not Round 1.
 
 ## Telemetry to track
@@ -543,7 +543,7 @@ budget). deadly-loop-multi is the same script with `multiplier > 1`.
 `agent(brief, {model:"sonnet", effort:"xhigh"})` / `agent(brief, {model:"opus"})` /
 `agent(brief, {agentType:"codex:codex-rescue"})`. Fable routing is
 RE-ENABLED (see `references/MODEL-POLICY.md`) — the Reviewer seat routes to
-`model:"fable"` when `args.fableAvailable === true`, falling back to Sonnet 5
+`model:"fable"` when `args.fableAvailable === true`, falling back to Sonnet
 then Opus if Fable is unavailable or returns null/falsy. The script begins with
 the codex availability probe (the MODEL-POLICY Node probe) and seats the Opus
 adversarial fallback if Codex is absent.

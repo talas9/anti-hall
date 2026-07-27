@@ -166,7 +166,7 @@ test('one full round runs Context->Investigate->Argue->Converge and returns the 
   assert.ok(calls.phases.some((p) => /Investigate:/.test(p)));
   assert.ok(calls.phases.some((p) => /Argue:/.test(p)));
   assert.ok(calls.phases.some((p) => /Converge:/.test(p)));
-  // Context agent + Reviewer = sonnet (Sonnet 5); Auditor = opus; Critic = codex:codex-rescue.
+  // Context agent + Reviewer = sonnet (Sonnet); Auditor = opus; Critic = codex:codex-rescue.
   assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'sonnet'));
   assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'opus'));
   assert.ok(calls.agents.some((c) => c.opts && c.opts.agentType === 'codex:codex-rescue'));
@@ -189,7 +189,7 @@ test('Reviewer tries Fable first when args.fableAvailable=true (RE-ENABLED, 2026
   assert.ok(calls.agents.some((c) => c.opts && c.opts.model === 'fable'), 'expected an agent() call requesting model:fable');
 });
 
-test('Reviewer falls back Fable -> Sonnet 5 -> Opus in deadly-loop when each seat in turn returns null', async () => {
+test('Reviewer falls back Fable -> Sonnet -> Opus in deadly-loop when each seat in turn returns null', async () => {
   const reviewerModels = [];
   const { promise, calls } = runStubbed({
     round: 1, multiplier: 1, targetSHA: 'abc123', branch: 'main', scope: 'whole repo',
@@ -203,12 +203,12 @@ test('Reviewer falls back Fable -> Sonnet 5 -> Opus in deadly-loop when each sea
   });
   const out = await promise;
   assert.strictEqual(out.verdictSummary.degraded, false);
-  assert.deepStrictEqual(reviewerModels, ['fable', 'sonnet', 'opus'], 'expected the full Fable -> Sonnet 5 -> Opus fallback chain');
+  assert.deepStrictEqual(reviewerModels, ['fable', 'sonnet', 'opus'], 'expected the full Fable -> Sonnet -> Opus fallback chain');
   assert.ok(calls.logs.some((l) => /Fable Reviewer unavailable/.test(l)));
   assert.ok(calls.logs.some((l) => /falling back to Opus Reviewer/.test(l)));
 });
 
-test('Reviewer stays on Sonnet 5 -> Opus (no Fable attempt) in deadly-loop when args.fableAvailable is not true', async () => {
+test('Reviewer stays on Sonnet -> Opus (no Fable attempt) in deadly-loop when args.fableAvailable is not true', async () => {
   const reviewerModels = [];
   const { promise, calls } = runStubbed({
     round: 1, multiplier: 1, targetSHA: 'abc123', branch: 'main', scope: 'whole repo',

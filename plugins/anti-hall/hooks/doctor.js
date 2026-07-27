@@ -767,7 +767,7 @@ head('Workflow templates (deadly-loop / ship-it)');
   if (found.length > 0) {
     ok(`saved workflow template(s) found: ${found.join(', ')}`);
   } else {
-    warnl('no saved deadly-loop/ship-it Workflow template found in ~/.claude/workflows/ or <cwd>/.claude/workflows/ -- running via the inline SKILL path means the Critic seat is unenforced LLM guidance and can silently degrade to Opus; save the workflow template via /workflows for the enforced codexUp Critic wiring');
+    warnl('no saved deadly-loop/ship-it Workflow template found in ~/.claude/workflows/ or <cwd>/.claude/workflows/ -- running via the inline SKILL path means the Critic seat is unenforced LLM guidance and can silently degrade to Opus; save the workflow template via /workflows so the seat census (deadSeats/degraded blocking converged) is mechanically enforced instead of LLM-followed guidance');
   }
 })();
 

@@ -254,7 +254,7 @@ change that lands on only one side drifts the ports apart; parity is mandatory, 
   just shipped code: if a KB's topic is platform-relevant (models, effort, planning,
   orchestration, review), it needs an explicit Codex-side section or a stated reason one isn't
   needed — never silent Claude-only coverage on a cross-platform topic.
-- Any model-routing artifact → a Claude-model table (Opus / Sonnet 5 / Haiku) AND a parallel
+- Any model-routing artifact → a Claude-model table (Opus / Sonnet / Haiku) AND a parallel
   Codex-model table (gpt-5.x lineup), with a cross-platform equivalence mapping.
 - Reference the orchestration layers by parity: OMC ↔ OMX (`docs/KB-omc.md` ↔ `docs/KB-omx.md`).
 - The pre-release doc sweep covers BOTH ports (README + Codex README, llms.txt, both MODEL-POLICY

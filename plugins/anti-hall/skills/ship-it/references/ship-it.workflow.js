@@ -33,7 +33,12 @@
 //
 // INPUT (`args`): an object describing the approved plan, e.g.
 //   {
-//     fableAvailable: true, // true => Reviewer tries Fable before Sonnet 5
+//     fableAvailable: true, // true => Reviewer tries Fable before Sonnet
+//     codexAvailable: true, // false => Codex critic becomes Opus adversarial persona
+//                            // (mirrors deadly-loop.workflow.js). codex-availability.js is a
+//                            // PATH-only probe and this script has no filesystem access, so
+//                            // the coordinator must thread its result in here — same pattern
+//                            // as fableAvailable. Fail-open default: true (attempt Codex).
 //     parallelGroups: [
 //       // each group is a list of DISJOINT phases that run as one parallel barrier.
 //       // `files` is the EXACT list of paths the phase touches (used to PROVE the
@@ -54,7 +59,7 @@
 // group runs: a parallel Build, then a per-phase deadly-loop Audit gate.
 export const meta = {
   name: 'ship-it',
-  description: 'One lean anti-hall-native ship workflow: a parallel build over disjoint, conflict-free phase groups (Codex-primary / Sonnet-5 failover) followed by a per-phase deadly-loop audit gate (Reviewer + Auditor + Critic). Single-pass scaffold — the coordinator commits passing phases serially and drives the fix-wave loop; the script never commits.',
+  description: 'One lean anti-hall-native ship workflow: a parallel build over disjoint, conflict-free phase groups (Codex-primary / Sonnet failover) followed by a per-phase deadly-loop audit gate (Reviewer + Auditor + Critic). Single-pass scaffold — the coordinator commits passing phases serially and drives the fix-wave loop; the script never commits.',
   phases: [
     { title: 'Build', detail: 'parallel build over disjoint, conflict-free phase groups (validated fail-closed before fan-out)' },
     { title: 'Audit', detail: 'per-phase deadly-loop gate: Reviewer + Auditor + Critic barrier, gate on zero NEW P0 or P1' },
@@ -124,9 +129,9 @@ function buildBrief(phase, implementerModel, effort) {
   ].join('\n\n');
 }
 
-// BUILD SEAT with Codex-primary / Sonnet-5-failover (MODEL-POLICY.md "implementation"
+// BUILD SEAT with Codex-primary / Sonnet-failover (MODEL-POLICY.md "implementation"
 // row, B5). Mirrors criticAgent's fallback shape below: try Codex first (draws its own
-// limit, strong code-apply model), fall back to Sonnet 5 on unavailable/null — never a
+// limit, strong code-apply model), fall back to Sonnet on unavailable/null — never a
 // retry-loop. implementerModel is set by the CALLING CODE based on which branch actually
 // succeeded, not trusted from the agent's own self-report, so Step 5's cross-model
 // self-review guard (reviewerAgent's skipSonnet option) can rely on it being accurate.
@@ -135,11 +140,11 @@ function buildBrief(phase, implementerModel, effort) {
 // literal code-writing seat — the one most exposed to trained verbosity/length bias — and
 // effort tiers compound MULTIPLICATIVELY with the Workflow tool's own swarm fan-out cost, so
 // it must never be left to silently inherit a model default. Pin `medium` (Codex) / `high`
-// (Sonnet 5 failover) for ordinary phases — the same explicit-effort discipline MODEL-POLICY.md
+// (Sonnet failover) for ordinary phases — the same explicit-effort discipline MODEL-POLICY.md
 // already applies to the Reviewer/Auditor/Critic seats. A phase can opt into a higher tier
 // (e.g. `xhigh`) ONLY by the plan itself flagging it hard-risk via `phase.effort` — mirrors
-// how `phase.model` already overrides the Sonnet-5-failover model below. Never `max` here —
-// governance rule 3 (MODEL-POLICY.md) bans `max` for Sonnet 5 inside any loop-shaped seat.
+// how `phase.model` already overrides the Sonnet-failover model below. Never `max` here —
+// governance rule 3 (MODEL-POLICY.md) bans `max` for Sonnet inside any loop-shaped seat.
 async function buildAgent(p) {
   const codexEffort = p.effort || 'medium';
   const codex = await agent(buildBrief(p, 'codex', codexEffort), {
@@ -148,7 +153,7 @@ async function buildAgent(p) {
   });
   if (codex) return { ...codex, implementerModel: 'codex' };
 
-  log('ship-it: Codex build unavailable for "' + p.label + '" — falling back to Sonnet 5 build (MODEL-POLICY matrix).');
+  log('ship-it: Codex build unavailable for "' + p.label + '" — falling back to Sonnet build (MODEL-POLICY matrix).');
   const sonnetEffort = p.effort || 'high';
   const sonnet = await agent(buildBrief(p, 'sonnet', sonnetEffort), {
     schema: RESULT_SCHEMA, run_in_background: true,
@@ -158,14 +163,14 @@ async function buildAgent(p) {
   return { ...sonnet, implementerModel: 'sonnet' };
 }
 
-// deadly-loop per-phase gate: Reviewer (Sonnet 5, or Fable when args.fableAvailable
+// deadly-loop per-phase gate: Reviewer (Sonnet, or Fable when args.fableAvailable
 // is true) + Auditor (Opus) + Critic (Codex) in a BARRIER parallel. The roster,
 // availability fallback matrix, and canonical Codex spawn
 // form live in deadly-loop/references/MODEL-POLICY.md. Model tokens are tier tokens
 // (fable/opus) resolved to the latest of that tier at call time — never versioned ids.
 function reviewerBrief(phase) {
   return [
-    'You are the deadly-loop REVIEWER (Sonnet 5, effort xhigh — never max in loops) for phase ' + phase.label + '.',
+    'You are the deadly-loop REVIEWER (Sonnet, effort xhigh — never max in loops) for phase ' + phase.label + '.',
     'Audit this phase diff for: correctness vs the plan, edge cases actually handled,',
     'regressions, security on security-relevant phases, full blast radius.',
     'Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
@@ -184,30 +189,39 @@ function auditorBrief(phase) {
     'The gate blocks while EITHER is > 0. Return the verdict schema.',
   ].join('\n');
 }
-function criticBrief(phase) {
-  return [
+function criticBrief(phase, adversarialPersona) {
+  const lines = [
     'You are the deadly-loop CRITIC (Codex, xhigh reasoning) for phase ' + phase.label + '.',
     'Adversarial lens — DIFFERENT mental model; find blindspots the Reviewer and Auditor',
     'would miss; try to BREAK the change. Phase files: ' + ((phase.files || []).join(', ') || '(unspecified)') + '.',
+  ];
+  if (adversarialPersona) {
+    // Mirrors deadly-loop.workflow.js's investigateBrief adversarialPersona branch — the
+    // Opus stand-in must explicitly carry the break-it lens, not just inherit the Codex brief.
+    lines.push('PERSONA: you are the adversarial break-it critic (Codex stand-in — Codex is',
+      'unavailable this round). Hunt the failure mode the other seats will rationalize away.');
+  }
+  lines.push(
     'Count NEW P0 AND NEW P1 blockers separately; return both as newP0 and newP1.',
     'The gate blocks while EITHER is > 0. Return the verdict schema.',
-  ].join('\n');
+  );
+  return lines.join('\n');
 }
 
 // REVIEWER SEAT with AVAILABILITY FALLBACK (MODEL-POLICY.md "Availability fallback
-// matrix"). Default behavior is unchanged: Sonnet 5 -> Opus. When the SessionStart
+// matrix"). Default behavior is unchanged: Sonnet -> Opus. When the SessionStart
 // fable-availability hook tells the coordinator to pass args.fableAvailable === true,
 // this seat tries Fable first, then falls back through the normal chain.
 async function reviewerAgent(p, opts) {
   const skipSonnet = !!(opts && opts.skipSonnet);
 
   // Fable routing re-enabled (owner call, 2026-07-12): the earlier policy-disable
-  // (2026-07-02, over-restrictive/refusal-prone reports) is reversed now that Fable 5 is
+  // (2026-07-02, over-restrictive/refusal-prone reports) is reversed now that Fable is
   // available. KNOWN RESIDUAL RISK (accepted by the owner, not mitigated by this code): a
   // soft refusal can still pass StructuredOutput validation as a "successful" verdict rather
   // than triggering the fallback below — this branch only catches a null/falsy agent()
   // result (spawn failure/timeout), not a schema-conformant refusal. Revisit if that
-  // resurfaces as a real problem with Fable 5.
+  // resurfaces as a real problem with Fable.
   const tryFable = typeof args === 'object' && args !== null && args.fableAvailable === true;
   if (tryFable) {
     const fable = await agent(reviewerBrief(p), {
@@ -215,14 +229,14 @@ async function reviewerAgent(p, opts) {
       label: p.label + ':reviewer', model: 'fable', effort: 'xhigh',
     });
     if (fable) return fable;
-    log('ship-it: Fable Reviewer unavailable for "' + p.label + '" — falling back to Sonnet 5 Reviewer (MODEL-POLICY matrix).');
+    log('ship-it: Fable Reviewer unavailable for "' + p.label + '" — falling back to Sonnet Reviewer (MODEL-POLICY matrix).');
   }
 
-  // B5 cross-model self-review guard: this phase's build fell back to Sonnet 5, so a
-  // Sonnet-5 Reviewer would be reviewing Sonnet-5-implemented code — same-model self-review,
+  // B5 cross-model self-review guard: this phase's build fell back to Sonnet, so a
+  // Sonnet Reviewer would be reviewing Sonnet-implemented code — same-model self-review,
   // violating the plugin's "cross-model, no self-review" rule. Skip straight to Opus.
   if (skipSonnet) {
-    log('ship-it: Reviewer skipping Sonnet 5 for "' + p.label + '" — phase was built by Sonnet 5 (cross-model self-review guard); using Opus Reviewer.');
+    log('ship-it: Reviewer skipping Sonnet for "' + p.label + '" — phase was built by Sonnet (cross-model self-review guard); using Opus Reviewer.');
     return agent(reviewerBrief(p), {
       schema: VERDICT_SCHEMA, run_in_background: true,
       label: p.label + ':reviewer(opus-noselfreview)', model: 'opus',
@@ -247,7 +261,7 @@ async function reviewerAgent(p, opts) {
 // MODEL-POLICY implementer≠reviewer). The default path builds with Codex, so a Codex
 // Critic would be reviewing Codex-implemented code — self-review. When opts.skipCodex is
 // set (the caller saw implementerModel === 'codex'), skip Codex entirely and seat an Opus
-// Critic. Only the rarer Sonnet-5-built phase keeps the Codex Critic (no self-review there).
+// Critic. Only the rarer Sonnet-built phase keeps the Codex Critic (no self-review there).
 async function criticAgent(p, opts) {
   const skipCodex = !!(opts && opts.skipCodex);
   if (skipCodex) {
@@ -255,6 +269,21 @@ async function criticAgent(p, opts) {
     return agent(criticBrief(p), {
       schema: VERDICT_SCHEMA, run_in_background: true,
       label: p.label + ':critic(opus-noselfreview)', model: 'opus',
+    });
+  }
+
+  // codexAvailable GATE (mirrors deadly-loop.workflow.js's codexUp at buildFormation()).
+  // codex-availability.js is a PATH-only probe and this script has no filesystem access
+  // to read it directly, so the coordinator must thread the result via args.codexAvailable
+  // (same pattern as args.fableAvailable) — fail-open default true (attempt Codex). This
+  // flag does NOT prove Codex is authenticated/functional; the Codex spawn below and its
+  // null-fallback remain the real backstop regardless of what this flag says.
+  const codexUp = plan.codexAvailable !== false;
+  if (!codexUp) {
+    log('ship-it: Critic skipping Codex for "' + p.label + '" — codexAvailable===false; using Opus Critic (adversarial persona).');
+    return agent(criticBrief(p, true), {
+      schema: VERDICT_SCHEMA, run_in_background: true,
+      label: p.label + ':critic(opus-adversarial)', model: 'opus',
     });
   }
 
@@ -330,9 +359,9 @@ async function main() {
 
     // A group of 1 is a plain inline build (no parallel wrapper, no swarm overhead).
     let built;
-    // Implementation seats run Codex-primary / Sonnet-5-failover via buildAgent() (B5,
+    // Implementation seats run Codex-primary / Sonnet-failover via buildAgent() (B5,
     // MODEL-POLICY.md "implementation" row) — Codex draws its own limit and is a strong
-    // code-apply model; failover to Sonnet 5 only on unavailable/null, never a retry-loop.
+    // code-apply model; failover to Sonnet only on unavailable/null, never a retry-loop.
     // Override the fallback model per phase by setting phase.model in the plan.
     // Override build effort (default medium/high — see buildAgent()) per phase by setting
     // phase.effort in the plan, e.g. "xhigh" for a plan-flagged hard-risk phase.
@@ -356,14 +385,14 @@ async function main() {
       phase('deadly-loop gate: ' + p.label);
       // B5 cross-model self-review guard (implementer≠reviewer). The build seat that
       // produced this phase must NOT also review it:
-      //   - Sonnet-5-built => Reviewer skips its own Sonnet 5 attempt, goes straight to Opus.
+      //   - Sonnet-built => Reviewer skips its own Sonnet attempt, goes straight to Opus.
       //   - Codex-built    => Critic skips its own Codex attempt, seats an Opus Critic.
       // The Auditor is always Opus and is never the implementer, so it needs no guard.
       const implementerModel = results[p.label].build && results[p.label].build.implementerModel;
       const skipSonnet = implementerModel === 'sonnet';
       const skipCodex = implementerModel === 'codex';
       const audit = await parallel([
-        () => reviewerAgent(p, { skipSonnet }), // Sonnet 5 with documented Opus fallback (see reviewerAgent)
+        () => reviewerAgent(p, { skipSonnet }), // Sonnet with documented Opus fallback (see reviewerAgent)
         () => agent(auditorBrief(p),  { schema: VERDICT_SCHEMA, run_in_background: true, label: p.label + ':auditor', model: 'opus', effort: 'high' }),
         () => criticAgent(p, { skipCodex }), // Codex (or Opus when Codex built the phase / on fallback) — see criticAgent
       ]);
@@ -374,7 +403,31 @@ async function main() {
       // coordinator reads this to decide whether to run the deadly-loop fix-wave.
       const newP0 = seatSeverityCount(audit, 'newP0');
       const newP1 = seatSeverityCount(audit, 'newP1');
-      results[p.label].gate = { newP0, newP1, converged: newP0 === 0 && newP1 === 0 };
+
+      // SEAT CENSUS (fixes the integrity hole: a dead seat used to be silently dropped
+      // by seatSeverityCount, so fewer live seats -> fewer findings -> converged:true).
+      // Mirrors deadly-loop.workflow.js's deadSeats/degraded/seatReports vocabulary so
+      // both scripts read the same way. A round that lost a seat can NEVER converge —
+      // do not soften this.
+      const seatRoles = ['reviewer', 'auditor', 'critic'];
+      const totalSeats = audit.length;
+      const liveSeats = audit.filter((v) => v != null).length;
+      const deadSeats = totalSeats - liveSeats;
+      const degraded = deadSeats > 0;
+      if (degraded) {
+        log('ship-it: phase "' + p.label + '": ' + liveSeats + '/' + totalSeats +
+          ' seats live — NOT converged (seat loss).');
+      }
+      results[p.label].gate = {
+        newP0, newP1, totalSeats, liveSeats, deadSeats, degraded,
+        converged: newP0 === 0 && newP1 === 0 && !degraded,
+      };
+      results[p.label].seatReports = seatRoles.map((role, i) => {
+        const v = audit[i];
+        if (v == null) return role + ': DEAD/DEGRADED';
+        return role + ': ' + (v.verdict || '?') + ' (newP0=' + (Number(v.newP0) || 0) +
+          ', newP1=' + (Number(v.newP1) || 0) + ')';
+      });
     }
   }
 

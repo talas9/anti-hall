@@ -134,6 +134,7 @@ const repokey = require('../companion/lib/devswarm-repokey.js');
 const ingestHealth = require('../companion/lib/ingest-health.js');
 const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
 const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
+const names = require('../companion/lib/devswarm-names.js');
 // Shared structured JSONL logger (C0). Console fallback so a missing/older
 // companion never breaks the CLI — logging is strictly additive and fail-open;
 // alog.logError NEVER throws into a caller and NEVER changes control flow.
@@ -1369,7 +1370,7 @@ function foldMeshDuplicates(home, ctx) {
         const bySamePath = new Map(); // canonicalRealPath -> rows[]
         for (const d of g.rows) {
           const real = canonicalWorktreeRealPath(d.worktreePath);
-          const key = real || (' unresolved:' + String(d.id));
+          const key = real || ('\x00unresolved:' + String(d.id));
           let sub = bySamePath.get(key);
           if (!sub) { sub = []; bySamePath.set(key, sub); }
           sub.push(d);
@@ -3257,6 +3258,12 @@ function parseChildrenList(raw) {
     branch: e.branch || e.id || null,
     id: e.id || null,
     path: e.path || e.worktreePath || null,
+    // label (task #6): hivecontrol's free-text human title — live-verified
+    // present on `list children`/`list all` output, DEFAULTS to the branch
+    // name when `-t` was not passed at create. Previously dropped by this
+    // parse; now threaded through fetchNativeChildren/cmdRoster so a native
+    // child's human name is visible instead of just its branch/id.
+    label: (typeof e.label === 'string' && e.label) ? e.label : null,
   }));
 }
 
@@ -3349,6 +3356,10 @@ function cmdRoster(flags, ctx) {
     worktreePath: w.worktreePath || null, source: 'store',
     meshId: rosterMeshId(w.worktreePath),
     hints: rosterHints(home, w.id, w.worktreePath, now),
+    // wsName (task #6): cached human display name, read-only fs projection
+    // (never a hivecontrol spawn on this read verb) — null when not yet
+    // cached (backfilled by cmdReconcile, or set at spawn time).
+    wsName: names.readName(home, w.id),
   }));
   // Dedup by CANONICAL identity (inst.primaryWorkspaceId, which realpath-
   // normalizes before hashing), not raw string equality — the same fix class
@@ -3365,6 +3376,9 @@ function cmdRoster(flags, ctx) {
       worktreePath: child.path || null, source: 'native',
       meshId: rosterMeshId(child.path || null),
       hints: rosterHints(home, id, child.path || null, now),
+      // wsName: hivecontrol's own `label`, straight from this native fold —
+      // no fs cache lookup needed here, we already have the live value.
+      wsName: child.label || null,
     });
   }
   // Fix 1 (split-brain heal, READ-ONLY): a Primary registered into the LEGACY
@@ -3395,6 +3409,7 @@ function cmdRoster(flags, ctx) {
             worktreePath: pw.worktreePath || null, source: 'store-fallback',
             meshId: rosterMeshId(pw.worktreePath),
             hints: rosterHints(home, pw.id, pw.worktreePath, now),
+            wsName: names.readName(home, pw.id),
           });
         }
       }
@@ -3750,11 +3765,40 @@ function cmdReconcile(flags, ctx) {
   // anything at all) fails the aggregate. Never add a third allow-listed
   // failure regex here.
   const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true);
+
+  // Task #6 name backfill (off the hot path — reconcile is a gated/manual
+  // sweep, NEVER the every-turn hook, so a `hivecontrol` spawn here is fine).
+  // ONE batch `workspace list all` call resolves every target's CURRENT label
+  // in one spawn (not N per-id spawns) — this is the GENERAL backfill path:
+  // it catches a pre-existing workspace with no name at all, AND a workspace
+  // whose label ended up as hivecontrol's own branch-name default (cmdSpawn's
+  // -t injection only covers the two cases where a title was known at spawn
+  // time). Best-effort: hivecontrol missing/erroring/unparseable -> no
+  // backfill this sweep, NEVER fails reconcile itself (same fail-open posture
+  // as `healed` above).
+  let namesBackfilled = 0;
+  try {
+    const missingNames = targets.filter((d) => !names.readName(home, d.id));
+    if (missingNames.length > 0) {
+      const listRun = (ctx.io && ctx.io.run) || pull.defaultRun;
+      const lr = listRun({ args: ['workspace', 'list', 'all'], env: ctx.env, cwd, timeout: LIST_CHILDREN_TIMEOUT_MS });
+      if (lr && lr.ok) {
+        const all = parseChildrenList(lr.raw); // reuses the SAME tolerant parse + label field
+        const labelById = new Map(all.filter((e) => e.id).map((e) => [e.id, e.label]));
+        for (const d of missingNames) {
+          const label = labelById.get(d.id);
+          if (label && names.writeName(home, d.id, label, ctx.now)) namesBackfilled++;
+        }
+      }
+    }
+  } catch (_) { /* fail-open: reconcile proceeds without name backfill */ }
+
   const out = {
     ok: allRowsOkOrBenign, action: 'reconcile', repoKey,
     count: results.length, imported, lost, rejected, results,
   };
   if (healed) out.healed = healed;
+  if (namesBackfilled) out.namesBackfilled = namesBackfilled;
   return out;
 }
 
@@ -3945,15 +3989,99 @@ function resolveCreatedWorktreePath(res) {
   return null;
 }
 
+// ---- Task #6 (workspace naming) helpers ------------------------------------
+//
+// hasSpawnFlag(rest, shortFlag, longFlag) -> bool. TOLERANT scan for either
+// commander-style spacing form (`--title value` / `--title=value` /
+// `-t value`) — `rest` is forwarded VERBATIM to hivecontrol (never re-parsed
+// elsewhere in this file, per cmdSpawn's own long-standing contract), so this
+// scan must recognize the same forms hivecontrol's own parser accepts, or a
+// caller-supplied -t could be missed and DOUBLE-injected below.
+// NAMED DISTINCTLY from the pre-existing hasFlag(flags, name) (line ~2911,
+// used everywhere in this file for `--yes`/`--confirm`-style CLI flags): two
+// top-level `function hasFlag` declarations in the same scope would silently
+// let the SECOND one win at every call site (JS function redeclaration, not
+// an overload) — caught live via `reconcile-active --yes` losing its confirm
+// detection during this change's own verification pass.
+function hasSpawnFlag(rest, shortFlag, longFlag) {
+  if (!Array.isArray(rest)) return false;
+  return rest.some((a) => typeof a === 'string' &&
+    (a === shortFlag || a === longFlag || a.indexOf(longFlag + '=') === 0));
+}
+
+// extractFlagValue(rest, shortFlag, longFlag) -> string | null. Same tolerant
+// forms as hasSpawnFlag; returns the FIRST match's value (the next argv
+// element for the space form, or the substring after `=` for the equals
+// form). No pre-existing extractFlagValue in this file (verified) — no
+// collision risk here.
+function extractFlagValue(rest, shortFlag, longFlag) {
+  if (!Array.isArray(rest)) return null;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (typeof a !== 'string') continue;
+    if (a === shortFlag || a === longFlag) {
+      return (typeof rest[i + 1] === 'string') ? rest[i + 1] : null;
+    }
+    if (a.indexOf(longFlag + '=') === 0) return a.slice(longFlag.length + 1);
+  }
+  return null;
+}
+
+// deriveTitleFromBrief(brief) -> string | null. Owner-approved derivation
+// rule: take the first non-empty line of the brief, strip ONE leading
+// markdown marker (heading/bullet/quote) so a line like "# own the API layer"
+// titles as "own the API layer" rather than carrying the marker, collapse
+// internal whitespace, then truncate to 60 chars on a WORD boundary with a
+// trailing ellipsis if cut. Returns null for a non-string/empty/blank brief.
+function deriveTitleFromBrief(brief) {
+  if (typeof brief !== 'string') return null;
+  let line = null;
+  for (const l of brief.split(/\r?\n/)) {
+    const t = l.trim();
+    if (t) { line = t; break; }
+  }
+  if (!line) return null;
+  line = line.replace(/^(#{1,6}|[-*>])\s+/, '').trim().replace(/\s+/g, ' ');
+  if (!line) return null;
+  if (line.length <= 60) return line;
+  const cut = line.slice(0, 60);
+  const lastSpace = cut.lastIndexOf(' ');
+  const boundary = (lastSpace > 0 ? cut.slice(0, lastSpace) : cut).trimEnd();
+  return boundary + '…';
+}
+
 // cmdSpawn(rest, ctx) — PLAN.md "spawn": THIN pass-through wrap of
 // `hivecontrol workspace create <branch> ...` (rest[0] is the branch; every
-// remaining token forwards untouched — never re-implemented), then a
+// remaining token forwards untouched — never re-implemented, never gated;
+// hivecontrol may add create flags without anti-hall ever changing), then a
 // best-effort auto-registration of the new worktree in THIS project's shared
 // store registry (store-only — no descriptor file, no sessionId yet; the
 // child's own first inbox-pull/heartbeat/register fills that in itself, the
 // same self-registration path every other child already relies on). A create
 // failure is returned as-is; a registration failure AFTER a successful create
 // never rolls back or fails the (already-succeeded) hivecontrol create.
+//
+// Task #6 naming (CORRECTED design, owner 2026-07-27): a title is set via a
+// SEPARATE follow-up `hivecontrol workspace update-title -b <branch> <title>`
+// call — NEVER by touching the argv forwarded to `create` above. An earlier
+// draft injected `-t` into that forwarded array and broke the "THIN
+// pass-through... untouched, including short flags" invariant this file's
+// own tests enforce (and the very next test: "spawn never re-parses or gates
+// hivecontrol's own flags"). update-title also targets ANY existing branch
+// via -b, which -t-at-create never could — so cmdReconcile's read-only name
+// backfill (below) can mirror an already-set title into the local cache for
+// a PRE-EXISTING workspace too, off the hot path; it deliberately does NOT
+// fabricate/apply a title to hivecontrol for a workspace with no brief on
+// record (no ungrounded write into a user-facing GUI label).
+//
+// Fires ONLY when the caller did NOT pass -t/--title AND DID pass
+// -p/--prompt (derivation: deriveTitleFromBrief). Gated on the SAME
+// worktreePath-resolved condition as registration below (a create response
+// we cannot resolve a path from is not confirmed enough to act further on —
+// same conservative posture registration already uses). FAIL-OPEN: an
+// update-title failure/exception NEVER fails the spawn verb (mirrors
+// registration's own best-effort-skip posture — `registered:false`/
+// `titled:false` are legitimate reported outcomes, never verb failures).
 function cmdSpawn(rest, ctx) {
   const branch = rest && rest[0];
   if (!branch) return { ok: false, error: 'spawn requires a branch name' };
@@ -3965,7 +4093,16 @@ function cmdSpawn(rest, ctx) {
     return { ok: false, error: (res && res.error) || 'hivecontrol workspace create failed', branch };
   }
 
+  // Title derivation is pure/no I/O — computed up front, but the actual
+  // update-title CALL only fires inside the worktreePath-resolved branch
+  // below (see doc comment above for why).
+  let derivedTitle = null;
+  if (!hasSpawnFlag(rest, '-t', '--title')) {
+    derivedTitle = deriveTitleFromBrief(extractFlagValue(rest, '-p', '--prompt'));
+  }
+
   let registered = false;
+  let titled = false;
   let worktreePath = null;
   let meshId = null;
   try {
@@ -3973,10 +4110,10 @@ function cmdSpawn(rest, ctx) {
     // is a TOLERANT best-effort parse (same posture as this file's own
     // parseChildrenList) for a `path`/`worktreePath` field — NEVER a guessed
     // directory-naming convention. `ctx.io.newWorktreePath` is the explicit
-    // test/override seam. Absent a resolvable path, registration is
-    // best-effort-skipped (`registered:false` is a legitimate, reported
-    // outcome — never a failure of the verb itself, which already succeeded
-    // at the hivecontrol create call above).
+    // test/override seam. Absent a resolvable path, registration (and the
+    // title follow-up) is best-effort-skipped (`registered:false`/
+    // `titled:false` are legitimate reported outcomes — never a failure of
+    // the verb itself, which already succeeded at the create call above).
     worktreePath = (ctx.io && ctx.io.newWorktreePath) || resolveCreatedWorktreePath(res);
     if (worktreePath) {
       meshId = inst.primaryWorkspaceId(worktreePath);
@@ -3999,12 +4136,26 @@ function cmdSpawn(rest, ctx) {
         store.deriveSummary(s, { home: ctx.home, env: ctx.env, now: ctx.now });
         registered = true;
       } finally { s.close(); }
+
+      // Title follow-up (task #6, corrected design): a SEPARATE hivecontrol
+      // call, entirely independent of the `create` argv above. Best-effort —
+      // never re-throws into the caller, never fails the spawn verb.
+      if (derivedTitle) {
+        try {
+          const tres = run({ args: ['workspace', 'update-title', '-b', branch, derivedTitle], env: ctx.env, cwd });
+          titled = !!(tres && tres.ok);
+        } catch (_) { titled = false; }
+        // Cache ONLY when hivecontrol actually confirmed the title — never
+        // cache a name we don't know was really applied (the local cache
+        // must stay a mirror of real state, not a hopeful guess).
+        if (titled) { try { names.writeName(ctx.home, meshId, derivedTitle, ctx.now); } catch (_) { /* best-effort */ } }
+      }
     }
   } catch (_) { registered = false; }
 
   return {
     ok: true, action: 'spawn', branch, created: true,
-    worktreePath, meshId, registered, raw: res.raw,
+    worktreePath, meshId, registered, titled, raw: res.raw,
   };
 }
 
