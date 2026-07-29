@@ -717,6 +717,13 @@ function rehomeAcrossStores(home, id, fromKey, toKey, ctx) {
             + ' tombstoned, conflict surfaced.\n');
         } catch (_) {}
       }
+      // Rows were already appended to toStore (:684-689) and the registry upserted
+      // (:660) BEFORE this verification ran, so returning here without a derive leaves
+      // toStore's projection stale — delivered-but-invisible messages, the very failure
+      // the verified path guards against at :728-729. fromStore is deliberately NOT
+      // derived: nothing has mutated it (its registry row is only tombstoned AFTER
+      // verification succeeds). Best-effort + fail-open, mirroring the verified path.
+      try { store.deriveSummary(toStore, { home, env: ctx && ctx.env }); } catch (_) {}
       return out;
     }
 
@@ -1066,7 +1073,12 @@ function retireWorktreeDuplicates(home, keepDesc, ctx) {
         candidates.push(d);
       }
       result = foldGroupIntoSurvivor(s, home, keepDesc.id, candidates);
-      if (result.retired.length) store.deriveSummary(s, { home, env: ctx && ctx.env });
+      // Gate on forwarded TOO, not retired alone: foldGroupIntoSurvivor forwards unread
+      // rows into the survivor partition (devswarm.js:1124) BEFORE the descriptor check
+      // (:1136) that classifies a candidate as `left`. When every candidate is
+      // descriptor-backed, forwarded>0 with retired EMPTY — real messages delivered with
+      // NO projection refresh, so they are invisible to every summary.json reader.
+      if (result.retired.length || result.forwarded) store.deriveSummary(s, { home, env: ctx && ctx.env });
     } finally { s.close(); }
     const { retired, left, forwardFailed, forwarded } = result;
     if (!retired.length && !left.length && !forwarded && !forwardFailed.length) return null;
@@ -1396,7 +1408,10 @@ function foldMeshDuplicates(home, ctx) {
           if (r.retired.length || r.left.length || r.forwardFailed.length) folded++;
         }
       }
-      if (!dryRun && retired.length) store.deriveSummary(s, { home, env: c.env });
+      // Same forwarded-without-retired gap as retireWorktreeDuplicates above: a fold
+      // whose candidates are all descriptor-backed still FORWARDS unread rows, which
+      // must be reflected in the projection. (dryRun forwards nothing, so it stays out.)
+      if (!dryRun && (retired.length || forwarded)) store.deriveSummary(s, { home, env: c.env });
     } finally { s.close(); }
     const out = { ok: true, retired, forwarded, folded };
     if (left.length) out.left = left;

@@ -48,7 +48,15 @@ const { spawn } = require('child_process');
 const { devswarmRoot, livenessPathFor, writeVerdict, unreadBacklog, isSafeId } = require('./liveness.js');
 const { verifyTarget } = require('./target-session.js');
 const devswarmStore = require('./devswarm-store.js');
-const { primaryWorkspaceId } = require('../install-devswarm-ingest.js');
+const { primaryWorkspaceId, resolveMainWorktree } = require('../install-devswarm-ingest.js');
+// D27 (mirrors install-devswarm-ingest.js:46-55, devswarm-store.js:53): GUARDED, not
+// a bare require. This module is itself required TOP-LEVEL by devswarm-supervisor.js:41
+// (the sweep loop) and scripts/devswarm.js:129, whose fail-open guarantees wrap their
+// own call sites but NOT their top-level requires. A THROWING require here (a corrupt/
+// deleted devswarm-repokey.js) would crash BOTH consumers before fail-open ever engages.
+// `repokey` is null on failure; safeRepoKey() below already fails open when it is.
+let repokey = null;
+try { repokey = require('./devswarm-repokey.js'); } catch (_) { repokey = null; }
 
 const DEFAULT_MAX_RECOVERIES = 3;
 const DEFAULT_GRACE_MS = 5000;
@@ -368,13 +376,27 @@ function defaultFireCommand(argv) {
 
 function defaultOpenParentStore(opts) { return devswarmStore.openStore(opts); }
 
+// safeRepoKey(worktree) -> the v0.57 mesh per-project store key, or null. Mirrors
+// devswarm-ingest.js's own fail-open wrapper (devswarm-ingest.js:1526-1528): any
+// resolution failure (non-git worktree, missing git binary, deleted path) is null,
+// NEVER a throw — callers treat null as "mesh dormant" and fall back to the
+// pre-mesh legacy behavior.
+// Also null when the D27-guarded require above failed entirely.
+function safeRepoKey(worktree) {
+  try {
+    return repokey && typeof repokey.repoKeyForWorktree === 'function'
+      ? repokey.repoKeyForWorktree(worktree) : null;
+  } catch (_) { return null; }
+}
+
 // notifyParentEscalation(descriptor, verdict, opts, openParentStore) — MECHANICALLY
 // appends a synthetic notice into the PARENT/Primary's store (owner principle #20:
 // the supervisor actively escalates into the parent's STORE, not just a local log,
 // so an idle parent learns without taking a turn). Resolves the parent workspaceId
-// via install-devswarm-ingest.js's primaryWorkspaceId(worktreePath) (`primary-<hash>`,
-// per-worktree, no collisions across repos) — the SAME id the Primary reads via
-// `devswarm inbox messages`/`read-primary`.
+// by FIRST resolving the MAIN worktree via install-devswarm-ingest.js's
+// resolveMainWorktree(worktreePath), THEN hashing that via primaryWorkspaceId()
+// (`primary-<hash>`, per-worktree, no collisions across repos) — the SAME id the
+// Primary reads via `devswarm inbox messages`/`read-primary`.
 //
 // IDEMPOTENT (belt-and-suspenders, two layers):
 //   1. Caller-gated: only invoked on the verdict TRANSITION into escalated (the
@@ -387,6 +409,8 @@ function defaultOpenParentStore(opts) { return devswarmStore.openStore(opts); }
 //      hash (`escalate:<childId>:<staleSince>`) so a genuine race between two
 //      processes both observing a pre-transition verdict still lands only one row
 //      (both backends' appendMessage dedupe by hash).
+// PROJECTION: the append is followed by a deriveSummary on the SAME handle — see the
+// inline note at the call site for why `workspaceId` must be omitted from its opts.
 // FAIL-OPEN: any error (unreadable worktree, unopenable store, fs failure) is
 // swallowed — a parent-notice failure must NEVER crash the sweep or block the
 // (already-persisted) escalation itself.
@@ -395,22 +419,54 @@ function notifyParentEscalation(descriptor, verdict, opts, openParentStore) {
     if (!descriptor || !descriptor.worktreePath) return;
     const home = opts && opts.home;
     const now = Number.isFinite(opts && opts.now) ? opts.now : Date.now();
-    const parentId = primaryWorkspaceId(descriptor.worktreePath);
+    // ADDRESSEE FIX: primaryWorkspaceId() is a PURE HASH of the path it is handed — it
+    // performs no git resolution. descriptor.worktreePath is the CHILD's own worktree
+    // root (findGitToplevel stops at the linked worktree, whose `.git` is a FILE, not a
+    // dir), so hashing it yielded the CHILD'S OWN mesh id and the notice was filed into
+    // a queue the parent never reads. resolveMainWorktree() resolves via git-common-dir,
+    // which is identical for every worktree of a project, so this yields the real
+    // Primary's id. FAIL-OPEN: null (non-git worktree, or the D27-guarded repokey module
+    // unavailable) falls back to the previous behavior — MEASURED: resolveMainWorktree
+    // returns null on a non-git path, so pre-existing non-git test fixtures are
+    // unaffected by construction.
+    const parentWorktree = resolveMainWorktree(descriptor.worktreePath) || descriptor.worktreePath;
+    const parentId = primaryWorkspaceId(parentWorktree);
     if (!isSafeId(parentId) || parentId === descriptor.id) return; // never notify self
     const staleSince = Number.isFinite(verdict && verdict.staleSince) ? verdict.staleSince : null;
     const idleMin = staleSince !== null ? Math.max(0, Math.round((now - staleSince) / 60000)) : null;
     const body = 'child ' + descriptor.id + ' idle' + (idleMin !== null ? ' ' + idleMin + 'm' : '')
       + ' — reassign or archive';
     const open = openParentStore || defaultOpenParentStore;
-    // PER-PROJECT: open the PARENT's own store (keyed by its primary-<hash>) so the
-    // escalation lands where the parent's `inbox read-primary` reads it.
-    const s = open({ home, workspaceId: parentId, env: opts && opts.env, fsi: opts && opts.fsi });
+    // PER-PROJECT: open the PARENT's own store so the escalation lands where the
+    // parent's `inbox read-primary` reads it. The store KEY must be the v0.57 mesh
+    // repoKey (devswarm-repokey.js) — the SAME per-project key every other mesh
+    // writer opens with (devswarm-ingest.js:1271 `hash: repoKey || undefined`;
+    // devswarm-migrate.js:665 `hash: repoKey`). Omitting `hash` made openStore fall
+    // back to hashFromWorkspaceId(parentId) (devswarm-store.js:84-90) — the bare
+    // 8-hex LEGACY bucket — so a supervisor escalation landed in a store that no
+    // other mesh participant reads and that nothing ever re-derives.
+    // FAIL-OPEN: an unresolvable repoKey yields null -> `undefined` -> exactly the
+    // pre-mesh legacy behavior, identical to what ingest does.
+    const repoKey = safeRepoKey(descriptor.worktreePath);
+    const s = open({
+      home, workspaceId: parentId, hash: repoKey || undefined,
+      env: opts && opts.env, fsi: opts && opts.fsi,
+    });
     try {
       s.appendMessage({
         workspaceId: parentId, ts: now,
         hash: 'escalate:' + descriptor.id + ':' + (staleSince !== null ? staleSince : 'x'),
         body,
       });
+      // RE-DERIVE the projection. Hooks and watchers NEVER open the store — they read
+      // summaries/<hash>.json (devswarm-store.js:15-19). An appended row with no
+      // derive is invisible to every reader, so the exact wake-the-idle-parent event
+      // this function exists to deliver would silently go stale.
+      // NO `workspaceId` in these opts: deriveSummary would then re-resolve the target
+      // via hashFromWorkspaceId(parentId) and write the LEGACY summary file instead of
+      // summaries/<repoKey>.json — the same trap documented at devswarm-migrate.js:706-716.
+      // Omitting it targets `s.hash`, the key this handle was actually opened with.
+      try { devswarmStore.deriveSummary(s, { home, env: opts && opts.env, now, fsi: opts && opts.fsi }); } catch (_) {}
     } finally { s.close(); }
   } catch (_) { /* fail-open: a store-write error must never crash the sweep */ }
 }
