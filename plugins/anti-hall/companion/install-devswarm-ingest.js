@@ -94,7 +94,25 @@ const RESTART_SEC = 5; // gap before systemd relaunches the daemon after it exit
 
 const args = process.argv.slice(2);
 const UNINSTALL = args.includes('--uninstall');
-const DRYRUN = args.includes('--dry-run');
+// DRY-RUN SEAM — argv OR env. The env channel is NOT a convenience: this
+// installer is almost never invoked directly. Its real entry point is
+// scripts/devswarm.js's selfHeal -> defaultSpawnInstaller, which is ITSELF
+// already running inside a subprocess spawned by defaultSpawnReconcile. That
+// puts TWO process boundaries between any caller and this file, and `env` is
+// the only thing that crosses them — an in-process `io`/DI seam on planRun
+// provably cannot reach here, which is why the seam is an env var and not a
+// parameter.
+//
+// Why it exists: tests that exercise the REAL, unmocked reconcile path run
+// against throwaway tmp git fixtures. Without this, macInstallProject registers
+// a genuine KeepAlive LaunchAgent whose WorkingDirectory is that tmp dir;
+// teardown deletes the dir but never unloads the job, so launchd keeps the
+// registration and crash-loops it forever (exit 78, program gone). Setting
+// ANTIHALL_INGEST_DRY_RUN=1 makes planWrite/planRm/planRun no-ops, so the test
+// still proves the full spawn plumbing without mutating the host's launchd.
+// Opt-in only — never set in production, and absent in CI (where the upstream
+// DEVSWARM_REPO_ID gate is closed anyway).
+const DRYRUN = args.includes('--dry-run') || process.env.ANTIHALL_INGEST_DRY_RUN === '1';
 
 function say(msg) { process.stdout.write(msg + '\n'); }
 

@@ -337,12 +337,23 @@ test('REAL WIRING: an unmocked reconcile call against a real registered descript
   const repo = makeGitRepo();
   try {
     registerRealDescriptor(home, 'real-ws', repo);
-    // NOTE: env deliberately OMITTED (not `env: {}` — an empty-but-truthy
+    // env is a FULL copy of process.env (never `env: {}` — an empty-but-truthy
     // object would short-circuit reconcileSweepIfDue's `o.env || process.env`
     // fallback and strip PATH from the real `inbox pull` subprocess spawn,
     // breaking its own native `hivecontrol` lookup for reasons unrelated to
-    // this test's actual subject).
-    const res = M.reconcileSweepIfDue({ home, cooldownMs: 0 }); // no deps injected at all
+    // this test's actual subject). Spreading process.env preserves PATH and
+    // DEVSWARM_REPO_ID, so the realistic devswarm-active path stays under test.
+    // ANTIHALL_INGEST_DRY_RUN=1 is the ONE addition: this test's real `inbox
+    // pull` subprocess reaches selfHeal, which spawns install-devswarm-ingest.js
+    // as a grandchild that would otherwise `launchctl load` a KeepAlive
+    // LaunchAgent pointed at `repo` — a tmp dir this test's finally block then
+    // deletes, leaving launchd crash-looping the dead job forever. The flag
+    // makes that installer a no-op; the spawn plumbing under test is unchanged.
+    const res = M.reconcileSweepIfDue({
+      home,
+      cooldownMs: 0,
+      env: { ...process.env, ANTIHALL_INGEST_DRY_RUN: '1' },
+    }); // no deps injected at all
     assert.strictEqual(res.ran, true);
     assert.strictEqual(res.results.length, 1);
     const r = res.results[0].result;
@@ -383,7 +394,14 @@ test('REAL LOCK REUSE: the reconcile sweep observes the SAME per-id O_EXCL pull 
     fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-live-child' }));
 
     try {
-      const res = M.reconcileSweepIfDue({ home, cooldownMs: 0 }); // fully real, no deps injected (env omitted — see the WIRING test's note above)
+      // Same env posture as the WIRING test above — full process.env copy plus
+      // ANTIHALL_INGEST_DRY_RUN=1 so the grandchild installer cannot register a
+      // real launchd job against this tmp fixture. See that test's note.
+      const res = M.reconcileSweepIfDue({
+        home,
+        cooldownMs: 0,
+        env: { ...process.env, ANTIHALL_INGEST_DRY_RUN: '1' },
+      }); // fully real, no deps injected
       assert.strictEqual(res.ran, true);
       const r = res.results[0].result;
       assert.strictEqual(r.count, 1, 'precondition: the real target must actually have been visited, not silently zero');
