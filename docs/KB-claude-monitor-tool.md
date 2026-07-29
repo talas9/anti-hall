@@ -28,7 +28,13 @@
   (`@skills-dir`) plugin installs, which never load background monitors at all. See §9.
 - **Right shape:** continuous polling with event-per-occurrence (mailbox watcher, health
   check, child workspace heartbeat). Wrong shape: one-shot waits (`tail -f log | grep -m1
-  "DONE"`), high-frequency spammers (auto-stopped).
+  "DONE"`), high-frequency spammers — **measured this session, corrects the "auto-stopped"
+  framing: the process is never killed** (see §3/§6/§11); a spammy watcher instead goes
+  silently half-deaf as its notification stream gets suppressed.
+- **Verified this session, not documented:** a Monitor's `timeout_ms` expiry delivers a
+  distinctly-worded final event (`"[Monitor timed out — re-arm if needed.]"`) before ending
+  the watch — turning timeout into a self-healing re-arm signal for non-persistent
+  monitors, unlike a `persistent: true` monitor that just dies with no such signal. See §6.
 - **vs. Bash `run_in_background`:** Bash fires ONE completion notification when the command
   exits; Monitor fires per **occurrence** while living. Trade-off: Monitor is cheaper
   (events only, no full-turn overhead per occurrence), but less useful for one-time
@@ -39,6 +45,23 @@
   wake path wherever it's available; cron is **retained permanently** as the fallback for
   every case where Monitor provably does not exist (Bedrock/Vertex/Foundry, telemetry
   disabled, project-scope installs, non-interactive sessions). See §7.
+
+---
+
+## Measured vs. documented — read this before trusting either
+
+Most claims in this KB come from official Claude Code docs or the live tool schema, each
+tagged `[verified: tool schema]` or `[documented: ...]`. A separate batch of facts below
+comes from **direct experiments run in a live Claude Code session this session**
+(escalating stdout floods, exit-code probes, a timeout probe, an env-inheritance check,
+batching/stderr checks, a line-buffering retest, and a mtime-watcher design test) and is
+tagged `[verified: live test, this session]`. These are empirical observations, **not**
+Anthropic documentation — several of them **correct or refine** claims stated elsewhere in
+this KB, most notably the "automatically stopped" spam-protection claim (§3, §6, §11): a
+noisy monitor's process is never killed, only its notification stream is throttled. Treat
+every `[verified: live test, this session]` finding as tested, reproducible behavior at the
+scale actually tested — not a guaranteed contract, and not exhaustive proof no larger-scale
+behavior exists. Same caveat this KB already applies to the §4 idle-wake finding.
 
 ---
 
@@ -89,7 +112,7 @@ Monitor(
 | `command` | string | Shell command to run (e.g. `tail -f /path/to/log \| grep --line-buffered 'WARN\|ERROR'`) | Bash permission rules apply; runs under the session's allowed commands. One of `command` or `ws` required. |
 | `ws` | object `{url, protocols?}` | WebSocket source (e.g. `{url: 'wss://example.com/stream'}`) | No pattern filtering on the ws side; each frame becomes an event. v2.1.195+. Denies private/link-local/cloud-metadata IPs; respects sandbox rules. Frames >1MiB end the watch. |
 | `description` | string | Label shown in notifications (e.g. `"Watching build log for errors"`) | Required. Appears in the terminal panel and transcript. |
-| `timeout_ms` | number | Milliseconds before auto-stop. Default 300000 (5 min), max 3600000 (1 hour). | `persistent: true` ignores this; use `TaskStop` to halt. Silence ≠ success — a stalled watch is still alive (see coverage rule below). |
+| `timeout_ms` | number | Milliseconds before auto-stop. Default 300000 (5 min), max 3600000 (1 hour). | `persistent: true` ignores this; use `TaskStop` to halt. Silence ≠ success — a stalled watch is still alive (see coverage rule below). **Measured this session** [verified: live test, this session]: an unbounded emitting monitor was killed cleanly at its `timeout_ms` deadline (no partial/garbled line), delivering a distinct final event, `"[Monitor timed out — re-arm if needed.]"`, with terminal status `killed` — see §6 for why this makes timeout a self-healing re-arm signal, not just a limit. |
 | `persistent` | boolean | If `true`, run for the entire session (not subject to timeout). Stop via `TaskStop` tool. | Default `false`. Session-lifetime watches need explicit cleanup. Whether a plugin-declared `when: "always"` monitor gets re-armed for you across a resume/compaction is *not documented* either way — see §5 and §6 before relying on it. |
 
 **NO pattern/condition/regex parameter.** Filtering is **your job**, done **inside the
@@ -108,11 +131,47 @@ and the monitor stalls. Every pipe stage must flush per line:
 
 **Event batching** [verified: tool docs]: stdout lines arriving within 200ms are batched
 into a single notification. A flurry of log lines may fire as one `[3 lines received]`
-event, not three.
+event, not three. **Confirmed concretely this session** [verified: live test, this
+session]: three lines emitted via a single `printf` (effectively simultaneous) arrived as
+**one** notification containing all three; three lines separated by ~1.5s each arrived as
+**three** separate notifications.
 
 **Stdout only** [verified: tool docs]: only **stdout** drives events. Stderr goes to a
 readable output file but **does not wake** the agent. If you need stderr, merge it:
-`command 2>&1 | grep ...`.
+`command 2>&1 | grep ...`. **Confirmed this session** [verified: live test, this session]:
+a command writing to both streams produced notification events only for stdout lines; all
+four lines (stdout + stderr) were present in the output file, with stderr lines tagged
+`[stderr]`. One display quirk observed: the tag appeared on the first stderr line but not
+on an immediately-following consecutive stderr line — read this as a display quirk, not
+data loss (the output file had both lines intact).
+
+**Exit codes and terminal status — measured, not documented anywhere** [verified: live
+test, this session]: a command that emits a line then exits non-zero (tested: exit 7)
+produced the line's event, then a terminal notification with status `failed` naming the
+exit code (`"script failed (exit 7)"`). A command that exits `0` with **no output at all**
+produced **no event notification** and terminal status `completed` — a clean, silent,
+zero-output exit ends without any event ever firing. Implication: a watcher that crashes
+announces itself; a watcher that exits cleanly with nothing to say vanishes without a
+trace — "no notification yet" is not proof "still running."
+
+**Environment and cwd inheritance — measured, scope-limited** [verified: live test, this
+session]: an **agent-armed** Monitor command echoing `$PWD` / `$HOME` showed it inherits
+the session's actual working directory and normal environment; an unset variable correctly
+reported as unset (no unexpected env injection). This was verified only for an
+**agent-armed** monitor — whether a **plugin-declared** monitor (§5, started by the runtime
+at session start) inherits the same environment is **unverified** and should not be
+assumed; a plugin monitor that depends on env vars for its identity could silently fail to
+resolve them (a related but distinct gap from §5's existing note that plugin monitors don't
+receive `CLAUDE_PLUGIN_OPTION_<KEY>`).
+
+**Line-buffering trap — attempted this session, inconclusive** [verified: live test, this
+session — INCONCLUSIVE]: piping a slow producer (5 lines at 1s intervals) through `grep`
+*without* `--line-buffered` versus *with* it produced **identical** per-line delivery
+timing in both cases (~1.0s apart, by timestamp). This does **not** refute the documented
+trap — the test was small, run on macOS (likely BSD `grep`, not GNU `grep`), and didn't
+exercise the conditions known to trigger it (GNU grep, larger/faster input). Keep
+`--line-buffered` as the safe default regardless; treat the trap as
+documented-but-not-reproduced-here, not disproven.
 
 ---
 
@@ -145,6 +204,25 @@ tail -f deploy.log | grep --line-buffered -E '...' || echo "ERROR: deploy log di
 **Principle:** a dead monitor looks like a stalled one. Always pair a positive filter
 (happy path) with **one or more negative filters** (errors, timeouts, crashes) so the
 agent can distinguish "still waiting" from "something broke."
+
+**Measured design lesson — trigger on semantic delta, never on mtime** [verified: live
+test, this session]: a monitor watching the **mtime** of a shared state directory emitted
+8 events in ~70 seconds while only one meaningful thing was actually happening — because
+the directory's mtime changes on **every** write (heartbeats, cursor advances, projection
+re-derives), not only on actionable new messages. At that rate it reaches the ~19-20 event
+suppression ceiling (corrected understanding of "auto-stop," see §6/§11 below) in under
+three minutes, and the wake channel degrades into notification-suppression while still
+*looking* healthy — process alive, no error, just going quiet.
+
+**Rule:** the **emit** decision must come from **parsed state** (a monotonic counter
+advancing, a new message ID), never from a file/directory mtime or a generic "something
+changed" signal. mtime is fine as a cheap *gate* to skip re-parsing unchanged bytes, but it
+must never be the trigger itself. Corroborating live evidence: an idle workspace in a real
+mesh was observed broadcasting the same status message 50+ times at ~285-second intervals
+(a 5-minute polling cadence) — heartbeat traffic alone, with zero new information, is more
+than enough to exhaust the event budget. (The `devswarm-mailbox-watcher.sh` sketch in §7
+already follows this rule — it emits on `seq > last_seq`, not on mtime — this finding
+corroborates that design choice rather than correcting it.)
 
 ---
 
@@ -193,7 +271,10 @@ no doc commits to it.
 version it was silently substituted instead. Monitor processes do **not** receive
 `CLAUDE_PLUGIN_OPTION_<KEY>` env vars the way some other plugin hooks do; if a monitor
 needs user-configured options, have its script read a config file the plugin owns rather
-than relying on env injection.
+than relying on env injection. (Related but distinct gap, measured this session: §2
+confirms normal cwd/env inheritance for **agent-armed** Monitor calls specifically —
+whether a plugin-declared monitor gets the same inheritance is unverified; don't assume
+parity between the two.)
 
 **Other properties** [verified: tool/plugin schema]:
 - Disabling a plugin mid-session does **NOT** stop already-running monitors.
@@ -263,12 +344,14 @@ does not create a new session the way `--resume` does, so the resume conflict ab
 doesn't directly answer whether a Monitor (or a plugin `when: "always"` monitor) survives
 it. Do not assume survival either way without a live test.
 
-**Available re-arm triggers** [documented: Claude Code docs]:
-- `SessionStart` hook fires "when a session begins or resumes."
-- `PreCompact` / `PostCompact` hook events exist around the compaction boundary.
-
-These are the mechanical hooks available to re-arm a watch; see §7 for how anti-hall/
-DevSwarm uses them.
+**Available re-arm trigger, actually used** [documented: Claude Code docs; verified:
+`plugins/anti-hall/hooks/hooks.json`]: `SessionStart` fires "when a session begins or
+resumes" — and it fires again after in-session compaction too, carrying `source:
+"compact"` in its payload. One hook covers both the resume case and the compaction case.
+Every `SessionStart` entry registered in `plugins/anti-hall/hooks/hooks.json` has **no
+`matcher`**, so all of them run unconditionally on every session start *or* compact — a
+separate `PostCompact` hook would be redundant with a trigger that already fires there.
+See §7 for how anti-hall/DevSwarm uses this.
 
 **What ends a monitor, definitively** [verified: tool schema / docs] — independent of the
 resume/compaction question above:
@@ -276,8 +359,49 @@ resume/compaction question above:
 - An explicit `TaskStop`.
 - Session end.
 - The watched script/command exiting.
-- Auto-stop when it produces too many events (spam protection).
+- ~~Auto-stop when it produces too many events (spam protection)~~ — **this does NOT end
+  the monitor.** Measured and corrected this session — see the callout immediately below.
 - For `ws` monitors specifically: a frame larger than 1 MiB, or the socket closing.
+
+**CORRECTION — "automatically stopped" is not a process kill** [verified: live test, this
+session]: the docs and the tool's own description text say monitors producing too many
+events are "automatically stopped." Measured across four escalating trials — a steady 1
+line/sec for 30s, ~20 lines/sec, an instant 500-line dump, and an instant 5000-line dump —
+**the monitored process was never killed in any trial**. Every trial ran to natural
+completion with terminal status `completed`, and the **output file** contained the
+complete output every time (5000/5000 lines exact, verified with `wc -l`).
+
+What actually happens is **notification suppression**, not termination: after roughly
+19-20 notification events, the stream begins dropping events and substituting a marker
+line of the form `"[N events suppressed — output rate too high...]"`. The drop rate scales
+up with volume — observed `[1 events suppressed]` alternating at 1/sec, growing to `[4]`,
+`[6]`, `[8]`-event blocks at ~20/sec. Instant bulk dumps arrive as **one** batched
+notification whose displayed content is **truncated** (cut off partway with a truncation
+marker), while the output file stays complete.
+
+**Practical implication:** a noisy watcher will not die — it goes **silently half-deaf**
+while still appearing alive (process running, notifications still trickling in). The
+monitor's **output file** (path given in every notification, readable with `Read`) is the
+only authoritative record once suppression kicks in; never treat the notification stream
+alone as a complete log for a monitor this noisy.
+
+**Not exhaustively tested:** sustained multi-minute floods were not run, so a harder
+cutoff at much higher cumulative volume remains untested — this finding covers the tested
+range (light-to-heavy bursts over ~30s), not a claim that no cutoff exists at any scale.
+
+**Timeout as a measured re-arm signal** [verified: live test, this session]: a monitor
+with `timeout_ms: 15000` on an unbounded emitting loop was killed cleanly at the deadline
+— no partial/garbled line — and delivered a distinctly-worded final event,
+`"[Monitor timed out — re-arm if needed.]"`. Terminal status is `killed`, confirmed
+because a subsequent `TaskStop` on that task returned an error, `"Task ... is not running
+(status: killed)"` — itself a reliable way to check a monitor's final state after the
+fact. **Design implication:** because the timeout message is itself an event delivered to
+the agent, a **non-persistent** monitor with a bounded `timeout_ms` gives a self-healing
+re-arm loop for free — the expiry wakes the agent and tells it to re-arm — whereas a
+`persistent: true` monitor that dies (session end, crash) leaves **no such signal**. This
+is a concrete point in favor of bounded-timeout-plus-re-arm-on-expiry over
+`persistent: true` for exactly the kind of long-lived watch §7 describes, weighed against
+the double-arming risk already called out there.
 
 ---
 
@@ -294,6 +418,28 @@ CronCreate({
   prompt: 'node scripts/devswarm.js inbox read-primary <id>'
 })
 ```
+
+This cron job intentionally reads-and-acks in one call — `inbox read-primary` **always**
+mutates (see the forbidden-verbs warning below) — because the *timer itself* is the wake
+trigger here, not message arrival: it fires unconditionally on schedule, so consuming the
+mailbox in the same turn it wakes for costs nothing; there is no separate "a message just
+arrived" signal for it to erase. That is a fundamentally different shape from a Monitor
+watcher (below), whose entire job is to *detect* that a message arrived — a script that
+consumes what it exists to detect breaks itself.
+
+> **Forbidden verbs — never call these from inside a Monitor watcher.** Five DevSwarm
+> CLI verbs mutate a cursor as a side effect of reading, and every one of them breaks a
+> watcher the same way: it consumes the very unread signal the watcher exists to surface,
+> so the agent never learns anything happened.
+> - `inbox read-primary` — unconditionally acks the Primary's own inbox cursor.
+> - `inbox pull` — drains a child's native reception queue (auto-ensures + consumes it).
+> - `mesh read` (a.k.a. `roster --ack`) — reads the caller's mesh row and acks it.
+> - `roster --ack` — the same mesh-read-and-ack path, invoked via its `roster` alias.
+> - `inbox ack` — directly advances the inbox ack cursor.
+>
+> The cron job above is the one legitimate exception, and only there: its wake trigger is
+> the timer firing on schedule, not a message arriving, so there is no separate signal for
+> the ack to erase.
 
 **Costs:**
 - ❌ Blind polling: fires every 5 minutes **regardless of whether a message exists** (token waste).
@@ -317,52 +463,46 @@ it as the path that provably still works when Monitor doesn't.
 
 **Monitor** replaces the polling for **live-session latency**. Each time a child sends a
 message, a watcher script detects it and fires an event — the Primary wakes immediately,
-no delay.
+no delay. There is deliberately no illustrative bash sketch here: earlier drafts of this
+section leaned on `inbox read-primary` (or a `--since` flag that does not exist in the
+real CLI) inside the watcher loop — exactly the forbidden pattern called out above. The
+real mechanism (below) reads an already-derived, read-only projection instead of calling
+any mutating verb.
 
-```bash
-# Sketch (illustrative — see below for real pattern)
-while true; do
-  # Poll devswarm.js inbox for new messages, emit one line per new message
-  node scripts/devswarm.js inbox read-primary <primary-id> --since <last-seen> \
-    | jq -r '.[] | @json' || echo "ERROR: inbox read failed"
-  sleep 1  # Poll every 1 second (tighter than 5 min)
-done | \
-  # Only emit lines that are NEW messages (filter out duplicates / errors)
-  grep --line-buffered -E '^\{' # Emit JSON message objects; skip error lines
-```
+**Re-arm on `SessionStart` only.** Given §6's conflict, the safe assumption is that
+Monitor does not survive compaction, and cron's own resume-durability is unconfirmed. The
+mechanical re-arm hook anti-hall actually uses is `SessionStart` alone — no separate
+`PostCompact` hook is needed, because `SessionStart` **already re-fires after
+compaction** (`source: "compact"` in its payload), and every `SessionStart` entry in
+`plugins/anti-hall/hooks/hooks.json` runs with **no `matcher`**, i.e. unconditionally on
+every session start or compact.
 
-Each time the watcher sees a new message, a line passes through the filter → event fires
-→ agent wakes and processes the message.
-
-**Re-arm pessimistically.** Given §6's conflict, the safe assumption is that Monitor does
-**not** survive compaction and cron's own resume-durability is unconfirmed. So: re-arm
-proactively rather than hoping either survives.
-
-- **`PostCompact` hook** → re-arm after in-session compaction.
-- **`SessionStart` hook** → re-arm on resume/session begin.
+- **`SessionStart` hook** → re-arm on resume, session begin, *or* post-compaction — one
+  hook, both cases.
 - **Cron mailbox job stays live the whole time**, unconditionally, as the fallback that
   keeps working even if a re-arm is missed or Monitor is unavailable in this environment
   (§9).
 
 **A hook cannot call the Monitor tool directly** — hooks are shell scripts, not agent tool
-calls. What a `PostCompact`/`SessionStart` hook actually does is inject context (a
-system-reminder) telling the *agent* to re-arm the watch on its next turn. That makes this
-path **instruction-driven, not mechanical** — the agent has to act on the injected
-instruction; nothing forces it to. The one **truly mechanical** re-arm is a plugin-declared
+calls. What the `SessionStart` hook actually does is inject context (a system-reminder)
+telling the *agent* to re-arm the watch on its next turn. That makes this path
+**instruction-driven, not mechanical** — the agent has to act on the injected instruction;
+nothing forces it to. The one **truly mechanical** re-arm is a plugin-declared
 `when: "always"` monitor (§5), which the runtime itself restarts at session start — with
 the caveat from §5 that its behavior across resume/compaction is *also* undocumented and
 needs its own live test.
 
 ```bash
-# PostCompact / SessionStart hook (shell script) — illustrative
+# SessionStart hook (shell script) — illustrative
 # Cannot call Monitor() itself. Injects an instruction for the agent to act on.
+# Fires on resume AND on post-compaction (source: "compact") — one hook, both cases.
 echo '{"systemMessage": "Re-arm the Primary mailbox monitor: check if it is already running (see dedup note below) before starting a new one."}'
 ```
 
 ```javascript
 // Agent-side, on the next turn, acting on the injected instruction:
 Monitor({
-  command: 'scripts/devswarm-mailbox-watcher.sh <primary-id>',
+  command: 'node path/to/companion/lib/devswarm-wake-watch.js',
   description: 'Primary workspace mailbox watcher',
   persistent: true
 })
@@ -371,75 +511,71 @@ Monitor({
 **Double-arming warning.** If Monitor *does* turn out to survive compaction in some case
 (unconfirmed either way, §6) **and** a re-arm instruction also fires, you end up with two
 watchers running against the same mailbox — duplicate events, duplicate wakes, and a
-Primary processing the same message twice. Any re-arm path **must** include an
-idempotency/dedup check (e.g. a marker file or a mailbox-cursor lock keyed to a single
-active watcher) before starting a new Monitor, not just a "start on every hook fire"
-approach.
+Primary processing the same message twice. A generic re-arm path **must** include an
+idempotency/dedup check before starting a new Monitor, not just a "start on every hook
+fire" approach — the real shipped watcher (below) closes this mechanically with its own
+lock file rather than relying on an agent-side check alone.
 
 **Semantics:**
 - **Monitor** fires per message (latency: ~1s when live) — the primary path, where
   available.
 - **Cron mailbox job** keeps running unconditionally as the fallback (§9 lists where it's
   the *only* path).
-- **Re-arm hooks** (`PostCompact`, `SessionStart`) inject instructions to restart the
-  monitor, guarded by a dedup check.
+- **Re-arm hook** (`SessionStart`, one hook covers resume + compaction) injects an
+  instruction to restart the monitor, guarded by the lock described below.
 
-### Example monitor script (generic, for mesh mailbox)
+### The real shipped implementation (not a bash sketch)
 
-This sketch shows the pattern. Replace `scripts/devswarm.js inbox read-primary` with
-whatever your mesh/mailbox read command is [illustrative]:
+The production watcher is `companion/lib/devswarm-wake-watch.js` [verified: source read].
+It replaces the illustrative bash loops from earlier drafts of this KB entirely — this
+section describes what actually ships, not a pattern to adapt.
 
-```bash
-#!/bin/bash
-# scripts/devswarm-mailbox-watcher.sh <primary-workspace-id>
-# Watches for new messages in a primary workspace's mailbox.
-# Emits one line per NEW message; handles seq tracking to avoid re-emitting.
+- **Node, not shell.** A pure `tick(state, snapshot)` core (no fs/clock/process/random
+  inside it) is split from an IO runner that does the actual polling — the pure half is
+  directly unit-testable without spawning a process.
+- **~2s default poll**, configurable via `ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS` (clamped
+  250ms–60s; a malformed or out-of-range value fails open to the 2s default).
+- **Mechanical single-instance lock.** A duplicate watcher started for the same id
+  self-refuses: it writes **zero stdout** (stdout is what wakes the agent, so a refused
+  double-arm must fire zero events), logs a one-line notice to **stderr only**, and exits
+  `0`. This is a real lock file, not an agent-side "check before you start" convention —
+  it closes the double-arming gap above mechanically instead of by instruction.
+- **3 silent consecutive read failures, then a throttled error line.** The first three
+  failed ticks in a row produce no output; the 4th consecutive failure emits one ERROR
+  line immediately, and further repeats are throttled 1 minute → 5 minutes → 30 minutes
+  (clamped at the last tier) rather than firing every tick.
+- **Directs-only in v1** — it edge-triggers only on a workspace's own direct-message
+  total, never on the shared broadcast feed. See the honest gap below.
+- **repoKey-bucket-then-legacy-bucket read fallback** when resolving the Primary's own
+  summary: it checks the current repoKey-keyed projection first and falls back to the
+  legacy hash-keyed bucket only if the Primary's row is absent there, mirroring the same
+  fold the roster command already does.
 
-set -e
-primary_id="$1"
-cursor_file="$HOME/.anti-hall/mailbox-cursor-${primary_id}.txt"
-mkdir -p "$HOME/.anti-hall"
+### Two honest gaps — do not assume either is covered
 
-# Initialize cursor (last-seen message seq)
-last_seq=0
-[ -f "$cursor_file" ] && last_seq=$(cat "$cursor_file")
+**Broadcasts are not covered in v1.** The watcher edge-triggers only on direct-message
+totals; it does not watch the shared broadcast feed (`recent[]`). `recent[]` is capped at
+50 entries and gets saturated by duplicate heartbeat traffic — measured live on a real
+project: one idle workspace produced **1182 identical heartbeat broadcasts over 5.25
+days**, and the capped window held **49** rows from that single sender against **1** row
+from everyone else combined. A `recent[]`-diffing watcher would look like it works and
+silently evict genuine broadcasts behind heartbeat noise. Covering broadcasts correctly
+needs either an uncapped/dedicated broadcast counter or a heartbeat-excluding store
+projection change — both out of scope for the current watcher.
 
-# Poll loop — runs until monitor timeout or TaskStop
-while true; do
-  # Read new messages, filter by seq > last_seq [illustrative — adapt to your mesh]
-  response=$(node scripts/devswarm.js inbox read-primary "$primary_id" \
-    --json 2>&1 || echo '{"error":"read failed"}')
-
-  # Handle read errors — COVERAGE RULE: emit failure signature
-  if echo "$response" | jq -e '.error' >/dev/null 2>&1; then
-    echo "ERROR: inbox read failed — $response"
-  else
-    # Extract new messages (seq > last_seq) and emit one line per message
-    echo "$response" | jq -r ".messages[] | select(.seq > $last_seq) | @json" | \
-      while read -r line; do
-        echo "$line"  # One line per new message → one Monitor event
-        # Update cursor to this message's seq [illustrative]
-        seq=$(echo "$line" | jq .seq)
-        echo "$seq" > "$cursor_file"
-        last_seq="$seq"
-      done
-  fi
-
-  # Sleep before next poll — tighter interval than cron (1s vs 5 min)
-  sleep 1 || break  # break if sleep is interrupted (TaskStop signal)
-done
-```
-
-**Key details:**
-
-- **Line buffering:** `jq -r` flushes per line, and each `-e` check emits immediately.
-- **Tracking state:** cursor file stores the last-seen message seq; only emit new messages
-  (avoid re-firing old ones).
-- **Coverage rule:** if `inbox read` fails, emit an ERROR line so the monitor stays alive
-  and the agent sees something broke (not just silence).
-- **One line per message:** each new message = one line through stdout → one Monitor event.
-- **Graceful poll failure:** `|| echo "error"` ensures the loop doesn't die on a transient
-  read failure (survives the failure, logs it, moves on).
+**Supervisor parent-escalations do not *currently* reach the Primary — two independent
+defects, both being fixed in a separate workspace, not shipped fixed today:**
+1. `notifyParentEscalation` appends the escalation message without a `deriveSummary`
+   refresh, and opens the legacy (hash-keyed) bucket rather than the repoKey-keyed one.
+2. **Wrong addressee.** `parentId = primaryWorkspaceId(descriptor.worktreePath)` does no
+   git resolution of its own, and `descriptor.worktreePath` is the **child's own**
+   worktree root — not the actual Primary's — so the escalation is addressed to the
+   child's own mesh id instead of its parent's. This is a known limitation of the current
+   released code, actively being addressed elsewhere (the fix under discussion resolves
+   the parent's worktree first, e.g. `primaryWorkspaceId(resolveMainWorktree(wt) || wt)`,
+   fail-open). A reader must not assume the wake path covers supervisor escalations
+   reaching the Primary in the version they're running — check whether both defects have
+   landed before relying on it.
 
 ---
 
@@ -522,26 +658,38 @@ each is a case where Monitor is not degraded, it is **absent**.
 - Filter is too strict (matches nothing legitimately).
 
 **Fix:** add `|| echo "ERROR: ..."` to every pipe stage and wrap in a while loop that
-logs errors instead of dying.
+logs errors instead of dying. (Note: a small live test this session could not reproduce
+the classic GNU-grep line-buffering trap on macOS/BSD `grep` — see §2. Keep
+`--line-buffered` as the safe default regardless; not reproducing it here is not proof it
+doesn't exist elsewhere.)
 
-**Q: My monitor fires too much and gets auto-stopped.**
+**Q: My monitor fires too much — does it get killed?**
 
-Monitors producing **too many events** (spam) are automatically stopped by the runtime.
-Tighten the filter so only legitimate events pass through:
+**No — measured this session, corrects the naive reading of "automatically stopped"**
+[verified: live test, this session; full writeup in §6]: the process is never killed.
+What happens instead is **notification suppression** — after ~19-20 events the stream
+starts dropping notifications and substituting `"[N events suppressed]"` markers, while
+the process keeps running to completion and the **output file stays complete**. The real
+cost isn't a dead monitor, it's a **degraded wake channel** that still looks healthy.
+Tighten the filter anyway — not to dodge a kill that doesn't happen, but to keep the
+notification stream itself sparse and useful instead of half-deaf:
 
 ```bash
-# ❌ Emits every line of a noisy log
+# ❌ Emits every line of a noisy log — hits notification suppression fast
 tail -f app.log | cat
 
-# ✅ Emit only warnings and errors
+# ✅ Emit only warnings and errors — keeps the event stream sparse and reliable
 tail -f app.log | grep --line-buffered -E 'WARN|ERROR'
 ```
 
 **Q: How do I know if the monitor died vs. is just waiting?**
 
-**You don't, without the coverage rule.** This is why the filter must include error
-signatures: if you also emit on failure (errors, timeouts, crashes), then silence **does**
-mean "still running OK" instead of ambiguous.
+**You don't, without the coverage rule** — and there's now a third state to rule out, not
+just two. Silence can mean: still running OK, actually dead, **or** running fine but
+notification-suppressed (§6) because it's too noisy. This is why the filter must include
+error signatures **and** stay sparse enough to avoid the ~19-20 event suppression ceiling:
+if you also emit on failure (errors, timeouts, crashes) and keep normal volume low, then
+silence does mean "still running OK" instead of ambiguous.
 
 **Q: Why does my monitor die after the session resumes?**
 
@@ -549,8 +697,8 @@ Monitors do not survive session restart — that part is solid. Whether they (or
 plugin-declared `when: "always"` monitor) survive in-session compaction is **not
 documented either way** [inference only — see §6]. Don't assume a plugin monitor
 "auto-restarts cleanly" across compaction/resume without testing it live. Plan for it by
-re-arming pessimistically via `PostCompact`/`SessionStart` hooks and keeping a cron
-fallback running unconditionally (§7).
+re-arming via the `SessionStart` hook (it covers both resume and post-compaction, §6) and
+keeping a cron fallback running unconditionally (§7).
 
 **Q: What's the latency?**
 
@@ -560,22 +708,27 @@ fallback running unconditionally (§7).
 
 ---
 
-## 12. Session-start / post-compact re-arm pattern (for resilience)
+## 12. Session-start re-arm pattern (covers resume and post-compaction, one hook)
 
 If you use Monitor for something that should keep working across compaction and resume
-(like a Primary mailbox watch), do **not** assume either survives (§6). Re-arm
-pessimistically, and guard against double-arming.
+(like a Primary mailbox watch), do **not** assume either survives (§6). Re-arm on
+`SessionStart` — it covers both cases (§6: it re-fires after compaction with `source:
+"compact"`) — and guard against double-arming.
 
-**What a hook can and cannot do:** `PostCompact` and `SessionStart` are shell-script hooks
-— they cannot call the `Monitor` or `CronCreate` tools directly. What they *can* do is
-inject an instruction (a system-reminder / context message) for the agent to act on next
-turn. That makes this re-arm path **instruction-driven**, not a mechanical guarantee — the
-agent must actually follow through.
+**What a hook can and cannot do:** `SessionStart` is a shell-script hook — it cannot call
+the `Monitor` or `CronCreate` tools directly. What it *can* do is inject an instruction (a
+system-reminder / context message) for the agent to act on next turn. That makes this
+re-arm path **instruction-driven**, not a mechanical guarantee — the agent must actually
+follow through. (The real shipped watcher, §7, closes the double-arming risk
+**mechanically** via its own process-level lock file rather than relying only on the
+agent-side check below — the pattern here is the general illustrative shape, not what
+actually ships.)
 
 ```bash
 #!/bin/bash
-# PostCompact and SessionStart hook — illustrative, not production code.
+# SessionStart hook — illustrative, not production code.
 # Injects context; does NOT call Monitor/CronCreate itself (hooks can't).
+# Fires on resume AND on post-compaction (source: "compact") — one hook, both cases.
 echo '{"systemMessage": "Session (re)started or compacted. Re-arm the Primary mailbox watch: 1) check .anti-hall/monitor-lock-<id> for an existing active watcher before starting a new one (avoid double-arming, see below); 2) if absent, start the mailbox Monitor and write the lock; 3) the cron mailbox job keeps running regardless — no action needed there."}'
 ```
 
@@ -585,7 +738,7 @@ echo '{"systemMessage": "Session (re)started or compacted. Re-arm the Primary ma
 const lockPath = `.anti-hall/monitor-lock-${primaryId}`;
 if (!fs.existsSync(lockPath)) {
   Monitor({
-    command: 'scripts/devswarm-mailbox-watcher.sh ' + primaryId,
+    command: 'node path/to/companion/lib/devswarm-wake-watch.js',
     description: 'Primary workspace mailbox watcher',
     persistent: true
   });
@@ -597,12 +750,13 @@ if (!fs.existsSync(lockPath)) {
 
 **Double-arming warning (repeated from §7 because this is where it bites):** if the prior
 Monitor somehow survived the compaction/resume **and** this re-arm instruction also fires,
-you get two watchers on the same mailbox and duplicate events. The dedup/lock check above
-is not optional — without it, double-arming is the default outcome of "re-arm on every
-hook fire," not an edge case.
+you get two watchers on the same mailbox and duplicate events. For a generic watcher the
+dedup/lock check above is not optional — without it, double-arming is the default outcome
+of "re-arm on every hook fire," not an edge case. The real shipped watcher sidesteps this
+agent-side check entirely with its own mechanical lock (§7).
 
 On session start or post-compaction:
-1. Hook fires → injects the re-arm instruction (does not act on its own).
+1. `SessionStart` hook fires → injects the re-arm instruction (does not act on its own).
 2. Agent's next turn checks the lock, re-arms Monitor only if not already running.
 3. Cron mailbox job (§7) keeps running the whole time regardless, unconditionally.
 
@@ -625,22 +779,34 @@ On session start or post-compaction:
 **Verified live tool schemas (not docs-site URLs — pulled directly from the installed
 tool definitions)**
 
-6. `Monitor` tool schema — source for the parameter table (§2) and the "auto-stop when a
-   monitor produces too many events" rule (§3, §6, §11): this specific claim comes from
-   the Monitor tool's own built-in description text, not from the docs site.
+6. `Monitor` tool schema — source for the parameter table (§2) and the tool's own
+   description text claiming monitors are "automatically stopped" on too many events.
+   **This specific claim is corrected, not confirmed, by live measurement** — see item 9
+   below and the §6/§11 correction: the tool's own docstring says "stopped," but four live
+   trials this session showed only notification suppression, never a process kill.
 7. `CronCreate` tool schema — source for the "jobs live only in this Claude session... gone
    when Claude exits" and `durable` parameter language quoted in §6.
 
 **Directly tested behavior (this session, not sourced from any doc)**
 
-8. Two live behavioral tests of Monitor waking a fully idle session — §4. Empirically
-   verified, but not backed by any Anthropic documentation; could change without notice.
+8. Two live behavioral tests of Monitor waking a fully idle session — §4.
+9. Four escalating-volume trials showing "auto-stop" is notification suppression, not a
+   process kill (steady 1/sec, ~20/sec, instant 500-line dump, instant 5000-line dump) —
+   §6, §11.
+10. Batching, stderr tagging, exit-code/terminal-status behavior, the timeout re-arm
+    signal, env/cwd inheritance (agent-armed only, unverified for plugin-declared), and an
+    inconclusive line-buffering retest on macOS/BSD `grep` — §2.
+11. A naive mtime-based watcher design failure (8 events/70s on near-zero signal) plus
+    corroborating live-mesh heartbeat volume (50+ broadcasts at ~285s intervals) — §3.
+
+Items 8-11 are empirically verified this session but **not backed by any Anthropic
+documentation** and could change without notice.
 
 **Related KB documents in this repo**
 
-9. `KB-devswarm-hivecontrol.md` — DevSwarm orchestration & `hivecontrol` CLI
-10. `KB-claude-workflow-orchestration.md` — multi-agent orchestration primitives
-11. `KB-claude-codex.md` — Codex platform and parity with Claude Code (for dual-platform
+12. `KB-devswarm-hivecontrol.md` — DevSwarm orchestration & `hivecontrol` CLI
+13. `KB-claude-workflow-orchestration.md` — multi-agent orchestration primitives
+14. `KB-claude-codex.md` — Codex platform and parity with Claude Code (for dual-platform
     implications)
 
 ---
@@ -672,10 +838,16 @@ tool definitions)**
 ---
 
 **Document status:** Compiled from official docs + verified live tool schemas (as of
-Claude Code v2.1.207), plus one directly-tested behavioral finding (§4) that no Anthropic
-doc confirms. Where sources conflict (§6, resume-durability of `CronCreate`), this KB
-states the conflict rather than picking a side — treat those claims as needing a live
-test before any design leans on them. Monitor remains in the public API; no known breaking
-changes since v2.1.98. The DevSwarm application (§7) is **illustrative** — the specific
-mesh-read wrapper (`scripts/devswarm-mailbox-watcher.sh`) is a pattern sketch, not
-production code (adapt to your actual mailbox/mesh transport).
+Claude Code v2.1.207), plus a growing set of directly-tested, live-experiment findings that
+no Anthropic doc confirms — the idle-wake test (§4), the four-trial "auto-stop is
+notification suppression, not a kill" correction (§6, §11), and the batching/stderr/exit-
+code/timeout/env-inheritance/line-buffering/mtime-watcher findings (§2, §3). Where sources
+conflict (§6, resume-durability of `CronCreate`) or where a live test contradicts a
+documented claim (the "auto-stop" wording), this KB states the discrepancy rather than
+picking a side or quietly averaging them — treat those claims as needing further testing
+before any design leans on them further than the tested range. Monitor remains in the
+public API; no known breaking changes since v2.1.98. The DevSwarm application (§7)
+describes the actual shipped watcher (`companion/lib/devswarm-wake-watch.js`) alongside
+its two documented gaps (broadcasts, supervisor parent-escalations) — everything else in
+§7 (the hook re-arm snippets, the lock-file JS sketch in §12) remains illustrative
+shorthand for the real mechanism, not code to copy verbatim.

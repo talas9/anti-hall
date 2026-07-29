@@ -495,6 +495,30 @@ verdict — `alive`/`stale`/`nudged`/`ambiguous`/`escalated`), `~/.anti-hall/dev
 (append-only attempt/poke/escalate log), and `node hooks/doctor.js` (silent unless
 DevSwarm is active; `nudged` reports as WARN, not a failure).
 
+## Idle-wake: Monitor (Claude-only) vs. cron-equivalent polling (Codex)
+
+A separate question from the recovery model above: how does an idle DevSwarm
+orchestrator (typically the Primary) notice a new mailbox message in the first place,
+without a human nudging it? On Claude, this is layered: **`Monitor`** (a Claude Code
+CLI built-in background listener that fires a wake event when its watched command emits
+output — here, a pure-reader watcher process, `devswarm-wake-watch.js`, polling a derived
+projection file every 2s by default) is the primary path, with a **`CronCreate`
+mailbox-poll job retained permanently as the fallback** for every case where Monitor is
+unavailable (Bedrock/Vertex/Foundry, telemetry disabled, project-scope plugin installs,
+non-interactive sessions). Full mechanics, the pure-reader watcher pattern, and why the
+watcher must never call a mutating CLI verb: `docs/KB-claude-monitor-tool.md` §7.
+
+**`Monitor` is a Claude Code CLI built-in with no verified Codex equivalent** [verified:
+Claude Code docs + tool schema are Claude-only for this tool; no `Monitor`-equivalent MCP
+tool or `omx` CLI verb exists]. Do not invent one, and do not imply a workaround closes
+this gap — none does today. For a Codex-run workspace, **cron-equivalent polling (a
+scheduled/looped mailbox check) or draining the mailbox every turn is the only path** to
+notice a new message without a human prompt; there is no lower-latency background-wake
+mechanism available on this side. `inbox pull` (see "Child-side reception" above) is the
+per-turn drain a Codex child already runs; a Codex Primary wanting to reduce staleness has
+only the option of polling more aggressively (e.g. checking `roster`/`diagnose` on a
+tighter loop), not a genuine event-driven wake.
+
 ## Anti-hall + OMX workflow mapping
 
 - Workspace tier (doctrine shipped, no mechanical classifier): a Primary's top fan-out
@@ -513,6 +537,9 @@ DevSwarm is active; `nudged` reports as WARN, not a failure).
   supervisor identity-binds to `claude --resume` processes specifically. No Codex-side
   equivalent exists in this plugin, though the recovery CLI script itself is invokable from
   either side (see the on-demand recovery section above).
+- Idle-wake: Claude layers `Monitor` (low-latency, Claude-only built-in) over a permanent
+  `CronCreate` fallback; Codex has no `Monitor` equivalent, so cron-equivalent polling /
+  draining the mailbox every turn is the only wake path there (see "Idle-wake" above).
 
 Anti-hall does not replace OMX. Anti-hall supplies verify-first policy, the reference KB,
 and (for both agents) the mechanical per-turn recovery hooks; the liveness supervisor stays

@@ -1,0 +1,8 @@
+[
+  {
+    "name": "devswarm-wake-watch",
+    "command": "node ${CLAUDE_PLUGIN_ROOT}/companion/lib/devswarm-wake-watch.js",
+    "description": "DevSwarm idle-wake: watches this workspace's own mailbox (read-only, poll-based) and emits a stdout line the instant new direct mesh mail lands, waking an idle session with lower latency than the cron fallback. Additive only — never disarms or replaces the unconditional CronCreate fallback (see hooks/lib/devswarm-wake.js).",
+    "when": "always"
+  }
+]

@@ -927,3 +927,52 @@ test('runRepairs: heal-registry-rows REHOMES a synthetic mis-keyed row across pe
     assert.match(r2.msg, /nothing mis-keyed\/stale/);
   } finally { rm(home); rm(repoA); rm(repoB); }
 });
+
+// ---------------------------------------------------------------------------
+// wake-monitor (Monitor-based idle-wake) — REPORT-ONLY, mirrors the reaper
+// block. Arming requires the agent-only `Monitor` tool, so this NEVER
+// registers a migrationFix (a hook/CLI cannot call that tool) — status is
+// ALWAYS 'skipped', regardless of shipped/live state; only the message
+// changes. Reuses doctor-devswarm.js's own wakeMonitorShipped/
+// wakeMonitorLiveCheck (verified directly in tests/companion/doctor-
+// devswarm.test.js) so this is purely a wiring test: the entry exists, is
+// always status:'skipped', and never becomes 'fixed'/'gated'/'failed'.
+// ---------------------------------------------------------------------------
+test('wake-monitor: REPORT-ONLY entry present on a plain --dry-run pass, status always "skipped" (never a fake auto-fix)', () => {
+  const home = mkTmp('wakemon-report');
+  const repo = makeGitRepo('wakemon-report');
+  try {
+    const results = repair.runRepairs({ cwd: repo, env: {}, home, dryRun: true, platform: 'win32' });
+    const r = results.find((x) => x.id === 'wake-monitor');
+    assert.ok(r, 'a wake-monitor result must be present:\n' + JSON.stringify(results, null, 2));
+    assert.strictEqual(r.action, 'none', 'no action is ever registered — never a migrationFix');
+    assert.strictEqual(r.status, 'skipped');
+    assert.match(r.msg, /wake-monitor/);
+  } finally { rm(home); rm(repo); }
+});
+
+test('wake-monitor: REPORT-ONLY entry present even on a real (non-dry-run) pass, status stays "skipped"', () => {
+  const home = mkTmp('wakemon-report-real');
+  const repo = makeGitRepo('wakemon-report-real');
+  try {
+    const results = repair.runRepairs({ cwd: repo, env: { DEVSWARM_REPO_ID: 'r1' }, home, dryRun: false, platform: 'win32' });
+    const r = results.find((x) => x.id === 'wake-monitor');
+    assert.ok(r, 'a wake-monitor result must be present');
+    assert.strictEqual(r.status, 'skipped', 'wake-monitor never reports fixed/gated/failed — it can never actually arm anything');
+  } finally { rm(home); rm(repo); }
+});
+
+test('wake-monitor: reports the exact manual arm command when shipped but not live', () => {
+  const home = mkTmp('wakemon-report-armcmd');
+  const repo = makeGitRepo('wakemon-report-armcmd');
+  try {
+    const results = repair.runRepairs({ cwd: repo, env: {}, home, dryRun: true, platform: 'win32' });
+    const r = results.find((x) => x.id === 'wake-monitor');
+    assert.ok(r);
+    // On a real checkout of this repo the watcher is genuinely shipped; no
+    // lock was seeded under this throwaway `home`, so it must report NOT
+    // live and hand back the exact `Monitor`-tool arm command.
+    assert.match(r.msg, /NOT live|could not resolve/);
+    assert.match(r.msg, /Monitor.*tool/);
+  } finally { rm(home); rm(repo); }
+});

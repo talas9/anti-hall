@@ -1598,3 +1598,230 @@ test('renderHuman: omits the heal-registry-rows block entirely when not attempte
   const out = U.renderHuman(status, '');
   assert.doesNotMatch(out, /heal-registry-rows:/);
 });
+
+// ---------------------------------------------------------------------------
+// wakeMonitorPostUpdate — Monitor-based idle-wake forward-migration companion
+// (companion/lib/devswarm-wake-watch.js + hooks/lib/devswarm-wake.js).
+// update.js is a plain Node process with NO access to the agent-only `Monitor`
+// tool, so this function only VERIFIES + REPORTS (shipped / live / manual arm
+// command) — it must never claim to have armed a watcher. Same
+// REAL-plugin-source-tree posture as the other *PostUpdate suites: paths.
+// pluginSrcDir = this repo's own plugins/anti-hall so the require-and-call
+// wiring against the actual devswarm-detect.js / devswarm-wake-watch.js /
+// liveness.js is exercised, not a hand-rolled stub. `home` is always an
+// isolated tmpdir.
+// ---------------------------------------------------------------------------
+const wakeWatch = require('../../plugins/anti-hall/companion/lib/devswarm-wake-watch.js');
+
+test('wakeMonitorPostUpdate: not a DevSwarm session (no DEVSWARM_REPO_ID) -> attempted:false, gate closed', () => {
+  const result = U.wakeMonitorPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.strictEqual(result.shipped, false);
+  assert.strictEqual(result.live, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('wakeMonitorPostUpdate: pulled plugin tree missing scripts/companion files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree(); // empty marketplace fixture — no hooks/companion dirs at all
+  try {
+    const result = U.wakeMonitorPostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.strictEqual(result.shipped, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('wakeMonitorPostUpdate: gate open + real watcher shipped but NOT live -> shipped:true, live:false, exact manual arm command surfaced', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-notlive-'));
+  const repo = makeGitRepoForUpdate('wakemon-notlive');
+  try {
+    const result = U.wakeMonitorPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.shipped, true);
+    assert.strictEqual(result.live, false);
+    assert.match(result.detail, /NOT live|live-check skipped/);
+    assert.match(result.detail, /Monitor.*tool/, 'must surface the exact manual arm command since no watcher is live');
+    const watcherPath = path.join(REAL_PLUGIN_SRC_DIR, 'companion', 'lib', 'devswarm-wake-watch.js');
+    assert.ok(result.detail.includes(watcherPath), 'the manual arm command must name the real watcher script path');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('wakeMonitorPostUpdate: gate open + a lock genuinely held by THIS live process -> live:true, never touches the lock file (read-only)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-live-'));
+  const repo = makeGitRepoForUpdate('wakemon-live');
+  try {
+    const identity = wakeWatch.resolveIdentity({}, repo, {});
+    assert.ok(identity, 'sanity: identity must resolve for this real git repo before the lock test means anything');
+    const lockPath = wakeWatch.lockPathFor(home, identity.id);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    const lockPayload = JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'test-token' });
+    fs.writeFileSync(lockPath, lockPayload);
+
+    const result = U.wakeMonitorPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.shipped, true);
+    assert.strictEqual(result.live, true);
+    assert.match(result.detail, /LIVE/);
+    // Read-only contract: the lock file must be untouched — same bytes, still present.
+    assert.strictEqual(fs.readFileSync(lockPath, 'utf8'), lockPayload, 'wakeMonitorPostUpdate must never mutate a lock file it only inspects');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('wakeMonitorPostUpdate: a DEAD pid in the lock file -> live:false, never throws, never deletes the stale lock', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-dead-'));
+  const repo = makeGitRepoForUpdate('wakemon-dead');
+  try {
+    const identity = wakeWatch.resolveIdentity({}, repo, {});
+    assert.ok(identity);
+    const lockPath = wakeWatch.lockPathFor(home, identity.id);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    // A pid essentially guaranteed dead/unassigned on any real machine.
+    const deadPid = 999999;
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: deadPid, ts: Date.now(), token: 'x' }));
+
+    const result = U.wakeMonitorPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+    });
+    assert.strictEqual(result.live, false);
+    assert.ok(fs.existsSync(lockPath), 'inspection-only: a dead-holder lock must be left in place, never deleted by this reporter');
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('wakeMonitorPostUpdate: corrupt/unparseable lock file -> never throws, reported as not live', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-corrupt-'));
+  const repo = makeGitRepoForUpdate('wakemon-corrupt');
+  try {
+    const identity = wakeWatch.resolveIdentity({}, repo, {});
+    assert.ok(identity);
+    const lockPath = wakeWatch.lockPathFor(home, identity.id);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, 'not json{{{');
+
+    assert.doesNotThrow(() => {
+      const result = U.wakeMonitorPostUpdate({
+        paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+        env: { DEVSWARM_REPO_ID: 'r1' },
+        cwd: repo,
+        home,
+      });
+      assert.strictEqual(result.live, false);
+      assert.strictEqual(result.shipped, true);
+    });
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('wakeMonitorPostUpdate: idempotent — running twice back-to-back yields the same shipped/live verdict, no throw, no mutation drift', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-idem-'));
+  const repo = makeGitRepoForUpdate('wakemon-idem');
+  try {
+    const opts = {
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+    };
+    const first = U.wakeMonitorPostUpdate(opts);
+    const second = U.wakeMonitorPostUpdate(opts);
+    assert.strictEqual(first.attempted, second.attempted);
+    assert.strictEqual(first.shipped, second.shipped);
+    assert.strictEqual(first.live, second.live);
+    assert.strictEqual(first.detail, second.detail);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('runUpdate: wakeMonitor is NOT attempted outside a DevSwarm session (default env)', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status } = U.runUpdate({ paths: p, exec, env: {}, cwd: process.cwd() });
+    assert.ok(status.wakeMonitor, 'wakeMonitor field present on the status object');
+    assert.strictEqual(status.wakeMonitor.attempted, false);
+    assert.match(status.wakeMonitor.detail, /not a DevSwarm session/);
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: wakeMonitor runs inside a DevSwarm session and never flips stop/exit', () => {
+  const t = makeTree();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-wakemon-runupdate-'));
+  const repo = makeGitRepoForUpdate('wakemon-runupdate');
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const { status, stop } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: repo, home });
+    assert.strictEqual(stop, false);
+    assert.ok(status.wakeMonitor, 'wakeMonitor field present on the status object');
+    assert.strictEqual(status.wakeMonitor.attempted, true);
+    assert.strictEqual(status.wakeMonitor.shipped, true);
+  } finally {
+    t.cleanup();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('renderHuman: prints wake-monitor summary line when attempted', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    wakeMonitor: { attempted: true, shipped: true, live: false, detail: 'wake-monitor shipped but NOT live for primary abc123 — arm it: call the `Monitor` tool.' },
+  };
+  const out = U.renderHuman(status, '');
+  assert.match(out, /wake-monitor: wake-monitor shipped but NOT live for primary abc123/);
+});
+
+test('renderHuman: omits the wake-monitor block entirely when not attempted (non-DevSwarm session — no noise)', () => {
+  const status = {
+    installed: '0.32.1', latest: '0.33.0', updated: true, cacheSynced: true,
+    action: 'run /reload-plugins',
+    wakeMonitor: { attempted: false, detail: 'not a DevSwarm session — wake-monitor skipped (gate closed)' },
+  };
+  const out = U.renderHuman(status, '');
+  assert.doesNotMatch(out, /wake-monitor:/);
+});

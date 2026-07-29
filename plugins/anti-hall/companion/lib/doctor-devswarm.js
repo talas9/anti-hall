@@ -125,10 +125,124 @@ function listenerPresenceFor(d, now, F) {
   return { status: WARN, message: 'workspace ' + d.id + ' listener: state unknown (' + backlog.lines.length + ' unread message(s), cursor last moved ' + Math.round(cursorAgeMs / 60000) + 'm ago)' };
 }
 
+// ---------------------------------------------------------------------------
+// wake-monitor (Monitor-based idle-wake) — shipped / proven / live report.
+// Companion to skills/update/scripts/update.js's wakeMonitorPostUpdate: THAT
+// function runs post-update and can only verify/report (a plain Node process
+// has no `Monitor` tool); THIS check runs on every `doctor` pass and reports
+// the same three honest facts — shipped, proven (behavioral self-test), live
+// (read-only lock inspection) — plus the exact manual arm command whenever no
+// watcher is currently live. Neither path ever claims to have armed anything.
+// ---------------------------------------------------------------------------
+const PLUGIN_ROOT = path.join(__dirname, '..', '..');
+
+// wakeMonitorShipped(pluginRoot) -> { shipped, watcherPath, watcherMod, reason }.
+// shipped requires BOTH: the watcher script present + require()-loadable with
+// its expected exports, AND hooks/lib/devswarm-wake.js's wakeDirective actually
+// emitting Monitor-arm text when given a watcher path (proves the two halves
+// are still wired together, not just independently present).
+function wakeMonitorShipped(pluginRoot) {
+  const watcherPath = path.join(pluginRoot, 'companion', 'lib', 'devswarm-wake-watch.js');
+  try {
+    if (!fs.existsSync(watcherPath)) return { shipped: false, watcherPath, reason: 'watcher script missing at ' + watcherPath };
+    let watcherMod;
+    try { watcherMod = require(watcherPath); } catch (e) { return { shipped: false, watcherPath, reason: 'watcher script failed to load: ' + (e && e.message ? e.message : String(e)) }; }
+    if (typeof watcherMod.tick !== 'function' || typeof watcherMod.normalizeState !== 'function'
+      || typeof watcherMod.resolveIdentity !== 'function' || typeof watcherMod.lockPathFor !== 'function') {
+      return { shipped: false, watcherPath, reason: 'watcher script loaded but is missing expected exports (tick/normalizeState/resolveIdentity/lockPathFor)' };
+    }
+    const wakePath = path.join(pluginRoot, 'hooks', 'lib', 'devswarm-wake.js');
+    if (!fs.existsSync(wakePath)) return { shipped: false, watcherPath, reason: 'hooks/lib/devswarm-wake.js missing at ' + wakePath };
+    let wakeMod;
+    try { wakeMod = require(wakePath); } catch (e) { return { shipped: false, watcherPath, reason: 'hooks/lib/devswarm-wake.js failed to load: ' + (e && e.message ? e.message : String(e)) }; }
+    if (typeof wakeMod.wakeDirective !== 'function') return { shipped: false, watcherPath, reason: 'hooks/lib/devswarm-wake.js is missing wakeDirective' };
+    const cli = path.join(pluginRoot, 'scripts', 'devswarm.js');
+    let text = '';
+    try { text = wakeMod.wakeDirective({ DEVSWARM_AI_AGENT: 'claude' }, false, cli, watcherPath) || ''; } catch (_) { text = ''; }
+    if (typeof text !== 'string' || !text.includes('Monitor') || !text.includes(watcherPath)) {
+      return { shipped: false, watcherPath, reason: 'hooks/lib/devswarm-wake.js did not emit Monitor-arm text for a watcher path — the two halves are no longer wired together' };
+    }
+    return { shipped: true, watcherPath, watcherMod };
+  } catch (e) {
+    return { shipped: false, watcherPath, reason: 'raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+// wakeMonitorSelfTest(watcherMod) -> [{status, message}]. Behavioral proof the
+// PURE tick() core still fires correctly — mirrors selfTest()'s constructed-
+// fixture style above. Starts from an already-armed synthetic state so the
+// arm-line's own one-time emission never muddies the silent/emits assertions:
+// a no-change snapshot must stay silent, a new-total snapshot must emit
+// exactly one wake line.
+function wakeMonitorSelfTest(watcherMod) {
+  const out = [];
+  try {
+    const { tick, normalizeState } = watcherMod;
+    let st = normalizeState({ armed: true, lastTotal: 5 });
+    const noChange = { ok: true, total: 5, role: 'primary', id: 'selftest', nowMs: Date.now() };
+    const r1 = tick(st, noChange);
+    const silentOk = Array.isArray(r1.lines) && r1.lines.length === 0;
+    out.push({ status: silentOk ? PASS : FAIL, message: 'wake-monitor self-test: no-change snapshot stayed silent (' + (r1.lines ? r1.lines.length : '?') + ' line(s), expected 0)' });
+
+    st = r1.state;
+    const newTotal = { ok: true, total: 6, role: 'primary', id: 'selftest', nowMs: Date.now() };
+    const r2 = tick(st, newTotal);
+    const emitOk = Array.isArray(r2.lines) && r2.lines.length === 1 && /new mesh mail/.test(r2.lines[0]);
+    out.push({ status: emitOk ? PASS : FAIL, message: 'wake-monitor self-test: new-total snapshot emitted a wake line (' + (r2.lines ? r2.lines.length : '?') + ' line(s), expected 1)' });
+  } catch (e) {
+    out.push({ status: WARN, message: 'wake-monitor self-test raised (fail-open): ' + (e && e.message) });
+  }
+  return out;
+}
+
+// wakeMonitorLiveCheck(watcherMod, watcherPath, home, env, cwd) -> {status, message}.
+// READ-ONLY lock inspection — mirrors devswarm-pull.js's acquireExclLock
+// holder/isAlive semantics exactly (same pid-liveness test), but NEVER
+// acquires, steals, or deletes the lock; it only reads the file that is
+// already there, if any.
+function wakeMonitorLiveCheck(watcherMod, watcherPath, home, env, cwd) {
+  const armCmd = 'call the `Monitor` tool with command `node ' + watcherPath + '`, `persistent: true`'
+    + ' (or run that command yourself in a background terminal)';
+  let identity = null;
+  try { identity = watcherMod.resolveIdentity(env, cwd, {}); } catch (_) { identity = null; }
+  if (!identity) {
+    return { status: WARN, message: 'wake-monitor: could not resolve a DevSwarm identity for ' + cwd + ' — live-check skipped. Manual arm: ' + armCmd + '.' };
+  }
+  let holder = null;
+  try { holder = JSON.parse(fs.readFileSync(watcherMod.lockPathFor(home, identity.id), 'utf8')); } catch (_) { holder = null; }
+  const pid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
+  let alive = false;
+  if (pid !== null) {
+    try { process.kill(pid, 0); alive = true; } catch (e) { alive = !!(e && e.code === 'EPERM'); }
+  }
+  if (alive) {
+    return { status: PASS, message: 'wake-monitor: LIVE for ' + identity.role + ' ' + identity.id + ' (pid ' + pid + ')' };
+  }
+  return { status: WARN, message: 'wake-monitor: shipped but NOT live for ' + identity.role + ' ' + identity.id + ' — arm it: ' + armCmd + '.' };
+}
+
+// wakeMonitorChecks(home, env, cwd) -> [{status, message}]. shipped -> proven
+// (self-test) -> live (read-only lock inspection), each gated on the previous
+// step actually succeeding (no self-test against a watcher that failed to
+// load; no live-check without a watcherMod to call resolveIdentity on).
+function wakeMonitorChecks(home, env, cwd) {
+  const out = [];
+  const shipped = wakeMonitorShipped(PLUGIN_ROOT);
+  if (!shipped.shipped) {
+    out.push({ status: FAIL, message: 'wake-monitor: NOT shipped — ' + shipped.reason + ' (cron fallback is unaffected)' });
+    return out;
+  }
+  out.push({ status: PASS, message: 'wake-monitor: shipped (watcher script + devswarm-wake.js Monitor-arm emission both present)' });
+  out.push(...wakeMonitorSelfTest(shipped.watcherMod));
+  out.push(wakeMonitorLiveCheck(shipped.watcherMod, shipped.watcherPath, home, env, cwd));
+  return out;
+}
+
 function runChecks(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
   const F = o.fsi || fs;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
 
@@ -137,6 +251,7 @@ function runChecks(opts) {
   if (!active) return { active: false, results: [] };
 
   const results = selfTest(home, F);
+  results.push(...wakeMonitorChecks(home, env, cwd));
 
   // Per-real-workspace readout from persisted verdicts, plus a distinct
   // listener-presence line (evidence something is consuming the inbox — see
@@ -163,4 +278,8 @@ function runChecks(opts) {
   return { active: true, results };
 }
 
-module.exports = { PASS, WARN, FAIL, statusFor, statusForVerdict, listenerPresenceFor, runChecks };
+module.exports = {
+  PASS, WARN, FAIL, statusFor, statusForVerdict, listenerPresenceFor, runChecks,
+  // wake-monitor (Monitor-based idle-wake) — exported individually for tests.
+  wakeMonitorShipped, wakeMonitorSelfTest, wakeMonitorLiveCheck, wakeMonitorChecks,
+};
