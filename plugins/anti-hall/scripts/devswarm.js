@@ -2606,6 +2606,80 @@ function cmdArchiveIgnore(id, ctx, { set }) {
   return { ok: true, action: 'archive-unignore', id, removed };
 }
 
+// skipFilePath(home) — computed identically to hooks/skip-guard.js's own
+// SKIP_FILE constant (path.join(os.homedir(), '.anti-hall', 'skip.json')),
+// just home-injectable like every other path helper above (workspacesDir,
+// archiveIgnoreDir, ...) so tests can point it at a tmp HOME instead of the
+// real machine. With ctx.home defaulting to os.homedir() (see run()), the
+// production path is byte-identical to skip-guard.js's.
+function skipFilePath(home) { return path.join(home, '.anti-hall', 'skip.json'); }
+
+// cmdSkip(guard, flags, ctx) — the documented escape hatch for anti-hall's own
+// guards (see hooks/skip-guard.js): writes/merges { [guard]: expiryUnixMs }
+// into skip.json so every guard's own isSkipped(name) check fail-opens while
+// unexpired. This is the CLI-side half of edit-guard's own block-message hint
+// ("run 'node scripts/devswarm.js skip edit-guard'") — previously the message
+// pointed agents at a mechanism with no CLI entry point.
+function cmdSkip(guard, flags, ctx) {
+  const home = ctx.home;
+  // A bare `--ttl` (no following value, e.g. end-of-argv or immediately
+  // followed by another `--flag`) parses to boolean `true` in parseArgs(),
+  // which one() maps to `undefined` — indistinguishable from "--ttl not
+  // passed at all". Check the raw flags bucket first so a bare `--ttl`
+  // errors instead of silently falling through to the 15-minute default.
+  const ttlFlagPassed = Array.isArray(flags.ttl) && flags.ttl.length > 0;
+  const rawTtl = one(flags, 'ttl');
+  let ttlMinutes = 15;
+  if (ttlFlagPassed && rawTtl === undefined) {
+    return { ok: false, error: 'invalid --ttl (missing value; expected a positive number of minutes)' };
+  }
+  if (rawTtl !== undefined) {
+    const n = Number(rawTtl);
+    if (!Number.isFinite(n) || n <= 0) {
+      return { ok: false, error: 'invalid --ttl (must be a positive number of minutes)' };
+    }
+    ttlMinutes = n;
+  }
+  const dir = path.join(home, '.anti-hall');
+  const file = skipFilePath(home);
+  let data = {};
+  try {
+    const raw = fs.readFileSync(file, 'utf8').trim();
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      // Require a plain non-array object: JSON.stringify on an array only
+      // serializes index/length properties, so `data[guard] = expiresAt`
+      // on an array would be silently dropped on write (reported ok:true
+      // with nothing actually persisted). Reset to {} instead of accepting
+      // array-shaped skip.json.
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) data = parsed;
+    }
+  } catch (_) {
+    data = {}; // missing / unreadable / bad JSON -> start fresh, never blocks the write
+  }
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const expiresAt = now + ttlMinutes * 60000;
+  // Guard BEFORE writing anything: an astronomically large but finite --ttl
+  // can overflow `now + ttlMinutes*60000` to Infinity. JSON.stringify(Infinity)
+  // serializes as `null`, which the guard's `data[name] > now` check reads as
+  // false -- reporting success while silently never actually skipping. Worse,
+  // computing expiresAtIso via `new Date(Infinity).toISOString()` throws
+  // AFTER the file would already be written, corrupting skip.json with a
+  // `null` entry under an ok:false response. Reject up front instead.
+  if (!Number.isFinite(expiresAt)) {
+    return { ok: false, error: 'invalid --ttl (resulting expiry is not a finite value)' };
+  }
+  data[guard] = expiresAt;
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = file + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, file);
+  return {
+    ok: true, action: 'skip', guard, ttlMinutes,
+    expiresAt, expiresAtIso: new Date(expiresAt).toISOString(), path: file,
+  };
+}
+
 // buildArchiveRequestMessage(reason) — the exact posted string. `reason` is
 // optional; when omitted the marker + instruction still stand alone.
 function buildArchiveRequestMessage(reason) {
@@ -4502,9 +4576,21 @@ function run(argv, ctx0) {
         const r = cmdMergeVerb((argv || []).slice(1), ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
+      case 'skip': {
+        // The escape-hatch CLI entry point: `skip <guard> [--ttl <minutes>]`.
+        // No isSafeId gate here — guard names ("edit-guard", "all", ...) are a
+        // fixed, code-defined vocabulary read back by skip-guard.js's own
+        // isSkipped(), not a filesystem id.
+        const guard = positionals[1];
+        if (!guard) {
+          return { code: 2, result: { ok: false, error: 'usage: devswarm.js skip <guard> [--ttl <minutes>]' } };
+        }
+        const r = cmdSkip(guard, flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip)' } };
     }
   } catch (e) {
     // Csh: an internal exception used to be swallowed silently into { ok:false }.
@@ -4543,7 +4629,7 @@ module.exports = {
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
   computeDiagnosis, healthcheckHumanLine,
   resolveMeshTarget, resolveSendTarget,
-  workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath,
+  workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath, skipFilePath,
   selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,
   migrateOwnerKeys, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive,
   applyRecoveryIntents, recoveryIntentPath, rehomeStrandedProjectDescriptors,

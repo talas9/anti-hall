@@ -345,6 +345,17 @@ function main() {
     devswarmActive = false; // fail-open: treat as standalone/dormant
   }
 
+  // SKIP-GUARD OVERRIDE HINT (papercut fix): the block message never told the
+  // agent the sanctioned override exists, and the reason title's "DEVSWARM
+  // EDIT-DELEGATION RULE" mismatched the real skip key ("edit-guard"), which
+  // misled agents into writing a useless "devswarm-edit-delegation" key instead.
+  // Appended verbatim to ALL THREE reason branches below — the skip key is
+  // ALWAYS "edit-guard" regardless of DevSwarm role/activity.
+  const SKIP_HINT = ' If the user EXPLICITLY instructed you to make THIS edit ' +
+    "yourself, that is the documented override — run 'node scripts/devswarm.js " +
+    "skip edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min " +
+    'TTL), then retry. Never skip on your own initiative.';
+
   let reason;
   if (devswarmActive) {
     // Topology-aware noun: a child workspace is a sub-orchestrator, but the root
@@ -369,7 +380,7 @@ function main() {
     reason = childWorkspace
       ? ('DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
          'directly in its workspace — spawn a subagent to make this edit and have it ' +
-         'report a tight summary. (tool: ' + toolName + ')')
+         'report a tight summary.' + SKIP_HINT + ' (tool: ' + toolName + ')')
       : ('DEVSWARM EDIT-DELEGATION RULE: the primary/main orchestrator does not touch ' +
          'files directly. CHOOSE THE TIER: if this edit belongs to a workspace-scale ' +
          'MATTER (a feature/fix/deploy — multi-step, own branch, own review), spin a ' +
@@ -377,13 +388,13 @@ function main() {
          '<branch> -p "<brief>"` (guard-exempt, run it inline). ALTERNATIVE, only for ' +
          'genuinely small/scoped work (a one-file tweak, a mechanical transform): spawn ' +
          'a subagent to make this edit and have it report a tight summary. Do NOT hand a ' +
-         'workspace-scale matter to a subagent. (tool: ' + toolName + ')');
+         'workspace-scale matter to a subagent.' + SKIP_HINT + ' (tool: ' + toolName + ')');
   } else {
     reason =
       'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
       'a subagent to make this edit and have it report a tight summary. The ' +
       'coordinator synthesizes the summary; raw edits never happen in the main ' +
-      'thread. (tool: ' + toolName + ')';
+      'thread.' + SKIP_HINT + ' (tool: ' + toolName + ')';
   }
 
   process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');

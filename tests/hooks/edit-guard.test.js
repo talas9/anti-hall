@@ -142,16 +142,23 @@ for (const tool of ['Write', 'Edit']) {
   });
 }
 
+// The plain (non-DevSwarm) coordinator reason, WITH the skip-guard override
+// hint appended (papercut fix: the block message now names the documented
+// escape hatch — 'node scripts/devswarm.js skip edit-guard' — instead of
+// leaving the agent to guess or invent a wrong skip key).
+const PLAIN_REASON = (tool) =>
+  'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
+  'a subagent to make this edit and have it report a tight summary. The ' +
+  'coordinator synthesizes the summary; raw edits never happen in the main ' +
+  'thread. If the user EXPLICITLY instructed you to make THIS edit yourself, ' +
+  "that is the documented override — run 'node scripts/devswarm.js skip " +
+  "edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min TTL), " +
+  'then retry. Never skip on your own initiative. (tool: ' + tool + ')';
+
 test('CONTINUE-HERE.md REGRESSION: normal source file still BLOCKED with unchanged reason', () => {
   const r = runCoord(editPayload('Edit', { filePath: 'src/foo.js' }));
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-  assert.strictEqual(
-    r.json.reason,
-    'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
-    'a subagent to make this edit and have it report a tight summary. The ' +
-    'coordinator synthesizes the summary; raw edits never happen in the main ' +
-    'thread. (tool: Edit)',
-  );
+  assert.strictEqual(r.json.reason, PLAIN_REASON('Edit'));
 });
 
 const CONTINUE_HERE_LOOKALIKES_BLOCKED = [
@@ -431,13 +438,7 @@ test('SYMLINK BYPASS: a symlinked allowlisted file blocks with the UNCHANGED rea
     fs.symlinkSync(path.join(p.dir, 'target.js'), path.join(p.dir, 'CONTINUE-HERE.md'));
     const r = runIn(p, 'Edit', 'CONTINUE-HERE.md');
     assert.strictEqual(r.status, 2);
-    assert.strictEqual(
-      r.json.reason,
-      'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
-      'a subagent to make this edit and have it report a tight summary. The ' +
-      'coordinator synthesizes the summary; raw edits never happen in the main ' +
-      'thread. (tool: Edit)',
-    );
+    assert.strictEqual(r.json.reason, PLAIN_REASON('Edit'));
   } finally {
     p.cleanup();
   }
@@ -538,19 +539,36 @@ test('DEVSWARM CHILD: block reason is UNCHANGED (no workspace redirect — child
     r.json.reason,
     'DEVSWARM EDIT-DELEGATION RULE: the sub-orchestrator does not touch files ' +
     'directly in its workspace — spawn a subagent to make this edit and have it ' +
-    'report a tight summary. (tool: Edit)',
+    'report a tight summary. If the user EXPLICITLY instructed you to make THIS ' +
+    "edit yourself, that is the documented override — run 'node scripts/devswarm.js " +
+    "skip edit-guard' to record your consent (~/.anti-hall/skip.json, 15-min TTL), " +
+    'then retry. Never skip on your own initiative. (tool: Edit)',
   );
 });
 
-test('NON-DEVSWARM: block reason is byte-for-byte the pre-fix baseline (no DevSwarm text)', () => {
+test('NON-DEVSWARM: block reason is the pre-fix baseline plus the skip-hint (no DEVSWARM-ACTIVE title)', () => {
   const r = runCoord(editPayload('Edit', { filePath: 'src/app.js' })); // no DEVSWARM_* env
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
-  assert.strictEqual(
-    r.json.reason,
-    'EDIT-DELEGATION RULE: the coordinator does not touch files directly — spawn ' +
-    'a subagent to make this edit and have it report a tight summary. The ' +
-    'coordinator synthesizes the summary; raw edits never happen in the main ' +
-    'thread. (tool: Edit)',
-  );
-  assert.ok(!/devswarm/i.test(r.stdout), 'non-DevSwarm output must not mention DevSwarm');
+  assert.strictEqual(r.json.reason, PLAIN_REASON('Edit'));
+  // The shared skip-hint intentionally names 'scripts/devswarm.js' (the CLI that
+  // now implements `skip`) even in the non-DevSwarm-active branch — that is NOT
+  // the DevSwarm-active wording switch. What must stay absent is the ACTIVE-mode
+  // title/redirect text (the "DEVSWARM EDIT-DELEGATION RULE" title and the
+  // workspace-tier CHOOSE-THE-TIER redirect), which only devswarmActive adds.
+  assert.ok(!/DEVSWARM EDIT-DELEGATION RULE/.test(r.stdout),
+    'non-DevSwarm output must not carry the DevSwarm-active title');
+  assert.ok(!/CHOOSE THE TIER/.test(r.stdout),
+    'non-DevSwarm output must not carry the Primary workspace-tier redirect');
+});
+
+test('SKIP HINT: block message names the documented override in all three branches', () => {
+  // Plain (non-DevSwarm) coordinator.
+  let r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }));
+  assert.ok(/skip edit-guard/.test(r.json.reason), `plain reason: ${r.json.reason}`);
+  // DevSwarm child (sub-orchestrator).
+  r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), CHILD_ENV);
+  assert.ok(/skip edit-guard/.test(r.json.reason), `child reason: ${r.json.reason}`);
+  // DevSwarm primary.
+  r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), PRIMARY_ENV);
+  assert.ok(/skip edit-guard/.test(r.json.reason), `primary reason: ${r.json.reason}`);
 });

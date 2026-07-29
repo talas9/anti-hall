@@ -746,6 +746,116 @@ test('archive-ignore writes then archive-unignore removes the mark', () => {
   } finally { rm(home); }
 });
 
+// ---- skip (the guard escape-hatch CLI entry point) ----
+// skip.json path must match hooks/skip-guard.js's own SKIP_FILE construction
+// (home/.anti-hall/skip.json); cli.skipFilePath(home) is the exported home-
+// injectable equivalent (see devswarm.js).
+
+test('skip edit-guard writes the key with a ~15min expiry (default TTL)', () => {
+  const home = tmpHome();
+  try {
+    const before = Date.now();
+    const r = cli.run(['skip', 'edit-guard'], ctx(home, { now: before }));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.guard, 'edit-guard');
+    assert.equal(r.result.ttlMinutes, 15);
+    assert.equal(r.result.expiresAt, before + 15 * 60000);
+    assert.equal(r.result.expiresAtIso, new Date(before + 15 * 60000).toISOString());
+    const p = cli.skipFilePath(home);
+    assert.equal(r.result.path, p);
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.equal(data['edit-guard'], before + 15 * 60000);
+  } finally { rm(home); }
+});
+
+test('skip --ttl <minutes> respects a custom TTL', () => {
+  const home = tmpHome();
+  try {
+    const before = Date.now();
+    const r = cli.run(['skip', 'git-guard', '--ttl', '5'], ctx(home, { now: before }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.ttlMinutes, 5);
+    assert.equal(r.result.expiresAt, before + 5 * 60000);
+    const data = JSON.parse(fs.readFileSync(cli.skipFilePath(home), 'utf8'));
+    assert.equal(data['git-guard'], before + 5 * 60000);
+  } finally { rm(home); }
+});
+
+test('skip MERGES into existing skip.json instead of clobbering other keys', () => {
+  const home = tmpHome();
+  try {
+    const dir = path.join(home, '.anti-hall');
+    fs.mkdirSync(dir, { recursive: true });
+    const p = cli.skipFilePath(home);
+    fs.writeFileSync(p, JSON.stringify({ 'command-guard': 123456789 }));
+    const before = Date.now();
+    const r = cli.run(['skip', 'edit-guard'], ctx(home, { now: before }));
+    assert.equal(r.result.ok, true);
+    const data = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.equal(data['command-guard'], 123456789, 'pre-existing key must survive the merge');
+    assert.equal(data['edit-guard'], before + 15 * 60000);
+  } finally { rm(home); }
+});
+
+test('skip with no guard arg -> usage error, non-zero exit', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['skip'], ctx(home));
+    assert.equal(r.code, 2);
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /usage/i);
+  } finally { rm(home); }
+});
+
+test('skip --ttl 0 / negative / non-numeric -> rejected, does not write', () => {
+  const home = tmpHome();
+  try {
+    for (const bad of ['0', '-5', 'nope']) {
+      const r = cli.run(['skip', 'edit-guard', '--ttl', bad], ctx(home));
+      assert.equal(r.result.ok, false, `--ttl ${bad} must be rejected`);
+    }
+    assert.equal(fs.existsSync(cli.skipFilePath(home)), false, 'a rejected --ttl must never write skip.json');
+  } finally { rm(home); }
+});
+
+test('skip --ttl with no following value -> rejected, does not silently default', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['skip', 'edit-guard', '--ttl'], ctx(home));
+    assert.equal(r.result.ok, false, 'a bare --ttl must be rejected, not default to 15');
+    assert.match(r.result.error, /--ttl/);
+    assert.equal(fs.existsSync(cli.skipFilePath(home)), false, 'a rejected bare --ttl must never write skip.json');
+  } finally { rm(home); }
+});
+
+test('skip --ttl huge enough to overflow expiresAt to Infinity -> rejected, does not partially write', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['skip', 'edit-guard', '--ttl', '1e308'], ctx(home));
+    assert.equal(r.result.ok, false, 'a non-finite resulting expiry must be rejected');
+    assert.match(r.result.error, /--ttl/);
+    assert.equal(fs.existsSync(cli.skipFilePath(home)), false, 'an overflowing --ttl must never write skip.json, even partially');
+  } finally { rm(home); }
+});
+
+test('skip refuses an array-shaped skip.json instead of accepting it as data', () => {
+  const home = tmpHome();
+  try {
+    const dir = path.join(home, '.anti-hall');
+    fs.mkdirSync(dir, { recursive: true });
+    const p = cli.skipFilePath(home);
+    fs.writeFileSync(p, JSON.stringify([1, 2, 3]));
+    const before = Date.now();
+    const r = cli.run(['skip', 'edit-guard'], ctx(home, { now: before }));
+    assert.equal(r.result.ok, true);
+    const raw = fs.readFileSync(p, 'utf8');
+    const data = JSON.parse(raw);
+    assert.equal(Array.isArray(data), false, 'skip.json must be reset to a plain object, not stay an array');
+    assert.equal(data['edit-guard'], before + 15 * 60000, 'the guard key must actually be persisted (arrays silently drop non-index keys on JSON.stringify)');
+  } finally { rm(home); }
+});
+
 test('heartbeat writes a turn-authored beat with only supplied fields', () => {
   const home = tmpHome();
   try {
