@@ -692,6 +692,125 @@ test('roster fold fails open: a native `list children` spawn error never breaks 
   } finally { rm(home); rm(repo); }
 });
 
+// CROSS-REPO HIJACK GUARD (defense-in-depth): `hivecontrol workspace list
+// children` resolves its "current workspace" scope ENTIRELY from env
+// (DEVSWARM_REPO_ID/DEVSWARM_BUILDER_ID), never from cwd — live-verified on a
+// real multi-repo devswarm install: a foreign DEVSWARM_REPO_ID + a matching
+// foreign DEVSWARM_BUILDER_ID makes `list children` silently answer with that
+// OTHER repo's real children, exit 0, valid JSON, regardless of this
+// process's actual cwd. (An earlier version of this fix stripped
+// DEVSWARM_REPO_ID from the `list children` env entirely — that was
+// live-verified WRONG: `list children` REQUIRES DEVSWARM_REPO_ID and errors
+// "Not inside a DevSwarm workspace" without it, so stripping breaks the fold
+// instead of hardening it.) fetchNativeChildren now cross-checks each
+// record's `repositoryId` against a SEPARATE, cwd-anchored `list all` lookup
+// (env-stripped, so IT falls back to cwd resolution) and drops any mismatch.
+//
+// IMPORTANT CAVEAT ON WHAT THESE TESTS PROVE: hivecontrol is a proprietary
+// binary never present in CI (see the fail-open test above), so every test
+// here — like every other native-fold test in this file — mocks `io.run` and
+// therefore can only prove fetchNativeChildren's OWN filtering logic given a
+// hypothetical response shape. It CANNOT prove hivecontrol itself behaves as
+// described (requires-env-but-ignores-cwd for `list children`, resolves via
+// cwd when env is stripped for `list all`). That claim was verified
+// separately, live, against the real `hivecontrol` binary on a real
+// multi-repo devswarm install (real cross-repo record leak reproduced and
+// then confirmed blocked + logged by this exact fix) — a verification a
+// hermetic CI test cannot reproduce without either a bundled hivecontrol
+// test-double binary (not present in this repo) or a CI runner with the
+// actual DevSwarm CLI installed and pre-seeded multi-repo workspace state
+// (proprietary desktop infra, not present in CI).
+test('roster drops a native child whose repositoryId does not match this repo\'s cwd-resolved id, and logs the mismatch', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('roster-hijack-guard-drop');
+  try {
+    let listAllEnv = null;
+    let listChildrenEnv = null;
+    const io = {
+      run: (spec) => {
+        if (spec.args[1] === 'list' && spec.args[2] === 'children') {
+          listChildrenEnv = spec.env;
+          return {
+            ok: true,
+            raw: JSON.stringify([
+              { branch: 'real-child', id: 'real-child', path: '/wt/real-child', repositoryId: 'repo-ours' },
+              { branch: 'hijacked-child', id: 'hijacked-child', path: '/wt/hijacked', repositoryId: 'repo-foreign' },
+            ]),
+          };
+        }
+        if (spec.args[1] === 'list' && spec.args[2] === 'all') {
+          listAllEnv = spec.env;
+          return { ok: true, raw: JSON.stringify([{ branch: 'main', id: 'primary', path: repo, repositoryId: 'repo-ours' }]) };
+        }
+        return { ok: true, raw: '{}' };
+      },
+    };
+    const foreignEnv = { DEVSWARM_REPO_ID: 'repo-foreign' };
+    const r = cli.run(['roster'], ctx(home, { cwd: repo, io, env: foreignEnv }));
+    assert.equal(r.result.ok, true);
+    const native = r.result.workspaces.filter((w) => w.source === 'native');
+    assert.equal(native.length, 1, 'only the matching-repositoryId child survives the cross-check');
+    assert.equal(native[0].id, 'real-child');
+    assert.ok(!r.result.workspaces.some((w) => w.id === 'hijacked-child'), 'the mismatched-repositoryId child must be dropped');
+    assert.ok(listAllEnv, 'the cross-check ground-truth lookup (`list all`) must have been invoked');
+    assert.equal(listAllEnv.DEVSWARM_REPO_ID, undefined, 'the ground-truth lookup must strip DEVSWARM_REPO_ID so it resolves from cwd, not the (possibly foreign) env');
+    // Guards against reintroducing the strip that broke `list children` (it
+    // requires DEVSWARM_REPO_ID and errors "Not inside a DevSwarm workspace"
+    // without it — see comment above). This does NOT prove hivecontrol
+    // accepts/behaves given this env; the mock never inspects it either way,
+    // so only a live run against the real binary can verify that.
+    assert.ok(listChildrenEnv, 'the `list children` lookup must have been invoked');
+    assert.notEqual(listChildrenEnv.DEVSWARM_REPO_ID, undefined, 'DEVSWARM_REPO_ID must NOT be stripped from the `list children` env — that call requires it');
+  } finally { rm(home); rm(repo); }
+});
+
+test('roster folds a native child normally (no cross-check spawn) when no record carries a repositoryId at all', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('roster-hijack-guard-norepoid');
+  try {
+    let listAllCalled = false;
+    const io = {
+      run: (spec) => {
+        if (spec.args[1] === 'list' && spec.args[2] === 'children') {
+          return { ok: true, raw: JSON.stringify([{ branch: 'old-hivecontrol-child', id: 'old-hivecontrol-child', path: '/wt/old' }]) };
+        }
+        if (spec.args[1] === 'list' && spec.args[2] === 'all') {
+          listAllCalled = true;
+          return { ok: true, raw: '[]' };
+        }
+        return { ok: true, raw: '{}' };
+      },
+    };
+    const r = cli.run(['roster'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true);
+    const row = r.result.workspaces.find((w) => w.id === 'old-hivecontrol-child');
+    assert.ok(row, 'a child with no repositoryId field at all must still be folded in (nothing to cross-check)');
+    assert.equal(listAllCalled, false, 'the ground-truth lookup must not be spawned when there is nothing to validate');
+  } finally { rm(home); rm(repo); }
+});
+
+test('roster fails open (unfiltered) when the ground-truth `list all` lookup itself fails — never drops children it cannot validate', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('roster-hijack-guard-groundtruth-fails');
+  try {
+    const io = {
+      run: (spec) => {
+        if (spec.args[1] === 'list' && spec.args[2] === 'children') {
+          return { ok: true, raw: JSON.stringify([{ branch: 'unverifiable-child', id: 'unverifiable-child', path: '/wt/unverifiable', repositoryId: 'repo-x' }]) };
+        }
+        if (spec.args[1] === 'list' && spec.args[2] === 'all') {
+          return { ok: false, error: 'hivecontrol not installed' };
+        }
+        return { ok: true, raw: '{}' };
+      },
+    };
+    const r = cli.run(['roster'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true);
+    const row = r.result.workspaces.find((w) => w.id === 'unverifiable-child');
+    assert.ok(row, 'without a trusted repositoryId to compare against, a child must still be folded in rather than dropped (fail-open)');
+  } finally { rm(home); rm(repo); }
+});
+
 // ============================================================================
 // FEATURE 3: roster archive-candidate surfacing (read-only hints + archived/
 // dir listing). No new heavy work, no subprocess beyond what cmdRoster

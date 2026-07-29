@@ -3318,10 +3318,13 @@ function cmdSend(flags, ctx) {
 // probeNativeMessageCount) — a hung/slow native CLI must never wedge `roster`.
 const LIST_CHILDREN_TIMEOUT_MS = 5000;
 
-// parseChildrenList(raw) -> [{branch,id,path}]. TOLERANT parse of `hivecontrol
-// workspace list children` output — the JSON shape is not pinned in the KB, so
-// accept a bare array or a {children:[...]} wrapper (same tolerance the old,
-// now-deleted resolveChildBranch used for the same command).
+// parseChildrenList(raw) -> [{branch,id,path,repositoryId}]. TOLERANT parse of
+// `hivecontrol workspace list children`/`list all` output — the JSON shape is
+// not pinned in the KB, so accept a bare array or a {children:[...]} wrapper
+// (same tolerance the old, now-deleted resolveChildBranch used for the same
+// command). Shared by fetchNativeChildren (`list children`) AND
+// fetchTrustedRepositoryId (`list all`) below — both commands return the same
+// per-record shape (live-verified).
 function parseChildrenList(raw) {
   let list = [];
   try {
@@ -3338,7 +3341,35 @@ function parseChildrenList(raw) {
     // parse; now threaded through fetchNativeChildren/cmdRoster so a native
     // child's human name is visible instead of just its branch/id.
     label: (typeof e.label === 'string' && e.label) ? e.label : null,
+    // repositoryId (cross-repo hijack guard, see fetchNativeChildren below):
+    // hivecontrol's own internal repo identity for this record — live-verified
+    // present on both `list children` and `list all` output.
+    repositoryId: (typeof e.repositoryId === 'string' && e.repositoryId) ? e.repositoryId : null,
   }));
+}
+
+// fetchTrustedRepositoryId(ctx, run) -> string|null. ONE bounded, CWD-ANCHORED
+// `hivecontrol workspace list all` spawn with DEVSWARM_REPO_ID stripped from
+// the env it's given, so hivecontrol is forced onto its cwd-based resolution
+// fallback (live-verified correct: unsetting all DEVSWARM_* vars makes
+// `list all` resolve the repo from the real worktree cwd, not an ambient env
+// var). Used ONLY as ground truth for fetchNativeChildren's cross-check below.
+// Fail-open null: hivecontrol not installed / spawn error / unparseable /
+// empty output all read as "no trusted id available".
+function fetchTrustedRepositoryId(ctx, run) {
+  try {
+    let env = ctx.env;
+    if (env && Object.prototype.hasOwnProperty.call(env, 'DEVSWARM_REPO_ID')) {
+      env = Object.assign({}, env);
+      delete env.DEVSWARM_REPO_ID;
+    }
+    const res = run({ args: ['workspace', 'list', 'all'], env, timeout: LIST_CHILDREN_TIMEOUT_MS });
+    if (!res || !res.ok) return null;
+    const found = parseChildrenList(res.raw).find((e) => e.repositoryId);
+    return found ? found.repositoryId : null;
+  } catch (_) {
+    return null;
+  }
 }
 
 // fetchNativeChildren(ctx) -> [{branch,id,path}]. ONE bounded, NON-DESTRUCTIVE
@@ -3347,12 +3378,43 @@ function parseChildrenList(raw) {
 // file (pull.defaultRun). Fail-open []: hivecontrol not installed / spawn error
 // / unparseable output all read as "nothing to fold" — roster's own store-only
 // view is NEVER blocked or degraded by this best-effort addition.
+//
+// CROSS-REPO HIJACK GUARD (defense-in-depth): `list children` resolves its
+// "current workspace" scope ENTIRELY from env (DEVSWARM_REPO_ID +
+// DEVSWARM_BUILDER_ID), never from cwd — live-verified: a Node process that
+// inherited a FOREIGN repo's DEVSWARM_REPO_ID (+ a matching foreign
+// DEVSWARM_BUILDER_ID) gets that OTHER repo's real children back, exit 0,
+// valid JSON, with this process's cwd sitting in a completely unrelated repo
+// the whole time. (`list children` also REQUIRES DEVSWARM_REPO_ID to run at
+// all — it errors "Not inside a DevSwarm workspace" without it — so stripping
+// the env here, as an earlier version of this fix did, breaks the call
+// entirely instead of hardening it; that approach was live-verified wrong and
+// reverted.) Each returned record's `repositoryId` is cross-checked against a
+// SEPARATE, cwd-anchored lookup (fetchTrustedRepositoryId, env-stripped
+// `list all`) and any mismatch is dropped + logged rather than silently
+// folded into this repo's roster. If no trusted id can be established, or no
+// record carries a repositoryId at all (older hivecontrol), the fold degrades
+// to its pre-existing unfiltered behavior — never a crash, never a hard
+// failure.
 function fetchNativeChildren(ctx) {
   try {
     const run = (ctx.io && ctx.io.run) || pull.defaultRun;
     const res = run({ args: ['workspace', 'list', 'children'], env: ctx.env, timeout: LIST_CHILDREN_TIMEOUT_MS });
     if (!res || !res.ok) return [];
-    return parseChildrenList(res.raw);
+    const children = parseChildrenList(res.raw);
+    const withRepoId = children.filter((c) => c.repositoryId);
+    if (withRepoId.length === 0) return children; // nothing to cross-check against
+    const trusted = fetchTrustedRepositoryId(ctx, run);
+    if (!trusted) return children; // no ground truth available -> fail open, unfiltered
+    const mismatched = withRepoId.filter((c) => c.repositoryId !== trusted);
+    if (mismatched.length) {
+      try {
+        alog.logEvent('devswarm-cli', 'roster-native-fold', 'warn',
+          'dropped ' + mismatched.length + ' native child(ren) whose repositoryId did not match this repo (cross-repo env hijack guard)',
+          { expected: trusted, got: Array.from(new Set(mismatched.map((c) => c.repositoryId))) });
+      } catch (_) {}
+    }
+    return children.filter((c) => !c.repositoryId || c.repositoryId === trusted);
   } catch (_) {
     return [];
   }
