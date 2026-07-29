@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.67.1
+
+Fixes the DevSwarm supervisor escalation path for a Primary that has self-registered from the true main worktree — it had never delivered end-to-end. A Primary that has not self-registered that way still has its escalation land in the orphans list: the informational parent-inbox hook surfaces orphans, but the blocking parent-gate hook does not, so such a Primary can stop unblocked on an escalation the informational hook would have shown it. That gap is not fixed in this release.
+
+- **Supervisor escalations now actually reach the parent.** Four stacked defects, any one of which alone would have silently swallowed an escalation: the projection was never refreshed after an escalation was appended, so the parent-facing view stayed stale; the store was opened without a hash and wrote to a legacy bucket instead of the repoKey store; the parent id was derived from the child's own worktree path rather than resolved to the true parent, so escalations landed in the child's own bucket; and two fold/rehome paths skipped their projection refresh entirely on specific branches.
+- **Hardened the roster's native fold against cross-repo env hijack.** `hivecontrol workspace list children` resolves its scope entirely from `DEVSWARM_REPO_ID`/`DEVSWARM_BUILDER_ID`, never from cwd — a process holding a foreign repo's env gets that repo's children back with exit 0 and valid JSON. Each record's `repositoryId` is now cross-checked against a separate cwd-anchored, env-stripped `list all` lookup; mismatches are dropped and logged. Fails open unfiltered (older hivecontrol without `repositoryId`, no ground truth, spawn error) — the fold is never hard-failed.
+- **Added `devswarm.js skip <guard> [--ttl <minutes>]`**, the CLI entry point edit-guard's own block message already pointed agents at but which did not exist — agents were hand-rolling `node -e` scripts to write `~/.anti-hall/skip.json` directly. Also fixed edit-guard's block message itself, which titled its reason "DEVSWARM EDIT-DELEGATION RULE" while the skip key it actually checks is `edit-guard`, so following the message's own wording wrote a useless key and got blocked anyway.
+- **Guarded the `devswarm-repokey.js` require** in `recovery.js` — it is loaded top-level by both `devswarm-supervisor.js`'s sweep loop and `devswarm.js`'s CLI entry, neither of which wraps its own top-level requires in the fail-open guarantees that cover their call sites. A throwing require (corrupt or deleted `devswarm-repokey.js`) would have crashed both consumers before any fail-open path could engage.
+
 ## 0.67.0
 
 DevSwarm workspaces get human-readable names, a lost review seat can no longer report a clean gate, and model routing goes version-agnostic.
