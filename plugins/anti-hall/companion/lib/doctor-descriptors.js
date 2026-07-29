@@ -23,13 +23,26 @@
 // separators/traversal), not an id-SHAPE gate — a 34-char truncated uuid is a
 // perfectly safe path segment. This scan is the missing shape check.
 //
-// KNOWN ORIGIN (verified, not inferred): hooks/devswarm-child-turn.js:85-100
-// documents the one proven producer — hivecontrol's DEVSWARM_BUILDER_ID env var
-// arriving truncated by a couple of trailing hex chars (an env-plumbing bug
-// OUTSIDE anti-hall), which registerChildDescriptor then trusted as a filename
-// with zero shape validation and re-wrote every turn. v0.62.2 closed that with
-// TRUNCATED_UUID_RE + retirePhantomWorktreeDuplicates, which forwards the
-// phantom's unread messages to the real workspace and archives it.
+// KNOWN ORIGIN of the one real instance (forensically verified, and NOT the
+// cause the codebase itself assumes). hooks/devswarm-child-turn.js:85-100
+// attributes a truncated id to hivecontrol delivering a short
+// DEVSWARM_BUILDER_ID. For the live artifact that is DISPROVED by the artifact
+// itself: its sessionId holds the FULL 36-char id, and the CLI register path
+// sources sessionId from exactly that env var (scripts/devswarm.js:1912,
+// `flags.session || env.DEVSWARM_BUILDER_ID`). The env var was CORRECT.
+//
+// What actually happened: a wrapped copy-paste split the id at the shell —
+// `inbox pull <...4196> ac` instead of `<...4196ac>` (bash_history has the
+// line, re-run correctly one command later). `cmdInboxPull` auto-ensures a
+// descriptor for ANY unknown positional (requireNew register), deriving id,
+// filename, inboxPath and cursorPath from that ONE variable — which is exactly
+// why all four are consistently truncated while sessionId is not. A typo became
+// a persistent phantom because the CLI arg boundary validates ids with
+// isSafeId() (a path-safety check) and never rejects a uuid-shaped-but-short
+// positional; the TRUNCATED_UUID_RE guard exists only on the hook path.
+//
+// v0.62.2's retirePhantomWorktreeDuplicates later detected it by shape,
+// forwarded its unread messages to the real workspace, and archived it.
 //
 // So this scan is DETECTIVE, not preventive, and the two do not overlap: the
 // v0.62.2 defense stops NEW phantoms being written into workspaces/, but it
@@ -169,7 +182,7 @@ function scanDescriptors(opts) {
       message: 'descriptor archived/' + a.file + ': id ' + JSON.stringify(a.id) + ' (' + a.id.length + ' chars)'
         + ' is a strict PREFIX of live workspace id(s) ' + shadowed.map((s) => JSON.stringify(s) + ' (' + s.length + ')').join(', ')
         + ' — the roster dedups on exact id, so this renders as an extra phantom row for a workspace that exists once.'
-        + ' Known producer: a truncated DEVSWARM_BUILDER_ID (see hooks/devswarm-child-turn.js:85-100); v0.62.2 stops NEW ones but never deletes retired ones.'
+        + ' Known producer: a uuid-shaped-but-short id accepted at the CLI arg boundary (e.g. a split copy-paste into `inbox pull`), which auto-creates a descriptor; v0.62.2 retires such phantoms but never deletes them.'
         + ' REPORT ONLY: left untouched (it owns real inbox/cursor files); removing it needs explicit owner confirmation' });
   }
 
