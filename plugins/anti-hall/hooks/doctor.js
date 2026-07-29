@@ -582,6 +582,7 @@ function devswarmHookSelfTests() {
     path.join(libDir, 'liveness.js'),
     path.join(libDir, 'recovery.js'),
     path.join(libDir, 'doctor-devswarm.js'),
+    path.join(libDir, 'doctor-descriptors.js'),
     path.join(libDir, 'doctor-runtime.js'),
     path.join(ROOT, 'companion', 'devswarm-supervisor.js'),
     path.join(ROOT, 'companion', 'install-devswarm-supervisor.js'),
