@@ -12,6 +12,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const cp = require('node:child_process');
 
 const M = require(path.join(
   __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'recovery.js',
@@ -25,12 +26,29 @@ const storeLib = require(path.join(
 const inst = require(path.join(
   __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js',
 ));
+const repokeyLib = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-repokey.js',
+));
 
 const UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 function makeHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-recovery-'));
   return { home, cleanup: () => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} } };
+}
+function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
+// makeGitRepo(tag) — a REAL git repo, so repoKeyForWorktree (devswarm-repokey.js)
+// resolves non-null. Mirrors tests/companion/install-ingest-repokey.test.js /
+// tests/scripts/devswarm-fold-mesh.test.js's own local copy of this helper.
+function makeGitRepo(tag) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-recovery-repo-' + tag + '-'));
+  cp.spawnSync('git', ['init', '-q', dir]);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.email', 'a@b.c']);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'README.md'), tag);
+  cp.spawnSync('git', ['-C', dir, 'add', '.']);
+  cp.spawnSync('git', ['-C', dir, 'commit', '-q', '-m', 'init']);
+  return dir;
 }
 function descriptor(home) {
   const worktreePath = path.join(home, 'wt');
@@ -484,4 +502,151 @@ test('pokeOrEscalate: a NUDGE (not an escalate) never touches the parent store',
     assert.strictEqual(r.action, 'nudged');
     assert.strictEqual(opened, false, 'a nudge must never open/notify the parent store');
   } finally { cleanup(); }
+});
+
+// ---- GAP A: notifyParentEscalation must open the PARENT's REPOKEY store (not
+// the legacy hashFromWorkspaceId bucket) AND re-derive its projection. Pre-fix
+// it called `open({ home, workspaceId: parentId, ... })` with NO `hash`, so
+// openStore fell back to the legacy 8-hex bucket store.hashFromWorkspaceId(parentId)
+// — a store no other mesh participant reads — and never called deriveSummary at
+// all, so even a correctly-placed row would stay invisible to every projection
+// reader. -----------------------------------------------------------------------
+
+test('notifyParentEscalation: appends into the PARENT repoKey store (not the legacy hash bucket) and re-derives its projection', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const gitRepoDir = makeGitRepo('gapA');
+    try {
+      const expectedRepoKey = repokeyLib.repoKeyForWorktree(gitRepoDir);
+      assert.ok(expectedRepoKey, 'sanity: this environment must resolve a real repoKey for a real git repo — otherwise this test would be vacuous');
+
+      const parentId = inst.primaryWorkspaceId(gitRepoDir);
+      const d = { id: 'child-gapA', worktreePath: gitRepoDir, sessionId: UUID };
+      assert.notStrictEqual(d.id, parentId, 'sanity: the child id must differ from the resolved parent id');
+
+      const now = Date.now();
+      const staleSince = now - 7 * 60 * 1000;
+      const verdict = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+
+      // NO openParentStore override -> exercises the REAL store.
+      M.notifyParentEscalation(d, verdict, { home, now }, undefined);
+
+      // 1) The escalation row landed in the REPOKEY store.
+      const s = storeLib.openStore({ home, workspaceId: parentId, hash: expectedRepoKey });
+      let msgs;
+      try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
+      assert.ok(msgs.some((m) => m.body.includes(d.id)), 'the repoKey parent store carries a notice naming the child');
+
+      // 2) The PROJECTION reflects it — pre-fix nothing ever derived it, so this
+      //    was null.
+      const sum = storeLib.readSummaryForHash(home, expectedRepoKey);
+      assert.ok(sum, 'the repoKey summary was (re-)derived by notifyParentEscalation');
+
+      // 3) ANTI-REGRESSION: the LEGACY 8-hex bucket got NOTHING (only meaningful
+      //    when the two keys actually differ — a repoKey always contains an
+      //    internal `-`, a legacy 8-hex hash never does, so they are disjoint by
+      //    construction, but assert the precondition rather than assume it).
+      const legacyHash = storeLib.hashFromWorkspaceId(parentId);
+      if (legacyHash !== expectedRepoKey) {
+        const sLegacy = storeLib.openStore({ home, workspaceId: parentId, hash: legacyHash });
+        let legacyMsgs;
+        try { legacyMsgs = sLegacy.listMessages(parentId, {}); } finally { sLegacy.close(); }
+        assert.strictEqual(legacyMsgs.length, 0, 'the legacy hash bucket must receive NOTHING');
+      }
+    } finally { rm(gitRepoDir); }
+  } finally { cleanup(); }
+});
+
+// ---- GAP A2: notifyParentEscalation must address the PARENT's mesh id, not the
+// CHILD's own. primaryWorkspaceId() is a PURE hash of whatever path it is handed —
+// it does no git resolution. Pre-fix the call site hashed descriptor.worktreePath
+// directly, which for a LINKED worktree (the normal DevSwarm child shape) is the
+// child's OWN worktree root, so the "parent" id computed was actually the child's
+// own id and the notice was filed into a queue the parent never reads. ------------
+
+test('notifyParentEscalation (linked worktree): addresses the notice to the PARENT id, not the CHILD\'s own mesh id', () => {
+  const { home, cleanup } = makeHome();
+  let mainRepo = null;
+  let parentDir = null;
+  try {
+    mainRepo = makeGitRepo('gapA2-main');
+    // FIXTURE MUST STAY A LINKED WORKTREE — not a plain git repo. This is not a style
+    // preference. For a plain repo, resolveMainWorktree(repo) === repo, so the parent id
+    // and the child's own id COINCIDE and the wrong-addressee failure is structurally
+    // UNREPRESENTABLE. The earlier plain-repo fixture was not weakly asserted — it was
+    // STRUCTURALLY BLIND: a fixture that cannot express the failing topology passes
+    // forever no matter how many assertions are bolted onto it. Do not "simplify" this
+    // back to a plain repo; doing so silently re-blinds the test.
+    parentDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-recovery-wtparent-'));
+    const childDir = path.join(parentDir, 'child-wt');
+    const wtAdd = cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'add', '-q', childDir, '-b', 'wt-gapA2']);
+    assert.strictEqual(wtAdd.status, 0, `git worktree add must succeed: ${wtAdd.stderr}`);
+    // PRECONDITION: a linked worktree's `.git` is a FILE (a gitdir pointer), not a
+    // directory — else this scenario is vacuous (it would behave like a plain repo).
+    assert.ok(fs.statSync(path.join(childDir, '.git')).isFile(), 'sanity: linked worktree .git must be a FILE');
+
+    const d = { id: 'child-gapA2', worktreePath: childDir, sessionId: UUID };
+    const expectedParentId = inst.primaryWorkspaceId(inst.resolveMainWorktree(childDir));
+    const childOwnId = inst.primaryWorkspaceId(childDir);
+    // NON-VACUITY GUARD: if these ever coincide, the whole scenario below proves
+    // nothing — fail loudly rather than silently pass.
+    assert.notStrictEqual(expectedParentId, childOwnId, 'sanity: parent id and child\'s own id must differ for this fixture to be meaningful');
+
+    const now = Date.now();
+    const staleSince = now - 7 * 60 * 1000;
+    const verdict = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+
+    // NO openParentStore override -> exercises the REAL store, same as production.
+    M.notifyParentEscalation(d, verdict, { home, now }, undefined);
+
+    const expectedRepoKey = repokeyLib.repoKeyForWorktree(childDir);
+    assert.ok(expectedRepoKey, 'sanity: a real git worktree must resolve a real repoKey');
+
+    // 1) Row lands under the PARENT's key.
+    const sParent = storeLib.openStore({ home, workspaceId: expectedParentId, hash: expectedRepoKey });
+    let parentMsgs;
+    try { parentMsgs = sParent.listMessages(expectedParentId, {}); } finally { sParent.close(); }
+    assert.ok(parentMsgs.some((m) => m.body.includes(d.id)), 'the PARENT partition carries a notice naming the child');
+
+    // 2) Row is ABSENT from the child's own key (same repoKey store, different partition).
+    const sChild = storeLib.openStore({ home, workspaceId: childOwnId, hash: expectedRepoKey });
+    let childMsgs;
+    try { childMsgs = sChild.listMessages(childOwnId, {}); } finally { sChild.close(); }
+    assert.strictEqual(childMsgs.length, 0, 'the child\'s own partition must receive NOTHING — it is not the addressee');
+
+    // 3) The projection the parent reads reflects it. computeSummary only projects a
+    //    registry.listRegistry() row into `summary.workspaces[id]`; notifyParentEscalation
+    //    never registers the parent (it only appends a message), so a real-unread
+    //    partition with no registry row surfaces via the A2 ORPHAN-DETECTION path
+    //    instead — `summary.orphans[]` entries shaped {id, messageCount, unread}
+    //    (devswarm-store.js computeSummary, A2 orphan block). Verified empirically
+    //    against this exact fixture before writing this assertion — do not assume
+    //    `workspaces[id].unread`, which does not exist here.
+    const sum = storeLib.readSummaryForHash(home, expectedRepoKey);
+    assert.ok(sum, 'the repoKey summary was (re-)derived by notifyParentEscalation');
+    const orphanEntry = (sum.orphans || []).find((o) => o.id === expectedParentId);
+    assert.ok(orphanEntry, 'the projection surfaces the parent partition (as an orphan: no registry row, real unread)');
+    assert.ok(orphanEntry.unread > 0, 'the parent partition shows non-zero unread in the projection');
+
+    // 4) ANTI-REGRESSION: the LEGACY 8-hex bucket (hashFromWorkspaceId(parentId)) gets
+    //    NOTHING, guarded by a keys-differ precondition (disjoint by construction, but
+    //    assert it rather than assume it).
+    const legacyHash = storeLib.hashFromWorkspaceId(expectedParentId);
+    if (legacyHash !== expectedRepoKey) {
+      const sLegacy = storeLib.openStore({ home, workspaceId: expectedParentId, hash: legacyHash });
+      let legacyMsgs;
+      try { legacyMsgs = sLegacy.listMessages(expectedParentId, {}); } finally { sLegacy.close(); }
+      assert.strictEqual(legacyMsgs.length, 0, 'the legacy hash bucket must receive NOTHING');
+    }
+  } finally {
+    try {
+      if (mainRepo) {
+        const childDir = parentDir ? path.join(parentDir, 'child-wt') : null;
+        if (childDir) cp.spawnSync('git', ['-C', mainRepo, 'worktree', 'remove', '--force', childDir]);
+      }
+    } catch (_) {}
+    if (parentDir) rm(parentDir);
+    if (mainRepo) rm(mainRepo);
+    cleanup();
+  }
 });
