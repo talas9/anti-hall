@@ -28,7 +28,13 @@
   (`@skills-dir`) plugin installs, which never load background monitors at all. See §9.
 - **Right shape:** continuous polling with event-per-occurrence (mailbox watcher, health
   check, child workspace heartbeat). Wrong shape: one-shot waits (`tail -f log | grep -m1
-  "DONE"`), high-frequency spammers (auto-stopped).
+  "DONE"`), high-frequency spammers — **measured this session, corrects the "auto-stopped"
+  framing: the process is never killed** (see §3/§6/§11); a spammy watcher instead goes
+  silently half-deaf as its notification stream gets suppressed.
+- **Verified this session, not documented:** a Monitor's `timeout_ms` expiry delivers a
+  distinctly-worded final event (`"[Monitor timed out — re-arm if needed.]"`) before ending
+  the watch — turning timeout into a self-healing re-arm signal for non-persistent
+  monitors, unlike a `persistent: true` monitor that just dies with no such signal. See §6.
 - **vs. Bash `run_in_background`:** Bash fires ONE completion notification when the command
   exits; Monitor fires per **occurrence** while living. Trade-off: Monitor is cheaper
   (events only, no full-turn overhead per occurrence), but less useful for one-time
@@ -39,6 +45,23 @@
   wake path wherever it's available; cron is **retained permanently** as the fallback for
   every case where Monitor provably does not exist (Bedrock/Vertex/Foundry, telemetry
   disabled, project-scope installs, non-interactive sessions). See §7.
+
+---
+
+## Measured vs. documented — read this before trusting either
+
+Most claims in this KB come from official Claude Code docs or the live tool schema, each
+tagged `[verified: tool schema]` or `[documented: ...]`. A separate batch of facts below
+comes from **direct experiments run in a live Claude Code session this session**
+(escalating stdout floods, exit-code probes, a timeout probe, an env-inheritance check,
+batching/stderr checks, a line-buffering retest, and a mtime-watcher design test) and is
+tagged `[verified: live test, this session]`. These are empirical observations, **not**
+Anthropic documentation — several of them **correct or refine** claims stated elsewhere in
+this KB, most notably the "automatically stopped" spam-protection claim (§3, §6, §11): a
+noisy monitor's process is never killed, only its notification stream is throttled. Treat
+every `[verified: live test, this session]` finding as tested, reproducible behavior at the
+scale actually tested — not a guaranteed contract, and not exhaustive proof no larger-scale
+behavior exists. Same caveat this KB already applies to the §4 idle-wake finding.
 
 ---
 
@@ -89,7 +112,7 @@ Monitor(
 | `command` | string | Shell command to run (e.g. `tail -f /path/to/log \| grep --line-buffered 'WARN\|ERROR'`) | Bash permission rules apply; runs under the session's allowed commands. One of `command` or `ws` required. |
 | `ws` | object `{url, protocols?}` | WebSocket source (e.g. `{url: 'wss://example.com/stream'}`) | No pattern filtering on the ws side; each frame becomes an event. v2.1.195+. Denies private/link-local/cloud-metadata IPs; respects sandbox rules. Frames >1MiB end the watch. |
 | `description` | string | Label shown in notifications (e.g. `"Watching build log for errors"`) | Required. Appears in the terminal panel and transcript. |
-| `timeout_ms` | number | Milliseconds before auto-stop. Default 300000 (5 min), max 3600000 (1 hour). | `persistent: true` ignores this; use `TaskStop` to halt. Silence ≠ success — a stalled watch is still alive (see coverage rule below). |
+| `timeout_ms` | number | Milliseconds before auto-stop. Default 300000 (5 min), max 3600000 (1 hour). | `persistent: true` ignores this; use `TaskStop` to halt. Silence ≠ success — a stalled watch is still alive (see coverage rule below). **Measured this session** [verified: live test, this session]: an unbounded emitting monitor was killed cleanly at its `timeout_ms` deadline (no partial/garbled line), delivering a distinct final event, `"[Monitor timed out — re-arm if needed.]"`, with terminal status `killed` — see §6 for why this makes timeout a self-healing re-arm signal, not just a limit. |
 | `persistent` | boolean | If `true`, run for the entire session (not subject to timeout). Stop via `TaskStop` tool. | Default `false`. Session-lifetime watches need explicit cleanup. Whether a plugin-declared `when: "always"` monitor gets re-armed for you across a resume/compaction is *not documented* either way — see §5 and §6 before relying on it. |
 
 **NO pattern/condition/regex parameter.** Filtering is **your job**, done **inside the
@@ -108,11 +131,47 @@ and the monitor stalls. Every pipe stage must flush per line:
 
 **Event batching** [verified: tool docs]: stdout lines arriving within 200ms are batched
 into a single notification. A flurry of log lines may fire as one `[3 lines received]`
-event, not three.
+event, not three. **Confirmed concretely this session** [verified: live test, this
+session]: three lines emitted via a single `printf` (effectively simultaneous) arrived as
+**one** notification containing all three; three lines separated by ~1.5s each arrived as
+**three** separate notifications.
 
 **Stdout only** [verified: tool docs]: only **stdout** drives events. Stderr goes to a
 readable output file but **does not wake** the agent. If you need stderr, merge it:
-`command 2>&1 | grep ...`.
+`command 2>&1 | grep ...`. **Confirmed this session** [verified: live test, this session]:
+a command writing to both streams produced notification events only for stdout lines; all
+four lines (stdout + stderr) were present in the output file, with stderr lines tagged
+`[stderr]`. One display quirk observed: the tag appeared on the first stderr line but not
+on an immediately-following consecutive stderr line — read this as a display quirk, not
+data loss (the output file had both lines intact).
+
+**Exit codes and terminal status — measured, not documented anywhere** [verified: live
+test, this session]: a command that emits a line then exits non-zero (tested: exit 7)
+produced the line's event, then a terminal notification with status `failed` naming the
+exit code (`"script failed (exit 7)"`). A command that exits `0` with **no output at all**
+produced **no event notification** and terminal status `completed` — a clean, silent,
+zero-output exit ends without any event ever firing. Implication: a watcher that crashes
+announces itself; a watcher that exits cleanly with nothing to say vanishes without a
+trace — "no notification yet" is not proof "still running."
+
+**Environment and cwd inheritance — measured, scope-limited** [verified: live test, this
+session]: an **agent-armed** Monitor command echoing `$PWD` / `$HOME` showed it inherits
+the session's actual working directory and normal environment; an unset variable correctly
+reported as unset (no unexpected env injection). This was verified only for an
+**agent-armed** monitor — whether a **plugin-declared** monitor (§5, started by the runtime
+at session start) inherits the same environment is **unverified** and should not be
+assumed; a plugin monitor that depends on env vars for its identity could silently fail to
+resolve them (a related but distinct gap from §5's existing note that plugin monitors don't
+receive `CLAUDE_PLUGIN_OPTION_<KEY>`).
+
+**Line-buffering trap — attempted this session, inconclusive** [verified: live test, this
+session — INCONCLUSIVE]: piping a slow producer (5 lines at 1s intervals) through `grep`
+*without* `--line-buffered` versus *with* it produced **identical** per-line delivery
+timing in both cases (~1.0s apart, by timestamp). This does **not** refute the documented
+trap — the test was small, run on macOS (likely BSD `grep`, not GNU `grep`), and didn't
+exercise the conditions known to trigger it (GNU grep, larger/faster input). Keep
+`--line-buffered` as the safe default regardless; treat the trap as
+documented-but-not-reproduced-here, not disproven.
 
 ---
 
@@ -145,6 +204,25 @@ tail -f deploy.log | grep --line-buffered -E '...' || echo "ERROR: deploy log di
 **Principle:** a dead monitor looks like a stalled one. Always pair a positive filter
 (happy path) with **one or more negative filters** (errors, timeouts, crashes) so the
 agent can distinguish "still waiting" from "something broke."
+
+**Measured design lesson — trigger on semantic delta, never on mtime** [verified: live
+test, this session]: a monitor watching the **mtime** of a shared state directory emitted
+8 events in ~70 seconds while only one meaningful thing was actually happening — because
+the directory's mtime changes on **every** write (heartbeats, cursor advances, projection
+re-derives), not only on actionable new messages. At that rate it reaches the ~19-20 event
+suppression ceiling (corrected understanding of "auto-stop," see §6/§11 below) in under
+three minutes, and the wake channel degrades into notification-suppression while still
+*looking* healthy — process alive, no error, just going quiet.
+
+**Rule:** the **emit** decision must come from **parsed state** (a monotonic counter
+advancing, a new message ID), never from a file/directory mtime or a generic "something
+changed" signal. mtime is fine as a cheap *gate* to skip re-parsing unchanged bytes, but it
+must never be the trigger itself. Corroborating live evidence: an idle workspace in a real
+mesh was observed broadcasting the same status message 50+ times at ~285-second intervals
+(a 5-minute polling cadence) — heartbeat traffic alone, with zero new information, is more
+than enough to exhaust the event budget. (The `devswarm-mailbox-watcher.sh` sketch in §7
+already follows this rule — it emits on `seq > last_seq`, not on mtime — this finding
+corroborates that design choice rather than correcting it.)
 
 ---
 
@@ -193,7 +271,10 @@ no doc commits to it.
 version it was silently substituted instead. Monitor processes do **not** receive
 `CLAUDE_PLUGIN_OPTION_<KEY>` env vars the way some other plugin hooks do; if a monitor
 needs user-configured options, have its script read a config file the plugin owns rather
-than relying on env injection.
+than relying on env injection. (Related but distinct gap, measured this session: §2
+confirms normal cwd/env inheritance for **agent-armed** Monitor calls specifically —
+whether a plugin-declared monitor gets the same inheritance is unverified; don't assume
+parity between the two.)
 
 **Other properties** [verified: tool/plugin schema]:
 - Disabling a plugin mid-session does **NOT** stop already-running monitors.
@@ -276,8 +357,49 @@ resume/compaction question above:
 - An explicit `TaskStop`.
 - Session end.
 - The watched script/command exiting.
-- Auto-stop when it produces too many events (spam protection).
+- ~~Auto-stop when it produces too many events (spam protection)~~ — **this does NOT end
+  the monitor.** Measured and corrected this session — see the callout immediately below.
 - For `ws` monitors specifically: a frame larger than 1 MiB, or the socket closing.
+
+**CORRECTION — "automatically stopped" is not a process kill** [verified: live test, this
+session]: the docs and the tool's own description text say monitors producing too many
+events are "automatically stopped." Measured across four escalating trials — a steady 1
+line/sec for 30s, ~20 lines/sec, an instant 500-line dump, and an instant 5000-line dump —
+**the monitored process was never killed in any trial**. Every trial ran to natural
+completion with terminal status `completed`, and the **output file** contained the
+complete output every time (5000/5000 lines exact, verified with `wc -l`).
+
+What actually happens is **notification suppression**, not termination: after roughly
+19-20 notification events, the stream begins dropping events and substituting a marker
+line of the form `"[N events suppressed — output rate too high...]"`. The drop rate scales
+up with volume — observed `[1 events suppressed]` alternating at 1/sec, growing to `[4]`,
+`[6]`, `[8]`-event blocks at ~20/sec. Instant bulk dumps arrive as **one** batched
+notification whose displayed content is **truncated** (cut off partway with a truncation
+marker), while the output file stays complete.
+
+**Practical implication:** a noisy watcher will not die — it goes **silently half-deaf**
+while still appearing alive (process running, notifications still trickling in). The
+monitor's **output file** (path given in every notification, readable with `Read`) is the
+only authoritative record once suppression kicks in; never treat the notification stream
+alone as a complete log for a monitor this noisy.
+
+**Not exhaustively tested:** sustained multi-minute floods were not run, so a harder
+cutoff at much higher cumulative volume remains untested — this finding covers the tested
+range (light-to-heavy bursts over ~30s), not a claim that no cutoff exists at any scale.
+
+**Timeout as a measured re-arm signal** [verified: live test, this session]: a monitor
+with `timeout_ms: 15000` on an unbounded emitting loop was killed cleanly at the deadline
+— no partial/garbled line — and delivered a distinctly-worded final event,
+`"[Monitor timed out — re-arm if needed.]"`. Terminal status is `killed`, confirmed
+because a subsequent `TaskStop` on that task returned an error, `"Task ... is not running
+(status: killed)"` — itself a reliable way to check a monitor's final state after the
+fact. **Design implication:** because the timeout message is itself an event delivered to
+the agent, a **non-persistent** monitor with a bounded `timeout_ms` gives a self-healing
+re-arm loop for free — the expiry wakes the agent and tells it to re-arm — whereas a
+`persistent: true` monitor that dies (session end, crash) leaves **no such signal**. This
+is a concrete point in favor of bounded-timeout-plus-re-arm-on-expiry over
+`persistent: true` for exactly the kind of long-lived watch §7 describes, weighed against
+the double-arming risk already called out there.
 
 ---
 
@@ -522,26 +644,38 @@ each is a case where Monitor is not degraded, it is **absent**.
 - Filter is too strict (matches nothing legitimately).
 
 **Fix:** add `|| echo "ERROR: ..."` to every pipe stage and wrap in a while loop that
-logs errors instead of dying.
+logs errors instead of dying. (Note: a small live test this session could not reproduce
+the classic GNU-grep line-buffering trap on macOS/BSD `grep` — see §2. Keep
+`--line-buffered` as the safe default regardless; not reproducing it here is not proof it
+doesn't exist elsewhere.)
 
-**Q: My monitor fires too much and gets auto-stopped.**
+**Q: My monitor fires too much — does it get killed?**
 
-Monitors producing **too many events** (spam) are automatically stopped by the runtime.
-Tighten the filter so only legitimate events pass through:
+**No — measured this session, corrects the naive reading of "automatically stopped"**
+[verified: live test, this session; full writeup in §6]: the process is never killed.
+What happens instead is **notification suppression** — after ~19-20 events the stream
+starts dropping notifications and substituting `"[N events suppressed]"` markers, while
+the process keeps running to completion and the **output file stays complete**. The real
+cost isn't a dead monitor, it's a **degraded wake channel** that still looks healthy.
+Tighten the filter anyway — not to dodge a kill that doesn't happen, but to keep the
+notification stream itself sparse and useful instead of half-deaf:
 
 ```bash
-# ❌ Emits every line of a noisy log
+# ❌ Emits every line of a noisy log — hits notification suppression fast
 tail -f app.log | cat
 
-# ✅ Emit only warnings and errors
+# ✅ Emit only warnings and errors — keeps the event stream sparse and reliable
 tail -f app.log | grep --line-buffered -E 'WARN|ERROR'
 ```
 
 **Q: How do I know if the monitor died vs. is just waiting?**
 
-**You don't, without the coverage rule.** This is why the filter must include error
-signatures: if you also emit on failure (errors, timeouts, crashes), then silence **does**
-mean "still running OK" instead of ambiguous.
+**You don't, without the coverage rule** — and there's now a third state to rule out, not
+just two. Silence can mean: still running OK, actually dead, **or** running fine but
+notification-suppressed (§6) because it's too noisy. This is why the filter must include
+error signatures **and** stay sparse enough to avoid the ~19-20 event suppression ceiling:
+if you also emit on failure (errors, timeouts, crashes) and keep normal volume low, then
+silence does mean "still running OK" instead of ambiguous.
 
 **Q: Why does my monitor die after the session resumes?**
 
@@ -625,22 +759,34 @@ On session start or post-compaction:
 **Verified live tool schemas (not docs-site URLs — pulled directly from the installed
 tool definitions)**
 
-6. `Monitor` tool schema — source for the parameter table (§2) and the "auto-stop when a
-   monitor produces too many events" rule (§3, §6, §11): this specific claim comes from
-   the Monitor tool's own built-in description text, not from the docs site.
+6. `Monitor` tool schema — source for the parameter table (§2) and the tool's own
+   description text claiming monitors are "automatically stopped" on too many events.
+   **This specific claim is corrected, not confirmed, by live measurement** — see item 9
+   below and the §6/§11 correction: the tool's own docstring says "stopped," but four live
+   trials this session showed only notification suppression, never a process kill.
 7. `CronCreate` tool schema — source for the "jobs live only in this Claude session... gone
    when Claude exits" and `durable` parameter language quoted in §6.
 
 **Directly tested behavior (this session, not sourced from any doc)**
 
-8. Two live behavioral tests of Monitor waking a fully idle session — §4. Empirically
-   verified, but not backed by any Anthropic documentation; could change without notice.
+8. Two live behavioral tests of Monitor waking a fully idle session — §4.
+9. Four escalating-volume trials showing "auto-stop" is notification suppression, not a
+   process kill (steady 1/sec, ~20/sec, instant 500-line dump, instant 5000-line dump) —
+   §6, §11.
+10. Batching, stderr tagging, exit-code/terminal-status behavior, the timeout re-arm
+    signal, env/cwd inheritance (agent-armed only, unverified for plugin-declared), and an
+    inconclusive line-buffering retest on macOS/BSD `grep` — §2.
+11. A naive mtime-based watcher design failure (8 events/70s on near-zero signal) plus
+    corroborating live-mesh heartbeat volume (50+ broadcasts at ~285s intervals) — §3.
+
+Items 8-11 are empirically verified this session but **not backed by any Anthropic
+documentation** and could change without notice.
 
 **Related KB documents in this repo**
 
-9. `KB-devswarm-hivecontrol.md` — DevSwarm orchestration & `hivecontrol` CLI
-10. `KB-claude-workflow-orchestration.md` — multi-agent orchestration primitives
-11. `KB-claude-codex.md` — Codex platform and parity with Claude Code (for dual-platform
+12. `KB-devswarm-hivecontrol.md` — DevSwarm orchestration & `hivecontrol` CLI
+13. `KB-claude-workflow-orchestration.md` — multi-agent orchestration primitives
+14. `KB-claude-codex.md` — Codex platform and parity with Claude Code (for dual-platform
     implications)
 
 ---
@@ -672,10 +818,14 @@ tool definitions)**
 ---
 
 **Document status:** Compiled from official docs + verified live tool schemas (as of
-Claude Code v2.1.207), plus one directly-tested behavioral finding (§4) that no Anthropic
-doc confirms. Where sources conflict (§6, resume-durability of `CronCreate`), this KB
-states the conflict rather than picking a side — treat those claims as needing a live
-test before any design leans on them. Monitor remains in the public API; no known breaking
-changes since v2.1.98. The DevSwarm application (§7) is **illustrative** — the specific
-mesh-read wrapper (`scripts/devswarm-mailbox-watcher.sh`) is a pattern sketch, not
-production code (adapt to your actual mailbox/mesh transport).
+Claude Code v2.1.207), plus a growing set of directly-tested, live-experiment findings that
+no Anthropic doc confirms — the idle-wake test (§4), the four-trial "auto-stop is
+notification suppression, not a kill" correction (§6, §11), and the batching/stderr/exit-
+code/timeout/env-inheritance/line-buffering/mtime-watcher findings (§2, §3). Where sources
+conflict (§6, resume-durability of `CronCreate`) or where a live test contradicts a
+documented claim (the "auto-stop" wording), this KB states the discrepancy rather than
+picking a side or quietly averaging them — treat those claims as needing further testing
+before any design leans on them further than the tested range. Monitor remains in the
+public API; no known breaking changes since v2.1.98. The DevSwarm application (§7) is
+**illustrative** — the specific mesh-read wrapper (`scripts/devswarm-mailbox-watcher.sh`)
+is a pattern sketch, not production code (adapt to your actual mailbox/mesh transport).
