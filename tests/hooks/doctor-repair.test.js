@@ -994,3 +994,59 @@ test('wake-monitor: gate CLOSED (non-DevSwarm session) never spawns the live-che
     assert.doesNotMatch(r.msg, /NOT live/, 'gate-closed must never run the live-check at all');
   } finally { rm(home); rm(repo); }
 });
+
+// ---------------------------------------------------------------------------
+// 9. install-vs-source integrity (CHECK 1: install-divergence, CHECK 2:
+// monitors-json) — REPORT-ONLY, UNGATED (unlike wake-monitor above, these are
+// not DevSwarm-specific: they run regardless of gateOpen/DevSwarm-active
+// state, same posture as the reaper report-only block). Reuses doctor-
+// devswarm.js's installDivergenceCheck/monitorsJsonPresenceCheck so this can
+// never drift from the doctor-diagnostic verdict computed the same way.
+// ---------------------------------------------------------------------------
+
+test('install-divergence + monitors-json: present regardless of DevSwarm gate state (non-DevSwarm session)', () => {
+  const home = mkTmp('installdiv-ungated');
+  const repo = makeGitRepo('installdiv-ungated-cwd');
+  try {
+    // No ANTIHALL_MARKETPLACE_DIR and no real ~/.claude/plugins/marketplaces
+    // under this throwaway home -> the marketplace clone genuinely absent.
+    const results = repair.runRepairs({ cwd: repo, env: {}, home, dryRun: true, platform: 'win32' });
+    const divergence = results.find((x) => x.id === 'install-divergence');
+    const monitorsJson = results.find((x) => x.id === 'monitors-json');
+    assert.ok(divergence, 'an install-divergence result must be present even in a non-DevSwarm session:\n' + JSON.stringify(results, null, 2));
+    assert.ok(monitorsJson, 'a monitors-json result must be present even in a non-DevSwarm session');
+    assert.strictEqual(divergence.action, 'none');
+    assert.strictEqual(divergence.status, 'skipped');
+    assert.match(divergence.msg, /no marketplace clone present — nothing to compare/, 'no clone under this fixture home -> clean no-op:\n' + divergence.msg);
+    assert.strictEqual(monitorsJson.action, 'none');
+    assert.strictEqual(monitorsJson.status, 'skipped');
+    // PLUGIN_ROOT here is the REAL, checked-out plugin tree (doctor-repair.js's
+    // own installed root), which genuinely ships monitors/monitors.json.
+    assert.match(monitorsJson.msg, /present in the installed plugin root/, monitorsJson.msg);
+  } finally { rm(home); rm(repo); }
+});
+
+test('install-divergence: a REAL marketplace clone with divergent watcher content at the SAME version as the installed root -> DETECTED', () => {
+  const home = mkTmp('installdiv-detect');
+  const repo = makeGitRepo('installdiv-detect-cwd');
+  const mpBase = mkTmp('installdiv-detect-mp');
+  try {
+    // Build a marketplace clone fixture SAME-SHAPED as the real installed
+    // root (doctor-repair.js's own PLUGIN_ROOT) but with a divergent watcher
+    // and the SAME version — the exact shape of a cache dir populated
+    // mid-release that syncCache will never overwrite.
+    const PLUGIN_ROOT = path.join(REPO_ROOT, 'plugins', 'anti-hall');
+    const realVersion = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'utf8')).version;
+    const mpPluginDir = path.join(mpBase, 'plugins', 'anti-hall');
+    fs.cpSync(PLUGIN_ROOT, mpPluginDir, { recursive: true });
+    fs.mkdirSync(path.join(mpPluginDir, 'companion', 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(mpPluginDir, 'companion', 'lib', 'devswarm-wake-watch.js'), '// FINAL post-fix watcher, different from installed\n');
+
+    const results = repair.runRepairs({ cwd: repo, env: { ANTIHALL_MARKETPLACE_DIR: mpBase }, home, dryRun: true, platform: 'win32' });
+    const divergence = results.find((x) => x.id === 'install-divergence');
+    assert.ok(divergence);
+    assert.match(divergence.msg, /DIFFERS from the marketplace clone at the SAME version/, divergence.msg);
+    assert.match(divergence.msg, new RegExp(realVersion.replace(/\./g, '\\.')));
+    assert.match(divergence.msg, /version bump is required/);
+  } finally { rm(home); rm(repo); rm(mpBase); }
+});

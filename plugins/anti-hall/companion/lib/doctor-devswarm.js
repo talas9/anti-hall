@@ -10,6 +10,7 @@
 const os = require('os');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { isDevswarmActive } = require('../../hooks/lib/devswarm-detect.js');
 const { computeLiveness, livenessPathFor, projectDirFor, devswarmRoot, isSafeId, unreadBacklog } = require('./liveness.js');
 const { checkResults: descriptorChecks } = require('./doctor-descriptors.js');
@@ -239,6 +240,189 @@ function wakeMonitorChecks(home, env, cwd) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// install-vs-source integrity (CHECK 1: divergence, CHECK 2: monitors.json
+// presence) — DETECTION ONLY, never repairs. Closes a proven blind spot:
+// skills/update/scripts/update.js's syncCache NEVER overwrites an existing
+// cache/<version>/ dir (see that file's own doc comment), so a cache dir
+// populated mid-release — before the final commits land — freezes pre-
+// release code under the released version number forever, and no update run
+// will ever refresh it. Proven live on this machine: cache 0.68.0 held a
+// watcher from an earlier commit while the repo/marketplace clone had already
+// moved on, and nothing reported it. wakeMonitorPostUpdate (update.js) only
+// ever inspects the MARKETPLACE CLONE (paths.pluginSrcDir), never the
+// installed cache dir that actually runs — these checks look in the right
+// place instead.
+// ---------------------------------------------------------------------------
+
+// resolveMarketplaceDir(env, home) -> the marketplace clone's plugins/anti-hall
+// dir, or null if it is not present (a user who installed without a clone —
+// callers must treat that as a clean no-op, never a warning). Same
+// ANTIHALL_MARKETPLACE_DIR override + existence-gate pattern as
+// install-devswarm-ingest.js's resolveStableScript (test-only escape hatch;
+// production always resolves the default ~/.claude/plugins/marketplaces/... path).
+function resolveMarketplaceDir(env, home) {
+  const e = env || {};
+  let marketplaceDir = path.join(home, '.claude', 'plugins', 'marketplaces', 'anti-hall');
+  const override = e.ANTIHALL_MARKETPLACE_DIR;
+  if (override) {
+    try { if (path.isAbsolute(override) && fs.statSync(override).isDirectory()) marketplaceDir = override; } catch (_) {}
+  }
+  const candidate = path.join(marketplaceDir, 'plugins', 'anti-hall');
+  try { if (fs.statSync(candidate).isDirectory()) return candidate; } catch (_) {}
+  return null;
+}
+
+// DIVERGENCE_FILES — a small, meaningful shipped-file set to hash-compare
+// rather than the whole tree (cheap, per spec): the wake watcher (the file
+// PROVEN to have drifted live on this machine) plus monitors/monitors.json
+// (the same manifest CHECK 2 below inspects for presence).
+const DIVERGENCE_FILES = [
+  path.join('companion', 'lib', 'devswarm-wake-watch.js'),
+  path.join('monitors', 'monitors.json'),
+];
+
+// hashFileOrNull(p, F) -> hex sha256 digest | null (missing/unreadable).
+// node:crypto only — never shells out to md5/shasum (cross-platform constraint).
+function hashFileOrNull(p, F) {
+  try { return crypto.createHash('sha256').update(F.readFileSync(p)).digest('hex'); }
+  catch (_) { return null; }
+}
+
+// readPluginVersion(pluginRoot, F) -> semver-ish string | null. Fail-open.
+function readPluginVersion(pluginRoot, F) {
+  try {
+    const data = JSON.parse(F.readFileSync(path.join(pluginRoot, '.claude-plugin', 'plugin.json'), 'utf8'));
+    return (data && typeof data.version === 'string') ? data.version : null;
+  } catch (_) { return null; }
+}
+
+/**
+ * installDivergenceCheck({installedRoot, marketplaceRoot, fsi}) -> {status, message[, files]}
+ * status: 'clean' | 'diverged' | 'skipped' | 'unknown'.
+ *
+ * Compares the INSTALLED plugin root (the running copy — callers pass the
+ * cache dir the harness actually loaded, e.g. doctor-repair.js's own
+ * PLUGIN_ROOT) against the marketplace clone. Only fires when both exist AND
+ * their plugin.json `version` fields MATCH but on-disk content of the small
+ * DIVERGENCE_FILES set differs — the exact shape of a cache dir populated
+ * mid-release that syncCache will never touch again. A missing clone, a
+ * version mismatch (an update is simply pending — not this bug), or any
+ * unreadable path all degrade to a clean/unknown no-op, never a false alarm.
+ * REPORT ONLY: never copies/overwrites/deletes anything. FAIL OPEN: never throws.
+ */
+function installDivergenceCheck(opts) {
+  const o = opts || {};
+  const F = o.fsi || fs;
+  try {
+    const installedRoot = o.installedRoot;
+    const marketplaceRoot = o.marketplaceRoot;
+    if (!marketplaceRoot) {
+      return { status: 'skipped', message: 'install-divergence: no marketplace clone present — nothing to compare (clean no-op)' };
+    }
+    let mpStat = null;
+    try { mpStat = F.statSync(marketplaceRoot); } catch (_) { mpStat = null; }
+    if (!mpStat || !mpStat.isDirectory()) {
+      return { status: 'skipped', message: 'install-divergence: no marketplace clone present — nothing to compare (clean no-op)' };
+    }
+    let installedStat = null;
+    try { installedStat = installedRoot ? F.statSync(installedRoot) : null; } catch (_) { installedStat = null; }
+    if (!installedRoot || !installedStat || !installedStat.isDirectory()) {
+      return { status: 'unknown', message: 'install-divergence: installed plugin root not resolvable — skipped' };
+    }
+    const installedVersion = readPluginVersion(installedRoot, F);
+    const cloneVersion = readPluginVersion(marketplaceRoot, F);
+    if (!installedVersion || !cloneVersion) {
+      return { status: 'unknown', message: 'install-divergence: could not read plugin.json version from the installed root and/or the marketplace clone — skipped' };
+    }
+    if (installedVersion !== cloneVersion) {
+      return {
+        status: 'skipped',
+        message: 'install-divergence: installed v' + installedVersion + ' != marketplace clone v' + cloneVersion + ' — different versions (an update is simply pending, not this check\'s target)',
+      };
+    }
+    const diffs = [];
+    for (const rel of DIVERGENCE_FILES) {
+      const a = hashFileOrNull(path.join(installedRoot, rel), F);
+      const b = hashFileOrNull(path.join(marketplaceRoot, rel), F);
+      if (a === b) continue; // both absent (neither ships it) or byte-identical
+      diffs.push(rel);
+    }
+    if (diffs.length === 0) {
+      return { status: 'clean', message: 'install-divergence: installed cache (v' + installedVersion + ') content matches the marketplace clone — no divergence' };
+    }
+    return {
+      status: 'diverged',
+      files: diffs,
+      message: 'install-divergence: installed cache v' + installedVersion + ' DIFFERS from the marketplace clone at the SAME version (' + diffs.join(', ') + '). The cache dir for this version was populated before the final code landed, and syncCache (update.js) never overwrites an existing cache/<version>/ dir — a version bump is required for this install to pick up the fix.',
+    };
+  } catch (e) {
+    return { status: 'unknown', message: 'install-divergence check raised (fail-open): ' + (e && e.message) };
+  }
+}
+
+// resolveInstallScope(home, installedRoot, F) -> 'user' | 'project' | null.
+// Cheap best-effort lookup against installed_plugins.json (HARNESS-OWNED —
+// read only, never written) — matches the entry whose installPath resolves
+// to installedRoot. null (unknown) whenever the file/entry/match is absent;
+// callers must word their message so it stays accurate either way.
+function resolveInstallScope(home, installedRoot, F) {
+  try {
+    const data = JSON.parse(F.readFileSync(path.join(home, '.claude', 'plugins', 'installed_plugins.json'), 'utf8'));
+    const reg = (data && data.plugins && typeof data.plugins === 'object') ? data.plugins : data;
+    const entry = reg && reg['anti-hall@anti-hall'];
+    const list = Array.isArray(entry) ? entry : (entry ? [entry] : []);
+    const target = path.resolve(installedRoot);
+    for (const e of list) {
+      if (e && typeof e.installPath === 'string' && path.resolve(e.installPath) === target) {
+        return (e.scope === 'user' || e.scope === 'project') ? e.scope : null;
+      }
+    }
+    return null;
+  } catch (_) { return null; }
+}
+
+/**
+ * monitorsJsonPresenceCheck({installedRoot, home, fsi}) -> {status, message}
+ * status: 'present' | 'missing' | 'unknown'.
+ *
+ * Reports whether monitors/monitors.json exists in the INSTALLED plugin root
+ * (not the repo/clone) — the mechanical `when:"always"` arming manifest. A
+ * project-scope install NEVER loads background monitors at all (docs/KB-
+ * claude-monitor-tool.md:619-623) regardless of whether the file is present,
+ * so a missing file there is expected, not a failure — the message reflects
+ * scope when it is cheaply resolvable and stays accurate when it is not.
+ * REPORT ONLY. FAIL OPEN: never throws.
+ */
+function monitorsJsonPresenceCheck(opts) {
+  const o = opts || {};
+  const F = o.fsi || fs;
+  try {
+    const installedRoot = o.installedRoot;
+    if (!installedRoot) return { status: 'unknown', message: 'monitors.json check: installed plugin root not resolvable — skipped' };
+    const p = path.join(installedRoot, 'monitors', 'monitors.json');
+    let present = false;
+    try { present = F.statSync(p).isFile(); } catch (_) { present = false; }
+    const home = o.home || os.homedir();
+    const scope = resolveInstallScope(home, installedRoot, F);
+    if (present) {
+      return { status: 'present', message: 'monitors.json present in the installed plugin root — the mechanical when:"always" arming path is available' + (scope ? ' (scope: ' + scope + ')' : '') };
+    }
+    if (scope === 'project') {
+      return {
+        status: 'missing',
+        message: 'monitors.json not present in the installed plugin root (project-scope install — background monitors are never loaded for project-scope installs regardless, per docs/KB-claude-monitor-tool.md; this absence is expected, not a failure). Only the cron fallback and the instructional directive remain.',
+      };
+    }
+    return {
+      status: 'missing',
+      message: 'monitors.json not present in the installed plugin root (' + p + ') — the mechanical when:"always" arming path is unavailable for this install; only the cron fallback and the instructional directive remain. (If this is a project-scope install, that absence is expected — project-scope installs never load background monitors at all.)',
+    };
+  } catch (e) {
+    return { status: 'unknown', message: 'monitors.json check raised (fail-open): ' + (e && e.message) };
+  }
+}
+
 function runChecks(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
@@ -296,4 +480,7 @@ module.exports = {
   PASS, WARN, FAIL, statusFor, statusForVerdict, listenerPresenceFor, runChecks,
   // wake-monitor (Monitor-based idle-wake) — exported individually for tests.
   wakeMonitorShipped, wakeMonitorSelfTest, wakeMonitorLiveCheck, wakeMonitorChecks,
+  // install-vs-source integrity (CHECK 1/CHECK 2) — exported individually for tests.
+  installDivergenceCheck, monitorsJsonPresenceCheck, resolveMarketplaceDir, resolveInstallScope,
+  DIVERGENCE_FILES,
 };

@@ -1283,6 +1283,30 @@ function runRepairs(opts) {
     }
   }
 
+  // --- Install-vs-source integrity: REPORT-ONLY, UNGATED (not DevSwarm-
+  // specific — applies to every install, unlike the wake-monitor block above).
+  // CHECK 1 catches a cache dir for the running version whose on-disk content
+  // silently diverged from the marketplace clone at the SAME version (syncCache
+  // never overwrites an existing cache/<version>/ dir, so this never
+  // self-heals). CHECK 2 reports whether the mechanical monitors.json arming
+  // manifest is present in the INSTALLED root. Both reuse doctor-devswarm.js's
+  // pure check functions so this can never drift from the doctor-diagnostic
+  // verdict computed the same way. Never mutates anything under ~/.claude/**.
+  try {
+    const dsd = doctorDevswarmMod();
+    if (typeof dsd.installDivergenceCheck !== 'function' || typeof dsd.monitorsJsonPresenceCheck !== 'function') {
+      push('install-divergence', 'none', 'skipped', 'install-integrity checks unavailable (doctor-devswarm.js missing expected exports)');
+    } else {
+      const marketplaceRoot = typeof dsd.resolveMarketplaceDir === 'function' ? dsd.resolveMarketplaceDir(env, home) : null;
+      const divergence = dsd.installDivergenceCheck({ installedRoot: PLUGIN_ROOT, marketplaceRoot, fsi: fs });
+      push('install-divergence', 'none', 'skipped', divergence.message);
+      const monitorsPresence = dsd.monitorsJsonPresenceCheck({ installedRoot: PLUGIN_ROOT, home, fsi: fs });
+      push('monitors-json', 'none', 'skipped', monitorsPresence.message);
+    }
+  } catch (e) {
+    push('install-divergence', 'none', 'skipped', 'install-integrity check raised: ' + errMsg(e));
+  }
+
   return results;
 
   // ---- local: generic AUTO-SAFE migration fix ----------------------------

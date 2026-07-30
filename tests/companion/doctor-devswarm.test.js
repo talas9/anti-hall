@@ -216,3 +216,195 @@ test('runChecks: dormant (not active) -> wake-monitor produces zero results, sam
     assert.strictEqual(r.results.length, 0);
   } finally { cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// install-vs-source integrity (CHECK 1: installDivergenceCheck, CHECK 2:
+// monitorsJsonPresenceCheck) — closes the proven blind spot where a cache dir
+// populated mid-release (before the final commits land) freezes pre-release
+// code under the released version forever (syncCache never overwrites an
+// existing cache/<version>/ dir). DETECTION ONLY — these tests assert nothing
+// under the fixture roots is ever mutated.
+// ---------------------------------------------------------------------------
+
+function makePluginFixture(root, opts) {
+  const o = opts || {};
+  fs.mkdirSync(path.join(root, '.claude-plugin'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, '.claude-plugin', 'plugin.json'),
+    JSON.stringify({ name: 'anti-hall', version: o.version || '0.68.0' })
+  );
+  fs.mkdirSync(path.join(root, 'companion', 'lib'), { recursive: true });
+  fs.writeFileSync(
+    path.join(root, 'companion', 'lib', 'devswarm-wake-watch.js'),
+    o.wakeWatchContent || '// watcher v1\nmodule.exports = {};\n'
+  );
+  if (o.monitorsContent !== undefined && o.monitorsContent !== null) {
+    fs.mkdirSync(path.join(root, 'monitors'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'monitors', 'monitors.json'), o.monitorsContent);
+  }
+}
+
+test('installDivergenceCheck: divergent watcher content at the SAME version -> DETECTED (diverged, names the differing file)', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-divergence-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    const marketplaceRoot = path.join(base, 'marketplace');
+    makePluginFixture(installedRoot, { version: '0.68.0', wakeWatchContent: '// STALE pre-release watcher\n', monitorsContent: '{"when":"always"}' });
+    makePluginFixture(marketplaceRoot, { version: '0.68.0', wakeWatchContent: '// FINAL watcher, post-fix\n', monitorsContent: '{"when":"always"}' });
+
+    const r = D.installDivergenceCheck({ installedRoot, marketplaceRoot });
+    assert.strictEqual(r.status, 'diverged');
+    assert.ok(Array.isArray(r.files) && r.files.some((f) => /devswarm-wake-watch\.js$/.test(f)),
+      'expected the differing watcher file to be named: ' + JSON.stringify(r.files));
+    assert.match(r.message, /DIFFERS/);
+    assert.match(r.message, /version bump is required/);
+
+    // Fail-without-fix proof: nothing under either fixture root was touched.
+    assert.strictEqual(fs.readFileSync(path.join(installedRoot, 'companion', 'lib', 'devswarm-wake-watch.js'), 'utf8'), '// STALE pre-release watcher\n');
+    assert.strictEqual(fs.readFileSync(path.join(marketplaceRoot, 'companion', 'lib', 'devswarm-wake-watch.js'), 'utf8'), '// FINAL watcher, post-fix\n');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('installDivergenceCheck: identical content at the SAME version -> CLEAN', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-divergence-clean-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    const marketplaceRoot = path.join(base, 'marketplace');
+    const same = '// identical watcher content\n';
+    makePluginFixture(installedRoot, { version: '0.68.0', wakeWatchContent: same, monitorsContent: '{"a":1}' });
+    makePluginFixture(marketplaceRoot, { version: '0.68.0', wakeWatchContent: same, monitorsContent: '{"a":1}' });
+
+    const r = D.installDivergenceCheck({ installedRoot, marketplaceRoot });
+    assert.strictEqual(r.status, 'clean');
+    assert.match(r.message, /no divergence/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('installDivergenceCheck: DIFFERENT versions -> skipped (an update is pending, not this bug — never a false alarm)', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-divergence-verdiff-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    const marketplaceRoot = path.join(base, 'marketplace');
+    makePluginFixture(installedRoot, { version: '0.67.1', wakeWatchContent: 'old\n' });
+    makePluginFixture(marketplaceRoot, { version: '0.68.0', wakeWatchContent: 'new\n' });
+
+    const r = D.installDivergenceCheck({ installedRoot, marketplaceRoot });
+    assert.strictEqual(r.status, 'skipped');
+    assert.match(r.message, /different versions/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('installDivergenceCheck: missing marketplace clone -> CLEAN no-op (never a warning) — both explicit null and a non-existent path', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-divergence-noclone-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    makePluginFixture(installedRoot, { version: '0.68.0' });
+
+    const r1 = D.installDivergenceCheck({ installedRoot, marketplaceRoot: null });
+    assert.strictEqual(r1.status, 'skipped');
+    assert.match(r1.message, /nothing to compare/);
+
+    const r2 = D.installDivergenceCheck({ installedRoot, marketplaceRoot: path.join(base, 'does-not-exist') });
+    assert.strictEqual(r2.status, 'skipped');
+    assert.match(r2.message, /nothing to compare/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('installDivergenceCheck: unreadable/missing installed root -> unknown, never throws', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-divergence-unknown-'));
+  try {
+    const marketplaceRoot = path.join(base, 'marketplace');
+    makePluginFixture(marketplaceRoot, { version: '0.68.0' });
+
+    assert.doesNotThrow(() => {
+      const r = D.installDivergenceCheck({ installedRoot: path.join(base, 'nope'), marketplaceRoot });
+      assert.strictEqual(r.status, 'unknown');
+    });
+    assert.doesNotThrow(() => {
+      const r = D.installDivergenceCheck({ installedRoot: undefined, marketplaceRoot });
+      assert.strictEqual(r.status, 'unknown');
+    });
+    // A read that raises mid-check (hostile fsi) must still degrade to unknown.
+    assert.doesNotThrow(() => {
+      const hostileFsi = {
+        statSync: (p) => fs.statSync(p),
+        readFileSync: () => { throw new Error('disk exploded'); },
+      };
+      const r = D.installDivergenceCheck({ installedRoot: marketplaceRoot, marketplaceRoot, fsi: hostileFsi });
+      assert.strictEqual(r.status, 'unknown');
+    });
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('monitorsJsonPresenceCheck: present in the installed root -> reported present', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-monitorsjson-present-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    makePluginFixture(installedRoot, { version: '0.68.0', monitorsContent: '{"when":"always"}' });
+    const r = D.monitorsJsonPresenceCheck({ installedRoot, home: base });
+    assert.strictEqual(r.status, 'present');
+    assert.match(r.message, /arming path is available/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('monitorsJsonPresenceCheck: missing in the installed root -> reported missing, names the mechanical-arming gap', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-monitorsjson-missing-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    makePluginFixture(installedRoot, { version: '0.68.0' }); // no monitorsContent -> no monitors/ dir at all
+    const r = D.monitorsJsonPresenceCheck({ installedRoot, home: base });
+    assert.strictEqual(r.status, 'missing');
+    assert.match(r.message, /mechanical when:"always" arming path is unavailable/);
+    assert.match(r.message, /cron fallback/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('monitorsJsonPresenceCheck: project-scope install resolvable from installed_plugins.json -> missing is worded as EXPECTED, not a failure', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-monitorsjson-projscope-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    makePluginFixture(installedRoot, { version: '0.68.0' });
+    fs.mkdirSync(path.join(base, '.claude', 'plugins'), { recursive: true });
+    fs.writeFileSync(path.join(base, '.claude', 'plugins', 'installed_plugins.json'), JSON.stringify({
+      version: 2,
+      plugins: { 'anti-hall@anti-hall': [{ scope: 'project', installPath: installedRoot, version: '0.68.0' }] },
+    }));
+    const r = D.monitorsJsonPresenceCheck({ installedRoot, home: base });
+    assert.strictEqual(r.status, 'missing');
+    assert.match(r.message, /project-scope install/);
+    assert.match(r.message, /expected, not a failure/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('monitorsJsonPresenceCheck: unresolvable installed root -> unknown, never throws', () => {
+  assert.doesNotThrow(() => {
+    const r = D.monitorsJsonPresenceCheck({ installedRoot: null });
+    assert.strictEqual(r.status, 'unknown');
+  });
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-monitorsjson-hostile-'));
+  try {
+    assert.doesNotThrow(() => {
+      const hostileFsi = { statSync: () => { throw new Error('disk exploded'); }, readFileSync: () => { throw new Error('disk exploded'); } };
+      const r = D.monitorsJsonPresenceCheck({ installedRoot: base, home: base, fsi: hostileFsi });
+      // present:false from the hostile statSync -> reported missing, not thrown.
+      assert.ok(r.status === 'missing' || r.status === 'unknown');
+    });
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('resolveMarketplaceDir: ANTIHALL_MARKETPLACE_DIR override resolves when valid, ignored (falls back) when invalid', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-mpdir-'));
+  try {
+    const override = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-mpdir-override-'));
+    try {
+      fs.mkdirSync(path.join(override, 'plugins', 'anti-hall'), { recursive: true });
+      const r1 = D.resolveMarketplaceDir({ ANTIHALL_MARKETPLACE_DIR: override }, home);
+      assert.strictEqual(r1, path.join(override, 'plugins', 'anti-hall'));
+
+      // Invalid override (not absolute / not a dir) -> falls back to the default
+      // location under `home`, which does not exist in this fixture -> null.
+      const r2 = D.resolveMarketplaceDir({ ANTIHALL_MARKETPLACE_DIR: 'relative/nonsense' }, home);
+      assert.strictEqual(r2, null);
+    } finally { fs.rmSync(override, { recursive: true, force: true }); }
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
