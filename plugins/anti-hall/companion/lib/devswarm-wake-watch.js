@@ -697,38 +697,107 @@ function emitLine(line) {
   fs.writeSync(1, s);
 }
 
-// isDevswarmActiveGate(env) -> boolean. Mirrors skills/update/scripts/update.js's
-// wakeMonitorPostUpdate gate: SAME helper (hooks/lib/devswarm-detect.js's
-// isDevswarmActive), called the same way. Runs before ANY mkdir, lock
-// acquisition, state read/write, or stdout write in main() — a non-DevSwarm
-// session must produce zero stdout and create zero files/directories (the P0
-// this gate exists to fix: monitors.json's "when": "always" would otherwise
-// start this watcher for every personal-scope install, DevSwarm or not).
-// FAIL OPEN TOWARD NOT ARMING: if the gate helper itself throws, treat that as
-// "not active" — an unwanted arm is the bug being fixed, so a broken gate must
-// never accidentally arm.
-function isDevswarmActiveGate(env) {
+// isDevswarmActiveGate(env, cwd, io) -> boolean. Runs before ANY mkdir, lock
+// acquisition, state read/write, git spawn, or stdout write in main() — a
+// non-DevSwarm session must produce zero stdout and create zero
+// files/directories (the P0 this gate exists to fix: monitors.json's "when":
+// "always" would otherwise start this watcher for every personal-scope
+// install, DevSwarm or not).
+//
+// ARMS ON ANY of four independent POSITIVE-EVIDENCE signals (never on a bare
+// tier-3 Primary default with none of them — that bare-default case is the
+// original P0: a stranger in any git repo must NOT arm):
+//   (a) isDevswarmActive(env) — the existing explicit opt-in signal
+//       (DEVSWARM_REPO_ID set, or ANTIHALL_DEVSWARM_SUPERVISOR=on). Covers a
+//       Primary whose env survived into this Monitor-spawned process.
+//   (b) resolveIdentity's own tier 1: role.isChildWorkspace(env) (a non-empty
+//       DEVSWARM_SOURCE_BRANCH) PLUS a non-empty DEVSWARM_BUILDER_ID. THE FIX
+//       for the proven regression: a genuine DevSwarm child whose
+//       DEVSWARM_REPO_ID specifically did not survive into this process still
+//       carries these two, and resolveIdentity already treats them as
+//       sufficient to resolve a child identity — the gate must not be
+//       stricter than the identity resolution it gates.
+//   (c) resolveIdentity's own tier 2: a registered child-workspace descriptor
+//       whose worktreePath matches cwd — needs ZERO DEVSWARM_* env at all.
+//   (d) this repo already has DevSwarm state on disk for its own repoKey — a
+//       summaries/<repoKey>.json written only by a real deriveSummary call
+//       (cmdSend / the ingest daemon; see resolvePrimaryHashes/
+//       readPrimarySnapshot, which read the exact same file). This is what
+//       lets a genuine Primary arm when DEVSWARM_REPO_ID did not survive into
+//       the Monitor subprocess and neither (b) nor (c) apply (a Primary has no
+//       DEVSWARM_BUILDER_ID and is not a registered child descriptor). Checked
+//       LAST on purpose: it is the only tier that spawns git
+//       (repoKeyForWorktree), so a genuinely non-DevSwarm session still
+//       short-circuits above it on a plain env/descriptor check in the common
+//       case.
+// FAIL OPEN TOWARD NOT ARMING: any tier that throws is treated as "did not
+// match" and falls through to the next tier; if every tier throws or none
+// match, this returns false — an unwanted arm is the bug being fixed, so a
+// broken gate must never accidentally arm.
+function isDevswarmActiveGate(env, cwd, io) {
+  const e = env || process.env;
+
+  // (a) explicit opt-in / existing feature-detect.
   try {
     const { isDevswarmActive } = require('../../hooks/lib/devswarm-detect.js');
-    return typeof isDevswarmActive === 'function' && isDevswarmActive(env);
-  } catch (_) {
-    return false;
-  }
+    if (typeof isDevswarmActive === 'function' && isDevswarmActive(e)) return true;
+  } catch (_) { /* fall through to the positive-evidence tiers below */ }
+
+  const ioo = io || {};
+  const wd = typeof cwd === 'string' && cwd !== '' ? cwd : process.cwd();
+  const F = ioo.fs || fs;
+  const home = ioo.home || os.homedir();
+
+  // (b) tier 1 of resolveIdentity's own fallback.
+  try {
+    const roleLib = ioo.role || role;
+    if (roleLib.isChildWorkspace(e)) {
+      const raw = e.DEVSWARM_BUILDER_ID;
+      if (typeof raw === 'string' && raw.trim() !== '') return true;
+    }
+  } catch (_) { /* fall through */ }
+
+  // (c) tier 2 of resolveIdentity's own fallback.
+  try {
+    const readDescriptors = ioo.readDescriptors || supervisor.readDescriptors;
+    const descriptors = readDescriptors(home, F) || [];
+    const cwdForms = realFormsOf(wd, F);
+    for (const d of descriptors) {
+      if (!d || !d.worktreePath || !d.id) continue;
+      const dForms = realFormsOf(d.worktreePath, F);
+      let hit = false;
+      for (const f of cwdForms) { if (dForms.has(f)) { hit = true; break; } }
+      if (hit) return true;
+    }
+  } catch (_) { /* fall through */ }
+
+  // (d) on-disk DevSwarm state for this repo's own repoKey.
+  try {
+    const repoKeyForWorktree = ioo.repoKeyForWorktree || repokey.repoKeyForWorktree;
+    const summaryPathForHash = ioo.summaryPathForHash || store.summaryPathForHash;
+    const repoKey = repoKeyForWorktree(wd, ioo.gitIo ? { io: ioo.gitIo } : undefined);
+    if (repoKey && F.existsSync(summaryPathForHash(home, repoKey))) return true;
+  } catch (_) { /* fall through */ }
+
+  return false;
 }
 
 function main() {
   const env = process.env;
+  // process.cwd() itself touches no disk state (no mkdir/lock/read/write), so
+  // reading it before the gate is safe and lets the gate's tiers (c)/(d)
+  // evaluate against the real cwd.
+  const cwd = process.cwd();
 
-  // GATE — must be the very first thing main() does (see isDevswarmActiveGate
-  // comment above). stderr-only notice; stdout must stay empty here since
-  // stdout is what wakes an agent.
-  if (!isDevswarmActiveGate(env)) {
+  // GATE — must be the very first disk/stdout-touching thing main() does (see
+  // isDevswarmActiveGate comment above). stderr-only notice; stdout must stay
+  // empty here since stdout is what wakes an agent.
+  if (!isDevswarmActiveGate(env, cwd, {})) {
     try { process.stderr.write('[wake-watch] not a DevSwarm session; exiting quietly (not arming).\n'); } catch (_) {}
     process.exitCode = 0;
     return;
   }
 
-  const cwd = process.cwd();
   const identity = resolveIdentity(env, cwd, {});
   if (!identity) {
     try { process.stderr.write('[wake-watch] could not resolve a DevSwarm identity for cwd=' + cwd + '; exiting quietly.\n'); } catch (_) {}

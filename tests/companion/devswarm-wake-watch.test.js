@@ -24,6 +24,8 @@ const {
 
 const STORE_MODULE_PATH = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js');
 const storeMod = require(STORE_MODULE_PATH);
+const repokeyMod = require(path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-repokey.js'));
+const REPO_ROOT = path.join(__dirname, '..', '..');
 
 function tmpHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-wakewatch-'));
@@ -749,3 +751,89 @@ test('main(): a DevSwarm-active session still arms normally (gate is not over-br
     assert.ok(fs.existsSync(lockDir), 'expected the watch-lock directory to have been created for an active DevSwarm session');
   } finally { rm(home); }
 });
+
+// ---------------------------------------------------------------------------
+// REGRESSION FIX: the gate must arm on any of resolveIdentity's OWN positive-
+// evidence tiers (child env, descriptor cwd-match, on-disk repo state), not
+// only on isDevswarmActive(env) (DEVSWARM_REPO_ID / ANTIHALL_DEVSWARM_SUPERVISOR).
+// A second-opinion verifier proved isDevswarmActiveGate({DEVSWARM_SOURCE_BRANCH,
+// DEVSWARM_BUILDER_ID}) previously returned false while resolveIdentity on that
+// SAME env correctly resolved a child identity — a genuine DevSwarm child would
+// silently never arm. Each test below is one arming branch.
+// ---------------------------------------------------------------------------
+
+test('T2 (THE REGRESSION CASE): DEVSWARM_SOURCE_BRANCH + DEVSWARM_BUILDER_ID set, NO DEVSWARM_REPO_ID -> MUST arm', () => {
+  const home = tmpHome();
+  try {
+    const id = 't2-regression-child';
+    const env = {
+      PATH: process.env.PATH,
+      HOME: home,
+      USERPROFILE: home, // Windows: os.homedir() resolves USERPROFILE and ignores HOME
+      // Deliberately NO DEVSWARM_REPO_ID — env inheritance into a Monitor-
+      // spawned process is unverified, and this is the case where it did not
+      // survive. DEVSWARM_SOURCE_BRANCH + DEVSWARM_BUILDER_ID are the only
+      // signals present, exactly like resolveIdentity's own tier 1.
+      DEVSWARM_SOURCE_BRANCH: 'main',
+      DEVSWARM_BUILDER_ID: id,
+    };
+    const res = spawnSync(process.execPath, [MODULE_PATH], { env, encoding: 'utf8', timeout: 1500 });
+    assert.match(res.stdout, /\[wake-watch\] armed: watching child t2-regression-child/,
+      'expected an arm line on stdout; got stdout=' + JSON.stringify(res.stdout) + ' stderr=' + JSON.stringify(res.stderr));
+  } finally { rm(home); }
+});
+
+test('T3: descriptor cwd-match with ZERO DEVSWARM_* env -> MUST arm', () => {
+  const home = tmpHome();
+  try {
+    const worktree = path.join(home, 'wt');
+    fs.mkdirSync(worktree, { recursive: true });
+    const wdir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    fs.writeFileSync(path.join(wdir, 'child-t3.json'), JSON.stringify({
+      id: 'child-t3', worktreePath: worktree, sessionId: 's1',
+    }));
+    const env = {
+      PATH: process.env.PATH,
+      HOME: home,
+      USERPROFILE: home, // Windows: os.homedir() resolves USERPROFILE and ignores HOME
+      // Deliberately ZERO DEVSWARM_*/ANTIHALL_DEVSWARM_* vars — the descriptor
+      // cwd-match is the ONLY positive signal available.
+    };
+    const res = spawnSync(process.execPath, [MODULE_PATH], { env, cwd: worktree, encoding: 'utf8', timeout: 1500 });
+    assert.match(res.stdout, /\[wake-watch\] armed: watching child child-t3/,
+      'expected an arm line on stdout; got stdout=' + JSON.stringify(res.stdout) + ' stderr=' + JSON.stringify(res.stderr));
+  } finally { rm(home); }
+});
+
+test('T4: on-disk DevSwarm state for this repo\'s own repoKey (summaries/<repoKey>.json) -> MUST arm', () => {
+  const home = tmpHome();
+  try {
+    // Compute the SAME repoKey production code would derive for this real
+    // repo (a real git spawn against REPO_ROOT, not mocked), then place a
+    // summary file at the EXACT path readPrimarySnapshot/resolvePrimaryHashes
+    // already read — the cheapest reliable positive signal that this repo has
+    // genuinely participated in a DevSwarm mesh before.
+    const repoKey = repokeyMod.repoKeyForWorktree(REPO_ROOT);
+    assert.ok(repoKey, 'expected REPO_ROOT to resolve a repoKey (must be a real git worktree)');
+    const summaryPath = storeMod.summaryPathForHash(home, repoKey);
+    fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
+    fs.writeFileSync(summaryPath, JSON.stringify({ workspaces: {} }));
+
+    const env = {
+      PATH: process.env.PATH,
+      HOME: home,
+      USERPROFILE: home, // Windows: os.homedir() resolves USERPROFILE and ignores HOME
+      // Deliberately ZERO DEVSWARM_*/ANTIHALL_DEVSWARM_* vars — the on-disk
+      // summary file is the ONLY positive signal available.
+    };
+    const res = spawnSync(process.execPath, [MODULE_PATH], { env, cwd: REPO_ROOT, encoding: 'utf8', timeout: 1500 });
+    assert.match(res.stdout, /\[wake-watch\] armed: watching primary/,
+      'expected an arm line on stdout; got stdout=' + JSON.stringify(res.stdout) + ' stderr=' + JSON.stringify(res.stderr));
+  } finally { rm(home); }
+});
+
+// T5 (the existing DEVSWARM_REPO_ID path -> still arms) is covered above by
+// 'main(): a DevSwarm-active session still arms normally (gate is not
+// over-broad)', which sets DEVSWARM_REPO_ID and asserts an arm line — kept
+// green, not duplicated here.
