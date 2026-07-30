@@ -1393,12 +1393,81 @@ function computeSummary(store, opts) {
     };
   }
 
-  const recent = broadcastAll.slice(-recentCap).map((r) => ({
-    from: r.sender != null ? r.sender : null,
-    summary: r.body != null ? r.body : '',
-    ts: r.ts,
-    urgency: r.urgency != null ? r.urgency : null,
-  }));
+  // ---- recent[]: CONSECUTIVE-duplicate run collapse (heartbeat saturation) ----
+  // WHY: an idle child re-emits a BYTE-IDENTICAL heartbeat every turn — the
+  // devswarm-child-turn.js reminder is unconditional (no only-if-changed gate)
+  // and the */5 mailbox-wake cron keeps an idle workspace taking turns forever.
+  // MEASURED: 1182 byte-identical broadcast rows from ONE idle sender over 5.25
+  // days at ~285s intervals, occupying 49 of the 50 recent[] slots and EVICTING
+  // every genuine broadcast. Neither existing layer can filter it:
+  // meshMessageHash() includes the timestamp, so identical bodies never collide
+  // on UNIQUE(hash), and isNoiseText() matches only the literal '[Primary poke]'
+  // prefix. Collapsing HERE mirrors this project's own alert-kind rule — a
+  // stable kind + the subject in details + a BOUNDED occurrences count, never a
+  // fresh record per occurrence. PROJECTION-ONLY: the append-only `messages`
+  // table is untouched, no schema change, no migration.
+  //
+  // The collapse runs BEFORE the cap is applied, which is the whole point: the
+  // cap must budget DISTINCT broadcasts, not duplicate copies.
+  //
+  // TS SEMANTICS ARE DELIBERATELY UNCHANGED (LIVENESS SAFETY — see
+  // devswarm-child-gate.js:alreadyReportedThisEpisode, which asks
+  // `recent.some(r.from === id && r.ts >= episodeSince)`):
+  //   * A run merges only when rows are CONSECUTIVE **and** project identically
+  //     (from, summary, urgency) — a re-sent body separated by any other row
+  //     stays its own entry.
+  //   * A collapsed entry's `ts` is the MAXIMUM ts among the rows of its run —
+  //     always a ts that a REAL row from that SAME sender actually carries.
+  //     Nothing is synthesized, bumped, or carried across senders.
+  //   * Every row folded away had ts <= the surviving entry's ts, so if any
+  //     folded row satisfied `ts >= episodeSince`, the survivor does too. The
+  //     per-sender maximum ts in recent[] is therefore bit-for-bit what it was.
+  //   * The collapse only REMOVES older copies and frees cap slots, so it can
+  //     only reduce FALSE SILENCE (a genuine report evicted by duplicate noise).
+  //     It structurally cannot manufacture liveness: a wedged session whose
+  //     newest row predates episodeSince still has no qualifying entry.
+  //
+  // `occurrences` / `firstTs` / `lastTs` are emitted ONLY on an actually
+  // collapsed run (occurrences > 1), so a projection with no duplicate runs is
+  // byte-identical to the pre-collapse output for every existing reader.
+  const broadcastRuns = [];
+  for (const r of broadcastAll) {
+    const from = r.sender != null ? r.sender : null;
+    const summary = r.body != null ? r.body : '';
+    const urgency = r.urgency != null ? r.urgency : null;
+    const last = broadcastRuns.length > 0 ? broadcastRuns[broadcastRuns.length - 1] : null;
+    // Identity = the PROJECTED fields (from/summary/urgency). Two rows that
+    // would render as the same recent[] entry apart from `ts` ARE duplicates;
+    // any difference in urgency breaks the run rather than silently dropping it.
+    if (last !== null && last.from === from && last.summary === summary && last.urgency === urgency) {
+      last.count += 1;
+      if (Number.isFinite(r.ts)) {
+        last.maxTs = Number.isFinite(last.maxTs) ? Math.max(last.maxTs, r.ts) : r.ts;
+        last.minTs = Number.isFinite(last.minTs) ? Math.min(last.minTs, r.ts) : r.ts;
+      }
+      continue;
+    }
+    broadcastRuns.push({
+      from, summary, urgency, count: 1,
+      rawTs: r.ts, // the row's ts VERBATIM — used as-is for an uncollapsed entry
+      maxTs: Number.isFinite(r.ts) ? r.ts : null,
+      minTs: Number.isFinite(r.ts) ? r.ts : null,
+    });
+  }
+
+  const recent = broadcastRuns.slice(-recentCap).map((run) => {
+    // count === 1 -> `rawTs` verbatim (byte-identical to the pre-collapse shape,
+    // including a non-finite/absent ts). count > 1 -> the run MAXIMUM, falling
+    // back to rawTs if no row in the run carried a finite ts.
+    const ts = run.count > 1 && Number.isFinite(run.maxTs) ? run.maxTs : run.rawTs;
+    const entry = { from: run.from, summary: run.summary, ts, urgency: run.urgency };
+    if (run.count > 1) {
+      entry.occurrences = run.count;
+      entry.firstTs = run.minTs;
+      entry.lastTs = ts; // explicit alias: `ts` IS the newest of the run
+    }
+    return entry;
+  });
 
   const summary = { generatedAt: now, requiredGates: requiredGates.slice(), workspaces, recent };
 
