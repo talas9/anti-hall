@@ -602,7 +602,13 @@ prose reminders get ignored; only a mechanical trigger works.
   with the SAME imperative "STOP and read them FIRST via `devswarm.js inbox read-primary
   <id>`" wording the child gate uses below, so the Primary can no longer sit on its own
   unread inbound (fixes the confirmed gap where a parent could not see messages sent to
-  it). **v0.61.1 real-unread fix:** the "unread backlog" clause above now counts only
+  it). **These three clauses are not exhaustive of "the parent has something waiting":**
+  an escalation that landed in `orphans[]` (unread with no live registry row, e.g. because
+  the Primary never self-registered from the true main worktree — see the v0.67.1 note
+  above) matches NONE of them, so this gate does not block on it. Only the informational
+  `devswarm-parent-inbox.js` surfaces `orphans[]`; a Primary can `Stop` unblocked here while
+  that hook is displaying the very escalation this gate is meant to catch.
+  **v0.61.1 real-unread fix:** the "unread backlog" clause above now counts only
   REAL unread — system-generated poke/mirror noise is excluded via the shared
   `companion/lib/devswarm-noise.js` `isNoiseText` classifier — closing a ghost-workspace
   feedback loop where a backlog consisting solely of the Primary's own `[Primary poke]`
@@ -1208,6 +1214,19 @@ transport for DevSwarm coordination — a **REPLACE**, not an additional option.
   existing poke/escalate cadence (§8.7's Layer 2/3) — it NEVER resolves a pid and NEVER
   kills; the on-demand `devswarm-recover.js` CLI remains the only path in this system that
   ever does.
+- **v0.67.1 — this path never delivered end-to-end until now.** Four stacked defects, any
+  one of which alone silently swallowed the escalation: a missing `deriveSummary` call
+  after the append left the parent-facing projection stale; `openStore` was called without
+  a hash and wrote to a legacy bucket instead of the repoKey store; `parentId` was derived
+  from the CHILD's own worktree path (rather than resolved via `resolveMainWorktree` before
+  `primaryWorkspaceId`), so escalations landed in the child's own bucket; and two
+  fold/rehome paths skipped their projection refresh entirely on specific branches. All four
+  are now fixed. **Remaining precondition, NOT fixed by this release:** delivery still
+  requires the Primary to have self-registered from the true main worktree — otherwise the
+  escalation lands in `orphans[]` (see `computeSummary`'s A2 orphan detection in
+  `companion/lib/devswarm-store.js`), not the workspace's own row, and `devswarm-parent-gate.js`
+  does not check `orphans[]` (only `devswarm-parent-inbox.js` does) — see the parent-gate
+  note below.
 - **Daemon — unchanged.** `devswarm-ingest.js` (the one supervised native-`monitor`
   consumer) and its per-project install/health-check machinery from v0.57 are untouched by
   v0.58 — the daemon still exists purely to drain the Primary's OWN reception queue

@@ -514,6 +514,19 @@ nudged. `low`/`normal`/no-signal never forces anything (relies on the agent's ow
 turn). This is purely additive — it NEVER resolves a pid and NEVER kills; the on-demand
 `devswarm-recover.js` CLI (below) remains the only path that ever does.
 
+**v0.67.1 — this path never delivered end-to-end until now.** Four stacked defects, any
+one of which alone silently swallowed the escalation: a missing `deriveSummary` call
+after the append left the parent-facing projection stale; `openStore` was called without
+a hash and wrote to a legacy bucket instead of the repoKey store; `parentId` was derived
+from the CHILD's own worktree path (rather than resolved via `resolveMainWorktree` before
+`primaryWorkspaceId`), so escalations landed in the child's own bucket; and two
+fold/rehome paths skipped their projection refresh entirely on specific branches. All four
+are now fixed. **Remaining precondition, NOT fixed by this release:** delivery still
+requires the Primary to have self-registered from the true main worktree — otherwise the
+escalation lands in `orphans[]` rather than the workspace's own row, and the blocking
+`devswarm-parent-gate.js` Stop hook does not check `orphans[]` (only the informational
+`devswarm-parent-inbox.js` does).
+
 **Daemon — unchanged.** `devswarm-ingest.js` and its per-project install/health-check
 machinery are untouched by v0.58; the daemon only ever drained the Primary's own reception
 queue, not a fanout mechanism the mesh-only decision needed to touch.
@@ -638,6 +651,17 @@ poke worked and the verdict clears to `alive`.
 short-circuits it (returns unchanged, never re-stats) so the sweep stops re-targeting a
 workspace a human/parent must now handle. Reset it by deleting
 `~/.anti-hall/devswarm/liveness/<id>.json` after someone has looked.
+
+On the transition into `escalated` (never re-fired on an already-escalated workspace),
+`pokeOrEscalate()` ALSO mechanically notifies the parent's own store via
+`notifyParentEscalation()` — a channel separate from, and unconditional on, the optional
+`escalateCommand` above. **v0.67.1** fixed four stacked defects that had kept this
+parent-store notice from ever landing end-to-end (stale post-append projection,
+wrong-bucket store open, parentId resolved from the child's own worktree instead of the
+true main worktree, and two fold/rehome paths skipping their projection refresh); it now
+delivers, PROVIDED the Primary has self-registered from the true main worktree — otherwise
+it lands in `orphans[]`, which the blocking parent-gate hook does not check (see Layer 2/3
+mechanical triggers above).
 
 **Automatic path stops here.** Nothing above ever resolves a pid or sends a signal.
 
@@ -797,7 +821,12 @@ covered machine-wide or for other repos — it proves only that its OWN worktree
   script that pages an operator, or one that pings the parent orchestrator directly.
   Without `nudgeCommand`, a `stale` verdict escalates immediately (no poke attempt is
   possible); without `escalateCommand`, escalation still happens (verdict + recovery.log
-  entry) — it just has no external side effect.
+  entry) — but it is NOT side-effect-free: on the transition into `escalated`,
+  `pokeOrEscalate()` unconditionally also calls `notifyParentEscalation()`, mechanically
+  notifying the parent's own store regardless of whether `escalateCommand` is set. As of
+  **v0.67.1** that notice actually lands end-to-end (four prior stacked defects fixed —
+  see Layer 3 above), provided the Primary has self-registered from the true main
+  worktree; otherwise it lands in `orphans[]`, unseen by the blocking parent-gate hook.
 
 **3. Env gate.** `DISABLE_ANTIHALL_DEVSWARM=1` is the hard kill-switch. Note the
 supervisor daemon's own gate (`devswarm-supervisor.js`) checks only that switch plus

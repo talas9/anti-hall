@@ -257,13 +257,25 @@ plugin depends on it.
 
 - **Layered recovery, never-auto-kill** — a wedged child self-reports idleness, a
   supervisor **pokes** it, then **escalates to the parent**; the only path that ever kills
-  a process is the separate, on-demand `devswarm-recover.js` CLI.
+  a process is the separate, on-demand `devswarm-recover.js` CLI. Delivery of that
+  escalation still requires the Primary to have self-registered from the true main
+  worktree — see the v0.67.1 bullet below for the known gap when it hasn't.
 - **Human-readable workspace names (v0.67.0)** — `devswarm.js spawn` titles a new
   workspace from its `-p` brief via a separate best-effort `hivecontrol workspace
   update-title` call (a caller-supplied `-t/--title` is never overridden); the parent's
   per-turn status table now shows `name (shortid)` instead of a bare UUID, reading a
   shared fs cache (`companion/lib/devswarm-names.js`) that never spawns `hivecontrol` on
   that hot path.
+- **Supervisor escalation actually delivers, plus a cross-repo hijack guard (v0.67.1)** —
+  fixed four stacked defects that had kept the escalate-to-parent path above from ever
+  delivering end-to-end (stale post-append projection, wrong-bucket store open, parentId
+  derived from the child's own worktree instead of the resolved main worktree, and two
+  fold/rehome paths skipping their projection refresh); hardened the roster's native fold
+  with a cross-repo `repositoryId` check against a cwd-anchored ground truth (drops +
+  logs mismatches, fails open unfiltered) — a new guard, not a repair of a prior break.
+  **Known remaining gap:** an escalation that lands in `orphans[]` (no live registry row)
+  is surfaced by the informational parent-inbox hook but not by the blocking parent-gate
+  hook, so a Primary can `Stop` unblocked on an escalation the inbox hook is showing.
 - **Per-project mesh store** — one shared store per project keyed by a stable `repoKey`,
   so any worktree can message any other directly; **#36-STRUCTURAL scoping** closes a
   spoofable cross-project bleed.
@@ -378,7 +390,11 @@ plugin depends on it.
 - **`archive-request`** — a direct store write asking a child to archive itself;
   archiving stays a human-confirmed handoff on both sides, never mechanical.
 - **Supervisor escalate-on-urgent + liveness** — the opt-in supervisor also escalates to
-  the parent on a high/urgent mesh unread; it still never kills anything itself.
+  the parent on a high/urgent mesh unread; it still never kills anything itself. As of
+  v0.67.1 this path actually delivers end-to-end (four stacked defects fixed — see above);
+  delivery still requires the Primary to have self-registered from the true main worktree,
+  else the escalation lands in `orphans[]` and only the informational parent-inbox hook
+  (not the blocking parent-gate hook) surfaces it.
 - **Optional per-project ingest daemon** — the one native consumer wrapping `hivecontrol
   workspace monitor` into the shared store, installed per project via
   `companion/install-devswarm-ingest.js`.
@@ -389,7 +405,9 @@ integration above. It works around a `claude` session silently wedging (process 
 listener dead, claude-code#39755) with three escalating layers, **none of which ever
 kill anything**: a child workspace's own idle self-report, a supervisor **poke** (an
 optional descriptor-supplied command) on a detected-stale workspace, then an
-**escalate-to-parent** signal once the poke budget is exhausted. Killing lives
+**escalate-to-parent** signal once the poke budget is exhausted (as of v0.67.1 this
+signal actually reaches the parent's projection end-to-end — see the at-a-glance bullets
+above for the four fixes and the remaining self-registration precondition). Killing lives
 separately, on-demand only:
 
 ```bash
