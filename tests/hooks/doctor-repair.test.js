@@ -962,11 +962,15 @@ test('wake-monitor: REPORT-ONLY entry present even on a real (non-dry-run) pass,
   } finally { rm(home); rm(repo); }
 });
 
-test('wake-monitor: reports the exact manual arm command when shipped but not live', () => {
+test('wake-monitor: reports the exact manual arm command when shipped but not live (DevSwarm-active session)', () => {
   const home = mkTmp('wakemon-report-armcmd');
   const repo = makeGitRepo('wakemon-report-armcmd');
   try {
-    const results = repair.runRepairs({ cwd: repo, env: {}, home, dryRun: true, platform: 'win32' });
+    // P2 fix regression guard: the wake-monitor block now sits behind the same
+    // gateOpen every neighbouring DevSwarm repair uses, so the real
+    // shipped/live check (and its git-spawning identity resolution) only runs
+    // for a DevSwarm-active session — hence DEVSWARM_REPO_ID here.
+    const results = repair.runRepairs({ cwd: repo, env: { DEVSWARM_REPO_ID: 'r1' }, home, dryRun: true, platform: 'win32' });
     const r = results.find((x) => x.id === 'wake-monitor');
     assert.ok(r);
     // On a real checkout of this repo the watcher is genuinely shipped; no
@@ -974,5 +978,19 @@ test('wake-monitor: reports the exact manual arm command when shipped but not li
     // live and hand back the exact `Monitor`-tool arm command.
     assert.match(r.msg, /NOT live|could not resolve/);
     assert.match(r.msg, /Monitor.*tool/);
+  } finally { rm(home); rm(repo); }
+});
+
+test('wake-monitor: gate CLOSED (non-DevSwarm session) never spawns the live-check or tells the user to arm it', () => {
+  const home = mkTmp('wakemon-gated');
+  const repo = makeGitRepo('wakemon-gated');
+  try {
+    const results = repair.runRepairs({ cwd: repo, env: {}, home, dryRun: true, platform: 'win32' });
+    const r = results.find((x) => x.id === 'wake-monitor');
+    assert.ok(r, 'a wake-monitor result must still be present (report-only entry), just gated');
+    assert.strictEqual(r.action, 'none');
+    assert.strictEqual(r.status, 'skipped');
+    assert.doesNotMatch(r.msg, /arm it/, 'a non-DevSwarm session must never be told to arm the wake-monitor');
+    assert.doesNotMatch(r.msg, /NOT live/, 'gate-closed must never run the live-check at all');
   } finally { rm(home); rm(repo); }
 });

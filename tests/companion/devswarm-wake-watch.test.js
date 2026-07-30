@@ -673,6 +673,7 @@ test('lock-refused: a live-held lock produces zero stdout and a stderr line, exi
     const env = {
       PATH: process.env.PATH,
       HOME: home,
+      DEVSWARM_REPO_ID: 'r1', // keep the non-DevSwarm gate OPEN — this test exercises the lock-refusal path beyond it
       DEVSWARM_SOURCE_BRANCH: 'main',
       DEVSWARM_BUILDER_ID: id,
     };
@@ -683,5 +684,65 @@ test('lock-refused: a live-held lock produces zero stdout and a stderr line, exi
 
     // Lock file must be left untouched (refusal never steals/removes a live lock).
     assert.ok(fs.existsSync(lockPath));
+  } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// P0 FIX: non-DevSwarm session gate. monitors.json declares "when": "always",
+// so main() starts at EVERY session start for every personal-scope install —
+// this must produce ZERO stdout, exit 0, and create ZERO directories/files,
+// for a genuinely non-DevSwarm session (no DEVSWARM_* env, virgin/isolated
+// HOME). Mirrors skills/update/scripts/update.js's wakeMonitorPostUpdate gate:
+// SAME helper (hooks/lib/devswarm-detect.js isDevswarmActive), same semantics.
+// ---------------------------------------------------------------------------
+
+test('main(): a non-DevSwarm session exits quietly — zero stdout, exit 0, zero files/dirs created', () => {
+  const home = tmpHome();
+  try {
+    const env = {
+      PATH: process.env.PATH,
+      HOME: home,
+      // Deliberately NO DEVSWARM_* / ANTIHALL_DEVSWARM_* vars at all — a
+      // virgin, non-DevSwarm session.
+    };
+    const res = spawnSync(process.execPath, [MODULE_PATH], { env, encoding: 'utf8', timeout: 5000 });
+    assert.strictEqual(res.status, 0);
+    assert.strictEqual(res.stdout, '', 'stdout must be byte-for-byte empty — stdout is what wakes an agent');
+    // stderr MAY carry a one-line notice; that's fine and expected.
+    assert.match(res.stderr, /not a DevSwarm session/);
+
+    // ZERO directories/files created anywhere under the isolated HOME —
+    // specifically no ~/.anti-hall/devswarm (locks/wake state dirs) at all.
+    assert.strictEqual(fs.existsSync(path.join(home, '.anti-hall')), false,
+      'the gate must run before any mkdir/lock-acquisition/state write — found: ' + JSON.stringify(fs.readdirSync(home)));
+  } finally { rm(home); }
+});
+
+test('main(): a DevSwarm-active session still arms normally (gate is not over-broad)', () => {
+  const home = tmpHome();
+  try {
+    const id = 'arm-test-child-1';
+    const env = {
+      PATH: process.env.PATH,
+      HOME: home,
+      DEVSWARM_REPO_ID: 'r1',           // opens the isDevswarmActive gate
+      DEVSWARM_SOURCE_BRANCH: 'main',   // child-role identity, resolved purely from env (no git needed)
+      DEVSWARM_BUILDER_ID: id,
+    };
+    // The watcher loops forever (setTimeout(loop, pollMs)); let it run just
+    // long enough to complete its first (arm) tick, then time out / SIGTERM it.
+    const res = spawnSync(process.execPath, [MODULE_PATH], { env, encoding: 'utf8', timeout: 1500 });
+    assert.match(res.stdout, /\[wake-watch\] armed: watching child arm-test-child-1/,
+      'expected an arm line on stdout; got stdout=' + JSON.stringify(res.stdout) + ' stderr=' + JSON.stringify(res.stderr));
+
+    // A genuinely armed watcher DOES create its lock directory (proves the
+    // gate did not silently neuter the feature for an active DevSwarm
+    // session). The lock FILE itself is removed by the process's own SIGTERM
+    // cleanup handler (release()) once spawnSync's timeout kills it — that is
+    // correct, expected lock hygiene, not a sign nothing was created — so this
+    // asserts on the directory the lock lived in instead of the (by-then
+    // released) file.
+    const lockDir = path.dirname(lockPathFor(home, id));
+    assert.ok(fs.existsSync(lockDir), 'expected the watch-lock directory to have been created for an active DevSwarm session');
   } finally { rm(home); }
 });

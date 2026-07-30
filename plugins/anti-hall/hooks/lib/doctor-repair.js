@@ -1254,21 +1254,33 @@ function runRepairs(opts) {
   // REPORT-ONLY block above, never a `fixed`/`gated` action. Reuses
   // doctor-devswarm.js's own wakeMonitorShipped/wakeMonitorLiveCheck (never
   // re-derived here) so this can't drift from the doctor-diagnostic verdict.
-  try {
-    const dsd = doctorDevswarmMod();
-    if (typeof dsd.wakeMonitorShipped !== 'function' || typeof dsd.wakeMonitorLiveCheck !== 'function') {
-      push('wake-monitor', 'none', 'skipped', 'wake-monitor check unavailable (doctor-devswarm.js missing expected exports)');
-    } else {
-      const shipped = dsd.wakeMonitorShipped(PLUGIN_ROOT);
-      if (!shipped.shipped) {
-        push('wake-monitor', 'none', 'skipped', 'wake-monitor not shipped: ' + shipped.reason + ' (cron fallback unaffected)');
+  //
+  // P2 fix: this block used to sit OUTSIDE gateOpen, unlike every other
+  // DevSwarm repair in this file — so it spawned git (via wakeMonitorLiveCheck
+  // -> resolveIdentity -> resolveMainWorktree) and told a non-DevSwarm user to
+  // "arm it" on every `doctor --repair` run. Now behind the same gateOpen a
+  // non-DevSwarm/non-git-worktree session already closes for every neighbouring
+  // DevSwarm repair above — contract unchanged (still action:'none',
+  // status:'skipped' either way, never 'gated'/'fixed').
+  if (!gateOpen) {
+    push('wake-monitor', 'none', 'skipped', 'wake-monitor not checked: not a DevSwarm session (or no resolvable git worktree) — nothing to arm here.');
+  } else {
+    try {
+      const dsd = doctorDevswarmMod();
+      if (typeof dsd.wakeMonitorShipped !== 'function' || typeof dsd.wakeMonitorLiveCheck !== 'function') {
+        push('wake-monitor', 'none', 'skipped', 'wake-monitor check unavailable (doctor-devswarm.js missing expected exports)');
       } else {
-        const live = dsd.wakeMonitorLiveCheck(shipped.watcherMod, shipped.watcherPath, home, env, cwd);
-        push('wake-monitor', 'none', 'skipped', live.message);
+        const shipped = dsd.wakeMonitorShipped(PLUGIN_ROOT);
+        if (!shipped.shipped) {
+          push('wake-monitor', 'none', 'skipped', 'wake-monitor not shipped: ' + shipped.reason + ' (cron fallback unaffected)');
+        } else {
+          const live = dsd.wakeMonitorLiveCheck(shipped.watcherMod, shipped.watcherPath, home, env, cwd);
+          push('wake-monitor', 'none', 'skipped', live.message);
+        }
       }
+    } catch (e) {
+      push('wake-monitor', 'none', 'skipped', 'wake-monitor check raised: ' + errMsg(e));
     }
-  } catch (e) {
-    push('wake-monitor', 'none', 'skipped', 'wake-monitor check raised: ' + errMsg(e));
   }
 
   return results;

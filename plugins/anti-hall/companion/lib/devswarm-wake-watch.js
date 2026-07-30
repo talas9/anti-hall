@@ -697,8 +697,37 @@ function emitLine(line) {
   fs.writeSync(1, s);
 }
 
+// isDevswarmActiveGate(env) -> boolean. Mirrors skills/update/scripts/update.js's
+// wakeMonitorPostUpdate gate: SAME helper (hooks/lib/devswarm-detect.js's
+// isDevswarmActive), called the same way. Runs before ANY mkdir, lock
+// acquisition, state read/write, or stdout write in main() — a non-DevSwarm
+// session must produce zero stdout and create zero files/directories (the P0
+// this gate exists to fix: monitors.json's "when": "always" would otherwise
+// start this watcher for every personal-scope install, DevSwarm or not).
+// FAIL OPEN TOWARD NOT ARMING: if the gate helper itself throws, treat that as
+// "not active" — an unwanted arm is the bug being fixed, so a broken gate must
+// never accidentally arm.
+function isDevswarmActiveGate(env) {
+  try {
+    const { isDevswarmActive } = require('../../hooks/lib/devswarm-detect.js');
+    return typeof isDevswarmActive === 'function' && isDevswarmActive(env);
+  } catch (_) {
+    return false;
+  }
+}
+
 function main() {
   const env = process.env;
+
+  // GATE — must be the very first thing main() does (see isDevswarmActiveGate
+  // comment above). stderr-only notice; stdout must stay empty here since
+  // stdout is what wakes an agent.
+  if (!isDevswarmActiveGate(env)) {
+    try { process.stderr.write('[wake-watch] not a DevSwarm session; exiting quietly (not arming).\n'); } catch (_) {}
+    process.exitCode = 0;
+    return;
+  }
+
   const cwd = process.cwd();
   const identity = resolveIdentity(env, cwd, {});
   if (!identity) {
@@ -742,6 +771,18 @@ function main() {
   let st = normalizeState(loadSeenState(home, id, fs));
   const pollMs = pollMsFromEnv(env);
 
+  // Persisted-write dedup (P2 fix): saveSeenState only ever persists
+  // lastTotal/lastTotal2 (see its payload above), so track those two fields as
+  // last-WRITTEN-to-disk and skip the tmp-write+rename entirely whenever
+  // neither has moved since the last save — was previously called every tick
+  // unconditionally (~2s cadence, ~43k/day/session) even on a fully idle
+  // watcher. Never alters wake/emit semantics — lines are still emitted from
+  // `res.lines` exactly as before; this only gates the PERSISTENCE write. The
+  // saved-* trackers are only updated after a successful write, so a failed
+  // write leaves them stale and the next tick retries automatically.
+  let savedTotal = st.lastTotal;
+  let savedTotal2 = st.lastTotal2;
+
   let cleaned = false;
   function cleanup() {
     if (cleaned) return;
@@ -771,7 +812,13 @@ function main() {
     for (const line of res.lines) {
       try { emitLine(line); } catch (_) { /* never let an output error kill the loop */ }
     }
-    try { saveSeenState(home, id, st, fs); } catch (_) {}
+    if (st.lastTotal !== savedTotal || st.lastTotal2 !== savedTotal2) {
+      try {
+        saveSeenState(home, id, st, fs);
+        savedTotal = st.lastTotal;
+        savedTotal2 = st.lastTotal2;
+      } catch (_) {}
+    }
 
     setTimeout(loop, pollMs);
   }
@@ -789,6 +836,7 @@ module.exports = {
   ERROR_TOLERANCE,
   ERROR_BACKOFF_MS,
   // IO helpers
+  isDevswarmActiveGate,
   pollMsFromEnv,
   realFormsOf,
   resolveIdentity,
