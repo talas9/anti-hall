@@ -79,7 +79,12 @@ test('the devswarm-wake-watch command resolves to a REAL file on disk in this pl
   assert.ok(entry, 'devswarm-wake-watch entry must be present');
   const resolvedCommand = entry.command.replace('${CLAUDE_PLUGIN_ROOT}', PLUGIN_ROOT);
   const watcherPath = path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-wake-watch.js');
-  assert.ok(resolvedCommand.includes(watcherPath), 'command must point at the real watcher script path');
+  // Normalize separators before comparing: monitors.json's command string
+  // always uses forward slashes, but PLUGIN_ROOT/watcherPath are built with
+  // path.join() and use backslashes on Windows — a naive .includes() would
+  // never match there even though both sides point at the same real path.
+  const normalize = (s) => s.split(path.sep).join('/');
+  assert.ok(normalize(resolvedCommand).includes(normalize(watcherPath)), 'command must point at the real watcher script path');
   assert.ok(fs.existsSync(watcherPath), 'the watcher script referenced by monitors.json must actually exist on disk');
 });
 

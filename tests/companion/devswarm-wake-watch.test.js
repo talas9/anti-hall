@@ -673,6 +673,7 @@ test('lock-refused: a live-held lock produces zero stdout and a stderr line, exi
     const env = {
       PATH: process.env.PATH,
       HOME: home,
+      USERPROFILE: home, // Windows: os.homedir() resolves USERPROFILE and ignores HOME
       DEVSWARM_REPO_ID: 'r1', // keep the non-DevSwarm gate OPEN — this test exercises the lock-refusal path beyond it
       DEVSWARM_SOURCE_BRANCH: 'main',
       DEVSWARM_BUILDER_ID: id,
@@ -702,6 +703,7 @@ test('main(): a non-DevSwarm session exits quietly — zero stdout, exit 0, zero
     const env = {
       PATH: process.env.PATH,
       HOME: home,
+      USERPROFILE: home, // Windows: os.homedir() resolves USERPROFILE and ignores HOME
       // Deliberately NO DEVSWARM_* / ANTIHALL_DEVSWARM_* vars at all — a
       // virgin, non-DevSwarm session.
     };
@@ -725,6 +727,7 @@ test('main(): a DevSwarm-active session still arms normally (gate is not over-br
     const env = {
       PATH: process.env.PATH,
       HOME: home,
+      USERPROFILE: home, // Windows: os.homedir() resolves USERPROFILE and ignores HOME
       DEVSWARM_REPO_ID: 'r1',           // opens the isDevswarmActive gate
       DEVSWARM_SOURCE_BRANCH: 'main',   // child-role identity, resolved purely from env (no git needed)
       DEVSWARM_BUILDER_ID: id,
