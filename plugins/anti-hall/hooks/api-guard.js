@@ -43,7 +43,19 @@ const os = require('os');
 const { spawnSync } = require('child_process');
 
 const MAX_MODULES = 8;          // bound interpreter spawns (one per module group)
-const SPAWN_TIMEOUT_MS = 5000;  // per-spawn CEILING (normal spawn <300ms; headroom for cold/heavy imports)
+// per-spawn CEILING. Measured from real CI logs (Windows): a cold heavy-import
+// stdlib probe (asyncio) took 2427ms on a PASSING run and was KILLED at the old
+// 5000ms ceiling on a FAILING run in the same job, while a trivial `os` probe in
+// that same failing run took only 1253ms — the cost tracks import weight, not
+// interpreter absence (python3 was present and working). So the true requirement
+// is unknown and above 5s; 15000ms gives real headroom while staying well under
+// TOTAL_DEADLINE_MS (30000, leaves 15000ms headroom) and the hooks.json 45000ms
+// hook ceiling (leaves 15000ms headroom there too). Overridable (test-only: lets
+// tests force a fast, deterministic timeout without sleeping the real budget).
+const SPAWN_TIMEOUT_MS = (() => {
+  const v = parseInt(process.env.ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS || '', 10);
+  return Number.isFinite(v) && v > 0 ? v : 15000;
+})();
 const TOTAL_DEADLINE_MS = 30000; // global wall-clock budget (< hooks.json 45s timeout, with headroom)
 const MAX_CODE_BYTES = 600000;  // skip absurdly large chunks
 
@@ -276,11 +288,25 @@ function jsCandidates(code) {
 }
 
 // ---------------------------------------------------------------------------
+// Records the FIRST probe spawn that was killed by TIMEOUT or SIGNAL (not a
+// plain "interpreter not installed" ENOENT, which is normal/expected/silent).
+// Used to make an otherwise-silent fail-open OBSERVABLE: today a timed-out
+// probe and a genuinely-clean probe both exit 0 with no signal, so a slow
+// machine looks identical to a verified-healthy one. See emitTimeoutNotice().
+let timeoutNotice = null; // { bin, budgetMs } | null
+function noteSpawnOutcome(bin, res) {
+  if (timeoutNotice) return; // report only the first occurrence per run
+  if (res && (res.signal || (res.error && res.error.code === 'ETIMEDOUT'))) {
+    timeoutNotice = { bin, budgetMs: SPAWN_TIMEOUT_MS };
+  }
+}
+
 function spawnJSON(bin, argv, cwd) {
   let res;
   try {
     res = spawnSync(bin, argv, { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 262144, cwd: cwd || undefined });
   } catch (_) { return null; }
+  noteSpawnOutcome(bin, res);
   if (!res || res.error || res.signal || res.status !== 0) return null;
   try { return JSON.parse((res.stdout || '').trim()); } catch (_) { return null; }
 }
@@ -370,6 +396,21 @@ function verifyJs(cands, deadline) {
   return fakes;
 }
 
+// Fail-open is silent by design (a blocked-vs-allowed Write is the only
+// protocol-significant signal on stdout), but a TIMED-OUT probe must not look
+// identical to a genuinely-verified-clean one — that's the defect this closes.
+// STDERR ONLY (never stdout: PreToolUse stdout is protocol-significant), ONE
+// line, wrapped so a write failure can never block the edit it's reporting on.
+function emitTimeoutNotice() {
+  if (!timeoutNotice) return;
+  try {
+    process.stderr.write(
+      'anti-hall api-guard: API verification skipped (probe for "' + timeoutNotice.bin +
+      '" timed out after ' + timeoutNotice.budgetMs + 'ms budget) — edit allowed unchecked.\n'
+    );
+  } catch (_) { /* never let a stderr failure block the edit */ }
+}
+
 function runtimeVersion(bin) {
   try {
     const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
@@ -384,6 +425,7 @@ function pyBin() {
   for (const bin of ['python3', 'python']) {
     try {
       const r = spawnSync(bin, ['--version'], { timeout: SPAWN_TIMEOUT_MS, encoding: 'utf8', env: SAFE_ENV, maxBuffer: 65536 });
+      noteSpawnOutcome(bin, r);
       if (r && !r.error && r.status === 0 && /Python 3\./.test((r.stdout || '') + (r.stderr || ''))) { _pyBin = bin; break; }
     } catch (_) { /* try next */ }
   }
@@ -423,7 +465,7 @@ function main() {
   }
   if (jsCands.length) { binsUsed.add('node'); fakes.push(...verifyJs(jsCands, deadline)); }
 
-  if (!fakes.length) process.exit(0);
+  if (!fakes.length) { emitTimeoutNotice(); process.exit(0); }
 
   const seen = new Set();
   const uniq = fakes.filter((f) => (seen.has(f.label) ? false : (seen.add(f.label), true)));

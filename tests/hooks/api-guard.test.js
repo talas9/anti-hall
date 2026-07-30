@@ -14,6 +14,7 @@ const assert = require('node:assert');
 const { spawnSync } = require('node:child_process');
 const os = require('node:os');
 const path = require('node:path');
+const fs = require('node:fs');
 const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
@@ -194,6 +195,64 @@ test('FAIL-OPEN: no python3/python on PATH -> Python fake is ALLOWED', () => {
     const r = testHook(HOOK, write('/tmp/x.py', 'import os\nos.quantum_fork()\n'), { home: h.home, env: { PATH: '/nonexistent-bin-dir' } });
     assert.strictEqual(r.status, 0, 'no Python interpreter must fail open (allow), got ' + r.status);
   } finally { h.cleanup(); }
+});
+
+// ---- Timed-out fail-open must be OBSERVABLE (stderr), never silent noise ----
+// "Interpreter not installed" (ENOENT) is normal/expected and must stay silent.
+// A probe that times out or is signal-killed is a DIFFERENT condition — the
+// guard was silently inert but LOOKED healthy. Only that path gets one stderr
+// line; it must still exit 0 (fail-open contract unchanged) and stdout stays
+// untouched (PreToolUse stdout is protocol-significant).
+test('SILENT: interpreter-not-installed path emits NO stderr (would be noise)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, write('/tmp/x.py', 'import os\nos.quantum_fork()\n'), { home: h.home, env: { PATH: '/nonexistent-bin-dir' } });
+    assert.strictEqual(r.status, 0, 'missing interpreter must fail open (allow)');
+    assert.strictEqual(r.stderr.trim(), '', 'missing-interpreter path must stay SILENT on stderr');
+    assert.strictEqual(r.stdout.trim(), '', 'must not emit anything on stdout either');
+  } finally { h.cleanup(); }
+});
+
+test('TIMEOUT: a killed probe emits ONE stderr notice AND still allows (exit 0)', { skip: process.platform === 'win32' }, () => {
+  // Simulate a slow/cold interpreter deterministically WITHOUT sleeping the real
+  // budget: a fake `python3` on PATH answers `--version` instantly (so pyBin()
+  // detects a real interpreter, matching the proven scenario: python3 IS present
+  // and works) but sleeps past the (test-overridden, tiny) spawn budget for the
+  // actual attribute-probe invocation, which the hook then kills via `timeout`.
+  // POSIX-only simulation technique (#!/bin/sh shim); skipped on win32 like the
+  // other Python-availability-gated tests in this file.
+  const h = makeHome();
+  const shimDir = fs.mkdtempSync(path.join(TMP, 'antihall-apiguard-timeout-'));
+  try {
+    const shim = path.join(shimDir, 'python3');
+    fs.writeFileSync(
+      shim,
+      '#!/bin/sh\n' +
+      'if [ "$1" = "--version" ]; then\n' +
+      '  echo "Python 3.11.0"\n' +
+      '  exit 0\n' +
+      'fi\n' +
+      'sleep 2\n' +
+      'echo "[]"\n'
+    );
+    fs.chmodSync(shim, 0o755);
+
+    const r = testHook(HOOK, write('/tmp/x.py', 'import os\nos.getpid()\n'), {
+      home: h.home,
+      env: { PATH: shimDir, ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS: '150' },
+    });
+
+    assert.strictEqual(r.status, 0, 'a timed-out probe must still fail open (allow), got ' + r.status);
+    assert.strictEqual(r.stdout.trim(), '', 'stdout must stay untouched (protocol-significant)');
+    const lines = r.stderr.trim().split('\n').filter(Boolean);
+    assert.strictEqual(lines.length, 1, 'expected exactly ONE stderr line, got: ' + JSON.stringify(lines));
+    assert.match(lines[0], /python3/, 'notice should name the interpreter');
+    assert.match(lines[0], /150/, 'notice should name the elapsed/spawn budget');
+    assert.match(lines[0], /timed out|timeout/i, 'notice should say the probe timed out');
+  } finally {
+    h.cleanup();
+    fs.rmSync(shimDir, { recursive: true, force: true });
+  }
 });
 
 // ---- Fail-open / scope ---------------------------------------------------
