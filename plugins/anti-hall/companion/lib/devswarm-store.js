@@ -1534,6 +1534,16 @@ function computeSummary(store, opts) {
 // when empty, so a no-orphan/no-stale project produces the exact same on-disk
 // artifact as before). Write is ATOMIC (tmp + rename) so a hook read never observes
 // a partial file.
+//
+// FOOTGUN: the write target is chosen by summaryHashFor(store, opts) (above) —
+// and opts.workspaceId, when present, OVERRIDES the store handle's own `.hash`.
+// If a caller already holds a store opened on the correct bucket and ALSO passes
+// opts.workspaceId, the projection is redirected to a DIFFERENT (legacy,
+// hashFromWorkspaceId-derived) bucket than the one the handle uses. This fails
+// SILENTLY — no error, no warning — the summary lands somewhere nothing reads,
+// while the bucket the caller is actually operating on goes stale. Rule: when
+// the store handle is already correctly bucketed, OMIT opts.workspaceId so the
+// handle's own hash wins (production's cmdSend does this).
 function deriveSummary(store, opts) {
   const o = opts || {};
   const home = o.home || os.homedir();

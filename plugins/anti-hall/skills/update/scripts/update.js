@@ -795,6 +795,113 @@ function healRegistryPostUpdate(opts) {
   }
 }
 
+/**
+ * wakeMonitorPostUpdate({ paths, env, cwd, home }) →
+ *   { attempted, shipped, live, stateDirEnsured, detail }
+ *
+ * Monitor-based idle-wake forward-migration companion (see
+ * companion/lib/devswarm-wake-watch.js + hooks/lib/devswarm-wake.js). This is
+ * a PLAIN NODE PROCESS — it has NO `Monitor` tool (that is agent-only), so it
+ * must NEVER claim to have armed a watcher. What it DOES, idempotently:
+ *   1. Verifies the watcher script is present in the installed/mirrored
+ *      plugin dir and syntactically loads via require() in a try/catch
+ *      (confirmed side-effect-free: the module's own
+ *      `require.main === module` guard keeps its main() from auto-running on
+ *      require).
+ *   2. Ensures the watcher's persisted-state dir exists (CREATE ONLY, never
+ *      deletes) — <home>/.anti-hall/devswarm/wake, via the SAME devswarmRoot()
+ *      helper the watcher itself uses for its own seen-cursor file, so this
+ *      can never drift from where the watcher actually looks.
+ *   3. Detects whether a watcher is CURRENTLY LIVE for this identity by
+ *      read-only inspection of its lock file — mirrors devswarm-pull.js's
+ *      acquireExclLock holder/isAlive semantics (pid recorded in the lock
+ *      JSON, liveness via process.kill(pid, 0)) WITHOUT ever acquiring,
+ *      stealing, or deleting that lock.
+ *   4. When not live, returns the exact manual arm command (the `Monitor`
+ *      tool invocation) in `detail` — never a fake auto-fix, since no
+ *      hook/CLI can call an agent-only tool.
+ *
+ * Same DevSwarm-session-only gate + fully fail-open posture as
+ * reconcile/fold/ownerKeyMigrate/healRegistryRows above: NEVER throws, never
+ * affects `stop` or the update's own success/failure. Idempotent — a re-run
+ * reports the same shipped/live state; the only mutation (mkdirSync
+ * recursive on the state dir) is itself idempotent and NO-DELETE.
+ */
+function wakeMonitorPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const watcherPath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-wake-watch.js');
+    if (!fs.existsSync(detectPath)) {
+      return { attempted: false, shipped: false, live: false, detail: 'wake-monitor skipped: expected plugin file not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, shipped: false, live: false, detail: 'not a DevSwarm session — wake-monitor skipped (gate closed)' };
+    }
+
+    // 1. shipped? — file present, require()-loadable, has the exports this
+    // function itself depends on next (fail-open: a broken/missing watcher
+    // must never throw, only report shipped:false).
+    if (!fs.existsSync(watcherPath)) {
+      return { attempted: true, shipped: false, live: false, detail: 'wake-monitor NOT shipped: watcher script missing at ' + watcherPath + ' — Monitor-based idle-wake unavailable this run (cron fallback is unaffected)' };
+    }
+    let watcherMod = null;
+    try {
+      watcherMod = require(watcherPath);
+    } catch (e) {
+      return { attempted: true, shipped: false, live: false, detail: 'wake-monitor NOT shipped: watcher script failed to load (' + (e && e.message ? e.message : String(e)) + ') at ' + watcherPath };
+    }
+    if (typeof watcherMod.resolveIdentity !== 'function' || typeof watcherMod.lockPathFor !== 'function') {
+      return { attempted: true, shipped: false, live: false, detail: 'wake-monitor NOT shipped: watcher script loaded but is missing expected exports (resolveIdentity/lockPathFor)' };
+    }
+
+    // 2. ensure the watcher's state dir exists — CREATE ONLY, never delete.
+    let stateDirEnsured = false;
+    try {
+      const livenessPath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'liveness.js');
+      const { devswarmRoot } = require(livenessPath);
+      fs.mkdirSync(path.join(devswarmRoot(home), 'wake'), { recursive: true });
+      stateDirEnsured = true;
+    } catch (_) { stateDirEnsured = false; /* fail-open: reported honestly, never blocks */ }
+
+    // 3. is a watcher currently live for THIS identity? Read-only lock
+    // inspection — never acquire/steal/delete (see doc comment above).
+    let identity = null;
+    try { identity = watcherMod.resolveIdentity(env, cwd, {}); } catch (_) { identity = null; }
+    const armCmd = 'call the `Monitor` tool with command `node ' + watcherPath + '`, persistent: true (or run that command yourself in a background terminal)';
+    if (!identity) {
+      return {
+        attempted: true, shipped: true, live: false, stateDirEnsured,
+        detail: 'wake-monitor shipped (state dir ' + (stateDirEnsured ? 'ready' : 'NOT ensured') + ') — could not resolve a DevSwarm identity for ' + cwd + ', live-check skipped. Manual arm: ' + armCmd + '.',
+      };
+    }
+    let holder = null;
+    try { holder = JSON.parse(fs.readFileSync(watcherMod.lockPathFor(home, identity.id), 'utf8')); } catch (_) { holder = null; }
+    const pid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
+    let alive = false;
+    if (pid !== null) {
+      try { process.kill(pid, 0); alive = true; } catch (e) { alive = !!(e && e.code === 'EPERM'); }
+    }
+    if (alive) {
+      return {
+        attempted: true, shipped: true, live: true, stateDirEnsured,
+        detail: 'wake-monitor shipped + LIVE — a watcher already holds the lock for ' + identity.role + ' ' + identity.id + ' (pid ' + pid + ')',
+      };
+    }
+    return {
+      attempted: true, shipped: true, live: false, stateDirEnsured,
+      detail: 'wake-monitor shipped but NOT live for ' + identity.role + ' ' + identity.id + ' — arm it: ' + armCmd + '.',
+    };
+  } catch (e) {
+    return { attempted: false, shipped: false, live: false, detail: 'wake-monitor raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Rollback (v0.57 mesh -> legacy per-worktree units) — PLAN-v0.57-mesh.md
 // Phase 6b / D13. Documented + tested, NOT auto-run by `main()`/runUpdate.
@@ -1097,6 +1204,12 @@ function runUpdate(opts) {
   // stale row via devswarm.js's healRegistry. Same gate + fail-open posture;
   // never affects the update's success.
   const healRegistryRows = healRegistryPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // Monitor-based idle-wake companion: report shipped/live state + the exact
+  // manual arm command. update.js is a plain Node process — it CANNOT call
+  // the agent-only `Monitor` tool, so this only verifies/reports, never
+  // claims to have armed anything. Same gate + fail-open posture; never
+  // affects the update's success.
+  const wakeMonitor = wakeMonitorPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home });
 
   // Unknown installed version → NEVER 'already up to date'; no delta computable
   // (a null `from` would dump the entire changelog, so suppress it).
@@ -1112,6 +1225,7 @@ function runUpdate(opts) {
         fold,
         ownerKeyMigrate,
         healRegistryRows,
+        wakeMonitor,
         action: UNKNOWN_INSTALLED_ACTION,
       },
       changelog: '',
@@ -1141,6 +1255,7 @@ function runUpdate(opts) {
       fold,
       ownerKeyMigrate,
       healRegistryRows,
+      wakeMonitor,
       action: updated ? 'run /reload-plugins' : 'already up to date',
     },
     changelog,
@@ -1205,6 +1320,9 @@ function renderHuman(status, changelog) {
       }
     }
   }
+  if (status.wakeMonitor && status.wakeMonitor.attempted) {
+    lines.push('  wake-monitor: ' + status.wakeMonitor.detail);
+  }
   if (changelog) {
     lines.push('');
     lines.push('Changelog delta:');
@@ -1238,6 +1356,7 @@ module.exports = {
   foldMeshPostUpdate,
   ownerKeyMigratePostUpdate,
   healRegistryPostUpdate,
+  wakeMonitorPostUpdate,
   readLegacyHeartbeat,
   rollbackToLegacyUnits,
   runCheck,

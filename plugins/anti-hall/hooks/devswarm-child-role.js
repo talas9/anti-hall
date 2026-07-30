@@ -39,6 +39,14 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 // not the plugin root, so a relative path in emitted text is unrunnable there).
 const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 
+// WATCHER — the ABSOLUTE path to the Monitor watch script (self-resolving: it
+// takes no required args, deriving role/id from env + on-disk descriptors at
+// run time). Same __dirname-based resolution rationale as CLI above — this
+// hook's cwd is never the plugin root. Passed to wakeDirective() below so the
+// Claude branch can arm `Monitor` IN ADDITION to CronCreate (never instead —
+// see lib/devswarm-wake.js's NON-NEGOTIABLE header comment).
+const WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+
 // OVERRIDE_CORE — the full COMMUNICATION OVERRIDE directive (PLAN.md "OVERRIDE +
 // WAKE-TIER0"), identical for both roles. Deliberately avoids the literal
 // strings `message-child`/`message-parent` (uses the `message-*` wildcard form
@@ -108,7 +116,7 @@ const PARENT_QUESTION_LINE =
 // COMMUNICATION OVERRIDE, no wake directive) — never crash, never block.
 function wakeLine(env, isChild) {
   try {
-    return require('./lib/devswarm-wake.js').wakeDirective(env, isChild, CLI);
+    return require('./lib/devswarm-wake.js').wakeDirective(env, isChild, CLI, WATCHER);
   } catch (_) {
     return ''; // fail-open: pre-v0.59 behavior
   }

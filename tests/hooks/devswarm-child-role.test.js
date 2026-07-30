@@ -197,6 +197,28 @@ test('WAKE: Claude Primary -> CronCreate directive using the read-primary drain 
   }
 });
 
+// CONSUMER-LEVEL (Monitor low-latency wake): this hook computes its own absolute
+// WATCHER path (companion/lib/devswarm-wake-watch.js, resolved from __dirname the
+// same way CLI already is) and passes it to wakeDirective() — the Claude branch
+// must then arm `Monitor` with that exact path, alongside the CronCreate text
+// (never instead of it — cron is unconditional, see lib/devswarm-wake.js header).
+test('MONITOR: Claude child/Primary SessionStart directive arms Monitor with an ABSOLUTE watcher path, ALONGSIDE the cron directive', () => {
+  const h = makeHome();
+  try {
+    for (const env of [CLAUDE_CHILD, CLAUDE_PRIMARY]) {
+      const c = ctx(testHook(HOOK, sessionPayload(), { home: h.home, expectJson: true, env }));
+      assert.ok(/`Monitor`/.test(c), `must arm Monitor; ctx=${c}`);
+      assert.ok(/`CronCreate`/.test(c), `cron must still be present alongside Monitor; ctx=${c}`);
+      const m = c.match(/node ([^`]*?devswarm-wake-watch\.js)/);
+      assert.ok(m, `must emit the watcher script path; ctx=${c}`);
+      assert.ok(path.isAbsolute(m[1]), `watcher path must be absolute: ${m[1]}`);
+      assert.ok(m[1].endsWith(path.join('companion', 'lib', 'devswarm-wake-watch.js')), `must resolve to companion/lib/devswarm-wake-watch.js: ${m[1]}`);
+    }
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('WAKE INTERVAL: ANTIHALL_DEVSWARM_WAKE_CRON is honored verbatim', () => {
   const h = makeHome();
   try {

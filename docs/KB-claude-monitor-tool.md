@@ -344,12 +344,14 @@ does not create a new session the way `--resume` does, so the resume conflict ab
 doesn't directly answer whether a Monitor (or a plugin `when: "always"` monitor) survives
 it. Do not assume survival either way without a live test.
 
-**Available re-arm triggers** [documented: Claude Code docs]:
-- `SessionStart` hook fires "when a session begins or resumes."
-- `PreCompact` / `PostCompact` hook events exist around the compaction boundary.
-
-These are the mechanical hooks available to re-arm a watch; see §7 for how anti-hall/
-DevSwarm uses them.
+**Available re-arm trigger, actually used** [documented: Claude Code docs; verified:
+`plugins/anti-hall/hooks/hooks.json`]: `SessionStart` fires "when a session begins or
+resumes" — and it fires again after in-session compaction too, carrying `source:
+"compact"` in its payload. One hook covers both the resume case and the compaction case.
+Every `SessionStart` entry registered in `plugins/anti-hall/hooks/hooks.json` has **no
+`matcher`**, so all of them run unconditionally on every session start *or* compact — a
+separate `PostCompact` hook would be redundant with a trigger that already fires there.
+See §7 for how anti-hall/DevSwarm uses this.
 
 **What ends a monitor, definitively** [verified: tool schema / docs] — independent of the
 resume/compaction question above:
@@ -417,6 +419,28 @@ CronCreate({
 })
 ```
 
+This cron job intentionally reads-and-acks in one call — `inbox read-primary` **always**
+mutates (see the forbidden-verbs warning below) — because the *timer itself* is the wake
+trigger here, not message arrival: it fires unconditionally on schedule, so consuming the
+mailbox in the same turn it wakes for costs nothing; there is no separate "a message just
+arrived" signal for it to erase. That is a fundamentally different shape from a Monitor
+watcher (below), whose entire job is to *detect* that a message arrived — a script that
+consumes what it exists to detect breaks itself.
+
+> **Forbidden verbs — never call these from inside a Monitor watcher.** Five DevSwarm
+> CLI verbs mutate a cursor as a side effect of reading, and every one of them breaks a
+> watcher the same way: it consumes the very unread signal the watcher exists to surface,
+> so the agent never learns anything happened.
+> - `inbox read-primary` — unconditionally acks the Primary's own inbox cursor.
+> - `inbox pull` — drains a child's native reception queue (auto-ensures + consumes it).
+> - `mesh read` (a.k.a. `roster --ack`) — reads the caller's mesh row and acks it.
+> - `roster --ack` — the same mesh-read-and-ack path, invoked via its `roster` alias.
+> - `inbox ack` — directly advances the inbox ack cursor.
+>
+> The cron job above is the one legitimate exception, and only there: its wake trigger is
+> the timer firing on schedule, not a message arriving, so there is no separate signal for
+> the ack to erase.
+
 **Costs:**
 - ❌ Blind polling: fires every 5 minutes **regardless of whether a message exists** (token waste).
 - ❌ Expires after 7 days (recurring jobs auto-expire; must be re-armed).
@@ -439,52 +463,46 @@ it as the path that provably still works when Monitor doesn't.
 
 **Monitor** replaces the polling for **live-session latency**. Each time a child sends a
 message, a watcher script detects it and fires an event — the Primary wakes immediately,
-no delay.
+no delay. There is deliberately no illustrative bash sketch here: earlier drafts of this
+section leaned on `inbox read-primary` (or a `--since` flag that does not exist in the
+real CLI) inside the watcher loop — exactly the forbidden pattern called out above. The
+real mechanism (below) reads an already-derived, read-only projection instead of calling
+any mutating verb.
 
-```bash
-# Sketch (illustrative — see below for real pattern)
-while true; do
-  # Poll devswarm.js inbox for new messages, emit one line per new message
-  node scripts/devswarm.js inbox read-primary <primary-id> --since <last-seen> \
-    | jq -r '.[] | @json' || echo "ERROR: inbox read failed"
-  sleep 1  # Poll every 1 second (tighter than 5 min)
-done | \
-  # Only emit lines that are NEW messages (filter out duplicates / errors)
-  grep --line-buffered -E '^\{' # Emit JSON message objects; skip error lines
-```
+**Re-arm on `SessionStart` only.** Given §6's conflict, the safe assumption is that
+Monitor does not survive compaction, and cron's own resume-durability is unconfirmed. The
+mechanical re-arm hook anti-hall actually uses is `SessionStart` alone — no separate
+`PostCompact` hook is needed, because `SessionStart` **already re-fires after
+compaction** (`source: "compact"` in its payload), and every `SessionStart` entry in
+`plugins/anti-hall/hooks/hooks.json` runs with **no `matcher`**, i.e. unconditionally on
+every session start or compact.
 
-Each time the watcher sees a new message, a line passes through the filter → event fires
-→ agent wakes and processes the message.
-
-**Re-arm pessimistically.** Given §6's conflict, the safe assumption is that Monitor does
-**not** survive compaction and cron's own resume-durability is unconfirmed. So: re-arm
-proactively rather than hoping either survives.
-
-- **`PostCompact` hook** → re-arm after in-session compaction.
-- **`SessionStart` hook** → re-arm on resume/session begin.
+- **`SessionStart` hook** → re-arm on resume, session begin, *or* post-compaction — one
+  hook, both cases.
 - **Cron mailbox job stays live the whole time**, unconditionally, as the fallback that
   keeps working even if a re-arm is missed or Monitor is unavailable in this environment
   (§9).
 
 **A hook cannot call the Monitor tool directly** — hooks are shell scripts, not agent tool
-calls. What a `PostCompact`/`SessionStart` hook actually does is inject context (a
-system-reminder) telling the *agent* to re-arm the watch on its next turn. That makes this
-path **instruction-driven, not mechanical** — the agent has to act on the injected
-instruction; nothing forces it to. The one **truly mechanical** re-arm is a plugin-declared
+calls. What the `SessionStart` hook actually does is inject context (a system-reminder)
+telling the *agent* to re-arm the watch on its next turn. That makes this path
+**instruction-driven, not mechanical** — the agent has to act on the injected instruction;
+nothing forces it to. The one **truly mechanical** re-arm is a plugin-declared
 `when: "always"` monitor (§5), which the runtime itself restarts at session start — with
 the caveat from §5 that its behavior across resume/compaction is *also* undocumented and
 needs its own live test.
 
 ```bash
-# PostCompact / SessionStart hook (shell script) — illustrative
+# SessionStart hook (shell script) — illustrative
 # Cannot call Monitor() itself. Injects an instruction for the agent to act on.
+# Fires on resume AND on post-compaction (source: "compact") — one hook, both cases.
 echo '{"systemMessage": "Re-arm the Primary mailbox monitor: check if it is already running (see dedup note below) before starting a new one."}'
 ```
 
 ```javascript
 // Agent-side, on the next turn, acting on the injected instruction:
 Monitor({
-  command: 'scripts/devswarm-mailbox-watcher.sh <primary-id>',
+  command: 'node path/to/companion/lib/devswarm-wake-watch.js',
   description: 'Primary workspace mailbox watcher',
   persistent: true
 })
@@ -493,75 +511,71 @@ Monitor({
 **Double-arming warning.** If Monitor *does* turn out to survive compaction in some case
 (unconfirmed either way, §6) **and** a re-arm instruction also fires, you end up with two
 watchers running against the same mailbox — duplicate events, duplicate wakes, and a
-Primary processing the same message twice. Any re-arm path **must** include an
-idempotency/dedup check (e.g. a marker file or a mailbox-cursor lock keyed to a single
-active watcher) before starting a new Monitor, not just a "start on every hook fire"
-approach.
+Primary processing the same message twice. A generic re-arm path **must** include an
+idempotency/dedup check before starting a new Monitor, not just a "start on every hook
+fire" approach — the real shipped watcher (below) closes this mechanically with its own
+lock file rather than relying on an agent-side check alone.
 
 **Semantics:**
 - **Monitor** fires per message (latency: ~1s when live) — the primary path, where
   available.
 - **Cron mailbox job** keeps running unconditionally as the fallback (§9 lists where it's
   the *only* path).
-- **Re-arm hooks** (`PostCompact`, `SessionStart`) inject instructions to restart the
-  monitor, guarded by a dedup check.
+- **Re-arm hook** (`SessionStart`, one hook covers resume + compaction) injects an
+  instruction to restart the monitor, guarded by the lock described below.
 
-### Example monitor script (generic, for mesh mailbox)
+### The real shipped implementation (not a bash sketch)
 
-This sketch shows the pattern. Replace `scripts/devswarm.js inbox read-primary` with
-whatever your mesh/mailbox read command is [illustrative]:
+The production watcher is `companion/lib/devswarm-wake-watch.js` [verified: source read].
+It replaces the illustrative bash loops from earlier drafts of this KB entirely — this
+section describes what actually ships, not a pattern to adapt.
 
-```bash
-#!/bin/bash
-# scripts/devswarm-mailbox-watcher.sh <primary-workspace-id>
-# Watches for new messages in a primary workspace's mailbox.
-# Emits one line per NEW message; handles seq tracking to avoid re-emitting.
+- **Node, not shell.** A pure `tick(state, snapshot)` core (no fs/clock/process/random
+  inside it) is split from an IO runner that does the actual polling — the pure half is
+  directly unit-testable without spawning a process.
+- **~2s default poll**, configurable via `ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS` (clamped
+  250ms–60s; a malformed or out-of-range value fails open to the 2s default).
+- **Mechanical single-instance lock.** A duplicate watcher started for the same id
+  self-refuses: it writes **zero stdout** (stdout is what wakes the agent, so a refused
+  double-arm must fire zero events), logs a one-line notice to **stderr only**, and exits
+  `0`. This is a real lock file, not an agent-side "check before you start" convention —
+  it closes the double-arming gap above mechanically instead of by instruction.
+- **3 silent consecutive read failures, then a throttled error line.** The first three
+  failed ticks in a row produce no output; the 4th consecutive failure emits one ERROR
+  line immediately, and further repeats are throttled 1 minute → 5 minutes → 30 minutes
+  (clamped at the last tier) rather than firing every tick.
+- **Directs-only in v1** — it edge-triggers only on a workspace's own direct-message
+  total, never on the shared broadcast feed. See the honest gap below.
+- **repoKey-bucket-then-legacy-bucket read fallback** when resolving the Primary's own
+  summary: it checks the current repoKey-keyed projection first and falls back to the
+  legacy hash-keyed bucket only if the Primary's row is absent there, mirroring the same
+  fold the roster command already does.
 
-set -e
-primary_id="$1"
-cursor_file="$HOME/.anti-hall/mailbox-cursor-${primary_id}.txt"
-mkdir -p "$HOME/.anti-hall"
+### Two honest gaps — do not assume either is covered
 
-# Initialize cursor (last-seen message seq)
-last_seq=0
-[ -f "$cursor_file" ] && last_seq=$(cat "$cursor_file")
+**Broadcasts are not covered in v1.** The watcher edge-triggers only on direct-message
+totals; it does not watch the shared broadcast feed (`recent[]`). `recent[]` is capped at
+50 entries and gets saturated by duplicate heartbeat traffic — measured live on a real
+project: one idle workspace produced **1182 identical heartbeat broadcasts over 5.25
+days**, and the capped window held **49** rows from that single sender against **1** row
+from everyone else combined. A `recent[]`-diffing watcher would look like it works and
+silently evict genuine broadcasts behind heartbeat noise. Covering broadcasts correctly
+needs either an uncapped/dedicated broadcast counter or a heartbeat-excluding store
+projection change — both out of scope for the current watcher.
 
-# Poll loop — runs until monitor timeout or TaskStop
-while true; do
-  # Read new messages, filter by seq > last_seq [illustrative — adapt to your mesh]
-  response=$(node scripts/devswarm.js inbox read-primary "$primary_id" \
-    --json 2>&1 || echo '{"error":"read failed"}')
-
-  # Handle read errors — COVERAGE RULE: emit failure signature
-  if echo "$response" | jq -e '.error' >/dev/null 2>&1; then
-    echo "ERROR: inbox read failed — $response"
-  else
-    # Extract new messages (seq > last_seq) and emit one line per message
-    echo "$response" | jq -r ".messages[] | select(.seq > $last_seq) | @json" | \
-      while read -r line; do
-        echo "$line"  # One line per new message → one Monitor event
-        # Update cursor to this message's seq [illustrative]
-        seq=$(echo "$line" | jq .seq)
-        echo "$seq" > "$cursor_file"
-        last_seq="$seq"
-      done
-  fi
-
-  # Sleep before next poll — tighter interval than cron (1s vs 5 min)
-  sleep 1 || break  # break if sleep is interrupted (TaskStop signal)
-done
-```
-
-**Key details:**
-
-- **Line buffering:** `jq -r` flushes per line, and each `-e` check emits immediately.
-- **Tracking state:** cursor file stores the last-seen message seq; only emit new messages
-  (avoid re-firing old ones).
-- **Coverage rule:** if `inbox read` fails, emit an ERROR line so the monitor stays alive
-  and the agent sees something broke (not just silence).
-- **One line per message:** each new message = one line through stdout → one Monitor event.
-- **Graceful poll failure:** `|| echo "error"` ensures the loop doesn't die on a transient
-  read failure (survives the failure, logs it, moves on).
+**Supervisor parent-escalations do not *currently* reach the Primary — two independent
+defects, both being fixed in a separate workspace, not shipped fixed today:**
+1. `notifyParentEscalation` appends the escalation message without a `deriveSummary`
+   refresh, and opens the legacy (hash-keyed) bucket rather than the repoKey-keyed one.
+2. **Wrong addressee.** `parentId = primaryWorkspaceId(descriptor.worktreePath)` does no
+   git resolution of its own, and `descriptor.worktreePath` is the **child's own**
+   worktree root — not the actual Primary's — so the escalation is addressed to the
+   child's own mesh id instead of its parent's. This is a known limitation of the current
+   released code, actively being addressed elsewhere (the fix under discussion resolves
+   the parent's worktree first, e.g. `primaryWorkspaceId(resolveMainWorktree(wt) || wt)`,
+   fail-open). A reader must not assume the wake path covers supervisor escalations
+   reaching the Primary in the version they're running — check whether both defects have
+   landed before relying on it.
 
 ---
 
@@ -683,8 +697,8 @@ Monitors do not survive session restart — that part is solid. Whether they (or
 plugin-declared `when: "always"` monitor) survive in-session compaction is **not
 documented either way** [inference only — see §6]. Don't assume a plugin monitor
 "auto-restarts cleanly" across compaction/resume without testing it live. Plan for it by
-re-arming pessimistically via `PostCompact`/`SessionStart` hooks and keeping a cron
-fallback running unconditionally (§7).
+re-arming via the `SessionStart` hook (it covers both resume and post-compaction, §6) and
+keeping a cron fallback running unconditionally (§7).
 
 **Q: What's the latency?**
 
@@ -694,22 +708,27 @@ fallback running unconditionally (§7).
 
 ---
 
-## 12. Session-start / post-compact re-arm pattern (for resilience)
+## 12. Session-start re-arm pattern (covers resume and post-compaction, one hook)
 
 If you use Monitor for something that should keep working across compaction and resume
-(like a Primary mailbox watch), do **not** assume either survives (§6). Re-arm
-pessimistically, and guard against double-arming.
+(like a Primary mailbox watch), do **not** assume either survives (§6). Re-arm on
+`SessionStart` — it covers both cases (§6: it re-fires after compaction with `source:
+"compact"`) — and guard against double-arming.
 
-**What a hook can and cannot do:** `PostCompact` and `SessionStart` are shell-script hooks
-— they cannot call the `Monitor` or `CronCreate` tools directly. What they *can* do is
-inject an instruction (a system-reminder / context message) for the agent to act on next
-turn. That makes this re-arm path **instruction-driven**, not a mechanical guarantee — the
-agent must actually follow through.
+**What a hook can and cannot do:** `SessionStart` is a shell-script hook — it cannot call
+the `Monitor` or `CronCreate` tools directly. What it *can* do is inject an instruction (a
+system-reminder / context message) for the agent to act on next turn. That makes this
+re-arm path **instruction-driven**, not a mechanical guarantee — the agent must actually
+follow through. (The real shipped watcher, §7, closes the double-arming risk
+**mechanically** via its own process-level lock file rather than relying only on the
+agent-side check below — the pattern here is the general illustrative shape, not what
+actually ships.)
 
 ```bash
 #!/bin/bash
-# PostCompact and SessionStart hook — illustrative, not production code.
+# SessionStart hook — illustrative, not production code.
 # Injects context; does NOT call Monitor/CronCreate itself (hooks can't).
+# Fires on resume AND on post-compaction (source: "compact") — one hook, both cases.
 echo '{"systemMessage": "Session (re)started or compacted. Re-arm the Primary mailbox watch: 1) check .anti-hall/monitor-lock-<id> for an existing active watcher before starting a new one (avoid double-arming, see below); 2) if absent, start the mailbox Monitor and write the lock; 3) the cron mailbox job keeps running regardless — no action needed there."}'
 ```
 
@@ -719,7 +738,7 @@ echo '{"systemMessage": "Session (re)started or compacted. Re-arm the Primary ma
 const lockPath = `.anti-hall/monitor-lock-${primaryId}`;
 if (!fs.existsSync(lockPath)) {
   Monitor({
-    command: 'scripts/devswarm-mailbox-watcher.sh ' + primaryId,
+    command: 'node path/to/companion/lib/devswarm-wake-watch.js',
     description: 'Primary workspace mailbox watcher',
     persistent: true
   });
@@ -731,12 +750,13 @@ if (!fs.existsSync(lockPath)) {
 
 **Double-arming warning (repeated from §7 because this is where it bites):** if the prior
 Monitor somehow survived the compaction/resume **and** this re-arm instruction also fires,
-you get two watchers on the same mailbox and duplicate events. The dedup/lock check above
-is not optional — without it, double-arming is the default outcome of "re-arm on every
-hook fire," not an edge case.
+you get two watchers on the same mailbox and duplicate events. For a generic watcher the
+dedup/lock check above is not optional — without it, double-arming is the default outcome
+of "re-arm on every hook fire," not an edge case. The real shipped watcher sidesteps this
+agent-side check entirely with its own mechanical lock (§7).
 
 On session start or post-compaction:
-1. Hook fires → injects the re-arm instruction (does not act on its own).
+1. `SessionStart` hook fires → injects the re-arm instruction (does not act on its own).
 2. Agent's next turn checks the lock, re-arms Monitor only if not already running.
 3. Cron mailbox job (§7) keeps running the whole time regardless, unconditionally.
 
@@ -826,6 +846,8 @@ conflict (§6, resume-durability of `CronCreate`) or where a live test contradic
 documented claim (the "auto-stop" wording), this KB states the discrepancy rather than
 picking a side or quietly averaging them — treat those claims as needing further testing
 before any design leans on them further than the tested range. Monitor remains in the
-public API; no known breaking changes since v2.1.98. The DevSwarm application (§7) is
-**illustrative** — the specific mesh-read wrapper (`scripts/devswarm-mailbox-watcher.sh`)
-is a pattern sketch, not production code (adapt to your actual mailbox/mesh transport).
+public API; no known breaking changes since v2.1.98. The DevSwarm application (§7)
+describes the actual shipped watcher (`companion/lib/devswarm-wake-watch.js`) alongside
+its two documented gaps (broadcasts, supervisor parent-escalations) — everything else in
+§7 (the hook re-arm snippets, the lock-file JS sketch in §12) remains illustrative
+shorthand for the real mechanism, not code to copy verbatim.

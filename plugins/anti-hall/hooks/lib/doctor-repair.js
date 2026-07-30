@@ -67,6 +67,13 @@ function ingestHealthMod() {
 function devswarmRootFor(home) {
   try { return require(path.join(PLUGIN_ROOT, 'companion', 'lib', 'liveness.js')).devswarmRoot(home); } catch (_) { return path.join(home, '.anti-hall', 'devswarm'); }
 }
+// Lazy require of companion/lib/doctor-devswarm.js — reused ONLY for its
+// wakeMonitorShipped/wakeMonitorLiveCheck helpers (see the wake-monitor
+// REPORT-ONLY block in runRepairs below) so the repair-pass report can never
+// drift from the doctor-diagnostic verdict computed the same way.
+function doctorDevswarmMod() {
+  try { return require(path.join(PLUGIN_ROOT, 'companion', 'lib', 'doctor-devswarm.js')); } catch (_) { return {}; }
+}
 // projectDaemonHealthy(home, repoKey, now, io) -> bool.
 //
 // B2 FIX: this used to be a LOCALLY-DUPLICATED, WEAKER reimplementation of
@@ -1235,6 +1242,33 @@ function runRepairs(opts) {
     } catch (e) {
       push('reaper', 'none', 'skipped', 'reaper check raised: ' + errMsg(e));
     }
+  }
+
+  // --- Wake-monitor (Monitor-based idle-wake): REPORT-ONLY, deliberately NO
+  // migrationFix ------------------------------------------------------------
+  // Arming a watcher requires Claude Code's `Monitor` tool, which only the
+  // AGENT can call — a hook/CLI process has no access to it. Registering a
+  // migrationFix here would be a FAKE auto-fix: it would promise a repair
+  // this process cannot actually perform. So this block only ever reports —
+  // shipped/live state + the exact manual arm command — mirroring the reaper
+  // REPORT-ONLY block above, never a `fixed`/`gated` action. Reuses
+  // doctor-devswarm.js's own wakeMonitorShipped/wakeMonitorLiveCheck (never
+  // re-derived here) so this can't drift from the doctor-diagnostic verdict.
+  try {
+    const dsd = doctorDevswarmMod();
+    if (typeof dsd.wakeMonitorShipped !== 'function' || typeof dsd.wakeMonitorLiveCheck !== 'function') {
+      push('wake-monitor', 'none', 'skipped', 'wake-monitor check unavailable (doctor-devswarm.js missing expected exports)');
+    } else {
+      const shipped = dsd.wakeMonitorShipped(PLUGIN_ROOT);
+      if (!shipped.shipped) {
+        push('wake-monitor', 'none', 'skipped', 'wake-monitor not shipped: ' + shipped.reason + ' (cron fallback unaffected)');
+      } else {
+        const live = dsd.wakeMonitorLiveCheck(shipped.watcherMod, shipped.watcherPath, home, env, cwd);
+        push('wake-monitor', 'none', 'skipped', live.message);
+      }
+    }
+  } catch (e) {
+    push('wake-monitor', 'none', 'skipped', 'wake-monitor check raised: ' + errMsg(e));
   }
 
   return results;

@@ -138,6 +138,13 @@ const installIngest = require('../companion/install-devswarm-ingest.js');
 // project worktree, never the plugin root, so a relative path is unrunnable).
 const CLI = path.join(__dirname, '..', 'scripts', 'devswarm.js');
 
+// WATCHER — the ABSOLUTE path to the Monitor watch script (self-resolving: no
+// required args). Same __dirname-based resolution rationale as CLI above.
+// Passed to wakeReassert() below so the Claude branch can arm `Monitor` IN
+// ADDITION to CronCreate (never instead — see lib/devswarm-wake.js's
+// NON-NEGOTIABLE header comment).
+const WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+
 const GUARD_NAME = 'devswarm-parent-gate';
 const DEFAULT_CAP = 3; // forced-acks per distinct blocking SET
 
@@ -150,7 +157,7 @@ const DEFAULT_CAP = 3; // forced-acks per distinct blocking SET
 function wakeReassertLine(env, isChild) {
   try {
     const wake = require('./lib/devswarm-wake.js');
-    return wake.isClaudeAgent(env) ? wake.wakeReassert(env, CLI, isChild) : '';
+    return wake.isClaudeAgent(env) ? wake.wakeReassert(env, CLI, isChild, WATCHER) : '';
   } catch (_) {
     return ''; // fail-open: pre-v0.59 behavior
   }

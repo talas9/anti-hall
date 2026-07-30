@@ -25,6 +25,30 @@
 // gets nothing — we do not guess which agent we are talking to.
 //
 // Pure Node built-ins. Never throws to the caller (fail-open = empty directive).
+//
+// MONITOR ADDITION (v0.6x "low-latency wake"): a SECOND, faster wake path layers
+// ON TOP of the CronCreate directive above — Claude Code's built-in `Monitor`
+// tool, armed with a watcher script (companion/lib/devswarm-wake-watch.js) whose
+// every stdout line becomes a transcript event, waking even a fully IDLE session
+// with far lower latency than a 5-minute cron tick.
+//
+// NON-NEGOTIABLE (owner rule — see docs/KB-claude-monitor-tool.md §7 and §9):
+// Cron is NEVER disarmed, nor made conditional on Monitor's availability.
+// `Monitor` is UNAVAILABLE on Bedrock/Vertex/Microsoft Foundry, whenever
+// DISABLE_TELEMETRY or CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC is set, in
+// non-interactive sessions, and project-scope (`@skills-dir`) plugin installs
+// never load plugin monitors at all — none of that is detectable from a hook,
+// and a SILENTLY DEAF orchestrator is strictly worse than a redundant poll. So
+// both halves ship in the SAME breath, ALWAYS. Do NOT add an
+// `if (monitorAvailable)`-style check that suppresses the cron text — that is
+// exactly the bug this rule exists to prevent.
+//
+// `watcher` (new trailing param on wakeDirective/wakeReassert) is the ABSOLUTE
+// path to the watch script. Present + non-empty -> the Claude branch emits the
+// Monitor-arm instruction IN ADDITION to the cron instruction. Absent/empty ->
+// today's cron-only text, byte-identical (fail-open for any caller not yet
+// updated to pass it). The non-Claude branch NEVER sees this — Monitor is a
+// Claude-only tool.
 
 // WAKE_CRON_DEFAULT — 5 minutes. The interval is a real cost: 1-minute = 1,440
 // wake-turns/day/workspace, 5-minute = 288. ANTIHALL_DEVSWARM_WAKE_CRON is the one
@@ -91,11 +115,42 @@ function drainCmd(cli, isChild) {
     : '`node ' + cli + ' inbox read-primary <DEVSWARM_BUILDER_ID>`';
 }
 
-// wakeDirective(env, isChild, cli) -> the SessionStart directive text (leading
-// space, appended to the COMMUNICATION OVERRIDE), or '' when the agent is unknown.
-// `cli` MUST be the ABSOLUTE path to scripts/devswarm.js — a workspace's cwd is its
-// PROJECT WORKTREE, never the plugin root, so a relative path is unrunnable there.
-function wakeDirective(env, isChild, cli) {
+// monitorArmLine(watcher) -> the Monitor-arm addition to the Claude-branch wake
+// text, or '' when no watcher path is supplied (fail-open: a caller not yet
+// updated to pass `watcher` keeps getting exactly today's cron-only text).
+//
+// SANITIZATION CONCLUSION: `watcher` is NOT run through any charset/backtick
+// guard the way CRON_FIELD gates ANTIHALL_DEVSWARM_WAKE_CRON above, and that is
+// deliberate rather than an oversight. CRON_FIELD exists because the cron env
+// var is UNTRUSTED input (operator/machine-supplied, reflected verbatim). Every
+// caller of `watcher`, by contrast, computes it as
+// `path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js')` —
+// derived solely from the HOOK'S OWN on-disk install location, never from an
+// env var, CLI flag, or any other attacker-reachable input. There is no path by
+// which a prompt-injection payload could substitute a crafted string for this
+// parameter, so gating it would be theatre with no attacker it defends against.
+function monitorArmLine(watcher) {
+  if (typeof watcher !== 'string' || !watcher) return '';
+  return ' ALSO arm the `Monitor` tool for LOW-LATENCY wake (Cron above still fires ' +
+    'independently — this is IN ADDITION, never instead): first check whether a mailbox-' +
+    'wake Monitor is already armed so you never arm a second one (double-arming causes ' +
+    'duplicate wakes; the watcher script also self-guards with a lock, but do not rely on ' +
+    'that alone). If none is armed, call `Monitor` with command `node ' + watcher + '`, ' +
+    '`persistent: true`, and a description like "devswarm mailbox wake watcher" — every ' +
+    'line it prints on stdout becomes a transcript event, waking this session even while ' +
+    'fully idle, with far lower latency than the cron tick above.';
+}
+
+// wakeDirective(env, isChild, cli, watcher) -> the SessionStart directive text
+// (leading space, appended to the COMMUNICATION OVERRIDE), or '' when the agent
+// is unknown. `cli` MUST be the ABSOLUTE path to scripts/devswarm.js — a
+// workspace's cwd is its PROJECT WORKTREE, never the plugin root, so a relative
+// path is unrunnable there. `watcher`, when a non-empty string, is the ABSOLUTE
+// path to the Monitor watch script; the Claude branch then emits the Monitor-arm
+// instruction IN ADDITION to the cron instruction (never instead — see the
+// NON-NEGOTIABLE header comment above). Absent/empty `watcher` -> cron-only,
+// byte-identical to pre-Monitor behavior.
+function wakeDirective(env, isChild, cli, watcher) {
   try {
     const agent = agentName(env);
     if (!agent) return ''; // unknown agent -> say nothing rather than guess
@@ -104,6 +159,8 @@ function wakeDirective(env, isChild, cli) {
       // Never names the Claude idle-cron tool: an agent that does not have it must
       // not be handed the tool's name at all (a named tool is an invitation to call
       // a hallucinated one). It gets the honest instruction it CAN actually follow.
+      // NEVER touch this branch for Monitor: Monitor is ALSO a Claude-only tool, so
+      // it belongs strictly in the `claude` branch below, same as CronCreate.
       return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
         'primitive — once you go idle, nothing can wake you, so a message that lands after ' +
         'you stop waits for your next turn. Drain your mailbox at the START of every turn ' +
@@ -115,22 +172,27 @@ function wakeDirective(env, isChild, cli) {
       'that runs ' + drain + ' and acts on anything unread. If the job is already listed, do ' +
       'nothing — never create a second one. Cron jobs fire while this session is IDLE (each ' +
       'tick is a full turn) — this is the ONLY thing that will wake you to drain your mailbox ' +
-      'once you go idle; a message that lands after you stop is otherwise never seen.';
+      'once you go idle; a message that lands after you stop is otherwise never seen.' +
+      monitorArmLine(watcher);
   } catch (_) {
     return ''; // fail-open: a broken directive must never break SessionStart
   }
 }
 
-// wakeReassert(env, cli, isChild) -> the Stop-gate RE-VERIFY text (leading space).
-// Worded as a CronList re-verify, never a bare "create it": a job created >7 days
-// ago has since self-deleted (contract clause 3 above), so the Stop gate is also
-// the RENEWAL path — it costs nothing extra, and it is why anti-hall needs no
-// 7-day timer of its own. Claude-only by construction (callers gate on
-// isClaudeAgent) — a Codex workspace has no job to create, so it is never nagged.
-// `isChild` selects the role-correct drain verb (default true = child pull->read,
-// matching this function's original child-gate caller; devswarm-parent-gate.js
-// passes false for the Primary's read-primary verb).
-function wakeReassert(env, cli, isChild) {
+// wakeReassert(env, cli, isChild, watcher) -> the Stop-gate RE-VERIFY text
+// (leading space). Worded as a CronList re-verify, never a bare "create it": a
+// job created >7 days ago has since self-deleted (contract clause 3 above), so
+// the Stop gate is also the RENEWAL path — it costs nothing extra, and it is why
+// anti-hall needs no 7-day timer of its own. Claude-only by construction
+// (callers gate on isClaudeAgent) — a Codex workspace has no job to create, so
+// it is never nagged. `isChild` selects the role-correct drain verb (default
+// true = child pull->read, matching this function's original child-gate caller;
+// devswarm-parent-gate.js passes false for the Primary's read-primary verb).
+// `watcher`, when a non-empty string, is the ABSOLUTE path to the Monitor watch
+// script; adds the Monitor re-verify/arm line IN ADDITION to the cron re-verify
+// (never instead — see the NON-NEGOTIABLE header comment above). Absent/empty
+// `watcher` -> cron-only, byte-identical to pre-Monitor behavior.
+function wakeReassert(env, cli, isChild, watcher) {
   try {
     const child = isChild === undefined ? true : !!isChild;
     return ' MAILBOX WAKE — before you stop, VERIFY your self-wake cron job: call `CronList`. ' +
@@ -139,7 +201,8 @@ function wakeReassert(env, cli, isChild) {
       wakeCron(env) + '`, prompt runs ' + drainCmd(cli, child) + ' and acts on anything unread. ' +
       'Cron jobs fire while this session is IDLE — without one, any message that arrives after ' +
       'you stop is never seen. If `CronList` already shows it, just say so and stop (this ' +
-      'reminder is capped and stops on its own).';
+      'reminder is capped and stops on its own).' +
+      monitorArmLine(watcher);
   } catch (_) {
     return '';
   }
