@@ -303,3 +303,96 @@ test('acquireExclLock RECLAIMS a TORN/EMPTY lock whose MTIME is OLD (dead holder
     rel();
   } finally { rm(home); }
 });
+
+// P0 silent-failure regression: defaultRun used to inspect ONLY r.error (the SPAWN-
+// failure channel) and never r.status/r.signal, so a process that spawned fine but
+// exited NON-ZERO with empty stdout was reported as {ok:true, raw:''} — success with
+// no data. Demonstrated live: with DevSwarm.app unreachable, `hivecontrol workspace
+// list all` exits 1 with EMPTY stdout and stderr 'DevSwarm is not running', and
+// defaultRun called that SUCCESS. These use process.execPath as the "hivecontrol"
+// binary — the SAME convention as the spec.cwd test above (guaranteed present on
+// every CI platform, no shell) — to produce an exact, controlled status/stdout/stderr.
+test('defaultRun: a NON-ZERO exit with EMPTY stdout is ok:false with stderr surfaced (never a silent {ok:true, raw:\'\'})', () => {
+  const res = pull.defaultRun({
+    hivecontrol: process.execPath,
+    args: ['-e', 'process.stderr.write("DevSwarm is not running"); process.exit(1)'],
+  });
+  assert.equal(res.ok, false, 'a non-zero exit must NOT report success: ' + JSON.stringify(res));
+  assert.equal(res.raw, '', 'the command genuinely produced no stdout');
+  assert.equal(res.status, 1, 'the real exit status is surfaced');
+  assert.equal(res.signal, null);
+  assert.equal(res.stderr, 'DevSwarm is not running', 'stderr is captured verbatim');
+  assert.match(res.error, /DevSwarm is not running/, 'stderr must be surfaced in the error string');
+  assert.match(res.error, /exited 1/, 'the error names the exit status');
+  // Must NOT be absorbed by cmdReconcile's `hivecontrolMissing` benign-skip
+  // classifier (devswarm.js), which matches this exact spawn-failure shape — an
+  // exit-status failure is a REAL failure, not a benign environment fact.
+  assert.ok(!/^spawnSync\s+\S*hivecontrol\S*\s+(ENOENT|EACCES|ENOTDIR)\b/i.test(res.error),
+    'an exit-status failure must not masquerade as the benign missing-binary shape');
+});
+
+test('defaultRun: a NON-ZERO exit PRESERVES stdout in raw (hivecontrol emits JSON bodies alongside exit 1)', () => {
+  // KB-devswarm-hivecontrol.md: `workspace search` returns a structured
+  // {success:false, code:...} JSON body on stdout WITH exit 1. Blanking raw on
+  // failure would destroy that diagnostic body.
+  const res = pull.defaultRun({
+    hivecontrol: process.execPath,
+    args: ['-e', 'process.stdout.write(JSON.stringify({success:false,code:"TEAM_SUBSCRIPTION_REQUIRED"})); process.exit(1)'],
+  });
+  assert.equal(res.ok, false);
+  assert.equal(res.status, 1);
+  assert.deepEqual(JSON.parse(res.raw), { success: false, code: 'TEAM_SUBSCRIPTION_REQUIRED' },
+    'the failure body must survive on raw, not be blanked');
+});
+
+test('defaultRun: a SIGNAL-terminated command is ok:false with the signal surfaced', { skip: process.platform === 'win32' }, () => {
+  const res = pull.defaultRun({
+    hivecontrol: process.execPath,
+    args: ['-e', 'process.kill(process.pid, "SIGKILL")'],
+  });
+  assert.equal(res.ok, false, 'a signal-killed command must NOT report success: ' + JSON.stringify(res));
+  assert.equal(res.signal, 'SIGKILL', 'the terminating signal is surfaced');
+  assert.equal(res.status, null, 'a signal-killed process has no exit status');
+  assert.match(res.error, /killed by signal SIGKILL/);
+});
+
+test('defaultRun: a CLEAN exit 0 still reports ok:true with stdout (no regression)', () => {
+  const res = pull.defaultRun({
+    hivecontrol: process.execPath,
+    args: ['-e', 'process.stdout.write("2")'],
+  });
+  assert.equal(res.ok, true, JSON.stringify(res));
+  assert.equal(res.raw, '2');
+  assert.equal(res.status, 0);
+  assert.equal(res.error, null);
+});
+
+// BLAST RADIUS: the count-gate is what the silent failure actually corrupted. A
+// `message-count` that exits non-zero with EMPTY stdout used to reach parseCount('')
+// === 0 and return {ok:true, nativeCount:0} = "nothing to drain", making an
+// unreachable DevSwarm.app indistinguishable from a genuinely empty queue. It must
+// now be an explicit ok:false — WITHOUT throwing (the fail-open contract) and
+// WITHOUT falling through to the destructive read.
+test('count-gate blast radius: a FAILING message-count is ok:false, never a silent nativeCount:0 success', () => {
+  const home = tmpHome();
+  try {
+    seedDescriptor(home, 'child-1');
+    const calls = [];
+    // The exact shape defaultRun now returns for `hivecontrol` exiting 1 with empty
+    // stdout because DevSwarm.app is not running.
+    const run = (s) => {
+      calls.push(s);
+      return {
+        ok: false, raw: '', status: 1, signal: null,
+        stderr: 'DevSwarm is not running',
+        error: 'hivecontrol workspace message-count exited 1: DevSwarm is not running',
+      };
+    };
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', io: { run } });
+    assert.equal(res.ok, false, 'an unreachable DevSwarm must not read as a successful empty drain');
+    assert.equal(res.locked, true);
+    assert.match(res.error, /DevSwarm is not running/, 'the real cause reaches the caller');
+    assert.deepEqual(calls.map((c) => c.args[1]), ['message-count'],
+      'a failed count-gate must NOT fall through to the destructive read-messages');
+  } finally { rm(home); }
+});

@@ -118,9 +118,41 @@ function acquireExclLock(lockPath, io, staleMs) {
   return null;
 }
 
-// defaultRun(spec) -> { ok, raw, error }. ONE injectable hivecontrol spawn (mirrors
-// ingest.defaultMonitorRun). spec: { args, timeout, env, hivecontrol }. Carries a
-// finite `timeout` so a hung read-messages can never wedge the child's turn.
+// defaultRun(spec) -> { ok, raw, error, status?, signal?, stderr? }. ONE injectable
+// hivecontrol spawn (mirrors ingest.defaultMonitorRun). spec: { args, timeout, env,
+// hivecontrol }. Carries a finite `timeout` so a hung read-messages can never wedge
+// the child's turn.
+//
+// EXIT-STATUS CHECK (silent-failure fix). This used to inspect ONLY `r.error` — the
+// SPAWN-failure channel (binary missing, EACCES). A process that spawned FINE but
+// exited NON-ZERO was reported as `{ok:true, raw:''}`: success with no data.
+// Demonstrated live: with DevSwarm.app not reachable, `hivecontrol workspace list
+// all` exits 1 with EMPTY stdout and stderr "DevSwarm is not running" — and this
+// function called that SUCCESS. Every consumer routed through here inherited it
+// (pullOnce's message-count gate and read-messages; devswarm.js's
+// fetchNativeChildren roster fold, reconcile name backfill, cmdSpawn's create +
+// update-title, cmdMergeVerb's check-merge + merge-into-source), so "the app is
+// down" was indistinguishable from "there is genuinely nothing" — and a FAILING
+// `merge-into-source` broadcast "merge-into-source completed" to the whole mesh.
+// Now a non-zero exit OR a terminating signal yields ok:false with stderr captured.
+//
+// STDOUT IS PRESERVED ON FAILURE (`raw` is NOT blanked). hivecontrol emits
+// meaningful JSON on stdout alongside a non-zero exit (KB-devswarm-hivecontrol.md:
+// `workspace search` returns a structured `{success:false, code:...}` body with
+// exit 1; `repo validate` uses 0=valid/1=invalid/2=no-file). Blanking `raw` here
+// would destroy that diagnostic body. Only the `r.error` spawn-failure branch keeps
+// `raw:''` — there genuinely is no stdout when the process never ran.
+//
+// FAIL-OPEN CONTRACT PRESERVED: this widens the ok:false CHANNEL; it never throws
+// and never hard-blocks. Every caller already gates on `.ok` and either treats a
+// failed run as "nothing to fold" (fetchNativeChildren -> [], reconcile's name
+// backfill -> skip, cmdMergeVerb's check-merge -> null) or now reports an honest
+// failure it previously masked as success (cmdSpawn's create, cmdMergeVerb's merge).
+//
+// The `error` string deliberately does NOT begin with "spawnSync" — cmdReconcile's
+// `hivecontrolMissing` benign-skip classifier (devswarm.js) matches
+// /^spawnSync\s+\S*hivecontrol\S*\s+(ENOENT|EACCES|ENOTDIR)\b/, and an exit-status
+// failure must NOT be silently absorbed into that environment-fact allowance.
 function defaultRun(spec) {
   const o = spec || {};
   const bin = o.hivecontrol || 'hivecontrol';
@@ -132,7 +164,18 @@ function defaultRun(spec) {
     if (typeof o.cwd === 'string' && o.cwd) opts.cwd = o.cwd;
     const r = spawnSync(bin, args, opts);
     if (r.error) return { ok: false, raw: '', error: String(r.error.message || r.error) };
-    return { ok: true, raw: String(r.stdout || ''), error: null };
+    const raw = String(r.stdout || '');
+    const stderr = String(r.stderr || '');
+    const detail = stderr.trim() ? ': ' + stderr.trim() : '';
+    // Signal FIRST: a signal-killed process reports `status === null`, so the
+    // status branch below could not describe it.
+    if (r.signal) {
+      return { ok: false, raw, error: bin + ' ' + args.join(' ') + ' killed by signal ' + r.signal + detail, status: null, signal: r.signal, stderr };
+    }
+    if (r.status !== 0) {
+      return { ok: false, raw, error: bin + ' ' + args.join(' ') + ' exited ' + r.status + detail, status: r.status, signal: null, stderr };
+    }
+    return { ok: true, raw, error: null, status: 0, signal: null, stderr };
   } catch (e) {
     return { ok: false, raw: '', error: String(e && e.message || e) };
   }
