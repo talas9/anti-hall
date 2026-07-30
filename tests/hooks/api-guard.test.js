@@ -239,7 +239,7 @@ test('TIMEOUT: a killed probe emits ONE stderr notice AND still allows (exit 0)'
 
     const r = testHook(HOOK, write('/tmp/x.py', 'import os\nos.getpid()\n'), {
       home: h.home,
-      env: { PATH: shimDir, ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS: '150' },
+      env: { PATH: shimDir + path.delimiter + process.env.PATH, ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS: '150' },
     });
 
     assert.strictEqual(r.status, 0, 'a timed-out probe must still fail open (allow), got ' + r.status);
