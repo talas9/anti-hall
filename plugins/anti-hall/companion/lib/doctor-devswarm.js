@@ -12,6 +12,7 @@ const fs = require('fs');
 const path = require('path');
 const { isDevswarmActive } = require('../../hooks/lib/devswarm-detect.js');
 const { computeLiveness, livenessPathFor, projectDirFor, devswarmRoot, isSafeId, unreadBacklog } = require('./liveness.js');
+const { checkResults: descriptorChecks } = require('./doctor-descriptors.js');
 
 const PASS = 'PASS';
 const WARN = 'WARN';
@@ -137,6 +138,19 @@ function runChecks(opts) {
   if (!active) return { active: false, results: [] };
 
   const results = selfTest(home, F);
+
+  // Descriptor-store integrity (companion/lib/doctor-descriptors.js): a
+  // REPORT-ONLY scan for malformed ids and for archived ids that strict-prefix a
+  // live one (the phantom-roster-row signature). It lives in its own module
+  // because it reads descriptors RAW — including the malformed ones
+  // readDescriptors() above deliberately filters out, which is precisely why
+  // nothing caught this before. Fail-open: a raising scan never breaks doctor,
+  // and it never mutates the store.
+  try {
+    for (const r of descriptorChecks({ home, fsi: F })) results.push(r);
+  } catch (e) {
+    results.push({ status: WARN, message: 'descriptor integrity scan unavailable: ' + (e && e.message) });
+  }
 
   // Per-real-workspace readout from persisted verdicts, plus a distinct
   // listener-presence line (evidence something is consuming the inbox — see
