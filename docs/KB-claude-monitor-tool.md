@@ -220,9 +220,11 @@ changed" signal. mtime is fine as a cheap *gate* to skip re-parsing unchanged by
 must never be the trigger itself. Corroborating live evidence: an idle workspace in a real
 mesh was observed broadcasting the same status message 50+ times at ~285-second intervals
 (a 5-minute polling cadence) — heartbeat traffic alone, with zero new information, is more
-than enough to exhaust the event budget. (The `devswarm-mailbox-watcher.sh` sketch in §7
-already follows this rule — it emits on `seq > last_seq`, not on mtime — this finding
-corroborates that design choice rather than correcting it.)
+than enough to exhaust the event budget. (The shipped watcher in §7,
+`companion/lib/devswarm-wake-watch.js`, already follows this rule — it emits on
+`total > lastTotal`, a monotonic counter, and deliberately drops the mtime/size gate an
+earlier draft used, precisely because mtime granularity could swallow a same-tick write —
+so this finding corroborates that design choice rather than correcting it.)
 
 ---
 
