@@ -10,7 +10,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
+const { spawnSync, spawn } = require('node:child_process');
 
 const MODULE_PATH = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-wake-watch.js');
 const wakeWatch = require(MODULE_PATH);
@@ -32,6 +32,63 @@ function tmpHome() {
   return home;
 }
 function rm(home) { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+
+// Waits for `pattern` to appear in the child's accumulated stdout, or for
+// `hardCapMs` to elapse, whichever comes first -- never a fixed sleep. Some
+// arming paths (notably the on-disk-repoKey / Primary-fallback path) spawn
+// real `git` one or more times before the watcher's first tick can print its
+// arm line, so a fixed wall-clock budget raced against that variable startup
+// cost is inherently flaky under parallel-suite CPU contention. Waiting for
+// the actual expected output removes the race entirely.
+//
+// The child is ALWAYS terminated before this resolves -- on a match, on the
+// child exiting early on its own, or on the hard-cap timeout -- so no test
+// can leave a watcher subprocess (it polls forever by design) running past
+// its own assertion, including when that assertion throws. This never
+// rejects: even a hard-cap timeout resolves with whatever stdout/stderr were
+// collected so far, so the caller's own assert.match reports the real
+// failure (actual output), not a bare "timed out" message.
+//
+// child.kill() is used for termination rather than relying on any in-process
+// SIGTERM handler: on Windows there is no real signal delivery, and
+// ChildProcess#kill() maps to TerminateProcess there regardless of the signal
+// name, which still reliably ends the process -- it just does not run the
+// child's own cleanup handler. Since none of these tests depend on that
+// handler running (they only assert on stdout content / directory
+// creation), this termination path is correct on every platform.
+function waitForStdoutMatch(args, spawnOpts, pattern, hardCapMs) {
+  hardCapMs = hardCapMs || 8000;
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, args, spawnOpts);
+    if (child.stdout) child.stdout.setEncoding('utf8');
+    if (child.stderr) child.stderr.setEncoding('utf8');
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let hardTimer = null;
+
+    function finish() {
+      if (settled) return;
+      settled = true;
+      clearTimeout(hardTimer);
+      try { child.kill('SIGTERM'); } catch (_) {}
+      resolve({ stdout, stderr });
+    }
+
+    if (child.stdout) {
+      child.stdout.on('data', (chunk) => {
+        stdout += chunk;
+        if (pattern.test(stdout)) finish();
+      });
+    }
+    if (child.stderr) {
+      child.stderr.on('data', (chunk) => { stderr += chunk; });
+    }
+    child.on('error', () => finish());
+    child.on('exit', () => finish()); // exited on its own before a match -- let the caller's assert report it
+    hardTimer = setTimeout(finish, hardCapMs);
+  });
+}
 
 function okSnapshot(total, extra) {
   return Object.assign({ ok: true, error: null, total, role: 'primary', id: 'primary-deadbeef', nowMs: 1000 }, extra || {});
@@ -722,7 +779,7 @@ test('main(): a non-DevSwarm session exits quietly — zero stdout, exit 0, zero
   } finally { rm(home); }
 });
 
-test('main(): a DevSwarm-active session still arms normally (gate is not over-broad)', () => {
+test('main(): a DevSwarm-active session still arms normally (gate is not over-broad)', async () => {
   const home = tmpHome();
   try {
     const id = 'arm-test-child-1';
@@ -734,9 +791,9 @@ test('main(): a DevSwarm-active session still arms normally (gate is not over-br
       DEVSWARM_SOURCE_BRANCH: 'main',   // child-role identity, resolved purely from env (no git needed)
       DEVSWARM_BUILDER_ID: id,
     };
-    // The watcher loops forever (setTimeout(loop, pollMs)); let it run just
-    // long enough to complete its first (arm) tick, then time out / SIGTERM it.
-    const res = spawnSync(process.execPath, [MODULE_PATH], { env, encoding: 'utf8', timeout: 1500 });
+    // The watcher loops forever (setTimeout(loop, pollMs)); wait for its
+    // first (arm) tick to actually print, then terminate it.
+    const res = await waitForStdoutMatch([MODULE_PATH], { env }, /\[wake-watch\] armed: watching child arm-test-child-1/);
     assert.match(res.stdout, /\[wake-watch\] armed: watching child arm-test-child-1/,
       'expected an arm line on stdout; got stdout=' + JSON.stringify(res.stdout) + ' stderr=' + JSON.stringify(res.stderr));
 
@@ -762,7 +819,7 @@ test('main(): a DevSwarm-active session still arms normally (gate is not over-br
 // silently never arm. Each test below is one arming branch.
 // ---------------------------------------------------------------------------
 
-test('T2 (THE REGRESSION CASE): DEVSWARM_SOURCE_BRANCH + DEVSWARM_BUILDER_ID set, NO DEVSWARM_REPO_ID -> MUST arm', () => {
+test('T2 (THE REGRESSION CASE): DEVSWARM_SOURCE_BRANCH + DEVSWARM_BUILDER_ID set, NO DEVSWARM_REPO_ID -> MUST arm', async () => {
   const home = tmpHome();
   try {
     const id = 't2-regression-child';
@@ -777,13 +834,13 @@ test('T2 (THE REGRESSION CASE): DEVSWARM_SOURCE_BRANCH + DEVSWARM_BUILDER_ID set
       DEVSWARM_SOURCE_BRANCH: 'main',
       DEVSWARM_BUILDER_ID: id,
     };
-    const res = spawnSync(process.execPath, [MODULE_PATH], { env, encoding: 'utf8', timeout: 1500 });
+    const res = await waitForStdoutMatch([MODULE_PATH], { env }, /\[wake-watch\] armed: watching child t2-regression-child/);
     assert.match(res.stdout, /\[wake-watch\] armed: watching child t2-regression-child/,
       'expected an arm line on stdout; got stdout=' + JSON.stringify(res.stdout) + ' stderr=' + JSON.stringify(res.stderr));
   } finally { rm(home); }
 });
 
-test('T3: descriptor cwd-match with ZERO DEVSWARM_* env -> MUST arm', () => {
+test('T3: descriptor cwd-match with ZERO DEVSWARM_* env -> MUST arm', async () => {
   const home = tmpHome();
   try {
     const worktree = path.join(home, 'wt');
@@ -800,13 +857,13 @@ test('T3: descriptor cwd-match with ZERO DEVSWARM_* env -> MUST arm', () => {
       // Deliberately ZERO DEVSWARM_*/ANTIHALL_DEVSWARM_* vars — the descriptor
       // cwd-match is the ONLY positive signal available.
     };
-    const res = spawnSync(process.execPath, [MODULE_PATH], { env, cwd: worktree, encoding: 'utf8', timeout: 1500 });
+    const res = await waitForStdoutMatch([MODULE_PATH], { env, cwd: worktree }, /\[wake-watch\] armed: watching child child-t3/);
     assert.match(res.stdout, /\[wake-watch\] armed: watching child child-t3/,
       'expected an arm line on stdout; got stdout=' + JSON.stringify(res.stdout) + ' stderr=' + JSON.stringify(res.stderr));
   } finally { rm(home); }
 });
 
-test('T4: on-disk DevSwarm state for this repo\'s own repoKey (summaries/<repoKey>.json) -> MUST arm', () => {
+test('T4: on-disk DevSwarm state for this repo\'s own repoKey (summaries/<repoKey>.json) -> MUST arm', async () => {
   const home = tmpHome();
   try {
     // Compute the SAME repoKey production code would derive for this real
@@ -827,7 +884,11 @@ test('T4: on-disk DevSwarm state for this repo\'s own repoKey (summaries/<repoKe
       // Deliberately ZERO DEVSWARM_*/ANTIHALL_DEVSWARM_* vars — the on-disk
       // summary file is the ONLY positive signal available.
     };
-    const res = spawnSync(process.execPath, [MODULE_PATH], { env, cwd: REPO_ROOT, encoding: 'utf8', timeout: 1500 });
+    // This is the path that falls through to the Primary tier, which spawns
+    // real `git` (repoKeyForWorktree + resolveMainWorktree) before the arm
+    // line can print -- wait for the actual output rather than racing a
+    // fixed wall-clock budget against that variable startup cost.
+    const res = await waitForStdoutMatch([MODULE_PATH], { env, cwd: REPO_ROOT }, /\[wake-watch\] armed: watching primary/);
     assert.match(res.stdout, /\[wake-watch\] armed: watching primary/,
       'expected an arm line on stdout; got stdout=' + JSON.stringify(res.stdout) + ' stderr=' + JSON.stringify(res.stderr));
   } finally { rm(home); }
