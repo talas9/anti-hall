@@ -6,6 +6,34 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.68.1
+
+This release exists primarily so the 0.68.0 gate fix can actually reach installed users.
+
+- **Direct messages sent with `send --to` are readable by their recipient.** They were written
+  to the store while `inbox read`/`count` read a per-workspace NDJSON that only the native queue
+  populates; with native messaging unavailable, nothing wrote it, so messages were unreadable
+  while the projection counted them as unread — a workspace was told to commit finished work,
+  never saw it, and the work was abandoned. Both channels are now unioned and deduped by content
+  hash; `ack` advances the store cursor under the existing ownership check; `read` stays
+  non-mutating.
+- **Doctor detects an installed copy that diverged from its source.** The harness runs a
+  version-pinned cache dir, and the updater never overwrites an existing one — so a cache
+  populated mid-release freezes pre-release code under the released version number and no later
+  update can refresh it. That happened to 0.68.0: the executed copy carried an already-fixed gate
+  bug and nothing reported it. Doctor now compares installed against source at the same version
+  and names the differing files and the remedy. It also reports whether monitors.json is present
+  in the installed root, since its absence removes the only mechanical arming path.
+- **Note for anyone whose 0.68.0 install predates this release:** a version-pinned cache cannot be
+  refreshed in place by the updater, which is why this is a version bump rather than a silent
+  re-sync.
+
+Known limitations:
+
+- The 0.68.0 limitations still apply (see below).
+- If a native message reaches the NDJSON but the best-effort store parity write fails, the union
+  reports more unread than the store-only projection.
+
 ## 0.68.0
 
 DevSwarm idle-wake gains a Monitor-tool path that wakes an idle orchestrator the moment new direct mesh mail lands, instead of waiting up to 5 minutes for the cron fallback. The cron fallback is never removed — the Monitor path is strictly additive, so nothing regresses if it is unavailable.
