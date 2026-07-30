@@ -6,6 +6,23 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.68.0
+
+DevSwarm idle-wake gains a Monitor-tool path that wakes an idle orchestrator the moment new direct mesh mail lands, instead of waiting up to 5 minutes for the cron fallback. The cron fallback is never removed — the Monitor path is strictly additive, so nothing regresses if it is unavailable.
+
+- **Monitor-based wake watcher.** New `companion/lib/devswarm-wake-watch.js` plus a `monitors/monitors.json` plugin manifest. Pure `tick(state, snapshot)` core split from the IO runner so the logic is unit-testable without spawning a process. Edge-triggers on a monotonic per-workspace message counter, never on file mtime — an mtime trigger fires on every heartbeat write and would exhaust the ~19-20 event notification budget.
+- **Mechanical single-instance lock.** A duplicate watcher self-refuses: zero stdout (stdout is what wakes the agent), a one-line stderr notice, exit 0.
+- **Four projection and silent-failure fixes** merged alongside it: devswarm-pull no longer ignores a subprocess exit status (and no longer broadcasts "merge completed" on a FAILED merge); duplicate heartbeat broadcasts no longer saturate the projection; a corrupt truncated archived descriptor is surfaced instead of silently dropped; and the test suite no longer registers real launchd jobs on the host.
+- **The wake watcher is gated on an active DevSwarm session.** `monitors.json` declares `"when": "always"`, so without a gate the watcher would start for every personal-scope install — including users who never touched DevSwarm — costing them a polling process, an unsolicited transcript line, and state directories. It now exits quietly unless the session is genuinely DevSwarm-active, and fails closed if the check itself errors.
+
+Known limitations:
+
+- Monitor-based wake is verified by construction, not by a live end-to-end runtime test. The monitors manifest test asserts schema and shape only and says so explicitly.
+- Project-scope (`@skills-dir`) plugin installs do not load background monitors at all. Those users keep the cron wake path and get no Monitor path.
+- Watcher identity is derived from the git worktree, so two orchestrators in the same repository resolve to the same identity; the second watcher refuses its lock and only the lock winner gets low-latency wakes. The loser still has cron.
+- If a summary file is missing or unreadable, the watcher's counter reads as absent rather than as an error, while a PID-based liveness check still reports the process as live. A wedged watcher can therefore look healthy. Cron remains the backstop.
+- Wake notifications are subject to the same ~19-20 event budget as any monitor; past that, low-latency wakes stop and only cron remains.
+
 ## 0.67.1
 
 Fixes the DevSwarm supervisor escalation path for a Primary that has self-registered from the true main worktree — it had never delivered end-to-end. A Primary that has not self-registered that way still has its escalation land in the orphans list: the informational parent-inbox hook surfaces orphans, but the blocking parent-gate hook does not, so such a Primary can stop unblocked on an escalation the informational hook would have shown it. That gap is not fixed in this release.
