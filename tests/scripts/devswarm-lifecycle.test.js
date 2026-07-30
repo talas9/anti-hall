@@ -222,7 +222,17 @@ test('reconcile spawns a REAL subprocess per worktree (default path, no injectio
     // stays `true` on a machine with no hivecontrol AND on this dev machine
     // (which has it). This is the exact case the reviewer flagged: don't
     // weaken this assertion away to hide the regression, fix the aggregate.
-    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, env: process.env }));
+    // ANTIHALL_INGEST_DRY_RUN=1 on top of a full process.env copy: this test's
+    // REAL subprocess runs `inbox pull`, which is withSelfHeal-wrapped, and
+    // selfHeal spawns install-devswarm-ingest.js as a grandchild. Because
+    // process.env carries DEVSWARM_REPO_ID, that installer would `launchctl
+    // load` a KeepAlive LaunchAgent whose WorkingDirectory is `repo` — a tmp
+    // dir the finally block deletes, leaving launchd crash-looping it forever.
+    // The flag no-ops the installer without weakening the plumbing assertions.
+    const r = cli.run(['reconcile'], ctx(home, {
+      cwd: repo,
+      env: { ...process.env, ANTIHALL_INGEST_DRY_RUN: '1' },
+    }));
     assert.equal(r.result.ok, true, 'a hivecontrol-absent target is a benign skip, not a reconcile failure — ' + JSON.stringify(r.result));
     assert.equal(r.result.count, 1);
     assert.equal(r.result.results[0].id, 'child-real');
