@@ -1999,28 +1999,17 @@ function cmdInboxPull(id, flags, ctx) {
 // (mutating) path is gated. `--ack-as-owner` is the explicit operator override for
 // a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's
 // backlog on its behalf).
-function cmdInboxMessages(id, flags, ctx, opts) {
-  const home = ctx.home;
-  const doAck = !!((opts && opts.ack) || flags.ack);
-  const unread = !!flags.unread || doAck; // read-primary is inherently unread-then-ack
-  const ackAsOwner = !!flags['ack-as-owner'];
-  // Claim 4 (ack-as-owner UX guard): `--ack-as-owner` is ONLY meaningful on a
-  // MUTATING ack (it bypasses the cross-workspace ownership gate below). On the
-  // non-acking `inbox messages` read path (no --ack, not the read-primary
-  // wrapper) the flag reads as "ack on someone's behalf" but does NOTHING — a
-  // silent no-op that leaves the operator believing the backlog was cleared.
-  // Warn to stderr (non-fatal, control-flow unchanged: this stays a pure read)
-  // and point at the verb that actually acks.
-  if (ackAsOwner && !doAck) {
-    try {
-      process.stderr.write('[devswarm] inbox messages ' + JSON.stringify(String(id))
-        + ' --ack-as-owner did NOT ack — `messages` is read-only. To ack on the'
-        + " owner's behalf use `inbox read-primary " + String(id)
-        + ' --ack-as-owner` (or add --ack).\n');
-    } catch (_) {}
-  }
-  const cursorPath = primaryCursorPath(home, id);
-  const cursor = inboxCursor.readCursor(cursorPath);
+// resolveWorkspaceStoreForRead(id, ctx, home) -> { ok:true, store } | { ok:false, ... }.
+// The shared "which physical mesh-store partition does `id` live in" resolution —
+// re-homes a stranded legacy-hash row into its cwd project store first (P1-1/P1-2),
+// then refuses when `id` is POSITIVELY registered under a DIFFERENT project than
+// this invocation's own cwd resolves to (A1(c) — never silently open the wrong
+// store). Extracted from cmdInboxMessages (the Primary/store read path) verbatim,
+// unchanged behavior, so cmdInbox's descriptor-path count/read/ack (P0 fix: a
+// `send --to` direct is STORE-ONLY and must be visible from `inbox read`/`count`
+// too, not just `inbox messages`/`read-primary`) opens `id`'s mesh partition the
+// SAME way instead of re-implementing (and potentially drifting from) this guard.
+function resolveWorkspaceStoreForRead(id, ctx, home) {
   // P1-1/P1-2 RE-HOME (read path): if this workspace is still stranded in the
   // legacy hash bucket (persisted ownerKey=hash) while repoKey now resolves, its
   // messages are in a bucket the repoKey-keyed read below would never open — a
@@ -2060,11 +2049,77 @@ function cmdInboxMessages(id, flags, ctx, opts) {
         + ' — run this from within that project\'s worktree to read its inbox',
     };
   }
-  // v0.57 mesh (D24): the Primary read-CLI opens the SAME shared per-project
-  // store the per-project ingest daemon natively drains INTO (D8/D21) — without
-  // this re-key, `inbox messages`/`read-primary` would read the legacy per-id
-  // bucket the daemon no longer writes to and silently see nothing.
+  // v0.57 mesh (D24): this opens the SAME shared per-project store the per-project
+  // ingest daemon natively drains INTO (D8/D21) — without this re-key, a reader
+  // would open the legacy per-id bucket the daemon no longer writes to and
+  // silently see nothing.
   const s = store.openStore({ home, workspaceId: id, hash: callerRepoKeyForRead || undefined, backend: ctx.backend, env: ctx.env });
+  return { ok: true, store: s };
+}
+
+// ndjsonHashesFromLines(lines) -> Set<string> of each parsed line's embedded `_h`
+// content hash (devswarm-pull.js pullOnce writes `{_h, fromBranch, message,
+// createdAt, status}` per NDJSON line). An unparsable/hashless line contributes
+// nothing — it can never dedupe-match a store row and is never dropped itself
+// (callers keep `lines` as-is; this Set is only used to exclude STORE rows that
+// duplicate it).
+function ndjsonHashesFromLines(lines) {
+  const set = new Set();
+  for (const line of lines) {
+    try {
+      const o = JSON.parse(line);
+      if (o && typeof o === 'object' && o._h != null) set.add(String(o._h));
+    } catch (_) { /* unparsable line: no hash to dedupe against, never thrown */ }
+  }
+  return set;
+}
+
+// ndjsonAllHashes(inboxPath) -> Set<string> of EVERY line's `_h` in the durable
+// NDJSON (not just the unread tail) — used for the `total` union so an
+// already-consumed native-drained message (still on disk, past the cursor) isn't
+// double-counted against its store-side parity-fed twin. Fail-soft: an absent/
+// unreadable inbox yields an empty Set (matches inboxCursor.countMessages'
+// own fail-soft contract).
+function ndjsonAllHashes(inboxPath) {
+  let raw;
+  try { raw = String(fs.readFileSync(inboxPath, 'utf8')); } catch (_) { return new Set(); }
+  const set = new Set();
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    try {
+      const o = JSON.parse(t);
+      if (o && typeof o === 'object' && o._h != null) set.add(String(o._h));
+    } catch (_) { /* unparsable line: contributes no hash, never thrown */ }
+  }
+  return set;
+}
+
+function cmdInboxMessages(id, flags, ctx, opts) {
+  const home = ctx.home;
+  const doAck = !!((opts && opts.ack) || flags.ack);
+  const unread = !!flags.unread || doAck; // read-primary is inherently unread-then-ack
+  const ackAsOwner = !!flags['ack-as-owner'];
+  // Claim 4 (ack-as-owner UX guard): `--ack-as-owner` is ONLY meaningful on a
+  // MUTATING ack (it bypasses the cross-workspace ownership gate below). On the
+  // non-acking `inbox messages` read path (no --ack, not the read-primary
+  // wrapper) the flag reads as "ack on someone's behalf" but does NOTHING — a
+  // silent no-op that leaves the operator believing the backlog was cleared.
+  // Warn to stderr (non-fatal, control-flow unchanged: this stays a pure read)
+  // and point at the verb that actually acks.
+  if (ackAsOwner && !doAck) {
+    try {
+      process.stderr.write('[devswarm] inbox messages ' + JSON.stringify(String(id))
+        + ' --ack-as-owner did NOT ack — `messages` is read-only. To ack on the'
+        + " owner's behalf use `inbox read-primary " + String(id)
+        + ' --ack-as-owner` (or add --ack).\n');
+    } catch (_) {}
+  }
+  const cursorPath = primaryCursorPath(home, id);
+  const cursor = inboxCursor.readCursor(cursorPath);
+  const openedForRead = resolveWorkspaceStoreForRead(id, ctx, home);
+  if (!openedForRead.ok) return openedForRead;
+  const s = openedForRead.store;
   let total, messages, acked;
   try {
     if (doAck && !ackAsOwner) {
@@ -2133,25 +2188,113 @@ function cmdInbox(sub, id, flags, ctx) {
   }
   const inboxPath = desc.inboxPath;
   const cursorPath = desc.cursorPath;
-  if (sub === 'count') {
+  if (sub === 'count' || sub === 'read' || sub === 'ack') {
+    // P0 fix (parent->child direct messages silently undeliverable): `send --to`
+    // (cmdSend/appendMeshMessage) is a STORE-ONLY write — it never touches this
+    // descriptor's durable NDJSON, which is populated ONLY by `inbox pull` draining
+    // the NATIVE hivecontrol queue (devswarm-pull.js pullOnce). When native
+    // hivecontrol messaging is unavailable, nothing ever writes the NDJSON, so a
+    // mesh-direct message sent to `id` was invisible to `inbox count/read/ack`
+    // even though `inbox messages <id>` (the store-direct read) saw it immediately.
+    // LOSS-FREE UNION (not winner-take-all): merge in the STORE's messages for
+    // `id`, deduped by content hash against the NDJSON side — a native-drained
+    // message carries the SAME `native:`-prefixed hash in both channels (see
+    // devswarm-ingest.js messageHash / devswarm-pull.js's `_h` field and its
+    // best-effort store-parity feed), so it is correctly excluded from the
+    // store-only tally; a mesh-direct `send --to` message exists ONLY in the
+    // store (`mesh:`-prefixed hash) and is therefore always additive here.
+    // Best-effort: any store-open failure (e.g. a genuine cross-project id
+    // mismatch) falls back to the PRE-fix NDJSON-only reporting — count/read
+    // never newly hard-fail because of this merge.
     const u = inboxCursor.readUnread(inboxPath, cursorPath);
-    return { ok: true, action: 'count', id, unread: u.count, cursor: u.cursor, total: u.total, known: u.known };
-  }
-  if (sub === 'read') {
-    const u = inboxCursor.readUnread(inboxPath, cursorPath);
-    return { ok: true, action: 'read', id, lines: u.lines, count: u.count, cursor: u.cursor, total: u.total, known: u.known };
-  }
-  if (sub === 'ack') {
-    if (!cursorPath) return { ok: false, error: 'no cursorPath for workspace ' + JSON.stringify(id) };
+    let storeHandle = null;
+    let storeCursorVal = 0;
+    let storeOnlyUnreadRows = [];
+    let storeOnlyTotalCount = 0;
+    try {
+      const opened = resolveWorkspaceStoreForRead(id, ctx, home);
+      if (opened.ok) {
+        storeHandle = opened.store;
+        storeCursorVal = storeHandle.cursorValue(id);
+        const allNdjsonHashes = ndjsonAllHashes(inboxPath);
+        const unreadNdjsonHashes = ndjsonHashesFromLines(u.lines);
+        const storeAllRows = storeHandle.listMessages(id);
+        storeOnlyTotalCount = storeAllRows.filter((r) => !r.hash || !allNdjsonHashes.has(r.hash)).length;
+        const storeUnreadRows = storeHandle.listMessages(id, { sinceCursor: storeCursorVal });
+        storeOnlyUnreadRows = storeUnreadRows.filter((r) => !r.hash || !unreadNdjsonHashes.has(r.hash));
+      }
+    } catch (_) { /* fail-open: NDJSON-only reporting, matches pre-fix behavior */ }
+
+    const mergedTotal = u.total + storeOnlyTotalCount;
+    const mergedUnreadCount = u.lines.length + storeOnlyUnreadRows.length;
+
+    if (sub === 'count') {
+      if (storeHandle) storeHandle.close();
+      return {
+        ok: true, action: 'count', id,
+        unread: mergedUnreadCount, cursor: u.cursor, total: mergedTotal, known: u.known,
+        storeCursor: storeCursorVal, storeUnread: storeOnlyUnreadRows.length,
+      };
+    }
+    if (sub === 'read') {
+      if (storeHandle) storeHandle.close();
+      return {
+        ok: true, action: 'read', id,
+        lines: u.lines, meshMessages: storeOnlyUnreadRows,
+        count: mergedUnreadCount, cursor: u.cursor, total: mergedTotal, known: u.known,
+        storeCursor: storeCursorVal,
+      };
+    }
+    // sub === 'ack'
+    if (!cursorPath) { if (storeHandle) storeHandle.close(); return { ok: false, error: 'no cursorPath for workspace ' + JSON.stringify(id) }; }
     const toRaw = one(flags, 'to');
     let cursor;
     if (toRaw !== undefined) {
       const n = Number(toRaw);
-      if (!Number.isFinite(n)) return { ok: false, error: '--to must be a number' };
+      if (!Number.isFinite(n)) { if (storeHandle) storeHandle.close(); return { ok: false, error: '--to must be a number' }; }
+      // `--to N` stays NDJSON-SCOPED, byte-for-byte unchanged from the pre-fix
+      // contract: an absolute NDJSON line-count has no cross-channel meaning for
+      // the store's own cursor, so ack-all (below) is the only path that also
+      // clears the store side.
       cursor = inboxCursor.ackTo(cursorPath, n, undefined, inboxPath);
     } else {
-      cursor = inboxCursor.advanceCursor(inboxPath, cursorPath); // ack-all
+      cursor = inboxCursor.advanceCursor(inboxPath, cursorPath); // ack-all (ndjson side)
+      // Store-side ack-all (P0 fix): advance the STORE's OWN cursor for `id` too,
+      // so deriveSummary's persisted projection (what the parent-gate banner
+      // reads) agrees with what this read path just reported as consumed —
+      // otherwise the banner would keep declaring these messages unread forever
+      // even after the recipient legitimately read+acked them. Gated by the SAME
+      // ownership guard `inbox messages --ack`/`read-primary` already enforce
+      // (cross-workspace ack hazard, bug #2) since this is a NEW mutation this
+      // verb never performed before; `--ack-as-owner` overrides identically for a
+      // legitimate cross-workspace ack (e.g. a supervisor clearing a dead
+      // workspace's backlog on its behalf). A refusal here is silent/best-effort
+      // — the NDJSON ack above already durably succeeded regardless.
+      if (storeHandle) {
+        try {
+          const ackAsOwner = !!flags['ack-as-owner'];
+          let owns = true;
+          if (!ackAsOwner) {
+            const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
+            const caller = callerInfo.identity;
+            const ownEntry = resolveMeshTarget(storeHandle, caller);
+            owns = caller === id || (ownEntry && ownEntry.id === id);
+          }
+          if (owns) {
+            const totalNow = storeHandle.messageCount(id);
+            storeHandle.setCursor(id, totalNow);
+            // Keep the SEPARATE `inbox messages --ack`/`read-primary` ACK-cursor
+            // FILE (primaryCursorPath, a DIFFERENT namespace than this
+            // descriptor's own cursorPath) in lockstep too, so a workspace that
+            // mixes `inbox ack` with `read-primary` never sees those two
+            // read-verbs disagree about what is already consumed.
+            inboxCursor.ackTo(primaryCursorPath(home, id), totalNow);
+            store.deriveSummary(storeHandle, { home, env: ctx.env, now: ctx.now });
+          }
+        } catch (_) { /* best-effort: the ndjson ack above already durably succeeded */ }
+      }
     }
+    if (storeHandle) storeHandle.close();
     return { ok: true, action: 'ack', id, cursor, total: inboxCursor.countMessages(inboxPath) };
   }
   return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count|pull|messages|read-primary)' };
