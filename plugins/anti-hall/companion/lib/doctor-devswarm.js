@@ -273,20 +273,69 @@ function resolveMarketplaceDir(env, home) {
   return null;
 }
 
-// DIVERGENCE_FILES — a small, meaningful shipped-file set to hash-compare
-// rather than the whole tree (cheap, per spec): the wake watcher (the file
-// PROVEN to have drifted live on this machine) plus monitors/monitors.json
-// (the same manifest CHECK 2 below inspects for presence).
-const DIVERGENCE_FILES = [
-  path.join('companion', 'lib', 'devswarm-wake-watch.js'),
-  path.join('monitors', 'monitors.json'),
-];
+// SKIP_DIR_NAMES — directories that are genuinely not shipped content.
+// `.in_use` is the one entry PROVEN necessary by running this check against
+// the real installed cache: `.claude/plugins/cache/anti-hall/anti-hall/<ver>/
+// .in_use/<pid>` is the harness's OWN cache-GC bookkeeping (one file per live
+// process holding that cache version open, content `{pid,procStart}`) — it is
+// written into the cache dir by Claude Code itself, never present in the
+// marketplace clone, and would otherwise flag as "diverged" on every machine
+// with anti-hall active, since a running pid never matches across roots. The
+// real plugin tree otherwise has neither .git nor node_modules under it
+// (verified: plugins/anti-hall/ contains only .claude-plugin, .codex-plugin,
+// .in_use (installed side only), agents, codex, companion, hooks, monitors,
+// README.md, scripts, skills, statusline) — those two are a defensive
+// exclusion for any install/clone that happens to carry one, not an expected
+// case. Tests and docs are deliberately NOT excluded — they are shipped
+// content and a diff there is exactly the kind of drift this check exists to
+// catch.
+const SKIP_DIR_NAMES = new Set(['.git', 'node_modules', '.in_use']);
+
+// MAX_FILE_BYTES — files above this are skipped from the walk (both the
+// listing and the divergence compare), so a stray large/binary file can never
+// make this check expensive. The largest real shipped file today is
+// scripts/devswarm.js at ~265KB, so 5MB leaves comfortable headroom while
+// staying far below anything that would make hashing hundreds of files slow.
+const MAX_FILE_BYTES = 5 * 1024 * 1024;
+
+// MAX_DIFFS_REPORTED — cap on how many differing paths are named in the
+// human-readable message (the full list still lives in the returned `files`
+// array for programmatic consumers).
+const MAX_DIFFS_REPORTED = 20;
 
 // hashFileOrNull(p, F) -> hex sha256 digest | null (missing/unreadable).
 // node:crypto only — never shells out to md5/shasum (cross-platform constraint).
 function hashFileOrNull(p, F) {
   try { return crypto.createHash('sha256').update(F.readFileSync(p)).digest('hex'); }
   catch (_) { return null; }
+}
+
+// collectShippedFiles(root, F) -> {files: string[], skippedForSize: number}.
+// Recursively walks `root`, returning every regular file's path relative to
+// `root` (OS-native separators). Same F.readdirSync + F.statSync convention
+// already used by readDescriptors() above — no withFileTypes dependency, so
+// a minimal fsi mock (readdirSync + statSync + readFileSync) keeps working.
+// Fail-open per directory: an unreadable subtree is silently skipped rather
+// than aborting the whole walk (matches every other check in this file).
+function collectShippedFiles(root, F) {
+  const files = [];
+  let skippedForSize = 0;
+  (function walk(dir, rel) {
+    let names;
+    try { names = F.readdirSync(dir); } catch (_) { return; }
+    for (const name of names) {
+      if (SKIP_DIR_NAMES.has(name)) continue;
+      const full = path.join(dir, name);
+      const relPath = rel ? path.join(rel, name) : name;
+      let st = null;
+      try { st = F.statSync(full); } catch (_) { continue; }
+      if (st.isDirectory()) { walk(full, relPath); continue; }
+      if (!st.isFile()) continue; // skip symlinks-to-nowhere/sockets/etc — defensive
+      if (st.size > MAX_FILE_BYTES) { skippedForSize++; continue; }
+      files.push(relPath);
+    }
+  })(root, '');
+  return { files, skippedForSize };
 }
 
 // readPluginVersion(pluginRoot, F) -> semver-ish string | null. Fail-open.
@@ -304,11 +353,13 @@ function readPluginVersion(pluginRoot, F) {
  * Compares the INSTALLED plugin root (the running copy — callers pass the
  * cache dir the harness actually loaded, e.g. doctor-repair.js's own
  * PLUGIN_ROOT) against the marketplace clone. Only fires when both exist AND
- * their plugin.json `version` fields MATCH but on-disk content of the small
- * DIVERGENCE_FILES set differs — the exact shape of a cache dir populated
- * mid-release that syncCache will never touch again. A missing clone, a
- * version mismatch (an update is simply pending — not this bug), or any
- * unreadable path all degrade to a clean/unknown no-op, never a false alarm.
+ * their plugin.json `version` fields MATCH but on-disk content of the WHOLE
+ * shipped tree differs (every file, hashed by sha256 — see
+ * collectShippedFiles/MAX_FILE_BYTES/SKIP_DIR_NAMES above) — the exact shape
+ * of a cache dir populated mid-release that syncCache will never touch
+ * again. A file present in only one root counts as divergence too. A missing
+ * clone, a version mismatch (an update is simply pending — not this bug), or
+ * any unreadable path all degrade to a clean/unknown no-op, never a false alarm.
  * REPORT ONLY: never copies/overwrites/deletes anything. FAIL OPEN: never throws.
  */
 function installDivergenceCheck(opts) {
@@ -341,20 +392,53 @@ function installDivergenceCheck(opts) {
         message: 'install-divergence: installed v' + installedVersion + ' != marketplace clone v' + cloneVersion + ' — different versions (an update is simply pending, not this check\'s target)',
       };
     }
+    // Walk BOTH trees in full (not a hand-picked file set — see history: a
+    // hardcoded 2-file sample missed a proven real divergence in
+    // hooks/api-guard.js, which is exactly the class of bug this check exists
+    // to detect). A file present in only one root is divergence too — it is
+    // tracked separately from content mismatches so the message can say which
+    // kind it is, while `files` stays a flat list of relative paths for
+    // programmatic consumers.
+    const installedTree = collectShippedFiles(installedRoot, F);
+    const marketplaceTree = collectShippedFiles(marketplaceRoot, F);
+    const installedSet = new Set(installedTree.files);
+    const marketplaceSet = new Set(marketplaceTree.files);
+    const allRel = new Set([...installedTree.files, ...marketplaceTree.files]);
     const diffs = [];
-    for (const rel of DIVERGENCE_FILES) {
-      const a = hashFileOrNull(path.join(installedRoot, rel), F);
-      const b = hashFileOrNull(path.join(marketplaceRoot, rel), F);
-      if (a === b) continue; // both absent (neither ships it) or byte-identical
-      diffs.push(rel);
+    for (const rel of allRel) {
+      const inInstalled = installedSet.has(rel);
+      const inMarketplace = marketplaceSet.has(rel);
+      if (inInstalled && inMarketplace) {
+        const a = hashFileOrNull(path.join(installedRoot, rel), F);
+        const b = hashFileOrNull(path.join(marketplaceRoot, rel), F);
+        if (a !== b) diffs.push({ rel, kind: 'content' });
+      } else if (inInstalled) {
+        diffs.push({ rel, kind: 'only-in-installed' });
+      } else {
+        diffs.push({ rel, kind: 'only-in-marketplace' });
+      }
     }
+    diffs.sort((x, y) => (x.rel < y.rel ? -1 : x.rel > y.rel ? 1 : 0));
+    const skippedForSize = installedTree.skippedForSize + marketplaceTree.skippedForSize;
+    const sizeNote = skippedForSize > 0
+      ? ' (skipped ' + skippedForSize + ' file(s) over ' + Math.round(MAX_FILE_BYTES / (1024 * 1024)) + 'MB)'
+      : '';
     if (diffs.length === 0) {
-      return { status: 'clean', message: 'install-divergence: installed cache (v' + installedVersion + ') content matches the marketplace clone — no divergence' };
+      return {
+        status: 'clean',
+        message: 'install-divergence: installed cache (v' + installedVersion + ') content matches the marketplace clone across ' + allRel.size + ' shipped file(s) — no divergence' + sizeNote,
+      };
     }
+    const shown = diffs.slice(0, MAX_DIFFS_REPORTED).map((d) => {
+      if (d.kind === 'only-in-installed') return d.rel + ' [only in installed]';
+      if (d.kind === 'only-in-marketplace') return d.rel + ' [only in marketplace clone]';
+      return d.rel;
+    });
+    const moreNote = diffs.length > MAX_DIFFS_REPORTED ? ' (+' + (diffs.length - MAX_DIFFS_REPORTED) + ' more)' : '';
     return {
       status: 'diverged',
-      files: diffs,
-      message: 'install-divergence: installed cache v' + installedVersion + ' DIFFERS from the marketplace clone at the SAME version (' + diffs.join(', ') + '). The cache dir for this version was populated before the final code landed, and syncCache (update.js) never overwrites an existing cache/<version>/ dir — a version bump is required for this install to pick up the fix.',
+      files: diffs.map((d) => d.rel),
+      message: 'install-divergence: installed cache v' + installedVersion + ' DIFFERS from the marketplace clone at the SAME version — ' + diffs.length + ' file(s) differ: ' + shown.join(', ') + moreNote + sizeNote + '. The cache dir for this version was populated before the final code landed, and syncCache (update.js) never overwrites an existing cache/<version>/ dir — a version bump is required for this install to pick up the fix.',
     };
   } catch (e) {
     return { status: 'unknown', message: 'install-divergence check raised (fail-open): ' + (e && e.message) };
@@ -482,5 +566,5 @@ module.exports = {
   wakeMonitorShipped, wakeMonitorSelfTest, wakeMonitorLiveCheck, wakeMonitorChecks,
   // install-vs-source integrity (CHECK 1/CHECK 2) — exported individually for tests.
   installDivergenceCheck, monitorsJsonPresenceCheck, resolveMarketplaceDir, resolveInstallScope,
-  DIVERGENCE_FILES,
+  collectShippedFiles,
 };

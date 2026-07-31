@@ -392,6 +392,93 @@ test('monitorsJsonPresenceCheck: unresolvable installed root -> unknown, never t
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+// ---------------------------------------------------------------------------
+// REGRESSION: the old installDivergenceCheck only hash-compared a hardcoded
+// two-entry file set (the wake watcher + monitors/monitors.json). Proven live
+// on the real installed cache: hooks/api-guard.js had drifted between the
+// installed cache and the marketplace clone at the SAME version, and the old
+// check reported 'clean' anyway because api-guard.js was not in its list.
+// This test uses a file OUTSIDE that old set (hooks/api-guard.js) — it must
+// FAIL against the old two-entry implementation and PASS once the check walks
+// the whole shipped tree instead.
+// ---------------------------------------------------------------------------
+
+test('installDivergenceCheck: divergence OUTSIDE the old hardcoded file set (hooks/api-guard.js) is DETECTED', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-divergence-apiguard-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    const marketplaceRoot = path.join(base, 'marketplace');
+    makePluginFixture(installedRoot, { version: '0.68.1' });
+    makePluginFixture(marketplaceRoot, { version: '0.68.1' });
+    // Both trees are otherwise identical (same watcher content via
+    // makePluginFixture's default) — the ONLY divergence is api-guard.js,
+    // which the old DIVERGENCE_FILES list never looked at.
+    fs.mkdirSync(path.join(installedRoot, 'hooks'), { recursive: true });
+    fs.mkdirSync(path.join(marketplaceRoot, 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(installedRoot, 'hooks', 'api-guard.js'), '// STALE installed api-guard\n');
+    fs.writeFileSync(path.join(marketplaceRoot, 'hooks', 'api-guard.js'), '// FINAL marketplace api-guard, post-fix\n');
+
+    const r = D.installDivergenceCheck({ installedRoot, marketplaceRoot });
+    assert.strictEqual(r.status, 'diverged', 'expected diverged, got: ' + JSON.stringify(r));
+    assert.ok(Array.isArray(r.files) && r.files.some((f) => /api-guard\.js$/.test(f)),
+      'expected hooks/api-guard.js to be named in the differing files: ' + JSON.stringify(r.files));
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('installDivergenceCheck: a file present in the installed root but ABSENT from the marketplace clone is reported as divergence', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-divergence-extra-installed-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    const marketplaceRoot = path.join(base, 'marketplace');
+    const same = '// identical watcher content\n';
+    makePluginFixture(installedRoot, { version: '0.68.1', wakeWatchContent: same });
+    makePluginFixture(marketplaceRoot, { version: '0.68.1', wakeWatchContent: same });
+    fs.writeFileSync(path.join(installedRoot, 'companion', 'lib', 'orphan-only-in-installed.js'), '// only shipped in the installed cache\n');
+
+    const r = D.installDivergenceCheck({ installedRoot, marketplaceRoot });
+    assert.strictEqual(r.status, 'diverged');
+    assert.ok(r.files.some((f) => /orphan-only-in-installed\.js$/.test(f)), JSON.stringify(r.files));
+    assert.match(r.message, /only in installed/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('installDivergenceCheck: a file present in the marketplace clone but ABSENT from the installed root is reported as divergence', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-divergence-extra-marketplace-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    const marketplaceRoot = path.join(base, 'marketplace');
+    const same = '// identical watcher content\n';
+    makePluginFixture(installedRoot, { version: '0.68.1', wakeWatchContent: same });
+    makePluginFixture(marketplaceRoot, { version: '0.68.1', wakeWatchContent: same });
+    fs.writeFileSync(path.join(marketplaceRoot, 'companion', 'lib', 'new-file-not-yet-installed.js'), '// only shipped in the marketplace clone\n');
+
+    const r = D.installDivergenceCheck({ installedRoot, marketplaceRoot });
+    assert.strictEqual(r.status, 'diverged');
+    assert.ok(r.files.some((f) => /new-file-not-yet-installed\.js$/.test(f)), JSON.stringify(r.files));
+    assert.match(r.message, /only in marketplace clone/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('installDivergenceCheck: identical whole trees (multiple files/dirs, not just the two old sample files) still report CLEAN', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-divergence-wholetree-clean-'));
+  try {
+    const installedRoot = path.join(base, 'installed');
+    const marketplaceRoot = path.join(base, 'marketplace');
+    makePluginFixture(installedRoot, { version: '0.68.1', monitorsContent: '{"when":"always"}' });
+    makePluginFixture(marketplaceRoot, { version: '0.68.1', monitorsContent: '{"when":"always"}' });
+    for (const root of [installedRoot, marketplaceRoot]) {
+      fs.mkdirSync(path.join(root, 'hooks', 'lib'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'hooks', 'lib', 'some-lib.js'), '// shared lib content\n');
+      fs.mkdirSync(path.join(root, 'skills', 'devswarm'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'skills', 'devswarm', 'SKILL.md'), '# doc content\n');
+    }
+
+    const r = D.installDivergenceCheck({ installedRoot, marketplaceRoot });
+    assert.strictEqual(r.status, 'clean', JSON.stringify(r));
+    assert.match(r.message, /no divergence/);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('resolveMarketplaceDir: ANTIHALL_MARKETPLACE_DIR override resolves when valid, ignored (falls back) when invalid', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-mpdir-'));
   try {

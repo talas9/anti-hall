@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.68.2
+
+- **Doctor's install-divergence check now walks the full shipped tree instead of a 2-file sample.**
+  0.68.1 added the installed-vs-source comparison (below) but only checked two files (the wake
+  watcher and `monitors.json`), so real drift elsewhere — e.g. a stale `hooks/api-guard.js` — went
+  unreported: exactly the silently-frozen-cache failure the check exists to catch. It now
+  sha256-hashes every shipped file under the plugin root and reports content mismatches plus files
+  present in only one of the two roots (installed vs marketplace source), bounded by per-file size
+  (5 MB) and total-diff (20) caps so a pathological tree can't run away. Regression test covers
+  `api-guard.js` drift, asymmetric file presence, and a clean tree.
+
 ## 0.68.1
 
 This release exists primarily so the 0.68.0 gate fix can actually reach installed users.
