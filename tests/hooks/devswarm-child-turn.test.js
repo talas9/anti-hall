@@ -828,6 +828,32 @@ test('D26 MESH DIRECT: cwd not a git worktree -> no segment, no throw (fail-open
 // ---------------------------------------------------------------------------
 // v0.58 "mesh-only messaging": terse per-turn OVERRIDE_REASSERT + hook-text sweep.
 
+// ---------------------------------------------------------------------------
+// SELF-CONTINUE: the inter-round idle-latency fix. A child that voluntarily
+// ends its turn between rounds of a multi-round autonomous task waits a full
+// wake-cycle (supervisor cron) before it resumes — nothing mechanical forces
+// that pause. This directive tells the child to keep issuing tool calls
+// across rounds within the SAME turn instead.
+
+test('SELF-CONTINUE: per-turn directive to keep issuing tool calls across rounds is present, unconditionally, for a child', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(/AUTONOMY ACROSS ROUNDS/.test(c), `self-continue directive must be present; ctx=${c}`);
+    assert.ok(/do NOT end your turn to wait between rounds/.test(c), `must tell the child not to idle between rounds; ctx=${c}`);
+    assert.ok(/proceed to the next round within the SAME turn/.test(c), `must tell the child to self-continue; ctx=${c}`);
+    assert.ok(/genuine BLOCK needing a parent decision/.test(c), `must name the legitimate Stop conditions; ctx=${c}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('OVERRIDE: terse per-turn COMMS OVERRIDE re-assertion is present, unconditionally, for a child', () => {
   const h = makeHome();
   try {

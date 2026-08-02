@@ -57,6 +57,14 @@
 //      inbox file. Skipped (fail-open) when the id is unsafe, no cwd/git-toplevel
 //      resolves, or any fs op errors — never blocks or crashes a turn.
 //
+//   5. SELF-CONTINUE (advisory). A child ending its OWN turn between rounds of
+//      a multi-round autonomous task ("checking in") is not forced by anything
+//      mechanical — it is purely the model's choice — yet it costs a full
+//      wake-cycle of latency (the supervisor cron) before the child resumes.
+//      Injects a per-turn directive to keep issuing tool calls across rounds
+//      within the SAME turn, reserving Stop for a genuine block, final
+//      completion, or an unrecoverable error.
+//
 // Primary / non-DevSwarm sessions and malformed stdin are silent no-ops (no
 // output, exit 0) — byte-identical to dormant. Fail-open on ANY error. Pure
 // Node built-ins only.
@@ -123,6 +131,28 @@ const REMINDER =
   'message, not a substitute) — and check for + act on any parent ' +
   'messages before continuing, so you stay visible on the parent\'s task list ' +
   'instead of drifting off it.';
+
+// SELF_CONTINUE — the actual latency fix (root cause: a child voluntarily ends
+// its turn between rounds of a multi-round autonomous task "to check in", then
+// waits a FULL wake-cycle — the 5-min supervisor cron in the layered recovery
+// model, see docs/KB-devswarm-hivecontrol.md — before it resumes; nothing
+// mechanical forces that pause, it is purely the model's own choice). The
+// heartbeat/reminder/inbox segments above already give the child a way to
+// report progress WITHOUT ending its turn (`heartbeat --summary` is a tool
+// call, not a Stop), so this directive tells it to actually use that instead of
+// stopping. Injected unconditionally, same as OVERRIDE_REASSERT/REMINDER,
+// since DevSwarm's own `--system-prompt-file` replaces the system prompt at
+// every child spawn (PLAN.md "Locked design") — per-turn UserPromptSubmit
+// injection is the only lever left to keep this in front of the child.
+const SELF_CONTINUE =
+  'DEVSWARM AUTONOMY ACROSS ROUNDS: if you are running a multi-round autonomous ' +
+  'task (deadly-loop, iterative fix waves, a long staged build), do NOT end your ' +
+  'turn to wait between rounds — keep issuing tool calls and proceed to the next ' +
+  'round within the SAME turn. End your turn (Stop) ONLY at: (a) a genuine BLOCK ' +
+  'needing a parent decision, (b) your final completion / merge-gate report, or ' +
+  '(c) an unrecoverable error. Ending your turn just to \'check in\' between ' +
+  'rounds costs a full wake-cycle of latency and is the main cause of slow ' +
+  'workspace work.';
 
 // OVERRIDE_REASSERT — terse (<=160 char) per-turn re-assertion of the SessionStart
 // COMMUNICATION OVERRIDE (devswarm-child-role.js): DevSwarm's own `--system-
@@ -749,7 +779,7 @@ function main() {
   // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
   const segments = [];
   if (staleBanner) segments.push(staleBanner);
-  segments.push(OVERRIDE_REASSERT, REMINDER, RECEIVE_NUDGE);
+  segments.push(OVERRIDE_REASSERT, SELF_CONTINUE, REMINDER, RECEIVE_NUDGE);
   if (meshDirectSegment) segments.push(meshDirectSegment);
   const info = unreadInfo(env, home);
   let archiveSegmentPushed = false;
