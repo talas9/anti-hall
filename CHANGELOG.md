@@ -6,6 +6,49 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.69.0
+
+- **Harness Phase-1 hooks: `output-verify-guard` + `failure-root-cause-nudge`, plus a sandbox doc
+  section.** Adopted from the Fable-reviewed harness-feature adoption plan
+  (`docs/superpowers/specs/2026-08-01-harness-feature-adoption.md`). `output-verify-guard.js`
+  (PostToolUse, matcher Bash) scans a Bash tool call's own output for a passing signal (e.g. "8
+  passed", "PASS") alongside a failing signal (e.g. "2 failed", a confirmed non-zero exit) in the
+  SAME run — the shape of a partial-pass summary that is easy to mis-report as a clean "tests
+  pass" — and annotates (never blocks). `failure-root-cause-nudge.js` (PostToolUseFailure, matcher
+  Bash) adds one short reminder pointing at `/anti-hall:root-cause` when a Bash command exits
+  non-zero, deliberately terse since OMC already injects its own root-cause nudges in this
+  harness. Both are advisory-only and fail-open. `AGENTS.md` gained a SANDBOXING sub-bullet
+  recommending the harness's `/sandbox` mode for autonomous build-heavy sessions (doc-only, no
+  mechanical enforcement).
+- **DevSwarm parent decide+reply gate.** The Stop-gate (`devswarm-parent-gate.js`) could previously
+  be satisfied by a Primary merely *reading* a child's blocking `--question` — it now requires an
+  OBSERVED reply: a new `devswarm-parent-reply-tracker.js` (PostToolUse, matcher Bash, Primary
+  only) watches for a successful `devswarm.js send --to <id> --question`-style direct send and
+  records it via a new durable, per-project reply-state store
+  (`companion/lib/devswarm-reply-state.js`, keyed by a repo-scoped `repoKey` so it survives a
+  read/ack and new Claude sessions, not a short-lived `session_id`). The forced-ack cap
+  (`MAX_BLOCKS`) can no longer silence an unanswered question forever — once exhausted it
+  escalates once with distinct wording instead of going quiet. Every Primary turn also re-asserts
+  the decide+reply obligation. `recordReply`'s read-modify-write is now lock-protected (an O_EXCL
+  lock with retry/backoff) after a reproduced race lost entries under concurrent writers. New
+  persisted shape: a `needs_reply` column on mesh rows (sqlite: additive `ALTER TABLE ADD COLUMN`,
+  idempotent + fail-open + no-delete, applied on every store open; journal backend: absent field
+  reads as `false`) plus the new reply-state JSON file (fails open to `{}` when absent — no prior
+  shape to migrate from). Hardened via a 6-round deadly-loop (Reviewer/Auditor/Critic) that found
+  and fixed a read-vs-reply lifetime mismatch, an identity-space mismatch, 3 row-copy paths
+  dropping the new flag, a Codex upgrade-detection gap, and the concurrent-write race above.
+- **DevSwarm child self-continue directive.** A child in a multi-round autonomous task (deadly-loop,
+  iterative fix waves) previously had no mechanical push to keep working between rounds — ending
+  its turn to "check in" cost a full wake-cycle (supervisor cron) before it resumed. A new per-turn
+  directive in `devswarm-child-turn.js` tells the child to keep issuing tool calls across rounds
+  within the same turn, reserving `Stop` for a genuine block, final completion, or an unrecoverable
+  error. Shared verbatim with the Codex port (registered unmodified from `hooks/devswarm-child-turn.js`).
+- **Windows support dropped.** Removed `windows-latest` from the CI matrix (ubuntu-latest +
+  macos-latest remain) and corrected support-claim language across `plugin.json`, `README.md`,
+  `llms.txt`, and `AGENTS.md` from "runs on Windows/macOS/Linux" to macOS + Linux supported,
+  Windows untested and not officially supported. Pure-Node cross-platform code is unchanged —
+  Windows may still work, it's just no longer tested or claimed as supported.
+
 ## 0.68.2
 
 - **Doctor's install-divergence check now walks the full shipped tree instead of a 2-file sample.**
