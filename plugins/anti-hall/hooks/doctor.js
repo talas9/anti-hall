@@ -702,14 +702,37 @@ function devswarmHookSelfTests() {
 // --- 6e. Codex / OMX port detection (CONDITIONAL) -----------------------------
 // Detects a Codex install by the same artifacts codex/install-codex.js writes:
 // <scope>/.codex/config.toml (+ [features] hooks = true) and <scope>/.codex/
-// hooks.json with anti-hall's own hook commands merged in (matched the same way
-// install-codex.js's own isAntiHallGroup() does — by the /plugins/anti-hall/
-// hooks/ path fragment in the command string). Read-only; never writes.
+// hooks.json with anti-hall's own hook commands merged in. "Wired" is a
+// PRECISE per-event check: every event key in install-codex.js's own
+// ANTI_HALL_HOOKS (the canonical source of what SHOULD be registered) must
+// have a matching anti-hall-owned group actually present under that SAME
+// event, using install-codex.js's own isAntiHallGroup() matcher (reused
+// directly, not re-implemented) — not a coarse "does the fragment appear
+// anywhere in the file" test. The coarse version reported an OLDER install
+// (missing a newly-added event, e.g. the PostToolUse reply-tracker hook) as
+// already wired, because its older events still matched the substring test;
+// doctor --fix's repair decision lives in doctor-repair.js's scanCodex() —
+// this mirrors that same precise logic so the read-only report here never
+// disagrees with what repair actually does. Read-only; never writes.
 (function codexSection() {
+  let codexInstaller = {};
+  try { codexInstaller = require(path.join(ROOT, 'codex', 'install-codex.js')); } catch (_) { codexInstaller = {}; }
+  const { ANTI_HALL_HOOKS, isAntiHallGroup } = codexInstaller;
+  const expectedEvents = ANTI_HALL_HOOKS && typeof ANTI_HALL_HOOKS === 'object' ? Object.keys(ANTI_HALL_HOOKS) : [];
+
   function hasAntiHallHooks(hooksJsonPath) {
     let cfg;
     try { cfg = JSON.parse(fs.readFileSync(hooksJsonPath, 'utf8')); } catch (_) { return null; } // null = file absent/unreadable
     try {
+      const hooksByEvent = cfg && typeof cfg === 'object' && cfg.hooks && typeof cfg.hooks === 'object' ? cfg.hooks : {};
+      if (typeof isAntiHallGroup === 'function' && expectedEvents.length) {
+        return expectedEvents.every((event) => {
+          const groups = Array.isArray(hooksByEvent[event]) ? hooksByEvent[event] : [];
+          return groups.some((g) => isAntiHallGroup(g));
+        });
+      }
+      // Defensive fallback only (install-codex.js failed to require) — never
+      // crash the scan; falls back to the old coarse substring test.
       return JSON.stringify(cfg).replace(/\\\\/g, '/').includes('/plugins/anti-hall/hooks/');
     } catch (_) { return false;
     }

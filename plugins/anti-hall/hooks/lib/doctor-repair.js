@@ -693,7 +693,31 @@ function scanStatusLine(cwd, home) {
   return { present: false };
 }
 
+// codexInstallerMod() — lazy require of codex/install-codex.js, the single
+// source of truth for both the canonical hook set (ANTI_HALL_HOOKS) and the
+// anti-hall-owned-group matcher (isAntiHallGroup). require()-ing it is safe:
+// install-codex.js guards its own main()/file-writing behind
+// `require.main === module`, so pulling in these exports never mutates disk.
+function codexInstallerMod() {
+  try { return require(CODEX_INSTALLER); } catch (_) { return {}; }
+}
+
+// scanCodex — PRECISE per-event wiring check. A prior version of this function
+// (and doctor.js's read-only mirror of it) treated Codex as "wired" the moment
+// ANY anti-hall hook fragment ('/plugins/anti-hall/hooks/') appeared anywhere
+// in hooks.json. That made an upgrade silently invisible: an existing install
+// with only the OLDER event set (e.g. missing a newly-added PostToolUse entry)
+// still matched the coarse substring test on its older events and was reported
+// "already wired", so `doctor --fix` never re-ran the installer to add the new
+// event. Now every event key present in ANTI_HALL_HOOKS must have a matching
+// anti-hall-owned group actually registered under that SAME event in the
+// user's hooks.json — if even one expected event is missing/unwired, the whole
+// scope is reported unwired so the AUTO-SAFE repair below re-runs the
+// installer (mergeHooks() is additive per-event and safe to re-run — see its
+// own doc comment in install-codex.js).
 function scanCodex(cwd, home) {
+  const { ANTI_HALL_HOOKS, isAntiHallGroup } = codexInstallerMod();
+  const expectedEvents = ANTI_HALL_HOOKS && typeof ANTI_HALL_HOOKS === 'object' ? Object.keys(ANTI_HALL_HOOKS) : [];
   const scopesX = [
     ['project', path.join(cwd, '.codex'), []],
     ['global',  path.join(home, '.codex'), ['--global']],
@@ -706,7 +730,18 @@ function scanCodex(cwd, home) {
     let wired = null; // null = hooks.json absent/unreadable
     try {
       const cfg = JSON.parse(fs.readFileSync(path.join(dir, 'hooks.json'), 'utf8'));
-      wired = JSON.stringify(cfg).replace(/\\\\/g, '/').includes('/plugins/anti-hall/hooks/');
+      const hooksByEvent = cfg && typeof cfg === 'object' && cfg.hooks && typeof cfg.hooks === 'object' ? cfg.hooks : {};
+      if (typeof isAntiHallGroup === 'function' && expectedEvents.length) {
+        wired = expectedEvents.every((event) => {
+          const groups = Array.isArray(hooksByEvent[event]) ? hooksByEvent[event] : [];
+          return groups.some((g) => isAntiHallGroup(g));
+        });
+      } else {
+        // Defensive fallback only (install-codex.js failed to require, or
+        // exports missing) — never crash the scan; falls back to the old
+        // coarse substring test rather than reporting a hard failure.
+        wired = JSON.stringify(cfg).replace(/\\\\/g, '/').includes('/plugins/anti-hall/hooks/');
+      }
     } catch (_) { wired = null; }
     out.push({ label, dir, flags, wired });
   }
@@ -1356,6 +1391,9 @@ function checkMemguardReaperRisk(opts) {
 
 module.exports = {
   readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
+  // Codex "is it wired" precise per-event detection (exported for direct unit
+  // testing of the fixture-hooks.json upgrade scenario):
+  scanCodex,
   // v0.57 mesh Phase 6 (D9/D25/D28) — legacy ingest unit orphan sweep:
   reapOrphanedLegacyUnits, projectDaemonHealthy,
   // v0.65.0 `doctor --reclaim-ingest-lock` (explicit, opt-in):

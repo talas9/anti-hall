@@ -94,6 +94,56 @@ test('doctor: Codex config.toml present in cwd -> reports detected, flags missin
   }
 });
 
+// Upgrade-path regression: an EXISTING Codex install with only the OLDER event
+// set (missing the newly-added PostToolUse reply-tracker hook) must be
+// reported as unwired, not "already wired". A prior version of this
+// detection matched a coarse "'/plugins/anti-hall/hooks/' appears ANYWHERE in
+// hooks.json" test, which still matched on the surviving older events and
+// silently hid the missing PostToolUse event from the user.
+test('doctor: Codex hooks.json missing only a newly-added event (PostToolUse) -> reports unwired, not "already wired"', () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const installer = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'codex', 'install-codex.js');
+    const install = cp.spawnSync(process.execPath, [installer], { cwd, encoding: 'utf8' });
+    assert.strictEqual(install.status, 0, install.stderr || install.stdout);
+    const hooksPath = path.join(cwd, '.codex', 'hooks.json');
+    const cfg = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.ok(cfg.hooks.PostToolUse, 'fixture sanity: installer must register PostToolUse before we drop it');
+    delete cfg.hooks.PostToolUse;
+    fs.writeFileSync(hooksPath, JSON.stringify(cfg, null, 2) + '\n');
+
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /Codex \/ OMX port — detected/);
+    assert.match(r.out, /Codex hooks\.json \(project\) present but no anti-hall hooks found — run plugins\/anti-hall\/codex\/install-codex\.js/, r.out);
+    assert.doesNotMatch(r.out, /Codex hooks\.json \(project\) has anti-hall hooks registered/, r.out);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// Regression guard: a fully-current install (every event, including
+// PostToolUse) must still report wired -- doctor must not spuriously nag a
+// fully-up-to-date install.
+test('doctor: Codex hooks.json with the FULL current event set -> reports "has anti-hall hooks registered"', () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const installer = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'codex', 'install-codex.js');
+    const install = cp.spawnSync(process.execPath, [installer], { cwd, encoding: 'utf8' });
+    assert.strictEqual(install.status, 0, install.stderr || install.stdout);
+
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /Codex hooks\.json \(project\) has anti-hall hooks registered/, r.out);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
 test('doctor: DevSwarm workspace descriptor with a caught-up inbox -> listener-presence PASS line appears', () => {
   const { home, cleanup } = makeFakeHome();
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));

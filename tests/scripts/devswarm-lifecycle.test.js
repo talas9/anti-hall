@@ -1521,6 +1521,47 @@ test('F-D: rehomeCore does NOT tombstone the source when the destination has a C
   } finally { rm(home); rm(repo); }
 });
 
+// FIX WAVE regression: rehomeCore's row-copy (rehomeAcrossStores step 2) threads
+// sender/recipient/mtype/urgency/isHeartbeat from each source row but used to
+// DROP needsReply — silently disarming the decide+reply gate for a pending
+// blocking question the instant its containing workspace got rehomed (e.g. via
+// send --to-primary's self-heal path). Asserts a needsReply:true row survives
+// rehomeCore with needsReply still true on the copied row, read back via
+// listMessages on the destination store.
+test('rehomeCore preserves needsReply:true on a copied message row (no silent gate disarm)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('needsreply-rehome');
+  try {
+    const id = 'ws-needsreply';
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const hashKey = storeLib.hashFromWorkspaceId(id);
+    assert.notEqual(hashKey, repoKey);
+
+    // Source: a hash-bucket-stranded row + a pending BLOCKING QUESTION (needsReply:true).
+    writeActiveDesc(home, id, { id, worktreePath: repo, sessionId: 's-real', ownerKey: hashKey });
+    seedRegistry(home, hashKey, { id, worktreePath: repo, sessionId: 's-real' });
+    const hs = storeLib.openStore({ home, hash: hashKey, backend: 'journal' });
+    try {
+      hs.appendMeshRow({
+        workspaceId: id, hash: 'h-needsreply-1', body: 'blocking question?',
+        sender: 'child', recipient: id, mtype: 'direct', urgency: 'normal',
+        isHeartbeat: false, needsReply: true,
+      });
+    } finally { hs.close(); }
+
+    const r = cli.rehomeCore(home, id, repoKey, ctx(home, { cwd: repo }));
+    assert.equal(r.rehomed, true, 'rehome must succeed against an empty destination');
+
+    const ds = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      const msgs = ds.listMessages(id);
+      const row = msgs.find((m) => m.body === 'blocking question?');
+      assert.ok(row, 'the copied row must land in the destination store');
+      assert.equal(row.needsReply, true, 'needsReply must survive the rehome copy, not silently drop to false');
+    } finally { ds.close(); }
+  } finally { rm(home); rm(repo); }
+});
+
 // --- G2: crash-safe archive rollback persists a recovery-intent on double failure ---
 test('G2: cmdArchive persists a recovery-intent and reports failure when tombstone AND revive both fail; applyRecoveryIntents revives', () => {
   const home = tmpHome();

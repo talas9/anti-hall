@@ -677,7 +677,7 @@ function migrateHashStoresToRepoNameLocked(opts) {
             const r = dst.appendMeshRow({
               workspaceId: id, ts: row.ts, hash: h, body: row.body,
               sender: row.sender, recipient: row.recipient, mtype: row.mtype,
-              urgency: row.urgency, isHeartbeat: row.isHeartbeat,
+              urgency: row.urgency, isHeartbeat: row.isHeartbeat, needsReply: row.needsReply,
             });
             if (r && r.inserted) { wsCopied++; copied++; }
           }

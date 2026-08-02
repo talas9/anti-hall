@@ -257,8 +257,14 @@ test('3 PARENT-GATE: per-SET cap goes quiet, then a CHANGED unread set re-opens 
     assert.ok(b1.json && b1.json.decision === 'block', 'block #1');
     const b2 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
     assert.ok(b2.json && b2.json.decision === 'block', 'block #2');
+    // effectiveBlocks === cap (2) on this pass -> ONE escalation block, not silence
+    // (§4.4 requirement D).
     const b3 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
-    assert.strictEqual(b3.stdout, '', 'capped: same set goes quiet after CAP forced-acks');
+    assert.ok(b3.json && b3.json.decision === 'block', 'escalation pass must still block');
+    assert.match(b3.json.reason, /DEVSWARM ESCALATION/, 'must use escalation wording, not the normal nag');
+    // effectiveBlocks > cap on the NEXT pass -> now goes quiet (bounded at cap+1).
+    const b4 = testHookRaw('devswarm-parent-gate.js', stop, { home, env });
+    assert.strictEqual(b4.stdout, '', 'capped: same set goes quiet the pass AFTER the escalation');
 
     // A new message changes the unread SET signature -> cap resets -> re-block.
     fs.appendFileSync(inboxPath, 'c\n');

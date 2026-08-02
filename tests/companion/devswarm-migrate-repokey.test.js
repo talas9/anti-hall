@@ -273,3 +273,47 @@ test('migrateToStore wires the Phase-3 fold in AFTER the global split, under the
     try { assert.equal(merged.messageCount('primary-cccccccc'), 1); } finally { merged.close(); }
   } finally { rm(home); }
 });
+
+// FIX WAVE regression: migrateHashStoresToRepoNameLocked's row-copy threads
+// sender/recipient/mtype/urgency/isHeartbeat from each source row but used to
+// DROP needsReply — silently disarming the decide+reply gate for a pending
+// blocking question the instant its workspace's store got folded into the
+// repoKey-keyed layout. Asserts a needsReply:true row survives the repoKey
+// migration with needsReply still true on the copied row, read back via
+// listMessages on the destination store.
+test('migrateHashStoresToRepoName preserves needsReply:true on a copied message row (no silent gate disarm)', () => {
+  const home = tmpHome();
+  try {
+    const worktree = '/wt/delta-primary';
+    const commonDir = '/repos/delta/.git';
+    const id = 'primary-dddddddd';
+
+    // Seed the legacy hash-keyed store directly with a needsReply:true row —
+    // seedLegacyStore's appendMessage helper doesn't carry mesh fields, so use
+    // appendMeshRow directly, matching production's own send path.
+    const src = storeLib.openStore({ home, backend: 'journal', env: {}, hash: LEGACY_HASH_A });
+    try {
+      src.upsertRegistry({ id, worktreePath: worktree, sessionId: 's-' + id, inboxPath: null, cursorPath: null, nudgeCommand: null });
+      src.appendMeshRow({
+        workspaceId: id, hash: 'h-migrate-needsreply-1', body: 'blocking question?',
+        sender: 'child', recipient: id, mtype: 'direct', urgency: 'normal',
+        isHeartbeat: false, needsReply: true,
+      });
+      storeLib.deriveSummary(src, { home, workspaceId: id, env: {} });
+    } finally { src.close(); }
+
+    const io = { run: fakeGitRepo({ [worktree]: commonDir }), repokeyFs: identityFs };
+    const rep = migrate.migrateHashStoresToRepoName({ home, backend: 'journal', env: {}, io });
+    assert.equal(rep.ok, true);
+    assert.equal(rep.verifiedAll, true);
+
+    const repoKey = expectedRepoKey(worktree, io);
+    const merged = storeLib.openStore({ home, backend: 'journal', hash: repoKey });
+    try {
+      const msgs = merged.listMessages(id);
+      const row = msgs.find((m) => m.body === 'blocking question?');
+      assert.ok(row, 'the copied row must land in the destination repoKey store');
+      assert.equal(row.needsReply, true, 'needsReply must survive the repoKey migration copy, not silently drop to false');
+    } finally { merged.close(); }
+  } finally { rm(home); }
+});

@@ -41,6 +41,9 @@ test('CHILD: gets the blocking-question protocol with all key markers', () => {
     // send --to-primary channel (also present in OVERRIDE_CORE, but must be
     // present in this workspace's injected text either way).
     assert.ok(/send --to-primary/.test(c), `must reference send --to-primary; ctx=${c}`);
+    // a genuinely blocking question must carry --question (§4.6 of the parent
+    // decide+reply gate spec) so the structural needs_reply signal gets set.
+    assert.ok(/send --to-primary --question/.test(c), `must reference send --to-primary --question; ctx=${c}`);
     // default-and-proceed with the loud, non-silent flag requirement.
     assert.ok(/DEFAULT-AND-PROCEED/.test(c), `must name DEFAULT-AND-PROCEED; ctx=${c}`);
     assert.ok(/flag it LOUDLY as an explicit assumption/i.test(c), `must require loud flagging; ctx=${c}`);

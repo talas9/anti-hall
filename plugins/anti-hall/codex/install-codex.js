@@ -88,6 +88,9 @@ const ANTI_HALL_HOOKS = {
     group(null, ['devswarm-parent-gate.js'], 30),
     group(null, ['devswarm-child-gate.js'], 30),
   ],
+  PostToolUse: [
+    group('Bash', ['devswarm-parent-reply-tracker.js'], 10),
+  ],
 };
 
 function readJSON(file) {
@@ -159,4 +162,13 @@ function main() {
   process.stdout.write('- note: Codex/OMX status_line uses built-in IDs only; anti-hall does not inject an unsupported AH version footer item.\n');
 }
 
-main();
+// Exported for doctor.js/doctor-repair.js so they can reuse the SAME canonical
+// hook set + anti-hall-group detection this installer uses, instead of
+// inventing a separate (and drift-prone) heuristic. require()-ing this module
+// must NOT run main() / write files — only direct CLI invocation
+// (`node install-codex.js`) does, hence the require.main guard below.
+module.exports = { ANTI_HALL_HOOKS, isAntiHallGroup, mergeHooks };
+
+if (require.main === module) {
+  main();
+}

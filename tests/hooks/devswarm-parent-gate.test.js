@@ -16,6 +16,7 @@ const cp = require('node:child_process');
 const os = require('node:os');
 const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const replyStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-reply-state.js');
 
 const HOOK = 'devswarm-parent-gate.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + Primary (no SOURCE_BRANCH)
@@ -49,14 +50,18 @@ function stopPayload(sessionId, withCwd, explicitCwd) {
   return p;
 }
 
-// writeOwnSummary(home, unread, urgencyMax) — the Primary's OWN unread,
-// written to the SAME per-project summary projection path the hook reads
-// (v0.57 mesh: summaries/<REPO_KEY>.json -> workspaces[primary-<hash>].unread).
-function writeOwnSummary(home, unread, urgencyMax) {
+// writeOwnSummary(home, unread, urgencyMax, pendingQuestions) — the Primary's
+// OWN unread, written to the SAME per-project summary projection path the
+// hook reads (v0.57 mesh: summaries/<REPO_KEY>.json ->
+// workspaces[primary-<hash>].unread). `pendingQuestions` (§4.4) is the
+// per-workspace projected array of `{from, ts, seq}` structural questions —
+// same shape computeSummary produces.
+function writeOwnSummary(home, unread, urgencyMax, pendingQuestions) {
   const dir = path.join(home, '.anti-hall', 'devswarm', 'summaries');
   fs.mkdirSync(dir, { recursive: true });
   const entry = { unread };
   if (urgencyMax !== undefined) entry.urgencyMax = urgencyMax;
+  if (pendingQuestions !== undefined) entry.pendingQuestions = pendingQuestions;
   fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify({ workspaces: { [OWN_ID]: entry } }));
 }
 
@@ -195,7 +200,11 @@ test('SKIP: user-consented skip.json disables the gate', () => {
   } finally { h.cleanup(); }
 });
 
-test('LOOP-SAFE: same blocking SET is capped (goes quiet after CAP forced-acks)', () => {
+// §4.4 requirement D: cap-exhaustion is now an ESCALATION block (not a silent
+// return) on the FIRST pass where effectiveBlocks === cap, and only goes
+// quiet on the NEXT pass after that (effectiveBlocks > cap) — bounding total
+// blocks-per-signature at cap+1, never a fully-silent give-up.
+test('LOOP-SAFE: same blocking SET escalates at the cap, then goes quiet (bounded at cap+1 blocks)', () => {
   const h = makeHome();
   try {
     seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 }); // 2 unread, unchanging
@@ -203,9 +212,12 @@ test('LOOP-SAFE: same blocking SET is capped (goes quiet after CAP forced-acks)'
     const p = stopPayload('loopsess');
     const r1 = run(h.home, p, env); assert.strictEqual(r1.json && r1.json.decision, 'block', 'block #1');
     const r2 = run(h.home, p, env); assert.strictEqual(r2.json && r2.json.decision, 'block', 'block #2');
-    const r3 = run(h.home, p, env); // cap=2 reached
-    assert.strictEqual(r3.status, 0);
-    assert.strictEqual(r3.stdout, '', 'must go quiet once the same set hits the cap');
+    const r3 = run(h.home, p, env); // effectiveBlocks === cap (2) -> escalation, not silence
+    assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
+    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'must use escalation wording, not the normal nag');
+    const r4 = run(h.home, p, env); // effectiveBlocks > cap -> now goes quiet
+    assert.strictEqual(r4.status, 0);
+    assert.strictEqual(r4.stdout, '', 'must go quiet the pass AFTER the escalation');
   } finally { h.cleanup(); }
 });
 
@@ -216,9 +228,11 @@ test('CAP RESET: a CHANGED unread set re-opens the budget after being capped', (
     const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
     const p = stopPayload('resetsess');
     run(h.home, p, env); // block #1
-    run(h.home, p, env); // block #2 -> capped
-    const capped = run(h.home, p, env);
-    assert.strictEqual(capped.stdout, '', 'capped before change');
+    run(h.home, p, env); // block #2
+    const escalated = run(h.home, p, env); // block #3 -> escalation
+    assert.match(escalated.json && escalated.json.reason, /DEVSWARM ESCALATION/, 'pass #3 escalates');
+    const capped = run(h.home, p, env); // block #4 -> now quiet
+    assert.strictEqual(capped.stdout, '', 'capped (quiet) before change');
     // A new message arrives -> unread count changes -> signature changes -> reset.
     fs.appendFileSync(seeded.inboxPath, JSON.stringify({ m: 'c' }) + '\n');
     const after = run(h.home, p, env);
@@ -307,7 +321,7 @@ test('C3 FIX: malformed own summary.json -> surfaces as an explicit UNKNOWN own-
   } finally { h.cleanup(); }
 });
 
-test('LOOP-SAFE: own-unread blocking set is capped too (cap machinery still terminates)', () => {
+test('LOOP-SAFE: own-unread blocking set escalates at the cap, then goes quiet (cap machinery still terminates)', () => {
   const h = makeHome();
   try {
     writeOwnSummary(h.home, 2);
@@ -315,9 +329,12 @@ test('LOOP-SAFE: own-unread blocking set is capped too (cap machinery still term
     const p = stopPayload('loop-own', true);
     const r1 = run(h.home, p, env); assert.strictEqual(r1.json && r1.json.decision, 'block', 'block #1');
     const r2 = run(h.home, p, env); assert.strictEqual(r2.json && r2.json.decision, 'block', 'block #2');
-    const r3 = run(h.home, p, env); // cap=2 reached
-    assert.strictEqual(r3.status, 0);
-    assert.strictEqual(r3.stdout, '', 'must go quiet once the same own-unread set hits the cap');
+    const r3 = run(h.home, p, env); // effectiveBlocks === cap (2) -> escalation, not silence
+    assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
+    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'must use escalation wording');
+    const r4 = run(h.home, p, env); // effectiveBlocks > cap -> now goes quiet
+    assert.strictEqual(r4.status, 0);
+    assert.strictEqual(r4.stdout, '', 'must go quiet the pass AFTER the escalation for own-unread too');
   } finally { h.cleanup(); }
 });
 
@@ -494,11 +511,17 @@ test('WAKE BOUND: rides the SAME per-SET cap the neglect gate already has — no
     const r2 = run(h.home, p, env);
     assert.strictEqual(r2.json && r2.json.decision, 'block', 'block #2');
     assert.ok(/MAILBOX WAKE/.test(r2.json.reason), 'block #2: wake line present');
-    // cap=2 reached -> the SAME cap that already governs the neglect gate silences
-    // both concerns at once; no separate wake-only block exists.
+    // cap=2 reached -> the SAME cap that already governs the neglect gate now
+    // escalates (requirement D) rather than going silent; the wake line still
+    // rides along on this escalation block too.
     const r3 = run(h.home, p, env);
-    assert.strictEqual(r3.status, 0);
-    assert.strictEqual(r3.stdout, '', `must go quiet exactly like the pre-wake gate; got: ${r3.stdout}`);
+    assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
+    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'must escalate, not silently return');
+    assert.ok(/MAILBOX WAKE/.test(r3.json.reason), 'escalation pass: wake line still present');
+    // Only the NEXT pass (effectiveBlocks > cap) goes fully quiet.
+    const r4 = run(h.home, p, env);
+    assert.strictEqual(r4.status, 0);
+    assert.strictEqual(r4.stdout, '', `must go quiet the pass AFTER the escalation; got: ${r4.stdout}`);
   } finally { h.cleanup(); }
 });
 
@@ -933,5 +956,237 @@ test('FIX 2c: an ARCHIVED workspace is EXCLUDED from the parent-gate scan (never
     assert.strictEqual(r.json && r.json.decision, 'block', 'the live workspace must still gate');
     assert.match(r.json.reason, /ws-live/);
     assert.doesNotMatch(r.json.reason, /ws-archived/, 'an archived workspace must never appear in the neglect set');
+  } finally { h.cleanup(); }
+});
+
+// ============================================================================
+// §4.4 — UNANSWERED QUESTIONS (requirement C: cap-bypass) + CAP-EXHAUSTION
+// ESCALATION (requirement D). `pendingQuestions` is the summary projection's
+// structural per-workspace field (companion/lib/devswarm-store.js
+// computeSummary); `readReplyState`/`recordReply`/`unansweredQuestions` come
+// from companion/lib/devswarm-reply-state.js. writeOwnSummary's 4th arg seeds
+// `entry.pendingQuestions` directly — the same field readOwnUnread now reads.
+// ============================================================================
+
+test('UNANSWERED QUESTION: gate stays blocked well past the old cap while a pendingQuestion is unanswered (4th+ Stop call)', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000; // 5 minutes ago
+    writeOwnSummary(h.home, 1, undefined, [{ from: 'child-1', ts, seq: 1 }]);
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' }; // small cap, deliberately exhausted below
+    const p = stopPayload('unanswered-sess', true);
+    for (let i = 1; i <= 5; i++) {
+      const r = run(h.home, p, env);
+      assert.strictEqual(r.status, 0, `call #${i} must exit 0`);
+      assert.strictEqual(r.json && r.json.decision, 'block', `call #${i} must still block (unanswered question)`);
+      assert.match(r.json.reason, /UNANSWERED QUESTION/, `call #${i} must carry the unanswered-question wording`);
+      assert.match(r.json.reason, /child-1/, `call #${i} must name the asker`);
+      assert.ok(r.json.reason.includes('send --to'), `call #${i} must state the exact reply command`);
+      // Small fix #2 (Round 2 review): the reply-target label is now `<id>`,
+      // not `<meshId>` — the resolved value is a registry row id, not
+      // necessarily the sender's raw meshId.
+      assert.ok(r.json.reason.includes('<id>'), `call #${i} must label the reply target as <id>; reason=${r.json.reason}`);
+      assert.ok(!r.json.reason.includes('<meshId>'), `call #${i} must NOT use the misleading <meshId> label; reason=${r.json.reason}`);
+      assert.match(r.json.reason, /is NOT sufficient/i, `call #${i} must say reading alone is not sufficient`);
+      assert.ok(!/DEVSWARM ESCALATION/.test(r.json.reason), `call #${i} must never be escalation wording — the question axis bypasses the cap entirely, well past cap=2`);
+    }
+  } finally { h.cleanup(); }
+});
+
+test('UNANSWERED QUESTION CLEARED: once a reply is recorded for that asker, the same question no longer blocks (assuming no OTHER blocking reason)', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    // unread:0 isolates this to ONLY the question axis (own.unread contributing
+    // no separate blocking reason) so clearing the question alone goes quiet.
+    writeOwnSummary(h.home, 0, undefined, [{ from: 'child-1', ts, seq: 1 }]);
+    const p = stopPayload('reply-clears-sess', true);
+
+    const before = run(h.home, p);
+    assert.strictEqual(before.json && before.json.decision, 'block', 'must block while unanswered');
+    assert.match(before.json.reason, /UNANSWERED QUESTION/);
+    assert.match(before.json.reason, /child-1/);
+
+    // Record an observed reply AFTER the question's ts (recordReply is the
+    // primitive the PostToolUse reply-tracker hook, §4.3, would call). Keyed
+    // by REPO_KEY (the durable per-project key), not the session_id — the
+    // gate now reads reply-state via `selfKey`/REPO_KEY (see stopPayload's
+    // `withCwd` -> REPO_CWD), independent of the Stop payload's session_id.
+    replyStateLib.recordReply(REPO_KEY, h.home, 'child-1', ts + 60000);
+
+    const after = run(h.home, p);
+    assert.strictEqual(after.status, 0);
+    assert.strictEqual(after.stdout, '', `question answered + no other blocking reason -> must go quiet; got: ${after.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('CAP-EXHAUSTION (plain, non-question backlog): the (cap+1)th call escalates, the (cap+2)th goes quiet', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 }); // 2 unread, unchanging, NO pendingQuestions
+    const p = stopPayload('cap-exhaustion-sess');
+    const cap = 3; // DEFAULT_CAP — no env override, exercised at its real default
+    const results = [];
+    for (let i = 1; i <= cap + 2; i++) results.push(run(h.home, p));
+
+    for (let i = 0; i < cap; i++) {
+      assert.strictEqual(results[i].json && results[i].json.decision, 'block', `call #${i + 1} (normal, pre-cap) must block`);
+      assert.ok(!/DEVSWARM ESCALATION/.test(results[i].json.reason), `call #${i + 1} must not yet escalate`);
+    }
+    const escalationCall = results[cap]; // the (cap+1)th call
+    assert.strictEqual(escalationCall.status, 0, '(cap+1)th call must exit 0');
+    assert.strictEqual(escalationCall.json && escalationCall.json.decision, 'block', '(cap+1)th call must still block, not silently give up');
+    assert.notStrictEqual(escalationCall.stdout, '', '(cap+1)th call must not be a silent give-up (the old behavior this fix removes)');
+    assert.match(escalationCall.json.reason, /DEVSWARM ESCALATION/, '(cap+1)th call must carry escalation wording');
+
+    const quietCall = results[cap + 1]; // the (cap+2)th call
+    assert.strictEqual(quietCall.status, 0);
+    assert.strictEqual(quietCall.stdout, '', '(cap+2)th call must go fully quiet, bounding total blocks at cap+1');
+  } finally { h.cleanup(); }
+});
+
+// P0-C FIX: escalation-fired-once must be tracked EXPLICITLY (a persisted
+// `escalated` boolean), never re-derived from `effectiveBlocks === cap`. The
+// old arithmetic check broke exactly here: while a question is unanswered,
+// the cap-bypass branch (unanswered.length > 0) NEVER escalates and NEVER
+// returns — so `blocks` keeps climbing every Stop, sailing straight past the
+// one instant `effectiveBlocks === cap` would ever have been true. Once the
+// question is answered and the SAME plain, non-question backlog remains
+// under the SAME signature, effectiveBlocks is already > cap — the old code
+// would skip straight to the silent `effectiveBlocks > cap -> return`
+// branch, and the one-time escalation message would never fire at all.
+test('P0-C FIX: an unanswered-question bypass phase that overshoots the cap still escalates exactly once after the reply (never skips straight to silence)', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    // A plain, non-question backlog (ws1) that persists under an UNCHANGED
+    // signature across the whole test — the same axis the 'CAP-EXHAUSTION
+    // (plain, non-question backlog)' test above exercises alone. own.unread:0
+    // isolates `unanswered` to ONLY the pendingQuestions axis — own
+    // contributes nothing to the `blocking` array/signature itself, so
+    // answering the question can never itself change the signature.
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 }); // 2 unread, unchanging
+    writeOwnSummary(h.home, 0, undefined, [{ from: 'child-1', ts, seq: 1 }]);
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    const p = stopPayload('p0c-bypass-sess', true);
+
+    // 4 Stops while the question stays unanswered: the cap-bypass branch
+    // fires every time (unanswered.length > 0), pushing the per-signature
+    // `blocks` counter to 4 — well past cap=2 — WITHOUT ever escalating,
+    // since that branch never even looks at `effectiveBlocks` vs `cap`. The
+    // one instant the OLD `effectiveBlocks === cap` check could have fired
+    // is skipped over entirely during this phase.
+    for (let i = 1; i <= 4; i++) {
+      const r = run(h.home, p, env);
+      assert.strictEqual(r.json && r.json.decision, 'block', `unanswered pass #${i} must block`);
+      assert.match(r.json.reason, /UNANSWERED QUESTION/, `unanswered pass #${i} must carry the question wording`);
+      assert.ok(!/DEVSWARM ESCALATION/.test(r.json.reason), `unanswered pass #${i} must never escalate — the question axis bypasses the cap entirely`);
+    }
+
+    // Reply recorded -> the question clears. The plain ws1 backlog (SAME
+    // signature) persists untouched. Keyed by REPO_KEY, not session_id.
+    replyStateLib.recordReply(REPO_KEY, h.home, 'child-1', ts + 60000);
+
+    // The VERY NEXT Stop must emit the escalation-worded block (never
+    // silence), even though effectiveBlocks (4) is already well past cap (2)
+    // — escalation is now tracked by the explicit `escalated` flag (still
+    // false at this point for this signature), not by effectiveBlocks ===
+    // cap, so an overshoot from the bypass phase must still trigger exactly
+    // one escalation here rather than being skipped over.
+    const escalated = run(h.home, p, env);
+    assert.strictEqual(escalated.json && escalated.json.decision, 'block', 'first post-reply pass must still block');
+    assert.match(escalated.json.reason, /DEVSWARM ESCALATION/, 'first post-reply pass must escalate, not silently skip to quiet');
+    assert.ok(!/UNANSWERED QUESTION/.test(escalated.json.reason), 'the question is answered — must not re-appear in the reason');
+
+    // Only the pass AFTER THAT goes quiet.
+    const quiet = run(h.home, p, env);
+    assert.strictEqual(quiet.status, 0);
+    assert.strictEqual(quiet.stdout, '', 'must go quiet exactly one pass after the escalation, not before');
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-OPEN: corrupt reply-state file -> exit 0, never throws, question still treated as UNANSWERED (still blocks)', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 60000;
+    writeOwnSummary(h.home, 1, undefined, [{ from: 'child-1', ts, seq: 1 }]);
+    const p = stopPayload('corrupt-reply-sess', true);
+    const replyPath = replyStateLib.replyStatePathFor(REPO_KEY, h.home);
+    fs.mkdirSync(path.dirname(replyPath), { recursive: true });
+    fs.writeFileSync(replyPath, '{not valid json');
+    const r = run(h.home, p);
+    assert.strictEqual(r.status, 0, 'must exit 0, never throw on a corrupt reply-state file');
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a corrupt reply-state file must fail open toward BLOCKING, never silently clear the question');
+    assert.match(r.json.reason, /UNANSWERED QUESTION/);
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-OPEN: malformed pendingQuestions entries on the summary -> exit 0, never throws, treated as UNANSWERED (still blocks)', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 1, undefined, [
+      { from: 'child-1', ts: 'not-a-number' }, // malformed ts -> unansweredQuestions treats as always-newer
+      null, // malformed entry entirely -> lib fail-opens to "keep" (unanswered)
+      42, // malformed entry (not even an object)
+    ]);
+    const p = stopPayload('malformed-pq-sess', true);
+    const r = run(h.home, p);
+    assert.strictEqual(r.status, 0, 'must exit 0, never throw on malformed pendingQuestions entries');
+    assert.strictEqual(r.json && r.json.decision, 'block', 'malformed pendingQuestions entries must fail open toward BLOCKING, never silently clear the question');
+    assert.match(r.json.reason, /UNANSWERED QUESTION/);
+  } finally { h.cleanup(); }
+});
+
+// BUG 1a FIX: reply-state is now keyed by the durable per-project REPO_KEY
+// (resolved from `cwd` — same as `selfKey` in the hook), not the short-lived
+// Claude Stop payload `session_id`. A reply observed while one Claude session
+// was active must still be seen as clearing the question when a COMPLETELY
+// DIFFERENT session (same project) later checks — proving a fresh session no
+// longer resurrects every historically-answered question (the exact
+// resurrection bug this fix closes).
+test('BUG 1a FIX: a reply recorded (repoKey-keyed) clears an unanswered question for a COMPLETELY DIFFERENT Claude session_id, same project', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    // unread:0 isolates this to ONLY the question axis, same isolation
+    // pattern as the 'UNANSWERED QUESTION CLEARED' test above.
+    writeOwnSummary(h.home, 0, undefined, [{ from: 'child-1', ts, seq: 1 }]);
+    const pSessionA = stopPayload('session-A-original', true);
+    const pSessionB = stopPayload('session-B-totally-unrelated', true); // same REPO_CWD -> same repoKey
+
+    const beforeA = run(h.home, pSessionA);
+    assert.strictEqual(beforeA.json && beforeA.json.decision, 'block', 'must block under session A while unanswered');
+    assert.match(beforeA.json.reason, /UNANSWERED QUESTION/);
+
+    // The reply-tracker hook (§4.3) would record this — keyed by repoKey, not
+    // by whichever session_id happened to be active when the reply was sent.
+    replyStateLib.recordReply(REPO_KEY, h.home, 'child-1', ts + 60000);
+
+    // A BRAND NEW Claude session (session-B, same project) must see the SAME
+    // project's already-recorded reply — not start over with an empty,
+    // session-scoped reply-state file and resurrect the question.
+    const afterB = run(h.home, pSessionB);
+    assert.strictEqual(afterB.status, 0);
+    assert.strictEqual(afterB.stdout, '',
+      `a fresh session_id for the SAME project must see the question as already answered; got: ${afterB.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+// Small fix #1 (Round 2 review): buildReason's "DEVSWARM NEGLECT: N
+// workspace(s)..." paragraph must be entirely ABSENT (not "0 workspace(s)...
+// : .") when the unanswered question is the ONLY reason this pass is
+// blocking (blocking.length === 0).
+test('SMALL FIX: the "DEVSWARM NEGLECT" paragraph is entirely absent (not a self-contradicting "0 workspace(s)") when an unanswered question is the ONLY blocking reason', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 60000;
+    writeOwnSummary(h.home, 0, undefined, [{ from: 'child-1', ts, seq: 1 }]); // unread:0 -> blocking.length===0
+    const p = stopPayload('neglect-wording-sess', true);
+    const r = run(h.home, p);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.doesNotMatch(r.json.reason, /DEVSWARM NEGLECT/,
+      `the NEGLECT paragraph must not appear at all when there is no neglected workspace to name; reason=${r.json.reason}`);
+    assert.doesNotMatch(r.json.reason, /0 workspace\(s\)/,
+      `must never emit the self-contradicting "0 workspace(s) ... : ." sentence; reason=${r.json.reason}`);
   } finally { h.cleanup(); }
 });

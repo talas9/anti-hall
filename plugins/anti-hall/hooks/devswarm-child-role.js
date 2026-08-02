@@ -84,7 +84,7 @@ const CHILD_IDLE_LINE =
 const CHILD_QUESTION_LINE =
   ' BLOCKED ON A DECISION? Never ask the human directly, never halt all work — a ' +
   'question parks ONE sub-task, not the workspace. Send it to the parent with the ' +
-  '`send --to-primary` command above, message = what\'s blocked / options / your ' +
+  '`send --to-primary --question` command above, message = what\'s blocked / options / your ' +
   'recommendation / the DEFAULT you\'ll take / your deadline. Keep working every ' +
   'other unblocked item meanwhile. DEFAULT-AND-PROCEED: no reply by your deadline ' +
   '-> take that default, proceed, and flag it LOUDLY as an explicit assumption in ' +

@@ -15,6 +15,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const store = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const inst = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 
 const STORE_PATH = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js');
 
@@ -144,6 +145,63 @@ for (const B of backends) {
       assert.equal(r2.inserted, true);
       assert.equal(s.listMessages(store.BROADCAST_PARTITION_ID).length, 2, 'both rows physically present, no collapse');
     } finally { s.close(); rm(home); }
+  });
+
+  // EASY-WIN FIX (Round 3 review): needsReply was added to messages by an
+  // earlier wave but never added to meshMessageHash's hashed tuple. Two
+  // messages identical in every OTHER hashed field but differing ONLY in
+  // needsReply (e.g. a plain message and a `--question` message with
+  // byte-identical body text at the exact same millisecond) must NOT collapse
+  // under UNIQUE(hash)/journal dedupe — both must produce DISTINCT hashes and
+  // both must be newly inserted.
+  test(`[${B.name}] two messages identical except for needsReply produce DISTINCT hashes and both insert (do not dedupe-collapse)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('bob'));
+      const base = { from: 'alice', to: 'bob', type: 'direct', message: 'same body', timestamp: 1000, urgency: 'normal' };
+      const plain = Object.assign({}, base, { needsReply: false });
+      const question = Object.assign({}, base, { needsReply: true });
+      assert.notEqual(
+        store.meshMessageHash(plain), store.meshMessageHash(question),
+        'identical fields differing ONLY in needsReply must produce distinct hashes'
+      );
+      const r1 = store.appendMeshMessage(s, Object.assign({}, plain, { hash: store.meshMessageHash(plain) }));
+      const r2 = store.appendMeshMessage(s, Object.assign({}, question, { hash: store.meshMessageHash(question) }));
+      assert.equal(r1.inserted, true, 'the plain message must be newly inserted');
+      assert.equal(r2.inserted, true, 'the question message must ALSO be newly inserted, not deduped away');
+      assert.equal(s.messageCount('bob'), 2, 'both rows physically present, no collapse');
+    } finally { s.close(); rm(home); }
+  });
+
+  // BACKWARD-COMPAT FIX (Fix Wave 4): the needsReply slot in meshMessageHash
+  // must be CONDITIONAL (only appended when genuinely truthy), not
+  // unconditional, so a PLAIN message's hash stays byte-identical to the
+  // pre-needsReply-hashing format. foldGroupIntoSurvivor's idempotence
+  // (INSERT OR IGNORE no-ops on a re-run) depends on recomputing the SAME
+  // hash for the SAME logical fields across an anti-hall upgrade boundary —
+  // an unconditional append would change every plain message's hash and
+  // duplicate already-forwarded rows on the next post-upgrade fold.
+  test(`[${B.name}] a plain message's hash is IDENTICAL to the pre-needsReply-hashing tuple format (byte-identical across the upgrade boundary)`, () => {
+    const crypto = require('node:crypto');
+    const base = { from: 'alice', to: 'bob', type: 'direct', message: 'same body', timestamp: 1000, urgency: 'normal' };
+    // Hand-computed OLD format: the 6-field tuple joined with ' ', with NO
+    // needsReply slot at all (what meshMessageHash produced before needsReply
+    // was added to the hashed tuple).
+    const oldParts = [base.from, base.to, base.type, base.urgency, base.message, String(base.timestamp)].join(' ');
+    const oldHash = 'mesh:' + crypto.createHash('sha256').update(oldParts).digest('hex');
+    assert.equal(store.meshMessageHash(base), oldHash, 'needsReply absent -> hash matches the pre-existing (no-needsReply-slot) format');
+    assert.equal(
+      store.meshMessageHash(Object.assign({}, base, { needsReply: false })),
+      oldHash,
+      'needsReply:false -> hash STILL matches the pre-existing format (false is "not a question", same as absent)'
+    );
+  });
+
+  test(`[${B.name}] needsReply:false and needsReply:undefined (absent) hash IDENTICALLY — both mean "not a question"`, () => {
+    const withFalse = { from: 'alice', to: 'bob', type: 'direct', message: 'x', timestamp: 1, urgency: 'normal', needsReply: false };
+    const withUndefined = { from: 'alice', to: 'bob', type: 'direct', message: 'x', timestamp: 1, urgency: 'normal' };
+    assert.equal(store.meshMessageHash(withFalse), store.meshMessageHash(withUndefined));
   });
 
   test(`[${B.name}] seq is monotonic across sends (direct + broadcast interleaved)`, () => {
@@ -385,7 +443,247 @@ for (const B of backends) {
       assert.equal(sum.workspaces['child-4'].archive_requested, false, 'native rows carry mtype:null, never direct — defense-in-depth, never a false positive');
     } finally { s.close(); rm(home); }
   });
+
+  // ---- needsReply / pendingQuestions (devswarm parent decide+reply gate) ----
+  test(`[${B.name}] needsReply threads through appendMeshMessage -> appendMeshRow -> listMessages`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('bob'));
+      const f = { from: 'alice', to: 'bob', type: 'direct', message: 'what do I do?', timestamp: 1, urgency: 'normal', needsReply: true };
+      const r = store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      assert.equal(r.inserted, true);
+      const msgs = s.listMessages('bob');
+      assert.equal(msgs.length, 1);
+      assert.equal(msgs[0].needsReply, true);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] a row sent WITHOUT needsReply reads back needsReply:false (default, byte-identical for old readers)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('bob'));
+      const f = { from: 'alice', to: 'bob', type: 'direct', message: 'fyi', timestamp: 1, urgency: 'normal' };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      const msgs = s.listMessages('bob');
+      assert.equal(msgs[0].needsReply, false);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] a legacy (pre-needs_reply) row via the OLD appendMessage path reads back needsReply:false`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w'));
+      s.appendMessage({ workspaceId: 'w', body: 'legacy row', hash: 'legacy-nr1' });
+      const rows = s.listMessages('w');
+      assert.equal(rows[0].needsReply, false, 'a legacy appendMessage row never gets needs_reply -> reads back false, not null/undefined');
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] deriveSummary's pendingQuestions includes an unread DIRECT row flagged needsReply`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      // sender registered under a resolvable worktree (Part 2 fix — an
+      // unresolvable sender is now DROPPED, not kept raw, so this test's
+      // sender must actually resolve for the row to survive).
+      const senderWorktree = '/wt/primary-abc-sender';
+      const senderMeshId = inst.primaryWorkspaceId(senderWorktree);
+      s.upsertRegistry(descriptor('primary-abc', { worktreePath: senderWorktree }));
+      s.upsertRegistry(descriptor('child-5'));
+      const f = { from: senderMeshId, to: 'child-5', type: 'direct', message: 'which approach?', timestamp: 111, urgency: 'high', needsReply: true };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-5'].pendingQuestions.length, 1);
+      assert.equal(sum.workspaces['child-5'].pendingQuestions[0].from, 'primary-abc');
+      assert.equal(sum.workspaces['child-5'].pendingQuestions[0].ts, 111);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] deriveSummary's pendingQuestions is [] for a plain DIRECT row (needsReply not set)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      const senderWorktree = '/wt/primary-abc-sender-2';
+      const senderMeshId = inst.primaryWorkspaceId(senderWorktree);
+      s.upsertRegistry(descriptor('primary-abc', { worktreePath: senderWorktree }));
+      s.upsertRegistry(descriptor('child-6'));
+      const f = { from: senderMeshId, to: 'child-6', type: 'direct', message: 'just checking in', timestamp: 1, urgency: 'normal' };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.deepEqual(sum.workspaces['child-6'].pendingQuestions, []);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] deriveSummary's pendingQuestions EXCLUDES a broadcast/heartbeat row even if needsReply were somehow set (mtype must be 'direct')`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w1'));
+      const bc = { from: 'w1', to: null, type: 'broadcast', message: 'not a real question', timestamp: 1, urgency: 'high', needsReply: true };
+      store.appendMeshMessage(s, Object.assign({}, bc, { hash: store.meshMessageHash(bc) }));
+      const hb = { from: 'w1', to: null, type: 'broadcast', message: 'still working', timestamp: 2, urgency: 'normal', isHeartbeat: true, needsReply: true };
+      store.appendMeshMessage(s, Object.assign({}, hb, { hash: store.meshMessageHash(hb) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.deepEqual(sum.workspaces.w1.pendingQuestions, [], 'a broadcast/heartbeat row is never a pendingQuestion, regardless of needsReply');
+    } finally { s.close(); rm(home); }
+  });
+
+  // P0-A fix (devswarm-parent-decide-gate fix wave): pendingQuestions used to be
+  // computed from unreadRows (cursor-scoped), so `inbox read-primary` acking the
+  // cursor past the question row cleared it with ZERO reply ever sent — the exact
+  // bug the whole feature exists to fix. pendingQuestions is now computed from
+  // ALL of this workspace's messages ever marked needs_reply, so a bare read/ack
+  // must NOT clear it — only a genuine reply (cross-referenced downstream by
+  // devswarm-reply-state.js's unansweredQuestions, never inside computeSummary
+  // itself) can.
+  test(`[${B.name}] pendingQuestions STAYS populated after the question row is ACKed (cursor advanced past it) with no reply ever sent (P0-A fix)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      // sender registered under a resolvable worktree (Part 2 fix — an
+      // unresolvable sender is now DROPPED, not kept raw).
+      const senderWorktree = '/wt/primary-abc-sender-3';
+      const senderMeshId = inst.primaryWorkspaceId(senderWorktree);
+      s.upsertRegistry(descriptor('primary-abc', { worktreePath: senderWorktree }));
+      s.upsertRegistry(descriptor('child-7'));
+      const f = { from: senderMeshId, to: 'child-7', type: 'direct', message: 'decide?', timestamp: 1, urgency: 'high', needsReply: true };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      let sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-7'].pendingQuestions.length, 1, 'unread question -> pending');
+      s.setCursor('child-7', s.messageCount('child-7')); // ack-all (READ, not REPLIED)
+      sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-7'].pendingQuestions.length, 1, 'acked/read alone must NOT clear a pending question — only a genuine reply does');
+      assert.equal(sum.workspaces['child-7'].pendingQuestions[0].from, 'primary-abc');
+      assert.equal(sum.workspaces['child-7'].pendingQuestions[0].ts, 1);
+      // A SECOND ack (already-acked, still unanswered) must not change anything either.
+      s.setCursor('child-7', s.messageCount('child-7'));
+      sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-7'].pendingQuestions.length, 1, 'a repeat ack still does not clear an unanswered question');
+    } finally { s.close(); rm(home); }
+  });
+
+  // P0-B fix: a question row's `sender` is the sender's worktree-derived meshId
+  // (callerIdentity()), but a reply's echoed `toId` (cmdSend/resolveSendTarget) is
+  // the REGISTRY ROW id — NOT necessarily the same value. Every real child
+  // registers under a DEVSWARM_BUILDER_ID different from its own derived meshId
+  // (scripts/devswarm.js's cmdInboxMessages "v0.57 mesh (P0 fix)" commentary).
+  // pendingQuestions[].from must resolve to the SAME registry-row-id identity
+  // space toId already uses, so unansweredQuestions' q.from <-> replyState[toId]
+  // comparison actually lines up.
+  test(`[${B.name}] pendingQuestions[].from resolves to the sender's REGISTRY ROW id (not its raw meshId) when registered under a divergent DEVSWARM_BUILDER_ID`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      const senderWorktree = '/wt/sender-divergent';
+      const senderMeshId = inst.primaryWorkspaceId(senderWorktree);
+      const builderId = 'sess-builder-xyz'; // DEVSWARM_BUILDER_ID, deliberately != senderMeshId
+      assert.notEqual(senderMeshId, builderId, 'sanity: the two identity spaces really do diverge');
+      s.upsertRegistry(descriptor(builderId, { worktreePath: senderWorktree, sessionId: 'sess-live' }));
+      s.upsertRegistry(descriptor('child-9'));
+
+      const f = { from: senderMeshId, to: 'child-9', type: 'direct', message: 'which approach?', timestamp: 5, urgency: 'high', needsReply: true };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+
+      const sum = store.deriveSummary(s, { home });
+      assert.equal(sum.workspaces['child-9'].pendingQuestions.length, 1);
+      assert.equal(sum.workspaces['child-9'].pendingQuestions[0].from, builderId,
+        'from must be the REGISTRY ROW id (the exact identity space a reply\'s toId echo uses), not the raw sender meshId');
+    } finally { s.close(); rm(home); }
+  });
+
+  // PERMANENT-DEADLOCK FIX (Round 2 review, supersedes the prior fix-wave's
+  // "keep the original unresolved value" behavior asserted here before): a
+  // sender that resolves to NO live registry row at all is a STRUCTURALLY
+  // unresolvable identity — under the now-PERMANENT pendingQuestions
+  // semantics (P0-A above), keeping such a row would create an UNCONDITIONAL,
+  // never-clearing Stop-gate deadlock (send --to fails closed on an
+  // unregistered recipient, so no reply can ever be recorded for it either).
+  // The row is now DROPPED from the projection entirely instead.
+  test(`[${B.name}] pendingQuestions EXCLUDES a row whose sender cannot be resolved to any registry row (permanent-deadlock fix — never included, not kept under the raw sender)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('child-10'));
+      const f = { from: 'orphan-sender-no-registry-row', to: 'child-10', type: 'direct', message: 'decide?', timestamp: 9, urgency: 'normal', needsReply: true };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.deepEqual(sum.workspaces['child-10'].pendingQuestions, [],
+        'a structurally unresolvable sender must never appear in pendingQuestions (would deadlock forever)');
+    } finally { s.close(); rm(home); }
+  });
+
+  // Bug 1b regression coverage: the SAME exclusion for a sender that was NEVER
+  // registered at all (as opposed to registered-then-removed) — the more
+  // common real-world shape (a child that was archived/deregistered, or whose
+  // worktree no longer resolves) — proving no deadlock either way.
+  test(`[${B.name}] pendingQuestions EXCLUDES a row whose sender was NEVER registered in this store at all`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('child-11')); // only the recipient is registered
+      const f = { from: 'never-registered-sender', to: 'child-11', type: 'direct', message: 'decide?', timestamp: 11, urgency: 'normal', needsReply: true };
+      store.appendMeshMessage(s, Object.assign({}, f, { hash: store.meshMessageHash(f) }));
+      const sum = store.deriveSummary(s, { home });
+      assert.deepEqual(sum.workspaces['child-11'].pendingQuestions, [],
+        'a never-registered sender must never appear in pendingQuestions');
+    } finally { s.close(); rm(home); }
+  });
+
 }
+
+// Small fix #3 (Round 2 review): resolveSenderRegistryId's same-updatedAt
+// tie-break must match scripts/devswarm.js's resolveMeshTarget/meshCursorValue
+// EXACTLY — a non-finite cursor read on ONE side must never veto a decisive
+// comparison against a genuinely finite cursor on the other side (the prior
+// mirror required BOTH sides finite before comparing at all, silently
+// defaulting to "keep the first-seen row" whenever either side's cursor read
+// was unreadable/non-finite, even when the other side was perfectly
+// decisive). Exercised directly through computeSummary (a pure function of
+// its `store` argument, per its own header) with a hand-built store double so
+// two registry rows can be forced to an EXACT updatedAt tie and a controlled
+// non-finite cursor read — not reliably reproducible through the timing of
+// real upsertRegistry() calls.
+test('resolveSenderRegistryId tie-break (via computeSummary): a finite cursor on one side beats a non-finite cursor on the other, even though BOTH being finite is no longer required', () => {
+  const senderWorktree = '/wt/fake-tie-sender';
+  const senderMeshId = inst.primaryWorkspaceId(senderWorktree);
+  // rowA is encountered FIRST (becomes the initial bestLive) and its cursor
+  // read is deliberately non-finite (simulating an unreadable cursor). rowB
+  // is encountered SECOND, ties rowA's updatedAt exactly, and has a
+  // genuinely finite, positive cursor value — under the FIXED coercion
+  // (non-finite -> -1, compared unconditionally) rowB must win (3 > -1).
+  // Under the OLD buggy code (`Number.isFinite(curVal) && Number.isFinite(bestVal)`)
+  // the comparison would be skipped entirely (bestVal=NaN is not finite) and
+  // rowA — the row with the WORSE, unreadable cursor — would wrongly survive.
+  const registry = [
+    { id: 'rowA', worktreePath: senderWorktree, sessionId: 'sess-live-a', updatedAt: 5000 },
+    { id: 'rowB', worktreePath: senderWorktree, sessionId: 'sess-live-b', updatedAt: 5000 },
+    { id: 'child-x', worktreePath: '/wt/child-x', sessionId: 'sess-child-x', updatedAt: 5000 },
+  ];
+  const messagesByWorkspace = {
+    'child-x': [{ mtype: 'direct', needsReply: true, sender: senderMeshId, ts: 100, storeSeq: 1, body: 'q?' }],
+  };
+  const cursorValues = { rowA: NaN, rowB: 3, 'child-x': 0 };
+  const fakeStore = {
+    listMessages(id) {
+      if (id === store.BROADCAST_PARTITION_ID) return [];
+      return messagesByWorkspace[id] || [];
+    },
+    listRegistry() { return registry; },
+    messageCount(id) { return (messagesByWorkspace[id] || []).length; },
+    cursorValue(id) { return cursorValues[id]; },
+    currentGates() { return {}; },
+  };
+  const home = tmpHome();
+  try {
+    const sum = store.computeSummary(fakeStore, { home });
+    assert.equal(sum.workspaces['child-x'].pendingQuestions.length, 1);
+    assert.equal(sum.workspaces['child-x'].pendingQuestions[0].from, 'rowB',
+      'the row with the FINITE, decisive cursor must win the tie-break, even though the other side is non-finite');
+  } finally { rm(home); }
+});
 
 // ---- broadcastCursorValue / setBroadcastCursor (direct handle API) --------
 test('[journal] broadcastCursorValue defaults to 0; setBroadcastCursor is a direct set (distinct from advance)', () => {

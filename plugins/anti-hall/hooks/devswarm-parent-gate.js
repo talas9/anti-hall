@@ -261,19 +261,25 @@ function findGitToplevel(startDir) {
 //     IS the "daemon crashed mid-write" anomaly this fix targets, so it comes
 //     back `unknown:true` and main() below folds it into the blocking set,
 //     never silently reading it as a healthy zero.
+// pendingQuestions (§4.4 requirement C): every returned shape below carries
+// `pendingQuestions` (always an array, `[]` default) so main()'s
+// `own.pendingQuestions || []` never needs to special-case a missing field.
+// Only the "entry resolved" success path can ever populate it non-empty — it
+// is read from the SAME summary entry `unread`/`urgencyMax` already come
+// from, defaulting to `[]` if absent or malformed (not an array).
 function readOwnUnread(home, cwd, repoKey) {
   const top = cwd ? findGitToplevel(cwd) : null;
-  if (!top) return { unread: 0, id: null, urgencyMax: null, unknown: false };
+  if (!top) return { unread: 0, id: null, urgencyMax: null, unknown: false, pendingQuestions: [] };
 
   let id = null;
   try { id = installIngest.primaryWorkspaceId(top); } catch (_) { id = null; }
-  if (!id) return { unread: 0, id: null, urgencyMax: null, unknown: false };
+  if (!id) return { unread: 0, id: null, urgencyMax: null, unknown: false, pendingQuestions: [] };
 
   try {
     let legacyHash = null;
     try { legacyHash = installIngest.worktreeHash(top); } catch (_) { legacyHash = null; }
     const hash = repoKey || legacyHash;
-    if (!hash) return { unread: 0, id, urgencyMax: null, unknown: false };
+    if (!hash) return { unread: 0, id, urgencyMax: null, unknown: false, pendingQuestions: [] };
 
     const p = path.join(devswarmRoot(home), 'summaries', String(hash) + '.json');
 
@@ -283,7 +289,7 @@ function readOwnUnread(home, cwd, repoKey) {
     } catch (e) {
       // ENOENT = routine "never derived yet" -> confirmed-empty, not unknown.
       // Anything else (EACCES, EISDIR, ...) means something is actually wrong.
-      return { unread: 0, id, urgencyMax: null, unknown: !!(e && e.code !== 'ENOENT') };
+      return { unread: 0, id, urgencyMax: null, unknown: !!(e && e.code !== 'ENOENT'), pendingQuestions: [] };
     }
 
     const trimmed = String(raw).trim();
@@ -292,24 +298,25 @@ function readOwnUnread(home, cwd, repoKey) {
       // this codebase treats as ambiguous (devswarm-pull.js's own TORN-READ
       // GUARD) — a derive-in-progress write, not a confirmed-empty summary.
       // Fail open TOWARD unknown here, never toward a silent 0.
-      return { unread: 0, id, urgencyMax: null, unknown: true };
+      return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [] };
     }
 
     const summary = JSON.parse(trimmed); // throws on corrupt/truncated JSON -> caught below
     if (!summary || typeof summary !== 'object' || typeof summary.workspaces !== 'object' || !summary.workspaces) {
-      return { unread: 0, id, urgencyMax: null, unknown: true }; // parses, but not the expected shape
+      return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [] }; // parses, but not the expected shape
     }
 
     const entry = summary.workspaces[id];
     const unread = entry && Number.isFinite(entry.unread) && entry.unread > 0 ? entry.unread : 0;
     const urgencyMax = (unread > 0 && entry && entry.urgencyMax) ? entry.urgencyMax : null;
-    return { unread, id, urgencyMax, unknown: false };
+    const pendingQuestions = entry && Array.isArray(entry.pendingQuestions) ? entry.pendingQuestions : [];
+    return { unread, id, urgencyMax, unknown: false, pendingQuestions };
   } catch (_) {
     // Any unanticipated failure past the ENOENT-tolerant read above means a
     // summary WAS reachable enough to attempt reading/parsing and something
     // still went wrong — the C3 anomaly class. Fail toward unknown (surfaced),
     // never toward a silent healthy-looking 0.
-    return { unread: 0, id, urgencyMax: null, unknown: true };
+    return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [] };
   }
 }
 
@@ -351,15 +358,46 @@ function main() {
   // unread too, not just children's).
   const own = readOwnUnread(home, cwd, selfKey);
 
+  // UNANSWERED QUESTIONS (§4.4 requirement C): cross-reference this PROJECT's
+  // OBSERVED replies (companion/lib/devswarm-reply-state.js — pure fs, never
+  // opens the store DB, same Stop-hook budget constraint as everything else
+  // in this file) against own.pendingQuestions. Reuses `selfKey` (already
+  // resolved above for readOwnUnread/the #36 filter) rather than
+  // `payload.session_id`: pendingQuestions is now PERMANENT (devswarm-store.js
+  // computeSummary), so the reply record that clears it must share that same
+  // durable per-project lifetime, not a short-lived Claude session_id — a
+  // fresh session's empty session-keyed reply-state used to resurrect every
+  // already-answered question (Bug 1a). Lazy-required inside this try/catch
+  // (same idiom as repokeyMod/wakeReassertLine above) so a missing or
+  // throwing lib degrades instead of crashing the Stop hook. Fail-open TOWARD
+  // UNANSWERED on any surprise here — matches the lib's own posture, but this
+  // caller must independently never let an unexpected shape (e.g. a
+  // non-array own.pendingQuestions) throw past this point.
+  let unanswered = [];
+  try {
+    const replyStateLib = require('../companion/lib/devswarm-reply-state.js');
+    const replyState = replyStateLib.readReplyState(selfKey, home);
+    unanswered = replyStateLib.unansweredQuestions(own.pendingQuestions || [], replyState);
+  } catch (_) {
+    // The lib itself is fail-open-toward-unanswered; mirror that here too —
+    // an unreadable reply-state module must never silently clear a question.
+    unanswered = Array.isArray(own.pendingQuestions) ? own.pendingQuestions.slice() : [];
+  }
+
   // INERT until descriptors exist (P1-D) OR the Primary itself has unread OR
   // its own summary is unreadable in a genuinely anomalous way (C3 — see
   // readOwnUnread's header: `own.unknown` is only ever true when something
   // WAS derivable and is now broken, never for the routine "never derived
   // yet" ENOENT case, so this override can never make a vanilla/never-touched
-  // DevSwarm Primary noisy).
+  // DevSwarm Primary noisy) OR an unanswered question is pending (requirement
+  // C's "ALWAYS emits a block ... under any circumstance" — a pendingQuestion
+  // is structurally a subset of own.unread in the normal case, so this arm
+  // rarely fires on its own, but it must never be possible for an unanswered
+  // question to be swallowed by inertness before `unanswered` is even
+  // consulted below).
   let descriptors = [];
   try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
-  if (descriptors.length === 0 && own.unread === 0 && !own.unknown) return;
+  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0) return;
 
   // Build the blocking SET: workspaces with unread backlog past their cursor OR a
   // stale/escalated verdict, PLUS the Primary's own unread. All reads are pure fs
@@ -471,8 +509,14 @@ function main() {
 
   const stateFile = stateFileFor(payload.session_id, home);
 
-  // Nothing neglected -> clear any prior loop-state and stay quiet.
-  if (blocking.length === 0) {
+  // Nothing neglected AND no unanswered question -> clear any prior loop-state
+  // and stay quiet. An unanswered question (requirement C) must never be
+  // silenced by this path either — structurally this should already be
+  // covered by `own.unread > 0` above (a pendingQuestion is itself an unread
+  // row), but the `unanswered.length` check here is kept as an explicit
+  // belt-and-suspenders guard so a future/edge-case divergence between the
+  // two counts can never silently drop a real unanswered question.
+  if (blocking.length === 0 && unanswered.length === 0) {
     try { fs.unlinkSync(stateFile); } catch (_) {}
     return;
   }
@@ -488,45 +532,141 @@ function main() {
       .join('\x1f')
   ).digest('hex');
 
-  // Load prior loop-state { sig, blocks }.
+  // Load prior loop-state { sig, blocks, escalated }.
   let lastSig = '';
   let blocks = 0;
+  let escalated = false;
   try {
     const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     if (parsed && typeof parsed === 'object') {
       lastSig = typeof parsed.sig === 'string' ? parsed.sig : '';
       blocks = Number.isFinite(parsed.blocks) ? parsed.blocks : 0;
+      escalated = parsed.escalated === true;
     }
   } catch (_) { /* first time / cleared */ }
 
-  // Per-SET cap: the counter is only meaningful while the set is unchanged.
+  // Per-SET cap: the counter AND the escalated flag are only meaningful while
+  // the set is unchanged — a new blocking-set signature gets a fresh budget
+  // AND a fresh escalation opportunity (mirrors the existing blocks reset).
   const effectiveBlocks = sig === lastSig ? blocks : 0;
+  const effectiveEscalated = sig === lastSig ? escalated : false;
   const cap = resolveCap(process.env);
-  if (effectiveBlocks >= cap) return; // this exact set has been forced-acked enough — go quiet
+
+  // CAP BYPASS (requirement C) + ESCALATION-NOT-SILENCE (requirement D).
+  //   - unanswered.length > 0: the cap NEVER silences this pass — always
+  //     block, unconditionally. The per-signature `blocks` counter still
+  //     advances normally underneath (bookkeeping/telemetry for the OTHER,
+  //     non-question blocking reasons), it just never causes a `return` here
+  //     — and the `escalated` flag is left untouched (carried forward as-is):
+  //     it belongs strictly to the plain-backlog axis below, so however long
+  //     a bypass phase runs, it can never itself trip or clear escalation.
+  //   - unanswered.length === 0 (the only case the cap/escalation still
+  //     governs): whether escalation has ALREADY fired for this exact,
+  //     unchanged signature is tracked EXPLICITLY via the persisted
+  //     `escalated` boolean (P0-C fix) — never re-derived from
+  //     `effectiveBlocks === cap`. That arithmetic equality broke the moment
+  //     a prior unanswered-question bypass phase pushed `blocks` past `cap`
+  //     WITHOUT ever escalating (the bypass branch above always takes the
+  //     `else`, so the exact-cap pass can be skipped over entirely) — the
+  //     next unanswered.length===0 pass would then have effectiveBlocks > cap
+  //     already and silently fall into the old "go quiet" branch, having
+  //     never escalated at all.
+  //       * effectiveEscalated -> already escalated once for this unchanged
+  //         signature -> go quiet exactly as before.
+  //       * !effectiveEscalated && effectiveBlocks >= cap -> the FIRST
+  //         exhaustion pass for this signature — reached either by normal
+  //         per-pass counting (effectiveBlocks === cap, the common case) or
+  //         by a bypass-phase overshoot (effectiveBlocks > cap, the P0-C
+  //         scenario) — emit ONE escalation-worded block, set
+  //         `escalated = true`, and persist.
+  //       * otherwise -> the normal, unexhausted forced-ack block.
+  let nextBlocks;
+  let nextEscalated = effectiveEscalated;
+  let escalateTimes = null;
+  if (unanswered.length === 0) {
+    if (effectiveEscalated) return; // already escalated once — go quiet
+    nextBlocks = effectiveBlocks + 1;
+    if (effectiveBlocks >= cap) {
+      escalateTimes = nextBlocks;
+      nextEscalated = true;
+    }
+  } else {
+    nextBlocks = effectiveBlocks + 1;
+  }
 
   // Persist BEFORE blocking so the cap is honored even if the model re-stops with
   // the same set. Can't persist -> fail-open (skip the block to avoid any loop).
   try {
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ sig, blocks: effectiveBlocks + 1 }), 'utf8');
+    fs.writeFileSync(stateFile, JSON.stringify({ sig, blocks: nextBlocks, escalated: nextEscalated }), 'utf8');
   } catch (_) { return; }
 
   // WAKE RE-VERIFY (v0.59, reused not re-invented — see header): rides along on
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
   const wakeLine = wakeReassertLine(process.env, false);
 
-  const reason = buildReason(blocking, own.id) + wakeLine;
+  const reason = buildReason(blocking, own.id, unanswered, escalateTimes) + wakeLine;
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 
-// buildReason(blocking, ownId) -> string. Names up to 5 neglected workspaces with
-// their unread counts / verdict status, then states the EXACT non-skip clear path
-// for each axis (the child read/ack primitive, plus the distinct Primary-own-
-// inbound read-primary path when ownId is among the blocking set) plus the
-// skip-guard escape. Workspace ids are already path-safe (readDescriptors filters
-// via isSafeId: /^[A-Za-z0-9._-]+$/; ownId comes from primaryWorkspaceId, same
-// charset), so they carry no control chars / injection surface.
-function buildReason(blocking, ownId) {
+// approxAge(ms) -> a short human-readable age string (minutes/hours/days),
+// or 'unknown age' for a non-finite/negative input. Kept deliberately coarse
+// (this is a nudge, not a precise clock) — mirrors the file's other terse,
+// no-frills wording (e.g. buildReason's own unread/status bits).
+function approxAge(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return 'unknown age';
+  const mins = Math.floor(ms / 60000);
+  if (mins < 1) return '<1m ago';
+  if (mins < 60) return mins + 'm ago';
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return hours + 'h ago';
+  return Math.floor(hours / 24) + 'd ago';
+}
+
+// buildUnansweredSegment(unanswered) -> the loudest/first segment of the reason
+// body (§4.4 requirement C+D wording): names each still-unanswered question's
+// asker + approximate age, and states explicitly that READING alone
+// (`inbox read-primary`) does NOT clear it — the Primary must DECIDE from
+// context and REPLY via `send --to <id>`. `q.from`/`q.ts` come from the
+// summary projection's `pendingQuestions` (companion/lib/devswarm-store.js
+// computeSummary) — `from` is now a REGISTRY ROW id (resolveSenderRegistryId
+// normalizes it there), not necessarily the sender's raw meshId, though both
+// work as a `send --to` target (resolveSendTarget); `ts` a numeric epoch-ms;
+// either may be malformed on a fail-open path, so both are defensively
+// coerced rather than trusted.
+function buildUnansweredSegment(unanswered) {
+  const now = Date.now();
+  const items = unanswered.slice(0, 5).map((q) => {
+    const from = q && q.from != null ? String(q.from) : 'unknown sender';
+    const ts = q && Number.isFinite(q.ts) ? q.ts : NaN;
+    return from + ' (' + approxAge(now - ts) + ')';
+  }).join('; ');
+  const more = unanswered.length > 5 ? ' (and ' + (unanswered.length - 5) + ' more)' : '';
+  return (
+    'UNANSWERED QUESTION' + (unanswered.length > 1 ? 'S' : '') + ' — ' + items + more + ': ' +
+    'reading it via `inbox read-primary` is NOT sufficient to clear this. ' +
+    'You must DECIDE from context and REPLY: `send --to <id> --message "..."`. '
+  );
+}
+
+// buildReason(blocking, ownId, unanswered, escalateTimes) -> string. Names up to
+// 5 neglected workspaces with their unread counts / verdict status, then states
+// the EXACT non-skip clear path for each axis (the child read/ack primitive,
+// plus the distinct Primary-own-inbound read-primary path when ownId is among
+// the blocking set) plus the skip-guard escape. Workspace ids are already
+// path-safe (readDescriptors filters via isSafeId: /^[A-Za-z0-9._-]+$/; ownId
+// comes from primaryWorkspaceId, same charset), so they carry no control
+// chars / injection surface.
+//
+// `unanswered` (requirement C) — when non-empty, a loud leading segment is
+// prepended naming each still-unanswered question, BEFORE everything else
+// (loudest/most urgent reason first).
+//
+// `escalateTimes` (requirement D) — when set (only ever alongside an EMPTY
+// `unanswered`, the one axis the cap still governs), this pass is the FIRST
+// cap-exhaustion for this exact signature: replace the normal nag body with a
+// standalone escalation-worded block instead, naming the exhausted count.
+function buildReason(blocking, ownId, unanswered, escalateTimes) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
@@ -536,13 +676,39 @@ function buildReason(blocking, ownId) {
   }).join('; ');
   const more = blocking.length > 5 ? ' (and ' + (blocking.length - 5) + ' more)' : '';
 
+  let body = '';
+  if (Array.isArray(unanswered) && unanswered.length > 0) {
+    body += buildUnansweredSegment(unanswered);
+  }
+
+  if (escalateTimes) {
+    // Standalone escalation wording (requirement D) — deliberately NOT the
+    // normal nag body below: forced-acknowledging the same unresolved
+    // signature `escalateTimes` times with no observed change is itself the
+    // signal, distinct from "here is what to go read/ack".
+    body +=
+      'DEVSWARM ESCALATION: this neglect signature (' + shown + more + ') has been ' +
+      'forced-acknowledged ' + escalateTimes + ' times with no observed resolution — ' +
+      'a human should look. This will not repeat automatically after this message. ' +
+      'Escape hatch: the user may direct a skip via ~/.anti-hall/skip.json ("devswarm-parent-gate").';
+    return body;
+  }
+
   const ownEntry = ownId ? blocking.find((b) => b.id === ownId && (b.unread > 0 || b.unknown)) : null;
   const anyChildUnread = blocking.some((b) => (b.unread > 0 || b.unknown) && b.id !== ownId);
   const anyStale = blocking.some((b) => b.status === 'stale' || b.status === 'escalated');
 
-  let body =
-    'DEVSWARM NEGLECT: ' + blocking.length + ' workspace(s) still need attention ' +
-    'before this Primary turn ends: ' + shown + more + '. ';
+  // Small fix (Round 2 review): only append this paragraph when there is an
+  // actual neglected workspace to name — `blocking` can be EMPTY here while
+  // still reaching this function (the sole blocking reason was an unanswered
+  // question, already handled above via buildUnansweredSegment), and an
+  // unconditional append produced a self-contradicting "0 workspace(s) ... :
+  // ." sentence with nothing after the colon.
+  if (blocking.length > 0) {
+    body +=
+      'DEVSWARM NEGLECT: ' + blocking.length + ' workspace(s) still need attention ' +
+      'before this Primary turn ends: ' + shown + more + '. ';
+  }
   if (ownEntry && ownEntry.unknown) {
     // C3 fix: the own-summary projection could not be conclusively read (e.g.
     // the daemon crashed mid-write) — surfaced as an explicit unknown, never

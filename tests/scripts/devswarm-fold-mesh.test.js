@@ -68,6 +68,15 @@ for (const B of backends) {
       storeLib.appendMeshMessage(s, Object.assign({}, f, { hash: storeLib.meshMessageHash(f) }));
     } finally { s.close(); }
   };
+  // A `--question` direct (needsReply: true) — used to verify foldGroupIntoSurvivor
+  // threads needsReply through the forward, not just the plain-message path above.
+  const seedDirectQuestion = (home, repoKey, toId, body) => {
+    const s = openS(home, repoKey);
+    try {
+      const f = { from: 'sender-x', to: toId, type: 'direct', message: body, timestamp: Date.now(), urgency: 'normal', needsReply: true };
+      storeLib.appendMeshMessage(s, Object.assign({}, f, { hash: storeLib.meshMessageHash(f) }));
+    } finally { s.close(); }
+  };
   const descFile = (home, id, desc) => {
     const p = cli.descriptorPath(home, id);
     fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -160,6 +169,37 @@ for (const B of backends) {
       assert.deepStrictEqual(r2.retired, [], 're-run retires nothing (idempotent)');
       assert.deepStrictEqual(regIds(E.home, E.repoKey), after, 'registry unchanged on re-run');
     } finally { cleanup(E); }
+  });
+
+  // Fix Wave 4: foldGroupIntoSurvivor's fields object dropped needsReply when
+  // forwarding a row into the survivor partition — a genuine `--question`
+  // (needsReply: true) forwarded through a fold silently lost the flag,
+  // vanishing from pendingQuestions and starving the child that asked it.
+  // This is a NARROWER repro than the full seedOldStore fixture above: one
+  // live descriptor-backed survivor + one store-only phantom carrying a
+  // `--question` direct.
+  test(`[${B.name}] a --question (needsReply:true) row survives foldGroupIntoSurvivor with needsReply intact`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('needsreply-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      seedReg(home, repoKey, { id: 'nr-live', worktreePath: topOf(W1), sessionId: 's1' });
+      descFile(home, 'nr-live', { id: 'nr-live', worktreePath: topOf(W1), sessionId: 's1' });
+      seedReg(home, repoKey, { id: 'nr-phantom', worktreePath: topOf(W1), sessionId: null });
+      seedDirectQuestion(home, repoKey, 'nr-phantom', 'which approach?');
+
+      const r = cli.foldMeshDuplicates(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r.ok, true);
+      assert.ok(r.retired.includes('nr-phantom'), 'phantom row tombstoned');
+      assert.ok(r.forwarded >= 1, 'the question direct was forwarded');
+
+      const s = openS(home, repoKey);
+      let survMsgs;
+      try { survMsgs = s.listMessages('nr-live', {}); } finally { s.close(); }
+      const forwarded = survMsgs.find((m) => m.body === 'which approach?');
+      assert.ok(forwarded, 'the question landed in the survivor partition');
+      assert.equal(forwarded.needsReply, true, 'needsReply survives the fold — NOT dropped/defaulted to false');
+    } finally { rm(W1); rm(home); }
   });
 
   test(`[${B.name}] foldMeshDuplicates dryRun classifies without writing`, () => {
