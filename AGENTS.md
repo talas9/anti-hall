@@ -146,6 +146,14 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
     boundary, re-check the work against it; if you have drifted (scope creep, a tangent, an
     unrequested change), course-correct back toward the goal. Only deviate from the locked
     goal when the user explicitly redirects — otherwise the final aim stays on target.
+  - SANDBOXING: for AFK/autonomous sessions running build-heavy command chains, recommend
+    the harness's `/sandbox` mode (macOS Seatbelt / Linux+WSL2 bubblewrap) as a stronger
+    containment layer than after-the-fact process reaping. Caveats: native Windows is
+    UNSUPPORTED (this repo's CI matrix includes a windows leg — a sandboxed session cannot
+    run there); `jest`+`watchman` and `docker` are both incompatible with the sandbox
+    boundary (do not enable it for sessions that need either); spawned subagents INHERIT
+    the parent session's sandbox config and cannot opt out individually. Doc-only guidance
+    for now — no mechanical enforcement.
 
 ## Recommended companion: graphify
 
