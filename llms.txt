@@ -12,8 +12,8 @@
 > orphaned MCP-server processes, and a second opt-in, OPTIONAL companion (dormant unless
 > DevSwarm is in use, feature-gated like the OMC integration) that detects a wedged
 > DevSwarm workspace session and pokes/escalates it (never kills — a separate on-demand
-> CLI is the only path that ever kills). All hooks are pure Node.js (built-ins only) and run on macOS,
-> Linux, and Windows; the one prerequisite is Node >= 22 on PATH.
+> CLI is the only path that ever kills). All hooks are pure Node.js (built-ins only) and run on macOS
+> and Linux; the one prerequisite is Node >= 22 on PATH. Windows is untested and not officially supported.
 
 anti-hall targets four failure modes of coding assistants: eagerness (acting before
 investigating), hallucination (stating unverified facts as truth), fix-before-diagnosis

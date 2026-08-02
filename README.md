@@ -9,7 +9,7 @@
 [![tests](https://github.com/talas9/anti-hall/actions/workflows/test.yml/badge.svg)](https://github.com/talas9/anti-hall/actions/workflows/test.yml) [![version](https://img.shields.io/github/v/tag/talas9/anti-hall?label=version)](https://github.com/talas9/anti-hall/releases) [![license](https://img.shields.io/github/license/talas9/anti-hall)](LICENSE) ![node](https://img.shields.io/badge/node-%E2%89%A522-brightgreen) ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2) ![Codex port](https://img.shields.io/badge/Codex-port-111827)
 
 A Claude Code **marketplace + plugin** plus a separate Codex-native port that installs always-on hooks where each platform supports them, evidence-driven workflow skills, and a live two-line statusline for Claude Code. Pure Node.js, no dependencies, runs on
-**macOS · Linux · Windows**. The only prerequisite is Node ≥ 22 on `PATH`.
+**macOS · Linux**. The only prerequisite is Node ≥ 22 on `PATH`. Windows is untested and not officially supported.
 
 ```bash
 /plugin marketplace add talas9/anti-hall
