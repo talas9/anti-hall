@@ -126,3 +126,50 @@ test('install-codex.js generates the same five Phase-1 DevSwarm hook registratio
     try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
   }
 });
+
+// Drift guard: the reply-tracker hook (added by a later fix wave to close the
+// decide+reply gate's unbounded-Stop-block bug) has TWO Codex wiring surfaces —
+// codex/hooks/hooks.json (the plugin-manifest path) and install-codex.js's
+// ANTI_HALL_HOOKS (the standalone-installer path). Both must register it, or a
+// Codex user installing via install-codex.js gets a gate that can never be
+// answered/cleared.
+test('codex/hooks/hooks.json and install-codex.js both register the PostToolUse reply-tracker hook', () => {
+  const codexCfg = JSON.parse(fs.readFileSync(CODEX_HOOKS_JSON, 'utf8'));
+  const manifestPost = commandsFor(codexCfg, 'PostToolUse');
+  assert.ok(
+    manifestPost.some((c) => /devswarm-parent-reply-tracker\.js/.test(c)),
+    'devswarm-parent-reply-tracker.js not registered on PostToolUse in codex/hooks/hooks.json'
+  );
+
+  const { spawnSync } = require('node:child_process');
+  const os = require('node:os');
+  const installer = path.join(PLUGIN, 'codex', 'install-codex.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-devswarm-codex-install-posttooluse-'));
+  try {
+    const r = spawnSync(process.execPath, [installer], { cwd: tmp, encoding: 'utf8' });
+    assert.strictEqual(r.status, 0, r.stderr || r.stdout);
+    const cfg = JSON.parse(fs.readFileSync(path.join(tmp, '.codex', 'hooks.json'), 'utf8'));
+    const installerPost = commandsFor(cfg, 'PostToolUse');
+    assert.ok(
+      installerPost.some((c) => /devswarm-parent-reply-tracker\.js/.test(c)),
+      'devswarm-parent-reply-tracker.js not registered on PostToolUse by install-codex.js'
+    );
+
+    // Same matcher/timeout as the manifest-path registration, so the two
+    // wiring surfaces stay functionally equivalent.
+    const postGroups = cfg.hooks.PostToolUse || [];
+    const trackerGroup = postGroups.find((g) => (g.hooks || []).some((h) => /devswarm-parent-reply-tracker\.js/.test(h.command || '')));
+    assert.ok(trackerGroup, 'reply-tracker group not found on installer-generated PostToolUse');
+    assert.strictEqual(trackerGroup.matcher, 'Bash');
+    const trackerHook = trackerGroup.hooks.find((h) => /devswarm-parent-reply-tracker\.js/.test(h.command || ''));
+    assert.strictEqual(trackerHook.timeout, 10);
+
+    const manifestGroups = codexCfg.hooks.PostToolUse || [];
+    const manifestTrackerGroup = manifestGroups.find((g) => (g.hooks || []).some((h) => /devswarm-parent-reply-tracker\.js/.test(h.command || '')));
+    assert.strictEqual(manifestTrackerGroup.matcher, trackerGroup.matcher, 'matcher drift between the two Codex wiring surfaces');
+    const manifestTrackerHook = manifestTrackerGroup.hooks.find((h) => /devswarm-parent-reply-tracker\.js/.test(h.command || ''));
+    assert.strictEqual(manifestTrackerHook.timeout, trackerHook.timeout, 'timeout drift between the two Codex wiring surfaces');
+  } finally {
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) {}
+  }
+});

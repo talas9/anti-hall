@@ -26,6 +26,7 @@ const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const replyStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-reply-state.js');
 
 const HOOK = 'devswarm-parent-inbox.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + no source-branch = Primary
@@ -1195,6 +1196,227 @@ test('OWN UNREAD: unresolvable cwd (no git toplevel) -> no own segment, no throw
       { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     assert.strictEqual(ownSegment(ctx(r)), '', `no cwd resolution -> no own segment; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
+});
+
+// ---- §4.5 decide+reply gate: the Primary's own unread pendingQuestions ----
+// buildOwnUnreadSegment previously only ever said "STOP and read ... FIRST".
+// This is the CORE fix for claim 1: this hook fires on EVERY UserPromptSubmit
+// turn (unlike the SessionStart-only devswarm-child-role.js injection), so
+// once the decide+reply wording is wired here it survives context compaction
+// — a Primary mid-session, post-compaction, still sees "DECIDE and REPLY" (not
+// just "read") on its very next turn if a question remains unanswered. These
+// tests invoke the hook FRESH (no prior SessionStart context in scope at all,
+// simulating post-compaction) and assert purely on THIS hook's own output.
+
+test('OWN UNREAD DECIDE+REPLY (§4.5): unanswered pendingQuestion on own entry -> per-turn injection carries decide+reply wording (simulated post-compaction, no prior reply-state)', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 0, unread: 1, directUnread: 1,
+        pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
+      },
+    });
+    // No reply-state file at all — nothing has ever been recorded for this
+    // session, the same shape post-compaction leaves behind (this hook's own
+    // output is asserted independent of any other hook/session state).
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    assert.ok(own, `own segment expected; ctx=${ctx(r)}`);
+    assert.match(own, /DECIDE/, `must instruct DECIDE; own=${own}`);
+    assert.match(own, /send --to/, `must name the send --to reply command; own=${own}`);
+    assert.ok(own.includes('child-a'), `must name the asker's id; own=${own}`);
+    assert.match(own, /NOT SUFFICIENT/i, `must state that reading alone is not sufficient; own=${own}`);
+    // Small fix #2 (Round 2 review): the reply-target label is now `<id>`,
+    // not `<meshId>` — the resolved value is a registry row id, not
+    // necessarily the sender's raw meshId.
+    assert.ok(own.includes('<id>'), `must label the reply target as <id>; own=${own}`);
+    assert.ok(!own.includes('<meshId>'), `must NOT use the misleading <meshId> label; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD DECIDE+REPLY: a recorded reply for the asker clears the decide+reply wording, falls back to plain read wording', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 0, unread: 1, directUnread: 1,
+        pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
+      },
+    });
+    // Reply recorded under REPO_KEY (the durable per-project key the hook now
+    // reads via — see the PER-PROJECT SCOPING fix), AFTER the question's ts,
+    // for the exact asker — genuinely answered. No longer keyed by
+    // session_id ('t').
+    replyStateLib.recordReply(REPO_KEY, h.home, 'child-a', askTs + 1000);
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    // ownUnread (1) is independent of pendingQuestions/reply-state (this hook
+    // has no store access to decrement it on its own), so the own segment
+    // still surfaces — but with the PLAIN read wording, no longer nagging
+    // DECIDE/REPLY once genuinely answered.
+    assert.ok(own, `own segment still present (unread still > 0); ctx=${ctx(r)}`);
+    assert.ok(!/DECIDE/.test(own), `must not nag DECIDE once genuinely answered; own=${own}`);
+    assert.ok(!/NOT SUFFICIENT/i.test(own), `must not claim reading is insufficient once answered; own=${own}`);
+    assert.match(own, /STOP and read your unread parent\/peer message\(s\) FIRST/, `falls back to plain read wording; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+// BUG 1a FIX: reply-state is now keyed by the durable per-project REPO_KEY
+// (resolved from `cwd`), not the short-lived Claude `session_id` — a reply
+// recorded while one session was active must still clear the decide+reply
+// nag when a COMPLETELY DIFFERENT session_id (same project/cwd) checks next.
+test('BUG 1a FIX: a reply recorded under one session_id clears the decide+reply nag for a COMPLETELY DIFFERENT session_id, same project', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 0, unread: 1, directUnread: 1,
+        pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
+      },
+    });
+    const payloadSessionA = { hook_event_name: 'UserPromptSubmit', session_id: 'session-A-original', prompt: 'hi', cwd: REPO_CWD };
+    const payloadSessionB = { hook_event_name: 'UserPromptSubmit', session_id: 'session-B-totally-unrelated', prompt: 'hi', cwd: REPO_CWD };
+
+    const before = testHook(HOOK, payloadSessionA, { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.match(ownSegment(ctx(before)), /DECIDE/, 'must nag DECIDE under session A before any reply is recorded');
+
+    // The reply-tracker hook (§4.3) would record this — keyed by repoKey, not
+    // by whichever session_id happened to be active when the reply was sent.
+    replyStateLib.recordReply(REPO_KEY, h.home, 'child-a', askTs + 1000);
+
+    // A BRAND NEW Claude session (session-B, same project) must see the reply
+    // — not start over with an empty, session-scoped reply-state file and
+    // resurrect the question as unanswered.
+    const after = testHook(HOOK, payloadSessionB, { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const ownAfter = ownSegment(ctx(after));
+    assert.ok(!/DECIDE/.test(ownAfter), `a fresh session_id for the SAME project must see the question as already answered; own=${ownAfter}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD DECIDE+REPLY REGRESSION GUARD: read-and-acked (unread=0) but a pendingQuestion is still unanswered -> decide+reply segment STILL surfaces', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    // unread: 0 (fully drained/acked, cursor caught up to total) — but the
+    // pendingQuestions entry has NO matching reply-state entry, so it is still
+    // genuinely unanswered under the mesh semantics (pendingQuestions no
+    // longer clears on read; only a recorded reply clears it). This is the
+    // exact regression class: a Primary that reads/acks a question but never
+    // replies must still see the decide+reply nag on the next turn.
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 1, unread: 0, directUnread: 0,
+        pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
+      },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    assert.ok(own, `own segment must still surface when unread=0 but a question remains unanswered; ctx=${ctx(r)}`);
+    assert.match(own, /DECIDE/, `must instruct DECIDE even with unread=0; own=${own}`);
+    assert.match(own, /send --to/, `must name the send --to reply command; own=${own}`);
+    assert.ok(own.includes('child-a'), `must name the asker's meshId; own=${own}`);
+    assert.match(own, /NOT SUFFICIENT/i, `must state that reading alone is not sufficient; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD DECIDE+REPLY REGRESSION: plain unread with no pendingQuestions is byte-identical to the pre-§4.5 wording', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, { [OWN_ID]: { total: 4, cursor: 0, unread: 4, directUnread: 4 } });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    const cliPath = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'devswarm.js');
+    const expected =
+      'DEVSWARM OWN INBOX — PRIORITY: you have 4 unread parent/peer '
+      + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
+      + 'parent/peer message(s) FIRST before continuing. Read them the SAFE, '
+      + 'NON-DRAINING way — `node ' + cliPath + ' inbox read-primary ' + OWN_ID + '` (anti-hall '
+      + 'devswarm CLI). Do NOT run `hivecontrol workspace read-messages` or '
+      + '`monitor` — those DESTRUCTIVELY drain the native queue.';
+    assert.strictEqual(own, expected, `no-pendingQuestions wording must be unchanged; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD DECIDE+REPLY: multiple unanswered askers are all named, capped at MAX_LISTED like every other list in this file', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    const pendingQuestions = [];
+    for (let i = 0; i < 8; i++) pendingQuestions.push({ from: 'child-' + i, ts: askTs, seq: i });
+    writeSharedSummary(h.home, {
+      [OWN_ID]: { total: 8, cursor: 0, unread: 8, directUnread: 8, pendingQuestions },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const own = ownSegment(ctx(r));
+    assert.match(own, /DECIDE/, `own=${own}`);
+    for (let i = 0; i < 6; i++) assert.ok(own.includes('child-' + i), `must name child-${i}; own=${own}`);
+    assert.ok(own.includes('+2 more'), `must cap at 6 with a "+N more" suffix; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD DECIDE+REPLY FAIL-OPEN: a corrupt reply-state file does not throw and does not suppress the decide/reply wording', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 0, unread: 1, directUnread: 1,
+        pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
+      },
+    });
+    // Malformed reply-state file for THIS project's repoKey — must fail open
+    // toward "unanswered" (the lib's own contract), never crash the hook,
+    // never be silently read as "already answered".
+    const p = replyStateLib.replyStatePathFor(REPO_KEY, h.home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, '{ not valid json ][');
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0, 'hook must never throw / exit non-zero on a corrupt reply-state file');
+    const own = ownSegment(ctx(r));
+    assert.match(own, /DECIDE/, `corrupt reply-state must fail OPEN toward still showing decide/reply; own=${own}`);
+    assert.match(own, /send --to/, `own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD DECIDE+REPLY FAIL-OPEN: malformed pendingQuestions entries (missing/garbage shape) still surface as unanswered, never throw', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 0, unread: 1, directUnread: 1,
+        // Deliberately malformed entries: a bare string and an object missing
+        // both `from`/`ts` — the shared lib's own contract keeps any entry
+        // that isn't a well-formed {from, ts} object as unanswered.
+        pendingQuestions: ['garbage', { bogus: true }],
+      },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0, 'hook must never throw on a malformed pendingQuestions shape');
+    const own = ownSegment(ctx(r));
+    assert.match(own, /DECIDE/, `malformed pendingQuestions entries must still fail open toward decide/reply; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD DECIDE+REPLY FAIL-OPEN: pendingQuestions not an array at all (top-level malformed) -> defaults to [], no throw, no decide/reply nag', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      [OWN_ID]: { total: 2, cursor: 0, unread: 2, directUnread: 2, pendingQuestions: 'not-an-array' },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0, 'hook must never throw on a non-array pendingQuestions field');
+    const own = ownSegment(ctx(r));
+    assert.ok(own, `own segment still present (plain unread); ctx=${ctx(r)}`);
+    assert.ok(!/DECIDE/.test(own), `no structured question data -> no decide/reply nag; own=${own}`);
   } finally { h.cleanup(); }
 });
 

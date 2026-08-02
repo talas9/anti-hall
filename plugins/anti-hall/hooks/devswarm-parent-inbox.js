@@ -494,26 +494,90 @@ function buildUrgentUnreadSegment(list) {
   );
 }
 
-// buildOwnUnreadSegment(count, id, urgencyMax) -> string. IMPERATIVE PRIORITY
-// wording for the Primary's OWN inbound unread (#34 fix — the Primary previously
-// had no visibility into its own unread parent/peer backlog, only children's).
-// Parity with the child's own imperative nudge (devswarm-child-turn.js
-// buildUnreadSegment:167-176, #29): the Primary must not treat its own unread
-// messages as optional either. v0.57 mesh (D4, Phase 8 step 4): `urgencyMax`
-// (the highest urgency among the Primary's own pending directs, from the
-// summary projection) is HONORED in the wording — urgent/high gets an explicit
-// "URGENT" prefix — but NEVER changes whether this is surfaced; a DIRECT always
-// gates/surfaces regardless of urgency (D4's type-vs-urgency separation —
-// urgency governs tier/loudness only).
-function buildOwnUnreadSegment(count, id, urgencyMax) {
+// buildOwnUnreadSegment(count, id, urgencyMax, unanswered) -> string. IMPERATIVE
+// PRIORITY wording for the Primary's OWN inbound unread (#34 fix — the Primary
+// previously had no visibility into its own unread parent/peer backlog, only
+// children's). Parity with the child's own imperative nudge (devswarm-child-
+// turn.js buildUnreadSegment:167-176, #29): the Primary must not treat its own
+// unread messages as optional either. v0.57 mesh (D4, Phase 8 step 4):
+// `urgencyMax` (the highest urgency among the Primary's own pending directs,
+// from the summary projection) is HONORED in the wording — urgent/high gets an
+// explicit "URGENT" prefix — but NEVER changes whether this is surfaced; a
+// DIRECT always gates/surfaces regardless of urgency (D4's type-vs-urgency
+// separation — urgency governs tier/loudness only).
+//
+// `unanswered` (decide+reply gate, §4.5): the subset of this same summary
+// entry's pendingQuestions (companion/lib/devswarm-store.js's computeSummary)
+// that unansweredQuestions() (companion/lib/devswarm-reply-state.js, §4.3)
+// judged still unanswered for THIS session. This is the CORE fix for claim 1 —
+// this hook fires on EVERY UserPromptSubmit turn (unlike the SessionStart-only
+// devswarm-child-role.js injection), so once wired here the decide+reply
+// instruction survives context compaction. Strictly additive when count > 0:
+// when `unanswered` is empty (plain unread, no flagged question, or the
+// question(s) were already replied to), the base paragraph below is UNCHANGED
+// from before this fix — only a non-empty `unanswered` appends the extra
+// DECIDE+REPLY paragraph, naming each asker's id (capped at MAX_LISTED,
+// same convention as buildUnreadSegment/buildArchiveSegment above). `q.from`
+// is now a REGISTRY ROW id (resolveSenderRegistryId in devswarm-store.js
+// normalizes it), not necessarily the sender's raw meshId, though both work
+// as a `send --to` target (resolveSendTarget) — the wording below says
+// `<id>`, not `<meshId>`, to avoid implying it must be a meshId specifically.
+//
+// count === 0 branch (regression fix): under the mesh semantics
+// (companion/lib/devswarm-store.js's computeSummary) pendingQuestions is no
+// longer cursor/unread-scoped — reading/acking a message no longer clears it,
+// only a matching reply-state entry does (companion/lib/devswarm-reply-
+// state.js's unansweredQuestions). That makes "fully read, unread === 0, but
+// a question is still unanswered" a REAL and REACHABLE state, so the call
+// site below now invokes this function whenever EITHER count > 0 OR
+// unanswered is non-empty — this branch supplies wording for the
+// unread-already-drained-to-0 case, since the normal "STOP and read your
+// unread message(s)" phrasing would be nonsensical with nothing unread.
+function buildOwnUnreadSegment(count, id, urgencyMax, unanswered) {
+  const unansweredList = Array.isArray(unanswered) ? unanswered : [];
   const prefix = isHighUrgency(urgencyMax) ? 'DEVSWARM OWN INBOX — URGENT PRIORITY: ' : 'DEVSWARM OWN INBOX — PRIORITY: ';
+
+  if (count > 0) {
+    let body = (
+      prefix + 'you have ' + count + ' unread parent/peer '
+      + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
+      + 'parent/peer message(s) FIRST before continuing. Read them the SAFE, '
+      + 'NON-DRAINING way — `node ' + CLI + ' inbox read-primary ' + id + '` (anti-hall '
+      + 'devswarm CLI). Do NOT run `hivecontrol workspace read-messages` or '
+      + '`monitor` — those DESTRUCTIVELY drain the native queue.'
+    );
+    if (unansweredList.length > 0) {
+      const askers = unansweredList.slice(0, MAX_LISTED).map(
+        (q) => (q && q.from != null) ? String(q.from) : '?'
+      );
+      const extra = unansweredList.length > MAX_LISTED
+        ? ' +' + (unansweredList.length - MAX_LISTED) + ' more' : '';
+      body += (
+        ' READING IS NOT SUFFICIENT: ' + unansweredList.length + ' of these is an unanswered '
+        + 'QUESTION from ' + askers.join(', ') + extra + ' — you must DECIDE from context and '
+        + 'REPLY, not merely read, via `node ' + CLI + ' send --to <id> --message "..."` '
+        + '(use the asker\'s id above as <id>).'
+      );
+    }
+    return body;
+  }
+
+  // count === 0 but unansweredList.length > 0 (the only other case the call
+  // site now invokes this function for): a fully read/acked backlog that
+  // still holds a genuinely unanswered question. There is nothing left to
+  // "read", so this wording skips the read-primary instruction entirely and
+  // goes straight to the decide+reply nag.
+  const askers = unansweredList.slice(0, MAX_LISTED).map(
+    (q) => (q && q.from != null) ? String(q.from) : '?'
+  );
+  const extra = unansweredList.length > MAX_LISTED
+    ? ' +' + (unansweredList.length - MAX_LISTED) + ' more' : '';
   return (
-    prefix + 'you have ' + count + ' unread parent/peer '
-    + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
-    + 'parent/peer message(s) FIRST before continuing. Read them the SAFE, '
-    + 'NON-DRAINING way — `node ' + CLI + ' inbox read-primary ' + id + '` (anti-hall '
-    + 'devswarm CLI). Do NOT run `hivecontrol workspace read-messages` or '
-    + '`monitor` — those DESTRUCTIVELY drain the native queue.'
+    prefix + 'you have already read your parent/peer messages, but '
+    + unansweredList.length + ' remain UNANSWERED — from ' + askers.join(', ') + extra
+    + '. READING IS NOT SUFFICIENT: you must DECIDE from context and REPLY, not merely '
+    + 'read/ack, via `node ' + CLI + ' send --to <id> --message "..."` (use the '
+    + 'asker\'s id above as <id>).'
   );
 }
 
@@ -837,6 +901,10 @@ function main() {
   // Fail-open: any failure -> 0.
   let ownUnread = 0;
   let ownUrgencyMax = null;
+  // ownPendingQuestions (§4.5): the same summary entry's pendingQuestions[]
+  // (companion/lib/devswarm-store.js's computeSummary — always present, `[]`
+  // when none). Default `[]` on absence/malformed shape.
+  let ownPendingQuestions = [];
   try {
     if (primaryId) {
       const ownEntry = summaryEntry(summary, primaryId);
@@ -844,8 +912,37 @@ function main() {
         ownUnread = ownEntry.unread;
         ownUrgencyMax = ownEntry.urgencyMax || null;
       }
+      if (ownEntry && Array.isArray(ownEntry.pendingQuestions)) {
+        ownPendingQuestions = ownEntry.pendingQuestions;
+      }
     }
-  } catch (_) { ownUnread = 0; ownUrgencyMax = null; }
+  } catch (_) { ownUnread = 0; ownUrgencyMax = null; ownPendingQuestions = []; }
+
+  // ownUnanswered (§4.5, CORE fix for claim 1): cross-reference
+  // ownPendingQuestions against this PROJECT's recorded reply-state
+  // (companion/lib/devswarm-reply-state.js, §4.3) via the shared
+  // unansweredQuestions() helper, so buildOwnUnreadSegment below can tell
+  // "read" apart from "decided and replied". Reuses `repoKey` (already
+  // resolved above for the shared summary read) rather than
+  // `payload.session_id`: pendingQuestions is now PERMANENT (devswarm-store.js
+  // computeSummary), so the reply record that clears it must share that same
+  // durable per-project lifetime, not a short-lived Claude session_id — a
+  // fresh session's empty session-keyed reply-state used to resurrect every
+  // already-answered question (Bug 1a). This hook fires on EVERY
+  // UserPromptSubmit turn (unlike the SessionStart-only devswarm-child-role.js
+  // injection), so once wired the decide+reply instruction survives context
+  // compaction. Fail-open TOWARD unanswered on ANY error here — never let a
+  // read failure be silently read as "all answered" (the unsafe direction for
+  // this feature); a require()/read failure falls back to treating every
+  // pendingQuestions entry as still-unanswered.
+  let ownUnanswered = [];
+  try {
+    const replyStateMod = require('../companion/lib/devswarm-reply-state.js');
+    const replyState = replyStateMod.readReplyState(repoKey, home);
+    ownUnanswered = replyStateMod.unansweredQuestions(ownPendingQuestions, replyState);
+  } catch (_) {
+    ownUnanswered = ownPendingQuestions.slice();
+  }
 
   // Daemon-LIVENESS staleness banner (fail-open). Gated on `rows.length>0` (an
   // active workspace exists, i.e. a daemon is EXPECTED to be running) OR
@@ -954,9 +1051,14 @@ function main() {
   }
 
   // The Primary's OWN unread is its own top-priority item — surfaced ahead of
-  // the children's unread/idle summary.
-  if (ownUnread > 0 && primaryId) {
-    segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax));
+  // the children's unread/idle summary. Gated on EITHER ownUnread > 0 OR
+  // ownUnanswered.length > 0 (not ownUnread alone — regression fix): under the
+  // mesh semantics pendingQuestions no longer clears on read/ack, so a fully
+  // read-and-acked backlog (ownUnread === 0) can still hold a genuinely
+  // unanswered question, and that state must keep surfacing every turn just
+  // as much as a plain unread backlog does.
+  if ((ownUnread > 0 || ownUnanswered.length > 0) && primaryId) {
+    segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax, ownUnanswered));
   }
 
   // v0.57 mesh (D4, Phase 8 step 2): tier the child-unread attention list by

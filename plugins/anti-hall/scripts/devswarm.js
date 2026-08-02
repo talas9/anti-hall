@@ -684,7 +684,7 @@ function rehomeAcrossStores(home, id, fromKey, toKey, ctx) {
       toStore.appendMeshRow({
         workspaceId: id, ts: m.ts, hash: m.hash, body: m.body,
         sender: m.sender, recipient: m.recipient, mtype: m.mtype,
-        urgency: m.urgency, isHeartbeat: m.isHeartbeat,
+        urgency: m.urgency, isHeartbeat: m.isHeartbeat, needsReply: m.needsReply,
       });
     }
 
@@ -1131,6 +1131,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
         const fields = {
           from: m.sender, to: survivorId, type: 'direct',
           message: m.body, timestamp: m.ts, urgency: m.urgency || 'normal',
+          needsReply: m.needsReply,
         };
         const hash = store.meshMessageHash(fields);
         const r = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
@@ -3326,6 +3327,13 @@ function cmdSend(flags, ctx) {
   }
   const type = broadcastFlag ? 'broadcast' : 'direct';
 
+  // --question (D-devswarm-parent-decide-gate §4.1): marks this send as a
+  // blocking question needing a reply (needs_reply); never valid on a broadcast.
+  const questionFlag = hasFlag(flags, 'question');
+  if (questionFlag && type === 'broadcast') {
+    return { ok: false, error: 'send --question is only valid for a direct message (--to/--to-primary), not --broadcast' };
+  }
+
   const message = one(flags, 'message');
   if (!message) return { ok: false, error: 'send requires --message TEXT' };
 
@@ -3428,6 +3436,7 @@ function cmdSend(flags, ctx) {
       const fields = {
         from, to: type === 'direct' ? targetPartition : null,
         type, message: String(message), timestamp: now, urgency,
+        needsReply: questionFlag,
       };
       const hash = store.meshMessageHash(fields);
       const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
@@ -3437,6 +3446,8 @@ function cmdSend(flags, ctx) {
         to: type === 'direct' ? (toPrimaryFlag ? primaryMeshId : toFlag) : null, type, urgency,
         sent: !!res.inserted, seq: res.seq,
         rehomedFromHashBucket: rehomedSend || undefined,
+        needsReply: questionFlag,
+        toId: type === 'direct' ? targetPartition : null,
       };
     };
     if (type === 'direct') {

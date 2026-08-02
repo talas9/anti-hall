@@ -121,6 +121,14 @@
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/devswarm-child-gate.js\"", "timeout": 30 }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/devswarm-parent-reply-tracker.js\"", "timeout": 10 }
+        ]
+      }
     ]
   }
 }

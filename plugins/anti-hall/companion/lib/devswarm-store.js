@@ -211,6 +211,7 @@ function ensureMessagesMeshColumns(db) {
   const need = [
     ['sender', 'TEXT'], ['recipient', 'TEXT'], ['mtype', 'TEXT'],
     ['urgency', 'TEXT'], ['is_heartbeat', 'INTEGER'], ['seq', 'INTEGER'],
+    ['needs_reply', 'INTEGER'],
   ];
   for (const [name, type] of need) {
     if (!cols.includes(name)) {
@@ -238,10 +239,36 @@ function ensureRegistryWriteSeqColumn(db) {
 
 // meshMessageHash(fields) -> 'mesh:<sha256>'. The DISJOINT dedupe namespace for
 // STORE-DIRECT mesh sends (D7) — over sender+recipient+mtype+urgency+message+
-// timestamp, so two DISTINCT broadcasts never collapse under UNIQUE(hash)/journal
-// dedupe. The 'mesh:' prefix keeps this namespace structurally disjoint from the
-// EXISTING native 'native:' messageHash (devswarm-ingest.js) — no cross-path
-// collision is even possible, by construction.
+// timestamp+needsReply, so two DISTINCT broadcasts never collapse under
+// UNIQUE(hash)/journal dedupe. The 'mesh:' prefix keeps this namespace
+// structurally disjoint from the EXISTING native 'native:' messageHash
+// (devswarm-ingest.js) — no cross-path collision is even possible, by
+// construction.
+//
+// needsReply (EASY-WIN fix, Round 3 review): ADDITIVE — appended after the
+// pre-existing field list rather than interleaved, so this only changes what
+// NEW hashes look like; it is write-time-only dedupe (INSERT OR IGNORE keyed
+// on `hash`), never recomputed against/compared to an existing row's stored
+// hash, so no data migration is needed. Without this, two messages identical
+// in every OTHER hashed field but differing ONLY in `needsReply` (e.g. a
+// plain message and a `--question` message with byte-identical body text at
+// the exact same millisecond) would collide and dedupe, silently dropping
+// the flagged question (`sent:false`) so it is never recorded as pending.
+//
+// CONDITIONAL append (Fix Wave 4): the needsReply slot is only appended when
+// genuinely truthy (a `--question` message), rather than unconditionally as
+// an always-present (possibly empty) slot. `foldGroupIntoSurvivor`'s
+// idempotence depends on recomputing the SAME hash for the SAME logical
+// fields across repeated fold runs (so INSERT OR IGNORE correctly no-ops on
+// a re-run); an unconditional slot changes the hash for the overwhelmingly
+// common PLAIN-message case (needsReply false/absent) relative to the format
+// used before this needsReply hashing was introduced, defeating that
+// idempotence across an anti-hall upgrade straddling two fold runs. Keeping
+// the plain-message hash BYTE-IDENTICAL to the pre-needsReply format
+// preserves cross-upgrade idempotence for that overwhelmingly common case; a
+// genuine `--question` row's hash still changes relative to the pre-this-
+// effort format, which is an acceptable, self-limiting, one-time cost right
+// at the upgrade boundary (see foldGroupIntoSurvivor's doc comment).
 function meshMessageHash(fields) {
   const f = fields || {};
   const parts = [
@@ -251,11 +278,12 @@ function meshMessageHash(fields) {
     f.urgency != null ? String(f.urgency) : '',
     f.message != null ? String(f.message) : '',
     f.timestamp != null ? String(f.timestamp) : '',
-  ].join(' ');
-  return 'mesh:' + crypto.createHash('sha256').update(parts).digest('hex');
+  ];
+  if (f.needsReply) parts.push(String(f.needsReply));
+  return 'mesh:' + crypto.createHash('sha256').update(parts.join(' ')).digest('hex');
 }
 
-// appendMeshMessage(store, {from,to,type,message,timestamp,urgency,hash,isHeartbeat})
+// appendMeshMessage(store, {from,to,type,message,timestamp,urgency,hash,isHeartbeat,needsReply})
 // -> {inserted, seq}. The WIRE-CONTRACT-to-physical-row mapping (D3): a DIRECT row's
 // workspace_id is the CALLER-SUPPLIED `to` (the target's real read partition per D19
 // — the caller resolves meshId -> builder-id partition BEFORE calling this; this
@@ -278,11 +306,12 @@ function appendMeshMessage(store, fields) {
   const urgency = f.urgency != null ? String(f.urgency) : 'normal';
   const hash = f.hash != null ? String(f.hash) : null;
   const isHeartbeat = !!f.isHeartbeat;
+  const needsReply = !!f.needsReply;
   const workspaceId = type === 'direct' ? to : BROADCAST_PARTITION_ID;
   const recipient = type === 'direct' ? to : null;
   return store.appendMeshRow({
     workspaceId, ts, hash, body: message,
-    sender: from, recipient, mtype: type, urgency, isHeartbeat,
+    sender: from, recipient, mtype: type, urgency, isHeartbeat, needsReply,
   });
 }
 
@@ -367,6 +396,7 @@ function openSqlite(home, workspaceId, opts) {
     + ' mtype TEXT,'
     + ' urgency TEXT,'
     + ' is_heartbeat INTEGER,'
+    + ' needs_reply INTEGER,'
     + ' seq INTEGER,'
     + ' UNIQUE(hash)'
     + ');'
@@ -464,13 +494,14 @@ function openSqlite(home, workspaceId, opts) {
       const mtype = m && m.mtype != null ? String(m.mtype) : null;
       const urgency = m && m.urgency != null ? String(m.urgency) : null;
       const isHeartbeat = m && m.isHeartbeat ? 1 : 0;
+      const needsReply = m && m.needsReply ? 1 : 0;
       const stmt = db.prepare(
         'INSERT ' + (hash !== null ? 'OR IGNORE ' : '')
-        + 'INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, seq)'
-        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));'
+        + 'INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, seq)'
+        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));'
       );
       const r = retrySqliteBusy(() =>
-        stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat)
+        stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat, needsReply)
       );
       if (r.changes <= 0) return { inserted: false, seq: null }; // dedupe hit (OR IGNORE)
       const got = db.prepare('SELECT seq FROM messages WHERE id = ?;').get(Number(r.lastInsertRowid));
@@ -666,7 +697,7 @@ function openSqlite(home, workspaceId, opts) {
       const o = opts || {};
       const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
       const rows = db.prepare(
-        'SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, seq'
+        'SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, seq'
         + ' FROM messages WHERE workspace_id = ? ORDER BY id ASC;'
       ).all(String(id));
       const out = [];
@@ -682,6 +713,7 @@ function openSqlite(home, workspaceId, opts) {
           mtype: rows[i].mtype != null ? String(rows[i].mtype) : null,
           urgency: rows[i].urgency != null ? String(rows[i].urgency) : null,
           isHeartbeat: rows[i].is_heartbeat === 1 || rows[i].is_heartbeat === 1n,
+          needsReply: rows[i].needs_reply === 1 || rows[i].needs_reply === 1n,
           storeSeq: rows[i].seq != null ? Number(rows[i].seq) : null,
         });
       }
@@ -979,6 +1011,7 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
           mtype: m && m.mtype != null ? String(m.mtype) : null,
           urgency: m && m.urgency != null ? String(m.urgency) : null,
           isHeartbeat: !!(m && m.isHeartbeat),
+          needsReply: !!(m && m.needsReply),
           seq,
         });
         return { inserted: true, seq };
@@ -1183,6 +1216,7 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
           mtype: kept[i].mtype != null ? String(kept[i].mtype) : null,
           urgency: kept[i].urgency != null ? String(kept[i].urgency) : null,
           isHeartbeat: !!kept[i].isHeartbeat,
+          needsReply: !!kept[i].needsReply,
           storeSeq: Number.isFinite(kept[i].seq) ? Number(kept[i].seq) : null,
         });
       }
@@ -1264,6 +1298,82 @@ function maxUrgencyOf(rows) {
     if (rank > bestRank) { bestRank = rank; best = u; }
   }
   return best;
+}
+
+// SYNTHETIC_SESSION_PREFIX / isLiveSessionIdForResolve — mirrors scripts/
+// devswarm.js's SYNTHETIC_SESSION_PREFIX/isLiveSessionId byte-for-byte, kept as a
+// LOCAL copy (not a require) because scripts/devswarm.js itself requires THIS
+// module (`const store = require('../companion/lib/devswarm-store.js')`), so the
+// reverse require would be circular. A registry row auto-ensured by inbox pull
+// (never a real live session) carries a sessionId prefixed this way; excluding it
+// from "live" matches resolveMeshTarget's own freshest-live tie-break below.
+const SYNTHETIC_SESSION_PREFIX = 'unclaimed:';
+function isLiveSessionIdForResolve(sessionId) {
+  if (sessionId == null) return false;
+  const s = String(sessionId);
+  if (s === '') return false;
+  return !s.startsWith(SYNTHETIC_SESSION_PREFIX);
+}
+
+// resolveSenderRegistryId(store, registry, meshId) -> registry row id | null.
+// Bug 2 / P0-B identity normalization (PLAN fix-wave): a question row's `sender`
+// is the SENDER's worktree-derived meshId (callerIdentity() in scripts/
+// devswarm.js), but a reply's echoed `toId` (cmdSend) is the REGISTRY ROW id
+// produced by resolveSendTarget/resolveMeshTarget — NOT necessarily the same
+// value. These two id-spaces diverge whenever a workspace is registered under a
+// DEVSWARM_BUILDER_ID different from its own derived meshId — a REAL, already-
+// documented case (every real child; see scripts/devswarm.js's
+// cmdInboxMessages "v0.57 mesh (P0 fix)" commentary around its `caller !== id`
+// check). This mirrors scripts/devswarm.js's resolveMeshTarget matching/tie-
+// break logic (kept as a local copy for the same circular-require reason as
+// isLiveSessionIdForResolve above): among registry rows whose worktreePath
+// derives to `meshId`, prefer the freshest LIVE row (greatest updatedAt, then a
+// higher cursor value as a same-ms tiebreak), falling back to the first match
+// (e.g. an auto-ensured phantom) when none is live. Returns null (never throws)
+// when nothing matches or no meshId is derivable — the CALLER decides how to
+// treat null (see computeSummary's pendingQuestions build below: a
+// STRUCTURALLY unresolvable sender is now DROPPED, not kept under its raw
+// value — the permanent-deadlock fix, Round 2 review).
+//
+// cursorValueSafe(id) -> a finite cursor value, or -1 (unreadable/absent).
+// Mirrors scripts/devswarm.js's own meshCursorValue helper EXACTLY (same
+// coercion, same -1 sentinel) — the tie-break below compares its output
+// UNCONDITIONALLY (never gated on Number.isFinite of BOTH sides first, a
+// divergence from resolveMeshTarget a prior fix-wave introduced here: gating
+// on both-finite let a corrupt/unreadable ONE side's cursor silently veto an
+// otherwise-decisive comparison against a perfectly finite other side).
+function cursorValueSafe(store, id) {
+  try {
+    const v = store.cursorValue(id);
+    return Number.isFinite(v) ? v : -1;
+  } catch (_) { return -1; }
+}
+function resolveSenderRegistryId(store, registry, meshId) {
+  if (!meshId) return null;
+  if (!ingestIdentity || typeof ingestIdentity.primaryWorkspaceId !== 'function') return null;
+  let firstMatch = null;
+  let bestLive = null;
+  for (const d of registry) {
+    if (!d || !d.worktreePath) continue;
+    let derived = null;
+    try { derived = ingestIdentity.primaryWorkspaceId(d.worktreePath); } catch (_) { derived = null; }
+    if (derived == null || String(derived) !== String(meshId)) continue;
+    if (firstMatch === null) firstMatch = d;
+    if (!isLiveSessionIdForResolve(d.sessionId)) continue;
+    if (bestLive === null) { bestLive = d; continue; }
+    const a = Number.isFinite(d.updatedAt) ? d.updatedAt : -1;
+    const b = Number.isFinite(bestLive.updatedAt) ? bestLive.updatedAt : -1;
+    if (a > b) { bestLive = d; continue; }
+    if (a === b) {
+      // Same-ms tiebreak (scripts/devswarm.js's resolveMeshTarget, mirrored
+      // exactly via cursorValueSafe above): a strictly greater cursor wins,
+      // unconditionally — never gated on both sides being finite first (fix,
+      // Round 2 review small item #3).
+      if (cursorValueSafe(store, d.id) > cursorValueSafe(store, bestLive.id)) bestLive = d;
+    }
+  }
+  const row = bestLive || firstMatch;
+  return row ? row.id : null;
 }
 
 // deriveSummary(store, opts) -> summary object (also written to this project's
@@ -1360,6 +1470,63 @@ function computeSummary(store, opts) {
       (r) => r && r.mtype === 'direct' && typeof r.body === 'string' && r.body.indexOf(ARCHIVE_REQUEST_MARKER) !== -1
     );
 
+    // pendingQuestions (Bug 1 / P0-A fix — structural, needs_reply-flagged):
+    // computed from ALL of this workspace's messages ever marked needs_reply,
+    // NOT scoped by the read cursor like unreadRows above. "Unread" and
+    // "unanswered" are independent axes: `inbox read-primary` (the FIRST, still-
+    // required step so the Primary even learns what a question asks — see
+    // devswarm-parent-gate.js/devswarm-parent-inbox.js) advances the cursor via
+    // setCursor + deriveSummary, which used to shrink unreadRows past the
+    // question row and silently clear pendingQuestions on a bare READ, with
+    // ZERO reply ever sent — the exact bug this whole feature exists to fix.
+    // A question leaves this list ONLY by (a) falling out of the full message
+    // history (never happens — append-only) or (b) its sender resolving to no
+    // live registry row at all — a STRUCTURALLY unresolvable identity that can
+    // never be replied to, dropped below to avoid a permanent deadlock (see
+    // the resolveSenderRegistryId call's own comment). Otherwise "answered" is
+    // decided downstream, NOT here (devswarm-reply-state.js's
+    // unansweredQuestions cross-references this list against
+    // replyState[q.from].lastReplyTs). urgencyMax/archive_requested (above)
+    // correctly stay cursor/unread-scoped — those ARE genuinely about unread
+    // state, unlike pendingQuestions.
+    const allRows = typeof store.listMessages === 'function' ? store.listMessages(d.id) : [];
+    const pendingQuestions = allRows
+      .filter((r) => r && r.mtype === 'direct' && r.needsReply)
+      .map((r) => {
+        // Bug 2 / P0-B identity normalization: resolve the sender's worktree-
+        // derived meshId to the SAME registry-row-id space a reply's echoed
+        // `toId` (cmdSend/resolveSendTarget) already uses, so
+        // unansweredQuestions' q.from <-> replyState[meshId] comparison lines
+        // up even when the sender is registered under a DEVSWARM_BUILDER_ID
+        // different from its own derived meshId.
+        //
+        // PERMANENT-DEADLOCK FIX (Round 2 review, supersedes the prior
+        // fix-wave's "fail toward keeping the original unresolved value"):
+        // resolveSenderRegistryId returning null here means the sender does
+        // NOT match ANY live registry row — not a transient resolution
+        // hiccup, a STRUCTURAL fact (the child was archived/deregistered, or
+        // its worktree path no longer resolves). A question from a sender
+        // that can never be resolved to a live, addressable recipient can
+        // never be replied to by construction (`send --to` fails closed on
+        // an unregistered recipient — devswarm.js's `unregistered-recipient`
+        // error — so the reply-tracker can never record anything for it
+        // either), which means pendingQuestions is now PERMANENT
+        // (see this function's own header above) — keeping such a row in the
+        // blocking set is therefore not "fail open toward safety", it is an
+        // UNCONDITIONAL, PERMANENT deadlock with no code path that can ever
+        // clear it. The prior "keep the raw sender" instruction was right for
+        // a temporary resolution hiccup (a live sender not yet found because
+        // of some other transient state) but wrong for a structurally
+        // unresolvable one; distinguishing the two isn't possible here (null
+        // means "no live registry row matched", full stop), so this row is
+        // DROPPED from the projection entirely rather than kept under a
+        // dead-end identity. `null` marks a row to drop; filtered out below.
+        const resolvedFrom = resolveSenderRegistryId(store, registry, r.sender);
+        if (resolvedFrom == null) return null;
+        return { from: resolvedFrom, ts: r.ts, seq: r.storeSeq };
+      })
+      .filter((q) => q !== null);
+
     const bcCursor = typeof store.broadcastCursorValue === 'function' ? store.broadcastCursorValue(d.id) : 0;
     const unreadBroadcastRows = broadcastNonHeartbeat.filter(
       (r) => Number.isFinite(r.storeSeq) && r.storeSeq > bcCursor
@@ -1390,6 +1557,7 @@ function computeSummary(store, opts) {
       gates,
       archive_ready,
       archive_requested,
+      pendingQuestions,
     };
   }
 

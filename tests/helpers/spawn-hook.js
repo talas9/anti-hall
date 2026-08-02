@@ -187,4 +187,26 @@ function editPayload(tool, { filePath, agentId, cwd } = {}) {
   };
 }
 
-module.exports = { testHook, testHookRaw, bashPayload, editPayload, HOOKS_DIR };
+// Build a PostToolUse Bash payload. Field names (hook_event_name, tool_name,
+// tool_input, tool_response, tool_use_id) are confirmed against the shipped
+// Claude Code agent runtime's own hook-dispatch source (see
+// devswarm-parent-reply-tracker.js's header comment for the verification
+// trail) — this plugin's first PostToolUse hook/test. `toolResponse` defaults
+// to the real Bash tool's own outputSchema shape `{ stdout, stderr }` (stdout
+// carries the command's actual stdout text); pass opts.toolResponse to
+// override with a different shape (e.g. a bare string) for shape-defensive
+// tests.
+function postToolUseBashPayload(command, { stdout, stderr, toolResponse, sessionId, agentId } = {}) {
+  return {
+    hook_event_name: 'PostToolUse',
+    tool_name: 'Bash',
+    tool_input: { command },
+    tool_response: toolResponse !== undefined ? toolResponse : { stdout: stdout || '', stderr: stderr || '' },
+    tool_use_id: 'tu-1',
+    session_id: sessionId || 't',
+    cwd: process.cwd(),
+    ...(agentId ? { agent_id: agentId } : {}),
+  };
+}
+
+module.exports = { testHook, testHookRaw, bashPayload, editPayload, postToolUseBashPayload, HOOKS_DIR };

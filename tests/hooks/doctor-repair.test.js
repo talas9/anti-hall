@@ -1050,3 +1050,106 @@ test('install-divergence: a REAL marketplace clone with divergent watcher conten
     assert.match(divergence.msg, /version bump is required/);
   } finally { rm(home); rm(repo); rm(mpBase); }
 });
+
+// ---------------------------------------------------------------------------
+// Codex "is it wired" upgrade regression — a prior version of scanCodex()
+// (and doctor.js's read-only mirror) used a COARSE "does the
+// '/plugins/anti-hall/hooks/' fragment appear ANYWHERE in hooks.json" test.
+// That made an EXISTING Codex install with only the OLDER event set (missing
+// a newly-added event, e.g. the PostToolUse reply-tracker hook) still match
+// on its older events and get reported "already wired" — so `doctor --fix`
+// never re-ran the installer to add the new event, leaving the user
+// permanently under-wired across upgrades. scanCodex() now requires EVERY
+// event key in install-codex.js's ANTI_HALL_HOOKS to have a matching
+// anti-hall-owned group actually present, so a missing event is caught.
+// ---------------------------------------------------------------------------
+const CODEX_INSTALLER_JS = path.join(REPO_ROOT, 'plugins', 'anti-hall', 'codex', 'install-codex.js');
+
+// buildCodexHooksFixture(dir, {dropEvents}) — writes a .codex/config.toml +
+// hooks.json into `dir` by actually running the REAL installer (so every
+// anti-hall-owned group is byte-identical to what a real install produces),
+// then optionally deletes given event keys entirely to simulate an OLDER
+// install that pre-dates those events.
+function buildCodexHooksFixture(dir, { dropEvents = [] } = {}) {
+  const r = cp.spawnSync(process.execPath, [CODEX_INSTALLER_JS], { cwd: dir, encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, 'fixture installer run failed: ' + (r.stderr || r.stdout));
+  const hooksPath = path.join(dir, '.codex', 'hooks.json');
+  if (dropEvents.length) {
+    const cfg = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    for (const ev of dropEvents) delete cfg.hooks[ev];
+    fs.writeFileSync(hooksPath, JSON.stringify(cfg, null, 2) + '\n');
+  }
+  return hooksPath;
+}
+
+test('scanCodex: fresh install with the FULL current event set -> wired true (no regression on the fully-wired case)', () => {
+  const cwd = mkTmp('codex-scan-fresh');
+  const home = mkTmp('codex-scan-fresh-home');
+  try {
+    buildCodexHooksFixture(cwd, {});
+    const scan = repair.scanCodex(cwd, home);
+    const project = scan.find((s) => s.label === 'project');
+    assert.ok(project, 'expected a project-scope scan result:\n' + JSON.stringify(scan));
+    assert.strictEqual(project.wired, true, 'a freshly installed hooks.json (every current event) must report wired:true');
+  } finally { rm(cwd); rm(home); }
+});
+
+test('scanCodex: OLDER install missing the newly-added PostToolUse event -> wired false (upgrade must be detected, not silently "already wired")', () => {
+  const cwd = mkTmp('codex-scan-stale');
+  const home = mkTmp('codex-scan-stale-home');
+  try {
+    // Simulate a pre-upgrade install: SessionStart/UserPromptSubmit/PreToolUse/
+    // Stop are registered (the OLD event set) but PostToolUse — added later for
+    // devswarm-parent-reply-tracker.js — never got wired because it didn't
+    // exist yet at install time.
+    buildCodexHooksFixture(cwd, { dropEvents: ['PostToolUse'] });
+    const scan = repair.scanCodex(cwd, home);
+    const project = scan.find((s) => s.label === 'project');
+    assert.ok(project);
+    assert.strictEqual(project.wired, false, 'missing the PostToolUse event must report wired:false, not true (this was the bug — a coarse substring test matched on the surviving older events)');
+  } finally { rm(cwd); rm(home); }
+});
+
+test('doctor --fix: fresh/fully-wired Codex install -> reports "already wired", does NOT spuriously re-run the installer', () => {
+  const home = mkTmp('codex-fix-fresh-home');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-repair-codex-fix-fresh-cwd-'));
+  try {
+    seedUserSettings(home, { command: 'custom-noop' }); // custom SL so the unrelated statusline repair never fails this test
+    buildCodexHooksFixture(cwd, {});
+    const before = fs.readFileSync(path.join(cwd, '.codex', 'hooks.json'), 'utf8');
+    const r = runDoctor({ cwd, args: ['--fix'], env: { HOME: home, USERPROFILE: home } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /anti-hall codex hooks already wired \(project\)/, r.out);
+    const after = fs.readFileSync(path.join(cwd, '.codex', 'hooks.json'), 'utf8');
+    assert.strictEqual(after, before, 'a fully-wired install must not be rewritten by --fix');
+  } finally { rm(home); rm(cwd); }
+});
+
+test('doctor --fix: EXISTING Codex install upgraded past a new hook event -> re-runs the installer and adds the missing PostToolUse hook (regression for the unbounded-Stop-block bug)', () => {
+  const home = mkTmp('codex-fix-upgrade-home');
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-repair-codex-fix-upgrade-cwd-'));
+  try {
+    seedUserSettings(home, { command: 'custom-noop' }); // custom SL so the unrelated statusline repair never fails this test
+    buildCodexHooksFixture(cwd, { dropEvents: ['PostToolUse'] });
+    const hooksPath = path.join(cwd, '.codex', 'hooks.json');
+    const beforeCfg = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    assert.strictEqual(beforeCfg.hooks.PostToolUse, undefined, 'fixture setup sanity: PostToolUse must be absent before repair');
+
+    const r = runDoctor({ cwd, args: ['--fix'], env: { HOME: home, USERPROFILE: home } });
+    assert.strictEqual(r.code, 0, r.out);
+    // Must NOT claim "already wired" for a scope that was missing an event —
+    // it must report the installer actually ran and re-wired it.
+    assert.doesNotMatch(r.out, /anti-hall codex hooks already wired \(project\)/, r.out);
+    assert.match(r.out, /wired anti-hall codex hooks \(project\)/, r.out);
+
+    const afterCfg = JSON.parse(fs.readFileSync(hooksPath, 'utf8'));
+    const postCommands = (afterCfg.hooks.PostToolUse || []).flatMap((g) => (g.hooks || []).map((h) => h.command));
+    assert.ok(postCommands.some((c) => /devswarm-parent-reply-tracker\.js/.test(c)), 'the missing PostToolUse reply-tracker hook must be added by the repair-triggered re-install:\n' + JSON.stringify(afterCfg.hooks, null, 2));
+
+    // The pre-existing (older) events must survive the re-install untouched in
+    // shape (mergeHooks() is additive per-event — re-running the installer on
+    // an existing install must not clobber events it already knew about).
+    const preCommands = (afterCfg.hooks.PreToolUse || []).flatMap((g) => (g.hooks || []).map((h) => h.command));
+    assert.ok(preCommands.some((c) => /git-guard\.js/.test(c)), 'pre-existing PreToolUse hooks must survive the repair-triggered re-install');
+  } finally { rm(home); rm(cwd); }
+});

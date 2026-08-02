@@ -394,6 +394,70 @@ test('send --to-primary resolves a Primary registered (via the REAL register-pri
   } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); if (alias) rm(alias); }
 });
 
+// ---- send --question (needs_reply, D-devswarm-parent-decide-gate §4.1) ----
+
+test('send --to <recipient> --question succeeds with needsReply:true and toId matching the resolved recipient id', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('question-to');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'peer-question', worktreePath: path.join(repo, 'nope'), sessionId: 's' });
+    const r = cli.run(['send', '--to', 'peer-question', '--question', '--message', 'need a decision'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.equal(r.result.needsReply, true);
+    assert.equal(r.result.toId, 'peer-question');
+    assert.equal(r.result.to, 'peer-question');
+    assert.equal(r.result.type, 'direct');
+  } finally { rm(home); rm(repo); }
+});
+
+test('send --to-primary --question succeeds with needsReply:true and toId present', () => {
+  const home = tmpHome();
+  const mainRepo = makeGitRepo('question-to-primary-main');
+  let childWt = null;
+  try {
+    childWt = addLinkedWorktree(mainRepo, 'question-to-primary-child');
+    const repoKey = repokey.repoKeyForWorktree(mainRepo);
+    const mainWorktree = inst.resolveMainWorktree(mainRepo);
+    const primaryId = inst.primaryWorkspaceId(mainWorktree);
+    seedRegistry(home, repoKey, { id: primaryId, worktreePath: mainWorktree, sessionId: 's' });
+
+    const r = cli.run(['send', '--to-primary', '--question', '--message', 'need a decision'], ctx(home, { cwd: childWt }));
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.equal(r.result.needsReply, true);
+    assert.equal(r.result.toId, primaryId);
+    assert.equal(r.result.to, primaryId);
+  } finally { rm(home); rm(mainRepo); if (childWt) rm(childWt); }
+});
+
+test('send --broadcast --question is rejected (a broadcast cannot be a blocking question)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('question-broadcast');
+  try {
+    const r = cli.run(['send', '--broadcast', '--question', '--message', 'hi'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.error, 'send --question is only valid for a direct message (--to/--to-primary), not --broadcast');
+  } finally { rm(home); rm(repo); }
+});
+
+test('send --to <recipient> without --question still succeeds with needsReply:false (back-compat, response shape otherwise unchanged)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('question-backcompat');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'peer-backcompat', worktreePath: path.join(repo, 'nope'), sessionId: 's' });
+    const r = cli.run(['send', '--to', 'peer-backcompat', '--message', 'status'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.equal(r.result.needsReply, false);
+    assert.equal(r.result.toId, 'peer-backcompat');
+    assert.equal(r.result.to, 'peer-backcompat');
+    assert.equal(r.result.type, 'direct');
+    assert.equal(r.result.sent, true);
+    assert.equal(r.result.urgency, 'normal');
+    assert.equal(r.result.rehomedFromHashBucket, undefined);
+  } finally { rm(home); rm(repo); }
+});
+
 test('send requires --message', () => {
   const home = tmpHome();
   const repo = makeGitRepo('nomessage');

@@ -41,7 +41,7 @@ function walk(dir, base) {
 // the deterministic fixture below (home path normalized to <HOME>). Captured from
 // the code as it stood BEFORE the computeSummary extraction; the refactor must
 // reproduce it byte-for-byte. Both backends produced the identical string.
-const GOLDEN = '{"generatedAt":1234567890,"requiredGates":["done","merged","tests_passed"],"workspaces":{"a":{"id":"a","worktreePath":"<HOME>/wt-a","sessionId":"sess-a","inboxPath":"/inbox/a","cursorPath":"/cursor/a","nudgeCommand":null,"total":1,"cursor":0,"unread":1,"directUnread":1,"broadcastUnread":0,"urgencyMax":"normal","broadcastUrgencyMax":null,"working_on":null,"gates":{},"archive_ready":false,"archive_requested":false}},"recent":[]}';
+const GOLDEN = '{"generatedAt":1234567890,"requiredGates":["done","merged","tests_passed"],"workspaces":{"a":{"id":"a","worktreePath":"<HOME>/wt-a","sessionId":"sess-a","inboxPath":"/inbox/a","cursorPath":"/cursor/a","nudgeCommand":null,"total":1,"cursor":0,"unread":1,"directUnread":1,"broadcastUnread":0,"urgencyMax":"normal","broadcastUrgencyMax":null,"working_on":null,"gates":{},"archive_ready":false,"archive_requested":false,"pendingQuestions":[]}},"recent":[]}';
 
 // normalizeHomeForGolden(raw, home) -> `raw` with every occurrence of `home`
 // collapsed to `<HOME>`, comparable cross-platform against the forward-slash
