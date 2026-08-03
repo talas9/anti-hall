@@ -21,6 +21,15 @@ function makeFakeHome() {
   return { home, cleanup: () => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} } };
 }
 
+// timeout: generous on purpose. spawnSync's timeout kills the child (SIGTERM) and
+// yields status=null on expiry — that is a legitimately-slow subprocess under
+// contention, NOT a wrong exit code, and asserting strictEqual(r.code, 0) against a
+// null gives a misleading "0 !== null" failure that looks like a real doctor bug
+// (see fe0d901's fix to doctor-logs.test.js for the proven root cause: 3 concurrent
+// `node --test` full-suite runs pushed this same subprocess past a 15000ms cap).
+// 60000ms keeps a real hang/crash catchable while giving generous headroom for CI
+// parallelism, without loosening the exit-code assertion itself — a genuine
+// non-zero exit from a subprocess that actually ran is still caught.
 function runDoctor({ cwd, env }) {
   // --check is doctor's PURE read-only path (v0.55.0): full detection, mutates
   // NOTHING. These env-detection assertions predate repair mode and assert the
@@ -29,7 +38,7 @@ function runDoctor({ cwd, env }) {
   const res = cp.spawnSync(process.execPath, [DOCTOR_JS, '--check'], {
     cwd,
     encoding: 'utf8',
-    timeout: 15000,
+    timeout: 60000,
     env: Object.assign({}, process.env, {
       // Fully isolate from whatever machine/session this test itself runs
       // under (this repo's own dev loop is frequently DevSwarm/OMC-active).
@@ -37,7 +46,11 @@ function runDoctor({ cwd, env }) {
       DISABLE_ANTIHALL_DEVSWARM: undefined, ANTIHALL_DEVSWARM_SUPERVISOR: undefined,
     }, env || {}),
   });
-  return { code: res.status, out: (res.stdout || '') + (res.stderr || '') };
+  return {
+    code: res.status,
+    out: (res.stdout || '') + (res.stderr || '')
+      + (res.signal ? `\n[runDoctor: process terminated by signal ${res.signal}]` : ''),
+  };
 }
 
 test('doctor: OMC + DevSwarm absent -> exits 0, no crash, prints "not detected" INFOs, no false FAIL', () => {

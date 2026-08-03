@@ -50,15 +50,31 @@ function isolatedEnv(home, extra) {
 }
 
 // runWrapper: call the wrapper script inside a fake HOME.
+//
+// timeout: generous on purpose. spawnSync's timeout kills the child (SIGTERM) and
+// yields status=null on expiry — that is a legitimately-slow subprocess under
+// contention, NOT a wrong exit code (see fe0d901's fix to doctor-logs.test.js for
+// the proven root cause: concurrent `node --test` full-suite runs push a spawned
+// child past a tight timeout cap with no bug, no hang, no shared state). A
+// SIGTERM'd wrapper here yields empty stdout -> json:null, which callers already
+// assert against (`assert.ok(r && r.active === ...)` fails on a null r) — no
+// separate signal-tolerance is needed since no test asserts on `status` here
+// (only on the parsed `json`); the tolerant path is exercised through
+// json === null instead. 60000ms keeps a real hang/crash catchable while giving
+// generous headroom for CI parallelism, without weakening any assertion.
 function runWrapper(home, extraEnv) {
   const res = spawnSync(process.execPath, [WRAPPER_SCRIPT], {
     encoding: 'utf8',
     env: isolatedEnv(home, extraEnv),
-    timeout: 10000,
+    timeout: 60000,
   });
   let json = null;
   try { json = JSON.parse(res.stdout); } catch (_) {}
-  return { status: res.status, stdout: res.stdout || '', json };
+  return {
+    status: res.status,
+    stdout: (res.stdout || '') + (res.signal ? `\n[runWrapper: process terminated by signal ${res.signal}]` : ''),
+    json,
+  };
 }
 
 // writeCacheFile: create the OMC usage cache at the expected path under fakeHome.

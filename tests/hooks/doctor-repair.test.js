@@ -50,15 +50,28 @@ function seedUserSettings(home, statusLine) {
   fs.writeFileSync(path.join(dir, 'settings.json'), JSON.stringify(body));
   return path.join(dir, 'settings.json');
 }
+// timeout: generous on purpose. spawnSync's timeout kills the child (SIGTERM) and
+// yields status=null on expiry — that is a legitimately-slow subprocess under
+// contention, NOT a wrong exit code, and asserting strictEqual(r.code, 0) against a
+// null gives a misleading "0 !== null" failure that looks like a real doctor bug
+// (see fe0d901's fix to doctor-logs.test.js for the proven root cause: 3 concurrent
+// `node --test` full-suite runs pushed this same subprocess past its previous cap).
+// 60000ms keeps a real hang/crash catchable while giving generous headroom for CI
+// parallelism, without loosening the exit-code assertion itself — a genuine
+// non-zero exit from a subprocess that actually ran is still caught.
 function runDoctor({ cwd, env, args }) {
   const res = cp.spawnSync(process.execPath, [DOCTOR_JS].concat(args || []), {
-    cwd, encoding: 'utf8', timeout: 20000,
+    cwd, encoding: 'utf8', timeout: 60000,
     env: Object.assign({}, process.env, {
       HOME: undefined, USERPROFILE: undefined, DEVSWARM_REPO_ID: undefined,
       DISABLE_ANTIHALL_DEVSWARM: undefined, ANTIHALL_DEVSWARM_SUPERVISOR: undefined,
     }, env || {}),
   });
-  return { code: res.status, out: (res.stdout || '') + (res.stderr || '') };
+  return {
+    code: res.status,
+    out: (res.stdout || '') + (res.stderr || '')
+      + (res.signal ? `\n[runDoctor: process terminated by signal ${res.signal}]` : ''),
+  };
 }
 function ingestUnitPath(home, platform) {
   if (platform === 'darwin') return path.join(home, 'Library', 'LaunchAgents', ingest.LABEL + '.plist');
