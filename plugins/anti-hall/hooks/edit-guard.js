@@ -7,7 +7,7 @@
 //   instead. Silent pass-through in subagent context. Mirrors command-guard.js, but
 //   for the Edit-family tools instead of Bash.
 //
-//   TWO EXEMPTIONS keep it from firing on legitimate orchestrator work:
+//   THREE EXEMPTIONS keep it from firing on legitimate orchestrator work:
 //     1) PLAN MODE (payload.permission_mode === 'plan') — a read-only planning
 //        session drafting docs/scratch/plan artifacts. NARROWED: source files are
 //        STILL blocked in plan mode (see isPlanMode / isLikelySource / main()),
@@ -16,6 +16,15 @@
 //     2) ORCHESTRATOR-ARTIFACT ALLOWLIST — plan/state/handover/memory files the
 //        coordinator owns directly (see DEFAULT_ALLOW / isAllowed). Applies in any
 //        mode.
+//     3) HANDOVER / COMPACT-PREP DOC EXCLUSION — a broader, name-pattern-based
+//        match (HANDOVER*/*-handover*/*handoff* variants, *compact*handover*/
+//        *compact*handoff*/*compact*prep*) for the coordinator's own
+//        session-handover synthesis, hard-gated to '.md' basenames only so it
+//        can never become a route to write code (see isHandoverDoc / main()).
+//        Deliberately does NOT re-match "continue-here" — that already has its
+//        own dedicated root-anchored allowlist entries (exemption 2) with their
+//        own lookalike/nesting tests; CONTINUE-HERE*/.continue-here* variants
+//        stay covered by exemption 2, unchanged.
 //
 // COORDINATOR vs SUBAGENT DETECTION
 //   Shared with command-guard.js — see hooks/coordinator-detect.js for the full
@@ -232,7 +241,8 @@ function allowlistIsHonest(filePath, cwd) {
     } else {
       chain.push(abs);
     }
-    for (const p of chain) {
+    for (let i = 0; i < chain.length; i++) {
+      const p = chain[i];
       let st;
       try {
         st = fs.lstatSync(p);
@@ -241,6 +251,18 @@ function allowlistIsHonest(filePath, cwd) {
         return false; // unexpected fs error -> fail CLOSED
       }
       if (st.isSymbolicLink()) return false;
+      // HARDLINK (final path component only): a regular file with nlink > 1 has
+      // another name pointing at the SAME inode elsewhere on disk. Writing
+      // through this path clobbers whatever that other name is — structurally
+      // the same arbitrary-overwrite bypass as the symlink case above, just
+      // without a symlink for lstat to flag (found in the bypass-safety review
+      // of the handover-doc exclusion below, which widens the name space
+      // reachable through this check far past the original narrow allowlist).
+      // Checked ONLY on the final component and ONLY for regular files:
+      // intermediate directories legitimately have nlink > 1 (POSIX counts '.'
+      // plus one per subdirectory), so checking them would false-positive on
+      // every ordinary directory in the chain.
+      if (i === chain.length - 1 && st.isFile() && st.nlink > 1) return false;
     }
 
     // Cross-check: the real file must live in the real directory it claims to.
@@ -267,6 +289,66 @@ function isLikelySource(filePath) {
   if (!filePath) return false;
   const norm = String(filePath).replace(/\\/g, '/');
   return SOURCE_DIRS.test(norm) || SOURCE_EXT.test(norm);
+}
+
+// COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION
+// A handover/compact-prep doc is the coordinator SYNTHESIZING its OWN session
+// state ahead of compaction — no subagent has seen this conversation, so
+// "delegate the handover" is nonsensical (identical rationale to the existing
+// CONTINUE-HERE.md / *.continue-here.md allowlist entries above, which this
+// exclusion intentionally does NOT duplicate — those already have dedicated
+// root-anchored handling with their own lookalike/nesting regression tests;
+// re-matching "continue-here" loosely here would relax that anchoring). This
+// widens the SAME idea to the common handover/handoff/compact-prep naming
+// variants the exact-name allowlist entries miss (e.g.
+// 'HANDOVER-2026-08-03.md', 'x-handoff.md', 'session-compact-handover.md').
+//
+// BYPASS-SAFETY (the entire point of this exclusion, read before touching it):
+//   1) Matched by BASENAME ONLY, never a path substring — a file living under
+//      a directory that happens to contain "handover" in its name (e.g.
+//      'src/handover-notes/evil.js') is judged on its own filename, not the
+//      path it sits in.
+//   2) HARD-GATED on a literal '.md' extension. This is the anti-bypass
+//      constraint: 'handover.js' / 'handoff.py' / any non-markdown file NEVER
+//      qualifies, no matter how its basename reads, so this exclusion can
+//      never be used to write code or config.
+//   3) Still subject to the SAME symlink/hardlink-honesty check as the
+//      allowlist (allowlistIsHonest, called at the use site below) — a
+//      'HANDOVER.md' that is actually a symlink OR a hardlink to a real
+//      source file is judged dishonest and falls through to the normal block,
+//      exactly like an allowlist entry would.
+//   4) CWD-CONTAINED (isWithinCwd, called at the use site below). Unlike
+//      isAllowed's bare-filename patterns (which are root-anchored — no '/' in
+//      the cwd-relative path), this exclusion matches by basename at ANY
+//      depth, so without an explicit containment check a coordinator could
+//      write 'HANDOVER.md' to an arbitrary location OUTSIDE the project
+//      entirely (e.g. '../../other-project/HANDOVER.md', or an absolute path
+//      under the user's home directory) — a real containment escape even
+//      though the written content stays markdown. isWithinCwd rejects any
+//      path that resolves outside `cwd` (found in the bypass-safety review of
+//      this exclusion; see git history for the exact review that flagged it).
+const HANDOVER_DOC_RE = /(handover|handoff|compact.*(?:handover|handoff|prep))/i;
+function isHandoverDoc(filePath) {
+  if (!filePath) return false;
+  const base = basename(filePath);
+  if (!/\.md$/i.test(base)) return false; // constraint (2): markdown docs ONLY
+  return HANDOVER_DOC_RE.test(base);
+}
+
+// isWithinCwd(filePath, cwd) -> true when filePath resolves to somewhere UNDER
+// cwd (no '../' escape, not an absolute path outside cwd). See constraint (4)
+// above for why this exists. Mirrors the `inside` check already used inside
+// allowlistIsHonest, kept as a small standalone predicate so it can be
+// evaluated independently of the symlink walk.
+function isWithinCwd(filePath, cwd) {
+  try {
+    const base = cwd ? String(cwd) : process.cwd();
+    const abs = path.resolve(base, String(filePath));
+    const rel = path.relative(base, abs);
+    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  } catch (_) {
+    return false; // fail CLOSED
+  }
 }
 
 // isPlanMode(payload) — true when the session is in Claude Code PLAN MODE.
@@ -317,6 +399,19 @@ function main() {
   // An allowlist match is honored ONLY when the path is honest (not a symlink /
   // reparse point, and not reached through one) — see allowlistIsHonest().
   if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+
+  // COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION — see isHandoverDoc()
+  // above for the exclusion's rationale and its four anti-bypass constraints
+  // (basename-only match, .md-only gate, symlink/hardlink honesty, cwd
+  // containment). Applies in ANY coordinator context (DevSwarm or not), same
+  // as the allowlist line above and for the same reason. Runs AFTER the
+  // allowlist check; requires BOTH isWithinCwd (blocks writing the doc outside
+  // the project entirely) AND allowlistIsHonest (blocks a symlinked/hardlinked
+  // lookalike), so neither an escape nor a lookalike can slip a real write
+  // through under a handover-shaped name.
+  if (isHandoverDoc(filePath) && isWithinCwd(filePath, cwd) && allowlistIsHonest(filePath, cwd)) {
+    process.exit(0);
+  }
 
   // PLAN MODE (NARROWED): a plan-mode session is doing read-only planning, so
   // drafting a doc/scratch/plan artifact is legitimate orchestrator work and the

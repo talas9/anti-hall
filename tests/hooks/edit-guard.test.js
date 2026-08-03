@@ -561,6 +561,142 @@ test('NON-DEVSWARM: block reason is the pre-fix baseline plus the skip-hint (no 
     'non-DevSwarm output must not carry the Primary workspace-tier redirect');
 });
 
+// ---------------------------------------------------------------------------
+// COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION (isHandoverDoc). A handover
+// is the coordinator synthesizing ITS OWN session state for compaction —
+// delegating that to a subagent that never saw the conversation is nonsensical,
+// so the Primary (and any coordinator) may Write/Edit these directly. The
+// exclusion is basename-matched and HARD-GATED to '.md' — this is the
+// anti-bypass property under test below.
+
+const HANDOVER_DOC_ALLOWED = [
+  'HANDOVER-2026-08-03.md',
+  'CONTINUE-HERE.md',
+  'x-handoff.md',
+  'session-compact-handover.md',
+  '.continue-here.md',
+  'team-handover.md',
+];
+for (const p of HANDOVER_DOC_ALLOWED) {
+  test(`HANDOVER DOC: DevSwarm Primary Write on ${p} -> ALLOWED`, () => {
+    const r = runCoord(editPayload('Write', { filePath: p }), PRIMARY_ENV);
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  });
+}
+
+// ANTI-BYPASS (mandatory): the same basenames with a non-.md extension must
+// STILL be blocked — the .md gate is the entire safety property of this
+// exclusion, and it must never be usable to write code.
+const HANDOVER_NONMD_BLOCKED = [
+  'handover.js',
+  'handoff.py',
+  'HANDOVER-2026-08-03.js',
+  'session-compact-handover.sh',
+];
+for (const p of HANDOVER_NONMD_BLOCKED) {
+  test(`HANDOVER DOC ANTI-BYPASS: DevSwarm Primary Write on ${p} -> STILL BLOCKED`, () => {
+    const r = runCoord(editPayload('Write', { filePath: p }), PRIMARY_ENV);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  });
+}
+
+// A normal source file must remain blocked regardless of this exclusion.
+test('HANDOVER DOC: DevSwarm Primary Write on foo.js -> STILL BLOCKED', () => {
+  const r = runCoord(editPayload('Write', { filePath: 'foo.js' }), PRIMARY_ENV);
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+});
+
+// A non-Primary / non-DevSwarm normal coordinator session is unaffected by the
+// DevSwarm-Primary framing — the exclusion applies to ANY coordinator, so a
+// plain coordinator writing a handover doc is also allowed, and a plain
+// coordinator writing ordinary source is unaffected (still blocked).
+test('HANDOVER DOC: plain (non-DevSwarm) coordinator Write on HANDOVER.md -> ALLOWED', () => {
+  const r = runCoord(editPayload('Write', { filePath: 'HANDOVER.md' }));
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+
+test('HANDOVER DOC: plain (non-DevSwarm) coordinator Write on src/app.js -> UNCHANGED (still blocked)', () => {
+  const r = runCoord(editPayload('Write', { filePath: 'src/app.js' }));
+  assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+  assert.strictEqual(r.json.reason, PLAIN_REASON('Write'));
+});
+
+// SYMLINK HONESTY holds for the handover exclusion too: a '.md'-named, handover-
+// shaped symlink pointing at a real source file must NOT slip through.
+test('HANDOVER DOC symlink: a handover-shaped .md symlink -> a source file -> BLOCKED', { skip: NO_SYMLINKS }, () => {
+  const p = makeProject();
+  try {
+    const target = path.join(p.dir, 'command-guard.js');
+    fs.writeFileSync(target, 'ORIGINAL\n', 'utf8');
+    fs.symlinkSync(target, path.join(p.dir, 'HANDOVER.md'));
+    const r = runIn(p, 'Write', 'HANDOVER.md');
+    assert.strictEqual(r.status, 2, `symlinked handover doc must NOT be allowed; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  } finally {
+    p.cleanup();
+  }
+});
+
+// HARDLINK BYPASS (found in Opus bypass-safety review): a regular file with
+// nlink > 1 has another name pointing at the SAME inode — writing through the
+// handover-shaped name clobbers whatever the other name is, the same
+// arbitrary-overwrite shape as the symlink case, just without a symlink for
+// lstat to flag. allowlistIsHonest now rejects nlink > 1 on the FINAL path
+// component (regular files only).
+test('HANDOVER DOC hardlink: a handover-shaped .md HARDLINK -> a source file -> BLOCKED', { skip: NO_SYMLINKS }, () => {
+  const p = makeProject();
+  try {
+    const target = path.join(p.dir, 'victim.js');
+    fs.writeFileSync(target, 'ORIGINAL\n', 'utf8');
+    fs.linkSync(target, path.join(p.dir, 'HANDOVER.md')); // hardlink, not symlink
+    const r = runIn(p, 'Write', 'HANDOVER.md');
+    assert.strictEqual(r.status, 2, `hardlinked handover doc must NOT be allowed; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+  } finally {
+    p.cleanup();
+  }
+});
+
+// SYMLINK BYPASS regression: allowlistIsHonest's new hardlink check must not
+// break the pre-existing symlink coverage for allowlist entries.
+test('SYMLINK BYPASS REGRESSION: hardlink check does not affect existing allowlist symlink coverage', () => {
+  const p = makeProject();
+  try {
+    fs.writeFileSync(path.join(p.dir, 'CONTINUE-HERE.md'), '# handover\n', 'utf8');
+    const r = runIn(p, 'Edit', 'CONTINUE-HERE.md');
+    assert.strictEqual(r.status, 0, `a real single-link file must stay allowed; stdout: ${r.stdout}`);
+  } finally {
+    p.cleanup();
+  }
+});
+
+// CWD-CONTAINMENT ESCAPE (found in Opus bypass-safety review): isHandoverDoc
+// matches by basename at ANY depth, so without an explicit containment check a
+// coordinator could write a handover-shaped .md OUTSIDE the project entirely.
+// isWithinCwd must reject that even though the target is legitimately markdown
+// and even though the path, taken alone, would match HANDOVER_DOC_RE.
+test('HANDOVER DOC escape: writing OUTSIDE cwd via ../ traversal -> BLOCKED', () => {
+  const p = makeProject(); // acts as session cwd
+  const outside = makeProject(); // a sibling directory OUTSIDE p.dir
+  try {
+    const escapePath = path.join(outside.dir, 'HANDOVER.md');
+    const h = makeHome();
+    try {
+      const r = testHook(HOOK, editPayload('Write', { filePath: escapePath, cwd: p.dir }),
+        { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 2, `writing a handover doc OUTSIDE cwd must be blocked; stdout: ${r.stdout}`);
+      assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+    } finally {
+      h.cleanup();
+    }
+  } finally {
+    p.cleanup();
+    outside.cleanup();
+  }
+});
+
 test('SKIP HINT: block message names the documented override in all three branches', () => {
   // Plain (non-DevSwarm) coordinator.
   let r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }));
