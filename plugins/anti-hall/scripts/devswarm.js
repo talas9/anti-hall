@@ -2989,6 +2989,46 @@ function cmdNudge(id, flags, ctx) {
   return { ok: true, action: 'nudge', id, result: res };
 }
 
+// archivedTombstoneIsOrphaned(home, archivedStat) -> bool
+//   true  == archived/<id>.json is a leftover from a PRIOR archive generation and
+//            is safe to unlink+relink (NO live descriptor shares its inode).
+//   false == its inode is shared with a LIVE descriptor under workspaces/ -> NEVER
+//            unlink it (that would destroy a genuine active descriptor).
+//
+// WHY AN INODE TEST AND NOT "the registry has no live row for this id": that
+// predicate is self-defeating here. cmdArchive only reaches the conflicting-link
+// branch when the id's ACTIVE descriptor exists, i.e. the id IS live at that
+// moment — a "no live row for this id" test can therefore never fire, and the
+// stale tombstone would stay wedged forever. The question that actually matters is
+// not "is this id live" but "is this FILE still somebody's active descriptor", and
+// only (dev, ino) answers that: archived/<id>.json is created exclusively as a
+// hardlink of a workspaces/<id>.json, so if no live descriptor shares its inode it
+// can only be a dangling remnant of an archive generation that has already ended.
+// Do not re-propose the registry-row predicate.
+//
+// FAIL CLOSED — the single most important property here. An unreadable/absent
+// workspaces dir, or ANY lstat that leaves the scan incomplete, returns FALSE
+// ("not orphaned"), so the caller keeps failing and nothing is unlinked. "I could
+// not see any live descriptor" must NEVER be read as "nothing is live, safe to
+// delete". A vanished entry (ENOENT between readdir and lstat) counts as an
+// incomplete scan too: it may be a descriptor a concurrent archive just unlinked,
+// in which case this archived path could be the last remaining link to it.
+function archivedTombstoneIsOrphaned(home, archivedStat) {
+  if (!archivedStat) return false;
+  const dir = workspacesDir(home);
+  let names;
+  try { names = fs.readdirSync(dir); }
+  catch (_) { return false; } // FAIL CLOSED
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    let st;
+    try { st = fs.lstatSync(path.join(dir, n)); }
+    catch (_) { return false; } // FAIL CLOSED — incomplete scan
+    if (st.dev === archivedStat.dev && st.ino === archivedStat.ino) return false;
+  }
+  return true;
+}
+
 // cmdArchive(id, ctx, opts) — archive a workspace descriptor + tombstone its
 // registry row. The WHOLE descriptor+registry mutation runs under the per-id lock
 // (P1-4) so a concurrent register/reap for the same id can never interleave.
@@ -3102,10 +3142,44 @@ function cmdArchive(id, ctx, opts) {
       catch (e) {
         if (!e || e.code !== 'EEXIST') throw e;
       }
-      const activeStat = fs.lstatSync(activePath);
-      const archivedStat = fs.lstatSync(archivedPath);
+      let activeStat = fs.lstatSync(activePath);
+      let archivedStat = fs.lstatSync(archivedPath);
       if (activeStat.dev !== archivedStat.dev || activeStat.ino !== archivedStat.ino) {
-        throw new Error('archived descriptor already exists and is not the active descriptor');
+        // SELF-HEAL a genuinely ORPHANED tombstone. The EEXIST swallowed above can
+        // be a leftover archived/<id>.json from a PRIOR archive generation of this
+        // same id (re-registered, then archived again) — with the old link still in
+        // place the inode check fails and re-archiving the id is wedged FOREVER.
+        // Unlink+relink is allowed ONLY when no live descriptor shares that inode
+        // (see archivedTombstoneIsOrphaned, which fails CLOSED); otherwise the file
+        // is a hardlink of somebody's genuine ACTIVE descriptor and we keep failing
+        // — the never-clobber contract. activePath is never touched on any path.
+        if (!archivedTombstoneIsOrphaned(home, archivedStat)) {
+          throw new Error('archived descriptor already exists and is not the active descriptor');
+        }
+        // Replace the orphaned tombstone via link-to-temp + atomic rename, NOT
+        // unlink-then-link. unlink-then-link is two independent syscalls with no
+        // rollback between them: if linkSync throws (ENOSPC, EPERM) or the process
+        // dies in the gap, archivedPath is left MISSING and the tombstone's bytes
+        // are gone with nothing to replace them. A same-directory fs.renameSync is
+        // atomic on POSIX and REPLACES an existing destination in one step, so
+        // archivedPath is never observably missing at any instant. Do not
+        // "simplify" this back to unlink+link.
+        const healTmp = archivedPath + '.tmp-heal';
+        try { fs.unlinkSync(healTmp); } catch (_) {} // clear a leftover from a prior crashed heal
+        fs.linkSync(activePath, healTmp);
+        try {
+          fs.renameSync(healTmp, archivedPath); // atomic same-dir replace: archivedPath is never missing
+        } catch (e) {
+          try { fs.unlinkSync(healTmp); } catch (_) {} // never leave the temp link behind
+          throw e;
+        }
+        // RE-VERIFY from disk (never trust the retry blind): only a fresh stat of
+        // BOTH paths agreeing on (dev, ino) may set `linked`.
+        activeStat = fs.lstatSync(activePath);
+        archivedStat = fs.lstatSync(archivedPath);
+        if (activeStat.dev !== archivedStat.dev || activeStat.ino !== archivedStat.ino) {
+          throw new Error('archived descriptor already exists and is not the active descriptor');
+        }
       }
       linked = true;
     } catch (e) {
@@ -5482,7 +5556,7 @@ module.exports = {
   resolveMeshTarget, resolveSendTarget,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath, skipFilePath,
   selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,
-  migrateOwnerKeys, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive,
+  migrateOwnerKeys, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive, archivedTombstoneIsOrphaned,
   applyRecoveryIntents, recoveryIntentPath, rehomeStrandedProjectDescriptors,
   cmdWorkspacesList, cmdGate, cmdReconcile, cmdRegister,
   cmdLogs, cmdInboxMessages, parseSinceDuration,
