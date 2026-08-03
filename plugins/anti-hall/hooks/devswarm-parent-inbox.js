@@ -427,9 +427,11 @@ function logInjection(home, workspaces) {
 }
 
 // buildUnreadSegment(list) -> string. SHORT summary of the unread/idle workspaces.
-// IMPERATIVE wording for the unread case (was advisory "need attention" — #34
-// parity pass): a Primary must not treat a child's unread backlog as optional
-// background noise, same posture as the child's own imperative nudge below.
+// ADVISORY wording for the unread case (softened from a per-turn "STOP ...
+// before continuing" imperative — urgent/high items never reach this function:
+// the call site filters tierOf(w) === 'normal' here and routes tierOf(w) ===
+// 'urgent' to buildUrgentUnreadSegment below, which stays loud. This is the
+// normal tier by construction, so a hard interrupt every turn is unwarranted.
 function buildUnreadSegment(list) {
   const shown = list.slice(0, MAX_LISTED).map((w) => {
     const parts = [];
@@ -444,8 +446,9 @@ function buildUnreadSegment(list) {
     + shown.join('; ') + extra + '. '
   );
   body += anyUnread
-    ? ('STOP and read each unread workspace\'s inbox message(s) FIRST via '
-      + '`node ' + CLI + ' inbox read <id>` before continuing (or reassign/archive it). ')
+    ? ('Read each unread workspace\'s inbox message(s) via '
+      + '`node ' + CLI + ' inbox read <id>` when you reach a good stopping point '
+      + '(or reassign/archive it). ')
     : ('Read/ack each workspace inbox (or reassign/archive it) so it does not sit '
       + 'unnoticed off your task list. ');
   body += 'A workspace flagged stale/escalated has a wedged child — check on it.';

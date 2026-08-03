@@ -661,6 +661,60 @@ test('URGENCY: a STUCK (stale/escalated) workspace is never demoted to table-row
   } finally { h.cleanup(); }
 });
 
+// ---- normal-tier unread wording softened to ADVISORY (fix/devswarm-injection-and-archive) ----
+// buildUnreadSegment is the normal tier by construction (tierOf() only ever
+// routes 'urgent' items to buildUrgentUnreadSegment; everything else lands
+// here), so a per-turn hard "STOP ... before continuing" interrupt is
+// unwarranted — it is now advisory. Urgent/high stay loud (buildUrgentUnreadSegment
+// is untouched).
+
+test('WORDING: normal-tier unread segment is ADVISORY, not a hard STOP', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsNormal: { total: 1, cursor: 0, unread: 1, directUnread: 1, urgencyMax: 'normal' },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    const seg = segment(c, 'DEVSWARM PARENT INBOX');
+    assert.ok(seg, `normal segment expected; ctx=${c}`);
+    assert.ok(!/STOP/.test(seg), `normal-tier segment must not contain STOP; seg=${seg}`);
+    assert.ok(!/before continuing/.test(seg), `normal-tier segment must not contain 'before continuing'; seg=${seg}`);
+    assert.ok(seg.includes('inbox read'), `normal-tier segment must still show the inbox read command; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
+test('WORDING: urgent-tier unread segment stays LOUD (STOP + before continuing)', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsUrgent: { total: 1, cursor: 0, unread: 1, directUnread: 1, urgencyMax: 'urgent' },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    const seg = segment(c, 'DEVSWARM URGENT INBOX');
+    assert.ok(seg, `urgent segment expected; ctx=${c}`);
+    assert.ok(/STOP/.test(seg), `urgent-tier segment must contain STOP; seg=${seg}`);
+    assert.ok(/before continuing/.test(seg), `urgent-tier segment must contain 'before continuing'; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
+test('WORDING: high-urgency also routes to the LOUD urgent segment', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsHigh: { total: 1, cursor: 0, unread: 1, directUnread: 1, urgencyMax: 'high' },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    const seg = segment(c, 'DEVSWARM URGENT INBOX');
+    assert.ok(seg, `high-urgency segment expected via the urgent path; ctx=${c}`);
+    assert.ok(seg.includes('wsHigh'), `urgent segment names wsHigh; seg=${seg}`);
+    assert.ok(/STOP/.test(seg) && /before continuing/.test(seg), `high-urgency segment must stay loud; seg=${seg}`);
+    assert.strictEqual(segment(c, 'DEVSWARM PARENT INBOX'), '', `high-urgency workspace must not also appear in the normal segment; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
 // ---- v0.57 mesh: broadcast/roster feed — advisory only (D3/D4/D22/D23/D27) ----
 
 test('BROADCAST: a plain broadcast renders soft, advisory react-if-concerned wording', () => {
@@ -1156,7 +1210,7 @@ test('OWN UNREAD: urgent own-unread gets the URGENT PRIORITY prefix (D4 honoring
   } finally { h.cleanup(); }
 });
 
-test('OWN UNREAD: coexists with a child unread banner without prefix collision, child wording upgraded to imperative too', () => {
+test('OWN UNREAD: coexists with a child unread banner without prefix collision, child (normal tier) wording stays advisory', () => {
   const h = makeHome();
   try {
     writeSharedSummary(h.home, {
@@ -1172,7 +1226,8 @@ test('OWN UNREAD: coexists with a child unread banner without prefix collision, 
     assert.ok(own.includes('1'), `own unread count; own=${own}`);
     assert.ok(child.includes('wsA'), `child segment names wsA; child=${child}`);
     assert.ok(child.includes('2 unread'), `child unread count; child=${child}`);
-    assert.ok(/STOP and read each unread workspace/.test(child), `child unread wording upgraded to imperative; child=${child}`);
+    assert.ok(/Read each unread workspace/.test(child), `child unread wording stays advisory; child=${child}`);
+    assert.ok(!/STOP/.test(child) && !/before continuing/.test(child), `normal-tier child must not be imperative; child=${child}`);
   } finally { h.cleanup(); }
 });
 
@@ -1678,7 +1733,7 @@ test('STALE-REGISTRY: summary.staleRegistryPartitions -> renders stale-workspace
   } finally { h.cleanup(); }
 });
 
-test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to the pre-Phase-A output (no new segments)', () => {
+test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to the current normal-tier output (no new segments)', () => {
   const h = makeHome();
   try {
     // Fresh heartbeat + live lock (this test process's own pid) deterministically
@@ -1698,8 +1753,9 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
         + '|---|---|---|---|---|\n'
         + '| wsA | active | — | 2 | — |',
       'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — wsA (2 unread). '
-        + 'STOP and read each unread workspace\'s inbox message(s) FIRST via `node '
-        + cliPath + ' inbox read <id>` before continuing (or reassign/archive it). '
+        + 'Read each unread workspace\'s inbox message(s) via `node '
+        + cliPath + ' inbox read <id>` when you reach a good stopping point '
+        + '(or reassign/archive it). '
         + 'A workspace flagged stale/escalated has a wedged child — check on it.',
     ].join('\n\n');
     assert.strictEqual(c, expected, `clean summary must be byte-identical to pre-Phase-A output; ctx=${c}`);

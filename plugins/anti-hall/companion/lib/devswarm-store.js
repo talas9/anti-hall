@@ -1577,6 +1577,52 @@ function collapsePendingQuestionsBySender(list) {
   return out;
 }
 
+// archivedOnlyIds(home, F) -> Set<string>. The READ-SIDE half of the archive
+// fold: the ids whose workspace is GENUINELY archived right now — archived/<id>.json
+// present AND workspaces/<id>.json absent. Byte-for-byte the same test
+// devswarm.js's isArchivedOnlyWorkspace/foldArchivedRegistryRows classify with,
+// deliberately duplicated here rather than imported: devswarm-store.js is required
+// BY scripts/devswarm.js, so importing it back would close a require cycle.
+//
+// WHY A READ FILTER AT ALL: foldArchivedRegistryRows is a WRITE migration that runs
+// only from doctor (hooks/lib/doctor-repair.js) and update (skills/update/scripts/
+// update.js) — never per turn. Until one of those runs, an archived workspace's
+// surviving registry row still projects as ACTIVE, inflating every per-turn DevSwarm
+// injection. Filtering on READ makes the ACTIVE projection correct immediately,
+// without paying a write on every refresh.
+//
+// STRUCTURALLY CANNOT BLIND A LIVE ROW: a live workspace has workspaces/<id>.json by
+// definition, so it fails the second half of the test and is never in this set. The
+// SIBLING half of the fold (rows sharing an archived worktree's real path) is
+// deliberately NOT replicated here — that one needs foldGroupIntoSurvivor's liveness
+// safety gate to avoid retiring a live child, and stays doctor-side.
+//
+// COST: ONE readdir of archived/ per projection, plus an existsSync only for ids that
+// are actually in archived/ — not two syscalls per registry row.
+//
+// FAIL-OPEN: any error yields an EMPTY set, i.e. nothing is filtered and the
+// projection degrades to exactly the pre-filter behaviour. An unreadable
+// registry/archived dir must never throw into a UserPromptSubmit turn.
+function archivedOnlyIds(home, F) {
+  const out = new Set();
+  try {
+    const root = devswarmRoot(home);
+    const adir = path.join(root, 'archived');
+    let names = [];
+    try { names = F.readdirSync(adir); } catch (_) { return out; } // no archived/ -> nothing archived
+    for (const n of names) {
+      if (typeof n !== 'string' || !/\.json$/.test(n)) continue;
+      const id = n.slice(0, -'.json'.length);
+      if (!isSafeId(id)) continue;
+      let live = false;
+      try { live = F.existsSync(path.join(root, 'workspaces', id + '.json')); }
+      catch (_) { live = true; } // fail-open per id: unreadable -> assume LIVE, never hide it
+      if (!live) out.add(id);
+    }
+  } catch (_) { return new Set(); }
+  return out;
+}
+
 function summaryHashFor(store, o) {
   return (o && o.workspaceId != null)
     ? hashFromWorkspaceId(o.workspaceId)
@@ -1617,12 +1663,34 @@ function computeSummary(store, opts) {
   const broadcastNonHeartbeat = broadcastAll.filter((r) => !r.isHeartbeat);
 
   const registry = store.listRegistry();
-  const registryIds = new Set(registry.map((d) => String(d.id)));
+
+  // Archived workspaces are NOT part of the ACTIVE projection — see archivedOnlyIds.
+  // archivedIds is computed BEFORE registryIds below because registryIds deliberately
+  // EXCLUDES archived ids: registryIds' only consumer is the A2 orphan pass
+  // (`if (registryIds.has(id)) continue;`), which treats "in the registry" as "not an
+  // orphan, skip it." If archived ids stayed in registryIds, a message addressed to a
+  // now-archived workspace would be silently invisible in ALL THREE projection
+  // fields (workspaces[], A2 orphans, A3 stale) until doctor runs — a stranded unread
+  // message going dark with no signal anywhere. Dropping archived ids from
+  // registryIds instead lets the A2 orphan pass see them as unregistered and report
+  // {id, unread} same as it would for any other unregistered partition.
+  // Net behaviour: an archived workspace with 0 unread is fully invisible (quiet,
+  // as it should be — nothing left to report). One with real unread surfaces as an
+  // orphan (honest — someone messaged a dead workspace and that must not vanish).
+  // This also MATCHES the post-doctor end state: once foldArchivedRegistryRows
+  // tombstones the registry row, the A2 orphan pass reports the exact same thing —
+  // so the read path and the doctor path now agree instead of diverging until doctor
+  // runs.
+  const archivedIds = archivedOnlyIds(home, F);
+  const registryIds = new Set(
+    registry.map((d) => String(d.id)).filter((id) => !archivedIds.has(id))
+  );
 
   const workspaces = {};
   for (const d of registry) {
     if (!isSafeId(d.id)) continue; // never project an unsafe id
     if (d.id === BROADCAST_PARTITION_ID) continue; // defense-in-depth: the shared broadcast partition is NEVER a real workspace (isSafeId already excludes '*', kept explicit)
+    if (archivedIds.has(String(d.id))) continue; // archived -> never projected ACTIVE
     const total = store.messageCount(d.id);
     const cursor = store.cursorValue(d.id);
     const unread = Math.max(0, total - cursor);
@@ -1885,6 +1953,7 @@ function computeSummary(store, opts) {
     const id = String(d.id);
     if (id === BROADCAST_PARTITION_ID) continue;
     if (!isSafeId(id)) continue;
+    if (archivedIds.has(id)) continue; // archived rows are not "stale live rows"
     const wt = d.worktreePath;
     if (wt == null || String(wt) === '') continue; // no path recorded -> nothing to verify
     let exists = true;
@@ -2000,6 +2069,7 @@ module.exports = {
   requiredGatesFrom, selectBackend, sqliteAvailable,
   openStore, openSqlite, openJournal,
   computeSummary, deriveSummary, writeSummaryAtomic, readSummary, readSummaryForHash,
+  archivedOnlyIds,
   // mesh (v0.57, D3-D7/D22/D23):
   BROADCAST_PARTITION_ID, meshMessageHash, appendMeshMessage,
   // v0.58 (archive-request store write, deriveSummary archive_requested):
