@@ -187,6 +187,18 @@ function sqliteAvailable() {
 const BROADCAST_PARTITION_ID = '*mesh-broadcast*';
 const URGENCY_RANK = { low: 0, normal: 1, high: 2, urgent: 3 };
 const DEFAULT_RECENT_CAP = 50; // O-D8 (broadcast retention) UNRESOLVED — sane default, overridable via opts.recentCap.
+// DEFAULT_PENDING_QUESTIONS_CAP — a BACKSTOP on the per-workspace pendingQuestions
+// array, overridable via opts.pendingQuestionsCap. It should be UNREACHABLE in
+// practice: the per-sender collapse in computeSummary already bounds the array by
+// the number of DISTINCT registered senders that ever asked this workspace a
+// question, which is a roster-sized number, not a history-sized one. This exists
+// only so a pathological store (a runaway registry, a corrupted projection) cannot
+// materialize an unbounded array into the summary JSON. UNLIKE recent[], truncation
+// here is NOT semantically free — dropping a genuinely-unanswered question would
+// silently unblock the decide-gate — so when it DOES bite, the oldest (most overdue)
+// entries are kept and the workspace carries an explicit truncation signal so no
+// consumer can mistake a truncated list for a complete one.
+const DEFAULT_PENDING_QUESTIONS_CAP = 200;
 
 // ARCHIVE_REQUEST_MARKER (v0.58, PLAN.md STORE + child-gate) — the mechanical
 // tag a parent's `scripts/devswarm.js archive-request <childId>` prefixes onto
@@ -402,6 +414,16 @@ function openSqlite(home, workspaceId, opts) {
     + ');'
   );
   ensureMessagesMeshColumns(db); // additive migration for a table that pre-dates the mesh columns
+  // idx_messages_needs_reply — supports listNeedsReply's per-workspace needs_reply
+  // lookup (computeSummary calls it once PER REGISTRY ROW, every projection). Without
+  // it that query degrades to a full table scan of an append-only, never-pruned table.
+  // MUST run AFTER ensureMessagesMeshColumns: on a table that pre-dates the mesh
+  // columns, `needs_reply` only exists once that ALTER has run. Best-effort/fail-open
+  // in the same spirit as the migrations above — an index is a pure performance
+  // affordance, never a correctness precondition, so a read-only/locked DB that
+  // cannot create it still works (just slower). IF NOT EXISTS -> idempotent on an
+  // existing db, re-run safe on every open.
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_needs_reply ON messages (workspace_id, needs_reply);'); } catch (_) { /* fail-open */ }
   db.exec(
     'CREATE TABLE IF NOT EXISTS registry ('
     + ' id TEXT PRIMARY KEY,'
@@ -714,6 +736,50 @@ function openSqlite(home, workspaceId, opts) {
           urgency: rows[i].urgency != null ? String(rows[i].urgency) : null,
           isHeartbeat: rows[i].is_heartbeat === 1 || rows[i].is_heartbeat === 1n,
           needsReply: rows[i].needs_reply === 1 || rows[i].needs_reply === 1n,
+          storeSeq: rows[i].seq != null ? Number(rows[i].seq) : null,
+        });
+      }
+      return out;
+    },
+    // listNeedsReply(id) -> [{sender, ts, storeSeq}] — the needs_reply DIRECT rows of
+    // a workspace, in insertion order, and NOTHING else.
+    //
+    // WHY A SEPARATE METHOD AND NOT AN OPTION ON listMessages: listMessages' `seq` is
+    // a 1-based POSITIONAL index over the kept set, and the read cursor is a
+    // consumed-COUNT over that same positional space. A filter option would silently
+    // renumber `seq` for a filtered call and corrupt that contract for every other
+    // caller. This method deliberately emits NO positional `seq` at all — only the
+    // physical mesh `storeSeq` — so the trap cannot be reintroduced.
+    //
+    // WHY IT EXISTS: computeSummary's pendingQuestions is DELIBERATELY not
+    // cursor-scoped (cursor-scoping it was the original bug), so it needed EVERY row
+    // of the workspace's history on EVERY projection, for EVERY registry row — a full
+    // history read, all columns, all materialized into JS objects, just to keep a
+    // handful of them. Pushing the predicate into SQL (backed by
+    // idx_messages_needs_reply) reads only the rows that survive it and only the three
+    // fields the projection actually consumes. The RESULT must stay identical to
+    // `listMessages(id).filter((r) => r.mtype === 'direct' && r.needsReply)` — the
+    // predicate below is that expression verbatim: mtype exactly 'direct', and
+    // needs_reply exactly 1 (the same truth test listMessages' `needsReply` applies).
+    listNeedsReply(id) {
+      const rows = db.prepare(
+        'SELECT sender, ts, seq FROM messages'
+        + " WHERE workspace_id = ? AND needs_reply = 1 AND mtype = 'direct' ORDER BY id ASC;"
+      ).all(String(id));
+      const out = [];
+      for (let i = 0; i < rows.length; i++) {
+        // ts: null-safe, matching the journal twin's convention (and
+        // listMessages' own `storeSeq`-style null-on-absent pattern) — a
+        // non-finite/absent ts must normalize to `null` on BOTH backends, not
+        // `Number(undefined)`'s NaN here vs the journal's explicit null. The
+        // two are equivalent for pendingQuestionEffTs (which maps both to
+        // Infinity) and on-disk (JSON.stringify flattens NaN to null too), but
+        // an in-memory consumer comparing the two backends' output directly
+        // must see identical values, not NaN vs null for the same logical row.
+        const rawTs = Number(rows[i].ts);
+        out.push({
+          sender: rows[i].sender != null ? String(rows[i].sender) : null,
+          ts: Number.isFinite(rawTs) ? rawTs : null,
           storeSeq: rows[i].seq != null ? Number(rows[i].seq) : null,
         });
       }
@@ -1222,6 +1288,44 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
       }
       return out;
     },
+    // listNeedsReply(id) -> [{sender, ts, storeSeq}] — sqlite-parity twin (see that
+    // backend's comment for WHY this is a separate method rather than a listMessages
+    // option). NDJSON has no index, so this still walks the file — unavoidable — but
+    // it materializes ONLY the surviving rows and ONLY the three fields the projection
+    // consumes, instead of building a full row object (body included) for every
+    // message in history.
+    //
+    // THE DEDUP MUST MATCH listMessages EXACTLY or the two backends disagree: dedupe
+    // by hash across ALL of this workspace's rows, keeping the FIRST occurrence, and
+    // do it BEFORE the needs_reply/mtype filter — a duplicate-hash row is dropped
+    // because an EARLIER row already claimed that hash, which is a fact about the
+    // whole workspace history, not about the filtered subset. Filtering first would
+    // let a later duplicate survive whenever the first occurrence failed the
+    // predicate. (sqlite has UNIQUE(hash) so it has no duplicates to fold at all;
+    // this reproduces that same end state.)
+    listNeedsReply(id) {
+      const wid = String(id);
+      const seen = new Set();
+      const out = [];
+      for (const row of readAll(files.messages)) {
+        if (String(row.workspaceId) !== wid) continue;
+        if (row.hash != null) {
+          if (seen.has(row.hash)) continue; // dedupe identical hashes on read (parity with listMessages)
+          seen.add(row.hash);
+        }
+        // The predicate, verbatim from listMessages' projected shape:
+        // mtype exactly 'direct' (a null-mtype legacy row is NOT a mesh direct here)
+        // and needsReply truthy under the same `!!` coercion listMessages applies.
+        if (row.mtype !== 'direct') continue;
+        if (!row.needsReply) continue;
+        out.push({
+          sender: row.sender != null ? String(row.sender) : null,
+          ts: Number.isFinite(row.ts) ? row.ts : null,
+          storeSeq: Number.isFinite(row.seq) ? Number(row.seq) : null,
+        });
+      }
+      return out;
+    },
     cursorValue(id) {
       const wid = String(id);
       let v = 0;
@@ -1406,6 +1510,73 @@ function resolveSenderRegistryId(store, registry, meshId) {
 // explicit opts.workspaceId wins, else the handle's workspaceId, else its hash (a
 // handle always carries a hash). Shared by computeSummary (to read the anti-spam
 // sidecar) and deriveSummary (to write both the summary and the sidecar).
+// pendingQuestionEffTs(q) — the ts unansweredQuestions ACTUALLY compares against
+// lastReplyTs: a finite ts verbatim, a non-finite one as +Infinity ("unparsable ts ->
+// treat as always-newer", devswarm-reply-state.js). The collapse below MUST order by
+// THIS value, not by the raw ts, or a non-finite-ts question (which is unanswerable
+// by construction, so permanently blocking) could be folded away behind a finite-ts
+// one that a reply has already cleared — turning a blocking set into an empty one.
+function pendingQuestionEffTs(q) {
+  return (q && Number.isFinite(q.ts)) ? q.ts : Infinity;
+}
+
+// collapsePendingQuestionsBySender(list) — fold a workspace's pendingQuestions to ONE
+// entry per sender: the entry with the MAXIMUM effective ts (tie-broken on the greater
+// storeSeq).
+//
+// WHY THIS IS LOSSLESS FOR THE BLOCKING DECISION (the whole justification — a naive
+// slice(-N) would NOT be, and must never be used here): downstream,
+// devswarm-reply-state.js's unansweredQuestions keeps q where
+// `effTs(q) > replyState[q.from].lastReplyTs`. For a FIXED sender, lastReplyTs is a
+// SINGLE value, so "sender S has any unanswered question" is EXACTLY equivalent to
+// "S's maximum-effTs question is unanswered" — max > L iff some element > L. Keeping
+// only that maximum therefore cannot change any blocking outcome in either direction,
+// while bounding the array by the number of DISTINCT senders (roster-sized) instead of
+// by the message history (unbounded, append-only, grows for the life of the project).
+//
+// ORDER is first-appearance order of each sender, so a list with no repeats comes back
+// in its original order, element-for-element unchanged.
+//
+// `occurrences` / `firstTs` / `lastTs` are emitted ONLY on an actually collapsed entry
+// (occurrences > 1) — the SAME convention recent[]'s run-collapse uses above — so a
+// projection where no sender asked twice is byte-identical to the pre-collapse output
+// for every existing reader.
+function collapsePendingQuestionsBySender(list) {
+  const order = [];
+  const byFrom = new Map();
+  for (const q of list) {
+    const key = String(q.from);
+    const prev = byFrom.get(key);
+    if (prev === undefined) {
+      order.push(key);
+      byFrom.set(key, { best: q, count: 1, minTs: Number.isFinite(q.ts) ? q.ts : null });
+      continue;
+    }
+    prev.count += 1;
+    if (Number.isFinite(q.ts)) prev.minTs = prev.minTs === null ? q.ts : Math.min(prev.minTs, q.ts);
+    const a = pendingQuestionEffTs(q);
+    const b = pendingQuestionEffTs(prev.best);
+    // Strictly-newer wins; on an exact tie the greater storeSeq wins (a later physical
+    // row). A null storeSeq sorts below any real one. The tiebreak cannot affect
+    // blocking (equal effTs answer the `> lastReplyTs` test identically) — it only
+    // makes the survivor deterministic.
+    const seqOf = (x) => (x && Number.isFinite(x.seq) ? x.seq : -Infinity);
+    if (a > b || (a === b && seqOf(q) > seqOf(prev.best))) prev.best = q;
+  }
+  const out = [];
+  for (const key of order) {
+    const g = byFrom.get(key);
+    const entry = g.best;
+    if (g.count > 1) {
+      entry.occurrences = g.count;
+      entry.firstTs = g.minTs;
+      entry.lastTs = entry.ts; // explicit alias: `ts` IS the newest of the group
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
 function summaryHashFor(store, o) {
   return (o && o.workspaceId != null)
     ? hashFromWorkspaceId(o.workspaceId)
@@ -1435,6 +1606,8 @@ function computeSummary(store, opts) {
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const requiredGates = Array.isArray(o.requiredGates) ? o.requiredGates : requiredGatesFrom(o.env);
   const recentCap = Number.isFinite(o.recentCap) && o.recentCap > 0 ? Math.floor(o.recentCap) : DEFAULT_RECENT_CAP;
+  const pendingQuestionsCap = Number.isFinite(o.pendingQuestionsCap) && o.pendingQuestionsCap > 0
+    ? Math.floor(o.pendingQuestionsCap) : DEFAULT_PENDING_QUESTIONS_CAP;
 
   // The shared broadcast partition — read ONCE, reused for every workspace's
   // broadcastUnread/working_on AND the top-level recent[]. Ordered by insertion
@@ -1489,9 +1662,21 @@ function computeSummary(store, opts) {
     // replyState[q.from].lastReplyTs). urgencyMax/archive_requested (above)
     // correctly stay cursor/unread-scoped — those ARE genuinely about unread
     // state, unlike pendingQuestions.
-    const allRows = typeof store.listMessages === 'function' ? store.listMessages(d.id) : [];
-    const pendingQuestions = allRows
-      .filter((r) => r && r.mtype === 'direct' && r.needsReply)
+    //
+    // READ PATH (perf): the needs_reply rows come from the DEDICATED
+    // store.listNeedsReply(d.id) — the predicate pushed down into the backend so a
+    // projection reads only the surviving rows and only the {sender, ts, storeSeq}
+    // this map consumes. It used to be `store.listMessages(d.id)` (FULL history, all
+    // columns, every row materialized) run once PER REGISTRY ROW on EVERY projection,
+    // which is the dominant cost of computeSummary on a long-lived project. The
+    // fallback below reproduces that exact expression for a partial store double that
+    // predates listNeedsReply — same defensive `typeof` style as the reads above.
+    const needsReplyRows = typeof store.listNeedsReply === 'function'
+      ? store.listNeedsReply(d.id)
+      : (typeof store.listMessages === 'function'
+        ? store.listMessages(d.id).filter((r) => r && r.mtype === 'direct' && r.needsReply)
+        : []);
+    const resolvedQuestions = needsReplyRows
       .map((r) => {
         // Bug 2 / P0-B identity normalization: resolve the sender's worktree-
         // derived meshId to the SAME registry-row-id space a reply's echoed
@@ -1527,6 +1712,26 @@ function computeSummary(store, opts) {
       })
       .filter((q) => q !== null);
 
+    // PER-SENDER COLLAPSE (bounding fix). Without it this array grows for the life of
+    // the project — every question ever asked, forever, since nothing but a
+    // structurally-unresolvable sender ever leaves it (see the header above). The
+    // collapse is LOSSLESS for the blocking decision; see
+    // collapsePendingQuestionsBySender for the proof. A naive tail-slice is NOT lossless
+    // and is deliberately not used: it can drop a genuinely-unanswered question and
+    // silently unblock the decide-gate.
+    const collapsedQuestions = collapsePendingQuestionsBySender(resolvedQuestions);
+    // BACKSTOP CAP — second line of defence only; the collapse above already bounds the
+    // array by the distinct-sender count, so this should be unreachable in any healthy
+    // store. Truncation keeps the OLDEST entries (the array is in first-appearance
+    // order, so the head is the longest-outstanding questions — the ones most likely to
+    // be genuinely blocking) and, unlike recent[]'s cap, ALWAYS surfaces a signal:
+    // a truncated pendingQuestions is not a complete one and no consumer may treat it
+    // as such.
+    const pendingQuestions = collapsedQuestions.length > pendingQuestionsCap
+      ? collapsedQuestions.slice(0, pendingQuestionsCap)
+      : collapsedQuestions;
+    const pendingQuestionsDropped = collapsedQuestions.length - pendingQuestions.length;
+
     const bcCursor = typeof store.broadcastCursorValue === 'function' ? store.broadcastCursorValue(d.id) : 0;
     const unreadBroadcastRows = broadcastNonHeartbeat.filter(
       (r) => Number.isFinite(r.storeSeq) && r.storeSeq > bcCursor
@@ -1559,6 +1764,16 @@ function computeSummary(store, opts) {
       archive_requested,
       pendingQuestions,
     };
+    // Emitted ONLY when the backstop actually bit, so an untruncated workspace stays
+    // byte-identical for existing readers (same convention as orphans/recent's
+    // occurrences). `dropped` is how many DISTINCT SENDERS' questions are missing.
+    if (pendingQuestionsDropped > 0) {
+      workspaces[d.id].pendingQuestionsTruncated = {
+        cap: pendingQuestionsCap,
+        kept: pendingQuestions.length,
+        dropped: pendingQuestionsDropped,
+      };
+    }
   }
 
   // ---- recent[]: CONSECUTIVE-duplicate run collapse (heartbeat saturation) ----

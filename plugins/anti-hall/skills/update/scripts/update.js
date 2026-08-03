@@ -674,6 +674,67 @@ function foldMeshPostUpdate(opts) {
 }
 
 /**
+ * foldArchivedRowsPostUpdate({ paths, env, cwd, home, devswarm }) →
+ *   { attempted, retired, forwarded, left, detail }
+ *
+ * Forward-migration for registries ALREADY split by the archive bug: cmdArchive
+ * used to tombstone exactly ONE registry row per archive, while up to four rows
+ * (builder UUID / spawn phantom / legacy ingested / subdir-derived) can exist for
+ * ONE worktree — so every surviving row kept an ARCHIVED workspace projecting as
+ * active. This sweeps every per-project store for rows belonging to a genuinely
+ * archived workspace and applies the same forward-then-tombstone + safety gate
+ * cmdArchive now applies at archive time (devswarm.js foldArchivedRegistryRows —
+ * this wrapper adds no decision logic of its own).
+ *
+ * Runs AFTER foldMeshPostUpdate: fold first collapses same-worktree duplicates
+ * into ONE canonical survivor per worktree, so this pass usually has a single row
+ * left to retire per archived workspace instead of racing the same rows from the
+ * other direction. Both are idempotent, so the order is about doing less work, not
+ * correctness. Same DevSwarm-session-only gate + fully fail-open posture as
+ * reconcile/fold/ownerKeyMigrate; NEVER throws, never affects the update's own
+ * success. NO-DELETE (message rows are forwarded, never deleted) and idempotent (a
+ * re-run finds no row left for any archived id).
+ */
+function foldArchivedRowsPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'fold-archived-rows skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — fold-archived-rows skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.foldArchivedRegistryRows !== 'function') {
+      return { attempted: false, detail: 'fold-archived-rows skipped: this devswarm.js build has no foldArchivedRegistryRows' };
+    }
+    const r = devswarm.foldArchivedRegistryRows(home, { cwd, env }) || {};
+    const retired = Array.isArray(r.retired) ? r.retired.length : 0;
+    const left = Array.isArray(r.left) ? r.left.length : 0;
+    return {
+      attempted: true,
+      retired,
+      forwarded: r.forwarded || 0,
+      left,
+      errors: r.errors || 0,
+      detail: 'fold-archived-rows: retired ' + retired + ' registry row(s) of archived workspace(s)'
+        + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
+        + (left ? ' — ' + left + ' row(s) left in place (safety-gated)' : '')
+        + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'fold-archived-rows raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * ownerKeyMigratePostUpdate({ paths, env, cwd, home, devswarm }) →
  *   { attempted, scanned, backfilled, rehomed, errors, detail }
  *
@@ -1197,6 +1258,13 @@ function runUpdate(opts) {
   // survivors — after reconcile drains, so stranded messages exist to forward.
   // Same gate + fail-open posture; never affects `stop` or the update's success.
   const fold = foldMeshPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // Archived-still-active migration: retire every registry row still held by a
+  // GENUINELY archived workspace. Deliberately AFTER `fold` — fold first collapses
+  // each worktree's duplicates into one canonical survivor, so this pass typically
+  // has a single row per archived workspace to retire rather than approaching the
+  // same rows from the other direction. Both are idempotent, so the ordering is a
+  // work-reduction, not a correctness requirement. Same gate + fail-open posture.
+  const foldArchivedRows = foldArchivedRowsPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
   // P1-8: backfill the new `ownerKey` descriptor field + heal prior hash-bucket
   // split-brain. Same gate + fail-open posture; never affects the update's success.
   const ownerKeyMigrate = ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
@@ -1223,6 +1291,7 @@ function runUpdate(opts) {
         ingestHeal,
         reconcile,
         fold,
+        foldArchivedRows,
         ownerKeyMigrate,
         healRegistryRows,
         wakeMonitor,
@@ -1253,6 +1322,7 @@ function runUpdate(opts) {
       ingestHeal,
       reconcile,
       fold,
+      foldArchivedRows,
       ownerKeyMigrate,
       healRegistryRows,
       wakeMonitor,
@@ -1312,6 +1382,9 @@ function renderHuman(status, changelog) {
   if (status.fold && status.fold.attempted) {
     lines.push('  fold:      ' + status.fold.detail);
   }
+  if (status.foldArchivedRows && status.foldArchivedRows.attempted) {
+    lines.push('  fold-archived-rows: ' + status.foldArchivedRows.detail);
+  }
   if (status.healRegistryRows && status.healRegistryRows.attempted) {
     lines.push('  heal-registry-rows: ' + status.healRegistryRows.detail);
     if (Array.isArray(status.healRegistryRows.stores) && status.healRegistryRows.stores.length) {
@@ -1354,6 +1427,7 @@ module.exports = {
   healIngestDaemon,
   reconcilePostUpdate,
   foldMeshPostUpdate,
+  foldArchivedRowsPostUpdate,
   ownerKeyMigratePostUpdate,
   healRegistryPostUpdate,
   wakeMonitorPostUpdate,

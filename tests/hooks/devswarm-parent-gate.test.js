@@ -50,18 +50,23 @@ function stopPayload(sessionId, withCwd, explicitCwd) {
   return p;
 }
 
-// writeOwnSummary(home, unread, urgencyMax, pendingQuestions) — the Primary's
-// OWN unread, written to the SAME per-project summary projection path the
-// hook reads (v0.57 mesh: summaries/<REPO_KEY>.json ->
+// writeOwnSummary(home, unread, urgencyMax, pendingQuestions, pendingQuestionsTruncated)
+// — the Primary's OWN unread, written to the SAME per-project summary
+// projection path the hook reads (v0.57 mesh: summaries/<REPO_KEY>.json ->
 // workspaces[primary-<hash>].unread). `pendingQuestions` (§4.4) is the
 // per-workspace projected array of `{from, ts, seq}` structural questions —
-// same shape computeSummary produces.
-function writeOwnSummary(home, unread, urgencyMax, pendingQuestions) {
+// same shape computeSummary produces. `pendingQuestionsTruncated` (P2 fix)
+// is the store's own `{cap, kept, dropped}` truncation-signal object —
+// computeSummary stamps it on the workspace entry ONLY when its backstop cap
+// actually bit; this param lets a test seed that exact shape directly rather
+// than seeding 200+ senders through the real store.
+function writeOwnSummary(home, unread, urgencyMax, pendingQuestions, pendingQuestionsTruncated) {
   const dir = path.join(home, '.anti-hall', 'devswarm', 'summaries');
   fs.mkdirSync(dir, { recursive: true });
   const entry = { unread };
   if (urgencyMax !== undefined) entry.urgencyMax = urgencyMax;
   if (pendingQuestions !== undefined) entry.pendingQuestions = pendingQuestions;
+  if (pendingQuestionsTruncated !== undefined) entry.pendingQuestionsTruncated = pendingQuestionsTruncated;
   fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify({ workspaces: { [OWN_ID]: entry } }));
 }
 
@@ -1188,5 +1193,85 @@ test('SMALL FIX: the "DEVSWARM NEGLECT" paragraph is entirely absent (not a self
       `the NEGLECT paragraph must not appear at all when there is no neglected workspace to name; reason=${r.json.reason}`);
     assert.doesNotMatch(r.json.reason, /0 workspace\(s\)/,
       `must never emit the self-contradicting "0 workspace(s) ... : ." sentence; reason=${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+// ============================================================================
+// P2 FIX — pendingQuestionsTruncated: devswarm-store.js's computeSummary
+// stamps a workspace entry with `pendingQuestionsTruncated: {cap, kept,
+// dropped}` when its per-workspace backstop cap actually bit (more distinct
+// resolved senders holding an unanswered question than the cap), but nothing
+// downstream consumed that signal before this fix. Consequence: the senders
+// past the cap are simply absent from `pendingQuestions`, so
+// unansweredQuestions() below never sees them and the gate silently stopped
+// blocking for exactly those askers, with no observed reply. The fix: treat
+// the PRESENCE of the truncation signal as itself blocking, unconditionally
+// (never governed by the forced-ack cap, same as an unanswered question), and
+// name it explicitly in the reason so the operator knows the list shown is
+// known-incomplete. Seeded directly via writeOwnSummary's 5th arg (the exact
+// shape computeSummary stamps) rather than 200+ real senders, per the task's
+// own "keep it fast" instruction.
+// ============================================================================
+
+test('TRUNCATED: presence of pendingQuestionsTruncated BLOCKS unconditionally, and the message says the list was truncated', () => {
+  const h = makeHome();
+  try {
+    // unread:0, no pendingQuestions entries at all -> isolates this to ONLY
+    // the truncation axis; without the fix this pass would go fully quiet.
+    writeOwnSummary(h.home, 0, undefined, undefined, { cap: 200, kept: 200, dropped: 7 });
+    const p = stopPayload('truncated-sess', true);
+    const r = run(h.home, p);
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a truncated pendingQuestions projection must block, even with own.unread:0 and no unanswered entries visible');
+    assert.match(r.json.reason, /TRUNCATED/i, 'reason must name the truncation explicitly');
+    assert.match(r.json.reason, /200/, 'reason must surface the kept/cap count');
+    assert.match(r.json.reason, /7/, 'reason must surface the dropped-sender count');
+    assert.match(r.json.reason, /higher/i, 'reason must say the true unanswered count is higher than what is shown');
+
+    // Never governed by the forced-ack cap: run well past DEFAULT_CAP with a
+    // small explicit cap and confirm it NEVER escalates or goes quiet — same
+    // bypass guarantee an unanswered question already has.
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    for (let i = 1; i <= 5; i++) {
+      const rr = run(h.home, p, env);
+      assert.strictEqual(rr.json && rr.json.decision, 'block', `truncated pass #${i} must still block`);
+      assert.match(rr.json.reason, /TRUNCATED/i, `truncated pass #${i} must still name the truncation`);
+      assert.ok(!/DEVSWARM ESCALATION/.test(rr.json.reason), `truncated pass #${i} must never escalate — the truncation axis bypasses the cap entirely`);
+    }
+  } finally { h.cleanup(); }
+});
+
+test('UNTRUNCATED: an ordinary (non-truncated) projection behaves exactly as today — no truncation wording, cap/escalation unaffected', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    // A normal unanswered-question projection with NO pendingQuestionsTruncated
+    // field at all (the common, untruncated case) — must be byte-identical in
+    // behavior to the pre-fix gate: it blocks on the unanswered question, but
+    // carries no truncation wording whatsoever.
+    writeOwnSummary(h.home, 1, undefined, [{ from: 'child-1', ts, seq: 1 }]);
+    const p = stopPayload('untruncated-sess', true);
+    const r = run(h.home, p);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /UNANSWERED QUESTION/);
+    assert.doesNotMatch(r.json.reason, /TRUNCATED/i, 'an untruncated projection must never carry truncation wording');
+
+    // And the ordinary CAP-EXHAUSTION escalate-then-quiet machinery (plain,
+    // non-question backlog, no truncation at all) is completely unaffected.
+    const h2 = makeHome();
+    try {
+      seedWorkspace(h2.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+      const p2 = stopPayload('untruncated-cap-sess');
+      const cap = 3;
+      const results = [];
+      for (let i = 1; i <= cap + 2; i++) results.push(run(h2.home, p2));
+      for (let i = 0; i < cap; i++) {
+        assert.strictEqual(results[i].json && results[i].json.decision, 'block', `call #${i + 1} must block`);
+        assert.ok(!/DEVSWARM ESCALATION/.test(results[i].json.reason));
+        assert.doesNotMatch(results[i].json.reason, /TRUNCATED/i);
+      }
+      assert.match(results[cap].json.reason, /DEVSWARM ESCALATION/, '(cap+1)th call must still escalate as before');
+      assert.strictEqual(results[cap + 1].stdout, '', '(cap+2)th call must still go quiet as before');
+    } finally { h2.cleanup(); }
   } finally { h.cleanup(); }
 });
