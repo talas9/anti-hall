@@ -18,25 +18,25 @@
 
 const fs = require('fs');
 const path = require('path');
-const { devswarmRoot } = require('../../companion/lib/liveness.js');
+// Re-exported from companion/lib/liveness.js so hook-side callers have ONE freshness import.
+//
+// idleThresholdMs / DEFAULT_IDLE_MS (this file's own name for
+// liveness.js's DEFAULT_ROSTER_IDLE_MS) now LIVE in liveness.js — moved
+// there (not just imported) because isDormantRow needs the idle-window
+// reader too, and liveness.js cannot require THIS file back without a
+// cycle (this file already requires liveness.js). Re-exported here under
+// their ORIGINAL names so this module's existing consumers are unaffected.
+const {
+  devswarmRoot, dormantThresholdMs, isDormantActivity, DEFAULT_DORMANT_MS,
+  idleThresholdMs, DEFAULT_ROSTER_IDLE_MS,
+} = require('../../companion/lib/liveness.js');
 const { readUnreadMessages } = require('../../companion/lib/devswarm-inbox-cursor.js');
 
-// How long a workspace may sit with no fresh activity signal (lastActivityTs)
-// before it is considered idle. 6 hours is a defensible default: long enough
-// that a normal lull between turns/sessions never false-positives, short
-// enough that a workspace idle since yesterday reads as idle today. Override
-// via ANTIHALL_DEVSWARM_IDLE_MS (ms, not seconds).
-const DEFAULT_IDLE_MS = 6 * 60 * 60 * 1000;
-
-// idleThresholdMs(env) -> ms. Reads ANTIHALL_DEVSWARM_IDLE_MS off the given env
-// (defaults to process.env when omitted); absent, non-numeric, or non-positive
-// -> DEFAULT_IDLE_MS. Never throws.
-function idleThresholdMs(env) {
-  const src = env || process.env;
-  const raw = src && src.ANTIHALL_DEVSWARM_IDLE_MS;
-  const n = parseInt(raw, 10);
-  return (Number.isFinite(n) && n > 0) ? n : DEFAULT_IDLE_MS;
-}
+// DEFAULT_IDLE_MS — this file's own historical name for the wide read-side
+// idle window; now sourced from liveness.js's DEFAULT_ROSTER_IDLE_MS (see
+// that module for the full rationale). Same value (6 hours), same override
+// (ANTIHALL_DEVSWARM_IDLE_MS).
+const DEFAULT_IDLE_MS = DEFAULT_ROSTER_IDLE_MS;
 
 // heartbeatPathFor(home, id) -> the turn-authored per-workspace heartbeat file
 // (heartbeats/<id>.json), carrying progress_pct + ts.
@@ -125,4 +125,7 @@ module.exports = {
   readHeartbeat,
   lastActivityTs,
   newestUnreadMessageTs,
+  DEFAULT_DORMANT_MS,
+  dormantThresholdMs,
+  isDormantActivity,
 };

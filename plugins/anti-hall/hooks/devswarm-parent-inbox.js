@@ -69,6 +69,7 @@ const {
   isSafeId,
   DEFAULT_COOLDOWN_MS,
 } = require('../companion/lib/liveness.js');
+const livenessLib = require('../companion/lib/liveness.js');
 // worktreeHash: the SAME per-worktree identity install-devswarm-ingest.js baked
 // into the daemon's unit (and devswarm-ingest.js keys its heartbeat file by).
 // ingestHeartbeatPath: the per-worktree daemon LIVENESS file (rewritten every
@@ -307,7 +308,7 @@ function finishingRate(summary, id, heartbeat) {
   return '—';
 }
 
-// displayStatus(archiveReady, status, activityTs, now) -> { label, rank }.
+// displayStatus(archiveReady, status, activityTs, now, dormant) -> { label, rank }.
 // Collapses the raw verdict enum into the five surfaced states and assigns a
 // sort rank so attention-needed workspaces sort first: escalated (0) > stale
 // (1, incl. nudged) > archive-ready (2) > idle (3) > active (4). escalated
@@ -319,22 +320,54 @@ function finishingRate(summary, id, heartbeat) {
 // archive-ready, not idle, even though it is typically also long-idle).
 // activityTs null/non-finite (no activity signal yet) -> stays "active", same
 // as before this change (fail toward the prior default, not a guess).
-function displayStatus(archiveReady, status, activityTs, now) {
+//
+// `dormant` (param, rank 5, sorts LAST — below even `active`) is a caller-
+// SUPPLIED boolean: the read-side liveness demotion decided by
+// companion/lib/liveness.js's isDormantRow (the ONE read-side dormancy rule —
+// see that function's own doc for why the window it picks depends on whether
+// this row's transcript term actually resolved). displayStatus itself stays a
+// PURE, easily-unit-tested function that only collapses an already-decided
+// verdict into a label/rank — it does not re-derive dormancy from activityTs
+// (P1 fix: doing so here could only ever apply ONE fixed window uniformly,
+// which is exactly the bug — a tight window misreads a live child mid-long-
+// turn as dead whenever the transcript term didn't contribute for that row).
+//
+// IT DEMOTES, IT DOES NOT HIDE. A dormant row still renders in the table, still
+// carries its unread count, and is only pushed to the bottom of the sort. That is
+// deliberate and is what makes the anti-blinding guarantee STRUCTURAL rather than
+// threshold-dependent: even if the threshold is one day mistuned tight enough to
+// demote a genuinely-live-but-quiet child, that child is still visible — it is
+// merely ranked below the demonstrably-active ones. Nothing here can make a live
+// workspace disappear.
+//
+// It is checked BELOW escalated / stale / archive-ready so a wedged child needing
+// a human, or a finished one ready to archive, keeps its louder label regardless of
+// heartbeat age. It is checked ABOVE `idle` because dormancy is the stronger claim
+// about the same axis; with the default windows (30 min dormant vs 6 h idle) `idle`
+// is consequently reached only when ANTIHALL_DEVSWARM_DORMANT_MS is configured
+// WIDER than ANTIHALL_DEVSWARM_IDLE_MS, which is why that branch is kept.
+function displayStatus(archiveReady, status, activityTs, now, dormant) {
   if (status === 'escalated') return { label: 'escalated', rank: 0 };
   if (status === 'stale' || status === 'nudged') return { label: 'stale', rank: 1 };
   if (archiveReady) return { label: 'archive-ready', rank: 2 };
+  if (dormant) {
+    return { label: 'dormant', rank: 5 };
+  }
   if (Number.isFinite(activityTs) && Number.isFinite(now) && (now - activityTs) >= freshness.idleThresholdMs(process.env)) {
     return { label: 'idle', rank: 3 };
   }
   return { label: 'active', rank: 4 };
 }
 
-// buildWorkspaceTable(rows, now, capped, hidden) -> string. Compact markdown table
-// of the ACTIVE workspaces (one row each): workspace, status, finishing rate,
-// unread, last-activity. Rows are pre-sorted + already capped by the caller.
-function buildWorkspaceTable(rows, now, capped, hidden) {
+// buildWorkspaceTable(rows, now, capped, hidden, hiddenRows) -> string. Compact
+// markdown table of the ACTIVE workspaces (one row each): workspace, status,
+// finishing rate, unread, last-activity. Rows are pre-sorted + already capped by
+// the caller. `hiddenRows` (optional) is the EVICTED slice (dormant rows sort
+// last, so they are evicted first) — named in the overflow line so a capped-out
+// row never silently vanishes behind a bare count.
+function buildWorkspaceTable(rows, now, capped, hidden, hiddenRows) {
   const lines = [
-    'DEVSWARM WORKSPACES (live — refreshed every turn):',
+    'DEVSWARM WORKSPACES (refreshed every turn):',
     '| workspace | status | finish | unread | last |',
     '|---|---|---|---|---|',
   ];
@@ -349,7 +382,24 @@ function buildWorkspaceTable(rows, now, capped, hidden) {
       + ' | ' + formatRelative(r.lastActivityTs, now) + ' |'
     );
   }
-  if (capped) lines.push('+' + hidden + ' more (capped at ' + MAX_TABLE_ROWS + ')');
+  // One-line legend, emitted ONLY when a dormant row is actually shown: the
+  // Primary must not read a dormant row as a workspace still worth chasing or
+  // nagging the owner to close. Costs nothing when every row is live.
+  if (rows.some((r) => r.label === 'dormant')) {
+    lines.push('dormant = no recent activity signal; often a workspace already CLOSED in the app — verify before nagging to close. If it has unread or a pending question, still answer it.');
+  }
+  if (capped) {
+    // Name the hidden rows (capped at 8 ids + ellipsis, so a huge overflow
+    // cannot bloat the injection) instead of a bare count — dormant rows sort
+    // last and are evicted first, so without this a demoted-but-live workspace
+    // could vanish behind "+N more" with no way to even know its id.
+    let overflow = '+' + hidden + ' more (capped at ' + MAX_TABLE_ROWS + ')';
+    if (Array.isArray(hiddenRows) && hiddenRows.length) {
+      const ids = hiddenRows.slice(0, 8).map((r) => names.shortId(r.id));
+      overflow += ': ' + ids.join(', ') + (hiddenRows.length > 8 ? ', …' : '');
+    }
+    lines.push(overflow);
+  }
   return lines.join('\n');
 }
 
@@ -892,8 +942,40 @@ function main() {
     // --- live-table row (every ACTIVE workspace, every turn) ---
     try {
       const heartbeat = freshness.readHeartbeat(home, id);
-      const activityTs = freshness.lastActivityTs(verdict, heartbeat);
-      const ds = displayStatus(archiveReady, status, activityTs, now);
+      // P2-b: pass the already-parsed heartbeat ts through to readActivityTs /
+      // isDormantRow below so neither re-reads heartbeats/<id>.json a second
+      // time this turn (freshness.readHeartbeat above already read it once).
+      const heartbeatTsOpt = heartbeat && Number.isFinite(heartbeat.ts) ? heartbeat.ts : undefined;
+      const row = { id, worktreePath: entry.worktreePath, sessionId: entry.sessionId };
+      // Compose the widest activity signal available (companion/lib/liveness.js
+      // readActivityTs): heartbeat OR live-session transcript mtime OR the
+      // supervisor verdict. The transcript term is what keeps a child mid-long-turn
+      // observably alive — heartbeats are turn-scoped and go quiet for the whole of
+      // a long autonomous turn. Falls back to the previous two-input signal on any
+      // failure, so this can only ever widen liveness, never narrow it.
+      let activityTs = freshness.lastActivityTs(verdict, heartbeat);
+      let dormant = false;
+      try {
+        const richer = livenessLib.readActivityTs(
+          row, home,
+          { lastOutboundTs: verdict && verdict.lastOutboundTs, heartbeatTs: heartbeatTsOpt }
+        );
+        if (richer && Number.isFinite(richer.ts) && (!Number.isFinite(activityTs) || richer.ts > activityTs)) {
+          activityTs = richer.ts;
+        }
+      } catch (_) {}
+      try {
+        // isDormantRow (companion/lib/liveness.js) — THE ONE read-side
+        // dormancy rule, shared with scripts/devswarm.js's rosterHints so the
+        // per-turn table and the roster can never classify the same row
+        // differently. Picks the tight or wide window per-row based on
+        // whether the transcript term actually resolved for it (P1 fix).
+        dormant = livenessLib.isDormantRow(
+          row, home,
+          { now, lastOutboundTs: verdict && verdict.lastOutboundTs, heartbeatTs: heartbeatTsOpt }
+        );
+      } catch (_) {}
+      const ds = displayStatus(archiveReady, status, activityTs, now, dormant);
       rows.push({
         id,
         label: ds.label,
@@ -1036,8 +1118,9 @@ function main() {
     rows.sort((a, b) => (a.rank - b.rank) || (b.unread - a.unread) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
     const capped = rows.length > MAX_TABLE_ROWS;
     const shown = capped ? rows.slice(0, MAX_TABLE_ROWS) : rows;
+    const evicted = capped ? rows.slice(MAX_TABLE_ROWS) : [];
     if (capped) logTableCap(home, rows.length, shown.length);
-    segments.push(buildWorkspaceTable(shown, now, capped, rows.length - shown.length));
+    segments.push(buildWorkspaceTable(shown, now, capped, rows.length - shown.length, evicted));
   }
 
   // Stuck-mesh surfacing (LEAN, read-only) — orphans[]/staleRegistryPartitions[]
@@ -1116,9 +1199,17 @@ function main() {
   fs.writeSync(1, JSON.stringify(out) + '\n');
 }
 
-try {
-  main();
-} catch (_) {
-  // Fail-open: any error -> no output, exit 0.
+// require.main === module guard (same convention as scripts/devswarm.js): this
+// hook runs its main() + process.exit(0) unconditionally when invoked as a CLI
+// hook, but a test that `require()`s this file for its pure helpers (e.g.
+// displayStatus) must not have the process exited out from under it.
+if (require.main === module) {
+  try {
+    main();
+  } catch (_) {
+    // Fail-open: any error -> no output, exit 0.
+  }
+  process.exit(0);
 }
-process.exit(0);
+
+module.exports = { displayStatus };
