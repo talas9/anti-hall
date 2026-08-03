@@ -37,16 +37,31 @@ function seedLog(dir, fn) {
   }
 }
 
+// timeout: generous on purpose. spawnSync's timeout kills the child (SIGTERM) and
+// yields status=null on expiry — that is a legitimately-slow subprocess under
+// contention, NOT a wrong exit code, and asserting strictEqual(r.code, 0) against a
+// null gives a misleading "0 !== null" failure that looks like a real doctor bug.
+// Proven under load (3 concurrent `node --test` full-suite runs on this machine,
+// each spawning ~130 test files' worth of child processes): this same doctor
+// invocation legitimately took 15021-15040ms wall-clock — just over the previous
+// 15000ms cap — with NO shared state, no hung process, no signal other than the
+// timeout's own SIGTERM. 60000ms keeps a real hang/crash catchable while giving
+// ~4x headroom over the worst contention observed so CI parallelism doesn't flake it.
 function runDoctor({ cwd, env, args }) {
   const res = cp.spawnSync(process.execPath, [DOCTOR_JS].concat(args || []), {
-    cwd, encoding: 'utf8', timeout: 15000,
+    cwd, encoding: 'utf8', timeout: 60000,
     env: Object.assign({}, process.env, {
       HOME: undefined, USERPROFILE: undefined, DEVSWARM_REPO_ID: undefined,
       DISABLE_ANTIHALL_DEVSWARM: undefined, ANTIHALL_DEVSWARM_SUPERVISOR: undefined,
       ANTI_HALL_LOG_DIR: undefined,
     }, env || {}),
   });
-  return { code: res.status, out: (res.stdout || '') + (res.stderr || '') };
+  return {
+    code: res.status,
+    signal: res.signal,
+    out: (res.stdout || '') + (res.stderr || '')
+      + (res.signal ? `\n[runDoctor: process terminated by signal ${res.signal}]` : ''),
+  };
 }
 
 test('doctor --logs: no log file at all -> "no warn/error entries" INFO, exits 0', () => {
