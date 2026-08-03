@@ -27,6 +27,7 @@ const { makeHome } = require('../helpers/fixtures.js');
 const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 const replyStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-reply-state.js');
+const { projectDirFor } = require('../../plugins/anti-hall/companion/lib/liveness.js');
 
 const HOOK = 'devswarm-parent-inbox.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + no source-branch = Primary
@@ -137,6 +138,24 @@ function writeHeartbeat(home, id, beat) {
   const p = path.join(swarmDir(home), 'heartbeats', id + '.json');
   fs.mkdirSync(path.dirname(p), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(beat));
+}
+// writeTranscript(home, worktreePath, sessionId, ageMs) — a real, on-disk
+// <sessionId>.jsonl the hook's readActivityTs/isDormantRow can statSync, with
+// its mtime forced back by `ageMs` (default: freshly written). Needed to make
+// the transcript term actually CONTRIBUTE (sawTranscript:true) for a P1-fix
+// test row — the TIGHT dormantThresholdMs window only applies when this is
+// present; without it, dormancy falls back to the WIDE idleThresholdMs window
+// (see companion/lib/liveness.js's isDormantRow).
+function writeTranscript(home, worktreePath, sessionId, ageMs) {
+  const dir = projectDirFor(worktreePath, home);
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, sessionId + '.jsonl');
+  fs.writeFileSync(p, '{}\n');
+  if (Number.isFinite(ageMs)) {
+    const ts = (Date.now() - ageMs) / 1000;
+    fs.utimesSync(p, ts, ts);
+  }
+  return p;
 }
 
 // ---- gating no-ops ----
@@ -385,7 +404,7 @@ test('TABLE: renders correct rows/columns for varied status + gates + unread, so
 // lastActivityTs) to "idle" in the live table. It must never delete/archive the
 // row, never touch gates, and must never outrank escalated/stale/archive-ready.
 
-test('IDLE: row whose lastActivityTs is older than the default cutoff -> labeled idle, not active', () => {
+test('IDLE: row whose lastActivityTs is older than the default cutoff -> labeled dormant, not active', () => {
   const h = makeHome();
   try {
     writeVerdict(h.home, 'wsOld', { lastOutboundTs: Date.now() - 7 * 60 * 60 * 1000 }); // 7h ago, > 6h default
@@ -393,7 +412,11 @@ test('IDLE: row whose lastActivityTs is older than the default cutoff -> labeled
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const row = tableRow(ctx(r), 'wsOld');
-    assert.ok(/\|\s*wsOld\s*\|\s*idle\s*\|/.test(row), `stale-activity row must show idle; row=${row}`);
+    // Changed by the dormant read-side liveness fix: 7h old activity is now
+    // FIRST caught by the (much tighter, 30m default) dormant threshold, so
+    // this row is 'dormant', not 'idle' — a row with no recent activity is no
+    // longer reported as active/idle.
+    assert.ok(/\|\s*wsOld\s*\|\s*dormant\s*\|/.test(row), `stale-activity row must show dormant; row=${row}`);
     assert.ok(!/\bactive\b/.test(row), `must NOT still say active; row=${row}`);
   } finally { h.cleanup(); }
 });
@@ -449,8 +472,19 @@ test('IDLE: archive-ready row that is ALSO long-idle stays archive-ready (preced
 test('IDLE: ANTIHALL_DEVSWARM_IDLE_MS override honored (shorter cutoff demotes sooner)', () => {
   const h = makeHome();
   try {
+    // P1 fix note: isDormantRow (companion/lib/liveness.js) now picks its
+    // window from whether the transcript term resolved. A row with NO
+    // resolvable transcript uses idleThresholdMs as ITS dormant window too, so
+    // once the (overridden) idle cutoff is exceeded it reads 'dormant', not
+    // merely 'idle' — 'idle' becomes reachable ONLY for a row whose
+    // transcript DOES resolve, so the dormant check keeps using the separate,
+    // unaffected dormantThresholdMs (default 30 min) while idleThresholdMs is
+    // overridden below to 1 min. This row is given a real, resolvable
+    // transcript for exactly that reason.
+    const sessionId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    writeTranscript(h.home, REPO_CWD, sessionId, 2 * 60 * 1000); // 2m old, resolvable
     writeVerdict(h.home, 'wsShortCutoff', { lastOutboundTs: Date.now() - 2 * 60 * 1000 }); // 2m ago
-    writeSharedSummary(h.home, { wsShortCutoff: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
+    writeSharedSummary(h.home, { wsShortCutoff: { total: 0, cursor: 0, unread: 0, directUnread: 0, sessionId } });
     const r = testHook(HOOK, withCwd(payload), {
       home: h.home, env: { ...PRIMARY_ENV, ANTIHALL_DEVSWARM_IDLE_MS: '60000' }, expectJson: true, // 1m cutoff
     });
@@ -466,10 +500,17 @@ test('IDLE: garbage ANTIHALL_DEVSWARM_IDLE_MS -> falls back to default (6h), no 
     // 2h idle: would stay active under the 6h default, would demote under any
     // small cutoff. Asserting "still active" proves the garbage value was
     // rejected in favor of the (much larger) default, not silently coerced to 0.
+    // Changed by the dormant read-side liveness fix: 2h old activity now trips
+    // the (30m default) dormant check BEFORE the idle check this test actually
+    // targets, so ANTIHALL_DEVSWARM_DORMANT_MS is widened here (per the fix
+    // spec: widen dormant rather than delete/weaken the still-valid idle-
+    // fallback assertion below) to isolate the behavior under test.
     writeVerdict(h.home, 'wsGarbageEnv', { lastOutboundTs: Date.now() - 2 * 60 * 60 * 1000 });
     writeSharedSummary(h.home, { wsGarbageEnv: { total: 0, cursor: 0, unread: 0, directUnread: 0 } });
     const r = testHook(HOOK, withCwd(payload), {
-      home: h.home, env: { ...PRIMARY_ENV, ANTIHALL_DEVSWARM_IDLE_MS: 'not-a-number' }, expectJson: true,
+      home: h.home,
+      env: { ...PRIMARY_ENV, ANTIHALL_DEVSWARM_IDLE_MS: 'not-a-number', ANTIHALL_DEVSWARM_DORMANT_MS: String(24 * 60 * 60 * 1000) },
+      expectJson: true,
     });
     assert.strictEqual(r.status, 0);
     const row = tableRow(ctx(r), 'wsGarbageEnv');
@@ -501,7 +542,11 @@ test('IDLE: demoted row is never removed from the registry/summary — no archiv
     // Row still present (demoted, not disappeared) in this turn's table.
     const row = tableRow(ctx(r), 'wsIdleKept');
     assert.ok(row, `idle row must remain visible in the table, not vanish; ctx=${ctx(r)}`);
-    assert.ok(/\bidle\b/.test(row), `row; row=${row}`);
+    // Changed by the dormant read-side liveness fix: 10h old activity is now
+    // caught by the (30m default) dormant threshold before the (6h default)
+    // idle threshold, so this row demotes to 'dormant', not 'idle' — a row
+    // with no recent activity is no longer reported as active/idle.
+    assert.ok(/\bdormant\b/.test(row), `row; row=${row}`);
     // The hook is read-only w.r.t. the registry: the summary file this hook
     // reads from is byte-identical after the run (no archive/delete side effect
     // was written back through it).
@@ -1748,7 +1793,9 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
     const cliPath = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'devswarm.js');
     const expected = [
       OVERRIDE_REASSERT,
-      'DEVSWARM WORKSPACES (live — refreshed every turn):\n'
+      // Header text changed: "live" was actively misleading once a dormant
+      // (likely-closed) row can appear in this same table.
+      'DEVSWARM WORKSPACES (refreshed every turn):\n'
         + '| workspace | status | finish | unread | last |\n'
         + '|---|---|---|---|---|\n'
         + '| wsA | active | — | 2 | — |',

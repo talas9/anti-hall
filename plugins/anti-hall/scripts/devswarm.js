@@ -124,6 +124,7 @@ const inboxCursor = require('../companion/lib/devswarm-inbox-cursor.js');
 const {
   isSafeId, devswarmRoot, livenessPathFor,
   writeVerdict, hasFreshHeartbeat, worktreeActivityMtime, unreadBacklog, DEFAULT_IDLE_MS,
+  isDormantRow,
 } = require('../companion/lib/liveness.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
@@ -4262,6 +4263,18 @@ function fetchNativeChildren(ctx) {
 // reads, liveness.js:129) to surface "days since last activity" on the
 // roster, without any new heavy computation. Returns null (never fabricated)
 // when no verdict exists yet or it carries no usable timestamp.
+// rosterLastOutboundTs(home, id) -> ms | null. The persisted liveness verdict's
+// raw lastOutboundTs (the same file rosterIdleDays reads, before the day
+// conversion). null when absent / unreadable / missing the field — never a
+// fabricated value.
+function rosterLastOutboundTs(home, id) {
+  try {
+    const v = JSON.parse(fs.readFileSync(livenessPathFor(id, home), 'utf8'));
+    if (v && Number.isFinite(v.lastOutboundTs)) return v.lastOutboundTs;
+  } catch (_) { /* no verdict yet / unreadable — fail-open */ }
+  return null;
+}
+
 function rosterIdleDays(home, id, now) {
   try {
     const v = JSON.parse(fs.readFileSync(livenessPathFor(id, home), 'utf8'));
@@ -4279,11 +4292,28 @@ function rosterIdleDays(home, id, now) {
 // `archive <id>` verb. `worktree-gone` = the descriptor's worktreePath no
 // longer exists on disk (existsSync, same check style as elsewhere in this
 // file). `idle Nd` = days since last liveness activity, when known.
-function rosterHints(home, id, worktreePath, now) {
+function rosterHints(home, id, worktreePath, now, sessionId) {
   const hints = [];
   if (worktreePath && !fs.existsSync(worktreePath)) hints.push('worktree-gone');
   const idleDays = rosterIdleDays(home, id, now);
   if (idleDays !== null) hints.push('idle ' + idleDays + 'd');
+  // `dormant` — isDormantRow (companion/lib/liveness.js), THE ONE read-side
+  // dormancy rule, shared with devswarm-parent-inbox.js's per-turn injection
+  // so the roster and the UserPromptSubmit table can never disagree about
+  // which rows are still transacting. It picks the tight dormant window when
+  // this row's transcript term resolves, or the wide idle window when it
+  // doesn't (the common case) — see isDormantRow's own doc for why. Annotation
+  // ONLY: the row is still listed in full. Fail-open — no signal at all means
+  // UNKNOWN, which is never dormant.
+  try {
+    if (isDormantRow(
+      { id, worktreePath, sessionId: sessionId || null },
+      home,
+      { now, lastOutboundTs: rosterLastOutboundTs(home, id) }
+    )) {
+      hints.push('dormant');
+    }
+  } catch (_) {}
   return hints;
 }
 
@@ -4345,7 +4375,7 @@ function cmdRoster(flags, ctx) {
     // or deleted — same no-delete posture as the archived/ scan below); only its
     // label changes, so an archived workspace can no longer read as active.
     const archivedOnly = isArchivedOnlyWorkspace(home, w.id);
-    const hints = rosterHints(home, w.id, w.worktreePath, now);
+    const hints = rosterHints(home, w.id, w.worktreePath, now, w.sessionId);
     if (archivedOnly) hints.unshift('archived');
     return {
       id: w.id, working_on: w.working_on, directUnread: w.directUnread,
@@ -4373,7 +4403,7 @@ function cmdRoster(flags, ctx) {
       directUnread: null, broadcastUnread: null, urgencyMax: null,
       worktreePath: child.path || null, source: 'native',
       meshId: rosterMeshId(child.path || null),
-      hints: rosterHints(home, id, child.path || null, now),
+      hints: rosterHints(home, id, child.path || null, now, null), // native hivecontrol child has no mesh descriptor / sessionId
       // wsName: hivecontrol's own `label`, straight from this native fold —
       // no fs cache lookup needed here, we already have the live value.
       wsName: child.label || null,
@@ -4406,7 +4436,7 @@ function cmdRoster(flags, ctx) {
             broadcastUnread: pw.broadcastUnread, urgencyMax: pw.urgencyMax,
             worktreePath: pw.worktreePath || null, source: 'store-fallback',
             meshId: rosterMeshId(pw.worktreePath),
-            hints: rosterHints(home, pw.id, pw.worktreePath, now),
+            hints: rosterHints(home, pw.id, pw.worktreePath, now, pw.sessionId),
             wsName: names.readName(home, pw.id),
           });
         }

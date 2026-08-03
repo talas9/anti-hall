@@ -801,7 +801,15 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
   `lastOutboundTs` and the heartbeat's `ts`). Capped at 12 rows with a logged (never
   silent) `+N more`; empty output when there are no active workspaces; read-only,
   fail-open, and — like the rest of the parent hooks — makes zero git calls or
-  `computeLiveness()` invocations on the hot UserPromptSubmit path.
+  `computeLiveness()` invocations on the hot UserPromptSubmit path. **v0.70.1:** the
+  ladder gained a `dormant` tier that sorts last, below even `active` — a mesh/registry
+  row outlives its workspace (closing one in the DevSwarm app deletes nothing), and only
+  heartbeat/verdict age reliably separated a live workspace from a closed one across
+  measured cases, so a row whose newest known activity signal is at least
+  `ANTIHALL_DEVSWARM_DORMANT_MS` old (default 30 min, ms) is labeled `dormant` instead.
+  Demotes, never hides (a dormant row still renders with its unread count); never
+  overrides `escalated`/`stale`/`archive-ready`; a heuristic threshold, not proof of
+  closure. `roster` (`scripts/devswarm.js`) carries the identical hint.
 
 **v0.56.0 follow-up (shipped).** Three refinements closing the reception/teardown loop:
 - **Archive flow — both roles, `archive-request` verb.** `devswarm-parent-inbox.js`'s

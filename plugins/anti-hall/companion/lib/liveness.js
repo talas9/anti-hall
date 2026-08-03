@@ -49,6 +49,53 @@ const DEFAULT_NUDGE_WINDOW_MS = 3 * 60 * 1000; // how long a poke stays "in effe
 const DEFAULT_HEARTBEAT_FRESH_MS = DEFAULT_IDLE_MS;
 const GIT_TIMEOUT_MS = 4000;
 
+// DEFAULT_DORMANT_MS — the READ-SIDE liveness window: how long a workspace may go
+// with NO activity signal at all before the roster/injection stops calling it
+// active. 30 min = 2x DEFAULT_HEARTBEAT_FRESH_MS (15 min). The margin that makes
+// this safe for a live-but-quiet child is NOT the mailbox-wake cron (that cron
+// only fires while a session is IDLE between turns; it contributes nothing during
+// a long autonomous turn and cannot be relied on to keep the heartbeat fresh). The
+// real margin comes from the TRANSCRIPT signal in readActivityTs below: a live
+// session appends to its transcript on EVERY tool call, not once per turn, so it
+// keeps refreshing continuously even deep inside one long multi-round turn. 30
+// minutes of total silence across BOTH heartbeat and transcript means the session
+// is not running at all.
+//
+// WHY A READ-SIDE WINDOW AT ALL: a mesh/registry row OUTLIVES its workspace. When
+// a workspace is closed in the DevSwarm app its registry row, its worktree, its
+// workspaces/<id>.json descriptor and its `hivecontrol workspace list` entry ALL
+// survive — closing is not deleting. Measured on four real workspaces (one live,
+// three closed), every other candidate signal was identical across live and dead:
+// descriptor presence, archived/<id>.json presence, registry updated_at (a
+// reconcile sweep bumps every row), the persisted liveness verdict (all four read
+// `alive`), and isLiveSessionId (a pure `unclaimed:` prefix test that is true for
+// any surviving row). ONLY the heartbeat's own age separated them — because
+// heartbeats/<id>.json is rewritten ONLY by that workspace's own live session.
+//
+// Override via ANTIHALL_DEVSWARM_DORMANT_MS (ms, not seconds).
+const DEFAULT_DORMANT_MS = 30 * 60 * 1000;
+
+// DEFAULT_ROSTER_IDLE_MS / idleThresholdMs — the WIDE read-side fallback window,
+// moved here from hooks/lib/devswarm-freshness.js (that module requires this
+// file, so this file cannot require it back without a cycle; devswarm-
+// freshness.js now re-exports these two so its existing consumers are
+// unaffected). This is the window isDormantRow falls back to when the
+// transcript term did NOT contribute (see isDormantRow below): most workspace
+// descriptors never record a real Claude sessionId (scripts/devswarm.js's
+// cmdInboxPull resolves session as `--session || DEVSWARM_BUILDER_ID ||
+// 'unclaimed:'+id` — none of those are a Claude session id; only
+// hooks/devswarm-child-turn.js stamps a real one), so for most rows the ONLY
+// surviving signal is the heartbeat, written once per USER TURN — a tight
+// window there would misread a live child mid-long-turn as dead. 6 hours is a
+// defensible wide default: long enough that a normal lull between turns/
+// sessions never false-positives, short enough that a workspace idle since
+// yesterday still reads as idle/dormant today. Override via
+// ANTIHALL_DEVSWARM_IDLE_MS (ms, not seconds). NOT the same constant as this
+// file's own DEFAULT_IDLE_MS (15 min, computeLiveness's outbound-staleness
+// idle default, an unrelated axis) — kept under a distinct name to avoid
+// silently colliding with it.
+const DEFAULT_ROSTER_IDLE_MS = 6 * 60 * 60 * 1000;
+
 // isSafeId(id) -> bool. A descriptor id must be a single safe path segment before
 // it is ever path.join'd into locks/liveness/recovery paths (P1-7): no separators,
 // no traversal, no control chars/whitespace, not empty, not '.'/'..'.
@@ -98,6 +145,174 @@ function isFreshBeat(ts, now, freshMs) {
   if (ts === null || !Number.isFinite(ts) || ts <= 0) return false;
   if (ts > now) return false; // future ts is not proof of present life
   return (now - ts) <= freshMs;
+}
+
+// dormantThresholdMs(env) -> ms. ANTIHALL_DEVSWARM_DORMANT_MS off the given env
+// (process.env when omitted); absent / non-numeric / non-positive ->
+// DEFAULT_DORMANT_MS. Never throws.
+//
+// P2-a: uses Number(), NOT parseInt. parseInt STOPS at the first non-digit
+// character instead of rejecting the whole value, so `"30min"` silently
+// parsed as `30` (a 30-MILLISECOND threshold — every workspace instantly
+// dormant) and `"1e6"` (a legitimate exponential form) parsed as `1`, not
+// 1000000. Number() parses (or rejects) the WHOLE trimmed string.
+function dormantThresholdMs(env) {
+  const src = env || process.env;
+  const raw = src && src.ANTIHALL_DEVSWARM_DORMANT_MS;
+  const n = Number(String(raw == null ? '' : raw).trim());
+  return (Number.isFinite(n) && n > 0) ? n : DEFAULT_DORMANT_MS;
+}
+
+// idleThresholdMs(env) -> ms. ANTIHALL_DEVSWARM_IDLE_MS off the given env
+// (process.env when omitted); absent / non-numeric / non-positive ->
+// DEFAULT_ROSTER_IDLE_MS. Moved here from devswarm-freshness.js (see
+// DEFAULT_ROSTER_IDLE_MS above); same Number()-based parsing as
+// dormantThresholdMs, for the same reason (P2-a applies identically here —
+// this reader is now load-bearing as isDormantRow's fallback window, not
+// merely a display-label threshold).
+function idleThresholdMs(env) {
+  const src = env || process.env;
+  const raw = src && src.ANTIHALL_DEVSWARM_IDLE_MS;
+  const n = Number(String(raw == null ? '' : raw).trim());
+  return (Number.isFinite(n) && n > 0) ? n : DEFAULT_ROSTER_IDLE_MS;
+}
+
+// isDormantActivity(activityTs, now, env, opts) -> bool. TRUE only on POSITIVE
+// evidence that a workspace's session has stopped transacting: a KNOWN
+// activity timestamp that is at least the threshold old.
+//
+// opts.thresholdMs — when a FINITE value > 0 is supplied, it WINS over the env
+// lookup (isDormantRow uses this to pick between the tight dormant window and
+// the wide idle window per-row, without duplicating this comparison logic).
+// Absent/non-finite/non-positive -> falls back to dormantThresholdMs(env), the
+// original behaviour, unchanged.
+//
+// FAIL-OPEN BY CONSTRUCTION — every uncertain input returns FALSE (not dormant),
+// so an unknown-liveness row is always still surfaced:
+//   * activityTs null / non-finite (no heartbeat and no verdict ever written —
+//     a brand-new or pre-upgrade workspace) -> false. ABSENCE OF A SIGNAL IS NOT
+//     EVIDENCE OF DEATH; this is what keeps the filter from blinding a live row.
+//   * a non-finite `now` -> false.
+//   * activityTs <= 0 -> false (a zeroed/garbage stamp is not evidence).
+//   * a FUTURE activityTs (clock skew) -> false, mirroring isFreshBeat's refusal
+//     to trust a future stamp in either direction.
+function isDormantActivity(activityTs, now, env, opts) {
+  if (!Number.isFinite(activityTs) || activityTs <= 0) return false;
+  if (!Number.isFinite(now)) return false;
+  const age = now - activityTs;
+  if (age < 0) return false; // future stamp -> not evidence of anything
+  const o = opts || {};
+  const threshold = (Number.isFinite(o.thresholdMs) && o.thresholdMs > 0) ? o.thresholdMs : dormantThresholdMs(env);
+  return age >= threshold;
+}
+
+// readActivityTs(row, home, opts) -> { ts, sawTranscript }. The newest activity
+// signal a READER can observe for a workspace, without git and without spawning
+// anything:
+//   1. heartbeats/<id>.json ts      — written once per USER TURN by the child's
+//                                     UserPromptSubmit hook.
+//   2. the session TRANSCRIPT mtime — <projectDir>/<sessionId>.jsonl, appended
+//                                     continuously by a live session (every tool
+//                                     call, not once per turn). This is what makes
+//                                     a live child mid-long-turn observably alive:
+//                                     turn-scoped heartbeats alone go quiet for the
+//                                     whole of a long autonomous turn.
+//   3. the liveness verdict's lastOutboundTs — only refreshed when the OPTIONAL
+//                                     supervisor companion is installed, so it is a
+//                                     bonus signal, never a dependency.
+// `ts` is the NEWEST of whatever is available (ms, or null when nothing is
+// available) — unchanged from before this shape change. Every input
+// independently degrades to 0/null, so a missing one can only make the row
+// look LESS alive than it is.
+//
+// `sawTranscript` is true ONLY when the transcript statSync above actually
+// produced a finite mtime for THIS row's own <sessionId>.jsonl. WHY THE CALLER
+// NEEDS THIS: measured on this machine, only ~7/26 workspace descriptors carry
+// a real Claude sessionId at all (scripts/devswarm.js's cmdInboxPull resolves
+// session as `--session || DEVSWARM_BUILDER_ID || 'unclaimed:'+id` — none of
+// those are a Claude session id; only hooks/devswarm-child-turn.js stamps a
+// real one), and only ~5/26 of those resolve to an on-disk transcript file.
+// For the rest, the transcript term above NEVER contributes, and the only
+// surviving signal is the heartbeat — written once per USER TURN. A tight
+// dormancy window applied to a heartbeat-only signal would misread a live
+// child deep in one long autonomous turn as dead, because nothing refreshes
+// between heartbeats mid-turn. The caller (isDormantRow) uses `sawTranscript`
+// to WIDEN its window whenever the transcript term did not contribute, rather
+// than applying the same tight window uniformly regardless of which evidence
+// is actually available.
+//
+// Pure fs reads (readFileSync + statSync). Never throws.
+function readActivityTs(row, home, opts) {
+  const o = opts || {};
+  const F = o.fs || fs;
+  const id = row && row.id != null ? String(row.id) : null;
+  if (!id) return { ts: null, sawTranscript: false };
+  let best = 0;
+  let sawTranscript = false;
+  try {
+    if (Number.isFinite(o.heartbeatTs)) {
+      // P2-b: caller already read+parsed the heartbeat file (e.g.
+      // devswarm-parent-inbox.js's freshness.readHeartbeat) — skip the
+      // redundant internal re-read of the same file this turn.
+      if (o.heartbeatTs > best) best = o.heartbeatTs;
+    } else {
+      const t = heartbeatTs(id, home, F);
+      if (Number.isFinite(t) && t > best) best = t;
+    }
+  } catch (_) {}
+  try {
+    if (row.sessionId && row.worktreePath) {
+      const t = transcriptMtime(projectDirFor(row.worktreePath, home), String(row.sessionId), F);
+      if (Number.isFinite(t)) {
+        sawTranscript = true;
+        if (t > best) best = t;
+      }
+    }
+  } catch (_) {}
+  try {
+    if (Number.isFinite(o.lastOutboundTs) && o.lastOutboundTs > best) best = o.lastOutboundTs;
+  } catch (_) {}
+  return { ts: best > 0 ? best : null, sawTranscript };
+}
+
+// isDormantRow(row, home, opts) -> bool. THE ONE read-side dormancy rule —
+// composes readActivityTs + isDormantActivity so the hook's per-turn table and
+// scripts/devswarm.js's rosterHints can never drift apart on the same row.
+//
+// Picks the window from the EVIDENCE actually available (readActivityTs's
+// `sawTranscript`):
+//   * transcript term contributed -> the TIGHT dormantThresholdMs window. A
+//     live session appends to its transcript on every tool call, so real
+//     silence across BOTH heartbeat AND transcript is strong evidence the
+//     session has ended.
+//   * transcript did NOT resolve (no sessionId on the row, or no .jsonl on
+//     disk — the common case, since most descriptors never record a Claude
+//     session id) -> fall back to the WIDE idleThresholdMs window. The only
+//     surviving signal is the heartbeat, written once per USER TURN, so a
+//     tight window there would misread a live child in one long autonomous
+//     turn as dead.
+// Fail-open in both directions: no signal at all -> never dormant (isDormantActivity's own guarantee).
+//
+// opts: { now, env, fs, lastOutboundTs, heartbeatTs } — all forwarded to
+// readActivityTs / isDormantActivity as appropriate. `now` defaults to
+// Date.now(); `env` defaults to process.env.
+function isDormantRow(row, home, opts) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const env = o.env || process.env;
+  const readOpts = {};
+  if (o.fs) readOpts.fs = o.fs;
+  if (Number.isFinite(o.lastOutboundTs)) readOpts.lastOutboundTs = o.lastOutboundTs;
+  if (Number.isFinite(o.heartbeatTs)) readOpts.heartbeatTs = o.heartbeatTs;
+  let ts = null;
+  let sawTranscript = false;
+  try {
+    const r = readActivityTs(row, home, readOpts);
+    ts = r && Number.isFinite(r.ts) ? r.ts : null;
+    sawTranscript = !!(r && r.sawTranscript);
+  } catch (_) { ts = null; sawTranscript = false; }
+  const thresholdMs = sawTranscript ? dormantThresholdMs(env) : idleThresholdMs(env);
+  return isDormantActivity(ts, now, env, { thresholdMs });
 }
 
 // hasFreshHeartbeat(id, home, opts) -> bool. True iff a heartbeat for `id` was
@@ -280,8 +495,10 @@ function writeVerdict(id, verdict, home, fsi) {
 }
 
 module.exports = {
-  DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS, DEFAULT_HEARTBEAT_FRESH_MS,
+  DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS, DEFAULT_HEARTBEAT_FRESH_MS, DEFAULT_DORMANT_MS,
+  DEFAULT_ROSTER_IDLE_MS,
   isSafeId, devswarmRoot, livenessPathFor, heartbeatPathFor, projectDirFor,
   transcriptMtime, worktreeActivityMtime, unreadBacklog, computeLiveness, writeVerdict,
-  heartbeatTs, hasFreshHeartbeat, isFreshBeat,
+  heartbeatTs, hasFreshHeartbeat, isFreshBeat, dormantThresholdMs, isDormantActivity,
+  idleThresholdMs, readActivityTs, isDormantRow,
 };
