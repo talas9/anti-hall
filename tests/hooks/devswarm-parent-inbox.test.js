@@ -1420,6 +1420,80 @@ test('OWN UNREAD DECIDE+REPLY FAIL-OPEN: pendingQuestions not an array at all (t
   } finally { h.cleanup(); }
 });
 
+// buildOwnUnreadSegment wording fix: unansweredList (pendingQuestions cross-
+// referenced against reply-state) is NOT cursor/unread-scoped, so its length
+// can legitimately exceed `count` (the unread total stated in the preceding
+// sentence) — "N of these is/are an unanswered QUESTION(S)" would then wrongly
+// claim the unanswered questions are a subset of the just-announced unread
+// set. These three tests cover: length > count (must not claim containment,
+// must be plural), length === 1 (singular grammar), and 1 < length <= count
+// (plural grammar, containment claim holds).
+
+test('OWN UNREAD DECIDE+REPLY WORDING: unansweredList.length > count -> no false "N of these" containment claim, plural grammar', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    // unread total is 1, but 3 distinct askers are unanswered — unansweredList
+    // is not unread-scoped so this is a real, reachable state.
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 0, unread: 1, directUnread: 1,
+        pendingQuestions: [
+          { from: 'child-a', ts: askTs, seq: 1 },
+          { from: 'child-b', ts: askTs, seq: 2 },
+          { from: 'child-c', ts: askTs, seq: 3 },
+        ],
+      },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    assert.ok(own, `own segment expected; ctx=${ctx(r)}`);
+    assert.ok(!/3 of these is an unanswered/.test(own), `must not claim false containment; own=${own}`);
+    assert.ok(!/3 of these are unanswered/.test(own), `must not claim false containment; own=${own}`);
+    assert.match(own, /3 unanswered QUESTIONS/, `must be plural for 3; own=${own}`);
+    assert.match(own, /DECIDE/, `own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD DECIDE+REPLY WORDING: unansweredList.length === 1 -> correct singular grammar', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 2, cursor: 0, unread: 2, directUnread: 2,
+        pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
+      },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    assert.match(own, /1 of these is an unanswered QUESTION /, `singular grammar; own=${own}`);
+    assert.ok(!/QUESTIONS/.test(own), `must not pluralize the noun for count 1; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('OWN UNREAD DECIDE+REPLY WORDING: 1 < unansweredList.length <= count -> correct plural grammar, containment claim holds', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 3, cursor: 0, unread: 3, directUnread: 3,
+        pendingQuestions: [
+          { from: 'child-a', ts: askTs, seq: 1 },
+          { from: 'child-b', ts: askTs, seq: 2 },
+        ],
+      },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    assert.match(own, /2 of these are unanswered QUESTIONS/, `plural containment-holds wording; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
 // Reviewer P1 regression (Wave G fix-wave): Phase 8's step-1 restructure iterates
 // the shared summary's OWN entries too, since the Primary's self-registered id
 // (OWN_ID) lives in the SAME summaries/<REPO_KEY>.json as real children. Without

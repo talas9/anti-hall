@@ -934,6 +934,31 @@ function runRepairs(opts) {
     };
   }, () => require(DEVSWARM_SCRIPT).foldMeshDuplicates(home, { cwd, env }));
 
+  // Archived-still-active forward-migration: cmdArchive used to tombstone exactly
+  // ONE registry row per archive, while up to four rows (hivecontrol builder UUID,
+  // `primary-<8hex>` spawn phantom, legacy ingested `<label>-<repoId8>`, subdir-
+  // derived) can exist for ONE worktree — and computeSummary projects any live row
+  // as an ACTIVE workspace, so an archived workspace kept reading active under a
+  // surviving duplicate. This retires the whole same-worktree group for every
+  // genuinely archived workspace, forwarding unread directs into the archived id's
+  // partition FIRST (message rows are NEVER deleted) and leaving any row backed by
+  // a DIFFERENT live descriptor untouched. Pure store read+write (no daemon or
+  // scheduler side effect) -> AUTO-SAFE, same posture as fold-mesh-duplicates
+  // above. Reuses devswarm.js's foldArchivedRegistryRows for BOTH the dry-run
+  // detect and the apply — one code path, idempotent, fail-open.
+  migrationFix('fold-archived-rows', 'fold-archived-rows', () => {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.foldArchivedRegistryRows !== 'function') return { pending: false, detail: 'build has no foldArchivedRegistryRows' };
+    const r = dw.foldArchivedRegistryRows(home, { cwd, env, dryRun: true }) || {};
+    const n = r.pending || 0;
+    const leftN = Array.isArray(r.left) ? r.left.length : 0;
+    return {
+      pending: n > 0,
+      detail: n + ' registry row(s) of archived workspace(s) to retire'
+        + (leftN ? ' (' + leftN + ' safety-gated row(s) left in place)' : ''),
+    };
+  }, () => require(DEVSWARM_SCRIPT).foldArchivedRegistryRows(home, { cwd, env }));
+
   // P1-8: backfill the new `ownerKey` descriptor field on every descriptor
   // (active AND archived) + heal prior hash-bucket split-brain via re-home. A
   // pure descriptor/store forward-migration (idempotent, fail-open, NO-DELETE) —

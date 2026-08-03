@@ -552,9 +552,23 @@ function buildOwnUnreadSegment(count, id, urgencyMax, unanswered) {
       );
       const extra = unansweredList.length > MAX_LISTED
         ? ' +' + (unansweredList.length - MAX_LISTED) + ' more' : '';
+      // unansweredList is deliberately NOT cursor/unread-scoped (see the
+      // comment above this function), while `count` IS the unread total —
+      // unansweredList.length can legitimately exceed count. When it does,
+      // "N of these" would wrongly claim the unanswered questions are a
+      // subset of the just-announced unread set, so that phrasing is only
+      // used when the subset claim actually holds; otherwise the sentence
+      // stands on its own (still fully plural/singular-correct).
+      const questionClause = unansweredList.length <= count
+        ? (unansweredList.length === 1
+            ? '1 of these is an unanswered QUESTION'
+            : unansweredList.length + ' of these are unanswered QUESTIONS')
+        : (unansweredList.length === 1
+            ? '1 unanswered QUESTION remains (not necessarily among the unread above)'
+            : unansweredList.length + ' unanswered QUESTIONS remain (not necessarily among the unread above)');
       body += (
-        ' READING IS NOT SUFFICIENT: ' + unansweredList.length + ' of these is an unanswered '
-        + 'QUESTION from ' + askers.join(', ') + extra + ' — you must DECIDE from context and '
+        ' READING IS NOT SUFFICIENT: ' + questionClause
+        + ' from ' + askers.join(', ') + extra + ' — you must DECIDE from context and '
         + 'REPLY, not merely read, via `node ' + CLI + ' send --to <id> --message "..."` '
         + '(use the asker\'s id above as <id>).'
       );

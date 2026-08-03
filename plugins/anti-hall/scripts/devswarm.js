@@ -598,6 +598,64 @@ function upsertStoreRegistry(home, desc, ctx, opts) {
 }
 
 // ---------------------------------------------------------------------------
+// MESH ROW COPY — the ONE definition of which fields a copied message row
+// carries. There are exactly TWO sites in this file that copy an existing mesh
+// row into another partition/store: rehomeAcrossStores (a VERBATIM move into
+// another store, via the low-level `store.appendMeshRow`) and
+// foldGroupIntoSurvivor (a FORWARD into the survivor partition, via the
+// wire-contract `store.appendMeshMessage`). Those two APIs name the SAME data
+// DIFFERENTLY (`sender`/`from`, `body`/`message`, `ts`/`timestamp`,
+// `mtype`/`type`), so each site used to spell its own object literal out by
+// hand — which is precisely how the historical `needsReply`-drop bug class
+// recurred: a new message field added to the wire contract was carried at one
+// site and silently forgotten at the other, and a dropped flag is invisible
+// (the row still copies, it just loses its meaning). One table now defines the
+// canonical field set; a new field is added HERE, once, and both shapes get it.
+//
+// `msg: null` means "this field is deliberately NOT part of the forward shape":
+//   - hash        — a FORWARD re-addresses the row (new recipient), so its hash
+//                   MUST be recomputed from the new fields (that recomputation
+//                   is what makes a re-run OR-IGNORE instead of duplicating).
+//                   A verbatim re-home keeps the original hash for exactly the
+//                   same dedup reason.
+//   - isHeartbeat — a heartbeat can never reach the forward site at all:
+//                   isForwardable/isForwardableRow requires mtype==='direct',
+//                   which structurally excludes every heartbeat/broadcast row.
+//                   Carrying the flag there would imply forwards can be
+//                   heartbeats; they cannot. The verbatim re-home DOES carry it
+//                   (it moves rows untouched, heartbeat or not).
+const MESH_ROW_COPY_FIELDS = [
+  // { row: key on a stored row / appendMeshRow, msg: key on appendMeshMessage }
+  { row: 'sender', msg: 'from' },
+  { row: 'recipient', msg: 'to' },
+  { row: 'body', msg: 'message' },
+  { row: 'ts', msg: 'timestamp' },
+  { row: 'mtype', msg: 'type' },
+  { row: 'urgency', msg: 'urgency' },
+  { row: 'needsReply', msg: 'needsReply' },
+  { row: 'hash', msg: null },
+  { row: 'isHeartbeat', msg: null },
+];
+
+// meshRowCopy(m, shape, overrides) -> a copy payload for `shape`:
+//   'row'     -> appendMeshRow field names (verbatim move; caller supplies workspaceId)
+//   'message' -> appendMeshMessage field names (forward; caller supplies the new
+//                recipient/type and recomputes the hash)
+// `overrides` is applied LAST so a caller can re-address the copy (the forward
+// site) without reaching around this helper. Pure — never throws, never reads
+// or writes a store.
+function meshRowCopy(m, shape, overrides) {
+  const src = m || {};
+  const out = {};
+  for (const f of MESH_ROW_COPY_FIELDS) {
+    const key = shape === 'message' ? f.msg : f.row;
+    if (!key) continue; // deliberately absent from this shape (see the table's comment)
+    out[key] = src[f.row];
+  }
+  return Object.assign(out, overrides || {});
+}
+
+// ---------------------------------------------------------------------------
 // STORE RE-HOME (P1-1 / P1-2). A descriptor registered while repoKey was
 // transiently null lands its registry row + any messages in the LEGACY hash
 // bucket store/<hashFromWorkspaceId(id)>/ — a bucket the Primary's real read
@@ -681,11 +739,11 @@ function rehomeAcrossStores(home, id, fromKey, toKey, ctx) {
     let msgs = [];
     try { msgs = fromStore.listMessages(id, { sinceCursor: fromCursor }) || []; } catch (_) { msgs = []; }
     for (const m of msgs) {
-      toStore.appendMeshRow({
-        workspaceId: id, ts: m.ts, hash: m.hash, body: m.body,
-        sender: m.sender, recipient: m.recipient, mtype: m.mtype,
-        urgency: m.urgency, isHeartbeat: m.isHeartbeat, needsReply: m.needsReply,
-      });
+      // VERBATIM move: every field comes from the ONE shared MESH_ROW_COPY_FIELDS
+      // table (see meshRowCopy) so this site can never again drift from the
+      // forward site in foldGroupIntoSurvivor. Only the destination partition is
+      // an override — the row keeps its original hash (dedup) and its heartbeat flag.
+      toStore.appendMeshRow(meshRowCopy(m, 'row', { workspaceId: id }));
     }
 
     // 3) VERIFY the copy landed BEFORE removing anything (no-delete-until-verified).
@@ -1108,37 +1166,142 @@ function retireWorktreeDuplicates(home, keepDesc, ctx) {
 // tombstoning — used by the doctor `fold-mesh-duplicates` detect() so it shares
 // this ONE classification instead of a second reimplementation. NEVER throws on a
 // row (each is try/wrapped by the caller's own fold body / fail-open).
+//
+// `opts.lockCandidates` (OPT-IN — the ARCHIVE paths only; see
+// retireArchivedWorktreeGroup's header for the full why) runs each candidate's
+// forward + descriptor-check + conditional tombstone under withIdLock(candidateId)
+// and re-derives the CAS snapshot from a FRESH in-lock re-read of that row. The
+// conditional tombstone alone closes every interleaving where a candidate's
+// re-register lands BEFORE the tombstone (the CAS then mismatches and refuses);
+// it CANNOT close the one where the re-register's registry write lands AFTER it —
+// cmdRegister writes the descriptor and upserts the row as two separate steps, so
+// a fold that samples the row, sees no descriptor yet, and CASes before either
+// write tombstones a row that a live child is in the middle of re-establishing.
+// Holding that candidate's OWN lock makes our check+tombstone atomic with respect
+// to cmdRegister, which wraps both of its writes in withIdLock(id) — the window
+// closes completely. A lock-busy candidate is SKIPPED (never forwarded, never
+// tombstoned), reported in `lockBusy`, and retried by a later pass (every step
+// here is idempotent). Existing non-archive callers do not pass this and keep
+// today's exact behaviour.
 function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
   const dryRun = !!(opts && opts.dryRun);
+  const lockCandidates = !!(opts && opts.lockCandidates) && !dryRun;
   const retired = [];
   const left = [];
   const forwardFailed = [];
+  // `skipped` — candidates we deliberately did NOT act on this pass (lockCandidates
+  // only): [{id, reason}] with reason 'lock-busy' | 'row-unreadable'. Always present
+  // and EMPTY for the unlocked callers, whose behaviour is unchanged.
+  const skipped = [];
+  // `leftRows` — id -> the row this pass ACTUALLY judged when it decided 'left'
+  // (the fresh in-lock re-read when lockCandidates is on, the pre-lock row
+  // otherwise). Callers that report WHY a row was left (archiveLeftReason) must
+  // key off this, not their own pre-lock snapshot, or the reported reason can
+  // contradict what the pass acted on for a row whose liveness changed inside
+  // the lock window. `left` itself stays a plain id array — existing callers
+  // (foldMeshDuplicates) read it that way and are unaffected.
+  const leftRows = new Map();
   let forwarded = 0;
   for (const d of candidates) {
     if (!d || d.id == null || String(d.id) === String(survivorId)) continue;
     if (dryRun) {
       // read-only classification: a store-only row WOULD be tombstoned; a
       // descriptor-backed one WOULD be left (never collapsed).
-      if (readDescriptorFile(home, d.id)) { left.push(d.id); continue; }
+      if (readDescriptorFile(home, d.id)) { left.push(d.id); leftRows.set(String(d.id), d); continue; }
       retired.push(d.id);
       continue;
     }
-    let forwardOk = true;
-    try {
-      const since = s.cursorValue(d.id);
-      for (const m of s.listMessages(d.id, { sinceCursor: since })) {
-        if (!isForwardable(m)) continue; // #67: forward only a real actionable direct — skips broadcast/heartbeat AND stale native poke/hash-mirror rows (mtype/sender null)
-        const fields = {
-          from: m.sender, to: survivorId, type: 'direct',
-          message: m.body, timestamp: m.ts, urgency: m.urgency || 'normal',
-          needsReply: m.needsReply,
-        };
-        const hash = store.meshMessageHash(fields);
-        const r = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
-        if (r && r.inserted) forwarded++;
+    // foldOne(row) — the per-candidate forward-then-tombstone body, factored so it
+    // can run either UNLOCKED (the pre-existing callers' byte-identical behaviour)
+    // or inside withIdLock(row.id) when lockCandidates is on. `row` is the snapshot
+    // the conditional tombstone is keyed on: the pre-lock listRegistry() row when
+    // unlocked, or a FRESH in-lock re-read when locked (acting on a pre-lock
+    // snapshot under a lock would re-introduce the very lost-update the lock is
+    // taken to prevent — rekeySubdirRegistryRows' rule).
+    const foldOne = (row) => {
+      let forwardOk = true;
+      try {
+        const since = s.cursorValue(row.id);
+        for (const m of s.listMessages(row.id, { sinceCursor: since })) {
+          if (!isForwardable(m)) continue; // #67: forward only a real actionable direct — skips broadcast/heartbeat AND stale native poke/hash-mirror rows (mtype/sender null)
+          // FORWARD: same ONE shared MESH_ROW_COPY_FIELDS table as the verbatim
+          // re-home site (see meshRowCopy). The overrides re-address the copy to the
+          // survivor partition; `type:'direct'` is pinned (not m.mtype) because only
+          // a direct can reach here at all — isForwardable already filtered the rest —
+          // and urgency keeps its pre-existing empty-string->'normal' normalization.
+          // `hash` is absent by design (recomputed below from the NEW fields) and so
+          // is `isHeartbeat` (a heartbeat is never forwardable).
+          const fields = meshRowCopy(m, 'message', {
+            to: survivorId, type: 'direct', urgency: m.urgency || 'normal',
+          });
+          const hash = store.meshMessageHash(fields);
+          const r = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+          if (r && r.inserted) forwarded++;
+        }
+      } catch (_) { forwardOk = false; }
+      if (!forwardOk) return { outcome: 'forward-failed' };
+      // `row` here is whatever foldOne was called with — the in-lock re-read `cur`
+      // when locked, the pre-lock candidate `d` when not — so a caller keying its
+      // reported reason off this row (leftRows, below) reports what THIS pass
+      // actually judged, not a possibly-stale pre-lock snapshot.
+      if (readDescriptorFile(home, row.id)) return { outcome: 'left', row };
+      // P1a/P2/P3 race close: ATOMIC conditional tombstone. removeRegistryIf deletes
+      // ONLY if the row is STILL EXACTLY the one we classified — its session_id AND
+      // updatedAt AND writeSeq all still equal our snapshot (NULL-safe, so a null
+      // snapshot updatedAt/writeSeq that gained a real value, or a NEW session_id,
+      // counts as a re-register). sqlite: one atomic DELETE ... WHERE; journal: an
+      // under-lock re-read + a conditional (`ifUpdatedAt`/`ifSessionId`/`ifWriteSeq`)
+      // remove op reduceRegistry ignores if a re-register raced it. A child that
+      // re-registered in the window (child-turn writes its descriptor THEN its store
+      // row) is now re-written -> NOT deleted -> LEFT (a later fold re-evaluates);
+      // forward-before-tombstone already ran and is idempotent, so nothing is
+      // orphaned. (Descriptor-backed rows were already LEFT above — this pins the
+      // store-only phantom, which may itself carry a stale session_id.)
+      // P3 (v0.61.0 money-path residual): writeSeq is a per-row monotonic counter
+      // bumped on EVERY upsert regardless of wall-clock ms — closes the LAST gap
+      // where a live child re-registers the SAME id/sessionId within the SAME
+      // millisecond as the snapshot (updatedAt alone can't distinguish that from a
+      // stable phantom; writeSeq still advances).
+      const removed = s.removeRegistryIf(row.id, { sessionId: row.sessionId, updatedAt: row.updatedAt, writeSeq: row.writeSeq });
+      if (!removed) return { outcome: 'left' };
+      return { outcome: 'retired' };
+    };
+
+    let res;
+    if (lockCandidates) {
+      // NEVER the survivor's own lock — only CANDIDATE ids, which the loop guard
+      // above proves are != survivorId. The archive callers already hold the
+      // survivor's lock, so re-acquiring it here would self-deadlock.
+      const r = withIdLock(d.id, home, () => {
+        let cur = null;
+        try { cur = (s.listRegistry() || []).find((x) => x && x.id != null && String(x.id) === String(d.id)) || null; }
+        catch (_) { return { outcome: 'unreadable' }; }
+        if (!cur) return { outcome: 'gone' }; // row already retired by another op -> nothing to do
+        return foldOne(cur);
+      });
+      if (r && r.lockBusy) {
+        // SKIPPED, not forwarded and not tombstoned: another operation (typically
+        // the candidate's own cmdRegister) holds its lock. Surfaced, never silently
+        // dropped — every step here is idempotent, so a later pass retires it.
+        skipped.push({ id: String(d.id), reason: 'lock-busy' });
+        try {
+          process.stderr.write('[devswarm] foldGroupIntoSurvivor: candidate ' + JSON.stringify(String(d.id))
+            + ' is locked by another operation in progress — skipped this pass (retried on the next run)\n');
+        } catch (_) {}
+        continue;
       }
-    } catch (_) { forwardOk = false; }
-    if (!forwardOk) {
+      res = r;
+    } else {
+      res = foldOne(d);
+    }
+    if (!res || res.outcome === 'gone') continue;
+    if (res.outcome === 'unreadable') {
+      // Could not re-read the row under its lock -> cannot classify it; leave it
+      // exactly as it is (idempotent retry next pass) rather than acting blind.
+      skipped.push({ id: String(d.id), reason: 'row-unreadable' });
+      continue;
+    }
+    if (res.outcome === 'forward-failed') {
       forwardFailed.push(String(d.id));
       try {
         process.stderr.write('[devswarm] foldGroupIntoSurvivor: forward FAILED for '
@@ -1146,29 +1309,242 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
       } catch (_) {}
       continue;
     }
-    if (readDescriptorFile(home, d.id)) { left.push(d.id); continue; }
-    // P1a/P2/P3 race close: ATOMIC conditional tombstone. removeRegistryIf deletes
-    // ONLY if the row is STILL EXACTLY the one we classified — its session_id AND
-    // updatedAt AND writeSeq all still equal our snapshot (NULL-safe, so a null
-    // snapshot updatedAt/writeSeq that gained a real value, or a NEW session_id,
-    // counts as a re-register). sqlite: one atomic DELETE ... WHERE; journal: an
-    // under-lock re-read + a conditional (`ifUpdatedAt`/`ifSessionId`/`ifWriteSeq`)
-    // remove op reduceRegistry ignores if a re-register raced it. A child that
-    // re-registered in the window (child-turn writes its descriptor THEN its store
-    // row) is now re-written -> NOT deleted -> LEFT (a later fold re-evaluates);
-    // forward-before-tombstone already ran and is idempotent, so nothing is
-    // orphaned. (Descriptor-backed rows were already LEFT above — this pins the
-    // store-only phantom, which may itself carry a stale session_id.)
-    // P3 (v0.61.0 money-path residual): writeSeq is a per-row monotonic counter
-    // bumped on EVERY upsert regardless of wall-clock ms — closes the LAST gap
-    // where a live child re-registers the SAME id/sessionId within the SAME
-    // millisecond as the snapshot (updatedAt alone can't distinguish that from a
-    // stable phantom; writeSeq still advances).
-    const removed = s.removeRegistryIf(d.id, { sessionId: d.sessionId, updatedAt: d.updatedAt, writeSeq: d.writeSeq });
-    if (!removed) { left.push(d.id); continue; }
+    if (res.outcome === 'left') {
+      left.push(d.id);
+      leftRows.set(String(d.id), res.row || d);
+      continue;
+    }
     retired.push(d.id);
   }
-  return { retired, left, forwardFailed, forwarded };
+  return { retired, left, forwardFailed, forwarded, skipped, leftRows };
+}
+
+// pickArchiveForwardSurvivor(s, home, archivedId, rows) — WHERE the archive folds
+// forward the unread backlog. This is a SEPARATE question from WHAT gets retired,
+// and getting it wrong is message LOSS, not merely untidy bookkeeping.
+//
+// The archive paths originally hardcoded the ARCHIVED id as the forward survivor.
+// That is right only when the whole worktree is going away. It is WRONG whenever a
+// DIFFERENT live workspace still holds this worktree, because of the exact ordering
+// the archive performs: forward into <survivor>, then tombstone. When the survivor
+// IS the id being archived, its own registry row is tombstoned moments later
+// (cmdArchive's removeRegistry, or this migration's ownRow CAS) — so a real unread
+// direct, forwarded a few lines earlier, lands in a partition that computeSummary
+// no longer projects and that NO live session drains. It is not deleted (message
+// rows never are), but it is unreachable and invisible: the v0.55.x P0 message-loss
+// class, re-created by the fold that was supposed to prevent it. A phantom row's
+// unanswered question belongs with whoever is still ALIVE on that worktree.
+//
+// RULE: forward to a same-worktree row that has BOTH its OWN live descriptor
+// (workspaces/<id>.json) AND a LIVE registry sessionId (isLiveSessionId). Among
+// several such rows, defer to the EXISTING pickSurvivor (freshest-live registry
+// updatedAt, cursor tiebreak) — the same selection resolveMeshTarget and
+// foldMeshDuplicates already use, so a `send` to this worktree and this forward
+// converge on ONE partition rather than a second, divergent survivor policy. With NO
+// such row the archived id is the survivor: legitimate, because the whole worktree is
+// retiring and the resulting partition is SURFACED as an orphan (never deleted),
+// which is the no-delete posture, not loss.
+//
+// CONSERVATIVE vs STRICT — the conceptual error the first version of this helper
+// made, spelled out because it reads like a consistency win and is not:
+// that version deliberately reused the TOMBSTONE safety gate's test (descriptor
+// presence, and nothing else) for the forward destination, on the reasoning that "the
+// row we refuse to retire" and "the row we trust to drain" must never disagree. They
+// are DIFFERENT QUESTIONS and they SHOULD disagree:
+//   - TOMBSTONING must be CONSERVATIVE: never retire a row that MIGHT still be alive.
+//     A descriptor file is the right (permissive) test there — over-keeping a row is
+//     untidy, mis-retiring one loses a workspace. That gate is UNCHANGED.
+//   - The FORWARD DESTINATION must be STRICT: only forward where something will
+//     ACTUALLY drain. A descriptor file proves only that a workspace once existed —
+//     NOTHING purges a stale workspaces/<id>.json after a crash, so a crashed sibling
+//     keeps its descriptor while its registry sessionId is empty/synthetic (dead).
+// Forwarding into such a row buries a real unanswered direct in a partition no live
+// session drains: the SAME message-loss class this helper exists to close, merely
+// relocated from the archived id to a different dead id — and WORSE, because the
+// destination was then reported as 'live-descriptor', so the operator had no signal
+// anything was wrong. Session liveness is the only test that answers "will this
+// drain?".
+//
+// pickSurvivor's firstMatch fallback is why the filter must be a PRE-filter, not a
+// post-hoc trust: pickSurvivor assigns firstMatch UNCONDITIONALLY before its own
+// liveness check and ends `return bestLive || firstMatch`, so handing it a set with
+// no live row returns a DEAD row rather than null. Every row we pass in is therefore
+// already proven live-session, which makes both branches of that fallback live; the
+// belt-and-braces post-check below re-verifies the pick and falls back to the
+// archived id if it is ever not. pickSurvivor itself is left alone on purpose — its
+// other callers (retireWorktreeDuplicates / foldMeshDuplicates / the fold) rely on
+// the firstMatch fallback, and changing shared behaviour here would be a far wider
+// blast radius than this bug.
+//
+// Fail-open: any error -> the archived id (the pre-existing behaviour).
+function pickArchiveForwardSurvivor(s, home, archivedId, rows) {
+  try {
+    const drainableRows = [];
+    for (const d of rows || []) {
+      if (!d || d.id == null || String(d.id) === String(archivedId)) continue;
+      if (!readDescriptorFile(home, d.id)) continue;   // store-only phantom: cannot drain anything
+      if (!isLiveSessionId(d.sessionId)) continue;     // descriptor-backed but SESSION-DEAD (crashed sibling): nothing drains it
+      drainableRows.push(d);
+    }
+    if (!drainableRows.length) return String(archivedId);
+    const pick = pickSurvivor(s, { rows: drainableRows });
+    // Post-check (defence in depth against pickSurvivor's firstMatch fallback ever
+    // returning a row the pre-filter would have rejected): a destination we cannot
+    // PROVE drainable is never used.
+    if (!pick || pick.id == null || !isLiveSessionId(pick.sessionId) || !readDescriptorFile(home, pick.id)) {
+      return String(archivedId);
+    }
+    return String(pick.id);
+  } catch (_) { return String(archivedId); }
+}
+
+// archiveLeftReason(home, id, row) — the REPORTED reason a same-worktree row survived
+// the fold. Must be a FACT, not a reassuring label: the tombstone gate keeps every
+// descriptor-backed row (correctly conservative — see above), so a row left behind may
+// be a genuinely live child OR a crashed one whose stale descriptor outlived it. Those
+// are operationally different (the first drains its partition, the second does not), so
+// they get DIFFERENT reasons — 'live-descriptor' keeps its existing, accurate meaning
+// (descriptor AND live session; other tests assert on it) and the dead case is named
+// explicitly instead of borrowing the word "live". `row` is the registry snapshot, may
+// be missing -> then only the descriptor is knowable.
+function archiveLeftReason(home, id, row) {
+  if (!readDescriptorFile(home, id)) return 'raced-re-register';
+  if (row && isLiveSessionId(row.sessionId)) return 'live-descriptor';
+  if (!row) return 'live-descriptor'; // no snapshot to judge liveness with; descriptor is all we know
+  return 'descriptor-no-live-session';
+}
+
+// retireArchivedWorktreeGroup(s, home, archivedId, worktreePath) — the ARCHIVE
+// counterpart of retireWorktreeDuplicates, and the fix for "an archived
+// workspace keeps projecting ACTIVE on the roster".
+//
+// MECHANISM (why one tombstone is not enough): a registry row is keyed on the
+// id of whoever REGISTERED it (cmdRegister), while a worktree's mesh ADDRESS is
+// derived separately from its worktreePath. Two id-spaces, one worktree — by
+// design (a child MUST own the partition it drains, the v0.55.x P0 message-loss
+// fix). The consequence is that up to four DIFFERENT ids can hold a live
+// registry row for ONE physical worktree at the same time: the child's
+// hivecontrol builder UUID, a `primary-<8hex>` spawn phantom / register-primary
+// row, a legacy ingested `<label>-<repoId8>` row, and a `primary-<8hex>`
+// derived from a SUBDIR pre-image. cmdArchive tombstoned exactly ONE of them —
+// the id it was asked to archive — and computeSummary treats "has a registry
+// row" as "this workspace is active", so EVERY surviving sibling row kept the
+// just-archived workspace projecting as live. Archiving is a WORKTREE-level
+// retirement, so the whole same-worktree group must retire with it.
+//
+// Candidates are matched on the collision-free canonicalWorktreeRealPath (the
+// resolved real path STRING, never the 8-hex hash — a hash bucket can collide
+// two distinct worktrees; see that helper's own comment), and folded with the
+// SHARED foldGroupIntoSurvivor primitive, so every retired row's unread direct
+// backlog is FORWARDED into ONE partition before anything is tombstoned. Message
+// rows are NEVER deleted.
+//
+// The forward survivor is chosen by LIVENESS (pickArchiveForwardSurvivor), NOT by
+// "whoever is being archived". Hardcoding the archived id forwards a phantom's
+// unanswered question into a partition this very function's caller tombstones a few
+// lines later — undeleted but undrainable and unprojected, i.e. the message-loss
+// class the fold exists to prevent. See that helper for the full why. The survivor
+// is never a candidate (so it is never locked, forwarded from, or tombstoned) and,
+// when it is not the archived id, it is still SURFACED in `left` with its
+// 'live-descriptor' reason — it survived the fold, and every surviving
+// same-worktree row is reported.
+//
+// SAFETY GATE (the sharpest edge): foldGroupIntoSurvivor deliberately LEAVES any
+// row that has its own LIVE descriptor (workspaces/<id>.json) — such a row could
+// be a DISTINCT live child draining its own partition, and tombstoning it would
+// silently archive a workspace the user never asked to archive. That is exactly
+// the rule archive needs, so it is reused verbatim rather than relaxed: a row is
+// tombstoned only when it has no live descriptor of its own. Every row left
+// behind is SURFACED with a reason (never silently dropped), so the caller can
+// report it instead of the user discovering a still-active ghost later.
+//
+// LOCKING (this used to read "lock-free BY CONTRACT" — that was WRONG for this
+// path, and the reason is worth spelling out):
+//   - The ARCHIVED id is NEVER locked here. cmdArchive already holds
+//     withIdLock(archivedId) around this whole call, and the per-id lock is NOT
+//     re-entrant, so re-acquiring it would self-deadlock (it would spin out its
+//     budget and then fail closed, silently turning archive into a no-op fold).
+//     Every candidate is != archivedId by the loop's own guard, so nothing below
+//     can ever take that lock.
+//   - The CANDIDATES *are* locked (`lockCandidates: true`), because the atomic
+//     conditional tombstone is not sufficient on its own. removeRegistryIf refuses
+//     when a candidate's re-register lands BEFORE it (the snapshot mismatches), but
+//     cmdRegister performs TWO writes — descriptor first, registry upsert second —
+//     both under withIdLock(id). A fold that samples a candidate's row, reads no
+//     descriptor (not written yet), and CASes (row not yet re-upserted, so the
+//     snapshot still matches) tombstones the row of a child that is at that instant
+//     coming back to life; the child's upsert then re-creates the row, leaving the
+//     unread backlog we just forwarded sitting as undrainable duplicates in the
+//     ARCHIVED partition (whose own registry row cmdArchive tombstones moments
+//     later) and, in the window between, a live child that `send` and the roster
+//     both read as unregistered. Taking the candidate's OWN lock makes our
+//     descriptor-check + tombstone atomic against exactly those two writes, which
+//     is what closes the window. The in-lock re-read (never the pre-lock snapshot)
+//     is what makes the CAS key honest.
+//   - NO CYCLE: withIdLock is a BOUNDED wait (acquireIdLock's 2s budget) that then
+//     FAILS CLOSED with {lockBusy:true} rather than blocking forever, and a
+//     lock-busy candidate is SKIPPED — not forwarded, not tombstoned, just
+//     surfaced in `left` with reason 'lock-busy'. So two concurrent archives on one
+//     worktree that each hold the other's id (an X->Y / Y->X cycle) cannot wedge:
+//     both time out, both skip, and because every step is idempotent a later pass
+//     retires whatever was skipped.
+// FAIL-OPEN: never throws.
+function retireArchivedWorktreeGroup(s, home, archivedId, worktreePath) {
+  const out = { retired: [], forwarded: 0, left: [], forwardedTo: String(archivedId) };
+  try {
+    if (!worktreePath || archivedId == null) return out;
+    const keepReal = canonicalWorktreeRealPath(worktreePath);
+    if (!keepReal) return out; // unresolvable path -> cannot PROVE same worktree; never fold
+    const candidates = [];
+    for (const d of s.listRegistry()) {
+      if (!d || d.id == null || String(d.id) === String(archivedId)) continue;
+      if (!d.worktreePath) continue;
+      if (canonicalWorktreeRealPath(d.worktreePath) !== keepReal) continue; // SAME physical worktree only
+      candidates.push(d);
+    }
+    if (!candidates.length) return out;
+    // LIVENESS survivor: a same-worktree row that still has its own descriptor
+    // outlives this archive, so it — not the id being tombstoned — is the partition
+    // the phantoms' unread must land in.
+    const survivorId = pickArchiveForwardSurvivor(s, home, archivedId, candidates);
+    out.forwardedTo = survivorId;
+    // The survivor is excluded from the fold entirely: never forwarded FROM, never
+    // locked, never tombstoned. (foldGroupIntoSurvivor's own loop guard would skip
+    // it anyway; filtering here makes the exclusion explicit and keeps it out of the
+    // primitive's retired/left bookkeeping so we can report it ourselves.)
+    const foldCandidates = candidates.filter((d) => d && String(d.id) !== survivorId);
+    const r = foldGroupIntoSurvivor(s, home, survivorId, foldCandidates, { lockCandidates: true });
+    out.retired = r.retired.map((x) => String(x));
+    out.forwarded = r.forwarded;
+    // The forward survivor, when it is not the archived id, is a same-worktree row
+    // that SURVIVED this archive — surfaced with the SAME 'live-descriptor' reason
+    // the safety gate gives every other kept row, so the caller's report still
+    // accounts for every row it did not retire.
+    // The survivor, when it is not the archived id, is by construction descriptor-
+    // backed AND live-session (pickArchiveForwardSurvivor's strict filter), so
+    // 'live-descriptor' is a FACT here, not a hopeful label.
+    const rowOf = new Map(candidates.map((d) => [String(d.id), d]));
+    if (survivorId !== String(archivedId)) out.left.push({ id: survivorId, reason: 'live-descriptor' });
+    for (const x of r.left) {
+      // Distinguish the ways a row survives the fold, so the reason is a FACT rather
+      // than a guess: a descriptor-backed row with a LIVE session (a distinct live
+      // child — the safety gate), a descriptor-backed row whose session is DEAD (a
+      // crashed sibling whose stale descriptor kept the conservative gate from
+      // retiring it — it is NOT draining anything), or a row whose atomic conditional
+      // tombstone was refused because it changed under us (a re-register raced the
+      // fold). See archiveLeftReason. Key off the row the pass ITSELF acted on
+      // (r.leftRows — the in-lock re-read foldOne classified), not the pre-lock
+      // `rowOf` snapshot: a row whose liveness changed inside the lock window
+      // must not get a reason derived from stale pre-lock state. Fail open to
+      // the pre-lock snapshot only if leftRows has nothing for this id.
+      out.left.push({ id: String(x), reason: archiveLeftReason(home, x, (r.leftRows && r.leftRows.get(String(x))) || rowOf.get(String(x))) });
+    }
+    for (const x of r.forwardFailed) out.left.push({ id: String(x), reason: 'forward-failed' });
+    // Candidates we deliberately skipped (their own lock was held, or the in-lock
+    // re-read failed): NOT retired, NOT forwarded, surfaced with the real reason.
+    for (const x of r.skipped) out.left.push({ id: String(x.id), reason: x.reason });
+    return out;
+  } catch (_) { return out; } // fail-open: a group retire must never break archive itself
 }
 
 // canonicalWorktreeRealPath(worktreePath) — the collision-FREE real-path pre-image
@@ -1427,6 +1803,183 @@ function foldMeshDuplicates(home, ctx) {
     // indistinguishable from "nothing needed folding". Report the failure;
     // control flow is unchanged (still returns normally, never throws).
     return { ok: false, error: String(e && e.message || e), retired: [], forwarded: 0, folded: 0 };
+  }
+}
+
+// foldArchivedRegistryRows(home, ctx0) — FORWARD MIGRATION for registries that
+// were ALREADY split by the archive bug before the fix shipped (this repo's
+// persisted-shape rule: a shape change ships a migration in BOTH update and
+// doctor). cmdArchive used to tombstone exactly ONE id per archive, so every
+// registry that saw an archive under the old code can still hold live rows for
+// worktrees whose workspace is archived — and a live row is what makes
+// computeSummary/roster project that workspace as ACTIVE. This sweep applies the
+// SAME forward-then-tombstone + safety gate cmdArchive now applies at archive
+// time (retireArchivedWorktreeGroup), retroactively.
+//
+// SCOPE — every id form and every bucket form, without enumerating either:
+//   - ID FORMS: rows are matched by the archived descriptor's canonical worktree
+//     REAL PATH (canonicalWorktreeRealPath), which is form-AGNOSTIC — a
+//     `primary-<8hex>` canonical row, a `primary-<8hex>` derived from a SUBDIR
+//     pre-image (canonicalWorktreeRealPath resolves to the git TOPLEVEL first, so
+//     a subdir row matches its toplevel), a hivecontrol builder UUID, and a legacy
+//     `<label>-<repoId8>` row all match on the SAME real path. The archived id's
+//     OWN row is additionally matched by id, so a row whose worktreePath is
+//     missing/unresolvable is still retired.
+//   - BUCKET FORMS: store.listStoreHashes enumerates EVERY per-project store
+//     directory, which covers both `store/<repoKey>` (`<sanitized-name>-<6hex>`)
+//     and the LEGACY `store/<8hex>` hashFromWorkspaceId bucket without special-
+//     casing either.
+//
+// PROPERTIES (all four are load-bearing):
+//   - IDEMPOTENT: a retired row is gone from listRegistry, so a second run finds
+//     no rows for any archived id and reports nothing to do.
+//   - FAIL-OPEN, HONESTLY: never throws into update/doctor — but a run that RAISED
+//     reports ok:false with the error, never a clean no-op (the same posture as
+//     foldMeshDuplicates' catch). Per-store and per-id errors are counted, and one
+//     store's failure never aborts the sweep.
+//   - NO-DELETE: message rows are NEVER deleted. Unread directs are FORWARDED into
+//     the archived id's partition first; only REGISTRY rows are tombstoned.
+//   - SAFETY-GATED: foldGroupIntoSurvivor leaves any row with its own LIVE
+//     descriptor, so a distinct live workspace that merely shares a worktree is
+//     never silently archived — it is reported in `left` with a reason.
+// `ctx0.dryRun` classifies without writing (doctor detect()); it takes no lock
+// and performs no forward/tombstone. The APPLY path runs each archived id's work
+// under withIdLock(id) — an unlocked read-modify-write here is a lost-update bug
+// against a concurrent unarchive/register for the same id (the same reasoning as
+// rekeySubdirRegistryRows). A lock-busy id is SURFACED and retried next run.
+function foldArchivedRegistryRows(home, ctx0) {
+  const ctx = Object.assign({ home, env: process.env }, ctx0 || {});
+  const dryRun = !!(ctx0 && ctx0.dryRun);
+  const out = {
+    ok: true, action: 'fold-archived-rows', dryRun,
+    scanned: 0, pending: 0, retired: [], forwarded: 0, left: [], errors: 0,
+  };
+  try {
+    // 1) Every GENUINELY archived workspace: archived/<id>.json present AND
+    //    workspaces/<id>.json absent (the same test isArchivedOnlyWorkspace uses —
+    //    a mid-archive/crashed state has BOTH and is applyRecoveryIntents' job,
+    //    not this migration's).
+    const ad = checkedArchivedDir(home);
+    if (!ad.ok || !ad.exists) return out;
+    let names = [];
+    try { names = fs.readdirSync(ad.path); } catch (_) { names = []; }
+    const archived = [];
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      const id = n.slice(0, -'.json'.length);
+      if (!isSafeId(id)) continue;
+      if (fs.existsSync(descriptorPath(home, id))) continue; // still live -> not archived
+      const st = readDescriptorPathState(path.join(ad.path, n));
+      const d = st.descriptor;
+      if (!d || String(d.id) !== id) continue;
+      archived.push({ id, real: d.worktreePath ? canonicalWorktreeRealPath(d.worktreePath) : null });
+      out.scanned++;
+    }
+    if (!archived.length) return out;
+
+    // 2) Sweep EVERY per-project store bucket (both bucket forms — see header).
+    let hashes = [];
+    try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
+    for (const bucket of hashes) {
+      let s = null;
+      try { s = store.openStore({ home, hash: bucket, backend: ctx.backend, env: ctx.env }); }
+      catch (_) { out.errors++; continue; } // unreadable store: SKIPPED, never wiped
+      try {
+        for (const a of archived) {
+          let rows = [];
+          try { rows = s.listRegistry() || []; } catch (_) { out.errors++; continue; }
+          const ownRow = rows.find((d) => d && d.id != null && String(d.id) === a.id) || null;
+          const sameWorktree = a.real
+            ? rows.filter((d) => d && d.id != null && String(d.id) !== a.id && d.worktreePath
+                && canonicalWorktreeRealPath(d.worktreePath) === a.real)
+            : [];
+          if (!ownRow && !sameWorktree.length) continue; // nothing of this archived id lives here
+          // WHERE the siblings' unread goes — chosen by LIVENESS, identical rule to
+          // the archive-time path (pickArchiveForwardSurvivor; see its header). The
+          // archived id's own row is tombstoned a few lines below, so forwarding into
+          // it while a LIVE sibling still holds this worktree would bury a real
+          // unanswered direct in a partition nothing drains.
+          const survivorId = pickArchiveForwardSurvivor(s, home, a.id, sameWorktree);
+          const foldCandidates = sameWorktree.filter((d) => d && String(d.id) !== survivorId);
+          const survivorIsOther = survivorId !== String(a.id);
+          // Snapshot rows by id so a LEFT row's reported reason can name the real
+          // reason (live vs descriptor-backed-but-session-dead) — see archiveLeftReason.
+          const rowOf = new Map(sameWorktree.map((d) => [String(d.id), d]));
+          if (dryRun) {
+            // Pure classification, no lock and no write: foldGroupIntoSurvivor's own
+            // dryRun mode decides which siblings WOULD retire (identical rule to the
+            // apply path — one classifier, never a second reimplementation).
+            const c = foldGroupIntoSurvivor(s, home, survivorId, foldCandidates, { dryRun: true });
+            for (const x of c.retired) { out.retired.push(String(x) + '@' + bucket); out.pending++; }
+            if (survivorIsOther) out.left.push({ id: survivorId, bucket, reason: 'live-descriptor' });
+            for (const x of c.left) out.left.push({ id: String(x), bucket, reason: archiveLeftReason(home, x, rowOf.get(String(x))) });
+            if (ownRow) { out.retired.push(a.id + '@' + bucket); out.pending++; }
+            continue;
+          }
+          const r = withIdLock(a.id, home, () => {
+            // Forward-before-tombstone for the siblings, THEN retire the archived
+            // id's own surviving row. Order matters: the siblings' unread must land
+            // in this partition while it is still the survivor.
+            // lockCandidates: the siblings are locked individually so a sibling
+            // that is mid-cmdRegister is never tombstoned out from under itself
+            // (see retireArchivedWorktreeGroup's LOCKING note). a.id's own lock is
+            // held by THIS withIdLock and is never re-acquired — every sibling id
+            // is != a.id by the filter above, and the survivor is excluded from the
+            // candidates entirely (never locked, never forwarded from, never
+            // tombstoned), so a live survivor cannot self-deadlock this pass either.
+            const g = foldGroupIntoSurvivor(s, home, survivorId, foldCandidates, { lockCandidates: true });
+            let ownRetired = false;
+            if (ownRow) {
+              // ATOMIC conditional tombstone on the exact snapshot: a workspace
+              // un-archived/re-registered between the scan and here must NOT be
+              // silently re-tombstoned (its descriptor would then be live again —
+              // caught next run, when it no longer classifies as archived).
+              try {
+                ownRetired = !!s.removeRegistryIf(ownRow.id, {
+                  sessionId: ownRow.sessionId, updatedAt: ownRow.updatedAt, writeSeq: ownRow.writeSeq,
+                });
+              } catch (_) { ownRetired = false; }
+            }
+            return { g, ownRetired };
+          });
+          if (r && r.lockBusy) {
+            // Surfaced, never silently dropped — idempotent, so the next run retries.
+            out.left.push({ id: a.id, bucket, reason: 'lock-busy' });
+            continue;
+          }
+          const g = r.g;
+          out.forwarded += g.forwarded;
+          for (const x of g.retired) out.retired.push(String(x) + '@' + bucket);
+          // The live survivor is not retired — surfaced with the same reason every
+          // other kept same-worktree row gets, so the report stays complete.
+          if (survivorIsOther) out.left.push({ id: survivorId, bucket, reason: 'live-descriptor' });
+          for (const x of g.left) {
+            // Key off g.leftRows (the in-lock re-read the pass actually classified),
+            // not the pre-lock rowOf snapshot — same reasoning as
+            // retireArchivedWorktreeGroup. Fail open to rowOf if leftRows has nothing.
+            out.left.push({ id: String(x), bucket, reason: archiveLeftReason(home, x, (g.leftRows && g.leftRows.get(String(x))) || rowOf.get(String(x))) });
+          }
+          for (const x of g.forwardFailed) out.left.push({ id: String(x), bucket, reason: 'forward-failed' });
+          for (const x of g.skipped) out.left.push({ id: String(x.id), bucket, reason: x.reason });
+          if (r.ownRetired) out.retired.push(a.id + '@' + bucket);
+          else if (ownRow) out.left.push({ id: a.id, bucket, reason: 'raced-re-register' });
+          // Refresh the projection whenever anything actually changed — a forward
+          // with no tombstone still delivers real messages that must be visible to
+          // every summary.json reader (the same gap retireWorktreeDuplicates closes).
+          if (g.retired.length || g.forwarded || r.ownRetired) {
+            try { store.deriveSummary(s, { home, env: ctx.env }); } catch (_) { out.errors++; }
+          }
+        }
+      } finally { try { s.close(); } catch (_) {} }
+    }
+    if (!dryRun) out.pending = out.retired.length;
+    out.ok = out.errors === 0;
+    return out;
+  } catch (e) {
+    // Fail-open means "never THROW into update/doctor" — NOT "report success for a
+    // run that raised" (foldMeshDuplicates' precedent).
+    return { ok: false, action: 'fold-archived-rows', dryRun, error: String(e && e.message || e),
+      scanned: out.scanned, pending: 0, retired: out.retired, forwarded: out.forwarded, left: out.left, errors: out.errors + 1 };
   }
 }
 
@@ -2584,9 +3137,29 @@ function cmdArchive(id, ctx, opts) {
   // store `register`/`roster` populate (repoKey, when resolvable). Done BEFORE the
   // active unlink so an ENOSPC/IO failure here leaves BOTH the descriptor and the
   // registry row intact.
+  //
+  // WHOLE-GROUP RETIRE (archived-still-active fix): tombstoning THIS id alone
+  // left every OTHER registry row for the SAME physical worktree live, and a
+  // live row IS what computeSummary projects as an active workspace — so the
+  // workspace the user just archived kept showing up as active under a
+  // duplicate row (see retireArchivedWorktreeGroup for the full mechanism).
+  // Runs BEFORE this id's own tombstone, and forward-before-tombstone, so the
+  // duplicates' unread backlog lands in THIS id's partition rather than being
+  // scattered across partitions nothing will ever drain. It is fail-open (never
+  // throws), so the only thing that can throw inside this try — and therefore
+  // the only thing that can trigger the rollback below — is still the tombstone
+  // itself, exactly as before: the all-or-nothing discipline for the archived
+  // descriptor+row pair is unchanged. If the rollback does fire, the forwarded
+  // rows are already durable in this id's partition and its registry row is
+  // revived, so nothing is stranded and a retry is idempotent.
+  let groupRetire = null;
   try {
     const s = store.openStore({ home, workspaceId: id, hash: ownerKey, backend: ctx.backend, env: ctx.env });
-    try { s.removeRegistry(id); store.deriveSummary(s, { home, env: ctx.env }); }
+    try {
+      groupRetire = retireArchivedWorktreeGroup(s, home, id, desc && desc.worktreePath);
+      s.removeRegistry(id);
+      store.deriveSummary(s, { home, env: ctx.env });
+    }
     finally { s.close(); }
   } catch (e) {
     // ROLLBACK. The failure may have hit AFTER removeRegistry appended its
@@ -2656,11 +3229,21 @@ function cmdArchive(id, ctx, opts) {
   }
   // Archive fully completed — the recovery-intent is discharged.
   clearRecoveryIntent(home, id);
-  return {
+  const archived = {
     ok: true, action: 'archive', id, descriptorArchived: moved,
     manualStep: 'hivecontrol has no teardown command — REMOVE workspace ' + id +
       ' in the DevSwarm app (archive keeps disk contents; never delete without confirmation).',
   };
+  // Surface the whole-group retire ONLY when it did something — a plain archive
+  // of a single-row worktree keeps its existing return shape byte-for-byte.
+  // `leftDuplicates` is the honest half: a same-worktree row the safety gate
+  // refused to tombstone is REPORTED with its reason, never silently dropped.
+  if (groupRetire) {
+    if (groupRetire.retired.length) archived.retiredDuplicates = groupRetire.retired;
+    if (groupRetire.forwarded) archived.forwardedFromDuplicates = groupRetire.forwarded;
+    if (groupRetire.left.length) archived.leftDuplicates = groupRetire.left;
+  }
+  return archived;
   });
 }
 
@@ -3644,6 +4227,32 @@ function rosterMeshId(worktreePath) {
   try { return inst.primaryWorkspaceId(worktreePath); } catch (_) { return null; }
 }
 
+// isArchivedOnlyWorkspace(home, id) — is this id's workspace GENUINELY archived?
+// True only when archived/<id>.json exists AND workspaces/<id>.json does NOT:
+// the archived hardlink alone is not proof (cmdArchive links the descriptor into
+// archived/ BEFORE unlinking the active one, so mid-archive BOTH exist, and a
+// crash there leaves an active workspace with an archived anchor that
+// applyRecoveryIntents reconciles). Requiring the ACTIVE descriptor to be gone
+// is the same "the destructive step completed" test applyRecoveryIntents uses.
+//
+// Why the roster needs this: computeSummary projects any workspace with a live
+// registry row as active, and a surviving duplicate row for an archived
+// worktree therefore re-projects it as active (the bug retireArchivedWorktreeGroup
+// fixes going forward). The roster could only ever ADD archived ids that were
+// absent — it had no way to DEMOTE a store-sourced row — so on a registry that
+// is already split, an archived workspace kept reading active. Read-only and
+// FAIL-OPEN: any unreadable/ambiguous state returns false, i.e. the row projects
+// exactly as it does today.
+function isArchivedOnlyWorkspace(home, id) {
+  try {
+    if (id == null || !isSafeId(String(id))) return false;
+    if (fs.existsSync(descriptorPath(home, String(id)))) return false; // still live
+    const ad = checkedArchivedDir(home);
+    if (!ad.ok || !ad.exists) return false;
+    return fs.existsSync(path.join(ad.path, String(id) + '.json'));
+  } catch (_) { return false; }
+}
+
 function cmdRoster(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
@@ -3655,17 +4264,27 @@ function cmdRoster(flags, ctx) {
   try { sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now }); }
   finally { s.close(); }
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
-  const workspaces = Object.values(sum.workspaces || {}).map((w) => ({
-    id: w.id, working_on: w.working_on, directUnread: w.directUnread,
-    broadcastUnread: w.broadcastUnread, urgencyMax: w.urgencyMax,
-    worktreePath: w.worktreePath || null, source: 'store',
-    meshId: rosterMeshId(w.worktreePath),
-    hints: rosterHints(home, w.id, w.worktreePath, now),
-    // wsName (task #6): cached human display name, read-only fs projection
-    // (never a hivecontrol spawn on this read verb) — null when not yet
-    // cached (backfilled by cmdReconcile, or set at spawn time).
-    wsName: names.readName(home, w.id),
-  }));
+  const workspaces = Object.values(sum.workspaces || {}).map((w) => {
+    // DEMOTE (archived-still-active fix): a store-sourced row whose workspace is
+    // genuinely archived is labeled source:'archived' + hinted, instead of being
+    // reported as a live 'store' row. The row is still SHOWN (nothing is hidden
+    // or deleted — same no-delete posture as the archived/ scan below); only its
+    // label changes, so an archived workspace can no longer read as active.
+    const archivedOnly = isArchivedOnlyWorkspace(home, w.id);
+    const hints = rosterHints(home, w.id, w.worktreePath, now);
+    if (archivedOnly) hints.unshift('archived');
+    return {
+      id: w.id, working_on: w.working_on, directUnread: w.directUnread,
+      broadcastUnread: w.broadcastUnread, urgencyMax: w.urgencyMax,
+      worktreePath: w.worktreePath || null, source: archivedOnly ? 'archived' : 'store',
+      meshId: rosterMeshId(w.worktreePath),
+      hints,
+      // wsName (task #6): cached human display name, read-only fs projection
+      // (never a hivecontrol spawn on this read verb) — null when not yet
+      // cached (backfilled by cmdReconcile, or set at spawn time).
+      wsName: names.readName(home, w.id),
+    };
+  });
   // Dedup by CANONICAL identity (inst.primaryWorkspaceId, which realpath-
   // normalizes before hashing), not raw string equality — the same fix class
   // as resolvePrimaryTarget: a raw `--show-toplevel` spelling and a
@@ -4858,6 +5477,7 @@ module.exports = {
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   retireWorktreeDuplicates,
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
+  retireArchivedWorktreeGroup, foldArchivedRegistryRows, meshRowCopy, MESH_ROW_COPY_FIELDS, cmdRoster,
   computeDiagnosis, healthcheckHumanLine,
   resolveMeshTarget, resolveSendTarget,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath, skipFilePath,

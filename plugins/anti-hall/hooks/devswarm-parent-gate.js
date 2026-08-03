@@ -267,19 +267,35 @@ function findGitToplevel(startDir) {
 // Only the "entry resolved" success path can ever populate it non-empty — it
 // is read from the SAME summary entry `unread`/`urgencyMax` already come
 // from, defaulting to `[]` if absent or malformed (not an array).
+//
+// pendingQuestionsTruncated (P2 fix): devswarm-store.js's computeSummary
+// caps pendingQuestions at a per-workspace backstop (DEFAULT_PENDING_
+// QUESTIONS_CAP) and, ONLY when that cap actually bites, stamps the entry
+// with `pendingQuestionsTruncated: {cap, kept, dropped}` — the store's own
+// header there is explicit that a truncated list must never be treated as a
+// complete one. Nothing downstream consumed that signal until this fix: with
+// enough distinct resolved senders holding unanswered questions to exceed
+// the cap, the senders past it are silently absent from pendingQuestions, so
+// unansweredQuestions() below never sees them and this gate stops blocking
+// for exactly those askers — without ever observing a reply. Every returned
+// shape below carries `pendingQuestionsTruncated` (`null` default) so
+// main()'s `own.pendingQuestionsTruncated` never needs to special-case a
+// missing field; only the "entry resolved" success path can populate it,
+// read verbatim from the same summary entry (never re-derived here — this
+// hook must stay a pure projection of what the store already decided).
 function readOwnUnread(home, cwd, repoKey) {
   const top = cwd ? findGitToplevel(cwd) : null;
-  if (!top) return { unread: 0, id: null, urgencyMax: null, unknown: false, pendingQuestions: [] };
+  if (!top) return { unread: 0, id: null, urgencyMax: null, unknown: false, pendingQuestions: [], pendingQuestionsTruncated: null };
 
   let id = null;
   try { id = installIngest.primaryWorkspaceId(top); } catch (_) { id = null; }
-  if (!id) return { unread: 0, id: null, urgencyMax: null, unknown: false, pendingQuestions: [] };
+  if (!id) return { unread: 0, id: null, urgencyMax: null, unknown: false, pendingQuestions: [], pendingQuestionsTruncated: null };
 
   try {
     let legacyHash = null;
     try { legacyHash = installIngest.worktreeHash(top); } catch (_) { legacyHash = null; }
     const hash = repoKey || legacyHash;
-    if (!hash) return { unread: 0, id, urgencyMax: null, unknown: false, pendingQuestions: [] };
+    if (!hash) return { unread: 0, id, urgencyMax: null, unknown: false, pendingQuestions: [], pendingQuestionsTruncated: null };
 
     const p = path.join(devswarmRoot(home), 'summaries', String(hash) + '.json');
 
@@ -289,7 +305,7 @@ function readOwnUnread(home, cwd, repoKey) {
     } catch (e) {
       // ENOENT = routine "never derived yet" -> confirmed-empty, not unknown.
       // Anything else (EACCES, EISDIR, ...) means something is actually wrong.
-      return { unread: 0, id, urgencyMax: null, unknown: !!(e && e.code !== 'ENOENT'), pendingQuestions: [] };
+      return { unread: 0, id, urgencyMax: null, unknown: !!(e && e.code !== 'ENOENT'), pendingQuestions: [], pendingQuestionsTruncated: null };
     }
 
     const trimmed = String(raw).trim();
@@ -298,25 +314,30 @@ function readOwnUnread(home, cwd, repoKey) {
       // this codebase treats as ambiguous (devswarm-pull.js's own TORN-READ
       // GUARD) — a derive-in-progress write, not a confirmed-empty summary.
       // Fail open TOWARD unknown here, never toward a silent 0.
-      return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [] };
+      return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [], pendingQuestionsTruncated: null };
     }
 
     const summary = JSON.parse(trimmed); // throws on corrupt/truncated JSON -> caught below
     if (!summary || typeof summary !== 'object' || typeof summary.workspaces !== 'object' || !summary.workspaces) {
-      return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [] }; // parses, but not the expected shape
+      return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [], pendingQuestionsTruncated: null }; // parses, but not the expected shape
     }
 
     const entry = summary.workspaces[id];
     const unread = entry && Number.isFinite(entry.unread) && entry.unread > 0 ? entry.unread : 0;
     const urgencyMax = (unread > 0 && entry && entry.urgencyMax) ? entry.urgencyMax : null;
     const pendingQuestions = entry && Array.isArray(entry.pendingQuestions) ? entry.pendingQuestions : [];
-    return { unread, id, urgencyMax, unknown: false, pendingQuestions };
+    // Presence alone is the signal — trust the store's own decision to stamp
+    // it rather than re-validating {cap,kept,dropped} here (this hook never
+    // re-derives store state, it only projects it); an unexpected shape still
+    // degrades safely since main() only checks truthiness, never reads into it.
+    const pendingQuestionsTruncated = entry && entry.pendingQuestionsTruncated ? entry.pendingQuestionsTruncated : null;
+    return { unread, id, urgencyMax, unknown: false, pendingQuestions, pendingQuestionsTruncated };
   } catch (_) {
     // Any unanticipated failure past the ENOENT-tolerant read above means a
     // summary WAS reachable enough to attempt reading/parsing and something
     // still went wrong — the C3 anomaly class. Fail toward unknown (surfaced),
     // never toward a silent healthy-looking 0.
-    return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [] };
+    return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [], pendingQuestionsTruncated: null };
   }
 }
 
@@ -384,6 +405,16 @@ function main() {
     unanswered = Array.isArray(own.pendingQuestions) ? own.pendingQuestions.slice() : [];
   }
 
+  // TRUNCATED pendingQuestions (P2 fix — see readOwnUnread's header). This is
+  // a THIRD, independent blocking axis alongside unread/unanswered: even a
+  // CORRECTLY-computed `unanswered` above is unanswered over an INCOMPLETE
+  // view when truncation is present — a sender past the cap simply never
+  // reached `own.pendingQuestions` at all, so it cannot show up in
+  // `unanswered` no matter how faithfully unansweredQuestions() runs. The
+  // presence of the signal is itself the fact to act on; blocking must not
+  // wait for `unanswered` to (impossibly) reflect the missing senders.
+  const truncated = own.pendingQuestionsTruncated || null;
+
   // INERT until descriptors exist (P1-D) OR the Primary itself has unread OR
   // its own summary is unreadable in a genuinely anomalous way (C3 — see
   // readOwnUnread's header: `own.unknown` is only ever true when something
@@ -394,10 +425,13 @@ function main() {
   // is structurally a subset of own.unread in the normal case, so this arm
   // rarely fires on its own, but it must never be possible for an unanswered
   // question to be swallowed by inertness before `unanswered` is even
-  // consulted below).
+  // consulted below) OR pendingQuestions is truncated (same "never swallow a
+  // real signal before it's consulted" reasoning — a fresh/never-touched
+  // Primary can never hit the 200-sender backstop, so this cannot make a
+  // vanilla project noisy either).
   let descriptors = [];
   try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
-  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0) return;
+  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated) return;
 
   // Build the blocking SET: workspaces with unread backlog past their cursor OR a
   // stale/escalated verdict, PLUS the Primary's own unread. All reads are pure fs
@@ -509,14 +543,18 @@ function main() {
 
   const stateFile = stateFileFor(payload.session_id, home);
 
-  // Nothing neglected AND no unanswered question -> clear any prior loop-state
-  // and stay quiet. An unanswered question (requirement C) must never be
-  // silenced by this path either — structurally this should already be
-  // covered by `own.unread > 0` above (a pendingQuestion is itself an unread
-  // row), but the `unanswered.length` check here is kept as an explicit
-  // belt-and-suspenders guard so a future/edge-case divergence between the
-  // two counts can never silently drop a real unanswered question.
-  if (blocking.length === 0 && unanswered.length === 0) {
+  // Nothing neglected AND no unanswered question AND no truncation -> clear
+  // any prior loop-state and stay quiet. An unanswered question (requirement
+  // C) must never be silenced by this path either — structurally this should
+  // already be covered by `own.unread > 0` above (a pendingQuestion is itself
+  // an unread row), but the `unanswered.length` check here is kept as an
+  // explicit belt-and-suspenders guard so a future/edge-case divergence
+  // between the two counts can never silently drop a real unanswered
+  // question. `truncated` gets the same treatment (P2 fix): it names a set
+  // of questions this Primary structurally CANNOT see, so it must never be
+  // waved through just because the visible `blocking`/`unanswered` happen to
+  // be empty this pass.
+  if (blocking.length === 0 && unanswered.length === 0 && !truncated) {
     try { fs.unlinkSync(stateFile); } catch (_) {}
     return;
   }
@@ -553,17 +591,22 @@ function main() {
   const cap = resolveCap(process.env);
 
   // CAP BYPASS (requirement C) + ESCALATION-NOT-SILENCE (requirement D).
-  //   - unanswered.length > 0: the cap NEVER silences this pass — always
-  //     block, unconditionally. The per-signature `blocks` counter still
-  //     advances normally underneath (bookkeeping/telemetry for the OTHER,
-  //     non-question blocking reasons), it just never causes a `return` here
-  //     — and the `escalated` flag is left untouched (carried forward as-is):
-  //     it belongs strictly to the plain-backlog axis below, so however long
-  //     a bypass phase runs, it can never itself trip or clear escalation.
-  //   - unanswered.length === 0 (the only case the cap/escalation still
-  //     governs): whether escalation has ALREADY fired for this exact,
-  //     unchanged signature is tracked EXPLICITLY via the persisted
-  //     `escalated` boolean (P0-C fix) — never re-derived from
+  //   - unanswered.length > 0 OR truncated: the cap NEVER silences this pass —
+  //     always block, unconditionally. `truncated` joins `unanswered.length >
+  //     0` in this bypass (P2 fix) for the same reason: it names questions
+  //     this Primary structurally cannot see, so "we've already nagged about
+  //     this N times" can never be a reason to stop — there is no way to
+  //     confirm the hidden senders were ever addressed. The per-signature
+  //     `blocks` counter still advances normally underneath (bookkeeping/
+  //     telemetry for the OTHER, non-question blocking reasons), it just
+  //     never causes a `return` here — and the `escalated` flag is left
+  //     untouched (carried forward as-is): it belongs strictly to the plain-
+  //     backlog axis below, so however long a bypass phase runs, it can never
+  //     itself trip or clear escalation.
+  //   - unanswered.length === 0 && !truncated (the only case the cap/
+  //     escalation still governs): whether escalation has ALREADY fired for
+  //     this exact, unchanged signature is tracked EXPLICITLY via the
+  //     persisted `escalated` boolean (P0-C fix) — never re-derived from
   //     `effectiveBlocks === cap`. That arithmetic equality broke the moment
   //     a prior unanswered-question bypass phase pushed `blocks` past `cap`
   //     WITHOUT ever escalating (the bypass branch above always takes the
@@ -580,10 +623,11 @@ function main() {
   //         scenario) — emit ONE escalation-worded block, set
   //         `escalated = true`, and persist.
   //       * otherwise -> the normal, unexhausted forced-ack block.
+  const bypassCap = unanswered.length > 0 || !!truncated;
   let nextBlocks;
   let nextEscalated = effectiveEscalated;
   let escalateTimes = null;
-  if (unanswered.length === 0) {
+  if (!bypassCap) {
     if (effectiveEscalated) return; // already escalated once — go quiet
     nextBlocks = effectiveBlocks + 1;
     if (effectiveBlocks >= cap) {
@@ -605,7 +649,7 @@ function main() {
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
   const wakeLine = wakeReassertLine(process.env, false);
 
-  const reason = buildReason(blocking, own.id, unanswered, escalateTimes) + wakeLine;
+  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated) + wakeLine;
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 
@@ -649,7 +693,29 @@ function buildUnansweredSegment(unanswered) {
   );
 }
 
-// buildReason(blocking, ownId, unanswered, escalateTimes) -> string. Names up to
+// buildTruncatedSegment(truncated) -> the loudest/first segment (alongside
+// buildUnansweredSegment) naming a pendingQuestions TRUNCATION (P2 fix): the
+// store's own backstop cap (devswarm-store.js DEFAULT_PENDING_QUESTIONS_CAP)
+// bit, meaning some distinct senders' unanswered questions are NOT reflected
+// in `unanswered` above at all — the true unanswered count is HIGHER than
+// what this Primary can currently see. `truncated` is the store's own
+// `{cap, kept, dropped}` object (see readOwnUnread) — `dropped` is how many
+// DISTINCT SENDERS are missing, not how many messages. Defensively coerced
+// (this hook must never throw on an unexpected shape from a fail-open path).
+function buildTruncatedSegment(truncated) {
+  const kept = Number.isFinite(truncated && truncated.kept) ? truncated.kept : '?';
+  const dropped = Number.isFinite(truncated && truncated.dropped) ? truncated.dropped : '?';
+  const cap = Number.isFinite(truncated && truncated.cap) ? truncated.cap : '?';
+  return (
+    'PENDING QUESTIONS LIST TRUNCATED — ' + kept + ' sender(s) shown, ' + dropped +
+    ' more sender(s) with an unanswered question are NOT shown (cap ' + cap + '). ' +
+    'The true unanswered count is HIGHER than what this message can list. ' +
+    'This is not resolvable by replying to only the senders named below — ' +
+    'check `devswarm.js inbox read-primary` / registry state directly. '
+  );
+}
+
+// buildReason(blocking, ownId, unanswered, escalateTimes, truncated) -> string. Names up to
 // 5 neglected workspaces with their unread counts / verdict status, then states
 // the EXACT non-skip clear path for each axis (the child read/ack primitive,
 // plus the distinct Primary-own-inbound read-primary path when ownId is among
@@ -666,7 +732,7 @@ function buildUnansweredSegment(unanswered) {
 // `unanswered`, the one axis the cap still governs), this pass is the FIRST
 // cap-exhaustion for this exact signature: replace the normal nag body with a
 // standalone escalation-worded block instead, naming the exhausted count.
-function buildReason(blocking, ownId, unanswered, escalateTimes) {
+function buildReason(blocking, ownId, unanswered, escalateTimes, truncated) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
@@ -677,6 +743,13 @@ function buildReason(blocking, ownId, unanswered, escalateTimes) {
   const more = blocking.length > 5 ? ' (and ' + (blocking.length - 5) + ' more)' : '';
 
   let body = '';
+  // Truncation (P2 fix) is named FIRST, ahead of even the unanswered-question
+  // segment — it is the loudest possible signal ("what you are about to read
+  // below is known to be incomplete") and must not be buried under a partial
+  // list it is warning about.
+  if (truncated) {
+    body += buildTruncatedSegment(truncated);
+  }
   if (Array.isArray(unanswered) && unanswered.length > 0) {
     body += buildUnansweredSegment(unanswered);
   }

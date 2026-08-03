@@ -302,8 +302,10 @@ plugin depends on it.
   --broadcast [--urgency low|normal|high|urgent] [--question]`, `roster` (also folds in
   unregistered native `hivecontrol` children), `mesh read`, `heartbeat --summary`, `inbox
   pull/read/read-primary`. Every message row carries `{from, to, type, message, timestamp,
-  urgency}`. `--question` marks a direct send as a blocking decision-request the recipient
-  must explicitly reply to, not just read — rejected on `--broadcast`.
+  urgency}`. `--question` marks a direct send as a blocking decision-request — rejected on
+  `--broadcast`. The blocking/reply-tracking guarantee (Stop-gate + `recordReply`) is
+  enforced when the recipient is the Primary; a peer child→child `--question` is
+  delivered and flagged (`needs_reply`) but is not gate-enforced on the recipient side.
 - **Mesh self-heal (v0.61.0).** Drain-aware routing delivers to the partition a child
   actually drains, plus a phantom-only rescue on a child's first registration; a pure
   `computeSummary` projection derives `orphans[]` (unread partition, no live workspace)
