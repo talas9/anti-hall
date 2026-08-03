@@ -295,6 +295,21 @@ plugin depends on it.
   across rounds within the same turn instead of ending its turn to "check in", cutting the
   wake-cycle (supervisor cron) latency that cost every time it idled between rounds. Shared
   verbatim with the Codex port.
+- **Mesh/store message-loss fix (v0.70.0)** — `archive` used to tombstone exactly one
+  registry row per generation, so a re-archived-and-reregistered worktree could still hold
+  LIVE sibling rows sharing it, and a real unanswered question could forward into one of
+  those dead partitions. `foldArchivedRegistryRows` now folds ALL same-worktree rows for an
+  archived id and picks the forward survivor by LIVENESS; it's a dual-path migration wired
+  into both `update` and `doctor --fix` (idempotent, fail-open-honestly, no-delete — message
+  rows are never deleted, only registry rows are tombstoned after their unread forwards).
+- **Archived-row read filter + archive self-heal (v0.70.0)** — a new read-side filter
+  excludes a genuinely archived workspace from the LIVE per-turn injection immediately,
+  without needing a `doctor` run first; an archived workspace with real unread still
+  surfaces as an orphan (no lost signal). `archive` also self-heals a stale
+  `archived/<id>.json` leftover from a prior generation (decided by inode, fail-closed on
+  any incomplete scan) instead of permanently wedging re-archive of that id. The per-turn
+  parent-inbox STOP wording is now advisory for the normal tier (urgent/high tier
+  unchanged).
 - **Per-project mesh store** — one shared store per project keyed by a stable `repoKey`,
   so any worktree can message any other directly; **#36-STRUCTURAL scoping** closes a
   spoofable cross-project bleed.

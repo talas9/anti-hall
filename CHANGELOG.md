@@ -6,6 +6,46 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.70.0
+
+- **DevSwarm mesh/store hardening — message-loss fix (merge `5856eb9`).** `archive` used
+  to tombstone exactly one registry row per archive, so a worktree that had been
+  archived-and-reregistered across multiple generations could still hold LIVE sibling
+  rows sharing that worktree — and a live row is what makes a message get forwarded
+  there instead of to a genuinely-live partition. `foldArchivedRegistryRows` (new,
+  `scripts/devswarm.js`) now folds ALL same-worktree registry rows for an archived id
+  and picks the forward survivor by LIVENESS (`pickArchiveForwardSurvivor`), fixing a
+  P0 where a real unanswered question could be forwarded into a dead partition nothing
+  drains. Ships as a dual-path persisted-shape migration — wired into BOTH `update`
+  (`skills/update/scripts/update.js`) and `doctor --fix`
+  (`hooks/lib/doctor-repair.js`'s `migrationFix('fold-archived-rows', ...)`) — and is
+  idempotent (a retired row is gone, a second run is a no-op), fail-open-honestly
+  (never silently reports success on a raised error), and no-delete (message rows are
+  never deleted; only registry rows are tombstoned after their unread is forwarded).
+  Also in this merge: decide-gate follow-ups — durable per-project reply-state, cap
+  escalation, and a `recordReply` lock closing a lost-update race under concurrent
+  writers. Hardened via a multi-round deadly-loop.
+- **Injection token / archived-row read-filter fixes (merge `58c307d`, incl. `f4d26ef`).**
+  A NEW `archivedOnlyIds`/read-side filter in `companion/lib/devswarm-store.js` excludes
+  a genuinely archived workspace (`archived/<id>.json` present, `workspaces/<id>.json`
+  absent) from the LIVE per-turn projection immediately — without needing a `doctor`
+  run first, closing the window where a stale ACTIVE row inflated every DevSwarm
+  injection. An archived workspace with real unread still surfaces as an `orphans[]`
+  entry instead of going dark (no lost signal); the predicate structurally cannot hide
+  a live row (a live workspace has its own descriptor by definition) and fails open to
+  an empty set on any read error. `cmdArchive` (`scripts/devswarm.js`) gained a
+  descriptor-conflict self-heal (`archivedTombstoneIsOrphaned`, decided by inode not by
+  registry state, fail-closed on any incomplete scan) that unblocks re-archiving an id
+  whose `archived/<id>.json` was a stale leftover from a prior archive generation. The
+  per-turn parent-inbox STOP imperative (`hooks/devswarm-parent-inbox.js`) is softened
+  to advisory wording for the normal tier; the loud (urgent/high) tier is untouched.
+- **Test-flake hardening (`fe0d901`, `b99eafb`).** 5 doctor/limit test files hardened
+  against contention-killed subprocesses (`spawnSync` timeout + signal tolerance); no
+  assertion was weakened.
+- **Emoji-as-signal orchestration guidance (`873467d`).** Rule K in `verify-first-orch.js`
+  now names the exact signal glyphs (✅/❌/⚠️) instead of a vague "emoji = signal, not
+  decoration" — same intent, less ambiguity for the model to over-apply.
+
 ## 0.69.0
 
 - **Harness Phase-1 hooks: `output-verify-guard` + `failure-root-cause-nudge`, plus a sandbox doc
