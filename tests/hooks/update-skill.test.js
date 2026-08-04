@@ -921,7 +921,7 @@ test('healIngestDaemon: gate open + unstable-script (drift) unit → env is pass
   }
 });
 
-test('healIngestDaemon: gate open + already-stable ("ok") unit under a drift-aware env → attempted:true, healed:true, never spawns (no thrash)', { skip: process.platform === 'win32' }, () => {
+test('healIngestDaemon: gate open + already-stable ("ok") unit under a drift-aware env → attempted:true, healed:true, FORCES a restart anyway (pacing-fix delivery gap — the running process must re-exec onto post-pull content even when install-shape is already ok)', { skip: process.platform === 'win32' }, () => {
   const installer = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-heal-stable-'));
   const wt = process.cwd();
@@ -958,8 +958,8 @@ test('healIngestDaemon: gate open + already-stable ("ok") unit under a drift-awa
     });
     assert.strictEqual(result.attempted, true);
     assert.strictEqual(result.healed, true);
-    assert.match(result.detail, /ok/);
-    assert.strictEqual(spawned, false, 'an already-stable unit must not be reinstalled (no thrash)');
+    assert.match(result.detail, /restarted/);
+    assert.strictEqual(spawned, true, 'an already-stable unit is STILL restarted once — update just changed the code on disk and the running daemon only re-execs on crash, never on a fresh git pull alone');
   } finally {
     fs.rmSync(home, { recursive: true, force: true });
     fs.rmSync(fakeMarketplaceDir, { recursive: true, force: true });

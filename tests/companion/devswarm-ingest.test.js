@@ -267,6 +267,97 @@ test('runIngestLoop heartbeats a message-arrival cycle too (not just quiet cycle
   } finally { rm(home); }
 });
 
+// ---------------------------------------------------------------------------
+// CODE-VERSION STAMP (pacing-fix delivery gap): the daemon's heartbeat now
+// carries `codeVersion` (the installed plugin.json version, resolved once at
+// startup) so doctor/update can tell a STILL-RUNNING pre-fix daemon apart from
+// one that already re-exec'd onto new content — `git pull` rewrites the stable
+// ExecStart script on disk, but this daemon's own main loop
+// (maxIterations:Infinity) only re-execs on crash, so the running process would
+// otherwise keep executing whatever it loaded at ITS OWN startup forever.
+// ---------------------------------------------------------------------------
+
+test('readInstalledPluginVersion: reads THIS repo\'s real plugin.json version (fail-open helper, direct unit test)', () => {
+  const realJson = JSON.parse(fs.readFileSync(
+    path.join(__dirname, '..', '..', 'plugins', 'anti-hall', '.claude-plugin', 'plugin.json'), 'utf8'));
+  assert.equal(ingest.readInstalledPluginVersion(), realJson.version);
+});
+
+test('readInstalledPluginVersion: unreadable/malformed plugin.json -> null, never throws (fail-open)', () => {
+  const throwingFs = { readFileSync: () => { throw new Error('ENOENT: no such file'); } };
+  assert.equal(ingest.readInstalledPluginVersion(throwingFs), null);
+  const malformedFs = { readFileSync: () => 'not json{{{' };
+  assert.equal(ingest.readInstalledPluginVersion(malformedFs), null);
+});
+
+test('runIngestLoop: the heartbeat carries codeVersion (the real installed plugin.json version) and startedAtMs', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const hash = repokey.repoKeyForWorktree(wt);
+    const hbPath = ingest.ingestHeartbeatPath(home, hash);
+    const realVersion = ingest.readInstalledPluginVersion();
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {}, now: 4242,
+    });
+    assert.equal(summary.started, true);
+    const beat = JSON.parse(fs.readFileSync(hbPath, 'utf8'));
+    assert.equal(beat.codeVersion, realVersion, 'heartbeat stamps the real installed plugin.json version');
+    assert.equal(typeof beat.startedAtMs, 'number', 'heartbeat stamps a numeric daemon start time');
+  } finally { rm(home); }
+});
+
+test('runIngestLoop: explicit opts.pluginVersion overrides the real on-disk read (test/tuning determinism)', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const hash = repokey.repoKeyForWorktree(wt);
+    const hbPath = ingest.ingestHeartbeatPath(home, hash);
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {}, pluginVersion: '9.9.9-test',
+    });
+    assert.equal(summary.started, true);
+    const beat = JSON.parse(fs.readFileSync(hbPath, 'utf8'));
+    assert.equal(beat.codeVersion, '9.9.9-test');
+  } finally { rm(home); }
+});
+
+// VACUOUS-RED PROOF for the "fail-open, never crashes the loop" behavior: when
+// the plugin.json read itself throws (e.g. a marketplace clone mid-update, a
+// permissions error), the daemon must still start and heartbeat — codeVersion
+// degrades to null rather than taking the whole loop down with it.
+test('runIngestLoop: a plugin.json read failure at startup is fail-open — codeVersion is null, the loop still starts and heartbeats normally', () => {
+  const home = tmpHome();
+  try {
+    const wt = process.cwd();
+    const hash = repokey.repoKeyForWorktree(wt);
+    const hbPath = ingest.ingestHeartbeatPath(home, hash);
+    const spyFs = new Proxy(fs, {
+      get(target, prop) {
+        if (prop === 'readFileSync') {
+          return function (p, ...rest) {
+            if (typeof p === 'string' && p.endsWith(path.join('.claude-plugin', 'plugin.json'))) {
+              throw new Error('simulated unreadable plugin.json');
+            }
+            return target.readFileSync(p, ...rest);
+          };
+        }
+        const val = target[prop];
+        return typeof val === 'function' ? val.bind(target) : val;
+      },
+    });
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: wt,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {}, io: { storeFs: spyFs },
+    });
+    assert.equal(summary.started, true, 'an unreadable plugin.json must never prevent the daemon from starting');
+    const beat = JSON.parse(fs.readFileSync(hbPath, 'utf8'));
+    assert.equal(beat.codeVersion, null, 'codeVersion degrades to null rather than crashing the read');
+  } finally { rm(home); }
+});
+
 test('runIngestLoop is FAIL-OPEN when the heartbeat write itself errors — never crashes the loop', () => {
   const home = tmpHome();
   try {

@@ -1058,6 +1058,27 @@ function resolveMonitorTimeoutSec(explicit, env) {
   return DEFAULT_MONITOR_TIMEOUT_SEC;
 }
 
+// readInstalledPluginVersion(fsi) -> semver string | null. Best-effort read of
+// THIS daemon's own installed plugin.json version (companion/devswarm-ingest.js
+// -> ../.claude-plugin/plugin.json — one directory up from this file, resolved
+// via __dirname so it always names the plugin build actually LOADED into this
+// process, never the caller's cwd). Stamped into every heartbeat (see
+// writeIngestHeartbeat) so doctor/update can detect a RUNNING daemon that is
+// still executing pre-update code after `git pull` lands new content at the
+// stable path but does not itself restart the process (the pacing-fix gap this
+// stamp exists to close). Fail-open to null — a missing/unreadable/malformed
+// plugin.json must never crash the loop; null is treated as "pre-stamp code"
+// (older than any real semver) by every consumer, which is the correct
+// conservative default.
+function readInstalledPluginVersion(fsi) {
+  const F = fsi || fs;
+  try {
+    const p = path.join(__dirname, '..', '.claude-plugin', 'plugin.json');
+    const json = JSON.parse(F.readFileSync(p, 'utf8'));
+    return (json && typeof json.version === 'string') ? json.version : null;
+  } catch (_) { return null; }
+}
+
 // logFilePath(home) — the SAME stable log install-devswarm-ingest.js wires
 // launchd's StandardOutPath/StandardErrorPath, systemd's StandardOutput/
 // StandardError, and the cron fallback's `>> ... 2>&1` into
@@ -1164,6 +1185,13 @@ function runIngestLoop(opts) {
     lastMonitorErrorCode: null, lastMonitorError: null,
     hivecontrolBin: hivecontrol.bin, hivecontrolSource: hivecontrol.source,
     daemonPath: (o.env && typeof o.env.PATH === 'string') ? o.env.PATH : null,
+    // CODE-VERSION STAMP (resolved ONCE per daemon process, like hivecontrol
+    // above, and reused for every heartbeat): lets doctor/update detect a
+    // still-running daemon that never re-exec'd after `git pull` landed newer
+    // content at the stable ExecStart path — see readInstalledPluginVersion.
+    // o.pluginVersion (test override) wins over the real on-disk read.
+    codeVersion: o.pluginVersion != null ? String(o.pluginVersion) : readInstalledPluginVersion(o.io && o.io.storeFs),
+    startedAtMs: Number.isFinite(o.startedAtMs) ? o.startedAtMs : Date.now(),
   };
 
   const logFs = o.io && o.io.logFs;
@@ -1883,6 +1911,12 @@ function writeIngestHeartbeat(home, hash, meta, fsi) {
       // fault is "the scheduler gave this unit a PATH without the CLI in it".
       // Bounded so a pathological PATH can never bloat the heartbeat file.
       daemonPath: m.daemonPath != null ? String(m.daemonPath).slice(0, 1024) : null,
+      // codeVersion/startedAtMs (stale-running detection): ABSENT on a
+      // pre-this-fix daemon's heartbeat — every consumer MUST treat a missing
+      // codeVersion as "older than any real semver", never as "current" or
+      // "unknown-so-skip" (see readInstalledPluginVersion above).
+      codeVersion: m.codeVersion != null ? String(m.codeVersion) : null,
+      startedAtMs: Number.isFinite(m.startedAtMs) ? m.startedAtMs : null,
     };
     const tmp = p + '.' + process.pid + '.tmp';
     F.writeFileSync(tmp, JSON.stringify(beat));
@@ -1942,4 +1976,6 @@ module.exports = {
   monitorFailureCode, permanentBackoffMs, createMonitorBreaker,
   writeIngestHeartbeat,
   PERMANENT_SPAWN_ERROR_CODES, PERMANENT_BACKOFF_CAP_MS, PERMANENT_BACKOFF_STEPS,
+  // stale-running detection (pacing-fix delivery gap):
+  readInstalledPluginVersion,
 };

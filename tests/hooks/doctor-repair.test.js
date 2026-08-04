@@ -99,6 +99,15 @@ function makeMarketplaceFixture(tag) {
   fs.writeFileSync(scriptPath, '// fixture stable ingest daemon script\n');
   return { dir, scriptPath };
 }
+// installedPluginVersion() -> the REAL, currently-checked-out plugin.json
+// version (never hardcoded — stays correct across version bumps). Fixtures
+// that want to simulate an up-to-date daemon heartbeat stamp this exact value
+// as codeVersion, since staleRunningCheck's ingestDaemonMod() always requires
+// THIS repo's real companion/devswarm-ingest.js (never the ANTIHALL_MARKETPLACE_DIR
+// fixture some of these tests point classifyIngestUnit's drift check at).
+function installedPluginVersion() {
+  return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'plugins', 'anti-hall', '.claude-plugin', 'plugin.json'), 'utf8')).version;
+}
 
 // ---------------------------------------------------------------------------
 // 1. classifyIngestUnit — pure logic, all platforms.
@@ -460,7 +469,7 @@ test('(b) doctor --dry-run: script already IS the current stable marketplace pat
     const lock = projectLockPathFor(home, repoKey);
     fs.mkdirSync(path.dirname(hb), { recursive: true });
     fs.mkdirSync(path.dirname(lock), { recursive: true });
-    fs.writeFileSync(hb, JSON.stringify({ ts: Date.now(), pid: process.pid }));
+    fs.writeFileSync(hb, JSON.stringify({ ts: Date.now(), pid: process.pid, codeVersion: installedPluginVersion() }));
     fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
 
     const r = runDoctor({
@@ -469,6 +478,94 @@ test('(b) doctor --dry-run: script already IS the current stable marketplace pat
     });
     assert.match(r.out, /skipped \[ingest\] ingest daemon installed and healthy/, 'a script matching the current stable path AND alive must classify ok, no thrash:\n' + r.out);
     assert.doesNotMatch(r.out, /would \(re\)install the ingest daemon/, 'must NOT attempt a reinstall when already current:\n' + r.out);
+  } finally { rm(home); rm(cwd); rm(mp.dir); }
+});
+
+// ---------------------------------------------------------------------------
+// 6b2. STALE-RUNNING (pacing-fix delivery gap): install-shape ok, daemon alive
+// and healthy by every liveness/monitor signal, but its OWN heartbeat still
+// names a codeVersion OLDER than (or missing, i.e. pre-this-fix) the currently
+// installed plugin.json. `git pull` already landed the fix on disk; only the
+// RUNNING process is still stale — gate-open -> restart, exactly once, and
+// self-clearing (a current codeVersion never re-triggers it — see test (b)/
+// the "FRESH heartbeat" liveness tests above, both now stamp
+// installedPluginVersion()).
+// ---------------------------------------------------------------------------
+function writeStaleRunningFixture(home, cwd, mp, heartbeatExtra) {
+  const wt = ingest.resolveWorktree(cwd) || cwd;
+  const platform = process.platform;
+  const unitPath = ingestUnitPath(home, platform);
+  fs.mkdirSync(path.dirname(unitPath), { recursive: true });
+  const body = platform === 'darwin'
+    ? ingest.buildPlist({ exec: process.execPath, script: mp.scriptPath, log: path.join(home, 'l.log'), workdir: wt })
+    : ingest.buildService({ exec: process.execPath, script: mp.scriptPath, workdir: wt });
+  fs.writeFileSync(unitPath, body);
+  const repoKey = repokey.repoKeyForWorktree(wt);
+  const hb = heartbeatPathFor(home, repoKey);
+  const lock = projectLockPathFor(home, repoKey);
+  fs.mkdirSync(path.dirname(hb), { recursive: true });
+  fs.mkdirSync(path.dirname(lock), { recursive: true });
+  fs.writeFileSync(hb, JSON.stringify(Object.assign({ ts: Date.now(), pid: process.pid }, heartbeatExtra)));
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
+  return unitPath;
+}
+
+test('(c) doctor --dry-run: install-shape ok + alive/healthy but heartbeat is MISSING codeVersion (pre-fix daemon) -> stale-running, would restart exactly once', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('stale-running-missing');
+  const cwd = makeGitRepo('stale-running-missing-cwd');
+  const mp = makeMarketplaceFixture('stale-running-missing');
+  try {
+    seedUserSettings(home);
+    // No codeVersion field at all — the exact shape a daemon started before this
+    // fix ever ran (forward-migration case: missing must be treated as stale).
+    writeStaleRunningFixture(home, cwd, mp, {});
+
+    const r = runDoctor({
+      cwd, args: ['--dry-run'],
+      env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_MARKETPLACE_DIR: mp.dir },
+    });
+    assert.doesNotMatch(r.out, /skipped \[ingest\] ingest daemon installed and healthy/, 'a daemon running pre-fix code must never be reported healthy:\n' + r.out);
+    const restarts = (r.out.match(/would restart the ingest daemon/g) || []).length;
+    assert.strictEqual(restarts, 1, 'the restart action must be reported exactly once, not repeated/duplicated:\n' + r.out);
+    assert.match(r.out, /pre-update code/, 'names the actual condition:\n' + r.out);
+    assert.match(r.out, /codeVersion missing/, 'names the missing heartbeat field:\n' + r.out);
+    assert.doesNotMatch(r.out, /GATED \[ingest\]/, 'gate must be open (DEVSWARM_REPO_ID + real worktree)');
+  } finally { rm(home); rm(cwd); rm(mp.dir); }
+});
+
+test('(d) doctor --dry-run: install-shape ok + alive/healthy but heartbeat codeVersion is OLDER than installed -> stale-running, would restart exactly once', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('stale-running-older');
+  const cwd = makeGitRepo('stale-running-older-cwd');
+  const mp = makeMarketplaceFixture('stale-running-older');
+  try {
+    seedUserSettings(home);
+    writeStaleRunningFixture(home, cwd, mp, { codeVersion: '0.0.1' });
+
+    const r = runDoctor({
+      cwd, args: ['--dry-run'],
+      env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_MARKETPLACE_DIR: mp.dir },
+    });
+    assert.doesNotMatch(r.out, /skipped \[ingest\] ingest daemon installed and healthy/, 'a daemon running an older codeVersion must never be reported healthy:\n' + r.out);
+    const restarts = (r.out.match(/would restart the ingest daemon/g) || []).length;
+    assert.strictEqual(restarts, 1, 'the restart action must be reported exactly once:\n' + r.out);
+    assert.match(r.out, /codeVersion 0\.0\.1/, 'names the stale heartbeat version:\n' + r.out);
+  } finally { rm(home); rm(cwd); rm(mp.dir); }
+});
+
+test('(e) doctor --dry-run: install-shape ok + alive/healthy + heartbeat codeVersion CURRENT -> healthy, no restart (idempotent — proves the self-clear)', { skip: process.platform === 'win32' }, () => {
+  const home = mkTmp('stale-running-current');
+  const cwd = makeGitRepo('stale-running-current-cwd');
+  const mp = makeMarketplaceFixture('stale-running-current');
+  try {
+    seedUserSettings(home);
+    writeStaleRunningFixture(home, cwd, mp, { codeVersion: installedPluginVersion() });
+
+    const r = runDoctor({
+      cwd, args: ['--dry-run'],
+      env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x', ANTIHALL_MARKETPLACE_DIR: mp.dir },
+    });
+    assert.match(r.out, /skipped \[ingest\] ingest daemon installed and healthy/, 'a daemon already on the current build must be healthy, no thrash:\n' + r.out);
+    assert.doesNotMatch(r.out, /would restart the ingest daemon/, 'the SAME codeVersion must never trigger a restart — this is the no-bounce proof:\n' + r.out);
   } finally { rm(home); rm(cwd); rm(mp.dir); }
 });
 
@@ -545,7 +642,7 @@ test('doctor --fix: install-shape ok + FRESH heartbeat + a live-pid lock holder 
     const lock = projectLockPathFor(home, repoKey);
     fs.mkdirSync(path.dirname(hb), { recursive: true });
     fs.mkdirSync(path.dirname(lock), { recursive: true });
-    fs.writeFileSync(hb, JSON.stringify({ ts: Date.now(), pid: process.pid }));
+    fs.writeFileSync(hb, JSON.stringify({ ts: Date.now(), pid: process.pid, codeVersion: installedPluginVersion() }));
     fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
     const before = fs.readFileSync(unitPath, 'utf8');
 
@@ -680,6 +777,7 @@ test('doctor --fix: alive + monitor SUCCEEDING -> still reported healthy (no fal
       ts: Date.now(), pid: process.pid,
       consecutiveMonitorFailures: 0, lastMonitorOkMs: Date.now() - 2000,
       hivecontrolBin: '/opt/dv/bin/hivecontrol', hivecontrolSource: 'env',
+      codeVersion: installedPluginVersion(),
     }));
     fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, ts: Date.now() }));
 

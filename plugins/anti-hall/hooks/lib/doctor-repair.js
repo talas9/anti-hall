@@ -660,6 +660,71 @@ function classifyIngestUnit(opts) {
   return 'ok';
 }
 
+// compareSemverLite(a, b) -> -1/0/1. Tiny local numeric-prefix comparator —
+// deliberately DUPLICATED from skills/update/scripts/update.js's own
+// compareVersions (same 'unparseable/missing sorts as 0.0.0' behavior) rather
+// than required from it, because update.js already requires THIS file
+// (readInstalledIngestWorkingDir/classifyIngestUnit) — requiring it back would
+// be a cycle.
+function compareSemverLite(a, b) {
+  const parse = (v) => {
+    if (typeof v !== 'string') return [0];
+    const m = v.trim().replace(/^v/i, '').match(/^(\d+(?:\.\d+)*)/);
+    if (!m) return [0];
+    return m[1].split('.').map((n) => parseInt(n, 10));
+  };
+  const pa = parse(a), pb = parse(b);
+  const len = Math.max(pa.length, pb.length);
+  for (let i = 0; i < len; i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x < y) return -1;
+    if (x > y) return 1;
+  }
+  return 0;
+}
+
+// staleRunningCheck(home, repoKey, io) -> { stale, heartbeatVersion, installedVersion } | null
+//
+// Only meaningful once the caller has ALREADY confirmed cls==='ok' && alive
+// (fresh heartbeat + live-pid lock + same incarnation, monitor OK) — this is a
+// SEPARATE signal layered on top, same pattern as monitorFault (neither folds
+// into classifyIngestUnit's install-SHAPE enum, both read from the daemon's own
+// heartbeat file). Detects a daemon that is alive and well-formed but STILL
+// RUNNING PRE-UPDATE CODE: `git pull` (update.js's own healIngestDaemon) lands
+// new content at the stable ExecStart path, but the already-running process
+// (devswarm-ingest.js's maxIterations:Infinity — only re-execs on crash) keeps
+// executing whatever it loaded at its OWN startup until something restarts it.
+//
+// A missing heartbeat.codeVersion (a pre-this-fix daemon whose heartbeat
+// predates the field — the forward-migration case) is treated as older than ANY
+// real semver via compareSemverLite's 'missing sorts as 0.0.0' rule — the same
+// "missing == stale, never == current" posture this codebase's persisted-shape
+// migration discipline always takes.
+//
+// SELF-CLEARING (no bounce loop): after ONE restart the new incarnation stamps
+// the CURRENT installed version into its own first heartbeat (devswarm-ingest.js
+// resolves this ONCE per process, at startup), so this check reports
+// stale:false on the very next doctor/update pass — nothing here re-triggers a
+// second restart once the running process actually matches disk.
+//
+// Fail-open throughout: no repoKey, no heartbeat file yet, malformed JSON, or an
+// unreadable/malformed installed plugin.json all return null (never claim
+// stale on inconclusive evidence) rather than throwing.
+function staleRunningCheck(home, repoKey, io) {
+  if (!repoKey) return null;
+  try {
+    const daemon = ingestDaemonMod();
+    if (typeof daemon.ingestHeartbeatPath !== 'function' || typeof daemon.readInstalledPluginVersion !== 'function') return null;
+    const F = (io && io.fs) || fs;
+    const raw = F.readFileSync(daemon.ingestHeartbeatPath(home, repoKey), 'utf8');
+    const beat = JSON.parse(raw);
+    const installedVersion = daemon.readInstalledPluginVersion(F);
+    if (!installedVersion) return null; // can't establish "current" -> never claim stale
+    const heartbeatVersion = (beat && beat.codeVersion != null) ? String(beat.codeVersion) : null;
+    return { stale: compareSemverLite(heartbeatVersion, installedVersion) < 0, heartbeatVersion, installedVersion };
+  } catch (_) { return null; }
+}
+
 // insideWorktree(dir) -> bool. Reuses install-devswarm-ingest.resolveWorktree
 // (git -C dir rev-parse --show-toplevel) so the "is this a git worktree" test is
 // byte-identical to the one the installer itself gates on.
@@ -1170,8 +1235,9 @@ function runRepairs(opts) {
       // installer bakes the resolved binary + PATH into the regenerated unit.
       let alive = true;
       let monitorFault = null;
+      let repoKeyForHealth = null; // hoisted: reused below for the stale-running codeVersion check
       if (cls === 'ok') {
-        let repoKeyForHealth = read.repoKey;
+        repoKeyForHealth = read.repoKey;
         if (!repoKeyForHealth && currentWorktree) {
           try {
             const { repoKeyForWorktree } = repokeyMod();
@@ -1193,7 +1259,30 @@ function runRepairs(opts) {
       }
 
       if (cls === 'ok' && alive && !monitorFault) {
-        push('ingest', 'install-ingest', 'skipped', 'ingest daemon installed and healthy (WorkingDirectory ' + read.workingDir + ')');
+        // STALE-RUNNING (pacing-fix delivery gap): install-SHAPE is fine and the
+        // process is alive+healthy, but it may still be executing PRE-UPDATE code
+        // — `git pull` (update.js) rewrites the stable ExecStart script on disk,
+        // but the already-running daemon (maxIterations:Infinity, only re-execs on
+        // crash) keeps running whatever it loaded at ITS OWN startup until
+        // something restarts it. Detected here, not folded into classifyIngestUnit
+        // (install-shape only) or daemonHealth (liveness only) — same layering as
+        // monitorFault above. See staleRunningCheck for the self-clearing proof.
+        const staleRunning = staleRunningCheck(home, repoKeyForHealth, o.io);
+        if (staleRunning && staleRunning.stale) {
+          const reason = 'ingest daemon is alive but running pre-update code (heartbeat codeVersion '
+            + (staleRunning.heartbeatVersion || 'missing') + ', installed ' + staleRunning.installedVersion + ')';
+          if (!gateOpen) {
+            push('ingest', 'install-ingest', 'gated', reason + '. ' + gatedHint(CMD_INGEST));
+          } else if (dryRun) {
+            push('ingest', 'install-ingest', 'skipped', '[dry-run] would restart the ingest daemon so the running process picks up the current build (' + reason + ')');
+          } else {
+            spawnInstaller(INGEST_INSTALLER, [], cwd, env);
+            push('ingest', 'install-ingest', 'fixed', 'ingest daemon restarted to pick up the current build — was running codeVersion '
+              + (staleRunning.heartbeatVersion || 'missing') + ', now ' + staleRunning.installedVersion);
+          }
+        } else {
+          push('ingest', 'install-ingest', 'skipped', 'ingest daemon installed and healthy (WorkingDirectory ' + read.workingDir + ')');
+        }
       } else {
         const deadDaemon = cls === 'ok' && !alive; // install-shape fine, liveness check failed
         const reason = monitorFault ? monitorFaultReason(monitorFault, read.workingDir)
@@ -1441,4 +1530,6 @@ module.exports = {
   // v0.66 — "alive but ingesting nothing" (monitor-outcome) detection:
   monitorFaultFor, monitorFaultReason,
   MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS,
+  // stale-running (pacing-fix delivery gap) detection:
+  staleRunningCheck, compareSemverLite,
 };

@@ -517,16 +517,28 @@ function healIngestDaemon(opts) {
 
     const before = bestUnit();
     const cls = classifyIngestUnit({ workingDir: before.workingDir, scriptPath: before.scriptPath, home, env });
-    if (cls === 'ok' || cls === 'absent') {
-      // 'ok': already healthy — nothing to heal. 'absent': not installed here —
-      // first-installing an opt-in daemon unprompted stays the update SKILL's own
-      // explicit, documented step (SKILL.md step 7), not this code path's job.
-      return { attempted: true, healed: true, detail: 'ingest daemon ' + cls + ' — no heal needed' };
+    if (cls === 'absent') {
+      // Not installed here — first-installing an opt-in daemon unprompted stays
+      // the update SKILL's own explicit, documented step (SKILL.md step 7), not
+      // this code path's job.
+      return { attempted: true, healed: true, detail: 'ingest daemon absent — no heal needed' };
     }
 
     const spawn = o.spawnFn || ((script) => spawnSync(process.execPath, [script], {
       cwd, env: Object.assign({}, env, { HOME: home }), encoding: 'utf8', timeout: 30000,
     }));
+    // FORCED RESTART even when cls === 'ok' (v-pacing-fix delivery gap): `git
+    // pull` above already landed new companion/ content at the stable
+    // ExecStart path, but the ingest daemon's main loop
+    // (runIngestLoop's maxIterations:Infinity) only re-execs on a CRASH — it
+    // never notices new content on disk on its own. Re-running the installer is
+    // SAFE and idempotent (install-devswarm-ingest.js documents it: "reinstalling
+    // rewrites the unit and RELAUNCHES so the running daemon picks up this
+    // build's code — launchctl unload+load on macOS / systemd restart on
+    // Linux") and update only runs on a real version bump (never per-turn), so
+    // forcing it here — unlike doctor's install-shape-driven repair, which only
+    // reinstalls when cls !== 'ok' — is the ONE place that is always safe and
+    // always warranted: an update JUST changed the code on disk.
     spawn(installerPath);
     const after = bestUnit();
     const cls2 = classifyIngestUnit({ workingDir: after.workingDir, scriptPath: after.scriptPath, home, env });
@@ -534,7 +546,9 @@ function healIngestDaemon(opts) {
       attempted: true,
       healed: cls2 === 'ok',
       detail: cls2 === 'ok'
-        ? 're-installed the ingest daemon (was ' + cls + ') — WorkingDirectory now ' + after.workingDir
+        ? (cls === 'ok'
+            ? 'ingest daemon restarted so the running process picks up this build — WorkingDirectory ' + after.workingDir
+            : 're-installed the ingest daemon (was ' + cls + ') — WorkingDirectory now ' + after.workingDir)
         : 'ingest daemon still ' + cls2 + ' after re-install attempt',
     };
   } catch (e) {
