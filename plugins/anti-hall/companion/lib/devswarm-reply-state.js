@@ -169,39 +169,59 @@ function recordReply(repoKey, home, meshId, ts) {
     // JSON.stringify a fixed-key object -> compact single-line record. meshId+ts
     // is a few dozen bytes.
     const record = JSON.stringify({ m: meshId, t }) + '\n';
-    // SIZE CAP (atomicity guard): POSIX guarantees an O_APPEND write is atomic —
-    // never interleaved with a concurrent append — ONLY when the payload is
-    // <= PIPE_BUF (512 bytes by POSIX minimum). A record larger than that could
-    // tear across a concurrent writer, corrupting BOTH lines. A legitimate
-    // meshId+ts is tiny; anything that assembles past this conservative 512-byte
-    // cap is pathological, so we DO NOT write a torn/oversized append at all —
-    // skip it (fail-open: the gate treats the question as still-unanswered and
-    // nags one extra time, the safe direction), never risk corrupting the file.
-    const RECORD_BYTE_CAP = 512;
-    if (Buffer.byteLength(record, 'utf8') > RECORD_BYTE_CAP) return;
-    // LEGACY-LINE SEPARATION (no-loss append onto an un-migrated file): a legacy
-    // reply-file was written by the old code as `JSON.stringify(state)` with NO
-    // trailing newline (a single line `{"<meshId>":{"lastReplyTs":N}}`). If the
-    // forward migration has not yet run, appending our record directly would
-    // concatenate onto that line -> `{...}{"m":...}` = invalid JSON on line 1,
-    // which foldReplyLog then skips, losing BOTH the legacy state AND this reply.
-    // So: if the file already exists and is non-empty and its LAST byte is not a
-    // newline, prepend one — the legacy object stays a valid standalone first
-    // line and our record lands on its own line. Cheap single-byte read; any
-    // error fails open (proceed without the correction rather than lose the
-    // write).
-    let payload = record;
+    // LEGACY-LINE SEPARATION (no-loss append onto an un-migrated file), FAIL-CLOSED:
+    // a legacy reply-file was written by the old code as `JSON.stringify(state)`
+    // with NO trailing newline (a single line `{"<meshId>":{"lastReplyTs":N}}`).
+    // If the forward migration has not yet run, appending our record directly
+    // would concatenate onto that line -> `{...}{"m":...}` = invalid JSON on line
+    // 1, which foldReplyLog then skips, losing BOTH the legacy state AND this
+    // reply.
+    //
+    // The separator decision FAILS CLOSED (safe direction): we DEFAULT to
+    // prepending the '\n' and only SKIP it when we have POSITIVELY confirmed the
+    // file is empty/absent or already ends in '\n'. A leading blank line on an
+    // already-\n-terminated (or empty/fresh) file is harmless — foldReplyLog
+    // skips empty lines — so defaulting to the prepend on ANY read uncertainty
+    // costs nothing, whereas the OLD fail-OPEN default (append with NO separator
+    // whenever the last-byte read threw) could concatenate onto an un-terminated
+    // legacy line and recur the exact data-loss above. So: a stat/open/read error,
+    // or a short read, keeps needSep=true (prepend); only a size-0 file, a missing
+    // file (ENOENT), or a byte we actually read AND confirmed to be 0x0a clears it.
+    let needSep = true; // safe default: assume a separator is needed
     try {
       const st = fs.statSync(p);
-      if (st.size > 0) {
+      if (st.size === 0) {
+        needSep = false; // positively empty -> appendFileSync starts a fresh file
+      } else {
         const fd = fs.openSync(p, 'r');
         try {
           const last = Buffer.alloc(1);
-          fs.readSync(fd, last, 0, 1, st.size - 1);
-          if (last[0] !== 0x0a) payload = '\n' + record; // 0x0a === '\n'
+          const n = fs.readSync(fd, last, 0, 1, st.size - 1);
+          // Only a CONFIRMED trailing newline (exactly one byte read, value 0x0a)
+          // clears the separator; a short/failed read stays fail-closed.
+          if (n === 1 && last[0] === 0x0a) needSep = false; // 0x0a === '\n'
         } finally { fs.closeSync(fd); }
       }
-    } catch (_) { /* file missing/unreadable -> no separator needed, fail open */ }
+    } catch (e) {
+      // ENOENT = file absent = positively empty -> no separator needed. ANY other
+      // error (unreadable, IO) is UNCERTAIN -> stay fail-closed (keep the prepend).
+      if (e && e.code === 'ENOENT') needSep = false;
+    }
+    const payload = needSep ? '\n' + record : record;
+    // SIZE CAP (atomicity guard) — measured on the FULL assembled line ACTUALLY
+    // WRITTEN, including the trailing '\n' AND any prepended leading '\n'. POSIX
+    // guarantees an O_APPEND write is atomic — never interleaved with a concurrent
+    // append — ONLY when the payload is <= PIPE_BUF (512 bytes by POSIX minimum).
+    // A write past that could tear across a concurrent writer, corrupting BOTH
+    // lines. The cap is set COMFORTABLY BELOW that 512-byte bound (480) so the
+    // exact bytes we hand to appendFileSync — leading sep + record + trailing '\n'
+    // — are always within the atomicity guarantee, not merely the record body.
+    // A legitimate meshId+ts is tiny; anything assembling past 480 is pathological,
+    // so we DO NOT write a torn/oversized append at all — skip it (fail-open: the
+    // gate treats the question as still-unanswered and nags one extra time, the
+    // safe direction), never risk corrupting the file.
+    const RECORD_BYTE_CAP = 480;
+    if (Buffer.byteLength(payload, 'utf8') > RECORD_BYTE_CAP) return;
     fs.appendFileSync(p, payload); // flag 'a' (O_APPEND|O_CREAT|O_WRONLY) — atomic append
   } catch (_) { /* best-effort; never throw */ }
 }
@@ -321,26 +341,56 @@ function migrateReplyState(home, opts) {
       for (let pass = 0; pass < MAX_PASSES && !done; pass++) {
         const body = serialize(foldReplyLog(current)); // lossless: max ts per sender
         const tmp = p + '.migrate.' + process.pid + '.' + Date.now() + '.' + Math.random().toString(36).slice(2);
-        let wrote = false;
         try {
           fs.writeFileSync(tmp, body);
-          wrote = true;
           // Re-read the source to catch a late append that raced this rewrite.
+          // FAIL-CLOSED (C2): a re-read that THROWS means we CANNOT confirm the
+          // source is unchanged — so we must NOT rename over it (the rename
+          // REPLACES the source; renaming on an unverified source could discard
+          // late appends = a NO-DELETE violation / lost reply). An uncertain
+          // re-read ABORTS this file: leave the source exactly as-is (the
+          // backward-compatible foldReplyLog reader still folds it correctly),
+          // count it as an error, and never rename. Only an unchanged source that
+          // we POSITIVELY re-read authorizes the atomic replace.
           let latest;
-          try { latest = fs.readFileSync(p, 'utf8'); } catch (_) { latest = current; }
-          if (latest === current) {
+          let reReadFailed = false;
+          try { latest = fs.readFileSync(p, 'utf8'); } catch (_) { reReadFailed = true; }
+          if (reReadFailed) {
+            report.errors++;
+            done = true; // abort on uncertain re-read; source left untouched
+          } else if (latest === current) {
+            // ACCEPTED SAFE RESIDUAL (final-window race — do NOT try to close it):
+            // a live recordReply append that lands in the tiny window AFTER this
+            // re-read but BEFORE the renameSync below is dropped by the atomic
+            // replace. This cannot be closed lock-free — reconfirm and rename are
+            // two separate syscalls with no atomicity between them, and this
+            // module deliberately takes NO lock (the whole append-only redesign
+            // exists to be lock-free; reintroducing an O_EXCL/CAS lockfile here
+            // would defeat it). The ONLY consequence is one lost reply record ->
+            // the gate treats that one question as still-unanswered -> ONE EXTRA
+            // NAG next Stop. That is the same fail-open/fail-SAFE direction the
+            // whole module keeps: it can never let a genuinely-unanswered question
+            // slip THROUGH the Stop-gate, only ever cause one redundant nag. Left
+            // as a documented, bounded, benign residual — consistent with the
+            // originally-disclosed fail-open.
             fs.renameSync(tmp, p); // atomic replace — source unchanged since fold
             report.migrated++;
             done = true;
           } else {
-            // Late append landed: discard this tmp, re-fold including it, retry.
-            try { fs.unlinkSync(tmp); } catch (_) {}
+            // Late append landed: re-fold including it and retry (tmp is reclaimed
+            // by the unconditional finally below).
             current = latest;
           }
         } catch (e) {
-          if (wrote) { try { fs.unlinkSync(tmp); } catch (_) {} }
           report.errors++;
           done = true; // give up on this file; leave the source untouched
+        } finally {
+          // UNCONDITIONAL tmp cleanup (E2), every exit path: success, abort,
+          // retry, or a thrown write. On the success path renameSync already moved
+          // tmp to p, so this unlink is a harmless ENOENT; on every other path it
+          // reclaims the `.migrate` sidecar that a uniquely-named tmp would
+          // otherwise leak forever (nothing else ever overwrites a unique name).
+          try { fs.unlinkSync(tmp); } catch (_) {}
         }
       }
       if (!done) {

@@ -524,6 +524,178 @@ test('recordReply: an oversized record is rejected (no torn write); normal recor
   } finally { cleanup(); }
 });
 
+// --- SECOND BOUNDED FIX ROUND (fail-closed hardening: A2 / D2 / C2 / E2) ----
+
+// FIX A2: the legacy-line separator decision must FAIL CLOSED. A last-byte read
+// that THROWS must still result in the '\n' separator being applied (a leading
+// blank line is harmless — foldReplyLog skips it), never in a separator-less
+// append that concatenates onto an un-terminated legacy line and drops BOTH the
+// legacy state and this reply.
+test('recordReply (A2): a last-byte read failure on a legacy no-newline file still applies the separator — no data loss', () => {
+  const { home, cleanup } = makeHome();
+  const realReadSync = fs.readSync;
+  try {
+    const repoKey = 'a2-readfail-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const legacy = JSON.stringify({ 'child-a': { lastReplyTs: 111 } }); // NO trailing newline
+    fs.writeFileSync(p, legacy);
+    assert.notEqual(fs.readFileSync(p, 'utf8').slice(-1), '\n', 'precondition: no trailing newline');
+
+    // Force the last-byte read to THROW. HEAD swallowed this and appended WITHOUT
+    // a separator (fail-OPEN); A2 defaults to prepending on ANY read uncertainty.
+    fs.readSync = function () { const e = new Error('simulated read failure'); e.code = 'EIO'; throw e; };
+    M.recordReply(repoKey, home, 'child-b', 222);
+    fs.readSync = realReadSync;
+
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 111, 'legacy state survives despite the last-byte read failure');
+    assert.equal(state['child-b'].lastReplyTs, 222, 'the appended reply survives too');
+    assert.equal(Object.keys(state).length, 2, 'no reply lost');
+    // On disk: two valid standalone lines (the separator WAS applied).
+    const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
+    assert.equal(lines.length, 2);
+    for (const line of lines) assert.doesNotThrow(() => JSON.parse(line), 'each line is valid JSON — nothing torn');
+  } finally {
+    fs.readSync = realReadSync;
+    cleanup();
+  }
+});
+
+// FIX D2: the size cap must bound the EXACT bytes written — the assembled line
+// including the trailing '\n' AND any prepended leading '\n' — against a cap set
+// comfortably BELOW the 512-byte atomicity bound (480). A record that assembles
+// to >480 bytes only once the separator is counted must be rejected.
+test('recordReply (D2): the cap counts the full assembled line incl. separator; accepted writes stay within the atomicity bound', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'd2-cap-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // Legacy no-trailing-newline file forces recordReply to PREPEND a '\n', so
+    // the bytes actually written = record + 1.
+    const legacy = JSON.stringify({ 'child-a': { lastReplyTs: 1 } });
+    fs.writeFileSync(p, legacy);
+
+    // meshId sized so the record body (JSON + '\n') is EXACTLY 480 bytes, but the
+    // ACTUAL write (record + leading '\n' separator) is 481 — over the 480 cap.
+    // A cap measured on the record body alone (even at 480, and certainly the old
+    // 512) would let this through and write a 481-byte line that can tear a
+    // concurrent append; the cap must reject it because it measures the payload.
+    const recBytes = (L) => Buffer.byteLength(JSON.stringify({ m: 'x'.repeat(L), t: 1000 }) + '\n', 'utf8');
+    let L = 1; while (recBytes(L) < 480) L++;
+    assert.equal(recBytes(L), 480, 'precondition: record body is exactly 480 bytes (payload with separator = 481)');
+    const overId = 'x'.repeat(L);
+    M.recordReply(repoKey, home, overId, 1000);
+    assert.equal(fs.readFileSync(p, 'utf8'), legacy, 'the over-cap-with-separator record is rejected — file untouched');
+    assert.strictEqual(M.readReplyState(repoKey, home)[overId], undefined, 'the over-cap sender is never recorded');
+
+    // A normal record still appends, and EVERY line actually on disk (incl. its
+    // trailing newline) is within the 480-byte atomicity bound.
+    M.recordReply(repoKey, home, 'child-b', 2000);
+    for (const line of fs.readFileSync(p, 'utf8').split('\n').filter(Boolean)) {
+      assert.ok(Buffer.byteLength(line + '\n', 'utf8') <= 480, 'each written line incl. newline stays within the atomicity bound');
+    }
+    assert.equal(M.readReplyState(repoKey, home)['child-b'].lastReplyTs, 2000);
+  } finally { cleanup(); }
+});
+
+// FIX C2: a re-read that THROWS during the migration convergence loop must ABORT
+// that file (leave it exactly as-is, backward-compatible reader still folds it),
+// never authorize the rename — renaming over an unverified source could discard
+// a late append. Combined with a late append here to prove no data is lost.
+test('migrateReplyState (C2): a re-read that throws aborts the migration — file left intact, no reply lost', () => {
+  const { home, cleanup } = makeHome();
+  const realWrite = fs.writeFileSync;
+  const realRead = fs.readFileSync;
+  try {
+    const repoKey = 'c2-reread-throw-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ 'child-a': { lastReplyTs: 111 } }) + '\n');
+
+    let fired = false;
+    let armed = false;
+    fs.writeFileSync = function (file, data, ...rest) {
+      const r = realWrite.call(fs, file, data, ...rest);
+      if (!fired && typeof file === 'string' && file.includes('.migrate.')) {
+        fired = true;
+        // A live reply lands after the snapshot fold, before the re-read ...
+        realWrite.call(fs, p, realRead.call(fs, p, 'utf8') + JSON.stringify({ m: 'child-b', t: 222 }) + '\n');
+        // ... and then the migration's re-read of the source throws.
+        armed = true;
+      }
+      return r;
+    };
+    fs.readFileSync = function (file, ...rest) {
+      if (armed && file === p) { armed = false; const e = new Error('simulated EIO'); e.code = 'EIO'; throw e; }
+      return realRead.call(fs, file, ...rest);
+    };
+
+    const report = M.migrateReplyState(home);
+    fs.writeFileSync = realWrite;
+    fs.readFileSync = realRead;
+
+    assert.ok(fired, 'the injection must have fired');
+    assert.equal(report.migrated, 0, 'an uncertain re-read must NOT authorize a rename');
+    assert.equal(report.errors, 1, 'the file is counted as an aborted error, not migrated');
+
+    // Source left as-is — reader still folds BOTH the legacy sender and the late
+    // append. Nothing lost by a rename that (correctly) never happened.
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 111, 'legacy sender intact');
+    assert.equal(state['child-b'].lastReplyTs, 222, 'the late append is NOT lost — no rename over an unverified source');
+    assert.equal(Object.keys(state).length, 2);
+    const leaked = fs.readdirSync(path.dirname(p)).filter((f) => f.includes('.migrate.'));
+    assert.deepEqual(leaked, [], 'no .migrate sidecar left behind (E2)');
+  } finally {
+    fs.writeFileSync = realWrite;
+    fs.readFileSync = realRead;
+    cleanup();
+  }
+});
+
+// FIX E2: the tmp/.migrate sidecar cleanup must be UNCONDITIONAL. A partial write
+// that creates the sidecar and then throws (HEAD only unlinked when wrote===true)
+// must not leak the sidecar — the finally-style cleanup always reclaims it.
+test('migrateReplyState (E2): a partial/aborted write leaves NO .migrate sidecar (unconditional cleanup)', () => {
+  const { home, cleanup } = makeHome();
+  const realWrite = fs.writeFileSync;
+  try {
+    const repoKey = 'e2-sidecar-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const legacy = JSON.stringify({ 'child-a': { lastReplyTs: 111 } }) + '\n';
+    fs.writeFileSync(p, legacy);
+
+    // Simulate a partial write: the tmp sidecar IS created on disk, then the write
+    // throws (e.g. ENOSPC mid-write). HEAD only unlinked the tmp when wrote===true,
+    // so a throw here leaked the sidecar forever.
+    let leftPartial = false;
+    fs.writeFileSync = function (file, data, ...rest) {
+      if (typeof file === 'string' && file.includes('.migrate.')) {
+        realWrite.call(fs, file, 'partial-body'); // a real partial file on disk
+        leftPartial = true;
+        const e = new Error('simulated ENOSPC'); e.code = 'ENOSPC'; throw e;
+      }
+      return realWrite.call(fs, file, data, ...rest);
+    };
+
+    const report = M.migrateReplyState(home);
+    fs.writeFileSync = realWrite;
+
+    assert.ok(leftPartial, 'the partial-write injection must have fired');
+    assert.equal(report.migrated, 0, 'the aborted write does not migrate');
+    assert.equal(report.errors, 1, 'the write failure is counted');
+    const leaked = fs.readdirSync(path.dirname(p)).filter((f) => f.includes('.migrate.'));
+    assert.deepEqual(leaked, [], 'the .migrate sidecar must be cleaned up unconditionally, even on a partial/aborted write');
+    assert.equal(fs.readFileSync(p, 'utf8'), legacy, 'source left intact on abort');
+  } finally {
+    fs.writeFileSync = realWrite;
+    cleanup();
+  }
+});
+
 // --- unansweredQuestions (unchanged consumer contract) ---------------------
 test('unansweredQuestions: separates answered (ts <= lastReplyTs) from unanswered (ts > lastReplyTs, or no entry)', () => {
   const pendingQuestions = [
