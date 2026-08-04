@@ -6,6 +6,17 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.71.3 (2026-08-04)
+
+- **DevSwarm ingest installer resolves hivecontrol via a robust tiered chain.**
+  `install-devswarm-ingest.js` now resolves hivecontrol via `ANTIHALL_DEVSWARM_HIVECONTROL`
+  → a persisted last-known-good cache at `~/.anti-hall/devswarm/hivecontrol-path.json` →
+  a login-shell lookup → known install locations, and caches every success, so a
+  reinstall from a minimal-env caller (hook, doctor repair, bare subagent shell) no
+  longer silently bakes a PATH-less daemon that ENOENTs and stops ingesting; on total
+  miss it now prints a loud stderr warning instead of failing silently, while still
+  installing fail-open.
+
 ## 0.71.2 (2026-08-04)
 
 - **DevSwarm installer rejects unknown/mistyped flags.** `install-devswarm-ingest.js`

@@ -594,7 +594,7 @@ anti-hall/
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
 ├── docs/                               # KB + design notes — CONTEXT-PRESERVATION-KB · KB · TASKLIST-GUARD · TASK-WORK · E2E-TESTING (+ Claude Code internals)
-├── tests/                              # zero-dependency node:test E2E suite (2932 tests, 2930 pass +2 platform-skip) — `node --test`
+├── tests/                              # zero-dependency node:test E2E suite (2939 tests, 2937 pass +2 platform-skip) — `node --test`
 ├── .github/workflows/test.yml          # CI: runs the suite on push/PR
 └── CHANGELOG.md
 ```
