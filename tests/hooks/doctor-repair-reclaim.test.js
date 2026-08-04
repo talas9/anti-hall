@@ -560,10 +560,18 @@ const DOCTOR_JS = path.join(REPO_ROOT, 'plugins', 'anti-hall', 'hooks', 'doctor.
 // parallelism, without loosening the exit-code assertion itself — a genuine
 // non-zero exit from a subprocess that actually ran is still caught.
 function runDoctor({ cwd, env, args }) {
+  const callerEnv = env || {};
+  // See doctor.test.js's runDoctor for why the default must be a disposable
+  // temp HOME rather than `undefined`: os.homedir() resolves an unset HOME
+  // via the platform passwd db to the REAL user home, so a caller that omits
+  // its own HOME would silently point doctor.js at the real
+  // ~/.anti-hall/devswarm/store. Every current call site passes its own
+  // isolated HOME; this default only guards future ones.
+  const fallbackHome = ('HOME' in callerEnv) ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-default-home-'));
   const res = cp.spawnSync(process.execPath, [DOCTOR_JS].concat(args || []), {
     cwd, encoding: 'utf8', timeout: 60000,
     env: Object.assign({}, process.env, {
-      HOME: undefined, USERPROFILE: undefined, DEVSWARM_REPO_ID: undefined,
+      HOME: fallbackHome, USERPROFILE: fallbackHome, DEVSWARM_REPO_ID: undefined,
       DISABLE_ANTIHALL_DEVSWARM: undefined, ANTIHALL_DEVSWARM_SUPERVISOR: undefined,
       // Ambient-env leak fix: inheriting process.env wholesale means a real
       // ANTIHALL_DOCTOR_CONTEXT set in the invoking shell (e.g. 'flutter-debug')
@@ -574,7 +582,7 @@ function runDoctor({ cwd, env, args }) {
       // before. Always clear it explicitly, same as the other behavior-
       // selecting vars above.
       ANTIHALL_DOCTOR_CONTEXT: undefined,
-    }, env || {}),
+    }, callerEnv),
   });
   return {
     code: res.status,
