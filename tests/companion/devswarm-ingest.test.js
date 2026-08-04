@@ -237,7 +237,11 @@ test('runIngestLoop heartbeats EVERY bounded cycle even when every cycle is quie
     });
     assert.equal(summary.started, true);
     assert.equal(summary.stats.inserted, 0, 'every cycle was quiet — zero messages the whole run');
-    assert.equal(hbWrites, 4, 'heartbeat written once per bounded cycle (4 of 4), independent of message arrival');
+    // 4 heartbeats from the top-of-iteration write (once per cycle) PLUS one
+    // extra heartbeat per non-final iteration's success-path pacing sleep (3 of
+    // the 4 iterations pace via backoffWithHeartbeat, which itself heartbeats
+    // before its slice-sleep — see the pacing fix above) = 4 + 3 = 7.
+    assert.equal(hbWrites, 7, 'heartbeat written once per bounded cycle PLUS once per pacing sleep (independent of message arrival)');
     assert.deepEqual(timeoutsSeen, [
       ingest.DEFAULT_MONITOR_TIMEOUT_SEC, ingest.DEFAULT_MONITOR_TIMEOUT_SEC,
       ingest.DEFAULT_MONITOR_TIMEOUT_SEC, ingest.DEFAULT_MONITOR_TIMEOUT_SEC,
@@ -1195,5 +1199,121 @@ test('a lock leaked by NO earlier release is still released when store-open thro
     const rel = ingest.acquireIngestLock(home, undefined, wt);
     assert.ok(rel, 'lock was released despite the startup failure — not leaked');
     rel();
+  } finally { rm(home); }
+});
+
+// --- SUCCESS-PATH PACING (kernel-leak fix) ---------------------------------
+// Root cause: `run` (hivecontrol workspace monitor -i/-t) is EXPECTED to
+// long-poll for ~intervalSec, but production hivecontrol regularly returns in
+// well under a second, and the loop previously had NO pacing sleep on the
+// SUCCESS path — only the failure path backed off. With nothing to slow it
+// down, a fast-returning `run` busy-spins the loop, spawning hivecontrol far
+// more than once per intervalSec: a sustained macOS kernel-allocator leak
+// (data.kalloc.1024) plus needless CPU. These tests prove the loop now paces
+// itself to ~intervalSec between spawns on the success path, without touching
+// the failure/backoff path.
+
+function busyWaitMs(ms) {
+  const start = Date.now();
+  while (Date.now() - start < ms) { /* deliberate spin: simulate a fast-returning run() */ }
+}
+
+test('runIngestLoop PACES the success path — a fast-returning run() does not busy-spin', () => {
+  const home = tmpHome();
+  try {
+    const sleepCalls = [];
+    const run = () => { busyWaitMs(5); return { ok: true, raw: '[]' }; }; // "instant" success
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 3,
+      run, sleep: (ms) => sleepCalls.push(ms), intervalSec: 0.1, // 100ms cadence, short so the test stays fast
+    });
+    assert.equal(summary.started, true);
+    assert.equal(summary.stats.iterations, 3);
+    // Every success iteration EXCEPT the last should have paced once via sleep()
+    // (routed through backoffWithHeartbeat, the same primitive the failure path
+    // already used — see the loop's sleep() call sites, there are only two:
+    // backoffWithHeartbeat's slice sleep and the ELOCKFS/ELOCKUNAVAIL retry).
+    assert.equal(sleepCalls.length, 2, 'paces after each success iteration except the final one (2 of 3)');
+    for (const ms of sleepCalls) {
+      assert.ok(ms > 0 && ms <= 100, `pace should be capped to ~intervalSec*1000 (100ms), got ${ms}ms`);
+    }
+  } finally { rm(home); }
+});
+
+test('runIngestLoop pacing is ELAPSED-AWARE — a slower run() gets a smaller (or zero) pace', () => {
+  const home = tmpHome();
+  try {
+    const sleepCalls = [];
+    // run() itself burns ~90ms of the 100ms budget — pacing should top up only
+    // the remainder, proving pace = intervalSec*1000 - elapsed, not a flat sleep.
+    const run = () => { busyWaitMs(90); return { ok: true, raw: '[]' }; };
+    ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 2,
+      run, sleep: (ms) => sleepCalls.push(ms), intervalSec: 0.1,
+    });
+    // Only iteration 0 paces (iteration 1 is the last, never paced). Since run()
+    // already consumed ~90ms of the 100ms budget, the requested pace must be
+    // small — well under a flat, elapsed-unaware 100ms sleep.
+    assert.ok(sleepCalls.length <= 1, 'at most one pacing sleep (2 iterations, last is unpaced)');
+    if (sleepCalls.length === 1) {
+      assert.ok(sleepCalls[0] < 50, `elapsed-aware pace should be well under the full 100ms budget, got ${sleepCalls[0]}ms`);
+    }
+  } finally { rm(home); }
+});
+
+test('runIngestLoop success-path pacing is SKIPPED on the final iteration', () => {
+  const home = tmpHome();
+  try {
+    const sleepCalls = [];
+    const run = () => ({ ok: true, raw: '[]' });
+    ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 1,
+      run, sleep: (ms) => sleepCalls.push(ms), intervalSec: 0.1,
+    });
+    assert.equal(sleepCalls.length, 0, 'a single-iteration run never paces — nothing left to pace before');
+  } finally { rm(home); }
+});
+
+test('runIngestLoop success-path pacing falls back to DEFAULT_MONITOR_INTERVAL_SEC on a bad intervalSec (0/negative/NaN)', () => {
+  const home = tmpHome();
+  for (const badInterval of [0, -5, NaN]) {
+    const home2 = tmpHome();
+    try {
+      const sleepCalls = [];
+      const run = () => ({ ok: true, raw: '[]' });
+      ingest.runIngestLoop({
+        home: home2, backend: 'journal', workspaceId: 'p', maxIterations: 2,
+        run, sleep: (ms) => sleepCalls.push(ms), intervalSec: badInterval,
+      });
+      // Must still pace (not throw, not busy-spin unpaced) — falls back to the
+      // 3s default, so the single pacing sleep (iteration 0) should be a large,
+      // sane value bounded by DEFAULT_MONITOR_INTERVAL_SEC*1000 (3000ms), not 0
+      // and not NaN/negative.
+      assert.equal(sleepCalls.length, 1, `bad intervalSec (${badInterval}) still paces via the fallback default`);
+      assert.ok(Number.isFinite(sleepCalls[0]) && sleepCalls[0] > 0 && sleepCalls[0] <= 3000,
+        `pace for bad intervalSec ${badInterval} should fall back to DEFAULT_MONITOR_INTERVAL_SEC bound, got ${sleepCalls[0]}`);
+    } finally { rm(home2); }
+  }
+  rm(home);
+});
+
+test('REGRESSION: runIngestLoop FAILURE path still backs off exactly as before (pacing change is success-path only)', () => {
+  const home = tmpHome();
+  try {
+    const sleepCalls = [];
+    const run = () => ({ ok: false, raw: '', error: 'boom', code: 'ETIMEDOUT' });
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 3,
+      run, sleep: (ms) => sleepCalls.push(ms), restartBackoffMs: 250, intervalSec: 0.1,
+    });
+    assert.equal(summary.stats.errors, 3);
+    // The failure path backs off using restartBackoffMs (250ms here), NOT the
+    // success-path pacing formula — every recorded sleep must equal exactly
+    // 250 (sliced once since it is under BACKOFF_HEARTBEAT_SLICE_MS), proving
+    // the pacing addition did not leak into or alter the failure/backoff path.
+    assert.equal(sleepCalls.length, 2, 'backs off after each failure except the final iteration (2 of 3)');
+    for (const ms of sleepCalls) {
+      assert.equal(ms, 250, 'failure-path backoff is unchanged by the success-path pacing fix');
+    }
   } finally { rm(home); }
 });

@@ -1371,6 +1371,17 @@ function runIngestLoop(opts) {
       // whether anything was ingested — a live-but-quiet daemon must still read as
       // alive. Fail-open: a heartbeat-write error must never crash the loop.
       writeIngestHeartbeat(home, hbHash, Object.assign({ workspaceId, workingDir: worktree, now: o.now }, monitorState), (o.io && o.io.storeFs));
+      // PACING (P0 fix): `run` is expected to long-poll for ~intervalSec on its
+      // own (hivecontrol's -i/-t flags), but in production hivecontrol can and
+      // does return in well under a second — with nothing here to slow it back
+      // down, the loop busy-spins at multiple iterations/sec, each doing a full
+      // fork/exec/reap of the hivecontrol binary. That drove both a sustained
+      // macOS kernel-allocator leak (data.kalloc.1024, ~220/sec observed) and
+      // ~11% steady-state CPU from a daemon that should be idling between polls.
+      // iterationStart is real Date.now() (NOT the injectable o.now, which tests
+      // use as a fixed business-logic timestamp and would make elapsed always 0)
+      // so pacing reflects actual wall-clock spend regardless of test overrides.
+      const iterationStart = Date.now();
       const res = run({
         hivecontrol: hivecontrol.bin, intervalSec,
         timeoutSec, hardTimeoutMs,
@@ -1483,6 +1494,20 @@ function runIngestLoop(opts) {
       monitorState.lastMonitorError = null;
       stats.monitorFailures = 0;
       stats.monitorPermanent = false;
+      // Pace the SUCCESS path to at most ~once per intervalSec regardless of how
+      // fast `run` actually returned (see the iterationStart comment above). A
+      // negative/NaN/zero intervalSec (bad opts) falls back to
+      // DEFAULT_MONITOR_INTERVAL_SEC rather than spinning unpaced. Routed through
+      // the EXISTING backoffWithHeartbeat (not a raw sleep) so lock/heartbeat
+      // liveness slicing during the wait is preserved — same as the failure path.
+      // Skipped on the final iteration: nothing left to pace before.
+      if (i + 1 < maxIterations) {
+        const paceIntervalSec = Number.isFinite(intervalSec) && intervalSec > 0
+          ? intervalSec : DEFAULT_MONITOR_INTERVAL_SEC;
+        const elapsed = Date.now() - iterationStart;
+        const pace = Math.max(0, (paceIntervalSec * 1000) - elapsed);
+        if (pace > 0) backoffWithHeartbeat(pace);
+      }
     }
   } catch (e) {
     // Startup (store-open) AND main-loop failures land here. Fail-open: APPEND a
