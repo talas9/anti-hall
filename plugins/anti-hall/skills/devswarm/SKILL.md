@@ -148,6 +148,10 @@ handoff:
   ```bash
   node scripts/devswarm.js archive <id>
   ```
+  **(v0.70.1)** `<id>` also accepts an unambiguous shortId/prefix — the same short form shown
+  in the roster/injection table — so the id displayed there is directly archivable; an
+  ambiguous prefix (matches more than one row) archives nothing and lists the candidates
+  instead. Exact full-id behavior is unchanged.
   **NEVER auto-archive.** anti-hall never archives mechanically on either side of this
   handshake — the CLI only ever archives-by-absence on anti-hall's own registry (moves the
   descriptor to `archived/`, tombstones the store entry) and surfaces a manual "remove
@@ -255,7 +259,7 @@ recovery" below) is a third, explicitly-invoked script, not a daemon.
 | `workspaces list [--workspace <id>] [--worktree P]` | none | Emit the `summary.json` projection for a project (defaults to the current worktree's own store). Pure `computeSummary` read (fixed under #62 — no longer writes `summary.json` on a plain read, unlike some older docs/specs claim). | Full projection dump including gates/`archive_ready`. | **Read-only.** |
 | `gate <id> --set CSV --clear CSV` | at least one of `--set`/`--clear` required | Mark/unmark named append-only completion gates; drives `archive_ready`. | Consumer marking `done`/`merged`/`tests_passed` etc. | **Writes.** |
 | `nudge <id>` | none | Poke-or-escalate one workspace on demand (reuses the supervisor's own `pokeOrEscalate`, honoring persisted attempt count/cooldown). | Manual on-demand nudge outside the automatic sweep. | **Writes** (poke/escalation state). |
-| `archive <id>` | none | Archive-by-absence: move the descriptor to `archived/`, tombstone the store registry row. Surfaces a manual "remove in the DevSwarm app" step (no native teardown command exists). | Workspace lifecycle complete (CHILD role, after confirming with your user). | **Writes.** |
+| `archive <id>` | none | Archive-by-absence: move the descriptor to `archived/`, tombstone the store registry row. Surfaces a manual "remove in the DevSwarm app" step (no native teardown command exists). **(v0.70.1)** `<id>` resolves an unambiguous shortId/prefix too (matching the roster/injection table's displayed id); an ambiguous prefix archives nothing and lists the candidates. `isSafeId` still gates (no `/`). | Workspace lifecycle complete (CHILD role, after confirming with your user). | **Writes.** |
 | `unarchive <id>` | none | Reverses `archive`: restores the descriptor from `archived/` back to active (hardlink-then-unlink, crash-safe) and revives the store registry row. Rejects (`ok:false`) if the archived descriptor's ownerKey doesn't match the CURRENT project (cross-project reject) or if a non-recovery-anchor active descriptor already exists for that id. | Un-archiving a workspace that was archived by mistake, or resuming one still needed. | **Writes.** |
 | `archive-ignore <id>` / `archive-unignore <id>` | none | Mute/unmute the archive-ready reminder for one workspace. | Suppress a nag already triaged. | **Writes.** |
 | `archive-request <childId> [--reason TEXT]` | none required | Direct STORE WRITE (v0.58, zero `hivecontrol` calls): posts a `[[ANTIHALL_ARCHIVE_REQUEST]]` mesh-direct message straight into `childId`'s own partition. Never verifies merged/tested/deployed itself — that stays the parent's own repo policy. | PARENT asking a child to archive, after verifying merged+tested+deployed per your own policy. | **Writes.** |

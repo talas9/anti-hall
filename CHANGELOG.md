@@ -6,6 +6,30 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.70.1 (2026-08-04)
+
+- **Liveness-aware roster read — dormant-tier demotion (`7f253cd`).** A DevSwarm mesh/
+  registry row outlives its workspace — closing a workspace in the DevSwarm app deletes
+  nothing (registry row, worktree, descriptor, `hivecontrol workspace list` entry all
+  survive) — so a row whose newest known activity signal (heartbeat timestamp,
+  transcript mtime, or supervisor verdict) is at least `ANTIHALL_DEVSWARM_DORMANT_MS`
+  old (default 30 min) is now labeled `dormant` (rank 5, sorts last, below `active`)
+  instead of reading as still-active forever. Demotes, never hides — a dormant row
+  still renders with its unread count, only ranked last; never overrides
+  `escalated`/`stale`/`archive-ready`; fail-open on any read error. `scripts/devswarm.js`
+  `roster` carries the identical hint so the two surfaces can't disagree.
+- **Edit-guard: coordinator handover/compact-prep doc exclusion (`f6e2931`).** The
+  Primary write-block now excludes coordinator handover / compact-prep `.md` docs from
+  the block, closing a false-positive that stopped a Primary from writing its own
+  session handoff. Bypass-safe: gated by basename + `.md` extension, cwd-containment
+  checked, hardlinks rejected.
+- **DevSwarm `archive`: shortId/prefix resolve (`78425ae`).** `archive <id>` now
+  resolves the workspace id by an unambiguous shortId/prefix, so the id shown in the
+  roster/injection table is directly archivable without pasting the full id. An
+  ambiguous prefix (matches more than one row) archives nothing and lists the
+  candidates instead; exact full-id behavior is unchanged; `isSafeId` still gates
+  (no `/`).
+
 ## 0.70.0
 
 - **DevSwarm mesh/store hardening — message-loss fix (merge `5856eb9`).** `archive` used

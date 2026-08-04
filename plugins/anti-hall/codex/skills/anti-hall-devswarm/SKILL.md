@@ -155,7 +155,10 @@ Two v0.56.0 additions:
   posture as `send`/`roster`/`mesh read` below until that status changes. CHILD role: on
   seeing that marker in an unread message, confirm with YOUR user, then run
   `node scripts/devswarm.js archive <id>` (unaffected by v0.58, still agent-agnostic and
-  store-independent). (The CHILD side's automatic marker-detection/surfacing, above, runs via
+  store-independent). **(v0.70.1)** `<id>` also accepts an unambiguous shortId/prefix — the
+  same short form shown in the roster/injection table — so the id displayed there is
+  directly archivable; an ambiguous prefix archives nothing and lists the candidates instead.
+  (The CHILD side's automatic marker-detection/surfacing, above, runs via
   `devswarm-child-turn.js`, now registered for both agents — no manual scan needed on Codex
   either.)
 
@@ -317,7 +320,7 @@ the operational truth regardless of promotion status.
 | `workspaces list [--workspace <id>] [--worktree P]` | none | Emit the `summary.json` projection. Pure `computeSummary` read (#62 fix — no longer writes on a plain read). | Full projection dump including gates/`archive_ready`. | **Read-only.** |
 | `gate <id> --set CSV --clear CSV` | at least one required | Mark/unmark named completion gates; drives `archive_ready`. | Consumer marking `done`/`merged`/`tests_passed` etc. | **Writes.** |
 | `nudge <id>` | none | Poke-or-escalate one workspace on demand. | Manual on-demand nudge outside the automatic sweep. | **Writes.** |
-| `archive <id>` | none | Archive-by-absence: descriptor to `archived/`, tombstone the registry row; surfaces a manual DevSwarm-app removal step. | Workspace lifecycle complete (CHILD role, after confirming with your user). | **Writes.** |
+| `archive <id>` | none | Archive-by-absence: descriptor to `archived/`, tombstone the registry row; surfaces a manual DevSwarm-app removal step. **(v0.70.1)** `<id>` resolves an unambiguous shortId/prefix too (matching the roster/injection table's displayed id); an ambiguous prefix archives nothing and lists the candidates. | Workspace lifecycle complete (CHILD role, after confirming with your user). | **Writes.** |
 | `unarchive <id>` | none | Reverses `archive`: restores the descriptor from `archived/` back to active (crash-safe hardlink-then-unlink) and revives the store registry row. Rejects if the archived descriptor's ownerKey doesn't match the current project, or if a conflicting active descriptor already exists. | Un-archiving a workspace archived by mistake, or resuming one still needed. | **Writes.** |
 | `archive-ignore <id>` / `archive-unignore <id>` | none | Mute/unmute the archive-ready reminder. | Suppress a nag already triaged. | **Writes.** |
 | `archive-request <childId> [--reason TEXT]` | none required | Direct STORE WRITE (v0.58, zero `hivecontrol` calls): posts `[[ANTIHALL_ARCHIVE_REQUEST]]` straight into `childId`'s own partition. Never verifies merged/tested/deployed itself. | PARENT asking a child to archive, after verifying per your own policy. | **Writes.** |

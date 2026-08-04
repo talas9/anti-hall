@@ -310,6 +310,11 @@ plugin depends on it.
   any incomplete scan) instead of permanently wedging re-archive of that id. The per-turn
   parent-inbox STOP wording is now advisory for the normal tier (urgent/high tier
   unchanged).
+- **DevSwarm `archive` shortId/prefix resolve (v0.70.1)** — `archive <id>` now also
+  resolves an unambiguous shortId/prefix (the same short form shown in the roster/
+  injection table), so the id displayed there is directly archivable; an ambiguous
+  prefix archives nothing and lists the candidates instead. `isSafeId` still gates
+  (no `/`); exact-id behavior is unchanged.
 - **Per-project mesh store** — one shared store per project keyed by a stable `repoKey`,
   so any worktree can message any other directly; **#36-STRUCTURAL scoping** closes a
   spoofable cross-project bleed.
