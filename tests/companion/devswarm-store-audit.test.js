@@ -216,6 +216,289 @@ test('devswarm-store-leak-report CLI: writes a JSON report with correct counts, 
 });
 
 // ---------------------------------------------------------------------------
+// 9. FIX 2 (P1): a bucket whose ACTIVE descriptor is gone but which has an
+//    ARCHIVED descriptor (devswarmRoot/archived/<id>.json — same shape,
+//    written by scripts/devswarm.js cmdArchive) must classify REAL, not
+//    GARBAGE. An archived real workspace is not garbage.
+// ---------------------------------------------------------------------------
+function writeArchivedDescriptor(home, id, fields) {
+  const dir = path.join(home, '.anti-hall', 'devswarm', 'archived');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, id + '.json'), JSON.stringify(Object.assign({ id }, fields || {})));
+}
+
+test('auditStore: no ACTIVE descriptor, but an ARCHIVED descriptor matches (id-hash) -> REAL, not GARBAGE', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const id = 'primary-a11ce123';
+    writeArchivedDescriptor(home, id, { worktreePath: '/nonexistent/does/not/matter' });
+    const hash = store.hashFromWorkspaceId(id);
+    makeSqliteOnlyBucket(home, hash);
+
+    const report = audit.auditStore({ home });
+    assert.strictEqual(report.total, 1);
+    assert.strictEqual(report.realCount, 1, 'archived-descriptor bucket must be REAL: ' + JSON.stringify(report));
+    assert.strictEqual(report.garbageCount, 0);
+    assert.deepStrictEqual(report.real, [hash]);
+    assert.match(report.realSample[0].reason, /archived/);
+  } finally { cleanup(); }
+});
+
+test('auditStore: no ACTIVE descriptor, but an ARCHIVED descriptor matches (repoKey) -> REAL, not GARBAGE', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    writeArchivedDescriptor(home, 'child-archived-1', { repoKey: 'archivedproj-abc123', ownerKey: 'archivedproj-abc123' });
+    makeSqliteOnlyBucket(home, 'archivedproj-abc123');
+
+    const report = audit.auditStore({ home });
+    assert.strictEqual(report.realCount, 1);
+    assert.strictEqual(report.garbageCount, 0);
+  } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// 10. FIX 3 (P1): read/parse/stat FAILURES must classify UNKNOWN, not
+//     GARBAGE — evidence is incomplete, not confidently empty.
+// ---------------------------------------------------------------------------
+
+// 10a. workspaces/ directory itself is unreadable (EACCES-shaped failure via
+// an injected fsi) -> every otherwise-GARBAGE bucket becomes UNKNOWN, because
+// a live descriptor match could have been missed.
+test('auditStore: workspaces/ directory read fails with a real error -> UNKNOWN, not GARBAGE', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const workspacesDir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+
+    const spyFsi = Object.assign({}, fs);
+    spyFsi.readdirSync = (dir, ...rest) => {
+      if (path.resolve(String(dir)) === path.resolve(workspacesDir)) {
+        const e = new Error('EACCES: permission denied, scandir ' + dir);
+        e.code = 'EACCES';
+        throw e;
+      }
+      return fs.readdirSync(dir, ...rest);
+    };
+
+    const report = audit.auditStore({ home, fsi: spyFsi });
+    assert.strictEqual(report.total, 1);
+    assert.strictEqual(report.garbageCount, 0, 'must NOT collapse to GARBAGE when descriptor evidence is incomplete: ' + JSON.stringify(report));
+    assert.strictEqual(report.unknownCount, 1);
+    assert.deepStrictEqual(report.unknown, ['deadbeef']);
+  } finally { cleanup(); }
+});
+
+// 10b. Individual descriptor file is corrupt (unparseable JSON) -> degraded,
+// so an unmatched bucket becomes UNKNOWN rather than a confident GARBAGE.
+test('auditStore: a corrupt (unparseable) descriptor file -> UNKNOWN for unmatched buckets, not GARBAGE', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const dir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'corrupt.json'), '{ not valid json ][');
+    makeSqliteOnlyBucket(home, 'deadbeef');
+
+    const report = audit.auditStore({ home });
+    assert.strictEqual(report.garbageCount, 0, JSON.stringify(report));
+    assert.strictEqual(report.unknownCount, 1);
+  } finally { cleanup(); }
+});
+
+// 10c. Bucket-level registry.ndjson read fails with a real error (not
+// ENOENT) -> that specific bucket is UNKNOWN, independent of any
+// descriptor-dir-level degradation (workspaces/ is fine here).
+test('auditStore: a bucket registry.ndjson read fails with a real error -> UNKNOWN for that bucket only', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    writeDescriptor(home, 'primary-11110000', {}); // unrelated live descriptor, workspaces/ dir read is fine
+    makeSqliteOnlyBucket(home, '11110000'); // this one matches -> REAL, unaffected by the other bucket's flaky read
+    const hash = 'flaky-registry-000abc';
+    const journalDir = store.journalDirForHash(home, hash);
+    fs.mkdirSync(journalDir, { recursive: true });
+    const registryPath = path.join(journalDir, 'registry.ndjson');
+    fs.writeFileSync(registryPath, '{}\n'); // present, will be "unreadable" via spy
+
+    const spyFsi = Object.assign({}, fs);
+    spyFsi.readFileSync = (file, ...rest) => {
+      if (path.resolve(String(file)) === path.resolve(registryPath)) {
+        const e = new Error('EIO: i/o error, read');
+        e.code = 'EIO';
+        throw e;
+      }
+      return fs.readFileSync(file, ...rest);
+    };
+
+    const report = audit.auditStore({ home, fsi: spyFsi });
+    assert.strictEqual(report.total, 2); // the id-hash bucket + this flaky one
+    assert.strictEqual(report.realCount, 1, JSON.stringify(report));
+    assert.strictEqual(report.garbageCount, 0, JSON.stringify(report));
+    assert.strictEqual(report.unknownCount, 1);
+    assert.deepStrictEqual(report.unknown, [hash]);
+  } finally { cleanup(); }
+});
+
+// 10d. Existing REAL/GARBAGE cases (tests 1-6) still hold under the new
+// three-way classification — re-asserted here with explicit unknownCount
+// checks so a regression that starts leaking UNKNOWN into old REAL/GARBAGE
+// paths is caught.
+test('auditStore: REAL/GARBAGE cases carry unknownCount: 0 when no read/stat failure occurred', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    writeDescriptor(home, 'primary-11111111', {});
+    makeSqliteOnlyBucket(home, '11111111'); // REAL
+    makeSqliteOnlyBucket(home, '22222222'); // GARBAGE
+
+    const report = audit.auditStore({ home });
+    assert.strictEqual(report.realCount, 1);
+    assert.strictEqual(report.garbageCount, 1);
+    assert.strictEqual(report.unknownCount, 0);
+  } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// 11. CLI: report prints/reports unknownCount alongside real/garbage.
+// ---------------------------------------------------------------------------
+test('devswarm-store-leak-report CLI: report JSON includes unknownCount', () => {
+  const { home, cleanup } = tmpHome();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-audit-report-out-'));
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const workspacesDir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    const spyFsi = Object.assign({}, fs);
+    spyFsi.readdirSync = (dir, ...rest) => {
+      if (path.resolve(String(dir)) === path.resolve(workspacesDir)) {
+        const e = new Error('EACCES: permission denied, scandir ' + dir);
+        e.code = 'EACCES';
+        throw e;
+      }
+      return fs.readdirSync(dir, ...rest);
+    };
+
+    const outPath = path.join(outDir, 'report.json');
+    const result = reportCli.run(['--home', home, '--out', outPath, '--quiet'], { fsi: spyFsi });
+    assert.strictEqual(result.ok, true, JSON.stringify(result));
+    const parsed = JSON.parse(fs.readFileSync(outPath, 'utf8'));
+    assert.strictEqual(parsed.unknownCount, 1);
+    assert.strictEqual(parsed.garbageCount, 0);
+  } finally {
+    cleanup();
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12. FIX 1 (P0): --out safety. The path is user-controlled and reaches
+//     writeFileSync — must REFUSE (non-zero, nothing written) rather than
+//     risk overwriting a production devswarm.db.
+// ---------------------------------------------------------------------------
+
+// 12a. --out resolving under the devswarm store root must be REFUSED.
+test('devswarm-store-leak-report CLI: --out under the devswarm store root is REFUSED, nothing written', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const insideStore = path.join(home, '.anti-hall', 'devswarm', 'store', 'deadbeef', 'devswarm.json');
+
+    const result = reportCli.run(['--home', home, '--out', insideStore, '--quiet']);
+    assert.strictEqual(result.ok, false, 'must refuse an --out path under the store root');
+    assert.match(result.error, /store root/);
+    assert.ok(!fs.existsSync(insideStore), 'nothing must be written when --out is refused');
+  } finally { cleanup(); }
+});
+
+// 12a-bis. Refuse even the devswarm root itself (not just store/) and the
+// exact production shape named in the finding: store/<hash>/devswarm.db
+// (non-.json AND under the store root — either reason alone must refuse).
+test('devswarm-store-leak-report CLI: --out at a real devswarm.db path is REFUSED (store root AND non-.json)', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const dbPath = store.sqlitePathForHash(home, 'deadbeef');
+    const before = fs.readFileSync(dbPath, 'utf8');
+
+    const result = reportCli.run(['--home', home, '--out', dbPath, '--quiet']);
+    assert.strictEqual(result.ok, false);
+    assert.ok(!/^\{/.test(fs.readFileSync(dbPath, 'utf8')), 'devswarm.db content must be untouched');
+    assert.strictEqual(fs.readFileSync(dbPath, 'utf8'), before, 'devswarm.db must not be overwritten/truncated');
+  } finally { cleanup(); }
+});
+
+// 12b. --out not ending in .json must be REFUSED, even outside the store root.
+test('devswarm-store-leak-report CLI: --out not ending in .json is REFUSED, nothing written', () => {
+  const { home, cleanup } = tmpHome();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-audit-report-out-'));
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const outPath = path.join(outDir, 'report.txt');
+
+    const result = reportCli.run(['--home', home, '--out', outPath, '--quiet']);
+    assert.strictEqual(result.ok, false);
+    assert.match(result.error, /\.json/);
+    assert.ok(!fs.existsSync(outPath));
+  } finally {
+    cleanup();
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// 12c. --out pointing at an existing file that is NOT a prior JSON report
+// from this tool must be REFUSED (no clobbering arbitrary files), even when
+// it is a .json file outside the store root.
+test('devswarm-store-leak-report CLI: --out clobbering an existing non-report .json file is REFUSED', () => {
+  const { home, cleanup } = tmpHome();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-audit-report-out-'));
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const outPath = path.join(outDir, 'not-a-report.json');
+    const originalContent = JSON.stringify({ some: 'unrelated config file', values: [1, 2, 3] });
+    fs.writeFileSync(outPath, originalContent);
+
+    const result = reportCli.run(['--home', home, '--out', outPath, '--quiet']);
+    assert.strictEqual(result.ok, false);
+    assert.strictEqual(fs.readFileSync(outPath, 'utf8'), originalContent, 'unrelated existing file must be untouched');
+  } finally {
+    cleanup();
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// 12d. Acceptance: a VALID .json path outside the store root, either absent
+// or itself a prior report, is ACCEPTED and written.
+test('devswarm-store-leak-report CLI: a valid --out .json path outside the store root is accepted and written', () => {
+  const { home, cleanup } = tmpHome();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-audit-report-out-'));
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const outPath = path.join(outDir, 'my-report.json');
+
+    const result1 = reportCli.run(['--home', home, '--out', outPath, '--quiet']);
+    assert.strictEqual(result1.ok, true, JSON.stringify(result1));
+    assert.ok(fs.existsSync(outPath));
+
+    // Re-running against the SAME path (now a prior report from this tool)
+    // must be accepted too — idempotent re-runs are a normal workflow.
+    const result2 = reportCli.run(['--home', home, '--out', outPath, '--quiet']);
+    assert.strictEqual(result2.ok, true, JSON.stringify(result2));
+  } finally {
+    cleanup();
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// 12e. Default out path (no --out given) is unaffected by the new validation
+// (repo-relative .anti-hall/reports/*.json is never under the devswarm store
+// root and always ends in .json).
+test('devswarm-store-leak-report CLI: default --out path (no --out flag) still passes validation', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const result = reportCli.run(['--home', home, '--quiet']);
+    assert.strictEqual(result.ok, true, JSON.stringify(result));
+    try { fs.unlinkSync(result.outPath); } catch (_) {}
+  } finally { cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
 // VACUOUS-RED proof: a bucket that SHOULD be GARBAGE under a naive
 // "everything with no descriptor is REAL" implementation would misclassify
 // — proving these assertions are not vacuously true. Simulated inline
