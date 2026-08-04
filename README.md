@@ -66,7 +66,7 @@ compaction), a short rotating reminder every turn, and **mechanical hooks** that
 argued with.
 
 > **What's proven, and what isn't.** The **mechanical hooks** are the load-bearing part and
-> are verified by 783 passing tests (+2 platform-skipped, 785 total) — they deterministically block force-pushes, AI-credit
+> are verified by 2924 passing tests (+2 platform-skipped, 2926 total) — they deterministically block force-pushes, AI-credit
 > trailers, un-delegated heavy commands, and stale task state regardless of what the model
 > "feels" like doing. The **prompt layer** (verify-first protocol + nudges) is a *discipline*,
 > not a benchmark-validated hallucination cure: a four-round A/B eval ([`eval/`](eval/)) —
@@ -594,7 +594,7 @@ anti-hall/
 │   └── statusline/                     # two-line statusline: dispatcher + rich/simple/monorepo renderers + installer
 ├── AGENTS.md                           # prose Iron-Law mirror for Codex / cross-tool agents (copy into your repo)
 ├── docs/                               # KB + design notes — CONTEXT-PRESERVATION-KB · KB · TASKLIST-GUARD · TASK-WORK · E2E-TESTING (+ Claude Code internals)
-├── tests/                              # zero-dependency node:test E2E suite (785 tests, 783 pass +2 platform-skip) — `node --test`
+├── tests/                              # zero-dependency node:test E2E suite (2926 tests, 2924 pass +2 platform-skip) — `node --test`
 ├── .github/workflows/test.yml          # CI: runs the suite on push/PR
 └── CHANGELOG.md
 ```
@@ -603,7 +603,7 @@ anti-hall/
 `AGENTS.md` (e.g. Codex). It lives at the repo root and is **not** bundled by
 `/plugin install` — copy it into your own repo if you want cross-tool coverage.
 
-A zero-dependency **`node --test` E2E suite** (`tests/`, 783 passing +2 platform-skipped, 785 total) covers the hooks and
+A zero-dependency **`node --test` E2E suite** (`tests/`, 2924 passing +2 platform-skipped, 2926 total) covers the hooks and
 runs in **CI** on every push/PR ([`.github/workflows/test.yml`](.github/workflows/test.yml)).
 
 See [`plugins/anti-hall/README.md`](plugins/anti-hall/README.md) for the full component

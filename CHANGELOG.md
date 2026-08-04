@@ -6,6 +6,23 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.71.1 (2026-08-04)
+
+- **DevSwarm ingest daemon busy-spin fix (elapsed-aware pacing, `7242575`).** The ingest
+  daemon's success-path loop spun as fast as the OS would schedule it instead of
+  respecting `intervalSec`, causing a `data.kalloc.1024` macOS kernel-allocator leak and
+  ~11% idle CPU. The loop now sleeps for the remaining time in the interval (elapsed-aware,
+  ~1 iteration per `intervalSec`), clamped to a finite `MAX_PACE_MS` ceiling so a
+  misconfigured interval can't overflow back into busy-spinning.
+- **Delivery to running installs (`c09cf9f`, `3d0d03e`).** The daemon now stamps its
+  plugin `codeVersion` into the heartbeat; `doctor-repair` restarts an alive daemon found
+  running stale code (self-clearing — no restart-bounce once it's current), and the
+  updater force-restarts the ingest daemon after `update.js` runs so an already-running
+  unbounded-loop daemon actually re-execs onto the paced code instead of persisting until
+  its next natural restart.
+- Measured in a controlled harness: ~362x fewer fork/exec spawns per second (busy-spin
+  ~384/s -> paced ~1/s).
+
 ## 0.71.0 (2026-08-04)
 
 - **Append-only reply-state redesign (`recordReply`, merge `adfd61c`).** DevSwarm parent
