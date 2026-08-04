@@ -3322,6 +3322,71 @@ function cmdArchive(id, ctx, opts) {
   });
 }
 
+// resolveArchiveId(raw, ctx) — id-PREFIX resolution for the `archive` verb
+// ONLY. WHY: the per-turn table (devswarm-parent-inbox.js) and the roster
+// both render `name (shortId)` (names.displayName/shortId — first 8 chars of
+// the UUID) as the ONLY copyable-looking token; the real archivable id is the
+// full UUID, shown nowhere. An agent/user copies the 8-char shortId and
+// `archive <that>` fails 'invalid or missing workspace id'. This lets that
+// same shortId (or any unambiguous longer prefix) resolve directly, WITHOUT
+// adding a single new injection token to the rendered table — no full UUIDs
+// are surfaced anywhere by this change.
+//
+// Contract (P0: archiving the WRONG workspace is the real risk, so ambiguity
+// fails CLOSED — nothing is ever archived on an ambiguous prefix):
+//   1. An EXACT existing descriptor id (active OR archived-only) short-circuits
+//      immediately — unchanged full-id behaviour, zero prefix search performed.
+//   2. Else the candidate pool is the CURRENT PROJECT's own active (non-
+//      archived) workspace ids — same `sum.workspaces` projection
+//      cmdWorkspacesList/the roster/the table already read (computeSummary
+//      excludes archived ids by construction), scoped by the SAME repoKey
+//      derivation cmdWorkspacesList uses. This deliberately mirrors cmdArchive's
+//      own ownership gate ('descriptor does not belong to the current
+//      project') — a prefix can only ever resolve to a workspace this project
+//      could legitimately archive anyway.
+//   3. Exactly one candidate id starts with `raw` -> resolved, use it.
+//   4. Zero, or `raw` itself is not isSafeId (e.g. contains '/' or '..') ->
+//      the existing 'invalid or missing workspace id' error, unchanged.
+//   5. Two or more -> ARCHIVE NOTHING; return an error listing every
+//      candidate's full id so the caller can pick the exact one.
+// Never throws; every path returns { ok, id? , error?, candidates? }.
+function resolveArchiveId(raw, ctx) {
+  if (!isSafeId(raw)) return { ok: false, error: 'invalid or missing workspace id' };
+  const home = ctx.home;
+  // Step 1: exact id short-circuit (active OR archived-only descriptor) — no
+  // prefix search, no ambiguity possible, byte-identical to pre-existing
+  // full-id archive behaviour.
+  if (readDescriptorPathState(descriptorPath(home, raw)).exists) return { ok: true, id: raw };
+  const archiveDirState = checkedArchivedDir(home, { create: false });
+  if (archiveDirState.ok) {
+    const archivedPath = path.join(archiveDirState.path, raw + '.json');
+    if (readDescriptorPathState(archivedPath).exists) return { ok: true, id: raw };
+  }
+  // Step 2: candidate pool = current project's active workspaces, same
+  // derivation cmdWorkspacesList uses (cwd-derived worktree -> repoKey).
+  let candidates = [];
+  try {
+    const worktree = inst.resolveWorktree(ctx.cwd || process.cwd());
+    const workspaceId = worktree ? inst.primaryWorkspaceId(worktree) : undefined;
+    const repoKey = worktree ? repokey.repoKeyForWorktree(worktree) : repoKeyForCwd(ctx);
+    const s = store.openStore({ home, workspaceId, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
+    let sum;
+    try { sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now }); }
+    finally { s.close(); }
+    candidates = Object.keys(sum.workspaces || {}).filter((wid) => isSafeId(wid) && wid.startsWith(raw));
+  } catch (_) {
+    candidates = []; // fail-closed: an unresolvable project context yields no candidates, not a crash
+  }
+  if (candidates.length === 1) return { ok: true, id: candidates[0] };
+  if (candidates.length === 0) return { ok: false, error: 'invalid or missing workspace id' };
+  return {
+    ok: false,
+    error: 'ambiguous workspace id prefix ' + JSON.stringify(raw) + ' matches ' + candidates.length
+      + ' workspaces — archived nothing; use the full id: ' + candidates.join(', '),
+    candidates,
+  };
+}
+
 // cmdUnarchive(id, ctx) — reverse of cmdArchive: link the descriptor back into
 // workspaces/, remove the archived recovery anchor, then re-upsert the store
 // registry (append-only:
@@ -5418,9 +5483,11 @@ function run(argv, ctx0) {
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'archive': {
-        const id = positionals[1];
-        if (!isSafeId(id)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
-        const r = cmdArchive(id, ctx);
+        const rawId = positionals[1];
+        if (!isSafeId(rawId)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
+        const resolved = resolveArchiveId(rawId, ctx);
+        if (!resolved.ok) return { code: 2, result: Object.assign({ action: 'archive', id: rawId, descriptorArchived: false }, resolved) };
+        const r = cmdArchive(resolved.id, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'unarchive': {
@@ -5587,6 +5654,7 @@ module.exports = {
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath, skipFilePath,
   selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,
   migrateOwnerKeys, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive, archivedTombstoneIsOrphaned,
+  resolveArchiveId,
   applyRecoveryIntents, recoveryIntentPath, rehomeStrandedProjectDescriptors,
   cmdWorkspacesList, cmdGate, cmdReconcile, cmdRegister,
   cmdLogs, cmdInboxMessages, parseSinceDuration,
