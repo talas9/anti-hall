@@ -384,6 +384,146 @@ test('migrate-state.js migrateReplyState wrapper delegates to the reply-state mo
   } finally { cleanup(); }
 });
 
+// --- FIX A: legacy file with NO trailing newline + append (data-loss) -------
+// A pre-migration legacy reply-file was written as `JSON.stringify(state)` with
+// NO trailing newline. If migration has not run, the FIRST recordReply append
+// must NOT concatenate onto that line (which would make line 1 invalid JSON and
+// lose BOTH the legacy state and the new reply). recordReply prepends a leading
+// newline when the file's last byte is not one, so both survive the fold.
+test('recordReply onto a legacy no-trailing-newline file: BOTH legacy state and the new reply survive', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'legacy-nonl-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // Legacy shape exactly as the OLD code wrote it: one JSON object, NO newline.
+    fs.writeFileSync(p, JSON.stringify({ 'child-a': { lastReplyTs: 111 } }));
+    assert.notEqual(fs.readFileSync(p, 'utf8').slice(-1), '\n', 'precondition: legacy file has no trailing newline');
+
+    M.recordReply(repoKey, home, 'child-b', 222);
+
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 111, 'legacy state must survive the append');
+    assert.equal(state['child-b'].lastReplyTs, 222, 'the newly appended reply must survive too');
+    assert.equal(Object.keys(state).length, 2, 'no reply lost — both present');
+
+    // On disk: the legacy object stays a valid standalone first line, the new
+    // record lands on its own second line — two parseable lines, nothing torn.
+    const lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean);
+    assert.equal(lines.length, 2);
+    for (const line of lines) assert.doesNotThrow(() => JSON.parse(line), 'each line is valid JSON');
+  } finally { cleanup(); }
+});
+
+// --- FIX B: a sender id equal to `__proto__` folds/reads/serializes ----------
+// isSafeId permits underscores, so `__proto__` is a legal sender id. On a plain
+// `{}` accumulator it would poison the prototype and vanish from Object.keys;
+// the null-prototype accumulator stores it as a real own key.
+test('foldReplyLog: a sender id of `__proto__` is stored as an own key, not a prototype poison', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'proto-repo';
+    M.recordReply(repoKey, home, '__proto__', 1000);
+    M.recordReply(repoKey, home, 'constructor', 1500); // also a prototype-hazard name
+    const state = M.readReplyState(repoKey, home);
+    assert.ok(Object.keys(state).includes('__proto__'), '`__proto__` must appear as an own key');
+    assert.ok(Object.keys(state).includes('constructor'), '`constructor` must appear as an own key');
+    assert.equal(state['__proto__'].lastReplyTs, 1000);
+    assert.equal(state['constructor'].lastReplyTs, 1500);
+  } finally { cleanup(); }
+});
+
+test('migrateReplyState: a legacy `__proto__` sender is serialized to disk, not dropped', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'proto-migrate-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    // Raw JSON string (NOT an object literal, which would set the prototype):
+    // JSON.parse makes `__proto__` a real own key.
+    fs.writeFileSync(p, '{"__proto__":{"lastReplyTs":5},"child-a":{"lastReplyTs":9}}');
+
+    const report = M.migrateReplyState(home);
+    assert.equal(report.migrated, 1);
+    assert.equal(report.errors, 0);
+
+    const raw = fs.readFileSync(p, 'utf8');
+    assert.ok(/"m":"__proto__"/.test(raw), 'the `__proto__` sender must be serialized to an append record, not dropped');
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['__proto__'].lastReplyTs, 5);
+    assert.equal(state['child-a'].lastReplyTs, 9);
+  } finally { cleanup(); }
+});
+
+// --- FIX C: a late append during migration must not be lost -----------------
+// migrateReplyState reads a snapshot, folds, writes a tmp, then renames. If a
+// live recordReply append lands between the snapshot and the rename, the rename
+// replace would drop it. The re-read-before-rename convergence loop must fold
+// that late record in before renaming. Deterministically simulated by patching
+// fs.writeFileSync to inject a late append onto the source exactly once, right
+// after the migration's first tmp write.
+test('migrateReplyState: a late append arriving during migration is folded in, never lost', () => {
+  const { home, cleanup } = makeHome();
+  const realWriteFileSync = fs.writeFileSync;
+  try {
+    const repoKey = 'race-migrate-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ 'child-a': { lastReplyTs: 111 } }) + '\n');
+
+    // Inject ONE late append onto the source, triggered by the migration's first
+    // tmp write (path carries the '.migrate.' marker). Fires exactly once.
+    let injected = false;
+    fs.writeFileSync = function (file, data, ...rest) {
+      const r = realWriteFileSync.call(fs, file, data, ...rest);
+      if (!injected && typeof file === 'string' && file.includes('.migrate.')) {
+        injected = true;
+        // A live reply lands AFTER the snapshot fold but BEFORE the rename.
+        realWriteFileSync.call(fs, p, fs.readFileSync(p, 'utf8') + JSON.stringify({ m: 'child-b', t: 222 }) + '\n');
+      }
+      return r;
+    };
+
+    const report = M.migrateReplyState(home);
+    fs.writeFileSync = realWriteFileSync;
+
+    assert.ok(injected, 'the late-append injection must have fired (migration wrote a tmp)');
+    assert.equal(report.migrated, 1);
+    assert.equal(report.errors, 0);
+
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-a'].lastReplyTs, 111, 'snapshot sender preserved');
+    assert.equal(state['child-b'].lastReplyTs, 222, 'the late append must be folded in, not lost by the rename');
+    assert.equal(Object.keys(state).length, 2);
+  } finally {
+    fs.writeFileSync = realWriteFileSync;
+    cleanup();
+  }
+});
+
+// --- FIX D: an oversized record is rejected without writing a torn line ------
+// O_APPEND atomicity only holds for payloads <= PIPE_BUF. A record assembling
+// past the conservative 512-byte cap must be skipped entirely (fail-open),
+// never written as a torn/oversized append; smaller records still append.
+test('recordReply: an oversized record is rejected (no torn write); normal records still append', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const repoKey = 'oversize-repo';
+    const p = M.replyStatePathFor(repoKey, home);
+    const hugeMeshId = 'x'.repeat(600); // record assembles well past the 512-byte cap
+    M.recordReply(repoKey, home, hugeMeshId, 1000);
+    assert.strictEqual(fs.existsSync(p), false, 'an oversized record must not be written at all');
+
+    // A normal, in-bounds record still appends and reads back.
+    M.recordReply(repoKey, home, 'child-ok', 2000);
+    const state = M.readReplyState(repoKey, home);
+    assert.equal(state['child-ok'].lastReplyTs, 2000, 'a normal record still appends after an oversized one is skipped');
+    assert.strictEqual(state[hugeMeshId], undefined, 'the oversized sender was never recorded');
+    // Only the one good record is on disk — no torn/oversized line.
+    assert.equal(fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).length, 1);
+  } finally { cleanup(); }
+});
+
 // --- unansweredQuestions (unchanged consumer contract) ---------------------
 test('unansweredQuestions: separates answered (ts <= lastReplyTs) from unanswered (ts > lastReplyTs, or no entry)', () => {
   const pendingQuestions = [

@@ -99,7 +99,15 @@ function isAppendRecord(o) {
 // surprise (unparseable JSON, array, wrong shape) is skipped, never thrown —
 // the same fail-open-toward-{} posture the whole module keeps.
 function foldReplyLog(raw) {
-  const out = {};
+  // NULL-PROTOTYPE accumulator (not a plain `{}`): a sender id can legitimately
+  // be any isSafeId-permitted string, INCLUDING `__proto__`, `constructor`, or
+  // `prototype` (the id regex allows underscores). On a plain `{}`, assigning
+  // `out['__proto__'] = ...` would mutate the object's PROTOTYPE instead of
+  // creating an own key — the entry would then vanish from Object.keys(out) and
+  // be silently dropped on both read and re-serialization. Object.create(null)
+  // has no prototype, so every sender string is stored as a real own key and
+  // survives folding, reading, and migration serialization.
+  const out = Object.create(null);
   const bump = (meshId, ts) => {
     if (typeof meshId !== 'string' || !meshId || !Number.isFinite(ts)) return;
     const prior = out[meshId] && Number.isFinite(out[meshId].lastReplyTs) ? out[meshId].lastReplyTs : -Infinity;
@@ -158,13 +166,43 @@ function recordReply(repoKey, home, meshId, ts) {
     const t = Number(ts);
     if (!Number.isFinite(t)) return;
     try { fs.mkdirSync(path.dirname(p), { recursive: true }); } catch (_) { return; }
-    // JSON.stringify a fixed-key object -> compact single-line record. Even a
-    // very long meshId keeps this well under PIPE_BUF; a pathological meshId
-    // beyond PIPE_BUF could in theory interleave, corrupting at most THIS one
-    // line, which foldReplyLog skips — same fail-open direction, never
-    // corrupting another sender's record.
+    // JSON.stringify a fixed-key object -> compact single-line record. meshId+ts
+    // is a few dozen bytes.
     const record = JSON.stringify({ m: meshId, t }) + '\n';
-    fs.appendFileSync(p, record); // flag 'a' (O_APPEND|O_CREAT|O_WRONLY) — atomic append
+    // SIZE CAP (atomicity guard): POSIX guarantees an O_APPEND write is atomic —
+    // never interleaved with a concurrent append — ONLY when the payload is
+    // <= PIPE_BUF (512 bytes by POSIX minimum). A record larger than that could
+    // tear across a concurrent writer, corrupting BOTH lines. A legitimate
+    // meshId+ts is tiny; anything that assembles past this conservative 512-byte
+    // cap is pathological, so we DO NOT write a torn/oversized append at all —
+    // skip it (fail-open: the gate treats the question as still-unanswered and
+    // nags one extra time, the safe direction), never risk corrupting the file.
+    const RECORD_BYTE_CAP = 512;
+    if (Buffer.byteLength(record, 'utf8') > RECORD_BYTE_CAP) return;
+    // LEGACY-LINE SEPARATION (no-loss append onto an un-migrated file): a legacy
+    // reply-file was written by the old code as `JSON.stringify(state)` with NO
+    // trailing newline (a single line `{"<meshId>":{"lastReplyTs":N}}`). If the
+    // forward migration has not yet run, appending our record directly would
+    // concatenate onto that line -> `{...}{"m":...}` = invalid JSON on line 1,
+    // which foldReplyLog then skips, losing BOTH the legacy state AND this reply.
+    // So: if the file already exists and is non-empty and its LAST byte is not a
+    // newline, prepend one — the legacy object stays a valid standalone first
+    // line and our record lands on its own line. Cheap single-byte read; any
+    // error fails open (proceed without the correction rather than lose the
+    // write).
+    let payload = record;
+    try {
+      const st = fs.statSync(p);
+      if (st.size > 0) {
+        const fd = fs.openSync(p, 'r');
+        try {
+          const last = Buffer.alloc(1);
+          fs.readSync(fd, last, 0, 1, st.size - 1);
+          if (last[0] !== 0x0a) payload = '\n' + record; // 0x0a === '\n'
+        } finally { fs.closeSync(fd); }
+      }
+    } catch (_) { /* file missing/unreadable -> no separator needed, fail open */ }
+    fs.appendFileSync(p, payload); // flag 'a' (O_APPEND|O_CREAT|O_WRONLY) — atomic append
   } catch (_) { /* best-effort; never throw */ }
 }
 
@@ -259,20 +297,56 @@ function migrateReplyState(home, opts) {
       if (!needsMigration(raw)) { report.alreadyAppendOnly++; continue; }
       report.pending++;
       if (dryRun) continue;
-      const folded = foldReplyLog(raw); // lossless: max ts per surviving sender
-      // Deterministic order (sorted meshId) so a re-run of the SAME state
-      // produces byte-identical output — no needless churn, easy to diff.
-      const body = Object.keys(folded)
+      // Deterministic serialization (sorted meshId) so a re-run of the SAME
+      // state produces byte-identical output — no needless churn, easy to diff.
+      const serialize = (folded) => Object.keys(folded)
         .sort()
         .map((m) => JSON.stringify({ m, t: folded[m].lastReplyTs }) + '\n')
         .join('');
-      const tmp = p + '.migrate.' + process.pid + '.' + Date.now() + '.' + Math.random().toString(36).slice(2);
-      try {
-        fs.writeFileSync(tmp, body);
-        fs.renameSync(tmp, p); // atomic replace
-        report.migrated++;
-      } catch (e) {
-        try { fs.unlinkSync(tmp); } catch (_) {}
+      // RE-READ-BEFORE-RENAME CONVERGENCE (no-loss migration): the rename below
+      // REPLACES the source file, so any live `recordReply` append that landed
+      // between our snapshot read (`raw`, above) and the rename would be dropped
+      // by the replace — a NO-DELETE violation. Before each rename we RE-READ the
+      // source: if it grew (late records arrived since we last folded), we fold
+      // those late records in too and rewrite the tmp, then try again. Bounded to
+      // a few passes; if it still won't stabilize we ABORT this file (leave it
+      // exactly as-is — the backward-compatible reader still folds it correctly)
+      // rather than risk losing a late append. Idempotent and fail-open either
+      // way. A record arriving in the tiny window after the final re-read but
+      // before the rename is the documented benign residual (one extra nag),
+      // same fail-open direction the whole module keeps.
+      const MAX_PASSES = 3;
+      let current = raw;
+      let done = false;
+      for (let pass = 0; pass < MAX_PASSES && !done; pass++) {
+        const body = serialize(foldReplyLog(current)); // lossless: max ts per sender
+        const tmp = p + '.migrate.' + process.pid + '.' + Date.now() + '.' + Math.random().toString(36).slice(2);
+        let wrote = false;
+        try {
+          fs.writeFileSync(tmp, body);
+          wrote = true;
+          // Re-read the source to catch a late append that raced this rewrite.
+          let latest;
+          try { latest = fs.readFileSync(p, 'utf8'); } catch (_) { latest = current; }
+          if (latest === current) {
+            fs.renameSync(tmp, p); // atomic replace — source unchanged since fold
+            report.migrated++;
+            done = true;
+          } else {
+            // Late append landed: discard this tmp, re-fold including it, retry.
+            try { fs.unlinkSync(tmp); } catch (_) {}
+            current = latest;
+          }
+        } catch (e) {
+          if (wrote) { try { fs.unlinkSync(tmp); } catch (_) {} }
+          report.errors++;
+          done = true; // give up on this file; leave the source untouched
+        }
+      }
+      if (!done) {
+        // Could not converge within the bound: ABORT rather than risk loss.
+        // The source file is left exactly as-is (reader stays backward-compatible)
+        // and is counted as an error so the caller sees it did not complete.
         report.errors++;
       }
     } catch (_) {
