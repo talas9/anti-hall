@@ -1027,6 +1027,76 @@ test('register-primary populates repoId from env.DEVSWARM_REPO_ID (#36)', () => 
   } finally { rm(home); }
 });
 
+// ---- register-primary session_id realness (Task #10) -----------------------
+test('register-primary with no --session defaults to CLAUDE_CODE_SESSION_ID when set (real session id, transcript-resolvable)', () => {
+  const home = tmpHome();
+  try {
+    const wt = '/some/repo/worktree-real-session';
+    const expectedId = inst.primaryWorkspaceId(wt);
+    const r = cli.run(
+      ['register-primary', '--worktree', wt],
+      ctx(home, { env: { CLAUDE_CODE_SESSION_ID: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' } })
+    );
+    assert.equal(r.result.ok, true);
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, expectedId), 'utf8'));
+    assert.equal(desc.sessionId, 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+  } finally { rm(home); }
+});
+
+test('register-primary: an explicit --session flag still wins over CLAUDE_CODE_SESSION_ID', () => {
+  const home = tmpHome();
+  try {
+    const wt = '/some/repo/worktree-explicit-session';
+    const expectedId = inst.primaryWorkspaceId(wt);
+    const r = cli.run(
+      ['register-primary', '--worktree', wt, '--session', 'explicit-session'],
+      ctx(home, { env: { CLAUDE_CODE_SESSION_ID: 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee' } })
+    );
+    assert.equal(r.result.ok, true);
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, expectedId), 'utf8'));
+    assert.equal(desc.sessionId, 'explicit-session');
+  } finally { rm(home); }
+});
+
+test('register-primary with no --session and no CLAUDE_CODE_SESSION_ID falls back to DEVSWARM_BUILDER_ID (back-compat)', () => {
+  const home = tmpHome();
+  try {
+    const wt = '/some/repo/worktree-builder-fallback';
+    const expectedId = inst.primaryWorkspaceId(wt);
+    const r = cli.run(
+      ['register-primary', '--worktree', wt],
+      ctx(home, { env: { DEVSWARM_BUILDER_ID: 'builder-42' } })
+    );
+    assert.equal(r.result.ok, true);
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, expectedId), 'utf8'));
+    assert.equal(desc.sessionId, 'builder-42');
+  } finally { rm(home); }
+});
+
+test('register-primary with no --session/env at all falls back to the derived id (never a phantom sessionId, existing behavior preserved)', () => {
+  const home = tmpHome();
+  try {
+    const wt = '/some/repo/worktree-no-env';
+    const expectedId = inst.primaryWorkspaceId(wt);
+    const r = cli.run(['register-primary', '--worktree', wt], ctx(home));
+    assert.equal(r.result.ok, true);
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, expectedId), 'utf8'));
+    assert.equal(desc.sessionId, expectedId);
+  } finally { rm(home); }
+});
+
+test('register-primary run again with a NEW CLAUDE_CODE_SESSION_ID refreshes sessionId (not the requireNew/ensure-preserve path — register-primary always re-registers)', () => {
+  const home = tmpHome();
+  try {
+    const wt = '/some/repo/worktree-refresh';
+    const expectedId = inst.primaryWorkspaceId(wt);
+    cli.run(['register-primary', '--worktree', wt], ctx(home, { env: { CLAUDE_CODE_SESSION_ID: 'session-one-aaaa-bbbb-cccc-dddddddddddd' } }));
+    cli.run(['register-primary', '--worktree', wt], ctx(home, { env: { CLAUDE_CODE_SESSION_ID: 'session-two-aaaa-bbbb-cccc-dddddddddddd' } }));
+    const desc = JSON.parse(fs.readFileSync(cli.descriptorPath(home, expectedId), 'utf8'));
+    assert.equal(desc.sessionId, 'session-two-aaaa-bbbb-cccc-dddddddddddd');
+  } finally { rm(home); }
+});
+
 test('register-primary then migrate folds a legacy NDJSON into the Primary partition (idempotent)', () => {
   const home = tmpHome();
   try {

@@ -2870,7 +2870,25 @@ function cmdRegisterPrimary(flags, ctx) {
   }
   const id = inst.primaryWorkspaceId(worktree);
   if (!isSafeId(id)) return { ok: false, error: 'derived primary workspace id is unsafe: ' + JSON.stringify(id) };
-  const session = one(flags, 'session') || (ctx.env && ctx.env.DEVSWARM_BUILDER_ID) || id;
+  // Task #10 (session_id realness): prefer the REAL Claude Code session id when the
+  // caller didn't pass --session explicitly. CLAUDE_CODE_SESSION_ID is a genuine
+  // env var Claude Code sets on every process it spawns (verified present on a live
+  // session; see docs/KB-claude-codex.md's cmux discussion, which already treats it
+  // as authoritative) — it is what liveness.js's transcriptMtime(projectDir,
+  // sessionId) needs to find <projectDir>/<sessionId>.jsonl on disk. This call
+  // ALWAYS registers the CALLER's OWN row (id is derived from the caller's own cwd
+  // above, never an arbitrary target), so stamping the invoking process's own
+  // session id here can never misattribute someone else's session. Previously this
+  // fell back to DEVSWARM_BUILDER_ID (empty for a Primary — that env var is a
+  // CHILD's identity) or the workspace `id` itself (never a real Claude session,
+  // so the transcript term in readActivityTs/isDormantRow could never resolve for
+  // any Primary row). DEVSWARM_BUILDER_ID is kept as the next fallback for back-
+  // compat with any caller that still relies on it; `id` remains the final resort
+  // so `register requires --session` never fires for a bare CLI invocation.
+  const session = one(flags, 'session')
+    || (ctx.env && ctx.env.CLAUDE_CODE_SESSION_ID)
+    || (ctx.env && ctx.env.DEVSWARM_BUILDER_ID)
+    || id;
   const inbox = one(flags, 'inbox'); // optional legacy NDJSON source for `migrate`
   const cursor = one(flags, 'cursor') || primaryCursorPath(home, id);
   const ensureFlags = { worktree: [worktree], session: [session], cursor: [cursor] };
