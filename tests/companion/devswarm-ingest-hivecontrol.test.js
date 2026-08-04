@@ -318,7 +318,7 @@ test('resolveHivecontrolPath discovers the binary via the LOGIN shell (never a h
     const bin = makeBin(path.join(home, 'tools', 'bin'), 'hivecontrol');
     const calls = [];
     const got = installer.resolveHivecontrolPath({
-      platform: 'darwin', env: { SHELL: '/bin/zsh' },
+      platform: 'darwin', env: { SHELL: '/bin/zsh' }, home,
       io: {
         lookupRun: (spec) => {
           calls.push(spec.cmd + ' ' + spec.args.join(' '));
@@ -330,36 +330,162 @@ test('resolveHivecontrolPath discovers the binary via the LOGIN shell (never a h
     assert.equal(got, bin, 'the discovered absolute path is returned');
     assert.equal(calls.length, 1, 'the interactive login shell is tried FIRST (it is where most users export PATH)');
     assert.match(calls[0], /^\/bin\/zsh -lic command -v hivecontrol$/, 'uses the user\'s own $SHELL as a login shell');
+    // v0.72: a successful shell-lookup resolution is PERSISTED to the cache.
+    const cached = JSON.parse(fs.readFileSync(installer.hivecontrolCachePath(home), 'utf8'));
+    assert.equal(cached.hivecontrol, bin, 'the resolved path is cached for the next (possibly minimal-env) run');
   } finally { rm(home); }
 });
 
 test('resolveHivecontrolPath: env override wins, noise-only output falls through, nothing found -> null', () => {
   const home = tmpHome();
+  // This machine has a REAL DevSwarm.app installed, which would make the tier-4
+  // known-location probe succeed and mask the "nothing found" assertions below.
+  // Neutralize that tier for this test so it exercises env+cache+shell only —
+  // the known-location probe itself is covered by its own dedicated tests.
+  const savedDarwin = installer.KNOWN_HIVECONTROL_LOCATIONS.darwin;
+  installer.KNOWN_HIVECONTROL_LOCATIONS.darwin = [];
   try {
     const bin = makeBin(path.join(home, 'b'), 'hivecontrol');
     assert.equal(
       installer.resolveHivecontrolPath({
-        platform: 'darwin', env: { ANTIHALL_DEVSWARM_HIVECONTROL: bin },
+        platform: 'darwin', env: { ANTIHALL_DEVSWARM_HIVECONTROL: bin }, home,
         io: { lookupRun: () => { throw new Error('must not be consulted'); } },
       }), bin, 'an explicit env var short-circuits the shell probe entirely');
 
     // A shell that answers with unrelated noise (or a path whose basename is not
-    // the binary) must never be mistaken for a resolution.
-    const attempts = [];
-    assert.equal(
-      installer.resolveHivecontrolPath({
-        platform: 'darwin', env: {},
-        io: { lookupRun: (s) => { attempts.push(s.args[0]); return { ok: true, raw: '/etc/profile.d/x.sh\nsome warning\n' }; } },
-      }), null, 'noise is filtered — no guessing');
-    assert.deepEqual(attempts, ['-lic', '-lc', '-c'], 'all three lookup strategies are attempted, in order');
+    // the binary) must never be mistaken for a resolution. Use a FRESH home so
+    // the cache write from the assertion above doesn't short-circuit this one.
+    const home2 = tmpHome();
+    try {
+      const attempts = [];
+      assert.equal(
+        installer.resolveHivecontrolPath({
+          platform: 'darwin', env: {}, home: home2,
+          io: { lookupRun: (s) => { attempts.push(s.args[0]); return { ok: true, raw: '/etc/profile.d/x.sh\nsome warning\n' }; } },
+        }), null, 'noise is filtered — no guessing');
+      assert.deepEqual(attempts, ['-lic', '-lc', '-c'], 'all three lookup strategies are attempted, in order');
 
-    assert.equal(
-      installer.resolveHivecontrolPath({ platform: 'darwin', env: {}, io: { lookupRun: () => ({ ok: false, raw: '' }) } }),
-      null, 'a failing lookup resolves to null (the installer then warns and installs anyway)');
-    assert.equal(
-      installer.resolveHivecontrolPath({ platform: 'win32', env: {}, io: { lookupRun: () => { throw new Error('no'); } } }),
-      null, 'win32 is a documented no-op — never probes, never throws');
+      assert.equal(
+        installer.resolveHivecontrolPath({ platform: 'darwin', env: {}, home: home2, io: { lookupRun: () => ({ ok: false, raw: '' }) } }),
+        null, 'a failing lookup resolves to null (the installer then warns and installs anyway)');
+      assert.equal(
+        installer.resolveHivecontrolPath({ platform: 'win32', env: {}, home: home2, io: { lookupRun: () => { throw new Error('no'); } } }),
+        null, 'win32 is a documented no-op — never probes, never throws');
+    } finally { rm(home2); }
+  } finally { installer.KNOWN_HIVECONTROL_LOCATIONS.darwin = savedDarwin; rm(home); }
+});
+
+// ---------------------------------------------------------------------------
+// 4b. v0.72: persisted last-known-good cache + known-location probe
+// ---------------------------------------------------------------------------
+
+test('resolveHivecontrolPath: reuses the persisted cache when env + shell lookup both miss (minimal-env reinstall)', () => {
+  const home = tmpHome();
+  try {
+    const bin = makeBin(path.join(home, 'cachetools'), 'hivecontrol');
+    // Prime the cache the way a normal (richer-env) run would: resolve once via
+    // the shell lookup, which persists it.
+    installer.resolveHivecontrolPath({
+      platform: 'darwin', env: {}, home,
+      io: { lookupRun: () => ({ ok: true, raw: bin + '\n' }) },
+    });
+    // A later MINIMAL-env caller (no env var, and a shell lookup that finds
+    // nothing — exactly a hook/bare-subagent-shell/doctor-repair scenario) must
+    // still resolve, from the cache, WITHOUT consulting the shell at all.
+    const got = installer.resolveHivecontrolPath({
+      platform: 'darwin', env: {}, home,
+      io: { lookupRun: () => { throw new Error('must not be consulted — cache should short-circuit'); } },
+    });
+    assert.equal(got, bin, 'the cached path is reused on a minimal-env run');
   } finally { rm(home); }
+});
+
+test('resolveHivecontrolPath: a corrupt or stale cache falls through gracefully to the next tier', () => {
+  const home = tmpHome();
+  try {
+    // Corrupt cache (not valid JSON).
+    fs.mkdirSync(path.dirname(installer.hivecontrolCachePath(home)), { recursive: true });
+    fs.writeFileSync(installer.hivecontrolCachePath(home), '{not json');
+    const bin = makeBin(path.join(home, 'freshtools'), 'hivecontrol');
+    const got = installer.resolveHivecontrolPath({
+      platform: 'darwin', env: {}, home,
+      io: { lookupRun: () => ({ ok: true, raw: bin + '\n' }) },
+    });
+    assert.equal(got, bin, 'a corrupt cache is never trusted — falls through to the shell lookup');
+
+    // Stale cache: points at a path that no longer exists / is not executable.
+    fs.writeFileSync(installer.hivecontrolCachePath(home), JSON.stringify({ hivecontrol: path.join(home, 'gone', 'hivecontrol') }));
+    const got2 = installer.resolveHivecontrolPath({
+      platform: 'darwin', env: {}, home,
+      io: { lookupRun: () => ({ ok: true, raw: bin + '\n' }) },
+    });
+    assert.equal(got2, bin, 'a stale (no-longer-executable) cache entry falls through to the shell lookup');
+  } finally { rm(home); }
+});
+
+test('resolveHivecontrolPath: probes KNOWN install locations when env + cache + shell all miss', () => {
+  const home = tmpHome();
+  try {
+    // linux carries NO known-location candidates (never invented) — env + cache +
+    // shell all missing still resolves to null, proving there is no unconditional
+    // fallback that would mask a genuine miss.
+    const missOnLinux = installer.resolveHivecontrolPath({
+      platform: 'linux', env: {}, home,
+      io: { lookupRun: () => ({ ok: false, raw: '' }) },
+    });
+    assert.equal(missOnLinux, null, 'no Linux known-location candidate -> still null');
+
+    assert.deepEqual(installer.knownHivecontrolLocations('darwin'),
+      ['/Applications/DevSwarm.app/Contents/Resources/cli/hivecontrol'],
+      'the documented macOS DevSwarm.app CLI location');
+    assert.deepEqual(installer.knownHivecontrolLocations('linux'), [],
+      'no confirmed Linux install root — never invented');
+    assert.deepEqual(installer.knownHivecontrolLocations('win32'), []);
+  } finally { rm(home); }
+});
+
+test('resolveHivecontrolPath: a successful known-location probe is cached', () => {
+  const home = tmpHome();
+  const savedDarwin = installer.KNOWN_HIVECONTROL_LOCATIONS.darwin;
+  try {
+    const bin = makeBin(path.join(home, 'appbundle'), 'hivecontrol');
+    // Inject a fake "known location" by mutating the exported table directly —
+    // the same object resolveHivecontrolPath reads from (no re-derived copy).
+    installer.KNOWN_HIVECONTROL_LOCATIONS.darwin = [bin];
+    const got = installer.resolveHivecontrolPath({
+      platform: 'darwin', env: {}, home,
+      io: { lookupRun: () => ({ ok: false, raw: '' }) },
+    });
+    assert.equal(got, bin, 'the known-location candidate resolves when env/cache/shell all miss');
+    const cached = JSON.parse(fs.readFileSync(installer.hivecontrolCachePath(home), 'utf8'));
+    assert.equal(cached.hivecontrol, bin, 'a known-location resolution is persisted too');
+  } finally {
+    installer.KNOWN_HIVECONTROL_LOCATIONS.darwin = savedDarwin;
+    rm(home);
+  }
+});
+
+test('writeHivecontrolCache is fail-open: a broken io.fs never throws or aborts', () => {
+  assert.doesNotThrow(() => {
+    installer.writeHivecontrolCache('/opt/x/hivecontrol', {
+      home: '/does/not/matter',
+      io: { fs: { mkdirSync: () => { throw new Error('disk full'); } } },
+    });
+  });
+});
+
+test('readHivecontrolCache is fail-open: missing file -> null, never throws', () => {
+  const home = tmpHome();
+  try {
+    assert.equal(installer.readHivecontrolCache({ home }), null, 'no cache file yet -> null, not a throw');
+  } finally { rm(home); }
+});
+
+test('hivecontrolUnresolvedWarningLines: names the env var and is non-empty (the LOUD warning)', () => {
+  const lines = installer.hivecontrolUnresolvedWarningLines();
+  assert.ok(lines.length >= 3, 'a genuinely prominent, multi-line warning');
+  assert.ok(lines.some((l) => l.includes('ANTIHALL_DEVSWARM_HIVECONTROL')), 'names the actionable fix');
+  assert.ok(lines.some((l) => l.includes('!')), 'visually loud, not a quiet log line');
 });
 
 test('unitEnvFor prepends the resolved bin dir to the scheduler PATH and pins the absolute binary', () => {

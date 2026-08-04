@@ -311,11 +311,78 @@ function isExecutableFile(p, F) {
   return true;
 }
 
-// resolveHivecontrolPath({env, io, platform}) -> absolute path | null. Order:
+// ----- hivecontrol resolution cache (persisted last-known-good) -----
+// Recurring reliability bug this closes: a MINIMAL-env caller (a hook, a bare
+// subagent shell, a doctor --repair reinstall) has no login-shell PATH carrying
+// the DevSwarm CLI, so resolveHivecontrolPath's shell-lookup tier finds nothing
+// EVERY time it runs from such a caller — even on a machine where a PRIOR,
+// richer-env resolution (a normal terminal install) already found the binary
+// once. Persisting that one good resolution under the daemon's own per-machine
+// state root (devswarmRoot, same scope as its lock/heartbeat files) lets every
+// later minimal-env run reuse it instead of re-failing the same lookup forever.
+//
+// hivecontrolCachePath(home) — same per-machine (per-home) scope as the daemon's
+// own lock/heartbeat files (devswarmRoot(home)), so cleaning/relocating one
+// cleans/relocates the other consistently.
+function hivecontrolCachePath(home) {
+  return path.join(devswarmRoot(home), 'hivecontrol-path.json');
+}
+// readHivecontrolCache({home, io}) -> absolute path | null. Tolerates a missing,
+// corrupt, or stale (no-longer-executable) cache file — always fails open to the
+// next resolution tier rather than throwing or trusting unverified content.
+function readHivecontrolCache(opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  try {
+    const raw = F.readFileSync(hivecontrolCachePath(o.home), 'utf8');
+    const data = JSON.parse(raw);
+    const bin = data && typeof data.hivecontrol === 'string' ? data.hivecontrol : null;
+    if (bin && path.isAbsolute(bin) && isExecutableFile(bin, F)) return bin;
+  } catch (_) { /* missing/corrupt/stale -> fall through to the next tier */ }
+  return null;
+}
+// writeHivecontrolCache(bin, {home, io}) — persists the resolved path so the
+// NEXT minimal-env resolution can reuse it. Fail-open in every direction: a
+// cache write must never abort or fail an install (matches this file's existing
+// posture on every other side effect — planWrite/planRun/planRm).
+function writeHivecontrolCache(bin, opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  try {
+    const file = hivecontrolCachePath(o.home);
+    F.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.${_tmpCounter++}.tmp`;
+    F.writeFileSync(tmp, JSON.stringify({ hivecontrol: bin, updatedAt: new Date().toISOString() }, null, 2));
+    F.renameSync(tmp, file);
+  } catch (_) { /* fail-open: a cache-write failure must never fail the install */ }
+}
+
+// KNOWN_HIVECONTROL_LOCATIONS — last-resort probe of DISCOVERED, VERIFIED
+// install roots (never guessed) when the env var, cache, and login-shell lookup
+// all miss. macOS: the DevSwarm.app bundle's own CLI shim. Linux intentionally
+// carries NO entries — there is no confirmed, machine-agnostic install root to
+// probe there; a Linux user relies on ANTIHALL_DEVSWARM_HIVECONTROL, the login
+// shell, or the persisted cache instead.
+const KNOWN_HIVECONTROL_LOCATIONS = {
+  darwin: ['/Applications/DevSwarm.app/Contents/Resources/cli/hivecontrol'],
+};
+function knownHivecontrolLocations(platform) {
+  return KNOWN_HIVECONTROL_LOCATIONS[platform] || [];
+}
+
+// resolveHivecontrolPath({env, io, platform, home}) -> absolute path | null.
+// Order (first hit wins):
 //   1. an explicit ANTIHALL_DEVSWARM_HIVECONTROL (absolute + executable),
-//   2. `command -v hivecontrol` in the user's LOGIN shell (interactive first —
+//   2. the persisted last-known-good cache (hivecontrolCachePath) — reused
+//      resolution from a PRIOR, richer-env run, so a later minimal-env caller
+//      (hook / bare subagent shell / doctor --repair reinstall) never has to
+//      re-fail the same login-shell lookup,
+//   3. `command -v hivecontrol` in the user's LOGIN shell (interactive first —
 //      many users export PATH from an interactive rc, not a profile — then
-//      login-only, then a plain /bin/sh lookup as the last resort).
+//      login-only, then a plain /bin/sh lookup as the last resort),
+//   4. a probe of KNOWN, VERIFIED install locations (KNOWN_HIVECONTROL_LOCATIONS).
+// Every successful resolution (tiers 1, 3, 4) is persisted to the cache so the
+// NEXT run — including a minimal-env one — can reuse it via tier 2.
 // Returns null when nothing resolves; the caller then installs ANYWAY and warns
 // (a daemon with no baked path still runs, still holds its lock and heartbeat,
 // and is now VISIBLY degraded to doctor — strictly better than no daemon).
@@ -325,11 +392,18 @@ function resolveHivecontrolPath(opts) {
   const env = o.env || process.env;
   const F = (o.io && o.io.fs) || fs;
   const platform = o.platform || process.platform;
+  const cacheOpts = { home: o.home, io: o.io };
   if (platform === 'win32') return null;
   try {
     const explicit = env[HIVECONTROL_ENV_VAR];
     if (typeof explicit === 'string' && explicit.trim() && path.isAbsolute(explicit.trim())
-      && isExecutableFile(explicit.trim(), F)) return explicit.trim();
+      && isExecutableFile(explicit.trim(), F)) {
+      const bin = explicit.trim();
+      writeHivecontrolCache(bin, cacheOpts);
+      return bin;
+    }
+    const cached = readHivecontrolCache(cacheOpts);
+    if (cached) return cached;
     const run = (o.io && o.io.lookupRun) || defaultLookupRun;
     const shell = (typeof env.SHELL === 'string' && path.isAbsolute(env.SHELL)) ? env.SHELL : '/bin/sh';
     const cmd = 'command -v ' + HIVECONTROL_BIN_NAME;
@@ -343,10 +417,40 @@ function resolveHivecontrolPath(opts) {
       try { r = run(a); } catch (_) { r = null; }
       if (!r || !r.ok) continue;
       const p = firstBinLine(r.raw);
-      if (p && isExecutableFile(p, F)) return p;
+      if (p && isExecutableFile(p, F)) {
+        writeHivecontrolCache(p, cacheOpts);
+        return p;
+      }
+    }
+    for (const candidate of knownHivecontrolLocations(platform)) {
+      if (isExecutableFile(candidate, F)) {
+        writeHivecontrolCache(candidate, cacheOpts);
+        return candidate;
+      }
     }
   } catch (_) { /* fail-open: an install must never abort on a lookup failure */ }
   return null;
+}
+
+// hivecontrolUnresolvedWarningLines() -> string[]. The LOUD, actionable notice
+// emitted (to stderr, prominently) when ALL resolution tiers miss: the daemon
+// will still be installed (fail-open) but will ENOENT on every poll until this
+// is fixed. Extracted as a pure function so the wording is locked down by test
+// without spawning a real installer subprocess.
+function hivecontrolUnresolvedWarningLines() {
+  const bar = '!'.repeat(70);
+  return [
+    bar,
+    `WARNING: could not resolve the ${HIVECONTROL_BIN_NAME} CLI (env var, cache, login shell,`,
+    '  and known install locations all missed).',
+    `  A scheduler-launched daemon gets a MINIMAL PATH (${MINIMAL_UNIT_PATH}), so without a`,
+    `  baked path every \`${HIVECONTROL_BIN_NAME} workspace monitor\` call will fail ENOENT and`,
+    '  NOTHING will be ingested until this is fixed.',
+    '  FIX: install/expose the DevSwarm CLI on your login shell\'s PATH, or export',
+    `  ${HIVECONTROL_ENV_VAR}=/absolute/path/to/${HIVECONTROL_BIN_NAME} and re-run this installer.`,
+    '  Installing anyway (the daemon runs in degraded mode and doctor will report it).',
+    bar,
+  ];
 }
 
 // unitEnvFor(hivecontrolPath) -> {PATH, ANTIHALL_DEVSWARM_HIVECONTROL} | null.
@@ -1285,17 +1389,15 @@ function main() {
       // visibly degraded (backed-off, and reported by doctor) instead of
       // ENOENT-storming every 2 seconds.
       try {
-        RESOLVED_HIVECONTROL = resolveHivecontrolPath({ env: process.env });
+        RESOLVED_HIVECONTROL = resolveHivecontrolPath({ env: process.env, home: HOME });
       } catch (_) { RESOLVED_HIVECONTROL = null; }
       if (RESOLVED_HIVECONTROL) {
         say(`resolved ${HIVECONTROL_BIN_NAME}: ${RESOLVED_HIVECONTROL} (baked into the unit as ${HIVECONTROL_ENV_VAR} + PATH)`);
       } else {
-        say(`(warn) could not resolve the ${HIVECONTROL_BIN_NAME} CLI via your login shell (\`command -v ${HIVECONTROL_BIN_NAME}\`).`);
-        say(`  A scheduler-launched daemon gets a MINIMAL PATH (${MINIMAL_UNIT_PATH}), so without a baked`);
-        say(`  path every \`${HIVECONTROL_BIN_NAME} workspace monitor\` call fails ENOENT and NOTHING is ingested.`);
-        say(`  FIX: install/expose the DevSwarm CLI on your login shell's PATH, or export`);
-        say(`  ${HIVECONTROL_ENV_VAR}=/absolute/path/to/${HIVECONTROL_BIN_NAME} and re-run this installer.`);
-        say('  Installing anyway (the daemon runs in degraded mode and doctor will report it).');
+        // LOUD + on stderr (not a quiet stdout log line): all resolution tiers
+        // missed, so the daemon is about to be installed PATH-less and will
+        // ENOENT-storm until this is fixed. Never abort the install (fail-open).
+        try { for (const line of hivecontrolUnresolvedWarningLines()) process.stderr.write(line + '\n'); } catch (_) {}
       }
     }
     // Resolve the worktree the daemon must run FROM (see resolveWorktree). Only for
@@ -1391,6 +1493,10 @@ module.exports = {
   // v0.66 — hivecontrol discovery + baked unit environment:
   HIVECONTROL_BIN_NAME, HIVECONTROL_ENV_VAR, MINIMAL_UNIT_PATH,
   resolveHivecontrolPath, unitEnvFor, firstBinLine, sdEnvValue, parseCronCommand,
+  // v0.72 — persisted last-known-good hivecontrol resolution cache + known-location
+  // probe (fixes minimal-env installs baking a PATH-less daemon on every run):
+  hivecontrolCachePath, readHivecontrolCache, writeHivecontrolCache,
+  KNOWN_HIVECONTROL_LOCATIONS, knownHivecontrolLocations, hivecontrolUnresolvedWarningLines,
   // CLI arg validation (footgun fix): --help/unknown-flag must never install.
   KNOWN_FLAGS, usageText, validateArgs,
 };
