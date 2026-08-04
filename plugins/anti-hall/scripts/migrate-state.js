@@ -387,4 +387,30 @@ if (require.main === module) {
   }
 }
 
-module.exports = { migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore };
+/**
+ * migrateReplyState({ dryRun, home }) — forward-migration for the DevSwarm
+ * parent-gate reply-state files (Task #4): converts every existing
+ * ~/.anti-hall/devswarm/parent-gate/*-replies.json from the legacy single-
+ * merged-object shape to the new append-only JSONL shape, losslessly.
+ * Delegates ENTIRELY to devswarm-reply-state.js's own migrateReplyState (one
+ * code path for BOTH the doctor-repair migrationFix here and update.js's
+ * post-update pass, and for the dry-run detect + the apply). Idempotent,
+ * fail-open (never throws — a missing module or any error yields a zeroed
+ * report), NO-DELETE (the fold preserves every sender's max lastReplyTs).
+ *
+ * Returns the reply-state module's report ({ scanned, migrated,
+ * alreadyAppendOnly, pending, errors }).
+ */
+function migrateReplyState({ dryRun, home } = {}) {
+  const empty = { scanned: 0, migrated: 0, alreadyAppendOnly: 0, pending: 0, errors: 0 };
+  try {
+    const mod = require('../companion/lib/devswarm-reply-state.js');
+    if (!mod || typeof mod.migrateReplyState !== 'function') return empty;
+    const h = home || require('os').homedir();
+    return mod.migrateReplyState(h, { dryRun: !!dryRun }) || empty;
+  } catch (_) {
+    return empty;
+  }
+}
+
+module.exports = { migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore, migrateReplyState };
