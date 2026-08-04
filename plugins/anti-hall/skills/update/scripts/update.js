@@ -782,6 +782,59 @@ function ownerKeyMigratePostUpdate(opts) {
 }
 
 /**
+ * replyStateMigratePostUpdate({ paths, env, cwd, home }) →
+ *   { attempted, scanned, migrated, alreadyAppendOnly, errors, detail }
+ *
+ * Task #4 persisted-shape forward-migration: normalize every parent-gate
+ * reply-state file (~/.anti-hall/devswarm/parent-gate/*-replies.json) from the
+ * legacy single-merged-object shape to the new append-only JSONL shape,
+ * losslessly. Pure per-user-file fold+rewrite via migrate-state.js's
+ * migrateReplyState (which delegates to devswarm-reply-state.js) — no store
+ * open, no daemon/scheduler side effect. Runs on EVERY update (not gated on
+ * cache.synced — an existing reply-state file predates the new shape regardless
+ * of whether the plugin changed version this run). Same DevSwarm-session-only
+ * gate + fully fail-open posture as fold/reconcile/ownerKeyMigrate above; NEVER
+ * throws, never affects the update's own success. Idempotent (an already-
+ * append-only file is detected and skipped), NO-DELETE (the fold keeps every
+ * sender's max lastReplyTs).
+ */
+function replyStateMigratePostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const migratePath = path.join(paths.pluginSrcDir, 'scripts', 'migrate-state.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(migratePath)) {
+      return { attempted: false, detail: 'reply-state migrate skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — reply-state migrate skipped (gate closed)' };
+    }
+    const migrate = o.migrate || require(migratePath);
+    if (typeof migrate.migrateReplyState !== 'function') {
+      return { attempted: false, detail: 'reply-state migrate skipped: this build has no migrateReplyState' };
+    }
+    const r = migrate.migrateReplyState({ home }) || {};
+    return {
+      attempted: true,
+      scanned: r.scanned || 0,
+      migrated: r.migrated || 0,
+      alreadyAppendOnly: r.alreadyAppendOnly || 0,
+      errors: r.errors || 0,
+      detail: 'reply-state migrate: scanned ' + (r.scanned || 0) + ', migrated ' + (r.migrated || 0)
+        + ', already-append-only ' + (r.alreadyAppendOnly || 0)
+        + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'reply-state migrate raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * healRegistryPostUpdate({ paths, env, cwd, home, devswarm }) →
  *   { attempted, checked, healed, rehomed, stores, detail }
  *
@@ -1268,6 +1321,10 @@ function runUpdate(opts) {
   // P1-8: backfill the new `ownerKey` descriptor field + heal prior hash-bucket
   // split-brain. Same gate + fail-open posture; never affects the update's success.
   const ownerKeyMigrate = ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // Task #4: normalize parent-gate reply-state files to the append-only shape.
+  // Pure per-user-file fold+rewrite; same gate + fail-open posture; never
+  // affects the update's own success.
+  const replyStateMigrate = replyStateMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home });
   // Claim 3 self-heal: sweep every per-project store registry for a mis-keyed/
   // stale row via devswarm.js's healRegistry. Same gate + fail-open posture;
   // never affects the update's success.
@@ -1293,6 +1350,7 @@ function runUpdate(opts) {
         fold,
         foldArchivedRows,
         ownerKeyMigrate,
+        replyStateMigrate,
         healRegistryRows,
         wakeMonitor,
         action: UNKNOWN_INSTALLED_ACTION,
@@ -1324,6 +1382,7 @@ function runUpdate(opts) {
       fold,
       foldArchivedRows,
       ownerKeyMigrate,
+      replyStateMigrate,
       healRegistryRows,
       wakeMonitor,
       action: updated ? 'run /reload-plugins' : 'already up to date',
@@ -1384,6 +1443,9 @@ function renderHuman(status, changelog) {
   }
   if (status.foldArchivedRows && status.foldArchivedRows.attempted) {
     lines.push('  fold-archived-rows: ' + status.foldArchivedRows.detail);
+  }
+  if (status.replyStateMigrate && status.replyStateMigrate.attempted) {
+    lines.push('  reply-state-migrate: ' + status.replyStateMigrate.detail);
   }
   if (status.healRegistryRows && status.healRegistryRows.attempted) {
     lines.push('  heal-registry-rows: ' + status.healRegistryRows.detail);

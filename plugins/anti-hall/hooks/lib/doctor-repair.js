@@ -915,6 +915,19 @@ function runRepairs(opts) {
     return { pending: !!(r && r.pending), detail: (r && r.workspaces || 0) + ' workspace(s)' };
   }, () => require(MIGRATE_STATE).migrateDevswarmStore({}));
 
+  // Task #4: normalize parent-gate reply-state files from the legacy single-
+  // merged-object shape to the new append-only JSONL shape. A PURE per-user-file
+  // fold+rewrite under ~/.anti-hall/devswarm/parent-gate/ (no daemon/scheduler
+  // side effect, no store open) -> AUTO-SAFE, same posture as
+  // migrate-devswarm-store above. Reuses migrate-state.js's migrateReplyState
+  // (itself delegating to devswarm-reply-state.js) for BOTH the dry-run detect
+  // and the apply — one code path, idempotent (an already-append-only file is
+  // never rewritten), fail-open, NO-DELETE (the fold keeps every sender's max).
+  migrationFix('migrate-reply-state', 'migrate-reply-state', () => {
+    const r = require(MIGRATE_STATE).migrateReplyState({ dryRun: true, home });
+    return { pending: !!(r && r.pending > 0), detail: (r && r.pending || 0) + ' reply-state file(s)' };
+  }, () => require(MIGRATE_STATE).migrateReplyState({ home }));
+
   // #70: fold ALL prior mesh forms (phantom rows, dual/legacy pairs, subdir-splits)
   // into one canonical survivor per worktree. A PURE store read+write (forward-then-
   // tombstone, message rows NEVER deleted) — so AUTO-SAFE, not GATED (no daemon /
