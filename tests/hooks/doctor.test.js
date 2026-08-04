@@ -35,16 +35,25 @@ function runDoctor({ cwd, env }) {
   // NOTHING. These env-detection assertions predate repair mode and assert the
   // read-only report/exit, so they run under --check. The auto-fix / gate /
   // dry-run behavior is covered separately in doctor-repair.test.js.
+  const callerEnv = env || {};
+  // Fully isolate from whatever machine/session this test itself runs under
+  // (this repo's own dev loop is frequently DevSwarm/OMC-active). A bare
+  // `HOME: undefined` here does NOT isolate anything — os.homedir() falls
+  // back through the platform passwd db to the REAL user home when HOME is
+  // unset, so a caller that forgets to pass its own HOME would silently
+  // point doctor.js at the real ~/.anti-hall/devswarm/store. Every current
+  // call site does pass its own isolated HOME, but this default must still
+  // be a safe, disposable temp dir — never the real machine home — so a
+  // future call site that omits HOME can't leak into the real store.
+  const fallbackHome = ('HOME' in callerEnv) ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-default-home-'));
   const res = cp.spawnSync(process.execPath, [DOCTOR_JS, '--check'], {
     cwd,
     encoding: 'utf8',
     timeout: 60000,
     env: Object.assign({}, process.env, {
-      // Fully isolate from whatever machine/session this test itself runs
-      // under (this repo's own dev loop is frequently DevSwarm/OMC-active).
-      HOME: undefined, USERPROFILE: undefined, DEVSWARM_REPO_ID: undefined,
+      HOME: fallbackHome, USERPROFILE: fallbackHome, DEVSWARM_REPO_ID: undefined,
       DISABLE_ANTIHALL_DEVSWARM: undefined, ANTIHALL_DEVSWARM_SUPERVISOR: undefined,
-    }, env || {}),
+    }, callerEnv),
   });
   return {
     code: res.status,

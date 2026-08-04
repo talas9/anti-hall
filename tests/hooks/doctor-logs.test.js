@@ -48,13 +48,21 @@ function seedLog(dir, fn) {
 // timeout's own SIGTERM. 60000ms keeps a real hang/crash catchable while giving
 // ~4x headroom over the worst contention observed so CI parallelism doesn't flake it.
 function runDoctor({ cwd, env, args }) {
+  const callerEnv = env || {};
+  // See doctor.test.js's runDoctor for why the default must be a disposable
+  // temp HOME rather than `undefined`: os.homedir() resolves an unset HOME
+  // via the platform passwd db to the REAL user home, so a caller that omits
+  // its own HOME would silently point doctor.js at the real
+  // ~/.anti-hall/devswarm/store. Every current call site passes its own
+  // isolated HOME; this default only guards future ones.
+  const fallbackHome = ('HOME' in callerEnv) ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-default-home-'));
   const res = cp.spawnSync(process.execPath, [DOCTOR_JS].concat(args || []), {
     cwd, encoding: 'utf8', timeout: 60000,
     env: Object.assign({}, process.env, {
-      HOME: undefined, USERPROFILE: undefined, DEVSWARM_REPO_ID: undefined,
+      HOME: fallbackHome, USERPROFILE: fallbackHome, DEVSWARM_REPO_ID: undefined,
       DISABLE_ANTIHALL_DEVSWARM: undefined, ANTIHALL_DEVSWARM_SUPERVISOR: undefined,
       ANTI_HALL_LOG_DIR: undefined,
-    }, env || {}),
+    }, callerEnv),
   });
   return {
     code: res.status,
