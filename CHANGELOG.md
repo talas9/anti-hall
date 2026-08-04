@@ -6,6 +6,34 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.71.0 (2026-08-04)
+
+- **Append-only reply-state redesign (`recordReply`, merge `adfd61c`).** DevSwarm parent
+  decide-gate reply-state moved from a lockfile read-modify-write of a merged JSON object
+  to an append-only JSONL log — `recordReply` is now one `O_APPEND` write with no lock,
+  `readReplyState` folds the log on read, a fail-closed newline separator guards partial
+  records, each record is capped at 480 bytes, and the fold accumulator uses
+  `Object.create(null)` so a `__proto__`-named sender survives the fold instead of
+  polluting the prototype. Ships with a loss-safe forward migration (`migrateReplyState`)
+  wired into both `update.js` and `doctor-repair`, with an accepted, documented residual
+  in the final write window. Structurally eliminates the disclosed steal-branch TOCTOU
+  rather than patching around it.
+- **Emoji-as-signal rule propagated to subagents + Codex (`e6f6e3f`).** Rule K (status
+  glyph as SIGNAL, never decoration) is now also injected at `SubagentStart` and in the
+  Codex orchestration skill, not just the orchestrator's `SessionStart`.
+- **Test-store-leak hardening + read-only leaked-bucket audit (merge `9b89fdd`).** Fixed
+  4 doctor tests' `HOME`-default landmine, where an unset test override silently fell
+  back to the real home directory. Added a new READ-ONLY store audit/classifier
+  (REAL/GARBAGE/UNKNOWN) and a leak-report CLI whose `--out` is guarded (realpath
+  canonicalization against the store root, `O_EXCL`/`O_NOFOLLOW` write, a distinctive
+  report marker) so it can never overwrite a production `devswarm.db`; ambiguous or
+  unreadable evidence degrades to UNKNOWN, never GARBAGE. Detection-only — it never
+  deletes.
+- **`register-primary` records the real Claude `session_id` (merge `dfad611`).**
+  `--session` now defaults to `CLAUDE_CODE_SESSION_ID` (previously the workspace hash),
+  so Primary registry rows resolve their transcript for liveness reads. Also corrected a
+  KB doc's broken `$CLAUDE_SESSION_ID` reference.
+
 ## 0.70.1 (2026-08-04)
 
 - **Liveness-aware roster read — dormant-tier demotion (`7f253cd`).** A DevSwarm mesh/

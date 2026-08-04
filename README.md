@@ -315,6 +315,24 @@ plugin depends on it.
   injection table), so the id displayed there is directly archivable; an ambiguous
   prefix archives nothing and lists the candidates instead. `isSafeId` still gates
   (no `/`); exact-id behavior is unchanged.
+- **Append-only reply-state redesign (v0.71.0)** — DevSwarm parent decide-gate reply
+  state moved from a lockfile read-modify-write to an append-only JSONL log
+  (`recordReply` = one `O_APPEND` write, no lock; `readReplyState` folds the log,
+  fail-closed newline separator, 480-byte record cap, `Object.create(null)` fold
+  accumulator so a `__proto__`-named sender survives). Loss-safe forward migration
+  wired into both `update.js` and `doctor --fix`. Structurally eliminates the
+  disclosed steal-branch TOCTOU.
+- **Emoji-as-signal rule propagated to subagents + Codex (v0.71.0)** — Rule K (status
+  glyph as SIGNAL, never decoration) now also injected at `SubagentStart` and in the
+  Codex orchestration skill, not just the orchestrator's `SessionStart`.
+- **Test-store-leak hardening + read-only leak audit (v0.71.0)** — fixed 4 doctor
+  tests' `HOME`-default landmine; added a READ-ONLY store audit/classifier
+  (REAL/GARBAGE/UNKNOWN) and a leak-report CLI whose `--out` is guarded (realpath
+  canonicalization, `O_EXCL`/`O_NOFOLLOW`, a distinctive marker) so it can never
+  overwrite a production `devswarm.db`. Detection-only — never deletes.
+- **`register-primary` records the real Claude `session_id` (v0.71.0)** — `--session`
+  now defaults to `CLAUDE_CODE_SESSION_ID` (was the workspace hash), so Primary rows
+  resolve their transcript for liveness reads.
 - **Per-project mesh store** — one shared store per project keyed by a stable `repoKey`,
   so any worktree can message any other directly; **#36-STRUCTURAL scoping** closes a
   spoofable cross-project bleed.
