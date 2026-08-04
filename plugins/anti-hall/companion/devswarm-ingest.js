@@ -64,6 +64,18 @@ try { alog = require('./lib/anti-hall-log.js'); } catch (_) {
 const INGEST_LOCK_STALE_MS = 15 * 60 * 1000; // a monitor consumer is long-lived; used to judge an UNKNOWN holder's liveness — a KNOWN-dead holder is reclaimed immediately regardless of this window (see acquireIngestLock's P1-B steal rule)
 const DEFAULT_MONITOR_INTERVAL_SEC = 3;      // hivecontrol monitor default poll
 const DEFAULT_RESTART_BACKOFF_MS = 2000;     // gap before re-spawning after a monitor exit/crash
+// MAX_PACE_MS — hard ceiling on the SUCCESS-path pace computed below. A
+// misconfigured (absurdly large, or overflowing to Infinity) intervalSec must
+// never turn into an unbounded — or, worse, non-finite — sleep. `backoffWithHeartbeat`
+// already slices any wait into BACKOFF_HEARTBEAT_SLICE_MS (60s) chunks so the
+// daemon's own heartbeat/lock liveness (judged stale past the 3-minute
+// HEARTBEAT_STALE_MS) is never at risk from a single long pace. The ceiling
+// here instead bounds how long real ingestion can be starved by a bad config:
+// 5 minutes is comfortably longer than any sane poll cadence yet still short
+// enough that a typo'd interval degrades ingest latency rather than parking
+// it indefinitely (or, via the Infinity/NaN coercion this replaces, restoring
+// the busy-spin the pacing fix exists to prevent).
+const MAX_PACE_MS = 5 * 60 * 1000;
 // DEFAULT_MONITOR_TIMEOUT_SEC — the bounded `-t` timeout given to EVERY `hivecontrol
 // workspace monitor` call. Without a timeout, monitor long-polls (BLOCKS) until a
 // message arrives; on a live-but-QUIET workspace that parks runIngestLoop's iteration
@@ -1533,7 +1545,15 @@ function runIngestLoop(opts) {
         const paceIntervalSec = Number.isFinite(intervalSec) && intervalSec > 0
           ? intervalSec : DEFAULT_MONITOR_INTERVAL_SEC;
         const elapsed = Date.now() - iterationStart;
-        const pace = Math.max(0, (paceIntervalSec * 1000) - elapsed);
+        // Clamp the effective interval to MAX_PACE_MS BEFORE subtracting elapsed,
+        // and guard against a non-finite product (huge paceIntervalSec * 1000
+        // overflowing to Infinity) — either would otherwise make `pace` Infinity,
+        // which backoffWithHeartbeat/sleepSync silently coerce back to a 0ms wait,
+        // restoring the exact busy-spin this pacing block exists to prevent.
+        const rawIntervalMs = paceIntervalSec * 1000;
+        const cappedIntervalMs = Number.isFinite(rawIntervalMs)
+          ? Math.min(rawIntervalMs, MAX_PACE_MS) : MAX_PACE_MS;
+        const pace = Math.max(0, cappedIntervalMs - elapsed);
         if (pace > 0) backoffWithHeartbeat(pace);
       }
     }
@@ -1978,4 +1998,6 @@ module.exports = {
   PERMANENT_SPAWN_ERROR_CODES, PERMANENT_BACKOFF_CAP_MS, PERMANENT_BACKOFF_STEPS,
   // stale-running detection (pacing-fix delivery gap):
   readInstalledPluginVersion,
+  // success-path pacing ceiling (P2 hardening — clamp absurd/overflowing intervalSec):
+  MAX_PACE_MS,
 };
