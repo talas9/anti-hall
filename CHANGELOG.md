@@ -6,6 +6,12 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.71.2 (2026-08-04)
+
+- **DevSwarm installer rejects unknown/mistyped flags.** `install-devswarm-ingest.js`
+  now rejects unknown/mistyped flags and handles `--help`/`-h` by printing usage and
+  exiting, instead of silently running a full daemon install on an unrecognized flag.
+
 ## 0.71.1 (2026-08-04)
 
 - **DevSwarm ingest daemon busy-spin fix (elapsed-aware pacing, `7242575`).** The ingest
