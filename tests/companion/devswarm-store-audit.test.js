@@ -806,3 +806,195 @@ test('devswarm-store-leak-report CLI: a brand-new valid --out .json target is wr
     try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
   }
 });
+
+// ---------------------------------------------------------------------------
+// 16. FIX 1c (P0, third round): close the write-side leaf-symlink TOCTOU —
+//     the final open of --out uses O_NOFOLLOW (numeric flags, not the 'wx'
+//     string) so a symlink at the target leaf is refused, on BOTH the
+//     new-file path (O_CREAT|O_EXCL|O_NOFOLLOW) and the sanctioned-overwrite
+//     path (O_TRUNC|O_NOFOLLOW, no O_CREAT/O_EXCL).
+// ---------------------------------------------------------------------------
+
+// 16a. --out itself is a symlink (pointing anywhere) -> refused, and nothing
+// is written through the symlink to its target.
+test('devswarm-store-leak-report CLI: --out that is itself a leaf symlink is REFUSED, nothing written through it', () => {
+  const { home, cleanup } = tmpHome();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-audit-symlink-leaf-'));
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const targetPath = path.join(outDir, 'symlink-target.json');
+    const linkPath = path.join(outDir, 'leaf-link.json');
+    fs.symlinkSync(targetPath, linkPath);
+
+    const result = reportCli.run(['--home', home, '--out', linkPath, '--quiet']);
+    assert.strictEqual(result.ok, false, 'writing through a leaf symlink must be refused');
+    assert.ok(!fs.existsSync(targetPath), 'nothing must be written to the symlink target');
+  } finally {
+    cleanup();
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// 16b. A normal (non-symlink) new-file write still works after the O_NOFOLLOW
+// hardening (regression guard).
+test('devswarm-store-leak-report CLI: a normal new-file --out write still succeeds after O_NOFOLLOW hardening', () => {
+  const { home, cleanup } = tmpHome();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-audit-nofollow-new-'));
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const outPath = path.join(outDir, 'report.json');
+
+    const result = reportCli.run(['--home', home, '--out', outPath, '--quiet']);
+    assert.strictEqual(result.ok, true, JSON.stringify(result));
+    const parsed = JSON.parse(fs.readFileSync(outPath, 'utf8'));
+    assert.strictEqual(parsed._antihallLeakReport, true);
+  } finally {
+    cleanup();
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// 16c. Overwriting a marked prior report (a real file, not a symlink) still
+// works after the O_NOFOLLOW hardening on the overwrite path (regression
+// guard for the sanctioned-overwrite branch).
+test('devswarm-store-leak-report CLI: overwriting a marked prior report still succeeds after O_NOFOLLOW hardening', () => {
+  const { home, cleanup } = tmpHome();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-audit-nofollow-overwrite-'));
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const outPath = path.join(outDir, 'prior-report.json');
+    fs.writeFileSync(outPath, JSON.stringify({ _antihallLeakReport: true, home, total: 0, garbage: [], real: [] }));
+
+    const result = reportCli.run(['--home', home, '--out', outPath, '--quiet']);
+    assert.strictEqual(result.ok, true, JSON.stringify(result));
+    const parsed = JSON.parse(fs.readFileSync(outPath, 'utf8'));
+    assert.strictEqual(parsed._antihallLeakReport, true);
+    assert.strictEqual(parsed.total, 1);
+  } finally {
+    cleanup();
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+// 16d. The marked-prior-report file at --out is swapped for a symlink AT THE
+// EXACT MOMENT of the sanctioned-overwrite open (simulating the race window
+// between the marker check and the final write via an injected fsi) — must
+// be refused via O_NOFOLLOW on the overwrite open, never written through.
+test('devswarm-store-leak-report CLI: a symlink swapped in for a marked prior report is REFUSED on overwrite (O_NOFOLLOW)', () => {
+  const { home, cleanup } = tmpHome();
+  const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'store-audit-nofollow-swap-'));
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const outPath = path.join(outDir, 'prior-report.json');
+    const evilTarget = path.join(outDir, 'evil-target.txt');
+    fs.writeFileSync(evilTarget, 'must never be written to');
+    fs.writeFileSync(outPath, JSON.stringify({ _antihallLeakReport: true, home, total: 0, garbage: [], real: [] }));
+    const originalLstat = fs.lstatSync(outPath);
+    const originalContent = fs.readFileSync(outPath, 'utf8');
+
+    const spyFsi = Object.assign({}, fs);
+    let openCall = 0;
+    spyFsi.openSync = (p, flags, mode) => {
+      if (path.resolve(String(p)) === path.resolve(outPath)) {
+        openCall++;
+        if (openCall === 1) {
+          // First attempt is the O_EXCL new-file open; the file is real, so
+          // this must EEXIST (matches production behavior).
+          const e = new Error('EEXIST');
+          e.code = 'EEXIST';
+          throw e;
+        }
+        // Second call is the sanctioned-overwrite open — simulate the leaf
+        // being swapped for a symlink at this exact instant, then let the
+        // REAL openSync run against the now-swapped path so O_NOFOLLOW
+        // enforcement is exercised for real, not mocked away.
+        fs.unlinkSync(outPath);
+        fs.symlinkSync(evilTarget, outPath);
+        return fs.openSync(p, flags, mode);
+      }
+      return fs.openSync(p, flags, mode);
+    };
+    // lstatSync/readFileSync for the marker check must still see the
+    // ORIGINAL marked file (the check happened before the swap).
+    spyFsi.lstatSync = (p) => (path.resolve(String(p)) === path.resolve(outPath) ? originalLstat : fs.lstatSync(p));
+    spyFsi.readFileSync = (p, enc) => (path.resolve(String(p)) === path.resolve(outPath) ? originalContent : fs.readFileSync(p, enc));
+
+    const result = reportCli.run(['--home', home, '--out', outPath, '--quiet'], { fsi: spyFsi });
+    assert.strictEqual(result.ok, false, 'the swapped-in symlink must be refused, not written through: ' + JSON.stringify(result));
+    assert.strictEqual(fs.readFileSync(evilTarget, 'utf8'), 'must never be written to', 'the symlink target must never receive the report write');
+  } finally {
+    try { fs.rmSync(outDir, { recursive: true, force: true }); } catch (_) {}
+    cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 17. FIX 3c (P1, third round): a registry.ndjson row that PARSES but is not
+//     a usable object (null / array / bare primitive) is semantically
+//     malformed evidence — must degrade to UNKNOWN, never a confident
+//     GARBAGE. A legitimate row object with no worktreePath (e.g. an
+//     `_op: 'remove'` tombstone written by devswarm-store.js's append()) is
+//     NOT malformed and must be left alone.
+// ---------------------------------------------------------------------------
+
+test('auditStore: a registry.ndjson row that parses to a bare string (not an object) -> UNKNOWN, not GARBAGE', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const hash = 'nonobject-row-abc123';
+    const journalDir = store.journalDirForHash(home, hash);
+    fs.mkdirSync(journalDir, { recursive: true });
+    fs.writeFileSync(path.join(journalDir, 'registry.ndjson'), '"just a string, not a row object"\n');
+
+    const report = audit.auditStore({ home });
+    assert.strictEqual(report.garbageCount, 0, 'a non-object parsed row must not collapse to GARBAGE: ' + JSON.stringify(report));
+    assert.strictEqual(report.unknownCount, 1);
+    assert.deepStrictEqual(report.unknown, [hash]);
+  } finally { cleanup(); }
+});
+
+test('auditStore: a registry.ndjson row that parses to null -> UNKNOWN, not GARBAGE', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const hash = 'null-row-abc123';
+    const journalDir = store.journalDirForHash(home, hash);
+    fs.mkdirSync(journalDir, { recursive: true });
+    fs.writeFileSync(path.join(journalDir, 'registry.ndjson'), 'null\n');
+
+    const report = audit.auditStore({ home });
+    assert.strictEqual(report.garbageCount, 0, JSON.stringify(report));
+    assert.strictEqual(report.unknownCount, 1);
+  } finally { cleanup(); }
+});
+
+test('auditStore: a registry.ndjson row that parses to an array (not a row object) -> UNKNOWN, not GARBAGE', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const hash = 'array-row-abc123';
+    const journalDir = store.journalDirForHash(home, hash);
+    fs.mkdirSync(journalDir, { recursive: true });
+    fs.writeFileSync(path.join(journalDir, 'registry.ndjson'), '[1,2,3]\n');
+
+    const report = audit.auditStore({ home });
+    assert.strictEqual(report.garbageCount, 0, JSON.stringify(report));
+    assert.strictEqual(report.unknownCount, 1);
+  } finally { cleanup(); }
+});
+
+// Regression guard: a legitimate `_op: 'remove'` tombstone row (a real row
+// object with no worktreePath — the ordinary shape devswarm-store.js's
+// append() writes for a removal) must NOT be swept into the new
+// non-object-degrade path; it still falls through to the existing, correct
+// (non-degraded) GARBAGE classification when nothing else matches.
+test('auditStore: a legitimate _op:remove tombstone row (real object, no worktreePath) is NOT treated as malformed', () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const hash = 'tombstone-row-abc123';
+    const journalDir = store.journalDirForHash(home, hash);
+    fs.mkdirSync(journalDir, { recursive: true });
+    fs.writeFileSync(path.join(journalDir, 'registry.ndjson'), JSON.stringify({ id: 'w1', _op: 'remove', updatedAt: Date.now() }) + '\n');
+
+    const report = audit.auditStore({ home });
+    assert.strictEqual(report.unknownCount, 0, 'a legitimate no-worktreePath row must not be flagged malformed: ' + JSON.stringify(report));
+    assert.strictEqual(report.garbageCount, 1, 'no live/archived match and no worktree evidence -> still ordinary (non-degraded) GARBAGE');
+  } finally { cleanup(); }
+});

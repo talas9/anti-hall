@@ -22,11 +22,16 @@
 // alone is bypassable by a symlink whose target lands inside the store, or
 // (on a case-insensitive filesystem) by a differently-cased alias of a path
 // under the store. The actual write is also TOCTOU-safe: a brand-new report
-// is always created with the 'wx' flag (O_EXCL — fails if the path already
-// exists); only on EEXIST do we consider overwriting, and only when the
-// existing file carries the distinctive `_antihallLeakReport: true` marker
-// (not just "looks like an audit report" by generic shape) — containment is
-// re-validated again immediately before that overwrite.
+// is always created via a numeric-flags open (O_WRONLY|O_CREAT|O_EXCL|
+// O_NOFOLLOW — O_EXCL fails if the path already exists, O_NOFOLLOW refuses a
+// symlink at the leaf instead of writing through it); only on EEXIST do we
+// consider overwriting, and only when the existing file carries the
+// distinctive `_antihallLeakReport: true` marker (not just "looks like an
+// audit report" by generic shape) — containment is re-validated again
+// immediately before that overwrite, and the overwrite open itself also
+// carries O_NOFOLLOW (O_WRONLY|O_TRUNC|O_NOFOLLOW, no O_CREAT/O_EXCL) so a
+// leaf swapped for a symlink between the marker check and the write is
+// refused, not followed.
 //
 // Usage:
 //   node plugins/anti-hall/scripts/devswarm-store-leak-report.js [--home <dir>] [--out <file>] [--quiet]
@@ -147,13 +152,19 @@ function validateOutPath(outPath, home, fsi) {
 
 // writeReport(resolved, storeRootCanonical, payload, fsi) -> { ok: true } | { ok: false, error }
 //
-// TOCTOU-safe write: always attempts a brand-new file first via 'wx'
-// (O_EXCL — fails if the path already exists). Only on EEXIST do we consider
-// overwriting, and only when the existing file is itself a prior report from
-// this tool (REPORT_MARKER, checked above) — containment is re-validated
-// immediately before that overwrite, since the target could in principle
-// have been swapped (e.g. for a symlink into the store) between the earlier
-// validateOutPath check and now.
+// TOCTOU-safe write: always attempts a brand-new file first via numeric
+// O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW flags (O_EXCL — fails if the path
+// already exists; O_NOFOLLOW — fails with ELOOP if the leaf itself is a
+// symlink, refusing to follow it rather than writing through it). Only on
+// EEXIST do we consider overwriting, and only when the existing file is
+// itself a prior report from this tool (REPORT_MARKER, checked above) —
+// containment is re-validated immediately before that overwrite, and the
+// overwrite open itself also carries O_NOFOLLOW so a symlink swapped in at
+// the leaf between the marker check and this open is refused (ELOOP), not
+// followed — closing the write-side leaf-symlink TOCTOU. Ancestor-directory
+// symlink races (an ancestor dir swapped mid-walk) are not fully closable in
+// pure Node without a per-component openat-style walk and are out of scope
+// for a local, human-run diagnostic tool.
 function writeReport(resolved, storeRootCanonical, payload, fsi) {
   const F = fsi || fs;
   const data = JSON.stringify(payload, null, 2) + '\n';
@@ -162,14 +173,31 @@ function writeReport(resolved, storeRootCanonical, payload, fsi) {
   } catch (e) {
     return { ok: false, error: 'failed to create --out directory: ' + (e && e.message) };
   }
+
+  const NEW_FLAGS = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL | fs.constants.O_NOFOLLOW;
+  let fd = null;
   try {
-    F.writeFileSync(resolved, data, { flag: 'wx' });
-    return { ok: true };
+    fd = F.openSync(resolved, NEW_FLAGS, 0o644);
   } catch (e) {
+    if (e && e.code === 'ELOOP') {
+      return { ok: false, error: 'refusing to write --out: target is a symlink: ' + resolved };
+    }
     if (!e || e.code !== 'EEXIST') {
       return { ok: false, error: 'failed to write report: ' + (e && e.message) };
     }
+    // EEXIST — fall through to the sanctioned-overwrite path below.
   }
+  if (fd != null) {
+    try {
+      F.writeSync(fd, data);
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: 'failed to write report: ' + (e && e.message) };
+    } finally {
+      try { F.closeSync(fd); } catch (_) { /* best-effort */ }
+    }
+  }
+
   let existingLstat = null;
   try { existingLstat = F.lstatSync(resolved); } catch (e2) {
     return { ok: false, error: 'failed to stat existing --out path: ' + (e2 && e2.message) };
@@ -186,11 +214,29 @@ function writeReport(resolved, storeRootCanonical, payload, fsi) {
   if (isPathUnder(recheckCanonical, storeRootCanonical)) {
     return { ok: false, error: 'refusing to write --out inside the devswarm store root (' + storeRootCanonical + '): ' + resolved };
   }
+
+  // Sanctioned overwrite of a prior report: O_TRUNC + O_NOFOLLOW, deliberately
+  // WITHOUT O_CREAT/O_EXCL (the file must already exist — verified above). If
+  // the leaf was swapped for a symlink between the lstatSync/marker check
+  // above and this open, O_NOFOLLOW makes the open refuse it (ELOOP) instead
+  // of writing through it.
+  const OVERWRITE_FLAGS = fs.constants.O_WRONLY | fs.constants.O_TRUNC | fs.constants.O_NOFOLLOW;
+  let ofd = null;
   try {
-    F.writeFileSync(resolved, data);
-    return { ok: true };
+    ofd = F.openSync(resolved, OVERWRITE_FLAGS);
   } catch (e3) {
+    if (e3 && e3.code === 'ELOOP') {
+      return { ok: false, error: 'refusing to overwrite --out: target is a symlink: ' + resolved };
+    }
     return { ok: false, error: 'failed to write report: ' + (e3 && e3.message) };
+  }
+  try {
+    F.writeSync(ofd, data);
+    return { ok: true };
+  } catch (e4) {
+    return { ok: false, error: 'failed to write report: ' + (e4 && e4.message) };
+  } finally {
+    try { F.closeSync(ofd); } catch (_) { /* best-effort */ }
   }
 }
 

@@ -176,7 +176,20 @@ function worktreePathsFromRegistry(home, bucketHash, fsi) {
     if (!trimmed) continue;
     try {
       const row = JSON.parse(trimmed);
-      if (row && row.worktreePath) paths.add(String(row.worktreePath));
+      if (row && typeof row === 'object' && !Array.isArray(row)) {
+        // A legitimate row without worktreePath (e.g. an `_op: 'remove'`
+        // tombstone — see devswarm-store.js's append()) carries no worktree
+        // evidence but is NOT malformed; silently contributing nothing to
+        // `paths` is correct for it.
+        if (row.worktreePath) paths.add(String(row.worktreePath));
+      } else {
+        // Parsed successfully but is not a usable row object (null / array /
+        // a bare primitive) — semantically malformed evidence, not the
+        // legitimate "no worktreePath" case above. Treating this the same as
+        // a clean absence would let ambiguous evidence silently degrade a
+        // bucket straight to a confident GARBAGE it hasn't earned.
+        degraded = true;
+      }
     } catch (_) { degraded = true; }
   }
   return { paths, degraded };
