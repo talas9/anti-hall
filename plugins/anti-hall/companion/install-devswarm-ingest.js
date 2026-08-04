@@ -116,6 +116,45 @@ const DRYRUN = args.includes('--dry-run') || process.env.ANTIHALL_INGEST_DRY_RUN
 
 function say(msg) { process.stdout.write(msg + '\n'); }
 
+// ---------------------------------------------------------------------------
+// CLI arg validation (footgun fix): installing is a side-effecting action
+// (LaunchAgent/systemd unit write + launchctl/systemctl load, or a crontab
+// mutation). An unrecognized flag — a typo, or a user expecting `--help` to
+// just print usage — must NEVER fall through to a full daemon install. This
+// runs BEFORE any install side effect (called from the top of main(), which
+// only ever executes when this file is run directly — see `require.main ===
+// module` below — so requiring this module as a library never triggers it).
+// ---------------------------------------------------------------------------
+const KNOWN_FLAGS = ['--uninstall', '--dry-run', '--help', '-h'];
+function usageText() {
+  return [
+    'Usage: node install-devswarm-ingest.js [options]',
+    '',
+    '  (no options)  install the DevSwarm ingest daemon (continuous, supervised)',
+    '  --uninstall   remove the installed daemon',
+    '  --dry-run     print what would be done, without making any changes',
+    '  --help, -h    show this help and exit (no install)',
+  ].join('\n');
+}
+// validateArgs(argv) — exits the process directly (never returns) on --help/-h
+// or an unrecognized `-`-prefixed flag. Both paths run BEFORE workdir
+// resolution / unit writes / launchctl-systemctl-crontab calls, so neither can
+// ever reach an install side effect.
+function validateArgs(argv) {
+  const list = argv || [];
+  if (list.includes('--help') || list.includes('-h')) {
+    say(usageText());
+    process.exit(0);
+  }
+  for (const a of list) {
+    if (typeof a === 'string' && a.startsWith('-') && !KNOWN_FLAGS.includes(a)) {
+      process.stderr.write(`unknown option: ${a}\n`);
+      process.stderr.write(usageText() + '\n');
+      process.exit(1);
+    }
+  }
+}
+
 let _tmpCounter = 0;
 // Atomic unit write: NEVER truncate a live plist/service in place. Write the new
 // content to a unique same-directory temp file, then rename(2) over the target —
@@ -1228,6 +1267,7 @@ function windowsNoop() {
 
 function main() {
   try {
+    validateArgs(args); // footgun fix: --help/-h or an unknown flag exits here, no install
     if (process.platform === 'win32') return windowsNoop();
     if (!fs.existsSync(SCRIPT)) { say(`error: ingest daemon script not found at ${SCRIPT}`); process.exit(1); return; }
     // Report (never fix) a local process-reaper that would SIGKILL this daemon.
@@ -1351,4 +1391,6 @@ module.exports = {
   // v0.66 — hivecontrol discovery + baked unit environment:
   HIVECONTROL_BIN_NAME, HIVECONTROL_ENV_VAR, MINIMAL_UNIT_PATH,
   resolveHivecontrolPath, unitEnvFor, firstBinLine, sdEnvValue, parseCronCommand,
+  // CLI arg validation (footgun fix): --help/unknown-flag must never install.
+  KNOWN_FLAGS, usageText, validateArgs,
 };

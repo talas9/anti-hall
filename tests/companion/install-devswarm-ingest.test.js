@@ -11,7 +11,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 
 const MOD = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'install-devswarm-ingest.js');
 const m = require(MOD);
@@ -464,4 +464,101 @@ test('SCRIPT (module-load-time): falls back to __dirname/devswarm-ingest.js when
     }).trim();
     assert.strictEqual(out, path.join(path.dirname(MOD), 'devswarm-ingest.js'), 'falls back to the real file next to the installer');
   } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+// ---------------------------------------------------------------------------
+// CLI arg validation (footgun fix): an unrecognized flag (typo, or a user
+// expecting --help to just print usage) must NEVER fall through to a full
+// daemon install. Each subprocess runs with an isolated HOME so a validation
+// regression would still be caught (a real launchctl/systemctl/crontab write
+// under the isolated HOME still shows up as a `wrote .../.plist|.service` or
+// `ran: launchctl|systemctl|crontab ...` line in stdout) without ever risking
+// the REAL scheduler/HOME on the machine running the test.
+// ---------------------------------------------------------------------------
+
+const NO_INSTALL_RE = /^(\[dry-run\] )?(wrote|ran:) .*(\.(plist|service)$|launchctl|systemctl|crontab)/m;
+
+test('--help prints usage and exits 0 without installing anything', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-help-'));
+  try {
+    const r = spawnSync(process.execPath, [MOD, '--help'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home },
+    });
+    assert.strictEqual(r.status, 0, 'exits 0');
+    assert.ok(/^Usage: node install-devswarm-ingest\.js \[options\]/m.test(r.stdout), 'prints usage');
+    assert.ok(r.stdout.includes('--uninstall'), 'usage lists the real recognized flags');
+    assert.ok(r.stdout.includes('--dry-run'), 'usage lists the real recognized flags');
+    assert.ok(!NO_INSTALL_RE.test(r.stdout), 'must NOT perform any install/uninstall side effect');
+    assert.strictEqual(fs.readdirSync(home).length, 0, 'must not create anything under HOME (no .anti-hall, no Library/.config)');
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+test('-h behaves identically to --help (exit 0, usage, no install)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-h-'));
+  try {
+    const r = spawnSync(process.execPath, [MOD, '-h'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home },
+    });
+    assert.strictEqual(r.status, 0, 'exits 0');
+    assert.ok(/^Usage: node install-devswarm-ingest\.js \[options\]/m.test(r.stdout), 'prints usage');
+    assert.ok(!NO_INSTALL_RE.test(r.stdout), 'must NOT perform any install/uninstall side effect');
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+test('an unrecognized flag exits non-zero, reports it, and does NOT install', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-bogus-'));
+  try {
+    const r = spawnSync(process.execPath, [MOD, '--bogus'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home },
+    });
+    assert.notStrictEqual(r.status, 0, 'must exit non-zero');
+    assert.ok(r.stderr.includes('unknown option: --bogus'), 'names the bad flag on stderr');
+    assert.ok(/^Usage: node install-devswarm-ingest\.js \[options\]/m.test(r.stderr), 'usage also printed to stderr');
+    assert.ok(!NO_INSTALL_RE.test(r.stdout) && !NO_INSTALL_RE.test(r.stderr), 'must NOT perform any install/uninstall side effect');
+    assert.strictEqual(fs.readdirSync(home).length, 0, 'must not create anything under HOME');
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+test('a mistyped --help (e.g. -help) is NOT special-cased into help — it is an unrecognized flag, not an install', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-mistyped-'));
+  try {
+    const r = spawnSync(process.execPath, [MOD, '-help'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home },
+    });
+    assert.notStrictEqual(r.status, 0, 'must exit non-zero, not silently install');
+    assert.ok(r.stderr.includes('unknown option: -help'));
+    assert.ok(!NO_INSTALL_RE.test(r.stdout) && !NO_INSTALL_RE.test(r.stderr), 'must NOT perform any install/uninstall side effect');
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+// Regression guard: a recognized flag (--dry-run) still behaves exactly as
+// before — reaches the install path (dry-run, no real scheduler mutation) and
+// exits 0. This is the case validateArgs must NEVER block.
+test('regression: --dry-run (a recognized flag) still reaches the install path unaffected by arg validation', () => {
+  if (process.platform === 'win32') return; // Windows is a documented no-op (no scheduler)
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ingest-dryrun-regress-'));
+  try {
+    const r = spawnSync(process.execPath, [MOD, '--dry-run'], {
+      encoding: 'utf8',
+      env: { ...process.env, HOME: home },
+    });
+    assert.strictEqual(r.status, 0, 'exits 0');
+    assert.ok(/^\[dry-run\] would write .+\.(plist|service)$/m.test(r.stdout), '--dry-run still reaches the install path (dry-run write logged)');
+  } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+});
+
+// KNOWN_FLAGS / usageText / validateArgs are exported for direct unit coverage
+// (subprocess tests above prove the CLI wiring; these prove the pure logic).
+test('validateArgs / usageText / KNOWN_FLAGS: pure-function coverage', () => {
+  assert.deepStrictEqual(m.KNOWN_FLAGS.sort(), ['--dry-run', '--help', '--uninstall', '-h'].sort());
+  assert.ok(m.usageText().startsWith('Usage: node install-devswarm-ingest.js [options]'));
+  // Recognized flags never throw / never call process.exit (would crash the test runner).
+  m.validateArgs([]);
+  m.validateArgs(['--dry-run']);
+  m.validateArgs(['--uninstall']);
+  m.validateArgs(['--dry-run', '--uninstall']);
 });
