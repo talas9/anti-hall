@@ -11,6 +11,7 @@ Keep the main agent as coordinator:
 - Prioritize highest-risk/highest-priority work first.
 - Delegate noisy or long-running command execution to subagents where available.
 - Keep subagent outputs compact: `{claim, evidence, verdict, blockers, next}` for substantial findings.
+- Present findings scannably: tables/**bold**/`code` where they organize; at most a leading status glyph as signal (✅/❌/⚠️), never decoration; don't overdo it (rule K).
 - Verify delegated claims independently before marking work complete.
 - Do not end with open, silently dropped tasks.
 

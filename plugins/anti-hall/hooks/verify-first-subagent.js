@@ -38,6 +38,7 @@ const SUBAGENT_DISCIPLINES = [
   '  - anti-sycophancy: do not agree just to agree. If the user or a premise is wrong, challenge it with evidence. User agreement is not correctness (Positive Rule 9).',
   '  - scope-fidelity: the SCOPE & FIDELITY block above. Simplest sufficient solution; intent over letter; confirm before expanding scope; match rigor to blast radius; finish asked work and drop nothing.',
   '  - subagent role: DO the work yourself; do NOT re-delegate unless your task explicitly says to orchestrate. Shallow and direct beats deep chains. Return a TIGHT summary — findings only, no transcript, no re-pasted file bodies.',
+  "  - PRESENT FINDINGS SCANNABLY: tables/**bold**/`code` where they organize; at most a leading status glyph as SIGNAL (✅/❌/⚠️), never decoration; don't overdo it (rule K).",
   'INVOKE WHEN IT MATCHES (conditional skills, not every turn):',
   '  - /anti-hall:root-cause - full debugging playbook when investigating a specific bug/failure.',
   '  - /anti-hall:deadly-loop - HARDEN risky changes BEFORE merge: cross-file/cross-PR coordination, security-sensitive changes, schema/production-data touches, shell scripts, CI/workflow YAML, LLM-prompt work.',
