@@ -103,8 +103,19 @@ function readDescriptorsFrom(dir, fsi) {
     try {
       const raw = F.readFileSync(path.join(dir, name), 'utf8');
       const d = JSON.parse(raw);
-      if (d && typeof d === 'object') out.push(d);
-      else degraded = true; // parsed but not a descriptor-shaped object
+      if (d && typeof d === 'object') {
+        // A descriptor that parses but carries NONE of the matchable keys
+        // (id/repoKey/ownerKey) contributes zero entries to liveKeys — it is
+        // ambiguous evidence (we can't rule out that it's a real descriptor
+        // in some form this reader doesn't recognize), not a confident
+        // absence. Still counted in descriptorCount, but degrades the read
+        // so an otherwise-unmatched bucket falls to UNKNOWN, not GARBAGE.
+        const hasMatchableKey = d.id != null || !!d.repoKey || !!d.ownerKey;
+        out.push(d);
+        if (!hasMatchableKey) degraded = true;
+      } else {
+        degraded = true; // parsed but not a descriptor-shaped object
+      }
     } catch (_) { degraded = true; }
   }
   return { list: out, degraded };
@@ -142,12 +153,13 @@ function liveKeysFromDescriptors(descriptors) {
 //              bucket's journal/registry.ndjson, if present. A plain
 //              text/JSON-lines read — never opens the sqlite db.
 //   degraded — true when the registry file EXISTS but failed to read with a
-//              real error (not ENOENT). An absent file (sqlite-backend
-//              bucket, or a journal bucket with no registry writes yet) is
-//              the legitimate "no evidence" case: empty paths, degraded
-//              false. Individual malformed JSON-lines are still skipped
-//              silently (expected for an append-only log with possible
-//              partial/torn writes), not treated as degraded.
+//              real error (not ENOENT), OR at least one non-empty line in it
+//              failed to JSON.parse. An absent file (sqlite-backend bucket,
+//              or a journal bucket with no registry writes yet) is the
+//              legitimate "no evidence" case: empty paths, degraded false. A
+//              malformed line IS treated as degraded — ambiguous/unreadable
+//              evidence must never be silently dropped and must never let a
+//              bucket fall to a confident GARBAGE it hasn't earned.
 function worktreePathsFromRegistry(home, bucketHash, fsi) {
   const F = fsi || fs;
   const registryPath = path.join(store.journalDirForHash(home, bucketHash), 'registry.ndjson');
@@ -158,15 +170,16 @@ function worktreePathsFromRegistry(home, bucketHash, fsi) {
     return { paths: new Set(), degraded: true };
   }
   const paths = new Set();
+  let degraded = false;
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
     try {
       const row = JSON.parse(trimmed);
       if (row && row.worktreePath) paths.add(String(row.worktreePath));
-    } catch (_) { /* skip malformed line */ }
+    } catch (_) { degraded = true; }
   }
-  return { paths, degraded: false };
+  return { paths, degraded };
 }
 
 // classifyBucket(bucketHash, home, liveKeys, archivedKeys, fsi)
@@ -235,6 +248,18 @@ function auditStore(opts) {
   const liveKeys = liveKeysFromDescriptors(descResult.list);
   const archivedKeys = liveKeysFromDescriptors(archivedResult.list);
   const descriptorReadDegraded = !!descResult.degraded || !!archivedResult.degraded;
+  // store.listStoreHashes() fail-opens to [] on ANY readdirSync error
+  // (by design — doctor/migration callers want a harmless empty list on a
+  // fresh/never-used home). That silent [] is indistinguishable from "store/
+  // legitimately doesn't exist yet" vs "store/ exists but couldn't be read"
+  // (EACCES/EIO/etc) — the latter must NOT collapse into a misleading
+  // zero-bucket report. Probe the same directory ourselves (same fsi, so a
+  // spy that fails consistently fails identically here) to tell them apart.
+  let storeEnumerationError = null;
+  try { F.readdirSync(store.storeRootDir(home)); }
+  catch (e) {
+    if (!isMissingErr(e)) storeEnumerationError = (e && e.message) || String(e);
+  }
   const hashes = store.listStoreHashes(home, F);
 
   const garbage = [];
@@ -271,6 +296,11 @@ function auditStore(opts) {
     garbageSample: details.filter((d) => d.class === 'GARBAGE').slice(0, SAMPLE_CAP),
     realSample: details.filter((d) => d.class === 'REAL').slice(0, SAMPLE_CAP),
     unknownSample: details.filter((d) => d.class === 'UNKNOWN').slice(0, SAMPLE_CAP),
+    // null when store/ enumerated cleanly (including the legitimate "doesn't
+    // exist yet" case); a message string when the enumeration itself failed
+    // with a real error — a caller must treat total:0 alongside this as
+    // "unknown", never as a confident "no leaked buckets".
+    storeEnumerationError,
   };
 }
 
