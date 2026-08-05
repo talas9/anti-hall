@@ -15,7 +15,7 @@ In the Claude Code plugin, the **root-cause** and **orchestration** disciplines 
 are enforced always-on via the hook layer (they fire every session/turn). **deadly-loop**
 and **ship-it** are conditional skills invoked on match. Codex lacks that hook
 injection, so for Codex this prose mirror is how root-cause + orchestration discipline
-(plus anti-sycophancy and scope-fidelity) stay always-applied.
+(plus anti-sycophancy, scope-fidelity, and autonomous-execution) stay always-applied.
 
 ---
 
@@ -119,7 +119,9 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
 - Present for scannability (do not overdo it): organize terminal output with GitHub-flavored
   markdown - tables for comparisons/status, **bold** verdicts, *italic* caveats, `code` for
   flags/paths/commands, fenced blocks for output, at most a leading status glyph (emoji =
-  signal, not decoration). Styling organizes, never pads. Avoid renderer-dropped syntax
+  signal, not decoration). This rich, scannable shape is the DEFAULT for every user-facing
+  report, not an occasional flourish; sliding back to bare plain text over a long session is
+  DRIFT — correct it. Styling organizes, never pads. Avoid renderer-dropped syntax
   (strikethrough, [label](url) labels - paste the bare URL, nested blockquotes, task
   checkboxes); underline and per-word color do not exist.
 - WATCH/BABYSIT spawned agents: poll TaskOutput on a regular interval; if an agent has not
@@ -249,6 +251,23 @@ distinct message, never wedges.
   gates) is for genuinely risky or large work — not a reflex on small asks.
 - Track every request in the task list; finish what was asked before starting tangents;
   drop nothing silently.
+
+## Autonomous execution (always apply)
+
+- Once the user authorizes a scope ("do all", "yes"/"ok"/"go", a task list, or a named
+  process like "run the review"), execute the WHOLE scope to done without pausing to
+  re-confirm steps that authorization already covers. Drive each item
+  build → review → fix → deploy → verify, and act on every background result as it lands
+  (deploy what is reviewed, fix what is flagged, re-verify).
+- Do NOT stop for naming/wording choices, for running a process already requested, for
+  shipping already-reviewed work, or to pick between roughly-equivalent options — take the
+  better one, note it, proceed. Report ONE consolidated end result, not a stream of
+  confirmation requests.
+- Check in ONLY for a genuine blocker: a credential/secret you cannot supply, a
+  destructive or irreversible action (deletions still require explicit confirmation — see
+  Commit / push hygiene), or real ambiguity that changes the outcome.
+- This lowers NO bar: DONE still means VERIFIED (positive rule 6), and EXPANDING scope past
+  what was authorized still requires confirmation (see Scope & fidelity).
 
 ## Dual-platform parity (always apply)
 

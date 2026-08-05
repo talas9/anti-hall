@@ -105,6 +105,36 @@ test('SubagentStart -> subagent-role discipline present', () => {
   } finally { h.cleanup(); }
 });
 
+test('SubagentStart -> autonomous-execution discipline present (worker framing, safety gates intact)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const c = ctx(r);
+    assert.ok(c.includes('- autonomous-execution:'), 'autonomous-execution discipline must be present');
+    assert.ok(c.includes('your assigned task IS your authorization'), 'subagent framing: assignment is the authorization');
+    assert.ok(c.includes('without pausing to re-confirm steps it already covers'), 'no re-confirmation inside the assigned scope');
+    // Safety gates must be cross-referenced, never overridden.
+    assert.ok(c.includes('destructive/irreversible action'), 'destructive/irreversible stop-point preserved');
+    assert.ok(c.includes('deletions still require explicit confirmation'), 'never-delete-without-confirmation preserved');
+    assert.ok(c.includes('DONE still means VERIFIED (Positive Rule 6)'), 'Positive Rule 6 not weakened');
+    assert.ok(c.includes('EXPANDING scope past your assignment still needs confirmation'), 'SCOPE & FIDELITY not bypassed');
+    // Worker variant must NOT carry orchestration-flavored autonomy language.
+    assert.ok(!c.includes('deploy what is reviewed'), 'orchestration-flavored autonomy phrasing must stay out of the worker variant');
+  } finally { h.cleanup(); }
+});
+
+test('SubagentStart -> scannable presentation is stated as the DEFAULT, drift-corrected', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const c = ctx(r);
+    assert.ok(c.includes('PRESENT FINDINGS SCANNABLY'), 'rule K mirror must be present');
+    assert.ok(c.includes('DEFAULT shape for every report you return'), 'scannable style must be stated as the DEFAULT');
+    assert.ok(c.includes('sliding back to bare plain text is DRIFT'), 'plain-text regression must be named as drift');
+    assert.ok(c.includes('never decoration'), 'emoji-as-signal (never decoration) must be preserved');
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------------------------
 // Fail-open: malformed / empty stdin must never block.
 // ---------------------------------------------------------------------------

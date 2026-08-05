@@ -6,6 +6,33 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.71.4 (2026-08-05)
+
+- **New always-apply `autonomous-execution` discipline (both platforms).** Once the user
+  authorizes a scope ("do all" / "yes" / "go", a task list, or a named process), the agent
+  now runs the WHOLE scope to done — driving each item build → review → fix → deploy →
+  verify and acting on background results as they land — instead of pausing to re-confirm
+  steps the authorization already covered. Naming/wording, running an already-requested
+  process, shipping already-reviewed work, and picking between roughly-equivalent options
+  are no longer check-in points; the agent picks the better one, notes it, and proceeds,
+  reporting ONE consolidated end result. Injected via `verify-first-full.js` (SessionStart)
+  and `verify-first-subagent.js` (SubagentStart, phrased for the worker framing: the
+  assigned task IS the authorization), and mirrored for Codex as a new
+  "Autonomous execution (always apply)" section in `AGENTS.md`.
+- **The discipline lowers no existing bar.** It explicitly cross-references, rather than
+  overrides, the stop-points that already existed: a credential/secret the agent cannot
+  supply, any destructive or irreversible action, deletions still requiring explicit
+  confirmation, `DONE` still meaning VERIFIED (Positive Rule 6), and scope expansion past
+  what was authorized still requiring confirmation (SCOPE & FIDELITY).
+- **Output-style guidance strengthened (rule K + its mirrors).** The rich, scannable
+  presentation (tables for status/comparisons, **bold** verdicts, `code` for flags/paths,
+  a single leading status glyph as SIGNAL) is now stated as the DEFAULT for every
+  user-facing report rather than an occasional flourish, and sliding back to bare plain
+  text over a long session is named as DRIFT to correct. Applied to `verify-first-orch.js`
+  rule K, the `verify-first-subagent.js` scannability line, the `AGENTS.md` scannability
+  bullet, and the Codex `anti-hall-orchestration` skill mirror. Emoji-as-signal-never-
+  decoration is unchanged.
+
 ## 0.71.3 (2026-08-04)
 
 - **DevSwarm ingest installer resolves hivecontrol via a robust tiered chain.**
