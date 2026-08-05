@@ -258,7 +258,8 @@ distinct message, never wedges.
   process like "run the review"), execute the WHOLE scope to done without pausing to
   re-confirm steps that authorization already covers. Drive each item
   build → review → fix → deploy → verify, and act on every background result as it lands
-  (deploy what is reviewed, fix what is flagged, re-verify).
+  (deploy what is reviewed (unless the deploy itself is irreversible - then confirm), fix
+  what is flagged, re-verify).
 - Do NOT stop for naming/wording choices, for running a process already requested, for
   shipping already-reviewed work, or to pick between roughly-equivalent options — take the
   better one, note it, proceed. Report ONE consolidated end result, not a stream of
