@@ -353,7 +353,13 @@ test('MULTI-WORKSPACE: two workspaces in ONE shared summary each render independ
     const archive = segment(c, 'DEVSWARM ARCHIVE-READY');
     assert.ok(archive.includes('wsAlpha'), `wsAlpha must be archive-ready; ctx=${c}`);
     assert.ok(!archive.includes('wsBeta'), `wsBeta must NOT be archive-ready; ctx=${c}`);
-    assert.ok(/\|\s*wsAlpha\s*\|\s*archive-ready\s*\|\s*1\/1\s*\|/.test(tableRow(c, 'wsAlpha')), `wsAlpha row; row=${tableRow(c, 'wsAlpha')}`);
+    // wsAlpha's `merged` gate is never set here, so the archive-ready row
+    // additionally carries the "merged (unverified)" title-suffix marker
+    // (git ground-truth report-only check, unpushed/merged verification) —
+    // matched via [^|]* so this assertion stays about gates/status, not the
+    // marker's exact wording (covered by its own dedicated test below, "RISK
+    // MARKERS").
+    assert.ok(/\|\s*wsAlpha[^|]*\|\s*archive-ready\s*\|\s*1\/1\s*\|/.test(tableRow(c, 'wsAlpha')), `wsAlpha row; row=${tableRow(c, 'wsAlpha')}`);
     // wsBeta: escalated + 0/1 gates, per ITS OWN entry — not wsAlpha's
     // archive-ready status leaking over, and not silently null (the bug).
     assert.ok(/\|\s*wsBeta\s*\|\s*escalated\s*\|\s*0\/1\s*\|/.test(tableRow(c, 'wsBeta')), `wsBeta row; row=${tableRow(c, 'wsBeta')}`);
@@ -382,7 +388,9 @@ test('TABLE: renders correct rows/columns for varied status + gates + unread, so
     // Column values
     // required gates declared but none met for wsStale -> 0/2 (not "—").
     assert.ok(/\|\s*wsStale\s*\|\s*stale\s*\|\s*0\/2\s*\|\s*3\s*\|/.test(tableRow(c, 'wsStale')), `wsStale row; row=${tableRow(c, 'wsStale')}`);
-    assert.ok(/\|\s*wsDone\s*\|\s*archive-ready\s*\|\s*2\/2\s*\|\s*0\s*\|/.test(tableRow(c, 'wsDone')), `wsDone row; row=${tableRow(c, 'wsDone')}`);
+    // wsDone's `merged` gate is never set here -> "merged (unverified)" title
+    // suffix (see the wsAlpha comment above); matched via [^|]*.
+    assert.ok(/\|\s*wsDone[^|]*\|\s*archive-ready\s*\|\s*2\/2\s*\|\s*0\s*\|/.test(tableRow(c, 'wsDone')), `wsDone row; row=${tableRow(c, 'wsDone')}`);
     // gates 1/2 + progress 40% shown together
     assert.ok(/\|\s*wsQuiet\s*\|\s*active\s*\|\s*1\/2 \(40%\)\s*\|\s*0\s*\|/.test(tableRow(c, 'wsQuiet')), `wsQuiet row; row=${tableRow(c, 'wsQuiet')}`);
     // Sort: stale (attention) before archive-ready before active.
@@ -391,6 +399,92 @@ test('TABLE: renders correct rows/columns for varied status + gates + unread, so
     const iDone = body.findIndex((l) => l.startsWith('| wsDone '));
     const iQuiet = body.findIndex((l) => l.startsWith('| wsQuiet '));
     assert.ok(iStale < iDone && iDone < iQuiet, `attention-first sort; order stale<done<quiet; body=${JSON.stringify(body)}`);
+  } finally { h.cleanup(); }
+});
+
+// ---- RISK MARKERS (git ground-truth: unpushed / no-upstream / merged-unverified) ----
+//
+// riskMarker() (devswarm-parent-inbox.js) appends to the workspace TITLE cell,
+// never a new column. These tests assert the ACTUAL rendered wording — the
+// TABLE test above only relaxes its regex to tolerate the marker; it never
+// proves the marker text itself is correct.
+
+test('RISK MARKER: noUpstream:true renders "⚠ no upstream" in the title cell', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsRisky: { archive_ready: false, noUpstream: true, unpushed: null },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsRisky');
+    assert.ok(/wsRisky ⚠ no upstream/.test(row), `expected literal "⚠ no upstream" marker; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('RISK MARKER: unpushed:N (upstream present) renders "⚠ N unpushed" in the title cell', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsAhead: { archive_ready: false, noUpstream: false, unpushed: 5 },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsAhead');
+    assert.ok(/wsAhead ⚠ 5 unpushed/.test(row), `expected literal "⚠ 5 unpushed" marker; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('RISK MARKER: noUpstream:true takes priority over a stale unpushed count (unpushed count is meaningless with no @{u})', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsBoth: { archive_ready: false, noUpstream: true, unpushed: 3 },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsBoth');
+    assert.ok(/wsBoth ⚠ no upstream/.test(row), `noUpstream must win over the unpushed count; row=${row}`);
+    assert.ok(!/unpushed/.test(row), `must NOT also render the unpushed count; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('RISK MARKER: clean push state (noUpstream:false, unpushed:0) renders NO marker', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsClean: { archive_ready: false, noUpstream: false, unpushed: 0 },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsClean');
+    assert.ok(/\|\s*wsClean\s*\|/.test(row), `clean row must render with no marker suffix; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('RISK MARKER: archive-ready row with mergedVerified:true renders NO "(unverified)" suffix', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsVerified: { archive_ready: true, gates: { done: true, merged: true }, mergedVerified: true },
+    }, { requiredGates: ['done', 'merged'] });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsVerified');
+    assert.ok(!/unverified/.test(row), `a proven merge must NOT carry "(unverified)"; row=${row}`);
+  } finally { h.cleanup(); }
+});
+
+test('RISK MARKER: archive-ready row with mergedVerified:false renders "merged (unverified)"', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      wsUnproven: { archive_ready: true, gates: { done: true, merged: true }, mergedVerified: false },
+    }, { requiredGates: ['done', 'merged'] });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const row = tableRow(ctx(r), 'wsUnproven');
+    assert.ok(/wsUnproven merged \(unverified\)/.test(row), `expected literal "merged (unverified)" marker; row=${row}`);
   } finally { h.cleanup(); }
 });
 
@@ -465,7 +559,9 @@ test('IDLE: archive-ready row that is ALSO long-idle stays archive-ready (preced
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
     const row = tableRow(ctx(r), 'wsArchOld');
-    assert.ok(/\|\s*wsArchOld\s*\|\s*archive-ready\s*\|/.test(row), `archive-ready must NOT be demoted to idle; row=${row}`);
+    // wsArchOld's `merged` gate is never set here -> "merged (unverified)"
+    // title suffix (see the wsAlpha comment above); matched via [^|]*.
+    assert.ok(/\|\s*wsArchOld[^|]*\|\s*archive-ready\s*\|/.test(row), `archive-ready must NOT be demoted to idle; row=${row}`);
   } finally { h.cleanup(); }
 });
 

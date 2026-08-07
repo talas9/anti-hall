@@ -1435,3 +1435,98 @@ test('F-A RETIRE: a truncated-id phantom holding an unread direct is retired WIT
     h.cleanup();
   }
 });
+
+// ----- git push-state (unpushed/no-upstream ground truth on the heartbeat) -----
+//
+// Real temp git repos (never the actual anti-hall checkout, whose own
+// upstream state is not deterministic across environments/CI). Mirrors
+// tests/companion/devswarm-git-truth.test.js's fixture shape.
+
+function git(dir, args) {
+  const r = require('node:child_process').spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error('git ' + args.join(' ') + ' failed: ' + r.stderr);
+  return r.stdout;
+}
+function makeBareRemote() {
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-remote-'));
+  require('node:child_process').spawnSync('git', ['init', '-q', '--bare', dir]);
+  return dir;
+}
+function makeSyncedRepo() {
+  const os = require('node:os');
+  const remote = makeBareRemote();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-repo-'));
+  git(dir, ['init', '-q', '-b', 'main']);
+  git(dir, ['config', 'user.email', 'a@example.com']);
+  git(dir, ['config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'f.txt'), '1');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-q', '-m', 'c1']);
+  git(dir, ['remote', 'add', 'origin', remote]);
+  git(dir, ['push', '-q', '-u', 'origin', 'main']);
+  return { dir, remote };
+}
+function rmDir(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
+
+test('HEARTBEAT PUSH-STATE: upstream configured + ahead -> heartbeat carries noUpstream:false, unpushed:N', () => {
+  const h = makeHome();
+  const { dir, remote } = makeSyncedRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'g.txt'), '2');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c2']);
+    const r = testHook(HOOK, promptPayload('sess-push', dir), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'push-child' },
+    });
+    assert.strictEqual(r.status, 0);
+    const beat = readBeat(h.home, 'push-child');
+    assert.strictEqual(beat.noUpstream, false);
+    assert.strictEqual(beat.unpushed, 1);
+  } finally {
+    h.cleanup();
+    rmDir(dir); rmDir(remote);
+  }
+});
+
+test('HEARTBEAT PUSH-STATE: no upstream configured -> heartbeat carries noUpstream:true, unpushed:null (never 0)', () => {
+  const h = makeHome();
+  const os = require('node:os');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ct-noup-'));
+  try {
+    git(dir, ['init', '-q', '-b', 'main']);
+    git(dir, ['config', 'user.email', 'a@example.com']);
+    git(dir, ['config', 'user.name', 'Test']);
+    fs.writeFileSync(path.join(dir, 'f.txt'), '1');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c1']);
+    const r = testHook(HOOK, promptPayload('sess-noup', dir), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'noup-child' },
+    });
+    assert.strictEqual(r.status, 0);
+    const beat = readBeat(h.home, 'noup-child');
+    assert.strictEqual(beat.noUpstream, true);
+    assert.strictEqual(beat.unpushed, null);
+  } finally {
+    h.cleanup();
+    rmDir(dir);
+  }
+});
+
+test('HEARTBEAT PUSH-STATE: no resolvable worktree (default /tmp cwd) -> keys omitted entirely, never fabricated', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload('sess-nowt'), {
+      home: h.home,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'nowt-child' },
+    });
+    assert.strictEqual(r.status, 0);
+    const beat = readBeat(h.home, 'nowt-child');
+    assert.ok(!('noUpstream' in beat), 'noUpstream must be omitted, not fabricated');
+    assert.ok(!('unpushed' in beat), 'unpushed must be omitted, not fabricated');
+  } finally {
+    h.cleanup();
+  }
+});

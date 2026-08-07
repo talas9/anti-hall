@@ -1842,6 +1842,35 @@ function computeSummary(store, opts) {
       archive_requested,
       pendingQuestions,
     };
+    // PUSH-STATE (report-only unpushed/no-upstream ground truth): threaded from
+    // the freshest per-workspace heartbeat (heartbeats/<id>.json — one file per
+    // id, always the latest turn's write, so "freshest" needs no extra logic
+    // here), NOT re-probed with a fresh git spawn on every projection read (this
+    // is a hot per-turn read path). Omitted entirely when the heartbeat has no
+    // push-state written yet (an older heartbeat, or a probe that itself
+    // fail-opened to omitting the keys) — never fabricated. See
+    // devswarm-child-turn.js's writeHeartbeat (the sole writer) and
+    // devswarm-git-truth.js (the probe itself).
+    let pushBeat = null;
+    try {
+      pushBeat = JSON.parse(F.readFileSync(path.join(devswarmRoot(home), 'heartbeats', String(d.id) + '.json'), 'utf8'));
+    } catch (_) { pushBeat = null; }
+    if (pushBeat && typeof pushBeat === 'object' && typeof pushBeat.noUpstream === 'boolean') {
+      workspaces[d.id].noUpstream = pushBeat.noUpstream;
+      workspaces[d.id].unpushed = (pushBeat.unpushed === null || Number.isFinite(pushBeat.unpushed))
+        ? pushBeat.unpushed : null;
+    }
+    // MERGED-GATE VERIFICATION (report-only): mergedVerified is carried as an
+    // ordinary gate row named `merged_verified` (scripts/devswarm.js cmdGate is
+    // the sole writer, alongside the real `merged` gate) rather than a new
+    // persisted-shape column — true/false only when cmdGate's git ancestry
+    // check actually resolved one way or the other; UNSET (never written) when
+    // the check came back null (unresolvable), so it is correctly absent here
+    // too, never fabricated. Deliberately excluded from DEFAULT_REQUIRED_GATES
+    // so archive_ready above is never gated on it (REPORT-ONLY doctrine).
+    if (Object.prototype.hasOwnProperty.call(gates, 'merged_verified')) {
+      workspaces[d.id].mergedVerified = gates.merged_verified;
+    }
     // Emitted ONLY when the backstop actually bit, so an untruncated workspace stays
     // byte-identical for existing readers (same convention as orphans/recent's
     // occurrences). `dropped` is how many DISTINCT SENDERS' questions are missing.

@@ -646,7 +646,11 @@ test('9 ARCHIVE-READY: reminder is COOLDOWN\'d (not repeated next turn) but PERS
     // its factual archive-ready status — the cooldown gates the reminder, not the table.
     const t2 = testHook('devswarm-parent-inbox.js', inboxPayload(), { home, env: PRIMARY_ENV, expectJson: true });
     assert.ok(!/DEVSWARM ARCHIVE-READY/.test(ctxOf(t2)), 'within cooldown the reminder is suppressed');
-    assert.match(segOf(ctxOf(t2), 'DEVSWARM WORKSPACES'), /\|\s*wsA\s*\|\s*archive-ready\s*\|/);
+    // wsA's `merged` gate is set against a non-existent worktree
+    // (`/wt/wsA`), so git ground-truth verification cannot resolve -> the
+    // row carries the "merged (unverified)" title-suffix marker (devswarm-
+    // git-truth.js report-only check); matched via [^|]*.
+    assert.match(segOf(ctxOf(t2), 'DEVSWARM WORKSPACES'), /\|\s*wsA[^|]*\|\s*archive-ready\s*\|/);
 
     // Later turn: cooldown elapsed -> the SAME still-ready, still-present workspace is
     // reminded AGAIN. Proves the reminder is persistent, not one-shot.

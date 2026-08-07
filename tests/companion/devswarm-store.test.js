@@ -207,6 +207,87 @@ for (const B of backends) {
     } finally { s.close(); rm(home); }
   });
 
+  test(`[${B.name}] computeSummary threads a heartbeat's noUpstream/unpushed onto the workspace entry`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w'));
+      const hbDir = path.join(home, '.anti-hall', 'devswarm', 'heartbeats');
+      fs.mkdirSync(hbDir, { recursive: true });
+      fs.writeFileSync(path.join(hbDir, 'w.json'), JSON.stringify({ ts: Date.now(), noUpstream: false, unpushed: 5 }));
+
+      const sum = store.deriveSummary(s, { home });
+      assert.strictEqual(sum.workspaces.w.noUpstream, false);
+      assert.strictEqual(sum.workspaces.w.unpushed, 5);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] computeSummary threads noUpstream:true/unpushed:null (NEVER 0) from the heartbeat`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w'));
+      const hbDir = path.join(home, '.anti-hall', 'devswarm', 'heartbeats');
+      fs.mkdirSync(hbDir, { recursive: true });
+      fs.writeFileSync(path.join(hbDir, 'w.json'), JSON.stringify({ ts: Date.now(), noUpstream: true, unpushed: null }));
+
+      const sum = store.deriveSummary(s, { home });
+      assert.strictEqual(sum.workspaces.w.noUpstream, true);
+      assert.strictEqual(sum.workspaces.w.unpushed, null);
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] computeSummary omits noUpstream/unpushed entirely when no heartbeat file exists (never fabricated)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w'));
+      const sum = store.deriveSummary(s, { home });
+      assert.ok(!('noUpstream' in sum.workspaces.w), 'noUpstream must be omitted, not fabricated');
+      assert.ok(!('unpushed' in sum.workspaces.w), 'unpushed must be omitted, not fabricated');
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] computeSummary omits noUpstream/unpushed when the heartbeat is malformed (fail-open, never throws)`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w'));
+      const hbDir = path.join(home, '.anti-hall', 'devswarm', 'heartbeats');
+      fs.mkdirSync(hbDir, { recursive: true });
+      fs.writeFileSync(path.join(hbDir, 'w.json'), '{not json');
+      const sum = store.deriveSummary(s, { home });
+      assert.ok(!('noUpstream' in sum.workspaces.w));
+      assert.ok(!('unpushed' in sum.workspaces.w));
+    } finally { s.close(); rm(home); }
+  });
+
+  test(`[${B.name}] computeSummary exposes mergedVerified from the merged_verified gate (true/false), omitted when unset`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      s.upsertRegistry(descriptor('w'));
+      let sum = store.deriveSummary(s, { home });
+      assert.ok(!('mergedVerified' in sum.workspaces.w), 'unset merged_verified gate -> mergedVerified omitted, never fabricated');
+
+      s.setGate({ workspaceId: 'w', name: 'merged_verified', value: true });
+      sum = store.deriveSummary(s, { home });
+      assert.strictEqual(sum.workspaces.w.mergedVerified, true);
+
+      s.setGate({ workspaceId: 'w', name: 'merged_verified', value: false });
+      sum = store.deriveSummary(s, { home });
+      assert.strictEqual(sum.workspaces.w.mergedVerified, false);
+
+      // merged_verified is deliberately excluded from DEFAULT_REQUIRED_GATES —
+      // it must never gate archive_ready (REPORT-ONLY doctrine).
+      s.setGate({ workspaceId: 'w', name: 'done', value: true });
+      s.setGate({ workspaceId: 'w', name: 'merged', value: true });
+      s.setGate({ workspaceId: 'w', name: 'tests_passed', value: true });
+      sum = store.deriveSummary(s, { home });
+      assert.strictEqual(sum.workspaces.w.archive_ready, true, 'merged_verified:false must never block archive_ready');
+    } finally { s.close(); rm(home); }
+  });
+
   test(`[${B.name}] archive_ready derives true only when ALL required gates met on an active workspace`, () => {
     const home = tmpHome();
     const s = open(home);

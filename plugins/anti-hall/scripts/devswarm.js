@@ -137,6 +137,7 @@ const ingestHealth = require('../companion/lib/ingest-health.js');
 const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
 const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
 const names = require('../companion/lib/devswarm-names.js');
+const gitTruth = require('../companion/lib/devswarm-git-truth.js');
 // Shared structured JSONL logger (C0). Console fallback so a missing/older
 // companion never breaks the CLI — logging is strictly additive and fail-open;
 // alog.logError NEVER throws into a caller and NEVER changes control flow.
@@ -2953,6 +2954,37 @@ function cmdGate(id, flags, ctx) {
   try {
     for (const name of setNames) s.setGate({ workspaceId: id, name, value: true, setBy });
     for (const name of clearNames) s.setGate({ workspaceId: id, name, value: false, setBy });
+
+    // MERGED-GATE GROUND-TRUTH VERIFICATION (report-only, mechanical — never
+    // blocks). When a child sets `merged`, best-effort verify HEAD is an
+    // ancestor of the resolved default branch. The gate is set REGARDLESS of
+    // the verdict either way — a squash/rebase merge legitimately breaks
+    // ancestry even though the work IS merged, so a false/null verdict must
+    // never block archive_ready; `merged_verified` is persisted ALONGSIDE
+    // `merged` purely so the parent can see whether the claim was proven or
+    // is self-declared. See devswarm-git-truth.js for the field incident
+    // (unpushed/unmerged work self-declared done) this exists to catch.
+    if (setNames.includes('merged')) {
+      // Reuse descForGate (already read above for the project-context-mismatch
+      // guard) rather than a second descriptor read for the same id.
+      const worktreePath = descForGate && descForGate.worktreePath ? descForGate.worktreePath : null;
+      if (worktreePath) {
+        let verified = null;
+        try { verified = gitTruth.gitMergedInto(worktreePath); } catch (_) { verified = null; }
+        if (verified === true) {
+          s.setGate({ workspaceId: id, name: 'merged_verified', value: true, setBy });
+        } else if (verified === false) {
+          s.setGate({ workspaceId: id, name: 'merged_verified', value: false, setBy });
+          try {
+            process.stderr.write('[devswarm] gate: `merged` set, but HEAD does not appear to be an ancestor of '
+              + 'the default branch (git ground-truth check) — this can be normal for a squash/rebase merge; the '
+              + 'gate is still set (report-only, never blocked). See the parent roster for the "(unverified)" mark.\n');
+          } catch (_) {}
+        }
+        // verified === null (unresolvable default branch / spawn failure) -> omit entirely, never fabricate.
+      }
+    }
+
     summary = store.deriveSummary(s, { home, env: ctx.env, now: ctx.now });
   } finally { s.close(); }
   const ws = (summary.workspaces || {})[id];

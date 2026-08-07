@@ -402,6 +402,88 @@ test('gate --set / --clear marks gates and derives archive_ready', () => {
   } finally { rm(home); }
 });
 
+// ---- merged-gate ground-truth verification (report-only, never blocks) ----
+
+function git(dir, args) {
+  const r = require('node:child_process').spawnSync('git', ['-C', dir, ...args], { encoding: 'utf8' });
+  if (r.status !== 0) throw new Error('git ' + args.join(' ') + ' failed: ' + r.stderr);
+  return r.stdout;
+}
+function makeBareRemote() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-gate-remote-'));
+  require('node:child_process').spawnSync('git', ['init', '-q', '--bare', dir]);
+  return dir;
+}
+function makeSyncedRepo() {
+  const remote = makeBareRemote();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cli-gate-repo-'));
+  git(dir, ['init', '-q', '-b', 'main']);
+  git(dir, ['config', 'user.email', 'a@example.com']);
+  git(dir, ['config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'f.txt'), '1');
+  git(dir, ['add', '.']);
+  git(dir, ['commit', '-q', '-m', 'c1']);
+  git(dir, ['remote', 'add', 'origin', remote]);
+  git(dir, ['push', '-q', '-u', 'origin', 'main']);
+  git(dir, ['remote', 'set-head', 'origin', 'main']);
+  return { dir, remote };
+}
+function rmDir(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (_) {} }
+
+test('gate --set merged: HEAD is an ancestor of the default branch -> merged_verified:true, gate still set', () => {
+  const home = tmpHome();
+  const { dir, remote } = makeSyncedRepo();
+  try {
+    cli.run(['register', 'w', '--worktree', dir, '--session', 's'], ctx(home, { cwd: dir }));
+    const r = cli.run(['gate', 'w', '--set', 'merged'], ctx(home, { cwd: dir }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.gates.merged, true);
+    assert.equal(r.result.gates.merged_verified, true);
+  } finally { rm(home); rmDir(dir); rmDir(remote); }
+});
+
+test('gate --set merged: HEAD is NOT an ancestor (unmerged local commit) -> gate STILL set, merged_verified:false + warning', () => {
+  const home = tmpHome();
+  const { dir, remote } = makeSyncedRepo();
+  try {
+    fs.writeFileSync(path.join(dir, 'g.txt'), '2');
+    git(dir, ['add', '.']);
+    git(dir, ['commit', '-q', '-m', 'c2']);
+    cli.run(['register', 'w', '--worktree', dir, '--session', 's'], ctx(home, { cwd: dir }));
+    const r = cli.run(['gate', 'w', '--set', 'merged'], ctx(home, { cwd: dir }));
+    // REPORT-ONLY doctrine: a proven-false ancestry check must NEVER block the
+    // gate — a squash/rebase merge legitimately breaks ancestry.
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.gates.merged, true, 'the merged gate must still be set despite a false verification');
+    assert.equal(r.result.gates.merged_verified, false);
+  } finally { rm(home); rmDir(dir); rmDir(remote); }
+});
+
+test('gate --set merged: unresolvable default branch (no worktreePath / non-git) -> merged_verified omitted, never fabricated', () => {
+  const home = tmpHome();
+  try {
+    // No --worktree flag on register in THIS test's default ctx (fakeCwd is a
+    // non-git dir), so the descriptor's worktreePath resolves to a path
+    // `git -C <path>` will fail against — gitMergedInto must fail open to null.
+    cli.run(['register', 'w', '--worktree', '/definitely/not/a/git/repo', '--session', 's'], ctx(home));
+    const r = cli.run(['gate', 'w', '--set', 'merged'], ctx(home));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.gates.merged, true);
+    assert.ok(!('merged_verified' in r.result.gates), 'merged_verified must be omitted, never fabricated');
+  } finally { rm(home); }
+});
+
+test('gate --set on a name OTHER than merged never runs the git verification', () => {
+  const home = tmpHome();
+  const { dir, remote } = makeSyncedRepo();
+  try {
+    cli.run(['register', 'w', '--worktree', dir, '--session', 's'], ctx(home, { cwd: dir }));
+    const r = cli.run(['gate', 'w', '--set', 'done'], ctx(home, { cwd: dir }));
+    assert.equal(r.result.ok, true);
+    assert.ok(!('merged_verified' in r.result.gates), 'merged_verified must not appear when `merged` was never set');
+  } finally { rm(home); rmDir(dir); rmDir(remote); }
+});
+
 test('gate with neither --set nor --clear errors', () => {
   const home = tmpHome();
   try {

@@ -6,6 +6,30 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.74.0 (2026-08-08)
+
+- **DevSwarm: unpushed/no-upstream risk surfacing + git-verified merged gate
+  (report-only).** A child could self-declare `merged` while its work sat
+  unpushed and un-reviewable — nothing detected the single-copy-on-disk state.
+  Two independent, fail-open git ground-truth probes land in
+  `companion/lib/devswarm-git-truth.js` (`gitPushState`, `gitMergedInto`),
+  both using the same argv-array `spawnSync` convention as
+  `liveness.js`'s `defaultGitCommitTs`: never shell-interpolated, a 4s
+  timeout, and `null` (never a fabricated fact) on any probe failure.
+  `devswarm-child-turn.js`'s `writeHeartbeat` attaches one `gitPushState`
+  probe per turn (`noUpstream`/`unpushed`, omitted entirely when unresolved);
+  `devswarm-store.js`'s `computeSummary` threads that into each workspace
+  projection along with a new `merged_verified` gate row (never a new
+  persisted-shape column); `devswarm-parent-inbox.js` renders a `⚠ no
+  upstream` / `⚠ N unpushed` / `merged (unverified)` marker next to the
+  workspace title in the roster table. `scripts/devswarm.js`'s `cmdGate`
+  runs the ancestry check whenever `--set merged` fires and persists
+  `merged_verified` alongside `merged`, warning on stderr when the check
+  resolves false (a squash/rebase merge legitimately breaks ancestry even
+  though the work IS merged) — the gate is set either way. Strictly
+  REPORT-ONLY throughout: nothing here blocks, kills, or archives; it only
+  makes an existing self-declared state visible before a human acts on it.
+
 ## 0.73.0 (2026-08-07)
 
 - **DevSwarm child inbox-neglect, fixed (SkyCrew field incident).** Root cause

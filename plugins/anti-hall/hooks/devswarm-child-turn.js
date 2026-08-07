@@ -89,6 +89,7 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 const { ARCHIVE_REQUEST_MARKER } = require('../companion/lib/devswarm-store.js');
+const gitTruth = require('../companion/lib/devswarm-git-truth.js');
 
 // FULL_UUID_RE / TRUNCATED_UUID_RE (F3 defensive hardening) — narrow UUID-shape
 // detectors for ONE proven failure mode: hivecontrol's DEVSWARM_BUILDER_ID (a
@@ -203,10 +204,10 @@ function heartbeatKey(builderId, branch) {
   return safe + '-' + hash;
 }
 
-// writeHeartbeat(env, sessionId, home) — atomic tmp+rename write of the
+// writeHeartbeat(env, sessionId, cwd, home) — atomic tmp+rename write of the
 // turn-authored heartbeat. Best-effort: any fs error is swallowed by the caller
 // (a heartbeat-write failure must NEVER block a turn).
-function writeHeartbeat(env, sessionId, home) {
+function writeHeartbeat(env, sessionId, cwd, home) {
   const branch = env.DEVSWARM_SOURCE_BRANCH;
   const key = heartbeatKey(env.DEVSWARM_BUILDER_ID, branch);
   const dir = path.join(devswarmRoot(home), 'heartbeats');
@@ -223,6 +224,23 @@ function writeHeartbeat(env, sessionId, home) {
     builderName: env.DEVSWARM_BUILDER_NAME || null,
     sessionId: sessionId || null,
   };
+  // GIT PUSH-STATE (report-only, mechanical): one gitPushState probe per
+  // heartbeat turn, attached ONLY when a worktree resolves from cwd and the
+  // probe itself succeeds. Fail-open to OMITTING both keys entirely on any
+  // failure (unresolvable worktree, non-git dir, spawn/timeout error) — NEVER
+  // fabricate unpushed:0 or noUpstream:false. See devswarm-git-truth.js for
+  // the field incident this exists to catch (unpushed commits + no upstream,
+  // silently invisible to the parent).
+  try {
+    const worktreePath = findGitToplevel(cwd);
+    if (worktreePath) {
+      const push = gitTruth.gitPushState(worktreePath);
+      if (push && typeof push.noUpstream === 'boolean') {
+        beat.noUpstream = push.noUpstream;
+        beat.unpushed = push.unpushed;
+      }
+    }
+  } catch (_) { /* fail-open: omit the keys, never block the heartbeat write */ }
   fs.mkdirSync(dir, { recursive: true });
   const tmp = target + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(beat));
@@ -705,7 +723,7 @@ function main() {
 
   // Heartbeat first, isolated so a write failure still lets the reminder through.
   try {
-    writeHeartbeat(env, payload.session_id, home);
+    writeHeartbeat(env, payload.session_id, payload.cwd, home);
   } catch (_) { /* fail-open: never block a turn on a heartbeat write */ }
 
   // Mechanical descriptor registration (#31 HOTFIX), isolated the same way — a

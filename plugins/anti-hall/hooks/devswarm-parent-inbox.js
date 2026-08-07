@@ -366,6 +366,24 @@ function displayStatus(archiveReady, status, activityTs, now, dormant, notDraini
   return { label: 'active', rank: 4 };
 }
 
+// riskMarker(r) -> string (possibly empty). REPORT-ONLY git ground-truth
+// marker appended to a row's workspace TITLE cell (never a new column — using
+// the existing title convention keeps this additive to the table's fixed
+// column set). noUpstream takes priority over a bare unpushed count (a
+// no-upstream branch's unpushed count is meaningless — there is nothing to
+// diff against @{u}); a separate `merged (unverified)` marker is appended for
+// an archive-ready row whose merged gate was self-declared but never proven
+// by git ancestry (mergedVerified !== true covers both `false` and
+// unset/undefined — "lacking verification" either way). Never blocks or
+// implies anything beyond "look before archiving".
+function riskMarker(r) {
+  const parts = [];
+  if (r.noUpstream) parts.push('⚠ no upstream');
+  else if (Number.isFinite(r.unpushed) && r.unpushed > 0) parts.push('⚠ ' + r.unpushed + ' unpushed');
+  if (r.label === 'archive-ready' && r.mergedVerified !== true) parts.push('merged (unverified)');
+  return parts.length ? ' ' + parts.join(', ') : '';
+}
+
 // buildWorkspaceTable(rows, now, capped, hidden, hiddenRows) -> string. Compact
 // markdown table of the ACTIVE workspaces (one row each): workspace, status,
 // finishing rate, unread, last-activity. Rows are pre-sorted + already capped by
@@ -383,7 +401,7 @@ function buildWorkspaceTable(rows, now, capped, hidden, hiddenRows) {
     // (names.displayName's own fallback). Escape a literal `|` in the name
     // (free-text from a brief/hivecontrol title) so it can never break this
     // markdown table's column structure.
-    const workspaceCol = names.displayName(r.id, r.wsName).replace(/\|/g, '\\|');
+    const workspaceCol = names.displayName(r.id, r.wsName).replace(/\|/g, '\\|') + riskMarker(r);
     lines.push(
       '| ' + workspaceCol + ' | ' + r.label + ' | ' + r.finish + ' | ' + r.unread
       + ' | ' + formatRelative(r.lastActivityTs, now) + ' |'
@@ -1091,6 +1109,14 @@ function main() {
         // every-turn hot path. null when not yet cached (buildWorkspaceTable
         // falls back to the bare id via names.displayName).
         wsName: names.readName(home, id),
+        // unpushed/noUpstream/mergedVerified (git ground-truth report-only
+        // markers, threaded from computeSummary — see devswarm-store.js /
+        // devswarm-git-truth.js): absent-vs-present is significant, so these
+        // are read straight from `entry`, never defaulted to a falsy-looking
+        // value that could be mistaken for "checked and clean".
+        unpushed: entry && Number.isFinite(entry.unpushed) ? entry.unpushed : null,
+        noUpstream: !!(entry && entry.noUpstream === true),
+        mergedVerified: entry ? entry.mergedVerified : undefined,
       });
     } catch (_) {}
   }
