@@ -582,6 +582,86 @@ test('ROW 6 (e): FAIL-OPEN: null tool_input on research corpus -> exit 0', () =>
   } finally { h.cleanup(); }
 });
 
+// ------------------------------------------------- HANDOVER-DELEGATION (thread 1)
+// A field failure showed a session delegating handover-writing to a subagent
+// EVEN AFTER loading the handover skill. This advisory is independent of the
+// model-tier table above, never blocks, and is capped once per session.
+
+test('HANDOVER-DELEGATION: description matches "write" + "handover" -> advisory, no block', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      model: 'haiku',
+      subagent_type: 'general-purpose',
+      description: 'write a handover for this session',
+      prompt: 'summarize what happened and save it',
+    }), { home: h.home });
+    assertAdvisory(r, /HANDOVER-DELEGATION/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /invoke the handover skill yourself/);
+  } finally { h.cleanup(); }
+});
+
+test('HANDOVER-DELEGATION: prompt matches "prepare" + "handoff" -> advisory fires from prompt too', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      description: 'session wrap-up',
+      prompt: 'please prepare a handoff document for the next session',
+    }), { home: h.home });
+    assertAdvisory(r, /HANDOVER-DELEGATION/);
+  } finally { h.cleanup(); }
+});
+
+test('HANDOVER-DELEGATION: noun without a write-verb -> no advisory (allow, silent)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, payload({
+      description: 'review the handover for accuracy',
+      prompt: 'check that the existing handover reflects reality',
+    }), { home: h.home });
+    // No 'write/prepare/create/author/draft' verb present -> must not fire.
+    assert.ok(!(r.json && r.json.hookSpecificOutput &&
+      /HANDOVER-DELEGATION/.test(r.json.hookSpecificOutput.additionalContext || '')),
+      `must not fire without a write-verb; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('HANDOVER-DELEGATION: capped — does not repeat for the SAME session', () => {
+  const h = makeHome();
+  try {
+    const p = payload({
+      description: 'write a handover',
+      prompt: 'draft the session handover now',
+    });
+    p.session_id = 'handover-delegation-cap';
+    const r1 = testHook(HOOK, p, { home: h.home });
+    assertAdvisory(r1, /HANDOVER-DELEGATION/);
+    const r2 = testHook(HOOK, p, { home: h.home });
+    // Second spawn in the SAME session must not re-advise; falls through to
+    // the ordinary model-tier table (silent allow here: no mechanical/complex
+    // signal, explicit haiku is absent, generic model-tier rows don't fire).
+    assert.ok(!(r2.json && r2.json.hookSpecificOutput &&
+      /HANDOVER-DELEGATION/.test(r2.json.hookSpecificOutput.additionalContext || '')),
+      `advisory must not repeat this session; stdout: ${r2.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('HANDOVER-DELEGATION: independent of the block-vs-advisory model-tier table (never blocks)', () => {
+  const h = makeHome();
+  try {
+    // Mechanical-only + flagship would normally BLOCK (Row 1) — but the
+    // handover-delegation advisory intercepts first and only advises.
+    const r = testHook(HOOK, payload({
+      model: 'opus',
+      subagent_type: 'general-purpose',
+      description: 'write the session handover',
+      prompt: 'run the build and git push, then draft the handover',
+    }), { home: h.home });
+    assert.notStrictEqual(r.status, 2, `must not exit 2 (block); stdout: ${r.stdout}`);
+    assertAdvisory(r, /HANDOVER-DELEGATION/);
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------- hooks.json ORDER
 
 test('ORDER: model-routing-guard is FIRST (before swarm-guard) in BOTH Agent and Task', () => {

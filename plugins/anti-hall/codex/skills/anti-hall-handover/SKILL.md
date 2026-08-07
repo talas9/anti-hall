@@ -5,17 +5,16 @@ description: Use when the user says "prepare a handover", "handover", "write a h
 
 # anti-hall handover for Codex
 
-Codex-native mirror of the Claude `handover` skill — same artifact contract and
-templates; only platform phrasing differs (no `/compact` references, `AGENTS.md`
-instead of `CLAUDE.md`).
+Codex-native mirror of the Claude `handover` skill — same artifact contract
+and templates; only platform phrasing differs (no `/compact` references,
+`AGENTS.md` instead of `CLAUDE.md`).
 
-Prepares a session handover: perishable job state (goal, current position, next
-executable step, decisions, dead ends, verification status) written to disk so a
-fresh session — with no memory of this one — can resume correctly and completely.
-Built from anti-hall's `docs/KB-session-handover.md` (repo-clone-only; not
-bundled with a packaged install, like all `docs/` — when citing it in handover
-files, name it as the anti-hall repo's doc: the target project won't have that
-path).
+Prepares a session handover: perishable job state (goal, current position,
+next executable step, decisions, dead ends, verification status) written to
+disk so a fresh session — with no memory of this one — resumes correctly.
+Built from anti-hall's `docs/KB-session-handover.md` (repo-clone-only, not
+bundled with a packaged install — cite it as the anti-hall repo's own doc,
+since the target project won't have that path).
 
 **Handover ≠ memory.** Durable rules, conventions, and architecture facts belong
 in `AGENTS.md`/project memory — they persist because they're always true. A
@@ -24,6 +23,19 @@ Never write durable knowledge into a handover file (it'll rot there, unread);
 never write perishable job state into `AGENTS.md` (it'll bloat the always-loaded
 context). If you learn something durable while writing a handover, route it to
 `AGENTS.md`/project memory separately — don't smuggle it into `decisions.md`.
+
+## Self-write mandate (read first)
+
+The handover is written **by the agent holding the session context** —
+**never delegate the writing to a subagent**: it never lived this session, so
+its reconstruction loses decision/trial fidelity (a field failure: a session
+delegated handover-writing to a subagent even after loading this skill).
+Documented exception to delegation-first/orchestrate-only doctrine. Parity
+note: `edit-guard.js`'s wrong-location redirect and `model-routing-guard.js`'s
+spawn-intent advisory (shared files) carry this rule's logic, but Codex's
+`hooks.json` wires neither onto a Write/Edit or Agent-spawn matcher (it does
+register `tasklist-guard.js` and `handover-resume.js`) — treat this as YOUR
+discipline here, not yet a mechanical rail.
 
 ## Artifact layout
 
@@ -44,14 +56,12 @@ model: read `INDEX.md` first, open only what it says is relevant.
 
 ## Session id and date
 
-- Prefer a stable session/thread identifier from the runtime if one is available
-  to you.
+- Prefer a stable session/thread identifier from the runtime if available.
 - Otherwise fall back to the same platform-neutral style: a sha1 hash of the
   transcript/log path, first 16 hex characters, if such a path is knowable. If
-  neither a runtime id nor a transcript path is available, use a short, stable
-  human slug (lowercase, hyphenated, e.g. `auth-refactor-session`) — stable
-  meaning: reuse the SAME slug across handovers written in the same session,
-  don't regenerate it each call.
+  neither is available, use a short, stable human slug (lowercase, hyphenated,
+  e.g. `auth-refactor-session`) — reuse the SAME slug across handovers written
+  in the same session, don't regenerate it each call.
 - Date = today, `YYYY-MM-DD`.
 
 ## Sequencing
@@ -83,7 +93,9 @@ consolidated schema):
    summary.
 4. **NOT verified / verification gaps** — mandatory, explicit. If nothing is
    unverified, say so explicitly; don't just omit the section.
-5. **Open items** — numbered, prioritized.
+5. **Open items** — numbered, prioritized; the pending/in-progress subset of
+   state.md's Task list snapshot, one line each — point at state.md for the
+   full snapshot.
 6. **Decisions summary** — one line each, pointing into `decisions.md` for the
    reasoning.
 7. **Do-not-repeat summary** — pointing into `trials.md`.
@@ -161,6 +173,11 @@ Unpushed: <yes/no, what>
 Uncommitted files: <list>
 Running processes: <list, or "none">
 
+## Task list snapshot
+| id | subject | status | priority | blocked-by |
+|---|---|---|---|---|
+| ... | ... | pending/in_progress/completed | P0/P1/P2/... | ... |
+
 ## Commands run this session (with actual results)
 - `<command>` → `<real output, trimmed>`
 ```
@@ -215,24 +232,37 @@ as `.anti-hall/progress/INDEX.md`:
 
 ## Automatic resume
 
-A companion SessionStart hook, `handover-resume.js`, closes the loop so a
-written handover is actually picked up next time: on a context reset (clear or
-compaction) or a fresh session start, it scans `.anti-hall/handovers/` for the
-newest `HANDOVER*.md` (preferring one from the SAME session over a merely
-newer one from a different session) and, if it's 7 days old or newer, injects
-a pointer to its path plus the numbered Guided Resume Path from "Next-session
-usage" above — never the file's content. That injection explicitly states the
-handover SUPERSEDES the auto-compact summary and any legacy
-`CONTINUE-HERE`-style file for continuation state. This means writing a
-handover is not just documentation — it is what the next context actually
-resumes from.
+A companion SessionStart hook, `handover-resume.js`, closes the loop: on a
+context reset (clear/compaction) or a fresh session start, it scans
+`.anti-hall/handovers/` for the newest `HANDOVER*.md` (preferring the SAME
+session over a merely newer other-session one) and, if ≤7 days old, injects a
+pointer to its path plus the numbered Guided Resume Path — never the file's
+content — stating it SUPERSEDES the auto-compact summary and any legacy
+`CONTINUE-HERE`-style file. Writing a handover is not just documentation — it
+is what the next context actually resumes from.
 
-**Write proactively** — at task boundaries or when a context reset is likely, not
-only when explicitly asked and not at the absolute limit of the context window
-(compaction/reset mechanisms can themselves fail once truly at capacity —
-docs/KB-session-handover.md, F4). If you notice a natural task boundary during a
-long session, it's reasonable to say so and offer to write a handover rather than
-waiting to be asked.
+**Write proactively** — at task boundaries or when a reset is likely, not only
+when asked and not at the absolute context-window limit (reset mechanisms can
+themselves fail once truly at capacity — docs/KB-session-handover.md, F4).
+
+## Before ending: quiesce, declare, stay honest
+
+**Quiesce gate.** Before declaring safe for a context reset, reach a safe
+point: finish/park the current micro-task, enumerate every running
+background item (task list, background agents, workflows, monitors), and for
+each: await it, stop it, or record it in `HANDOVER.md`'s Open items as STILL
+RUNNING with its id and re-attach instructions. While unmet, say WAIT, not
+done: `⏳ NOT SAFE for a context reset yet — waiting on: <named items>. I'll
+tell you the moment it's safe.` Once met: `✅ HANDOVER COMPLETE — SAFE FOR
+CONTEXT COMPACTION/RESET NOW` + `<saved paths list>` + `<numbered
+instructions: trigger the reset; the resume hook guides the next session>`.
+
+**Terminal declaration.** The ✅ SAFE line is the LAST act of the turn — work
+after it makes the handover STALE; refresh (same seq, or seq+1) and
+re-declare before claiming safe again. `tasklist-guard.js` (shared, and
+registered in Codex's own `hooks.json`) backs this up mechanically:
+file-changing work after the newest `HANDOVER*.md`'s mtime gets a capped
+"handover is STALE" advisory on its Stop output.
 
 ## Next-session usage
 
@@ -244,3 +274,6 @@ waiting to be asked.
    file.
 4. Page in detail files only as needed, per the Detail-file pointer table's "read
    this when" column — progressive disclosure, not a full read of everything.
+5. Recreate/reconcile your task list from state.md's Task list snapshot BEFORE
+   starting any work — the snapshot is the source of truth for what's
+   pending/in-progress/blocked.

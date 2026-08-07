@@ -1699,6 +1699,15 @@ function computeSummary(store, opts) {
 
     const unreadRows = unread > 0 ? store.listMessages(d.id, { sinceCursor: cursor }) : [];
     const urgencyMax = maxUrgencyOf(unreadRows);
+    // oldestDirectUnreadTs (age/trend surfacing, item 6): the OLDEST unread
+    // row's ts for this workspace's own partition — zero extra store reads
+    // (computed over the ALREADY-fetched unreadRows above). null when there
+    // is no unread row, or no row carries a finite ts (fail-open to omitting
+    // age rather than fabricating one).
+    let oldestDirectUnreadTs = null;
+    for (const r of unreadRows) {
+      if (r && Number.isFinite(r.ts) && (oldestDirectUnreadTs === null || r.ts < oldestDirectUnreadTs)) oldestDirectUnreadTs = r.ts;
+    }
 
     // archive_requested (v0.58, additive): true when an UNREAD DIRECT row
     // addressed to this workspace carries the archive-request marker — scanned
@@ -1823,6 +1832,7 @@ function computeSummary(store, opts) {
       nudgeCommand: d.nudgeCommand,
       total, cursor, unread,
       directUnread: unread,
+      oldestDirectUnreadTs,
       broadcastUnread,
       urgencyMax,
       broadcastUrgencyMax,

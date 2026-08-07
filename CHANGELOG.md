@@ -6,6 +6,58 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.73.0 (2026-08-07)
+
+- **DevSwarm child inbox-neglect, fixed (SkyCrew field incident).** Root cause
+  had three parts: (1) `send --to` writes ONLY to the store — never the
+  durable NDJSON inbox — so any reader checking NDJSON alone (liveness's
+  unread backlog, the child/parent Stop gates) was blind to a mesh-direct
+  backlog that could climb 14→15 while every gate read 0; (2) a child has no
+  mid-turn re-entry point — `devswarm-child-turn.js` fires once per
+  UserPromptSubmit, never during a long autonomous task, so a poke never
+  re-surfaced; (3) the existing remedy path silently mutated state instead of
+  reporting. Fixed with a shared LOSS-FREE UNION unread primitive
+  (`companion/lib/devswarm-unread.js`, NDJSON ∪ store-only, hash-deduped —
+  `scripts/devswarm.js`'s CLI now delegates to it too instead of a third
+  drifting copy), wired into liveness and both Stop gates so `notDraining`
+  and `oldestUnreadAgeMs` are computed against the true union; and a new
+  throttled `devswarm-child-drain.js` PostToolUse/Bash hook (child-only,
+  mirrors the Primary-only reply-tracker) that gives a child a re-entry point
+  on every tool call, re-injecting only when the unread count changes or a
+  10-minute window elapses. The child/parent Stop-gate messages now split
+  "CHILD NOT DRAINING" from "YOUR INBOX" and name the workspace by title, and
+  the heartbeat verdict path is unified with the union read. Registered on
+  both platforms (`hooks/hooks.json` and `codex/hooks/hooks.json`).
+- **Handover skill hardening (7 threads, owner amendments 2026-08-07).**
+  Self-write mandate: the handover skill now states explicitly that the
+  agent holding session context must write it — never delegate to a
+  subagent, which loses decision/trial fidelity — and documents this as the
+  explicit exception to delegation-first (edit-guard already allows direct
+  writes under `.anti-hall/handovers/**`). `model-routing-guard.js` adds a
+  capped-once-per-session advisory that fires independently of model-tier
+  routing when a spawn looks like it's being asked to write/prepare a
+  handover. `state.md`'s template gains a Task list snapshot table, and both
+  `HANDOVER.md`'s Open items and the next-session usage steps point at it so
+  a fresh session reconciles its task list before working. `edit-guard.js`
+  now redirects a NEW handover-named `.md` write outside
+  `.anti-hall/handovers/**` back to the correct location instead of silently
+  allowing it anywhere under cwd (existing files and ambiguous cwd are
+  unaffected). `handover-resume.js` emits a one-line negative report on a
+  clear/compact source when no handover is found at all, naming the
+  wrong-location write as the likely cause. `tasklist-guard.js` adds two
+  capped, ride-along (never a new block on their own) Stop advisories:
+  boundary-surfacing when a block is about to fire with no handover dir yet,
+  and a staleness rail when file-changing work happened after the newest
+  `HANDOVER*.md`'s mtime. The skill also adds an explicit quiesce gate
+  (enumerate/await/park every running background item, `⏳`/`✅` status
+  format) and a terminal declaration rule — the `✅ SAFE TO COMPACT` line is
+  the last act of the turn; any work after it makes the handover stale and
+  requires refresh + re-declare.
+- **Fix:** `devswarm-supervisor.js`'s `sweepOnce` built the object literal
+  passed to `computeLiveness` without `env` (it was computed locally but
+  never threaded through), so liveness always fell back to `process.env`
+  instead of honoring an injected/test env.
+
 ## 0.72.0 (2026-08-07)
 
 - **New `handover` skill (Claude + Codex).** Writes a comprehensive, multi-file session

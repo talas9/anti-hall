@@ -9,9 +9,19 @@
 // rather than silently abandoned off the Primary's task list.
 //
 // WHAT IT READS (audit P1-C — the Stop path has a ~30s budget and MUST stay
-// cheap): it NEVER re-runs computeLiveness() and NEVER shells out to git, and
-// NEVER opens the store DB. Signals come from files the supervisor / consumer /
-// ingest daemon already wrote:
+// cheap): it NEVER re-runs computeLiveness(). It STAYS fs-only for the
+// #36 structural repoKey filter and the primary case below (one memoized git
+// spawn per distinct worktree, reused everywhere else in this file). The
+// per-descriptor mesh-direct UNION check (root cause b fix, see "UNION" below)
+// is the ONE exception: it DOES open the store DB (read-only) for each
+// resolvable descriptor whose NDJSON side is conclusively known — this was
+// added deliberately to close a real blind spot (a `send --to` direct is
+// STORE-ONLY, invisible to the NDJSON-only signals below) and reuses the
+// ALREADY-memoized repoKey (never a second git spawn per worktree). Bounded,
+// read-only, fail-open (never blocks on failure) — but no longer "never
+// touches git/the store"; that invariant applied to the pre-union version of
+// this file only. Signals otherwise come from files the supervisor / consumer
+// / ingest daemon already wrote:
 //   - CHILD unread backlog: the durable NDJSON inbox + its cursor, via the
 //     read/ack primitive (companion/lib/devswarm-inbox-cursor.js
 //     readUnreadMessages) — pure fs, the SAME projection the staleness
@@ -113,6 +123,7 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 // the verdict-file path helper all already exist.
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.js');
+const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const { livenessPathFor, devswarmRoot, hasFreshHeartbeat } = require('../companion/lib/liveness.js');
 // POKE_PREFIX text check (companion/lib/devswarm-noise.js isNoiseText) —
 // applied HERE to descriptor durable-inbox NDJSON rows' `.message` (a shape
@@ -514,6 +525,35 @@ function main() {
       }
     } catch (_) {
       unreadUnknown = true; // hard failure reading the primitive itself -> fail open
+    }
+
+    // UNION (root cause b fix): a mesh-direct `send --to` is STORE-ONLY (see
+    // companion/lib/devswarm-unread.js's header) — the NDJSON-only read above
+    // is blind to it. `dKey` is ALREADY resolved (the #36 structural filter
+    // just above), so reuse it rather than re-spawning git. Only attempted
+    // when dKey resolved AND the NDJSON side was conclusively readable (an
+    // unreadUnknown row already blocks unconditionally — no need to also
+    // union it). LAZY + GUARDED, fail-open: never turns a passing row newly
+    // unknown/blocking, only ADDS store-only real rows already excluded by
+    // the same isNoiseText check applied to their `.body`.
+    if (!unreadUnknown && dKey) {
+      try {
+        // `repoKey: dKey` reuses the ALREADY-RESOLVED (memoized, above) repoKey
+        // for this descriptor's worktree instead of letting openStoreForUnread
+        // re-spawn git for the SAME worktree a second time this Stop invocation.
+        const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: d.worktreePath, id: d.id, home, env: process.env, repoKey: dKey });
+        if (storeHandle) {
+          try {
+            const union = devswarmUnread.unionUnread({ inboxPath: d.inboxPath, cursorPath: d.cursorPath, id: d.id, storeHandle });
+            for (const row of union.storeOnlyUnreadRows) {
+              if (isNoiseText(row && row.body)) continue;
+              realUnread++;
+            }
+          } finally {
+            try { storeHandle.close(); } catch (_) {}
+          }
+        }
+      } catch (_) { /* fail-open: NDJSON-only realUnread stands */ }
     }
 
     const status = readVerdictStatus(d.id, home);

@@ -409,8 +409,46 @@ function main() {
   // the project entirely) AND allowlistIsHonest (blocks a symlinked/hardlinked
   // lookalike), so neither an escape nor a lookalike can slip a real write
   // through under a handover-shaped name.
+  //
+  // WRONG-LOCATION REDIRECT (owner amendment 2026-08-07, thread 3). This
+  // exclusion USED TO allow a handover-named .md ANYWHERE under cwd — a field
+  // failure produced a 177-line handover written to docs/ that
+  // handover-resume.js (which scans ONLY .anti-hall/handovers/**) can never
+  // find. Paths INSIDE .anti-hall/handovers/** already exit at the allowlist
+  // check above (DEFAULT_ALLOW '.anti-hall/**'), so they never reach this
+  // block — unaffected. A file OUTSIDE that dir which ALREADY EXISTS on disk
+  // (a legacy repo HANDOVER-*.md, or root CONTINUE-HERE.md, which is also
+  // separately allowlisted above) is unaffected too — only a NEW write
+  // (target doesn't exist yet) at a wrong location gets redirected instead of
+  // silently allowed. Fail-open on ambiguity: an unknown cwd behaves exactly
+  // as before (allowed) since the redirect has nowhere reliable to check
+  // existence against. Skippable via the existing skip.json mechanism (the
+  // 'edit-guard' key), already honored at the top of main().
   if (isHandoverDoc(filePath) && isWithinCwd(filePath, cwd) && allowlistIsHonest(filePath, cwd)) {
-    process.exit(0);
+    if (!cwd) {
+      process.exit(0); // ambiguous cwd -> old broad-allow behavior, unchanged
+    }
+    let alreadyExists = false;
+    try {
+      alreadyExists = fs.existsSync(path.resolve(String(cwd), String(filePath)));
+    } catch (_) {
+      alreadyExists = true; // can't check -> ambiguous -> fail-open (old broad-allow behavior)
+    }
+    if (alreadyExists) {
+      process.exit(0); // legacy file at its existing location -> unaffected
+    }
+    process.stdout.write(JSON.stringify({
+      decision: 'block',
+      reason:
+        'HANDOVER-LOCATION RULE: a NEW session-handover doc belongs under ' +
+        '.anti-hall/handovers/<YYYY-MM-DD>/<session-id>/ (see the `handover` skill, ' +
+        'which computes <date>/<session-id> for you) — not at this path. Redirect this ' +
+        'write there. If this is an intentional exception, honor it via the existing ' +
+        "skip mechanism — run 'node scripts/devswarm.js skip edit-guard' " +
+        '(~/.anti-hall/skip.json, 15-min TTL), then retry. Never skip on your own ' +
+        'initiative. (tool: ' + toolName + ')',
+    }) + '\n');
+    process.exit(2);
   }
 
   // PLAN MODE (NARROWED): a plan-mode session is doing read-only planning, so

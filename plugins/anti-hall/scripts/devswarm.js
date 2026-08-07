@@ -121,10 +121,11 @@ const { spawnSync } = require('child_process');
 
 const store = require('../companion/lib/devswarm-store.js');
 const inboxCursor = require('../companion/lib/devswarm-inbox-cursor.js');
+const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const {
   isSafeId, devswarmRoot, livenessPathFor,
   writeVerdict, hasFreshHeartbeat, worktreeActivityMtime, unreadBacklog, DEFAULT_IDLE_MS,
-  isDormantRow,
+  isDormantRow, unionPendingFor,
 } = require('../companion/lib/liveness.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
@@ -2343,18 +2344,29 @@ function cmdHeartbeat(id, flags, ctx) {
     throw e;
   }
 
-  // P2-11: compute `pending` the SAME way computeLiveness does on its fresh-
-  // heartbeat short-circuit (liveness.js: `hbBacklog.known && lines.length>0`) so
-  // the two verdict-write paths AGREE — the old hardcoded `pending:false` here
-  // disagreed with the supervisor's recompute, flapping the parent-gate signal.
+  // P2-11 (+ later union fix): compute `pending`/`notDraining`/`oldestUnreadAgeMs`
+  // the SAME way computeLiveness does on its fresh-heartbeat short-circuit
+  // (liveness.js's unionPendingFor — NDJSON ∪ store, not NDJSON-only) so the two
+  // verdict-write paths AGREE — a disagreement here (this path stamping
+  // `pending:false` over a store-only backlog the supervisor sweep reports as
+  // `pending:true`) flaps the parent-gate signal exactly like the original P2-11
+  // bug this comment used to describe. unionPendingFor is already fail-open
+  // (falls back to NDJSON-only, never throws) so no extra try/catch semantics
+  // are needed beyond what it already provides.
   let pending = false;
+  let notDraining = false;
+  let oldestUnreadAgeMs = null;
   try {
     const descForPending = readDescriptorFile(home, id);
     if (descForPending) {
-      const backlog = unreadBacklog(descForPending.inboxPath, descForPending.cursorPath);
-      pending = !!(backlog.known && backlog.lines.length > 0);
+      const union = unionPendingFor(descForPending, home, { now });
+      pending = !!union.pending;
+      notDraining = !!union.notDraining;
+      oldestUnreadAgeMs = Number.isFinite(union.oldestUnreadAgeMs) ? union.oldestUnreadAgeMs : null;
     }
-  } catch (_) { pending = false; /* fail-open: pending defaults to false on any read error */ }
+  } catch (_) {
+    pending = false; notDraining = false; oldestUnreadAgeMs = null; // fail-open
+  }
 
   // v0.62 heartbeat-alive decouple (owner-approved — see liveness.js header): a
   // heartbeat is emitted only by this workspace's OWN live session, so receiving
@@ -2368,7 +2380,8 @@ function cmdHeartbeat(id, flags, ctx) {
   try {
     writeVerdict(id, {
       status: 'alive', lastOutboundTs: now, staleSince: null,
-      nudgeAttempts: 0, nudgedAt: null, pending, heartbeatTs: now,
+      nudgeAttempts: 0, nudgedAt: null, pending, notDraining, oldestUnreadAgeMs,
+      heartbeatTs: now,
     }, home);
   } catch (_) { /* fail-open: verdict refresh is best-effort, never breaks a heartbeat */ }
 
@@ -2612,43 +2625,10 @@ function resolveWorkspaceStoreForRead(id, ctx, home) {
   return { ok: true, store: s };
 }
 
-// ndjsonHashesFromLines(lines) -> Set<string> of each parsed line's embedded `_h`
-// content hash (devswarm-pull.js pullOnce writes `{_h, fromBranch, message,
-// createdAt, status}` per NDJSON line). An unparsable/hashless line contributes
-// nothing — it can never dedupe-match a store row and is never dropped itself
-// (callers keep `lines` as-is; this Set is only used to exclude STORE rows that
-// duplicate it).
-function ndjsonHashesFromLines(lines) {
-  const set = new Set();
-  for (const line of lines) {
-    try {
-      const o = JSON.parse(line);
-      if (o && typeof o === 'object' && o._h != null) set.add(String(o._h));
-    } catch (_) { /* unparsable line: no hash to dedupe against, never thrown */ }
-  }
-  return set;
-}
-
-// ndjsonAllHashes(inboxPath) -> Set<string> of EVERY line's `_h` in the durable
-// NDJSON (not just the unread tail) — used for the `total` union so an
-// already-consumed native-drained message (still on disk, past the cursor) isn't
-// double-counted against its store-side parity-fed twin. Fail-soft: an absent/
-// unreadable inbox yields an empty Set (matches inboxCursor.countMessages'
-// own fail-soft contract).
-function ndjsonAllHashes(inboxPath) {
-  let raw;
-  try { raw = String(fs.readFileSync(inboxPath, 'utf8')); } catch (_) { return new Set(); }
-  const set = new Set();
-  for (const line of raw.split('\n')) {
-    const t = line.trim();
-    if (!t) continue;
-    try {
-      const o = JSON.parse(t);
-      if (o && typeof o === 'object' && o._h != null) set.add(String(o._h));
-    } catch (_) { /* unparsable line: contributes no hash, never thrown */ }
-  }
-  return set;
-}
+// ndjsonHashesFromLines / ndjsonAllHashes — MOVED to companion/lib/devswarm-unread.js
+// (the canonical copy, shared with hooks + liveness.js; devswarmUnread.unionUnread
+// above now does this work internally, so nothing in this file calls these two
+// directly anymore).
 
 function cmdInboxMessages(id, flags, ctx, opts) {
   const home = ctx.home;
@@ -2761,33 +2741,27 @@ function cmdInbox(sub, id, flags, ctx) {
     // Best-effort: any store-open failure (e.g. a genuine cross-project id
     // mismatch) falls back to the PRE-fix NDJSON-only reporting — count/read
     // never newly hard-fail because of this merge.
-    const u = inboxCursor.readUnread(inboxPath, cursorPath);
+    //
+    // The actual union MATH now lives in companion/lib/devswarm-unread.js
+    // (unionUnread) — shared with hooks + liveness.js so all three readers
+    // agree on one implementation instead of drifting copies. This call site
+    // keeps its OWN store-open/ownership/rehome logic (resolveWorkspaceStoreForRead)
+    // unchanged — that part is CLI-specific — and only delegates the merge
+    // computation, so output stays byte-identical to before this refactor.
     let storeHandle = null;
-    let storeCursorVal = 0;
-    let storeOnlyUnreadRows = [];
-    let storeOnlyTotalCount = 0;
     try {
       const opened = resolveWorkspaceStoreForRead(id, ctx, home);
-      if (opened.ok) {
-        storeHandle = opened.store;
-        storeCursorVal = storeHandle.cursorValue(id);
-        const allNdjsonHashes = ndjsonAllHashes(inboxPath);
-        const unreadNdjsonHashes = ndjsonHashesFromLines(u.lines);
-        const storeAllRows = storeHandle.listMessages(id);
-        storeOnlyTotalCount = storeAllRows.filter((r) => !r.hash || !allNdjsonHashes.has(r.hash)).length;
-        const storeUnreadRows = storeHandle.listMessages(id, { sinceCursor: storeCursorVal });
-        storeOnlyUnreadRows = storeUnreadRows.filter((r) => !r.hash || !unreadNdjsonHashes.has(r.hash));
-      }
+      if (opened.ok) storeHandle = opened.store;
     } catch (_) { /* fail-open: NDJSON-only reporting, matches pre-fix behavior */ }
-
-    const mergedTotal = u.total + storeOnlyTotalCount;
-    const mergedUnreadCount = u.lines.length + storeOnlyUnreadRows.length;
+    const union = devswarmUnread.unionUnread({ inboxPath, cursorPath, id, storeHandle });
+    const storeCursorVal = union.storeCursor;
+    const storeOnlyUnreadRows = union.storeOnlyUnreadRows;
 
     if (sub === 'count') {
       if (storeHandle) storeHandle.close();
       return {
         ok: true, action: 'count', id,
-        unread: mergedUnreadCount, cursor: u.cursor, total: mergedTotal, known: u.known,
+        unread: union.unread, cursor: union.cursor, total: union.total, known: union.known,
         storeCursor: storeCursorVal, storeUnread: storeOnlyUnreadRows.length,
       };
     }
@@ -2795,8 +2769,8 @@ function cmdInbox(sub, id, flags, ctx) {
       if (storeHandle) storeHandle.close();
       return {
         ok: true, action: 'read', id,
-        lines: u.lines, meshMessages: storeOnlyUnreadRows,
-        count: mergedUnreadCount, cursor: u.cursor, total: mergedTotal, known: u.known,
+        lines: union.ndjsonUnreadLines, meshMessages: storeOnlyUnreadRows,
+        count: union.unread, cursor: union.cursor, total: union.total, known: union.known,
         storeCursor: storeCursorVal,
       };
     }

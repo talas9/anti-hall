@@ -155,7 +155,7 @@ test('2. an urgent DIRECT renders the imperative STOP wording', () => {
   try {
     writeSharedSummary(h.home, { wsUrgent: { total: 1, cursor: 0, unread: 1, directUnread: 1, urgencyMax: 'urgent' } });
     const c = inboxCtx(testHook(PARENT_INBOX, inboxPayload(), { home: h.home, env: PRIMARY_ENV, expectJson: true }));
-    assert.match(segment(c, 'DEVSWARM URGENT INBOX'), /STOP and read/);
+    assert.match(segment(c, 'DEVSWARM URGENT INBOX'), /STOP and poke/);
   } finally { h.cleanup(); }
 });
 

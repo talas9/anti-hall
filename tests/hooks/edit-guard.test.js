@@ -569,13 +569,15 @@ test('NON-DEVSWARM: block reason is the pre-fix baseline plus the skip-hint (no 
 // exclusion is basename-matched and HARD-GATED to '.md' — this is the
 // anti-bypass property under test below.
 
+// NOTE (owner amendment 2026-08-07, thread 3): a NEW handover-named .md write
+// OUTSIDE .anti-hall/handovers/** is now REDIRECTED (see WRONG-LOCATION
+// REDIRECT tests below) rather than silently allowed anywhere. Only
+// CONTINUE-HERE.md / .continue-here.md stay in this "always allowed" list —
+// they are matched by the separate DEFAULT_ALLOW bare-filename allowlist
+// (isAllowed), not by isHandoverDoc, so this specific change does not touch them.
 const HANDOVER_DOC_ALLOWED = [
-  'HANDOVER-2026-08-03.md',
   'CONTINUE-HERE.md',
-  'x-handoff.md',
-  'session-compact-handover.md',
   '.continue-here.md',
-  'team-handover.md',
 ];
 for (const p of HANDOVER_DOC_ALLOWED) {
   test(`HANDOVER DOC: DevSwarm Primary Write on ${p} -> ALLOWED`, () => {
@@ -609,18 +611,96 @@ test('HANDOVER DOC: DevSwarm Primary Write on foo.js -> STILL BLOCKED', () => {
 });
 
 // A non-Primary / non-DevSwarm normal coordinator session is unaffected by the
-// DevSwarm-Primary framing — the exclusion applies to ANY coordinator, so a
-// plain coordinator writing a handover doc is also allowed, and a plain
-// coordinator writing ordinary source is unaffected (still blocked).
-test('HANDOVER DOC: plain (non-DevSwarm) coordinator Write on HANDOVER.md -> ALLOWED', () => {
-  const r = runCoord(editPayload('Write', { filePath: 'HANDOVER.md' }));
-  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
-});
+// DevSwarm-Primary framing — the exclusion applies to ANY coordinator. A NEW
+// root-level HANDOVER.md write is now redirected (thread 3), covered below;
+// this test moves to the redirect section.
 
 test('HANDOVER DOC: plain (non-DevSwarm) coordinator Write on src/app.js -> UNCHANGED (still blocked)', () => {
   const r = runCoord(editPayload('Write', { filePath: 'src/app.js' }));
   assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
   assert.strictEqual(r.json.reason, PLAIN_REASON('Write'));
+});
+
+// ---------------------------------------------------------------------------
+// WRONG-LOCATION REDIRECT (owner amendment 2026-08-07, thread 3). A NEW
+// handover-named .md write OUTSIDE <cwd>/.anti-hall/handovers/** is redirected
+// instead of silently allowed anywhere — the field failure this closes: a
+// 177-line handover written to docs/, invisible to handover-resume.js (which
+// scans ONLY .anti-hall/handovers/**).
+
+const HANDOVER_DOC_REDIRECTED_NEW = [
+  'HANDOVER.md',
+  'HANDOVER-2026-08-03.md',
+  'x-handoff.md',
+  'session-compact-handover.md',
+  'team-handover.md',
+  'docs/HANDOVER.md',
+];
+for (const p of HANDOVER_DOC_REDIRECTED_NEW) {
+  test(`WRONG-LOCATION REDIRECT: NEW Write on ${p} (outside .anti-hall/handovers/**) -> BLOCKED w/ redirect`, () => {
+    const proj = makeProject();
+    try {
+      assert.strictEqual(fs.existsSync(path.join(proj.dir, p)), false, 'precondition: file must not exist yet');
+      const r = runIn(proj, 'Write', p);
+      assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+      assert.ok(r.json && r.json.decision === 'block', 'decision:block expected');
+      assert.match(r.json.reason, /HANDOVER-LOCATION RULE/);
+      assert.match(r.json.reason, /\.anti-hall\/handovers/);
+      assert.match(r.json.reason, /handover.* skill/);
+      assert.match(r.json.reason, /skip edit-guard/);
+    } finally {
+      proj.cleanup();
+    }
+  });
+}
+
+test('WRONG-LOCATION REDIRECT: write INSIDE .anti-hall/handovers/** stays ALLOWED (unaffected)', () => {
+  const proj = makeProject();
+  try {
+    const inside = path.join('.anti-hall', 'handovers', '2026-08-07', 'sess-1', 'HANDOVER.md');
+    const r = runIn(proj, 'Write', inside);
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  } finally {
+    proj.cleanup();
+  }
+});
+
+test('WRONG-LOCATION REDIRECT: a file that ALREADY EXISTS at a wrong location stays ALLOWED (only NEW writes redirect)', () => {
+  const proj = makeProject();
+  try {
+    const target = path.join(proj.dir, 'HANDOVER-2026-01-01.md');
+    fs.writeFileSync(target, '# old handover\n', 'utf8');
+    const r = runIn(proj, 'Edit', 'HANDOVER-2026-01-01.md');
+    assert.strictEqual(r.status, 0, `pre-existing legacy file must stay allowed; stdout: ${r.stdout}`);
+  } finally {
+    proj.cleanup();
+  }
+});
+
+test('WRONG-LOCATION REDIRECT: unknown cwd -> ambiguous, allowed as before (fail-open)', () => {
+  const h = makeHome();
+  try {
+    const payload = editPayload('Write', { filePath: 'HANDOVER.md' });
+    delete payload.cwd;
+    const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('WRONG-LOCATION REDIRECT: SKIP escape hatch -> allowed even for a NEW wrong-location write', () => {
+  const proj = makeProject();
+  const h = makeHome();
+  try {
+    h.writeSkip({ 'edit-guard': Date.now() + 60000 });
+    const r = testHook(HOOK, editPayload('Write', { filePath: 'HANDOVER.md', cwd: proj.dir }),
+      { home: h.home, env: COORD });
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  } finally {
+    h.cleanup();
+    proj.cleanup();
+  }
 });
 
 // SYMLINK HONESTY holds for the handover exclusion too: a '.md'-named, handover-

@@ -251,7 +251,7 @@ function sweepOnce(opts) {
   for (const d of descriptors) {
     try {
       const verdict = (deps.computeLiveness || computeLiveness)({
-        descriptor: d, now: o.now, home, runners: deps.runners,
+        descriptor: d, now: o.now, home, env, runners: deps.runners,
         idleThresholdMs: o.idleThresholdMs, cooldownMs: o.cooldownMs, nudgeWindowMs: o.nudgeWindowMs,
       });
       (deps.writeVerdict || writeVerdict)(d.id, verdict, home, F);

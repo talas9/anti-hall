@@ -351,6 +351,101 @@ function main() {
     // detection error → fall through to normal block
   }
 
+  // THREAD 5 (owner amendment 2026-08-07): boundary-surfacing advisory. When
+  // this Stop is ALREADY about to block (shouldBlock, reached this point) AND
+  // no session-handover dir exists yet, append ONE capped advisory line onto
+  // the existing reason reminding the agent to write one before ending. This
+  // NEVER creates a new block on its own -- it only rides an already-decided
+  // block -- and is capped once per session via its own state key so it never
+  // repeats nagging on subsequent Stops.
+  let finalReason = reason;
+  try {
+    if (cwd && typeof cwd === 'string') {
+      const handoverDir = path.join(cwd, '.anti-hall', 'handovers', progressDate, sessionIdForPath);
+      let handoverDirExists = false;
+      try {
+        handoverDirExists = fs.statSync(handoverDir).isDirectory();
+      } catch (_) {
+        handoverDirExists = false;
+      }
+      if (!handoverDirExists) {
+        const advStateFile = path.join(stateDir, 'tasklist-guard-handover-advisory-' + safeSession + '.json');
+        let alreadyAdvised = false;
+        try {
+          alreadyAdvised = fs.existsSync(advStateFile);
+        } catch (_) {
+          alreadyAdvised = false;
+        }
+        if (!alreadyAdvised) {
+          finalReason = sanitizeReason(
+            finalReason + ' Also: significant work this session and no handover exists — ' +
+            'consider /anti-hall:handover before ending.'
+          );
+          try {
+            fs.mkdirSync(stateDir, { recursive: true });
+            fs.writeFileSync(advStateFile, JSON.stringify({ advised: true }), 'utf8');
+          } catch (_) {
+            // best-effort cap; the advisory line above already went into finalReason
+            // this once regardless, which is fine -- worst case it repeats once more.
+          }
+        }
+      } else {
+        // THREAD 7b (owner amendment 2026-08-07): staleness rail. A handover
+        // dir exists for this session -- if a counted file-changing action's
+        // own entry timestamp (scan.lastWorkTs; NOT the transcript file mtime,
+        // which advances on every turn including pure chat and would cry STALE
+        // by construction) is AFTER the newest HANDOVER*.md's mtime, the
+        // written handover no longer reflects the session. lastWorkTs === 0
+        // (no timestamps in the transcript) stays silent -- never claim
+        // unprovable recency. Same "never a new block on its own" +
+        // once-per-session cap discipline as thread 5.
+        let newestHandoverMtime = 0;
+        let entries = [];
+        try {
+          entries = fs.readdirSync(handoverDir);
+        } catch (_) {
+          entries = [];
+        }
+        for (const fname of entries) {
+          if (!/^HANDOVER(?:-\d+)?\.md$/.test(fname)) continue;
+          try {
+            const st = fs.statSync(path.join(handoverDir, fname));
+            if (st.mtimeMs > newestHandoverMtime) newestHandoverMtime = st.mtimeMs;
+          } catch (_) {
+            // skip unreadable entry
+          }
+        }
+        if (newestHandoverMtime > 0) {
+          const lastWorkTs = Number.isFinite(scan.lastWorkTs) ? scan.lastWorkTs : 0;
+          if (lastWorkTs > 0 && lastWorkTs > newestHandoverMtime) {
+            const staleStateFile = path.join(stateDir, 'tasklist-guard-handover-stale-' + safeSession + '.json');
+            let alreadyWarned = false;
+            try {
+              alreadyWarned = fs.existsSync(staleStateFile);
+            } catch (_) {
+              alreadyWarned = false;
+            }
+            if (!alreadyWarned) {
+              finalReason = sanitizeReason(
+                finalReason + ' Also: handover is STALE (work happened after it was ' +
+                'written) — refresh it before the user compacts.'
+              );
+              try {
+                fs.mkdirSync(stateDir, { recursive: true });
+                fs.writeFileSync(staleStateFile, JSON.stringify({ warned: true }), 'utf8');
+              } catch (_) {
+                // best-effort cap
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (_) {
+    // fail-open: keep the original (un-augmented) reason on any error.
+    finalReason = reason;
+  }
+
   // RECONCILED: persist state FIRST, emit the block only if the write SUCCEEDED.
   // The earlier ordering emitted the block before persisting, reasoning that a
   // missed write costs "one extra nudge". That is WRONG when the state dir is
@@ -369,7 +464,7 @@ function main() {
 
   // fs.writeSync(1): stdout.write races the async pipe flush with exit() on
   // macOS node 18/20 (repo-wide hook-output rule; R2-N1).
-  try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
+  try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason: finalReason }) + '\n'); } catch (_) {}
   process.exit(0);
 }
 
@@ -452,12 +547,13 @@ function readTranscriptTail(transcriptPath, windowBytes) {
 function scanTranscript(filePath) {
   const tail = readTranscriptTail(filePath);
   if (!tail) {
-    return { workCount: 0, sawTaskActivity: false, hasStaleInProgress: false, openTaskIds: [] };
+    return { workCount: 0, sawTaskActivity: false, hasStaleInProgress: false, openTaskIds: [], lastWorkTs: 0 };
   }
   const lines = tail.data.split(/\r?\n/);
   if (tail.truncated && lines.length > 0) lines.shift();
 
   let workCount = 0;
+  let lastWorkTs = 0; // ms epoch of the NEWEST counted file-changing action (0 = unknown)
   let sawTaskActivity = false;
 
   const provisionalMap = new Map(); // tool_use_id -> { content, status }
@@ -487,18 +583,28 @@ function scanTranscript(filePath) {
       }
     }
 
+    // Real transcript entries carry an ISO `timestamp`; parse once per entry so
+    // counted work can be time-attributed (thread 7b staleness rail). Missing or
+    // malformed timestamps leave lastWorkTs untouched (0 = unknown → the
+    // staleness advisory stays silent rather than claim unprovable recency).
+    const entryTs = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN;
+
     const toolUses = collectToolUses(entry);
     for (const tu of toolUses) {
       const name = tu.name || '';
 
       if (MUTATING_TOOLS.has(name)) {
         workCount++;
+        if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
         continue;
       }
 
       if (name === 'Bash') {
         const cmd = tu.input && typeof tu.input.command === 'string' ? tu.input.command : '';
-        if (cmd && BASH_WORK_RE.test(neutralizeQuotedContents(cmd))) workCount++;
+        if (cmd && BASH_WORK_RE.test(neutralizeQuotedContents(cmd))) {
+          workCount++;
+          if (Number.isFinite(entryTs) && entryTs > lastWorkTs) lastWorkTs = entryTs;
+        }
         continue;
       }
 
@@ -607,7 +713,7 @@ function scanTranscript(filePath) {
   // genuinely-dangling in_progress, so nothing is permanently masked.
   const hasStaleInProgress = inProgressCount > 1 && !agentsRunning();
 
-  return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds };
+  return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds, lastWorkTs };
 }
 
 // agentsRunning() — true if ~/.anti-hall/agents/ holds a FRESH heartbeat, meaning

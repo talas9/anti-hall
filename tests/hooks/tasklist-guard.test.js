@@ -50,9 +50,12 @@ function writeHistory(home, session = 't') {
   return p;
 }
 
-function edit(i) {
+function edit(i, ts = new Date()) {
+  // Real transcript entries carry an ISO `timestamp` (thread 7b attributes
+  // work recency from it); fixtures mirror that shape by default.
   return {
     type: 'assistant',
+    timestamp: ts.toISOString(),
     message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Edit', id: 'toolu_e' + i, input: { file_path: '/x/f' + i } }] },
   };
 }
@@ -651,4 +654,159 @@ test('PRIORITY: two P0/P1 in_progress, no live agent, fresh progress -> stale-mu
   } finally {
     h.cleanup();
   }
+});
+
+// ---------------------------------------------------------------------------
+// THREAD 5 (owner amendment 2026-08-07): boundary-surfacing advisory. Rides
+// an ALREADY-decided block only; never creates a new block on its own; capped
+// once per session via its own state key.
+
+test('THREAD 5 ADVISORY: blocking session + no handover dir -> advisory appended', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /significant work this session and no handover exists/);
+    assert.match(r.json.reason, /consider \/anti-hall:handover before ending/);
+  } finally { h.cleanup(); }
+});
+
+test('THREAD 5 ADVISORY: capped — does not repeat on a later block for the SAME session', () => {
+  const h = makeHome();
+  try {
+    const session = 'thread5-cap';
+    const tp1 = h.writeTranscript(edits(4));
+    const r1 = testHook(HOOK, stopPayload(tp1, h.home, session), { home: h.home });
+    assert.ok(isBlock(r1), `first block expected; stdout: ${r1.stdout}`);
+    assert.match(r1.json.reason, /consider \/anti-hall:handover/);
+
+    // Different work-signal (more edits) so the main dedup hash changes and a
+    // SECOND block fires — this isolates the per-session advisory cap from the
+    // main dedup/MAX_BLOCKS cap.
+    const tp2 = h.writeTranscript(edits(7)); // different workBucket (floor(n/3)) -> new dedup signal
+    const r2 = testHook(HOOK, stopPayload(tp2, h.home, session), { home: h.home });
+    assert.ok(isBlock(r2), `second block expected on a new signal; stdout: ${r2.stdout}`);
+    assert.doesNotMatch(r2.json.reason, /consider \/anti-hall:handover/,
+      'advisory must not repeat once already advised this session');
+  } finally { h.cleanup(); }
+});
+
+test('THREAD 5 ADVISORY: handover dir already exists for this session -> advisory NOT appended', () => {
+  const h = makeHome();
+  try {
+    const session = 'thread5-has-handover';
+    const today = todayUtc();
+    const hdir = path.join(h.home, '.anti-hall', 'handovers', today, safeSession(session));
+    fs.mkdirSync(hdir, { recursive: true });
+    fs.writeFileSync(path.join(hdir, 'HANDOVER.md'), '# handover\n', 'utf8');
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.doesNotMatch(r.json.reason, /consider \/anti-hall:handover/);
+  } finally { h.cleanup(); }
+});
+
+test('THREAD 5 ADVISORY: below-threshold session -> no block, so no advisory either', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(edits(1));
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(!isBlock(r), `below-threshold must not block; stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// THREAD 7b (owner amendment 2026-08-07): staleness rail. A handover exists
+// for this session, but a counted file-changing action's own entry timestamp
+// (scan.lastWorkTs — NOT the transcript file's mtime, which advances on every
+// turn and would cry STALE by construction) is AFTER the newest HANDOVER*.md's
+// mtime -> capped advisory, same "rides an existing block only" +
+// once-per-session discipline. No timestamps in the transcript -> silent.
+
+test('THREAD 7b STALENESS: handover older than the transcript -> stale advisory appended', () => {
+  const h = makeHome();
+  try {
+    const session = 'thread7b-stale';
+    const today = todayUtc();
+    const hdir = path.join(h.home, '.anti-hall', 'handovers', today, safeSession(session));
+    fs.mkdirSync(hdir, { recursive: true });
+    const hfile = path.join(hdir, 'HANDOVER.md');
+    fs.writeFileSync(hfile, '# handover\n', 'utf8');
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(hfile, old, old);
+
+    const tp = h.writeTranscript(edits(4)); // written now -> newer than the handover
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /handover is STALE/);
+    assert.match(r.json.reason, /refresh it before the user compacts/);
+  } finally { h.cleanup(); }
+});
+
+test('THREAD 7b STALENESS: handover newer than the transcript -> NOT stale, no advisory', () => {
+  const h = makeHome();
+  try {
+    const session = 'thread7b-fresh';
+    const today = todayUtc();
+    const tp = h.writeTranscript(edits(4)); // written first (older)
+    const hdir = path.join(h.home, '.anti-hall', 'handovers', today, safeSession(session));
+    fs.mkdirSync(hdir, { recursive: true });
+    fs.writeFileSync(path.join(hdir, 'HANDOVER.md'), '# handover\n', 'utf8'); // written after -> newer
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.doesNotMatch(r.json.reason, /handover is STALE/);
+  } finally { h.cleanup(); }
+});
+
+test('THREAD 7b STALENESS: transcript entries WITHOUT timestamps -> silent (never claim unprovable recency)', () => {
+  const h = makeHome();
+  try {
+    const session = 'thread7b-no-ts';
+    const today = todayUtc();
+    const hdir = path.join(h.home, '.anti-hall', 'handovers', today, safeSession(session));
+    fs.mkdirSync(hdir, { recursive: true });
+    const hfile = path.join(hdir, 'HANDOVER.md');
+    fs.writeFileSync(hfile, '# handover\n', 'utf8');
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(hfile, old, old);
+
+    // Timestamp-less entries (older transcript shapes): recency is unprovable,
+    // so even a backdated handover must NOT draw the STALE advisory.
+    const noTs = [];
+    for (let i = 0; i < 4; i++) {
+      const e = edit(i);
+      delete e.timestamp;
+      noTs.push(e);
+    }
+    const tp = h.writeTranscript(noTs);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.doesNotMatch(r.json.reason, /handover is STALE/);
+  } finally { h.cleanup(); }
+});
+
+test('THREAD 7b STALENESS: capped — does not repeat once already warned this session', () => {
+  const h = makeHome();
+  try {
+    const session = 'thread7b-cap';
+    const today = todayUtc();
+    const hdir = path.join(h.home, '.anti-hall', 'handovers', today, safeSession(session));
+    fs.mkdirSync(hdir, { recursive: true });
+    const hfile = path.join(hdir, 'HANDOVER.md');
+    fs.writeFileSync(hfile, '# handover\n', 'utf8');
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    fs.utimesSync(hfile, old, old);
+
+    const tp1 = h.writeTranscript(edits(4));
+    const r1 = testHook(HOOK, stopPayload(tp1, h.home, session), { home: h.home });
+    assert.ok(isBlock(r1), `first block expected; stdout: ${r1.stdout}`);
+    assert.match(r1.json.reason, /handover is STALE/);
+
+    const tp2 = h.writeTranscript(edits(7)); // different workBucket (floor(n/3)) -> new dedup signal // new signal -> re-blocks
+    const r2 = testHook(HOOK, stopPayload(tp2, h.home, session), { home: h.home });
+    assert.ok(isBlock(r2), `second block expected on a new signal; stdout: ${r2.stdout}`);
+    assert.doesNotMatch(r2.json.reason, /handover is STALE/,
+      'staleness advisory must not repeat once already warned this session');
+  } finally { h.cleanup(); }
 });

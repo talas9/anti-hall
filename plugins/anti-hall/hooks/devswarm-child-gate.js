@@ -89,6 +89,7 @@ const { isChildWorkspace } = require('./lib/devswarm-role.js');
 const { isSkipped } = require('./skip-guard.js');
 const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
+const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 
 // CLI — the ABSOLUTE path to anti-hall's DevSwarm CLI wrapper, resolved ONCE
 // from this hook's own on-disk location (never a relative "scripts/devswarm.js"
@@ -246,6 +247,15 @@ function strictEnabled(env) {
 // .json -> inboxPath/cursorPath), via the same inbox-cursor primitive devswarm-
 // child-turn.js uses. Pure fs — never drains the native queue, never spawns
 // hivecontrol. Fail-safe: ANY error -> { known: false, count: 0 }.
+//
+// UNION-AWARE (root cause b fix): a mesh-direct `send --to` is STORE-ONLY (see
+// companion/lib/devswarm-unread.js's header) — the NDJSON-only readUnread()
+// above is blind to it. When the descriptor carries a worktreePath, ALSO
+// consult the union (NDJSON ∪ store-only) count via the shared lib, LAZY +
+// GUARDED (same D27 idiom as devswarm-child-turn.js's registerStoreDescriptor)
+// so a missing/corrupt module or a store-open failure degrades to the
+// pre-fix NDJSON-only count — never throws, never regresses the known:false
+// fail-open-to-blocking posture below.
 function readDurableUnread(env, home) {
   try {
     const id = env.DEVSWARM_BUILDER_ID;
@@ -254,6 +264,19 @@ function readDurableUnread(env, home) {
     let desc;
     try { desc = JSON.parse(fs.readFileSync(descPath, 'utf8')); } catch (_) { return { known: false, count: 0 }; }
     if (!desc || typeof desc !== 'object' || !desc.inboxPath) return { known: false, count: 0 };
+    if (desc.worktreePath) {
+      try {
+        const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: desc.worktreePath, id, home, env });
+        if (storeHandle) {
+          try {
+            const union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle });
+            return { known: !!union.known, count: union.known ? union.unread : 0 };
+          } finally {
+            try { storeHandle.close(); } catch (_) {}
+          }
+        }
+      } catch (_) { /* fall through to NDJSON-only below */ }
+    }
     const u = readUnread(desc.inboxPath, desc.cursorPath);
     return { known: !!u.known, count: u.known ? u.count : 0 };
   } catch (_) {

@@ -370,7 +370,10 @@ function defaultGitCommitTs(worktreePath) {
 // inboxPath = NDJSON append-only (one message/line). cursorPath = a bare integer
 // OR JSON {line:<int>} = count of consumed lines. Unparseable/absent cursor =>
 // known:false (treated as NOT pending — fail-safe: never nominate an unreadable
-// workspace for a kill).
+// workspace for a kill). NDJSON-ONLY — see unionPendingFor below for the
+// mesh-aware (NDJSON ∪ store) signal computeLiveness actually gates on; this
+// function is kept as-is (still used directly by callers that only have an
+// inboxPath/cursorPath, no workspace id/worktreePath to resolve a store from).
 function unreadBacklog(inboxPath, cursorPath, fsi) {
   const F = fsi || fs;
   let all;
@@ -389,6 +392,52 @@ function unreadBacklog(inboxPath, cursorPath, fsi) {
   }
   if (!Number.isFinite(cursor) || cursor < 0) return { lines: [], known: false };
   return { lines: all.slice(cursor), known: true };
+}
+
+// NOT_DRAINING_AGE_MS — how old the OLDEST unread message must be before a
+// nonzero union-unread backlog is additionally flagged `notDraining` (a
+// distinct, REPORT/ESCALATE-ONLY stall signal — see computeLiveness below).
+// 20 minutes: long enough that a child mid-turn (which drains reactively via
+// hooks/devswarm-child-drain.js, not on a fixed clock) isn't flagged for an
+// ordinary processing lag, short enough to catch the real failure mode this
+// closes (a mesh-direct backlog sitting unseen for a full session).
+const NOT_DRAINING_AGE_MS = 20 * 60 * 1000;
+
+// unionPendingFor(descriptor, home, opts) -> { pending, notDraining, oldestUnreadAgeMs }.
+// The mesh-aware (NDJSON durable inbox ∪ store-only mesh-direct backlog) unread
+// signal — closes the root cause this file's header documents (a `send --to`
+// direct is STORE-ONLY; unreadBacklog()/NDJSON-only reads it as empty). LAZY +
+// GUARDED (D27 idiom, matching devswarm-child-turn.js's registerStoreDescriptor
+// and every other hook in this plugin that opens the store): a missing/corrupt
+// devswarm-unread.js, an unresolvable repoKey, or a store-open failure all
+// degrade to the pre-fix unreadBacklog() NDJSON-only signal — NEVER throws,
+// NEVER makes a previously-passing check newly fail closed.
+function unionPendingFor(descriptor, home, opts) {
+  const o = opts || {};
+  const fsi = o.fs || fs;
+  const fallback = unreadBacklog(descriptor.inboxPath, descriptor.cursorPath, fsi);
+  try {
+    const unreadLib = require('./devswarm-unread.js');
+    const storeHandle = unreadLib.openStoreForUnread({
+      worktreePath: descriptor.worktreePath, id: descriptor.id, home, env: o.env,
+    });
+    if (!storeHandle) {
+      return { pending: fallback.known && fallback.lines.length > 0, notDraining: false, oldestUnreadAgeMs: null };
+    }
+    try {
+      const union = unreadLib.unionUnread({
+        inboxPath: descriptor.inboxPath, cursorPath: descriptor.cursorPath,
+        id: descriptor.id, storeHandle, fsi, now: o.now,
+      });
+      const pending = union.unread > 0;
+      const notDraining = pending && Number.isFinite(union.oldestUnreadAgeMs) && union.oldestUnreadAgeMs > NOT_DRAINING_AGE_MS;
+      return { pending, notDraining, oldestUnreadAgeMs: union.oldestUnreadAgeMs };
+    } finally {
+      try { storeHandle.close(); } catch (_) {}
+    }
+  } catch (_) {
+    return { pending: fallback.known && fallback.lines.length > 0, notDraining: false, oldestUnreadAgeMs: null };
+  }
 }
 
 // computeLiveness(opts) ->
@@ -424,21 +473,26 @@ function computeLiveness(opts) {
   // unread is surfaced (coordination axis) without ever being nudged-as-gone.
   const beatTs = heartbeatTs(descriptor.id, home, fsi);
   if (isFreshBeat(beatTs, now, heartbeatFreshMs)) { // P1-7: a future/non-positive ts is NOT fresh
-    const hbBacklog = unreadBacklog(descriptor.inboxPath, descriptor.cursorPath, fsi);
+    const hbUnion = unionPendingFor(descriptor, home, { fs: fsi, now, env: opts.env });
     return {
       status: 'alive',
       lastOutboundTs: Math.max(beatTs, priorOutbound || 0) || beatTs,
       staleSince: null,
       nudgeAttempts: 0,
       nudgedAt: null,
-      pending: hbBacklog.known && hbBacklog.lines.length > 0,
+      pending: hbUnion.pending,
+      notDraining: hbUnion.notDraining,
+      oldestUnreadAgeMs: hbUnion.oldestUnreadAgeMs,
     };
   }
 
   // P2-13 TERMINAL short-circuit: `escalated` is sticky — return it unchanged,
   // never re-stat, so the sweep stops re-targeting a workspace a human must handle.
   if (prev && prev.status === 'escalated') {
-    return { status: 'escalated', lastOutboundTs: priorOutbound, staleSince: priorStaleSince, nudgeAttempts, nudgedAt, pending: false };
+    return {
+      status: 'escalated', lastOutboundTs: priorOutbound, staleSince: priorStaleSince,
+      nudgeAttempts, nudgedAt, pending: false, notDraining: false, oldestUnreadAgeMs: null,
+    };
   }
 
   const projectDir = projectDirFor(descriptor.worktreePath, home);
@@ -446,8 +500,13 @@ function computeLiveness(opts) {
   const wMtime = worktreeActivityMtime(descriptor.worktreePath, runners);
   const lastOutboundTs = Math.max(tMtime || 0, wMtime || 0) || null;
 
-  const backlog = unreadBacklog(descriptor.inboxPath, descriptor.cursorPath, fsi);
-  const pending = backlog.known && backlog.lines.length > 0;
+  // union-unread (NDJSON ∪ store) — see unionPendingFor's header. `pending` is
+  // this file's ORIGINAL name for "known unread backlog"; `notDraining` (item 3,
+  // REPORT/ESCALATE ONLY — never gates a kill) additionally flags a pending
+  // backlog whose OLDEST row is older than NOT_DRAINING_AGE_MS, independent of
+  // the alive/stale/nudged/escalated axis below.
+  const unionInfo = unionPendingFor(descriptor, home, { fs: fsi, now, env: opts.env });
+  const pending = unionInfo.pending;
 
   // NUDGE hold: a poke is outstanding. Stay `nudged` unless the fresh outbound
   // signal has advanced past nudgedAt (proof the poke woke the session up ->
@@ -458,11 +517,17 @@ function computeLiveness(opts) {
   if (prev && prev.status === 'nudged') {
     const advanced = nudgedAt !== null && lastOutboundTs !== null && lastOutboundTs > nudgedAt;
     if (advanced) {
-      return { status: 'alive', lastOutboundTs, staleSince: null, nudgeAttempts, nudgedAt, pending };
+      return {
+        status: 'alive', lastOutboundTs, staleSince: null, nudgeAttempts, nudgedAt,
+        pending, notDraining: unionInfo.notDraining, oldestUnreadAgeMs: unionInfo.oldestUnreadAgeMs,
+      };
     }
     const withinWindow = nudgedAt !== null && (now - nudgedAt) < nudgeWindowMs;
     if (withinWindow) {
-      return { status: 'nudged', lastOutboundTs: priorOutbound, staleSince: priorStaleSince, nudgeAttempts, nudgedAt, pending };
+      return {
+        status: 'nudged', lastOutboundTs: priorOutbound, staleSince: priorStaleSince, nudgeAttempts, nudgedAt,
+        pending, notDraining: unionInfo.notDraining, oldestUnreadAgeMs: unionInfo.oldestUnreadAgeMs,
+      };
     }
     // window elapsed, no advance -> fall through to the normal recompute.
   }
@@ -480,6 +545,8 @@ function computeLiveness(opts) {
     nudgeAttempts,
     nudgedAt,
     pending,
+    notDraining: unionInfo.notDraining,
+    oldestUnreadAgeMs: unionInfo.oldestUnreadAgeMs,
   };
 }
 
@@ -496,9 +563,9 @@ function writeVerdict(id, verdict, home, fsi) {
 
 module.exports = {
   DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS, DEFAULT_HEARTBEAT_FRESH_MS, DEFAULT_DORMANT_MS,
-  DEFAULT_ROSTER_IDLE_MS,
+  DEFAULT_ROSTER_IDLE_MS, NOT_DRAINING_AGE_MS,
   isSafeId, devswarmRoot, livenessPathFor, heartbeatPathFor, projectDirFor,
-  transcriptMtime, worktreeActivityMtime, unreadBacklog, computeLiveness, writeVerdict,
+  transcriptMtime, worktreeActivityMtime, unreadBacklog, unionPendingFor, computeLiveness, writeVerdict,
   heartbeatTs, hasFreshHeartbeat, isFreshBeat, dormantThresholdMs, isDormantActivity,
   idleThresholdMs, readActivityTs, isDormantRow,
 };

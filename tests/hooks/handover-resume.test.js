@@ -42,7 +42,7 @@ function appendIndexRow(cwd, date, sessionId, outcome, seq = 1) {
   fs.appendFileSync(indexPath, line, 'utf8');
 }
 
-test('(a) no .anti-hall/handovers dir -> no output, empty context', () => {
+test('(a) no .anti-hall/handovers dir + source compact -> THREAD 4 negative report injected', () => {
   const h = makeHome();
   const cwd = makeProjectCwd();
   try {
@@ -52,10 +52,55 @@ test('(a) no .anti-hall/handovers dir -> no output, empty context', () => {
       cwd,
       source: 'compact',
       hook_event_name: 'SessionStart',
+    }, { home: h.home, expectJson: true });
+
+    assert.strictEqual(r.status, 0, 'must always exit 0 (fail-open)');
+    assert.ok(r.json, `expected JSON negative-report context, got: ${r.stdout}`);
+    assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'SessionStart');
+    assert.match(r.json.hookSpecificOutput.additionalContext, /No session handover found/);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /wrong location/);
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('(a2) no .anti-hall/handovers dir + source startup -> silent (no noise on ordinary fresh sessions)', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    const r = testHook(HOOK, {
+      session_id: 's1',
+      transcript_path: '/tmp/whatever.jsonl',
+      cwd,
+      source: 'startup',
+      hook_event_name: 'SessionStart',
     }, { home: h.home });
 
     assert.strictEqual(r.status, 0, 'must always exit 0 (fail-open)');
-    assert.strictEqual(r.stdout.trim(), '', 'no handovers dir -> no injection at all');
+    assert.strictEqual(r.stdout.trim(), '', 'startup with no handovers dir must stay silent');
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('(a3) handovers dir exists but is empty (no HANDOVER*.md yet) + source clear -> negative report injected', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    fs.mkdirSync(path.join(cwd, '.anti-hall', 'handovers'), { recursive: true });
+    const r = testHook(HOOK, {
+      session_id: 's1',
+      transcript_path: '/tmp/whatever.jsonl',
+      cwd,
+      source: 'clear',
+      hook_event_name: 'SessionStart',
+    }, { home: h.home, expectJson: true });
+
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json, `expected JSON negative-report context, got: ${r.stdout}`);
+    assert.match(r.json.hookSpecificOutput.additionalContext, /No session handover found/);
   } finally {
     h.cleanup();
     fs.rmSync(cwd, { recursive: true, force: true });

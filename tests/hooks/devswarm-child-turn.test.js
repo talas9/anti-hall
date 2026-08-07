@@ -756,6 +756,22 @@ test('D26 MESH DIRECT: this child\'s own directUnread>0 in the shared summary ->
   } finally { h.cleanup(); }
 });
 
+test('D26 MESH DIRECT: age surfacing — an old unread row renders "(oldest Xm)" from oldestDirectUnreadTs', () => {
+  const h = makeHome();
+  try {
+    const s = meshStore.openStore({ home: h.home, workspaceId: 'child-stale', hash: REPO_KEY });
+    const oldTs = Date.now() - 25 * 60 * 1000; // 25 minutes ago
+    try {
+      const fields = { from: 'primary-seed', to: 'child-stale', type: 'direct', message: 'old one', timestamp: oldTs, urgency: 'normal' };
+      meshStore.appendMeshMessage(s, Object.assign({}, fields, { hash: meshStore.meshMessageHash(fields) }));
+      meshStore.deriveSummary(s, { home: h.home });
+    } finally { s.close(); }
+    const r = testHook(HOOK, promptPayload('sess-mesh', REPO_CWD), { home: h.home, expectJson: true, env: CHILD_ENV });
+    const seg = meshDirectSegment(ctx(r));
+    assert.match(seg, /\(oldest 2[0-9]m\)/, `must surface the oldest-unread age; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
 test('D26 MESH DIRECT URGENT: urgencyMax urgent/high -> the LOUD URGENT wording (D4)', () => {
   const h = makeHome();
   try {

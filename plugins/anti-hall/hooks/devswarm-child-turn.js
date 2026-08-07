@@ -268,25 +268,44 @@ function buildUnreadSegment(info) {
   );
 }
 
-// buildMeshDirectSegment(count, id, urgencyMax) -> string. D26/D4 (Phase 8 step
-// 3): urgency-tiered nudge for a mesh DIRECT addressed to THIS child's meshId —
-// urgent/high gets the LOUDEST imperative wording (parity with the Primary's
-// own buildOwnUnreadSegment posture); everything else (null/'normal'/
-// unrecognized) gets the standard read nudge (edge_cases: unknown -> normal).
-// A DIRECT always surfaces regardless of urgency (D4's type-vs-urgency
-// separation — urgency governs wording/loudness only).
-function buildMeshDirectSegment(count, id, urgencyMax) {
+// ageLabel(oldestTs, now) -> ' (oldest Xm)' or '' when the age is not known
+// (fail-open to omitting it — item 6: "Fail-open to omitting trend" applies
+// equally to age when the signal is unavailable, never fabricated).
+function ageLabel(oldestTs, now) {
+  if (!Number.isFinite(oldestTs) || oldestTs <= 0) return '';
+  const age = (Number.isFinite(now) ? now : Date.now()) - oldestTs;
+  if (age < 0) return ''; // future ts is not evidence of anything
+  return ' (oldest ' + Math.floor(age / 60000) + 'm)';
+}
+
+// buildMeshDirectSegment(count, id, urgencyMax, oldestTs) -> string. D26/D4
+// (Phase 8 step 3): urgency-tiered nudge for a mesh DIRECT addressed to THIS
+// child's meshId — urgent/high gets the LOUDEST imperative wording (parity
+// with the Primary's own buildOwnUnreadSegment posture); everything else
+// (null/'normal'/unrecognized) gets the standard read nudge (edge_cases:
+// unknown -> normal). A DIRECT always surfaces regardless of urgency (D4's
+// type-vs-urgency separation — urgency governs wording/loudness only).
+//
+// `oldestTs` (item 4/6 — mid-turn drain age surfacing): the oldest unread
+// row's ts (companion/lib/devswarm-store.js computeSummary's
+// oldestDirectUnreadTs, a zero-extra-read projection field), appended as
+// '(oldest Xm)' when known. The clear path is `inbox read-primary <id>` —
+// the ACTUAL cursor-advancing command (cmdInboxMessages with ack:true; root
+// cause b: `inbox read <id>` does NOT advance any cursor — never prescribed
+// here).
+function buildMeshDirectSegment(count, id, urgencyMax, oldestTs) {
+  const age = ageLabel(oldestTs);
   const urgent = urgencyMax === 'urgent' || urgencyMax === 'high';
   if (urgent) {
     return (
       'DEVSWARM MESH DIRECT — URGENT: you have ' + count + ' unread mesh direct '
-      + 'message(s) addressed to you. STOP and read them FIRST via `node ' + CLI + ' '
+      + 'message(s)' + age + ' addressed to you. STOP and read them FIRST via `node ' + CLI + ' '
       + 'inbox read-primary ' + id + '` before continuing.'
     );
   }
   return (
-    'DEVSWARM MESH DIRECT: you have ' + count + ' unread mesh direct message(s) '
-    + 'addressed to you. Read them via `node ' + CLI + ' inbox read-primary ' + id + '`.'
+    'DEVSWARM MESH DIRECT: you have ' + count + ' unread mesh direct message(s)'
+    + age + ' addressed to you. Read them via `node ' + CLI + ' inbox read-primary ' + id + '`.'
   );
 }
 
@@ -764,7 +783,8 @@ function main() {
             const directUnread = entry && Number.isFinite(entry.directUnread) ? entry.directUnread
               : (entry && Number.isFinite(entry.unread) ? entry.unread : 0);
             if (directUnread > 0) {
-              meshDirectSegment = buildMeshDirectSegment(directUnread, id, entry.urgencyMax || null);
+              const oldestTs = Number.isFinite(entry.oldestDirectUnreadTs) ? entry.oldestDirectUnreadTs : null;
+              meshDirectSegment = buildMeshDirectSegment(directUnread, id, entry.urgencyMax || null, oldestTs);
             }
             if (entry && entry.archive_requested) {
               archiveRequestedId = id;

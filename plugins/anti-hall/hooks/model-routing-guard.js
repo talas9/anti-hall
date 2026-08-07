@@ -46,6 +46,8 @@
 'use strict';
 
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 // Bound the amount of stdin we scan for keywords. A pathological multi-MB prompt
 // must not turn classification into a CPU sink. 128 KB covers any real brief.
@@ -138,6 +140,42 @@ function countSignals(tokens, list) {
   return n;
 }
 
+// HANDOVER-DELEGATION ADVISORY (owner amendment 2026-08-07, thread 1). A
+// field failure showed a session delegating handover-writing to a subagent
+// EVEN AFTER loading the handover skill — a subagent never lived the session,
+// so its reconstruction loses decision/trial fidelity. This is a SEPARATE,
+// advisory-only concern from the model-tier routing table above: it fires on
+// intent (handover|handoff AND write|prepare|create|author|draft), independent
+// of model/subagent_type, and NEVER blocks. Capped once per session via its
+// own state file so it nudges exactly once, not on every spawn.
+const HANDOVER_NOUN_RE = /\b(handover|handoff)\b/i;
+const HANDOVER_VERB_RE = /\b(write|prepare|create|author|draft)\b/i;
+
+function handoverDelegationAdvisory(payload, corpus) {
+  if (!HANDOVER_NOUN_RE.test(corpus) || !HANDOVER_VERB_RE.test(corpus)) return;
+  const rawSessionId = payload && payload.session_id != null ? String(payload.session_id) : '';
+  const safeSession = (rawSessionId || 'unknown-session').replace(/[^A-Za-z0-9_.-]/g, '_');
+  const stateDir = path.join(os.homedir(), '.anti-hall');
+  const stateFile = path.join(stateDir, 'model-routing-guard-handover-state-' + safeSession + '.json');
+  try {
+    if (fs.existsSync(stateFile)) return; // already advised this session
+  } catch (_) {
+    return; // can't check the cap -> fail-open, stay silent rather than risk a loop
+  }
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ advised: true }), 'utf8');
+  } catch (_) {
+    return; // can't persist the cap -> fail-open, don't advise uncapped
+  }
+  advise(
+    'HANDOVER-DELEGATION (advisory): this spawn looks like it is being asked to write/prepare ' +
+    'a session handover. The handover must be authored by the session holding the memory — ' +
+    'invoke the handover skill yourself, do not delegate the writing. A subagent never lived ' +
+    'this session, so its reconstruction loses decision/trial fidelity.'
+  );
+}
+
 // Advisory: nested hookSpecificOutput schema (KB §1.4, verify-first.js pattern).
 // fs.writeSync(1, …) is synchronous so exit cannot race an async pipe flush.
 function advise(additionalContext) {
@@ -184,6 +222,13 @@ function main() {
 
   // Bounded scan corpus: description + prompt, capped at SCAN_LIMIT.
   const corpus = (description + '\n' + prompt).slice(0, SCAN_LIMIT);
+
+  // Handover-delegation advisory runs FIRST and independently of the model-tier
+  // table below — it is about WHO writes the handover, not which model runs it.
+  // advise() exits the process when it fires; a no-match/already-capped call
+  // returns normally and the model-tier table below still runs.
+  handoverDelegationAdvisory(payload, corpus);
+
   const tokens = tokenize(corpus);
 
   const mechanical = countSignals(tokens, MECHANICAL);

@@ -365,3 +365,71 @@ test('P1-7: a FUTURE heartbeat does NOT short-circuit computeLiveness to alive (
     assert.strictEqual(v.status, 'stale', 'a future heartbeat must not be accepted as proof-of-life');
   } finally { cleanup(); }
 });
+
+// ============================================================================
+// Item 2/3 (SkyCrew fix-wave): union-unread (NDJSON ∪ store-only mesh-direct)
+// drives `pending`, and a stale-but-nonzero backlog additionally flags
+// `notDraining` — a distinct, REPORT/ESCALATE-ONLY signal (never gates a kill;
+// see liveness.js header). A `send --to` direct is STORE-ONLY (see companion/
+// lib/devswarm-unread.js's header) — the pre-fix unreadBacklog()/NDJSON-only
+// read was BLIND to it.
+// ============================================================================
+
+const devswarmStoreForLiveness = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const repokeyForLiveness = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+
+const LIVENESS_REPO_CWD = process.cwd();
+const LIVENESS_REPO_KEY = repokeyForLiveness.repoKeyForWorktree(LIVENESS_REPO_CWD);
+
+function seedStoreOnlyBacklog(home, id, count, ageMs) {
+  const s = devswarmStoreForLiveness.openStore({ home, workspaceId: id, hash: LIVENESS_REPO_KEY });
+  try {
+    const ts = Date.now() - (typeof ageMs === 'number' ? ageMs : 0);
+    for (let i = 0; i < count; i++) {
+      const fields = { from: 'primary-x', to: id, type: 'direct', message: 'row ' + i, timestamp: ts };
+      devswarmStoreForLiveness.appendMeshMessage(s, Object.assign({}, fields, { hash: devswarmStoreForLiveness.meshMessageHash(fields) }));
+    }
+  } finally { s.close(); }
+}
+
+test('UNION: a store-only mesh-direct backlog (empty NDJSON) is picked up as pending — previously invisible', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = LIVENESS_REPO_CWD;
+    const d = { id: 'sw1', worktreePath, inboxPath: path.join(home, 'sw1.inbox.ndjson'), cursorPath: path.join(home, 'sw1.cursor'), sessionId: null };
+    fs.writeFileSync(d.inboxPath, ''); // empty durable NDJSON — the pre-fix signal reads 0 unread
+    fs.writeFileSync(d.cursorPath, '0');
+    seedStoreOnlyBacklog(home, 'sw1', 14, 25 * 60 * 1000); // 14 store-only directs, 25 min old (field-evidence shape)
+    writeHeartbeat(home, 'sw1', 0); // fresh heartbeat -> takes the heartbeat short-circuit branch
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE });
+    assert.strictEqual(v.status, 'alive', 'a fresh heartbeat still proves the env alive');
+    assert.strictEqual(v.pending, true, 'the store-only backlog must be visible as pending (union, not NDJSON-only)');
+    assert.strictEqual(v.notDraining, true, 'a pending backlog older than NOT_DRAINING_AGE_MS must flag notDraining');
+    assert.ok(v.oldestUnreadAgeMs >= 25 * 60 * 1000 - 5000, `oldestUnreadAgeMs must reflect the seeded age; got ${v.oldestUnreadAgeMs}`);
+  } finally { cleanup(); }
+});
+
+test('UNION: a FRESH store-only backlog (under NOT_DRAINING_AGE_MS) is pending but NOT flagged notDraining', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const worktreePath = LIVENESS_REPO_CWD;
+    const d = { id: 'sw2', worktreePath, inboxPath: path.join(home, 'sw2.inbox.ndjson'), cursorPath: path.join(home, 'sw2.cursor'), sessionId: null };
+    fs.writeFileSync(d.inboxPath, '');
+    fs.writeFileSync(d.cursorPath, '0');
+    seedStoreOnlyBacklog(home, 'sw2', 1, 60 * 1000); // 1 minute old — well under the 20-min threshold
+    writeHeartbeat(home, 'sw2', 0);
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE });
+    assert.strictEqual(v.pending, true, 'still pending');
+    assert.strictEqual(v.notDraining, false, 'a fresh backlog must not be flagged notDraining yet');
+  } finally { cleanup(); }
+});
+
+test('UNION FAIL-OPEN: an unresolvable worktree (non-git) degrades to the pre-fix NDJSON-only pending signal, never throws', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seed(home, { id: 'nongit1', transcriptAgeMs: 40 * 60 * 1000, inboxLines: [{ m: 1 }], cursor: 0 }); // seed's worktreePath is NOT a git repo
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => Date.now() - 40 * 60 * 1000 } });
+    assert.strictEqual(v.pending, true, 'NDJSON-only fallback must still see its own durable unread line');
+    assert.strictEqual(v.notDraining, false, 'no oldest-ts signal available on the NDJSON-only fallback path -> never fabricated as notDraining');
+  } finally { cleanup(); }
+});

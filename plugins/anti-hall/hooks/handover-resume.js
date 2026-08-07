@@ -162,6 +162,7 @@ function buildContext(candidate, outcome, prefix) {
   lines.push('3. Load detail files ONLY as needed via the pointer table (state.md / decisions.md / trials.md / knowledge.md).');
   lines.push('4. Check trials.md do-not-repeat list before re-attempting anything.');
   lines.push('5. Continue from the single Next Action.');
+  lines.push("6. Recreate/reconcile your task list from state.md's Task list snapshot BEFORE working.");
   lines.push('');
   lines.push(
     'This handover SUPERSEDES the auto-compact summary and any legacy CONTINUE-HERE-style ' +
@@ -169,6 +170,32 @@ function buildContext(candidate, outcome, prefix) {
     'evidence-backed record; the compact summary is lossy.'
   );
   return lines.join('\n');
+}
+
+// emitNegativeReport(payload) -- THREAD 4 (owner amendment 2026-08-07). On a
+// clear/compact source ONLY (never startup/resume -- that would be noise on
+// every fresh session that simply hasn't written a handover yet), when the
+// scan finds NO handover at all for this repo, inject a single short pointer
+// line naming the likely cause (wrong-location write, now redirected by
+// edit-guard's thread-3 amendment) instead of staying silent. Kept to one
+// line, well under the ~10k injection cap.
+function emitNegativeReport(payload) {
+  const hookEventName = typeof payload.hook_event_name === 'string' && payload.hook_event_name
+    ? payload.hook_event_name
+    : 'SessionStart';
+  const out = {
+    hookSpecificOutput: {
+      hookEventName,
+      additionalContext:
+        'No session handover found under .anti-hall/handovers/ -- if one was written ' +
+        'this session, it may be in the wrong location; the handover skill writes there.',
+    },
+  };
+  try {
+    fs.writeSync(1, JSON.stringify(out) + '\n');
+  } catch (_) {
+    // fail-open: never let injection failure affect session start.
+  }
 }
 
 function main() {
@@ -190,6 +217,9 @@ function main() {
   const cwd = payload.cwd;
   if (!cwd || typeof cwd !== 'string') return;
 
+  const source = typeof payload.source === 'string' ? payload.source : '';
+  const isCompactOrClear = source === 'clear' || source === 'compact';
+
   const handoversRoot = path.join(cwd, '.anti-hall', 'handovers');
   let rootIsDir = false;
   try {
@@ -197,19 +227,24 @@ function main() {
   } catch (_) {
     rootIsDir = false;
   }
-  if (!rootIsDir) return;
+  if (!rootIsDir) {
+    if (isCompactOrClear) emitNegativeReport(payload);
+    return;
+  }
 
   const rawSessionId = payload.session_id != null ? String(payload.session_id) : '';
   const wantSessionId = rawSessionId ? sanitizeSessionId(rawSessionId) : '';
 
   const candidate = findNewestHandover(handoversRoot, wantSessionId);
-  if (!candidate) return;
+  if (!candidate) {
+    if (isCompactOrClear) emitNegativeReport(payload);
+    return;
+  }
 
   const ageMs = Date.now() - candidate.mtimeMs;
-  if (ageMs > SEVEN_DAYS_MS) return; // stale -- silent, per spec.
+  if (ageMs > SEVEN_DAYS_MS) return; // stale -- silent, per spec (unchanged).
 
-  const source = typeof payload.source === 'string' ? payload.source : '';
-  const prefix = (source === 'clear' || source === 'compact')
+  const prefix = isCompactOrClear
     ? 'A session handover was found for this continuation'
     : 'A previous session left a handover';
 

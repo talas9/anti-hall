@@ -651,7 +651,7 @@ test('URGENCY: an urgent direct renders the LOUD imperative segment, distinct fr
     assert.ok(urgentSeg, `urgent segment expected; ctx=${c}`);
     assert.ok(urgentSeg.includes('wsUrgent'), `urgent segment names wsUrgent; seg=${urgentSeg}`);
     assert.ok(!urgentSeg.includes('wsNormal'), `urgent segment must not include the normal workspace; seg=${urgentSeg}`);
-    assert.match(urgentSeg, /STOP and read/);
+    assert.match(urgentSeg, /STOP and poke/);
     assert.ok(normalSeg, `standard segment expected for the normal-urgency workspace; ctx=${c}`);
     assert.ok(normalSeg.includes('wsNormal'), `standard segment names wsNormal; seg=${normalSeg}`);
     assert.ok(!normalSeg.includes('wsUrgent'), `standard segment must not include the urgent workspace; seg=${normalSeg}`);
@@ -725,7 +725,11 @@ test('WORDING: normal-tier unread segment is ADVISORY, not a hard STOP', () => {
     assert.ok(seg, `normal segment expected; ctx=${c}`);
     assert.ok(!/STOP/.test(seg), `normal-tier segment must not contain STOP; seg=${seg}`);
     assert.ok(!/before continuing/.test(seg), `normal-tier segment must not contain 'before continuing'; seg=${seg}`);
-    assert.ok(seg.includes('inbox read'), `normal-tier segment must still show the inbox read command; seg=${seg}`);
+    // Root cause b fix: `inbox read <id>` never advances any cursor, so it is
+    // NEVER prescribed as the remedy anymore — poke/escalate guidance instead.
+    assert.ok(!seg.includes('inbox read <id>'), `normal-tier segment must NOT prescribe the non-mutating inbox-read command; seg=${seg}`);
+    assert.ok(seg.includes('CHILD NOT DRAINING'), `normal-tier segment must carry the CHILD NOT DRAINING label; seg=${seg}`);
+    assert.ok(seg.includes('send --to'), `normal-tier segment must show the poke (send --to) command; seg=${seg}`);
   } finally { h.cleanup(); }
 });
 
@@ -757,6 +761,39 @@ test('WORDING: high-urgency also routes to the LOUD urgent segment', () => {
     assert.ok(seg.includes('wsHigh'), `urgent segment names wsHigh; seg=${seg}`);
     assert.ok(/STOP/.test(seg) && /before continuing/.test(seg), `high-urgency segment must stay loud; seg=${seg}`);
     assert.strictEqual(segment(c, 'DEVSWARM PARENT INBOX'), '', `high-urgency workspace must not also appear in the normal segment; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+// ---- item 5: CHILD NOT DRAINING — title (not bare id) + age surfacing ----
+
+const parentInboxNames = require('../../plugins/anti-hall/companion/lib/devswarm-names.js');
+
+test('CHILD NOT DRAINING: a registered workspace TITLE is shown in the human-facing list, not the bare mesh id', () => {
+  const h = makeHome();
+  try {
+    parentInboxNames.writeName(h.home, 'child-abc123', 'billing-refactor');
+    writeSharedSummary(h.home, {
+      'child-abc123': { total: 1, cursor: 0, unread: 1, directUnread: 1 },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    const seg = segment(c, 'DEVSWARM PARENT INBOX');
+    assert.ok(seg.includes('billing-refactor'), `must show the registered title; seg=${seg}`);
+    assert.ok(seg.includes('CHILD NOT DRAINING'), `must carry the CHILD NOT DRAINING label; seg=${seg}`);
+  } finally { h.cleanup(); }
+});
+
+test('CHILD NOT DRAINING: oldestDirectUnreadTs surfaces as "(oldest Xm)" in the human-facing list', () => {
+  const h = makeHome();
+  try {
+    const oldTs = Date.now() - 15 * 60 * 1000;
+    writeSharedSummary(h.home, {
+      wsOld: { total: 1, cursor: 0, unread: 1, directUnread: 1, oldestDirectUnreadTs: oldTs },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    const c = ctx(r);
+    const seg = segment(c, 'DEVSWARM PARENT INBOX');
+    assert.match(seg, /oldest 1[45]m/, `must surface the oldest-unread age; seg=${seg}`);
   } finally { h.cleanup(); }
 });
 
@@ -1271,7 +1308,7 @@ test('OWN UNREAD: coexists with a child unread banner without prefix collision, 
     assert.ok(own.includes('1'), `own unread count; own=${own}`);
     assert.ok(child.includes('wsA'), `child segment names wsA; child=${child}`);
     assert.ok(child.includes('2 unread'), `child unread count; child=${child}`);
-    assert.ok(/Read each unread workspace/.test(child), `child unread wording stays advisory; child=${child}`);
+    assert.ok(/CHILD NOT DRAINING/.test(child), `child unread wording stays advisory (poke/escalate); child=${child}`);
     assert.ok(!/STOP/.test(child) && !/before continuing/.test(child), `normal-tier child must not be imperative; child=${child}`);
   } finally { h.cleanup(); }
 });
@@ -1800,12 +1837,13 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
         + '|---|---|---|---|---|\n'
         + '| wsA | active | — | 2 | — |',
       'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — wsA (2 unread). '
-        + 'Read each unread workspace\'s inbox message(s) via `node '
-        + cliPath + ' inbox read <id>` when you reach a good stopping point '
-        + '(or reassign/archive it). '
+        + 'CHILD NOT DRAINING: these are message(s) YOU sent that the child has NOT yet '
+        + 'drained. Poke it (`node ' + cliPath + ' send --to <id> --message "..."`) or '
+        + 'escalate/reassign it — do not assume it has seen the backlog just because '
+        + 'time has passed. '
         + 'A workspace flagged stale/escalated has a wedged child — check on it.',
     ].join('\n\n');
-    assert.strictEqual(c, expected, `clean summary must be byte-identical to pre-Phase-A output; ctx=${c}`);
+    assert.strictEqual(c, expected, `updated golden (item 5, CHILD NOT DRAINING wording) must match; ctx=${c}`);
     assert.ok(!c.includes('ORPHANED MESH'), 'no orphan segment expected');
     assert.ok(!c.includes('STALE WORKSPACE(S)'), 'no stale-registry segment expected');
   } finally { h.cleanup(); }

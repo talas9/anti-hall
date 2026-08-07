@@ -22,6 +22,18 @@ always-loaded context). If you learn something durable while writing a handover,
 route it to `CLAUDE.md`/project memory separately — don't smuggle it into
 `decisions.md`.
 
+## Self-write mandate (read first)
+
+The handover is written **by the agent holding the session context** —
+**never delegate the writing to a subagent**: a subagent never lived this
+session, so its reconstruction loses decision/trial fidelity (a field
+failure: a session delegated handover-writing to a subagent even after
+loading this skill). This is the documented exception to the
+delegation-first/orchestrate-only doctrine — `edit-guard.js` lets the
+coordinator Write/Edit handover files directly under
+`.anti-hall/handovers/**` (and redirects NEW handover-named `.md` writes
+elsewhere back to that path), so self-write never needs a subagent detour.
+
 ## Artifact layout
 
 ```
@@ -78,7 +90,9 @@ consolidated schema):
    summary.
 4. **NOT verified / verification gaps** — mandatory, explicit. If nothing is
    unverified, say so explicitly; don't just omit the section.
-5. **Open items** — numbered, prioritized.
+5. **Open items** — numbered, prioritized; the pending/in-progress subset of
+   state.md's Task list snapshot, one line each — point at state.md for the
+   full snapshot.
 6. **Decisions summary** — one line each, pointing into `decisions.md` for the
    reasoning.
 7. **Do-not-repeat summary** — pointing into `trials.md`.
@@ -155,6 +169,11 @@ Unpushed: <yes/no, what>
 Uncommitted files: <list>
 Running processes: <list, or "none">
 
+## Task list snapshot
+| id | subject | status | priority | blocked-by |
+|---|---|---|---|---|
+| ... | ... | pending/in_progress/completed | P0/P1/P2/... | ... |
+
 ## Commands run this session (with actual results)
 - `<command>` → `<real output, trimmed>`
 ```
@@ -227,6 +246,24 @@ fail once the ceiling is hit — docs/KB-session-handover.md, F4). If you notice
 natural task boundary during a long session, it's reasonable to say so and offer
 to write a handover rather than waiting to be asked.
 
+## Before ending: quiesce, declare, stay honest
+
+**Quiesce gate.** Before declaring safe to compact/clear, reach a safe point:
+finish/park the current micro-task, enumerate every running background item
+(task list, background agents, workflows, monitors), and for each: await it,
+stop it, or record it in `HANDOVER.md`'s Open items as STILL RUNNING with its
+id and re-attach instructions. While unmet, say WAIT, not done: `⏳ **NOT SAFE
+to compact yet** — waiting on: <named items>. I'll tell you the moment it's
+safe.` Once met, the final message is: `✅ **HANDOVER COMPLETE — SAFE TO
+COMPACT OR CLEAR NOW**` + `<saved paths list>` + `<numbered instructions:
+/compact or /clear; the resume hook guides the fresh session automatically>`.
+
+**Terminal declaration.** The ✅ SAFE line is the LAST act of the turn — work
+after it makes the handover STALE; refresh it (same seq, or seq+1) and
+re-declare before claiming safe again. `tasklist-guard.js` backs this up
+mechanically: file-changing work after the newest `HANDOVER*.md`'s mtime gets
+a capped "handover is STALE" advisory on its Stop output.
+
 ## Next-session usage
 
 1. Read `.anti-hall/handovers/INDEX.md` → find the newest relevant row.
@@ -237,3 +274,6 @@ to write a handover rather than waiting to be asked.
    file.
 4. Page in detail files only as needed, per the Detail-file pointer table's "read
    this when" column — progressive disclosure, not a full read of everything.
+5. Recreate/reconcile your task list (TaskCreate/TaskUpdate or TodoWrite) from
+   state.md's Task list snapshot BEFORE starting any work — the snapshot is
+   the source of truth for what's pending/in-progress/blocked.

@@ -346,9 +346,16 @@ function finishingRate(summary, id, heartbeat) {
 // about the same axis; with the default windows (30 min dormant vs 6 h idle) `idle`
 // is consequently reached only when ANTIHALL_DEVSWARM_DORMANT_MS is configured
 // WIDER than ANTIHALL_DEVSWARM_IDLE_MS, which is why that branch is kept.
-function displayStatus(archiveReady, status, activityTs, now, dormant) {
+function displayStatus(archiveReady, status, activityTs, now, dormant, notDraining) {
   if (status === 'escalated') return { label: 'escalated', rank: 0 };
   if (status === 'stale' || status === 'nudged') return { label: 'stale', rank: 1 };
+  // not-draining (liveness.js unionPendingFor's `notDraining`, item 3): a live/
+  // alive workspace whose union-unread backlog has sat past NOT_DRAINING_AGE_MS
+  // regardless of activity — distinct from `stale`/`escalated` (those are
+  // ACTIVITY axis; this is the COORDINATION axis) so it must not be folded into
+  // either label. REPORT/ESCALATE ONLY (never gates a kill); sorts just behind
+  // stale/escalated since it names a real, aging neglect signal.
+  if (notDraining) return { label: 'not-draining', rank: 1.5 };
   if (archiveReady) return { label: 'archive-ready', rank: 2 };
   if (dormant) {
     return { label: 'dormant', rank: 5 };
@@ -387,6 +394,9 @@ function buildWorkspaceTable(rows, now, capped, hidden, hiddenRows) {
   // nagging the owner to close. Costs nothing when every row is live.
   if (rows.some((r) => r.label === 'dormant')) {
     lines.push('dormant = no recent activity signal; often a workspace already CLOSED in the app — verify before nagging to close. If it has unread or a pending question, still answer it.');
+  }
+  if (rows.some((r) => r.label === 'not-draining')) {
+    lines.push('not-draining = a union-unread backlog has sat undrained >20m — a coordination signal independent of activity/liveness; poke or escalate, report/escalate only, never auto-killed.');
   }
   if (capped) {
     // Name the hidden rows (capped at 8 ids + ellipsis, so a huge overflow
@@ -476,18 +486,93 @@ function logInjection(home, workspaces) {
   } catch (_) {}
 }
 
+// MAX_TREND_LOG_BYTES — item 6 ("trend vs the last persisted logInjection
+// entry"): parent-inbox.log has no rotation, so it can grow unbounded over a
+// long session. Bound the read rather than parse an ever-growing file every
+// turn — beyond this cap, trend is silently omitted (fail-open, per item 6's
+// own "fail-open to omitting trend" clause), never a thrown error.
+const MAX_TREND_LOG_BYTES = 2 * 1024 * 1024;
+
+// lastInjectedUnread(home, id) -> number | null. The `unread` count this
+// workspace carried in the MOST RECENT prior 'inject' telemetry line (read
+// BEFORE this turn's own logInjection() call, so it is always a strictly
+// earlier turn's snapshot — never this turn's). Read-only, fail-open: a
+// missing/oversized/corrupt log, or no prior entry for this id, is `null`
+// (never fabricated, never thrown).
+function lastInjectedUnread(home, id) {
+  try {
+    const p = parentInboxLogPath(home);
+    const st = fs.statSync(p);
+    if (!st.isFile() || st.size === 0 || st.size > MAX_TREND_LOG_BYTES) return null;
+    const lines = fs.readFileSync(p, 'utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line) continue;
+      let rec;
+      try { rec = JSON.parse(line); } catch (_) { continue; }
+      if (!rec || rec.event !== 'inject' || !Array.isArray(rec.workspaces)) continue;
+      const w = rec.workspaces.find((x) => x && x.id === id);
+      if (w && Number.isFinite(w.unread)) return w.unread;
+    }
+    return null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// trendLabel(home, id, currUnread) -> 'rising' | 'flat' | 'falling' | null
+// (null when no prior snapshot exists — fail-open to omitting trend, item 6).
+function trendLabel(home, id, currUnread) {
+  const prev = lastInjectedUnread(home, id);
+  if (!Number.isFinite(prev)) return null;
+  if (currUnread > prev) return 'rising';
+  if (currUnread < prev) return 'falling';
+  return 'flat';
+}
+
+// truncateTitle(s, max) -> `s` capped at ~48 chars (item 5: "Workspace TITLE
+// (truncate ~48 chars) in human-facing text; mesh id ONLY inside command
+// strings") — a workspace's cached free-text name/title (companion/lib/
+// devswarm-names.js) is operator-authored and unbounded; this keeps a long
+// title from bloating the per-turn injection.
+function truncateTitle(s, max) {
+  const str = String(s == null ? '' : s);
+  const limit = max || 48;
+  return str.length > limit ? str.slice(0, limit) + '…' : str;
+}
+
 // buildUnreadSegment(list) -> string. SHORT summary of the unread/idle workspaces.
 // ADVISORY wording for the unread case (softened from a per-turn "STOP ...
 // before continuing" imperative — urgent/high items never reach this function:
 // the call site filters tierOf(w) === 'normal' here and routes tierOf(w) ===
 // 'urgent' to buildUrgentUnreadSegment below, which stays loud. This is the
 // normal tier by construction, so a hard interrupt every turn is unwarranted.
-function buildUnreadSegment(list) {
+//
+// CHILD NOT DRAINING (item 5, root cause b fix): this list names workspaces
+// the PRIMARY sent messages to that the CHILD has not yet drained — it used
+// to prescribe `inbox read <id>` as the "fix", but that command NEVER
+// advances any cursor (root cause b — see companion/lib/devswarm-unread.js's
+// header). The actual remedy for an unresponsive child is poke/escalate
+// guidance, not a re-read; this segment now says so instead. Workspace TITLE
+// (companion/lib/devswarm-names.js's displayName, truncated) is used in the
+// human-facing list — the raw mesh id stays reserved for command strings.
+// `oldest Xm` (item 6, when known) is the AGE of that workspace's oldest
+// still-undrained message (companion/lib/devswarm-store.js computeSummary's
+// oldestDirectUnreadTs, a zero-extra-read projection field).
+function buildUnreadSegment(list, home) {
+  const now = Date.now();
   const shown = list.slice(0, MAX_LISTED).map((w) => {
+    const title = truncateTitle(names.displayName(w.id, w.wsName));
     const parts = [];
     if (w.unread > 0) parts.push(w.unread + ' unread');
     if (w.status && STUCK_STATUSES.has(w.status)) parts.push(w.status);
-    return w.id + (parts.length ? ' (' + parts.join(', ') + ')' : '');
+    if (w.notDraining) parts.push('NOT DRAINING >20m'); // item 3: distinct from stale/escalated
+    if (Number.isFinite(w.oldestUnreadTs)) parts.push('oldest ' + formatRelative(w.oldestUnreadTs, now));
+    // item 6 (trend, vs the last persisted logInjection entry): fail-open to
+    // omitting when unknown (no prior snapshot / log too large / read error).
+    const trend = home ? trendLabel(home, w.id, w.unread) : null;
+    if (trend) parts.push(trend);
+    return title + (parts.length ? ' (' + parts.join(', ') + ')' : '');
   });
   const extra = list.length > MAX_LISTED ? ' +' + (list.length - MAX_LISTED) + ' more' : '';
   const anyUnread = list.some((w) => w.unread > 0);
@@ -496,9 +581,10 @@ function buildUnreadSegment(list) {
     + shown.join('; ') + extra + '. '
   );
   body += anyUnread
-    ? ('Read each unread workspace\'s inbox message(s) via '
-      + '`node ' + CLI + ' inbox read <id>` when you reach a good stopping point '
-      + '(or reassign/archive it). ')
+    ? ('CHILD NOT DRAINING: these are message(s) YOU sent that the child has NOT yet '
+      + 'drained. Poke it (`node ' + CLI + ' send --to <id> --message "..."`) or '
+      + 'escalate/reassign it — do not assume it has seen the backlog just because '
+      + 'time has passed. ')
     : ('Read/ack each workspace inbox (or reassign/archive it) so it does not sit '
       + 'unnoticed off your task list. ');
   body += 'A workspace flagged stale/escalated has a wedged child — check on it.';
@@ -532,18 +618,24 @@ function tierOf(w) {
 // LOUDEST tier — workspaces whose unread carries an urgent/high urgencyMax get a
 // DISTINCT, more prominent segment than the standard buildUnreadSegment below
 // (same imperative "STOP and read FIRST" posture as buildOwnUnreadSegment).
-function buildUrgentUnreadSegment(list) {
+function buildUrgentUnreadSegment(list, home) {
   const shown = list.slice(0, MAX_LISTED).map((w) => {
     const parts = [w.unread + ' unread'];
     if (w.status && STUCK_STATUSES.has(w.status)) parts.push(w.status);
+    if (w.notDraining) parts.push('NOT DRAINING >20m');
+    const trend = home ? trendLabel(home, w.id, w.unread) : null; // item 6, fail-open
+    if (trend) parts.push(trend);
     return w.id + ' (' + parts.join(', ') + ')';
   });
   const extra = list.length > MAX_LISTED ? ' +' + (list.length - MAX_LISTED) + ' more' : '';
+  // Root cause b fix (same as buildUnreadSegment above): `inbox read <id>`
+  // never advances any cursor — it is not a remedy. STOP and poke/escalate
+  // the unresponsive child instead.
   return (
-    'DEVSWARM URGENT INBOX: ' + list.length + ' workspace(s) sent an URGENT/HIGH-priority '
-    + 'direct message — ' + shown.join('; ') + extra + '. STOP and read each unread '
-    + 'workspace\'s inbox message(s) FIRST via `node ' + CLI + ' inbox read <id>` before '
-    + 'continuing.'
+    'DEVSWARM URGENT INBOX: ' + list.length + ' workspace(s) have an URGENT/HIGH-priority '
+    + 'direct message waiting, unread — ' + shown.join('; ') + extra + '. CHILD NOT DRAINING: '
+    + 'STOP and poke it NOW (`node ' + CLI + ' send --to <id> --message "..."`) or escalate — '
+    + 'do not wait to see if it drains on its own — before continuing.'
   );
 }
 
@@ -926,8 +1018,19 @@ function main() {
     const verdict = readVerdictFile(home, id); // still builder-id-keyed (D19)
     const status = verdictStatus(summary, id, verdict);
     const stuck = status !== null && STUCK_STATUSES.has(status);
-    if (unread > 0 || stuck) {
-      attention.push({ id, unread, cursor, total, status, urgencyMax });
+    // notDraining (item 3): the supervisor's persisted verdict field (companion/
+    // lib/liveness.js unionPendingFor) — a union-unread backlog whose oldest row
+    // has aged past NOT_DRAINING_AGE_MS, independent of `status`. Surfaced here
+    // (not folded into `stuck`) so it stays a distinct signal downstream.
+    const notDraining = !!(verdict && verdict.notDraining);
+    if (unread > 0 || stuck || notDraining) {
+      // wsName/oldestUnreadTs (item 5/6): human title + age for the reworded
+      // "CHILD NOT DRAINING" segment below — read-only, zero extra store
+      // reads (oldestDirectUnreadTs is already a zero-extra-read projection
+      // field, see companion/lib/devswarm-store.js computeSummary).
+      const wsName = names.readName(home, id);
+      const oldestUnreadTs = Number.isFinite(entry.oldestDirectUnreadTs) ? entry.oldestDirectUnreadTs : null;
+      attention.push({ id, unread, cursor, total, status, urgencyMax, wsName, oldestUnreadTs, notDraining });
     }
 
     // --- archive-ready recommendation (P1-E) ---
@@ -975,7 +1078,7 @@ function main() {
           { now, lastOutboundTs: verdict && verdict.lastOutboundTs, heartbeatTs: heartbeatTsOpt }
         );
       } catch (_) {}
-      const ds = displayStatus(archiveReady, status, activityTs, now, dormant);
+      const ds = displayStatus(archiveReady, status, activityTs, now, dormant, !!(verdict && verdict.notDraining));
       rows.push({
         id,
         label: ds.label,
@@ -1171,8 +1274,8 @@ function main() {
   if (attention.length) {
     const urgentList = attention.filter((w) => tierOf(w) === 'urgent');
     const normalList = attention.filter((w) => tierOf(w) === 'normal');
-    if (urgentList.length) segments.push(buildUrgentUnreadSegment(urgentList));
-    if (normalList.length) segments.push(buildUnreadSegment(normalList));
+    if (urgentList.length) segments.push(buildUrgentUnreadSegment(urgentList, home));
+    if (normalList.length) segments.push(buildUnreadSegment(normalList, home));
     // Acceptance telemetry only when there is genuine unread backlog (not merely a
     // sticky escalated verdict with an empty inbox).
     const totalUnread = attention.reduce((s, w) => s + w.unread, 0);
