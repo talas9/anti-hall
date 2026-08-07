@@ -32,7 +32,7 @@ include `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools.
 This port currently hard-registers only the anti-hall hooks whose payload
 contracts are live-aligned and regression-tested for Codex:
 
-- `SessionStart`: full verify-first protocol, graphify session reminder, DevSwarm child-role communication override (`devswarm-child-role.js`), version alert, codex-availability probe
+- `SessionStart`: full verify-first protocol, graphify session reminder, DevSwarm child-role communication override (`devswarm-child-role.js`), version alert, codex-availability probe, handover resume (`handover-resume.js`)
 - `UserPromptSubmit`: rotating verify-first nudge, task tracker, limit-conserve nudge, DevSwarm parent-inbox + child-turn per-turn reminders (`devswarm-parent-inbox.js`, `devswarm-child-turn.js`)
 - `PreToolUse`: shell command guards (`git-guard`, `command-guard`, `graphify-guard`, `merge-gate`) — `command-guard.js` is a single shared file, so its DevSwarm destructive-read redirect (0.53.0: blocks `hivecontrol workspace monitor` unconditionally, `read-messages` when durable-inbox evidence exists, own skip `devswarm-read-guard`) auto-applies to Codex sessions with no separate adapter
 - `PostToolUse`: DevSwarm parent-decide/reply gate reply-tracker (`devswarm-parent-reply-tracker.js`, matcher `Bash`) — **registered, but its Codex payload contract is UNVERIFIED**: it has only been checked against the Claude Agent SDK's documented `PostToolUse` payload shape, not against a real Codex runtime. Unlike the other hooks in this list, it does not yet meet this port's own "live-aligned and regression-tested for Codex" bar; treat it as best-effort until confirmed against an actual Codex `PostToolUse` payload.
@@ -76,6 +76,7 @@ The Codex port exposes first-pass equivalents for the anti-hall skill surface:
 - `anti-hall-context-conserve` — context/usage conservation and model routing
 - `anti-hall-model-policy` — Codex model routing table
 - `anti-hall-doctor`, `anti-hall-update`, `anti-hall-debt`, `anti-hall-simplify`, `anti-hall-flutter-debug`, `anti-hall-install-statusline`, `anti-hall-omx`, `anti-hall-omc`
+- `anti-hall-handover` — comprehensive session handoff (index + per-session HANDOVER.md + detail files) so a fresh session can resume without re-deriving or guessing anything
 
 Context conservation is also wired as a `UserPromptSubmit` hook via `limit-conserve-inject.js`.
 Feature launch is intentionally a Codex/OMX planning protocol, not a GSD wrapper, because GSD was removed from active Codex config.

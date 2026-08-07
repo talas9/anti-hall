@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.72.0 (2026-08-07)
+
+- **New `handover` skill (Claude + Codex).** Writes a comprehensive, multi-file session
+  handover under `.anti-hall/handovers/` — task state, decisions, open threads, and
+  verification status — with a global index and sequence chaining across handovers, so a
+  fresh session can resume without re-deriving or guessing anything. Mirrored for Codex
+  under `plugins/anti-hall/codex/skills/anti-hall-handover/`.
+- **New `handover-resume` SessionStart hook.** On session start (including after
+  `/clear` or compaction), surfaces the latest handover and guides a structured resume,
+  superseding the lossy default compact summary. Registered on both the Claude
+  `hooks.json` and the Codex hook subset (`install-codex.js`, Codex `hooks.json`).
+- **New KB doc:** `docs/KB-session-handover.md` (24+ sources) documenting the handover
+  design and resume flow.
+
 ## 0.71.4 (2026-08-05)
 
 - **New always-apply `autonomous-execution` discipline (both platforms).** Once the user

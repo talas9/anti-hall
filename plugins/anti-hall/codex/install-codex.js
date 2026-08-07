@@ -65,6 +65,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['devswarm-child-role.js'], 10),
     group(null, ['version-alert.js'], 10),
     group(null, ['codex-availability.js'], 10),
+    group(null, ['handover-resume.js'], 10),
   ],
   UserPromptSubmit: [
     group(null, ['verify-first.js'], 10),

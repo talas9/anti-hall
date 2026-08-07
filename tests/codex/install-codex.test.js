@@ -60,6 +60,9 @@ test('install-codex: writes supported Codex hook subset and enables hooks featur
     assert.doesNotMatch(preCommands, /api-guard\.js/);
     assert.doesNotMatch(preCommands, /ship-it-guard\.js/);
 
+    const startCommands = hooks.SessionStart.flatMap(g => g.hooks || []).map(h => h.command).join('\n');
+    assert.match(startCommands, /handover-resume\.js/, 'handover-resume must be registered on Codex SessionStart');
+
     assert.match(fs.readFileSync(configPath, 'utf8'), /\[features\]\s+hooks = true/s);
   } finally { t.cleanup(); }
 });
