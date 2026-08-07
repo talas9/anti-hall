@@ -417,7 +417,18 @@ function main() {
         }
         if (newestHandoverMtime > 0) {
           const lastWorkTs = Number.isFinite(scan.lastWorkTs) ? scan.lastWorkTs : 0;
-          if (lastWorkTs > 0 && lastWorkTs > newestHandoverMtime) {
+          // MTIME_GRACE_MS: some filesystems (observed on Linux CI runners)
+          // round mtime to whole-second granularity, while lastWorkTs is
+          // parsed from the transcript's ISO timestamp at full millisecond
+          // precision. A handover written a few ms after the last counted
+          // action can therefore report a TRUNCATED mtime numerically before
+          // lastWorkTs, even though it was genuinely written later -- a
+          // false-positive "stale" verdict caused by mtime resolution, not
+          // real staleness. A 1s grace band absorbs that rounding artifact
+          // while still catching real staleness (work resuming meaningfully
+          // after the handover was written).
+          const MTIME_GRACE_MS = 1000;
+          if (lastWorkTs > 0 && lastWorkTs > newestHandoverMtime + MTIME_GRACE_MS) {
             const staleStateFile = path.join(stateDir, 'tasklist-guard-handover-stale-' + safeSession + '.json');
             let alreadyWarned = false;
             try {
