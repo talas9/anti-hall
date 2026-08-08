@@ -156,6 +156,46 @@ test('BLOCK: no tasklist (4 edits, no task activity, no progress file)', () => {
   } finally { h.cleanup(); }
 });
 
+test('NO-TASKS + prior session handover snapshot exists -> pointer to state.md appended', () => {
+  const h = makeHome();
+  try {
+    const priorSession = 'prior-session-id';
+    const statePath = path.join(h.home, '.anti-hall', 'handovers', todayUtc(), priorSession, 'state.md');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, '# state\n- Task list snapshot: ...\n', 'utf8');
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home, 'this-session'), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    const expectedRel = path.join('.anti-hall', 'handovers', todayUtc(), priorSession, 'state.md');
+    assert.ok(r.json.reason.includes(expectedRel), `expected pointer to ${expectedRel}; reason: ${r.json.reason}`);
+    assert.match(r.json.reason, /recreate your task list from/i);
+  } finally { h.cleanup(); }
+});
+
+test('NO-TASKS + only OWN session handover dir exists -> no self-pointer', () => {
+  const h = makeHome();
+  try {
+    const session = 'this-session';
+    const statePath = path.join(h.home, '.anti-hall', 'handovers', todayUtc(), session, 'state.md');
+    fs.mkdirSync(path.dirname(statePath), { recursive: true });
+    fs.writeFileSync(statePath, '# state\n', 'utf8');
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.ok(!/recreate your task list from/i.test(r.json.reason), `must not self-point; reason: ${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+test('NO-TASKS + no handovers dir at all -> no pointer (fail-open, no crash)', () => {
+  const h = makeHome();
+  try {
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.ok(isBlock(r), `expected block; stdout: ${r.stdout}`);
+    assert.ok(!/recreate your task list from/i.test(r.json.reason), `must not fabricate a pointer; reason: ${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
 test('REMINDER mentions the per-session history fix-ledger discipline when it fires', () => {
   const h = makeHome();
   try {
@@ -808,5 +848,102 @@ test('THREAD 7b STALENESS: capped — does not repeat once already warned this s
     assert.ok(isBlock(r2), `second block expected on a new signal; stdout: ${r2.stdout}`);
     assert.doesNotMatch(r2.json.reason, /handover is STALE/,
       'staleness advisory must not repeat once already warned this session');
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// RESUME-VERIFICATION ENFORCEMENT (v0.75.0, tasklist-guard-family Stop check).
+// handover-resume.js writes ~/.anti-hall/handover-resume-state-<session>.json
+// = { handoverFile, ts } whenever it injects the guided-resume protocol. If
+// this session then makes >= threshold file-changing actions without a
+// `resume-verified:` line ever landing in that HANDOVER file, ONE capped
+// block should fire naming it — independent of the normal task/progress
+// shouldBlock signal.
+// ---------------------------------------------------------------------------
+
+function writeResumeMarker(home, session, handoverFile) {
+  const p = path.join(home, '.anti-hall', 'handover-resume-state-' + safeSession(session) + '.json');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ handoverFile, ts: Date.now() }), 'utf8');
+  return p;
+}
+
+function writeHandoverFile(home, session, content) {
+  const dir = path.join(home, '.anti-hall', 'handovers', todayUtc(), safeSession(session));
+  fs.mkdirSync(dir, { recursive: true });
+  const p = path.join(dir, 'HANDOVER.md');
+  fs.writeFileSync(p, content, 'utf8');
+  return p;
+}
+
+test('RESUME-VERIFY: marker present + handover missing resume-verified line + >= threshold edits -> blocks naming the file', () => {
+  const h = makeHome();
+  try {
+    const session = 'resume-unverified';
+    const hfile = writeHandoverFile(h.home, session, '# handover\nNext action: continue.\n');
+    writeResumeMarker(h.home, session, hfile);
+
+    const tp = h.writeTranscript(edits(4));
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(isBlock(r), `expected resume-verification block; stdout: ${r.stdout}`);
+    assert.match(r.json.reason, /resume-verified/);
+    assert.ok(r.json.reason.includes(hfile), `reason must name the handover file; reason: ${r.json.reason}`);
+  } finally { h.cleanup(); }
+});
+
+test('RESUME-VERIFY: handover already carries a resume-verified line -> no resume block (falls through to normal check)', () => {
+  const h = makeHome();
+  try {
+    const session = 'resume-verified-ok';
+    const hfile = writeHandoverFile(h.home, session, '# handover\nresume-verified: 2026-08-08T00:00:00Z -- git clean, pwd ok, smoke passed.\n');
+    writeResumeMarker(h.home, session, hfile);
+    writeProgress(h.home, Date.now(), session);
+
+    const tp = h.writeTranscript([...taskCreate(1, 'do the thing', 'completed'), ...edits(4)]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow (tasks tracked + fresh progress + resume verified); stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('RESUME-VERIFY: no marker file for this session -> resume check is a no-op, normal flow applies', () => {
+  const h = makeHome();
+  try {
+    const session = 'resume-no-marker';
+    writeProgress(h.home, Date.now(), session);
+    const tp = h.writeTranscript([...taskCreate(1, 'do the thing', 'completed'), ...edits(4)]);
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow (no resume marker, tasks tracked, fresh progress); stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('RESUME-VERIFY: below work threshold -> no resume block even with an unresolved marker', () => {
+  const h = makeHome();
+  try {
+    const session = 'resume-below-threshold';
+    const hfile = writeHandoverFile(h.home, session, '# handover\n');
+    writeResumeMarker(h.home, session, hfile);
+
+    const tp = h.writeTranscript(edits(1));
+    const r = testHook(HOOK, stopPayload(tp, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r), `expected allow (below threshold); stdout: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('RESUME-VERIFY: capped — does not repeat once already nudged this session', () => {
+  const h = makeHome();
+  try {
+    const session = 'resume-cap';
+    const hfile = writeHandoverFile(h.home, session, '# handover\n');
+    writeResumeMarker(h.home, session, hfile);
+    writeProgress(h.home, Date.now(), session);
+
+    const tp1 = h.writeTranscript([...taskCreate(1, 'do the thing', 'completed'), ...edits(4)]);
+    const r1 = testHook(HOOK, stopPayload(tp1, h.home, session), { home: h.home });
+    assert.ok(isBlock(r1), `first block expected; stdout: ${r1.stdout}`);
+    assert.match(r1.json.reason, /resume-verified/);
+
+    const tp2 = h.writeTranscript([...taskCreate(1, 'do the thing', 'completed'), ...edits(4)]);
+    const r2 = testHook(HOOK, stopPayload(tp2, h.home, session), { home: h.home });
+    assert.ok(!isBlock(r2), `second Stop must allow — resume nudge capped and normal shouldBlock is false; stdout: ${r2.stdout}`);
   } finally { h.cleanup(); }
 });

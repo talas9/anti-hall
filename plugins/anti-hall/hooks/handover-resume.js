@@ -34,6 +34,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 const UNKNOWN_SESSION = 'unknown-session';
@@ -158,7 +159,7 @@ function buildContext(candidate, outcome, prefix) {
   lines.push('');
   lines.push('GUIDED RESUME PATH:');
   lines.push('1. Read ' + candidate.filePath + ' FULLY -- front matter (first ~15 lines) carries Situation + Next Action.');
-  lines.push('2. Run its section-10 resume-verification checklist (git status, pwd, CLAUDE.md re-read, smoke command) BEFORE trusting any written state.');
+  lines.push('2. Run its section-10 resume-verification checklist (git status, pwd, CLAUDE.md re-read, smoke command) BEFORE trusting any written state, THEN append a line to ' + candidate.filePath + ': `resume-verified: <ISO timestamp> -- <one-line git-status/pwd/smoke summary>`.');
   lines.push('3. Load detail files ONLY as needed via the pointer table (state.md / decisions.md / trials.md / knowledge.md).');
   lines.push('4. Check trials.md do-not-repeat list before re-attempting anything.');
   lines.push('5. Continue from the single Next Action.');
@@ -170,6 +171,27 @@ function buildContext(candidate, outcome, prefix) {
     'evidence-backed record; the compact summary is lossy.'
   );
   return lines.join('\n');
+}
+
+// resumeStatePath(sessionId) -- v0.75.0 resume-verification rail. Lives under
+// ~/.anti-hall/ (never the project tree -- mirrors tasklist-guard.js's own
+// state convention), keyed by the SAME sanitizeSessionId as tasklist-guard so
+// the two hooks agree on session identity without sharing a session-id source
+// of truth. Marks "a resume injection happened THIS session, pointing at
+// <handoverFile>" so a later Stop hook (tasklist-guard.js) can require a
+// resume-verified marker be recorded before the session ends.
+function resumeStatePath(sessionId) {
+  return path.join(os.homedir(), '.anti-hall', 'handover-resume-state-' + sessionId + '.json');
+}
+
+// writeResumeState(sessionId, handoverFile) -- best-effort, fail-open. Never
+// lets a write failure affect the SessionStart injection above it.
+function writeResumeState(sessionId, handoverFile) {
+  try {
+    const p = resumeStatePath(sessionId);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ handoverFile, ts: Date.now() }), 'utf8');
+  } catch (_) { /* fail-open: verification rail just stays inactive this session */ }
 }
 
 // emitNegativeReport(payload) -- THREAD 4 (owner amendment 2026-08-07). On a
@@ -254,6 +276,16 @@ function main() {
   const hookEventName = typeof payload.hook_event_name === 'string' && payload.hook_event_name
     ? payload.hook_event_name
     : 'SessionStart';
+
+  // Record that a resume injection happened THIS session, pointing at the
+  // referenced handover file -- tasklist-guard.js reads this to require a
+  // resume-verified marker before the session ends. sanitizeSessionId keyed
+  // to the RAW incoming session_id (not candidate.sessionId, which is the
+  // PRIOR session that wrote the handover) -- the state file belongs to the
+  // session resuming, not the one that left the handover.
+  if (rawSessionId) {
+    writeResumeState(sanitizeSessionId(rawSessionId), candidate.filePath);
+  }
 
   const out = {
     hookSpecificOutput: {

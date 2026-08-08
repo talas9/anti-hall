@@ -105,6 +105,13 @@ consolidated schema):
     command specific to this repo. Directly counters two documented post-compact
     failures: behavioral rules silently dropped (F1 — hence the `CLAUDE.md`
     re-read) and stale repo/directory state (F2) — docs/KB-session-handover.md.
+    After running it, **append** a `resume-verified: <ISO timestamp> --
+    <one-line git-status/pwd/smoke summary>` line to this file — this is what
+    proves the checklist actually ran, not just that it was written down.
+    `tasklist-guard.js` backs this up mechanically (v0.75.0): when
+    `handover-resume.js` injected a resume pointer this session and this
+    session then makes file-changing actions with no `resume-verified:` line
+    ever landing in the referenced file, one capped Stop-hook nudge fires.
 
 Everywhere: concrete over vague ("2-space indentation", not "format properly").
 Pointers over payloads — reference files/commits/artifacts by path, never inline
@@ -156,6 +163,8 @@ single worst format per the KB's own tool survey).
 - [ ] `pwd` — expect: <path>
 - [ ] re-read `CLAUDE.md` — rules may have been dropped by compaction
 - [ ] `<smoke/test command>` — expect: <result>
+
+resume-verified: <ISO timestamp> -- <one-line git-status/pwd/smoke summary>
 ```
 
 ## Detail-file templates (each also front-loaded, fixed schema)
@@ -271,7 +280,8 @@ a capped "handover is STALE" advisory on its Stop output.
    session's directory, if later seqs exist — check its Predecessor chain if
    unsure which is newest).
 3. Run the Resume-verification checklist BEFORE trusting anything else in the
-   file.
+   file, THEN append the `resume-verified:` line to it — `tasklist-guard.js`
+   nags (once, capped) if file-changing work happens this session without one.
 4. Page in detail files only as needed, per the Detail-file pointer table's "read
    this when" column — progressive disclosure, not a full read of everything.
 5. Recreate/reconcile your task list (TaskCreate/TaskUpdate or TodoWrite) from

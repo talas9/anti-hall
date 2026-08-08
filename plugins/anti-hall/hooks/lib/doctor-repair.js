@@ -1012,6 +1012,35 @@ function runRepairs(opts) {
     };
   }, () => require(DEVSWARM_SCRIPT).foldMeshDuplicates(home, { cwd, env }));
 
+  // Spec item 5c / [E] UPDATE-TIME SELF-HEAL: fold-mesh-duplicates above only
+  // folds the ONE project store `cwd` resolves to right now — an already-split
+  // registry sitting in a DIFFERENT project's store on this same machine is
+  // never reached just because `doctor` happened to run from project A instead
+  // of B (the SkyCrew field report's split was found by direct store
+  // inspection, not by a repair run from that project). Sweeps EVERY store
+  // this machine has ever opened via devswarm.js's foldMeshDuplicatesAllStores
+  // (same store.listStoreHashes(home) enumeration heal-registry-rows below
+  // already uses), folding each directly by its stored hash. `foldMeshDuplicates`
+  // (and therefore this all-stores wrapper, which just calls it per hash) DOES
+  // support a real dry-run (ctx.dryRun), so this uses the same dual-detect
+  // migrationFix() helper as fold-mesh-duplicates above rather than the manual
+  // push()-based pattern heal-registry-rows uses (that one has no dry-run mode
+  // of its own). Pure store read+write (forward-then-tombstone; message rows
+  // NEVER deleted) -> AUTO-SAFE, same posture as fold-mesh-duplicates. Reuses
+  // ONE code path for both detect and apply — idempotent (a re-run tombstones
+  // nothing left in any store), fail-open (a single unreadable store is
+  // skipped, never wiped, never aborts the sweep).
+  migrationFix('fold-all-stores', 'fold-all-stores', () => {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.foldMeshDuplicatesAllStores !== 'function') return { pending: false, detail: 'build has no foldMeshDuplicatesAllStores' };
+    const r = dw.foldMeshDuplicatesAllStores(home, { cwd, env, dryRun: true }) || {};
+    return {
+      pending: (r.retired || 0) > 0,
+      detail: (r.retired || 0) + ' duplicate mesh row(s) to fold across ' + (r.stores || 0) + ' store(s)'
+        + (r.errors ? ' (' + r.errors + ' store error(s), fail-open)' : ''),
+    };
+  }, () => require(DEVSWARM_SCRIPT).foldMeshDuplicatesAllStores(home, { cwd, env }));
+
   // Archived-still-active forward-migration: cmdArchive used to tombstone exactly
   // ONE registry row per archive, while up to four rows (hivecontrol builder UUID,
   // `primary-<8hex>` spawn phantom, legacy ingested `<label>-<repoId8>`, subdir-

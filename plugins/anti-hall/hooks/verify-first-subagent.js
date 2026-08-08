@@ -45,7 +45,19 @@ const SUBAGENT_DISCIPLINES = [
   '  - /anti-hall:deadly-loop - HARDEN risky changes BEFORE merge: cross-file/cross-PR coordination, security-sensitive changes, schema/production-data touches, shell scripts, CI/workflow YAML, LLM-prompt work.',
 ].join('\n');
 
-const SUBAGENT_TEXT = [...CORE_LINES, SUBAGENT_DISCIPLINES].join('\n');
+// TEAMMATE_REPORTING_NOTE (v0.75.0): field evidence showed background/team
+// agents losing their final report — a bare turn-end never reaches the
+// coordinator, and a background task's completion notification routes to the
+// MAIN session, not to the agent that started it, so waiting on one inside a
+// spawned agent's own turn silently stalls forever. Stated plainly so a
+// worker never assumes either channel "just works" the way it does for the
+// top-level session.
+const TEAMMATE_REPORTING_NOTE =
+  'If you are a teammate/background agent: SendMessage your final report to the coordinator BEFORE finishing — ' +
+  'a bare turn-end silently loses it. NEVER end a turn waiting on a background task — its completion ' +
+  'notification routes to the main session, not to you; run long commands foreground or poll the output file.';
+
+const SUBAGENT_TEXT = [...CORE_LINES, SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE].join('\n');
 
 function main() {
   let raw = '';

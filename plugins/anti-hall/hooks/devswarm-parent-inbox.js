@@ -171,6 +171,19 @@ const OVERRIDE_REASSERT =
   'DEVSWARM COMMS OVERRIDE: mesh only — native hivecontrol messaging blocked. ' +
   'Check: `roster` / `mesh read`. Direct: `send --to <meshId>`.';
 
+// TITLE_INSTRUCTION (item 4b, residual of task #7): field evidence (v0.73.0 live
+// session) showed Primaries still writing BARE mesh ids in their OWN prose replies
+// to the human ("workspace 0fe62861...") even though the workspace table above
+// already leads with each row's title (names.displayName). The table being
+// title-first was not itself sufficient — nothing told the Primary the SAME rule
+// applies to its own sentences, not just to what it reads. Emitted alongside the
+// table (same rows.length gate) so it is present exactly when there is a
+// workspace to mention.
+const TITLE_INSTRUCTION =
+  'When mentioning a workspace to the human, use its TITLE from the table above ' +
+  '(truncate ~48 chars) — NEVER the bare mesh id. Mesh ids belong ONLY inside ' +
+  'command strings (`send --to <meshId>`, etc).';
+
 // summaryPath(home, hash) -> a PER-PROJECT summary file (summaries/<hash>.json).
 // v0.57 mesh (D1/D24/Phase 8 step 1): the store now writes ONE shared summary
 // PER PROJECT, keyed by repoKeyForWorktree(cwd) — NOT per-descriptor
@@ -704,10 +717,13 @@ function buildOwnUnreadSegment(count, id, urgencyMax, unanswered) {
     let body = (
       prefix + 'you have ' + count + ' unread parent/peer '
       + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
-      + 'parent/peer message(s) FIRST before continuing. Read them the SAFE, '
-      + 'NON-DRAINING way — `node ' + CLI + ' inbox read-primary ' + id + '` (anti-hall '
-      + 'devswarm CLI). Do NOT run `hivecontrol workspace read-messages` or '
-      + '`monitor` — those DESTRUCTIVELY drain the native queue.'
+      + 'parent/peer message(s) FIRST before continuing. Read them via '
+      + '`node ' + CLI + ' inbox read-primary ' + id + '` (anti-hall devswarm CLI — '
+      + 'this advances YOUR OWN read cursor, the correct/expected drain for a '
+      + 'message you are now acting on; to check WITHOUT consuming it instead, '
+      + 'use `inbox peek-primary ' + id + '`). Do NOT run `hivecontrol workspace '
+      + 'read-messages` or `monitor` — those DESTRUCTIVELY drain the NATIVE queue '
+      + '(a completely separate channel from your own cursor above).'
     );
     if (unansweredList.length > 0) {
       const askers = unansweredList.slice(0, MAX_LISTED).map(
@@ -1250,6 +1266,7 @@ function main() {
     const evicted = capped ? rows.slice(MAX_TABLE_ROWS) : [];
     if (capped) logTableCap(home, rows.length, shown.length);
     segments.push(buildWorkspaceTable(shown, now, capped, rows.length - shown.length, evicted));
+    segments.push(TITLE_INSTRUCTION);
   }
 
   // Stuck-mesh surfacing (LEAN, read-only) — orphans[]/staleRegistryPartitions[]

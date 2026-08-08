@@ -120,6 +120,7 @@ const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const store = require('../companion/lib/devswarm-store.js');
+const livenessSelect = require('../companion/lib/devswarm-liveness-select.js');
 const inboxCursor = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const {
@@ -377,6 +378,34 @@ function checkedArchivedDir(home, { create = false, F } = {}) {
   return { ok: true, path: dir, exists: true };
 }
 function heartbeatsDir(home) { return path.join(devswarmRoot(home), 'heartbeats'); }
+// heartbeatCallersLogPath / appendHeartbeatCallerLog (spec item 1b, A1-INSTRUMENT):
+// field evidence showed a dead registry row's updatedAt refreshed every ~30-45s by
+// an unidentified caller invoking `heartbeat` WITHOUT --session (source:'cli-heartbeat',
+// sessionId:null — matches cmdHeartbeat, NOT the legit bin/devswarm-heartbeat.sh
+// daemon, which writes a different schema to a different filename). Instrumentation
+// only: append one NDJSON line (pid, ppid, argv-source, target id, ts) so the caller
+// can be attributed in the field. Fail-open (never throws, never blocks the real
+// heartbeat write); capped to the last ~200 lines so the file can't grow unbounded.
+function heartbeatCallersLogPath(home) { return path.join(devswarmRoot(home), 'heartbeat-callers.log'); }
+const HEARTBEAT_CALLERS_LOG_CAP = 200;
+function appendHeartbeatCallerLog(home, id, now) {
+  try {
+    const line = JSON.stringify({
+      ts: Number.isFinite(now) ? now : Date.now(),
+      pid: process.pid,
+      ppid: typeof process.ppid === 'number' ? process.ppid : null,
+      argv: Array.isArray(process.argv) ? process.argv.slice(0, 4).join(' ') : null,
+      id,
+    });
+    const p = heartbeatCallersLogPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    let prior = [];
+    try { prior = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean); } catch (_) { prior = []; }
+    prior.push(line);
+    if (prior.length > HEARTBEAT_CALLERS_LOG_CAP) prior = prior.slice(prior.length - HEARTBEAT_CALLERS_LOG_CAP);
+    fs.writeFileSync(p, prior.join('\n') + '\n');
+  } catch (_) { /* fail-open: instrumentation only, never breaks a heartbeat */ }
+}
 function archiveIgnoreDir(home) { return path.join(devswarmRoot(home), 'archive-ignore'); }
 function descriptorPath(home, id) { return path.join(workspacesDir(home), id + '.json'); }
 // The durable ACK cursor for the Primary/store read-path. Lives under cursors/ — an
@@ -1189,6 +1218,43 @@ function retireWorktreeDuplicates(home, keepDesc, ctx) {
 function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
   const dryRun = !!(opts && opts.dryRun);
   const lockCandidates = !!(opts && opts.lockCandidates) && !dryRun;
+  // P0-B fix, CORRECTED (see below): an EARLIER version of this fix bypassed the
+  // descriptor gate outright on the theory that every caller already proves
+  // canonicalWorktreeRealPath equality, so "could be a distinct live child" was
+  // structurally unreachable. That theory is FALSE — disproven by an existing,
+  // intentional test (devswarm-retire-duplicate.test.js "P1: a distinct live
+  // child (own descriptor) sharing a worktree is forwarded + LEFT, never
+  // tombstoned"): two genuinely live sessions (e.g. two terminal tabs) CAN both
+  // register from the exact same worktree path under different builder-ids, and
+  // both must survive — same-realpath does NOT imply "not distinct". Blanket-
+  // bypassing broke that legitimate case.
+  //
+  // The REAL bug (ground-truth SkyCrew inspection): a descriptor can linger on
+  // disk for a row whose session has ALREADY DIED — descriptor files are never
+  // cleaned up on session exit — so "has a descriptor" alone is not proof of a
+  // live distinct child either; cmdRegister writes one for every id, making the
+  // bare-descriptor gate always-true and duplicates immortal REGARDLESS of
+  // liveness. The evidence that DOES distinguish a genuinely dead/stranded
+  // duplicate from a real distinct live child is the SAME session-reference-
+  // integrity signal (a) devswarm-liveness-select.js uses for addressing: the
+  // field-observed dead row's sessionId held its LIVE SIBLING's own registry
+  // id — a stale cross-reference, not a real session. A descriptor-backed
+  // candidate whose sessionId aliases another id already in this SAME group
+  // (any other candidate, or the survivor) is therefore NOT protected by the
+  // descriptor gate; every other descriptor-backed candidate (a self-consistent
+  // sessionId, exactly the P1 test's shape) keeps the original protection
+  // unconditionally, for every caller, with no opt-in flag needed. CAS
+  // (removeRegistryIf below) remains the final safety net regardless: a
+  // candidate genuinely re-touched by a live session between the snapshot and
+  // the tombstone still fails the conditional delete and is LEFT, never lost.
+  const groupIds = new Set();
+  for (const d0 of candidates) { if (d0 && d0.id != null) groupIds.add(String(d0.id)); }
+  if (survivorId != null) groupIds.add(String(survivorId));
+  function isStaleCrossReference(row) {
+    if (!row) return false;
+    const sid = row.sessionId != null ? String(row.sessionId) : '';
+    return sid !== '' && sid !== String(row.id) && groupIds.has(sid);
+  }
   const retired = [];
   const left = [];
   const forwardFailed = [];
@@ -1209,8 +1275,11 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
     if (!d || d.id == null || String(d.id) === String(survivorId)) continue;
     if (dryRun) {
       // read-only classification: a store-only row WOULD be tombstoned; a
-      // descriptor-backed one WOULD be left (never collapsed).
-      if (readDescriptorFile(home, d.id)) { left.push(d.id); leftRows.set(String(d.id), d); continue; }
+      // descriptor-backed one WOULD be left (never collapsed) — UNLESS its
+      // sessionId is a proven stale cross-reference (see isStaleCrossReference
+      // above), in which case it WOULD be tombstoned too (subject to the same
+      // CAS the apply path uses).
+      if (!isStaleCrossReference(d) && readDescriptorFile(home, d.id)) { left.push(d.id); leftRows.set(String(d.id), d); continue; }
       retired.push(d.id);
       continue;
     }
@@ -1247,7 +1316,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
       // when locked, the pre-lock candidate `d` when not — so a caller keying its
       // reported reason off this row (leftRows, below) reports what THIS pass
       // actually judged, not a possibly-stale pre-lock snapshot.
-      if (readDescriptorFile(home, row.id)) return { outcome: 'left', row };
+      if (!isStaleCrossReference(row) && readDescriptorFile(home, row.id)) return { outcome: 'left', row };
       // P1a/P2/P3 race close: ATOMIC conditional tombstone. removeRegistryIf deletes
       // ONLY if the row is STILL EXACTLY the one we classified — its session_id AND
       // updatedAt AND writeSeq all still equal our snapshot (NULL-safe, so a null
@@ -1390,7 +1459,7 @@ function pickArchiveForwardSurvivor(s, home, archivedId, rows) {
       drainableRows.push(d);
     }
     if (!drainableRows.length) return String(archivedId);
-    const pick = pickSurvivor(s, { rows: drainableRows });
+    const pick = pickSurvivor(s, { rows: drainableRows }, home);
     // Post-check (defence in depth against pickSurvivor's firstMatch fallback ever
     // returning a row the pre-filter would have rejected): a destination we cannot
     // PROVE drainable is never used.
@@ -1605,25 +1674,15 @@ function groupRegistryByMeshId(registry) {
   return byMesh;
 }
 
-// pickSurvivor(s, group) — the SAME freshest-live selection resolveMeshTarget uses
-// (greatest registry updatedAt among LIVE rows; cursor-value tiebreak; else the
-// first row — the phantom, pre-self-register), generalized to a canonical group's
-// OWN rows (which include subdir-split rows resolveMeshTarget's plain-hash match
-// would miss). The survivor is the partition a live session actually drains.
-function pickSurvivor(s, group) {
-  let firstMatch = null;
-  let bestLive = null;
-  for (const d of group.rows) {
-    if (!d) continue;
-    if (firstMatch === null) firstMatch = d;
-    if (!isLiveSessionId(d.sessionId)) continue; // not live (A6: excludes the synthetic auto-ensure marker too)
-    if (bestLive === null) { bestLive = d; continue; }
-    const a = Number.isFinite(d.updatedAt) ? d.updatedAt : -1;
-    const b = Number.isFinite(bestLive.updatedAt) ? bestLive.updatedAt : -1;
-    if (a > b) { bestLive = d; continue; }
-    if (a === b && meshCursorValue(s, d.id) > meshCursorValue(s, bestLive.id)) bestLive = d;
-  }
-  return bestLive || firstMatch;
+// pickSurvivor(s, group, home) — the SAME freshest-LIVE selection resolveMeshTarget
+// uses (devswarm-liveness-select.js's pickFreshestLive: session-reference integrity,
+// drain activity, session-authored heartbeat, THEN updatedAt/cursor recency),
+// generalized to a canonical group's OWN rows (which include subdir-split rows
+// resolveMeshTarget's plain-hash match would miss). The survivor is the partition a
+// live session actually drains. `home` is optional (enables the heartbeat-credit
+// signal only).
+function pickSurvivor(s, group, home) {
+  return livenessSelect.pickFreshestLive(group.rows, { storeHandle: s, home });
 }
 
 // rekeySubdirRegistryRows(s, dryRun) — P1b: reconcile the two identity views so a
@@ -1725,7 +1784,13 @@ function foldMeshDuplicates(home, ctx) {
   const c = ctx || {};
   const dryRun = !!c.dryRun;
   try {
-    const repoKey = repoKeyForCwd(c);
+    // ctx.repoKey (spec item 5c: update-time self-heal across EVERY store, not
+    // only the one the caller's cwd happens to resolve to right now) — an
+    // explicit override for foldMeshDuplicatesAllStores below to fold a named
+    // store directly, bypassing cwd/git resolution entirely. Absent (the
+    // default, every pre-existing call site) falls back to the original
+    // cwd-derived behavior, byte-identical.
+    const repoKey = typeof c.repoKey === 'string' && c.repoKey ? c.repoKey : repoKeyForCwd(c);
     // NEVER open/create the shared store just to look for duplicates. A missing
     // repoKey (non-git cwd) or an absent per-project store dir means there is no
     // registry to fold — return a clean no-op WITHOUT calling openStore (which
@@ -1777,7 +1842,7 @@ function foldMeshDuplicates(home, ctx) {
         }
         for (const rows of bySamePath.values()) {
           if (rows.length < 2) continue; // no duplicate within this real worktree
-          const survivor = pickSurvivor(s, { rows });
+          const survivor = pickSurvivor(s, { rows }, home);
           if (!survivor || survivor.id == null) continue; // nothing live/first to keep -> skip
           const candidates = rows.filter((d) => d && String(d.id) !== String(survivor.id));
           const r = foldGroupIntoSurvivor(s, home, survivor.id, candidates, { dryRun });
@@ -1807,6 +1872,49 @@ function foldMeshDuplicates(home, ctx) {
     // control flow is unchanged (still returns normally, never throws).
     return { ok: false, error: String(e && e.message || e), retired: [], forwarded: 0, folded: 0 };
   }
+}
+
+// foldMeshDuplicatesAllStores(home, ctx) — spec item 5c / [E] UPDATE-TIME
+// SELF-HEAL: foldMeshDuplicates above only folds ONE project's store — the one
+// `ctx.cwd` (or process.cwd()) happens to resolve to right now. An update/
+// doctor run from project A can never reach an ALREADY-SPLIT registry sitting
+// in project B's store, so a machine with several DevSwarm projects would only
+// ever self-heal the one the operator happened to be standing in when they
+// last updated — exactly the gap the field evidence (a stray dead partition
+// discovered by direct store inspection, not by running update from that
+// project) surfaced. This sweeps EVERY store this machine has EVER opened
+// (store.listStoreHashes(home) — the same enumeration healRegistryPostUpdate
+// already uses for its own cross-store sweep) and folds each one directly by
+// its stored hash, bypassing cwd/git resolution entirely via foldMeshDuplicates'
+// `ctx.repoKey` override. Same guarantees as foldMeshDuplicates itself per
+// store: idempotent, fail-open (a single store's failure is recorded and
+// skipped, never aborts the sweep or throws out of this function), NO-DELETE
+// (forward-before-tombstone). Bounded/throttled by the CALLER (update.js /
+// doctor-repair.js), matching the project's heavy-scan convention — this
+// function itself does no throttling, it only enumerates+applies.
+// Returns { ok, stores, retired, forwarded, folded, errors, results[] }.
+function foldMeshDuplicatesAllStores(home, ctx) {
+  const c = ctx || {};
+  let hashes = [];
+  try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
+  let retired = 0, forwarded = 0, folded = 0, errors = 0;
+  const results = [];
+  for (const repoKey of hashes) {
+    let r = null;
+    try {
+      r = foldMeshDuplicates(home, Object.assign({}, c, { repoKey }));
+    } catch (e) {
+      r = { ok: false, error: String(e && e.message || e), retired: [], forwarded: 0, folded: 0 };
+    }
+    if (!r) continue;
+    if (r.ok === false) { errors++; results.push({ repoKey, ok: false, error: r.error }); continue; }
+    const n = Array.isArray(r.retired) ? r.retired.length : 0;
+    retired += n;
+    forwarded += r.forwarded || 0;
+    folded += r.folded || 0;
+    if (n || r.forwarded) results.push({ repoKey, ok: true, retired: n, forwarded: r.forwarded || 0, folded: r.folded || 0 });
+  }
+  return { ok: true, stores: hashes.length, retired, forwarded, folded, errors, results };
 }
 
 // foldArchivedRegistryRows(home, ctx0) — FORWARD MIGRATION for registries that
@@ -2330,6 +2438,9 @@ function cmdHeartbeat(id, flags, ctx) {
     blockers: many(flags, 'blockers'),
     sessionId: one(flags, 'session') !== undefined ? one(flags, 'session') : null,
   };
+  // A1-INSTRUMENT (spec item 1b): attribute the field-observed unidentified
+  // dead-row refresher — any --session-less caller gets one capped NDJSON line.
+  if (one(flags, 'session') === undefined) appendHeartbeatCallerLog(home, id, now);
   const p = path.join(dir, id + '.json');
   // P2-10: a UNIQUE staged temp per write (pid + hrtime + an in-process counter)
   // — a shared `<id>.json.tmp` let two concurrent heartbeats race, one rename
@@ -2429,7 +2540,7 @@ function cmdHeartbeat(id, flags, ctx) {
           // as its registered id.
           const callerInfo = callerIdentityDetailed(ctx.env, cwd);
           const caller = callerInfo.identity;
-          const ownEntry = resolveMeshTarget(s, caller);
+          const ownEntry = resolveMeshTarget(s, caller, home);
           const owns = caller === id || (ownEntry && ownEntry.id === id);
           if (!owns) {
             // A7: name WHICH leg failed instead of one generic message for
@@ -2634,7 +2745,12 @@ function resolveWorkspaceStoreForRead(id, ctx, home) {
 function cmdInboxMessages(id, flags, ctx, opts) {
   const home = ctx.home;
   const doAck = !!((opts && opts.ack) || flags.ack);
-  const unread = !!flags.unread || doAck; // read-primary is inherently unread-then-ack
+  // forceUnread (spec item 5b / D): lets `peek-primary` request the SAME
+  // unread-only view as `read-primary` (opts.ack:true implies it) WITHOUT
+  // itself acking — a genuinely non-mutating peek at what read-primary would
+  // show, never advancing the cursor.
+  const forceUnread = !!(opts && opts.unread);
+  const unread = !!flags.unread || doAck || forceUnread; // read-primary is inherently unread-then-ack
   const ackAsOwner = !!flags['ack-as-owner'];
   // Claim 4 (ack-as-owner UX guard): `--ack-as-owner` is ONLY meaningful on a
   // MUTATING ack (it bypasses the cross-workspace ownership gate below). On the
@@ -2677,7 +2793,7 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       // workspace's cwd resolves to a DIFFERENT registry entry (or none), so this
       // stays fail-closed for real cross-workspace acks — preserving the v0.56
       // cross-workspace ack-hazard protection (bug #2) this guard exists for.
-      const ownEntry = resolveMeshTarget(s, caller);
+      const ownEntry = resolveMeshTarget(s, caller, home);
       const owns = caller === id || (ownEntry && ownEntry.id === id);
       if (!owns) {
         // A7: name WHICH leg failed (same classification as the heartbeat
@@ -2703,7 +2819,7 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   } finally { s.close(); }
   return {
     ok: true,
-    action: doAck ? 'read-primary' : 'messages',
+    action: (opts && opts.action) || (doAck ? 'read-primary' : 'messages'),
     id,
     unread,
     cursor: acked !== undefined ? acked : cursor,
@@ -2718,6 +2834,14 @@ function cmdInbox(sub, id, flags, ctx) {
   if (sub === 'pull') return cmdInboxPull(id, flags, ctx);
   if (sub === 'messages') return cmdInboxMessages(id, flags, ctx);
   if (sub === 'read-primary') return cmdInboxMessages(id, flags, ctx, { ack: true });
+  // peek-primary (spec item 5b / D): the non-mutating counterpart to
+  // read-primary — same unread-only view, NEVER acks/advances the cursor.
+  // Reuses the existing non-acking `messages` path internally (opts.ack
+  // false), forcing the same unread-scoped filter read-primary uses (opts.
+  // unread true) so a caller genuinely wanting "what would read-primary show
+  // me" without consuming it has a real, tested verb instead of overloading
+  // read-primary's semantics or trusting injected wording alone.
+  if (sub === 'peek-primary') return cmdInboxMessages(id, flags, ctx, { ack: false, unread: true, action: 'peek-primary' });
   const desc = readDescriptorFile(home, id);
   if (!desc || !desc.inboxPath) {
     return { ok: false, error: 'no inboxPath for workspace ' + JSON.stringify(id) + ' (register it first)' };
@@ -2807,7 +2931,7 @@ function cmdInbox(sub, id, flags, ctx) {
           if (!ackAsOwner) {
             const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
             const caller = callerInfo.identity;
-            const ownEntry = resolveMeshTarget(storeHandle, caller);
+            const ownEntry = resolveMeshTarget(storeHandle, caller, home);
             owns = caller === id || (ownEntry && ownEntry.id === id);
           }
           if (owns) {
@@ -2827,7 +2951,7 @@ function cmdInbox(sub, id, flags, ctx) {
     if (storeHandle) storeHandle.close();
     return { ok: true, action: 'ack', id, cursor, total: inboxCursor.countMessages(inboxPath) };
   }
-  return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count|pull|messages|read-primary)' };
+  return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count|pull|messages|read-primary|peek-primary)' };
 }
 
 // cmdRegisterPrimary(flags, ctx) — register the CURRENT worktree's Primary/parent
@@ -3903,18 +4027,7 @@ function hasFlag(flags, name) {
 // (it is derived from the REGISTERED worktree path, never from any caller's
 // env). This is the D19 join: `--to <meshId>` resolves to the target's real
 // read partition (`d.id`, the builder-id), NOT the meshId itself.
-// meshCursorValue(storeHandle, id) -> the row's durable inbox cursor as a finite
-// number, or -1 (unreadable/absent). A safe wrapper over the store's cursorValue
-// primitive (both backends expose it) used ONLY as the updatedAt-tie drain signal
-// in resolveMeshTarget — never throws (a cursor read must not break addressing).
-function meshCursorValue(storeHandle, id) {
-  try {
-    const v = storeHandle.cursorValue(id);
-    return Number.isFinite(v) ? v : -1;
-  } catch (_) { return -1; }
-}
-
-function resolveMeshTarget(storeHandle, meshId) {
+function resolveMeshTarget(storeHandle, meshId, home) {
   if (!meshId) return null;
   // A single worktreePath can carry MORE THAN ONE registry row that ALL resolve to
   // the same meshId. Concretely observed: the `spawn` phantom (keyed BY the meshId,
@@ -3929,38 +4042,22 @@ function resolveMeshTarget(storeHandle, meshId) {
   // both backends).
   //
   // ROUTE TO THE PARTITION THE CHILD ACTUALLY DRAINS, independent of retire timing/
-  // success. The deterministic, store-native, drain-correlated signal: among LIVE
-  // rows (non-empty sessionId), the one with the GREATEST registry `updatedAt`. A
-  // live child re-registers its OWN partition every turn (inbox pull auto-ensures),
-  // so the drained row's updatedAt keeps advancing; a stale/stranded duplicate stops
-  // advancing the moment its session dies. Freshest-live is therefore the row a live
-  // session is currently maintaining = the one it drains. The phantom (sessionId
-  // null) is excluded by the liveness filter outright. Ties (equal/absent updatedAt)
-  // fall back to id-ASC order (first encountered), and when NO row is live yet we
-  // fall back to the first match (only the phantom exists, pre-self-register) — so
-  // this is a strict refinement of the prior "prefer live" behavior, never worse.
-  let firstMatch = null;
-  let bestLive = null;
+  // success. Matching by worktree-derived meshId stays local (needs `inst`); the
+  // actual freshest-LIVE selection is delegated to devswarm-liveness-select.js's
+  // pickFreshestLive — the SAME evidence-based ranking (session-reference integrity,
+  // drain activity, session-authored heartbeat, THEN updatedAt/cursor recency) also
+  // used by pickSurvivor and devswarm-store.js's resolveSenderRegistryId (P0-A: a
+  // plain recency window can NEVER exclude a dead row whose updatedAt is kept fresh
+  // by an unrelated `heartbeat` caller — see that module's header for the field
+  // evidence). `home` is optional (enables the heartbeat-credit signal only; every
+  // other signal works without it).
+  const candidates = [];
   for (const d of storeHandle.listRegistry()) {
     if (!d || !d.worktreePath) continue;
     if (inst.primaryWorkspaceId(d.worktreePath) !== String(meshId)) continue;
-    if (firstMatch === null) firstMatch = d; // first match (phantom) — fallback when nothing is live
-    if (!isLiveSessionId(d.sessionId)) continue; // not live (A6: excludes the synthetic auto-ensure marker) -> never a drain target
-    if (bestLive === null) { bestLive = d; continue; }
-    const a = Number.isFinite(d.updatedAt) ? d.updatedAt : -1;
-    const b = Number.isFinite(bestLive.updatedAt) ? bestLive.updatedAt : -1;
-    if (a > b) { bestLive = d; continue; } // strictly fresher live row wins
-    if (a === b) {
-      // updatedAt TIE (same-ms register race, devswarm-store.js upsert): id-ASC order
-      // is drain-AGNOSTIC and can hand the send to a stale row that merely sorts first
-      // (e.g. `aaa-stale` over `zzz-draining`). Break the tie by a DRAIN-CORRELATED
-      // signal instead — the row whose inbox cursor is higher has actually READ more
-      // messages, so it is the one a live session is currently draining. Only fall back
-      // to id-ASC-first (keep the current bestLive) if the cursors are also equal.
-      if (meshCursorValue(storeHandle, d.id) > meshCursorValue(storeHandle, bestLive.id)) bestLive = d;
-    }
+    candidates.push(d);
   }
-  return bestLive || firstMatch;
+  return livenessSelect.pickFreshestLive(candidates, { storeHandle, home });
 }
 
 // resolveSendTarget(storeHandle, arg) -> { target, ambiguous, candidates }.
@@ -3990,8 +4087,8 @@ function resolveMeshTarget(storeHandle, meshId) {
 // and they name DIFFERENT rows, that is a genuine collision (row A's real id
 // equals row B's derived meshId) and must fail loud as ambiguous rather than
 // silently preferring the meshId match and shadowing the exact-id row.
-function resolveSendTarget(storeHandle, arg) {
-  const byMesh = resolveMeshTarget(storeHandle, arg);
+function resolveSendTarget(storeHandle, arg, home) {
+  const byMesh = resolveMeshTarget(storeHandle, arg, home);
   if (!arg) return byMesh ? { target: byMesh, ambiguous: false, candidates: null } : { target: null, ambiguous: false, candidates: null };
   const idMatches = [];
   for (const d of storeHandle.listRegistry()) {
@@ -4144,7 +4241,7 @@ function cmdSend(flags, ctx) {
       // (above) the Primary's row is now in THIS repoKey store, so this resolve
       // finds it.
       if (toPrimaryFlag) {
-        const target = resolveMeshTarget(s, primaryMeshId);
+        const target = resolveMeshTarget(s, primaryMeshId, home);
         if (!target) {
           return {
             ok: false, reason: 'primary-unregistered',
@@ -4157,7 +4254,7 @@ function cmdSend(flags, ctx) {
         // (unchanged), then falls back to an exact match against a row's own
         // `id` — the value `roster` now prints alongside meshId, so a copied
         // roster id addresses correctly instead of failing closed.
-        const resolved = resolveSendTarget(s, toFlag);
+        const resolved = resolveSendTarget(s, toFlag, home);
         if (resolved.ambiguous) {
           return {
             ok: false, reason: 'ambiguous-recipient',
@@ -4587,7 +4684,7 @@ function computeDiagnosis(s, ctx) {
   const meshTargets = [];
   const splits = [];
   for (const g of byMesh.values()) {
-    const target = resolveMeshTarget(s, g.meshId); // the partition `send --to <meshId>` lands in
+    const target = resolveMeshTarget(s, g.meshId, c.home); // the partition `send --to <meshId>` lands in
     const split = g.liveRows >= 2;
     if (split) splits.push(g.meshId);
     meshTargets.push({ meshId: g.meshId, resolvesTo: target ? target.id : null, ids: g.ids, liveRows: g.liveRows, split });
@@ -4714,7 +4811,7 @@ function cmdMeshRead(flags, ctx) {
     // (resolveMeshTarget keyed by the caller's meshId); fall back to `from` itself
     // when unregistered (no store entry at all) — the pre-existing, still-correct
     // behavior for that case.
-    const ownEntry = resolveMeshTarget(s, from);
+    const ownEntry = resolveMeshTarget(s, from, home);
     const cursorKey = ownEntry ? ownEntry.id : from;
     const cursor = typeof s.broadcastCursorValue === 'function' ? s.broadcastCursorValue(cursorKey) : 0;
     const all = typeof s.listMessages === 'function' ? s.listMessages(store.BROADCAST_PARTITION_ID) : [];
@@ -5483,8 +5580,9 @@ function run(argv, ctx0) {
           ? withSelfHeal(() => cmdInbox(sub, id, flags, ctx), ctx)
           : cmdInbox(sub, id, flags, ctx);
         // Csh: wire only the mesh READ verbs the task names (pull/messages/
-        // read-primary); count/read/ack are the descriptor durable-inbox path.
-        if (sub === 'pull' || sub === 'messages' || sub === 'read-primary') {
+        // read-primary/peek-primary); count/read/ack are the descriptor
+        // durable-inbox path.
+        if (sub === 'pull' || sub === 'messages' || sub === 'read-primary' || sub === 'peek-primary') {
           logVerbOutcome('inbox-' + sub, id, r, ctx);
         }
         return { code: r.ok ? 0 : 2, result: r };
@@ -5672,6 +5770,7 @@ module.exports = {
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   retireWorktreeDuplicates,
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
+  foldMeshDuplicatesAllStores,
   retireArchivedWorktreeGroup, foldArchivedRegistryRows, meshRowCopy, MESH_ROW_COPY_FIELDS, cmdRoster,
   computeDiagnosis, healthcheckHumanLine,
   resolveMeshTarget, resolveSendTarget,

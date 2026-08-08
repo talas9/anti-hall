@@ -130,7 +130,11 @@ test('BLOCK: unread backlog past cursor -> decision:block naming the workspace +
     assert.strictEqual(r.json.decision, 'block');
     assert.match(r.json.reason, /ws1/);
     assert.match(r.json.reason, /2 unread/);
-    assert.match(r.json.reason, /devswarm-inbox-cursor\.js/, 'must state the read/ack clear path');
+    // C1 fix: the prescribed clear path is now the dual-backend CLI verb
+    // (`inbox read-primary <id>`), NOT the NDJSON-only advanceCursor primitive
+    // in devswarm-inbox-cursor.js (which never clears a store-backed row's
+    // unread projection — the gate used to refire forever demanding it).
+    assert.match(r.json.reason, /inbox read-primary/, 'must state the read/ack clear path');
     assert.match(r.json.reason, /devswarm-parent-gate/, 'must name the skip-guard escape');
   } finally { h.cleanup(); }
 });
@@ -973,14 +977,15 @@ test('FIX 2c: an ARCHIVED workspace is EXCLUDED from the parent-gate scan (never
 // `entry.pendingQuestions` directly — the same field readOwnUnread now reads.
 // ============================================================================
 
-test('UNANSWERED QUESTION: gate stays blocked well past the old cap while a pendingQuestion is unanswered (4th+ Stop call)', () => {
+test('UNANSWERED QUESTION: gate keeps forcing the reply up to the ceiling, then escalates once and goes quiet (spec item 5 / C2)', () => {
   const h = makeHome();
   try {
     const ts = Date.now() - 5 * 60000; // 5 minutes ago
     writeOwnSummary(h.home, 1, undefined, [{ from: 'child-1', ts, seq: 1 }]);
     const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' }; // small cap, deliberately exhausted below
     const p = stopPayload('unanswered-sess', true);
-    for (let i = 1; i <= 5; i++) {
+    // Passes 1-2: normal, unconditional per-question block wording, no escalation yet.
+    for (let i = 1; i <= 2; i++) {
       const r = run(h.home, p, env);
       assert.strictEqual(r.status, 0, `call #${i} must exit 0`);
       assert.strictEqual(r.json && r.json.decision, 'block', `call #${i} must still block (unanswered question)`);
@@ -993,7 +998,20 @@ test('UNANSWERED QUESTION: gate stays blocked well past the old cap while a pend
       assert.ok(r.json.reason.includes('<id>'), `call #${i} must label the reply target as <id>; reason=${r.json.reason}`);
       assert.ok(!r.json.reason.includes('<meshId>'), `call #${i} must NOT use the misleading <meshId> label; reason=${r.json.reason}`);
       assert.match(r.json.reason, /is NOT sufficient/i, `call #${i} must say reading alone is not sufficient`);
-      assert.ok(!/DEVSWARM ESCALATION/.test(r.json.reason), `call #${i} must never be escalation wording — the question axis bypasses the cap entirely, well past cap=2`);
+      assert.ok(!/DEVSWARM ESCALATION/.test(r.json.reason), `call #${i} must not yet escalate (pre-ceiling)`);
+    }
+    // Pass 3 (cap=2 exhausted): ONE loud escalation line, still blocks, question wording absent.
+    const escalated = run(h.home, p, env);
+    assert.strictEqual(escalated.json && escalated.json.decision, 'block', 'the ceiling-exhaustion pass must still block');
+    assert.match(escalated.json.reason, /DEVSWARM ESCALATION/, 'the ceiling-exhaustion pass must carry escalation wording');
+    assert.match(escalated.json.reason, /child-1/, 'the escalation must still name the asker');
+    // Pass 4+: goes fully quiet on this Stop-block loop — the question itself
+    // is never dropped (it is still unanswered in the store), only the
+    // repeated forced-block stops.
+    for (let i = 4; i <= 6; i++) {
+      const r = run(h.home, p, env);
+      assert.strictEqual(r.status, 0, `call #${i} must exit 0`);
+      assert.strictEqual(r.stdout, '', `call #${i} must go quiet — the ceiling escalated exactly once already`);
     }
   } finally { h.cleanup(); }
 });
@@ -1077,16 +1095,25 @@ test('P0-C FIX: an unanswered-question bypass phase that overshoots the cap stil
 
     // 4 Stops while the question stays unanswered: the cap-bypass branch
     // fires every time (unanswered.length > 0), pushing the per-signature
-    // `blocks` counter to 4 — well past cap=2 — WITHOUT ever escalating,
-    // since that branch never even looks at `effectiveBlocks` vs `cap`. The
-    // one instant the OLD `effectiveBlocks === cap` check could have fired
-    // is skipped over entirely during this phase.
-    for (let i = 1; i <= 4; i++) {
+    // `blocks` counter to 4 — well past cap=2 — regardless of what the
+    // QUESTION-set ceiling (spec item 5 / C2) itself does. Passes 1-2 carry
+    // the normal per-question wording; pass 3 exhausts the question ceiling
+    // (its OWN escalation, independent of the plain-backlog axis this test
+    // is really probing) and pass 4 goes quiet on the question axis — but
+    // `blocks` (the plain-backlog counter) keeps incrementing underneath on
+    // every pass regardless, which is the overshoot this test exists to
+    // prove doesn't get silently skipped once the question clears.
+    for (let i = 1; i <= 2; i++) {
       const r = run(h.home, p, env);
       assert.strictEqual(r.json && r.json.decision, 'block', `unanswered pass #${i} must block`);
       assert.match(r.json.reason, /UNANSWERED QUESTION/, `unanswered pass #${i} must carry the question wording`);
-      assert.ok(!/DEVSWARM ESCALATION/.test(r.json.reason), `unanswered pass #${i} must never escalate — the question axis bypasses the cap entirely`);
+      assert.ok(!/DEVSWARM ESCALATION/.test(r.json.reason), `unanswered pass #${i} must not yet hit the question ceiling`);
     }
+    const qEscalated = run(h.home, p, env);
+    assert.strictEqual(qEscalated.json && qEscalated.json.decision, 'block', 'the question-ceiling exhaustion pass must still block');
+    assert.match(qEscalated.json.reason, /DEVSWARM ESCALATION/, 'the question-ceiling exhaustion pass must carry escalation wording');
+    const qQuiet = run(h.home, p, env);
+    assert.strictEqual(qQuiet.stdout, '', 'the pass after question-ceiling escalation must go quiet (question axis only — ws1 plain backlog is untouched, still tracked underneath)');
 
     // Reply recorded -> the question clears. The plain ws1 backlog (SAME
     // signature) persists untouched. Keyed by REPO_KEY, not session_id.

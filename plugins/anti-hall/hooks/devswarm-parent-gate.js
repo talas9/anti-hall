@@ -70,10 +70,16 @@
 // today. It is not self-sufficient; it depends on Phase 2's ingest daemon (or a
 // consumer's equivalent) to have anything to act on.
 //
-// CLEAR PATH (audit P1-A): the non-skip escape is a real inbox read/ack that
-// advances the cursor — the primitive in companion/lib/devswarm-inbox-cursor.js
-// (advanceCursor(inboxPath, cursorPath) marks all current messages read; ackTo
-// for a partial ack). The block reason states this exact path. skip-guard's TTL
+// CLEAR PATH (audit P1-A, corrected P0-C): the non-skip escape is a real inbox
+// read/ack that advances the cursor — `devswarm.js inbox read-primary <id>`,
+// the SAME dual-backend verb cmdInboxMessages' ack path already uses (advances
+// BOTH the durable-NDJSON cursor via devswarm-inbox-cursor.js's ackTo AND the
+// store's own cursor via s.setCursor + deriveSummary). The block reason states
+// this exact path. Prior wording named companion/lib/devswarm-inbox-cursor.js's
+// bare advanceCursor primitive directly — that primitive is NDJSON-ONLY (its
+// own file header says so), so following it as prescribed left a store-backed
+// row's unread projection untouched: the gate refired forever demanding a
+// remedy that could never structurally satisfy it. skip-guard's TTL
 // (~/.anti-hall/skip.json, guard name "devswarm-parent-gate") is the last-resort
 // user-consented escape hatch.
 //
@@ -614,12 +620,18 @@ function main() {
   let lastSig = '';
   let blocks = 0;
   let escalated = false;
+  let lastQSig = '';
+  let qBlocks = 0;
+  let qEscalated = false;
   try {
     const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     if (parsed && typeof parsed === 'object') {
       lastSig = typeof parsed.sig === 'string' ? parsed.sig : '';
       blocks = Number.isFinite(parsed.blocks) ? parsed.blocks : 0;
       escalated = parsed.escalated === true;
+      lastQSig = typeof parsed.qSig === 'string' ? parsed.qSig : '';
+      qBlocks = Number.isFinite(parsed.qBlocks) ? parsed.qBlocks : 0;
+      qEscalated = parsed.qEscalated === true;
     }
   } catch (_) { /* first time / cleared */ }
 
@@ -667,6 +679,39 @@ function main() {
   let nextBlocks;
   let nextEscalated = effectiveEscalated;
   let escalateTimes = null;
+
+  // QUESTION-SET ESCALATION CEILING (spec item 5 / C2): bound the unanswered
+  // bypass — it exists precisely so a hidden/structurally-unclearable question
+  // can never be silenced by the plain-backlog cap above, but that same
+  // unconditional-block property means it must have ITS OWN bounded ceiling or
+  // it refires forever. Keyed to a signature of the QUESTION SET itself (not
+  // `sig`, which is the blocking-workspace set — a question can be pending with
+  // an otherwise-empty blocking list), tracked independently of the
+  // plain-backlog `blocks`/`escalated` pair above so the two axes can never
+  // desync one another.
+  //
+  // `truncated` deliberately does NOT participate in this ceiling (unlike its
+  // inclusion in `bypassCap` above): a truncation names an UNENUMERABLE set of
+  // hidden senders — there is no way to ever confirm they were addressed, so
+  // "we've nagged N times" can never be a legitimate reason to go quiet on it
+  // the way it can for a concrete, individually-repliable question set. Only
+  // genuine named `unanswered` entries (with `truncated` false) are eligible
+  // for the ceiling; a pass where `truncated` is true always takes the
+  // unconditional-block path below, exactly as before this fix, regardless of
+  // `unanswered`'s own state.
+  const qSig = crypto.createHash('sha1').update(
+    unanswered
+      .map((q) => (q && q.from != null ? String(q.from) : '') + '\x00' + (q && Number.isFinite(q.ts) ? q.ts : ''))
+      .sort()
+      .join('\x1f')
+  ).digest('hex');
+  const questionCeilingApplies = !truncated && unanswered.length > 0;
+  const effectiveQBlocks = qSig === lastQSig ? qBlocks : 0;
+  const effectiveQEscalated = qSig === lastQSig ? qEscalated : false;
+  let nextQBlocks = effectiveQBlocks;
+  let nextQEscalated = effectiveQEscalated;
+  let qEscalateTimes = null;
+
   if (!bypassCap) {
     if (effectiveEscalated) return; // already escalated once — go quiet
     nextBlocks = effectiveBlocks + 1;
@@ -675,21 +720,43 @@ function main() {
       nextEscalated = true;
     }
   } else {
-    nextBlocks = effectiveBlocks + 1;
+    nextBlocks = effectiveBlocks + 1; // unchanged telemetry bump — bypass axis never silences on `blocks`/`escalated`
+    if (questionCeilingApplies) {
+      if (effectiveQEscalated) {
+        // Already escalated once for this EXACT unchanged question set — go
+        // quiet on the Stop-block loop. The question itself is untouched
+        // (still live in computeSummary/pendingQuestions); only re-blocking
+        // stops.
+        try {
+          fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+          fs.writeFileSync(stateFile, JSON.stringify({
+            sig, blocks: nextBlocks, escalated: nextEscalated, qSig, qBlocks: effectiveQBlocks, qEscalated: true,
+          }), 'utf8');
+        } catch (_) { /* fail-open: best-effort persist, silence still holds this pass */ }
+        return;
+      }
+      nextQBlocks = effectiveQBlocks + 1;
+      if (effectiveQBlocks >= cap) {
+        qEscalateTimes = nextQBlocks;
+        nextQEscalated = true;
+      }
+    }
   }
 
   // Persist BEFORE blocking so the cap is honored even if the model re-stops with
   // the same set. Can't persist -> fail-open (skip the block to avoid any loop).
   try {
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify({ sig, blocks: nextBlocks, escalated: nextEscalated }), 'utf8');
+    fs.writeFileSync(stateFile, JSON.stringify({
+      sig, blocks: nextBlocks, escalated: nextEscalated, qSig, qBlocks: nextQBlocks, qEscalated: nextQEscalated,
+    }), 'utf8');
   } catch (_) { return; }
 
   // WAKE RE-VERIFY (v0.59, reused not re-invented — see header): rides along on
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
   const wakeLine = wakeReassertLine(process.env, false);
 
-  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated) + wakeLine;
+  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes) + wakeLine;
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 
@@ -772,7 +839,7 @@ function buildTruncatedSegment(truncated) {
 // `unanswered`, the one axis the cap still governs), this pass is the FIRST
 // cap-exhaustion for this exact signature: replace the normal nag body with a
 // standalone escalation-worded block instead, naming the exhausted count.
-function buildReason(blocking, ownId, unanswered, escalateTimes, truncated) {
+function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
@@ -781,6 +848,23 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated) {
     return b.id + (b.id === ownId ? ' (you)' : '') + ' (' + bits.join(', ') + ')';
   }).join('; ');
   const more = blocking.length > 5 ? ' (and ' + (blocking.length - 5) + ' more)' : '';
+
+  // QUESTION-SET escalation (spec item 5 / C2) — the ONE loud line the
+  // unanswered bypass degrades to after its own cap is exhausted. Deliberately
+  // separate wording from the plain-backlog `escalateTimes` branch below: this
+  // fires with an EMPTY (or unrelated) `blocking` list in the common case, so
+  // it must name the QUESTION senders, not a neglected-workspace list.
+  if (qEscalateTimes) {
+    const who = unanswered.slice(0, 5).map((q) => (q && q.from != null ? String(q.from) : 'unknown sender')).join('; ');
+    const moreQ = unanswered.length > 5 ? ' (and ' + (unanswered.length - 5) + ' more)' : '';
+    return (
+      'DEVSWARM ESCALATION: ' + (truncated ? 'a truncated set of unanswered questions' : 'unanswered question(s) from ' + who + moreQ) +
+      ' has forced-blocked this Stop ' + qEscalateTimes + ' times with no reply sent — ' +
+      'a human should look. This will not repeat automatically after this message ' +
+      '(the question itself is still tracked and unresolved). ' +
+      'Escape hatch: the user may direct a skip via ~/.anti-hall/skip.json ("devswarm-parent-gate").'
+    );
+  }
 
   let body = '';
   // Truncation (P2 fix) is named FIRST, ahead of even the unanswered-question
@@ -844,10 +928,10 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated) {
   if (anyChildUnread) {
     body +=
       'CLEAR the unread backlog by READING each workspace\'s unread inbox message(s), ' +
-      'ACTING on them, then ADVANCING its cursor with the read/ack primitive at ' +
-      'plugins/anti-hall/companion/lib/devswarm-inbox-cursor.js ' +
-      '(advanceCursor(inboxPath, cursorPath) marks all current messages read; ' +
-      'ackTo for a partial ack). ';
+      'ACTING on them, then ADVANCING its cursor via `devswarm.js inbox read-primary <id>` ' +
+      '(the dual-backend ack verb — advances BOTH the durable-NDJSON cursor AND the ' +
+      'store cursor, so the unread projection actually clears; the bare NDJSON-only ' +
+      'advanceCursor primitive does NOT clear a store-backed row). ';
   }
   if (anyStale) {
     body +=

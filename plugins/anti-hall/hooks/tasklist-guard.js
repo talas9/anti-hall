@@ -243,6 +243,32 @@ function main() {
     // History file absent, cwd unreadable, or any other error — no-op, fail-open.
   }
 
+  // RESUME-VERIFICATION ENFORCEMENT (v0.75.0, tasklist-guard-family Stop
+  // check). handover-resume.js (SessionStart) writes a small per-session
+  // marker under ~/.anti-hall/ whenever it injects the guided-resume
+  // protocol, naming the HANDOVER file it pointed at. If THIS session went on
+  // to make file-changing actions without ever recording a `resume-verified:`
+  // line in that HANDOVER file, nudge ONCE (capped, own state key — never
+  // re-derived from the dedup/MAX_BLOCKS machinery below, which is tuned for
+  // a churn-tolerant counter, not this single boolean). Runs BEFORE the
+  // trivial-session early-return below so it can fire independently of the
+  // normal shouldBlock signal — a session can legitimately track tasks and
+  // keep progress fresh yet still have skipped verifying a resumed handover
+  // before acting on it. Fail-open throughout: any error skips the nudge,
+  // never blocks/throws, and never touches shouldBlock/finalReason below.
+  try {
+    const resumeReason = checkResumeVerification({
+      homeDir: os.homedir(),
+      sessionId: sessionIdForPath,
+      workCount,
+      threshold,
+    });
+    if (resumeReason) {
+      fs.writeSync(1, JSON.stringify({ decision: 'block', reason: sanitizeReason(resumeReason) }) + '\n');
+      process.exit(0);
+    }
+  } catch (_) { /* fail-open: skip the resume nudge entirely */ }
+
   // Below the work threshold → trivial session → never block.
   if (workCount < threshold) {
     process.exit(0);
@@ -305,6 +331,19 @@ function main() {
     lead =
       'You made ' + workCount + ' file-changing actions this session but tracked ' +
       'NO tasks.';
+    // THREAD (v0.75.0): a NO-TASKS session may simply be a fresh resume that
+    // never rebuilt its task list from a PRIOR session's handover snapshot —
+    // point at it (if one exists) rather than let the agent invent a list from
+    // scratch. Capped implicitly by hash-dedup above (same lead text -> same
+    // signal each Stop until sawTaskActivity flips true). Fail-open: any error
+    // here just omits the pointer, never blocks/throws.
+    try {
+      const priorState = findPriorSessionStateFile(cwd, progressDate, sessionIdForPath);
+      if (priorState) {
+        lead += ' A prior session\'s handover snapshot exists at ' + priorState +
+          ' — recreate your task list from ' + priorState + ' first.';
+      }
+    } catch (_) { /* fail-open: omit the pointer */ }
   } else if (hasStaleInProgress) {
     lead =
       inProgressCount + ' tasks are in_progress but NO background agent is live — they are ' +
@@ -753,6 +792,97 @@ function agentsRunning(freshMs) {
     if (ts && (now - ts) < FRESH) return true;
   }
   return false;
+}
+
+// checkResumeVerification({homeDir, sessionId, workCount, threshold}) ->
+// reason string | null. See the call site's header comment for the full
+// rationale. Never throws — every fs op is individually try/catch'd by the
+// caller's wrapping try/catch, but this function additionally never lets a
+// missing/unreadable marker or handover file read as "needs a nudge": only a
+// CONCLUSIVELY read marker + CONCLUSIVELY read handover file lacking the
+// marker text triggers the nudge.
+function checkResumeVerification(opts) {
+  const homeDir = opts && opts.homeDir;
+  const sessionId = opts && opts.sessionId;
+  const workCount = opts && opts.workCount;
+  const threshold = opts && opts.threshold;
+  if (!homeDir || !sessionId) return null;
+  if (!(workCount >= threshold)) return null;
+
+  const markerPath = path.join(homeDir, '.anti-hall', 'handover-resume-state-' + sessionId + '.json');
+  let marker;
+  try {
+    marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+  } catch (_) {
+    return null; // no resume injection recorded this session -> nothing to check
+  }
+  const handoverFile = marker && typeof marker.handoverFile === 'string' ? marker.handoverFile : null;
+  if (!handoverFile) return null;
+
+  let content;
+  try {
+    content = fs.readFileSync(handoverFile, 'utf8');
+  } catch (_) {
+    return null; // can't confirm either way -> fail open
+  }
+  if (content.indexOf('resume-verified:') !== -1) return null; // already recorded
+
+  // ONE capped nudge per session -- a single once-fired boolean marker, not
+  // the churn-tolerant hash+counter used elsewhere in this file (there is
+  // only one signal here: "did a resume-verified line ever get written").
+  const firedPath = path.join(homeDir, '.anti-hall', 'resume-verify-nudged-' + sessionId + '.json');
+  try {
+    if (fs.existsSync(firedPath)) return null;
+  } catch (_) {
+    return null; // can't confirm cap state -> fail open
+  }
+  try {
+    fs.mkdirSync(path.dirname(firedPath), { recursive: true });
+    fs.writeFileSync(firedPath, JSON.stringify({ nudged: true, ts: Date.now() }), 'utf8');
+  } catch (_) {
+    return null; // can't persist the cap -> fail open (never block without a working cap)
+  }
+
+  return 'A session handover was resumed this session (' + handoverFile + ') but no `resume-verified:` ' +
+    'marker was recorded in it. Run the resume-verification checklist (git status, pwd, smoke command) ' +
+    'and append `resume-verified: <ISO timestamp> -- <summary>` to that file before continuing.';
+}
+
+// findPriorSessionStateFile(cwd, date, thisSessionId) -> relative path string
+// (e.g. ".anti-hall/handovers/2026-08-08/<other-session>/state.md") of the
+// NEWEST-by-mtime state.md written by a DIFFERENT session under today's
+// handovers dir, or null if cwd is missing/unreadable, the handovers dir for
+// today doesn't exist, or no OTHER session has a state.md. Never throws (any
+// fs error propagates to the caller's try/catch, which fails open).
+function findPriorSessionStateFile(cwd, date, thisSessionId) {
+  if (!cwd || typeof cwd !== 'string') return null;
+  const dayDir = path.join(cwd, '.anti-hall', 'handovers', date);
+  let entries;
+  try {
+    entries = fs.readdirSync(dayDir, { withFileTypes: true });
+  } catch (_) {
+    return null;
+  }
+  let best = null;
+  let bestMtime = -1;
+  for (const ent of entries) {
+    if (!ent.isDirectory || !ent.isDirectory()) continue;
+    const otherSessionId = ent.name;
+    if (otherSessionId === thisSessionId) continue;
+    const statePath = path.join(dayDir, otherSessionId, 'state.md');
+    let st;
+    try {
+      st = fs.lstatSync(statePath);
+    } catch (_) {
+      continue;
+    }
+    if (!st.isFile()) continue;
+    if (st.mtimeMs > bestMtime) {
+      bestMtime = st.mtimeMs;
+      best = path.join('.anti-hall', 'handovers', date, otherSessionId, 'state.md');
+    }
+  }
+  return best;
 }
 
 function collectToolUses(node) {

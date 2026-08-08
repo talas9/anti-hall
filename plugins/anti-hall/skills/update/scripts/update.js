@@ -924,6 +924,68 @@ function healRegistryPostUpdate(opts) {
 }
 
 /**
+ * foldAllStoresPostUpdate({ paths, env, cwd, home, devswarm }) →
+ *   { attempted, stores, retired, forwarded, folded, errors, detail }
+ *
+ * Spec item 5c / [E] UPDATE-TIME SELF-HEAL. `foldMeshPostUpdate` above only
+ * folds the ONE project the update was run FROM (foldMeshDuplicates resolves
+ * repoKey from cwd) — an already-split registry sitting in a DIFFERENT
+ * project's store on this same machine is never reached just because the
+ * operator happened to run `/anti-hall:update` from project A instead of B
+ * (the exact gap the SkyCrew field report's live store inspection surfaced:
+ * the split was found by direct store inspection, not by update reaching it).
+ * This sweeps EVERY store this machine has ever opened (devswarm.js's
+ * foldMeshDuplicatesAllStores — same store.listStoreHashes(home) enumeration
+ * healRegistryPostUpdate already uses) so an existing install self-heals
+ * regardless of which project triggered the update. Deliberately AFTER
+ * foldMeshPostUpdate (redundant-but-harmless overlap on the cwd project;
+ * idempotent either way) and BEFORE foldArchivedRowsPostUpdate, mirroring the
+ * existing fold -> foldArchivedRows ordering rationale (fold first collapses
+ * duplicates so the archived-row sweep typically sees one row per workspace).
+ * Same DevSwarm-session-only gate + fully fail-open posture as its siblings;
+ * NEVER throws, never affects the update's own success. NO-DELETE (forward-
+ * before-tombstone, same primitive as foldMeshDuplicates) and idempotent (a
+ * re-run finds no store-only duplicate left to retire in any store).
+ */
+function foldAllStoresPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'fold-all-stores skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — fold-all-stores skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.foldMeshDuplicatesAllStores !== 'function') {
+      return { attempted: false, detail: 'fold-all-stores skipped: this devswarm.js build has no foldMeshDuplicatesAllStores' };
+    }
+    const r = devswarm.foldMeshDuplicatesAllStores(home, { cwd, env }) || {};
+    return {
+      attempted: true,
+      stores: r.stores || 0,
+      retired: r.retired || 0,
+      forwarded: r.forwarded || 0,
+      folded: r.folded || 0,
+      errors: r.errors || 0,
+      detail: 'fold-all-stores: folded ' + (r.retired || 0) + ' duplicate mesh row(s) into their canonical'
+        + ' survivor across ' + (r.stores || 0) + ' store(s)'
+        + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
+        + (r.errors ? ' (' + r.errors + ' store error(s), fail-open)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'fold-all-stores raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * wakeMonitorPostUpdate({ paths, env, cwd, home }) →
  *   { attempted, shipped, live, stateDirEnsured, detail }
  *
@@ -1325,6 +1387,10 @@ function runUpdate(opts) {
   // survivors — after reconcile drains, so stranded messages exist to forward.
   // Same gate + fail-open posture; never affects `stop` or the update's success.
   const fold = foldMeshPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // Spec item 5c: fold EVERY store this machine has opened, not only the cwd
+  // project's — see foldAllStoresPostUpdate's doc comment. Same gate + fail-
+  // open posture; never affects the update's success.
+  const foldAllStores = foldAllStoresPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
   // Archived-still-active migration: retire every registry row still held by a
   // GENUINELY archived workspace. Deliberately AFTER `fold` — fold first collapses
   // each worktree's duplicates into one canonical survivor, so this pass typically
@@ -1362,6 +1428,7 @@ function runUpdate(opts) {
         ingestHeal,
         reconcile,
         fold,
+        foldAllStores,
         foldArchivedRows,
         ownerKeyMigrate,
         replyStateMigrate,
@@ -1394,6 +1461,7 @@ function runUpdate(opts) {
       ingestHeal,
       reconcile,
       fold,
+      foldAllStores,
       foldArchivedRows,
       ownerKeyMigrate,
       replyStateMigrate,
@@ -1454,6 +1522,9 @@ function renderHuman(status, changelog) {
   }
   if (status.fold && status.fold.attempted) {
     lines.push('  fold:      ' + status.fold.detail);
+  }
+  if (status.foldAllStores && status.foldAllStores.attempted) {
+    lines.push('  fold-all-stores: ' + status.foldAllStores.detail);
   }
   if (status.foldArchivedRows && status.foldArchivedRows.attempted) {
     lines.push('  fold-archived-rows: ' + status.foldArchivedRows.detail);

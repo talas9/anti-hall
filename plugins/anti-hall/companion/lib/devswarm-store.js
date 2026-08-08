@@ -40,6 +40,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
+const livenessSelect = require('./devswarm-liveness-select.js');
 
 // worktreeRealPath (install-devswarm-ingest.js) — the CANONICAL real-path resolver
 // used for stale-worktree detection (A3). Required fail-open (the installer guards
@@ -789,6 +790,17 @@ function openSqlite(home, workspaceId, opts) {
       const r = db.prepare('SELECT value FROM cursors WHERE workspace_id = ?;').get(String(id));
       return r ? Number(r.value) : 0;
     },
+    // hasCursorRow(id) -> bool. Distinguishes "no cursors row exists yet"
+    // (never established a read cursor) from "cursor row exists with value 0"
+    // (established, nothing read yet) — cursorValue() alone returns 0 for
+    // BOTH, which the devswarm-liveness-select DRAIN ACTIVITY signal (b) needs
+    // to tell apart (a live drainer's cursor row is PRESENT; a dead/never-
+    // draining duplicate has none at all). Any error -> false via the caller's
+    // own try/catch (never disqualifying — see cursorEvidence's fail-open).
+    hasCursorRow(id) {
+      const r = db.prepare('SELECT 1 FROM cursors WHERE workspace_id = ?;').get(String(id));
+      return !!r;
+    },
     currentGates(id) {
       const rows = db.prepare('SELECT gate_name, value FROM gates WHERE workspace_id = ? ORDER BY id ASC;').all(String(id));
       const out = {};
@@ -1334,6 +1346,16 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
       }
       return v;
     },
+    // hasCursorRow(id) -> bool. Journal-backend mirror of the sqlite backend's
+    // hasCursorRow — see its comment for why this is distinct from
+    // cursorValue()===0.
+    hasCursorRow(id) {
+      const wid = String(id);
+      for (const row of readAll(files.cursors)) {
+        if (String(row.workspaceId) === wid) return true;
+      }
+      return false;
+    },
     currentGates(id) {
       const wid = String(id);
       const out = {};
@@ -1404,22 +1426,7 @@ function maxUrgencyOf(rows) {
   return best;
 }
 
-// SYNTHETIC_SESSION_PREFIX / isLiveSessionIdForResolve — mirrors scripts/
-// devswarm.js's SYNTHETIC_SESSION_PREFIX/isLiveSessionId byte-for-byte, kept as a
-// LOCAL copy (not a require) because scripts/devswarm.js itself requires THIS
-// module (`const store = require('../companion/lib/devswarm-store.js')`), so the
-// reverse require would be circular. A registry row auto-ensured by inbox pull
-// (never a real live session) carries a sessionId prefixed this way; excluding it
-// from "live" matches resolveMeshTarget's own freshest-live tie-break below.
-const SYNTHETIC_SESSION_PREFIX = 'unclaimed:';
-function isLiveSessionIdForResolve(sessionId) {
-  if (sessionId == null) return false;
-  const s = String(sessionId);
-  if (s === '') return false;
-  return !s.startsWith(SYNTHETIC_SESSION_PREFIX);
-}
-
-// resolveSenderRegistryId(store, registry, meshId) -> registry row id | null.
+// resolveSenderRegistryId(store, registry, meshId, home) -> registry row id | null.
 // Bug 2 / P0-B identity normalization (PLAN fix-wave): a question row's `sender`
 // is the SENDER's worktree-derived meshId (callerIdentity() in scripts/
 // devswarm.js), but a reply's echoed `toId` (cmdSend) is the REGISTRY ROW id
@@ -1428,55 +1435,34 @@ function isLiveSessionIdForResolve(sessionId) {
 // DEVSWARM_BUILDER_ID different from its own derived meshId — a REAL, already-
 // documented case (every real child; see scripts/devswarm.js's
 // cmdInboxMessages "v0.57 mesh (P0 fix)" commentary around its `caller !== id`
-// check). This mirrors scripts/devswarm.js's resolveMeshTarget matching/tie-
-// break logic (kept as a local copy for the same circular-require reason as
-// isLiveSessionIdForResolve above): among registry rows whose worktreePath
-// derives to `meshId`, prefer the freshest LIVE row (greatest updatedAt, then a
-// higher cursor value as a same-ms tiebreak), falling back to the first match
-// (e.g. an auto-ensured phantom) when none is live. Returns null (never throws)
-// when nothing matches or no meshId is derivable — the CALLER decides how to
-// treat null (see computeSummary's pendingQuestions build below: a
-// STRUCTURALLY unresolvable sender is now DROPPED, not kept under its raw
-// value — the permanent-deadlock fix, Round 2 review).
-//
-// cursorValueSafe(id) -> a finite cursor value, or -1 (unreadable/absent).
-// Mirrors scripts/devswarm.js's own meshCursorValue helper EXACTLY (same
-// coercion, same -1 sentinel) — the tie-break below compares its output
-// UNCONDITIONALLY (never gated on Number.isFinite of BOTH sides first, a
-// divergence from resolveMeshTarget a prior fix-wave introduced here: gating
-// on both-finite let a corrupt/unreadable ONE side's cursor silently veto an
-// otherwise-decisive comparison against a perfectly finite other side).
-function cursorValueSafe(store, id) {
-  try {
-    const v = store.cursorValue(id);
-    return Number.isFinite(v) ? v : -1;
-  } catch (_) { return -1; }
-}
-function resolveSenderRegistryId(store, registry, meshId) {
+// check). Matches candidate rows by worktree-derived meshId (store-specific),
+// then delegates the freshest-LIVE selection to devswarm-liveness-select.js's
+// pickFreshestLive — the SAME evidence-based ranking scripts/devswarm.js's
+// resolveMeshTarget/pickSurvivor use (P0-A defect: this used to be a THIRD
+// independent copy of the same "freshest updatedAt among live rows" loop,
+// which could disagree with the other two on which duplicate row wins).
+// Returns null (never throws) when nothing matches or no meshId is derivable —
+// the CALLER decides how to treat null (see computeSummary's pendingQuestions
+// build below: a STRUCTURALLY unresolvable sender is now DROPPED, not kept
+// under its raw value — the permanent-deadlock fix, Round 2 review).
+function resolveSenderRegistryId(store, registry, meshId, home) {
   if (!meshId) return null;
   if (!ingestIdentity || typeof ingestIdentity.primaryWorkspaceId !== 'function') return null;
-  let firstMatch = null;
-  let bestLive = null;
+  // Match candidates by worktree-derived meshId (store-specific — needs
+  // ingestIdentity), then delegate the SAME evidence-based freshest-LIVE
+  // ranking scripts/devswarm.js's resolveMeshTarget/pickSurvivor use (see
+  // devswarm-liveness-select.js's header for the ranking rules and the field
+  // defect this closes — three independent copies of this loop previously
+  // disagreeing on which duplicate row wins).
+  const candidates = [];
   for (const d of registry) {
     if (!d || !d.worktreePath) continue;
     let derived = null;
     try { derived = ingestIdentity.primaryWorkspaceId(d.worktreePath); } catch (_) { derived = null; }
     if (derived == null || String(derived) !== String(meshId)) continue;
-    if (firstMatch === null) firstMatch = d;
-    if (!isLiveSessionIdForResolve(d.sessionId)) continue;
-    if (bestLive === null) { bestLive = d; continue; }
-    const a = Number.isFinite(d.updatedAt) ? d.updatedAt : -1;
-    const b = Number.isFinite(bestLive.updatedAt) ? bestLive.updatedAt : -1;
-    if (a > b) { bestLive = d; continue; }
-    if (a === b) {
-      // Same-ms tiebreak (scripts/devswarm.js's resolveMeshTarget, mirrored
-      // exactly via cursorValueSafe above): a strictly greater cursor wins,
-      // unconditionally — never gated on both sides being finite first (fix,
-      // Round 2 review small item #3).
-      if (cursorValueSafe(store, d.id) > cursorValueSafe(store, bestLive.id)) bestLive = d;
-    }
+    candidates.push(d);
   }
-  const row = bestLive || firstMatch;
+  const row = livenessSelect.pickFreshestLive(candidates, { storeHandle: store, home });
   return row ? row.id : null;
 }
 
@@ -1783,7 +1769,7 @@ function computeSummary(store, opts) {
         // means "no live registry row matched", full stop), so this row is
         // DROPPED from the projection entirely rather than kept under a
         // dead-end identity. `null` marks a row to drop; filtered out below.
-        const resolvedFrom = resolveSenderRegistryId(store, registry, r.sender);
+        const resolvedFrom = resolveSenderRegistryId(store, registry, r.sender, home);
         if (resolvedFrom == null) return null;
         return { from: resolvedFrom, ts: r.ts, seq: r.storeSeq };
       })

@@ -341,7 +341,9 @@ plugin depends on it.
 - **Mesh messaging CLI** (`scripts/devswarm.js`) — `send --to <meshId>|--to-primary|
   --broadcast [--urgency low|normal|high|urgent] [--question]`, `roster` (also folds in
   unregistered native `hivecontrol` children), `mesh read`, `heartbeat --summary`, `inbox
-  pull/read/read-primary`. Every message row carries `{from, to, type, message, timestamp,
+  pull/read/read-primary/peek-primary` (`peek-primary` is the non-acking counterpart to
+  `read-primary` — same read, no cursor advance, for checking status without clearing it).
+  Every message row carries `{from, to, type, message, timestamp,
   urgency}`. `--question` marks a direct send as a blocking decision-request — rejected on
   `--broadcast`. The blocking/reply-tracking guarantee (Stop-gate + `recordReply`) is
   enforced when the recipient is the Primary; a peer child→child `--question` is
@@ -521,7 +523,7 @@ dual-backend store
 (`companion/lib/devswarm-store.js` — feature-detects `node:sqlite`, else an NDJSON
 journal; hooks read only its `summary.json` projection, never the DB), a structured CLI
 (`scripts/devswarm.js` — register/register-primary/heartbeat/inbox
-[pull/read/count/ack/messages/read-primary]/workspaces/gate/nudge/archive/archive-request/migrate;
+[pull/read/count/ack/messages/read-primary/peek-primary]/workspaces/gate/nudge/archive/archive-request/migrate;
 see `docs/KB-devswarm-hivecontrol.md` §8.8 for the full reference), a PER-PROJECT ingest
 daemon (`companion/devswarm-ingest.js`, the one native consumer wrapping `hivecontrol
 workspace monitor` into the store — install ONE per repo/worktree you want covered, via

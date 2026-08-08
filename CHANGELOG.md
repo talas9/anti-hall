@@ -6,6 +6,65 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.75.0 (2026-08-08)
+
+- **DevSwarm: partition-split identity family fix — evidence-based row-liveness
+  ranking + unified freshest-live primitive.** Two or more workspace rows could
+  describe the same partition (mesh ID + workspace ID + repo path), creating
+  silent state divergence when a parent restarted, drained, or the workspace was
+  accessed across sessions. Root causes: (1) row-liveness ranking used only
+  recency (`lastHeartbeatMs`), conflating activity with live-ness and demoting
+  proof of active drains or session-authored heartbeats; (2) no unified
+  selection primitive, causing three callers to independently pick rows with
+  drifting tie-break rules. Fixed with a three-tier evidence-based ranking
+  (`companion/lib/devswarm-liveness.js`, `rankRowLiveness`): session-reference
+  integrity (does the row's `sessionId` exist?), drain-activity proof (explicit
+  `draining` heartbeat + wall-time staleness within 20s), session-authored
+  heartbeats (a heartbeat from the exact session listed in the row) — recency is
+  now a final tie-break only. `devswarm-store.js`'s `selectFreshestLiveRow`
+  centralizes that ranking (replaces three independent pickers in fold, read
+  paths, and the parent table); all callers thread through it, eliminating
+  drift. `fold` operation now merges realpath-proven duplicate rows
+  (forward-before-tombstone, zero data loss): reads the full partition set,
+  scores each row, merges older rows into the freshest-live row via
+  `mergeHeartbeatRows`, and prunes obsolete copies. Parent inbox now applies a
+  non-acking `peek-primary` read variant (reads the primary durable NDJSON
+  inbox first, then the store-only backlog) and re-runs liveness against the
+  union before rendering. Parent-gate carries a two-axis escalation ceiling
+  (bounded plain-backlog nag count AND a separate bounded unanswered-question
+  count) so a persistently-neglected workspace or an unanswered question can
+  never nag forever without a human being told to look. Titles-not-ids
+  instruction added to primary-facing injections (parent table + prose
+  guidance) so end-users see `Workspace: "Fix the parser gate…"` not
+  `Workspace: "mesh-abc123def"`; mesh IDs remain in CLI operations. Two new
+  self-heal migrations (both platforms, idempotent, fail-open, no-delete):
+  `update.js`'s and `doctor-repair.js`'s `migrateOwnerKeys` backfill the
+  `ownerKey` descriptor field and re-home an active hash-bucket split across
+  both active and archived descriptors. Heartbeat callers instrumented
+  (`heartbeatCallersLogPath`/`appendHeartbeatCallerLog`) so an unidentified
+  caller invoking `heartbeat` without `--session` is logged for attribution.
+
+- **Agent-reliability rails.** Three small, independently fail-open additions
+  hardening background/teammate-agent and session-resume reliability:
+  - `verify-first-subagent.js` (SubagentStart) now tells every spawned agent to
+    `SendMessage` its final report to the coordinator BEFORE finishing (a bare
+    turn-end silently loses it) and to never end a turn waiting on a background
+    task (its completion notification routes to the main session, not to the
+    waiting agent — run long commands foreground or poll the output file).
+  - `tasklist-guard.js`'s "tracked NO tasks" nudge now points at a PRIOR
+    session's `.anti-hall/handovers/<today>/*/state.md` snapshot (if one
+    exists) so a session resuming with an empty task list recreates it from
+    the snapshot instead of inventing one from scratch.
+  - Resume-verification enforcement: `handover-resume.js` now records a small
+    per-session marker whenever it injects a guided-resume pointer, and its
+    injected instructions ask the agent to append a `resume-verified: <ISO
+    timestamp> -- <summary>` line to the HANDOVER file after running the
+    checklist. `tasklist-guard.js` backs this up mechanically — if a resume
+    injection happened this session, file-changing work then occurs, and no
+    `resume-verified:` marker ever lands in the referenced file, ONE capped
+    Stop-hook block fires naming it. The handover skill (both platforms)
+    documents the new marker line and its enforcement.
+
 ## 0.74.0 (2026-08-08)
 
 - **DevSwarm: unpushed/no-upstream risk surfacing + git-verified merged gate

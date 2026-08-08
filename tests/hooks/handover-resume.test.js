@@ -145,6 +145,56 @@ test("(b) handover present + source 'compact' -> context has path, SUPERSEDES, a
   }
 });
 
+test('(b2) successful injection writes a resume-state marker under HOME keyed by the RESUMING session id', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    const date = '2026-08-01';
+    const sessionId = 'session-abc123';
+    const filePath = writeHandover(cwd, date, sessionId, 1);
+
+    const r = testHook(HOOK, {
+      session_id: sessionId,
+      transcript_path: '/tmp/whatever.jsonl',
+      cwd,
+      source: 'compact',
+      hook_event_name: 'SessionStart',
+    }, { home: h.home, expectJson: true });
+
+    assert.ok(r.json, `expected JSON context, got: ${r.stdout}`);
+    const statePath = path.join(h.home, '.anti-hall', 'handover-resume-state-' + sessionId + '.json');
+    assert.ok(fs.existsSync(statePath), 'resume-state marker must be written on successful injection');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.strictEqual(state.handoverFile, filePath, 'marker must record the referenced HANDOVER file path');
+    assert.ok(Number.isFinite(state.ts), 'marker must record a timestamp');
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('(b3) no candidate found -> no resume-state marker written', () => {
+  const h = makeHome();
+  const cwd = makeProjectCwd();
+  try {
+    fs.mkdirSync(path.join(cwd, '.anti-hall', 'handovers'), { recursive: true });
+    const sessionId = 'no-handover-session';
+    testHook(HOOK, {
+      session_id: sessionId,
+      transcript_path: '/tmp/whatever.jsonl',
+      cwd,
+      source: 'clear',
+      hook_event_name: 'SessionStart',
+    }, { home: h.home, expectJson: true });
+
+    const statePath = path.join(h.home, '.anti-hall', 'handover-resume-state-' + sessionId + '.json');
+    assert.ok(!fs.existsSync(statePath), 'no marker should be written when nothing was injected');
+  } finally {
+    h.cleanup();
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('(c) same-session dir preferred over a newer other-session dir', () => {
   const h = makeHome();
   const cwd = makeProjectCwd();

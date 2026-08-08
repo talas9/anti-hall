@@ -1571,11 +1571,14 @@ test('OWN UNREAD DECIDE+REPLY REGRESSION: plain unread with no pendingQuestions 
     const expected =
       'DEVSWARM OWN INBOX — PRIORITY: you have 4 unread parent/peer '
       + 'message(s) addressed to YOU (the Primary). STOP and read your unread '
-      + 'parent/peer message(s) FIRST before continuing. Read them the SAFE, '
-      + 'NON-DRAINING way — `node ' + cliPath + ' inbox read-primary ' + OWN_ID + '` (anti-hall '
-      + 'devswarm CLI). Do NOT run `hivecontrol workspace read-messages` or '
-      + '`monitor` — those DESTRUCTIVELY drain the native queue.';
-    assert.strictEqual(own, expected, `no-pendingQuestions wording must be unchanged; own=${own}`);
+      + 'parent/peer message(s) FIRST before continuing. Read them via '
+      + '`node ' + cliPath + ' inbox read-primary ' + OWN_ID + '` (anti-hall devswarm CLI — '
+      + 'this advances YOUR OWN read cursor, the correct/expected drain for a '
+      + 'message you are now acting on; to check WITHOUT consuming it instead, '
+      + 'use `inbox peek-primary ' + OWN_ID + '`). Do NOT run `hivecontrol workspace '
+      + 'read-messages` or `monitor` — those DESTRUCTIVELY drain the NATIVE queue '
+      + '(a completely separate channel from your own cursor above).';
+    assert.strictEqual(own, expected, `no-pendingQuestions wording must be unchanged apart from the accuracy fix; own=${own}`);
   } finally { h.cleanup(); }
 });
 
@@ -1932,6 +1935,11 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
         + '| workspace | status | finish | unread | last |\n'
         + '|---|---|---|---|---|\n'
         + '| wsA | active | — | 2 | — |',
+      // item 4b (residual of task #7): explicit instruction so the Primary's OWN
+      // prose also uses titles, not bare mesh ids, when mentioning a workspace.
+      'When mentioning a workspace to the human, use its TITLE from the table above '
+        + '(truncate ~48 chars) — NEVER the bare mesh id. Mesh ids belong ONLY inside '
+        + 'command strings (`send --to <meshId>`, etc).',
       'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — wsA (2 unread). '
         + 'CHILD NOT DRAINING: these are message(s) YOU sent that the child has NOT yet '
         + 'drained. Poke it (`node ' + cliPath + ' send --to <id> --message "..."`) or '

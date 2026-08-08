@@ -135,6 +135,18 @@ test('SubagentStart -> scannable presentation is stated as the DEFAULT, drift-co
   } finally { h.cleanup(); }
 });
 
+test('SubagentStart -> teammate reporting note present (SendMessage-before-finish + no background-wait)', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    const c = ctx(r);
+    assert.ok(c.includes('SendMessage your final report to the coordinator BEFORE finishing'), 'must instruct sending final report before finishing');
+    assert.ok(c.includes('a bare turn-end silently loses it'), 'must warn a bare turn-end loses the report');
+    assert.ok(c.includes('NEVER end a turn waiting on a background task'), 'must warn against waiting on background tasks');
+    assert.ok(c.includes('routes to the main session, not to you'), 'must explain the notification routing gap');
+  } finally { h.cleanup(); }
+});
+
 // ---------------------------------------------------------------------------
 // Fail-open: malformed / empty stdin must never block.
 // ---------------------------------------------------------------------------
