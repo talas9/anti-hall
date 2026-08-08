@@ -356,12 +356,19 @@ const OFFLINE_RE = new RegExp(
   'i'
 );
 
+// 20s (was 60s): a hung/slow remote should fail fast into the existing
+// fail-open path (report + continue with local state) rather than block the
+// update for a full minute per git call — gitState + gitPullFfOnly each make
+// one such call. Failure/timeout behavior itself (OFFLINE_RE fail-open vs
+// hard STOP) is unchanged; only how long we wait before deciding.
+const GIT_EXEC_TIMEOUT_MS = 20000;
+
 /** defaultExec(args, cwd) → stdout string. Throws on non-zero (carries .stderr/.status). */
 function defaultExec(args, cwd) {
   return execFileSync('git', args, {
     cwd,
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: GIT_EXEC_TIMEOUT_MS,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 }
@@ -423,6 +430,162 @@ function remotePluginVersion(marketplaceDir, exec) {
   } catch (e) {
     return { ok: false, version: null, reason: gitErr(e) };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Sweep throttling + resume/stamp state (post-update heavy scans) — Step 5.4.
+// ---------------------------------------------------------------------------
+//
+// foldAllStoresPostUpdate / healRegistryPostUpdate each enumerate EVERY
+// per-project DevSwarm store on this machine (hundreds, on a heavily-used
+// box). Unthrottled + re-run in full on every single update, that turns a
+// routine update into a minutes-long stall. This section adds three things,
+// shared by both sweeps (and reused by healIngestDaemon's own version check):
+//   1. a small yield between per-item iterations (Atomics.wait — a real
+//      pure-Node sleep, never a busy-wait spin) so a long sweep never runs as
+//      one uninterrupted CPU burst,
+//   2. an overall TIME BUDGET (default 20s, ANTIHALL_UPDATE_SWEEP_BUDGET_MS-
+//      overridable) — on exhaustion the sweep stops cleanly mid-list. Every
+//      sweep step is independently idempotent (fold/heal never re-does work a
+//      prior partial pass already completed), so a resumed sweep next run is
+//      always safe,
+//   3. a persisted state file (~/.anti-hall/update-sweep-state.json) recording
+//      EITHER a pending-resume list (continue from here next run) OR a
+//      completed-for-version stamp (skip entirely on a re-run at the SAME
+//      version — these are one-time per-version migrations, not steady-state
+//      work; a version bump naturally invalidates the old stamp). Fully
+//      fail-open: an unreadable/corrupt state file reads as empty, never
+//      thrown; a write failure is swallowed (the NEXT run just re-sweeps).
+const DEFAULT_SWEEP_BUDGET_MS = 20000;
+const DEFAULT_SWEEP_YIELD_MS = 30;
+
+/** sweepBudgetMs(env) -> positive ms, ANTIHALL_UPDATE_SWEEP_BUDGET_MS-overridable. */
+function sweepBudgetMs(env) {
+  const raw = (env || process.env || {}).ANTIHALL_UPDATE_SWEEP_BUDGET_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SWEEP_BUDGET_MS;
+}
+
+/**
+ * sweepYield(ms) -> blocks the event loop for `ms` via Atomics.wait — a real
+ * sleep, never a spin/busy-wait. Fails open (no-op) on a runtime without
+ * SharedArrayBuffer/Atomics: pacing is best-effort, never load-bearing for
+ * correctness.
+ */
+function sweepYield(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch (_) { /* no-op */ }
+}
+
+/**
+ * runThrottledSweep({ items, budgetMs, yieldMs, worker, now, sleepFn }) ->
+ *   { results, processedItems, remaining, budgetExhausted }
+ * Calls worker(item, index) for each item in order, sleeping `yieldMs`
+ * between calls. Stops BEFORE starting an item once the budget has elapsed —
+ * an in-flight worker call is never interrupted. The FIRST item always runs
+ * regardless of budget, so a budget of 0 still guarantees forward progress
+ * instead of stalling forever on an ever-growing store list.
+ */
+function runThrottledSweep(opts) {
+  const o = opts || {};
+  const items = Array.isArray(o.items) ? o.items : [];
+  const budgetMs = Number.isFinite(o.budgetMs) ? o.budgetMs : DEFAULT_SWEEP_BUDGET_MS;
+  const yieldMs = Number.isFinite(o.yieldMs) ? o.yieldMs : DEFAULT_SWEEP_YIELD_MS;
+  const now = o.now || Date.now;
+  const sleep = o.sleepFn || sweepYield;
+  const worker = o.worker;
+  const start = now();
+  const results = [];
+  const processedItems = [];
+  let i = 0;
+  for (; i < items.length; i++) {
+    if (i > 0 && (now() - start) >= budgetMs) break;
+    results.push(worker(items[i], i));
+    processedItems.push(items[i]);
+    if (i < items.length - 1) sleep(yieldMs);
+  }
+  return { results, processedItems, remaining: items.slice(i), budgetExhausted: i < items.length };
+}
+
+/** sweepStatePath(home) -> ~/.anti-hall/update-sweep-state.json (home-injectable). */
+function sweepStatePath(home) { return path.join(home, '.anti-hall', 'update-sweep-state.json'); }
+
+/** readSweepState(home) -> plain object, fail-open (missing/corrupt/non-object -> {}). */
+function readSweepState(home) {
+  try {
+    const raw = fs.readFileSync(sweepStatePath(home), 'utf8');
+    const data = JSON.parse(raw);
+    return (data && typeof data === 'object' && !Array.isArray(data)) ? data : {};
+  } catch (_) { return {}; }
+}
+
+/** writeSweepState(home, state) -> bool ok. Fail-open — a write failure is
+ * swallowed; the next run simply re-sweeps instead of trusting a stale/absent
+ * stamp. Atomic (tmp + rename) so a crash mid-write never corrupts the file. */
+function writeSweepState(home, state) {
+  try {
+    const dir = path.join(home, '.anti-hall');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = sweepStatePath(home);
+    const tmp = file + '.' + process.pid + '.' + Date.now() + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(state));
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (_) { return false; }
+}
+
+/**
+ * sweepItemsFor(state, key, version, fullEnumerate) -> { skip, items }
+ * skip:true when `key` is already stamped complete for `version` (nothing to
+ * do). Otherwise `items` is either a prior partial run's pending list (same
+ * key + version — RESUME) or `fullEnumerate()`'s result (first run at this
+ * version, or state unreadable/absent). `version` falsy (direct/unit-test
+ * calls with no version) always takes the fullEnumerate path — no stamping
+ * without a version to stamp against.
+ */
+function sweepItemsFor(state, key, version, fullEnumerate) {
+  const s = state[key];
+  if (version && s && s.completedVersion === version) return { skip: true, items: [] };
+  if (version && s && s.pendingVersion === version && Array.isArray(s.pendingHashes) && s.pendingHashes.length) {
+    return { skip: false, items: s.pendingHashes.slice() };
+  }
+  return { skip: false, items: fullEnumerate() };
+}
+
+/**
+ * recordSweepResult(home, state, key, version, sweep, opts) -> updated state
+ * (persisted to disk, fail-open). `sweep` is a runThrottledSweep() result.
+ * Budget-exhausted -> a pending list is saved for next run to RESUME from.
+ * Fully drained AND clean (opts.clean !== false) -> a completed-for-version
+ * stamp is saved (skips entirely next run at the SAME version). Fully drained
+ * but NOT clean (per-item errors occurred) -> NO completion stamp: the stamp
+ * must never bless a pass that skipped real work (e.g. a transiently-locked
+ * store) — any stale pending list is cleared so the NEXT run re-enumerates in
+ * full, exactly the pre-stamp behavior, just throttled. No-op (returns state
+ * unchanged, writes nothing) when `version` is falsy.
+ */
+function recordSweepResult(home, state, key, version, sweep, opts) {
+  if (!version) return state;
+  const clean = !(opts && opts.clean === false);
+  const next = Object.assign({}, state);
+  if (sweep.budgetExhausted) {
+    next[key] = {
+      pendingVersion: version,
+      pendingHashes: sweep.remaining,
+      lastCompletedHash: sweep.processedItems.length ? sweep.processedItems[sweep.processedItems.length - 1] : null,
+      completedVersion: (state[key] && state[key].completedVersion) || null,
+    };
+  } else if (clean) {
+    next[key] = { completedVersion: version, completedTs: Date.now(), pendingVersion: null, pendingHashes: [], lastCompletedHash: null };
+  } else {
+    next[key] = {
+      completedVersion: (state[key] && state[key].completedVersion) || null,
+      pendingVersion: null, pendingHashes: [], lastCompletedHash: null,
+    };
+  }
+  writeSweepState(home, next);
+  return next;
 }
 
 // ---------------------------------------------------------------------------
@@ -524,6 +687,25 @@ function healIngestDaemon(opts) {
       return { attempted: true, healed: true, detail: 'ingest daemon absent — no heal needed' };
     }
 
+    // #4 pacing fix: defense-in-depth against a spawn race — TWO update.js
+    // runs (e.g. two DevSwarm worktree sessions) that each observe
+    // cache.synced:true for the SAME newly-copied version would, pre-fix,
+    // each independently spawn the installer. `o.version` (runUpdate passes
+    // the just-resolved `latest`) lets a SECOND spawn for a version this
+    // process already healed (persisted stamp) skip when the daemon is
+    // ALSO currently healthy — never when it isn't, so a genuinely broken
+    // daemon still gets re-installed regardless of the stamp. `o.version`
+    // falsy (every existing call site/test that predates this) always falls
+    // through to the pre-existing forced-restart behavior, unchanged.
+    const version = o.version || null;
+    if (version && cls === 'ok') {
+      const priorState = readSweepState(home);
+      const healedVersion = priorState.ingestHeal && priorState.ingestHeal.healedVersion;
+      if (healedVersion === version) {
+        return { attempted: true, healed: true, detail: 'ingest daemon already healthy + healed for ' + version + ' — skipped (no re-spawn)' };
+      }
+    }
+
     const spawn = o.spawnFn || ((script) => spawnSync(process.execPath, [script], {
       cwd, env: Object.assign({}, env, { HOME: home }), encoding: 'utf8', timeout: 30000,
     }));
@@ -542,6 +724,10 @@ function healIngestDaemon(opts) {
     spawn(installerPath);
     const after = bestUnit();
     const cls2 = classifyIngestUnit({ workingDir: after.workingDir, scriptPath: after.scriptPath, home, env });
+    if (version && cls2 === 'ok') {
+      const s = readSweepState(home);
+      writeSweepState(home, Object.assign({}, s, { ingestHeal: { healedVersion: version, healedTs: Date.now() } }));
+    }
     return {
       attempted: true,
       healed: cls2 === 'ok',
@@ -780,7 +966,34 @@ function ownerKeyMigratePostUpdate(opts) {
     if (typeof devswarm.migrateOwnerKeys !== 'function') {
       return { attempted: false, detail: 'ownerKey migrate skipped: this devswarm.js build has no migrateOwnerKeys' };
     }
+
+    // Run-once-per-version stamp (spec item 3): migrateOwnerKeys does its own
+    // full descriptor-directory walk (workspaces/ + archived/) — a THIRD full
+    // traversal alongside the two store-hash sweeps above, on EVERY update
+    // regardless of whether anything changed. It keeps that walk (its own
+    // enumeration is a directory listing, not the store-hash sweep the other
+    // two share), but a completed pass for a given version needs no repeat —
+    // this is a one-time forward-migration per version, not steady-state work.
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    if (version && sweepState.ownerKeyMigrate && sweepState.ownerKeyMigrate.completedVersion === version) {
+      return {
+        attempted: true, scanned: 0, backfilled: 0, rehomed: 0, errors: 0,
+        skippedAlreadyDone: true,
+        detail: 'ownerKey migrate: already completed for ' + version + ' — skipped (one-time per-version migration)',
+      };
+    }
+
     const r = devswarm.migrateOwnerKeys(home, { env, cwd }) || {};
+    // Stamp ONLY a clean pass: a run with per-descriptor errors (r.errors > 0)
+    // skipped real work, and stamping it would skip those descriptors' one-time
+    // migration forever at this version — leave it unstamped so the next run
+    // (or doctor) retries; that is exactly the pre-stamp behavior.
+    if (version && !(r.errors > 0)) {
+      writeSweepState(home, Object.assign({}, sweepState, {
+        ownerKeyMigrate: { completedVersion: version, completedTs: Date.now() },
+      }));
+    }
     return {
       attempted: true,
       scanned: r.scanned || 0,
@@ -895,28 +1108,55 @@ function healRegistryPostUpdate(opts) {
       return { attempted: false, detail: 'heal-registry-rows skipped: this devswarm.js build has no healRegistry' };
     }
     const devstore = o.devswarmStore || require(storePath);
-    let hashes = [];
-    try { hashes = devstore.listStoreHashes(home) || []; } catch (_) { hashes = []; }
-    let checked = 0, healed = 0, rehomed = 0;
-    const stores = [];
-    for (const repoKey of hashes) {
-      let r = null;
-      try { r = devswarm.healRegistry(home, repoKey, { cwd, env }); } catch (_) { r = null; }
-      if (!r) continue;
-      checked += r.checked || 0;
-      healed += r.healed || 0;
-      rehomed += r.rehomed || 0;
-      const rowIds = (r.rows || [])
-        .filter((row) => row && (row.healedDescriptor || row.healedRegistryPath || row.rehomed))
-        .map((row) => (row.id == null ? '?' : row.id));
-      if (rowIds.length) stores.push({ repoKey, rows: rowIds });
+
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    const sel = sweepItemsFor(sweepState, 'healRegistry', version, () => {
+      if (Array.isArray(o.hashes)) return o.hashes.slice();
+      try { return devstore.listStoreHashes(home) || []; } catch (_) { return []; }
+    });
+    if (sel.skip) {
+      return {
+        attempted: true, checked: 0, healed: 0, rehomed: 0, stores: [],
+        skippedAlreadyDone: true,
+        detail: 'heal-registry-rows: already completed for ' + version + ' — skipped (one-time per-version migration)',
+      };
     }
+
+    let checked = 0, healed = 0, rehomed = 0, errors = 0;
+    const stores = [];
+    const sweep = runThrottledSweep({
+      items: sel.items,
+      budgetMs: sweepBudgetMs(env),
+      worker: (repoKey) => {
+        let r = null;
+        // healRegistry itself always returns an object (internal store errors
+        // fail open to empty rows) — a null here means it THREW at this level.
+        try { r = devswarm.healRegistry(home, repoKey, { cwd, env }); } catch (_) { r = null; }
+        if (!r) { errors++; return null; }
+        checked += r.checked || 0;
+        healed += r.healed || 0;
+        rehomed += r.rehomed || 0;
+        const rowIds = (r.rows || [])
+          .filter((row) => row && (row.healedDescriptor || row.healedRegistryPath || row.rehomed))
+          .map((row) => (row.id == null ? '?' : row.id));
+        if (rowIds.length) stores.push({ repoKey, rows: rowIds });
+        return r;
+      },
+    });
+    // clean:false on any per-store throw — same no-stamp-over-skipped-work
+    // rationale as foldAllStoresPostUpdate above.
+    recordSweepResult(home, sweepState, 'healRegistry', version, sweep, { clean: errors === 0 });
+
     return {
       attempted: true,
-      checked, healed, rehomed, stores,
-      detail: healed === 0 && rehomed === 0
-        ? 'checked ' + checked + ' registry row(s) across ' + hashes.length + ' store(s) — nothing mis-keyed/stale'
-        : 'healed ' + healed + ' + rehomed ' + rehomed + ' of ' + checked + ' registry row(s) across ' + hashes.length + ' store(s)',
+      checked, healed, rehomed, errors, stores,
+      budgetExhausted: sweep.budgetExhausted,
+      pending: sweep.remaining.length,
+      detail: (healed === 0 && rehomed === 0
+        ? 'checked ' + checked + ' registry row(s) across ' + sweep.processedItems.length + ' store(s) — nothing mis-keyed/stale'
+        : 'healed ' + healed + ' + rehomed ' + rehomed + ' of ' + checked + ' registry row(s) across ' + sweep.processedItems.length + ' store(s)')
+        + (sweep.budgetExhausted ? ' (budget hit — ' + sweep.remaining.length + ' store(s) pending next run)' : ''),
     };
   } catch (e) {
     return { attempted: false, detail: 'heal-registry-rows raised: ' + (e && e.message ? e.message : String(e)) };
@@ -947,6 +1187,14 @@ function healRegistryPostUpdate(opts) {
  * before-tombstone, same primitive as foldMeshDuplicates) and idempotent (a
  * re-run finds no store-only duplicate left to retire in any store).
  */
+// Throttled/resumable/one-time-per-version refactor (spec items 1-3): rather
+// than delegating to devswarm.foldMeshDuplicatesAllStores' own single
+// unthrottled internal loop, this calls the SAME per-store primitive
+// (devswarm.foldMeshDuplicates with a repoKey override — exactly what
+// foldMeshDuplicatesAllStores uses under the hood) directly, one hash at a
+// time, through runThrottledSweep. `foldMeshDuplicatesAllStores` itself is
+// left untouched (still exported, still usable un-throttled by any future
+// CLI/doctor caller) — only THIS post-update wiring changes.
 function foldAllStoresPostUpdate(opts) {
   const o = opts || {};
   const env = o.env || process.env;
@@ -956,7 +1204,8 @@ function foldAllStoresPostUpdate(opts) {
   try {
     const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
     const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
-    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+    const storePath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-store.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath) || !fs.existsSync(storePath)) {
       return { attempted: false, detail: 'fold-all-stores skipped: expected plugin files not found under ' + paths.pluginSrcDir };
     }
     const { isDevswarmActive } = require(detectPath);
@@ -964,21 +1213,56 @@ function foldAllStoresPostUpdate(opts) {
       return { attempted: false, detail: 'not a DevSwarm session — fold-all-stores skipped (gate closed)' };
     }
     const devswarm = o.devswarm || require(devswarmPath);
-    if (typeof devswarm.foldMeshDuplicatesAllStores !== 'function') {
-      return { attempted: false, detail: 'fold-all-stores skipped: this devswarm.js build has no foldMeshDuplicatesAllStores' };
+    if (typeof devswarm.foldMeshDuplicates !== 'function') {
+      return { attempted: false, detail: 'fold-all-stores skipped: this devswarm.js build has no foldMeshDuplicates' };
     }
-    const r = devswarm.foldMeshDuplicatesAllStores(home, { cwd, env }) || {};
+    const devstore = o.devswarmStore || require(storePath);
+
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    const sel = sweepItemsFor(sweepState, 'foldAllStores', version, () => {
+      if (Array.isArray(o.hashes)) return o.hashes.slice();
+      try { return devstore.listStoreHashes(home) || []; } catch (_) { return []; }
+    });
+    if (sel.skip) {
+      return {
+        attempted: true, stores: 0, retired: 0, forwarded: 0, folded: 0, errors: 0,
+        skippedAlreadyDone: true,
+        detail: 'fold-all-stores: already completed for ' + version + ' — skipped (one-time per-version migration)',
+      };
+    }
+
+    let retired = 0, forwarded = 0, folded = 0, errors = 0;
+    const sweep = runThrottledSweep({
+      items: sel.items,
+      budgetMs: sweepBudgetMs(env),
+      worker: (repoKey) => {
+        let r = null;
+        try { r = devswarm.foldMeshDuplicates(home, { cwd, env, repoKey }); }
+        catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+        if (!r || r.ok === false) { errors++; return r; }
+        retired += Array.isArray(r.retired) ? r.retired.length : 0;
+        forwarded += r.forwarded || 0;
+        folded += r.folded || 0;
+        return r;
+      },
+    });
+    // clean:false on any per-store error — a drained-but-errored pass must NOT
+    // stamp completion (the errored store's one-time migration would be skipped
+    // forever at this version); next run re-enumerates in full instead.
+    recordSweepResult(home, sweepState, 'foldAllStores', version, sweep, { clean: errors === 0 });
+
     return {
       attempted: true,
-      stores: r.stores || 0,
-      retired: r.retired || 0,
-      forwarded: r.forwarded || 0,
-      folded: r.folded || 0,
-      errors: r.errors || 0,
-      detail: 'fold-all-stores: folded ' + (r.retired || 0) + ' duplicate mesh row(s) into their canonical'
-        + ' survivor across ' + (r.stores || 0) + ' store(s)'
-        + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
-        + (r.errors ? ' (' + r.errors + ' store error(s), fail-open)' : ''),
+      stores: sweep.processedItems.length,
+      retired, forwarded, folded, errors,
+      budgetExhausted: sweep.budgetExhausted,
+      pending: sweep.remaining.length,
+      detail: 'fold-all-stores: folded ' + retired + ' duplicate mesh row(s) into their canonical'
+        + ' survivor across ' + sweep.processedItems.length + ' store(s)'
+        + (forwarded ? ' (forwarded ' + forwarded + ' message(s))' : '')
+        + (errors ? ' (' + errors + ' store error(s), fail-open)' : '')
+        + (sweep.budgetExhausted ? ' (budget hit — ' + sweep.remaining.length + ' store(s) pending next run)' : ''),
     };
   } catch (e) {
     return { attempted: false, detail: 'fold-all-stores raised: ' + (e && e.message ? e.message : String(e)) };
@@ -1373,8 +1657,29 @@ function runUpdate(opts) {
   // rationale). Fully fail-open — never affects `stop` or the update's own
   // success/failure.
   const ingestHeal = cache.synced
-    ? healIngestDaemon({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, spawnFn: opts.spawnIngestInstaller })
+    ? healIngestDaemon({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, spawnFn: opts.spawnIngestInstaller, version: latest })
     : { attempted: false, healed: false, detail: 'no cache sync this run — nothing to heal' };
+
+  // Shared store-hash enumeration (throttle/pacing fix, spec item 1): ONE
+  // listStoreHashes pass this run, reused by BOTH foldAllStoresPostUpdate and
+  // healRegistryPostUpdate instead of each doing its own full store-root
+  // directory listing. Only computed once, and only when a DevSwarm session
+  // is genuinely active — mirrors the gate each sweep already checks
+  // internally, so a non-DevSwarm run never pays even the one readdir.
+  // `null` (gate closed / files missing) means "let each sweep self-enumerate
+  // if it ends up needing to" — never forces a stale/empty list on them.
+  let sharedStoreHashes = null;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const storeLibPath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-store.js');
+    if (fs.existsSync(detectPath) && fs.existsSync(storeLibPath)) {
+      const { isDevswarmActive } = require(detectPath);
+      if (typeof isDevswarmActive === 'function' && isDevswarmActive(opts.env)) {
+        const devstore = opts.devswarmStore || require(storeLibPath);
+        sharedStoreHashes = devstore.listStoreHashes(opts.home || os.homedir()) || [];
+      }
+    }
+  } catch (_) { sharedStoreHashes = null; }
 
   // Reconcile: DevSwarm-session-only post-update step (drains stranded per-
   // worktree native hivecontrol queues into the shared store). Unlike
@@ -1389,8 +1694,13 @@ function runUpdate(opts) {
   const fold = foldMeshPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
   // Spec item 5c: fold EVERY store this machine has opened, not only the cwd
   // project's — see foldAllStoresPostUpdate's doc comment. Same gate + fail-
-  // open posture; never affects the update's success.
-  const foldAllStores = foldAllStoresPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // open posture; never affects the update's success. Throttled + resumable +
+  // one-time-per-version (spec items 1-3): shares this run's enumeration and
+  // is stamped complete for `latest` once fully drained.
+  const foldAllStores = foldAllStoresPostUpdate({
+    paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
+    hashes: sharedStoreHashes, version: latest,
+  });
   // Archived-still-active migration: retire every registry row still held by a
   // GENUINELY archived workspace. Deliberately AFTER `fold` — fold first collapses
   // each worktree's duplicates into one canonical survivor, so this pass typically
@@ -1399,16 +1709,24 @@ function runUpdate(opts) {
   // work-reduction, not a correctness requirement. Same gate + fail-open posture.
   const foldArchivedRows = foldArchivedRowsPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
   // P1-8: backfill the new `ownerKey` descriptor field + heal prior hash-bucket
-  // split-brain. Same gate + fail-open posture; never affects the update's success.
-  const ownerKeyMigrate = ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // split-brain. Same gate + fail-open posture; never affects the update's
+  // success. Run-once-per-version stamped (spec item 3) — its own descriptor
+  // walk (not the shared store-hash enumeration) is skipped entirely once a
+  // pass for `latest` has already completed.
+  const ownerKeyMigrate = ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest });
   // Task #4: normalize parent-gate reply-state files to the append-only shape.
   // Pure per-user-file fold+rewrite; same gate + fail-open posture; never
   // affects the update's own success.
   const replyStateMigrate = replyStateMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home });
   // Claim 3 self-heal: sweep every per-project store registry for a mis-keyed/
   // stale row via devswarm.js's healRegistry. Same gate + fail-open posture;
-  // never affects the update's success.
-  const healRegistryRows = healRegistryPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  // never affects the update's success. Throttled + resumable + one-time-per-
+  // version (spec items 1-3): shares this run's enumeration and is stamped
+  // complete for `latest` once fully drained.
+  const healRegistryRows = healRegistryPostUpdate({
+    paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
+    hashes: sharedStoreHashes, version: latest,
+  });
   // Monitor-based idle-wake companion: report shipped/live state + the exact
   // manual arm command. update.js is a plain Node process — it CANNOT call
   // the agent-only `Monitor` tool, so this only verifies/reports, never
@@ -1571,9 +1889,19 @@ module.exports = {
   gitState,
   gitPullFfOnly,
   remotePluginVersion,
+  GIT_EXEC_TIMEOUT_MS,
+  sweepBudgetMs,
+  sweepYield,
+  runThrottledSweep,
+  sweepStatePath,
+  readSweepState,
+  writeSweepState,
+  sweepItemsFor,
+  recordSweepResult,
   healIngestDaemon,
   reconcilePostUpdate,
   foldMeshPostUpdate,
+  foldAllStoresPostUpdate,
   foldArchivedRowsPostUpdate,
   ownerKeyMigratePostUpdate,
   healRegistryPostUpdate,

@@ -1825,3 +1825,619 @@ test('renderHuman: omits the wake-monitor block entirely when not attempted (non
   const out = U.renderHuman(status, '');
   assert.doesNotMatch(out, /wake-monitor:/);
 });
+
+// ---------------------------------------------------------------------------
+// Sweep throttling + resume/stamp (#15 pacing fix): runThrottledSweep, the
+// sweep-state file, and the foldAllStoresPostUpdate / healRegistryPostUpdate /
+// ownerKeyMigratePostUpdate / healIngestDaemon wiring on top of it.
+// ---------------------------------------------------------------------------
+
+test('runThrottledSweep: no budget pressure processes every item, sleeping between (not after) each', () => {
+  const sleeps = [];
+  const items = ['a', 'b', 'c'];
+  const seen = [];
+  const r = U.runThrottledSweep({
+    items,
+    worker: (x) => { seen.push(x); return x + '!'; },
+    sleepFn: (ms) => sleeps.push(ms),
+    now: () => 0, // budget never appears exceeded
+  });
+  assert.deepStrictEqual(seen, items);
+  assert.deepStrictEqual(r.results, ['a!', 'b!', 'c!']);
+  assert.deepStrictEqual(r.processedItems, items);
+  assert.deepStrictEqual(r.remaining, []);
+  assert.strictEqual(r.budgetExhausted, false);
+  assert.strictEqual(sleeps.length, 2, 'sleeps BETWEEN items only — never after the last one');
+});
+
+test('runThrottledSweep: budget exhaustion stops mid-list, always makes progress on the first item regardless of budget', () => {
+  const items = ['a', 'b', 'c', 'd'];
+  let call = 0;
+  const r = U.runThrottledSweep({
+    items,
+    budgetMs: 100,
+    worker: (x) => x,
+    sleepFn: () => {},
+    now: () => { call++; return call === 1 ? 0 : 1000; }, // start=0, every check after item 1 reads as way over budget
+  });
+  assert.deepStrictEqual(r.processedItems, ['a'], 'first item always runs even though the budget check trips immediately after');
+  assert.deepStrictEqual(r.remaining, ['b', 'c', 'd']);
+  assert.strictEqual(r.budgetExhausted, true);
+});
+
+test('sweepItemsFor / recordSweepResult: budget exhaustion persists a resume pending-list; a second pass continues from it and completes', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-sweep-resume-'));
+  try {
+    const version = '0.99.0';
+    let state = U.readSweepState(home);
+    assert.deepStrictEqual(state, {}, 'no state file yet -> {}');
+
+    // Pass 1: budget forces a stop after the first of three items.
+    const sel1 = U.sweepItemsFor(state, 'testSweep', version, () => ['h1', 'h2', 'h3']);
+    assert.strictEqual(sel1.skip, false);
+    assert.deepStrictEqual(sel1.items, ['h1', 'h2', 'h3'], 'first pass: fresh full enumeration');
+    const seen1 = [];
+    const sweep1 = U.runThrottledSweep({
+      items: sel1.items, worker: (x) => { seen1.push(x); return x; },
+      sleepFn: () => {}, now: (() => { let n = 0; return () => (n++ === 0 ? 0 : 1000); })(), budgetMs: 100,
+    });
+    assert.deepStrictEqual(seen1, ['h1']);
+    assert.strictEqual(sweep1.budgetExhausted, true);
+    state = U.recordSweepResult(home, state, 'testSweep', version, sweep1);
+    assert.strictEqual(state.testSweep.pendingVersion, version);
+    assert.deepStrictEqual(state.testSweep.pendingHashes, ['h2', 'h3']);
+    assert.strictEqual(state.testSweep.completedVersion, null);
+
+    // A fresh read of the persisted file matches the in-memory state.
+    const reread = U.readSweepState(home);
+    assert.deepStrictEqual(reread.testSweep.pendingHashes, ['h2', 'h3']);
+
+    // Pass 2 ("next update run"): resumes from the pending list, not from
+    // scratch, and this time completes (no budget pressure).
+    const sel2 = U.sweepItemsFor(reread, 'testSweep', version, () => { throw new Error('must NOT re-enumerate — a pending list exists'); });
+    assert.strictEqual(sel2.skip, false);
+    assert.deepStrictEqual(sel2.items, ['h2', 'h3']);
+    const seen2 = [];
+    const sweep2 = U.runThrottledSweep({ items: sel2.items, worker: (x) => { seen2.push(x); return x; }, sleepFn: () => {} });
+    assert.deepStrictEqual(seen2, ['h2', 'h3']);
+    assert.strictEqual(sweep2.budgetExhausted, false);
+    const state2 = U.recordSweepResult(home, reread, 'testSweep', version, sweep2);
+    assert.strictEqual(state2.testSweep.completedVersion, version, 'fully drained -> stamped complete for this version');
+    assert.deepStrictEqual(state2.testSweep.pendingHashes, []);
+
+    // Pass 3 ("update run at the SAME version"): the stamp is honored -> skip.
+    const sel3 = U.sweepItemsFor(U.readSweepState(home), 'testSweep', version, () => { throw new Error('must NOT enumerate — already stamped complete'); });
+    assert.strictEqual(sel3.skip, true);
+
+    // A version bump invalidates the old stamp -> fresh full sweep again.
+    const sel4 = U.sweepItemsFor(U.readSweepState(home), 'testSweep', '1.0.0', () => ['h1', 'h2', 'h3']);
+    assert.strictEqual(sel4.skip, false);
+    assert.deepStrictEqual(sel4.items, ['h1', 'h2', 'h3']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('readSweepState: unreadable/corrupt state file fails open to {} (never throws)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-sweep-corrupt-'));
+  try {
+    fs.mkdirSync(path.join(home, '.anti-hall'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.anti-hall', 'update-sweep-state.json'), '{ not valid json', 'utf8');
+    assert.deepStrictEqual(U.readSweepState(home), {});
+
+    // An array at the top level is rejected too (not a plain object).
+    fs.writeFileSync(path.join(home, '.anti-hall', 'update-sweep-state.json'), '[1,2,3]', 'utf8');
+    assert.deepStrictEqual(U.readSweepState(home), {});
+
+    // A missing file entirely.
+    fs.rmSync(path.join(home, '.anti-hall', 'update-sweep-state.json'));
+    assert.deepStrictEqual(U.readSweepState(home), {});
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('writeSweepState: an unwritable target fails open (returns false, never throws)', () => {
+  // Point "home" at a path that cannot be mkdir'd into (a FILE, not a dir).
+  const blocker = fs.mkdtempSync(path.join(os.tmpdir(), 'update-sweep-blocker-'));
+  const fakeHome = path.join(blocker, 'not-a-dir');
+  fs.writeFileSync(fakeHome, 'i am a file, not a directory', 'utf8');
+  try {
+    const ok = U.writeSweepState(fakeHome, { foo: 'bar' });
+    assert.strictEqual(ok, false);
+  } finally { fs.rmSync(blocker, { recursive: true, force: true }); }
+});
+
+test('sweepBudgetMs: ANTIHALL_UPDATE_SWEEP_BUDGET_MS overrides the 20s default; invalid values fall back', () => {
+  assert.strictEqual(U.sweepBudgetMs({}), 20000);
+  assert.strictEqual(U.sweepBudgetMs({ ANTIHALL_UPDATE_SWEEP_BUDGET_MS: '5000' }), 5000);
+  assert.strictEqual(U.sweepBudgetMs({ ANTIHALL_UPDATE_SWEEP_BUDGET_MS: '0' }), 0);
+  assert.strictEqual(U.sweepBudgetMs({ ANTIHALL_UPDATE_SWEEP_BUDGET_MS: 'garbage' }), 20000);
+});
+
+test('sweepYield: a real (bounded) sleep — does not throw, and actually elapses roughly the requested time', () => {
+  const start = Date.now();
+  U.sweepYield(20);
+  const elapsed = Date.now() - start;
+  assert.ok(elapsed >= 10, 'must actually pause, not a no-op: elapsed=' + elapsed);
+});
+
+// --- foldAllStoresPostUpdate: gate, real-tree wiring, throttle/resume/stamp ---
+
+test('foldAllStoresPostUpdate: not a DevSwarm session -> attempted:false, gate closed', () => {
+  const result = U.foldAllStoresPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { foldMeshDuplicates: () => { throw new Error('must not run when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('foldAllStoresPostUpdate: pulled plugin tree missing scripts/companion files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree();
+  try {
+    const result = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('foldAllStoresPostUpdate: gate open + no stores at all -> attempted:true, 0 across the board', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-empty-'));
+  try {
+    const result = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.stores, 0);
+    assert.strictEqual(result.retired, 0);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('foldAllStoresPostUpdate: explicit `hashes` is used as-is — devswarmStore.listStoreHashes is NEVER called (shared-enumeration contract)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-hashes-'));
+  try {
+    let calledFold = [];
+    let listCalled = 0;
+    const fakeDevswarm = { foldMeshDuplicates: (h, ctx) => { calledFold.push(ctx.repoKey); return { retired: [], forwarded: 0, folded: 0 }; } };
+    const fakeStore = { listStoreHashes: () => { listCalled++; return ['should-not-be-used']; } };
+    const result = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+      devswarm: fakeDevswarm,
+      devswarmStore: fakeStore,
+      hashes: ['pre-enumerated-a', 'pre-enumerated-b'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(listCalled, 0, 'listStoreHashes must not be called when a pre-enumerated list is supplied');
+    assert.deepStrictEqual(calledFold, ['pre-enumerated-a', 'pre-enumerated-b']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('foldAllStoresPostUpdate: budget exhaustion stops mid-sweep, writes a resume stamp; a second run (same version) resumes and completes', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-budget-'));
+  try {
+    const seen1 = [];
+    const fakeDevswarm1 = { foldMeshDuplicates: (h, ctx) => { seen1.push(ctx.repoKey); return { retired: [], forwarded: 0, folded: 0 }; } };
+    // Force the sweep to stop after the first hash via a near-zero budget +
+    // a `now` that reads "already over budget" on every check after the first.
+    const savedNow = Date.now;
+    let calls = 0;
+    Date.now = () => (calls++ === 0 ? 0 : 999999);
+    let result1;
+    try {
+      result1 = U.foldAllStoresPostUpdate({
+        paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+        env: { DEVSWARM_REPO_ID: 'r1', ANTIHALL_UPDATE_SWEEP_BUDGET_MS: '1' },
+        cwd: process.cwd(), home,
+        devswarm: fakeDevswarm1,
+        hashes: ['s1', 's2', 's3'],
+        version: '0.90.0',
+      });
+    } finally { Date.now = savedNow; }
+    assert.strictEqual(result1.attempted, true);
+    assert.deepStrictEqual(seen1, ['s1'], 'only the first store processed before the budget stop');
+    assert.strictEqual(result1.budgetExhausted, true);
+    assert.strictEqual(result1.pending, 2);
+
+    const stateAfter1 = U.readSweepState(home);
+    assert.strictEqual(stateAfter1.foldAllStores.pendingVersion, '0.90.0');
+    assert.deepStrictEqual(stateAfter1.foldAllStores.pendingHashes, ['s2', 's3']);
+
+    // Second run at the SAME version: resumes from the pending list (never
+    // re-supplied `hashes`, proving it reads the stamp, not a fresh param).
+    const seen2 = [];
+    const fakeDevswarm2 = { foldMeshDuplicates: (h, ctx) => { seen2.push(ctx.repoKey); return { retired: [], forwarded: 0, folded: 0 }; } };
+    const result2 = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm2,
+      version: '0.90.0',
+    });
+    assert.deepStrictEqual(seen2, ['s2', 's3'], 'resumed from where pass 1 left off, not from s1 again');
+    assert.strictEqual(result2.budgetExhausted, false);
+
+    const stateAfter2 = U.readSweepState(home);
+    assert.strictEqual(stateAfter2.foldAllStores.completedVersion, '0.90.0');
+
+    // Third run at the SAME version: the stamp is honored — sweep skipped entirely.
+    const fakeDevswarm3 = { foldMeshDuplicates: () => { throw new Error('must not run — already completed for this version'); } };
+    const result3 = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm3,
+      version: '0.90.0',
+    });
+    assert.strictEqual(result3.attempted, true);
+    assert.strictEqual(result3.skippedAlreadyDone, true);
+    assert.match(result3.detail, /already completed for 0\.90\.0/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('foldAllStoresPostUpdate: a per-store throw is fail-open — never propagates, counted as an error, the sweep continues', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-throw-'));
+  try {
+    const fakeDevswarm = {
+      foldMeshDuplicates: (h, ctx) => {
+        if (ctx.repoKey === 'bad') throw new Error('fold boom');
+        return { retired: ['x'], forwarded: 1, folded: 1 };
+      },
+    };
+    const result = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['good', 'bad'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.errors, 1);
+    assert.strictEqual(result.retired, 1, 'the good store still contributed its result');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('foldAllStoresPostUpdate: a drained-but-ERRORED pass is NOT stamped complete — the next run re-enumerates in full', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-foldall-errnostamp-'));
+  try {
+    const fakeDevswarm = {
+      foldMeshDuplicates: (h, ctx) => {
+        if (ctx.repoKey === 'locked') throw new Error('store locked');
+        return { retired: [], forwarded: 0, folded: 0 };
+      },
+    };
+    const result1 = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['ok1', 'locked', 'ok2'],
+      version: '0.91.0',
+    });
+    assert.strictEqual(result1.attempted, true);
+    assert.strictEqual(result1.errors, 1);
+    assert.strictEqual(result1.budgetExhausted, false, 'the sweep drained the whole list');
+    const state1 = U.readSweepState(home);
+    assert.ok(!state1.foldAllStores || state1.foldAllStores.completedVersion !== '0.91.0',
+      'an errored pass must NOT stamp completion — the locked store\'s migration would be skipped forever');
+
+    // Second run at the SAME version: no stamp honored, no stale pending — the
+    // full list is enumerated again and the previously-locked store is retried.
+    const seen2 = [];
+    const result2 = U.foldAllStoresPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: { foldMeshDuplicates: (h, ctx) => { seen2.push(ctx.repoKey); return { retired: [], forwarded: 0, folded: 0 }; } },
+      hashes: ['ok1', 'locked', 'ok2'],
+      version: '0.91.0',
+    });
+    assert.deepStrictEqual(seen2, ['ok1', 'locked', 'ok2'], 'full re-enumeration, including the previously-errored store');
+    assert.strictEqual(result2.errors, 0);
+    const state2 = U.readSweepState(home);
+    assert.strictEqual(state2.foldAllStores.completedVersion, '0.91.0', 'the clean pass IS stamped');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healRegistryPostUpdate: a healRegistry throw counts as an error and blocks the completion stamp', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-errnostamp-'));
+  try {
+    const fakeDevswarm = {
+      healRegistry: (h, repoKey) => {
+        if (repoKey === 'boom') throw new Error('heal boom');
+        return { checked: 1, healed: 0, rehomed: 0, skipped: 0, rows: [] };
+      },
+    };
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['a', 'boom', 'b'],
+      version: '0.91.0',
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.errors, 1);
+    assert.strictEqual(result.checked, 2, 'the non-throwing stores still contributed');
+    const state = U.readSweepState(home);
+    assert.ok(!state.healRegistry || state.healRegistry.completedVersion !== '0.91.0',
+      'an errored pass must NOT stamp completion');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('ownerKeyMigratePostUpdate: a pass with per-descriptor errors is NOT stamped — the next run retries', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-ownerkey-errnostamp-'));
+  try {
+    let calls = 0;
+    const fakeDevswarm = { migrateOwnerKeys: () => { calls++; return { scanned: 3, backfilled: 1, rehomed: 0, errors: calls === 1 ? 2 : 0 }; } };
+    const result1 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      version: '0.91.0',
+    });
+    assert.strictEqual(result1.attempted, true);
+    assert.strictEqual(result1.errors, 2);
+    const state1 = U.readSweepState(home);
+    assert.ok(!state1.ownerKeyMigrate || state1.ownerKeyMigrate.completedVersion !== '0.91.0',
+      'an errored migrate pass must NOT stamp completion');
+
+    // Second run (errors resolved) runs again and IS stamped; third run skips.
+    const result2 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      version: '0.91.0',
+    });
+    assert.strictEqual(result2.errors, 0);
+    assert.strictEqual(U.readSweepState(home).ownerKeyMigrate.completedVersion, '0.91.0');
+    const result3 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: { migrateOwnerKeys: () => { throw new Error('must not run — stamped'); } },
+      version: '0.91.0',
+    });
+    assert.strictEqual(result3.skippedAlreadyDone, true);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- healRegistryPostUpdate: shared-enumeration + throttle/resume/stamp ---
+
+test('healRegistryPostUpdate: explicit `hashes` is used as-is — devswarmStore.listStoreHashes is NEVER called (shared-enumeration contract)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-hashes-'));
+  try {
+    let listCalled = 0;
+    const seen = [];
+    const fakeDevswarm = { healRegistry: (h, repoKey) => { seen.push(repoKey); return { checked: 1, healed: 0, rehomed: 0, skipped: 0, rows: [] }; } };
+    const fakeStore = { listStoreHashes: () => { listCalled++; return ['should-not-be-used']; } };
+    const result = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      devswarmStore: fakeStore,
+      hashes: ['pre-a', 'pre-b'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(listCalled, 0);
+    assert.deepStrictEqual(seen, ['pre-a', 'pre-b']);
+    assert.strictEqual(result.checked, 2);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healRegistryPostUpdate: same-version re-run honors the completed stamp -> skipped entirely, healRegistry never called', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-stamp-'));
+  try {
+    const fakeDevswarm1 = { healRegistry: () => ({ checked: 1, healed: 0, rehomed: 0, skipped: 0, rows: [] }) };
+    const result1 = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm1,
+      hashes: ['h1'],
+      version: '0.91.0',
+    });
+    assert.strictEqual(result1.attempted, true);
+    assert.strictEqual(result1.skippedAlreadyDone, undefined);
+
+    const fakeDevswarm2 = { healRegistry: () => { throw new Error('must not run — already completed for this version'); } };
+    const result2 = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm2,
+      hashes: ['h1'],
+      version: '0.91.0',
+    });
+    assert.strictEqual(result2.skippedAlreadyDone, true);
+
+    // A version bump invalidates the stamp -> runs again.
+    const seen3 = [];
+    const fakeDevswarm3 = { healRegistry: (h, repoKey) => { seen3.push(repoKey); return { checked: 1, healed: 0, rehomed: 0, skipped: 0, rows: [] }; } };
+    const result3 = U.healRegistryPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm3,
+      hashes: ['h1'],
+      version: '0.92.0',
+    });
+    assert.strictEqual(result3.skippedAlreadyDone, undefined);
+    assert.deepStrictEqual(seen3, ['h1']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- ownerKeyMigratePostUpdate: run-once-per-version stamp ---
+
+test('ownerKeyMigratePostUpdate: not a DevSwarm session -> attempted:false, gate closed', () => {
+  const result = U.ownerKeyMigratePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { migrateOwnerKeys: () => { throw new Error('must not run when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('ownerKeyMigratePostUpdate: same-version re-run honors the completed stamp -> skipped entirely, migrateOwnerKeys never called', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-ownerkey-stamp-'));
+  try {
+    let calls = 0;
+    const fakeDevswarm = { migrateOwnerKeys: () => { calls++; return { scanned: 3, backfilled: 1, rehomed: 0, errors: 0 }; } };
+    const result1 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      version: '0.93.0',
+    });
+    assert.strictEqual(result1.attempted, true);
+    assert.strictEqual(result1.backfilled, 1);
+    assert.strictEqual(calls, 1);
+
+    const result2 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      version: '0.93.0',
+    });
+    assert.strictEqual(calls, 1, 'migrateOwnerKeys must NOT run again for the same version');
+    assert.strictEqual(result2.skippedAlreadyDone, true);
+
+    // No `version` passed -> always runs (existing/legacy call-site behavior, unchanged).
+    const result3 = U.ownerKeyMigratePostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+    });
+    assert.strictEqual(calls, 2);
+    assert.strictEqual(result3.skippedAlreadyDone, undefined);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- healIngestDaemon: version-aware skip (defense-in-depth against a spawn race) ---
+
+test('healIngestDaemon: with `version` + an already-ok unit, a prior same-version heal stamp skips the re-spawn', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-ingestheal-stamp-'));
+  const repo = makeGitRepoForUpdate('ingestheal-stamp');
+  try {
+    // Pre-seed the stamp as if a prior run already healed this exact version.
+    U.writeSweepState(home, { ingestHeal: { healedVersion: '0.94.0', healedTs: Date.now() } });
+    let spawned = 0;
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+      version: '0.94.0',
+      spawnFn: () => { spawned++; },
+    });
+    // With no unit installed at all, classifyIngestUnit reads 'absent' and the
+    // function returns before ever consulting the version stamp — this proves
+    // the stamp-skip path specifically requires cls === 'ok', not just any gate-open state.
+    assert.strictEqual(spawned, 0);
+    assert.strictEqual(result.attempted, true);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('healIngestDaemon: no `version` passed (existing call sites) -> stamp logic never engages, unchanged forced-restart behavior', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-ingestheal-noversion-'));
+  const repo = makeGitRepoForUpdate('ingestheal-noversion');
+  try {
+    U.writeSweepState(home, { ingestHeal: { healedVersion: '0.94.0', healedTs: Date.now() } });
+    const result = U.healIngestDaemon({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: repo,
+      home,
+      // no `version` field at all
+    });
+    assert.strictEqual(result.attempted, true);
+    // absent unit -> healed:true, no-spawn, same as always (proves this path is untouched).
+    assert.match(result.detail, /absent/);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+// --- runUpdate: shared enumeration (ONE listStoreHashes pass, reused by both sweeps) ---
+
+test('runUpdate: shared store-hash enumeration — devswarmStore.listStoreHashes is called exactly ONCE for the whole run, both sweeps reuse it', () => {
+  const t = makeTree();
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-shared-enum-'));
+  const repo = makeGitRepoForUpdate('shared-enum');
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR;
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+
+    let listCalls = 0;
+    const realStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const spyStore = Object.assign({}, realStore, {
+      listStoreHashes: (...args) => { listCalls++; return realStore.listStoreHashes(...args); },
+    });
+    const foldAllStoresRepoKeys = [];
+    let healCalls = 0;
+    const fakeDevswarm = {
+      run: () => ({ code: 0, result: { ok: true, action: 'reconcile', count: 0, imported: 0, results: [] } }),
+      // Used by BOTH foldMeshPostUpdate (cwd-scoped, called once regardless of
+      // the shared hash list) AND foldAllStoresPostUpdate (per shared hash) —
+      // distinguish them by whether ctx.repoKey (the all-stores override) was
+      // passed, rather than a single shared counter that would conflate the two.
+      foldMeshDuplicates: (h, ctx) => {
+        if (ctx && ctx.repoKey) foldAllStoresRepoKeys.push(ctx.repoKey);
+        return { retired: [], forwarded: 0, folded: 0 };
+      },
+      migrateOwnerKeys: () => ({ scanned: 0, backfilled: 0, rehomed: 0 }),
+      healRegistry: () => { healCalls++; return { checked: 0, healed: 0, rehomed: 0, skipped: 0, rows: [] }; },
+    };
+    const { status } = U.runUpdate({
+      paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: repo, home,
+      devswarm: fakeDevswarm, devswarmStore: spyStore,
+    });
+    assert.strictEqual(status.updated, true);
+    assert.strictEqual(listCalls, 1, 'listStoreHashes must be called exactly once per update run, shared by fold-all-stores and heal-registry-rows');
+    // No stores exist under this fresh home -> the shared hash list is empty,
+    // so both sweeps ran over zero items (the cwd-scoped foldMeshDuplicates
+    // call from foldMeshPostUpdate is separate and untracked here).
+    assert.deepStrictEqual(foldAllStoresRepoKeys, []);
+    assert.strictEqual(healCalls, 0);
+  } finally {
+    t.cleanup();
+    fs.rmSync(home, { recursive: true, force: true });
+    fs.rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test('GIT_EXEC_TIMEOUT_MS: 20s, not the prior 60s', () => {
+  assert.strictEqual(U.GIT_EXEC_TIMEOUT_MS, 20000);
+});
+
+test('defaultExec (git step): the reduced timeout does not change the fail-open contract — a bogus cwd still reports a reason, never throws out', () => {
+  const bogusDir = path.join(os.tmpdir(), 'update-timeout-bogus-' + Date.now());
+  const st = U.gitState(bogusDir, undefined);
+  assert.strictEqual(st.ok, false);
+  assert.ok(st.reason, 'still reports a reason (fail-open), unaffected by the timeout reduction');
+});

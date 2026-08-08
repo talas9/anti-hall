@@ -6,6 +6,28 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.75.1 (2026-08-08)
+
+- **Updater performance + UX.** The `update` skill's post-update DevSwarm sweeps
+  (`fold-all-stores`, `heal-registry-rows`) could turn a routine update into a
+  minutes-long stall on a heavily-used machine with hundreds of per-project
+  stores, since each sweep re-enumerated and re-walked every store in full on
+  EVERY run regardless of whether anything had changed. Fixed with a
+  run-once-per-version stamp (`~/.anti-hall/update-sweep-state.json`) so a
+  re-run at the same version skips a completed sweep entirely (idempotent,
+  fail-open, no-delete); a single shared store-hash enumeration reused across
+  both post-update sweeps instead of each doing its own full directory
+  listing; and per-store throttling via a bounded time budget
+  (`ANTIHALL_UPDATE_SWEEP_BUDGET_MS`, default 20s) with a persisted
+  resume list so a sweep that hits the budget stops cleanly mid-list and
+  picks up where it left off next run, never re-walking already-processed
+  stores. The one-time `ownerKey` migration and the ingest-daemon heal are
+  similarly stamped per-version to skip a redundant re-run. Separately, git
+  calls inside the updater (`gitState`, `gitPullFfOnly`) now time out after
+  20s instead of 60s, so a hung or slow remote fails fast into the existing
+  fail-open path (report + continue with local state) rather than blocking
+  the update for up to a full minute per call.
+
 ## 0.75.0 (2026-08-08)
 
 - **DevSwarm: partition-split identity family fix — evidence-based row-liveness
