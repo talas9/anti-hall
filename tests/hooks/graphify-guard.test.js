@@ -395,6 +395,79 @@ test('RE-ARM (wall-clock fallback): fresh marker (<2h old, transcript size unkno
   }
 });
 
+// ---------------------------------------------------------------------------
+// 10. Recommendation-text truthfulness: the reason must only name a path that
+//     actually exists in graphify-out/ (wiki index / GRAPH_REPORT.md /
+//     manifest.json are all OPTIONAL outputs of `graphify update`). See the
+//     hook's `safeIsFile` gating around the `extraRecommendation` build.
+// ---------------------------------------------------------------------------
+test('wiki index EXISTS: reason recommends the wiki index', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  try {
+    fs.mkdirSync(path.join(c.cwd, 'graphify-out', 'wiki'), { recursive: true });
+    fs.writeFileSync(path.join(c.cwd, 'graphify-out', 'wiki', 'index.md'), '# wiki\n', 'utf8');
+    const r = testHook(HOOK, payload('Grep', { pattern: 'x' }, c.cwd), { home: h.home });
+    assert.strictEqual(r.status, 2, `must block; stdout=${r.stdout}`);
+    assert.match(r.json.reason, /read the wiki index at/);
+    assert.doesNotMatch(r.json.reason, /GRAPH_REPORT\.md/);
+    assert.doesNotMatch(r.json.reason, /manifest\.json/);
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
+});
+
+test('wiki index ABSENT, GRAPH_REPORT.md present: reason recommends GRAPH_REPORT.md, never mentions wiki', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  try {
+    fs.writeFileSync(path.join(c.cwd, 'graphify-out', 'GRAPH_REPORT.md'), '# report\n', 'utf8');
+    const r = testHook(HOOK, payload('Grep', { pattern: 'x' }, c.cwd), { home: h.home });
+    assert.strictEqual(r.status, 2, `must block; stdout=${r.stdout}`);
+    assert.match(r.json.reason, /read the graph report at/);
+    assert.doesNotMatch(r.json.reason, /wiki/);
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
+});
+
+test('neither wiki index nor GRAPH_REPORT.md, manifest.json present: reason recommends manifest.json only', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  try {
+    fs.writeFileSync(path.join(c.cwd, 'graphify-out', 'manifest.json'), '{}', 'utf8');
+    const r = testHook(HOOK, payload('Grep', { pattern: 'x' }, c.cwd), { home: h.home });
+    assert.strictEqual(r.status, 2, `must block; stdout=${r.stdout}`);
+    assert.match(r.json.reason, /read the graph manifest at/);
+    assert.doesNotMatch(r.json.reason, /wiki/);
+    assert.doesNotMatch(r.json.reason, /GRAPH_REPORT\.md/);
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
+});
+
+test('none of wiki/GRAPH_REPORT.md/manifest.json present (this repo\'s real shape): reason names only the /graphify query command, no dead path', () => {
+  const h = makeHome();
+  const c = makeCwd('graphify-out', null);
+  try {
+    // Nothing written under graphify-out/ beyond the bare dir itself — mirrors
+    // this repo's actual graphify-out/ shape (graph.json, cache/, obsidian/ —
+    // none of the three optional recommendation targets).
+    const r = testHook(HOOK, payload('Grep', { pattern: 'x' }, c.cwd), { home: h.home });
+    assert.strictEqual(r.status, 2, `must block; stdout=${r.stdout}`);
+    assert.match(r.json.reason, /run `\/graphify query "<question>"`\. /, 'query command still recommended');
+    assert.doesNotMatch(r.json.reason, /wiki/);
+    assert.doesNotMatch(r.json.reason, /GRAPH_REPORT\.md/);
+    assert.doesNotMatch(r.json.reason, /manifest\.json/);
+  } finally {
+    h.cleanup();
+    c.cleanup();
+  }
+});
+
 test('LEGACY marker format (bare millis timestamp string): still honored as a fresh marker', () => {
   const h = makeHome();
   const c = makeCwd('graphify-out', null);

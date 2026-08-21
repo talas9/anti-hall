@@ -87,6 +87,10 @@ function safeIsDir(p) {
   try { return fs.statSync(p).isDirectory(); } catch (_) { return false; }
 }
 
+function safeIsFile(p) {
+  try { return fs.statSync(p).isFile(); } catch (_) { return false; }
+}
+
 function findGraphRoot(cwd) {
   const roots = [cwd];
   const top = gitToplevel(cwd);
@@ -444,11 +448,30 @@ function main() {
     : toolName;
 
   const safeGraphDir = sanitizePath(graphDir);
-  const safeWikiIndex = sanitizePath(path.join(graphDir, 'wiki', 'index.md'));
+
+  // The wiki index (and other artifact files) are OPTIONAL outputs of `graphify
+  // update` — not every graph run produces graphify-out/wiki/. Only recommend a
+  // path that actually exists on disk right now (checked with safeIsFile, never
+  // throws), in preference order: wiki index -> GRAPH_REPORT.md -> manifest.json
+  // -> (fallback) the /graphify query command alone, with no path named at all.
+  // This keeps the reflected reason truthful instead of pointing the model at a
+  // dead Read.
+  let extraRecommendation = '';
+  if (safeIsFile(path.join(graphDir, 'wiki', 'index.md'))) {
+    const safeWikiIndex = sanitizePath(path.join(graphDir, 'wiki', 'index.md'));
+    extraRecommendation = ' or read the wiki index at "' + safeWikiIndex + '"';
+  } else if (safeIsFile(path.join(graphDir, 'GRAPH_REPORT.md'))) {
+    const safeReport = sanitizePath(path.join(graphDir, 'GRAPH_REPORT.md'));
+    extraRecommendation = ' or read the graph report at "' + safeReport + '"';
+  } else if (safeIsFile(path.join(graphDir, 'manifest.json'))) {
+    const safeManifest = sanitizePath(path.join(graphDir, 'manifest.json'));
+    extraRecommendation = ' or read the graph manifest at "' + safeManifest + '"';
+  }
+
   const reason =
     'GRAPHIFY-FIRST: this project has a knowledge graph at "' + safeGraphDir + '". ' +
-    'Query it FIRST before raw code search: run `/graphify query "<question>"` ' +
-    'or read the wiki index at "' + safeWikiIndex + '". ' +
+    'Query it FIRST before raw code search: run `/graphify query "<question>"`' +
+    extraRecommendation + '. ' +
     'Raw search (' + toolLabel + ') is allowed after the graph has been consulted ' +
     'or lacks the answer (this nudge re-arms after ~240KB of transcript growth ' +
     'or 2h, not just once). ' +
