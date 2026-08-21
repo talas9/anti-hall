@@ -14,6 +14,8 @@ const crypto = require('crypto');
 const { isDevswarmActive } = require('../../hooks/lib/devswarm-detect.js');
 const { computeLiveness, livenessPathFor, projectDirFor, devswarmRoot, isSafeId, unreadBacklog } = require('./liveness.js');
 const { checkResults: descriptorChecks } = require('./doctor-descriptors.js');
+const { DEVSWARM_BASELINE } = require('../../hooks/lib/devswarm-baseline.js');
+const { classifyVersionDrift } = require('../../hooks/devswarm-version.js');
 
 const PASS = 'PASS';
 const WARN = 'WARN';
@@ -507,6 +509,69 @@ function monitorsJsonPresenceCheck(opts) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// version-mismatch (companion surface for hooks/devswarm-version.js) — reads
+// the SAME cache file the SessionStart hook writes (~/.anti-hall/
+// devswarm-version.json) so `/anti-hall:doctor` surfaces the drift alarm too,
+// without re-probing (no spawn from inside doctor). REPORT ONLY, fail-open:
+// an absent/malformed cache or a DevSwarm-absent probe is never a FAIL — only
+// a genuine version mismatch against the baseline is WARN.
+// ---------------------------------------------------------------------------
+const DEVSWARM_VERSION_CACHE = 'devswarm-version.json';
+
+// readDevswarmVersionCache(home, F) -> parsed cache object | null (absent/malformed).
+function readDevswarmVersionCache(home, F) {
+  try {
+    const raw = F.readFileSync(path.join(home, '.anti-hall', DEVSWARM_VERSION_CACHE), 'utf8');
+    const obj = JSON.parse(raw);
+    return (obj && typeof obj === 'object') ? obj : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// versionMismatchCheck({home, fsi}) -> {status, message}. Mirrors the
+// additionalContext wording hooks/devswarm-version.js emits (reuses the SAME
+// classifyVersionDrift() helper), so the doctor line and the SessionStart
+// nudge never drift apart in phrasing OR in what counts as a mismatch.
+//
+// Compares against DEVSWARM_BASELINE (the one authoritative constant — see
+// hooks/lib/devswarm-baseline.js), NOT cache.baseline: the cache is just a
+// probe result written by a background script that may be running an older
+// build of that script, so treating its copy as authoritative would reopen
+// exactly the drift this fix closes.
+//
+// No cache yet is NOT a warning — it's the expected state on every DevSwarm
+// machine before the first background refresh lands (SessionStart spawns it
+// detached; doctor never re-probes). Only a genuine major/minor mismatch is
+// WARN; patch-only drift and an absent/unparseable install are PASS.
+function versionMismatchCheck(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const F = o.fsi || fs;
+  try {
+    const cache = readDevswarmVersionCache(home, F);
+    if (!cache) {
+      return { status: PASS, message: 'devswarm-version: no cache yet (~/.anti-hall/devswarm-version.json) — populates on next SessionStart' };
+    }
+    if (cache.installed === null || typeof cache.installed !== 'string' || !cache.installed) {
+      return { status: PASS, message: 'devswarm-version: DevSwarm CLI not detected on this machine — nothing to compare (anti-hall works without it)' };
+    }
+    const drift = classifyVersionDrift(cache.installed, DEVSWARM_BASELINE);
+    if (!drift.advise) {
+      return { status: PASS, message: 'devswarm-version: DevSwarm ' + cache.installed + ' matches anti-hall\'s verified baseline (' + DEVSWARM_BASELINE + ')' };
+    }
+    const suffix = drift.reason === 'older' ? ' (newer)' : '';
+    return {
+      status: WARN,
+      message: 'devswarm-version: DevSwarm ' + cache.installed + ' installed; anti-hall\'s integration is verified against ' +
+        DEVSWARM_BASELINE + suffix + ' — behavior may have drifted, see docs/KB-devswarm-hivecontrol.md',
+    };
+  } catch (e) {
+    return { status: WARN, message: 'devswarm-version check raised (fail-open): ' + (e && e.message) };
+  }
+}
+
 function runChecks(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
@@ -521,6 +586,11 @@ function runChecks(opts) {
 
   const results = selfTest(home, F);
   results.push(...wakeMonitorChecks(home, env, cwd));
+  try {
+    results.push(versionMismatchCheck({ home, fsi: F }));
+  } catch (e) {
+    results.push({ status: WARN, message: 'devswarm-version check unavailable: ' + (e && e.message) });
+  }
 
   // Descriptor-store integrity (companion/lib/doctor-descriptors.js): a
   // REPORT-ONLY scan for malformed ids and for archived ids that strict-prefix a
@@ -564,6 +634,8 @@ module.exports = {
   PASS, WARN, FAIL, statusFor, statusForVerdict, listenerPresenceFor, runChecks,
   // wake-monitor (Monitor-based idle-wake) — exported individually for tests.
   wakeMonitorShipped, wakeMonitorSelfTest, wakeMonitorLiveCheck, wakeMonitorChecks,
+  // version-mismatch (companion surface for hooks/devswarm-version.js) — exported for tests.
+  versionMismatchCheck,
   // install-vs-source integrity (CHECK 1/CHECK 2) — exported individually for tests.
   installDivergenceCheck, monitorsJsonPresenceCheck, resolveMarketplaceDir, resolveInstallScope,
   collectShippedFiles,

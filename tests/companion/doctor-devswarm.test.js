@@ -495,3 +495,100 @@ test('resolveMarketplaceDir: ANTIHALL_MARKETPLACE_DIR override resolves when val
     } finally { fs.rmSync(override, { recursive: true, force: true }); }
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// versionMismatchCheck (T-6) — the doctor surface for hooks/devswarm-version.js.
+// Reads the SAME cache file the SessionStart hook writes; never re-probes.
+// ─────────────────────────────────────────────────────────────────────────
+
+function writeVersionCache(home, obj) {
+  const dir = path.join(home, '.anti-hall');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'devswarm-version.json'), JSON.stringify(obj), 'utf8');
+}
+
+test('versionMismatchCheck: no cache yet => PASS (not yet probed is expected, not a warning)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const r = D.versionMismatchCheck({ home });
+    assert.strictEqual(r.status, D.PASS, JSON.stringify(r));
+    assert.match(r.message, /no cache yet/);
+  } finally { cleanup(); }
+});
+
+test('versionMismatchCheck: DevSwarm absent (installed:null) => PASS, not a warning', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeVersionCache(home, { installed: null, baseline: '2.5.1', checkedAt: Date.now(), source: null });
+    const r = D.versionMismatchCheck({ home });
+    assert.strictEqual(r.status, D.PASS, JSON.stringify(r));
+    assert.match(r.message, /not detected/);
+  } finally { cleanup(); }
+});
+
+test('versionMismatchCheck: installed matches the authoritative baseline => PASS', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeVersionCache(home, { installed: '2.5.1', baseline: '2.5.1', checkedAt: Date.now(), source: 'devswarm' });
+    const r = D.versionMismatchCheck({ home });
+    assert.strictEqual(r.status, D.PASS, JSON.stringify(r));
+    assert.match(r.message, /matches/);
+  } finally { cleanup(); }
+});
+
+test('versionMismatchCheck: PATCH-only drift => PASS, semver-aware (not raw string inequality)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeVersionCache(home, { installed: '2.5.9', baseline: '2.5.1', checkedAt: Date.now(), source: 'devswarm' });
+    const r = D.versionMismatchCheck({ home });
+    assert.strictEqual(r.status, D.PASS, JSON.stringify(r));
+  } finally { cleanup(); }
+});
+
+test('versionMismatchCheck: genuine MAJOR/MINOR mismatch => WARN, mentions both versions', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeVersionCache(home, { installed: '2.6.0', baseline: '2.5.1', checkedAt: Date.now(), source: 'devswarm' });
+    const r = D.versionMismatchCheck({ home });
+    assert.strictEqual(r.status, D.WARN, JSON.stringify(r));
+    assert.match(r.message, /2\.6\.0/);
+    assert.match(r.message, /2\.5\.1/);
+    assert.match(r.message, /docs\/KB-devswarm-hivecontrol\.md/);
+  } finally { cleanup(); }
+});
+
+test('versionMismatchCheck: downgrade (installed older, major/minor) => WARN', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeVersionCache(home, { installed: '2.3.0', baseline: '2.5.1', checkedAt: Date.now(), source: 'devswarm' });
+    const r = D.versionMismatchCheck({ home });
+    assert.strictEqual(r.status, D.WARN, JSON.stringify(r));
+  } finally { cleanup(); }
+});
+
+test('versionMismatchCheck: malformed cache JSON => fail-open, never throws (WARN with raised message, never FAIL)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const dir = path.join(home, '.anti-hall');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'devswarm-version.json'), '{bad json', 'utf8');
+    const r = D.versionMismatchCheck({ home });
+    // readDevswarmVersionCache() itself catches JSON.parse errors and returns
+    // null, so this reads as "no cache yet" (PASS), not a raised exception.
+    assert.strictEqual(r.status, D.PASS, JSON.stringify(r));
+  } finally { cleanup(); }
+});
+
+test('versionMismatchCheck: baseline used for comparison is the SAME constant hooks/devswarm-version.js uses (P2-C)', () => {
+  const { DEVSWARM_BASELINE } = require(path.join(
+    __dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'lib', 'devswarm-baseline.js',
+  ));
+  const { home, cleanup } = makeHome();
+  try {
+    // cache.baseline deliberately WRONG/stale — doctor must ignore it and
+    // compare against the live authoritative constant, not the cache's copy.
+    writeVersionCache(home, { installed: DEVSWARM_BASELINE, baseline: '0.0.1', checkedAt: Date.now(), source: 'devswarm' });
+    const r = D.versionMismatchCheck({ home });
+    assert.strictEqual(r.status, D.PASS, `must compare against the live constant, not cache.baseline; got: ${JSON.stringify(r)}`);
+  } finally { cleanup(); }
+});
