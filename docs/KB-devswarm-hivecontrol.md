@@ -2116,3 +2116,149 @@ vendor's public changelog (https://devswarm.ai/changelog/) and docs site
 **version-fragile** — re-verify against the then-current `hivecontrol --version`, a fresh
 source grep, and the current state of the vendor's public changelog/docs before trusting them
 past the next DevSwarm update.
+
+## 22. v2.5.0 in-app chat — what it is, and why it is NOT an anti-hall-integrable surface
+
+Vendor changelog (https://devswarm.ai/changelog/), v2.5.0, released 2026-08-14, quoted
+verbatim: *"A real, richly formatted chat interface for the coding agents you already use,
+built into every workspace's editor, with support for Claude, GitHub Copilot, and OpenAI
+Codex"* — streamed responses, clickable permission prompts, tool-call cards.
+
+**Two distinct surfaces share the "chat" name — do not conflate them:**
+
+1. `GET`/`PUT /api/settings/rich-chat` on the local `hivecontrol` HTTP server — a **boolean
+   UI-preference toggle** backed by `RichChatPreferenceService` (`main.js:61072-61103`),
+   persisted through the app's generic settings store. No dedicated table, no message content.
+2. The actual chat feature — `WorkspaceChatService` (`main.js:73873`/`73879`),
+   `CloudSyncService.sendChatMessage` (`main.js:24202`), IPC handlers in
+   `workspace-chat.handlers.ts` (`main.js:15422`).
+
+**The real chat is cloud-relayed, not local** [verified: static bundle inspection]:
+- History is fetched over REST: `${apiUrl}/workspaces/${builderCloudId}/chat/messages?
+  before=...` (`main.js:73888`), authenticated via `AuthService.getSession()`.
+- Sends go over a multiplexed WebSocket channel named `workspace-chat:<builderCloudId>`
+  (`main.js:24202-24212`).
+- Neither path touches `localhost`/the local `hivecontrol` API port (§6's
+  `DEVSWARM_CLI_PORT`) — chat traffic never crosses the boundary anti-hall's guards or the
+  ingest daemon can see.
+
+**Zero local persistence, zero CLI surface:**
+- The local app DB has 23 tables (per §15's migration-journal enumeration through `0050`);
+  none are chat-related, and 2.4.x→2.5.1 shipped **no schema changes** (§15) — consistent with
+  chat having no local table.
+- None of the 67 registered `.command(` verbs (§4, §16) touch chat in any form.
+
+**Chat and `workspace_messages` are parallel, unrelated systems** — do not describe chat as
+having replaced or subsuming anti-hall's mesh, or the app's own parent/child messaging:
+- `CloudSyncService`'s own source comment (`main.js:24031`): *"Replaces WorkspaceChatService +
+  PromptSyncService with a single WebSocket connection... channels: `workspace-chat:<id>` for
+  chat, `prompt-sync:<id>` for prompt sync."* — chat and prompt-sync are named as **distinct**
+  channels.
+- Chat does **not** flow into `builder_transcript_prompts`; that table is fed only by the
+  separate `CLOUD_SYNC.SUBMIT_PROMPTS` handler (`main.js:10831`) and holds 0 rows on the
+  install sampled this session.
+- IPC namespaces are distinct: `IpcEvents.WORKSPACE_CHAT` (`GET_HISTORY` only) vs
+  `IpcEvents.WORKSPACE_MESSAGE` (`SENT`), registered near `main.js:83908`. No code path
+  connects them.
+
+**Adversarial refutation attempted on two angles — both failed to find hidden local state:**
+- (A) No chat strings anywhere in Electron `Local Storage/leveldb`, `Session Storage`, or
+  `IndexedDB` (`grep -riE 'chat.?message|workspace-chat|chatHistory'` → zero hits); no second
+  `.db`/`.sqlite` file; DevSwarm's own log, `grep -ic chat` → 0.
+- (B) Confirmed chat does not reach `builder_transcript_prompts` (0 rows, as above).
+
+**Not checked — recorded honestly as a gap, not silently folded into "verified":**
+- Contents of `sentry/queue/queue-v2.json` were not inspected.
+- Whether a **live** chat send transiently touches `Session Storage`/`blob_storage` before
+  garbage collection was not tested — only a static-file grep of the on-disk leveldb was
+  performed, not a live-send + immediate-snapshot experiment.
+
+**Nothing destructive:** the chat IPC surface exposes only `GET_HISTORY`; no delete/clear/purge
+verb exists for chat in the CLI, IPC, or the local HTTP surface (`/api/settings/rich-chat` is a
+boolean toggle, not a data-mutating endpoint). **No new command-guard coverage is required for
+chat.**
+
+**Security-relevant observation to state plainly:** because chat carries clickable permission
+prompts and tool-call cards, it is a **full agent-driving surface** — a human or another
+process can approve tool calls and steer an agent through it — that operates entirely outside
+any channel anti-hall's guards, the ingest daemon, or the mesh store can observe or gate. This
+is a genuine blind spot, not a hypothetical one: it is cloud-relayed (not localhost), so even a
+future local-port-based guard could not see it.
+
+**Conclusion:** the 2.5.0 chat feature is **not integrable** with anti-hall's current
+architecture (local CLI/file/HTTP-port observation) because it has no local persistence, no CLI
+verb, and no local network path — it exists solely as a cloud WebSocket/REST relay between the
+Electron renderer and the vendor's backend.
+
+## 23. Chat is undocumented by the vendor
+
+The public docs site (docs.devswarm.ai) — extracted per the method in §18/§25 — contains
+**exactly one** case-insensitive `chat` hit across the entire bundle
+(main.\<hash\>.js, ~1,116,532 bytes), and it is a Zod schema **field name** (`chatMessages`)
+inside a session-transcript type, not documentation prose describing the chat feature.
+
+- All 29 documented routes were enumerated from the bundle's search index (§18's method);
+  **none** is chat-related.
+- Phrase probes for `"tool-call card"`, `"streamed response"`, and `"richly-formatted"` each
+  returned **0 hits**.
+- The vendor also documents **no `--version` guidance for its own CLI**: `"hivecontrol --"` and
+  `"devswarm --"` both return 0 hits in the docs bundle; the only `--version` mention anywhere
+  is `git --version`, in the Troubleshooting page. **Consequence for anti-hall:** any future
+  version-parsing anti-hall implements (the §21 "standing gap") would rely on an output shape
+  the vendor has never documented or promised to keep stable.
+
+## 24. `transcriptByteOffset` — a real agent-liveness signal (resolves the long-standing open question)
+
+§17 flagged `builder_terminals.transcriptByteOffset`/`transcriptLineCount` as an unused,
+unverified capability; §20 separately falsified the *app's own* `isActive`/`lastSelectedAt`/
+`lastAccessed` columns as liveness signals. This section resolves `transcriptByteOffset`
+specifically, from code, without needing a live experiment.
+
+- `updateTranscriptProgress()` (~`main.js:25580`) is called from the polling loop
+  `pollTick()` (`main.js:73216`).
+- It `stat()`s the size of the **local Claude CLI JSONL transcript file** — either
+  `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl` or the subagent form
+  `.../subagents/agent-<id>.jsonl` — compares `fileSize <= transcript.transcriptByteOffset`,
+  and only fires ready-events / advances the stored offset when the **on-disk file grew**.
+- **Therefore it is a genuine local agent-liveness signal**, driven purely by agent output,
+  resolved from code [verified: `main.js:25580`, `main.js:73216`].
+
+**Caveat — proven from code, not observed in data this session:** in the install sampled, all
+179 `builder_terminals` rows and all 98 `builder_terminal_transcripts` rows had
+`transcriptByteOffset`/`transcriptLineCount` = 0, so no advancement was **observed** in that
+data snapshot. State both facts distinctly: the mechanism is **proven from code**; a live
+**observed** delta remains **unverified**.
+
+**Bearing on the previously-open T4 experiment:** T4 no longer requires spinning a throwaway
+workspace to answer the code-level question ("is `transcriptByteOffset` driven by real agent
+activity?" — yes, per the code above). Observing a live delta in the stored rows — i.e.
+confirming the mechanism actually *fires* in practice, not just that it *would* — remains
+unverified and would still require a live workspace to close.
+
+## 25. Correction, recorded so it does not happen a third time: the vendor DOES have a full docs site
+
+The vendor has a complete docs site at docs.devswarm.ai. It is an **Angular SPA** — every route
+returns the same small shell HTML (404-equivalent for content purposes when fetched directly),
+which has twice now caused a wrong "no docs exist" conclusion in earlier passes over this
+project. §18 already recorded the correct extraction method for that pass; this section
+restates it explicitly as the standing procedure so a future session doesn't repeat the
+mistake a third time:
+
+1. **Do not fetch SPA routes directly** (e.g. `https://docs.devswarm.ai/hivecontrol/hivecontrol`)
+   — they return the app shell, not content, and will look like "no docs."
+2. **Fetch the hashed main JS bundle instead** — `https://docs.devswarm.ai/main.<hash>.js`
+   (~1.1 MB as of this session, hash rotates per deploy; discover it from the shell HTML's
+   `<script>` tag).
+3. **Parse the inlined search-index records** — the bundle embeds `{id, title, content}`
+   objects for every doc page; grep/parse those objects rather than treating the bundle as
+   opaque minified JS.
+4. There is no `llms.txt` and no `sitemap.xml` (404) to shortcut this — the bundle-parse is the
+   only path to the real content.
+
+---
+
+Section §22–§25 facts were verified 2026-08-21, same session as §14–§21, against the installed
+v2.5.1 build, the vendor's public changelog (https://devswarm.ai/changelog/), and the docs
+bundle (https://docs.devswarm.ai/) as of that date. Per the §13 convention, treat them as
+**version-fragile** — re-verify against the then-current build and a fresh docs-bundle pull
+before trusting them past the next DevSwarm update.
