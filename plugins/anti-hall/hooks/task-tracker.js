@@ -184,6 +184,15 @@ function pickMessage(payload) {
     } catch (_) {
       // Can't persist -> still inject FULL (fail-open: never under-inject).
     }
+    // Opportunistic bounded self-prune of OTHER stale task-tracker-* files
+    // (see lib/state-prune.js header for the proven root cause: one file per
+    // session, never cleaned, ~47K accumulated). Cheap + throttled; never
+    // touches this session's own file. Fail-open, never blocks injection.
+    try {
+      require('./lib/state-prune.js').pruneStale({
+        stateDir, prefix: 'task-tracker', keepFile: stateFile,
+      });
+    } catch (_) {}
     return FULL;
   } catch (_) {
     return FULL; // any unexpected error -> never weaken discipline

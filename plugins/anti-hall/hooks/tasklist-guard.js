@@ -511,6 +511,14 @@ function main() {
   } catch (_) {
     process.exit(0); // can't persist the cap -> fail-open, do not block (no loop)
   }
+  // Opportunistic bounded self-prune of OTHER stale tasklist-guard-state-* files
+  // (one per session, never cleaned otherwise — see lib/state-prune.js).
+  try {
+    require('./lib/state-prune.js').pruneStale({
+      stateDir, prefix: 'tasklist-guard-state', keepFile: stateFile,
+    });
+  } catch (_) {
+  }
 
   // fs.writeSync(1): stdout.write races the async pipe flush with exit() on
   // macOS node 18/20 (repo-wide hook-output rule; R2-N1).

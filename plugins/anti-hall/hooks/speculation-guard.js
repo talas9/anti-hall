@@ -303,6 +303,13 @@ function main() {
     // Can't persist -> fail-open to avoid loops.
     process.exit(0);
   }
+  // Opportunistic bounded self-prune of OTHER stale speculation-guard-state-*
+  // files (one per session, never cleaned otherwise — see lib/state-prune.js).
+  try {
+    require('./lib/state-prune.js').pruneStale({
+      stateDir, prefix: 'speculation-guard-state', keepFile: stateFile,
+    });
+  } catch (_) {}
 
   const reason =
     'anti-hall speculation-guard: your reply states something speculative (\'' +

@@ -191,6 +191,14 @@ function main() {
   } catch (_) {
     process.exit(0); // can't persist -> fail-open (don't risk a loop)
   }
+  // Opportunistic bounded self-prune of OTHER stale codex-nudge-state-* files
+  // (one per session, never cleaned otherwise — see lib/state-prune.js).
+  try {
+    require('./lib/state-prune.js').pruneStale({
+      stateDir, prefix: 'codex-nudge-state', keepFile: stateFile,
+    });
+  } catch (_) {
+  }
 
   const names = Array.from(scan.codeFiles).slice(0, 3).join(', ');
   const more = scan.codeFiles.size > 3 ? ', …' : '';
