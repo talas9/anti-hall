@@ -11,6 +11,10 @@ turns the gaps below into a phased adoption plan.
 **Provenance:** every feature claim below was verified against the official
 [code.claude.com/docs](https://code.claude.com/docs) tree on 2026-08-01.
 Docs move — re-verify before acting, especially on exact hook payload contracts.
+**Provenance (2026-08-21):** the cross-session/agent-to-agent messaging, agent teams, and
+§4 DevSwarm-implication material below was verified against the same docs tree on
+2026-08-21 (local Claude Code version 2.1.238) and is additive to the 2026-08-01 audit —
+none of the earlier claims were changed.
 
 ---
 
@@ -130,6 +134,94 @@ Sources: [`/docs/en/plugins`](https://code.claude.com/docs/en/plugins), [`/docs/
 - `agent-teams`, `agent-view`, `desktop-scheduled-tasks`, and the Remote Control page were referenced during this audit but **not fetched** — their contract is unverified.
 - `/docs/en/llms.txt` returned **404** at audit time.
 
+### Cross-session / agent-to-agent messaging
+
+Local Claude Code version observed: **2.1.238**. Tools: `SendMessage`, `ListAgents`.
+
+| target class | bidirectional | durable | wakes idle | addressable when not running |
+|---|---|---|---|---|
+| In-process subagents (spawned this session) | yes | **NO** | N/A (not idle-capable) | session-scoped only |
+| Agent-team teammates | yes | **NO** | starts a turn when idle | only while session active |
+| Other LOCAL Claude Code sessions (same machine) | yes | **NO** | starts a new turn if idle | **NO — message dropped if target not running** |
+| Cloud/web sessions | one-way if sender not connected to Remote Control (receives, cannot reply) | **NO** | appears in conversation | only while running |
+| Remote Control sessions (other machines) | yes, if sender is on Remote Control | **NO** | appears in conversation | only while running |
+
+Documented behavior: *"The receiving Claude reads the message between tool calls during an
+active turn. When the receiving session is idle, Claude Code starts a new turn with the
+message."*
+
+**DURABILITY VERDICT:** `SendMessage` is **live-session IPC, NOT a durable message bus.**
+Messages to a non-running session are **dropped silently with no error to the sender**. No
+ack, no read receipt, no replay, no queue-for-later. Does not survive the target's
+exit/crash, `/clear`, `/compact`, or a machine restart.
+
+**Nuance — do not overstate:** durability for offline targets is **UNDOCUMENTED**, not
+documented-as-absent. Agent teams do persist a per-agent inbox JSON at
+`~/.claude/teams/{team}/inboxes/{agent}.json`, so some on-disk state exists, but no
+offline-delivery mechanism is described anywhere in the docs. Mark as **UNVERIFIED — needs
+an empirical test** (see §4 below).
+
+Source: [`/docs/en/cross-session-messaging`](https://code.claude.com/docs/en/cross-session-messaging.md), [`/docs/en/agent-teams`](https://code.claude.com/docs/en/agent-teams.md)
+
+### Agent teams (EXPERIMENTAL)
+
+Opt-in via `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` (v2.1.178+). Multiple coordinated
+sessions, a shared task list, and direct messaging; split panes or in-process. Documented
+limitations: **no session resumption with in-process teammates**, task status can lag, no
+nested teams. Architecture: per-agent inbox JSON under `~/.claude/teams/{team}/inboxes/`.
+
+**Flagged EXPERIMENTAL — unsuitable as the foundation for a shipped substrate today.**
+
+Source: [`/docs/en/agent-teams`](https://code.claude.com/docs/en/agent-teams.md)
+
+### Additions to the feature surface (absent from every prior doc in this repo — verified by grep)
+
+| Feature | Status | One-line description |
+|---|---|---|
+| `ListAgents` | Stable | Enumerates addressable agents: in-process subagents, other local sessions, cloud sessions, and (when Remote Control is connected) the account's other sessions. Names are the address for `SendMessage`. |
+| `EnterWorktree` / `ExitWorktree` | Stable | Worktree entry/exit tools. |
+| Artifacts — `capabilities` | Gated per-account | Runtime capabilities for published interactive pages beyond static HTML. |
+| `claude plugin eval` | Org-flag gated | Sandboxed plugin/skill testing. Graders: regex, LLM judge, `tool_used`, `file_exists`, baseline. `--json` v1 shape (`schemaVersion`, `cases[].arms.{with,without}[].graders`, `aggregates`), `--report` HTML, `--no-publish` local. Exit codes: 0 pass (default threshold 1.0), 1 fail/error/empty, 2 partial (cost-ceiling / auth-fail). |
+| `Agent` tool `subagent_type: "fork"` | Stable (v2.1.212+) | Spawns a fork that inherits the parent's full context. |
+| `Agent` tool `isolation: "worktree"` | Stable (v2.1.203+) | Runs the spawned agent in a temporary git worktree. |
+| `Monitor` | Stable, with a gap | Unavailable on Bedrock/Vertex/Foundry. |
+| `CronCreate` / `CronList` | Stable | Scheduled tasks within a session; restored on `--resume`. |
+
+Source: [tools reference](https://code.claude.com/docs/en/tools-reference.md), [sub-agents](https://code.claude.com/docs/en/sub-agents.md), [hooks](https://code.claude.com/docs/en/hooks.md), [plugin eval](https://code.claude.com/docs/en/plugin-eval.md), [docs index](https://code.claude.com/docs/en/claude_code_docs_map.md)
+
+---
+
+## 4. Implication for anti-hall's DevSwarm mesh
+
+**Question asked:** could Claude Code's native agent-to-agent messaging (`SendMessage` /
+`ListAgents` / agent teams) REPLACE anti-hall's DevSwarm mesh store
+(`~/.anti-hall/devswarm/store/<hash>/devswarm.db`, introduced v0.58.0)?
+
+**Answer: NO — they solve different problems.** The mesh is a DURABLE system of record that
+survives session death and supports replay/audit; `SendMessage` addresses only LIVE agents
+and drops silently otherwise.
+
+| property | DevSwarm mesh | `SendMessage` |
+|---|---|---|
+| Survives target death | ✅ | ❌ |
+| Sender learns of non-delivery | ✅ | ❌ |
+| Wakes an idle session | via cron + Monitor watcher | ✅ starts a new turn — genuinely better |
+| Cross-machine | ❌ local SQLite | ✅ via Remote Control |
+| Replay + audit | ✅ | ❌ |
+
+**Recommended posture: LAYER, don't replace.** Keep the mesh as the durable store of
+record; Claude's native messaging is a candidate LOW-LATENCY WAKE + live-coordination
+layer over it — conceptually what
+`plugins/anti-hall/companion/lib/devswarm-wake-watch.js` already does with a `Monitor`.
+The one genuinely NEW capability it unlocks is **cross-machine** reach, which a local
+SQLite mesh structurally cannot provide.
+
+**Open / unverified:** an empirical test of what actually happens to a message sent to a
+dead session — is the inbox JSON written and later drained, or is it truly dropped? Until
+tested, treat durability as absent.
+
+Assessed 2026-08-21 against Claude Code 2.1.238.
+
 ---
 
 *Audited 2026-08-01. Re-verify hook contracts against current docs before building against them — see the adoption plan's Fable-review step. The
@@ -138,3 +230,8 @@ contracts assumed above: `PostCompact` cannot inject `additionalContext`
 (side-effect-only), `SubagentStop` injects into the subagent's own turn
 rather than the parent, and `ConfigChange` does not watch
 `~/.anti-hall/skip.json`.*
+
+*Extended 2026-08-21 (Claude Code 2.1.238): added the cross-session/agent-to-agent
+messaging and agent-teams subsections plus §4's DevSwarm-mesh-vs-`SendMessage`
+comparison. The empirical test of message delivery to a dead session (inbox JSON
+written-and-drained vs. truly dropped) remains open — see §4.*

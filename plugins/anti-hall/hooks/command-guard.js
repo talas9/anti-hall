@@ -129,10 +129,22 @@ const LIGHT_EXCEPTIONS = [
 // evidence — a raw native read desyncs the durable cursor regardless, so it blocks
 // like `monitor`. Kept as TWO regexes so the block reason can name the specific
 // destructive subcommand (see buildDevswarmReason).
+// DEVSWARM_CLI_VERBS: `devswarm` is the PRIMARY DevSwarm CLI binary name;
+// `hivecontrol` is a thin sh shim that `exec`s the SAME sibling `devswarm`
+// binary (both ship on PATH as the identical program). Every regex/verb-check
+// below that reasons about "the DevSwarm CLI verb" MUST treat both names as
+// equivalent, or the guard is trivially bypassed by typing the other name —
+// this is exactly the confirmed bypass this block fixes (`devswarm workspace
+// monitor`/`read-messages`/`message-child`/`message-parent` sailed through
+// while the byte-identical `hivecontrol` form correctly blocked). ONE shared
+// alternation fragment feeds all four regexes AND the two effectiveVerb
+// equality checks below so the names can never drift apart again.
+const DEVSWARM_CLI_VERBS = new Set(['hivecontrol', 'devswarm']);
+const DEVSWARM_CLI_VERB_ALT = '(?:hivecontrol|devswarm)';
 const HIVECTL_MONITOR =
-  /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*monitor\b/i;
+  new RegExp('\\b' + DEVSWARM_CLI_VERB_ALT + '\\s+(?:-\\S+\\s+)*workspace\\s+(?:-\\S+\\s+)*monitor\\b', 'i');
 const HIVECTL_READ_MESSAGES =
-  /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*read-messages\b/i;
+  new RegExp('\\b' + DEVSWARM_CLI_VERB_ALT + '\\s+(?:-\\S+\\s+)*workspace\\s+(?:-\\S+\\s+)*read-messages\\b', 'i');
 
 // v0.58 "mesh-only messaging" (PLAN.md GUARD CONTRACT): the two native SEND
 // subcommands — `hivecontrol workspace message-child` / `message-parent` — are
@@ -146,9 +158,9 @@ const HIVECTL_READ_MESSAGES =
 // `devswarm.js spawn`/`merge` (THIN wraps of hivecontrol create/check-merge/
 // merge) keep working.
 const HIVECTL_MESSAGE_CHILD =
-  /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*message-child\b/i;
+  new RegExp('\\b' + DEVSWARM_CLI_VERB_ALT + '\\s+(?:-\\S+\\s+)*workspace\\s+(?:-\\S+\\s+)*message-child\\b', 'i');
 const HIVECTL_MESSAGE_PARENT =
-  /\bhivecontrol\s+(?:-\S+\s+)*workspace\s+(?:-\S+\s+)*message-parent\b/i;
+  new RegExp('\\b' + DEVSWARM_CLI_VERB_ALT + '\\s+(?:-\\S+\\s+)*workspace\\s+(?:-\\S+\\s+)*message-parent\\b', 'i');
 
 // detectHivectlDestructiveRead(command, depth) -> 'monitor' | 'read-messages' | null.
 // Mirrors isHeavyCommand's matching discipline so DATA and CODE are separated the
@@ -198,7 +210,7 @@ function detectHivectlDestructiveRead(command, depth) {
     // would need a full shell-expansion simulation, which is out of scope: this
     // guard prevents ACCIDENTAL and quote-obfuscated destructive reads, not a
     // determined shell-expansion bypass. Tests document these as knowingly-allowed.
-    if (effectiveVerb(dequoted) === 'hivecontrol') {
+    if (DEVSWARM_CLI_VERBS.has(effectiveVerb(dequoted))) {
       if (HIVECTL_MONITOR.test(dequoted)) return 'monitor';
       if (HIVECTL_READ_MESSAGES.test(dequoted)) sawReadMessages = true;
     }
@@ -257,7 +269,7 @@ function detectHivectlMessageSend(command, depth) {
   const d = typeof depth === 'number' ? depth : 0;
   for (const seg of splitSegments(command)) {
     const dequoted = dequoteSegment(seg);
-    if (effectiveVerb(dequoted) === 'hivecontrol') {
+    if (DEVSWARM_CLI_VERBS.has(effectiveVerb(dequoted))) {
       if (HIVECTL_MESSAGE_CHILD.test(dequoted)) return 'message-child';
       if (HIVECTL_MESSAGE_PARENT.test(dequoted)) return 'message-parent';
     }

@@ -756,3 +756,76 @@ test('DEVSWARM PRIMARY: the redirect target (`node scripts/devswarm.js spawn ...
   const r = runHeavy('node scripts/devswarm.js spawn feature/x -p "own the API layer"', PRIMARY_ENV);
   assert.strictEqual(r.status, 0, `redirect target must run inline; stdout: ${r.stdout}`);
 });
+
+// ---------------------------------------------------------------------------
+// BINARY-NAME PARITY (regression): `hivecontrol` is a 6-line sh shim that `exec`s
+// its sibling `devswarm` binary — `devswarm` is the PRIMARY name, `hivecontrol`
+// the alias, and both are on PATH as the SAME program. The guard previously
+// anchored its destructive-read / message-send detection on the literal verb
+// `hivecontrol` only, so the byte-identical `devswarm workspace monitor` /
+// `read-messages` / `message-child` / `message-parent` forms sailed through
+// (exit 0) while `hivecontrol ...` correctly blocked. Every assertion below runs
+// for BOTH binary names to prove they are now equivalent everywhere the guard
+// reasons about the DevSwarm CLI verb.
+for (const bin of ['hivecontrol', 'devswarm']) {
+  test(`DEVSWARM PARITY (${bin}) BLOCK: workspace monitor`, () => {
+    const r = runDevswarm(`${bin} workspace monitor`);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  });
+
+  test(`DEVSWARM PARITY (${bin}) BLOCK: workspace read-messages`, () => {
+    const r = runDevswarm(`${bin} workspace read-messages`);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  });
+
+  test(`DEVSWARM PARITY (${bin}) BLOCK: workspace message-child`, () => {
+    const r = runDevswarm(`${bin} workspace message-child "hi"`);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  });
+
+  test(`DEVSWARM PARITY (${bin}) BLOCK: workspace message-parent`, () => {
+    const r = runDevswarm(`${bin} workspace message-parent "hi"`);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  });
+
+  test(`DEVSWARM PARITY (${bin}) ALLOW: message-count (non-destructive)`, () => {
+    const r = runDevswarm(`${bin} workspace message-count`);
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  });
+
+  test(`DEVSWARM PARITY (${bin}) ALLOW: lifecycle verb (workspace create)`, () => {
+    const r = runDevswarm(`${bin} workspace create feature-x`);
+    assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+  });
+
+  test(`DEVSWARM PARITY (${bin}) BLOCK: absolute-path invocation basenames to ${bin}`, () => {
+    const r = runDevswarm(`/Applications/DevSwarm.app/Contents/Resources/cli/${bin} workspace monitor`);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  });
+
+  test(`DEVSWARM PARITY (${bin}) BLOCK: bash -c "..." nested form`, () => {
+    const r = runDevswarm(`bash -c "${bin} workspace monitor"`);
+    assert.strictEqual(r.status, 2, `stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  });
+}
+
+// The anti-hall wrapper exemption (`node scripts/devswarm.js ...`) must keep
+// working — its effectiveVerb is `node`, not `devswarm`/`hivecontrol`, so
+// widening the verb set to include `devswarm` must NOT collide with the fact
+// that `scripts/devswarm.js` literally contains the word "devswarm". Highest
+// risk part of the fix: a false positive here would break anti-hall's own
+// inbox/spawn/merge wrappers.
+test('DEVSWARM PARITY: `node scripts/devswarm.js inbox pull x` still ALLOWED (no false positive)', () => {
+  const r = runCoord('node scripts/devswarm.js inbox pull x');
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});
+test('DEVSWARM PARITY: `node scripts/devswarm.js inbox pull x` ALLOWED under active DevSwarm too', () => {
+  const r = runDevswarm('node scripts/devswarm.js inbox pull x');
+  assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
+});

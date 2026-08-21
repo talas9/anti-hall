@@ -11,6 +11,11 @@
 > exist and work, but are **not listed in `hivecontrol --help`'s own top-level output** — see
 > §4.3/§4.4 and §13.
 >
+> **Superseded-in-part:** §1–§13 are the v2.3.5-era record (still accurate for that build). For
+> the installed v2.5.1 surface, the version timeline (including the public vendor changelog),
+> the official-docs coverage review, and the delta analysis, see §14–§21 appended below
+> (verified 2026-08-21).
+>
 > **Verify-first headline:** public web sources conclude DevSwarm "has no CLI." That is
 > **false in the strong form** — `hivecontrol` v2.3.5 is real, ships inside `DevSwarm.app`,
 > and is on every workspace's `PATH`. It is simply *undocumented publicly* — and, as of the
@@ -1762,3 +1767,352 @@ confirmation that surfaced the hidden `jira`/`team` groups and `workspace search
 - **Vendor productivity claims** ("5×") are self-reported, not independently benchmarked [5][18];
   the "19% slower" counter-figure is reported by DevSwarm's blog [5] citing METR (2025), not a
   direct METR source here.
+
+
+## 14. Version timeline (evidence-tagged, appended 2026-08-21)
+
+> §1–§13 above are the **v2.3.5-era record**, verified 2026-07-14, and left untouched. This
+> section and §15–§17 record what could be established about the DevSwarm/`hivecontrol`
+> release history and the **currently installed v2.5.1** surface, verified 2026-08-21.
+
+| version | evidence | note |
+|---|---|---|
+| 2.3.0 | Code comment in migration `0044_add_builder_is_active`: "first 2.3.0 launch", ticket SWARM-4408 [P2] | Earliest version named anywhere in the local artifacts. |
+| 2.3.3 | `~/Downloads/DevSwarm.dmg` (417,408,143 bytes, created 2026-07-04 15:44:54 UTC); internal `Info.plist` reads 2.3.3 [P3] | This machine's earliest install. Oldest DevSwarm log entry `~/Library/Logs/DevSwarm/devswarm.2026-07-30-201633.log` begins 2026-07-04 19:46:44 local, same day. |
+| 2.3.4 | Prior KB pass (§13, 2026-07-12 re-verification) [P2, prior pass] | Zero CLI surface change vs 2.3.3, confirmed byte-for-byte at the time. |
+| 2.3.5 | §4 of this doc (2026-07-14 pass) [prior pass] | The baseline §1–§13 are pinned to. |
+| 2.4.0 | Code comment in migration `0046_add_multi_repos`: migration renumbered 0044→0046 when branch `release/2.4.0` merged with the Multi-Repo branch [P2] | Headline feature = multi-repo (see §15 data model). |
+| 2.5.0 | `cli/package.json` field `vscodeServerVersion: "v1.121.0-2.5.0"` [P2] | **Only** artifact on this machine naming 2.5.0 — no other evidence it ever ran here. |
+| 2.5.1 | `hivecontrol --version` → 2.5.1; `Info.plist` CFBundleVersion = CFBundleShortVersionString = 2.5.1; `cli/package.json` version 2.5.1; Sentry state files record release `DevSwarm@2.5.1+3373dea785d149fc51b132fedda9e03c72b125f1` (build commit SHA) [P3] | **Currently installed.** Bundle unpacked on this Mac 2026-08-19 ~02:41–02:59. Also pinned in this build: bunVersion 1.2.23, gitVersion 2.47.1, vscodeServer v1.121.0-2.5.0. |
+
+### 14.1 What is NOT recoverable
+
+> **Correction of an error made earlier in this same pass, 2026-08-21.** An earlier version of
+> this subsection asserted "no public changelog or release notes exist anywhere." That
+> conclusion was **wrong** — it was reached by searching only the app bundle and the update
+> infrastructure, and never checked the vendor's own public website. A public, paginated
+> changelog **does exist** at **https://devswarm.ai/changelog/** (paginated via `?page=2`
+> through at least `?page=5`) and is the **authoritative source for per-version feature
+> attribution** going forward — see §14.2 for what it contains. **Lesson:** the app bundle and
+> the update feed are local, mechanical artifacts; they are not a substitute for checking the
+> vendor's public site, and their emptiness does not imply a changelog doesn't exist elsewhere.
+> This error is called out explicitly, not silently fixed, per the doc's own verify-first
+> discipline (see the §13 "no CLI" lesson, which this repeats in miniature — this time the
+> propagation source was this session's own incomplete search, not a third-party web claim).
+
+The findings below **remain true** and are unaffected by the correction above — they establish
+that the *machine-local* artifacts carry no version history, not that no version history exists
+anywhere:
+
+- **The app bundle itself ships no changelog.** Searched `Resources` for changelog/release/
+  whats-new — the only hits were third-party `node_modules` changelogs inside bundled
+  vscode-server extensions, unrelated to DevSwarm itself [P2/P3].
+- **Squirrel update feed probed, yields nothing usable.** `buildFeedUrl` in `update-url.util.ts`
+  (inside `app.asar`) builds `${updateServerUrl}/update/${platformArch}/${currentVersion}`;
+  production channel = `https://xnc1yo2yl1.execute-api.us-west-2.amazonaws.com/production/`.
+  Probed for `darwin_arm64` at 2.3.5/2.4.0/2.4.5/2.5.0/2.5.1 → **HTTP 401
+  `{"error":"Authentication required"}` every time** [P3]. This is a delta-check endpoint keyed
+  to a specific installed version, not a version manifest — even authenticated it would not
+  enumerate a changelog.
+- **No updater artifacts retained on disk:** no `RELEASES`, no `latest-mac.yml`, no
+  `app-update.yml`; `~/Library/Caches/com.twentyfirstidea.devswarm.ShipIt` exists but is
+  **empty**. Crashpad `completed`/`new`/`pending` directories are all empty. The app does not
+  log its own version at launch [P3].
+- **Conclusion (narrowed, corrected):** whether 2.4.x or 2.5.0 ever actually *ran on this
+  machine* is **still unknown and unrecoverable** — that specific claim survives the
+  correction, because it's about local run history, which no public changelog can supply. The
+  per-version attribution of individual CLI changes between 2.3.5 and 2.5.1 also **still cannot
+  be fully established from local evidence alone**; §14.2's vendor changelog narrows this
+  considerably for *feature-level* changes (it names which release shipped which feature) but
+  does not prove which of those releases this machine ran. Every change recorded in §16 below
+  remains scoped as "landed somewhere in 2.3.5 → 2.5.1" unless a migration comment or the §14.2
+  changelog names a specific version.
+
+### 14.2 Public vendor changelog — authoritative version timeline [P4]
+
+> **New provenance tag, introduced this pass: [P4] = official vendor documentation/changelog
+> (web).** [P4] ranks **below** [P2] (source inspection) and [P3] (live probe) for CLI-behavior
+> facts — this doc's own §13 already established that ~20 web sources wrongly concluded
+> DevSwarm "has no CLI," so a vendor web page is trusted for *what shipped when / feature
+> naming*, but a §4/§16-style direct binary/source check always wins if the two disagree on
+> what the CLI actually does. [P4] was already used once, undefined, at line 322 of §5 (part of
+> the untouched §1–§13 record) — this is its first formal definition.
+
+Source: https://devswarm.ai/changelog/ (paginated, `?page=2`..`?page=5`), read this pass:
+
+| version | date | headline changes (per vendor changelog) |
+|---|---|---|
+| 2.3.2 | (undated on changelog; see below) | **HiveControl itself shipped in this release** (source: https://devswarm.ai/blog/hivecontrol-orchestrate-the-swarm/, not the changelog page). |
+| 2.3.3 | Jun 29, 2026 | AI-agent install retry/repair flow; embedded-IDE ready-signal hardened; terminal colors sync with the VS Code theme; keyboard shortcuts respect non-QWERTY layouts. |
+| 2.3.4 | Jul 8, 2026 | .edu/students get Pro automatically (~3-day silent renewal window); terminals no longer lose output on reattach; clone-into-existing-folder recovers gracefully. |
+| 2.3.5 | Jul 10, 2026 | Reliability fixes, better Windows support, steadier workspace indexing. |
+| 2.4.0 | Jul 16, 2026 | **Multi-Repo workspaces**: bundle several repositories into one workspace via a guided wizard, build a change across all of them, review in one place; each repo keeps its own branch and PR; can adopt repos already using submodules. Also fixes a blank AI terminal on workspace create/resume. |
+| 2.5.0 | Aug 14, 2026 | Built-in richly-formatted chat interface for terminal coding agents (Claude, GitHub Copilot, OpenAI Codex) with streamed responses, clickable permission prompts, tool-call cards; app-wide VS Code theme adoption (per-project themes); **keyboard-driven workspace search / quick-switch palette** (find workspaces by name, branch, or linked Jira issue); simpler first-run setup; redesigned Create Workspace flow with live Jira and GitHub pickers; Windows fixes (deep file paths, terminal shell selection). |
+| **2.5.1** | — | **Publicly unannounced.** The changelog's newest entry, as read this pass, is 2.5.0. No release note, blog post, or GitHub release names 2.5.1 anywhere on the vendor's public surfaces, despite it being the version actually installed on this machine (§14's main table, [P3]). |
+
+**Cross-corroboration — the strongest evidence in this doc, called out explicitly.** Two
+independent methods agree with each other, without either being derived from the other:
+- Migration `0046`'s in-code comment (§15.1) ties multi-repo to branch `release/2.4.0` — the
+  vendor changelog independently names 2.4.0 = Multi-Repo, shipped Jul 16, 2026.
+- The hidden `workspace search` verb found in the 2.3.5 binary (§4.1) — undocumented at the
+  time it was found — matches 2.5.0's changelog entry for a search/quick-switch palette shipped
+  Aug 14, 2026.
+
+This means the binary/migration forensics method (§4, §15) and the vendor's own published
+history (this section) were derived completely independently and landed on the same facts —
+meaningfully stronger corroboration than either source alone.
+
+
+
+This is the **desktop app's** local store, not the CLI's. The CLI is a thin HTTP client to the
+app's local API on `127.0.0.1` (port from `DEVSWARM_CLI_PORT`); the bundle's own source strings
+say "HiveControl uses DevSwarm's local HTTP API" [P2].
+
+- **Store:** `~/Library/Application Support/DevSwarm/devswarm.db` (SQLite, ~39MB, plus
+  `-wal`/`-shm`), Drizzle-migrated, 51 migrations under `Contents/Resources/migrations/` [P3].
+- **Worktrees:** `~/.devswarm/repos/<repositoryId>/<hash>/…`; pending cleanup staged under
+  `~/.devswarm/scheduled-for-deletion/` [P3].
+- **Not to be confused:** `~/.anti-hall/devswarm/*` is anti-hall's **own** state store, unrelated
+  to the DevSwarm app's `devswarm.db` above — a future pass should not conflate the two.
+
+Key tables → field names, verified via `sqlite3 PRAGMA table_info` [P3] (field names only; no
+row data inspected/recorded):
+
+| table | fields |
+|---|---|
+| `builders` (the "workspace" object) | id, repositoryId, sourceBranch, branchName, worktreePath, aiAgent, terminalId, label, createdAt, lastAccessed, rank, isHidden, promptEditorCollapsed, pullRequestId, builderType, isPinned, isActive, lastSelectedAt |
+| `workspace_messages` | id, repositoryId, fromBranch, toBranch, message, status, createdAt |
+| `repositories` | id, path, name, defaultBaseBranch, description, lastAccessed, defaultEditorId, rank, jiraProjectKey, githubAccessStatus, githubAccessError, githubAccessCheckedAt, defaultAiAgent |
+| `builder_terminals` | id, builderId, terminalId, terminalType, aiAgent, ai_session_config, label, displayOrder, isPinned, isActive, panelStatus, createdAt, lastViewedAt, initialPrompt, transcriptByteOffset, transcriptLineCount, ingestionStatus |
+| `builder_terminal_transcripts` | id, builderTerminalId, builderId, parentId, agentId, transcriptByteOffset, transcriptLineCount, ingestionStatus, createdAt |
+| `multi_repos` | id, repositoryId, createdAt, parentManaged (plus `multi_repo_members`, `multi_repo_pending_submodules`) |
+| other tables present | `jira_auth`, `github_auth`, `user_session`, `pull_requests`, `settings` (keys observed: `onboardingComplete`, `app.lastCacheVersion`) |
+
+### 15.1 Migration timeline — the 2.4.0-era changes (0038–0050)
+
+- `0038` add_transcript_tracking
+- `0039` terminalId on prompts
+- `0040` session_aware_cleanup (offsets moved onto `builder_terminals`)
+- `0041` sentAt on prompts
+- `0042` ingestionStatus
+- `0043` `builder_terminal_transcripts` + backfill
+- `0044` `builders.isActive` (comment: "first 2.3.0 launch", SWARM-4408)
+- `0045` `builders.lastSelectedAt` (SWARM-4408)
+- `0046` `multi_repos` + `multi_repo_members` (comment: renumbered when `release/2.4.0` merged)
+- `0047` `multi_repos.parentManaged` (SWARM-4627, described in-comment as a CRITICAL data-loss fix)
+- `0048` `multi_repo_pending_submodules` (SWARM-4652)
+- `0049` pending-submodule `bootstrapUrl`/`defaultBranch` (comment signed "Trevor 2026-06-12")
+- `0050` `repositories.defaultAiAgent`
+
+**Date caveat [P2]:** journal `when` values for `0038`–`0050` are exact 50,000,000ms (~13.9h)
+apart — the signature of synthetically re-stamped entries after the renumbering — unlike the
+irregular, organic timestamps of `0000`–`0037`. Migration `0049`'s in-comment date
+(2026-06-12) contradicts its journal date (2026-04-12). Treat `0038`–`0050` journal dates as
+**relative order only**, not authoritative dates. The local `__drizzle_migrations` table copies
+the journal's baked-in timestamps rather than real apply-time, so it cannot date this install's
+upgrades either [P3].
+
+**Key conclusion:** `0050` is the **last** migration present. Nothing is dated/ordered after it,
+so **2.4.x → 2.5.1 introduced no database schema changes** — that era's work was CLI/client/UI
+only, and is invisible to the migration-table artifact.
+
+## 16. v2.5.1 CLI surface — delta vs the §4 (v2.3.5) record
+
+§4 remains the authoritative v2.3.5 record. This section records the **v2.5.1 observed
+surface** and the delta between them.
+
+**Unchanged and still present** [P1/P3] — every verb anti-hall depends on still exists with the
+same shape: `workspace list children|all [--tree]`, `workspace info`, `create <branch>
+[-s -a -p -r -t]`, `update-title <title> [-b]`, `check-merge`, `merge-from-source`,
+`merge-into-source`, `update-base [-w -y -s]`, `message-child`, `message-parent`,
+`read-messages`, `message-count`, `monitor [-i -t]`; `repo configure|validate|refresh|find|
+port-vars|worktree-include|scripts`; `health`; `open [path]`. JSON remains the unconditional
+default; **still no `--json` flag anywhere**.
+
+**Additions / changes observed in 2.5.1** (cannot be attributed to a specific intermediate
+version — see §14):
+
+| item | 2.3.5 record (§4) | 2.5.1 observed | provenance |
+|---|---|---|---|
+| `jira transitions [key]` | absent from §4.3's 14-leaf list | present | [P1] — flag as new-or-previously-missed, not confirmed new |
+| `repo port-vars add` | `add <NAME>` | `add <name> <template>` (second arg) | [P1] |
+| `repo scripts` | `set setup <cmd>` / `unset setup` (§4) | generic `get <key>` / `set <key> <value>` / `unset <key>`, key still constrained to `"setup"` in practice | [P1] |
+| `repo worktree-include add` | `add <pattern>` | `add <pattern> "desc"` (description arg) | [P1] |
+
+Other observations:
+- **New env var `DEVSWARM_INVOKED_AS`**, set to `hivecontrol` by the shim [P2]. `hivecontrol`
+  is a POSIX-sh shim doing `exec devswarm "$@"`; both `hivecontrol` and `devswarm` are the same
+  16,629-line Commander.js JS bundle at `Contents/Resources/cli/devswarm`. Windows `.cmd`
+  wrappers prefer `%DEVSWARM_BUN_PATH%` (bundled bun) over system node.
+- **Hidden-command gating mechanism now identified** [P2]: `team` and `jira` (and `workspace
+  search`) are registered via `program2.addCommand(x, {hidden:true})` and shown in `--help`
+  only when `apiClient.getSubscriptionFeatures()` reports the matching feature (`features.team`
+  / `features.jira`). They remain **fully parseable and runnable while hidden** — visibility ≠
+  availability.
+- **New CLI quirk, integration-relevant** [P3]: leaf-level `--help` **misfires and prints the
+  root help** instead of the subcommand's own help. Reproduced for `repo
+  configure|validate|refresh|find` and `workspace info|update-title|check-merge|
+  merge-from-source|merge-into-source|update-base|message-child|message-parent|
+  read-messages|message-count|monitor`. Group-level help (`repo --help`, `workspace --help`,
+  `workspace list --help`) works correctly. **Consequence: `--help` is not a usable audit
+  boundary for leaves** — flags must be recovered by grepping `.command(...)` registrations in
+  the bundle. This compounds the §13 lesson about the audit boundary.
+
+**Explicitly NOT changes — false-positive guards** (recorded so a future pass doesn't log a
+phantom regression):
+- The 2.5.1 CLI bundle references only 8 `DEVSWARM_*` vars (`AI_AGENT`, `BUILDER_ID`,
+  `CLI_PORT`, `DEFAULT_BRANCH`, `INVOKED_AS`, `NO_AUTO_AUTH`, `REPO_ID`, `SOURCE_BRANCH`). The
+  other vars §6 documents (`BUILDER_NAME`, `NAME`, `HTTP_PORT`, `SPAWNED`, `PARENT_PID`,
+  `BUN_PATH`, `SHELL_READY_MARKER`) are set by the **Electron app into the shell env** and were
+  never read by the CLI bundle itself — their absence from a CLI-bundle grep is **not evidence
+  of removal**. Status: unverified either way; re-probe from inside a live workspace shell to
+  confirm.
+- `jira search` flags were **not** re-enumerated exhaustively in this pass; do not read a
+  shorter 2.5.1 listing as a removal of `--jql`/`--fields`/`--next-page-token`. Unverified.
+- `workspace_messages` schema (`fromBranch`, `toBranch`, `message`, `status`, `createdAt`)
+  **matches** the message shape §8 documents anti-hall parsing against — that contract is
+  intact.
+
+## 17. Capabilities present but unused by anti-hall (for a future integration review)
+
+Flagged as "not currently referenced in anti-hall doctrine" — no claim here about whether they
+*should* be used, only that they exist and aren't wired in today:
+
+- Multi-repo tables/feature (2.4.0 era; §15).
+- `builders.isActive` / `lastSelectedAt` / `isPinned` / `builderType` / `pullRequestId` as
+  native liveness+state signals.
+- `builder_terminals` transcript-ingestion fields (`transcriptByteOffset`/`LineCount`/
+  `ingestionStatus`).
+- `repositories.defaultAiAgent`.
+- `workspace update-base` as a CLI-native way to fix stale parent tracking.
+- Team-gated `team metrics|members|workspace|session|conversation` observability.
+- Team-gated `workspace search --explain`.
+- The whole `jira` group.
+
+Team/`jira` features are subscription-gated; **this install's entitlement status is
+unverified.**
+
+## 18. Official documentation coverage + positioning [P4]
+
+- **Docs site https://docs.devswarm.ai/ is an Angular SPA**: every route returns the same
+  1534-byte shell, so it is **not fetchable page-by-page**. All 30 pages' content is inlined in
+  `https://docs.devswarm.ai/main.f735601b49d8ebae.js` (~1.1MB) as `{id, title, content}`
+  search-index records. No `llms.txt`, no `sitemap.xml` (404), no public docs repo. **Record
+  this as the method for any future doc pull**: fetch the hashed main JS bundle and parse the
+  inlined search index, not the SPA routes.
+- **The docs document only 3 of ~25 CLI commands (~12% coverage)**: `hivecontrol workspace
+  create --agent <name>`, `devswarm repo port-vars add <NAME>`, `devswarm repo worktree-include
+  add <PATH>`. Verified **zero** occurrences in the docs bundle of: the messaging verbs
+  (`message-child`/`message-parent`/`read-messages`/`message-count`/`monitor`), `check-merge`,
+  `merge-from-source`, `merge-into-source`, `update-base`, `health`, `open`, `workspace
+  search`, `repo scripts`, the `team` group, the `jira` group.
+- **Vendor positioning, quoted verbatim** (https://docs.devswarm.ai/hivecontrol/hivecontrol):
+  *"HiveControl is the interface your AI assistant uses to orchestrate DevSwarm. … HiveControl
+  is AI-facing. You do not operate it by hand."* And: *"Inside a workspace this is the
+  `hivecontrol` command the assistant calls; you rarely run it yourself."* This **validates**
+  anti-hall's own doctrine of driving the CLI from agents rather than by hand, and explains why
+  no CLI reference page exists in the docs (only the 3 commands above appear, each inline in a
+  feature walkthrough, not a reference table).
+- **Three named orchestration patterns have dedicated docs pages**: **Plan-Do**, **Review
+  Stack**, **Release Stack**. Flagged as worth reviewing against anti-hall's own orchestration
+  doctrine (§8) — **not yet compared this pass**.
+- **`--json` appears zero times in the entire docs bundle** — consistent with the verified
+  binary behavior (§4, §16): JSON is the unconditional default, no flag exists. Any source
+  (web or otherwise) claiming a `--json` flag is wrong.
+- **Multi-Repo is documented as GUI-wizard-only**: Compose → Name → Confirm; right-click "Adopt
+  as Multi-Repo" for an existing submodule parent. Each member is a worktree on its own branch;
+  name collisions get a `-1` suffix; review fans the verdict out to each member repo's own PR.
+  **No CLI surface for multi-repo is documented, and none is registered in the 2.5.1 binary**
+  (see §19.2 below for the specific `delete-multi-repo` non-finding).
+- **Pricing** (https://devswarm.ai/pricing/): Free / Pro $8 / Team $18 / Enterprise.
+  Jira-to-workspace is listed under **Team**, consistent with the on-disk `features.jira`
+  subscription gate (§4.4, §16).
+
+## 19. Divergence log addendum (new findings this pass — §13 itself is untouched)
+
+Continues §13's spirit of logging web-vs-local disagreements; recorded as a **new, separate**
+section rather than an edit to §13, per this doc's own preserve-history rule.
+
+1. **Jira: GUI read-only vs CLI read-write.** Docs state verbatim: *"The Jira integration
+   provides read-only access. Update issues and add comments using your AI assistant or
+   manually directly in Jira."* (https://docs.devswarm.ai/features-and-integrations/
+   jira-integration). Yet the 2.5.1 CLI registers full write verbs: `jira create`, `update`,
+   `transition`, `comment`, `assign`, `worklog add`, `versions create|update` (§4.3). **Verdict:**
+   the read-only statement describes the GUI panel only, not the CLI — the CLI is
+   write-capable. **Consequence:** an agent CAN mutate Jira through the CLI even though the
+   docs describe the product as read-only; treat this as a real, doc-contradicted capability
+   and a caution when reasoning about what an agent can/cannot do to a linked Jira project.
+2. **`delete-multi-repo` is NOT a CLI verb — RESOLVED, not a gap.** It exists only as a
+   Playwright/E2E `data-testid` selector string (`menu-item-delete-multi-repo`) inside a UI
+   selector-constants block, alongside siblings like `remove-multi-repo-member` and
+   `adopt-multi-repo`. There is **no** Commander registration, **no** `multi-repo` command
+   group at all in the CLI, and **no** backing `apiClient` method. No guard pattern is needed
+   for it and there is no CLI-reachable automated-deletion path here [P2].
+3. **`.command(` grep false positives reaffirmed.** An exhaustive registration grep on the
+   2.5.1 binary still surfaces `clone, start, stop, serve, watch, lint` as raw string matches;
+   §13 already established these come from example code inside a JS **comment**, not real
+   registrations. Re-confirmed this pass on the current binary — do not record them as verbs.
+4. **"DevSwarm has no CLI" is now refuted by the vendor's *own docs*, not merely by running the
+   binary.** §13 refuted the "no CLI" claim by execution; this pass found the vendor's own docs
+   site shows `hivecontrol workspace create --agent` and `devswarm repo port-vars add`
+   verbatim (§18), closing the loop — the vendor's own public site contradicts the "no CLI"
+   claims made about it elsewhere on the web. Likely propagation source for the original wrong
+   claim: https://devswarm.ai/features/ does not mention a CLI at all.
+5. **Official GitHub org is a stub, and several look-alikes pollute search.**
+   `github.com/devswarm-ai/devswarm` exists but its newest release is **v0.12.0 (Free Beta)** —
+   not a usable changelog for the 2.x desktop app. `justrach/devswarm`,
+   `The-Swarm-Corporation/DevSwarm`, `kyegomez/dev-swarm`, and `harsha-gouru/devswarm` are
+   **unrelated** projects (consistent with §2's disambiguation table) that surface in generic
+   searches. Recorded so a future pass doesn't mistake any of them for upstream release notes.
+
+## 20. Falsified hypothesis — do not re-propose
+
+**FALSIFIED:** adopting `builders.isActive` / `lastSelectedAt` / `lastAccessed` from the app's
+own SQLite store (§15) as a native agent-liveness signal for anti-hall's supervisor. Evidence
+[P3], from a read-only query of `~/Library/Application Support/DevSwarm/devswarm.db`:
+
+- `isActive` is schema `integer DEFAULT 1 NOT NULL` and is **perfectly anti-correlated** with
+  `isHidden`: 82 rows `isActive=0`/`isHidden=1` (i.e. archived), 5 rows `isActive=1`/
+  `isHidden=0`. It means **"not archived"** and carries **zero** information about whether an
+  agent session is actually running.
+- 4 of the 5 `isActive=1` rows are repo-root `main`/`dev` **parent** rows, not live child
+  sessions — the signal doesn't even cluster on the workspaces you'd expect.
+- `lastSelectedAt` is UI click-focus, not activity: one row is stale by ~48 days while
+  `isActive=1` on that same row.
+- `lastAccessed` is useless as an activity signal: **all 87 rows** are stamped within ~1 second
+  of each other, consistent with an app-startup sweep touching every row, not per-workspace use.
+
+**Conclusion:** anti-hall's own heartbeat model (§8's supervisor doctrine, referenced in the
+`anti-hall:devswarm` skill) measures a strictly different and better axis than any of these
+three columns. **Do not adopt any of `isActive`/`lastSelectedAt`/`lastAccessed` as a liveness
+signal. Do not re-propose this without new evidence that specifically addresses the three
+anti-correlation/staleness/coarse-sweep findings above.**
+
+## 21. anti-hall integration outcome of this pass
+
+- **Defect found this pass (fix carried out by a parallel, separate task — not in this doc):**
+  anti-hall's `command-guard.js` anchored its four DevSwarm destructive/messaging blocks (§8.5)
+  on the literal verb `hivecontrol` only. Because `hivecontrol` is a 6-line `sh` shim that
+  `exec`s the sibling `devswarm` binary (§16) — and `devswarm` is the **primary** binary name,
+  equally present on `PATH` — the byte-identical `devswarm workspace
+  monitor|read-messages|message-child|message-parent` forms were **not** blocked. Verified
+  behaviorally: all four blocked under `hivecontrol`, all four allowed under `devswarm`, with
+  DevSwarm active. Fix: make both invocation names equivalent via a shared verb set/alternation
+  in the guard's matcher. This was a **latent pre-existing defect**, not a 2.5.1 regression —
+  it existed as long as the guard anchored on one literal verb name while the binary always
+  shipped two. The Codex port shares the same guard file (`codex/hooks/hooks.json` invokes the
+  Claude-side `hooks/command-guard.js`), so the fix, once landed, covers both ports without a
+  separate Codex change.
+- **Standing gap, recorded so it isn't silently re-lost:** anti-hall still performs **no**
+  `hivecontrol`/`devswarm` version probe anywhere in its own code. Every fact in this KB is
+  therefore version-blind at runtime and must be **manually** re-verified after each DevSwarm
+  update — nothing currently detects drift automatically.
+
+---
+
+All facts in §14–§21 were verified 2026-08-21 against the installed v2.5.1 build **plus the
+vendor's public changelog (https://devswarm.ai/changelog/) and docs site
+(https://docs.devswarm.ai/)** as of that date. Per the §13 convention, treat them as
+**version-fragile** — re-verify against the then-current `hivecontrol --version`, a fresh
+source grep, and the current state of the vendor's public changelog/docs before trusting them
+past the next DevSwarm update.
