@@ -77,12 +77,74 @@ test('unreadBacklog: {"line":N} cursor form', () => {
   } finally { cleanup(); }
 });
 
-test('unreadBacklog: missing/unparseable cursor -> known:false (fail-safe)', () => {
+test('unreadBacklog: missing/unparseable cursor -> known:false (fail-safe), tagged cursor-missing', () => {
   const { home, cleanup } = makeHome();
   try {
     const inbox = path.join(home, 'i');
+    const cursorPath = path.join(home, 'nope');
     fs.writeFileSync(inbox, 'a\nb\n');
-    assert.deepStrictEqual(M.unreadBacklog(inbox, path.join(home, 'nope')), { lines: [], known: false });
+    // Regression-fix (label-taxonomy port): the prior generic known:false is
+    // now tagged with WHY — an absent cursor file reads ENOENT -> 'cursor-missing',
+    // additively (existing `.lines`/`.known` readers are unaffected).
+    assert.deepStrictEqual(M.unreadBacklog(inbox, cursorPath), { lines: [], known: false, reason: 'cursor-missing', path: cursorPath, errno: 'ENOENT' });
+  } finally { cleanup(); }
+});
+
+// -----------------------------------------------------------------------
+// unreadBacklog LABEL TAXONOMY (regression fix, d1c8625 identity-family
+// collapse in devswarm-parent-gate.js) — distinct `reason`s for distinct
+// causes, each with the failing path/errno where available, so a caller can
+// build an actionable label instead of a single generic "unreadable".
+// -----------------------------------------------------------------------
+
+test('unreadBacklog: inboxPath is null -> reason no-inbox-path (malformed/phantom descriptor), never a TypeError', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const r = M.unreadBacklog(null, path.join(home, 'c'));
+    assert.deepStrictEqual(r, { lines: [], known: false, reason: 'no-inbox-path', path: null, errno: null });
+  } finally { cleanup(); }
+});
+
+test('unreadBacklog: inbox file missing (ENOENT) vs present-but-unreadable -> distinct reasons', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const missingInbox = path.join(home, 'missing-inbox');
+    const cur = path.join(home, 'c'); fs.writeFileSync(cur, '0');
+    const rMissing = M.unreadBacklog(missingInbox, cur);
+    assert.strictEqual(rMissing.known, false);
+    assert.strictEqual(rMissing.reason, 'inbox-missing');
+    assert.strictEqual(rMissing.errno, 'ENOENT');
+
+    // A directory at the inbox path exists but readFileSync fails with EISDIR
+    // — present, but genuinely unreadable as a file. Distinct from ENOENT.
+    const dirAsInbox = path.join(home, 'inbox-is-a-dir');
+    fs.mkdirSync(dirAsInbox);
+    const rUnreadable = M.unreadBacklog(dirAsInbox, cur);
+    assert.strictEqual(rUnreadable.known, false);
+    assert.strictEqual(rUnreadable.reason, 'inbox-unreadable');
+    assert.notStrictEqual(rUnreadable.reason, rMissing.reason, 'missing vs unreadable must be distinguishable');
+  } finally { cleanup(); }
+});
+
+test('unreadBacklog: cursor unreadable/corrupt (bad JSON) -> reason cursor-unreadable', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const inbox = path.join(home, 'i'); fs.writeFileSync(inbox, 'a\nb\n');
+    const cur = path.join(home, 'c'); fs.writeFileSync(cur, 'not-json-and-not-an-int{{{');
+    const r = M.unreadBacklog(inbox, cur);
+    assert.strictEqual(r.known, false);
+    assert.strictEqual(r.reason, 'cursor-unreadable');
+  } finally { cleanup(); }
+});
+
+test('unreadBacklog: cursor value invalid (negative) -> reason cursor-invalid', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const inbox = path.join(home, 'i'); fs.writeFileSync(inbox, 'a\nb\n');
+    const cur = path.join(home, 'c'); fs.writeFileSync(cur, JSON.stringify({ line: -5 }));
+    const r = M.unreadBacklog(inbox, cur);
+    assert.strictEqual(r.known, false);
+    assert.strictEqual(r.reason, 'cursor-invalid');
   } finally { cleanup(); }
 });
 

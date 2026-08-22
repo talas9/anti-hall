@@ -142,6 +142,27 @@ function seedWorkspace(home, id, opts = {}) {
   return { inboxPath, cursorPath };
 }
 
+// seedWorkspaceWithInboxPath(home, id, inboxPath, opts) — writes ONLY the
+// descriptor file (no inbox/cursor content), with an EXPLICIT `inboxPath`
+// (including `null`, reproducing a malformed/phantom descriptor field-for-
+// field per the live incident: "descriptor for primary-bf04dd47 has no
+// inboxPath"). seedWorkspace() above always computes a real inboxPath, so
+// this is the only way to exercise the `no-inbox-path` taxonomy branch at
+// the gate level.
+function seedWorkspaceWithInboxPath(home, id, inboxPath, opts = {}) {
+  const root = path.join(home, '.anti-hall', 'devswarm');
+  const wsDir = path.join(root, 'workspaces');
+  fs.mkdirSync(wsDir, { recursive: true });
+  const descriptor = {
+    id,
+    worktreePath: opts.worktreePath !== undefined ? opts.worktreePath : path.join(home, 'wt', id),
+    sessionId: 'child-' + id,
+    inboxPath,
+    cursorPath: opts.cursorPath !== undefined ? opts.cursorPath : path.join(root, 'cursor', id + '.json'),
+  };
+  fs.writeFileSync(path.join(wsDir, id + '.json'), JSON.stringify(descriptor));
+}
+
 function run(home, payload, env) {
   return testHookRaw(HOOK, JSON.stringify(payload || stopPayload()), {
     home,
@@ -1502,7 +1523,7 @@ test('IDENTITY-FAMILY: two GENUINELY distinct workspaces (different worktreePath
   } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
 });
 
-test('IDENTITY-FAMILY: unreadUnknown on any family member propagates (blocks + "inbox unreadable")', () => {
+test('IDENTITY-FAMILY: unreadUnknown on any family member propagates (blocks + a taxonomy\'d label, not "inbox unreadable")', () => {
   const h = makeHome();
   const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
   try {
@@ -1516,8 +1537,90 @@ test('IDENTITY-FAMILY: unreadUnknown on any family member propagates (blocks + "
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.match(r.json.reason, /1 workspace\(s\)/);
-    assert.match(r.json.reason, /inbox unreadable/, 'unreadUnknown from either member must propagate to the collapsed family');
+    // Regression-fix taxonomy (see the dedicated LABEL TAXONOMY tests below):
+    // a genuinely absent inbox file now reads "inbox file missing", NOT the
+    // old generic "inbox unreadable" bucket that gave no actionable cause.
+    assert.match(r.json.reason, /inbox file missing/, 'unreadUnknown from either member must propagate to the collapsed family, with the real cause named');
+    assert.doesNotMatch(r.json.reason, /\binbox unreadable\b/, 'the old generic bucket label must not resurface once the real cause is known');
   } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+// -----------------------------------------------------------------------
+// LABEL TAXONOMY + PER-MEMBER ATTRIBUTION (Fix 2 — regression from d1c8625's
+// identity-family collapse). A live operator saw "primary-bf04dd47 (inbox
+// unreadable)" for a descriptor whose `inboxPath` field was literally `null`
+// — a wording that gave no way to act on it. These tests prove: (a) the
+// label names the ACTUAL cause (missing field vs missing file vs unreadable
+// file vs corrupt cursor), and (b) a sibling descriptor's failure is never
+// misattributed to the Primary's own survivor id / own-summary paragraph.
+// -----------------------------------------------------------------------
+
+test('LABEL TAXONOMY: descriptor with inboxPath:null -> names the missing/malformed inboxPath field, not bare "inbox unreadable"', () => {
+  const h = makeHome();
+  const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
+  try {
+    seedWorkspaceWithInboxPath(h.home, 'phantom-null-inbox', null, { worktreePath: path.join(h.home, 'wt-phantom') });
+    const r = run(h.home, stopPayload('sess-taxA', false, bogusCwd));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /phantom-null-inbox/);
+    assert.match(r.json.reason, /descriptor has no inboxPath/i, 'must name the missing field, falsifiable from the descriptor itself');
+    assert.doesNotMatch(r.json.reason, /\binbox unreadable\b/);
+  } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+test('LABEL TAXONOMY: inbox file missing (ENOENT) vs present-but-unreadable (EISDIR) -> distinct labels', () => {
+  const h = makeHome();
+  const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
+  try {
+    // 'missing-one': a real inboxPath that was simply never written (ENOENT).
+    seedWorkspace(h.home, 'missing-one', { worktreePath: path.join(h.home, 'wt-missing'), cursor: 0 });
+    // 'unreadable-one': inboxPath points AT A DIRECTORY — present on disk,
+    // genuinely not readable as a file (EISDIR), distinct cause from ENOENT.
+    const dirInbox = path.join(h.home, 'wt-unreadable-inbox-dir');
+    fs.mkdirSync(dirInbox, { recursive: true });
+    seedWorkspaceWithInboxPath(h.home, 'unreadable-one', dirInbox, { worktreePath: path.join(h.home, 'wt-unreadable') });
+    const r = run(h.home, stopPayload('sess-taxB', false, bogusCwd));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /missing-one \(inbox file missing/, 'ENOENT must read as "inbox file missing"');
+    assert.match(r.json.reason, /unreadable-one \(inbox file unreadable/, 'EISDIR must read as "inbox file unreadable" — a DIFFERENT label from missing');
+  } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+test('FAMILY ATTRIBUTION: a sibling descriptor (inboxPath:null) sharing the Primary\'s OWN worktree family -> names the sibling, own-summary paragraph does NOT fire for the survivor', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 0); // the Primary's OWN summary reads fine: unread 0, unknown:false
+    // 'primary-bf04dd47' shares the SAME worktreePath as the Primary's own
+    // cwd (REPO_CWD) -> collapses into the SAME identity family as own's
+    // synthetic self-row (canonicalMeshId(REPO_CWD) === own.id, so the
+    // Primary's own row is ALWAYS the survivor for this family) — but its
+    // OWN inboxPath is null, reproducing the live incident field-for-field.
+    seedWorkspaceWithInboxPath(h.home, 'primary-bf04dd47', null, { worktreePath: REPO_CWD });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, new RegExp(OWN_ID + ' \\(you\\)'), 'the survivor is still the Primary\'s own id');
+    assert.match(r.json.reason, /primary-bf04dd47: descriptor has no inboxPath/, 'the sibling\'s failure is named explicitly, never blamed on the survivor');
+    assert.doesNotMatch(r.json.reason, /YOUR OWN inbound status could not be confirmed/, 'own-summary genuinely read fine — this paragraph must NOT fire over a SIBLING\'s unrelated failure');
+  } finally { h.cleanup(); }
+});
+
+test('SELF ROW: own-summary genuinely unreadable/corrupt -> the own-summary paragraph DOES fire (regression guard)', () => {
+  const h = makeHome();
+  try {
+    const dir = path.join(h.home, '.anti-hall', 'devswarm', 'summaries');
+    fs.mkdirSync(dir, { recursive: true });
+    // A zero-byte summary file is the SAME torn-write window readOwnUnread
+    // treats as genuinely unknown (own.unknown:true) — distinct from ENOENT
+    // ("never derived yet" -> confirmed-empty, per readOwnUnread's own header).
+    fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), '');
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /YOUR OWN inbound status could not be confirmed/, 'a genuine own-summary read failure must still surface this paragraph');
+  } finally { h.cleanup(); }
 });
 
 test('IDENTITY-FAMILY: sig stability — the SAME collapsed state across repeated calls never phantom-churns (reaches escalation at the cap)', () => {

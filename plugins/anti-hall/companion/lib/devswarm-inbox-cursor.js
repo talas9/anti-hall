@@ -60,10 +60,14 @@ function writeCursorAtomic(cursorPath, value, F) {
 }
 
 // readUnread(inboxPath, cursorPath, fsi) ->
-//   { lines: string[], count, cursor, total, known }.
+//   { lines: string[], count, cursor, total, known, reason?, path?, errno? }.
 // The unread slice, delegated to unreadBacklog() so read semantics stay identical
 // to the staleness detector. `known:false` (matching unreadBacklog) means the
 // cursor was unreadable/unparseable — treat as "nothing conclusively pending".
+// `reason`/`path`/`errno` are forwarded verbatim from unreadBacklog() (ADDITIVE
+// — prior callers reading only `.lines`/`.known` are unaffected) so a caller
+// distinguishing WHY `known` is false (no inboxPath vs missing vs unreadable
+// vs a bad cursor) does not need to re-derive it.
 function readUnread(inboxPath, cursorPath, fsi) {
   const backlog = unreadBacklog(inboxPath, cursorPath, fsi);
   return {
@@ -72,11 +76,14 @@ function readUnread(inboxPath, cursorPath, fsi) {
     cursor: readCursor(cursorPath, fsi),
     total: countMessages(inboxPath, fsi),
     known: backlog.known,
+    reason: backlog.reason || null,
+    path: backlog.path || null,
+    errno: backlog.errno || null,
   };
 }
 
 // readUnreadMessages(inboxPath, cursorPath, fsi) ->
-//   { rows: (object|null)[], count, known }.
+//   { rows: (object|null)[], count, known, reason?, path?, errno? }.
 // The SAME unread slice as readUnread(), with each line additionally
 // JSON-parsed. A line that fails to parse (or parses to a non-object, e.g. a
 // bare number) is represented as `null` in `rows` — index-aligned with the
@@ -84,6 +91,7 @@ function readUnread(inboxPath, cursorPath, fsi) {
 // this row" from "row missing entirely" can still tell the two apart if it
 // ever needs to. `known` mirrors readUnread()'s own meaning (false = the
 // cursor/inbox could not be conclusively read; treat as unknown, not empty).
+// `reason`/`path`/`errno` are forwarded verbatim from readUnread() (ADDITIVE).
 function readUnreadMessages(inboxPath, cursorPath, fsi) {
   const u = readUnread(inboxPath, cursorPath, fsi);
   const rows = u.lines.map((line) => {
@@ -94,7 +102,7 @@ function readUnreadMessages(inboxPath, cursorPath, fsi) {
       return null;
     }
   });
-  return { rows, count: u.count, known: u.known };
+  return { rows, count: u.count, known: u.known, reason: u.reason, path: u.path, errno: u.errno };
 }
 
 // ackTo(cursorPath, n, fsi, inboxPath?) -> int. Set the cursor to an absolute

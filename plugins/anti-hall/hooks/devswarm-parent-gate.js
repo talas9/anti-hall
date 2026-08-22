@@ -493,6 +493,13 @@ function main() {
       worktreePath: cwd,
       realUnread: own.unread,
       unreadUnknown: !!own.unknown,
+      // own-summary-unreadable: a DISTINCT failure mode from a descriptor's
+      // inbox/cursor read (own.unknown comes from readOwnUnread's own-summary
+      // projection, never from inboxPath/cursorPath) — labeled distinctly so
+      // a family's unknownMembers list never confuses the two.
+      unreadReason: own.unknown ? 'own-summary-unreadable' : null,
+      unreadReasonPath: null,
+      unreadReasonErrno: null,
       staleOrEscalated: false,
       status: '',
       urgencyMax: own.urgencyMax != null ? own.urgencyMax : null,
@@ -552,10 +559,23 @@ function main() {
     // parsed row with no recognizable text field) counts as real.
     let realUnread = 0;
     let unreadUnknown = false;
+    // unreadReason/unreadReasonPath/unreadReasonErrno (regression fix — see
+    // this file's own d1c8625 identity-family-collapse note below): a bare
+    // `unreadUnknown` boolean gave no way to tell a malformed/phantom
+    // descriptor (no inboxPath at all) apart from a genuinely missing or
+    // unreadable inbox/cursor file. Carried per-member so the family reduce
+    // step below can name WHICH descriptor failed and WHY, instead of a
+    // single generic "inbox unreadable" blamed on the family survivor.
+    let unreadReason = null;
+    let unreadReasonPath = null;
+    let unreadReasonErrno = null;
     try {
       const u = readUnreadMessages(d.inboxPath, d.cursorPath);
       if (!u || !u.known) {
         unreadUnknown = true;
+        unreadReason = (u && u.reason) || 'unknown';
+        unreadReasonPath = (u && u.path) || null;
+        unreadReasonErrno = (u && u.errno) || null;
       } else {
         for (const row of u.rows) {
           if (row === null) { realUnread++; continue; } // unparseable -> fail open (real)
@@ -565,6 +585,7 @@ function main() {
       }
     } catch (_) {
       unreadUnknown = true; // hard failure reading the primitive itself -> fail open
+      unreadReason = 'read-threw';
     }
 
     // UNION (root cause b fix): a mesh-direct `send --to` is STORE-ONLY (see
@@ -636,6 +657,9 @@ function main() {
       worktreePath: d.worktreePath,
       realUnread,
       unreadUnknown,
+      unreadReason,
+      unreadReasonPath,
+      unreadReasonErrno,
       staleOrEscalated,
       status: staleOrEscalated ? status : '',
       urgencyMax: null,
@@ -676,9 +700,24 @@ function main() {
     let staleOrEscalated = false;
     let status = '';
     let urgencyMax = null;
+    // unknownMembers (regression fix, d1c8625): the family-wide `unreadUnknown`
+    // OR is still computed as before (a family with ANY unreadable member
+    // still blocks), but WHICH member(s) actually failed — and why — is now
+    // carried alongside it, so the label built below can name the real
+    // culprit instead of blaming the survivor id for a DIFFERENT member's
+    // read failure.
+    const unknownMembers = [];
     for (const m of members) {
       unionUnread += Number.isFinite(m.realUnread) ? m.realUnread : 0;
-      if (m.unreadUnknown) unreadUnknown = true;
+      if (m.unreadUnknown) {
+        unreadUnknown = true;
+        unknownMembers.push({
+          id: m.id != null ? String(m.id) : null,
+          reason: m.unreadReason || 'unknown',
+          path: m.unreadReasonPath || null,
+          errno: m.unreadReasonErrno || null,
+        });
+      }
       if (m.staleOrEscalated) { staleOrEscalated = true; if (m.status) status = m.status; }
       if (m.urgencyMax != null) urgencyMax = m.urgencyMax;
     }
@@ -688,6 +727,7 @@ function main() {
     if (!survivorId) continue;
     const entry = { id: survivorId, unread: unionUnread, unknown: unreadUnknown, status };
     if (urgencyMax != null) entry.urgencyMax = urgencyMax;
+    if (unknownMembers.length) entry.unknownMembers = unknownMembers;
     blocking.push(entry);
   }
 
@@ -899,7 +939,7 @@ function main() {
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
   const wakeLine = wakeReassertLine(process.env, false);
 
-  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent) + wakeLine;
+  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown) + wakeLine;
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 
@@ -988,11 +1028,61 @@ function buildTruncatedSegment(truncated) {
 // intent exists, never the stored reason text itself (injection hygiene; the
 // reason is stored, never reflected — same discipline command-guard.js
 // applies to untrusted text elsewhere in this codebase).
-function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent) {
+// reasonLabel(m) -> string. Renders ONE unknownMembers entry's taxonomy'd
+// cause (see liveness.js's unreadBacklog header for the full reason list)
+// into a concise, falsifiable fragment — including the failing path/errno
+// where available, since those are our OWN descriptor's fields (not
+// untrusted message content) and are exactly what makes the claim checkable.
+function reasonLabel(m) {
+  const suffix = m.path ? ' (' + m.path + (m.errno ? ', ' + m.errno : '') + ')' : '';
+  switch (m.reason) {
+    case 'no-inbox-path': return 'descriptor has no inboxPath' + suffix;
+    case 'no-cursor-path': return 'descriptor has no cursorPath' + suffix;
+    case 'inbox-missing': return 'inbox file missing' + suffix;
+    case 'inbox-unreadable': return 'inbox file unreadable' + suffix;
+    case 'cursor-missing': return 'cursor file missing' + suffix;
+    case 'cursor-unreadable': return 'cursor unreadable/corrupt' + suffix;
+    case 'cursor-invalid': return 'cursor value invalid' + suffix;
+    case 'own-summary-unreadable': return 'own-summary unreadable/corrupt' + suffix;
+    case 'read-threw': return 'inbox read raised an error' + suffix;
+    default: return 'inbox status could not be confirmed' + suffix;
+  }
+}
+
+// unknownMemberLabel(b) -> string. Builds the "inbox unreadable"-replacement
+// bit for one blocking (family-reduced) entry `b`. `b.unknownMembers` (set by
+// main()'s family-reduce loop) carries per-MEMBER cause + failing id — this
+// names the actual failing member(s) whenever one differs from the survivor
+// id `b.id` already printed just before this bit, so the message never
+// silently blames the survivor for a sibling descriptor's failure. Falls back
+// to the old generic wording only if unknownMembers is somehow absent (should
+// not happen once unreadUnknown is true — defensive, never crashes on it).
+const MAX_UNKNOWN_MEMBERS_SHOWN = 3;
+function unknownMemberLabel(b) {
+  const members = Array.isArray(b.unknownMembers) ? b.unknownMembers : [];
+  if (members.length === 0) return 'inbox unreadable';
+  const shown = members.slice(0, MAX_UNKNOWN_MEMBERS_SHOWN).map((m) => {
+    const who = (m.id && m.id !== b.id) ? m.id + ': ' : '';
+    return who + reasonLabel(m);
+  });
+  const more = members.length > MAX_UNKNOWN_MEMBERS_SHOWN ? ' (+' + (members.length - MAX_UNKNOWN_MEMBERS_SHOWN) + ' more)' : '';
+  return shown.join('; ') + more;
+}
+
+function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, ownSelfUnknown) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
-    if (b.unknown) bits.push('inbox unreadable'); // fail-open: unknown, not silently dropped
+    // unknownLabel (regression fix, d1c8625 identity-family collapse): the
+    // bare "inbox unreadable" used to be printed under the FAMILY SURVIVOR's
+    // id regardless of which member actually failed to read, or why — a
+    // descriptor with `inboxPath: null` (a malformed/phantom descriptor) read
+    // identically to a genuinely missing/corrupt inbox file, and a DIFFERENT
+    // family member's failure could render under this survivor's own id.
+    // `unknownMemberLabel` names the taxonomy'd cause AND the actual failing
+    // member (only when it differs from the survivor id shown just before
+    // this) so the claim is falsifiable and correctly attributed.
+    if (b.unknown) bits.push(unknownMemberLabel(b));
     if (b.status) bits.push(b.status);
     return b.id + (b.id === ownId ? ' (you)' : '') + ' (' + bits.join(', ') + ')';
   }).join('; ');
@@ -1056,7 +1146,19 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
       'DEVSWARM NEGLECT: ' + blocking.length + ' workspace(s) still need attention ' +
       'before this Primary turn ends: ' + shown + more + '. ';
   }
-  if (ownEntry && ownEntry.unknown) {
+  // SELF-ROW GATING (regression fix, d1c8625 identity-family collapse):
+  // `ownEntry.unknown` is a FAMILY-WIDE union — it goes true whenever ANY
+  // member sharing this Primary's worktree family (e.g. a duplicate/phantom
+  // descriptor row for the same worktree) failed to read, not only when
+  // readOwnUnread's own-summary projection itself failed. Gating this
+  // paragraph on that union misattributed a SIBLING descriptor's failure as
+  // "YOUR OWN inbound status could not be confirmed" for the Primary itself.
+  // `ownSelfUnknown` is `own.unknown` — computed directly by readOwnUnread,
+  // entirely independent of the descriptor-side family collapse — so this
+  // paragraph now fires ONLY when the Primary's OWN summary read genuinely
+  // failed, never as a side effect of another member's inbox/cursor fault
+  // (that fault is still named, per-member, in the `shown` list above).
+  if (ownSelfUnknown) {
     // C3 fix: the own-summary projection could not be conclusively read (e.g.
     // the daemon crashed mid-write) — surfaced as an explicit unknown, never
     // silently treated as "nothing pending".
@@ -1065,7 +1167,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
       'possibly a daemon problem) — treat this as UNKNOWN, not "no messages". Check explicitly via ' +
       '`devswarm.js inbox read-primary ' + ownId + '` (and `devswarm.js healthcheck` / `devswarm.js logs` ' +
       'to check the daemon) before assuming there is nothing pending. ';
-  } else if (ownEntry) {
+  } else if (ownEntry && ownEntry.unread > 0) {
     // v0.57 mesh (D4, Phase 8 step 4): urgencyMax is HONORED in wording only —
     // a DIRECT always gates regardless of urgency (type governs gating; urgency
     // governs loudness/tier). urgent/high gets an explicit "URGENT" callout.

@@ -1205,6 +1205,74 @@ test('reconcilePostUpdate: a reconcile with a REAL per-target message loss -> at
   assert.match(result.detail, /LOST 2 message/i, 'the loss count must appear in the human detail, not a generic "unknown error"');
 });
 
+// P2 fix: cmdReconcile's returned object never carries a top-level
+// `.reason`/`.error` for a per-target-failure shape (only `.results[i]` does)
+// — reconcilePostUpdate used to always fall through to "unknown error" even
+// when a real per-target cause was present in `result.results`. Ported the
+// fix from doctor-repair.js's mirrored reconcile summariser (v0.76.0):
+// surface the real per-target error, filter benign skips, cap the list.
+test('reconcilePostUpdate: a real per-target error -> detail contains that error string, NOT "unknown error"', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 1, imported: 0,
+          results: [{ id: 'primary-bf04dd47', worktreePath: '/wt/primary', ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: false, error: 'descriptor for "primary-bf04dd47" has no inboxPath' }],
+        },
+      }),
+    },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.match(result.detail, /descriptor for "primary-bf04dd47" has no inboxPath/, 'the real per-target cause must be surfaced');
+  assert.doesNotMatch(result.detail, /unknown error/);
+});
+
+test('reconcilePostUpdate: only benign skips (locked/hivecontrolMissing/worktreeMissing) -> detail stays quiet, no false alarm', () => {
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {
+      run: () => ({
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 2, imported: 0,
+          results: [
+            { id: 'child-locked', worktreePath: '/wt/locked', ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: true, error: 'holds the lock' },
+            { id: 'child-nohivecontrol', worktreePath: '/wt/nohc', ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, hivecontrolMissing: true, error: 'spawnSync hivecontrol ENOENT' },
+          ],
+        },
+      }),
+    },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.match(result.detail, /unknown error/, 'no real cause remains once benign skips are filtered — falls back to the quiet generic detail');
+  assert.doesNotMatch(result.detail, /holds the lock/);
+  assert.doesNotMatch(result.detail, /ENOENT/);
+});
+
+test('reconcilePostUpdate: many failing targets -> capped list with "+N more"', () => {
+  const results = [];
+  for (let i = 0; i < 8; i++) {
+    results.push({ id: 'child-' + i, worktreePath: '/wt/' + i, ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: false, error: 'boom-' + i });
+  }
+  const result = U.reconcilePostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: { run: () => ({ code: 2, result: { ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 8, imported: 0, results } }) },
+  });
+  assert.strictEqual(result.attempted, true);
+  assert.match(result.detail, /boom-0/);
+  assert.match(result.detail, /boom-4/);
+  assert.doesNotMatch(result.detail, /boom-5/, 'list is capped to 5 shown entries');
+  assert.match(result.detail, /\+3 more/);
+});
+
 test('reconcilePostUpdate: an internal throw is fail-open — never propagates, detail explains it', () => {
   const result = U.reconcilePostUpdate({
     paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },

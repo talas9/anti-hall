@@ -803,9 +803,33 @@ function reconcilePostUpdate(opts) {
       // total whenever ANY target reports a shortfall. Still fully
       // fail-open — this NEVER throws, and the caller never fails the
       // update itself over a reconcile outcome (see doc comment above).
-      const detail = result && result.lost
-        ? 'reconcile LOST ' + result.lost + ' message(s) across ' + (result.count || 0) + ' worktree(s)'
-        : 'reconcile failed: ' + ((result && (result.reason || result.error)) || 'unknown error');
+      let detail;
+      if (result && result.lost) {
+        detail = 'reconcile LOST ' + result.lost + ' message(s) across ' + (result.count || 0) + ' worktree(s)';
+      } else {
+        // P2 fix (ported from doctor-repair.js's mirrored reconcile summariser):
+        // cmdReconcile's returned object never carries a top-level
+        // `.reason`/`.error` for a per-target-failure shape (only `.results[i]`
+        // does) — a top-level `result.reason` exists ONLY for the early
+        // `{ok:false, reason:'no-project'}` guard. Reading only the top level
+        // discarded every real per-target cause and always printed "unknown
+        // error". Surface the actual non-benign per-target errors instead —
+        // benign skips (`locked`, `hivecontrolMissing`, `worktreeMissing`, the
+        // same allow-list cmdReconcile itself uses for `ok`) are excluded so a
+        // sweep failing ONLY on genuine causes never gets buried under skip
+        // noise. Bounded to keep the line readable on a large target list.
+        const MAX_LISTED = 5;
+        detail = (result && result.reason) || null;
+        if (!detail && result && Array.isArray(result.results)) {
+          const real = result.results.filter((x) => x && !x.ok && !x.locked && !x.hivecontrolMissing && !x.worktreeMissing);
+          if (real.length) {
+            const shown = real.slice(0, MAX_LISTED).map((x) => x.id + ': ' + (x.error || 'unknown error'));
+            const more = real.length > MAX_LISTED ? ' (+' + (real.length - MAX_LISTED) + ' more)' : '';
+            detail = shown.join('; ') + more;
+          }
+        }
+        detail = 'reconcile failed: ' + (detail || 'unknown error');
+      }
       return { attempted: true, count: result && result.count, lost: result && result.lost, results: result && result.results, detail };
     }
     return {

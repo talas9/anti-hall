@@ -366,7 +366,8 @@ function defaultGitCommitTs(worktreePath) {
   return Number.isFinite(secs) ? secs * 1000 : null;
 }
 
-// unreadBacklog(inboxPath, cursorPath, fsi) -> { lines: string[], known: boolean }.
+// unreadBacklog(inboxPath, cursorPath, fsi) ->
+//   { lines: string[], known: boolean, reason?, path?, errno? }.
 // inboxPath = NDJSON append-only (one message/line). cursorPath = a bare integer
 // OR JSON {line:<int>} = count of consumed lines. Unparseable/absent cursor =>
 // known:false (treated as NOT pending — fail-safe: never nominate an unreadable
@@ -374,23 +375,47 @@ function defaultGitCommitTs(worktreePath) {
 // mesh-aware (NDJSON ∪ store) signal computeLiveness actually gates on; this
 // function is kept as-is (still used directly by callers that only have an
 // inboxPath/cursorPath, no workspace id/worktreePath to resolve a store from).
+//
+// `reason`/`path`/`errno` (ADDITIVE — every prior caller reads only `.lines`/
+// `.known` and is unaffected) distinguish WHY `known` came back false, so a
+// caller reporting this to a human can name the actual cause instead of a
+// single generic "unreadable" for every case. `reason` is one of:
+//   'no-inbox-path'    — inboxPath itself is falsy (null/undefined/'') — a
+//                         malformed/phantom descriptor, not a filesystem fault.
+//   'inbox-missing'    — readFileSync(inboxPath) failed with ENOENT.
+//   'inbox-unreadable' — readFileSync(inboxPath) failed with anything else
+//                         (EACCES, EISDIR, ...) — the path exists/resolves but
+//                         could not be read.
+//   'no-cursor-path'   — cursorPath itself is falsy.
+//   'cursor-missing'   — readFileSync(cursorPath) failed with ENOENT.
+//   'cursor-unreadable'— readFileSync(cursorPath) failed with anything else,
+//                         OR the content parsed but was not valid JSON/int.
+//   'cursor-invalid'   — the cursor parsed but is non-finite or negative.
+// A null path passed straight to fs.readFileSync throws a TypeError
+// (ERR_INVALID_ARG_TYPE), NOT ENOENT — so falsy paths are checked explicitly
+// BEFORE attempting the read, rather than folding into the generic catch,
+// where they would otherwise misreport as 'inbox-unreadable'/'cursor-unreadable'.
 function unreadBacklog(inboxPath, cursorPath, fsi) {
   const F = fsi || fs;
+  if (!inboxPath) return { lines: [], known: false, reason: 'no-inbox-path', path: null, errno: null };
   let all;
   try {
     all = String(F.readFileSync(inboxPath, 'utf8')).split('\n').filter((l) => l.trim() !== '');
-  } catch (_) {
-    return { lines: [], known: false };
+  } catch (e) {
+    const reason = (e && e.code === 'ENOENT') ? 'inbox-missing' : 'inbox-unreadable';
+    return { lines: [], known: false, reason, path: inboxPath, errno: (e && e.code) || null };
   }
+  if (!cursorPath) return { lines: [], known: false, reason: 'no-cursor-path', path: null, errno: null };
   let cursor;
   try {
     const raw = String(F.readFileSync(cursorPath, 'utf8')).trim();
     if (/^\d+$/.test(raw)) cursor = parseInt(raw, 10);
     else cursor = Number(JSON.parse(raw).line);
-  } catch (_) {
-    return { lines: [], known: false };
+  } catch (e) {
+    const reason = (e && e.code === 'ENOENT') ? 'cursor-missing' : 'cursor-unreadable';
+    return { lines: [], known: false, reason, path: cursorPath, errno: (e && e.code) || null };
   }
-  if (!Number.isFinite(cursor) || cursor < 0) return { lines: [], known: false };
+  if (!Number.isFinite(cursor) || cursor < 0) return { lines: [], known: false, reason: 'cursor-invalid', path: cursorPath, errno: null };
   return { lines: all.slice(cursor), known: true };
 }
 
