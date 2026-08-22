@@ -139,6 +139,44 @@ the update.
   (`heartbeatCallersLogPath`/`appendHeartbeatCallerLog`) so an unidentified
   caller invoking `heartbeat` without `--session` is logged for attribution.
 
+  **[CORRECTION 2026-08-22]** An audit (`git log -S` against every named
+  symbol, cross-checked against the actual shipped files) found this entry
+  mis-describes what `db5822b` actually shipped. Corrected, without deleting
+  the original text above:
+  - `companion/lib/devswarm-liveness.js` never existed under that name — the
+    file is `companion/lib/devswarm-liveness-select.js`.
+  - `rankRowLiveness` never existed under that name — the exported function is
+    `pickFreshestLive`.
+  - `selectFreshestLiveRow` never existed under that name — the store-side
+    function is `resolveSenderRegistryId` (`companion/lib/devswarm-store.js`),
+    which delegates to `pickFreshestLive`.
+  - **`mergeHeartbeatRows` was never built.** It exists in no commit and no
+    file — grep of the full tree and `git log -S` both return zero hits
+    outside this CHANGELOG's own prose. This was announced and never shipped;
+    flagged as the most serious item per this repo's false-completion stance.
+  - "all callers thread through it, eliminating drift" is **false as
+    written**: `hooks/devswarm-parent-gate.js` (verified via `grep`) has zero
+    references to `devswarm-liveness-select.js`, `pickFreshestLive`, or
+    `resolveSenderRegistryId`. The 0.75.0 work landed in the
+    store/registry-row layer only — the descriptor layer that renders the
+    parent gate table never adopted it.
+  - Signal (b), described above as "drain-activity proof (explicit `draining`
+    heartbeat + 20s wall-time staleness)", did not ship as described. The
+    actual shipped signal (verified in `devswarm-liveness-select.js`) is
+    comparative cursor-row evidence (`hasCursorRow`/`cursorValue`/
+    `messageCount`) — there is no `draining` field and no 20-second window
+    anywhere in the file.
+  - Signal (a), described above as "session-reference integrity (does the
+    row's `sessionId` exist?)", is mis-described. The shipped check is alias
+    detection: `sidStr !== String(d.id) && groupIds.has(sidStr)`.
+  - Accurate as originally written (no correction needed): signal (c)
+    session-authored heartbeats, `peek-primary`, `migrateOwnerKeys`, and
+    `heartbeatCallersLogPath`/`appendHeartbeatCallerLog`.
+  - The descriptor-layer gap this entry implied was already fixed is now
+    actually fixed, in `d1c8625` ("fix(devswarm): collapse identity families
+    so one workspace is counted once" — reader-side identity-family
+    collapse).
+
 - **Agent-reliability rails.** Three small, independently fail-open additions
   hardening background/teammate-agent and session-resume reliability:
   - `verify-first-subagent.js` (SubagentStart) now tells every spawned agent to

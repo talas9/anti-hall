@@ -707,15 +707,19 @@ function openSqlite(home, workspaceId, opts) {
     },
     // listMessages(id, {sinceCursor}) -> ordered message rows INCLUDING body. The
     // READ-BACK side of the store (the `body` column was written but never read
-    // until this). Ordered by insertion (id ASC) so `seq` (1-based, PER-WORKSPACE
-    // positional index — NOT the physical mesh `seq` column, see `storeSeq` below)
-    // aligns with the consumed-count cursor. sinceCursor (a consumed-count) skips
-    // the first N rows — the caller passes cursorValue(id) to get only the unread
-    // tail. Pure read; never mutates. sqlite has UNIQUE(hash) so no dup-hash rows to
-    // fold here; a null-hash row is a distinct message (matches messageCount's
-    // COUNT(*)). Additive mesh fields (sender/recipient/mtype/urgency/isHeartbeat/
-    // storeSeq) are null/false on a pre-mesh legacy row — existing consumers that
-    // destructure only {seq,ts,hash,body} are unaffected.
+    // until this). Ordered by insertion (id ASC) so `index` (1-based, PER-WORKSPACE
+    // positional index) aligns with the consumed-count cursor. sinceCursor (a
+    // consumed-count) skips the first N rows — the caller passes cursorValue(id) to
+    // get only the unread tail. Pure read; never mutates. sqlite has UNIQUE(hash) so
+    // no dup-hash rows to fold here; a null-hash row is a distinct message (matches
+    // messageCount's COUNT(*)). Additive mesh fields (sender/recipient/mtype/
+    // urgency/isHeartbeat/storeSeq) are null/false on a pre-mesh legacy row.
+    //
+    // `seq` FIX (TRACED — `seq` used to mean opposite things across sibling verbs:
+    // here it was the positional `i+1`, while `send`'s return and `cmdMeshRead`
+    // both use the PHYSICAL mesh `seq` column). `seq` now ALWAYS means the physical
+    // mesh seq (same value as `storeSeq`, kept alongside for backward compat with
+    // any existing reader of `storeSeq`); the positional ordinal moved to `index`.
     listMessages(id, opts) {
       const o = opts || {};
       const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
@@ -726,8 +730,10 @@ function openSqlite(home, workspaceId, opts) {
       const out = [];
       for (let i = 0; i < rows.length; i++) {
         if (i < since) continue;
+        const physicalSeq = rows[i].seq != null ? Number(rows[i].seq) : null;
         out.push({
-          seq: i + 1,
+          index: i + 1,
+          seq: physicalSeq,
           ts: Number(rows[i].ts),
           hash: rows[i].hash != null ? String(rows[i].hash) : null,
           body: rows[i].body != null ? String(rows[i].body) : '',
@@ -737,7 +743,7 @@ function openSqlite(home, workspaceId, opts) {
           urgency: rows[i].urgency != null ? String(rows[i].urgency) : null,
           isHeartbeat: rows[i].is_heartbeat === 1 || rows[i].is_heartbeat === 1n,
           needsReply: rows[i].needs_reply === 1 || rows[i].needs_reply === 1n,
-          storeSeq: rows[i].seq != null ? Number(rows[i].seq) : null,
+          storeSeq: physicalSeq,
         });
       }
       return out;
@@ -1263,10 +1269,13 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     // messages.ndjson in file (insertion) order, filtered by workspaceId, deduped by
     // hash on read with the SAME rule messageCount uses (so the row indices agree
     // with the consumed-count cursor). sinceCursor skips the first N kept rows. Pure
-    // read; never mutates the journal. `seq` here is the PER-WORKSPACE positional
-    // index (1-based, unchanged) — NOT the physical mesh `seq` field written by
-    // appendMeshRow, which is surfaced separately as `storeSeq` (parity with the
-    // sqlite backend; a legacy row without it reads back as storeSeq:null).
+    // read; never mutates the journal. `index` is the PER-WORKSPACE positional
+    // ordinal (1-based). `seq` is the PHYSICAL mesh `seq` field written by
+    // appendMeshRow (parity with the sqlite backend AND with `send`'s returned
+    // seq / cmdMeshRead's `seq` — TRACED fix: `seq` used to be the positional
+    // ordinal here, opposite of what `send`/`cmdMeshRead` mean by `seq`), also
+    // surfaced as `storeSeq` for backward compat; a legacy row without it reads
+    // back as null on both.
     listMessages(id, opts) {
       const o = opts || {};
       const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
@@ -1284,8 +1293,10 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
       const out = [];
       for (let i = 0; i < kept.length; i++) {
         if (i < since) continue;
+        const physicalSeq = Number.isFinite(kept[i].seq) ? Number(kept[i].seq) : null;
         out.push({
-          seq: i + 1,
+          index: i + 1,
+          seq: physicalSeq,
           ts: Number.isFinite(kept[i].ts) ? kept[i].ts : null,
           hash: kept[i].hash != null ? String(kept[i].hash) : null,
           body: kept[i].body != null ? String(kept[i].body) : '',
@@ -1295,7 +1306,7 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
           urgency: kept[i].urgency != null ? String(kept[i].urgency) : null,
           isHeartbeat: !!kept[i].isHeartbeat,
           needsReply: !!kept[i].needsReply,
-          storeSeq: Number.isFinite(kept[i].seq) ? Number(kept[i].seq) : null,
+          storeSeq: physicalSeq,
         });
       }
       return out;

@@ -1270,6 +1270,103 @@ function foldAllStoresPostUpdate(opts) {
 }
 
 /**
+ * healOrphanPartitionsPostUpdate({ paths, env, cwd, home, devswarm, hashes, version }) →
+ *   { attempted, stores, adopted, forwarded, unhealable, skipped, errors, detail }
+ *
+ * self-heal for a partition with real messages but NO registry row — structurally
+ * invisible to every fold path (foldMeshDuplicates groups s.listRegistry(), so an
+ * unregistered id is never a candidate/survivor/forward target). deriveSummary's
+ * `orphans[]` already DETECTS this shape read-only; this is the heal, wired the
+ * same throttled/resumable/one-time-per-version way as foldAllStoresPostUpdate
+ * above (modeled on it line-for-line): same isDevswarmActive gate, same
+ * runThrottledSweep + sweepItemsFor/recordSweepResult resumable budget, same
+ * run-once-per-version stamp (keyed 'healOrphanPartitions'), same shared
+ * `hashes`/`sharedStoreHashes` reuse from the caller. Deliberately run AFTER
+ * foldAllStoresPostUpdate (duplicates collapse to one canonical survivor per
+ * worktree FIRST, so an adopted orphan forwards into an already-canonical group)
+ * and BEFORE foldArchivedRowsPostUpdate. Same gate + fail-open posture as every
+ * other post-update self-heal here; never affects the update's own success.
+ * NO-DELETE: healOrphanPartitions only ever calls s.upsertRegistry (additive) and
+ * forwards via appendMeshRow (append-only) — never removeRegistryIf.
+ */
+function healOrphanPartitionsPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    const storePath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-store.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath) || !fs.existsSync(storePath)) {
+      return { attempted: false, detail: 'heal-orphan-partitions skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — heal-orphan-partitions skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.healOrphanPartitions !== 'function') {
+      return { attempted: false, detail: 'heal-orphan-partitions skipped: this devswarm.js build has no healOrphanPartitions' };
+    }
+    const devstore = o.devswarmStore || require(storePath);
+
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    const sel = sweepItemsFor(sweepState, 'healOrphanPartitions', version, () => {
+      if (Array.isArray(o.hashes)) return o.hashes.slice();
+      try { return devstore.listStoreHashes(home) || []; } catch (_) { return []; }
+    });
+    if (sel.skip) {
+      return {
+        attempted: true, stores: 0, adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0,
+        skippedAlreadyDone: true,
+        detail: 'heal-orphan-partitions: already completed for ' + version + ' — skipped (one-time per-version migration)',
+      };
+    }
+
+    let adopted = 0, forwarded = 0, unhealable = 0, skipped = 0, errors = 0;
+    const sweep = runThrottledSweep({
+      items: sel.items,
+      budgetMs: sweepBudgetMs(env),
+      worker: (repoKey) => {
+        let r = null;
+        try { r = devswarm.healOrphanPartitions(home, { cwd, env, repoKey }); }
+        catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
+        if (!r || r.ok === false) { errors++; return r; }
+        adopted += r.adopted || 0;
+        forwarded += r.forwarded || 0;
+        unhealable += r.unhealable || 0;
+        skipped += r.skipped || 0;
+        errors += r.errors || 0;
+        return r;
+      },
+    });
+    // clean:false on any per-store error — a drained-but-errored pass must NOT
+    // stamp completion (the errored store's one-time migration would be skipped
+    // forever at this version); next run re-enumerates in full instead.
+    recordSweepResult(home, sweepState, 'healOrphanPartitions', version, sweep, { clean: errors === 0 });
+
+    return {
+      attempted: true,
+      stores: sweep.processedItems.length,
+      adopted, forwarded, unhealable, skipped, errors,
+      budgetExhausted: sweep.budgetExhausted,
+      pending: sweep.remaining.length,
+      detail: 'heal-orphan-partitions: adopted ' + adopted + ' orphan partition(s)'
+        + ' across ' + sweep.processedItems.length + ' store(s)'
+        + (forwarded ? ' (forwarded ' + forwarded + ' message(s))' : '')
+        + (unhealable ? ' (' + unhealable + ' unhealable — no descriptor/family)' : '')
+        + (errors ? ' (' + errors + ' store error(s), fail-open)' : '')
+        + (sweep.budgetExhausted ? ' (budget hit — ' + sweep.remaining.length + ' store(s) pending next run)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'heal-orphan-partitions raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * wakeMonitorPostUpdate({ paths, env, cwd, home }) →
  *   { attempted, shipped, live, stateDirEnsured, detail }
  *
@@ -1701,6 +1798,15 @@ function runUpdate(opts) {
     paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
     hashes: sharedStoreHashes, version: latest,
   });
+  // Self-heal a partition with real messages but no registry row — after fold
+  // (duplicates collapse to one canonical survivor first, so an adopted orphan
+  // forwards into an already-canonical group) and before foldArchivedRows. Same
+  // gate + fail-open posture; never affects the update's success. Throttled +
+  // resumable + one-time-per-version, sharing this run's enumeration.
+  const healOrphanPartitions = healOrphanPartitionsPostUpdate({
+    paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
+    hashes: sharedStoreHashes, version: latest,
+  });
   // Archived-still-active migration: retire every registry row still held by a
   // GENUINELY archived workspace. Deliberately AFTER `fold` — fold first collapses
   // each worktree's duplicates into one canonical survivor, so this pass typically
@@ -1747,6 +1853,7 @@ function runUpdate(opts) {
         reconcile,
         fold,
         foldAllStores,
+        healOrphanPartitions,
         foldArchivedRows,
         ownerKeyMigrate,
         replyStateMigrate,
@@ -1780,6 +1887,7 @@ function runUpdate(opts) {
       reconcile,
       fold,
       foldAllStores,
+      healOrphanPartitions,
       foldArchivedRows,
       ownerKeyMigrate,
       replyStateMigrate,
@@ -1844,6 +1952,9 @@ function renderHuman(status, changelog) {
   if (status.foldAllStores && status.foldAllStores.attempted) {
     lines.push('  fold-all-stores: ' + status.foldAllStores.detail);
   }
+  if (status.healOrphanPartitions && status.healOrphanPartitions.attempted) {
+    lines.push('  heal-orphan-partitions: ' + status.healOrphanPartitions.detail);
+  }
   if (status.foldArchivedRows && status.foldArchivedRows.attempted) {
     lines.push('  fold-archived-rows: ' + status.foldArchivedRows.detail);
   }
@@ -1902,6 +2013,7 @@ module.exports = {
   reconcilePostUpdate,
   foldMeshPostUpdate,
   foldAllStoresPostUpdate,
+  healOrphanPartitionsPostUpdate,
   foldArchivedRowsPostUpdate,
   ownerKeyMigratePostUpdate,
   healRegistryPostUpdate,

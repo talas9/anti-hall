@@ -106,7 +106,7 @@ test('inbox peek-primary: unread-only view, matches read-primary content, but NE
     const before = cli.run(['inbox', 'peek-primary', 'w4'], selfCtx);
     assert.equal(before.code, 0, JSON.stringify(before.result));
     assert.equal(before.result.action, 'peek-primary');
-    assert.equal(before.result.unread, true);
+    assert.equal(before.result.unreadOnly, true);
 
     // Peeking again must show the SAME unread state (cursor untouched).
     const again = cli.run(['inbox', 'peek-primary', 'w4'], selfCtx);

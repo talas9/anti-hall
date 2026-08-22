@@ -1041,6 +1041,35 @@ function runRepairs(opts) {
     };
   }, () => require(DEVSWARM_SCRIPT).foldMeshDuplicatesAllStores(home, { cwd, env }));
 
+  // Orphan-partition self-heal: a partition with real messages but NO registry row
+  // is structurally invisible to every fold path above (they all group
+  // s.listRegistry() — an unregistered id is never a candidate). deriveSummary's
+  // `orphans[]` already DETECTS this shape read-only; this HEALS it — adopting a
+  // descriptor-backed orphan into the registry (purely additive, s.upsertRegistry)
+  // and, when a live family exists, forwarding its unread into that family's
+  // survivor. A descriptor-less orphan is left strictly alone (unhealable,
+  // detect-and-report only — no worktree/family/owner to adopt it under). Pure
+  // store read+write (no daemon/scheduler side effect) -> AUTO-SAFE, same posture
+  // as fold-mesh-duplicates/fold-all-stores above. Reuses devswarm.js's
+  // healOrphanPartitionsAllStores for BOTH the dry-run detect and the apply — one
+  // code path, idempotent (a re-run finds the adopted id already registered, no
+  // longer an orphan), fail-open. Guarded so an older devswarm.js build (missing
+  // this export) degrades to a clean no-op rather than throwing.
+  migrationFix('heal-orphan-partitions', 'heal-orphan-partitions', () => {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.healOrphanPartitionsAllStores !== 'function') return { pending: false, detail: 'build has no healOrphanPartitionsAllStores' };
+    const r = dw.healOrphanPartitionsAllStores(home, { cwd, env, dryRun: true }) || {};
+    const n = (r.adopted || 0) + (r.forwarded || 0);
+    return {
+      pending: n > 0,
+      detail: (r.adopted || 0) + ' orphan partition(s) to adopt'
+        + (r.forwarded ? ' + ' + r.forwarded + ' message(s) to forward' : '')
+        + ' across ' + (r.stores || 0) + ' store(s)'
+        + (r.unhealable ? ' (' + r.unhealable + ' unhealable — no descriptor/family)' : '')
+        + (r.errors ? ' (' + r.errors + ' store error(s), fail-open)' : ''),
+    };
+  }, () => require(DEVSWARM_SCRIPT).healOrphanPartitionsAllStores(home, { cwd, env }));
+
   // Archived-still-active forward-migration: cmdArchive used to tombstone exactly
   // ONE registry row per archive, while up to four rows (hivecontrol builder UUID,
   // `primary-<8hex>` spawn phantom, legacy ingested `<label>-<repoId8>`, subdir-

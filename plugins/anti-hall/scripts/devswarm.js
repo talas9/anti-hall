@@ -470,6 +470,13 @@ function registryRowPresent(home, id, ownerKey, ctx) {
 }
 
 // ----- tiny flag parser -----
+// VALUE_REQUIRED_FLAGS (FIX 4b, TRACED): flags whose value is NEVER a bare boolean
+// — the next token is consumed unconditionally, even when it itself starts with
+// `--` (e.g. `--message "--foo bar"`). Without this, such a value degrades to the
+// bare-boolean branch below (`val = true`) and the flag silently loses its text.
+// Deliberately scoped to flags that only ever take a value, so this cannot swallow
+// the next token for a genuinely boolean flag (e.g. `--json`, `--ack`, `--stdin`).
+const VALUE_REQUIRED_FLAGS = new Set(['message', 'message-file']);
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
 // Supports `--name value`, `--name=value`, repeatable (`--set a --set b`), and
 // bare boolean flags (`--json`). Values are collected as arrays so a caller can
@@ -484,6 +491,7 @@ function parseArgs(argv) {
       let val = null;
       const eq = name.indexOf('=');
       if (eq !== -1) { val = name.slice(eq + 1); name = name.slice(0, eq); }
+      else if (VALUE_REQUIRED_FLAGS.has(name) && i + 1 < argv.length) { val = argv[++i]; }
       else if (i + 1 < argv.length && !String(argv[i + 1]).startsWith('--')) { val = argv[++i]; }
       else { val = true; } // bare boolean flag
       if (!flags[name]) flags[name] = [];
@@ -1940,6 +1948,248 @@ function foldMeshDuplicatesAllStores(home, ctx) {
   return { ok: true, stores: hashes.length, retired, forwarded, folded, errors, results };
 }
 
+// reconcileOrphanCursor(home, s, id, desc, dryRun) — MIN-only reconciliation of the
+// THREE independent cursor namespaces a partition can carry: the durable Primary/
+// read-path ack file (primaryCursorPath, `cursors/<id>.json`), the descriptor's own
+// inbox-cursor file (desc.cursorPath, `cursors/<id>.cursor` by convention), and the
+// mesh store's own cursor row (s.cursorValue/s.setCursor). All three are read via
+// inboxCursor.readCursor / s.cursorValue, which already fail-safe to 0 on an absent/
+// unreadable file — so a namespace that was never touched contributes 0, never null,
+// and 0 can never be lowered further. The reconciled value is the MIN of whichever
+// namespaces are present: taking the MAX would mark a message "read" in a namespace
+// whose own reader never actually saw it (silent unread-loss, the exact forbidden
+// side effect this repo's owner rule bans). A namespace is only rewritten when it is
+// STRICTLY ABOVE the computed min — an already-min namespace is left untouched, so
+// the common case (all three already agree) performs zero writes. dryRun classifies
+// without writing (`changed` reports whether a write WOULD occur).
+function reconcileOrphanCursor(home, s, id, desc, dryRun) {
+  let jsonCursor = 0, fileCursor = 0, storeCursor = 0;
+  try { jsonCursor = inboxCursor.readCursor(primaryCursorPath(home, id)); } catch (_) { jsonCursor = 0; }
+  if (desc && desc.cursorPath) {
+    try { fileCursor = inboxCursor.readCursor(desc.cursorPath); } catch (_) { fileCursor = 0; }
+  }
+  try { storeCursor = s.cursorValue(id); } catch (_) { storeCursor = 0; }
+  const min = Math.min(jsonCursor, fileCursor, storeCursor);
+  let changed = false;
+  if (jsonCursor > min) { if (!dryRun) { try { inboxCursor.ackTo(primaryCursorPath(home, id), min); } catch (_) {} } changed = true; }
+  if (desc && desc.cursorPath && fileCursor > min) { if (!dryRun) { try { inboxCursor.ackTo(desc.cursorPath, min); } catch (_) {} } changed = true; }
+  if (storeCursor > min) { if (!dryRun) { try { s.setCursor(id, min); } catch (_) {} } changed = true; }
+  return { changed, min };
+}
+
+// healOrphanPartitions(home, ctx) — self-heal for a partition that has messages but
+// NO registry row: structurally invisible to every fold path (foldMeshDuplicates
+// groups s.listRegistry() — an unregistered id is never a candidate, never a
+// survivor, never forwarded), so its messages are permanently unreachable-but-
+// undeleted. deriveSummary's `orphans[]` is a READ-ONLY detector for exactly this
+// shape (listWorkspaceIds() − registry ids − BROADCAST_PARTITION_ID); this is the
+// heal.
+//
+// For each orphan id:
+//   - no descriptor file -> UNHEALABLE, detect-and-report only. No worktree, no
+//     family, no provable owner — adopting it would INVENT an identity. Zero
+//     writes for this id.
+//   - a descriptor file -> familyKey = canonicalMeshId(desc.worktreePath) (the SAME
+//     helper foldMeshDuplicates/groupRegistryByMeshId use — no new key derivation).
+//       - an ARCHIVED counterpart exists (hasArchivedCounterpart) -> do NOT
+//         re-adopt (it was deliberately retired); if a live family group exists,
+//         forward its unread into the family survivor (pickSurvivor — the SAME
+//         freshest-live selection resolveMeshTarget/foldMeshDuplicates use) via
+//         foldGroupIntoSurvivor, which — because the descriptor still exists —
+//         always LEAVES this row (never tombstones it; it was never in the
+//         registry to begin with). No group -> UNHEALABLE (nothing to forward
+//         into).
+//       - otherwise -> ADOPT: s.upsertRegistry(...) under withIdLock(id), purely
+//         additive (makes the id addressable by `send` and visible to future
+//         folds). No family group -> done. A family group exists -> immediately
+//         foldGroupIntoSurvivor the newly-adopted row into pickSurvivor(group)'s
+//         survivor, forwarding its unread (the row is left in place, same
+//         descriptor-present reasoning as above).
+// Cursor reconciliation (reconcileOrphanCursor, MIN-only, never raises a cursor) is
+// applied to every id that carries a descriptor, regardless of outcome.
+//
+// NO DELETE: only s.upsertRegistry (additive) and appendMeshRow (append-only, via
+// foldGroupIntoSurvivor's forward) ever write. No removeRegistryIf in this path.
+// FAIL-OPEN: every per-id body is try/catch'd into `errors`; a lock-busy id is
+// `skipped` and retried next pass. IDEMPOTENT: a re-run finds the adopted id in
+// listRegistry() (no longer an orphan) and does nothing; a re-forward recomputes
+// the same meshMessageHash and appendMeshRow dedups it (inserted:false); a MIN
+// reconcile of already-equal cursors is a no-op.
+// Returns { ok, adopted, forwarded, unhealable, skipped, errors, detail }.
+function healOrphanPartitions(home, ctx) {
+  const c = ctx || {};
+  const dryRun = !!c.dryRun;
+  const out = { ok: true, adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0, detail: [] };
+  try {
+    const repoKey = typeof c.repoKey === 'string' && c.repoKey ? c.repoKey : repoKeyForCwd(c);
+    // NEVER open/create the shared store just to look for orphans — same posture
+    // as foldMeshDuplicates.
+    if (!repoKey) return out;
+    let storeExists = false;
+    try { storeExists = fs.existsSync(store.storeDirForHash(home, repoKey)); } catch (_) { storeExists = false; }
+    if (!storeExists) return out;
+    const s = store.openStore({ home, hash: repoKey, backend: c.backend, env: c.env });
+    let anyWrite = false;
+    try {
+      // A store whose enumeration itself throws (corrupt/unreadable) is a whole-
+      // store failure, not "no orphans" — counted in `errors` (fail-open per this
+      // store, distinguishable from a clean zero-orphan store) rather than
+      // silently swallowed to an empty list, which would misreport a real fault
+      // as "nothing to heal".
+      let allIds;
+      try { allIds = typeof s.listWorkspaceIds === 'function' ? s.listWorkspaceIds() : []; }
+      catch (e) {
+        out.errors++;
+        out.detail.push({ action: 'error', reason: 'listWorkspaceIds raised: ' + String(e && e.message || e) });
+        return out;
+      }
+      const registryIds = new Set((s.listRegistry() || []).map((d) => String(d.id)));
+      const orphanIds = [];
+      for (const raw of allIds) {
+        const id = String(raw);
+        if (id === store.BROADCAST_PARTITION_ID) continue;
+        if (registryIds.has(id)) continue;
+        if (!isSafeId(id)) continue;
+        orphanIds.push(id);
+      }
+      for (const id of orphanIds) {
+        try {
+          const desc = readDescriptorFile(home, id);
+          if (!desc) {
+            out.unhealable++;
+            out.detail.push({ id, action: 'unhealable', reason: 'no-descriptor' });
+            continue; // ABSOLUTE: no write of any kind for an id with no descriptor
+          }
+          const familyKey = desc.worktreePath ? canonicalMeshId(desc.worktreePath) : null;
+          const byMesh = groupRegistryByMeshId(s.listRegistry());
+          const group = familyKey ? byMesh.get(familyKey) : null;
+          const archived = hasArchivedCounterpart(home, id);
+          // CROSS-STORE GUARD (reuses descriptorFreshRepoKey — the SAME identity
+          // check rehomeMiskeyedRow/healRegistry use): the descriptor's real
+          // structural home may be a DIFFERENT store than the one currently being
+          // healed (e.g. a stray message row left behind in the WRONG store after
+          // healRegistry rehomes its registry row elsewhere — messages are never
+          // deleted, so the old store keeps a message-only, now-orphaned trace).
+          // ADOPTING it here would re-create the exact mis-keyed registry row
+          // healRegistry exists to fix, flip-flopping the two migrations against
+          // each other. Only the ADOPT path is gated — forward-only (the archived
+          // branch) never creates a new registry row, so it carries no such risk.
+          const freshRepoKey = descriptorFreshRepoKey(desc);
+          const wrongStore = !!(freshRepoKey && repoKey && freshRepoKey !== repoKey);
+
+          if (archived) {
+            if (!group || !group.rows.length) {
+              out.unhealable++;
+              out.detail.push({ id, action: 'unhealable', reason: 'archived-no-family' });
+            } else {
+              const survivor = pickSurvivor(s, group, home);
+              if (!survivor || survivor.id == null) {
+                out.unhealable++;
+                out.detail.push({ id, action: 'unhealable', reason: 'archived-no-survivor' });
+              } else if (dryRun) {
+                out.detail.push({ id, action: 'would-forward', survivor: survivor.id });
+              } else {
+                const r = foldGroupIntoSurvivor(s, home, survivor.id, [{ id }], {});
+                out.forwarded += r.forwarded;
+                if (r.forwarded) anyWrite = true;
+                out.detail.push({ id, action: 'forwarded-only', survivor: survivor.id, forwarded: r.forwarded });
+              }
+            }
+          } else if (wrongStore) {
+            out.unhealable++;
+            out.detail.push({ id, action: 'unhealable', reason: 'wrong-store', freshRepoKey });
+          } else if (dryRun) {
+            out.adopted++;
+            out.detail.push({ id, action: 'would-adopt', hasFamily: !!(group && group.rows.length) });
+          } else {
+            const lockRes = withIdLock(id, home, () => {
+              const ok = s.upsertRegistry({
+                id, worktreePath: desc.worktreePath, sessionId: desc.sessionId,
+                inboxPath: desc.inboxPath, cursorPath: desc.cursorPath,
+              });
+              return { ok };
+            });
+            if (lockRes && lockRes.lockBusy) {
+              out.skipped++;
+              out.detail.push({ id, action: 'skipped', reason: 'lock-busy' });
+            } else if (!lockRes || lockRes.ok === false) {
+              out.errors++;
+              out.detail.push({ id, action: 'error', reason: 'adopt-failed' });
+            } else {
+              out.adopted++;
+              anyWrite = true;
+              if (group && group.rows.length) {
+                const survivor = pickSurvivor(s, group, home);
+                if (survivor && survivor.id != null) {
+                  const adoptedRow = { id, worktreePath: desc.worktreePath, sessionId: desc.sessionId };
+                  const r = foldGroupIntoSurvivor(s, home, survivor.id, [adoptedRow], { lockCandidates: true });
+                  out.forwarded += r.forwarded;
+                  out.detail.push({ id, action: 'adopted', survivor: survivor.id, forwarded: r.forwarded });
+                } else {
+                  out.detail.push({ id, action: 'adopted', reason: 'no-live-survivor' });
+                }
+              } else {
+                out.detail.push({ id, action: 'adopted' });
+              }
+            }
+          }
+
+          const rc = reconcileOrphanCursor(home, s, id, desc, dryRun);
+          if (rc.changed && !dryRun) anyWrite = true;
+        } catch (e) {
+          out.errors++;
+          out.detail.push({ id, action: 'error', error: String(e && e.message || e) });
+        }
+      }
+      if (!dryRun && anyWrite) store.deriveSummary(s, { home, env: c.env });
+    } finally { s.close(); }
+    return out;
+  } catch (e) {
+    return {
+      ok: false, error: String(e && e.message || e),
+      adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0, detail: [],
+    };
+  }
+}
+
+// healOrphanPartitionsAllStores(home, ctx) — same cross-store sweep shape as
+// foldMeshDuplicatesAllStores: healOrphanPartitions above only heals the ONE
+// project store `ctx.cwd`/`ctx.repoKey` resolves to; this sweeps EVERY store this
+// machine has ever opened (store.listStoreHashes(home)) and heals each directly by
+// its stored hash. Same guarantees per store: idempotent, fail-open (a single
+// store's failure is recorded and skipped, never aborts the sweep or throws out of
+// this function), NO-DELETE.
+// Returns { ok, stores, adopted, forwarded, unhealable, skipped, errors, results[] }.
+function healOrphanPartitionsAllStores(home, ctx) {
+  const c = ctx || {};
+  let hashes = [];
+  try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
+  let adopted = 0, forwarded = 0, unhealable = 0, skipped = 0, errors = 0;
+  const results = [];
+  for (const repoKey of hashes) {
+    let r = null;
+    try {
+      r = healOrphanPartitions(home, Object.assign({}, c, { repoKey }));
+    } catch (e) {
+      r = { ok: false, error: String(e && e.message || e), adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0, detail: [] };
+    }
+    if (!r) continue;
+    if (r.ok === false) { errors++; results.push({ repoKey, ok: false, error: r.error }); continue; }
+    adopted += r.adopted || 0;
+    forwarded += r.forwarded || 0;
+    unhealable += r.unhealable || 0;
+    skipped += r.skipped || 0;
+    errors += r.errors || 0;
+    if (r.adopted || r.forwarded || r.unhealable || r.skipped || r.errors) {
+      results.push({
+        repoKey, ok: true, adopted: r.adopted || 0, forwarded: r.forwarded || 0,
+        unhealable: r.unhealable || 0, skipped: r.skipped || 0, errors: r.errors || 0,
+      });
+    }
+  }
+  return { ok: true, stores: hashes.length, adopted, forwarded, unhealable, skipped, errors, results };
+}
+
 // foldArchivedRegistryRows(home, ctx0) — FORWARD MIGRATION for registries that
 // were ALREADY split by the archive bug before the fix shipped (this repo's
 // persisted-shape rule: a shape change ships a migration in BOTH update and
@@ -2712,7 +2962,16 @@ function cmdInboxPull(id, flags, ctx) {
 // `send --to` direct is STORE-ONLY and must be visible from `inbox read`/`count`
 // too, not just `inbox messages`/`read-primary`) opens `id`'s mesh partition the
 // SAME way instead of re-implementing (and potentially drifting from) this guard.
-function resolveWorkspaceStoreForRead(id, ctx, home) {
+function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
+  // skipExistenceGuard (FIX 5 wiring): cmdInboxMessages' OWN ownership check
+  // (doAck && !ackAsOwner, below) is a MORE specific, already-fail-closed guard
+  // for exactly the case where an ack is requested without the explicit
+  // ack-as-owner override — running the existence guard first would preempt it
+  // and lose that check's richer response shape (callerIdentity, refusal
+  // reason). The traced bug repro used `--ack-as-owner`, which BYPASSES that
+  // ownership check entirely — the existence guard exists to catch that case
+  // (and every non-ack read), so it stays active everywhere else.
+  const skipExistenceGuard = !!(roOpts && roOpts.skipExistenceGuard);
   // P1-1/P1-2 RE-HOME (read path): if this workspace is still stranded in the
   // legacy hash bucket (persisted ownerKey=hash) while repoKey now resolves, its
   // messages are in a bucket the repoKey-keyed read below would never open — a
@@ -2757,6 +3016,37 @@ function resolveWorkspaceStoreForRead(id, ctx, home) {
   // would open the legacy per-id bucket the daemon no longer writes to and
   // silently see nothing.
   const s = store.openStore({ home, workspaceId: id, hash: callerRepoKeyForRead || undefined, backend: ctx.backend, env: ctx.env });
+  // FIX 5 (TRACED, highest severity — P0): the only guard above is a cross-project
+  // repoKey MISMATCH, gated on a descriptor existing at all. An `id` with NO
+  // descriptor, NO registry row, AND NO messages skipped every guard and reached
+  // here, opening a store that trivially reports messageCount 0 / listMessages []
+  // — `ok:true` for a workspace that was never registered at all. Contrast
+  // `send --to` (resolveSendTarget, ~line 4519), which fails closed as
+  // `unregistered-recipient` for exactly this case — the write path validates
+  // identity, the read path did not. Mirror it, but stay compatible with the
+  // codebase's OTHER supported pattern (`seedStore`-style direct message-store
+  // seeding with NEITHER a descriptor NOR a registry row, exercised extensively
+  // by this suite — see e.g. devswarm-cli.test.js's "no descriptor needed" test):
+  // fail closed ONLY when `id` has genuinely NOTHING backing it — no descriptor,
+  // no registry row, AND zero messages in the store just opened. A registry-only
+  // row (e.g. the `spawn` placeholder at ~line 5705) or a message-seeded-only
+  // partition still passes; only a truly nonexistent id (0 signals of any kind)
+  // is refused.
+  if (!descForRead && !skipExistenceGuard) {
+    let hasRegistryRow = false;
+    let hasMessages = false;
+    try { hasRegistryRow = (s.listRegistry() || []).some((r) => r && String(r.id) === String(id)); } catch (_) { hasRegistryRow = false; }
+    try { hasMessages = s.messageCount(id) > 0; } catch (_) { hasMessages = false; }
+    if (!hasRegistryRow && !hasMessages) {
+      try { s.close(); } catch (_) {}
+      return {
+        ok: false, id,
+        reason: 'unregistered-workspace',
+        error: 'workspace ' + JSON.stringify(id) + ' is not registered and has no messages '
+          + '(no descriptor, no registry row, no store history) — register it first (or check the id for a typo)',
+      };
+    }
+  }
   return { ok: true, store: s };
 }
 
@@ -2773,7 +3063,12 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   // itself acking — a genuinely non-mutating peek at what read-primary would
   // show, never advancing the cursor.
   const forceUnread = !!(opts && opts.unread);
-  const unread = !!flags.unread || doAck || forceUnread; // read-primary is inherently unread-then-ack
+  // FIX 2 (TRACED): this was named `unread` and returned verbatim under that same
+  // key below — a MODE flag (whether to scope the read to the unread tail), while
+  // the summary projection (devswarm-store.js deriveSummary) emits `unread` as a
+  // COUNT. Renamed to `unreadOnly`; the actual count is reported separately as
+  // `unreadCount` below.
+  const unreadOnly = !!flags.unread || doAck || forceUnread; // read-primary is inherently unread-then-ack
   const ackAsOwner = !!flags['ack-as-owner'];
   // Claim 4 (ack-as-owner UX guard): `--ack-as-owner` is ONLY meaningful on a
   // MUTATING ack (it bypasses the cross-workspace ownership gate below). On the
@@ -2792,7 +3087,7 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   }
   const cursorPath = primaryCursorPath(home, id);
   const cursor = inboxCursor.readCursor(cursorPath);
-  const openedForRead = resolveWorkspaceStoreForRead(id, ctx, home);
+  const openedForRead = resolveWorkspaceStoreForRead(id, ctx, home, { skipExistenceGuard: doAck && !ackAsOwner });
   if (!openedForRead.ok) return openedForRead;
   const s = openedForRead.store;
   let total, messages, acked;
@@ -2833,23 +3128,37 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       }
     }
     total = s.messageCount(id);
-    messages = s.listMessages(id, { sinceCursor: unread ? cursor : 0 });
+    messages = s.listMessages(id, { sinceCursor: unreadOnly ? cursor : 0 });
     if (doAck) {
       acked = inboxCursor.ackTo(cursorPath, total); // absolute set to the current total (no inbox clamp)
       s.setCursor(id, acked); // keep deriveSummary's unread projection in sync with the ACK
       store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); // refresh the persisted projection now
     }
   } finally { s.close(); }
-  return {
+  // unreadCount (FIX 2): the actual count of unread messages AS OF the cursor
+  // read at the top of this call (before any ack this call itself performs) —
+  // a real number, never conflated with `unreadOnly`'s boolean mode.
+  const unreadCount = Number.isFinite(total) && Number.isFinite(cursor) ? Math.max(0, total - cursor) : 0;
+  const out = {
     ok: true,
     action: (opts && opts.action) || (doAck ? 'read-primary' : 'messages'),
     id,
-    unread,
+    unreadOnly,
+    unreadCount,
     cursor: acked !== undefined ? acked : cursor,
     total,
     count: messages.length,
     messages,
   };
+  // FIX 5 (zero-progress ack visibility): `ok:true` alone cannot distinguish an
+  // ack that actually advanced the cursor from one that moved nothing (e.g. an
+  // already-fully-read workspace, or — pre-FIX-5 — an unregistered id that
+  // silently acked total:0 -> cursor:0). Report both endpoints explicitly.
+  if (doAck) {
+    out.ackedFrom = cursor;
+    out.acked = acked;
+  }
+  return out;
 }
 
 function cmdInbox(sub, id, flags, ctx) {
@@ -2905,12 +3214,27 @@ function cmdInbox(sub, id, flags, ctx) {
     const storeCursorVal = union.storeCursor;
     const storeOnlyUnreadRows = union.storeOnlyUnreadRows;
 
+    // FIX 6 (TRACED): the two parallel, independently-cursored channels — the
+    // NDJSON descriptor inbox and the store partition — were surfaced as a bare
+    // `unread` (actually the SUM of both) sitting beside `storeUnread` (one of
+    // the two components), with NO field naming the NDJSON component at all.
+    // That mislabeling made a real NDJSON backlog invisible to an operator
+    // reading only the store side. Emit all three explicitly: unreadTotal (the
+    // sum, same value `unread` always was), unreadNdjson, unreadStore (same
+    // value `storeUnread` always was), plus cursorNdjson/cursorStore. `unread`/
+    // `storeCursor`/`storeUnread` are kept as EXACT ALIASES for compatibility —
+    // never the primary name going forward.
+    const unreadNdjsonCount = union.ndjsonUnreadLines.length;
+    const unreadStoreCount = storeOnlyUnreadRows.length;
     if (sub === 'count') {
       if (storeHandle) storeHandle.close();
       return {
         ok: true, action: 'count', id,
-        unread: union.unread, cursor: union.cursor, total: union.total, known: union.known,
-        storeCursor: storeCursorVal, storeUnread: storeOnlyUnreadRows.length,
+        unreadTotal: union.unread, unreadNdjson: unreadNdjsonCount, unreadStore: unreadStoreCount,
+        cursorNdjson: union.cursor, cursorStore: storeCursorVal,
+        total: union.total, known: union.known,
+        // compat aliases (see comment above) — do not treat as primary:
+        unread: union.unread, cursor: union.cursor, storeCursor: storeCursorVal, storeUnread: unreadStoreCount,
       };
     }
     if (sub === 'read') {
@@ -2918,8 +3242,11 @@ function cmdInbox(sub, id, flags, ctx) {
       return {
         ok: true, action: 'read', id,
         lines: union.ndjsonUnreadLines, meshMessages: storeOnlyUnreadRows,
-        count: union.unread, cursor: union.cursor, total: union.total, known: union.known,
-        storeCursor: storeCursorVal,
+        unreadTotal: union.unread, unreadNdjson: unreadNdjsonCount, unreadStore: unreadStoreCount,
+        cursorNdjson: union.cursor, cursorStore: storeCursorVal,
+        total: union.total, known: union.known,
+        // compat aliases (see comment above) — do not treat as primary:
+        count: union.unread, cursor: union.cursor, storeCursor: storeCursorVal,
       };
     }
     // sub === 'ack'
@@ -4212,8 +4539,34 @@ function cmdSend(flags, ctx) {
     return { ok: false, error: 'send --question is only valid for a direct message (--to/--to-primary), not --broadcast' };
   }
 
-  const message = one(flags, 'message');
-  if (!message) return { ok: false, error: 'send requires --message TEXT' };
+  // FIX 4a (TRACED): argv is the ONLY way to pass a message body, forcing callers
+  // to correctly quote shell metacharacters (backticks/`$` expand in the CALLER's
+  // shell — not an anti-hall vulnerability, but a real usability gap). Add
+  // --message-file <path> and --message-stdin as byte-exact alternatives, reusing
+  // the existing fd-0 read idiom (`--stdin` on reconcile-active). Mutually
+  // exclusive with --message and with each other.
+  const messageFlag = one(flags, 'message');
+  const messageFileFlag = one(flags, 'message-file');
+  const messageStdinFlag = hasFlag(flags, 'message-stdin');
+  const messageSourceCount = (messageFlag !== undefined ? 1 : 0)
+    + (messageFileFlag !== undefined ? 1 : 0) + (messageStdinFlag ? 1 : 0);
+  if (messageSourceCount > 1) {
+    return { ok: false, error: 'send accepts exactly one of --message, --message-file, or --message-stdin' };
+  }
+  if (messageSourceCount === 0) {
+    return { ok: false, error: 'send requires exactly one of --message TEXT, --message-file <path>, or --message-stdin' };
+  }
+  let message;
+  if (messageFileFlag !== undefined) {
+    try { message = fs.readFileSync(messageFileFlag, 'utf8'); }
+    catch (e) { return { ok: false, error: 'send --message-file ' + JSON.stringify(messageFileFlag) + ' could not be read: ' + String(e && e.message || e) }; }
+  } else if (messageStdinFlag) {
+    if (ctx.io && typeof ctx.io.stdin === 'string') message = ctx.io.stdin;
+    else { try { message = fs.readFileSync(0, 'utf8'); } catch (e) { return { ok: false, error: 'send --message-stdin could not read fd 0: ' + String(e && e.message || e) }; } }
+  } else {
+    message = messageFlag;
+  }
+  if (!message) return { ok: false, error: 'send requires --message TEXT (or --message-file/--message-stdin) with a non-empty body' };
 
   const urgencyRaw = one(flags, 'urgency');
   const urgency = urgencyRaw !== undefined ? urgencyRaw : 'normal';
@@ -4323,6 +4676,10 @@ function cmdSend(flags, ctx) {
         ok: true, action: 'send', from,
         to: type === 'direct' ? (toPrimaryFlag ? primaryMeshId : toFlag) : null, type, urgency,
         sent: !!res.inserted, seq: res.seq,
+        // FIX 3 (TRACED, purely additive): echo the integrity data already computed
+        // above so `ok:true` is verifiable without a read-back-and-tail-compare.
+        bytes: String(message).length,
+        hash,
         rehomedFromHashBucket: rehomedSend || undefined,
         needsReply: questionFlag,
         toId: type === 'direct' ? targetPartition : null,
@@ -5837,6 +6194,7 @@ module.exports = {
   retireWorktreeDuplicates,
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
   foldMeshDuplicatesAllStores,
+  healOrphanPartitions, healOrphanPartitionsAllStores,
   retireArchivedWorktreeGroup, foldArchivedRegistryRows, meshRowCopy, MESH_ROW_COPY_FIELDS, cmdRoster,
   computeDiagnosis, healthcheckHumanLine,
   resolveMeshTarget, resolveSendTarget,

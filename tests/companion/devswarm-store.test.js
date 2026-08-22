@@ -128,7 +128,12 @@ for (const B of backends) {
 
       const all = s.listMessages('p');
       assert.deepEqual(all.map((m) => m.body), ['first', 'second', 'third'], 'bodies returned in insertion order');
-      assert.deepEqual(all.map((m) => m.seq), [1, 2, 3], '1-based seq aligns with the consumed-count cursor');
+      // FIX 1 (TRACED): `index` is the 1-based POSITIONAL ordinal (what `seq` used
+      // to mean here); `seq` now ALWAYS means the PHYSICAL mesh seq (matching
+      // `send`/`cmdMeshRead`) — null for these appendMessage rows, which never set
+      // the physical seq column (that's appendMeshRow's job).
+      assert.deepEqual(all.map((m) => m.index), [1, 2, 3], '1-based index aligns with the consumed-count cursor');
+      assert.deepEqual(all.map((m) => m.seq), [null, null, null], 'seq is the physical mesh seq — absent on a non-mesh appendMessage row');
       assert.equal(all[0].hash, 'h1');
       assert.deepEqual(s.listMessages('other').map((m) => m.body), ['nope'], 'keyed strictly by workspaceId');
 

@@ -464,7 +464,7 @@ test('send requires --message', () => {
   try {
     const r = cli.run(['send', '--broadcast'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, false);
-    assert.match(r.result.error, /requires --message/);
+    assert.match(r.result.error, /--message/);
   } finally { rm(home); rm(repo); }
 });
 

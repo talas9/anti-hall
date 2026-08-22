@@ -2147,6 +2147,190 @@ test('foldAllStoresPostUpdate: a drained-but-ERRORED pass is NOT stamped complet
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
+// --- healOrphanPartitionsPostUpdate: gate, real-tree wiring, throttle/resume/stamp ---
+
+test('healOrphanPartitionsPostUpdate: not a DevSwarm session -> attempted:false, gate closed', () => {
+  const result = U.healOrphanPartitionsPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: {},
+    cwd: process.cwd(),
+    devswarm: { healOrphanPartitions: () => { throw new Error('must not run when the gate is closed'); } },
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /not a DevSwarm session/);
+});
+
+test('healOrphanPartitionsPostUpdate: pulled plugin tree missing scripts/companion files -> fail-open, attempted:false, never throws', () => {
+  const t = makeTree();
+  try {
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: path.join(t.marketplaceDir, 'plugins', 'anti-hall') },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+    });
+    assert.strictEqual(result.attempted, false);
+    assert.match(result.detail, /not found/);
+  } finally { t.cleanup(); }
+});
+
+test('healOrphanPartitionsPostUpdate: an older devswarm.js build without healOrphanPartitions -> attempted:false, never throws', () => {
+  const result = U.healOrphanPartitionsPostUpdate({
+    paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+    env: { DEVSWARM_REPO_ID: 'r1' },
+    cwd: process.cwd(),
+    devswarm: {}, // no healOrphanPartitions export — simulates an older build
+  });
+  assert.strictEqual(result.attempted, false);
+  assert.match(result.detail, /no healOrphanPartitions/);
+});
+
+test('healOrphanPartitionsPostUpdate: gate open + no stores at all -> attempted:true, 0 across the board', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-empty-'));
+  try {
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.stores, 0);
+    assert.strictEqual(result.adopted, 0);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: explicit `hashes` is used as-is — devswarmStore.listStoreHashes is NEVER called (shared-enumeration contract)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-hashes-'));
+  try {
+    let calledHeal = [];
+    let listCalled = 0;
+    const fakeDevswarm = { healOrphanPartitions: (h, ctx) => { calledHeal.push(ctx.repoKey); return { adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0 }; } };
+    const fakeStore = { listStoreHashes: () => { listCalled++; return ['should-not-be-used']; } };
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(),
+      home,
+      devswarm: fakeDevswarm,
+      devswarmStore: fakeStore,
+      hashes: ['pre-enumerated-a', 'pre-enumerated-b'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(listCalled, 0, 'listStoreHashes must not be called when a pre-enumerated list is supplied');
+    assert.deepStrictEqual(calledHeal, ['pre-enumerated-a', 'pre-enumerated-b']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: budget exhaustion stops mid-sweep, writes a resume stamp; a second run (same version) resumes and completes; a third (same version) is stamp-skipped', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-budget-'));
+  try {
+    const seen1 = [];
+    const fakeDevswarm1 = { healOrphanPartitions: (h, ctx) => { seen1.push(ctx.repoKey); return { adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0 }; } };
+    const savedNow = Date.now;
+    let calls = 0;
+    Date.now = () => (calls++ === 0 ? 0 : 999999);
+    let result1;
+    try {
+      result1 = U.healOrphanPartitionsPostUpdate({
+        paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+        env: { DEVSWARM_REPO_ID: 'r1', ANTIHALL_UPDATE_SWEEP_BUDGET_MS: '1' },
+        cwd: process.cwd(), home,
+        devswarm: fakeDevswarm1,
+        hashes: ['s1', 's2', 's3'],
+        version: '0.92.0',
+      });
+    } finally { Date.now = savedNow; }
+    assert.strictEqual(result1.attempted, true);
+    assert.deepStrictEqual(seen1, ['s1'], 'only the first store processed before the budget stop');
+    assert.strictEqual(result1.budgetExhausted, true);
+    assert.strictEqual(result1.pending, 2);
+
+    const stateAfter1 = U.readSweepState(home);
+    assert.strictEqual(stateAfter1.healOrphanPartitions.pendingVersion, '0.92.0');
+    assert.deepStrictEqual(stateAfter1.healOrphanPartitions.pendingHashes, ['s2', 's3']);
+
+    const seen2 = [];
+    const fakeDevswarm2 = { healOrphanPartitions: (h, ctx) => { seen2.push(ctx.repoKey); return { adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0 }; } };
+    const result2 = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm2,
+      version: '0.92.0',
+    });
+    assert.deepStrictEqual(seen2, ['s2', 's3'], 'resumed from where pass 1 left off, not from s1 again');
+    assert.strictEqual(result2.budgetExhausted, false);
+
+    const stateAfter2 = U.readSweepState(home);
+    assert.strictEqual(stateAfter2.healOrphanPartitions.completedVersion, '0.92.0');
+
+    // Third run at the SAME version: the stamp is honored — sweep skipped entirely.
+    const fakeDevswarm3 = { healOrphanPartitions: () => { throw new Error('must not run — already completed for this version'); } };
+    const result3 = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm3,
+      version: '0.92.0',
+    });
+    assert.strictEqual(result3.attempted, true);
+    assert.strictEqual(result3.skippedAlreadyDone, true);
+    assert.match(result3.detail, /already completed for 0\.92\.0/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: a per-store throw is fail-open — never propagates, counted as an error, the sweep continues', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-throw-'));
+  try {
+    const fakeDevswarm = {
+      healOrphanPartitions: (h, ctx) => {
+        if (ctx.repoKey === 'bad') throw new Error('heal boom');
+        return { adopted: 1, forwarded: 2, unhealable: 0, skipped: 0, errors: 0 };
+      },
+    };
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['good', 'bad'],
+    });
+    assert.strictEqual(result.attempted, true);
+    assert.strictEqual(result.errors, 1);
+    assert.strictEqual(result.adopted, 1, 'the good store still contributed its result');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: runUpdate wires it into status, after foldAllStores and before foldArchivedRows, and never turns a failure into a hard stop', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    p.pluginSrcDir = REAL_PLUGIN_SRC_DIR; // real scripts/hooks tree, so the gate opens for real
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-runupdate-'));
+    try {
+      const exec = execStub({ status: '', pull: 'Updating...\n' });
+      // No stores under this tmp home -> the throttled sweep has nothing to
+      // iterate, so this exercises the WIRING (status shape, ordering, never a
+      // hard stop) rather than the per-store throw path (already covered above).
+      const fakeDevswarm = { healOrphanPartitions: () => { throw new Error('boom — must never be reached with zero stores'); } };
+      const { status, stop } = U.runUpdate({ paths: p, exec, env: { DEVSWARM_REPO_ID: 'r1' }, cwd: process.cwd(), home, devswarm: fakeDevswarm });
+      assert.strictEqual(stop, false, 'a self-heal step never blocks the update itself');
+      assert.ok(status.healOrphanPartitions, 'runUpdate wires healOrphanPartitions into status');
+      assert.strictEqual(status.healOrphanPartitions.attempted, true);
+      assert.strictEqual(status.healOrphanPartitions.stores, 0, 'no stores under this tmp home');
+      // Ordering: healOrphanPartitions key appears after foldAllStores and
+      // before foldArchivedRows in the status object's own key order.
+      const keys = Object.keys(status);
+      assert.ok(keys.indexOf('foldAllStores') < keys.indexOf('healOrphanPartitions'), 'healOrphanPartitions comes after foldAllStores');
+      assert.ok(keys.indexOf('healOrphanPartitions') < keys.indexOf('foldArchivedRows'), 'healOrphanPartitions comes before foldArchivedRows');
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  } finally { t.cleanup(); }
+});
+
 test('healRegistryPostUpdate: a healRegistry throw counts as an error and blocks the completion stamp', () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healreg-errnostamp-'));
   try {

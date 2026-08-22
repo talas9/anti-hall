@@ -473,7 +473,12 @@ function migrateGlobalStoreToPerProject(opts) {
           for (const m of msgs) {
             const bodyStr = m.body != null ? String(m.body) : '';
             if (consumeBody(preExisting, bodyStr)) continue; // same content already migrated (this or another backend)
-            const h = (m.hash != null) ? String(m.hash) : synthGlobalHash(id, m.seq, m.body);
+            // FIX 1 (TRACED): listMessages' `seq` now means the PHYSICAL mesh seq
+            // (matching `send`/`cmdMeshRead`), not the per-workspace positional
+            // ordinal this salt needs for idempotency across re-runs (a legacy row
+            // may have no physical seq at all). Use `index` — the ordinal is stable
+            // because the source is append-only, so existing indices never shift.
+            const h = (m.hash != null) ? String(m.hash) : synthGlobalHash(id, m.index, m.body);
             const r = dst.appendMessage({ workspaceId: id, body: m.body, hash: h, ts: Number.isFinite(m.ts) ? m.ts : o.now });
             if (r && r.inserted) { wsCopied++; copied++; }
           }
@@ -672,7 +677,9 @@ function migrateHashStoresToRepoNameLocked(opts) {
           const wantHashes = [];
           let wsCopied = 0;
           for (const row of rows) {
-            const h = row.hash != null ? String(row.hash) : synthRepoKeyMigrateHash(id, row.seq, row.body);
+            // FIX 1 (TRACED): see the synthGlobalHash call site above — `seq` is now
+            // the physical mesh seq; this salt needs the stable positional `index`.
+            const h = row.hash != null ? String(row.hash) : synthRepoKeyMigrateHash(id, row.index, row.body);
             wantHashes.push(h);
             const r = dst.appendMeshRow({
               workspaceId: id, ts: row.ts, hash: h, body: row.body,
