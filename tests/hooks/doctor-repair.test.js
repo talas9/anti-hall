@@ -923,6 +923,129 @@ test('doctor --fix: reconcile with a REAL per-worktree message loss -> reported 
   }
 });
 
+// Defect-1 fix (P2): doctor's GATED reconcile repair's failure branch used to
+// read a top-level `result.reason`/`result.error` that cmdReconcile's
+// per-target-failure shape never sets (only `.results[i].error` does), so
+// EVERY reconcile failure of this shape printed the literal string "unknown
+// error" and discarded the real per-target cause sitting right there. This
+// proves the real per-target error string is now surfaced.
+test('doctor --fix: reconcile with a REAL per-target failure -> the actual per-target error is surfaced, never "unknown error"', () => {
+  const home = mkTmp('recon-realfail');
+  const cwd = makeGitRepo('recon-realfail-cwd');
+  const devswarmCacheKey = require.resolve(DEVSWARM_SCRIPT_FOR_TEST);
+  require(DEVSWARM_SCRIPT_FOR_TEST); // ensure cached before patching
+  const originalRun = require.cache[devswarmCacheKey].exports.run;
+  require.cache[devswarmCacheKey].exports.run = (argv) => {
+    if (argv[0] === 'reconcile') {
+      return {
+        code: 2,
+        result: {
+          ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 1, imported: 0, lost: 0,
+          results: [{
+            id: 'child-crashed', worktreePath: '/wt/crashed', ok: false, imported: 0, duplicate: 0,
+            nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false, worktreeMissing: false,
+            error: 'spawnSync ENOTDIR: not a directory',
+          }],
+        },
+      };
+    }
+    return originalRun(argv);
+  };
+  try {
+    const env = { ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' };
+    const results = repair.runRepairs({ cwd, env, home, dryRun: false, platform: 'win32' });
+    const r = results.find((x) => x.id === 'reconcile');
+    assert.ok(r, 'a reconcile repair result must be present:\n' + JSON.stringify(results, null, 2));
+    assert.strictEqual(r.status, 'failed');
+    assert.doesNotMatch(r.msg, /unknown error/, 'the real per-target cause must never be discarded as "unknown error":\n' + r.msg);
+    assert.match(r.msg, /child-crashed: spawnSync ENOTDIR: not a directory/, 'the real per-target id + error must be surfaced verbatim:\n' + r.msg);
+  } finally {
+    require.cache[devswarmCacheKey].exports.run = originalRun;
+    rm(home); rm(cwd);
+  }
+});
+
+// Defect-1 fix, benign-skip quiet path: a reconcile whose ONLY false-`ok` rows
+// are recognized benign skips (locked / hivecontrolMissing / worktreeMissing)
+// must never be reported as failed at all — cmdReconcile's own
+// `allRowsOkOrBenign` already makes `result.ok` true in that case, so doctor's
+// repair layer takes the 'fixed' branch and never reaches the error-surfacing
+// code path this defect lived in. This proves that end-to-end: benign skips
+// stay quiet, no "unknown error", no per-target noise.
+test('doctor --fix: reconcile whose ONLY false-ok rows are benign skips (worktreeMissing/locked/hivecontrolMissing) reports fixed, stays quiet (no per-target noise)', () => {
+  const home = mkTmp('recon-benign');
+  const cwd = makeGitRepo('recon-benign-cwd');
+  const devswarmCacheKey = require.resolve(DEVSWARM_SCRIPT_FOR_TEST);
+  require(DEVSWARM_SCRIPT_FOR_TEST);
+  const originalRun = require.cache[devswarmCacheKey].exports.run;
+  require.cache[devswarmCacheKey].exports.run = (argv) => {
+    if (argv[0] === 'reconcile') {
+      return {
+        code: 0,
+        result: {
+          ok: true, action: 'reconcile', repoKey: 'fake-repo', count: 2, imported: 0, lost: 0,
+          results: [
+            { id: 'child-gone', worktreePath: '/wt/gone', ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false, worktreeMissing: true, error: 'worktree not found on disk: /wt/gone' },
+            { id: 'child-locked', worktreePath: '/wt/locked', ok: false, imported: 0, duplicate: 0, nativeCount: 0, lost: 0, locked: true, hivecontrolMissing: false, worktreeMissing: false, error: 'another pull holds the lock' },
+          ],
+        },
+      };
+    }
+    return originalRun(argv);
+  };
+  try {
+    const env = { ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' };
+    const results = repair.runRepairs({ cwd, env, home, dryRun: false, platform: 'win32' });
+    const r = results.find((x) => x.id === 'reconcile');
+    assert.ok(r);
+    assert.strictEqual(r.status, 'fixed', 'benign-skip-only rows must report fixed, never failed:\n' + JSON.stringify(r));
+    assert.doesNotMatch(r.msg, /child-gone|child-locked|unknown error/, 'benign skips must not surface per-target noise into the doctor line:\n' + r.msg);
+  } finally {
+    require.cache[devswarmCacheKey].exports.run = originalRun;
+    rm(home); rm(cwd);
+  }
+});
+
+// Defect-1 fix, capped/bounded formatting: many real per-target failures must
+// not blow up the doctor output — capped to MAX_LISTED (5) ids plus a "+N more".
+test('doctor --fix: reconcile with MANY real per-target failures -> message is capped ("+N more"), never unbounded', () => {
+  const home = mkTmp('recon-capped');
+  const cwd = makeGitRepo('recon-capped-cwd');
+  const devswarmCacheKey = require.resolve(DEVSWARM_SCRIPT_FOR_TEST);
+  require(DEVSWARM_SCRIPT_FOR_TEST);
+  const originalRun = require.cache[devswarmCacheKey].exports.run;
+  const failingResults = [];
+  for (let i = 0; i < 9; i++) {
+    failingResults.push({
+      id: 'child-' + i, worktreePath: '/wt/' + i, ok: false, imported: 0, duplicate: 0,
+      nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false, worktreeMissing: false,
+      error: 'boom-' + i,
+    });
+  }
+  require.cache[devswarmCacheKey].exports.run = (argv) => {
+    if (argv[0] === 'reconcile') {
+      return {
+        code: 2,
+        result: { ok: false, action: 'reconcile', repoKey: 'fake-repo', count: 9, imported: 0, lost: 0, results: failingResults },
+      };
+    }
+    return originalRun(argv);
+  };
+  try {
+    const env = { ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' };
+    const results = repair.runRepairs({ cwd, env, home, dryRun: false, platform: 'win32' });
+    const r = results.find((x) => x.id === 'reconcile');
+    assert.ok(r);
+    assert.strictEqual(r.status, 'failed');
+    assert.match(r.msg, /child-0: boom-0/, 'the first failures must still be listed:\n' + r.msg);
+    assert.match(r.msg, /\(\+4 more\)/, '9 failures capped at 5 listed must show exactly "+4 more":\n' + r.msg);
+    assert.doesNotMatch(r.msg, /child-8: boom-8/, 'the message must be capped, not list every single failing target:\n' + r.msg);
+  } finally {
+    require.cache[devswarmCacheKey].exports.run = originalRun;
+    rm(home); rm(cwd);
+  }
+});
+
 test('doctor --check: DevSwarm ACTIVE + git worktree -> reconcile is skipped entirely (pure read-only, no Repair section at all)', () => {
   const home = mkTmp('recon-check');
   const cwd = makeGitRepo('recon-check-cwd');

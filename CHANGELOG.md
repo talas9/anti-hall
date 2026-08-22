@@ -6,6 +6,79 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.76.0 (2026-08-21)
+
+- **Security/data-loss fix: the DevSwarm parent gate could mark a child's
+  question read without the child ever seeing it, with no way to undo it.**
+  `devswarm-parent-gate.js` counted the Primary's OWN just-sent outbound
+  messages toward a workspace's "neglect" score, so a Primary that had just
+  messaged a child could still trip the neglect check — and the remediation
+  it then suggested, `inbox read-primary <child-id>`, advances that child's
+  read cursor. Following the guard's own advice would silently mark the
+  child's real, unread question as read, with no un-ack and no recovery.
+  Fixed by excluding own-sender rows from the neglect count and pointing the
+  remediation at the read-only `inbox peek-primary <id>` instead, which
+  inspects the inbox without moving the cursor. A Primary genuinely reading
+  its own inbox for the first time still correctly uses `read-primary`.
+- **Fix: doctor's `[reconcile]` check collapsed every failure into
+  `unknown error`, discarding the real per-target error.** Root cause: one
+  failing target had a `worktreePath` that no longer existed on disk, and
+  Node reports a missing `cwd` passed to a spawned child as an `ENOENT` on
+  the *executable*, not the directory — a generic message that gave no hint
+  which target or why. `doctor-repair.js` now surfaces the real per-target
+  errors (bounded, with a "+N more" summary for large batches) instead of
+  swallowing them. A missing `worktreePath` is now a recognized benign skip
+  (`worktreeMissing`), alongside the existing `locked` / `hivecontrolMissing`
+  skips, and a descriptor with an existing archived counterpart is now
+  detected and reported as `archivedDuplicate` — detection only; nothing is
+  ever deleted.
+- **Security: DevSwarm destructive-verb blocks bypassed via the `devswarm`
+  alias.** `command-guard` anchored its four DevSwarm destructive-command
+  blocks on the literal verb `hivecontrol`, but `hivecontrol` is a thin shim
+  that execs `devswarm` — the primary command name, equally on PATH. Running
+  `devswarm workspace monitor`, `read-messages`, `message-child`, or
+  `message-parent` directly therefore bypassed every block. Fixed with a
+  shared verb set and an alternation that matches either name; both the
+  Claude and Codex ports share the same hook file, so both are covered.
+  Latent since the blocks were added, not a new regression.
+- **New: DevSwarm version drift detection.** anti-hall had no visibility into
+  which DevSwarm version was installed, so its integration silently drifted
+  from a 2.3.5 baseline to 2.5.1 without anyone noticing — a real risk
+  because `command-guard` matches DevSwarm subcommands by literal string, so
+  a renamed verb in a future release would make a block silently stop
+  matching. A new SessionStart hook (`devswarm-version.js`, backed by a
+  detached background refresh so session start is never blocked) probes the
+  installed DevSwarm version, compares it against the shared baseline, and
+  advises on a major/minor drift (patch-only stays silent; a downgrade is
+  worded accordingly). The advisory dedupes on (installed, baseline) so it
+  never nags twice for the same drift. Absent DevSwarm or unparseable output
+  fails open and silent. Registered once, shared by both ports; also wired
+  into the doctor health check.
+- **Fix: `graphify-guard` recommended a wiki index file that doesn't exist.**
+  The guard's block message pointed agents at `<graph>/wiki/index.md`, but
+  `graphify update` never produces a `wiki/` directory — only `graph.json`,
+  `GRAPH_REPORT.md`, and `manifest.json` — so every block sent the agent to
+  a dead path. Fixed with an existence-checked fallback cascade (wiki index
+  → `GRAPH_REPORT.md` → `manifest.json` → the bare `/graphify query`
+  command) so the guard never names a path that isn't there. The block
+  itself is unchanged, only the recommendation text.
+- **Fix: unbounded per-session state growth under `~/.anti-hall`.** Every
+  per-session state file (task-tracker, speculation-guard, tasklist-guard,
+  codex-nudge) was kept forever and never read back once its session ended.
+  On a heavy multi-session machine this reached 47,000+ files across 71
+  days — and anti-hall's own `doctor.js` self-tests made it worse, orphaning
+  one file per hook on every run. A shared `pruneStale()` helper is now
+  wired into each hook's existing write path (no new hook, no new event): it
+  removes same-prefix files older than 7 days, throttled to once per 6 hours
+  so the cleanup scan never sits on the hot path, never touches the current
+  session's own file, and fails open if pruning itself errors. This run
+  pruned 42,236 orphaned files (`~/.anti-hall` 58,803 → 583 entries).
+- **Docs.** Recorded DevSwarm 2.5.x findings in the knowledge base: the
+  unauthenticated local HTTP API surface, Claude Code harness messaging
+  semantics, the v2.5.0 chat surface (a cloud-relayed, non-persisted feature
+  distinct from workspace messaging), and the `transcriptByteOffset`
+  agent-liveness signal.
+
 ## 0.75.1 (2026-08-08)
 
 - **Updater performance + UX.** The `update` skill's post-update DevSwarm sweeps

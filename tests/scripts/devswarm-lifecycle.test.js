@@ -241,6 +241,59 @@ test('reconcile spawns a REAL subprocess per worktree (default path, no injectio
   } finally { rm(home); rm(repo); }
 });
 
+// Defect-2 fix regression test (root cause, verified via isolated repro):
+// spawnSync(..., {cwd: d.worktreePath}) misreports a missing cwd as an ENOENT
+// against the SPAWNED EXECUTABLE (process.execPath) when the worktree no
+// longer exists on disk — looking exactly like "node is missing". No `io`
+// injection here (defaultSpawnReconcile is the thing under test): a
+// descriptor whose worktreePath does not exist must be classified as a
+// RECOGNIZED BENIGN SKIP (`worktreeMissing:true`), never spawned, and must
+// NOT fail the aggregate — same posture as `locked`/`hivecontrolMissing`.
+test('reconcile: a target whose worktreePath does not exist on disk is classified worktreeMissing (benign skip), never spawned, aggregate stays ok', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-worktree-gone');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const goneWorktree = path.join(os.tmpdir(), 'anti-hall-does-not-exist-' + crypto.randomBytes(4).toString('hex'));
+    seedRegistry(home, repoKey, { id: 'child-gone', worktreePath: goneWorktree, sessionId: 's' });
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, 'a worktree-missing target must be a benign skip, not a reconcile failure — ' + JSON.stringify(r.result));
+    assert.equal(r.result.count, 1);
+    const row = r.result.results[0];
+    assert.equal(row.id, 'child-gone');
+    assert.equal(row.ok, false, 'never spawned -> not genuinely ok');
+    assert.equal(row.worktreeMissing, true);
+    assert.equal(row.imported, 0);
+    assert.equal(row.lost, 0, 'a missing worktree is never counted as a loss');
+    assert.ok(row.error && /worktree not found on disk/.test(row.error), 'the real cause must be surfaced, not swallowed:\n' + row.error);
+  } finally { rm(home); rm(repo); }
+});
+
+// Defect-2(b) fix regression test: a live descriptor whose worktree is gone
+// AND which already has an archived/<id>.json counterpart must be reported
+// via `archivedDuplicate:true` — detect-and-report only, never deleted.
+test('reconcile: a worktree-missing target that ALSO has an archived/ counterpart is flagged archivedDuplicate (detect-only, nothing deleted)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-worktree-gone-archived');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const goneWorktree = path.join(os.tmpdir(), 'anti-hall-does-not-exist-' + crypto.randomBytes(4).toString('hex'));
+    seedRegistry(home, repoKey, { id: 'child-archived-dup', worktreePath: goneWorktree, sessionId: 's' });
+    const archivedDir = cli.archivedDir(home);
+    fs.mkdirSync(archivedDir, { recursive: true });
+    fs.writeFileSync(path.join(archivedDir, 'child-archived-dup.json'), JSON.stringify({ id: 'child-archived-dup', worktreePath: goneWorktree }));
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true);
+    const row = r.result.results[0];
+    assert.equal(row.worktreeMissing, true);
+    assert.equal(row.archivedDuplicate, true);
+    // detect-only: both the live descriptor row (none was ever registered as a
+    // file here, only in the store registry) and the archived counterpart
+    // remain exactly as written.
+    assert.ok(fs.existsSync(path.join(archivedDir, 'child-archived-dup.json')), 'archived counterpart must never be deleted');
+  } finally { rm(home); rm(repo); }
+});
+
 // v0.66 P0-2 regression test: BEFORE this fix, cmdReconcile's stricter
 // every-row-ok-or-locked aggregate treated a hivecontrol-absent target
 // (the exact CI-runner shape) as a hard failure, breaking this

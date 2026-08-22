@@ -26,16 +26,53 @@ none of the earlier claims were changed.
 | `UserPromptSubmit` hook | **USED** | same | 5 handlers: `verify-first.js`, `task-tracker.js`, `limit-conserve-inject.js`, `devswarm-parent-inbox.js`, `devswarm-child-turn.js`. |
 | `PreToolUse` hook | **USED** | same | Bash: `git-guard`, `command-guard`, `graphify-guard`, `merge-gate`. Write/Edit/MultiEdit: `api-guard`, `ship-it-guard`. Write/Edit/MultiEdit/NotebookEdit: `edit-guard`. Read: `inbox-read-guard`. Grep/Glob: `graphify-guard`. Agent+Task: `model-routing-guard`, `swarm-guard`, `phase-tracker`. |
 | `SubagentStart` hook | **USED** | `hooks/verify-first-subagent.js` | Claude plugin only — not present in the Codex port (Codex has no equivalent lifecycle hook for sub-sessions today). |
+| `PostToolUse` hook | **USED** | `hooks/hooks.json:370,380,390` | 3 Bash-matcher handlers: `output-verify-guard.js` (`:370`), `devswarm-parent-reply-tracker.js` (`:380`), `devswarm-child-drain.js` (`:390`). [UPDATE 2026-08-21: this row was missing — the same fact was already documented at `KB.md:71` as a v0.69.0 addition; this file was never updated to match. See §2's "NOT USED" row below, corrected in the same pass.] |
+| `PostToolUseFailure` hook | **USED** | `hooks/hooks.json:402` | 1 Bash-matcher handler: `failure-root-cause-nudge.js`. [UPDATE 2026-08-21: see note above — also shipped since v0.69.0, previously mis-listed as NOT USED here.] |
 | `Stop` hook | **USED** | same | `task-guard`, `tasklist-guard`, `graphify-reminder`, `speculation-guard`, `speculation-judge`, `codex-nudge`, `devswarm-parent-gate`, `devswarm-child-gate`. |
 | `Monitor` tool | **USED (opt-in)** | `plugins/anti-hall/monitors/monitors.json` → `companion/lib/devswarm-wake-watch.js` | Watches a DevSwarm workspace's own mailbox count delta, edge-triggered wake. Gated to DevSwarm sessions (`DEVSWARM_REPO_ID`); dormant otherwise. |
 | `run_in_background` | **USED** | orchestration guidance + the wake-watch process | Standard background-Bash pattern for long ops; also underlies the wake-watch companion. |
 | `CronCreate` / `CronList` | **USED (opt-in)** | `hooks/lib/devswarm-wake.js` | DevSwarm self-wake fallback: an injected agent directive tells the agent to `CronCreate` its own wake job (Cron is a Claude tool, not a hook the plugin can register directly). |
-| Skills | **USED** | `plugins/anti-hall/skills/` (14) + `plugins/anti-hall/codex/skills/` (17) | Claude: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `devswarm`, `doctor`, `flutter-debug`, `install-statusline`, `orchestration`, `root-cause`, `ship-it`, `simplify`, `system-briefing`, `update`. Codex: same set plus `context-conserve`, `omc`, `omx` (Codex-specific bridges), `model-policy`. |
+| Skills | **USED** | `plugins/anti-hall/skills/` (14 [UPDATE 2026-08-21: stale — actually **15** (+ `MODEL-POLICY.md`, not itself a skill); `handover` was missing from the enumeration]) + `plugins/anti-hall/codex/skills/` (17 [UPDATE 2026-08-21: stale — actually **18**; `anti-hall-handover` also missing]) | Claude: `activate`, `deadly-loop`, `deadly-loop-multi`, `debt`, `devswarm`, `doctor`, `flutter-debug`, `handover`, `install-statusline`, `orchestration`, `root-cause`, `ship-it`, `simplify`, `system-briefing`, `update`. Codex: same set plus `context-conserve`, `omc`, `omx` (Codex-specific bridges), `model-policy`. |
 | Statusline | **USED** | `plugins/anti-hall/statusline/` | Rich / simple / monorepo renderers + phase bar; installed via the `install-statusline` skill. |
 | Subagent guards (`Agent`/`Task` matchers) | **USED** | `hooks.json` PreToolUse | `model-routing-guard`, `swarm-guard`, `phase-tracker` fire on both `Agent` and `Task` tool calls. |
 | `Workflow` tool | **USED** | `plugins/anti-hall/skills/{deadly-loop,ship-it}/references/*.workflow.js` | Delivered as user-saved workflow templates — a plugin cannot ship a workflow directly as an installable command, so these ship as reference files a skill instructs the user/agent to save. |
-| Plugin marketplace | **USED** | `.claude-plugin/marketplace.json`, `plugins/anti-hall/.claude-plugin/plugin.json` (v0.68.2) | Codex mirror at `plugins/anti-hall/codex/.codex-plugin/`. |
-| **NOT USED** | — | — | `PostToolUse`, `PostToolUseFailure`, `PostToolBatch`, `SubagentStop`, `PreCompact`, `PostCompact`, `SessionEnd`, `Setup`, `Notification`, `TaskCreated`/`TaskCompleted` hooks, `ConfigChange`, `PermissionRequest`/`PermissionDenied`, `MessageDisplay`, `WorktreeCreate`/`WorktreeRemove`, `ScheduleWakeup` (referenced only in a code comment, not invoked), `CronDelete`, LSP servers (`.lsp.json`), output styles, Agent SDK / headless mode, MCP server ship-or-consume (deliberate CLI-over-MCP posture), sandboxing, checkpointing awareness. |
+| `SendMessage` | **GUIDANCE-ONLY** | `hooks/verify-first-subagent.js:56`, `skills/orchestration/SKILL.md:111` | [APPENDED 2026-08-21] Mentioned only in prompt guidance text — no actual tool-call site in the codebase. `ListAgents`: 0 code hits repo-wide (docs-only). See the owner-constraint note appended below §2 for why cross-machine `SendMessage`/`ListAgents` addressing should NOT be recommended for this owner. |
+| Plugin marketplace | **USED** | `.claude-plugin/marketplace.json`, `plugins/anti-hall/.claude-plugin/plugin.json` (v0.68.2 [UPDATE 2026-08-21: stale — committed version is now `0.75.1`; the working tree carries `0.76.0` with a release in flight (uncommitted, per release-prep convention — do not assert 0.76.0 has shipped)]) | Codex mirror at `plugins/anti-hall/codex/.codex-plugin/`. |
+| **NOT USED** | — | — | `PostToolBatch`, `SubagentStop`, `PreCompact`, `PostCompact`, `SessionEnd`, `Setup`, `Notification`, `TaskCreated`/`TaskCompleted` hooks, `ConfigChange`, `PermissionRequest`/`PermissionDenied`, `MessageDisplay`, `WorktreeCreate`/`WorktreeRemove`, `ScheduleWakeup` (referenced only in a code comment, not invoked), `CronDelete`, LSP servers (`.lsp.json`), output styles, Agent SDK / headless mode, MCP server ship-or-consume (deliberate CLI-over-MCP posture), sandboxing, checkpointing awareness. [UPDATE 2026-08-21: `PostToolUse` and `PostToolUseFailure` REMOVED from this row — both are now USED (see the two new rows above); this row previously listed them as not-used, which was stale since v0.69.0.] `SendMessage` = GUIDANCE-ONLY (see §2 usage-table appendix below); `ListAgents` = NOT USED. |
+
+**[APPENDED 2026-08-21] Owner constraint — do not recommend cross-machine `SendMessage`/
+`ListAgents` addressing for this owner.** The owner rotates Claude accounts whenever a
+usage limit is exhausted. Remote Control is account-scoped, so RC/cloud-session addressing
+is not a usable transport across a rotation: a session addressed under one account
+disappears from `ListAgents`/`SendMessage` reach once the owner rotates to another. The
+file-based DevSwarm mesh (`~/.anti-hall/devswarm/store/`) is account-agnostic and survives
+rotation — it has no equivalent blind spot. Consequence for any future recommendation in
+this doc or its adoption plan: score Claude-native messaging on its LOCAL/same-machine
+capability only; do not propose it as a cross-machine coordination layer for this owner.
+**UNVERIFIED:** whether same-machine, same-account local-session addressing (the
+"Other LOCAL Claude Code sessions" row in §3's cross-session-messaging table) is itself
+account-scoped was not tested this session — flagged, not asserted either way.
+
+**[APPENDED 2026-08-21] This repo's own `eval/` harness (distinct from `evals/`).**
+`eval/` (singular) exists at the repo root: `run.js` (433 lines) + 4 pilot graders
+(`ship-it`, `scope-fidelity`, `rule-behavior`, `false-done`, 986 lines total) +
+`README.md` (296 lines). `evals/` (plural — the `claude plugin eval` CLI convention
+scaffolded by `eval init`) does **not** exist in this repo; the two names are easy to
+conflate and refer to different, non-interoperating things.
+
+**Capability boundary — honest, not equivalent to `claude plugin eval`:** the `eval/`
+pilots score what the agent **STATES it would do**, not what it actually did — see
+`eval/…/ship-it-pilot.mjs:7-11`, which documents this directly. `claude plugin eval` run
+with `--allow-tools` plus a `tool_used: Skill` grader is categorically different: it
+proves the skill **actually fired** as a real tool call in a sandboxed execution, not
+merely that the model claimed it would. Neither harness subsumes the other — the
+in-repo pilots are cheap self-report checks; `claude plugin eval` is the mechanically
+verified alternative, with actual case execution still UNVERIFIED this session (see the
+`claude plugin eval` entry in §3's Additions table above).
+
+**[APPENDED 2026-08-21] CI gap.** `package.json:7`'s `"test"` script is `node --test`
+only — CI runs no `eval/` pilot and no `claude plugin eval` suite. Neither harness's
+result gates a merge or release today.
 
 ---
 
@@ -131,8 +168,8 @@ Sources: [`/docs/en/plugins`](https://code.claude.com/docs/en/plugins), [`/docs/
 ### Flagged / unverified
 
 - The `/docs/en/settings` summary listed hook names `beforeBash`/`afterBash`/`beforeWrite`/`afterWrite`/`configChange` that do **not** appear on `/docs/en/hooks`. Treat this as a summarization artifact — use the `/docs/en/hooks` event names (`PreToolUse`/`PostToolUse`/`ConfigChange`, etc.), not the settings-summary names.
-- `agent-teams`, `agent-view`, `desktop-scheduled-tasks`, and the Remote Control page were referenced during this audit but **not fetched** — their contract is unverified.
-- `/docs/en/llms.txt` returned **404** at audit time.
+- `agent-teams`, `agent-view`, `desktop-scheduled-tasks`, and the Remote Control page were referenced during this audit but **not fetched** — their contract is unverified. [UPDATE 2026-08-21: not re-checked this session — mark UNVERIFIED-since-2026-08-01, left as-is.]
+- `/docs/en/llms.txt` returned **404** at audit time. [UPDATE 2026-08-21: not re-checked this session — mark UNVERIFIED-since-2026-08-01, left as-is.]
 
 ### Cross-session / agent-to-agent messaging
 
@@ -176,16 +213,36 @@ Source: [`/docs/en/agent-teams`](https://code.claude.com/docs/en/agent-teams.md)
 
 ### Additions to the feature surface (absent from every prior doc in this repo — verified by grep)
 
+[UPDATE 2026-08-21: the header claim above ("absent from every prior doc in this repo")
+is FALSE for two of the rows below — corrected per-row rather than rewritten, per this
+repo's own "never silently rewrite" rule (`KB.md:37`). The "absent" framing holds ONLY
+for the `ListAgents` row; the other rows below were not all independently re-checked, but
+`isolation:"worktree"` is confirmed already documented elsewhere in this repo (see its row).]
+
 | Feature | Status | One-line description |
 |---|---|---|
-| `ListAgents` | Stable | Enumerates addressable agents: in-process subagents, other local sessions, cloud sessions, and (when Remote Control is connected) the account's other sessions. Names are the address for `SendMessage`. |
+| `ListAgents` | Stable | Enumerates addressable agents: in-process subagents, other local sessions, cloud sessions, and (when Remote Control is connected) the account's other sessions. Names are the address for `SendMessage`. Confirmed genuinely absent elsewhere in this repo: 0 code hits repo-wide (docs-only usage). |
 | `EnterWorktree` / `ExitWorktree` | Stable | Worktree entry/exit tools. |
 | Artifacts — `capabilities` | Gated per-account | Runtime capabilities for published interactive pages beyond static HTML. |
-| `claude plugin eval` | Org-flag gated | Sandboxed plugin/skill testing. Graders: regex, LLM judge, `tool_used`, `file_exists`, baseline. `--json` v1 shape (`schemaVersion`, `cases[].arms.{with,without}[].graders`, `aggregates`), `--report` HTML, `--no-publish` local. Exit codes: 0 pass (default threshold 1.0), 1 fail/error/empty, 2 partial (cost-ceiling / auth-fail). |
+| `claude plugin eval` | [UPDATE 2026-08-21: was "Org-flag gated" — corrected below, see new row] | superseded, see below |
 | `Agent` tool `subagent_type: "fork"` | Stable (v2.1.212+) | Spawns a fork that inherits the parent's full context. |
-| `Agent` tool `isolation: "worktree"` | Stable (v2.1.203+) | Runs the spawned agent in a temporary git worktree. |
+| `Agent` tool `isolation: "worktree"` | Stable (v2.1.203+) | Runs the spawned agent in a temporary git worktree. [UPDATE 2026-08-21: NOT absent from prior docs — already documented at `skills/orchestration/SKILL.md:27` AND `docs/KB-claude-workflow-orchestration.md:58,104` before this row was added. The "absent from every prior doc" framing in this section's header does not hold for this row.] |
 | `Monitor` | Stable, with a gap | Unavailable on Bedrock/Vertex/Foundry. |
 | `CronCreate` / `CronList` | Stable | Scheduled tasks within a session; restored on `--resume`. |
+
+**[UPDATE 2026-08-21] `claude plugin eval`:** corrected from "Org-flag gated" — the CLI is
+**AVAILABLE LOCALLY** (verified this session): CLI version 2.1.238, `claude plugin eval
+--help` renders successfully. Flags observed: `--ablation with-without`, `--allow-tools`,
+`--threshold`, `--json`, `--report`, `--no-publish`, `--max-cost-usd`, `--judge-model`,
+`--case`, `--tag`; `eval init [--bare]` scaffolds a suite. Suite convention: an
+`<eval-dir>/**/case.yaml` OR a `prompt.md` + `graders/*.md` pair; results land at
+`<eval-dir>/results/<timestamp>/aggregate-result.json`. Graders: regex, LLM judge,
+`tool_used`, `file_exists`, baseline. `--json` v1 shape (`schemaVersion`,
+`cases[].arms.{with,without}[].graders`, `aggregates`), `--report` HTML, `--no-publish`
+local. Exit codes: 0 pass (default threshold 1.0), 1 fail/error/empty, 2 partial
+(cost-ceiling / auth-fail). **Still UNVERIFIED: whether a case actually EXECUTES** — no
+run was attempted this session; only `--help` and flag enumeration were checked. Do not
+claim a passing/failing run without evidence.
 
 Source: [tools reference](https://code.claude.com/docs/en/tools-reference.md), [sub-agents](https://code.claude.com/docs/en/sub-agents.md), [hooks](https://code.claude.com/docs/en/hooks.md), [plugin eval](https://code.claude.com/docs/en/plugin-eval.md), [docs index](https://code.claude.com/docs/en/claude_code_docs_map.md)
 

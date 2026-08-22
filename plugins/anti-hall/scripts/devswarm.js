@@ -357,6 +357,20 @@ const BENIGN_MESH_BROADCAST_REASONS = new Set([
 // ----- paths -----
 function workspacesDir(home) { return path.join(devswarmRoot(home), 'workspaces'); }
 function archivedDir(home) { return path.join(devswarmRoot(home), 'archived'); }
+
+// hasArchivedCounterpart(home, id) -> bool. True iff archived/<id>.json exists
+// for this id — i.e. the id was already archived at some point. Read-only
+// (fs.existsSync), fail-closed to false on any error (never claims an
+// archived counterpart that couldn't actually be confirmed). Used by the
+// worktree-gone detect-and-skip paths below (cmdReconcile's target loop,
+// rehomeStrandedProjectDescriptors, healRegistry) so a stale live descriptor
+// whose worktree no longer exists — but which was already archived and left
+// un-pruned — is recognized and SKIPPED, never deleted or mutated.
+function hasArchivedCounterpart(home, id) {
+  if (!id || !isSafeId(String(id))) return false;
+  try { return fs.existsSync(path.join(archivedDir(home), id + '.json')); }
+  catch (_) { return false; }
+}
 function checkedArchivedDir(home, { create = false, F } = {}) {
   const G = F || fs;
   const dir = archivedDir(home);
@@ -1037,6 +1051,15 @@ function healRegistry(home, repoKey, ctx) {
   } catch (_) { rows = []; }
   for (const row of rows) {
     if (!row || row.id == null || !isSafeId(String(row.id))) { out.skipped++; continue; }
+    // Defect-2(b) fix: same detect-and-skip as rehomeStrandedProjectDescriptors
+    // above — a registry row whose worktree is gone on disk AND already has an
+    // archived/ counterpart for its id is not a live target for the heal pass.
+    // Detect-only, never deletes/unlinks the row or the archived counterpart.
+    if (row.worktreePath) {
+      let worktreeExists = true;
+      try { worktreeExists = fs.existsSync(row.worktreePath); } catch (_) { worktreeExists = true; }
+      if (!worktreeExists && hasArchivedCounterpart(home, String(row.id))) { out.skipped++; continue; }
+    }
     out.checked++;
     let r;
     try { r = rehomeMiskeyedRow(home, String(row.id), repoKey, ctx); }
@@ -3986,6 +4009,17 @@ function rehomeStrandedProjectDescriptors(home, ctx) {
     if (!isSafeId(id)) continue;
     const desc = readDescriptorFile(home, id);
     if (!desc || String(desc.id) !== String(id) || !desc.worktreePath) continue;
+    // Defect-2(b) fix: a live descriptor whose worktree no longer exists on
+    // disk, and which ALREADY has an archived/ counterpart for this same id
+    // (archived but never pruned — the exact stale-descriptor shape this
+    // sweep must not treat as live), is skipped here. Detect-only: never
+    // deletes/unlinks the stale live descriptor — that pruning decision is
+    // left for the owner. Guards against wasting a rehome attempt (or any
+    // future side effect) on a descriptor that structurally can't be a real
+    // live target.
+    let worktreeExists = true;
+    try { worktreeExists = fs.existsSync(desc.worktreePath); } catch (_) { worktreeExists = true; }
+    if (!worktreeExists && hasArchivedCounterpart(home, id)) continue;
     const storedOwnerKey = typeof desc.ownerKey === 'string' && desc.ownerKey ? desc.ownerKey : null;
     const hashKey = store.hashFromWorkspaceId(id);
     if (storedOwnerKey !== hashKey || hashKey === repoKey) continue; // not stranded
@@ -4857,7 +4891,21 @@ function cmdMeshRead(flags, ctx) {
 // the SAME per-id pull lock, as the caller) whenever `ctx.home` differs from
 // the live process's actual home. Same fix hooks/doctor.js's own child-env
 // builder (CHILD_ENV/PRIMARY_ENV) already applies for the identical reason.
+// Defect-2 fix (root cause, VERIFIED via isolated repro): when `d.worktreePath`
+// does not exist on disk, `spawnSync(..., { cwd: d.worktreePath })`'s internal
+// chdir failure is misreported by Node/libuv as an ENOENT against the SPAWNED
+// EXECUTABLE (`process.execPath`) — not against the missing cwd — which reads
+// exactly like "node itself is missing" even though node is perfectly present.
+// Check existsSync(d.worktreePath) FIRST and short-circuit with a distinct,
+// self-describing `worktreeMissing:true` result instead of ever letting that
+// misleading spawn failure occur. Detect-only: never deletes/unlinks/moves
+// anything — the descriptor and any archived/ counterpart are left untouched.
 function defaultSpawnReconcile(d, ctx) {
+  let worktreeExists = true;
+  try { worktreeExists = fs.existsSync(d.worktreePath); } catch (_) { worktreeExists = true; }
+  if (!worktreeExists) {
+    return { worktreeMissing: true, error: new Error('worktree not found on disk: ' + d.worktreePath) };
+  }
   const env = Object.assign({}, ctx.env || process.env, { HOME: ctx.home, USERPROFILE: ctx.home });
   if (ctx.backend) env.ANTIHALL_DEVSWARM_STORE_BACKEND = ctx.backend;
   try {
@@ -4952,6 +5000,20 @@ function cmdReconcile(flags, ctx) {
       // `ok` normally (deny-list polarity preserved).
       hivecontrolMissing: !!(parsed && parsed.ok === false
         && /^spawnSync\s+\S*hivecontrol\S*\s+(ENOENT|EACCES|ENOTDIR)\b/i.test(String(parsed.error || ''))),
+      // Defect-2 fix (root cause): when `d.worktreePath` does not exist on
+      // disk, spawnSync's `cwd` chdir failure is misreported by Node/libuv as
+      // an ENOENT against the SPAWNED EXECUTABLE (process.execPath) — not
+      // against the cwd — which reads exactly like "node is missing" even
+      // though node is fine (reproduced in isolation). defaultSpawnReconcile
+      // now checks existsSync(d.worktreePath) itself, BEFORE spawning, and
+      // sets `worktreeMissing:true` on its return value when the worktree is
+      // gone — that is what this reads. A fourth RECOGNIZED BENIGN SKIP, same
+      // posture as `locked`/`hivecontrolMissing`. Detect-only: nothing is
+      // deleted/unlinked/moved. Deliberately gated to `spawnFn === defaultSpawnReconcile`'s
+      // own contract (injected `ctx.io.spawnReconcile` test doubles are real
+      // spawn stand-ins and are never subject to this fs check).
+      worktreeMissing: !!(r && r.worktreeMissing),
+      archivedDuplicate: !!(r && r.worktreeMissing && hasArchivedCounterpart(home, d.id)),
       error: (parsed && parsed.error)
         || (r && r.error ? String((r.error && r.error.message) || r.error) : null)
         || (parsed ? null : 'reconcile: could not parse inbox-pull subprocess output'),
@@ -4978,7 +5040,11 @@ function cmdReconcile(flags, ctx) {
   // not matching the exact hivecontrol-spawn shape, unparseable stdout —
   // anything at all) fails the aggregate. Never add a third allow-listed
   // failure regex here.
-  const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true);
+  // Defect-2 fix: `worktreeMissing:true` is a FOURTH recognized benign skip —
+  // set only by the pre-spawn existsSync check above, never by parsing an
+  // error string, so it cannot be spoofed by a subprocess's stdout the way an
+  // allow-listed regex could be.
+  const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true || r.worktreeMissing === true);
 
   // Task #6 name backfill (off the hot path — reconcile is a gated/manual
   // sweep, NEVER the every-turn hook, so a `hivecontrol` spawn here is fine).

@@ -17,6 +17,7 @@ const os = require('node:os');
 const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 const replyStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-reply-state.js');
+const meshStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 
 const HOOK = 'devswarm-parent-gate.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + Primary (no SOURCE_BRANCH)
@@ -130,11 +131,13 @@ test('BLOCK: unread backlog past cursor -> decision:block naming the workspace +
     assert.strictEqual(r.json.decision, 'block');
     assert.match(r.json.reason, /ws1/);
     assert.match(r.json.reason, /2 unread/);
-    // C1 fix: the prescribed clear path is now the dual-backend CLI verb
-    // (`inbox read-primary <id>`), NOT the NDJSON-only advanceCursor primitive
-    // in devswarm-inbox-cursor.js (which never clears a store-backed row's
-    // unread projection — the gate used to refire forever demanding it).
-    assert.match(r.json.reason, /inbox read-primary/, 'must state the read/ack clear path');
+    // Root cause b fix (live incident): a CHILD's mailbox is the CHILD's own —
+    // this Primary is neither the owner (read-primary against a child id is
+    // refused as ownership-mismatch) nor may it advance that cursor (it would
+    // mark a message read the child has never seen). The prescribed path is now
+    // the NON-MUTATING `inbox peek-primary <id>` (inspect only, no ack).
+    assert.match(r.json.reason, /inbox peek-primary/, 'must state the non-destructive inspect path');
+    assert.doesNotMatch(r.json.reason, /inbox read-primary <id>/, 'must never tell the Primary to advance a CHILD workspace\'s cursor');
     assert.match(r.json.reason, /devswarm-parent-gate/, 'must name the skip-guard escape');
   } finally { h.cleanup(); }
 });
@@ -1300,5 +1303,83 @@ test('UNTRUNCATED: an ordinary (non-truncated) projection behaves exactly as tod
       assert.match(results[cap].json.reason, /DEVSWARM ESCALATION/, '(cap+1)th call must still escalate as before');
       assert.strictEqual(results[cap + 1].stdout, '', '(cap+2)th call must still go quiet as before');
     } finally { h2.cleanup(); }
+  } finally { h.cleanup(); }
+});
+
+// ============================================================================
+// ROOT CAUSE (a)+(b) FIX — live-session bug report (anti-hall 0.75.1): the
+// store-side UNION check (companion/lib/devswarm-unread.js) reads a CHILD
+// descriptor's mailbox partition (workspace_id === recipient === d.id, per
+// devswarm-store.js appendMeshMessage's D3 wire-contract). A message THIS
+// PRIMARY just sent to that child (`send --to <id>`) lands there with
+// `sender === own.id` and is awaiting the CHILD's read — not this Primary's.
+// (a) that row must not count toward the neglect count. (b) the remediation
+// text the gate emits for a genuine child-unread block must never instruct a
+// cursor advance on a workspace this Primary does not own (destructive by
+// side effect, and structurally refused anyway).
+// ============================================================================
+
+// seedStoreOnlyRow(home, id, from, hash) — a REAL store-direct mesh row
+// (appendMeshMessage, the same primitive `send --to` uses) addressed TO `id`,
+// with `sender` set to `from`. Mirrors devswarm-child-gate.test.js's own
+// seedOutboundReport helper (same store/openStore/appendMeshMessage pattern).
+function seedStoreOnlyRow(home, id, from, hash) {
+  const s = meshStore.openStore({ home, workspaceId: id, hash: REPO_KEY });
+  try {
+    meshStore.appendMeshMessage(s, {
+      from, to: id, type: 'direct', message: 'store-direct row', timestamp: Date.now(), hash,
+    });
+  } finally { s.close(); }
+}
+
+test('FIX 3a: a store-only row whose sender IS this Primary (own outbound send) does NOT count as neglect', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws-out1', { worktreePath: REPO_CWD, messages: [], cursor: 0 });
+    seedStoreOnlyRow(h.home, 'ws-out1', OWN_ID, 'test-out-1');
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `this Primary's own outbound send must never self-flag as neglect; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('FIX 3a control: a store-only row from a DIFFERENT sender still counts as real neglect', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws-out2', { worktreePath: REPO_CWD, messages: [], cursor: 0 });
+    seedStoreOnlyRow(h.home, 'ws-out2', 'some-other-sender', 'test-out-2');
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a store-only row from a real different sender must still block');
+    assert.match(r.json.reason, /ws-out2/);
+    assert.match(r.json.reason, /1 unread/);
+  } finally { h.cleanup(); }
+});
+
+test('FIX 3a mixed: this Primary\'s own outbound row is excluded while a genuine different-sender row in the SAME workspace still counts', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws-out3', { worktreePath: REPO_CWD, messages: [], cursor: 0 });
+    seedStoreOnlyRow(h.home, 'ws-out3', OWN_ID, 'test-out-3a');
+    seedStoreOnlyRow(h.home, 'ws-out3', 'some-other-sender', 'test-out-3b');
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /1 unread/, 'the own-outbound row must be excluded from the displayed count, leaving only the real one');
+  } finally { h.cleanup(); }
+});
+
+test('FIX 3b: the remediation for a genuine child-unread block is NON-DESTRUCTIVE — no cursor-advancing/ack command against a workspace this Primary does not own', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws-out2', { worktreePath: REPO_CWD, messages: [], cursor: 0 });
+    seedStoreOnlyRow(h.home, 'ws-out2', 'some-other-sender', 'test-out-4');
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    const reason = r.json.reason;
+    // The non-destructive, read-only inspect verb IS present...
+    assert.match(reason, /inbox peek-primary <id>/, `must point at the non-mutating peek-primary verb; reason=${reason}`);
+    // ...and no cursor-advancing/ack verb against the child id is present anywhere.
+    assert.doesNotMatch(reason, /inbox read-primary <id>/, `must never tell the Primary to advance a child's cursor; reason=${reason}`);
+    assert.doesNotMatch(reason, /ADVANCING its cursor/i, `must not instruct the Primary to advance a child's cursor; reason=${reason}`);
+    assert.doesNotMatch(reason, /\bACK\w*\s+its cursor/i, `must not instruct acking a child's cursor; reason=${reason}`);
   } finally { h.cleanup(); }
 });

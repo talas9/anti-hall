@@ -542,6 +542,18 @@ function main() {
     // union it). LAZY + GUARDED, fail-open: never turns a passing row newly
     // unknown/blocking, only ADDS store-only real rows already excluded by
     // the same isNoiseText check applied to their `.body`.
+    //
+    // OUTBOUND-NOT-NEGLECT fix (root cause a — live incident, storeSeq
+    // 27107-27109): `union.storeOnlyUnreadRows` is this CHILD descriptor's
+    // OWN mailbox partition (workspace_id === recipient === d.id, see
+    // devswarm-store.js appendMeshMessage's D3 wire-contract comment) — a row
+    // this Primary itself just sent via `send --to <childId>` lands here with
+    // `sender === own.id` and is awaiting the CHILD's read, not this Primary's.
+    // Counting it as parent neglect flagged the Primary for its own outbound
+    // send within seconds of sending it. Exclude any row whose `sender`
+    // matches this Primary's own workspace id (`own.id`, already resolved
+    // above via readOwnUnread/#34) — a row with no resolvable sender (absent/
+    // malformed) still counts as real (fail-open toward blocking, unchanged).
     if (!unreadUnknown && dKey) {
       try {
         // `repoKey: dKey` reuses the ALREADY-RESOLVED (memoized, above) repoKey
@@ -553,6 +565,9 @@ function main() {
             const union = devswarmUnread.unionUnread({ inboxPath: d.inboxPath, cursorPath: d.cursorPath, id: d.id, storeHandle });
             for (const row of union.storeOnlyUnreadRows) {
               if (isNoiseText(row && row.body)) continue;
+              // This Primary's own outbound send, sitting in the recipient's
+              // mailbox awaiting THEIR read — not parent neglect.
+              if (own.id && row && row.sender != null && String(row.sender) === String(own.id)) continue;
               realUnread++;
             }
           } finally {
@@ -926,12 +941,25 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
       'STOP and read them FIRST via `devswarm.js inbox read-primary ' + ownId + '`. ';
   }
   if (anyChildUnread) {
+    // NON-DESTRUCTIVE remediation (root cause b fix — live incident): the
+    // prior wording told the Primary to ADVANCE a child's cursor via
+    // `inbox read-primary <id>`. That mailbox partition belongs to the CHILD
+    // (workspace_id === recipient === that workspace's own id, per
+    // devswarm-store.js's D3 wire-contract), so advancing its cursor marks a
+    // message read that the CHILD itself has never seen — and read-primary
+    // against a workspace this Primary does not own is refused anyway
+    // (ownership-mismatch, scripts/devswarm.js cmdInboxMessages), so the old
+    // advice could never even succeed. `inbox peek-primary <id>` is the
+    // existing NON-MUTATING verb (scripts/devswarm.js cmdInbox 'peek-primary')
+    // — same unread-only view, never touches any cursor. Detect-and-report
+    // only: inspect here, let the workspace itself clear its own backlog by
+    // reading it.
     body +=
-      'CLEAR the unread backlog by READING each workspace\'s unread inbox message(s), ' +
-      'ACTING on them, then ADVANCING its cursor via `devswarm.js inbox read-primary <id>` ' +
-      '(the dual-backend ack verb — advances BOTH the durable-NDJSON cursor AND the ' +
-      'store cursor, so the unread projection actually clears; the bare NDJSON-only ' +
-      'advanceCursor primitive does NOT clear a store-backed row). ';
+      'INSPECT the unread backlog via `devswarm.js inbox peek-primary <id>` ' +
+      '(read-only — does not advance any cursor) to see what is pending for each ' +
+      'workspace, then follow up with that workspace as needed; a workspace\'s own ' +
+      'cursor is only advanced by that workspace reading its own inbox, never by this ' +
+      'Primary. ';
   }
   if (anyStale) {
     body +=
