@@ -16,6 +16,7 @@ const MODULE_PATH = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'co
 const wakeWatch = require(MODULE_PATH);
 const {
   tick, normalizeState, formatArmLine, formatWakeLine, formatDualWakeLine, formatErrorLine,
+  formatRefusalLine, REFUSAL_REASONS,
   ERROR_TOLERANCE, ERROR_BACKOFF_MS,
   pollMsFromEnv, realFormsOf, resolveIdentity, resolvePrimaryHashes, resolveChildHashes,
   readChildSnapshot, readPrimarySnapshot, readChildCombinedSnapshot,
@@ -720,7 +721,12 @@ test('readPrimarySnapshot (real store, not mocked): 50 broadcast/heartbeat rows 
 // Lock-refused path: stderr only, ZERO stdout, exit 0.
 // ---------------------------------------------------------------------------
 
-test('lock-refused: a live-held lock produces zero stdout and a stderr line, exit 0', (t) => {
+// REFUSAL_LINE_RE — the fixed shape a REFUSED TO ARM line must take: the
+// literal prefix plus exactly one of the three closed-vocabulary reasons and
+// nothing else (no interpolated id/cwd/error text can slip in undetected).
+const REFUSAL_LINE_RE = /^\[wake-watch\] REFUSED TO ARM: (not-a-devswarm-session|identity-unresolved|lock-held)\n$/;
+
+test('lock-refused: a live-held lock emits exactly one REFUSED TO ARM (lock-held) stdout line and a stderr line, exit 0', (t) => {
   const home = tmpHome();
   try {
     const id = 'builder-lockrefusal-test';
@@ -739,7 +745,8 @@ test('lock-refused: a live-held lock produces zero stdout and a stderr line, exi
     };
     const res = spawnSync(process.execPath, [MODULE_PATH], { env, encoding: 'utf8', timeout: 5000 });
     assert.strictEqual(res.status, 0);
-    assert.strictEqual(res.stdout, '');
+    assert.match(res.stdout, REFUSAL_LINE_RE);
+    assert.strictEqual(res.stdout, '[wake-watch] REFUSED TO ARM: ' + REFUSAL_REASONS.LOCK_HELD + '\n');
     assert.match(res.stderr, /already holds the lock/);
 
     // Lock file must be left untouched (refusal never steals/removes a live lock).
@@ -756,7 +763,7 @@ test('lock-refused: a live-held lock produces zero stdout and a stderr line, exi
 // SAME helper (hooks/lib/devswarm-detect.js isDevswarmActive), same semantics.
 // ---------------------------------------------------------------------------
 
-test('main(): a non-DevSwarm session exits quietly — zero stdout, exit 0, zero files/dirs created', () => {
+test('main(): a non-DevSwarm session emits exactly one REFUSED TO ARM (not-a-devswarm-session) stdout line, exit 0, zero files/dirs created', () => {
   const home = tmpHome();
   try {
     const env = {
@@ -768,7 +775,12 @@ test('main(): a non-DevSwarm session exits quietly — zero stdout, exit 0, zero
     };
     const res = spawnSync(process.execPath, [MODULE_PATH], { env, encoding: 'utf8', timeout: 5000 });
     assert.strictEqual(res.status, 0);
-    assert.strictEqual(res.stdout, '', 'stdout must be byte-for-byte empty — stdout is what wakes an agent');
+    // stdout carries ONLY the fixed closed-vocabulary refusal line — no cwd,
+    // no arbitrary state — so a Monitor caller can tell "refused" from
+    // "armed and quiet" while still never being fed anything but the fixed
+    // reason string.
+    assert.match(res.stdout, REFUSAL_LINE_RE);
+    assert.strictEqual(res.stdout, '[wake-watch] REFUSED TO ARM: ' + REFUSAL_REASONS.NOT_DEVSWARM_SESSION + '\n');
     // stderr MAY carry a one-line notice; that's fine and expected.
     assert.match(res.stderr, /not a DevSwarm session/);
 
@@ -777,6 +789,42 @@ test('main(): a non-DevSwarm session exits quietly — zero stdout, exit 0, zero
     assert.strictEqual(fs.existsSync(path.join(home, '.anti-hall')), false,
       'the gate must run before any mkdir/lock-acquisition/state write — found: ' + JSON.stringify(fs.readdirSync(home)));
   } finally { rm(home); }
+});
+
+test('main(): identity-unresolved refusal emits exactly one REFUSED TO ARM (identity-unresolved) stdout line, exit 1', () => {
+  const home = tmpHome();
+  try {
+    // Open the isDevswarmActiveGate (DEVSWARM_REPO_ID) but give resolveIdentity
+    // nothing it can use: no DEVSWARM_SOURCE_BRANCH/BUILDER_ID pair, cwd set to
+    // an isolated non-git tmp dir so tiers (c)/(d) also find nothing, and the
+    // env's own DEVSWARM_REPO_ID intentionally left off the resolveIdentity
+    // env-only tier's required pair.
+    const cwdDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wake-watch-noident-'));
+    const env = {
+      PATH: process.env.PATH,
+      HOME: home,
+      USERPROFILE: home,
+      DEVSWARM_REPO_ID: 'r1', // opens isDevswarmActiveGate...
+      // ...but no DEVSWARM_SOURCE_BRANCH/DEVSWARM_BUILDER_ID and no on-disk
+      // DevSwarm state for this cwd, so resolveIdentity has nothing to resolve.
+    };
+    try {
+      const res = spawnSync(process.execPath, [MODULE_PATH], { env, cwd: cwdDir, encoding: 'utf8', timeout: 5000 });
+      assert.strictEqual(res.status, 1);
+      assert.match(res.stdout, REFUSAL_LINE_RE);
+      assert.strictEqual(res.stdout, '[wake-watch] REFUSED TO ARM: ' + REFUSAL_REASONS.IDENTITY_UNRESOLVED + '\n');
+      assert.match(res.stderr, /could not resolve a DevSwarm identity/);
+    } finally { rm(cwdDir); }
+  } finally { rm(home); }
+});
+
+test('formatRefusalLine: closed vocabulary only — every REFUSAL_REASONS value round-trips through the fixed regex, arbitrary text does not', () => {
+  for (const reason of Object.values(REFUSAL_REASONS)) {
+    assert.match(formatRefusalLine(reason) + '\n', REFUSAL_LINE_RE);
+  }
+  // Sanity: a made-up reason (never actually emitted by main()) proves the
+  // regex is a real allowlist, not a rubber stamp.
+  assert.doesNotMatch(formatRefusalLine('/etc/passwd or $(rm -rf /)') + '\n', REFUSAL_LINE_RE);
 });
 
 test('main(): a DevSwarm-active session still arms normally (gate is not over-broad)', async () => {

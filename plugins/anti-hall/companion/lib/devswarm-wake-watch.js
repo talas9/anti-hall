@@ -263,6 +263,30 @@ function formatArmLine(snapshot) {
     + ' for new direct mesh mail (read-only, poll-based; broadcasts not covered in v1).';
 }
 
+// REFUSAL_REASONS — closed vocabulary for formatRefusalLine. Every refusal
+// site below MUST pass one of these fixed values, never a dynamically-built
+// string — the line lands verbatim on stdout so it must carry no interpolated
+// runtime state (injection hygiene, same discipline command-guard.js's
+// buildDevswarmReason()/buildDevswarmSendReason() use for their block reasons).
+const REFUSAL_REASONS = {
+  NOT_DEVSWARM_SESSION: 'not-a-devswarm-session',
+  IDENTITY_UNRESOLVED: 'identity-unresolved',
+  LOCK_HELD: 'lock-held',
+};
+
+// formatRefusalLine(reason) -> the ONE stdout line emitted when the watcher
+// declines to arm. Stdout normally carries only genuine wake events (armed,
+// every line becomes a transcript event per KB-claude-monitor-tool.md) — a
+// refusal-to-arm is different in kind, not degree: it is information the
+// caller needs EXACTLY ONCE, at arm time, to tell "no coverage" apart from "a
+// healthy, quiet watcher armed and waiting." It is not a recurring emission
+// and does not pollute the wake channel the way a per-tick status line would.
+// `reason` MUST be a REFUSAL_REASONS value (closed vocabulary) — never cwd,
+// an id, an error message, or any other runtime-derived text.
+function formatRefusalLine(reason) {
+  return '[wake-watch] REFUSED TO ARM: ' + reason;
+}
+
 // formatWakeLine(snapshot, prevTotal, total, opts) -> string. The actionable
 // line — tells the agent WHAT happened and what to do next, without the
 // watcher ever running that drain itself. `opts.channelLabel` (optional) names
@@ -790,18 +814,29 @@ function main() {
   const cwd = process.cwd();
 
   // GATE — must be the very first disk/stdout-touching thing main() does (see
-  // isDevswarmActiveGate comment above). stderr-only notice; stdout must stay
-  // empty here since stdout is what wakes an agent.
+  // isDevswarmActiveGate comment above). Refusal now ALSO gets exactly one
+  // closed-vocabulary line on stdout (see formatRefusalLine) so a caller
+  // watching only stdout can tell "refused" from "armed and quiet" — the
+  // detailed stderr notice stays for humans/logs. Exit 0: this is the
+  // NORMAL, expected outcome for the majority of invocations (any non-
+  // DevSwarm repo — monitors.json's "when": "always" starts this watcher
+  // unconditionally), not a fault.
   if (!isDevswarmActiveGate(env, cwd, {})) {
     try { process.stderr.write('[wake-watch] not a DevSwarm session; exiting quietly (not arming).\n'); } catch (_) {}
+    try { emitLine(formatRefusalLine(REFUSAL_REASONS.NOT_DEVSWARM_SESSION)); } catch (_) {}
     process.exitCode = 0;
     return;
   }
 
   const identity = resolveIdentity(env, cwd, {});
   if (!identity) {
+    // Unlike the gate above, isDevswarmActiveGate already confirmed this IS a
+    // DevSwarm session — failing to resolve an identity from here is a real
+    // anomaly, not an expected non-applicable case, so exit non-zero to make
+    // that distinction visible to anything that does check the exit code.
     try { process.stderr.write('[wake-watch] could not resolve a DevSwarm identity for cwd=' + cwd + '; exiting quietly.\n'); } catch (_) {}
-    process.exitCode = 0;
+    try { emitLine(formatRefusalLine(REFUSAL_REASONS.IDENTITY_UNRESOLVED)); } catch (_) {}
+    process.exitCode = 1;
     return;
   }
 
@@ -812,12 +847,17 @@ function main() {
   const lockPath = lockPathFor(home, id);
   const release = pull.acquireExclLock(lockPath, {}, WATCH_LOCK_STALE_MS);
   if (!release) {
-    // Double-arm refused. MUST write to stderr only, zero stdout — stdout is
-    // what wakes the agent, so a refused double-arm must fire ZERO events.
+    // Double-arm refused. A second watcher declining is CORRECT, not an
+    // error — exit 0. It still gets exactly one closed-vocabulary line on
+    // stdout (formatRefusalLine) so the caller can distinguish "another
+    // watcher already covers this" from "armed and quiet"; the detailed
+    // stderr line (with role/id) stays for humans/logs since only the fixed
+    // reason may go on stdout.
     try {
       process.stderr.write('[wake-watch] another watcher already holds the lock for '
         + watchedRole + ' ' + id + '; exiting quietly (not double-arming).\n');
     } catch (_) {}
+    try { emitLine(formatRefusalLine(REFUSAL_REASONS.LOCK_HELD)); } catch (_) {}
     process.exitCode = 0;
     return;
   }
@@ -902,6 +942,8 @@ module.exports = {
   formatWakeLine,
   formatDualWakeLine,
   formatErrorLine,
+  formatRefusalLine,
+  REFUSAL_REASONS,
   ERROR_TOLERANCE,
   ERROR_BACKOFF_MS,
   // IO helpers

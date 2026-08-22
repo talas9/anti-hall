@@ -138,7 +138,9 @@ function monitorArmLine(watcher) {
     'that alone). If none is armed, call `Monitor` with command `node ' + watcher + '`, ' +
     '`persistent: true`, and a description like "devswarm mailbox wake watcher" — every ' +
     'line it prints on stdout becomes a transcript event, waking this session even while ' +
-    'fully idle, with far lower latency than the cron tick above.';
+    'fully idle, with far lower latency than the cron tick above. A first line starting ' +
+    '`[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume ' +
+    'you do; the cron job above is still your only wake path.';
 }
 
 // wakeDirective(env, isChild, cli, watcher) -> the SessionStart directive text
