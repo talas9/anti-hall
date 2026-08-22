@@ -2683,6 +2683,210 @@ test('runUpdate: shared store-hash enumeration — devswarmStore.listStoreHashes
   }
 });
 
+// --- Defect 1: priority-blind sweep order starves small stores ---
+
+test('orderStoreHashesBySize: smallest-disk-size-first, not raw readdir/input order', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-order-size-'));
+  try {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const mk = (hash, bytes) => {
+      const dir = storeLib.storeDirForHash(home, hash);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'devswarm.db'), Buffer.alloc(bytes));
+    };
+    // 'aaaaaaaa' sorts first alphabetically/in raw readdir order, but is the
+    // LARGEST store — proves the reorder is driven by measured size, not by
+    // accidentally preserving input order.
+    mk('aaaaaaaa', 5_000_000);
+    mk('bbbbbbbb', 100);
+    mk('cccccccc', 1000);
+    const ordered = U.orderStoreHashesBySize(storeLib, home, ['aaaaaaaa', 'bbbbbbbb', 'cccccccc']);
+    assert.deepStrictEqual(ordered, ['bbbbbbbb', 'cccccccc', 'aaaaaaaa']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('orderStoreHashesBySize: fail-open — an unreadable/missing store dir scores 0, never throws, list is still returned in full', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-order-size-failopen-'));
+  try {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const dir = storeLib.storeDirForHash(home, 'realone');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'devswarm.db'), Buffer.alloc(500));
+    // 'missing' has no store dir on disk at all.
+    const ordered = U.orderStoreHashesBySize(storeLib, home, ['realone', 'missing']);
+    assert.deepStrictEqual(ordered.slice().sort(), ['missing', 'realone'].sort(), 'both hashes survive — nothing dropped/thrown on the unreadable one');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('smallest-first ordering reaches a store that would previously starve behind a large one, within the same tiny budget', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-order-starve-'));
+  try {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const mk = (hash, bytes) => {
+      const dir = storeLib.storeDirForHash(home, hash);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'devswarm.db'), Buffer.alloc(bytes));
+    };
+    // repoKey shape (^[a-z0-9-]{1,40}-[0-9a-f]{6}$) so listStoreHashes actually
+    // picks these up — 'a-large-store-...' sorts first alphabetically/in raw
+    // readdir order despite being the LARGEST.
+    mk('a-large-store-aaaaaa', 5_000_000);
+    mk('z-small-store-bbbbbb', 200);
+    const raw = storeLib.listStoreHashes(home);
+    assert.deepStrictEqual(raw.slice().sort(), ['a-large-store-aaaaaa', 'z-small-store-bbbbbb'].sort());
+    const ordered = U.orderStoreHashesBySize(storeLib, home, raw);
+
+    // budgetMs: 0 -> runThrottledSweep always runs the FIRST item (its own
+    // documented guarantee), then breaks before item 2 unconditionally. Which
+    // hash lands in that guaranteed first slot is exactly what starves under
+    // raw readdir order vs the size-ordered fix.
+    const seen = [];
+    const sweep = U.runThrottledSweep({
+      items: ordered,
+      budgetMs: 0,
+      sleepFn: () => {},
+      worker: (h) => { seen.push(h); },
+    });
+    assert.deepStrictEqual(seen, ['z-small-store-bbbbbb'], 'the small store is reached within budget instead of being starved behind the large one');
+    assert.strictEqual(sweep.budgetExhausted, true);
+    assert.deepStrictEqual(sweep.remaining, ['a-large-store-aaaaaa']);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('storeDirSizeBytes/orderStoreHashesBySize measured cost: stat-ing 242 stores is negligible next to the 20s sweep budget', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-order-size-cost-'));
+  try {
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const hashes = [];
+    for (let i = 0; i < 242; i++) {
+      const hash = 'store' + String(i).padStart(4, '0') + 'aa';
+      hashes.push(hash);
+      const dir = storeLib.storeDirForHash(home, hash);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'devswarm.db'), Buffer.alloc(1024));
+      fs.writeFileSync(path.join(dir, 'devswarm.db-wal'), Buffer.alloc(512));
+    }
+    const t0 = Date.now();
+    U.orderStoreHashesBySize(storeLib, home, hashes);
+    const elapsedMs = Date.now() - t0;
+    // Generously bounded (default budget is 20000ms) — this is a smoke bound,
+    // not a tight perf assertion; real-world numbers on this machine were
+    // low-single-digit milliseconds for 242 shallow stat passes.
+    assert.ok(elapsedMs < 2000, 'stat-ing 242 stores took ' + elapsedMs + 'ms — expected well under the 20s sweep budget');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- Defect 2: unhealable-store visibility (heal-orphan-partitions) ---
+
+test('healOrphanPartitionsPostUpdate: unhealable ids are surfaced as a bounded sample, not just a bare count', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-visible-'));
+  try {
+    const fakeDevswarm = {
+      healOrphanPartitions: (h, ctx) => ({
+        ok: true, adopted: 0, forwarded: 0, unhealable: 2, skipped: 0, errors: 0,
+        detail: [
+          { id: 'orphan-1', action: 'unhealable', reason: 'no-descriptor' },
+          { id: 'orphan-2', action: 'unhealable', reason: 'no-descriptor' },
+        ],
+      }),
+    };
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['store-x'],
+    });
+    assert.strictEqual(result.unhealable, 2);
+    assert.strictEqual(result.unhealableSample.length, 2);
+    assert.deepStrictEqual(result.unhealableSample.map((u) => u.id), ['orphan-1', 'orphan-2']);
+    assert.strictEqual(result.unhealableSample[0].repoKey, 'store-x');
+    assert.match(result.detail, /unhealable/);
+    assert.match(result.detail, /orphan-1/);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: unhealable sample is bounded (never dumps every id across many stores)', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-cap-'));
+  try {
+    const hashes = [];
+    for (let i = 0; i < 30; i++) hashes.push('store' + i);
+    const fakeDevswarm = {
+      healOrphanPartitions: (h, ctx) => ({
+        ok: true, adopted: 0, forwarded: 0, unhealable: 3, skipped: 0, errors: 0,
+        detail: [
+          { id: ctx.repoKey + '-a', action: 'unhealable', reason: 'no-descriptor' },
+          { id: ctx.repoKey + '-b', action: 'unhealable', reason: 'no-descriptor' },
+          { id: ctx.repoKey + '-c', action: 'unhealable', reason: 'no-descriptor' },
+        ],
+      }),
+    };
+    const result = U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes,
+    });
+    assert.strictEqual(result.unhealable, 90, '30 stores * 3 each');
+    assert.ok(result.unhealableSample.length <= 20, 'sample is capped, never the full 90');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('healOrphanPartitionsPostUpdate: wires a ctx.deadline (this run\'s sweep budget) into every devswarm.healOrphanPartitions call', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-healorphan-deadline-'));
+  try {
+    const seenDeadlines = [];
+    const fakeDevswarm = {
+      healOrphanPartitions: (h, ctx) => {
+        seenDeadlines.push(ctx.deadline);
+        return { ok: true, adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0, detail: [] };
+      },
+    };
+    const before = Date.now();
+    U.healOrphanPartitionsPostUpdate({
+      paths: { pluginSrcDir: REAL_PLUGIN_SRC_DIR },
+      env: { DEVSWARM_REPO_ID: 'r1' },
+      cwd: process.cwd(), home,
+      devswarm: fakeDevswarm,
+      hashes: ['s1'],
+    });
+    assert.strictEqual(seenDeadlines.length, 1);
+    assert.ok(Number.isFinite(seenDeadlines[0]) && seenDeadlines[0] >= before, 'deadline is a real future-ish epoch-ms value');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+// --- Defect 3: lastCompletedHash is observability-only (decided contract) ---
+
+test('lastCompletedHash is OBSERVABILITY-ONLY: sweepItemsFor resumption reads pendingHashes exclusively, never lastCompletedHash', () => {
+  const state = {
+    myKey: {
+      completedVersion: null,
+      pendingVersion: 'v1',
+      pendingHashes: ['s2', 's3'],
+      lastCompletedHash: 'BOGUS-VALUE-THAT-MATCHES-NOTHING',
+    },
+  };
+  const sel = U.sweepItemsFor(state, 'myKey', 'v1', () => { throw new Error('fullEnumerate must not run — a pending list already exists'); });
+  assert.strictEqual(sel.skip, false);
+  assert.deepStrictEqual(sel.items, ['s2', 's3'], 'resume list comes from pendingHashes only, unaffected by lastCompletedHash content');
+});
+
+test('recordSweepResult: lastCompletedHash records the last store actually finished before a budget stop (debugging aid), cleared on a clean completion', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'update-lastcompleted-'));
+  try {
+    const midSweep = { budgetExhausted: true, remaining: ['c'], processedItems: ['a', 'b'] };
+    const next1 = U.recordSweepResult(home, {}, 'k', 'v1', midSweep);
+    assert.strictEqual(next1.k.lastCompletedHash, 'b');
+    assert.deepStrictEqual(next1.k.pendingHashes, ['c']);
+
+    const doneSweep = { budgetExhausted: false, remaining: [], processedItems: ['c'] };
+    const next2 = U.recordSweepResult(home, next1, 'k', 'v1', doneSweep);
+    assert.strictEqual(next2.k.lastCompletedHash, null, 'cleared once the sweep for this version completes cleanly');
+    assert.strictEqual(next2.k.completedVersion, 'v1');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test('GIT_EXEC_TIMEOUT_MS: 20s, not the prior 60s', () => {
   assert.strictEqual(U.GIT_EXEC_TIMEOUT_MS, 20000);
 });

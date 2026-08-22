@@ -85,6 +85,53 @@ test('reconcile drains every registered worktree via a per-id subprocess spawn, 
   } finally { rm(home); rm(repo); }
 });
 
+// ---- REGRESSION (primary-* inboxPath:null failing reconcile forever) ------
+// A `primary-*` descriptor is created with inboxPath:null (the spawn seed at
+// devswarm.js:6197, or cmdRegisterPrimary without --inbox) and has NO per-turn
+// hook to backfill it the way devswarm-child-turn.js:447 does for children —
+// it used to fail reconcile identically every single sweep with
+// "descriptor for ... has no inboxPath". This exercises the REAL cmdInboxPull
+// -> cmdRegister(ensure) -> pullOnce chain in-process (only the native
+// hivecontrol spawn is mocked) to prove the whole path now self-heals.
+test('reconcile: a primary-* descriptor with inboxPath:null self-heals via the ensure-branch backfill and drains OK end-to-end', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-primary-null-inbox');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'primary-bf04dd47', worktreePath: repo, sessionId: 's1' });
+    const wdir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(wdir, { recursive: true });
+    fs.writeFileSync(path.join(wdir, 'primary-bf04dd47.json'), JSON.stringify({
+      id: 'primary-bf04dd47', worktreePath: repo, sessionId: 's1', inboxPath: null, cursorPath: null,
+    }));
+    const io = {
+      // spawnReconcile stands in for the real subprocess spawn, but drives the
+      // REAL `inbox pull` verb in-process — only the native hivecontrol binary
+      // (message-count/read-messages) is mocked, exactly the same seam
+      // cmdInboxPull's own `ctx.io.run` injection point uses in production.
+      spawnReconcile: (d) => {
+        const nativeIo = { run: (s) => {
+          const sub = (s && s.args && s.args[1]) || null;
+          if (sub === 'message-count') return { ok: true, raw: '0', error: null };
+          return { ok: false, raw: '', error: 'unexpected subcommand ' + sub };
+        } };
+        const r = cli.run(['inbox', 'pull', d.id], ctx(home, { cwd: d.worktreePath, io: nativeIo }));
+        return { status: 0, stdout: JSON.stringify(r.result), error: null };
+      },
+    };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io }));
+    assert.equal(r.result.ok, true, 'the sweep must succeed, not fail with "descriptor has no inboxPath"');
+    const row = r.result.results.find((x) => x.id === 'primary-bf04dd47');
+    assert.ok(row, 'the primary-* target must be present in the sweep');
+    assert.equal(row.ok, true);
+    assert.doesNotMatch(String(row.error || ''), /has no inboxPath/, 'the reported defect must no longer reproduce');
+    // The descriptor on disk must now carry a real, non-empty inboxPath —
+    // backfilled by cmdRegister's ensure branch, deterministically derived.
+    const desc = JSON.parse(fs.readFileSync(path.join(wdir, 'primary-bf04dd47.json'), 'utf8'));
+    assert.ok(desc.inboxPath, 'inboxPath must be backfilled, not left null');
+  } finally { rm(home); rm(repo); }
+});
+
 test('reconcile surfaces a per-id lock-skip (locked:true, imported:0) rather than counting it as drained', () => {
   const home = tmpHome();
   const repo = makeGitRepo('reconcile-locked');

@@ -484,6 +484,73 @@ for (const B of backends) {
     } finally { rm(W1); rm(home); }
   });
 
+  test(`[${B.name}] BUDGET FIX: real work (a descriptor-backed, adoptable orphan) is processed before the no-descriptor bucket, and still fully classifies with no ctx.deadline`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('order-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      // Several permanently-unhealable orphans (no descriptor anywhere) mixed
+      // with ONE adoptable orphan (has a live descriptor) — enumeration order
+      // (readdirSync-derived) puts them in an arbitrary mix, but the adoptable
+      // one must still be adopted regardless, and every no-descriptor id must
+      // still classify unhealable when no ctx.deadline is supplied (unset =
+      // today's exact behavior, per healOrphanPartitions' own doc comment).
+      for (const id of ['orphan-a', 'orphan-b', 'orphan-c']) seedDirect(home, repoKey, id, 'msg-' + id);
+      seedDirect(home, repoKey, 'orphan-real', 'adopt-me');
+      descFile(home, 'orphan-real', { id: 'orphan-real', worktreePath: topOf(W1), sessionId: 's1' });
+
+      const r = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.adopted, 1, 'the descriptor-backed orphan is still adopted');
+      assert.strictEqual(r.unhealable, 3, 'all three no-descriptor orphans still classify unhealable with no deadline set');
+      assert.ok(regIds(home, repoKey).includes('orphan-real'));
+      for (const id of ['orphan-a', 'orphan-b', 'orphan-c']) {
+        assert.ok(!regIds(home, repoKey).includes(id), id + ' never adopted');
+      }
+    } finally { rm(W1); rm(home); }
+  });
+
+  test(`[${B.name}] BUDGET FIX: an already-spent ctx.deadline skips the no-descriptor bucket in one shot (skipped, not unhealable) but never touches real adopt work`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('deadline-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      seedDirect(home, repoKey, 'orphan-nodesc-1', 'msg-1');
+      seedDirect(home, repoKey, 'orphan-nodesc-2', 'msg-2');
+      seedDirect(home, repoKey, 'orphan-real', 'adopt-me');
+      descFile(home, 'orphan-real', { id: 'orphan-real', worktreePath: topOf(W1), sessionId: 's1' });
+
+      const r = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend, deadline: Date.now() - 1 });
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.adopted, 1, 'real work still happens even with an already-spent deadline');
+      assert.strictEqual(r.unhealable, 0, 'no-descriptor ids are NOT classified this pass once the deadline is spent');
+      assert.strictEqual(r.skipped, 2, 'both no-descriptor ids counted as skipped (deferred), not unhealable');
+      assert.ok(r.detail.some((d) => d.action === 'deadline-skip' && d.count === 2));
+    } finally { rm(W1); rm(home); }
+  });
+
+  test(`[${B.name}] NO PERMANENT EXCLUSION: an unhealable orphan whose descriptor REAPPEARS is adopted on the next pass`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('reappear-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      seedDirect(home, repoKey, 'orphan-late', 'late-msg');
+      assert.ok(!cli.readDescriptorFile(home, 'orphan-late'), 'sanity: no descriptor yet');
+
+      const r1 = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r1.unhealable, 1, 'first pass: no descriptor -> unhealable, zero writes');
+      assert.ok(!regIds(home, repoKey).includes('orphan-late'));
+
+      // The descriptor reappears (e.g. the workspace re-registers on disk).
+      descFile(home, 'orphan-late', { id: 'orphan-late', worktreePath: topOf(W1), sessionId: 's1' });
+
+      const r2 = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r2.unhealable, 0, 'second pass: no longer unhealable');
+      assert.strictEqual(r2.adopted, 1, 'adopted now that a descriptor exists — proves no persistent blacklist/tombstone excluded it');
+      assert.ok(regIds(home, repoKey).includes('orphan-late'));
+    } finally { rm(W1); rm(home); }
+  });
+
   test(`[${B.name}] IDEMPOTENT: a second heal pass over an archive-only orphan forwards nothing new (hash dedup holds)`, () => {
     const home = tmpHome();
     const W1 = makeGitRepo('archonly-idem-' + B.name);

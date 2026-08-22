@@ -6,6 +6,47 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.81.0 (2026-08-23)
+
+- **Fix: a Primary's own inbox could be permanently unreachable.** A
+  `primary-*` descriptor created without an explicit inbox path kept
+  `inboxPath: null` forever — child descriptors self-heal this every turn,
+  but Primary rows had no equivalent, so reconcile failed the same way on
+  every run and mail addressed to that mailbox was undeliverable. The
+  register ensure-path now backfills `inboxPath`/`cursorPath` from the
+  caller's defaults (only when empty, never overwriting an existing value),
+  and the inbox pull now derives the standard default path instead of
+  erroring — matching what three sibling call sites already did.
+- **Fix: `diagnose` could report a dead workspace as live, and a live one as
+  dead.** Liveness came from a bare session id string with no expiry and no
+  heartbeat correlation: a closed workspace's row stayed "live" forever,
+  while a running workspace whose session id was never stamped read as
+  dead. `diagnose`/`healthcheck` now derive the displayed liveness from the
+  heartbeat instead. This is a **display-only** change — routing,
+  fold/retire/adopt, and tombstone decisions still use the previous signal
+  unchanged, deliberately, so no fold can newly happen as a result of this
+  fix.
+- **Fix: a workspace with a fresh heartbeat but an unclaimed session id
+  showed as dead.** A fresh heartbeat now takes precedence for the
+  displayed liveness field; a row that is unclaimed with no (or a stale)
+  heartbeat still shows not-live, and routing still treats "unclaimed" as
+  never-live, unchanged.
+- **Fix: small stores could starve behind large ones during update
+  sweeps.** Store processing order was raw directory order under a
+  wall-clock budget, so one large store could consume the entire budget and
+  leave trivial ones unprocessed run after run. Sweeps now process
+  smallest-first.
+- **Fix: unfixable orphan stores burned sweep budget and were invisible.**
+  Orphan stores with no descriptor — which anti-hall refuses to adopt,
+  because adopting one would mean inventing ownership it can't verify — are
+  now processed last and skipped cheaply once the budget is spent, and a
+  capped sample of which ones and why is now reported instead of just a
+  count. Nothing about an orphan is persisted: a store whose descriptor
+  reappears is still adopted normally on the next pass.
+- **Docs: `lastCompletedHash` in the sweep state file is observability-only,
+  not a resume cursor** — `pendingHashes` is the authoritative resume list.
+  Documented to prevent a future reader from treating it as one.
+
 ## 0.80.0 (2026-08-22)
 
 - **New: a `/anti-hall:defects` skill on both ports** — the durable defect

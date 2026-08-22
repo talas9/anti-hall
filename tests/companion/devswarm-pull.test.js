@@ -74,6 +74,32 @@ test('count-gate: message-count===0 -> read-messages is NEVER called, imported 0
   } finally { rm(home); }
 });
 
+// ---- REGRESSION (primary-* inboxPath:null hard-erroring reconcile forever) --
+// pullOnce used to hard-error whenever desc.inboxPath was absent/null, even
+// though every sibling call site (devswarm-wake-watch.js:870, devswarm-child-
+// turn.js:447, cmdRegister's ensure branch) derives the SAME deterministic
+// default (inboxDefaultPath) instead of erroring. A `primary-*` row has no
+// per-turn hook to backfill it, so it failed identically forever with
+// "descriptor for ... has no inboxPath".
+test('pullOnce succeeds against a descriptor with NO inboxPath, deriving the same default inboxDefaultPath() computes', () => {
+  const home = tmpHome();
+  try {
+    const dir = path.join(home, '.anti-hall', 'devswarm', 'workspaces');
+    fs.mkdirSync(dir, { recursive: true });
+    // Descriptor deliberately has no inboxPath field at all (and no cursorPath
+    // — pullOnce never reads cursorPath, only inboxPath).
+    fs.writeFileSync(path.join(dir, 'noinbox-1.json'),
+      JSON.stringify({ id: 'noinbox-1', worktreePath: '/wt/noinbox-1', sessionId: 's1', inboxPath: null }));
+    const R = makeRun({ count: 2, batch: TWO });
+    const res = pull.pullOnce({ home, id: 'noinbox-1', backend: 'journal', io: { run: R.run } });
+    assert.equal(res.ok, true, 'must derive the default inbox path rather than erroring');
+    assert.equal(res.imported, 2);
+    const derived = pull.inboxDefaultPath(home, 'noinbox-1');
+    const lines = fs.readFileSync(derived, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    assert.equal(lines.length, 2, 'the drain must land in the SAME default path inboxDefaultPath() computes');
+  } finally { rm(home); }
+});
+
 test('drain: count>0 -> N lines appended, inbox reports N, child-turn unread segment fires', () => {
   const home = tmpHome();
   try {

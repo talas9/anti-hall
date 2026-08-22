@@ -2262,3 +2262,74 @@ v2.5.1 build, the vendor's public changelog (https://devswarm.ai/changelog/), an
 bundle (https://docs.devswarm.ai/) as of that date. Per the §13 convention, treat them as
 **version-fragile** — re-verify against the then-current build and a fresh docs-bundle pull
 before trusting them past the next DevSwarm update.
+
+## 26. Two deliberately different meanings of "live" for a registry row — a trap for future folding work
+
+anti-hall now carries **two distinct "live" predicates** over the same registry row shape, on
+purpose, with different consumers. Anyone touching either path must know this split exists
+before "unifying" them, because unifying is a destructive-capability change, not a cleanup.
+
+- **`isLiveSessionId(sessionId)`** (`plugins/anti-hall/scripts/devswarm.js:231-236`) — true iff
+  the sessionId is non-null, non-empty, and not prefixed `unclaimed:` (the
+  `SYNTHETIC_SESSION_PREFIX` sentinel, `devswarm.js:230`). This remains the **single source of
+  truth for routing and fold decisions**: `resolveMeshTarget`, `pickSurvivor`,
+  `groupRegistryByMeshId` (which derives `liveRows`/`kind`/`split`/`deadSplit`/`mixedSplit`),
+  `rehomeMiskeyedRow`, `retireWorktreeDuplicates`, `foldGroupIntoSurvivor` all still gate on
+  this predicate alone. Unchanged by this work.
+
+- **`computeDiagnosis`'s `rows[].live`** (`devswarm.js:5489`, row construction at
+  `devswarm.js:5580-5595`, `phantoms` count at `devswarm.js:5597`) — a **heartbeat-aware,
+  display-only** derivation as of v0.81.0: `live` is `true` immediately on a fresh heartbeat
+  (`hasFreshHeartbeat`, `devswarm.js:5583`); otherwise, only when `isLiveSessionId(sid)` also
+  holds, it defers to `!isDormantRow(...)` (`devswarm.js:5586`, both from
+  `plugins/anti-hall/companion/lib/liveness.js`); on any exception it falls back to
+  `isLiveSessionId(sid)` alone (`devswarm.js:5587`). This feeds only `diagnose`/`healthcheck`
+  output and the `phantoms` count (`rows.filter((r) => !r.live).length`,
+  `devswarm.js:5597`) — it does **not** feed any fold path, and the `degraded` gate does not
+  read `phantoms` (`devswarm.js:5635` doc comment states this explicitly).
+
+**Why they differ, by design:** a bare non-empty sessionId is not proof of life — closing a
+workspace never deletes its registry row, so a once-real sessionId is trusted forever under
+`isLiveSessionId` alone. Making the *fold* path heartbeat-aware would newly classify some rows
+as dead, which can newly **permit** a fold/tombstone that previously would not have happened.
+The repo's fail-closed convention means only the *display* path was made heartbeat-aware; the
+fold path was deliberately left on the older, more conservative predicate.
+
+**Consequence to warn about:** `diagnose`/`healthcheck` can now correctly report a row as dead
+(fresh heartbeat absent, dormant) while the fold path still treats that same row as alive and
+routable. This mismatch is intended and current behavior, not a bug. A future change that makes
+the fold path consume `rows[].live` (or `hasFreshHeartbeat`/`isDormantRow` directly) must be
+treated as a new destructive-capability surface requiring its own hardening pass — never folded
+in as an incidental cleanup alongside a display fix.
+
+**Field symptoms this display fix resolved** (shapes only, not this machine's concrete data):
+a closed workspace's row reporting live forever under the old sessionId-only display check; a
+running workspace whose row had a null/empty sessionId reporting dead despite an active
+heartbeat; and an `unclaimed:`-prefixed placeholder row with a fresh heartbeat reporting dead
+under the old check, when the workspace behind it was in fact live.
+
+**Two smaller, adjacent facts recorded here rather than a new section:**
+
+- `lastCompletedHash` in `~/.anti-hall/update-sweep-state.json` is written at three call sites
+  in the sweep-state updater (`plugins/anti-hall/skills/update/scripts/update.js:660`,
+  `:665`, `:669`) and is **read nowhere** — it is observability-only by design (documented
+  in the doc comment at `update.js:639-647`). `pendingHashes`, read back at
+  `update.js:621-622`, is the sole authoritative resume list. `lastCompletedHash` looks like a
+  resume cursor and is not one — do not wire new resume logic off it without first checking
+  whether it is still unread.
+- The update sweep's store enumeration is ordered smallest-disk-size-first as of v0.81.0
+  (`orderStoreHashesBySize`, `plugins/anti-hall/skills/update/scripts/update.js`, doc comment
+  above the function). Previously it walked stores in raw `fs.readdirSync` order, which has no
+  relationship to per-store processing cost — one large store could consume the entire
+  wall-clock sweep budget every run, starving smaller stores that sat later in that same stable
+  readdir order. Sizing is a cheap (stat-only, single-digit ms for hundreds of stores),
+  fail-open proxy: a size-read error scores 0 and never throws or reorders on partial failure.
+
+---
+
+Section §26 facts were verified 2026-08-23 from source at the versions on disk in this repo
+checkout (not a live DevSwarm capture). Per the §13 convention, the `isLiveSessionId` /
+`rows[].live` split and the update-sweep facts are anti-hall's own code, not the vendor's, so
+they do not carry the same version-fragility caveat as vendor-behavior sections — but line
+numbers will drift with future edits to `devswarm.js` and `update.js`; re-grep the cited
+function/symbol names rather than trusting the line numbers verbatim after either file changes.

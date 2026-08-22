@@ -197,11 +197,19 @@ function withIdLock(id, home, fn, opts) {
 }
 
 // SYNTHETIC_SESSION_PREFIX / isLiveSessionId (A6, v0.66 review): a registry
-// row's `sessionId` is the ONLY liveness signal every mesh-addressing/fold
-// primitive in this file reads (resolveMeshTarget, pickSurvivor,
-// groupRegistryByMeshId, computeDiagnosis, rehomeMiskeyedRow's identity
-// confirmation) — "non-empty sessionId" == "a real session is running this
-// workspace". cmdInboxPull's auto-ensure/self-register path used to MINT a
+// row's `sessionId` is the liveness signal every mesh-addressing/fold
+// primitive in this file reads for ROUTING/FOLD decisions (resolveMeshTarget,
+// pickSurvivor, groupRegistryByMeshId, rehomeMiskeyedRow's identity
+// confirmation) — those all still read "non-empty, non-synthetic sessionId"
+// as their liveness signal, UNCHANGED, and this predicate remains their
+// single source of truth (see the fail-closed audit at computeDiagnosis's
+// `rows[].live`, which does NOT feed any of these — it is a heartbeat-aware
+// DISPLAY-ONLY derivation for `diagnose`/`healthcheck`, wired to
+// companion/lib/liveness.js instead of this bare string test, because a
+// non-empty sessionId alone is NOT proof a session is still running: closing
+// a workspace never deletes its registry row, so a once-real sessionId is
+// trusted forever unless something ages it out). cmdInboxPull's auto-ensure/
+// self-register path used to MINT a
 // sessionId from `id` itself when neither `--session` nor
 // DEVSWARM_BUILDER_ID was supplied, so a reconcile-spawned phantom (a bare
 // registry seed with no live session behind it at all) became permanently
@@ -2170,13 +2178,40 @@ function healOrphanPartitions(home, ctx) {
         if (!isSafeId(id)) continue;
         orphanIds.push(id);
       }
+      // BUDGET FIX (field-measured: 75/242 orphans across this machine's stores
+      // are permanently no-descriptor-anywhere — "unhealable, forever", every
+      // single pass, with no remediation path — see update.js's
+      // healOrphanPartitionsPostUpdate doc). Resolve every orphan's descriptor
+      // ONCE up front (same resolveOrphanDescriptor call the loop below used to
+      // make inline — no extra I/O), then process ids that resolved to a REAL
+      // descriptor (adopt/forward — the actual work) BEFORE the no-descriptor
+      // bucket. This never skips a real descriptor's resolution (a reappearing
+      // descriptor must still be adopted next pass — NO persistent blacklist/
+      // tombstone), it only reorders so real work is never starved by a store
+      // whose orphans are mostly unhealable, and lets an optional ctx.deadline
+      // (set by update.js's throttled sweep; unset for direct/CLI calls, so
+      // those see NO behavior change) cut the no-descriptor bucket off in O(1)
+      // once the outer budget is spent, instead of paying per-id cost for a
+      // class of ids that can never produce a write anyway.
+      const resolvedById = new Map();
+      const withDescriptorIds = [];
+      const noDescriptorIds = [];
       for (const id of orphanIds) {
+        let resolved;
+        try { resolved = resolveOrphanDescriptor(home, id); }
+        catch (e) { resolved = { descriptor: null, source: null, resolveError: String(e && e.message || e) }; }
+        resolvedById.set(id, resolved);
+        if (resolved.descriptor) withDescriptorIds.push(id); else noDescriptorIds.push(id);
+      }
+      for (const id of withDescriptorIds) {
         try {
           // FIX A: try the LIVE descriptor first, then fall back to the ARCHIVED
           // one — readDescriptorFile alone (workspaces/<id>.json only) made the
           // archived branch below effectively dead code (see
-          // resolveOrphanDescriptor's comment for the measured evidence).
-          const resolved = resolveOrphanDescriptor(home, id);
+          // resolveOrphanDescriptor's comment for the measured evidence). Reused
+          // from the up-front resolve pass above — id is only in this bucket
+          // because it already resolved to a truthy descriptor.
+          const resolved = resolvedById.get(id);
           const desc = resolved.descriptor;
           if (!desc) {
             out.unhealable++;
@@ -2303,6 +2338,33 @@ function healOrphanPartitions(home, ctx) {
         } catch (e) {
           out.errors++;
           out.detail.push({ id, action: 'error', error: String(e && e.message || e) });
+        }
+      }
+      // No-descriptor-anywhere bucket (the "unhealable, forever" class): zero
+      // writes either way, so once ctx.deadline (if any) is already spent this
+      // classifies them ALL in O(1) instead of O(n) per-id work that could
+      // never have produced a write. deadlineHit is false whenever ctx.deadline
+      // is unset (direct/CLI calls keep today's exact behavior — every id
+      // classified every time) or hasn't passed yet. Skipped ids are counted in
+      // `skipped`, not `unhealable` — they were never actually classified this
+      // pass; the NEXT pass re-derives every one of them fresh from disk (no
+      // tombstone, so a reappearing descriptor is still adopted).
+      const deadlineHit = Number.isFinite(c.deadline) && Date.now() >= c.deadline;
+      if (deadlineHit) {
+        out.skipped += noDescriptorIds.length;
+        if (noDescriptorIds.length) {
+          out.detail.push({ action: 'deadline-skip', reason: 'no-descriptor bucket deferred to next pass', count: noDescriptorIds.length });
+        }
+      } else {
+        for (const id of noDescriptorIds) {
+          const resolved = resolvedById.get(id);
+          if (resolved && resolved.resolveError) {
+            out.errors++;
+            out.detail.push({ id, action: 'error', reason: 'resolve raised: ' + resolved.resolveError });
+            continue;
+          }
+          out.unhealable++;
+          out.detail.push({ id, action: 'unhealable', reason: 'no-descriptor' });
         }
       }
       if (!dryRun && anyWrite) store.deriveSummary(s, { home, env: c.env });
@@ -2795,6 +2857,22 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
     const ensured = Object.assign({}, existing);
     if (!storedOwnerKey) ensured.ownerKey = currentOwnerKey;
     if (currentRepoKey && descriptorFreshRepoKey(ensured) === currentRepoKey) ensured.repoKey = currentRepoKey;
+    // BACKFILL (self-heal parity with the child turn hook's `defaultInboxPath`
+    // backfill at devswarm-child-turn.js:447): a `primary-*` descriptor has no
+    // per-turn hook to backfill a null/absent inboxPath, so it fails reconcile
+    // ("descriptor has no inboxPath") forever unless THIS ensure path — which
+    // runs on every `inbox pull` — repairs it. cmdInboxPull already computes a
+    // correct default via pull.inboxDefaultPath/cursorDefaultPath and passes it
+    // in ensureFlags every call; this branch used to silently discard it.
+    // CONSERVATIVE: only fills a null/undefined/empty-string field, from the
+    // caller's supplied flag first, falling back to the deterministic default —
+    // NEVER overwrites an existing non-empty value.
+    if (ensured.inboxPath === null || ensured.inboxPath === undefined || ensured.inboxPath === '') {
+      ensured.inboxPath = one(flags, 'inbox') || pull.inboxDefaultPath(home, id);
+    }
+    if (ensured.cursorPath === null || ensured.cursorPath === undefined || ensured.cursorPath === '') {
+      ensured.cursorPath = one(flags, 'cursor') || pull.cursorDefaultPath(home, id);
+    }
     writeDescriptorAtomic(home, id, ensured);
     existing = ensured;
     precreateCursorAndInbox(existing);
@@ -5461,13 +5539,58 @@ function computeDiagnosis(s, ctx) {
     });
   }
   const workspaces = sum.workspaces || {};
+  // `live` derivation (FIX: was a bare isLiveSessionId(sessionId) string test —
+  // see the header comment at ~line 199 and companion/lib/liveness.js's own
+  // header for the two symptoms this closes). Now heartbeat/staleness-aware,
+  // wired to the EXISTING liveness module (hasFreshHeartbeat / isDormantRow)
+  // rather than inventing a new mechanism:
+  //   1. a FRESH heartbeat is definitive proof-of-life (liveness.js header:
+  //      "emitted ONLY by the workspace's OWN live session") -> live, even if
+  //      sessionId is null/absent OR `unclaimed:`-prefixed (closes the
+  //      false-negative symptom: only hooks/devswarm-child-turn.js ever
+  //      stamps a real sessionId; other paths write null or a synthetic
+  //      `unclaimed:` marker, and a fresh heartbeat is a STRONGER, orthogonal
+  //      signal than that marker — the marker exists to stop ROUTING into a
+  //      partition nothing drains, not to assert the process is dead).
+  //   2. `unclaimed:`-prefixed sessionId with NO fresh heartbeat -> ALWAYS
+  //      not-live (the phantom-row case: a registry row with no process and
+  //      no real sessionId ever stamped).
+  //   3. else, a real (non-synthetic) sessionId with NO stale-past-threshold
+  //      activity (isDormantRow — the SAME read-side dormancy rule rosterHints
+  //      already uses) -> live. A real sessionId whose heartbeat/activity has
+  //      gone stale past the dormancy window is NOT live (closes the
+  //      false-positive symptom: closing a workspace leaves its registry row
+  //      untouched, so a once-real sessionId used to be trusted forever).
+  //   4. no real sessionId and no fresh heartbeat -> not live (unchanged from
+  //      before for this shape).
+  // NOTE: this heartbeat rescue is DISPLAY-ONLY (rows[].live). Routing/fold
+  // signals (liveRows/kind/split/deadSplit in groupRegistryByMeshId, ~line
+  // 1795) use isLiveSessionId(sessionId) directly and still treat
+  // `unclaimed:` as unconditionally not-live — unaffected by this block.
+  // isDormantRow is itself fail-open (no signal at all -> not dormant, per its
+  // own doc), so a row with NO heartbeat/transcript signal at all (e.g. a
+  // freshly-seeded row in a test, or a workspace never yet heartbeat-capable)
+  // degrades to the SAME "live" verdict the old bare-sessionId test gave it —
+  // an honest "unknown -> not newly downgraded" default, not a guess in
+  // either direction. try/catch keeps this fail-open against any throw from a
+  // malformed row, falling back to the OLD bare-sessionId signal so a bug in
+  // the liveness read path can never make computeDiagnosis itself throw.
   const rows = registry.filter((d) => d && d.id != null).map((d) => {
     const w = workspaces[d.id] || {};
+    const sid = d.sessionId || null;
+    let live = false;
+    try {
+      if (hasFreshHeartbeat(d.id, c.home, { now: c.now })) {
+        live = true;
+      } else if (isLiveSessionId(sid)) {
+        live = !isDormantRow({ id: d.id, worktreePath: d.worktreePath, sessionId: sid }, c.home, { now: c.now });
+      }
+    } catch (_) { live = isLiveSessionId(sid); }
     return {
       id: d.id,
       worktreePath: d.worktreePath || null,
       sessionId: d.sessionId || null,
-      live: isLiveSessionId(d.sessionId),
+      live,
       unread: Number.isFinite(w.unread) ? w.unread : 0,
     };
   });

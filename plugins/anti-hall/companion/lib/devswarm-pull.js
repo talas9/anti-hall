@@ -258,10 +258,16 @@ function pullOnce(opts) {
     try { desc = JSON.parse(F.readFileSync(descPath, 'utf8')); } catch (_) {
       return { ok: false, locked: true, error: 'no descriptor for workspace ' + JSON.stringify(id) };
     }
-    if (!desc || typeof desc !== 'object' || !desc.inboxPath) {
+    if (!desc || typeof desc !== 'object') {
       return { ok: false, locked: true, error: 'descriptor for ' + JSON.stringify(id) + ' has no inboxPath' };
     }
-    const inboxPath = desc.inboxPath;
+    // A null/absent inboxPath (e.g. a `primary-*` row that never went through
+    // a flow that seeded it, or an old descriptor from before the inbox field
+    // existed) is NOT unresolvable — every sibling call site (devswarm-wake-
+    // watch.js:870, devswarm-child-turn.js:447, cmdRegister's ensure branch)
+    // derives the SAME deterministic default instead of erroring. Match them
+    // here so a descriptor missing only this field still drains.
+    const inboxPath = desc.inboxPath || inboxDefaultPath(home, id);
 
     // NON-DESTRUCTIVE count-gate. count===0 -> never touch read-messages.
     const cRes = run({ args: ['workspace', 'message-count'], env });

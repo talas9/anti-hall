@@ -508,6 +508,77 @@ function runThrottledSweep(opts) {
   return { results, processedItems, remaining: items.slice(i), budgetExhausted: i < items.length };
 }
 
+/**
+ * storeDirSizeBytes(dir, fsi) -> total bytes on disk for one store directory,
+ * fail-open to 0 on any read error. SHALLOW by design: sums top-level file
+ * sizes plus one level into any subdirectory (the only shape either backend
+ * writes — sqlite's devswarm.db/-wal/-shm sit at top level; the journal
+ * backend's messages/registry/etc. live one level down under journal/) — no
+ * need to walk deeper than what devswarm-store.js itself ever creates.
+ */
+function storeDirSizeBytes(dir, fsi) {
+  const F = fsi || fs;
+  let total = 0;
+  let entries;
+  try { entries = F.readdirSync(dir, { withFileTypes: true }); } catch (_) { return 0; }
+  for (const ent of entries) {
+    const p = path.join(dir, ent.name);
+    try {
+      if (ent.isDirectory()) {
+        let sub = [];
+        try { sub = F.readdirSync(p); } catch (_) { sub = []; }
+        for (const name of sub) {
+          try { total += F.statSync(path.join(p, name)).size; } catch (_) { /* unreadable entry, skip */ }
+        }
+      } else {
+        total += F.statSync(p).size;
+      }
+    } catch (_) { /* unreadable entry, skip */ }
+  }
+  return total;
+}
+
+/**
+ * orderStoreHashesBySize(devstore, home, hashes, fsi) -> hashes reordered
+ * SMALLEST-DISK-SIZE-FIRST.
+ *
+ * FIX (field-measured starvation): runThrottledSweep walks its `items` in
+ * whatever order they arrive and stops BEFORE starting the next item once the
+ * wall-clock budget (default 20s) has elapsed. listStoreHashes' raw
+ * fs.readdirSync order has no relationship to store cost, so a single large
+ * store (measured on this machine: 39MB, one project's db+wal) can consume
+ * the entire budget while stores needing milliseconds (measured: two 48KB
+ * stores) sit later in that same readdir order — starved on EVERY run,
+ * because readdir order is stable. At a version boundary (which forces a
+ * full re-enumeration — sweepItemsFor's fullEnumerate path) this wastes an
+ * entire sweep on the same victims.
+ *
+ * Smallest-first bounds the damage: every store this pass processes gets
+ * SOME budget before a large store can consume the rest, and a store's disk
+ * size is a reasonable (not perfect, but cheap) proxy for how long
+ * healRegistry/foldMeshDuplicates/healOrphanPartitions will spend on it —
+ * all three walk the registry/messages the store actually holds, which is
+ * exactly what its size on disk reflects.
+ *
+ * Cost measured empirically (see tests/scripts/update-sweep-order.test.js):
+ * stat-ing every store's shallow size for a few hundred stores is single-digit
+ * milliseconds — negligible next to the 20s budget it's ordering. Fail-open:
+ * a size read error scores 0 (same bucket as a genuinely-empty store), never
+ * throws, never reorders on partial failure — worst case, an unreadable
+ * store keeps its position among other zero-sized ones.
+ */
+function orderStoreHashesBySize(devstore, home, hashes, fsi) {
+  const list = Array.isArray(hashes) ? hashes : [];
+  if (list.length < 2) return list.slice();
+  const sized = list.map((h) => {
+    let size = 0;
+    try { size = storeDirSizeBytes(devstore.storeDirForHash(home, h), fsi); } catch (_) { size = 0; }
+    return { h, size };
+  });
+  sized.sort((a, b) => a.size - b.size);
+  return sized.map((x) => x.h);
+}
+
 /** sweepStatePath(home) -> ~/.anti-hall/update-sweep-state.json (home-injectable). */
 function sweepStatePath(home) { return path.join(home, '.anti-hall', 'update-sweep-state.json'); }
 
@@ -564,6 +635,20 @@ function sweepItemsFor(state, key, version, fullEnumerate) {
  * store) — any stale pending list is cleared so the NEXT run re-enumerates in
  * full, exactly the pre-stamp behavior, just throttled. No-op (returns state
  * unchanged, writes nothing) when `version` is falsy.
+ *
+ * `lastCompletedHash` is OBSERVABILITY-ONLY — decided, not incidental. It is
+ * never read back by sweepItemsFor/resumption: `pendingHashes` alone is the
+ * resume cursor (the FULL remaining list, not an index into it), because a
+ * store hash disappearing/reordering between runs (a store removed, or a
+ * fresh listStoreHashes() enumeration ordering it differently) would make a
+ * "resume after hash X" position ambiguous or wrong, whereas an explicit
+ * remaining-list has no such failure mode. Wiring lastCompletedHash up as a
+ * second, competing resume mechanism would only add a second source of
+ * truth that could drift from pendingHashes for no resumption benefit. It is
+ * kept and set purely so a human/log inspecting ~/.anti-hall/update-sweep-
+ * state.json mid-sweep can see the last store actually finished before a
+ * budget stop — debugging aid, not a control-flow input. Do not read it in
+ * sweepItemsFor.
  */
 function recordSweepResult(home, state, key, version, sweep, opts) {
   if (!version) return state;
@@ -1397,18 +1482,43 @@ function healOrphanPartitionsPostUpdate(opts) {
     if (sel.skip) {
       return {
         attempted: true, stores: 0, adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0,
+        unhealableSample: [],
         skippedAlreadyDone: true,
         detail: 'heal-orphan-partitions: already completed for ' + version + ' — skipped (one-time per-version migration)',
       };
     }
 
     let adopted = 0, forwarded = 0, unhealable = 0, skipped = 0, errors = 0;
+    // UNHEALABLE VISIBILITY (defect fix): the count alone gives a user no way
+    // to know WHICH store/id is stuck or what to do about it. Collect a
+    // BOUNDED sample of {repoKey, id} pairs from each store's own r.detail
+    // (already carries {id, action:'unhealable', reason:'no-descriptor'|
+    // 'wrong-store'|'archived-no-family'|'archived-no-survivor'}) — capped so
+    // this can never dump the full 75-of-242 field-observed count into a hook
+    // payload (10k-char cap + spill-to-file convention: this stays a short
+    // sample, not a dump). Same shape convention as healRegistryPostUpdate's
+    // `stores` array above.
+    const UNHEALABLE_SAMPLE_CAP = 20;
+    const unhealableSample = [];
+    const nowFn = o.now || Date.now;
+    // Per-id deadline for devswarm.healOrphanPartitions' own no-descriptor
+    // bucket (see its doc comment): the SAME overall sweep budget this
+    // throttled pass already uses, so a store whose orphans are mostly
+    // "unhealable, forever" (re-derived fresh every pass, by design — never
+    // persisted/blacklisted) cannot burn the remaining budget on ids that can
+    // never produce a write, at the expense of real adopt/forward work in
+    // THIS or a later store. Computed LAZILY on the first worker call (not
+    // before runThrottledSweep runs) so it never consumes a `now()` tick
+    // ahead of runThrottledSweep's own budget clock — this must line up with
+    // the SAME clock runThrottledSweep uses to decide when to stop.
+    let deadline = null;
     const sweep = runThrottledSweep({
       items: sel.items,
       budgetMs: sweepBudgetMs(env),
       worker: (repoKey) => {
+        if (deadline === null) deadline = nowFn() + sweepBudgetMs(env);
         let r = null;
-        try { r = devswarm.healOrphanPartitions(home, { cwd, env, repoKey }); }
+        try { r = devswarm.healOrphanPartitions(home, { cwd, env, repoKey, deadline }); }
         catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
         if (!r || r.ok === false) { errors++; return r; }
         adopted += r.adopted || 0;
@@ -1416,6 +1526,14 @@ function healOrphanPartitionsPostUpdate(opts) {
         unhealable += r.unhealable || 0;
         skipped += r.skipped || 0;
         errors += r.errors || 0;
+        if (unhealableSample.length < UNHEALABLE_SAMPLE_CAP && Array.isArray(r.detail)) {
+          for (const d of r.detail) {
+            if (unhealableSample.length >= UNHEALABLE_SAMPLE_CAP) break;
+            if (d && d.action === 'unhealable') {
+              unhealableSample.push({ repoKey, id: d.id, reason: d.reason || null });
+            }
+          }
+        }
         return r;
       },
     });
@@ -1428,12 +1546,19 @@ function healOrphanPartitionsPostUpdate(opts) {
       attempted: true,
       stores: sweep.processedItems.length,
       adopted, forwarded, unhealable, skipped, errors,
+      unhealableSample,
       budgetExhausted: sweep.budgetExhausted,
       pending: sweep.remaining.length,
       detail: 'heal-orphan-partitions: adopted ' + adopted + ' orphan partition(s)'
         + ' across ' + sweep.processedItems.length + ' store(s)'
         + (forwarded ? ' (forwarded ' + forwarded + ' message(s))' : '')
-        + (unhealable ? ' (' + unhealable + ' unhealable — no descriptor/family)' : '')
+        + (unhealable ? ' (' + unhealable + ' unhealable — no descriptor/family'
+            + (unhealableSample.length
+              ? '; e.g. ' + unhealableSample.slice(0, 5).map((u) => u.repoKey + '/' + u.id).join(', ')
+                + (unhealable > unhealableSample.length || unhealableSample.length > 5 ? ', …' : '')
+              : '')
+            + ')' : '')
+        + (skipped ? ' (' + skipped + ' skipped — lock-busy or budget-deferred, retried next pass)' : '')
         + (errors ? ' (' + errors + ' store error(s), fail-open)' : '')
         + (sweep.budgetExhausted ? ' (budget hit — ' + sweep.remaining.length + ' store(s) pending next run)' : ''),
     };
@@ -1849,7 +1974,13 @@ function runUpdate(opts) {
       const { isDevswarmActive } = require(detectPath);
       if (typeof isDevswarmActive === 'function' && isDevswarmActive(opts.env)) {
         const devstore = opts.devswarmStore || require(storeLibPath);
-        sharedStoreHashes = devstore.listStoreHashes(opts.home || os.homedir()) || [];
+        const homeForOrder = opts.home || os.homedir();
+        const rawHashes = devstore.listStoreHashes(homeForOrder) || [];
+        // Smallest-store-first (see orderStoreHashesBySize doc comment): all
+        // three throttled sweeps below (foldAllStores, healOrphanPartitions,
+        // healRegistry) share this ONE ordered list, so the fix applies once
+        // here rather than three times.
+        sharedStoreHashes = orderStoreHashesBySize(devstore, homeForOrder, rawHashes, fsImpl);
       }
     }
   } catch (_) { sharedStoreHashes = null; }
@@ -2089,6 +2220,8 @@ module.exports = {
   sweepBudgetMs,
   sweepYield,
   runThrottledSweep,
+  orderStoreHashesBySize,
+  storeDirSizeBytes,
   sweepStatePath,
   readSweepState,
   writeSweepState,

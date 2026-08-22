@@ -316,6 +316,45 @@ test('ensure is idempotent: existing descriptor untouched, store re-upserted', (
   } finally { rm(home); }
 });
 
+// ---- REGRESSION (primary-* inboxPath:null): cmdRegister's ensure branch used
+// to silently discard the caller's --inbox/--cursor flags (only worktree/
+// session/ownerKey/repoKey were ever backfilled), so a `primary-*` descriptor
+// created with inboxPath:null (no per-turn hook ever backfills a Primary row,
+// unlike devswarm-child-turn.js:447 for children) failed reconcile forever
+// with "descriptor has no inboxPath" even though `inbox pull` calls this exact
+// branch every turn with a correct default already computed in ensureFlags.
+test('ensure branch BACKFILLS a null inboxPath/cursorPath from the supplied flags, and does NOT overwrite a non-empty existing one', () => {
+  const home = tmpHome();
+  try {
+    // Seed a descriptor with inboxPath:null exactly like the spawn seed at
+    // devswarm.js:6197 / cmdRegisterPrimary without --inbox.
+    const p = cli.descriptorPath(home, 'primary-x');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({
+      id: 'primary-x', worktreePath: '/wt/primary-x', sessionId: 's1',
+      inboxPath: null, cursorPath: null, ownerKey: storeLib.hashFromWorkspaceId('primary-x'),
+    }));
+    const inbox = pullLib.inboxDefaultPath(home, 'primary-x');
+    const cursor = pullLib.cursorDefaultPath(home, 'primary-x');
+    const r = cli.run(['ensure', 'primary-x', '--worktree', '/wt/primary-x', '--session', 's1',
+      '--inbox', inbox, '--cursor', cursor], ctx(home));
+    assert.equal(r.result.action, 'exists');
+    const desc = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.equal(desc.inboxPath, inbox, 'null inboxPath must be backfilled from the supplied flag');
+    assert.equal(desc.cursorPath, cursor, 'null cursorPath must be backfilled from the supplied flag');
+
+    // Re-run ensure with DIFFERENT flag values — the now-populated fields must
+    // NOT be clobbered (conservative backfill-only-when-empty).
+    const otherInbox = path.join(home, 'other-inbox.ndjson');
+    const otherCursor = path.join(home, 'other-cursor.json');
+    cli.run(['ensure', 'primary-x', '--worktree', '/wt/primary-x', '--session', 's1',
+      '--inbox', otherInbox, '--cursor', otherCursor], ctx(home));
+    const desc2 = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.equal(desc2.inboxPath, inbox, 'an already-populated inboxPath must never be overwritten');
+    assert.equal(desc2.cursorPath, cursor, 'an already-populated cursorPath must never be overwritten');
+  } finally { rm(home); }
+});
+
 // ---- FIX 2: ensure/exists branch must precreate the cursor/inbox too -------
 // cmdRegister's `requireNew && existing` early-return (~L881-891) used to skip
 // the cursor/inbox precreate block entirely (~L916-948, only reached on the
