@@ -6,6 +6,46 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.77.0 (2026-08-22)
+
+- **Fix: a DevSwarm workspace could be counted twice in "needs attention."**
+  Two descriptor files sharing one worktree — a builder-id descriptor and a
+  slug descriptor — each produced their own row, including duplicating the
+  Primary's own row; a live session saw 3 where the app showed 2. Reads now
+  collapse rows by identity family at read time. Nothing is retired or
+  deleted — the store layer's refusal to retire a descriptor-backed row is
+  deliberate, protecting two live tabs open on the same worktree.
+- **Fix: unread mail stranded in an unregistered mesh partition.** A Primary
+  drained one row, saw "0 unread," and was technically right — four real
+  messages sat unread in a different, unregistered partition for hours. The
+  heal now adopts an unregistered partition and folds it into its identity
+  family. Cursor reconciliation takes the MINIMUM across namespaces and only
+  ever lowers a cursor, never raises one — taking the maximum would mark
+  messages read that nobody had actually seen.
+- **Fix: archived mail was unreachable.** Descriptors move to `archived/` on
+  workspace retirement, but the orphan lookup only ever read `workspaces/` —
+  105 of 110 reported "no descriptor" orphans actually had one, just in the
+  wrong directory. Archived orphans are now forwarded (never adopted, never
+  deleted), carrying provenance and capped at 30 days old.
+- **Fix: mesh read/ack values meant different things in different places.**
+  `seq` was a positional ordinal in one verb and the physical mesh sequence
+  number in its sibling; `unread` was a boolean in one place, a count in
+  another, and a two-channel sum in a third; `read`/`ack` returned `ok:
+  true` after acking nothing on an unregistered id; `send` silently
+  discarded the hash it had already computed. Every value is now named
+  explicitly, with the old keys kept as aliases so nothing that reads them
+  today breaks.
+- **New: `--message-file` and `--message-stdin` for `devswarm` message
+  sends**, so a body with newlines, quotes, or shell-special characters
+  survives verbatim instead of being mangled by argv escaping. `send` now
+  also echoes the `bytes` and `hash` it computed for the sent message.
+- **New: counters name their own scope.** `orphansWithUnread` (this repo's
+  orphans with unread mail) is now reported separately from
+  `orphanPartitions` (all stores, any repo), and the healthcheck output
+  states which `repoKey` it scoped its counts to.
+- **New: `ANTIHALL_DEVSWARM_ARCHIVE_FORWARD_MAX_AGE_DAYS`** tunes the
+  archived-orphan forwarding age cap (default 30 days).
+
 ## 0.76.0 (2026-08-21)
 
 - **Security/data-loss fix: the DevSwarm parent gate could mark a child's
