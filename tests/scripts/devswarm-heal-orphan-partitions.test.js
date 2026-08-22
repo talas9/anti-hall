@@ -188,8 +188,14 @@ for (const B of backends) {
       assert.ok(r.forwarded >= 1, 'its unread is still forwarded');
       assert.ok(!regIds(home, repoKey).includes('orphan-arch'), 'still absent from the registry');
 
+      // FIX B: a forward out of an ARCHIVED source now carries a provenance
+      // marker (never a bare verbatim body), so a resurfaced message is never
+      // mistaken for fresh traffic.
       const survBodies = bodies(home, repoKey, 'fam-live');
-      assert.ok(survBodies.includes('archived-unread'), 'the archived id unread landed in the survivor');
+      assert.ok(
+        survBodies.some((b) => b.includes('archived-unread') && b.startsWith('[forwarded from archived orphan-arch]')),
+        'the archived id unread landed in the survivor, provenance-marked'
+      );
     } finally { rm(W1); rm(home); }
   });
 
@@ -346,6 +352,157 @@ for (const B of backends) {
       assert.ok(!regIds(home, repoKeyWrong).includes('z'), 'the wrong store still has no registry row for z');
       assert.ok(regIds(home, repoKeyTrue).includes('z'), 'the true home is untouched');
     } finally { rm(Wtrue); rm(Wwrong); rm(home); }
+  });
+
+  // ---------------------------------------------------------------------------
+  // FIX A/B — archive-aware descriptor lookup + forward-only policy for an
+  // orphan whose descriptor exists ONLY in archived/ (no workspaces/<id>.json at
+  // all). Before this fix, readDescriptorFile resolved workspaces/ only, so the
+  // `!desc -> unhealable/no-descriptor` bail ran BEFORE hasArchivedCounterpart
+  // was ever consulted — the archived-forward branch below was reachable ONLY
+  // when BOTH files existed (measured: 105/110 no-descriptor orphans on a real
+  // machine had an archived/<id>.json this lookup never looked at).
+  const seedDirectAt = (home, repoKey, toId, body, ts) => {
+    const s = openS(home, repoKey);
+    try {
+      const f = { from: 'sender-x', to: toId, type: 'direct', message: body, timestamp: ts, urgency: 'normal' };
+      storeLib.appendMeshMessage(s, Object.assign({}, f, { hash: storeLib.meshMessageHash(f) }));
+    } finally { s.close(); }
+  };
+  // archiveDescFile — writes archived/<id>.json DIRECTLY (unlike archiveFile
+  // above, which always writes the minimal {id} shape), so these tests can give
+  // the archived descriptor a real worktreePath (needed to derive the same
+  // familyKey as the live survivor).
+  const archiveDescFile = (home, id, desc) => {
+    const p = path.join(cli.archivedDir(home), id + '.json');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(desc));
+  };
+
+  test(`[${B.name}] archive-only orphan (descriptor ONLY in archived/), fresh unread: FORWARDED to the family survivor, never adopted, provenance-marked`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('archonly-fresh-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      seedReg(home, repoKey, { id: 'fam-live', worktreePath: topOf(W1), sessionId: 's1' });
+      descFile(home, 'fam-live', { id: 'fam-live', worktreePath: topOf(W1), sessionId: 's1' });
+
+      // NO workspaces/<id>.json for this id — archived/ is the ONLY descriptor.
+      archiveDescFile(home, 'orphan-archonly', { id: 'orphan-archonly', worktreePath: topOf(W1), sessionId: null });
+      assert.strictEqual(cli.readDescriptorFile(home, 'orphan-archonly'), null, 'sanity: no live workspaces/ descriptor');
+      seedDirectAt(home, repoKey, 'orphan-archonly', 'archonly-fresh-msg', Date.now());
+
+      const r = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.adopted, 0, 'archived id is never re-adopted, even archive-only');
+      assert.ok(r.forwarded >= 1, 'unread forwarded');
+      assert.ok(!regIds(home, repoKey).includes('orphan-archonly'), 'no registry row was created for it');
+
+      const survBodies = bodies(home, repoKey, 'fam-live');
+      assert.ok(
+        survBodies.some((b) => b.includes('archonly-fresh-msg') && b.startsWith('[forwarded from archived orphan-archonly]')),
+        'forwarded body carries the provenance marker'
+      );
+      // source row (message-only, never a registry row) is still present, untouched.
+      assert.ok(bodies(home, repoKey, 'orphan-archonly').includes('archonly-fresh-msg'), 'source row still present');
+    } finally { rm(W1); rm(home); }
+  });
+
+  test(`[${B.name}] archive-only orphan, unread past the age cap: archived-stale, detect-only, ZERO writes`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('archonly-stale-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      seedReg(home, repoKey, { id: 'fam-live', worktreePath: topOf(W1), sessionId: 's1' });
+      descFile(home, 'fam-live', { id: 'fam-live', worktreePath: topOf(W1), sessionId: 's1' });
+      archiveDescFile(home, 'orphan-stale', { id: 'orphan-stale', worktreePath: topOf(W1), sessionId: null });
+      const veryOld = Date.now() - (45 * 24 * 60 * 60 * 1000); // 45d > the 30d default cap
+      seedDirectAt(home, repoKey, 'orphan-stale', 'archonly-stale-msg', veryOld);
+
+      const before = openS(home, repoKey);
+      let beforeSurv;
+      try { beforeSurv = before.listRegistry().find((d) => d.id === 'fam-live'); } finally { before.close(); }
+
+      const r = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.adopted, 0, 'never adopted');
+      assert.strictEqual(r.forwarded, 0, 'nothing forwarded — every unread row is past the age cap');
+      assert.strictEqual(r.archivedStale, 1, 'classified archived-stale');
+      assert.strictEqual(r.unhealable, 0, 'NOT counted as unhealable');
+      assert.ok(!regIds(home, repoKey).includes('orphan-stale'), 'no registry row created');
+      assert.ok(!bodies(home, repoKey, 'fam-live').includes('archonly-stale-msg'), 'stale message never forwarded');
+
+      const after = openS(home, repoKey);
+      let afterSurv;
+      try { afterSurv = after.listRegistry().find((d) => d.id === 'fam-live'); } finally { after.close(); }
+      assert.strictEqual(afterSurv.writeSeq, beforeSurv.writeSeq, 'zero writes to the survivor row');
+    } finally { rm(W1); rm(home); }
+  });
+
+  test(`[${B.name}] archive-only orphan, unread == 0: archived-drained, NOT unhealable, zero writes`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('archonly-drained-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      seedReg(home, repoKey, { id: 'fam-live', worktreePath: topOf(W1), sessionId: 's1' });
+      descFile(home, 'fam-live', { id: 'fam-live', worktreePath: topOf(W1), sessionId: 's1' });
+      archiveDescFile(home, 'orphan-drained', { id: 'orphan-drained', worktreePath: topOf(W1), sessionId: null });
+      // This id has NO messages at all -> listWorkspaceIds would not even surface
+      // it as an orphan (no store trace). Give it a store trace with everything
+      // already consumed (messageCount === cursorValue) so it IS an orphan (has
+      // a store footprint) but genuinely drained (unread:0).
+      seedDirectAt(home, repoKey, 'orphan-drained', 'already-read', Date.now());
+      const sPre = openS(home, repoKey);
+      try { sPre.setCursor('orphan-drained', 1); } finally { sPre.close(); }
+
+      const r = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.adopted, 0);
+      assert.strictEqual(r.forwarded, 0);
+      assert.strictEqual(r.archivedDrained, 1, 'classified archived-drained');
+      assert.strictEqual(r.unhealable, 0, 'a drained archived orphan is NOT unhealable');
+      assert.ok(!regIds(home, repoKey).includes('orphan-drained'), 'no registry row created');
+    } finally { rm(W1); rm(home); }
+  });
+
+  test(`[${B.name}] orphan with NO descriptor in EITHER workspaces/ or archived/: still unhealable/no-descriptor, zero writes`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('nodesc-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      seedDirect(home, repoKey, 'orphan-nodesc', 'nowhere-msg');
+      assert.strictEqual(cli.readDescriptorFile(home, 'orphan-nodesc'), null);
+      assert.ok(!fs.existsSync(path.join(cli.archivedDir(home), 'orphan-nodesc.json')));
+
+      const r = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.adopted, 0);
+      assert.strictEqual(r.forwarded, 0);
+      assert.strictEqual(r.unhealable, 1, 'no descriptor anywhere -> unhealable');
+      assert.strictEqual(r.detail.find((d) => d.id === 'orphan-nodesc').reason, 'no-descriptor');
+      assert.ok(!regIds(home, repoKey).includes('orphan-nodesc'));
+    } finally { rm(W1); rm(home); }
+  });
+
+  test(`[${B.name}] IDEMPOTENT: a second heal pass over an archive-only orphan forwards nothing new (hash dedup holds)`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('archonly-idem-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      seedReg(home, repoKey, { id: 'fam-live', worktreePath: topOf(W1), sessionId: 's1' });
+      descFile(home, 'fam-live', { id: 'fam-live', worktreePath: topOf(W1), sessionId: 's1' });
+      archiveDescFile(home, 'orphan-idem', { id: 'orphan-idem', worktreePath: topOf(W1), sessionId: null });
+      seedDirectAt(home, repoKey, 'orphan-idem', 'idem-msg', Date.now());
+
+      const r1 = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.ok(r1.forwarded >= 1, 'first pass forwards the unread message');
+      const countAfter1 = bodies(home, repoKey, 'fam-live').length;
+
+      const r2 = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r2.forwarded, 0, 'second pass forwards nothing NEW — cursor + hash dedup holds');
+      const countAfter2 = bodies(home, repoKey, 'fam-live').length;
+      assert.strictEqual(countAfter2, countAfter1, 'survivor message count unchanged on the second pass');
+    } finally { rm(W1); rm(home); }
   });
 }
 

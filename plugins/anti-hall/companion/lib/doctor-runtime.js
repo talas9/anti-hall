@@ -630,7 +630,13 @@ function checkMeshShape(home, opts) {
   if (!r || r.reason === 'no-project' || r.ok === undefined) return results; // not a DevSwarm project cwd -> nothing to report
 
   const c = r.counts || {};
-  const drift = (c.orphans || 0) + (c.stale || 0) + (c.splits || 0);
+  // orphansWithUnread (FIX C rename — see cmdHealthcheck/healthcheckHumanLine in
+  // scripts/devswarm.js): this counter is SCOPED to `repoKey`'s own store and
+  // pre-filtered to unread>0. `orphans` is read as a fallback only for an older
+  // devswarm.js build that predates the rename (no known build lacks the alias,
+  // but this stays fail-open rather than silently reading undefined -> 0).
+  const orphansWithUnread = c.orphansWithUnread != null ? c.orphansWithUnread : (c.orphans || 0);
+  const drift = orphansWithUnread + (c.stale || 0) + (c.splits || 0);
 
   let leftIds = [];
   try {
@@ -640,10 +646,14 @@ function checkMeshShape(home, opts) {
     if (fr && Array.isArray(fr.left)) leftIds = fr.left;
   } catch (_) { leftIds = []; }
 
+  // Scope is stated explicitly (repoKey) so this PASS line never reads as a
+  // global all-clear — it checks ONLY this one project's own store, unlike
+  // `heal-orphan-partitions`' cross-machine sweep which can report a very
+  // different, non-comparable orphan count for the SAME machine.
   if (drift === 0 && leftIds.length === 0) {
-    results.push({ status: PASS, message: 'mesh shape: no drift (orphans=0 stale=0 splits=0)' });
+    results.push({ status: PASS, message: 'mesh shape (scope: ' + repoKey + '): no drift (orphansWithUnread=0 stale=0 splits=0)' });
   } else {
-    let msg = 'mesh shape DRIFT: ' + (c.orphans || 0) + ' orphan partition(s), ' + (c.stale || 0)
+    let msg = 'mesh shape DRIFT (scope: ' + repoKey + '): ' + orphansWithUnread + ' orphan partition(s) with unread, ' + (c.stale || 0)
       + ' stale registry row(s), ' + (c.splits || 0) + ' split worktree(s)';
     if (leftIds.length) msg += '; ' + leftIds.length + ' un-resolvable dual row(s) LEFT in place (' + leftIds.join(', ') + ')';
     msg += ' — run doctor --repair to fold duplicates (orphans/stale are surface-only, never auto-deleted)';

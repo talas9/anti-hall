@@ -530,6 +530,28 @@ function readDescriptorFile(home, id, F) {
   const state = readDescriptorPathState(descriptorPath(home, id), F);
   return state.error ? null : state.descriptor;
 }
+// resolveOrphanDescriptor(home, id, F) -> { descriptor, source }. readDescriptorFile
+// above resolves ONLY workspaces/<id>.json — it never consults archivedDir. That
+// made healOrphanPartitions' archived-forward branch effectively dead code: its
+// `!desc -> unhealable/no-descriptor` bail (below) ran BEFORE hasArchivedCounterpart
+// was ever checked, so the archived branch could only fire for an id that STILL had
+// a live workspaces/<id>.json file in addition to being archived — measured: of 110
+// no-descriptor orphans across this machine's stores, 105 had an archived/<id>.json
+// counterpart that this lookup never looked at. This tries the live descriptor
+// FIRST (unchanged priority/behavior for every id that still has one), then falls
+// back to archived/<id>.json, and reports WHICH source answered so a caller can
+// tell a live orphan from a merely-archived one apart (they get different policy —
+// see healOrphanPartitions). Read-only; fail-closed to {descriptor:null,source:null}
+// on any error, exactly like readDescriptorFile itself.
+function resolveOrphanDescriptor(home, id, F) {
+  const live = readDescriptorFile(home, id, F);
+  if (live) return { descriptor: live, source: 'live' };
+  const archivedState = readDescriptorPathState(path.join(archivedDir(home), id + '.json'), F);
+  if (!archivedState.error && archivedState.descriptor) {
+    return { descriptor: archivedState.descriptor, source: 'archived' };
+  }
+  return { descriptor: null, source: null };
+}
 function readDescriptorPathState(p, F) {
   const G = F || fs;
   try {
@@ -707,6 +729,68 @@ function meshRowCopy(m, shape, overrides) {
     out[key] = src[f.row];
   }
   return Object.assign(out, overrides || {});
+}
+
+// ARCHIVE_FORWARD_MAX_AGE_DAYS_DEFAULT / archiveForwardMaxAgeMs(env) — the age cap
+// on forwarding an ARCHIVED orphan's unread into a live family survivor (see
+// forwardArchivedOrphanUnread below / healOrphanPartitions' archived branch).
+// Resurfacing a month-old, possibly-stale instruction into a live sibling out of
+// context is real harm, not tidiness — a message that sat unread since the
+// workspace was archived is not "fresh traffic". Overridable per the same
+// ANTIHALL_<FEATURE>_<PARAM> env-tunable convention this repo's hooks use
+// (e.g. ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS, ANTIHALL_CODEX_NUDGE_MIN).
+const ARCHIVE_FORWARD_MAX_AGE_DAYS_DEFAULT = 30;
+function archiveForwardMaxAgeMs(env) {
+  const e = env || process.env;
+  const raw = e ? e.ANTIHALL_DEVSWARM_ARCHIVE_FORWARD_MAX_AGE_DAYS : undefined;
+  const days = parseInt(raw, 10);
+  const effectiveDays = Number.isFinite(days) && days > 0 ? days : ARCHIVE_FORWARD_MAX_AGE_DAYS_DEFAULT;
+  return effectiveDays * 24 * 60 * 60 * 1000;
+}
+// archivedForwardProvenancePrefix(id) — the marker prepended to a forwarded
+// archived-orphan body so the survivor (and anyone reading its inbox) can tell a
+// resurfaced message from fresh traffic, per the same forward envelope
+// (MESH_ROW_COPY_FIELDS/meshRowCopy) every other forward site in this file uses —
+// no parallel format invented.
+function archivedForwardProvenancePrefix(id) { return '[forwarded from archived ' + id + '] '; }
+
+// forwardArchivedOrphanUnread(s, id, survivorId, opts) — forward-only (NEVER
+// adopts/upserts a registry row for `id`) copy of an archived orphan's unread
+// DIRECTS into `survivorId`, using the SAME meshRowCopy/MESH_ROW_COPY_FIELDS
+// envelope + isForwardable filter + recomputed-hash dedup every other forward site
+// in this file uses (foldGroupIntoSurvivor's foldOne). Two additions specific to
+// an ARCHIVED source, both from FIX B's decided policy:
+//   - each forwarded body is prefixed with archivedForwardProvenancePrefix so the
+//     resurfaced message is never mistaken for fresh traffic.
+//   - any unread row older than opts.maxAgeMs is skipped entirely (counted in
+//     `stale`, never forwarded, never dedup-hashed) — resurfacing month-old
+//     instructions into a live sibling out of context is real harm.
+// Pure per-id op: never touches the registry, never tombstones, never advances a
+// cursor (cursor reconciliation is the caller's separate MIN-only step). Returns
+// { forwarded, stale }.
+function forwardArchivedOrphanUnread(s, id, survivorId, opts) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const maxAgeMs = Number.isFinite(o.maxAgeMs) && o.maxAgeMs > 0 ? o.maxAgeMs : archiveForwardMaxAgeMs();
+  let forwarded = 0;
+  let stale = 0;
+  let since = 0;
+  try { since = s.cursorValue(id); } catch (_) { since = 0; }
+  let rows = [];
+  try { rows = s.listMessages(id, { sinceCursor: since }); } catch (_) { rows = []; }
+  for (const m of rows) {
+    if (!isForwardable(m)) continue;
+    const ts = Number(m.ts);
+    if (Number.isFinite(ts) && (now - ts) > maxAgeMs) { stale++; continue; }
+    const fields = meshRowCopy(m, 'message', {
+      to: survivorId, type: 'direct', urgency: m.urgency || 'normal',
+      message: archivedForwardProvenancePrefix(id) + (m.body != null ? m.body : ''),
+    });
+    const hash = store.meshMessageHash(fields);
+    const r = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+    if (r && r.inserted) forwarded++;
+  }
+  return { forwarded, stale };
 }
 
 // ---------------------------------------------------------------------------
@@ -1986,19 +2070,26 @@ function reconcileOrphanCursor(home, s, id, desc, dryRun) {
 // heal.
 //
 // For each orphan id:
-//   - no descriptor file -> UNHEALABLE, detect-and-report only. No worktree, no
-//     family, no provable owner — adopting it would INVENT an identity. Zero
-//     writes for this id.
-//   - a descriptor file -> familyKey = canonicalMeshId(desc.worktreePath) (the SAME
+//   - no descriptor file, in EITHER workspaces/ or archived/ (resolveOrphanDescriptor
+//     tries both — see FIX A note there) -> UNHEALABLE, detect-and-report only. No
+//     worktree, no family, no provable owner — adopting it would INVENT an
+//     identity. Zero writes for this id.
+//   - a descriptor -> familyKey = canonicalMeshId(desc.worktreePath) (the SAME
 //     helper foldMeshDuplicates/groupRegistryByMeshId use — no new key derivation).
-//       - an ARCHIVED counterpart exists (hasArchivedCounterpart) -> do NOT
-//         re-adopt (it was deliberately retired); if a live family group exists,
-//         forward its unread into the family survivor (pickSurvivor — the SAME
-//         freshest-live selection resolveMeshTarget/foldMeshDuplicates use) via
-//         foldGroupIntoSurvivor, which — because the descriptor still exists —
-//         always LEAVES this row (never tombstones it; it was never in the
-//         registry to begin with). No group -> UNHEALABLE (nothing to forward
-//         into).
+//       - an ARCHIVED counterpart exists (hasArchivedCounterpart) -> NEVER
+//         re-adopt (it was deliberately retired — re-registering it would recreate
+//         the row foldArchivedRegistryRows exists to tombstone). Policy:
+//           - unread == 0 -> ARCHIVED-DRAINED. Nothing to heal; NOT unhealable.
+//           - unread > 0, no live family / no live survivor -> UNHEALABLE
+//             (nothing to forward into).
+//           - unread > 0, a live survivor exists -> FORWARD-ONLY (never adopts)
+//             via forwardArchivedOrphanUnread: provenance-prefixed, age-capped
+//             (archiveForwardMaxAgeMs — default 30d, ANTIHALL_DEVSWARM_ARCHIVE_
+//             FORWARD_MAX_AGE_DAYS overrides). Rows past the cap are skipped
+//             (never forwarded); if EVERY unread row is past the cap the id
+//             classifies ARCHIVED-STALE (detect-only, zero writes) instead of
+//             forwarded-only. The source row is always LEFT in place (it was
+//             never in the registry to begin with — nothing to tombstone).
 //       - otherwise -> ADOPT: s.upsertRegistry(...) under withIdLock(id), purely
 //         additive (makes the id addressable by `send` and visible to future
 //         folds). No family group -> done. A family group exists -> immediately
@@ -2009,19 +2100,29 @@ function reconcileOrphanCursor(home, s, id, desc, dryRun) {
 // applied to every id that carries a descriptor, regardless of outcome.
 //
 // NO DELETE: only s.upsertRegistry (additive) and appendMeshRow (append-only, via
-// foldGroupIntoSurvivor's forward) ever write. No removeRegistryIf in this path.
+// foldGroupIntoSurvivor's forward or forwardArchivedOrphanUnread) ever write. No
+// removeRegistryIf in this path, and archived ids are NEVER upserted.
 // FAIL-OPEN: every per-id body is try/catch'd into `errors`; a lock-busy id is
 // `skipped` and retried next pass. IDEMPOTENT: a re-run finds the adopted id in
 // listRegistry() (no longer an orphan) and does nothing; a re-forward recomputes
 // the same meshMessageHash and appendMeshRow dedups it (inserted:false); a MIN
 // reconcile of already-equal cursors is a no-op.
-// Returns { ok, adopted, forwarded, unhealable, skipped, errors, detail }.
+// Returns { ok, scope:'store', repoKey, adopted, forwarded, unhealable,
+//   archivedDrained, archivedStale, skipped, errors, detail }.
 function healOrphanPartitions(home, ctx) {
   const c = ctx || {};
   const dryRun = !!c.dryRun;
-  const out = { ok: true, adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0, detail: [] };
+  // scope — this call heals exactly ONE store (see healOrphanPartitionsAllStores
+  // for the cross-store sweep); surfaced so a caller/printer never has to guess
+  // which of the two different "orphan" counts (this store vs every store) it is
+  // looking at (FIX C).
+  const out = {
+    ok: true, scope: 'store', adopted: 0, forwarded: 0, unhealable: 0,
+    archivedDrained: 0, archivedStale: 0, skipped: 0, errors: 0, detail: [],
+  };
   try {
     const repoKey = typeof c.repoKey === 'string' && c.repoKey ? c.repoKey : repoKeyForCwd(c);
+    out.repoKey = repoKey || null;
     // NEVER open/create the shared store just to look for orphans — same posture
     // as foldMeshDuplicates.
     if (!repoKey) return out;
@@ -2054,7 +2155,12 @@ function healOrphanPartitions(home, ctx) {
       }
       for (const id of orphanIds) {
         try {
-          const desc = readDescriptorFile(home, id);
+          // FIX A: try the LIVE descriptor first, then fall back to the ARCHIVED
+          // one — readDescriptorFile alone (workspaces/<id>.json only) made the
+          // archived branch below effectively dead code (see
+          // resolveOrphanDescriptor's comment for the measured evidence).
+          const resolved = resolveOrphanDescriptor(home, id);
+          const desc = resolved.descriptor;
           if (!desc) {
             out.unhealable++;
             out.detail.push({ id, action: 'unhealable', reason: 'no-descriptor' });
@@ -2078,7 +2184,24 @@ function healOrphanPartitions(home, ctx) {
           const wrongStore = !!(freshRepoKey && repoKey && freshRepoKey !== repoKey);
 
           if (archived) {
-            if (!group || !group.rows.length) {
+            // FIX B (decided policy): an archived id is NEVER re-adopted (that
+            // would recreate the row foldArchivedRegistryRows exists to tombstone
+            // — the same cross-migration flip-flop this file already guards
+            // against elsewhere). Its unread is FORWARD-ONLY into the identity
+            // family's live survivor, subject to the age cap; drained rows
+            // (unread:0) classify as archived-drained, NOT unhealable — they are
+            // not something to heal, and lumping them into `unhealable` was
+            // measured to be the single largest contributor to an alarming count
+            // (61 of ~123 orphans on this machine) that had nothing wrong with it.
+            let total = 0;
+            let cursor = 0;
+            try { total = s.messageCount(id); } catch (_) { total = 0; }
+            try { cursor = s.cursorValue(id); } catch (_) { cursor = 0; }
+            const unread = Math.max(0, total - cursor);
+            if (unread === 0) {
+              out.archivedDrained++;
+              out.detail.push({ id, action: 'archived-drained' });
+            } else if (!group || !group.rows.length) {
               out.unhealable++;
               out.detail.push({ id, action: 'unhealable', reason: 'archived-no-family' });
             } else {
@@ -2087,12 +2210,36 @@ function healOrphanPartitions(home, ctx) {
                 out.unhealable++;
                 out.detail.push({ id, action: 'unhealable', reason: 'archived-no-survivor' });
               } else if (dryRun) {
-                out.detail.push({ id, action: 'would-forward', survivor: survivor.id });
+                // classify without writing: peek at the unread rows to tell "would
+                // forward" apart from "every unread row is past the age cap" —
+                // the same distinction the apply path below makes.
+                const maxAgeMs = archiveForwardMaxAgeMs(c.env);
+                const now = Number.isFinite(c.now) ? c.now : Date.now();
+                let peekRows = [];
+                try { peekRows = s.listMessages(id, { sinceCursor: cursor }); } catch (_) { peekRows = []; }
+                const forwardableRows = peekRows.filter(isForwardable);
+                const freshRows = forwardableRows.filter((m) => {
+                  const ts = Number(m.ts);
+                  return !(Number.isFinite(ts) && (now - ts) > maxAgeMs);
+                });
+                if (forwardableRows.length && !freshRows.length) {
+                  out.archivedStale++;
+                  out.detail.push({ id, action: 'archived-stale', survivor: survivor.id, staleCount: forwardableRows.length });
+                } else {
+                  out.detail.push({ id, action: 'would-forward', survivor: survivor.id });
+                }
               } else {
-                const r = foldGroupIntoSurvivor(s, home, survivor.id, [{ id }], {});
-                out.forwarded += r.forwarded;
-                if (r.forwarded) anyWrite = true;
-                out.detail.push({ id, action: 'forwarded-only', survivor: survivor.id, forwarded: r.forwarded });
+                const maxAgeMs = archiveForwardMaxAgeMs(c.env);
+                const fwd = forwardArchivedOrphanUnread(s, id, survivor.id, { maxAgeMs, now: c.now });
+                out.forwarded += fwd.forwarded;
+                if (fwd.forwarded) anyWrite = true;
+                if (!fwd.forwarded && fwd.stale) {
+                  // every unread row was past the age cap: detect-only, zero writes.
+                  out.archivedStale++;
+                  out.detail.push({ id, action: 'archived-stale', survivor: survivor.id, staleCount: fwd.stale });
+                } else {
+                  out.detail.push({ id, action: 'forwarded-only', survivor: survivor.id, forwarded: fwd.forwarded, stale: fwd.stale });
+                }
               }
             }
           } else if (wrongStore) {
@@ -2146,8 +2293,9 @@ function healOrphanPartitions(home, ctx) {
     return out;
   } catch (e) {
     return {
-      ok: false, error: String(e && e.message || e),
-      adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0, detail: [],
+      ok: false, error: String(e && e.message || e), scope: 'store',
+      adopted: 0, forwarded: 0, unhealable: 0, archivedDrained: 0, archivedStale: 0,
+      skipped: 0, errors: 0, detail: [],
     };
   }
 }
@@ -2159,35 +2307,51 @@ function healOrphanPartitions(home, ctx) {
 // its stored hash. Same guarantees per store: idempotent, fail-open (a single
 // store's failure is recorded and skipped, never aborts the sweep or throws out of
 // this function), NO-DELETE.
-// Returns { ok, stores, adopted, forwarded, unhealable, skipped, errors, results[] }.
+// `scope: 'all-stores'` is carried in the return value itself (FIX C) so a
+// printer/consumer never has to guess whether a given orphan-partition count came
+// from this cross-store sweep or from the single-store healOrphanPartitions above —
+// the two counts measure different things (this sweeps every store this machine has
+// ever opened; the single-store call scopes to one repoKey) and previously had no
+// way to distinguish themselves in their own output.
+// Returns { ok, scope:'all-stores', stores, adopted, forwarded, unhealable,
+//   archivedDrained, archivedStale, skipped, errors, results[] }.
 function healOrphanPartitionsAllStores(home, ctx) {
   const c = ctx || {};
   let hashes = [];
   try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
-  let adopted = 0, forwarded = 0, unhealable = 0, skipped = 0, errors = 0;
+  let adopted = 0, forwarded = 0, unhealable = 0, archivedDrained = 0, archivedStale = 0, skipped = 0, errors = 0;
   const results = [];
   for (const repoKey of hashes) {
     let r = null;
     try {
       r = healOrphanPartitions(home, Object.assign({}, c, { repoKey }));
     } catch (e) {
-      r = { ok: false, error: String(e && e.message || e), adopted: 0, forwarded: 0, unhealable: 0, skipped: 0, errors: 0, detail: [] };
+      r = {
+        ok: false, error: String(e && e.message || e), adopted: 0, forwarded: 0, unhealable: 0,
+        archivedDrained: 0, archivedStale: 0, skipped: 0, errors: 0, detail: [],
+      };
     }
     if (!r) continue;
     if (r.ok === false) { errors++; results.push({ repoKey, ok: false, error: r.error }); continue; }
     adopted += r.adopted || 0;
     forwarded += r.forwarded || 0;
     unhealable += r.unhealable || 0;
+    archivedDrained += r.archivedDrained || 0;
+    archivedStale += r.archivedStale || 0;
     skipped += r.skipped || 0;
     errors += r.errors || 0;
-    if (r.adopted || r.forwarded || r.unhealable || r.skipped || r.errors) {
+    if (r.adopted || r.forwarded || r.unhealable || r.archivedDrained || r.archivedStale || r.skipped || r.errors) {
       results.push({
         repoKey, ok: true, adopted: r.adopted || 0, forwarded: r.forwarded || 0,
-        unhealable: r.unhealable || 0, skipped: r.skipped || 0, errors: r.errors || 0,
+        unhealable: r.unhealable || 0, archivedDrained: r.archivedDrained || 0,
+        archivedStale: r.archivedStale || 0, skipped: r.skipped || 0, errors: r.errors || 0,
       });
     }
   }
-  return { ok: true, stores: hashes.length, adopted, forwarded, unhealable, skipped, errors, results };
+  return {
+    ok: true, scope: 'all-stores', stores: hashes.length, adopted, forwarded, unhealable,
+    archivedDrained, archivedStale, skipped, errors, results,
+  };
 }
 
 // foldArchivedRegistryRows(home, ctx0) — FORWARD MIGRATION for registries that
@@ -5126,11 +5290,26 @@ function cmdDiagnose(flags, ctx) {
 // `diagnose` computes (computeDiagnosis — one source, two presentations). Unlike
 // `diagnose` (always ok:true — a report), this turns mesh-shape drift into an exit
 // signal: ok/exit 0 when healthy, ok:false/exit non-zero when degraded.
-//   counts = { orphans, stale, splits, phantoms, unreadTotal }.
-//   degraded iff orphans>0 || stale>0 || splits>0 (STRUCTURAL drift only) —
-//   phantoms (a spawn-time placeholder, benign/transient) and unreadTotal (normal
-//   mailbox backlog) are reported for visibility but NEVER gate, so a freshly-
-//   spawned worktree does not trip a false "degraded". Pure read (zero writes).
+//   counts = { orphansWithUnread, stale, splits, phantoms, unreadTotal }, plus an
+//   `orphans` alias (same value as orphansWithUnread — see rename note below).
+//   degraded iff orphansWithUnread>0 || stale>0 || splits>0 (STRUCTURAL drift
+//   only) — phantoms (a spawn-time placeholder, benign/transient) and
+//   unreadTotal (normal mailbox backlog) are reported for visibility but NEVER
+//   gate, so a freshly-spawned worktree does not trip a false "degraded". Pure
+//   read (zero writes).
+//
+// FIX C rename: this count is d.orphans.length from computeDiagnosis/
+// computeSummary's A2 detector, which is ALREADY filtered to unread>0 (real
+// unread only — see computeSummary's orphans[] comment). It is scope-DIFFERENT
+// from healOrphanPartitionsAllStores' `orphans`-shaped counters (heal sweeps
+// EVERY store on the machine and counts every orphan regardless of unread;
+// this opens only the cwd's ONE store and counts only unread>0 ones) — the two
+// surfaces were measured printing 123 vs 0 for the SAME machine under the SAME
+// label ("orphans"), which reads as a contradiction. Renaming to
+// `orphansWithUnread` here names what this counter ACTUALLY measures; `orphans`
+// is kept as an exact-value alias since it is part of this command's existing
+// documented JSON contract (no known internal consumer greps `.counts.orphans`
+// outside this file/its tests, but an external script might).
 function cmdHealthcheck(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
@@ -5139,14 +5318,16 @@ function cmdHealthcheck(flags, ctx) {
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   let d;
   try { d = computeDiagnosis(s, { home, env: ctx.env, now: ctx.now }); } finally { s.close(); }
+  const orphansWithUnread = d.orphans.length;
   const counts = {
-    orphans: d.orphans.length,
+    orphansWithUnread,
+    orphans: orphansWithUnread, // alias — see rename note above
     stale: d.staleRegistryPartitions.length,
     splits: d.splits.length,
     phantoms: d.phantoms,
     unreadTotal: d.unreadTotal,
   };
-  const degraded = counts.orphans > 0 || counts.stale > 0 || counts.splits > 0;
+  const degraded = counts.orphansWithUnread > 0 || counts.stale > 0 || counts.splits > 0;
   return {
     ok: !degraded, action: 'healthcheck', repoKey,
     status: degraded ? 'degraded' : 'ok',
@@ -5161,18 +5342,23 @@ function cmdHealthcheck(flags, ctx) {
 
 // healthcheckHumanLine(result) — the DEFAULT (non-`--json`) render of `healthcheck`:
 // one compact line. `--json` prints the raw JSON object (main() decides which).
+// Carries the `(scope: <repoKey>)` marker (FIX C) so `orphansWithUnread=0` never
+// reads as a global all-clear it never was — this checks ONLY the cwd's own store,
+// unlike healOrphanPartitionsAllStores' cross-machine sweep.
 function healthcheckHumanLine(r) {
   if (!r || typeof r !== 'object') return String(r);
   if (r.reason === 'no-project') return 'healthcheck: no-project (cwd is not inside a DevSwarm project)';
   const c = r.counts || {};
+  const orphansWithUnread = c.orphansWithUnread != null ? c.orphansWithUnread : c.orphans;
   const parts = [
-    'orphans=' + (c.orphans || 0),
+    'orphansWithUnread=' + (orphansWithUnread || 0),
     'stale=' + (c.stale || 0),
     'splits=' + (c.splits || 0),
     'phantoms=' + (c.phantoms || 0),
     'unread=' + (c.unreadTotal || 0),
   ];
-  return 'healthcheck: ' + (r.status || (r.ok ? 'ok' : 'degraded')) + ' [' + parts.join(' ') + ']';
+  const scope = r.repoKey ? ' (scope: ' + r.repoKey + ')' : '';
+  return 'healthcheck: ' + (r.status || (r.ok ? 'ok' : 'degraded')) + scope + ' [' + parts.join(' ') + ']';
 }
 
 // cmdMeshRead(flags, ctx) — a.k.a. `roster --ack` (D23). Lists the CALLER's

@@ -1062,9 +1062,17 @@ function runRepairs(opts) {
     const n = (r.adopted || 0) + (r.forwarded || 0);
     return {
       pending: n > 0,
+      // archivedDrained/archivedStale are reported for visibility but never count
+      // toward `pending` — an archived-drained id has nothing to heal, and an
+      // archived-stale id is deliberately left un-forwarded (age cap), not a
+      // pending action. Both used to be folded into `unhealable`, which made a
+      // scary-looking "N unhealable" number mostly just "already fine" (measured:
+      // archived-drained was the single largest contributor on this machine).
       detail: (r.adopted || 0) + ' orphan partition(s) to adopt'
         + (r.forwarded ? ' + ' + r.forwarded + ' message(s) to forward' : '')
-        + ' across ' + (r.stores || 0) + ' store(s)'
+        + ' across ' + (r.stores || 0) + ' store(s), scope: all-stores'
+        + (r.archivedDrained ? ' (' + r.archivedDrained + ' archived-drained, nothing to heal)' : '')
+        + (r.archivedStale ? ' (' + r.archivedStale + ' archived-stale — past the age cap, detect-only)' : '')
         + (r.unhealable ? ' (' + r.unhealable + ' unhealable — no descriptor/family)' : '')
         + (r.errors ? ' (' + r.errors + ' store error(s), fail-open)' : ''),
     };

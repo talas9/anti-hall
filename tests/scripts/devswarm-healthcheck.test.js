@@ -72,7 +72,7 @@ for (const B of backends) {
       assert.strictEqual(r.result.ok, true, 'healthy -> ok:true');
       assert.strictEqual(r.result.status, 'ok');
       assert.strictEqual(r.code, 0, 'exit 0 when healthy');
-      assert.deepStrictEqual(r.result.counts, { orphans: 0, stale: 0, splits: 0, phantoms: 0, unreadTotal: 0 });
+      assert.deepStrictEqual(r.result.counts, { orphansWithUnread: 0, orphans: 0, stale: 0, splits: 0, phantoms: 0, unreadTotal: 0 });
     } finally { rm(main); rm(home); }
   });
 
@@ -94,7 +94,8 @@ for (const B of backends) {
       assert.strictEqual(r.result.ok, false, 'degraded -> ok:false');
       assert.strictEqual(r.result.status, 'degraded');
       assert.notStrictEqual(r.code, 0, 'exit non-zero when degraded');
-      assert.ok(r.result.counts.orphans >= 1, 'orphan counted');
+      assert.ok(r.result.counts.orphansWithUnread >= 1, 'orphan counted');
+      assert.strictEqual(r.result.counts.orphans, r.result.counts.orphansWithUnread, 'orphans alias agrees with orphansWithUnread');
       assert.ok(r.result.counts.splits >= 1, 'split counted');
       assert.ok(r.result.detail.splits.includes(mainMesh), 'detail names the split meshId');
       assert.ok(r.result.detail.orphans.some((o) => o.id === 'orphan-ws'), 'detail lists the orphan partition');
@@ -149,15 +150,17 @@ for (const B of backends) {
   });
 }
 
-// human-line render (backend-agnostic — pure formatter).
-test('healthcheckHumanLine renders one compact line for ok / degraded / no-project', () => {
+// human-line render (backend-agnostic — pure formatter). FIX C: the field is
+// renamed orphansWithUnread and the line now states its SCOPE (repoKey), so
+// `orphansWithUnread=0` never reads as a global all-clear it never was.
+test('healthcheckHumanLine renders one compact line for ok / degraded / no-project, with scope', () => {
   assert.strictEqual(
-    cli.healthcheckHumanLine({ ok: true, status: 'ok', counts: { orphans: 0, stale: 0, splits: 0, phantoms: 0, unreadTotal: 0 } }),
-    'healthcheck: ok [orphans=0 stale=0 splits=0 phantoms=0 unread=0]'
+    cli.healthcheckHumanLine({ ok: true, status: 'ok', repoKey: 'proj-abc123', counts: { orphansWithUnread: 0, orphans: 0, stale: 0, splits: 0, phantoms: 0, unreadTotal: 0 } }),
+    'healthcheck: ok (scope: proj-abc123) [orphansWithUnread=0 stale=0 splits=0 phantoms=0 unread=0]'
   );
   assert.strictEqual(
-    cli.healthcheckHumanLine({ ok: false, status: 'degraded', counts: { orphans: 2, stale: 1, splits: 3, phantoms: 4, unreadTotal: 5 } }),
-    'healthcheck: degraded [orphans=2 stale=1 splits=3 phantoms=4 unread=5]'
+    cli.healthcheckHumanLine({ ok: false, status: 'degraded', repoKey: 'proj-abc123', counts: { orphansWithUnread: 2, orphans: 2, stale: 1, splits: 3, phantoms: 4, unreadTotal: 5 } }),
+    'healthcheck: degraded (scope: proj-abc123) [orphansWithUnread=2 stale=1 splits=3 phantoms=4 unread=5]'
   );
   assert.strictEqual(
     cli.healthcheckHumanLine({ ok: false, reason: 'no-project' }),
@@ -179,7 +182,7 @@ test('healthcheck CLI process: human line by default, JSON with --json, exit cod
 
     const human = cp.spawnSync(process.execPath, [script, 'healthcheck'], { cwd: main, env, encoding: 'utf8' });
     assert.strictEqual(human.status, 0, 'healthy exit 0');
-    assert.match(human.stdout.trim(), /^healthcheck: ok \[orphans=0 /, 'default render is the human line');
+    assert.match(human.stdout.trim(), new RegExp('^healthcheck: ok \\(scope: ' + repoKey + '\\) \\[orphansWithUnread=0 '), 'default render is the human line, scoped to the repoKey');
 
     const json = cp.spawnSync(process.execPath, [script, 'healthcheck', '--json'], { cwd: main, env, encoding: 'utf8' });
     assert.strictEqual(json.status, 0);
