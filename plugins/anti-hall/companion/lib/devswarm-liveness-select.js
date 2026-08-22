@@ -57,6 +57,22 @@ function isLiveSessionId(sessionId) {
   return !s.startsWith(SYNTHETIC_SESSION_PREFIX);
 }
 
+// hasLiveCandidate(candidates) -> bool. Explicit ZERO-LIVE detector, added
+// alongside pickFreshestLive (not folded into it) so a caller that must NEVER
+// act on an id-sort-order fallback (e.g. foldMeshDuplicates forwarding real
+// mail) can refuse BEFORE calling pickFreshestLive, without changing
+// pickFreshestLive's own return contract/behavior for its other callers
+// (resolveMeshTarget / pickSurvivor's routing use, where "first row" is an
+// existing, unchanged, lower-stakes fallback). Fail-open: a non-array/empty
+// input is simply "no live candidate" (false), never throws.
+function hasLiveCandidate(candidates) {
+  const list = candidates || [];
+  for (const d of list) {
+    if (d && isLiveSessionId(d.sessionId)) return true;
+  }
+  return false;
+}
+
 function heartbeatPath(home, id) {
   const root = devswarmRootFn ? devswarmRootFn(home) : path.join(String(home || ''), '.anti-hall', 'devswarm');
   return path.join(root, 'heartbeats', String(id) + '.json');
@@ -211,6 +227,7 @@ module.exports = {
   SYNTHETIC_SESSION_PREFIX,
   isLiveSessionId,
   pickFreshestLive,
+  hasLiveCandidate,
   heartbeatPath,
   sessionAuthoredHeartbeat,
   cursorEvidence,

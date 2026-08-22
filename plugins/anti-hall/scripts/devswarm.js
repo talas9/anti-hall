@@ -1918,6 +1918,7 @@ function foldMeshDuplicates(home, ctx) {
     const retired = [];
     const left = [];
     const forwardFailed = [];
+    const needsAttention = []; // HAZARD 1 fix: zero-live groups refused (never folded by id-sort)
     let forwarded = 0;
     let folded = 0; // canonical groups that had ≥1 duplicate acted on
     let meshIdCollisions = 0; // meshId buckets spanning ≥2 DISTINCT canonical worktrees
@@ -1957,6 +1958,21 @@ function foldMeshDuplicates(home, ctx) {
         }
         for (const rows of bySamePath.values()) {
           if (rows.length < 2) continue; // no duplicate within this real worktree
+          // HAZARD 1 (live data-loss): a ZERO-LIVE group has no live session
+          // draining ANY row, so pickFreshestLive's own fallback ("first
+          // candidate") degrades to id-sort order — an accident of
+          // listRegistry()'s enumeration, not a signal of which row is
+          // actually being drained. Forwarding backlog INTO an id-sort
+          // "survivor" can move mail OUT of a row a Primary is mid-drain on
+          // (its sessionId already went stale/dead between drains) and INTO
+          // a row nobody reads — the opposite of this fold's intent, and it
+          // makes stranded mail WORSE, not better. Refuse to fold this group
+          // at all (no forward, no tombstone) and surface it for operator
+          // attention instead — never silently pick by registry order.
+          if (!livenessSelect.hasLiveCandidate(rows)) {
+            needsAttention.push({ meshId: g.meshId, ids: rows.map((d) => d.id) });
+            continue;
+          }
           const survivor = pickSurvivor(s, { rows }, home);
           if (!survivor || survivor.id == null) continue; // nothing live/first to keep -> skip
           const candidates = rows.filter((d) => d && String(d.id) !== String(survivor.id));
@@ -1978,6 +1994,7 @@ function foldMeshDuplicates(home, ctx) {
     if (forwardFailed.length) out.forwardFailed = forwardFailed;
     if (meshIdCollisions) out.meshIdCollisions = meshIdCollisions;
     if (rekeyed) out.rekeyed = rekeyed;
+    if (needsAttention.length) out.needsAttention = needsAttention;
     return out;
   } catch (e) {
     // A5(b): fail-open means "never THROW into update/doctor" — it does NOT
@@ -5238,11 +5255,32 @@ function computeDiagnosis(s, ctx) {
   const byMesh = groupRegistryByMeshId(registry);
   const meshTargets = [];
   const splits = [];
+  const deadSplits = [];
+  // HAZARD 2 fix: the pre-existing `split` (2+ LIVE rows — two live tabs, may
+  // be benign) does NOT cover a group with 2+ rows and ZERO live rows — nobody
+  // draining EITHER row, mail can strand there (see foldMeshDuplicates' new
+  // needsAttention refusal above for the fold-side half of this). That case
+  // used to compute `g.liveRows >= 2` -> false -> invisible. Named explicitly
+  // (not overloaded onto `split`) as `deadSplit`/`deadSplits` so callers can
+  // tell "two live tabs" (benign) apart from "nobody is draining this mesh"
+  // (dangerous). try/catch keeps this fail-open — a throw here must never
+  // block diagnose/healthcheck.
   for (const g of byMesh.values()) {
-    const target = resolveMeshTarget(s, g.meshId, c.home); // the partition `send --to <meshId>` lands in
-    const split = g.liveRows >= 2;
-    if (split) splits.push(g.meshId);
-    meshTargets.push({ meshId: g.meshId, resolvesTo: target ? target.id : null, ids: g.ids, liveRows: g.liveRows, split });
+    let target = null;
+    let liveSplit = false;
+    let deadSplit = false;
+    try {
+      target = resolveMeshTarget(s, g.meshId, c.home); // the partition `send --to <meshId>` lands in
+      liveSplit = g.liveRows >= 2;
+      deadSplit = g.rows.length >= 2 && g.liveRows === 0;
+    } catch (_) { target = null; liveSplit = false; deadSplit = false; }
+    const split = liveSplit; // preserved meaning: unchanged for existing consumers
+    if (liveSplit) splits.push(g.meshId);
+    if (deadSplit) deadSplits.push(g.meshId);
+    meshTargets.push({
+      meshId: g.meshId, resolvesTo: target ? target.id : null, ids: g.ids,
+      liveRows: g.liveRows, split, deadSplit,
+    });
   }
   const workspaces = sum.workspaces || {};
   const rows = registry.filter((d) => d && d.id != null).map((d) => {
@@ -5262,7 +5300,7 @@ function computeDiagnosis(s, ctx) {
     if (w && Number.isFinite(w.directUnread)) unreadTotal += w.directUnread;
   }
   return {
-    sum, registry: rows, meshTargets, splits,
+    sum, registry: rows, meshTargets, splits, deadSplits,
     orphans: sum.orphans || [],
     staleRegistryPartitions: sum.staleRegistryPartitions || [],
     phantoms, unreadTotal,
@@ -5280,7 +5318,7 @@ function cmdDiagnose(flags, ctx) {
   return {
     ok: true, action: 'diagnose', repoKey,
     count: d.registry.length, registry: d.registry,
-    meshTargets: d.meshTargets, splits: d.splits,
+    meshTargets: d.meshTargets, splits: d.splits, deadSplits: d.deadSplits,
     orphans: d.orphans,
     staleRegistryPartitions: d.staleRegistryPartitions,
   };
@@ -5324,10 +5362,11 @@ function cmdHealthcheck(flags, ctx) {
     orphans: orphansWithUnread, // alias — see rename note above
     stale: d.staleRegistryPartitions.length,
     splits: d.splits.length,
+    deadSplits: d.deadSplits.length, // HAZARD 2 fix: 2+ rows, ZERO live — dangerous, gates degraded too
     phantoms: d.phantoms,
     unreadTotal: d.unreadTotal,
   };
-  const degraded = counts.orphansWithUnread > 0 || counts.stale > 0 || counts.splits > 0;
+  const degraded = counts.orphansWithUnread > 0 || counts.stale > 0 || counts.splits > 0 || counts.deadSplits > 0;
   return {
     ok: !degraded, action: 'healthcheck', repoKey,
     status: degraded ? 'degraded' : 'ok',
@@ -5336,6 +5375,7 @@ function cmdHealthcheck(flags, ctx) {
       orphans: d.orphans,
       staleRegistryPartitions: d.staleRegistryPartitions,
       splits: d.splits,
+      deadSplits: d.deadSplits,
     },
   };
 }
@@ -5350,15 +5390,23 @@ function healthcheckHumanLine(r) {
   if (r.reason === 'no-project') return 'healthcheck: no-project (cwd is not inside a DevSwarm project)';
   const c = r.counts || {};
   const orphansWithUnread = c.orphansWithUnread != null ? c.orphansWithUnread : c.orphans;
+  const deadSplits = c.deadSplits || 0;
   const parts = [
     'orphansWithUnread=' + (orphansWithUnread || 0),
     'stale=' + (c.stale || 0),
     'splits=' + (c.splits || 0),
+    'deadSplits=' + deadSplits,
     'phantoms=' + (c.phantoms || 0),
     'unread=' + (c.unreadTotal || 0),
   ];
   const scope = r.repoKey ? ' (scope: ' + r.repoKey + ')' : '';
-  return 'healthcheck: ' + (r.status || (r.ok ? 'ok' : 'degraded')) + scope + ' [' + parts.join(' ') + ']';
+  // deadSplits (2+ registry rows, ZERO live) is the DANGEROUS kind (HAZARD 2:
+  // stranded mail, nobody draining) — surfaced with its own explicit warning
+  // suffix so it never blends into the same-looking benign `splits=` count.
+  const warning = deadSplits > 0
+    ? ' — WARNING: ' + deadSplits + ' dead split(s) (2+ registry rows, no live session draining either — mail can strand)'
+    : '';
+  return 'healthcheck: ' + (r.status || (r.ok ? 'ok' : 'degraded')) + scope + ' [' + parts.join(' ') + ']' + warning;
 }
 
 // cmdMeshRead(flags, ctx) — a.k.a. `roster --ack` (D23). Lists the CALLER's

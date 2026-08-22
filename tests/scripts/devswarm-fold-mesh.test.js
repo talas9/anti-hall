@@ -215,6 +215,77 @@ for (const B of backends) {
       assert.deepStrictEqual(bodies(E.home, E.repoKey, 'w1-live'), survBefore, 'dryRun did not forward');
     } finally { cleanup(E); }
   });
+
+  // HAZARD 1 — live data-loss: a group with ZERO live rows must NEVER be
+  // folded by pickFreshestLive's id-sort-order fallback. Reproduces the exact
+  // measured shape: one row sessionId:null (never claimed), one row
+  // sessionId:'unclaimed:<id>' (SYNTHETIC_SESSION_PREFIX — auto-ensured, never
+  // a real session). Both fail isLiveSessionId. The row with the FURTHER-
+  // ADVANCED cursor ("being drained") must never have its unread mail
+  // forwarded into the row with the LESS-advanced cursor ("nobody reads it").
+  test(`[${B.name}] foldMeshDuplicates REFUSES a zero-live group — no id-sort pick, no wrong-direction forward`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('zerolive-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      // 'drained' registers FIRST (would win any id-sort/registry-order pick)
+      // but carries an ADVANCED cursor (being actively drained by something)
+      // and NO forwardable backlog left unread.
+      seedReg(home, repoKey, { id: 'drained', worktreePath: topOf(W1), sessionId: null });
+      seedMsg(home, repoKey, 'drained', 'already-read-1', 'native:zl-drained-1');
+      { const s = openS(home, repoKey); try { s.setCursor('drained', 1); } finally { s.close(); } }
+
+      // 'unread-sibling' registers SECOND, synthetic unclaimed sessionId (also
+      // not live), cursor NEVER advanced, carries a real unread direct.
+      seedReg(home, repoKey, { id: 'unread-sibling', worktreePath: topOf(W1), sessionId: 'unclaimed:unread-sibling' });
+      seedDirect(home, repoKey, 'unread-sibling', 'payload-stranded');
+
+      const before = regIds(home, repoKey);
+      assert.deepStrictEqual(before, ['drained', 'unread-sibling'], 'sanity: both rows present, zero live');
+
+      const r = cli.foldMeshDuplicates(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r.ok, true);
+      // Neither row was folded: nothing tombstoned, nothing forwarded for this group.
+      assert.deepStrictEqual(r.retired, [], 'zero-live group: nothing tombstoned');
+      assert.strictEqual(r.forwarded, 0, 'zero-live group: nothing forwarded');
+      // Surfaced explicitly for operator attention instead of silently picked.
+      assert.ok(Array.isArray(r.needsAttention) && r.needsAttention.length === 1, 'zero-live group reported in needsAttention');
+      assert.deepStrictEqual(r.needsAttention[0].ids.slice().sort(), ['drained', 'unread-sibling'].sort());
+
+      // Registry untouched: BOTH rows still present, unmoved.
+      assert.deepStrictEqual(regIds(home, repoKey), ['drained', 'unread-sibling']);
+
+      // The critical safety assertion: mail from the more-advanced-cursor row
+      // ('drained') was NEVER forwarded into the less-advanced row
+      // ('unread-sibling'), and vice versa — each partition's own messages
+      // stayed exactly where they were.
+      assert.deepStrictEqual(bodies(home, repoKey, 'drained'), ['already-read-1'], 'drained partition unchanged — nothing forwarded IN');
+      assert.deepStrictEqual(bodies(home, repoKey, 'unread-sibling'), ['payload-stranded'], 'unread-sibling partition unchanged — nothing forwarded OUT');
+    } finally { rm(W1); rm(home); }
+  });
+
+  // Regression guard: a group with 2+ LIVE rows is UNAFFECTED by the zero-live
+  // refusal above — existing fold behavior (pick + forward + tombstone) still
+  // runs exactly as before.
+  test(`[${B.name}] foldMeshDuplicates: 2+ LIVE rows still fold as before (regression guard)`, () => {
+    const home = tmpHome();
+    const W1 = makeGitRepo('livefold-' + B.name);
+    const repoKey = repokey.repoKeyForWorktree(W1);
+    try {
+      seedReg(home, repoKey, { id: 'live-1', worktreePath: topOf(W1), sessionId: 'session-1', updatedAt: Date.now() - 60000 });
+      seedReg(home, repoKey, { id: 'live-2', worktreePath: topOf(W1), sessionId: 'session-2', updatedAt: Date.now() });
+      seedDirect(home, repoKey, 'live-1', 'payload-from-live-1');
+
+      const r = cli.foldMeshDuplicates(home, { cwd: W1, env: {}, backend: B.backend });
+      assert.strictEqual(r.ok, true);
+      assert.strictEqual(r.retired.length, 1, 'exactly one duplicate retired (unchanged behavior)');
+      assert.ok(r.forwarded >= 1, 'the backlog was forwarded (unchanged behavior)');
+      assert.strictEqual(r.needsAttention, undefined, 'a live group never appears in needsAttention');
+
+      const after = regIds(home, repoKey);
+      assert.strictEqual(after.length, 1, 'exactly one survivor remains');
+    } finally { rm(W1); rm(home); }
+  });
 }
 
 // Doctor entrypoint (journal backend, isolated tmp HOME): the AUTO-SAFE

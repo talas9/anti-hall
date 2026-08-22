@@ -136,4 +136,125 @@ for (const B of backends) {
       rm(main); rm(home);
     }
   });
+
+  // HAZARD 2 — a 2-row group with ZERO live rows must report the DANGEROUS
+  // split ("deadSplit"), not `splits: []` — the pre-fix blind spot: liveRows
+  // is 0, so the old `liveRows >= 2` check reports clean while mail strands.
+  test(`[${B.name}] diagnose on a 2-row ZERO-live group reports the dangerous deadSplit (not silent)`, () => {
+    const home = tmpHome();
+    const main = makeGitRepo('ddead-' + B.name);
+    try {
+      const repoKey = repokey.repoKeyForWorktree(main);
+      const mainTop = topOf(main);
+      const mainMesh = meshOf(main);
+      // Two registry rows, NEITHER live: sessionId null, and the SYNTHETIC
+      // unclaimed: prefix — both fail isLiveSessionId (matches the measured
+      // primary-63f9261d field shape).
+      seedB(home, repoKey, { id: 'row-a', worktreePath: mainTop, sessionId: null });
+      seedB(home, repoKey, { id: 'row-b', worktreePath: mainTop, sessionId: 'unclaimed:row-b' });
+
+      const d = cli.run(['diagnose'], bctx(home, { cwd: main }));
+      assert.strictEqual(d.result.ok, true);
+      // The old benign `splits` stays empty (liveRows is 0, correctly not a
+      // "2 live tabs" split) — the danger is NOT reported through that field.
+      assert.ok(!d.result.splits.includes(mainMesh), 'benign splits[] does not carry the zero-live case');
+      // The NEW explicit field DOES report it.
+      assert.ok(d.result.deadSplits.includes(mainMesh), 'deadSplits[] reports the zero-live danger — not silently clean');
+      const mt = d.result.meshTargets.find((m) => m.meshId === mainMesh);
+      assert.ok(mt, 'meshTargets entry present for the group');
+      assert.strictEqual(mt.liveRows, 0, 'sanity: zero live rows');
+      assert.strictEqual(mt.split, false, 'benign split flag stays false (unchanged meaning)');
+      assert.strictEqual(mt.deadSplit, true, 'deadSplit flag reports the dangerous kind');
+      assert.ok(mt.resolvesTo === 'row-a' || mt.resolvesTo === 'row-b', 'resolvesTo is still populated for the dangerous kind');
+    } finally {
+      rm(main); rm(home);
+    }
+  });
+
+  // diagnose on a 2+ LIVE group still reports the benign split exactly as
+  // before (deadSplits stays empty) — regression guard alongside the new case.
+  test(`[${B.name}] diagnose on a 2+ live group reports the benign split, deadSplits stays empty`, () => {
+    const home = tmpHome();
+    const main = makeGitRepo('dbenign-' + B.name);
+    try {
+      const repoKey = repokey.repoKeyForWorktree(main);
+      const mainTop = topOf(main);
+      const mainMesh = meshOf(main);
+      seedB(home, repoKey, { id: 'live-a', worktreePath: mainTop, sessionId: 'sa' });
+      seedB(home, repoKey, { id: 'live-b', worktreePath: mainTop, sessionId: 'sb' });
+
+      const d = cli.run(['diagnose'], bctx(home, { cwd: main }));
+      assert.strictEqual(d.result.ok, true);
+      assert.ok(d.result.splits.includes(mainMesh), 'benign split still reported as before');
+      assert.ok(!d.result.deadSplits.includes(mainMesh), 'deadSplits stays empty for a live split');
+    } finally {
+      rm(main); rm(home);
+    }
+  });
+
+  // healthcheck: the dangerous kind gates degraded AND the human line surfaces
+  // it distinctly (not blended into the benign splits= count).
+  test(`[${B.name}] healthcheck reports degraded with a distinct deadSplits warning on the human line`, () => {
+    const home = tmpHome();
+    const main = makeGitRepo('dhc-' + B.name);
+    try {
+      const repoKey = repokey.repoKeyForWorktree(main);
+      const mainTop = topOf(main);
+      seedB(home, repoKey, { id: 'row-a', worktreePath: mainTop, sessionId: null });
+      seedB(home, repoKey, { id: 'row-b', worktreePath: mainTop, sessionId: 'unclaimed:row-b' });
+
+      const h = cli.run(['healthcheck'], bctx(home, { cwd: main }));
+      assert.strictEqual(h.result.ok, false, 'degraded — exit-signal fires for the dangerous kind');
+      assert.strictEqual(h.result.status, 'degraded');
+      assert.strictEqual(h.result.counts.splits, 0, 'benign splits count stays 0');
+      assert.strictEqual(h.result.counts.deadSplits, 1, 'deadSplits count is 1');
+
+      const line = cli.healthcheckHumanLine(h.result);
+      assert.match(line, /deadSplits=1/, 'human line carries the deadSplits count');
+      assert.match(line, /WARNING/, 'human line surfaces the dangerous kind distinctly (not blended into splits=)');
+    } finally {
+      rm(main); rm(home);
+    }
+  });
 }
+
+// HAZARD 2 fail-open: a throw inside the split computation (resolveMeshTarget,
+// called per-group from computeDiagnosis) must never crash diagnose — it
+// degrades that ONE group's target/split flags to neutral, never propagates.
+// Exercises computeDiagnosis directly against a REAL store handle whose
+// listRegistry() is wrapped to throw on its 3rd call — measured (via a
+// one-off instrumented run of this exact fixture) to land on the per-group
+// resolveMeshTarget() call inside computeDiagnosis's loop (call #1 =
+// store.computeSummary's internal read, #2 = computeDiagnosis's own
+// `s.listRegistry()`, #3 = resolveMeshTarget's internal
+// `storeHandle.listRegistry()` for the one seeded group).
+test('computeDiagnosis fail-open: a throw inside the split computation does not crash diagnose', () => {
+  const home = tmpHome();
+  const main = makeGitRepo('dfailopen');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(main);
+    const mainTop = topOf(main);
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      s.upsertRegistry({ id: 'row-a', worktreePath: mainTop, sessionId: null });
+      let calls = 0;
+      const origListRegistry = s.listRegistry.bind(s);
+      s.listRegistry = (...args) => {
+        calls++;
+        if (calls >= 3) throw new Error('boom — injected split-computation failure');
+        return origListRegistry(...args);
+      };
+      let d;
+      assert.doesNotThrow(() => { d = cli.computeDiagnosis(s, { home, env: {} }); },
+        'computeDiagnosis must not throw when the per-group split computation throws');
+      assert.ok(Array.isArray(d.meshTargets) && d.meshTargets.length === 1, 'the group is still present, degraded to neutral');
+      assert.strictEqual(d.meshTargets[0].split, false, 'degraded liveSplit is neutral (false), not a crash');
+      assert.strictEqual(d.meshTargets[0].deadSplit, false, 'degraded deadSplit is neutral (false), not a crash');
+      assert.strictEqual(d.meshTargets[0].resolvesTo, null, 'degraded resolvesTo is neutral (null)');
+      assert.deepStrictEqual(d.splits, [], 'no split falsely reported from a degraded group');
+      assert.deepStrictEqual(d.deadSplits, [], 'no deadSplit falsely reported from a degraded group');
+    } finally { s.close(); }
+  } finally {
+    rm(main); rm(home);
+  }
+});

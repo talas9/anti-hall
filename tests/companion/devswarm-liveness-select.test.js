@@ -16,7 +16,7 @@ const path = require('node:path');
 
 const ROOT = path.join(__dirname, '..', '..', 'plugins', 'anti-hall');
 const livenessSelect = require(path.join(ROOT, 'companion', 'lib', 'devswarm-liveness-select.js'));
-const { pickFreshestLive, isLiveSessionId, sessionAuthoredHeartbeat, cursorEvidence, heartbeatPath } = livenessSelect;
+const { pickFreshestLive, isLiveSessionId, sessionAuthoredHeartbeat, cursorEvidence, heartbeatPath, hasLiveCandidate } = livenessSelect;
 
 function tmpHome(prefix) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), prefix || 'liveness-select-test-'));
@@ -191,6 +191,32 @@ test('FALLBACK: no candidate is live at all -> never strand a mesh, returns the 
 test('FALLBACK: empty candidate list -> returns null, never throws', () => {
   assert.strictEqual(pickFreshestLive([], {}), null);
   assert.strictEqual(pickFreshestLive(null, {}), null);
+});
+
+// ============================================================================
+// hasLiveCandidate — HAZARD 1 explicit zero-live detector (added alongside
+// pickFreshestLive, does not change pickFreshestLive's own behavior/contract)
+// ============================================================================
+
+test('hasLiveCandidate: false when every row is non-live (null/empty/synthetic sessionId)', () => {
+  const rows = [
+    { id: 'a', sessionId: null },
+    { id: 'b', sessionId: 'unclaimed:primary-63f9261d' },
+  ];
+  assert.strictEqual(hasLiveCandidate(rows), false);
+});
+
+test('hasLiveCandidate: true when at least one row is live', () => {
+  const rows = [
+    { id: 'a', sessionId: null },
+    { id: 'b', sessionId: 'real-session' },
+  ];
+  assert.strictEqual(hasLiveCandidate(rows), true);
+});
+
+test('hasLiveCandidate: empty/null input -> false, never throws', () => {
+  assert.strictEqual(hasLiveCandidate([]), false);
+  assert.strictEqual(hasLiveCandidate(null), false);
 });
 
 // ============================================================================
