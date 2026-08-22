@@ -72,7 +72,7 @@ for (const B of backends) {
       assert.strictEqual(r.result.ok, true, 'healthy -> ok:true');
       assert.strictEqual(r.result.status, 'ok');
       assert.strictEqual(r.code, 0, 'exit 0 when healthy');
-      assert.deepStrictEqual(r.result.counts, { orphansWithUnread: 0, orphans: 0, stale: 0, splits: 0, deadSplits: 0, phantoms: 0, unreadTotal: 0 });
+      assert.deepStrictEqual(r.result.counts, { orphansWithUnread: 0, orphans: 0, stale: 0, splits: 0, deadSplits: 0, mixedSplits: 0, phantoms: 0, unreadTotal: 0 });
     } finally { rm(main); rm(home); }
   });
 
@@ -155,12 +155,12 @@ for (const B of backends) {
 // `orphansWithUnread=0` never reads as a global all-clear it never was.
 test('healthcheckHumanLine renders one compact line for ok / degraded / no-project, with scope', () => {
   assert.strictEqual(
-    cli.healthcheckHumanLine({ ok: true, status: 'ok', repoKey: 'proj-abc123', counts: { orphansWithUnread: 0, orphans: 0, stale: 0, splits: 0, deadSplits: 0, phantoms: 0, unreadTotal: 0 } }),
-    'healthcheck: ok (scope: proj-abc123) [orphansWithUnread=0 stale=0 splits=0 deadSplits=0 phantoms=0 unread=0]'
+    cli.healthcheckHumanLine({ ok: true, status: 'ok', repoKey: 'proj-abc123', counts: { orphansWithUnread: 0, orphans: 0, stale: 0, splits: 0, deadSplits: 0, mixedSplits: 0, phantoms: 0, unreadTotal: 0 } }),
+    'healthcheck: ok (scope: proj-abc123) [orphansWithUnread=0 stale=0 splits=0 deadSplits=0 mixedSplits=0 phantoms=0 unread=0]'
   );
   assert.strictEqual(
-    cli.healthcheckHumanLine({ ok: false, status: 'degraded', repoKey: 'proj-abc123', counts: { orphansWithUnread: 2, orphans: 2, stale: 1, splits: 3, deadSplits: 0, phantoms: 4, unreadTotal: 5 } }),
-    'healthcheck: degraded (scope: proj-abc123) [orphansWithUnread=2 stale=1 splits=3 deadSplits=0 phantoms=4 unread=5]'
+    cli.healthcheckHumanLine({ ok: false, status: 'degraded', repoKey: 'proj-abc123', counts: { orphansWithUnread: 2, orphans: 2, stale: 1, splits: 3, deadSplits: 0, mixedSplits: 0, phantoms: 4, unreadTotal: 5 } }),
+    'healthcheck: degraded (scope: proj-abc123) [orphansWithUnread=2 stale=1 splits=3 deadSplits=0 mixedSplits=0 phantoms=4 unread=5]'
   );
   assert.strictEqual(
     cli.healthcheckHumanLine({ ok: false, reason: 'no-project' }),

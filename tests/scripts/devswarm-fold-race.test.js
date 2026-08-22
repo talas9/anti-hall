@@ -160,24 +160,33 @@ for (const B of backends) {
       seedReg(home, repoKey, { id: 'child-sub', worktreePath: Tsub, sessionId: 'sess-sub' });
       seedReg(home, repoKey, { id: 'child-wt2', worktreePath: WT2, sessionId: 'sess-wt2' });
 
-      // FAIL-FIRST: before migration the subdir row is addressable only by its raw
-      // subdir meshId, so a toplevel-meshId send fails closed.
+      // TRACED P0 fix (send/diagnose membership unification): `send`'s
+      // resolveMeshTarget now matches on canonicalMeshId (git-toplevel-resolved,
+      // the SAME identity `diagnose`/groupRegistryByMeshId use), not the raw
+      // stored worktreePath hash — so a toplevel-meshId send reaches a subdir
+      // row EVEN BEFORE any migration/rekey runs. This closes the exact
+      // disagreement this test used to encode as expected ("before migration:
+      // toplevel send does not resolve the subdir row") — `send` and `diagnose`
+      // no longer disagree on group membership for a subdir-registered row.
       const before = cli.run(['send', '--to', toplevelMeshId, '--message', 'hi'], ctx(home, { cwd: sender }));
-      assert.equal(before.result.ok, false, 'before migration: toplevel send does not resolve the subdir row');
-      assert.equal(before.result.reason, 'unregistered-recipient');
+      assert.equal(before.result.ok, true, 'send now resolves the subdir row via canonicalMeshId matching, pre-migration');
+      assert.equal(before.result.toId, 'child-sub');
+      assert.ok(bodies(home, repoKey, 'child-sub').includes('hi'), 'message landed in the subdir partition pre-migration');
 
-      // Migrate (the exact call `/update` + doctor repair make).
+      // Migrate (the exact call `/update` + doctor repair make). Still useful:
+      // it normalizes the STORED worktreePath itself (data hygiene), even
+      // though send/diagnose no longer need it to agree.
       const r = cli.foldMeshDuplicates(home, ctx(home, { cwd: T }));
       assert.equal(r.ok, true);
       assert.equal(r.rekeyed, 1, 'exactly the subdir row is re-keyed');
       assert.deepEqual(r.retired, [], 'a subdir SINGLETON is re-keyed, not folded/tombstoned');
 
       // PASS-AFTER: the subdir row is now stored under the canonical toplevel path,
-      // and a toplevel-meshId send reaches its partition (d.id unchanged -> no move).
+      // and a toplevel-meshId send still reaches its partition (d.id unchanged -> no move).
       assert.equal(worktreeOf(home, repoKey, 'child-sub'), inst.resolveWorktree(Tsub),
         'subdir row worktreePath re-keyed to the git toplevel');
       const after = cli.run(['send', '--to', toplevelMeshId, '--message', 'reached'], ctx(home, { cwd: sender }));
-      assert.equal(after.result.ok, true, 'after migration: toplevel send resolves');
+      assert.equal(after.result.ok, true, 'after migration: toplevel send still resolves');
       assert.ok(bodies(home, repoKey, 'child-sub').includes('reached'), 'message landed in the (formerly subdir) partition');
 
       // Distinct toplevel (linked worktree) is NOT merged/re-keyed and stays addressable on its OWN meshId.

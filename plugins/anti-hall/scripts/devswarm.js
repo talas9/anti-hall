@@ -4664,6 +4664,45 @@ function hasFlag(flags, name) {
 // (it is derived from the REGISTERED worktree path, never from any caller's
 // env). This is the D19 join: `--to <meshId>` resolves to the target's real
 // read partition (`d.id`, the builder-id), NOT the meshId itself.
+// meshCandidateRows(storeHandle, meshId) -> registry rows whose CANONICAL
+// (git-toplevel-resolved) meshId matches `meshId`.
+//
+// TRACED P0 DEFECT B fix: this used to match on the RAW stored worktreePath
+// hash (`inst.primaryWorkspaceId(d.worktreePath)`), while `diagnose` groups
+// via `canonicalMeshId` (git-toplevel-resolved, `groupRegistryByMeshId`
+// above). A subdir-registered row's raw-path hash differs from its
+// toplevel's canonical meshId, so it was inside diagnose's group but NOT a
+// send candidate for that same meshId — `send` and `diagnose` disagreed
+// about group membership for the exact same row.
+//
+// Fix chosen: unify HERE, on canonicalMeshId, rather than mutating the
+// registry via `rekeySubdirRegistryRows` on the send path. `meshId` values
+// callers actually pass to `--to` come from `roster`/`diagnose` output,
+// which are ALREADY canonical (both key off `groupRegistryByMeshId` /
+// `canonicalMeshId`) — so comparing each row's canonical meshId against that
+// argument is the correct, already-intended join, and it is a PURE
+// per-call computation: no registry write, no lock, no risk of a lost-update
+// race with a concurrent register/heartbeat/rehome (rekeySubdirRegistryRows
+// explicitly documents that hazard for its own in-place write path). The
+// data-repair alternative (running rekeySubdirRegistryRows here) was
+// rejected: it would require taking a per-id lock and performing a registry
+// write on every `send` for a case that is purely a read-side identity
+// mismatch, and it already runs independently via foldMeshDuplicates (doctor
+// repair / reconcile), which self-heals stored subdir rows over time — this
+// fix does not depend on that repair having already run.
+function meshCandidateRows(storeHandle, meshId) {
+  const candidates = [];
+  if (!meshId) return candidates;
+  for (const d of storeHandle.listRegistry()) {
+    if (!d || !d.worktreePath) continue;
+    let canon = null;
+    try { canon = canonicalMeshId(d.worktreePath); } catch (_) { canon = null; }
+    if (canon !== String(meshId)) continue;
+    candidates.push(d);
+  }
+  return candidates;
+}
+
 function resolveMeshTarget(storeHandle, meshId, home) {
   if (!meshId) return null;
   // A single worktreePath can carry MORE THAN ONE registry row that ALL resolve to
@@ -4688,12 +4727,7 @@ function resolveMeshTarget(storeHandle, meshId, home) {
   // by an unrelated `heartbeat` caller — see that module's header for the field
   // evidence). `home` is optional (enables the heartbeat-credit signal only; every
   // other signal works without it).
-  const candidates = [];
-  for (const d of storeHandle.listRegistry()) {
-    if (!d || !d.worktreePath) continue;
-    if (inst.primaryWorkspaceId(d.worktreePath) !== String(meshId)) continue;
-    candidates.push(d);
-  }
+  const candidates = meshCandidateRows(storeHandle, meshId);
   return livenessSelect.pickFreshestLive(candidates, { storeHandle, home });
 }
 
@@ -4751,7 +4785,10 @@ function resolveSendTarget(storeHandle, arg, home) {
     // DIFFERENT worktree than the one `arg` (as a meshId) actually derives
     // to — i.e. its own worktree's derived meshId does not even match `arg`.
     let ownMeshId = null;
-    try { ownMeshId = idMatches[0].worktreePath ? inst.primaryWorkspaceId(idMatches[0].worktreePath) : null; } catch (_) { ownMeshId = null; }
+    // canonicalMeshId (not the raw-path inst.primaryWorkspaceId) — kept consistent
+    // with resolveMeshTarget/meshCandidateRows' matching so this shadow-guard
+    // check agrees with the same identity byMesh was just derived from.
+    try { ownMeshId = idMatches[0].worktreePath ? canonicalMeshId(idMatches[0].worktreePath) : null; } catch (_) { ownMeshId = null; }
     const sameWorktreeGroup = ownMeshId != null && String(ownMeshId) === String(arg);
     if (byMesh && !sameRow && !sameWorktreeGroup) {
       return { target: null, ambiguous: true, candidates: [idMatches[0].id, byMesh.id] };
@@ -4896,6 +4933,16 @@ function cmdSend(flags, ctx) {
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   try {
     let targetPartition = null;
+    // TRACED P0 DEFECT B fix (step 1): `send` used to resolve+deliver to exactly
+    // one row with ZERO visibility into whether the candidate set it picked from
+    // had more than one row (a partition). REPORT, never block — a partition is
+    // exactly the shape where refusing to send would be worse than delivering to
+    // the freshest-live candidate. `candidateMeshRow` is whichever row resolution
+    // actually picked (toPrimaryFlag's `target` or the toFlag path's
+    // `resolved.target`); candidate count is recomputed from ITS OWN canonical
+    // meshId group (meshCandidateRows) so this is correct whether the row was
+    // found via the meshId match or the exact-id fallback in resolveSendTarget.
+    let candidateMeshRow = null;
     if (type === 'direct') {
       // Fail-closed addressing (D12a): a --to naming neither a registered meshId
       // NOR a registered row id is rejected outright — never a silent
@@ -4912,6 +4959,7 @@ function cmdSend(flags, ctx) {
           };
         }
         targetPartition = target.id;
+        candidateMeshRow = target;
       } else {
         // resolveSendTarget (P0 addressing fix): tries the meshId match FIRST
         // (unchanged), then falls back to an exact match against a row's own
@@ -4937,7 +4985,20 @@ function cmdSend(flags, ctx) {
         // is what lands a mesh direct in the exact partition the recipient (or a
         // child's builder-id read surface, D26) actually reads.
         targetPartition = resolved.target.id;
+        candidateMeshRow = resolved.target;
       }
+    }
+    // Candidate-set size for the resolved row's OWN canonical meshId group —
+    // >1 means the meshId this send addressed had more than one registry row
+    // (a partition); pickFreshestLive already chose `targetPartition` from
+    // among them. undefined (not 0) for a broadcast/no-target send, so the
+    // field is only present when it means something.
+    let candidateCount;
+    if (type === 'direct' && candidateMeshRow) {
+      try {
+        const meshForCount = canonicalMeshId(candidateMeshRow.worktreePath);
+        candidateCount = meshCandidateRows(s, meshForCount).length;
+      } catch (_) { candidateCount = undefined; }
     }
     const doAppend = () => {
       const fields = {
@@ -4959,6 +5020,10 @@ function cmdSend(flags, ctx) {
         rehomedFromHashBucket: rehomedSend || undefined,
         needsReply: questionFlag,
         toId: type === 'direct' ? targetPartition : null,
+        // TRACED P0 DEFECT B (step 1): visibility into the candidate set this
+        // send resolved from — >1 means the target meshId's group is
+        // partitioned (never blocks; report-only).
+        candidates: type === 'direct' ? candidateCount : undefined,
       };
     };
     if (type === 'direct') {
@@ -5351,30 +5416,48 @@ function computeDiagnosis(s, ctx) {
   const meshTargets = [];
   const splits = [];
   const deadSplits = [];
-  // HAZARD 2 fix: the pre-existing `split` (2+ LIVE rows — two live tabs, may
-  // be benign) does NOT cover a group with 2+ rows and ZERO live rows — nobody
-  // draining EITHER row, mail can strand there (see foldMeshDuplicates' new
-  // needsAttention refusal above for the fold-side half of this). That case
-  // used to compute `g.liveRows >= 2` -> false -> invisible. Named explicitly
-  // (not overloaded onto `split`) as `deadSplit`/`deadSplits` so callers can
-  // tell "two live tabs" (benign) apart from "nobody is draining this mesh"
-  // (dangerous). try/catch keeps this fail-open — a throw here must never
-  // block diagnose/healthcheck.
+  const mixedSplits = [];
+  // TRACED P0 fix: the predicate used to be two INDEPENDENT checks —
+  // `liveSplit = liveRows>=2` and `deadSplit = rows.length>=2 && liveRows===0`
+  // — which left EXACTLY ONE shape uncovered: `rows.length>=2 && liveRows===1`
+  // (one live row, one+ dead rows sharing a meshId). Neither check matched it,
+  // so it scored split:false/deadSplit:false/splits:[] — invisible, even
+  // though `send` can resolve to either row and a stranded child never
+  // receives mail routed to the dead one (field-reported: meshId
+  // `primary-bf04dd47`, liveRows:1, splits:[] while sends had to be
+  // redirected to a live partition UUID). Fixed by classifying from ONE
+  // predicate: any group with `rows.length >= 2` IS partitioned, and its
+  // KIND is derived from liveRows — `live` (2+ live, may be benign, e.g. two
+  // live tabs), `mixed` (exactly 1 live — the previously-invisible dangerous
+  // shape, mail CAN reach the live row but a second send picking the dead
+  // row strands), `dead` (0 live — HAZARD 2, nobody draining either row).
+  // `splits`/`deadSplits`/`split`/`deadSplit` keys are PRESERVED byte-
+  // identical for existing consumers (docs/KB-devswarm-hivecontrol.md,
+  // healthcheckHumanLine, cmdHealthcheck's `degraded` gate) — `kind` and
+  // `mixedSplit`/`mixedSplits` are ADDED alongside, never replacing them.
+  // try/catch keeps this fail-open — a throw here must never block
+  // diagnose/healthcheck.
   for (const g of byMesh.values()) {
     let target = null;
     let liveSplit = false;
     let deadSplit = false;
+    let mixedSplit = false;
+    let kind = null; // 'live' | 'mixed' | 'dead' | null (not partitioned — <2 rows)
     try {
       target = resolveMeshTarget(s, g.meshId, c.home); // the partition `send --to <meshId>` lands in
-      liveSplit = g.liveRows >= 2;
-      deadSplit = g.rows.length >= 2 && g.liveRows === 0;
-    } catch (_) { target = null; liveSplit = false; deadSplit = false; }
+      if (g.rows.length >= 2) {
+        if (g.liveRows >= 2) { kind = 'live'; liveSplit = true; }
+        else if (g.liveRows === 1) { kind = 'mixed'; mixedSplit = true; }
+        else { kind = 'dead'; deadSplit = true; }
+      }
+    } catch (_) { target = null; liveSplit = false; deadSplit = false; mixedSplit = false; kind = null; }
     const split = liveSplit; // preserved meaning: unchanged for existing consumers
     if (liveSplit) splits.push(g.meshId);
     if (deadSplit) deadSplits.push(g.meshId);
+    if (mixedSplit) mixedSplits.push(g.meshId);
     meshTargets.push({
       meshId: g.meshId, resolvesTo: target ? target.id : null, ids: g.ids,
-      liveRows: g.liveRows, split, deadSplit,
+      liveRows: g.liveRows, split, deadSplit, mixedSplit, kind,
     });
   }
   const workspaces = sum.workspaces || {};
@@ -5395,7 +5478,7 @@ function computeDiagnosis(s, ctx) {
     if (w && Number.isFinite(w.directUnread)) unreadTotal += w.directUnread;
   }
   return {
-    sum, registry: rows, meshTargets, splits, deadSplits,
+    sum, registry: rows, meshTargets, splits, deadSplits, mixedSplits,
     orphans: sum.orphans || [],
     staleRegistryPartitions: sum.staleRegistryPartitions || [],
     phantoms, unreadTotal,
@@ -5413,7 +5496,7 @@ function cmdDiagnose(flags, ctx) {
   return {
     ok: true, action: 'diagnose', repoKey,
     count: d.registry.length, registry: d.registry,
-    meshTargets: d.meshTargets, splits: d.splits, deadSplits: d.deadSplits,
+    meshTargets: d.meshTargets, splits: d.splits, deadSplits: d.deadSplits, mixedSplits: d.mixedSplits,
     orphans: d.orphans,
     staleRegistryPartitions: d.staleRegistryPartitions,
   };
@@ -5458,10 +5541,15 @@ function cmdHealthcheck(flags, ctx) {
     stale: d.staleRegistryPartitions.length,
     splits: d.splits.length,
     deadSplits: d.deadSplits.length, // HAZARD 2 fix: 2+ rows, ZERO live — dangerous, gates degraded too
+    // TRACED P0 fix: exactly 1 live row of 2+ — previously invisible (matched
+    // neither `splits` nor `deadSplits`); gates degraded too, since a second
+    // send can still resolve to the dead partition and strand.
+    mixedSplits: d.mixedSplits.length,
     phantoms: d.phantoms,
     unreadTotal: d.unreadTotal,
   };
-  const degraded = counts.orphansWithUnread > 0 || counts.stale > 0 || counts.splits > 0 || counts.deadSplits > 0;
+  const degraded = counts.orphansWithUnread > 0 || counts.stale > 0 || counts.splits > 0
+    || counts.deadSplits > 0 || counts.mixedSplits > 0;
   return {
     ok: !degraded, action: 'healthcheck', repoKey,
     status: degraded ? 'degraded' : 'ok',
@@ -5471,6 +5559,7 @@ function cmdHealthcheck(flags, ctx) {
       staleRegistryPartitions: d.staleRegistryPartitions,
       splits: d.splits,
       deadSplits: d.deadSplits,
+      mixedSplits: d.mixedSplits,
     },
   };
 }
@@ -5486,11 +5575,13 @@ function healthcheckHumanLine(r) {
   const c = r.counts || {};
   const orphansWithUnread = c.orphansWithUnread != null ? c.orphansWithUnread : c.orphans;
   const deadSplits = c.deadSplits || 0;
+  const mixedSplits = c.mixedSplits || 0;
   const parts = [
     'orphansWithUnread=' + (orphansWithUnread || 0),
     'stale=' + (c.stale || 0),
     'splits=' + (c.splits || 0),
     'deadSplits=' + deadSplits,
+    'mixedSplits=' + mixedSplits,
     'phantoms=' + (c.phantoms || 0),
     'unread=' + (c.unreadTotal || 0),
   ];
@@ -5498,9 +5589,14 @@ function healthcheckHumanLine(r) {
   // deadSplits (2+ registry rows, ZERO live) is the DANGEROUS kind (HAZARD 2:
   // stranded mail, nobody draining) — surfaced with its own explicit warning
   // suffix so it never blends into the same-looking benign `splits=` count.
-  const warning = deadSplits > 0
+  // mixedSplits (exactly 1 live of 2+ rows, TRACED P0) is ALSO dangerous — a
+  // second send can still resolve to the dead partition — surfaced the same way.
+  let warning = deadSplits > 0
     ? ' — WARNING: ' + deadSplits + ' dead split(s) (2+ registry rows, no live session draining either — mail can strand)'
     : '';
+  if (mixedSplits > 0) {
+    warning += ' — WARNING: ' + mixedSplits + ' mixed split(s) (2+ registry rows, exactly 1 live — a send can still resolve to the dead row)';
+  }
   return 'healthcheck: ' + (r.status || (r.ok ? 'ok' : 'degraded')) + scope + ' [' + parts.join(' ') + ']' + warning;
 }
 
