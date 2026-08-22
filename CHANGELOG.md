@@ -6,6 +6,24 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.77.1 (2026-08-22)
+
+- **Fix: a partition nobody was draining could have its mail moved the wrong
+  way.** When every row in a mesh identity group failed the liveness check,
+  the fold fell through to whichever row sorted first in the registry —
+  which for a real case would have forwarded a drained row's backlog into
+  the row nobody reads. The fold now refuses to fold such a group and
+  records it as needing attention. Refusing is deliberate: with no live
+  row, a cursor-based tiebreak cannot tell an actively-drained row from one
+  advanced once and abandoned. An unfolded group self-heals once a row goes
+  live; a wrong-direction forward does not.
+- **Fix: the check meant to catch that reported it as healthy.** A split
+  required two or more LIVE rows, so the dangerous shape — two rows, nobody
+  draining either — never appeared, while the benign case of two live tabs
+  on one worktree was flagged degraded. Diagnose now reports `liveSplit`
+  and `deadSplit` separately; healthcheck counts dead splits, treats them
+  as degraded, and prints a distinct warning.
+
 ## 0.77.0 (2026-08-22)
 
 - **Fix: a DevSwarm workspace could be counted twice in "needs attention."**
