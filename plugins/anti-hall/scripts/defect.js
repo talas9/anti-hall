@@ -6,15 +6,23 @@
 // derived-state-only, no index, write-verified).
 //
 // SUBCOMMANDS
-//   report --class C --sev p0|p1|p2 --sym T [--repro T --claimed T --observed T
-//          --proj P --sid S --v V]
-//          Append a report line. Exits 0 ONLY on 'recorded' or
+//   report --class C --sev p0|p1|p2 --sym T [--repro T --sym-file F --repro-file F
+//          --claimed T --observed T --proj P --sid S --v V]
+//          Append a report line. --sym-file/--repro-file read the field's body
+//          from a file (byte-exact — no shell interpolation of the body) and
+//          are overridden by --sym/--repro when both are given. `proj`
+//          defaults via reporterIdentity(): --proj -> ANTIHALL_DEFECT_PROJ ->
+//          repoKeyForWorktree(cwd) -> 'no-repo'. Exits 0 ONLY on 'recorded' or
 //          'occurrence-appended' — every other outcome (registry-full,
 //          occurrence-capped, defect-full, too-large, write-unverified,
 //          invalid-class, invalid-severity) exits non-zero. This is the
-//          point of the feature: no silent success.
+//          point of the feature: no silent success. On success the printed
+//          result also carries the freshly re-derived `status`/`staleBuild`.
 //   list [--mine|--open] [--json]
-//          List open defects (derived state only).
+//          List open defects (derived state only). --mine matches a UNION of
+//          identities (repoKeyForWorktree(cwd), basename(cwd), --proj/
+//          ANTIHALL_DEFECT_PROJ if given) so already-filed reports (proj =
+//          old cwd basename) keep matching alongside new reports.
 //   show <fp> [--json]
 //          Show every line of one defect (open or archived).
 //   rule <fp> --status ack|fixed|wontfix|notabug|dup [--fixed-in V --commit SHA
@@ -27,6 +35,7 @@
 //
 // Pure Node built-ins only, cross-platform.
 
+const fs = require('fs');
 const path = require('path');
 const store = require(path.join(__dirname, '..', 'hooks', 'lib', 'defect-store.js'));
 
@@ -37,6 +46,67 @@ function readVersion() {
   } catch (_) {
     return 'unknown';
   }
+}
+
+// readFileField(filePath) -> file contents (utf8, unmodified — no trim, no
+// clamp; clamping happens once, downstream, in defect-store's clampField) or
+// null if unreadable/absent. Backing for --sym-file/--repro-file: reading a
+// file's bytes directly (never interpolating them into a shell string) is
+// what makes backticks/`$(`/newlines in a report body byte-exact-safe.
+function readFileField(filePath) {
+  if (!filePath || typeof filePath !== 'string') return null;
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (_) {
+    return null;
+  }
+}
+
+function clampIdentity(s) {
+  return String(s == null ? '' : s).slice(0, 64);
+}
+
+// reporterIdentity(flags, env, cwd) -> the `proj` value a report is filed
+// under. First hit wins:
+//   1. --proj <s>                          (clamped to 64 chars)
+//   2. ANTIHALL_DEFECT_PROJ env var         (clamped to 64 chars)
+//   3. repokey.repoKeyForWorktree(cwd)      (fails open to null outside git)
+//   4. literal 'no-repo'
+// This is intentionally NOT a cutover from the old cwd-basename identity —
+// existing report lines already on disk keep matching by basename (see
+// mineIdentities' union below); nothing here is rewritten or migrated.
+function reporterIdentity(flags, env, cwd) {
+  if (flags && typeof flags.proj === 'string' && flags.proj) {
+    return clampIdentity(flags.proj);
+  }
+  if (env && typeof env.ANTIHALL_DEFECT_PROJ === 'string' && env.ANTIHALL_DEFECT_PROJ) {
+    return clampIdentity(env.ANTIHALL_DEFECT_PROJ);
+  }
+  try {
+    const repokey = require(path.join(__dirname, '..', 'companion', 'lib', 'devswarm-repokey.js'));
+    const key = repokey.repoKeyForWorktree(cwd);
+    if (key) return key;
+  } catch (_) { /* repokey unavailable -> fall through */ }
+  return 'no-repo';
+}
+
+// mineIdentities(flags, env, cwd) -> Set of identities `--mine` should match
+// a report's `proj` against — a UNION, not a single value, so already-filed
+// reports (proj = old cwd basename) keep matching alongside new reports
+// (proj = repoKey / --proj / env override).
+function mineIdentities(flags, env, cwd) {
+  const ids = new Set();
+  ids.add(path.basename(cwd));
+  try {
+    const repokey = require(path.join(__dirname, '..', 'companion', 'lib', 'devswarm-repokey.js'));
+    const key = repokey.repoKeyForWorktree(cwd);
+    if (key) ids.add(key);
+  } catch (_) { /* repokey unavailable -> basename-only */ }
+  if (flags && typeof flags.proj === 'string' && flags.proj) ids.add(clampIdentity(flags.proj));
+  if (env && typeof env.ANTIHALL_DEFECT_PROJ === 'string' && env.ANTIHALL_DEFECT_PROJ) {
+    ids.add(clampIdentity(env.ANTIHALL_DEFECT_PROJ));
+  }
+  return ids;
 }
 
 function parseArgs(argv) {
@@ -69,18 +139,29 @@ function printResult(result, asJson) {
 
 function cmdReport(args) {
   const f = args.flags;
+  const cwd = process.cwd();
   const input = {
     class: f.class,
     sev: f.sev,
-    sym: f.sym || '',
-    repro: f.repro || '',
+    sym: f.sym || readFileField(f['sym-file']) || '',
+    repro: f.repro || readFileField(f['repro-file']) || '',
     claimed: f.claimed || '',
     observed: f.observed || '',
-    proj: f.proj || path.basename(process.cwd()),
+    proj: reporterIdentity(f, process.env, cwd),
     sid: f.sid || process.env.CLAUDE_SESSION_ID || process.env.ANTIHALL_SESSION_ID || 'unknown',
     v: f.v || readVersion(),
   };
   const result = store.report(input);
+  // Re-derive after the verified write so a caller can see the CURRENT
+  // (possibly regressed) status and staleBuild flag for the fp it just
+  // wrote to, not just the raw write outcome.
+  if (result.outcome === 'recorded' || result.outcome === 'occurrence-appended') {
+    const shown = store.showDefect(result.fp);
+    if (shown) {
+      result.status = shown.status;
+      result.staleBuild = !!shown.staleBuild;
+    }
+  }
   printResult(result, !!f.json);
   return result.outcome === 'recorded' || result.outcome === 'occurrence-appended' ? 0 : 1;
 }
@@ -89,8 +170,8 @@ function cmdList(args) {
   const f = args.flags;
   let defects = store.listDefects({});
   if (f.mine) {
-    const proj = path.basename(process.cwd());
-    defects = defects.filter((d) => d.proj === proj);
+    const ids = mineIdentities(f, process.env, process.cwd());
+    defects = defects.filter((d) => ids.has(d.proj));
   }
   if (f.open) {
     defects = defects.filter((d) => d.status === 'open');
@@ -163,4 +244,7 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { parseArgs, cmdReport, cmdList, cmdShow, cmdRule, cmdArchive };
+module.exports = {
+  parseArgs, cmdReport, cmdList, cmdShow, cmdRule, cmdArchive,
+  reporterIdentity, mineIdentities, readFileField,
+};

@@ -942,3 +942,6 @@ supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supe
 - **update** — autonomously installs/refreshes the automatic supervisor AND (as of
   0.54.1) the ingest daemon when running inside an active DevSwarm session (see the
   activation checklist above).
+
+Found a bug in anti-hall itself? File it: `/anti-hall:defects` (durable, home-scoped,
+two-way — the maintainer's rulings come back to you via `list --mine`).

@@ -10,6 +10,8 @@ const path = require('node:path');
 const cp = require('node:child_process');
 
 const store = require('../../plugins/anti-hall/hooks/lib/defect-store.js');
+const defectCli = require('../../plugins/anti-hall/scripts/defect.js');
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 const CLI = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'defect.js');
 const NUDGE_HOOK = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'defect-nudge.js');
 
@@ -410,8 +412,8 @@ test('nudge hook: maintainer branch emits a fixed-format line with ZERO reporter
     assert.equal(res.status, 0);
     const out = JSON.parse(res.stdout);
     const ctx = out.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /^anti-hall: \d+ open defect reports, oldest \d+d — \/anti-hall:defects$/,
-      'output matches the fixed closed-vocabulary format exactly');
+    assert.match(ctx, /^anti-hall: \d+ open defect reports \(\d+ regressed\), oldest \d+d — \/anti-hall:defects$/,
+      'output matches the fixed closed-vocabulary format exactly, including the regressed count');
     assert.ok(!ctx.includes(injected), 'zero reporter-supplied substrings in the emitted line');
     assert.ok(!ctx.toLowerCase().includes('ignore'), 'no injected text leaked through');
   } finally { rm(home); rm(repoCwd); }
@@ -493,4 +495,303 @@ test('a corrupt/torn line mid-file is skipped by list/show; the file itself is l
     const afterBytes = fs.readFileSync(file, 'utf8');
     assert.equal(afterBytes, beforeBytes, 'the file was never rewritten to repair/drop the torn line');
   } finally { rm(home); }
+});
+
+// ============================================================================
+// 14. reporter identity precedence: --proj > ANTIHALL_DEFECT_PROJ > repoKey > no-repo
+// ============================================================================
+
+test('reporterIdentity precedence: --proj wins, then ANTIHALL_DEFECT_PROJ, then repoKey, then no-repo outside git', () => {
+  const gitCwd = process.cwd(); // this repo — a real git worktree
+  const nonGitCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-nogit-'));
+  try {
+    // 1. --proj wins over everything, clamped to 64 chars.
+    const long = 'p'.repeat(100);
+    assert.equal(
+      defectCli.reporterIdentity({ proj: long }, { ANTIHALL_DEFECT_PROJ: 'env-proj' }, gitCwd),
+      long.slice(0, 64),
+      '--proj wins and is clamped to 64 chars'
+    );
+
+    // 2. ANTIHALL_DEFECT_PROJ wins when --proj absent.
+    assert.equal(
+      defectCli.reporterIdentity({}, { ANTIHALL_DEFECT_PROJ: 'env-proj' }, gitCwd),
+      'env-proj',
+      'env var wins over repoKey when --proj is absent'
+    );
+
+    // 3. repoKey wins when neither --proj nor env is given, inside a git worktree.
+    const expectedKey = repokey.repoKeyForWorktree(gitCwd);
+    assert.ok(expectedKey, 'sanity: this repo resolves a repoKey');
+    assert.equal(
+      defectCli.reporterIdentity({}, {}, gitCwd),
+      expectedKey,
+      'repoKey wins when --proj and env are both absent'
+    );
+
+    // 4. 'no-repo' outside any git worktree, with nothing else set.
+    assert.equal(
+      defectCli.reporterIdentity({}, {}, nonGitCwd),
+      'no-repo',
+      'falls back to the literal no-repo outside git with no --proj/env override'
+    );
+  } finally { rm(nonGitCwd); }
+});
+
+// ============================================================================
+// 15. --mine union: a report filed under the OLD basename identity and one
+//     filed under the NEW repoKey identity are BOTH matched by --mine from
+//     the same worktree (back-compat holds, nothing is rewritten).
+// ============================================================================
+
+test('--mine matches a report filed under the old cwd-basename identity AND one filed under the new repoKey identity (union, back-compat)', () => {
+  const home = tmpHome();
+  try {
+    const cwd = process.cwd(); // real git worktree, used only to compute identities
+    const repoKey = repokey.repoKeyForWorktree(cwd);
+    assert.ok(repoKey, 'sanity: repoKey resolves for this repo');
+    const basename = path.basename(cwd);
+
+    // Report filed under the OLD identity shape (proj = basename), simulating
+    // a report written before reporterIdentity() existed.
+    const rOld = store.report(Object.assign(baseReportInput(), {
+      home, sym: 'mine union old identity', proj: basename,
+    }));
+    assert.equal(rOld.outcome, 'recorded');
+
+    // Report filed under the NEW identity shape (proj = repoKey).
+    const rNew = store.report(Object.assign(baseReportInput(), {
+      home, sym: 'mine union new identity', proj: repoKey,
+    }));
+    assert.equal(rNew.outcome, 'recorded');
+
+    const ids = defectCli.mineIdentities({}, {}, cwd);
+    assert.ok(ids.has(basename), 'union includes the cwd basename');
+    assert.ok(ids.has(repoKey), 'union includes the repoKey');
+
+    const defects = store.listDefects({ home }).filter((d) => ids.has(d.proj));
+    const fps = defects.map((d) => d.fp).sort();
+    assert.deepEqual(fps, [rOld.fp, rNew.fp].sort(), 'both old-identity and new-identity reports are matched by the union');
+  } finally { rm(home); }
+});
+
+// ============================================================================
+// 16. --sym-file / --repro-file round-trip a body with backticks and $( byte-exact
+// ============================================================================
+
+test('--sym-file and --repro-file round-trip a body containing backticks and $( byte-exact', () => {
+  const home = tmpHome();
+  try {
+    const tricky = 'crash in `some_fn()` when running $(echo hi) — quotes " and \' too';
+    const symFile = path.join(home, 'sym.txt');
+    const reproFile = path.join(home, 'repro.txt');
+    fs.writeFileSync(symFile, tricky, 'utf8');
+    fs.writeFileSync(reproFile, tricky, 'utf8');
+
+    const r = runCli(['report', '--class', 'other', '--sev', 'p2', '--sym-file', symFile, '--repro-file', reproFile], { home });
+    assert.equal(r.status, 0, 'CLI exits 0: ' + r.stderr);
+    const parsed = JSON.parse(r.stdout);
+    assert.equal(parsed.outcome, 'recorded');
+
+    const shown = store.showDefect(parsed.fp, home);
+    const reportLine = shown.lines.find((l) => l.t === 'report');
+    assert.equal(reportLine.sym, tricky, 'sym round-trips byte-exact from --sym-file (under the 200-char cap)');
+    assert.equal(reportLine.repro, tricky, 'repro round-trips byte-exact from --repro-file (under the 1200-char cap)');
+  } finally { rm(home); }
+});
+
+test('--sym / --repro win over --sym-file / --repro-file when both are given', () => {
+  const home = tmpHome();
+  try {
+    const symFile = path.join(home, 'sym.txt');
+    fs.writeFileSync(symFile, 'from file', 'utf8');
+    const r = runCli(['report', '--class', 'other', '--sev', 'p2', '--sym', 'from flag', '--sym-file', symFile], { home });
+    assert.equal(r.status, 0);
+    const parsed = JSON.parse(r.stdout);
+    const shown = store.showDefect(parsed.fp, home);
+    assert.equal(shown.lines[0].sym, 'from flag', '--sym wins over --sym-file');
+  } finally { rm(home); }
+});
+
+// ============================================================================
+// 17. regression cycles: report -> fixed@0.79.0 -> report(v=0.79.1) => regressed
+//     -> fixed@0.80.0 -> report(v=0.80.1) => regressed again (repeatable, no counters)
+// ============================================================================
+
+test('regression: report -> ruled fixed@0.79.0 -> report(v=0.79.1) is regressed; repeats through a second fixed/regressed cycle', () => {
+  const home = tmpHome();
+  try {
+    const r1 = store.report(Object.assign(baseReportInput(), { home, sym: 'regression cycle test', v: '0.78.0' }));
+    assert.equal(r1.outcome, 'recorded');
+    const fp = r1.fp;
+
+    let state = store.showDefect(fp, home);
+    assert.equal(state.status, 'open');
+
+    const ruled1 = store.rule(fp, { home, status: 'fixed', fixedIn: '0.79.0', note: 'shipped' });
+    assert.equal(ruled1.outcome, 'ruled');
+    state = store.showDefect(fp, home);
+    assert.equal(state.status, 'fixed');
+
+    const r2 = store.report(Object.assign(baseReportInput(), { home, sym: 'regression cycle test', v: '0.79.1', sid: 'sess-r2' }));
+    assert.equal(r2.outcome, 'occurrence-appended');
+    state = store.showDefect(fp, home);
+    assert.equal(state.status, 'regressed', 'v=0.79.1 is at/past fixedIn=0.79.0 -> regressed');
+
+    const ruled2 = store.rule(fp, { home, status: 'fixed', fixedIn: '0.80.0', note: 'shipped again' });
+    assert.equal(ruled2.outcome, 'ruled');
+    state = store.showDefect(fp, home);
+    assert.equal(state.status, 'fixed', 'a new ruling always resets the regression cycle');
+
+    const r3 = store.report(Object.assign(baseReportInput(), { home, sym: 'regression cycle test', v: '0.80.1', sid: 'sess-r3' }));
+    assert.equal(r3.outcome, 'occurrence-appended');
+    state = store.showDefect(fp, home);
+    assert.equal(state.status, 'regressed', 'the cycle repeats — no stored counters, purely derived each time');
+  } finally { rm(home); }
+});
+
+// ============================================================================
+// 18. v < fixedIn after a fix -> status stays fixed, staleBuild: true
+// ============================================================================
+
+test('a report with v < fixedIn after a fix leaves status fixed and sets derived staleBuild: true', () => {
+  const home = tmpHome();
+  try {
+    const r1 = store.report(Object.assign(baseReportInput(), { home, sym: 'stale build test', v: '0.70.0' }));
+    store.rule(r1.fp, { home, status: 'fixed', fixedIn: '0.79.0', note: 'shipped' });
+
+    const r2 = store.report(Object.assign(baseReportInput(), { home, sym: 'stale build test', v: '0.75.0', sid: 'sess-stale' }));
+    assert.equal(r2.outcome, 'occurrence-appended');
+    const state = store.showDefect(r1.fp, home);
+    assert.equal(state.status, 'fixed', 'status stays fixed for a report predating the fix');
+    assert.equal(state.staleBuild, true, 'staleBuild is derived true');
+
+    // CLI-level check: cmdReport prints status/staleBuild back. Must use the
+    // SAME class as r1/r2 above ('hook-crash', baseReportInput's default) —
+    // fingerprint = hash(class, normalizedSym), so a different class here
+    // would land on a DIFFERENT defect file entirely.
+    const cliOut = runCli(['report', '--class', 'hook-crash', '--sev', 'p2', '--sym', 'stale build test', '--v', '0.75.0', '--sid', 'sess-stale-cli'], { home });
+    assert.equal(cliOut.status, 0);
+    const parsed = JSON.parse(cliOut.stdout);
+    assert.equal(parsed.status, 'fixed');
+    assert.equal(parsed.staleBuild, true);
+  } finally { rm(home); }
+});
+
+// ============================================================================
+// 19. unparseable v is NOT a regression (fail-closed)
+// ============================================================================
+
+test('an unparseable v on a report after a fix is NOT treated as a regression (fail-closed)', () => {
+  const home = tmpHome();
+  try {
+    const r1 = store.report(Object.assign(baseReportInput(), { home, sym: 'unparseable v test', v: '0.70.0' }));
+    store.rule(r1.fp, { home, status: 'fixed', fixedIn: '0.79.0', note: 'shipped' });
+
+    const r2 = store.report(Object.assign(baseReportInput(), { home, sym: 'unparseable v test', v: 'not-a-version', sid: 'sess-bad-v' }));
+    assert.equal(r2.outcome, 'occurrence-appended');
+    const state = store.showDefect(r1.fp, home);
+    assert.equal(state.status, 'fixed', 'unparseable v never flips status to regressed');
+    assert.equal(state.staleBuild, false, 'unparseable v never sets staleBuild either — fails fully closed');
+
+    assert.equal(store.cmpSemver('not-a-version', '0.79.0'), null, 'cmpSemver returns null for an unparseable side');
+    assert.equal(store.cmpSemver('0.79.1', 'also-bad'), null, 'cmpSemver returns null when the OTHER side is unparseable too');
+  } finally { rm(home); }
+});
+
+// ============================================================================
+// 20. a regressed defect is NOT archived by the rotation sweep
+// ============================================================================
+
+test('a regressed defect is never archived, even when its last report is 31+ days old', () => {
+  const home = tmpHome();
+  try {
+    store.ensureDir(store.defectsDir(home));
+    const now = Date.now();
+    const old = now - 31 * 24 * 60 * 60 * 1000;
+    const oldIso = new Date(old).toISOString();
+
+    const fp = 'eeeeeeeeeeee';
+    const file = store.fpFile(fp, home);
+    const reportLine1 = JSON.stringify({ t: 'report', at: oldIso, v: '0.70.0', proj: 'p', sid: 's1', class: 'other', sev: 'p2', sym: 'regressed archival test', repro: '', claimed: '', observed: '' });
+    const rulingLine = JSON.stringify({ t: 'ruling', at: oldIso, status: 'fixed', fixedIn: '0.79.0', note: 'shipped' });
+    const reportLine2 = JSON.stringify({ t: 'report', at: oldIso, v: '0.79.0', proj: 'p', sid: 's2', class: 'other', sev: 'p2', sym: 'regressed archival test', repro: '', claimed: '', observed: '' });
+    fs.writeFileSync(file, [reportLine1, rulingLine, reportLine2].join('\n') + '\n');
+
+    const state = store.showDefect(fp, home);
+    assert.equal(state.status, 'regressed', 'sanity: this defect is derived regressed');
+
+    const results = store.archiveSweep(now, home);
+    const entry = results.find((r) => r.fp === fp);
+    assert.ok(entry && !entry.moved, 'a regressed defect is never moved by the archive sweep, regardless of age');
+    assert.equal(entry.reason, 'regressed');
+    assert.ok(fs.existsSync(file), 'the regressed defect file is still in place');
+  } finally { rm(home); }
+});
+
+// ============================================================================
+// 21. regression allowed past the 20-report cap up to REGRESSION_EXTRA, refused beyond
+// ============================================================================
+
+test('a regression report is allowed past the 20-report cap up to REGRESSION_EXTRA=3, refused beyond that', () => {
+  const home = tmpHome();
+  try {
+    let fp;
+    for (let i = 0; i < 20; i++) {
+      const r = store.report(Object.assign(baseReportInput(), { home, sym: 'cap plus regression test', sid: 'sess-' + i, v: '0.70.0' }));
+      fp = r.fp;
+      assert.notEqual(r.outcome, 'occurrence-capped', `report #${i + 1} should succeed`);
+    }
+    assert.equal(store.readRawLines(store.fpFile(fp, home)).length, 20);
+
+    // At the 20-report cap, a NORMAL (non-regression, still-open) report is refused.
+    const capped = store.report(Object.assign(baseReportInput(), { home, sym: 'cap plus regression test', sid: 'sess-capped', v: '0.70.0' }));
+    assert.equal(capped.outcome, 'occurrence-capped', 'a normal report at the cap while status is open is refused');
+
+    // Now the maintainer rules it fixed — status flips to 'fixed', unlocking
+    // REGRESSION_EXTRA=3 more report slots.
+    const ruled = store.rule(fp, { home, status: 'fixed', fixedIn: '0.79.0', note: 'shipped' });
+    assert.equal(ruled.outcome, 'ruled');
+
+    let lastOutcome;
+    for (let i = 0; i < store.REGRESSION_EXTRA; i++) {
+      const r = store.report(Object.assign(baseReportInput(), { home, sym: 'cap plus regression test', sid: 'sess-extra-' + i, v: '0.79.1' }));
+      lastOutcome = r.outcome;
+      assert.equal(r.outcome, 'occurrence-appended', `extra regression report #${i + 1} should be allowed past the base cap`);
+    }
+    const state = store.showDefect(fp, home);
+    assert.equal(state.status, 'regressed');
+    assert.equal(store.readRawLines(store.fpFile(fp, home)).length, 20 + 1 /* ruling */ + store.REGRESSION_EXTRA);
+
+    // One more past the extra allowance is refused again.
+    const beyond = store.report(Object.assign(baseReportInput(), { home, sym: 'cap plus regression test', sid: 'sess-beyond', v: '0.79.2' }));
+    assert.equal(beyond.outcome, 'occurrence-capped', 'a report beyond MAX_REPORT_LINES + REGRESSION_EXTRA is refused');
+  } finally { rm(home); }
+});
+
+// ============================================================================
+// 22. nudge line's regressed count reflects an actual regressed defect
+// ============================================================================
+
+test('nudge maintainer line includes a nonzero regressed count when a defect is derived regressed', () => {
+  const home = tmpHome();
+  const repoCwd = tmpHome();
+  const pluginDir = path.join(repoCwd, 'plugins', 'anti-hall', '.claude-plugin');
+  fs.mkdirSync(pluginDir, { recursive: true });
+  fs.writeFileSync(path.join(pluginDir, 'plugin.json'), JSON.stringify({ version: '0.0.0' }));
+  try {
+    const r1 = store.report(Object.assign(baseReportInput(), { home, sym: 'nudge regressed count test', v: '0.70.0' }));
+    store.rule(r1.fp, { home, status: 'fixed', fixedIn: '0.79.0', note: 'shipped' });
+    store.report(Object.assign(baseReportInput(), { home, sym: 'nudge regressed count test', v: '0.79.5', sid: 'sess-nudge-regr' }));
+
+    const state = store.showDefect(r1.fp, home);
+    assert.equal(state.status, 'regressed', 'sanity: this defect is regressed');
+
+    const res = runNudge(home, repoCwd, { cwd: repoCwd });
+    assert.equal(res.status, 0);
+    const out = JSON.parse(res.stdout);
+    const ctx = out.hookSpecificOutput.additionalContext;
+    assert.match(ctx, /^anti-hall: 1 open defect reports \(1 regressed\), oldest \d+d — \/anti-hall:defects$/,
+      'the regressed defect is counted in both the total and the explicit regressed count');
+  } finally { rm(home); rm(repoCwd); }
 });

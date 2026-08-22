@@ -60,6 +60,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { parseSemver } = require('./drift-baseline.js');
 
 function resolveHome(home) {
   return home || os.homedir();
@@ -87,6 +88,12 @@ const RULING_STATUS_ENUM = ['ack', 'fixed', 'wontfix', 'notabug', 'dup'];
 const MAX_OPEN_FILES = 200;      // open dir (defectsDir, top level .jsonl files)
 const MAX_FILE_BYTES = 64 * 1024; // per defect file
 const MAX_REPORT_LINES = 20;      // per defect file, report lines only
+const REGRESSION_EXTRA = 3;       // extra report lines allowed past MAX_REPORT_LINES
+                                   // when the defect's derived status is 'fixed' — a
+                                   // regression report on a long-lived defect is the
+                                   // highest-value report and must not be refused by
+                                   // the occurrence cap alone (still bounded by
+                                   // MAX_FILE_BYTES).
 const MAX_LINE_BYTES = 4096;      // per NDJSON line (any type)
 const MAX_ARCHIVE_FILES = 1000;   // archive dir, total across all month buckets
 const ARCHIVE_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days since lastSeen
@@ -120,6 +127,25 @@ function normSym(sym) {
   s = s.replace(/[0-9a-f]{6,}/g, '');
   s = s.replace(/\s+/g, ' ').trim();
   return s;
+}
+
+// cmpSemver(a, b) -> -1 | 0 | 1 | null. null means either side is unparseable
+// (per drift-baseline.parseSemver's [major,minor,patch]-or-null contract) —
+// callers MUST treat null as "not comparable", never coerce it to a number
+// (fail-closed: an unparseable version is never treated as a regression).
+// Deliberately built directly on parseSemver rather than reusing
+// classifyVersionDrift(), which collapses patch-only differences
+// (advise:false for e.g. 0.79.0 vs 0.79.1) — exactly the case a regression
+// check must NOT collapse: a defect fixed in 0.79.0 that reappears in
+// 0.79.1 is a real regression, not noise to suppress.
+function cmpSemver(a, b) {
+  const pa = parseSemver(a);
+  const pb = parseSemver(b);
+  if (!pa || !pb) return null;
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1;
+  }
+  return 0;
 }
 
 // fingerprint(cls, sym) -> 12 hex chars. Deterministic across repos/sessions.
@@ -161,17 +187,35 @@ function parseLines(rawLines) {
 }
 
 // deriveState(parsedLines) -> { status, occurrences, firstSeen, lastSeen,
-// reportCount, rulingCount }. Derived-state-only: nothing here is ever
-// persisted separately from the lines themselves. `status` is the last
-// ruling line's status in FILE ORDER (append order == chronological order
-// for a single append-only file; robust against clock skew between writers,
-// unlike sorting by `at`).
+// reportCount, rulingCount, staleBuild }. Derived-state-only: nothing here is
+// ever persisted separately from the lines themselves. `status` starts as
+// the last ruling line's status in FILE ORDER (append order == chronological
+// order for a single append-only file; robust against clock skew between
+// writers, unlike sorting by `at`), then a REPORT line can further derive it
+// to 'regressed':
+//   - a 'ruling' line sets status = line.status, remembers { status, fixedIn }
+//     as lastRuling, and resets staleBuild — a new ruling always resets the
+//     regression cycle.
+//   - a 'report' line, when lastRuling.status === 'fixed' and lastRuling has
+//     a fixedIn, compares this report's `v` against fixedIn via cmpSemver:
+//       - cmpSemver >= 0 (report's v is at or past the fix)  -> status =
+//         'regressed'. Repeatable: a later ruling resets it, a later report
+//         re-evaluates it — no counters, no stored regression flag.
+//       - cmpSemver < 0 (report's v predates the fix -> a stale build still
+//         reporting the old bug) -> status is left UNCHANGED (stays
+//         'fixed'), only `staleBuild` is set true.
+//       - cmpSemver === null (either version unparseable) -> fail CLOSED:
+//         neither branch fires, status and staleBuild are left unchanged.
+// `RULING_STATUS_ENUM` is unaffected — 'regressed' is derived-only, never a
+// writable ruling status.
 function deriveState(parsedLines) {
   let status = 'open';
   let occurrences = 0;
   let firstSeen = null;
   let lastSeen = null;
   let rulingCount = 0;
+  let staleBuild = false;
+  let lastRuling = null; // { status, fixedIn }
   for (const obj of parsedLines) {
     if (typeof obj.at === 'string' && obj.at) {
       if (firstSeen === null) firstSeen = obj.at;
@@ -179,12 +223,29 @@ function deriveState(parsedLines) {
     }
     if (obj.t === 'report') {
       occurrences++;
+      if (lastRuling && lastRuling.status === 'fixed' && lastRuling.fixedIn) {
+        const cmp = cmpSemver(obj.v, lastRuling.fixedIn);
+        if (cmp !== null) {
+          if (cmp >= 0) {
+            status = 'regressed';
+          } else {
+            staleBuild = true;
+          }
+        }
+      }
     } else if (obj.t === 'ruling') {
       rulingCount++;
-      if (typeof obj.status === 'string') status = obj.status;
+      if (typeof obj.status === 'string') {
+        status = obj.status;
+        lastRuling = { status: obj.status, fixedIn: typeof obj.fixedIn === 'string' ? obj.fixedIn : null };
+        staleBuild = false;
+      }
     }
   }
-  return { status, occurrences, firstSeen, lastSeen, reportCount: occurrences, rulingCount };
+  return {
+    status, occurrences, firstSeen, lastSeen,
+    reportCount: occurrences, rulingCount, staleBuild,
+  };
 }
 
 // countOpenFiles(home) -> number of *.jsonl files directly under defectsDir
@@ -329,7 +390,18 @@ function report(input) {
 
   const parsed = parseLines(readRawLines(file));
   const reportCount = parsed.filter((p) => p.t === 'report').length;
-  if (reportCount >= MAX_REPORT_LINES) return { outcome: 'occurrence-capped', fp };
+  // A defect currently derived 'fixed' OR already 'regressed' gets
+  // REGRESSION_EXTRA extra report slots past the normal cap — a regression
+  // report on a long-lived defect is the highest-value report and must not
+  // be refused solely because the defect already accumulated 20 pre-fix
+  // occurrence reports. 'regressed' is included (not just 'fixed') because
+  // the FIRST regression report itself flips status to 'regressed' — a
+  // second confirming report of the same live regression must not be capped
+  // again the instant the first one lands.
+  const priorState = deriveState(parsed);
+  const inExtraWindow = priorState.status === 'fixed' || priorState.status === 'regressed';
+  const cap = inExtraWindow ? MAX_REPORT_LINES + REGRESSION_EXTRA : MAX_REPORT_LINES;
+  if (reportCount >= cap) return { outcome: 'occurrence-capped', fp };
 
   let size = 0;
   try { size = fs.statSync(file).size; } catch (_) { size = 0; }
@@ -408,8 +480,8 @@ function archiveSweep(now, home) {
       continue;
     }
     const state = deriveState(parsed);
-    if (state.status === 'open') {
-      results.push({ fp, moved: false, reason: 'open' });
+    if (state.status === 'open' || state.status === 'regressed') {
+      results.push({ fp, moved: false, reason: state.status });
       continue;
     }
     const lastSeenMs = state.lastSeen ? Date.parse(state.lastSeen) : NaN;
@@ -480,9 +552,9 @@ function showDefect(fp, home) {
 module.exports = {
   defectsDir, archiveDir, nudgeStampFile,
   CLASS_ENUM, SEVERITY_ENUM, RULING_STATUS_ENUM,
-  MAX_OPEN_FILES, MAX_FILE_BYTES, MAX_REPORT_LINES, MAX_LINE_BYTES,
+  MAX_OPEN_FILES, MAX_FILE_BYTES, MAX_REPORT_LINES, REGRESSION_EXTRA, MAX_LINE_BYTES,
   MAX_ARCHIVE_FILES, ARCHIVE_AGE_MS, FIELD_CAPS,
-  ensureDir, clampField, normSym, fingerprint, fpFile,
+  ensureDir, clampField, normSym, fingerprint, fpFile, cmpSemver,
   readRawLines, parseLines, deriveState,
   countOpenFiles, countArchiveFiles, readLastRawLine,
   appendLine, report, rule, archiveSweep, listDefects, showDefect, yyyymm,

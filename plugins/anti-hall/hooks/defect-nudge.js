@@ -91,12 +91,14 @@ function daysAgo(iso, now) {
 function maintainerLine(store, home, now) {
   const defects = store.listDefects({ home });
   const open = defects.filter((d) => d.status === 'open');
-  if (open.length === 0) return '';
+  const regressed = defects.filter((d) => d.status === 'regressed');
+  const active = open.concat(regressed);
+  if (active.length === 0) return '';
   let oldestDays = 0;
-  for (const d of open) {
+  for (const d of active) {
     oldestDays = Math.max(oldestDays, daysAgo(d.firstSeen, now));
   }
-  return `anti-hall: ${open.length} open defect reports, oldest ${oldestDays}d — /anti-hall:defects`;
+  return `anti-hall: ${active.length} open defect reports (${regressed.length} regressed), oldest ${oldestDays}d — /anti-hall:defects`;
 }
 
 // reporterLine(store, home, cwd, now) -> the fixed-format ruling nudge, or ''
