@@ -6,6 +6,38 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.78.0 (2026-08-22)
+
+- **New: a durable defect channel between agents and the maintainer.** Any
+  agent running anti-hall in any repo can now file a structured defect
+  report via a CLI (`scripts/defect.js report`), and the maintainer session
+  drains reports and writes back rulings (`scripts/defect.js rule`). Reports
+  live in
+  `~/.anti-hall/defects/`, one append-only NDJSON file per defect —
+  cross-repo, survives session death, and never enters a git worktree.
+- **Why not the mesh:** bug reports about anti-hall's own messaging layer
+  should not travel through that layer.
+- **No stored state:** status, occurrence count, and first/last-seen are
+  derived from a defect file's own lines on every read, so two fields can
+  never disagree — there is only one field. Status is the last ruling in
+  append order (not by timestamp), so clock skew between writers cannot
+  flip it.
+- **Writes are verified:** every append is re-read and matched byte-exact
+  against the file; a write that cannot be confirmed reports
+  `write-unverified` and exits non-zero instead of claiming success.
+- **Nothing is deleted:** acking and resolving both append a ruling line;
+  rotation renames ruled-and-stale files into an archive directory. An
+  open defect never moves regardless of age.
+- **Bounded from the start:** at most 200 open defects, 20 reports per
+  defect, 64 KiB per file, 4 KiB per line, 1000 archived files — every cap
+  refuses with a distinct outcome instead of silently dropping a report.
+- **Discovery is quiet:** one SessionStart line, at most once per day,
+  never a Stop hook and never a forced acknowledgement — and it carries no
+  reporter-supplied text, only counts and ages.
+- New CLI verbs on `scripts/defect.js`: `report`, `list [--mine|--open]`,
+  `show <fp>`, `rule <fp> --status ack|fixed|wontfix|notabug|dup`,
+  `archive`.
+
 ## 0.77.1 (2026-08-22)
 
 - **Fix: a partition nobody was draining could have its mail moved the wrong
