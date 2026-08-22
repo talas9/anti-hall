@@ -255,10 +255,16 @@ docs are background; their actionable content is already in the synthesis.
   despite being 855 lines). Not independently re-verified for staleness.
 - `KB-model-modes.md` — CONTENT not edited this pass (out of scope, later
   wave). Routes model-selection guidance against Opus 4.8 per its header.
+  **[UPDATE 2026-08-22: RESOLVED — see the 2026-08-22 model-KB re-audit block
+  below.]**
 - `KB-sonnet-5.md` — CONTENT not edited this pass (out of scope). Routes
-  against Opus 4.8 / Sonnet 5 / Haiku 4.5 per its header.
-- `KB-fable-5.md` — CONTENT not edited this pass (out of scope).
+  against Opus 4.8 / Sonnet 5 / Haiku 4.5 per its header. **[UPDATE
+  2026-08-22: RESOLVED — see the 2026-08-22 model-KB re-audit block below.]**
+- `KB-fable-5.md` — CONTENT not edited this pass (out of scope). **[UPDATE
+  2026-08-22: RESOLVED — see the 2026-08-22 model-KB re-audit block below.]**
 - `KB-token-usage-models.md` — CONTENT not edited this pass (out of scope).
+  **[UPDATE 2026-08-22: RESOLVED — see the 2026-08-22 model-KB re-audit block
+  below.]**
 - `KB-codex-vs-opus-coding.md` — CONTENT not edited this pass (out of scope).
   **Cross-cutting finding, NOT resolved this pass:** `Opus 5` / `claude-opus-5`
   has **0 occurrences repo-wide** (grepped this session), while every model KB
@@ -266,7 +272,40 @@ docs are background; their actionable content is already in the synthesis.
   flagged **NEEDS-CONFIRMATION** — it is unclear whether "Opus 5" is simply not
   yet released/available, a naming-scheme assumption that doesn't hold, or a
   genuine gap in these docs. Do not resolve this here; a later wave owns the
-  model-KB content pass.
+  model-KB content pass. **[UPDATE 2026-08-22: RESOLVED — confirmed real:
+  `claude-opus-5` is Opus 4.8's actual successor (shipped 2026-06-09, same
+  $5/$25 price/context class), not a naming-scheme guess. See the 2026-08-22
+  model-KB re-audit block below.]**
+
+**[APPENDED 2026-08-22] Model-KB re-audit (this pass):** the six model/routing
+docs (`KB-model-modes.md`, `KB-sonnet-5.md`, `KB-fable-5.md`,
+`KB-token-usage-models.md`, `KB-codex-vs-opus-coding.md`,
+`plugins/anti-hall/skills/MODEL-POLICY.md` + its Codex mirror) were re-audited
+against a verified current model lineup and corrected via stacked dated
+annotations (`[UPDATE 2026-08-22]` / `[CORRECTION 2026-08-22]`), not silent
+rewrites — each file's own correction convention was followed (or, where none
+existed, the same stacked-annotation pattern as this ledger). Findings:
+**Opus 4.8 is now DEPRECATED / legacy**, superseded by **Opus 5**
+(`claude-opus-5`, same $5/$25 price/context class, shipped 2026-06-09); the
+true current flagship is **Claude Fable 5** (`claude-fable-5`, $10/$50,
+1M/128k) with **Claude Mythos 5** (`claude-mythos-5`) gated to approved orgs —
+neither had any mention across `KB-model-modes.md` or `KB-sonnet-5.md` before
+this pass. **Sonnet 5's scheduled Sept-1-2026 price increase to $3/$15 was
+cancelled** — it holds at $2/$10 indefinitely, contradicting the "intro,
+→Aug 31 2026" framing in `KB-sonnet-5.md` §2 and `KB-token-usage-models.md`
+§1. `KB-codex-vs-opus-coding.md` additionally predates the 2026-07-09 GPT-5.6
+(Sol/Terra/Luna) migration on the Codex side. `MODEL-POLICY.md` (both Claude
+and Codex variants) needed **no correction** — both already route by tier
+token (`opus`/`sonnet`/`haiku`/`fable`), resolved to the newest model
+in-family at runtime, per each file's own stated "never pin a model version"
+rule; only the prose *docs* had hardcoded stale model names. Also added: a
+"downshift guidance" section (`KB-model-modes.md` §13, cross-linked from
+`KB-sonnet-5.md` §6) covering main-agent usage-limit conservation — Sonnet 5
+is the correct 1M-context downshift target; Haiku 4.5 (200k) is disqualified
+for the main agent though still correct for leaf subagent work. The
+`plugins/anti-hall/hooks/lib/repo-audit-baseline.js` `MODEL_KB_AUDIT_DATE` was
+bumped from `2026-05-29` to `2026-08-22` to reflect this re-audit (threshold
+unchanged at 60 days).
 
 **Historical docs — pre-redesign claims (do NOT fix; they are frozen records):**
 These describe the plugin *before* the cadence redesign and are intentionally

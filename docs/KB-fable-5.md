@@ -3,6 +3,21 @@
 > Compiled 2026-06-10 from 14 sources (researcher agent draft; load-bearing claims
 > under independent spot-check — see Verification status at the end). All claims
 > carry inline source references [n] mapped to the numbered list at the end.
+>
+> **[UPDATE 2026-08-22 — re-verified against the authoritative reference; this doc's core Fable 5
+> claims hold up better than the other model KBs.** Confirmed still accurate: `claude-fable-5` id,
+> Fable 5 = current flagship, $10/$50 pricing, 1M context / 128k output, five-tier effort scale
+> (default `high`). Two things are now stale downstream of this doc's compile date: (1) **Opus 4.8
+> (referenced throughout §1/§3/§5/§6/§7 as the comparison/fallback model) is now DEPRECATED /
+> legacy** — succeeded by **Opus 5** (`claude-opus-5`, same $5/$25, 1M/128k, shipped 2026-06-09);
+> the §7 migration guide title ("Opus 4.8 → Fable 5") is still the correct migration path per the
+> vendor's own migration guide, just note the *source* model is now legacy, not current. (2)
+> **Sonnet 4.6 (§1 tier hierarchy, §3 pricing) was accurate at this doc's 2026-06-10 compile date
+> but has since been superseded by Sonnet 5** (`claude-sonnet-5`, released 2026-06-30, $2/$10 —
+> the Sept-1 increase to $3/$15 that other KBs cite was cancelled) — not an error in this doc, a
+> generation that shipped after it was written. Cache pricing (write 5-min 1.25×/write 1-hr
+> 2×/read 0.1× base) is confirmed to apply across all current models including Fable 5. Left as
+> stacked annotation per this KB's own draft/spot-check convention, not rewritten.]**
 
 ## 1. Identity
 
@@ -31,6 +46,13 @@ access-gated version without general-use classifiers. [1][3]
 3. Claude Opus 4.8 (`claude-opus-4-8`) [2]
 4. Claude Sonnet 4.6 (`claude-sonnet-4-6`) [2]
 5. Claude Haiku 4.5 (`claude-haiku-4-5`) [2]
+
+> **[UPDATE 2026-08-22]** Re-anchored against the verified current lineup: rows 1-2 unchanged
+> (Mythos 5 / Fable 5 still top of tier). Row 3, Opus 4.8, is superseded by **Opus 5**
+> (`claude-opus-5`, deprecated/legacy status for 4.8, same price/context class). Row 4, Sonnet 4.6,
+> is superseded by **Sonnet 5** (`claude-sonnet-5`, $2/$10, released 2026-06-30, after this doc's
+> compile date). Row 5, Haiku 4.5, unchanged (200k context, still below the 1M-context tier —
+> disqualified as a main-agent downshift target, see `KB-model-modes.md` §13).
 
 ## 2. Capabilities
 

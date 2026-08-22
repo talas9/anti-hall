@@ -8,6 +8,24 @@
 > "ultracode", `/code-review ultra`) plus the Codex-side parallels. Dual-platform note: anti-hall
 > routes both Claude and Codex — §7-§8 are the Codex mirror of §2-§4; orchestration parity is
 > OMC ↔ OMX (see `KB-omc.md` / `KB-omx.md`).
+>
+> **[CORRECTION 2026-08-22 — title/lineup one full generation stale.** The title and every
+> "Opus 4.8" reference below describe the 2026-07-03 lineup. Verified current lineup (2026-08-22):
+> **Claude Fable 5** (`claude-fable-5`, current flagship, 1M ctx/128k out, $10/$50) and **Claude
+> Mythos 5** (`claude-mythos-5`, same underlying "Mythos-class" model, gated to approved orgs) now
+> sit above **Opus 5** (`claude-opus-5`, enterprise/agentic, 1M/128k, $5/$25); **Sonnet 5**
+> (`claude-sonnet-5`, 1M/128k, $2/$10 — the Sept-1 price increase mentioned nowhere in this doc's
+> original research was cancelled) is unchanged as general-purpose; **Haiku 4.5** is unchanged
+> (200k ctx, not 1M — kept for fast/cheap and subagent-leaf work). **Opus 4.8 is now DEPRECATED /
+> legacy** — API-valid but superseded by Opus 5 (shipped 2026-06-09); the vendor migration guide
+> covers Opus 4.8 → Fable 5. All 5 of Fable 5 / Mythos 5 / Opus 5 / Sonnet 5 / Opus 4.8(legacy)
+> support the same `low/medium/high/xhigh/max` effort scale described in §2-§3 below (default
+> `high`); Haiku 4.5 supports effort but only extended thinking, not adaptive — this part of §2-§4
+> is NOT contradicted by the lineup change, only the "who is flagship" framing is. Every "Opus 4.8"
+> reference below is left as-is per this KB's correction convention (stacked annotation, not
+> rewrite) — read it as historical/"whichever top-tier model" prose, not a current model pin. See
+> §13 "Downshift guidance" (new, appended 2026-08-22) for the separate main-agent downshift
+> question this doc previously had no answer to.]**
 
 ## Coverage note (verification integrity)
 
@@ -552,3 +570,28 @@ code (not speculation):
 - No published, vendor-neutral benchmark exists (as of this KB) quantifying exact token/latency
   deltas *per effort tier* for Opus 4.8 or Haiku 4.5 the way Artificial Analysis did for Sonnet 5
   [20] — that gap is inherited from `KB-token-usage-models.md` and not closed here.
+
+---
+
+## 13. Downshift guidance (added 2026-08-22)
+
+**[ADDED 2026-08-22]** This doc had zero mentions of *downshifting* — moving a session off the
+flagship model to conserve usage limits — despite covering every other model-selection axis.
+Cross-linked from `KB-sonnet-5.md`.
+
+- **When a session must move off the flagship to conserve limits, the main agent needs 1M
+  context.** The main agent holds the full conversation + tool-output history; dropping to a
+  200k-context model mid-session risks truncating that history, not just "running a cheaper
+  model."
+- **Sonnet 5 (`claude-sonnet-5`, 1M context, $2/$10 per Mtok) is the correct downshift target**
+  for the main agent. It is general-purpose, supports the full `low/medium/high/xhigh/max` effort
+  scale (§3), and its price held at the introductory $2/$10 (the scheduled Sept 1 increase was
+  cancelled) — so downshifting to it is a capability/cost tradeoff, not a context-loss risk.
+- **Haiku 4.5 is disqualified as a main-agent downshift target — it is 200k context, not 1M**
+  (§4). It remains the correct choice for trivial or leaf **subagent** work (fast/cheap,
+  self-contained task, no need to hold the full session's context), never for the agent carrying
+  the session.
+- **The agent cannot self-switch models.** `/model` is a user action in Claude Code; there is no
+  API/tool path for an agent to change its own running model mid-session. Practically, this means
+  a downshift recommendation surfaces as a suggestion to the user ("you're near your usage limit —
+  consider `/model` to Sonnet 5"), never as an autonomous action.

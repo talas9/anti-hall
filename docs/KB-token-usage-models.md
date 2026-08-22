@@ -84,7 +84,29 @@ window — "a 900k-token request is billed at the same per-token rate as a 9k-to
 | Sonnet 5 (standard, from Sep 1 2026) | $3/MTok | $3.75 | $6 | $0.30 | $15/MTok |
 | Haiku 4.5 | $1/MTok | $1.25 | $2 | $0.10 | $5/MTok |
 
-**⚠ Side finding (out of this KB's scope, flagged for the owner):** the live official docs fetched
+> **[UPDATE 2026-08-22] Pricing table above is now stale on two points, verified against the
+> authoritative current reference:** (1) **the Sonnet 5 Sept-1-2026 increase to $3/$15 was
+> CANCELLED** — Sonnet 5 stays at the $2/$10 "intro" row indefinitely; drop the "standard, from Sep
+> 1 2026" row. (2) **Opus 4.8 is now DEPRECATED / legacy**, superseded by **Opus 5**
+> (`claude-opus-5`) at the same $5/$25 price/context/output class. Added rows for the now-current
+> flagship tier, all confirmed to use the **same cache-multiplier formula** as the table above
+> (write 5-min = 1.25× base input; write 1-hr = 2× base input; read = 0.1× base input — every
+> current model supports caching, so this row shape generalizes):
+>
+> | Model | Input | 5m cache write | 1h cache write | Cache read | Output |
+> |---|---|---|---|---|---|
+> | Claude Fable 5 (current flagship) | $10/MTok | $12.50 | $20 | $1.00 | $50/MTok |
+> | Claude Mythos 5 (gated, approved orgs) | $10/MTok | $12.50 | $20 | $1.00 | $50/MTok |
+> | Claude Opus 5 (successor to Opus 4.8) | $5/MTok | $6.25 | $10 | $0.50 | $25/MTok |
+> | Claude Sonnet 5 (holds at $2/$10, no increase) | $2/MTok | $2.50 | $4 | $0.20 | $10/MTok |
+> | Claude Haiku 4.5 (200k ctx, unchanged) | $1/MTok | $1.25 | $2 | $0.10 | $5/MTok |
+>
+> Resolves the "side finding" below: this is no longer out of scope — Fable 5 is the flagship and
+> `docs/KB-fable-5.md` is the dedicated KB for it (re-verified same date, see its own
+> `[UPDATE 2026-08-22]` annotation).
+
+**⚠ Side finding (out of this KB's scope, flagged for the owner) — [UPDATE 2026-08-22: RESOLVED,
+see the table update immediately above]:** the live official docs fetched
 for this research also reference **"Claude Fable 5"** and **"Claude Mythos 5"/"Mythos Preview"** by
 name, consistently across the effort/pricing/context-window pages — models beyond this KB's
 research-agent's training knowledge. This may mean Fable is available again under a new name. Not
@@ -316,3 +338,8 @@ shows order-of-magnitude/relative shape, not a precise unit-cost model. Full tab
   `KB-gpt-5.6.md` §9 for the full list of facts dropped for lack of verification.
 - **"Claude Fable 5" / "Claude Mythos 5" / "Mythos Preview"** appear in live official docs but are
   outside this KB's scope and the research agent's training knowledge — flagged, not investigated.
+  **[UPDATE 2026-08-22: RESOLVED.** Fable 5 (`claude-fable-5`) is the current flagship (1M ctx/128k
+  out, $10/$50); Mythos 5 (`claude-mythos-5`) is the same underlying "Mythos-class" model gated to
+  approved orgs (Project Glasswing). Opus 5 (`claude-opus-5`) now sits below both; Opus 4.8 is
+  deprecated/legacy. Full model KB: `docs/KB-fable-5.md` (re-verified same date). See the §1
+  pricing-table update above for the added rows.]

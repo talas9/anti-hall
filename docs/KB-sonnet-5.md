@@ -6,6 +6,26 @@
 > Dual-platform note: anti-hall routes both Claude and Codex — the Codex-model table is in
 > [§7](#7-codex-model-parallel-gpt-5x); orchestration parity is OMC ↔ OMX (see `KB-omc.md` /
 > `KB-omx.md`).
+>
+> **[CORRECTION 2026-08-22 — title/lineup one full generation stale; every "Opus 4.8" reference
+> below (22 occurrences) is now legacy, not current.** Verified current lineup: **Claude Fable 5**
+> (`claude-fable-5`, current flagship, 1M ctx/128k out, $10/$50) and **Claude Mythos 5**
+> (`claude-mythos-5`, same underlying "Mythos-class" model, gated to approved orgs) now sit above
+> **Opus 5** (`claude-opus-5`, enterprise/agentic, 1M/128k, $5/$25 — Opus 5's price/context/output
+> match what this doc lists for Opus 4.8; Opus 5 is Opus 4.8's direct successor, shipped
+> 2026-06-09). **Opus 4.8 is now DEPRECATED / legacy** — API-valid but superseded; the vendor
+> migration guide covers Opus 4.8 → Fable 5. Sonnet 5 is unchanged as general-purpose EXCEPT
+> pricing: **the §2 table's "$3/$15 ($2/$10 intro → Aug 31 2026)" is now WRONG — the scheduled
+> Sept 1 price increase was CANCELLED, so Sonnet 5 stays $2/$10 indefinitely, not just as an intro
+> rate.** Haiku 4.5 is unchanged (200k ctx — disqualified as a main-agent downshift target per
+> `KB-model-modes.md` §13, added 2026-08-22). None of §3-§6's Opus-4.8-branded benchmarks/decision
+> guidance are re-verified for Fable 5/Mythos 5/Opus 5 this pass — read every "Opus 4.8" below as
+> "the flagship-class model at the time this KB was compiled," not a current pin. **§7's routing
+> table is the one section with operational consequence** — see the inline correction there: the
+> actual shipped policy (`plugins/anti-hall/skills/MODEL-POLICY.md`) already routes by **tier
+> token** (`opus`/`sonnet`/`haiku`/`fable`), resolved to the newest model in-family at runtime, so
+> it was NOT stale — only this KB's hardcoded "Opus 4.8" labels in the seat map are. Per this KB's
+> own §10 "Discrepancies / caveats" pattern, left as stacked annotation, not rewritten.]**
 
 ## 1. TL;DR
 - **Sonnet 5** (`claude-sonnet-5`, 2026-06-30) is a **clear win for implementation** — near-Opus
@@ -97,8 +117,25 @@ reasoning phase) — expensive and slow; avoid inside loops.
   critical path).
 - **Do NOT use Opus for:** knowledge work, long-horizon agentic pipelines, terminal tasks,
   customer-facing chat — Sonnet 5 matches/beats it there at ~40% lower price.
+- **[ADDED 2026-08-22] Downshift (usage-limit conservation), not capability-based switching:**
+  when a session must move off the flagship to conserve limits, the main agent needs 1M context —
+  **Sonnet 5 is the correct downshift target** (1M ctx, $2/$10, general-purpose); **Haiku 4.5 is
+  disqualified for the main agent (200k ctx, not 1M)**, though it's still correct for
+  trivial/leaf subagent work. The agent cannot self-switch models (`/model` is a user action) — a
+  downshift surfaces only as a recommendation. Full treatment: `KB-model-modes.md` §13.
 
 ## 7. anti-hall routing (Claude side)
+
+> **[CORRECTION 2026-08-22]** This table's "Opus 4.8" / "Sonnet 5" labels describe the model
+> *class* at each seat, not a pinned version — verified against the live
+> `plugins/anti-hall/skills/MODEL-POLICY.md`, which routes by **tier token**
+> (`opus`/`sonnet`/`haiku`/`fable`), resolved to the newest model in-family at runtime (its own
+> stated rule: "Never pin a model version"). So the "opus" seats below now actually resolve to
+> **Opus 5** (`claude-opus-5`), not Opus 4.8, and MODEL-POLICY.md additionally routes the deadly-loop
+> Reviewer seat to **Fable** first when available (`fable-availability.js`, re-enabled 2026-07-12),
+> falling back to Sonnet then Opus — a routing detail this table does not show. Treat this table as
+> **directionally correct but not the live seat map**; MODEL-POLICY.md is ground truth.
+
 Effective seat map (mirrored in `skills/MODEL-POLICY.md`):
 
 | Seat | Model | Effort |

@@ -16,6 +16,18 @@
 > guidance's escalation tier, reserved for multi-repo refactors with subtle invariants
 > (§6), not general multi-file refactors as the "Keep on Opus 4.8" section below might
 > suggest read in isolation. See `docs/KB-sonnet-5.md` §5–§7 for current routing.
+>
+> **Scope note (2026-08-22):** this KB is now one full generation stale on BOTH sides of its
+> title comparison. Claude side: **Opus 4.8 is DEPRECATED / legacy**, superseded by **Opus 5**
+> (`claude-opus-5`, same $5/$25 price/context class) — and the true current Claude flagship is
+> **Fable 5** (`claude-fable-5`, $10/$50, 1M/128k), not covered by this KB at all (see
+> `docs/KB-fable-5.md`). Codex side: **the repo migrated to GPT-5.6 (Sol/Terra/Luna) tiers on
+> 2026-07-09**, superseding gpt-5.5/gpt-5.4 as the recommended tiers (see `KB-gpt-5.6.md` and
+> `docs/KB-sonnet-5.md` §8) — this KB's GPT-5.5 benchmark numbers are the *prior* generation's,
+> not GPT-5.6's. All 13 Opus-4.8 references and the GPT-5.5 framing below are left as-is per this
+> KB's own dated-annotation convention (see the 2026-07-01 note above) — read the whole doc as a
+> **snapshot of the Opus-4.8-vs-GPT-5.5 era**, not current routing guidance. For current routing,
+> see `docs/KB-sonnet-5.md` §7–§8 and `KB-model-modes.md`.
 
 ## TL;DR (verdict)
 
