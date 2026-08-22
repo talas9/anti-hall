@@ -6,6 +6,35 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.79.0 (2026-08-22)
+
+- **New: anti-hall now notices when its own knowledge goes stale.** It
+  already probed the installed DevSwarm version against its baseline; it now
+  also compares the installed Claude Code CLI version against the version
+  its harness KB was audited on, and compares the hook/skill counts
+  `docs/KB.md` CLAIMS against what is actually on disk. All three probes are
+  advisory, SessionStart only, deduped so they cannot nag, and fail open and
+  silent.
+- **Why the model check is a date, not a network probe:** model facts (the
+  current lineup, pricing) are not discoverable from the local machine, so a
+  probe that cannot verify its claim would either invent an answer or fail
+  constantly. Instead it records when the model KBs were last audited and
+  advises past 60 days — an honest "not checked in N days" instead of a
+  guess.
+- **Both fired on their first run:** the repo self-drift probe caught
+  `docs/KB.md` claiming 49 hooks when there were actually 53, and the model
+  KB staleness clock read 85 days.
+- **Model KBs re-audited:** Opus 4.8 is deprecated (superseded by Opus 5,
+  June 2026); Fable 5 is the current flagship; Sonnet 5 held its
+  introductory price; cache multipliers and current per-model pricing
+  recorded. MODEL-POLICY routes by tier token and resolves to the newest
+  family member at runtime, so executable routing was never affected — only
+  the prose was stale.
+- **New: downshift guidance.** Moving off the flagship to conserve limits
+  still needs 1M context, so Sonnet 5 is the target; Haiku 4.5 is
+  disqualified at 200k despite being cheaper (still right for trivial leaf
+  work).
+
 ## 0.78.0 (2026-08-22)
 
 - **New: a durable defect channel between agents and the maintainer.** Any
