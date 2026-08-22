@@ -186,6 +186,48 @@ function readDescriptors(home, fsi) {
   return out;
 }
 
+// collapsedDescriptorFamilies(descriptors, deps) -> [{key, members, survivor}].
+// READ-TIME identity-family collapse (companion/lib/devswarm-identity-family.js)
+// — the SAME grouping hooks/devswarm-parent-gate.js applies to its own
+// `readDescriptors` enumeration, so the supervisor's own reported "how many
+// workspaces are being watched" view agrees with the gate's "N workspace(s)"
+// count instead of drifting apart. Two descriptor FILES sharing one
+// `worktreePath` (a builder-id UUID row and a slug row for the same physical
+// worktree) collapse to ONE family here, purely for REPORTING — nothing here
+// retires/deletes/writes any descriptor or state file, and `sweepOnce` below
+// is DELIBERATELY left iterating the raw, uncollapsed `descriptors` list: each
+// real descriptor still gets its own liveness verdict/poke, since a twin
+// descriptor can carry its OWN distinct sessionId (the legitimate "two live
+// tabs on one worktree" case the store-layer fold already protects).
+// `deps.canonicalMeshId` is injectable for tests; the default lazily requires
+// scripts/devswarm.js (same circular-require reasoning as reconcileSweepIfDue
+// above — NEVER a top-level require in this file) and reuses its EXISTING
+// `canonicalMeshId` derivation rather than reimplementing it. Fail-open: any
+// failure (missing module, throwing resolver) yields one family per
+// descriptor — today's uncollapsed behavior, never a crash.
+function collapsedDescriptorFamilies(descriptors, deps) {
+  const d = deps || {};
+  const list = Array.isArray(descriptors) ? descriptors : [];
+  try {
+    const identityFamily = d.identityFamily || require('./lib/devswarm-identity-family.js');
+    const resolveMeshId = d.canonicalMeshId || function (wt) {
+      const devswarmCli = require('../scripts/devswarm.js');
+      return devswarmCli.canonicalMeshId(wt);
+    };
+    const cache = new Map(); // worktreePath -> canonicalMeshId | null
+    const resolve = (wt) => {
+      if (cache.has(wt)) return cache.get(wt);
+      let k = null;
+      try { k = resolveMeshId(wt); } catch (_) { k = null; }
+      cache.set(wt, k);
+      return k;
+    };
+    return identityFamily.collapseFamilies(list, { resolve });
+  } catch (_) {
+    return list.map((desc) => ({ key: 'id:' + (desc && desc.id), members: [desc], survivor: desc }));
+  }
+}
+
 // supervisorEnabled(env) — daemon gate: off / hard-kill only.
 function supervisorEnabled(env) {
   const e = env || process.env;
@@ -514,7 +556,16 @@ function main() {
     // as the liveness sweep above — never a parallel/independent lock — so two
     // overlapping supervisor ticks can never both attempt it at once either.
     const reconcile = reconcileSweepIfDue({ home });
-    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, reconcile }) + '\n');
+    // `sweepFamilies` (identity-family collapsed) rides ALONGSIDE the existing
+    // `sweep` field (raw per-descriptor count, unchanged — still what
+    // sweepOnce actually iterated/wrote verdicts for) rather than replacing
+    // it, so this reporting-only view addition can never regress anything
+    // that already reads `sweep`. Reads descriptors fresh (cheap fs read,
+    // same primitive sweepOnce itself just used) rather than threading
+    // worktreePath through sweepOnce's per-result shape.
+    let sweepFamilies = results.length;
+    try { sweepFamilies = collapsedDescriptorFamilies(readDescriptors(home)).length; } catch (_) { /* fail-open: keep raw count */ }
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile }) + '\n');
   } catch (_) {
     // absolute fail-safe: never throw out of the sweep
   } finally {
@@ -542,7 +593,7 @@ function main() {
 // the main() call, closing it unconditionally rather than relying on this
 // particular call graph never exercising it.
 module.exports = {
-  workspacesDir, readDescriptors, supervisorEnabled, sweepLockPath, acquireSweepLock, sweepOnce,
+  workspacesDir, readDescriptors, collapsedDescriptorFamilies, supervisorEnabled, sweepLockPath, acquireSweepLock, sweepOnce,
   parseEnvNum, resolveThresholdsFromEnv, readMeshUrgency, isUrgentMesh, URGENT_TIERS,
   reconcileSweepIfDue, reconcileSweepEnabled, resolveReconcileCooldownMs, distinctRepoKeys,
   reconcileSweepStatePath, readReconcileSweepState, writeReconcileSweepState,

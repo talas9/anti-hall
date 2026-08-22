@@ -44,6 +44,33 @@ function makeGitRepo() {
   return dir;
 }
 
+// makeLinkedWorktree() -> a REAL `git worktree add` linked worktree of THIS
+// repo: SAME git-common-dir (repoKey) as REPO_CWD, but a DISTINCT toplevel
+// path (-> a DIFFERENT identity-family key / canonicalMeshId than REPO_CWD /
+// OWN_ID). Mirrors this repo's own real DevSwarm topology — a genuine child
+// runs from its OWN linked worktree (`.claude/worktrees/<id>`), never from
+// the Primary's own cwd. Fixtures that need "a real different workspace,
+// same repoKey" use this instead of `worktreePath: REPO_CWD` (that was an
+// unrealistic same-worktree collision with the Primary's own identity — the
+// identity-family collapse this file also tests below correctly folds a
+// REPO_CWD-worktreePath descriptor into the Primary's own row, since by the
+// codebase's own definition it then IS the same worktree/identity).
+function makeLinkedWorktree() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-wt-'));
+  fs.rmdirSync(dir); // `git worktree add` requires the target not already exist
+  const branch = 'parent-gate-idfam-' + path.basename(dir);
+  const r = cp.spawnSync('git', ['worktree', 'add', '-q', '-b', branch, dir, 'HEAD'], { cwd: REPO_CWD });
+  if (r.status !== 0) throw new Error('git worktree add failed: ' + (r.stderr && r.stderr.toString()));
+  return {
+    dir,
+    cleanup() {
+      try { cp.spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_CWD }); } catch (_) {}
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+      try { cp.spawnSync('git', ['branch', '-D', branch], { cwd: REPO_CWD }); } catch (_) {}
+    },
+  };
+}
+
 function stopPayload(sessionId, withCwd, explicitCwd) {
   const p = { hook_event_name: 'Stop', session_id: sessionId || 'sess-1' };
   if (explicitCwd !== undefined) p.cwd = explicitCwd;
@@ -385,13 +412,14 @@ test('#36 EXCLUDE: a descriptor whose worktree resolves to a DIFFERENT repoKey i
 
 test('#36 INCLUDE (same repoKey): a descriptor whose worktree resolves to the SAME repoKey still gates', () => {
   const h = makeHome();
+  const wt = makeLinkedWorktree();
   try {
-    seedWorkspace(h.home, 'same-project', { messages: ['a', 'b'], cursor: 0, worktreePath: REPO_CWD });
+    seedWorkspace(h.home, 'same-project', { messages: ['a', 'b'], cursor: 0, worktreePath: wt.dir });
     const r = run(h.home);
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.match(r.json.reason, /same-project/);
-  } finally { h.cleanup(); }
+  } finally { h.cleanup(); wt.cleanup(); }
 });
 
 test('#36 INCLUDE (fail-open): a descriptor whose worktreePath is unresolvable (non-git) still gates', () => {
@@ -427,13 +455,14 @@ test('#36 INCLUDE (fail-open): session cwd is unresolvable (non-git) -> filter d
 // ground truth; env was always spoofable, D29).
 test('#36 env DEVSWARM_REPO_ID is IGNORED: a mismatching env repoId does not exclude a same-repoKey descriptor', () => {
   const h = makeHome();
+  const wt = makeLinkedWorktree();
   try {
-    seedWorkspace(h.home, 'same-project', { messages: ['a', 'b'], cursor: 0, worktreePath: REPO_CWD, repoId: 'repo-999' });
+    seedWorkspace(h.home, 'same-project', { messages: ['a', 'b'], cursor: 0, worktreePath: wt.dir, repoId: 'repo-999' });
     const r = run(h.home, stopPayload(), { DEVSWARM_REPO_ID: 'repo-1' }); // deliberately mismatching env
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.json && r.json.decision, 'block', 'the structural repoKey match must win over any env repoId mismatch');
     assert.match(r.json.reason, /same-project/);
-  } finally { h.cleanup(); }
+  } finally { h.cleanup(); wt.cleanup(); }
 });
 
 test('#36 INCLUDE: a descriptor with a MATCHING repoId still gates', () => {
@@ -834,9 +863,9 @@ test('FAIL-OPEN (P0-2): a descriptor whose inbox file is genuinely ABSENT (known
 // scripts/devswarm.js — that a prior fix round mistakenly treated as the ONLY
 // production entry point; a test that only exercises cmdRegister therefore
 // misses the real per-turn hook path entirely).
-function registerRealChild(home, id, sessionId) {
+function registerRealChild(home, id, sessionId, cwd) {
   const r = testHook('devswarm-child-turn.js', {
-    hook_event_name: 'UserPromptSubmit', session_id: sessionId || ('sess-' + id), prompt: 'go', cwd: REPO_CWD,
+    hook_event_name: 'UserPromptSubmit', session_id: sessionId || ('sess-' + id), prompt: 'go', cwd: cwd || REPO_CWD,
   }, {
     home,
     env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id },
@@ -867,8 +896,9 @@ test('NO-OP (regression guard, REAL registration path): a child registered via t
 
 test('FAIL-OPEN (P0-2, REAL registration path): a real child whose inbox file is later REMOVED still BLOCKS unconditionally', () => {
   const h = makeHome();
+  const wt = makeLinkedWorktree();
   try {
-    registerRealChild(h.home, 'removed-real1');
+    registerRealChild(h.home, 'removed-real1', undefined, wt.dir);
     const desc = realChildDescriptor(h.home, 'removed-real1');
     assert.ok(fs.existsSync(desc.inboxPath), 'precondition: the real registration path must have precreated the inbox');
     fs.unlinkSync(desc.inboxPath); // simulate a genuinely-absent inbox (removed / pre-fix legacy child)
@@ -876,7 +906,7 @@ test('FAIL-OPEN (P0-2, REAL registration path): a real child whose inbox file is
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block', 'an inbox removed AFTER real registration must still block, not silently read as 0 unread');
     assert.match(r.json.reason, /removed-real1/);
-  } finally { h.cleanup(); }
+  } finally { h.cleanup(); wt.cleanup(); }
 });
 
 test('FAIL-OPEN: no verdict file at all for a descriptor with real unread -> STILL blocks (never silently suppressed)', () => {
@@ -1334,43 +1364,47 @@ function seedStoreOnlyRow(home, id, from, hash) {
 
 test('FIX 3a: a store-only row whose sender IS this Primary (own outbound send) does NOT count as neglect', () => {
   const h = makeHome();
+  const wt = makeLinkedWorktree();
   try {
-    seedWorkspace(h.home, 'ws-out1', { worktreePath: REPO_CWD, messages: [], cursor: 0 });
+    seedWorkspace(h.home, 'ws-out1', { worktreePath: wt.dir, messages: [], cursor: 0 });
     seedStoreOnlyRow(h.home, 'ws-out1', OWN_ID, 'test-out-1');
     const r = run(h.home, stopPayload());
     assert.strictEqual(r.status, 0, 'must exit 0');
     assert.strictEqual(r.stdout, '', `this Primary's own outbound send must never self-flag as neglect; got: ${r.stdout}`);
-  } finally { h.cleanup(); }
+  } finally { h.cleanup(); wt.cleanup(); }
 });
 
 test('FIX 3a control: a store-only row from a DIFFERENT sender still counts as real neglect', () => {
   const h = makeHome();
+  const wt = makeLinkedWorktree();
   try {
-    seedWorkspace(h.home, 'ws-out2', { worktreePath: REPO_CWD, messages: [], cursor: 0 });
+    seedWorkspace(h.home, 'ws-out2', { worktreePath: wt.dir, messages: [], cursor: 0 });
     seedStoreOnlyRow(h.home, 'ws-out2', 'some-other-sender', 'test-out-2');
     const r = run(h.home, stopPayload());
     assert.strictEqual(r.json && r.json.decision, 'block', 'a store-only row from a real different sender must still block');
     assert.match(r.json.reason, /ws-out2/);
     assert.match(r.json.reason, /1 unread/);
-  } finally { h.cleanup(); }
+  } finally { h.cleanup(); wt.cleanup(); }
 });
 
 test('FIX 3a mixed: this Primary\'s own outbound row is excluded while a genuine different-sender row in the SAME workspace still counts', () => {
   const h = makeHome();
+  const wt = makeLinkedWorktree();
   try {
-    seedWorkspace(h.home, 'ws-out3', { worktreePath: REPO_CWD, messages: [], cursor: 0 });
+    seedWorkspace(h.home, 'ws-out3', { worktreePath: wt.dir, messages: [], cursor: 0 });
     seedStoreOnlyRow(h.home, 'ws-out3', OWN_ID, 'test-out-3a');
     seedStoreOnlyRow(h.home, 'ws-out3', 'some-other-sender', 'test-out-3b');
     const r = run(h.home, stopPayload());
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.match(r.json.reason, /1 unread/, 'the own-outbound row must be excluded from the displayed count, leaving only the real one');
-  } finally { h.cleanup(); }
+  } finally { h.cleanup(); wt.cleanup(); }
 });
 
 test('FIX 3b: the remediation for a genuine child-unread block is NON-DESTRUCTIVE — no cursor-advancing/ack command against a workspace this Primary does not own', () => {
   const h = makeHome();
+  const wt = makeLinkedWorktree();
   try {
-    seedWorkspace(h.home, 'ws-out2', { worktreePath: REPO_CWD, messages: [], cursor: 0 });
+    seedWorkspace(h.home, 'ws-out2', { worktreePath: wt.dir, messages: [], cursor: 0 });
     seedStoreOnlyRow(h.home, 'ws-out2', 'some-other-sender', 'test-out-4');
     const r = run(h.home, stopPayload());
     assert.strictEqual(r.json && r.json.decision, 'block');
@@ -1381,5 +1415,128 @@ test('FIX 3b: the remediation for a genuine child-unread block is NON-DESTRUCTIV
     assert.doesNotMatch(reason, /inbox read-primary <id>/, `must never tell the Primary to advance a child's cursor; reason=${reason}`);
     assert.doesNotMatch(reason, /ADVANCING its cursor/i, `must not instruct the Primary to advance a child's cursor; reason=${reason}`);
     assert.doesNotMatch(reason, /\bACK\w*\s+its cursor/i, `must not instruct acking a child's cursor; reason=${reason}`);
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+// ============================================================================
+// IDENTITY-FAMILY COLLAPSE — the parent-gate workspace-count divergence fix.
+// readDescriptors(home) yields one row per descriptor FILE; two descriptor
+// files sharing one worktreePath (a builder-id UUID row and a slug row for
+// the SAME physical worktree — including the Primary's OWN row) must collapse
+// to ONE reported entry (companion/lib/devswarm-identity-family.js), never
+// two, while the underlying descriptor files themselves are never
+// retired/deleted/tombstoned (unit-tested directly in
+// tests/companion/devswarm-identity-family.test.js — these are the
+// integration-level proofs through the real hook).
+// ============================================================================
+
+test('IDENTITY-FAMILY: two descriptors sharing one worktreePath collapse to ONE workspace, unread UNIONED', () => {
+  const h = makeHome();
+  const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
+  try {
+    // A fabricated, non-git, shared worktreePath: the #36 repoKey filter is
+    // fail-open here (unresolvable on both sides), isolating this test to
+    // ONLY the identity-family collapse. Two DIFFERENT descriptor ids at the
+    // exact SAME worktreePath — the builder-id-UUID-vs-slug shape the defect
+    // report names.
+    const sharedWt = path.join(h.home, 'shared-wt');
+    seedWorkspace(h.home, 'builder-uuid-1', { messages: ['a', 'b'], cursor: 0, worktreePath: sharedWt });
+    seedWorkspace(h.home, 'slug-one', { messages: ['c', 'd', 'e'], cursor: 0, worktreePath: sharedWt });
+    const r = run(h.home, stopPayload('sess-idfam1', false, bogusCwd));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /1 workspace\(s\)/, 'two descriptors at the SAME worktreePath must collapse to 1 workspace, not 2');
+    assert.match(r.json.reason, /5 unread/, 'the UNION of unread across both members (2 + 3)');
+  } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+test('IDENTITY-FAMILY: the SELF/Primary row duplicated (live evidence: the same id appears twice) collapses to one', () => {
+  const h = makeHome();
+  try {
+    // own's synthetic self-row (via writeOwnSummary, id=OWN_ID) PLUS a REAL
+    // descriptor registered under the Primary's OWN worktree/canonical id —
+    // reproducing the literal live-evidence duplication where
+    // "primary-63f9261d (you)" appeared twice in one blocking line.
+    writeOwnSummary(h.home, 2);
+    seedWorkspace(h.home, OWN_ID, { messages: ['x', 'y', 'z'], cursor: 0, worktreePath: REPO_CWD });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /1 workspace\(s\)/, 'the self row duplicated across own + a same-worktree descriptor must collapse to 1, not 2');
+    assert.match(r.json.reason, new RegExp(OWN_ID + ' \\(you\\)'), 'the survivor must still carry the (you) label');
+    assert.match(r.json.reason, /5 unread/, 'own\'s 2 unread UNIONED with the descriptor\'s 3 real unread');
   } finally { h.cleanup(); }
+});
+
+test('IDENTITY-FAMILY: a descriptor whose worktree no longer exists still groups deterministically, never throws', () => {
+  const h = makeHome();
+  const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
+  try {
+    // A worktreePath that never existed on disk at all -> canonicalMeshId's
+    // realpath resolution degrades to path.resolve (worktreeRealPath's own
+    // documented "never throws" contract) rather than failing.
+    const vanishedWt = path.join(os.tmpdir(), 'parent-gate-idfam-vanished-' + Date.now());
+    seedWorkspace(h.home, 'ghost-uuid', { messages: ['a'], cursor: 0, worktreePath: vanishedWt });
+    seedWorkspace(h.home, 'ghost-slug', { messages: ['b'], cursor: 0, worktreePath: vanishedWt });
+    let r;
+    assert.doesNotThrow(() => { r = run(h.home, stopPayload('sess-idfam2', false, bogusCwd)); });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /1 workspace\(s\)/, 'still groups deterministically even though the worktree never existed');
+  } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+test('IDENTITY-FAMILY: two GENUINELY distinct workspaces (different worktreePath) are still counted separately (no over-collapse)', () => {
+  const h = makeHome();
+  const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
+  try {
+    seedWorkspace(h.home, 'distinct-a', { messages: ['a'], cursor: 0, worktreePath: path.join(h.home, 'wt-alpha') });
+    seedWorkspace(h.home, 'distinct-b', { messages: ['b'], cursor: 0, worktreePath: path.join(h.home, 'wt-beta') });
+    const r = run(h.home, stopPayload('sess-idfam3', false, bogusCwd));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /2 workspace\(s\)/, 'two genuinely distinct worktrees must never be merged');
+    assert.match(r.json.reason, /distinct-a/);
+    assert.match(r.json.reason, /distinct-b/);
+  } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+test('IDENTITY-FAMILY: unreadUnknown on any family member propagates (blocks + "inbox unreadable")', () => {
+  const h = makeHome();
+  const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
+  try {
+    const sharedWt = path.join(h.home, 'shared-wt-unknown');
+    // 'known-quiet' has a confirmed-empty (0 unread) inbox; 'unknown-one' has
+    // NO inbox file at all (known:false -> unreadUnknown), sharing the SAME
+    // worktreePath -> one family whose aggregate must still surface unknown.
+    seedWorkspace(h.home, 'known-quiet', { messages: [], cursor: 0, worktreePath: sharedWt });
+    seedWorkspace(h.home, 'unknown-one', { worktreePath: sharedWt }); // no messages/cursor -> inbox absent -> known:false
+    const r = run(h.home, stopPayload('sess-idfam4', false, bogusCwd));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /1 workspace\(s\)/);
+    assert.match(r.json.reason, /inbox unreadable/, 'unreadUnknown from either member must propagate to the collapsed family');
+  } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+test('IDENTITY-FAMILY: sig stability — the SAME collapsed state across repeated calls never phantom-churns (reaches escalation at the cap)', () => {
+  const h = makeHome();
+  const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
+  try {
+    // If the collapsed set's signature were unstable across identical repeat
+    // calls (e.g. member/family ordering flipping run to run), the per-SET
+    // cap would never accumulate and escalation would never fire — exactly
+    // the same proof shape the existing LOOP-SAFE tests use for the
+    // uncollapsed path.
+    const sharedWt = path.join(h.home, 'shared-wt-sig');
+    seedWorkspace(h.home, 'sig-uuid-1', { messages: ['a', 'b'], cursor: 0, worktreePath: sharedWt });
+    seedWorkspace(h.home, 'sig-slug-1', { messages: ['c'], cursor: 0, worktreePath: sharedWt });
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    const p = stopPayload('sess-idfam-sig', false, bogusCwd);
+    const r1 = run(h.home, p, env); assert.strictEqual(r1.json && r1.json.decision, 'block', 'block #1');
+    const r2 = run(h.home, p, env); assert.strictEqual(r2.json && r2.json.decision, 'block', 'block #2');
+    const r3 = run(h.home, p, env); // effectiveBlocks === cap (2) -> escalation, never reset by a phantom-churning sig
+    assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
+    assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'the collapsed set signature must be STABLE run-to-run to ever reach escalation');
+  } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
 });

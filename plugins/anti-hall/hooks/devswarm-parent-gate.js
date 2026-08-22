@@ -455,14 +455,38 @@ function main() {
   // (no git, no computeLiveness, no store DB open) — `selfKey` above is the
   // ONLY repoKey git spawn this hook invocation needs; the #36 structural
   // filter below reuses it rather than re-resolving.
-  const blocking = [];
-  if (own.unread > 0 && own.id) {
-    blocking.push({ id: own.id, unread: own.unread, status: '', urgencyMax: own.urgencyMax });
-  } else if (own.unknown && own.id) {
-    // C3 fix: align polarity with the child #36 loop's known:false handling
-    // below — an unreadable/corrupt own-summary (e.g. the daemon crashed
-    // mid-write) surfaces as an explicit unknown, never a silent "0 unread".
-    blocking.push({ id: own.id, unread: 0, unknown: true, status: '' });
+  // IDENTITY-FAMILY COLLAPSE (fixes the parent-gate workspace-count
+  // divergence from the app's own count): `readDescriptors(home)` yields one
+  // row per descriptor FILE, and two descriptor files can legitimately share
+  // ONE worktreePath (a builder-id UUID row and a slug row for the SAME
+  // worktree — including the Primary's OWN worktree, which is exactly the
+  // live-evidence case of the self/"(you)" row appearing twice). Rather than
+  // pushing directly into `blocking` per-own/per-descriptor as before, every
+  // candidate (own's synthetic self-row PLUS every descriptor) is collected
+  // into `rawEntries` UNCONDITIONALLY here, grouped into identity families
+  // below (companion/lib/devswarm-identity-family.js), and only THEN reduced
+  // to one blocking entry per family with unioned counts. This is a pure
+  // READ-TIME grouping — nothing here retires/deletes/tombstones any
+  // descriptor or state file; the store-layer fold (scripts/devswarm.js) and
+  // retirePhantomWorktreeDuplicates (hooks/devswarm-child-turn.js) are
+  // unchanged and still own the legitimate "two live tabs on one worktree"
+  // case.
+  const rawEntries = [];
+  if (own.id) {
+    // `cwd` is the same input readOwnUnread resolved `own.id` from (via
+    // findGitToplevel(cwd) -> primaryWorkspaceId) — passing it as this
+    // synthetic entry's worktreePath lets the family resolver below
+    // (canonicalMeshId) group it with any descriptor sharing the SAME
+    // worktree, which is what closes the self-row duplication.
+    rawEntries.push({
+      id: own.id,
+      worktreePath: cwd,
+      realUnread: own.unread,
+      unreadUnknown: !!own.unknown,
+      staleOrEscalated: false,
+      status: '',
+      urgencyMax: own.urgencyMax != null ? own.urgencyMax : null,
+    });
   }
   // #36 STRUCTURAL cross-project filter (D29 — REPLACES the spoofable v0.56 env
   // filter `d.repoId !== currentRepoId`; env DEVSWARM_REPO_ID is in the SAME
@@ -592,14 +616,69 @@ function main() {
       try { if (hasFreshHeartbeat(d.id, home)) staleOrEscalated = false; } catch (_) {}
     }
 
-    if (unreadUnknown || realUnread > 0 || staleOrEscalated) {
-      blocking.push({
-        id: String(d.id),
-        unread: realUnread,
-        unknown: unreadUnknown,
-        status: staleOrEscalated ? status : '',
-      });
+    // Pushed UNCONDITIONALLY (not gated on unreadUnknown/realUnread/
+    // staleOrEscalated here) — the gate is applied ONCE per FAMILY after the
+    // collapse below, so a family with one blocking member and one quiet
+    // twin still blocks (and the quiet twin's 0/false contributes nothing to
+    // the union either way).
+    rawEntries.push({
+      id: String(d.id),
+      worktreePath: d.worktreePath,
+      realUnread,
+      unreadUnknown,
+      staleOrEscalated,
+      status: staleOrEscalated ? status : '',
+      urgencyMax: null,
+    });
+  }
+
+  // Collapse rawEntries into identity families and reduce each family to ONE
+  // blocking entry (union realUnread, OR unreadUnknown, OR staleOrEscalated).
+  // `resolveMeshId` reuses `canonicalMeshId` (scripts/devswarm.js) — the SAME
+  // derivation the store-layer fold already uses, NOT a fourth reimplementation
+  // — memoized per distinct worktreePath so N rawEntries sharing one worktree
+  // never re-spawn git more than once each (mirrors `repoKeyOfWorktree` above).
+  // Fail-open (outer try/catch): if collapsing throws for any reason, fall back
+  // to today's one-row-per-descriptor behavior rather than blocking or crashing.
+  let families;
+  try {
+    const identityFamily = require('../companion/lib/devswarm-identity-family.js');
+    const devswarmCli = require('../scripts/devswarm.js'); // lazy: side-effect-free (guarded by require.main===module), see scripts/devswarm.js's own precedent for lazy self-requires
+    const meshIdCache = new Map(); // worktreePath -> canonicalMeshId | null
+    const resolveMeshId = (wt) => {
+      if (meshIdCache.has(wt)) return meshIdCache.get(wt);
+      let k = null;
+      try { k = devswarmCli.canonicalMeshId(wt); } catch (_) { k = null; }
+      meshIdCache.set(wt, k);
+      return k;
+    };
+    families = identityFamily.collapseFamilies(rawEntries, { resolve: resolveMeshId });
+  } catch (_) {
+    // Fall back to one family per rawEntry (== today's uncollapsed behavior).
+    families = rawEntries.map((e) => ({ key: 'id:' + e.id, members: [e], survivor: e }));
+  }
+
+  const blocking = [];
+  for (const fam of families) {
+    const members = (fam && fam.members) || [];
+    let unionUnread = 0;
+    let unreadUnknown = false;
+    let staleOrEscalated = false;
+    let status = '';
+    let urgencyMax = null;
+    for (const m of members) {
+      unionUnread += Number.isFinite(m.realUnread) ? m.realUnread : 0;
+      if (m.unreadUnknown) unreadUnknown = true;
+      if (m.staleOrEscalated) { staleOrEscalated = true; if (m.status) status = m.status; }
+      if (m.urgencyMax != null) urgencyMax = m.urgencyMax;
     }
+    if (!(unreadUnknown || unionUnread > 0 || staleOrEscalated)) continue; // this family has nothing to report
+    const survivor = fam && fam.survivor;
+    const survivorId = survivor && survivor.id != null ? String(survivor.id) : (members[0] && members[0].id != null ? String(members[0].id) : null);
+    if (!survivorId) continue;
+    const entry = { id: survivorId, unread: unionUnread, unknown: unreadUnknown, status };
+    if (urgencyMax != null) entry.urgencyMax = urgencyMax;
+    blocking.push(entry);
   }
 
   const stateFile = stateFileFor(payload.session_id, home);
