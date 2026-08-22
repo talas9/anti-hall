@@ -18,6 +18,7 @@ const installIngest = require('../../plugins/anti-hall/companion/install-devswar
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
 const replyStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-reply-state.js');
 const meshStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const gateStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-gate-state.js');
 
 const HOOK = 'devswarm-parent-gate.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + Primary (no SOURCE_BRANCH)
@@ -1539,4 +1540,200 @@ test('IDENTITY-FAMILY: sig stability — the SAME collapsed state across repeate
     assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
     assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'the collapsed set signature must be STABLE run-to-run to ever reach escalation');
   } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// STATED-INTENT — a Primary that explains itself (`devswarm.js gate-intent
+// --reason "..."`) must be counted DIFFERENTLY from one silently ignoring the
+// gate: the escalation branch defers to a larger absolute backstop, but the
+// FIRST surfacing of a condition is never suppressed, and an intent never
+// carries over once the blocking signature (sig) actually changes.
+// ---------------------------------------------------------------------------
+
+function readGateState(home, sessionId) {
+  return JSON.parse(fs.readFileSync(gateStateLib.stateFileFor(sessionId, home), 'utf8'));
+}
+
+// writeIntent(home, sessionId, sig, reason) — simulates exactly what
+// scripts/devswarm.js's `gate-intent` CLI verb persists: merges an
+// `intents: { [sig]: { ts, reason } }` entry into the EXISTING state file,
+// preserving every other field. Used here instead of shelling out to the CLI
+// so these hook-level tests stay fast/in-process; the CLI verb itself is
+// covered separately in tests/scripts/devswarm-cli.test.js.
+function writeIntent(home, sessionId, sig, reason, base) {
+  const stateFile = gateStateLib.stateFileFor(sessionId, home);
+  const existing = base || {};
+  const next = Object.assign({}, existing, { intents: { [sig]: { ts: Date.now(), reason } } });
+  fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+  fs.writeFileSync(stateFile, JSON.stringify(next));
+}
+
+test('STATED-INTENT: the FIRST block still fires even when an intent is already recorded for the sig (never suppresses the initial surfacing)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 }); // stable 2-unread blocking set
+    // Learn the real sig via a throwaway session, then discard its state.
+    const learnP = stopPayload('learn-sig-sess');
+    run(h.home, learnP);
+    const sig = readGateState(h.home, 'learn-sig-sess').sig;
+    assert.ok(sig, 'must have learned a real sig');
+
+    // A FRESH session that has never blocked before, but whose state file was
+    // pre-seeded with an intent for the exact sig it is about to compute.
+    writeIntent(h.home, 'fresh-intent-sess', sig, 'already investigating, this is expected');
+    const r = run(h.home, stopPayload('fresh-intent-sess'));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'an intent must never suppress the first-ever block for a session');
+    assert.doesNotMatch(r.json.reason, /DEVSWARM ESCALATION/, 'the first block is a normal nag, not an escalation');
+  } finally { h.cleanup(); }
+});
+
+test('STATED-INTENT: intent recorded + sig unchanged -> repeated stops do NOT escalate, and intentAcks increments', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 }); // stable 2-unread blocking set
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' }; // absoluteCap = 2*5 = 10
+    const p = stopPayload('intent-sustain-sess');
+
+    const r1 = run(h.home, p, env); // pass #1: no intent yet
+    assert.strictEqual(r1.json && r1.json.decision, 'block');
+    const state1 = readGateState(h.home, 'intent-sustain-sess');
+    assert.strictEqual(state1.intentAcks, 0, 'no intent recorded yet -> intentAcks stays 0');
+
+    // Primary "explains itself" — record the intent for the exact sig just persisted.
+    writeIntent(h.home, 'intent-sustain-sess', state1.sig, 'known backlog, handling after this task', state1);
+
+    let lastIntentAcks = 0;
+    for (let i = 0; i < 6; i++) { // well under absoluteCap(10), well past the plain cap(2)
+      const r = run(h.home, p, env);
+      assert.strictEqual(r.status, 0);
+      assert.strictEqual(r.json && r.json.decision, 'block', `pass ${i + 2} must still block`);
+      assert.doesNotMatch(r.json.reason, /DEVSWARM ESCALATION/, `pass ${i + 2} must NOT escalate while an intent is on file`);
+      const st = readGateState(h.home, 'intent-sustain-sess');
+      assert.ok(st.intentAcks > lastIntentAcks, `intentAcks must increment (pass ${i + 2}): was ${lastIntentAcks}, now ${st.intentAcks}`);
+      lastIntentAcks = st.intentAcks;
+    }
+  } finally { h.cleanup(); }
+});
+
+test('STATED-INTENT: sig CHANGES after an intent was recorded -> escalation behavior returns to normal (intent does not carry over)', () => {
+  const h = makeHome();
+  try {
+    const seeded = seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    const p = stopPayload('intent-sig-change-sess');
+
+    const r1 = run(h.home, p, env);
+    const state1 = readGateState(h.home, 'intent-sig-change-sess');
+    writeIntent(h.home, 'intent-sig-change-sess', state1.sig, 'on it', state1);
+    const r2 = run(h.home, p, env); // still same sig -> covered by intent, no escalation
+    assert.doesNotMatch(r2.json.reason, /DEVSWARM ESCALATION/, 'still covered by the intent before the sig changes');
+
+    // Change the actual unread content -> a genuinely NEW blocking signature.
+    fs.appendFileSync(seeded.inboxPath, JSON.stringify({ m: 'c' }) + '\n');
+
+    // Drive the (now intent-free) new sig through the PLAIN cap (2) until it
+    // escalates — proves the old intent does not silently carry over.
+    let escalated = false;
+    for (let i = 0; i < 6 && !escalated; i++) {
+      const r = run(h.home, p, env);
+      if (r.json && /DEVSWARM ESCALATION/.test(r.json.reason)) escalated = true;
+    }
+    assert.ok(escalated, 'the new sig must still escalate at the plain cap — the prior intent must not apply to it');
+    const stFinal = readGateState(h.home, 'intent-sig-change-sess');
+    assert.ok(!stFinal.intents || !stFinal.intents[state1.sig], 'the OLD sig\'s intent must be pruned once the sig has moved on');
+  } finally { h.cleanup(); }
+});
+
+test('STATED-INTENT: no intent recorded -> existing escalate-at-cap behavior is UNCHANGED (regression guard)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' };
+    const p = stopPayload('no-intent-regression-sess');
+    run(h.home, p, env); // block #1
+    run(h.home, p, env); // block #2
+    const r3 = run(h.home, p, env); // effectiveBlocks === cap(2) -> escalation
+    assert.match(r3.json && r3.json.reason, /DEVSWARM ESCALATION/, 'no stated intent -> escalates exactly like before this feature');
+    const r4 = run(h.home, p, env);
+    assert.strictEqual(r4.stdout, '', 'then goes quiet, exactly as before');
+  } finally { h.cleanup(); }
+});
+
+test('STATED-INTENT: the absolute cap still bounds the loop even with an intent present', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const env = { ANTIHALL_DEVSWARM_PARENT_GATE_CAP: '2' }; // absoluteCap = 10
+    const p = stopPayload('intent-absolute-cap-sess');
+
+    run(h.home, p, env); // pass #1, no intent yet
+    const state1 = readGateState(h.home, 'intent-absolute-cap-sess');
+    writeIntent(h.home, 'intent-absolute-cap-sess', state1.sig, 'deferring escalation deliberately', state1);
+
+    let escalated = false;
+    let sawSilenceAfter = false;
+    for (let i = 0; i < 20 && !sawSilenceAfter; i++) {
+      const r = run(h.home, p, env);
+      if (!escalated) {
+        if (r.json && /DEVSWARM ESCALATION/.test(r.json.reason)) escalated = true;
+      } else {
+        // The pass immediately after escalation must go silent, exactly like
+        // the plain (no-intent) axis already does.
+        assert.strictEqual(r.stdout, '', 'must go quiet the pass after the absolute-cap escalation');
+        sawSilenceAfter = true;
+      }
+    }
+    assert.ok(escalated, 'an intent must not make the gate loop forever — the absolute backstop must eventually escalate');
+    assert.ok(sawSilenceAfter, 'and then go quiet, same as the plain axis');
+  } finally { h.cleanup(); }
+});
+
+test('STATED-INTENT: a state file with NO intents key (prior shape) loads and behaves exactly as before', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const p = stopPayload('legacy-shape-sess');
+    // Pre-seed a PRE-FEATURE-shaped state file: no `intents`/`intentAcks` keys
+    // at all, exactly what every state file looked like before this change.
+    const stateFile = gateStateLib.stateFileFor('legacy-shape-sess', h.home);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ sig: 'stale-sig-does-not-match', blocks: 1, escalated: false, qSig: '', qBlocks: 0, qEscalated: false }));
+    const r = run(h.home, p);
+    assert.strictEqual(r.status, 0, 'must not throw on a legacy-shaped state file');
+    assert.strictEqual(r.json && r.json.decision, 'block', 'must behave exactly as before — a normal block');
+    assert.doesNotMatch(r.json.reason, /DEVSWARM ESCALATION/, 'a fresh (mismatched) sig never escalates on its first real pass');
+  } finally { h.cleanup(); }
+});
+
+test('STATED-INTENT: the injected block reason NEVER echoes the stored reason text (injection hygiene)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const p = stopPayload('no-echo-sess');
+    run(h.home, p); // learn the sig
+    const state1 = readGateState(h.home, 'no-echo-sess');
+    const secretReason = 'TOTALLY-UNIQUE-REASON-TEXT-9f3a-should-never-be-echoed';
+    writeIntent(h.home, 'no-echo-sess', state1.sig, secretReason, state1);
+    const r = run(h.home, p);
+    assert.strictEqual(r.status, 0);
+    assert.ok(r.json && typeof r.json.reason === 'string', 'must still block with a reason');
+    assert.doesNotMatch(r.json.reason, /TOTALLY-UNIQUE-REASON-TEXT-9f3a/, 'the stored reason text must never appear in the injected output');
+    assert.doesNotMatch(r.json.reason, /should-never-be-echoed/, 'the stored reason text must never appear in the injected output');
+  } finally { h.cleanup(); }
+});
+
+test('STATED-INTENT: FAIL-OPEN — a corrupt/unreadable gate-state file behaves exactly as today (no throw)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
+    const p = stopPayload('corrupt-state-sess');
+    const stateFile = gateStateLib.stateFileFor('corrupt-state-sess', h.home);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, '{ this is not valid json,,, ]]]');
+    const r = run(h.home, p);
+    assert.strictEqual(r.status, 0, 'must exit 0, never throw on a corrupt state file');
+    assert.strictEqual(r.json && r.json.decision, 'block', 'must fail open toward a normal first block, exactly as pre-intent behavior');
+    assert.doesNotMatch(r.json.reason, /DEVSWARM ESCALATION/, 'a corrupt file must be treated as fresh state, not pre-exhausted');
+  } finally { h.cleanup(); }
 });

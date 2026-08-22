@@ -4241,6 +4241,101 @@ function cmdSkip(guard, flags, ctx) {
   };
 }
 
+// REASON_MAX_LEN — a stated-intent reason is stored verbatim (never echoed
+// back into any injected hook output — see devswarm-parent-gate.js's
+// buildReason) but is still bounded so a runaway/pasted-in caller can never
+// grow the tiny per-session state file unreasonably.
+const REASON_MAX_LEN = 2000;
+
+// cmdGateIntent(flags, ctx) — `gate-intent --reason "<text>" [--session <id>]`
+// (PLAN.md CLI VERB CONTRACT precedent, same shape as cmdSkip above): the
+// EXPLICIT, deliberate signal devswarm-parent-gate.js's Stop-hook gate
+// consumes to distinguish "the Primary stated a reason for this exact
+// neglect condition" from "the Primary is simply ignoring the gate" — see
+// that hook's `intents`/`intentAcks` handling. A CLI verb (rather than
+// scanning the transcript tail for a hedge phrase the way merge-gate.js
+// does) was chosen because the signal here needs to be UNAMBIGUOUS and
+// per-condition-scoped: merge-gate.js's keyword heuristic works for its
+// narrow backstop role (bypassable, honestly documented, default-off) but a
+// keyword match against free-form assistant text has no reliable way to
+// bind itself to ONE specific blocking signature — it would either fire on
+// every Stop once any hedge-like phrase appeared anywhere in the tail
+// (falsely covering an unrelated future block) or need its own second
+// scanner/state machine duplicating this file's existing sig-keyed
+// bookkeeping. A CLI call the Primary explicitly issues IN RESPONSE to a
+// block is unambiguous, requires no wording heuristic, and reuses the
+// gate's own already-persisted `sig` as the binding key for free.
+//
+// Session resolution mirrors cmdRegisterPrimary's own precedent (see its
+// comment above): `--session` explicit override, else the real
+// CLAUDE_CODE_SESSION_ID Claude Code sets on every spawned process, else the
+// legacy DEVSWARM_BUILDER_ID fallback. Unlike register-primary this verb has
+// NO further fallback to a derived id — an intent with no resolvable session
+// has nothing to key its per-session state file by, so it fails visibly
+// (`ok:false`) rather than silently guessing wrong.
+//
+// The intent can only ever be attached to a signature the gate has ALREADY
+// persisted (i.e., the Primary has already been blocked at least once this
+// session) — reading `sig` from the SAME state file
+// devswarm-parent-gate.js's Stop hook already writes, never re-deriving the
+// blocking-set signature itself (that computation needs descriptors/
+// liveness/store reads this thin CLI verb has no reason to duplicate). No
+// active block yet -> `ok:false`, nothing written — this is exactly what
+// keeps the gate's OWN "never suppress the first block" guarantee intact:
+// an intent can never predate the block it is meant to acknowledge.
+function cmdGateIntent(flags, ctx) {
+  const home = ctx.home;
+  const session = one(flags, 'session')
+    || (ctx.env && ctx.env.CLAUDE_CODE_SESSION_ID)
+    || (ctx.env && ctx.env.DEVSWARM_BUILDER_ID);
+  if (!session) {
+    return { ok: false, error: 'gate-intent needs a resolvable session id (CLAUDE_CODE_SESSION_ID not set in this environment; pass --session <id> explicitly)' };
+  }
+  const rawReason = one(flags, 'reason');
+  const reason = typeof rawReason === 'string' ? rawReason.trim() : '';
+  if (!reason) {
+    return { ok: false, error: 'gate-intent needs --reason "<text>" (a non-empty stated reason)' };
+  }
+  const gateState = require('../companion/lib/devswarm-gate-state.js');
+  const stateFile = gateState.stateFileFor(session, home);
+
+  let existing = null;
+  try {
+    existing = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  } catch (_) {
+    existing = null; // no state file yet, or unreadable/corrupt -> no active block to attach to
+  }
+  const sig = existing && typeof existing === 'object' && typeof existing.sig === 'string' ? existing.sig : '';
+  if (!sig) {
+    return {
+      ok: false,
+      error: 'no active devswarm-parent-gate block is recorded for session ' + JSON.stringify(session) +
+        ' — an intent can only be attached to a condition the gate has already surfaced at least once',
+    };
+  }
+
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  const truncatedReason = reason.length > REASON_MAX_LEN ? reason.slice(0, REASON_MAX_LEN) : reason;
+  const nextIntents = {};
+  nextIntents[sig] = { ts: now, reason: truncatedReason };
+  // Everything else in the existing state file is preserved verbatim — this
+  // verb only ever ADDS/replaces the `intents` entry for the CURRENT sig; it
+  // never touches blocks/escalated/qSig/etc (those stay the gate hook's own
+  // bookkeeping) and never deletes the file.
+  const next = Object.assign({}, existing, { intents: nextIntents });
+
+  try {
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    const tmp = stateFile + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(next));
+    fs.renameSync(tmp, stateFile);
+  } catch (e) {
+    return { ok: false, error: 'failed to persist gate-intent: ' + (e && e.message ? e.message : String(e)) };
+  }
+
+  return { ok: true, action: 'gate-intent', session, sig, ts: now };
+}
+
 // buildArchiveRequestMessage(reason) — the exact posted string. `reason` is
 // optional; when omitted the marker + instruction still stand alone.
 function buildArchiveRequestMessage(reason) {
@@ -6388,9 +6483,17 @@ function run(argv, ctx0) {
         const r = cmdSkip(guard, flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
+      case 'gate-intent': {
+        // `gate-intent --reason "<text>" [--session <id>]` — the explicit
+        // stated-intent signal devswarm-parent-gate.js's Stop hook consumes.
+        // See cmdGateIntent's own header for why this is a CLI verb rather
+        // than a transcript-tail keyword scan.
+        const r = cmdGateIntent(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip)' } };
     }
   } catch (e) {
     // Csh: an internal exception used to be swallowed silently into { ok:false }.

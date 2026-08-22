@@ -125,6 +125,10 @@ const crypto = require('crypto');
 const { isSkipped } = require('./skip-guard.js');
 const { isDevswarmActive } = require('./lib/devswarm-detect.js');
 const { isChildWorkspace } = require('./lib/devswarm-role.js');
+// stateFileFor: SHARED with scripts/devswarm.js's `gate-intent` CLI verb and
+// the intents-shape forward migration below — one path derivation, never
+// three (see that module's header).
+const { stateFileFor } = require('../companion/lib/devswarm-gate-state.js');
 // REUSE (never reimplement): descriptor discovery, the read/ack primitive, and
 // the verdict-file path helper all already exist.
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
@@ -165,6 +169,20 @@ const WATCHER = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-wa
 const GUARD_NAME = 'devswarm-parent-gate';
 const DEFAULT_CAP = 3; // forced-acks per distinct blocking SET
 
+// STATED-INTENT ABSOLUTE BACKSTOP MULTIPLIER — a Primary that has stated an
+// explicit intent for the CURRENT blocking signature (via `devswarm.js
+// gate-intent --reason "..."`, or `--session <id>` for a non-default caller)
+// gets a LARGER budget before the plain-backlog axis escalates (see the
+// intents handling in main() below) — the whole point of recording an intent
+// is that repeating the SAME already-explained condition must not accumulate
+// toward "a human should look" the way silently ignoring the gate does. It is
+// still bounded (never unbounded), per the "no hard-loop" invariant this file
+// has always kept: `absoluteCap = resolveCap(env) * INTENT_ABSOLUTE_MULTIPLIER`
+// (10..25 for the resolvable cap range 2..5). Fixed, not independently
+// configurable — one fewer knob than the base cap; the base cap's own env var
+// already scales this proportionally.
+const INTENT_ABSOLUTE_MULTIPLIER = 5;
+
 // wakeReassertLine(env, isChild) -> the Stop-gate wake re-verify text, or '' when
 // the agent is not Claude (no CronCreate tool) OR the wake lib cannot be loaded.
 // LAZY + GUARDED require (the same idiom as the repokey load below / edit-guard.js):
@@ -203,14 +221,6 @@ function readVerdictStatus(id, home) {
   } catch (_) {
     return null;
   }
-}
-
-// stateFileFor(sessionId, home) — DISTINCT per-session loop-state, under
-// ~/.anti-hall/devswarm/parent-gate/ (never the user's project tree; survives
-// `cd`; keyed by session so dedupe is per-session).
-function stateFileFor(sessionId, home) {
-  const safe = String(sessionId || 'nosession').replace(/[^A-Za-z0-9_.-]/g, '_');
-  return path.join(home, '.anti-hall', 'devswarm', 'parent-gate', safe + '.json');
 }
 
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
@@ -717,6 +727,8 @@ function main() {
   let lastQSig = '';
   let qBlocks = 0;
   let qEscalated = false;
+  let intents = {};
+  let intentAcks = 0;
   try {
     const parsed = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
     if (parsed && typeof parsed === 'object') {
@@ -726,15 +738,39 @@ function main() {
       lastQSig = typeof parsed.qSig === 'string' ? parsed.qSig : '';
       qBlocks = Number.isFinite(parsed.qBlocks) ? parsed.qBlocks : 0;
       qEscalated = parsed.qEscalated === true;
+      // STATED-INTENT (additive, fail-open): a state file predating this
+      // feature simply has no `intents` key -> defaults to `{}`, byte-for-
+      // byte the old no-intent behavior. A malformed `intents` (non-object,
+      // array, ...) is treated the same as absent rather than thrown on.
+      if (parsed.intents && typeof parsed.intents === 'object' && !Array.isArray(parsed.intents)) {
+        intents = parsed.intents;
+      }
+      intentAcks = Number.isFinite(parsed.intentAcks) ? parsed.intentAcks : 0;
     }
-  } catch (_) { /* first time / cleared */ }
+  } catch (_) { /* first time / cleared / corrupt -> fail-open, behaves exactly as pre-intent */ }
+
+  // hasIntent: true only when an explicit intent was recorded for THIS EXACT
+  // blocking signature (via `devswarm.js gate-intent --reason "..."`) — keyed
+  // by `sig` itself, so a sig change (new unread, new workspace, status
+  // change) automatically drops out of scope with no separate "is this
+  // stale" check needed: a DIFFERENT sig simply never has a matching key.
+  // `nextIntents` is the pruned map persisted below — carries forward ONLY
+  // the current sig's entry (if any), so the file can never accumulate a
+  // history of stale per-sig intents across a long session.
+  const hasIntent = !!(intents && Object.prototype.hasOwnProperty.call(intents, sig));
+  const nextIntents = hasIntent ? { [sig]: intents[sig] } : {};
 
   // Per-SET cap: the counter AND the escalated flag are only meaningful while
   // the set is unchanged — a new blocking-set signature gets a fresh budget
   // AND a fresh escalation opportunity (mirrors the existing blocks reset).
   const effectiveBlocks = sig === lastSig ? blocks : 0;
   const effectiveEscalated = sig === lastSig ? escalated : false;
+  const effectiveIntentAcks = sig === lastSig ? intentAcks : 0;
   const cap = resolveCap(process.env);
+  // ABSOLUTE BACKSTOP (see INTENT_ABSOLUTE_MULTIPLIER's header): the cap a
+  // stated-intent pass is measured against instead of the plain `cap` — never
+  // unbounded, just a larger, still-finite budget.
+  const absoluteCap = cap * INTENT_ABSOLUTE_MULTIPLIER;
 
   // CAP BYPASS (requirement C) + ESCALATION-NOT-SILENCE (requirement D).
   //   - unanswered.length > 0 OR truncated: the cap NEVER silences this pass —
@@ -773,6 +809,7 @@ function main() {
   let nextBlocks;
   let nextEscalated = effectiveEscalated;
   let escalateTimes = null;
+  let nextIntentAcks = effectiveIntentAcks;
 
   // QUESTION-SET ESCALATION CEILING (spec item 5 / C2): bound the unanswered
   // bypass — it exists precisely so a hidden/structurally-unclearable question
@@ -809,7 +846,17 @@ function main() {
   if (!bypassCap) {
     if (effectiveEscalated) return; // already escalated once — go quiet
     nextBlocks = effectiveBlocks + 1;
-    if (effectiveBlocks >= cap) {
+    // STATED-INTENT: while an intent is on file for THIS EXACT sig, measure
+    // against the larger `absoluteCap` instead of the normal `cap` — the
+    // escalation branch is what's suppressed, never the block itself (the
+    // block above/below this branch still fires every pass regardless).
+    // `intentAcks` is bumped ONLY on a pass where the intent axis is actually
+    // in play, so it visibly counts "acks covered by a stated reason"
+    // distinctly from the plain `blocks` telemetry (which keeps counting
+    // every pass either way, intent or not).
+    const effectiveCap = hasIntent ? absoluteCap : cap;
+    if (hasIntent) nextIntentAcks = effectiveIntentAcks + 1;
+    if (effectiveBlocks >= effectiveCap) {
       escalateTimes = nextBlocks;
       nextEscalated = true;
     }
@@ -825,6 +872,7 @@ function main() {
           fs.mkdirSync(path.dirname(stateFile), { recursive: true });
           fs.writeFileSync(stateFile, JSON.stringify({
             sig, blocks: nextBlocks, escalated: nextEscalated, qSig, qBlocks: effectiveQBlocks, qEscalated: true,
+            intents: nextIntents, intentAcks: nextIntentAcks,
           }), 'utf8');
         } catch (_) { /* fail-open: best-effort persist, silence still holds this pass */ }
         return;
@@ -843,6 +891,7 @@ function main() {
     fs.mkdirSync(path.dirname(stateFile), { recursive: true });
     fs.writeFileSync(stateFile, JSON.stringify({
       sig, blocks: nextBlocks, escalated: nextEscalated, qSig, qBlocks: nextQBlocks, qEscalated: nextQEscalated,
+      intents: nextIntents, intentAcks: nextIntentAcks,
     }), 'utf8');
   } catch (_) { return; }
 
@@ -850,7 +899,7 @@ function main() {
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
   const wakeLine = wakeReassertLine(process.env, false);
 
-  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes) + wakeLine;
+  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent) + wakeLine;
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 
@@ -933,7 +982,13 @@ function buildTruncatedSegment(truncated) {
 // `unanswered`, the one axis the cap still governs), this pass is the FIRST
 // cap-exhaustion for this exact signature: replace the normal nag body with a
 // standalone escalation-worded block instead, naming the exhausted count.
-function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes) {
+// `hasIntent` (STATED-INTENT) — when the plain-backlog axis escalates
+// (`escalateTimes` set) WHILE an intent was on file for this exact signature,
+// the wording notes that fact — CLOSED VOCABULARY ONLY: it names that an
+// intent exists, never the stored reason text itself (injection hygiene; the
+// reason is stored, never reflected — same discipline command-guard.js
+// applies to untrusted text elsewhere in this codebase).
+function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
@@ -979,8 +1034,9 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     // signal, distinct from "here is what to go read/ack".
     body +=
       'DEVSWARM ESCALATION: this neglect signature (' + shown + more + ') has been ' +
-      'forced-acknowledged ' + escalateTimes + ' times with no observed resolution — ' +
-      'a human should look. This will not repeat automatically after this message. ' +
+      'forced-acknowledged ' + escalateTimes + ' times with no observed resolution' +
+      (hasIntent ? ' (a stated intent was on file for this exact condition, but the absolute backstop was still reached)' : '') +
+      ' — a human should look. This will not repeat automatically after this message. ' +
       'Escape hatch: the user may direct a skip via ~/.anti-hall/skip.json ("devswarm-parent-gate").';
     return body;
   }

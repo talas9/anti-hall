@@ -413,4 +413,35 @@ function migrateReplyState({ dryRun, home } = {}) {
   }
 }
 
-module.exports = { migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore, migrateReplyState };
+/**
+ * migrateGateIntents({ dryRun, home }) — forward-migration for the
+ * devswarm-parent-gate.js stated-intent persisted-shape change: every
+ * existing ~/.anti-hall/devswarm/parent-gate/<session>.json gate-loop-state
+ * file (NOT the `*-replies.json` reply-state files migrateReplyState above
+ * handles) gets `intents: {}` / `intentAcks: 0` added if either key is
+ * missing, with every other field preserved byte-for-byte. Delegates
+ * ENTIRELY to devswarm-gate-state.js's own migrateGateIntentsShape (one code
+ * path for BOTH the doctor-repair migrationFix and update.js's post-update
+ * pass, and for the dry-run detect + the apply). Idempotent, fail-open
+ * (never throws — a missing module or any error yields a zeroed report),
+ * NO-DELETE. This is a courtesy normalization, not a correctness
+ * prerequisite: the hook itself already defaults a missing
+ * `intents`/`intentAcks` to `{}`/`0` on read, so a pre-migration file keeps
+ * working unchanged even if this migration never runs.
+ *
+ * Returns the gate-state module's report ({ scanned, migrated,
+ * alreadyCurrent, pending, errors }).
+ */
+function migrateGateIntents({ dryRun, home } = {}) {
+  const empty = { scanned: 0, migrated: 0, alreadyCurrent: 0, pending: 0, errors: 0 };
+  try {
+    const mod = require('../companion/lib/devswarm-gate-state.js');
+    if (!mod || typeof mod.migrateGateIntentsShape !== 'function') return empty;
+    const h = home || require('os').homedir();
+    return mod.migrateGateIntentsShape(h, { dryRun: !!dryRun }) || empty;
+  } catch (_) {
+    return empty;
+  }
+}
+
+module.exports = { migrateLegacyState, migrateGsdPlanning, migrateDevswarmStore, migrateReplyState, migrateGateIntents };

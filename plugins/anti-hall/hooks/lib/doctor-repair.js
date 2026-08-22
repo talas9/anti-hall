@@ -993,6 +993,20 @@ function runRepairs(opts) {
     return { pending: !!(r && r.pending > 0), detail: (r && r.pending || 0) + ' reply-state file(s)' };
   }, () => require(MIGRATE_STATE).migrateReplyState({ home }));
 
+  // devswarm-parent-gate.js stated-intent persisted-shape change: normalize
+  // every gate-loop-state file to carry `intents`/`intentAcks`. Same posture
+  // as migrate-reply-state above (a PURE per-user-file additive rewrite under
+  // ~/.anti-hall/devswarm/parent-gate/, no daemon/scheduler side effect) ->
+  // AUTO-SAFE. Reuses migrate-state.js's migrateGateIntents (itself
+  // delegating to devswarm-gate-state.js) for BOTH the dry-run detect and the
+  // apply — one code path, idempotent, fail-open, NO-DELETE. A courtesy
+  // normalization, not a correctness prerequisite: the hook itself already
+  // defaults a missing `intents`/`intentAcks` to `{}`/`0` on read.
+  migrationFix('migrate-gate-intents', 'migrate-gate-intents', () => {
+    const r = require(MIGRATE_STATE).migrateGateIntents({ dryRun: true, home });
+    return { pending: !!(r && r.pending > 0), detail: (r && r.pending || 0) + ' gate-state file(s)' };
+  }, () => require(MIGRATE_STATE).migrateGateIntents({ home }));
+
   // #70: fold ALL prior mesh forms (phantom rows, dual/legacy pairs, subdir-splits)
   // into one canonical survivor per worktree. A PURE store read+write (forward-then-
   // tombstone, message rows NEVER deleted) — so AUTO-SAFE, not GATED (no daemon /

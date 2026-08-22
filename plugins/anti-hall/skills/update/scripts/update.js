@@ -1062,6 +1062,58 @@ function replyStateMigratePostUpdate(opts) {
 }
 
 /**
+ * gateIntentsMigratePostUpdate({ paths, env, cwd, home }) →
+ *   { attempted, scanned, migrated, alreadyCurrent, errors, detail }
+ *
+ * devswarm-parent-gate.js stated-intent persisted-shape forward-migration:
+ * normalize every existing gate-loop-state file
+ * (~/.anti-hall/devswarm/parent-gate/<session>.json) to carry `intents` /
+ * `intentAcks`, losslessly. Same shape as replyStateMigratePostUpdate just
+ * above — pure per-user-file additive rewrite via migrate-state.js's
+ * migrateGateIntents (which delegates to devswarm-gate-state.js), no store
+ * open, no daemon/scheduler side effect. Same DevSwarm-session-only gate +
+ * fully fail-open posture; NEVER throws, never affects the update's own
+ * success. Idempotent (a file already carrying both keys is skipped
+ * untouched), NO-DELETE. A courtesy normalization, not a correctness
+ * prerequisite: the hook itself already defaults a missing
+ * `intents`/`intentAcks` to `{}`/`0` on read.
+ */
+function gateIntentsMigratePostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const migratePath = path.join(paths.pluginSrcDir, 'scripts', 'migrate-state.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(migratePath)) {
+      return { attempted: false, detail: 'gate-intents migrate skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — gate-intents migrate skipped (gate closed)' };
+    }
+    const migrate = o.migrate || require(migratePath);
+    if (typeof migrate.migrateGateIntents !== 'function') {
+      return { attempted: false, detail: 'gate-intents migrate skipped: this build has no migrateGateIntents' };
+    }
+    const r = migrate.migrateGateIntents({ home }) || {};
+    return {
+      attempted: true,
+      scanned: r.scanned || 0,
+      migrated: r.migrated || 0,
+      alreadyCurrent: r.alreadyCurrent || 0,
+      errors: r.errors || 0,
+      detail: 'gate-intents migrate: scanned ' + (r.scanned || 0) + ', migrated ' + (r.migrated || 0)
+        + ', already-current ' + (r.alreadyCurrent || 0)
+        + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'gate-intents migrate raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * healRegistryPostUpdate({ paths, env, cwd, home, devswarm }) →
  *   { attempted, checked, healed, rehomed, stores, detail }
  *
@@ -1824,6 +1876,10 @@ function runUpdate(opts) {
   // Pure per-user-file fold+rewrite; same gate + fail-open posture; never
   // affects the update's own success.
   const replyStateMigrate = replyStateMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home });
+  // devswarm-parent-gate.js stated-intent shape: normalize every gate-loop-
+  // state file to carry intents/intentAcks. Same gate + fail-open posture;
+  // never affects the update's own success.
+  const gateIntentsMigrate = gateIntentsMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home });
   // Claim 3 self-heal: sweep every per-project store registry for a mis-keyed/
   // stale row via devswarm.js's healRegistry. Same gate + fail-open posture;
   // never affects the update's success. Throttled + resumable + one-time-per-
@@ -1857,6 +1913,7 @@ function runUpdate(opts) {
         foldArchivedRows,
         ownerKeyMigrate,
         replyStateMigrate,
+        gateIntentsMigrate,
         healRegistryRows,
         wakeMonitor,
         action: UNKNOWN_INSTALLED_ACTION,
@@ -1891,6 +1948,7 @@ function runUpdate(opts) {
       foldArchivedRows,
       ownerKeyMigrate,
       replyStateMigrate,
+      gateIntentsMigrate,
       healRegistryRows,
       wakeMonitor,
       action: updated ? 'run /reload-plugins' : 'already up to date',
@@ -1960,6 +2018,9 @@ function renderHuman(status, changelog) {
   }
   if (status.replyStateMigrate && status.replyStateMigrate.attempted) {
     lines.push('  reply-state-migrate: ' + status.replyStateMigrate.detail);
+  }
+  if (status.gateIntentsMigrate && status.gateIntentsMigrate.attempted) {
+    lines.push('  gate-intents-migrate: ' + status.gateIntentsMigrate.detail);
   }
   if (status.healRegistryRows && status.healRegistryRows.attempted) {
     lines.push('  heal-registry-rows: ' + status.healRegistryRows.detail);

@@ -342,6 +342,37 @@ test('doctor (default): migrate-devswarm-store FIXES a pending descriptor, then 
   } finally { rm(home); rm(cwd); }
 });
 
+// devswarm-parent-gate.js stated-intent additive shape: migrate-gate-intents
+// normalizes an existing gate-loop-state file to carry intents/intentAcks —
+// same NEVER-FAILED-on-re-run posture as migrate-devswarm-store above (a
+// PURE additive per-file rewrite, so a re-run always finds nothing pending).
+test('doctor (default): migrate-gate-intents FIXES a pre-feature gate-state file, then a re-run is a clean no-op', () => {
+  const home = mkTmp('gate-intents-home');
+  const cwd = mkTmp('gate-intents-cwd');
+  try {
+    seedUserSettings(home, { command: 'custom-noop' });
+    const gateDir = path.join(home, '.anti-hall', 'devswarm', 'parent-gate');
+    fs.mkdirSync(gateDir, { recursive: true });
+    fs.writeFileSync(path.join(gateDir, 'sess-1.json'), JSON.stringify({ sig: 'abc', blocks: 1, escalated: false }));
+    const env = { HOME: home, USERPROFILE: home };
+
+    const r1 = runDoctor({ cwd, args: [], env });
+    assert.strictEqual(r1.code, 0, 'first run must exit 0:\n' + r1.out);
+    assert.match(r1.out, /FIXED \[migrate-gate-intents\] migrated: 1 gate-state file/, 'first run migrates the file:\n' + r1.out);
+    assert.doesNotMatch(r1.out, /FAILED \[migrate-gate-intents\]/);
+
+    const data = JSON.parse(fs.readFileSync(path.join(gateDir, 'sess-1.json'), 'utf8'));
+    assert.deepEqual(data.intents, {});
+    assert.equal(data.intentAcks, 0);
+    assert.equal(data.sig, 'abc', 'pre-existing fields preserved');
+
+    const r2 = runDoctor({ cwd, args: [], env });
+    assert.strictEqual(r2.code, 0, 'second run must still exit 0:\n' + r2.out);
+    assert.match(r2.out, /skipped \[migrate-gate-intents\] nothing to migrate/, 'second run is a clean idempotent no-op:\n' + r2.out);
+    assert.doesNotMatch(r2.out, /FAILED \[migrate-gate-intents\]/);
+  } finally { rm(home); rm(cwd); }
+});
+
 // ---------------------------------------------------------------------------
 // 5. Statusline: install-if-missing vs custom-untouched.
 // ---------------------------------------------------------------------------

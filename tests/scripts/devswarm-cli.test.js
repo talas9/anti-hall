@@ -938,6 +938,80 @@ test('skip refuses an array-shaped skip.json instead of accepting it as data', (
   } finally { rm(home); }
 });
 
+// ---- gate-intent (devswarm-parent-gate.js STATED-INTENT signal) -----------
+// The explicit, deliberate CLI verb a Primary calls to record "I explained
+// this condition" — see devswarm-parent-gate.js's `intents`/`intentAcks`
+// handling and cmdGateIntent's own header for why this is a CLI verb rather
+// than a transcript-tail keyword scan.
+
+test('gate-intent needs --reason', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['gate-intent'], ctx(home, { env: { CLAUDE_CODE_SESSION_ID: 'sess-1' } }));
+    assert.equal(r.code, 2);
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /--reason/);
+  } finally { rm(home); }
+});
+
+test('gate-intent needs a resolvable session id (no CLAUDE_CODE_SESSION_ID, no --session)', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['gate-intent', '--reason', 'x'], ctx(home, { env: {} }));
+    assert.equal(r.code, 2);
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /session/i);
+  } finally { rm(home); }
+});
+
+test('gate-intent with no active gate block recorded for the session -> ok:false, nothing written', () => {
+  const home = tmpHome();
+  try {
+    const r = cli.run(['gate-intent', '--reason', 'investigating'], ctx(home, { env: { CLAUDE_CODE_SESSION_ID: 'never-blocked-sess' } }));
+    assert.equal(r.code, 2);
+    assert.equal(r.result.ok, false);
+    assert.match(r.result.error, /no active devswarm-parent-gate block/);
+    const gateState = require('../../plugins/anti-hall/companion/lib/devswarm-gate-state.js');
+    assert.equal(fs.existsSync(gateState.stateFileFor('never-blocked-sess', home)), false, 'must never create a state file out of thin air');
+  } finally { rm(home); }
+});
+
+test('gate-intent attaches an intent to the CURRENT persisted sig, preserving every other field', () => {
+  const home = tmpHome();
+  try {
+    const gateState = require('../../plugins/anti-hall/companion/lib/devswarm-gate-state.js');
+    const stateFile = gateState.stateFileFor('active-sess', home);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ sig: 'abc123', blocks: 2, escalated: false, qSig: '', qBlocks: 0, qEscalated: false }));
+    const before = Date.now();
+    const r = cli.run(['gate-intent', '--reason', '  investigating, will fix after this task  '], ctx(home, { now: before, env: { CLAUDE_CODE_SESSION_ID: 'active-sess' } }));
+    assert.equal(r.code, 0);
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.sig, 'abc123');
+    const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.equal(data.blocks, 2, 'pre-existing fields must be preserved verbatim');
+    assert.equal(data.sig, 'abc123');
+    assert.ok(data.intents && data.intents.abc123, 'intent must be recorded under the current sig');
+    assert.equal(data.intents.abc123.reason, 'investigating, will fix after this task', 'reason is trimmed but stored');
+    assert.equal(data.intents.abc123.ts, before);
+  } finally { rm(home); }
+});
+
+test('gate-intent respects an explicit --session override', () => {
+  const home = tmpHome();
+  try {
+    const gateState = require('../../plugins/anti-hall/companion/lib/devswarm-gate-state.js');
+    const stateFile = gateState.stateFileFor('explicit-sess', home);
+    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+    fs.writeFileSync(stateFile, JSON.stringify({ sig: 'zzz', blocks: 1, escalated: false }));
+    const r = cli.run(['gate-intent', '--reason', 'x', '--session', 'explicit-sess'], ctx(home, { env: { CLAUDE_CODE_SESSION_ID: 'some-other-sess' } }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.session, 'explicit-sess');
+    const data = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(data.intents && data.intents.zzz);
+  } finally { rm(home); }
+});
+
 test('heartbeat writes a turn-authored beat with only supplied fields', () => {
   const home = tmpHome();
   try {
