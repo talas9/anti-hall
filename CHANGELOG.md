@@ -6,6 +6,65 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.80.0 (2026-08-22)
+
+- **New: a `/anti-hall:defects` skill on both ports** — the durable defect
+  channel shipped in v0.78.0 worked but had no discoverable entry point: no
+  skill described it, and the runtime nudge that told an operator to run it
+  pointed at a skill that did not exist, on both the Claude and Codex ports.
+  It was only documented in files an agent doesn't load. The `devswarm`
+  skill now also points at it, since that's the skill a DevSwarm session
+  actually loads. A test now pins every `/anti-hall:<name>` reference in the
+  plugin to a skill that actually exists, on both ports, with no allowlist.
+- **New: `--sym-file`/`--repro-file` on `defect.js report`.** A report body
+  can now be passed as a file instead of a shell argument, so a caller
+  reporting a bug about shell quoting doesn't have to fight shell quoting to
+  file it.
+- **New: regression detection, derived from the reporter's installed
+  version.** A report matching a defect the maintainer already ruled
+  `fixed` is now classified automatically: on a build at or past the
+  version that claimed the fix, it's a genuine `regressed` reappearance; on
+  an older build, it stays `fixed` and is flagged `staleBuild` instead — a
+  report from someone who just needs to update, not a new regression. A
+  regressed defect never auto-archives as resolved.
+- **Fix: reporter identity no longer depends on the current directory.** It
+  used to come from the cwd basename, so a report filed from a scratch
+  directory got an identity nothing else could match — silently breaking
+  `--mine`, the only way a reporter sees rulings on their own reports. It
+  now prefers an explicit flag, then an environment variable, then the
+  project's repo key, matching old cwd-basename reports too so nothing
+  already filed stops matching.
+- **Fix: a Primary that explains itself is no longer escalated like one
+  ignoring the gate.** The parent gate invited a Primary to say a block was
+  intentional but never used the answer — a stated reason accumulated
+  toward escalation at the same rate as silence. A stated intent now
+  suppresses escalation while the condition that triggered it is unchanged;
+  the first block always still fires, and escalation resumes the moment the
+  condition actually changes.
+- **Fix: the wake watcher no longer declines in silence.** Its three
+  decline paths (not a DevSwarm session, an identity it couldn't resolve, a
+  lock another watcher already holds) wrote to stderr and exited zero —
+  indistinguishable from a healthy, quiet watcher to a Monitor caller who
+  only sees stdout. Each refusal now prints one line on stdout naming the
+  reason, so a caller who thinks they have wake coverage can tell they
+  don't.
+- **Fix: a partition with exactly one live row is now visible.** The mesh
+  split check recognized two-or-more-live and zero-live groups but missed
+  the shape where one row of two is live — sends could land on a row nobody
+  was draining while the diagnostic reported healthy. `send` and `diagnose`
+  now also agree on which rows belong to a group (previously grouped by
+  different identities), and `send` reports how many candidates it had and
+  which row it chose.
+- **Fix: "inbox unreadable" now says which file failed and why.** A
+  descriptor with no inbox path, an absent file, and an unreadable file all
+  used to collapse into one unhelpful message, and a family member's
+  failure could be misattributed to the Primary's own id. The gate now
+  names the actual cause (missing field, absent file, or a read/parse
+  failure with path and errno) and the actual workspace it happened to.
+- **Fix: the updater no longer reports "unknown error" for a reconcile
+  failure it already had the real cause for** — it now surfaces the
+  per-target error, matching a fix the doctor already had.
+
 ## 0.79.0 (2026-08-22)
 
 - **New: anti-hall now notices when its own knowledge goes stale.** It

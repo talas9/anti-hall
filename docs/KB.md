@@ -54,7 +54,7 @@ debates reference the living docs for evidence; the *current* state and the
 > 0.76.0 has shipped). Hooks: **53** `.js` files + `hooks.json` = 54 (added this
 > session: `defect-nudge.js`, `claude-cli-version.js`, `claude-cli-version-refresh.js`,
 > `repo-self-drift.js`). Claude
-> skills: **15** (+ `MODEL-POLICY.md`, not itself a skill); Codex skills: **18**.
+> skills: **16** (+ `MODEL-POLICY.md`, not itself a skill); Codex skills: **19**.
 > `PostToolUse` wired: 3 Bash-matcher handlers — `output-verify-guard.js`
 > (`hooks.json:370`), `devswarm-parent-reply-tracker.js` (`:380`),
 > `devswarm-child-drain.js` (`:390`). `PostToolUseFailure` wired: 1 Bash-matcher
