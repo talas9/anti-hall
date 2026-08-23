@@ -341,6 +341,36 @@ plugin depends on it.
 - **`register-primary` records the real Claude `session_id` (v0.71.0)** — `--session`
   now defaults to `CLAUDE_CODE_SESSION_ID` (was the workspace hash), so Primary rows
   resolve their transcript for liveness reads.
+- **Partition resolution follows the WORKSPACE, not the caller's cwd (v0.84.0)** —
+  `inbox read-primary`/`inbox count` used to resolve the store partition from the
+  directory the command ran in, so a Primary could be gate-blocked on mail it
+  structurally could not see, and running the gate's own prescribed command from the
+  wrong directory risked writing a cursor into another project's partition. Both the CLI
+  and the Stop hook now resolve through ONE shared helper
+  (`companion/lib/devswarm-repokey.js` `registeredRepoKey`; precedence fresh key →
+  recorded `repoKey` → non-hash `ownerKey`), so they can no longer disagree about which
+  workspaces a session owns. In the same change: `gate`/`ensure`/`archive` no longer
+  re-home a foreign project's workspace BEFORE their ownership guard runs (a refused call
+  now writes nothing — `archive` had been removing the live descriptor); `inbox ack` on a
+  workspace the caller doesn't own no longer advances the cursor past unread mail; and
+  `inbox count`/`read` report `known:false` with the named `registeredRepoKey`/
+  `callerRepoKey` instead of a silent zero that reads like "no mail".
+- **Archived-stranded orphan partitions no longer warn (v0.84.0)** — the orphan detector
+  counted an archived child's own outbox copy as unread-with-no-reader, so the Primary saw
+  a permanent, unactionable warning every turn. It now excludes exactly the set
+  `healOrphanPartitions` classifies as `unhealable/archived-no-family`, by CALLING heal's
+  own exported helpers (`companion/lib/devswarm-orphan-policy.js`) rather than
+  re-implementing the rule — an equivalence test fails CI if the two predicates drift. The
+  excluded ids move to a quiet `archivedStranded[]` on the summary rather than being
+  dropped, and the classifier fails open (it can only quiet a warning it positively proved
+  unactionable).
+- **Defect fields are no longer silently truncated (v0.84.0)** — the shared clamp cut
+  over-length values at their cap and returned plain success with nothing in the result or
+  the record to show text was lost. Truncation is now named in `scripts/defect.js`'s JSON
+  result and on stderr and marked inside the stored value (`[truncated from N chars]`),
+  and the caps for `note` (300 → 1200), `claimed`, and `observed` were raised — bounded so
+  a maximum-length field still cannot push a record past `MAX_LINE_BYTES`. The write never
+  fails.
 - **Per-project mesh store** — one shared store per project keyed by a stable `repoKey`,
   so any worktree can message any other directly; **#36-STRUCTURAL scoping** closes a
   spoofable cross-project bleed.

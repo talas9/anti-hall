@@ -2481,15 +2481,15 @@ variable, which means it can in principle leak into (be inherited by) a Primary'
 process — a pre-existing, accepted risk that is now shared by two independent hard blocks
 instead of one.
 
-**The parent gate and the drain verb disagree about store scope** (filed as defect
-`e586afdaa968`). The parent gate's neglect check reads ACROSS stores (multi-store aware); the
-prescribed remediation, `inbox read-primary`, resolves its target repo key from the CURRENT
-WORKING DIRECTORY (single-store, CWD-scoped). Consequence: a Primary can be escalated at —
-and, unresolved, eventually escalated to a human about — a workspace it structurally cannot
-drain by running the gate's own prescribed command from its own directory, and running that
-command from the wrong directory risks writing a cursor into the wrong store partition
-entirely. Open at time of writing; recorded here as a known gate/verb scope mismatch, not
-resolved by anything in this section.
+**The parent gate and the drain verb disagreed about store scope** (filed as defect
+`e586afdaa968`; **RESOLVED in v0.84.0** — see §29). The parent gate's neglect check reads
+ACROSS stores (multi-store aware); the prescribed remediation, `inbox read-primary`, used to
+resolve its target repo key from the CURRENT WORKING DIRECTORY (single-store, CWD-scoped).
+Consequence, before the fix: a Primary could be escalated at — and, unresolved, eventually
+escalated to a human about — a workspace it structurally could not drain by running the
+gate's own prescribed command from its own directory, and running that command from the
+wrong directory risked writing a cursor into the wrong store partition entirely. Both sides
+now resolve through the SAME shared helper (§29).
 
 ---
 
@@ -2497,3 +2497,72 @@ Section §28 facts were verified 2026-08-23 from source at the versions on disk 
 checkout (anti-hall's own code, not vendor behavior — no version-fragility caveat applies,
 but re-grep the cited function/symbol names rather than trusting line numbers verbatim after
 either file changes further).
+
+## 29. Partition resolution is the WORKSPACE's property, not the caller's (v0.84.0)
+
+**The rule.** Which store partition a workspace's mail lives in is a property of THAT
+WORKSPACE's registration, never of the directory a command happened to be typed in. Both
+the CLI (`scripts/devswarm.js`) and the Stop hook (`hooks/devswarm-parent-gate.js`) now
+answer that question through one shared helper — `registeredRepoKey(descriptor, id, opts)`
+in `plugins/anti-hall/companion/lib/devswarm-repokey.js` — with a fixed precedence:
+
+1. the freshly-resolvable `repoKey` for the descriptor's worktree, then
+2. the descriptor's recorded `repoKey`, then
+3. a non-hash `ownerKey` (a legacy 8-hex bucket key is NOT accepted as a project key).
+
+Because there is exactly one implementation, the gate and the verb it prescribes can no
+longer disagree about which workspaces a session owns — the class of bug §28's tail recorded
+as open.
+
+**Guard-before-mutate is the load-bearing ordering.** `gate`, `ensure`, and `archive` each
+performed a re-home of the target workspace (copying messages and registry rows into the
+caller's partition and rewriting `ownerKey`) BEFORE running their own ownership guard. The
+mutation therefore happened even on invocations that went on to return `ok:false`, and
+`archive` had additionally removed the live descriptor by then. A refused cross-project call
+must write NOTHING; the ownership decision now precedes every write. Generalized lesson: an
+ownership guard placed after a self-heal is not a guard — the self-heal IS the damage.
+
+**A refused read may not advance a cursor.** `inbox ack <foreign-id>` advanced the NDJSON
+cursor after the resolver had already refused, permanently stepping over mail nobody had
+read. This is the same invariant §27 states from the delivery side ("a read cursor may never
+advance past a message that was not actually delivered to the caller"), reached from the
+authorization side: a call that did not read may not acknowledge.
+
+**Honest failure over a silent zero.** `inbox count`/`inbox read` used to return `0` when
+the caller's project did not match the workspace's — indistinguishable from "no mail". They
+now return `known:false` alongside the NAMED `registeredRepoKey` and `callerRepoKey`, so the
+reader can tell "I cannot see this from here" from "there is nothing here". Same lens as
+§28: a result shape that cannot express the failure is how a dropped job reports success.
+
+**Archived partitions nothing can ever read must not warn.** `computeSummary`'s A2 pass
+surfaced `orphans[]` (real unread, no live registry row) and the parent-inbox hook rendered
+it every turn. For a workspace deliberately ARCHIVED with no live identity-family survivor,
+that warning is unactionable BY CONSTRUCTION: `healOrphanPartitions` classifies exactly that
+shape as `unhealable / archived-no-family` and deliberately writes nothing — there is no
+survivor to forward into and re-adopting an archived id would recreate the very row
+`foldArchivedRegistryRows` exists to tombstone. The unread can never drain, so the id could
+never leave the warning set (12 partitions, in one real store, warning on every turn).
+
+`companion/lib/devswarm-orphan-policy.js` (`makeArchivedStrandedTest`) excludes exactly that
+set. Three properties make it safe to trust:
+
+- **It does not re-implement the rule.** It CALLS heal's own exported helpers
+  (`hasArchivedCounterpart`, `readDescriptorFile`, `archivedDir`, `canonicalMeshId`,
+  `groupRegistryByMeshId`) in the same order heal's archived branch does.
+- **Drift is a CI failure.** `tests/companion/devswarm-orphan-policy-equivalence.test.js`
+  drives this module and `healOrphanPartitions({dryRun:true})` over the same fixtures and
+  asserts the id sets are IDENTICAL.
+- **It fails open and never drops the count.** Any failure yields "not archived-stranded",
+  i.e. the id stays in `orphans[]` (pre-fix behavior); and the excluded ids are moved into a
+  quiet `archivedStranded[]` on the summary, not discarded.
+
+The `require` back into `scripts/devswarm.js` is LAZY (inside the classifier, on first
+candidate) because `devswarm-store.js` is required BY `devswarm.js` — a top-level require
+would close a cycle, and the lazy one is paid only when a store actually has an unread
+orphan candidate.
+
+---
+
+Section §29 facts were verified 2026-08-23 from source at the versions on disk in this repo
+checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol
+names rather than trusting line numbers verbatim after either file changes further).

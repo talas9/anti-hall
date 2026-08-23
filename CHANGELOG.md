@@ -6,6 +6,59 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.84.0 (2026-08-23)
+
+- **Fix: a mesh partition now resolves from the workspace's own registered
+  project, not from the directory the command happened to run in.** `inbox
+  read-primary`/`inbox count` derived the store partition from the caller's
+  working directory, so a Primary could be told — by anti-hall's own Stop gate —
+  to drain mail it structurally could not see, and running the prescribed command
+  from the wrong directory risked writing a read cursor into an unrelated
+  project's partition. Resolution now comes from the workspace's registered
+  `repoKey`, via one shared helper (`companion/lib/devswarm-repokey.js`
+  `registeredRepoKey`, precedence: fresh key → recorded `repoKey` → a non-hash
+  `ownerKey`) that the CLI and the Stop hook both call, so the two can no longer
+  disagree about which workspaces a session owns. Closes the gate/verb scope
+  mismatch recorded as a known open issue in the DevSwarm KB.
+- **Fix: cross-project commands no longer move a foreign project's workspace
+  before deciding they are not allowed to touch it.** `gate`, `ensure`, and
+  `archive` re-homed a workspace registered to another project — copying messages
+  and registry rows and rewriting its `ownerKey` — *before* their own ownership
+  guard ran, so even an invocation that ended in `ok:false` had already mutated
+  another project's state; `archive` additionally removed the live descriptor.
+  The ownership check now runs first, and a refused call writes nothing.
+- **Fix: `inbox ack` on a workspace the caller does not own no longer skips that
+  workspace's mail.** The cursor advanced even after the resolver had already
+  refused the read, permanently stepping over messages nobody had seen.
+- **Fix: the Primary Stop gate no longer hides genuinely drainable mail.** Two
+  paths could make real unread invisible to the gate: a persisted `repoKey` that
+  had gone permanently stale, and a descriptor carrying only an `ownerKey`. Both
+  now resolve through the same shared helper the CLI uses.
+- **`inbox count`/`inbox read` fail honestly instead of returning a silent zero.**
+  When the caller's project does not match the workspace's, the result now
+  carries `known:false` plus the named `registeredRepoKey` and `callerRepoKey`,
+  so "I cannot read this from here" can no longer be misread as "there is no
+  mail".
+- **Fix: defect fields are no longer silently truncated.** The shared clamp cut
+  over-length values at their cap and reported plain success, with nothing in the
+  result or the stored record to show text had been lost — a survey of the live
+  store found 41% of ruling notes and 27% of `observed` values sitting exactly at
+  the cap, i.e. amputated. Truncation is now named in `scripts/defect.js`'s JSON
+  result and on stderr, and marked inside the persisted value (`[truncated from N
+  chars]`). The caps for `note` (300 → 1200), `claimed`, and `observed` were
+  raised, bounded so a maximum-length field still cannot push a record past
+  `MAX_LINE_BYTES`. The write itself never fails.
+- **Fix: archived partitions nothing can ever read no longer warn every turn.**
+  The orphan detector counted an archived child's own outbox copy as unread mail
+  with no reader, producing a permanent, unactionable per-turn warning (12
+  partitions in one real store). It now excludes exactly the set
+  `healOrphanPartitions` classifies as `unhealable/archived-no-family`, by calling
+  heal's own exported helpers rather than re-implementing the rule — with an
+  equivalence test that fails CI if the two predicates ever drift. The count is
+  preserved in a new quiet `archivedStranded` field rather than dropped, and the
+  classifier fails open, so it can only ever quiet a warning it positively proved
+  is unactionable.
+
 ## 0.83.0 (2026-08-23)
 
 - **DevSwarm child workspaces can no longer update the knowledge graph.** A
