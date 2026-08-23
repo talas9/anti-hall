@@ -932,3 +932,103 @@ test('existing ack/fixed/wontfix/notabug/dup ruling statuses still derive correc
     }
   } finally { rm(home); }
 });
+
+// ============================================================================
+// 22. truncation is never SILENT (defect: a long --note was cut at the cap and
+//     `rule` still returned a bare {"outcome":"ruled"} with no signal at all)
+// ============================================================================
+
+test('rule() with an over-cap note reports the truncation in its result and marks the persisted value', () => {
+  const home = tmpHome();
+  try {
+    const filed = store.report(Object.assign(baseReportInput(), { home, sym: 'truncation signal note' }));
+    const longNote = 'N'.repeat(store.FIELD_CAPS.note + 500);
+    const ruled = store.rule(filed.fp, { home, status: 'fixed', fixedIn: '0.80.0', note: longNote });
+    assert.equal(ruled.outcome, 'ruled', 'truncation must NEVER fail the write');
+    assert.ok(ruled.truncated, 'result carries a `truncated` map');
+    assert.ok(ruled.truncated.note, '`note` is named as truncated');
+    assert.equal(ruled.truncated.note.originalLength, longNote.length);
+    assert.equal(ruled.truncated.note.cap, store.FIELD_CAPS.note);
+
+    const shown = store.showDefect(filed.fp, home);
+    const ruling = shown.lines.find((l) => l.t === 'ruling');
+    assert.ok(ruling.note.length <= store.FIELD_CAPS.note, 'still bounded by the cap');
+    assert.match(ruling.note, /\[truncated from \d+ chars\]$/, 'persisted value carries an explicit marker');
+  } finally { rm(home); }
+});
+
+test('a note that FITS the cap is untouched: no marker, no `truncated` key', () => {
+  const home = tmpHome();
+  try {
+    const filed = store.report(Object.assign(baseReportInput(), { home, sym: 'truncation signal fits' }));
+    const note = 'a full ruling note that comfortably fits: ' + 'x'.repeat(500);
+    const ruled = store.rule(filed.fp, { home, status: 'fixed', fixedIn: '0.80.0', note });
+    assert.equal(ruled.outcome, 'ruled');
+    assert.equal(ruled.truncated, undefined, 'no truncated map when nothing was cut');
+    const shown = store.showDefect(filed.fp, home);
+    const ruling = shown.lines.find((l) => l.t === 'ruling');
+    assert.equal(ruling.note, note, 'note persisted verbatim');
+  } finally { rm(home); }
+});
+
+test('report() names EVERY silently-capped field it truncated (repro/claimed/observed marked, sym reported unmarked)', () => {
+  const home = tmpHome();
+  try {
+    const r = store.report(Object.assign(baseReportInput(), {
+      home,
+      sym: 'S'.repeat(store.FIELD_CAPS.sym + 50),
+      repro: 'R'.repeat(store.FIELD_CAPS.repro + 50),
+      claimed: 'C'.repeat(store.FIELD_CAPS.claimed + 50),
+      observed: 'O'.repeat(store.FIELD_CAPS.observed + 50),
+    }));
+    assert.equal(r.outcome, 'recorded', 'truncation must NEVER fail the write');
+    assert.ok(r.truncated, 'result carries a `truncated` map');
+    for (const f of ['sym', 'repro', 'claimed', 'observed']) {
+      assert.ok(r.truncated[f], `${f} named as truncated`);
+      assert.equal(r.truncated[f].originalLength, store.FIELD_CAPS[f] + 50);
+    }
+    const shown = store.showDefect(r.fp, home);
+    const line = shown.lines.find((l) => l.t === 'report');
+    // sym stays marker-free: it is the fingerprint input.
+    assert.equal(line.sym.length, store.FIELD_CAPS.sym);
+    assert.equal(line.sym, 'S'.repeat(store.FIELD_CAPS.sym));
+    for (const f of ['repro', 'claimed', 'observed']) {
+      assert.match(line[f], /\[truncated from \d+ chars\]$/, `${f} persisted with a marker`);
+      assert.ok(line[f].length <= store.FIELD_CAPS[f], `${f} still bounded`);
+    }
+  } finally { rm(home); }
+});
+
+test('the CLI surfaces truncation in its JSON result and on stderr, still exiting 0', () => {
+  const home = tmpHome();
+  try {
+    const filed = runCli(['report', '--class', 'guard-miss', '--sev', 'p1', '--sym', 'cli truncation surface', '--json'], { home });
+    assert.equal(filed.status, 0, filed.stderr);
+    const fp = JSON.parse(filed.stdout).fp;
+    const longNote = 'z'.repeat(store.FIELD_CAPS.note + 400);
+    const ruled = runCli(['rule', fp, '--status', 'fixed', '--fixed-in', '0.80.0', '--note', longNote, '--json'], { home });
+    assert.equal(ruled.status, 0, 'a truncated write still succeeds');
+    const out = JSON.parse(ruled.stdout);
+    assert.equal(out.outcome, 'ruled');
+    assert.ok(out.truncated && out.truncated.note, 'JSON result names the truncated field');
+    assert.match(ruled.stderr, /truncated/i, 'stderr warns the caller');
+  } finally { rm(home); }
+});
+
+test('an over-long --proj identity is truncated LOUDLY on stderr, not silently', () => {
+  const home = tmpHome();
+  try {
+    const longProj = 'p'.repeat(90);
+    const r = runCli(['report', '--class', 'guard-miss', '--sev', 'p1', '--sym', 'identity truncation', '--proj', longProj, '--json'], { home });
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /--proj truncated to fit the identity cap: 90 chars -> cap 64/);
+  } finally { rm(home); }
+});
+
+test('caps are large enough for a real ruling note, and a max-length note can never exceed MAX_LINE_BYTES', () => {
+  // A 3-byte-per-char worst case must still fit one NDJSON line, so raising
+  // the note cap can never turn a silent truncation into a hard rejection.
+  assert.ok(store.FIELD_CAPS.note >= 1200, 'note cap is big enough for a real ruling narrative');
+  const worstCase = store.FIELD_CAPS.note * 3 + 200; // + ruling-line overhead
+  assert.ok(worstCase < store.MAX_LINE_BYTES, `note cap ${store.FIELD_CAPS.note} must stay inside MAX_LINE_BYTES`);
+});

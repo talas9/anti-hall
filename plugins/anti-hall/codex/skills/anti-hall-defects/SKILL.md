@@ -99,6 +99,16 @@ outcome (`registry-full`, `occurrence-capped`, `defect-full`, `too-large`,
 `write-unverified`, `invalid-class`, `invalid-severity`) means the write did **NOT**
 happen — report that plainly, don't retry blindly against a real, meaningful cap.
 
+### Truncation is a SUCCESS that lost text — check `truncated`
+
+Field length caps still apply (`sym` 200, `repro` 1200, `claimed`/`observed` 600, `note`
+1200 chars). Over-cap content is cut, but never silently: the write still succeeds and
+exits 0, AND the printed result carries a `truncated` map naming each cut field with its
+`originalLength` and the `cap` it hit (the CLI also warns on stderr). Narrative fields
+(`repro`, `claimed`, `observed`, `note`) additionally carry a `[truncated from N chars]`
+marker inside the persisted value. If you see `truncated`, say so and re-file the missing
+detail as a follow-up — do NOT report the record as complete.
+
 ## Reading rulings back
 
 `list --mine` matches a union of identities so already-filed reports keep matching:

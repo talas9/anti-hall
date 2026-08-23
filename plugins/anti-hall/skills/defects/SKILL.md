@@ -116,6 +116,16 @@ report/ruling was **NOT** recorded. Read the printed `outcome` field and say so 
 do not retry blindly (a retry against `registry-full`/`occurrence-capped`/`defect-full`
 will fail identically — those are real, meaningful caps, not transient errors).
 
+### Truncation is a SUCCESS that lost text — check `truncated`
+
+Field length caps still apply (`sym` 200, `repro` 1200, `claimed`/`observed` 600, `note`
+1200 chars). Over-cap content is cut, but never silently: the write still succeeds and
+exits 0, AND the printed result carries a `truncated` map naming each cut field with its
+`originalLength` and the `cap` it hit (the CLI also warns on stderr). Narrative fields
+(`repro`, `claimed`, `observed`, `note`) additionally carry a `[truncated from N chars]`
+marker inside the persisted value. If you see `truncated`, say so and re-file the missing
+detail as a follow-up — do NOT report the record as complete.
+
 ## Reading rulings back
 
 `list --mine` shows every defect matched by your identity (derived automatically —

@@ -108,7 +108,37 @@ const MAX_ARCHIVE_FILES = 1000;   // archive dir, total across all month buckets
 const ARCHIVE_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days since lastSeen
 
 // Field length caps (chars) from the schema.
-const FIELD_CAPS = { sym: 200, repro: 1200, claimed: 300, observed: 300, note: 300 };
+//
+// Sized from the LIVE store, not guessed. A survey of every line in
+// ~/.anti-hall/defects (18 files, 44 lines) found values sitting EXACTLY at
+// their cap — the signature of amputated content — in note 9/22, observed
+// 6/22, repro 3/22, sym 2/22. The caps below raise the two worst offenders:
+//   - note 300 -> 1200: a ruling note is the maintainer's whole explanation
+//     of a defect and 41% of them were being cut. 1200 matches `repro`, the
+//     existing precedent for the longest narrative field, and is provably
+//     safe against MAX_LINE_BYTES: a ruling line carries no other large
+//     field, so even worst-case 3-byte UTF-8 (1200*3 = 3600) plus ~150 bytes
+//     of line overhead stays under 4096 — raising it can never convert a
+//     silent truncation into a hard 'too-large' REJECTION.
+//   - claimed/observed 300 -> 600: `observed` hit the cap in 6/22 lines and
+//     `claimed` peaked at 289/300. 600 doubles the room while keeping the
+//     four-content-field report line (200 + 1200 + 600 + 600) inside the
+//     same 4096-byte budget for ASCII.
+// `sym` and `repro` bounds are deliberately UNCHANGED: `sym` is the
+// fingerprint input (widening it would re-key already-filed defects), and
+// `repro` is already the largest allowance in a line that must hold four
+// content fields. Their truncation is no longer silent, which is the actual
+// defect being fixed here.
+const FIELD_CAPS = { sym: 200, repro: 1200, claimed: 600, observed: 600, note: 1200 };
+
+// truncationNotice(originalLength) -> the marker appended INSIDE a truncated
+// narrative value. Deliberately based on the ORIGINAL length (a fixed input)
+// rather than the dropped count (which would depend on the marker's own
+// length — circular), so the final value's length is computable in one pass.
+// ASCII only: clampField strips control chars and this must survive intact.
+function truncationNotice(originalLength) {
+  return ` [truncated from ${originalLength} chars]`;
+}
 
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -120,12 +150,68 @@ function ensureDir(dir) {
 // bytes (including \n/\r/\0 — a raw newline in a field would forge a fake
 // NDJSON line boundary, corrupting file structure).
 function clampField(value, maxLen) {
+  return clampFieldInfo(value, maxLen).value;
+}
+
+// clampFieldInfo(value, maxLen, opts) -> { value, truncated, originalLength,
+// marked }. The sanitizing/clamping core behind clampField, but it REPORTS
+// whether it cut anything instead of dropping that fact on the floor.
+//
+// Silent truncation here was a real defect: a ruling note was cut mid-word at
+// the cap and rule() still returned a bare { outcome: 'ruled' }, so the caller
+// had no way to know its data had been amputated. Truncation must never fail
+// the write (degrade honestly, don't reject) — but it must never be invisible
+// either, so it is announced in TWO places: the returned `truncated` map, and
+// (for narrative fields, opts.mark) an explicit marker inside the persisted
+// value itself, for whoever reads the record later with no access to the
+// original call.
+//
+// opts.mark is opt-in per field. Identifier-ish fields (sym, v, proj, sid,
+// commit, fixedIn, supersededBy) are NOT marked: a marker would corrupt the
+// value's meaning, and `sym` additionally feeds fingerprint(), so appending to
+// it would change the fingerprint of every already-filed over-long defect and
+// split it into a new file. Those fields are still named in `truncated`.
+function clampFieldInfo(value, maxLen, opts) {
   let s = typeof value === 'string' ? value : (value == null ? '' : String(value));
   s = s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); // ANSI CSI sequences
   s = s.replace(/[\x00-\x1f\x7f]/g, '');        // remaining control chars
   s = s.trim();
-  if (typeof maxLen === 'number' && s.length > maxLen) s = s.slice(0, maxLen);
-  return s;
+  const originalLength = s.length;
+  if (typeof maxLen !== 'number' || originalLength <= maxLen) {
+    return { value: s, truncated: false, originalLength, marked: false };
+  }
+  if (!opts || opts.mark !== true) {
+    return { value: s.slice(0, maxLen), truncated: true, originalLength, marked: false };
+  }
+  const notice = truncationNotice(originalLength);
+  const keep = maxLen - notice.length;
+  // A cap too small to hold the marker falls back to a plain slice — the
+  // `truncated` map still tells the caller. Never emit a value over the cap.
+  if (keep <= 0) {
+    return { value: s.slice(0, maxLen), truncated: true, originalLength, marked: false };
+  }
+  return { value: s.slice(0, keep) + notice, truncated: true, originalLength, marked: true };
+}
+
+// truncationCollector() -> { take(name, value, maxLen, mark), map() }.
+// Clamps a field, records any truncation under `name`, and returns the
+// clamped value. map() returns the accumulated { field: { cap,
+// originalLength, marked } } map, or undefined when nothing was cut (so a
+// clean write's result stays exactly as it was before this fix).
+function truncationCollector() {
+  const cut = {};
+  let any = false;
+  return {
+    take(name, value, maxLen, mark) {
+      const r = clampFieldInfo(value, maxLen, { mark: mark === true });
+      if (r.truncated) {
+        any = true;
+        cut[name] = { cap: maxLen, originalLength: r.originalLength, marked: r.marked };
+      }
+      return r.value;
+    },
+    map() { return any ? cut : undefined; },
+  };
 }
 
 // normSym(sym) -> lowercase, collapse whitespace, strip runs of digits/hex
@@ -365,36 +451,45 @@ function report(input) {
   const home = input.home;
   ensureDir(defectsDir(home));
 
-  const sym = clampField(input.sym, FIELD_CAPS.sym);
+  // Every clamp below goes through the collector so a truncated field is
+  // NAMED in the result instead of vanishing silently.
+  const tr = truncationCollector();
+  // sym: reported but never marked — it is the fingerprint input.
+  const sym = tr.take('sym', input.sym, FIELD_CAPS.sym, false);
   const fp = fingerprint(cls, sym);
+  const withTrunc = (res) => {
+    const map = tr.map();
+    return map ? Object.assign({}, res, { truncated: map }) : res;
+  };
   const lineObj = {
     t: 'report',
     at: (input.at && typeof input.at === 'string') ? input.at : new Date().toISOString(),
-    v: clampField(input.v, 40),
+    v: tr.take('v', input.v, 40, false),
     // proj/sid have no schema-mandated cap (only sym/repro/claimed/observed
     // do). The clamp here is deliberately looser than MAX_LINE_BYTES (4096)
     // — it exists only to bound pathological input, not to prevent
     // 'too-large'; the real backstop for an oversize whole line is the
     // MAX_LINE_BYTES check below.
-    proj: clampField(input.proj, 5000),
-    sid: clampField(input.sid, 5000),
+    proj: tr.take('proj', input.proj, 5000, false),
+    sid: tr.take('sid', input.sid, 5000, false),
     class: cls,
     sev,
     sym,
-    repro: clampField(input.repro, FIELD_CAPS.repro),
-    claimed: clampField(input.claimed, FIELD_CAPS.claimed),
-    observed: clampField(input.observed, FIELD_CAPS.observed),
+    // Narrative fields: marked in-value as well as reported.
+    repro: tr.take('repro', input.repro, FIELD_CAPS.repro, true),
+    claimed: tr.take('claimed', input.claimed, FIELD_CAPS.claimed, true),
+    observed: tr.take('observed', input.observed, FIELD_CAPS.observed, true),
   };
   const lineStr = JSON.stringify(lineObj);
-  if (Buffer.byteLength(lineStr, 'utf8') > MAX_LINE_BYTES) return { outcome: 'too-large', fp };
+  if (Buffer.byteLength(lineStr, 'utf8') > MAX_LINE_BYTES) return withTrunc({ outcome: 'too-large', fp });
 
   const file = fpFile(fp, home);
   const exists = fs.existsSync(file);
 
   if (!exists) {
-    if (countOpenFiles(home) >= MAX_OPEN_FILES) return { outcome: 'registry-full', fp };
+    if (countOpenFiles(home) >= MAX_OPEN_FILES) return withTrunc({ outcome: 'registry-full', fp });
     const res = appendLine(file, lineStr, { create: true });
-    return Object.assign({ fp }, res);
+    return withTrunc(Object.assign({ fp }, res));
   }
 
   const parsed = parseLines(readRawLines(file));
@@ -410,16 +505,16 @@ function report(input) {
   const priorState = deriveState(parsed);
   const inExtraWindow = priorState.status === 'fixed' || priorState.status === 'regressed';
   const cap = inExtraWindow ? MAX_REPORT_LINES + REGRESSION_EXTRA : MAX_REPORT_LINES;
-  if (reportCount >= cap) return { outcome: 'occurrence-capped', fp };
+  if (reportCount >= cap) return withTrunc({ outcome: 'occurrence-capped', fp });
 
   let size = 0;
   try { size = fs.statSync(file).size; } catch (_) { size = 0; }
   if (size + Buffer.byteLength(lineStr + '\n', 'utf8') > MAX_FILE_BYTES) {
-    return { outcome: 'defect-full', fp };
+    return withTrunc({ outcome: 'defect-full', fp });
   }
 
   const res = appendLine(file, lineStr, { create: false });
-  return Object.assign({ fp }, res);
+  return withTrunc(Object.assign({ fp }, res));
 }
 
 // rule(fp, input) -> { outcome, fp }. outcome: 'ruled', 'not-found',
@@ -431,28 +526,36 @@ function rule(fp, input) {
   const status = input && input.status;
   if (!RULING_STATUS_ENUM.includes(status)) return { outcome: 'invalid-status', fp };
 
+  const tr = truncationCollector();
+  const withTrunc = (res) => {
+    const map = tr.map();
+    return map ? Object.assign({}, res, { truncated: map }) : res;
+  };
   const lineObj = {
     t: 'ruling',
     at: (input.at && typeof input.at === 'string') ? input.at : new Date().toISOString(),
     status,
-    note: clampField(input.note || '', FIELD_CAPS.note),
+    // The ruling note is the field that exposed this bug: narrative, so it
+    // is marked in-value AND reported.
+    note: tr.take('note', input.note || '', FIELD_CAPS.note, true),
   };
-  if (input.fixedIn) lineObj.fixedIn = clampField(input.fixedIn, 40);
-  if (input.commit) lineObj.commit = clampField(input.commit, 64);
-  if (input.supersededBy) lineObj.supersededBy = clampField(input.supersededBy, 12);
+  // Identifiers: reported, never marked (a marker would corrupt the value).
+  if (input.fixedIn) lineObj.fixedIn = tr.take('fixedIn', input.fixedIn, 40, false);
+  if (input.commit) lineObj.commit = tr.take('commit', input.commit, 64, false);
+  if (input.supersededBy) lineObj.supersededBy = tr.take('supersededBy', input.supersededBy, 12, false);
 
   const lineStr = JSON.stringify(lineObj);
-  if (Buffer.byteLength(lineStr, 'utf8') > MAX_LINE_BYTES) return { outcome: 'too-large', fp };
+  if (Buffer.byteLength(lineStr, 'utf8') > MAX_LINE_BYTES) return withTrunc({ outcome: 'too-large', fp });
 
   let size = 0;
   try { size = fs.statSync(file).size; } catch (_) { size = 0; }
   if (size + Buffer.byteLength(lineStr + '\n', 'utf8') > MAX_FILE_BYTES) {
-    return { outcome: 'defect-full', fp };
+    return withTrunc({ outcome: 'defect-full', fp });
   }
 
   const res = appendLine(file, lineStr, { create: false });
   const outcome = res.outcome === 'occurrence-appended' ? 'ruled' : res.outcome;
-  return { outcome, fp };
+  return withTrunc({ outcome, fp });
 }
 
 function yyyymm(ms) {
@@ -563,7 +666,8 @@ module.exports = {
   CLASS_ENUM, SEVERITY_ENUM, RULING_STATUS_ENUM,
   MAX_OPEN_FILES, MAX_FILE_BYTES, MAX_REPORT_LINES, REGRESSION_EXTRA, MAX_LINE_BYTES,
   MAX_ARCHIVE_FILES, ARCHIVE_AGE_MS, FIELD_CAPS,
-  ensureDir, clampField, normSym, fingerprint, fpFile, cmpSemver,
+  ensureDir, clampField, clampFieldInfo, truncationNotice, truncationCollector,
+  normSym, fingerprint, fpFile, cmpSemver,
   readRawLines, parseLines, deriveState,
   countOpenFiles, countArchiveFiles, readLastRawLine,
   appendLine, report, rule, archiveSweep, listDefects, showDefect, yyyymm,

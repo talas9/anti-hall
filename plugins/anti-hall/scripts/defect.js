@@ -64,8 +64,24 @@ function readFileField(filePath) {
   }
 }
 
+// clampIdentity(s) -> s bounded to 64 chars. The CLI's own identity clamp,
+// applied BEFORE the store sees the value, so the store's `truncated` map
+// cannot observe it. Truncation here is announced by warnIdentityTruncated()
+// rather than marked in-value: `proj` is a match key (`list --mine`), and a
+// marker inside it would break the very matching it identifies.
+const IDENTITY_CAP = 64;
 function clampIdentity(s) {
-  return String(s == null ? '' : s).slice(0, 64);
+  return String(s == null ? '' : s).slice(0, IDENTITY_CAP);
+}
+
+// warnIdentityTruncated(raw, label) -> stderr warning if `raw` exceeds the
+// identity cap. Same rule as the store's: never fail, never stay silent.
+function warnIdentityTruncated(raw, label) {
+  const s = String(raw == null ? '' : raw);
+  if (s.length <= IDENTITY_CAP) return;
+  process.stderr.write(
+    `warning: ${label} truncated to fit the identity cap: ${s.length} chars -> cap ${IDENTITY_CAP}\n`
+  );
 }
 
 // reporterIdentity(flags, env, cwd) -> the `proj` value a report is filed
@@ -79,9 +95,11 @@ function clampIdentity(s) {
 // mineIdentities' union below); nothing here is rewritten or migrated.
 function reporterIdentity(flags, env, cwd) {
   if (flags && typeof flags.proj === 'string' && flags.proj) {
+    warnIdentityTruncated(flags.proj, '--proj');
     return clampIdentity(flags.proj);
   }
   if (env && typeof env.ANTIHALL_DEFECT_PROJ === 'string' && env.ANTIHALL_DEFECT_PROJ) {
+    warnIdentityTruncated(env.ANTIHALL_DEFECT_PROJ, 'ANTIHALL_DEFECT_PROJ');
     return clampIdentity(env.ANTIHALL_DEFECT_PROJ);
   }
   try {
@@ -171,6 +189,23 @@ function parseArgs(argv) {
   return out;
 }
 
+// warnTruncated(result) -> writes a stderr line naming every field the store
+// had to cut, with its original length and the cap it hit. The `truncated`
+// map is already in the printed JSON result; this makes it impossible to
+// miss in a plain terminal too. Never changes the exit code: a truncated
+// write is a SUCCESSFUL write that lost some text, not a failure.
+function warnTruncated(result) {
+  const t = result && result.truncated;
+  if (!t) return;
+  const parts = Object.keys(t).map((k) => {
+    const info = t[k];
+    return `${k} (${info.originalLength} chars -> cap ${info.cap}${info.marked ? ', marker written' : ''})`;
+  });
+  process.stderr.write(
+    'warning: content was truncated to fit the defect schema: ' + parts.join(', ') + '\n'
+  );
+}
+
 function printResult(result, asJson) {
   if (asJson) {
     process.stdout.write(JSON.stringify(result) + '\n');
@@ -205,6 +240,7 @@ function cmdReport(args) {
     }
   }
   printResult(result, !!f.json);
+  warnTruncated(result);
   return result.outcome === 'recorded' || result.outcome === 'occurrence-appended' ? 0 : 1;
 }
 
@@ -253,6 +289,7 @@ function cmdRule(args) {
   };
   const result = store.rule(fp, input);
   printResult(result, !!f.json);
+  warnTruncated(result);
   return result.outcome === 'ruled' ? 0 : 1;
 }
 
