@@ -628,6 +628,56 @@ function descriptorFreshRepoKey(desc) {
   try { return repokey.repoKeyForWorktree(desc.worktreePath); }
   catch (_) { return null; }
 }
+// descriptorRegisteredRepoKey(desc, id) -> repoKey | null (defect e586afdaa968).
+// "Which PROJECT is this workspace id registered under" — the id-derived
+// authority every explicitly-id'd store read must resolve its partition from,
+// as opposed to the caller's own cwd.
+//
+// descriptorFreshRepoKey alone (the pre-fix guard) re-derives from the
+// descriptor's worktreePath and returns null the moment that path stops
+// resolving — a removed/moved worktree, a repo relocated, git transiently
+// unavailable. The guard then silently disengaged and the caller's cwd became
+// the de-facto authority for a FOREIGN workspace. The descriptor already
+// PERSISTS its project key at registration time (`repoKey`, mirrored into
+// `ownerKey`), so fall back to that: a re-derived key when the worktree still
+// exists (always the fresher truth — a submodule split changes it without the
+// persisted field being updated), else the persisted one.
+//
+// The legacy per-id HASH bucket (store.hashFromWorkspaceId) is deliberately
+// NOT a project key — a workspace registered outside any git repo persists it
+// as its ownerKey, and treating it as a registered project would refuse that
+// workspace's own reads and disable the sanctioned re-home heal. Excluded
+// explicitly.
+// THE DEFINITION ITSELF now lives in companion/lib/devswarm-repokey.js
+// (`registeredRepoKey`) so hooks/devswarm-parent-gate.js resolves the SAME
+// fact from the SAME code — the two used to disagree about the ownerKey
+// fallback and drifted into a gate that printed a CLI command the CLI refuses.
+// This wrapper is kept purely as the in-file name every call site already uses.
+function descriptorRegisteredRepoKey(desc, id) {
+  let hashKey;
+  try { hashKey = store.hashFromWorkspaceId(id); } catch (_) { hashKey = undefined; }
+  return repokey.registeredRepoKey(desc, id, { hashKey });
+}
+
+// projectContextMismatch(id, registeredKey, callerKey, verb) -> the ONE refusal
+// shape every explicitly-id'd, partition-scoped verb returns when the id's own
+// registered project positively disagrees with this invocation's cwd (defect
+// e586afdaa968). Shared so `read`, `gate`, `ensure`, `archive` and `inbox ack`
+// cannot drift in what they report — each only supplies its own trailing
+// remediation clause.
+function projectContextMismatch(id, registeredKey, callerKey, tail) {
+  return {
+    ok: false, id,
+    reason: 'project-context-mismatch',
+    registeredRepoKey: registeredKey,
+    callerRepoKey: callerKey || null,
+    error: 'workspace ' + JSON.stringify(id) + ' is registered under project ' + JSON.stringify(registeredKey)
+      + (callerKey
+        ? (', but the current context resolves to a DIFFERENT project ' + JSON.stringify(callerKey))
+        : ', but the current context could not resolve a project (non-git cwd?)')
+      + ' — ' + tail,
+  };
+}
 function descriptorPhysicalOwnerKey(desc) {
   if (desc && typeof desc.ownerKey === 'string' && desc.ownerKey) return desc.ownerKey;
   return descriptorStructuralRepoKey(desc);
@@ -1225,6 +1275,23 @@ function maybeRehomeToCwdProject(home, id, ctx) {
   const desc = readDescriptorFile(home, id);
   const storedOwnerKey = desc && typeof desc.ownerKey === 'string' && desc.ownerKey ? desc.ownerKey : null;
   if (storedOwnerKey !== hashKey) return null; // not stranded in the hash bucket
+  // FOREIGN-STRAND GUARD (defect e586afdaa968, P0). "Stranded in the hash
+  // bucket" says WHERE the rows physically live; it says NOTHING about WHICH
+  // project the workspace belongs to. A workspace whose worktree genuinely
+  // lives in project B, registered from a non-git cwd (so ownerKey === the
+  // hash bucket), was re-homed into whatever project the CALLER happened to be
+  // standing in — physically copying B's registry row + messages into A and
+  // rewriting the descriptor's ownerKey to A. Every caller of this function
+  // (read, gate, and — via their own inline rehomeCore blocks — ensure and
+  // archive) then had another project's data moved under it, INCLUDING the
+  // calls that went on to refuse with ok:false. The heal is only ever correct
+  // toward the workspace's OWN registered project, so: when the id's registered
+  // key positively resolves and disagrees with this cwd, do nothing.
+  // Fail-open unchanged: a workspace that names no project at all (the legacy
+  // no-project mode — registeredRepoKey returns null for exactly the hash
+  // bucket it is stranded in) still heals here, as before.
+  const registeredKey = descriptorRegisteredRepoKey(desc, id);
+  if (registeredKey && registeredKey !== repoKey) return null;
   const r = withIdLock(id, home, () => rehomeCore(home, id, repoKey, ctx));
   // withIdLock now fails closed (G1): a lock-busy return is NOT a re-home result
   // — normalize to null so callers' `rh && rh.rehomed` guard reads it as "no
@@ -2933,6 +3000,26 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
     // now resolves, MIGRATE its registry row + messages into store/<repoKey>/ and
     // rewrite ownerKey=repoKey BEFORE the ownership check below — so ensure no
     // longer rejects the workspace from its own inbox. Lock already held.
+    // ---- ID-DERIVED AUTHORITY GATE (defect e586afdaa968, P0) ----
+    // The ownership check further down compares the descriptor's PERSISTED
+    // ownerKey against this cwd — but the re-home immediately below REWRITES
+    // that ownerKey to this cwd's key first, so the check was validating a
+    // fact the previous statement had just manufactured. `ensure` on a
+    // hash-stranded workspace whose worktree genuinely lives in ANOTHER
+    // project therefore returned ok:true, moved that project's messages into
+    // this one, and took ownership of the descriptor. Refuse FIRST, on the
+    // id's own registered key (fresh worktree key, else the persisted
+    // repoKey/ownerKey), before anything is written.
+    // Fail-open unchanged: a descriptor that names no project at all
+    // (registeredRepoKey === null — including the legacy hash bucket it is
+    // stranded in) falls straight through to the re-home heal as before.
+    {
+      const registeredRepoKeyForEnsure = descriptorRegisteredRepoKey(existing, id);
+      if (registeredRepoKeyForEnsure && registeredRepoKeyForEnsure !== currentRepoKey) {
+        return projectContextMismatch(id, registeredRepoKeyForEnsure, currentRepoKey,
+          'run this from within that project\'s worktree to ensure it');
+      }
+    }
     let rehomed = null;
     {
       const storedOwnerKeyPre = typeof existing.ownerKey === 'string' && existing.ownerKey ? existing.ownerKey : null;
@@ -3327,6 +3414,42 @@ function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
   // ownership check entirely — the existence guard exists to catch that case
   // (and every non-ack read), so it stays active everywhere else.
   const skipExistenceGuard = !!(roOpts && roOpts.skipExistenceGuard);
+  // ---- ID-DERIVED AUTHORITY GATE (defect e586afdaa968) ----
+  // Everything below this point (the re-home, the store open, and every cursor
+  // write the callers perform against the returned handle) acts on a partition
+  // chosen by the CALLER'S cwd. That is only correct when the cwd agrees with
+  // the workspace's OWN registered project — so the disagreement is resolved
+  // FIRST, before any of it runs. Two things changed here:
+  //   1. the authority is descriptorRegisteredRepoKey (fresh key, else the
+  //      descriptor's PERSISTED repoKey/ownerKey) — the pre-fix guard used
+  //      descriptorFreshRepoKey ONLY, so a workspace whose worktree no longer
+  //      resolved silently lost its guard and the caller's cwd took over;
+  //   2. this refusal now precedes maybeRehomeToCwdProject — which re-homes to
+  //      `repoKeyForCwd(ctx)` and, when it ran first, physically copied a
+  //      FOREIGN workspace's messages + registry row into the caller's
+  //      partition and rewrote its descriptor ownerKey, on a plain
+  //      non-mutating read.
+  // This early return IS the "never advance a cursor in a partition that was
+  // not resolved from the workspace's own registered repoKey" guarantee: past
+  // this point the partition is either the id's own registered project, or the
+  // id has no registered project at all (the sanctioned legacy/no-project mode,
+  // where the per-id hash bucket IS id-derived).
+  const callerRepoKeyForRead = repoKeyForCwd(ctx);
+  const descForRead = readDescriptorFile(home, id);
+  const registeredRepoKeyForRead = descForRead ? descriptorRegisteredRepoKey(descForRead, id) : null;
+  if (registeredRepoKeyForRead && registeredRepoKeyForRead !== callerRepoKeyForRead) {
+    return {
+      ok: false, id,
+      reason: 'project-context-mismatch',
+      registeredRepoKey: registeredRepoKeyForRead,
+      callerRepoKey: callerRepoKeyForRead || null,
+      error: 'workspace ' + JSON.stringify(id) + ' is registered under project ' + JSON.stringify(registeredRepoKeyForRead)
+        + (callerRepoKeyForRead
+          ? (', but the current context resolves to a DIFFERENT project ' + JSON.stringify(callerRepoKeyForRead))
+          : ', but the current context could not resolve a project (non-git cwd?)')
+        + ' — run this from within that project\'s worktree to read its inbox',
+    };
+  }
   // P1-1/P1-2 RE-HOME (read path): if this workspace is still stranded in the
   // legacy hash bucket (persisted ownerKey=hash) while repoKey now resolves, its
   // messages are in a bucket the repoKey-keyed read below would never open — a
@@ -3334,38 +3457,15 @@ function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
   // store/<repoKey>/ FIRST so the read that follows actually sees them. Best-
   // effort + under the per-id lock; a no-op when not stranded.
   try { maybeRehomeToCwdProject(home, id, ctx); } catch (_) { /* fail-open: read proceeds regardless */ }
-  // A1(c) fix: repoKeyForCwd(ctx) collapsing to null must not silently open a
-  // DIFFERENT store than the one `id` is ACTUALLY registered under. Compare
-  // against `id`'s own descriptor (when one exists) — its structurally-derived
-  // repoKey (descriptorFreshRepoKey, re-derived from the descriptor's real,
-  // current worktreePath — the SAME independently-verifiable ground truth
-  // rehomeMiskeyedRow uses) names which project `id` genuinely belongs to.
-  // Only refuse when that ground truth POSITIVELY names a real, resolvable
-  // project this invocation's own repoKey resolution does NOT agree with —
-  // this is the concrete symptom the review names: a caller whose OWN cwd
-  // resolution fails/drifts (a submodule miscount, an invocation from the
-  // wrong directory, git transiently unavailable) silently falls back to the
-  // legacy per-id hash bucket and reports `ok:true, total:0, messages:[]`,
-  // reading as "not registered" for a workspace that IS registered elsewhere.
-  // An id with NO descriptor, or whose descriptor's own worktree is itself
-  // unresolvable (the legacy/no-project mode this CLI has always supported,
-  // exercised extensively by this suite's default non-git `ctx()` cwd), is
-  // UNCHANGED — this must never turn the sanctioned "no project at all"
-  // fallback into a hard failure.
-  const callerRepoKeyForRead = repoKeyForCwd(ctx);
-  const descForRead = readDescriptorFile(home, id);
-  const descRepoKeyForRead = descForRead ? descriptorFreshRepoKey(descForRead) : null;
-  if (descRepoKeyForRead && descRepoKeyForRead !== callerRepoKeyForRead) {
-    return {
-      ok: false, id,
-      reason: 'project-context-mismatch',
-      error: 'workspace ' + JSON.stringify(id) + ' is registered under project ' + JSON.stringify(descRepoKeyForRead)
-        + (callerRepoKeyForRead
-          ? (', but the current context resolves to a DIFFERENT project ' + JSON.stringify(callerRepoKeyForRead))
-          : ', but the current context could not resolve a project (non-git cwd?)')
-        + ' — run this from within that project\'s worktree to read its inbox',
-    };
-  }
+  // A1(c) (SUPERSEDED IN PLACE by the ID-DERIVED AUTHORITY GATE above, defect
+  // e586afdaa968): the same cross-project refusal this block used to perform
+  // now runs BEFORE the re-home, and resolves `id`'s project from
+  // descriptorRegisteredRepoKey (fresh key, else the descriptor's persisted
+  // one) instead of descriptorFreshRepoKey alone. `callerRepoKeyForRead` /
+  // `descForRead` are resolved up there and reused here — an id with NO
+  // descriptor, or whose descriptor names no project at all, still falls back
+  // to the caller's own key exactly as before (the sanctioned legacy/no-project
+  // mode, exercised extensively by this suite's default non-git `ctx()` cwd).
   // v0.57 mesh (D24): this opens the SAME shared per-project store the per-project
   // ingest daemon natively drains INTO (D8/D21) — without this re-key, a reader
   // would open the legacy per-id bucket the daemon no longer writes to and
@@ -4009,10 +4109,35 @@ function cmdInbox(sub, id, flags, ctx) {
     // unchanged — that part is CLI-specific — and only delegates the merge
     // computation, so output stays byte-identical to before this refactor.
     let storeHandle = null;
+    // storeUnavailable (defect e586afdaa968): the store side being unopenable
+    // is NOT the same fact as "the store side holds 0 unread", but that is
+    // exactly how it read — the refusal was swallowed here and the response
+    // still carried unreadStore:0 / cursorStore:0 / known:true, indistinguish-
+    // able from an empty mailbox. The commonest cause is the id being
+    // registered in ANOTHER project, i.e. precisely the workspace whose mail
+    // this caller structurally cannot see. Delivery stays fail-open (the
+    // NDJSON side is still reported, count/read never newly hard-fail), but
+    // the store side is now reported as UNKNOWN, with the reason attached.
+    let storeUnavailable = null;
     try {
       const opened = resolveWorkspaceStoreForRead(id, ctx, home);
       if (opened.ok) storeHandle = opened.store;
-    } catch (_) { /* fail-open: NDJSON-only reporting, matches pre-fix behavior */ }
+      else {
+        storeUnavailable = {
+          reason: opened.reason || 'store-unavailable',
+          error: opened.error || null,
+          registeredRepoKey: opened.registeredRepoKey || null,
+          callerRepoKey: opened.callerRepoKey || null,
+        };
+      }
+    } catch (e) {
+      storeUnavailable = {
+        reason: 'store-open-failed',
+        error: String((e && e.message) || e),
+        registeredRepoKey: null,
+        callerRepoKey: null,
+      };
+    }
     const union = devswarmUnread.unionUnread({ inboxPath, cursorPath, id, storeHandle });
     const storeCursorVal = union.storeCursor;
     const storeOnlyUnreadRows = union.storeOnlyUnreadRows;
@@ -4035,7 +4160,8 @@ function cmdInbox(sub, id, flags, ctx) {
         ok: true, action: 'count', id,
         unreadTotal: union.unread, unreadNdjson: unreadNdjsonCount, unreadStore: unreadStoreCount,
         cursorNdjson: union.cursor, cursorStore: storeCursorVal,
-        total: union.total, known: union.known,
+        total: union.total, known: union.known && !storeUnavailable,
+        ...(storeUnavailable ? { storeUnavailable, unreadStoreUnknown: true } : {}),
         // compat aliases (see comment above) — do not treat as primary:
         unread: union.unread, cursor: union.cursor, storeCursor: storeCursorVal, storeUnread: unreadStoreCount,
       };
@@ -4047,12 +4173,33 @@ function cmdInbox(sub, id, flags, ctx) {
         lines: union.ndjsonUnreadLines, meshMessages: storeOnlyUnreadRows,
         unreadTotal: union.unread, unreadNdjson: unreadNdjsonCount, unreadStore: unreadStoreCount,
         cursorNdjson: union.cursor, cursorStore: storeCursorVal,
-        total: union.total, known: union.known,
+        total: union.total, known: union.known && !storeUnavailable,
+        ...(storeUnavailable ? { storeUnavailable, unreadStoreUnknown: true } : {}),
         // compat aliases (see comment above) — do not treat as primary:
         count: union.unread, cursor: union.cursor, storeCursor: storeCursorVal,
       };
     }
     // sub === 'ack'
+    // ---- ID-DERIVED AUTHORITY GATE (defect e586afdaa968, P0) ----
+    // `count`/`read` above are non-mutating and stay FAIL-OPEN on a refused
+    // store side (the NDJSON channel is id-derived and partition-independent,
+    // so its mail is genuinely readable from anywhere — that readability is
+    // what devswarm-parent-gate.js's remediation now depends on). `ack` is
+    // NOT: it advances this descriptor's NDJSON cursor, permanently marking
+    // another project's workspace's mail consumed so its real owner never
+    // sees it. The advance below used to run unconditionally, so a caller the
+    // store resolver had ALREADY refused still got ok:true and a moved cursor.
+    // Refuse before touching either cursor.
+    // Narrow on purpose: ONLY a positive cross-project mismatch refuses. Any
+    // other store-open failure keeps the pre-existing fail-open ack (the store
+    // side was never required for the NDJSON ack to be correct).
+    if (storeUnavailable && storeUnavailable.reason === 'project-context-mismatch') {
+      if (storeHandle) storeHandle.close();
+      return Object.assign(
+        { action: 'ack', acked: 0, cursor: null },
+        projectContextMismatch(id, storeUnavailable.registeredRepoKey, storeUnavailable.callerRepoKey,
+          'run this from within that project\'s worktree to ack it (`inbox read ' + id + '` is read-only and works from anywhere)'));
+    }
     if (!cursorPath) { if (storeHandle) storeHandle.close(); return { ok: false, error: 'no cursorPath for workspace ' + JSON.stringify(id) }; }
     const toRaw = one(flags, 'to');
     let cursor;
@@ -4222,30 +4369,37 @@ function cmdGate(id, flags, ctx) {
     return { ok: false, error: 'gate needs --set <csv> and/or --clear <csv>' };
   }
   const setBy = one(flags, 'by') !== undefined ? one(flags, 'by') : 'devswarm-cli';
+  // ---- ID-DERIVED AUTHORITY GATE (defect e586afdaa968, P0) ----
+  // The refusal runs BEFORE the re-home, and resolves the id's project from
+  // descriptorRegisteredRepoKey (fresh worktree key, else the PERSISTED
+  // repoKey/ownerKey) rather than descriptorFreshRepoKey alone. Both halves
+  // were load-bearing and both were wrong here:
+  //   1. ORDER — maybeRehomeToCwdProject re-homes to `repoKeyForCwd(ctx)`.
+  //      Running it first meant `gate <foreign-id>` from project A physically
+  //      moved a hash-stranded project-B workspace's registry row into A and
+  //      rewrote its descriptor ownerKey to A's key, and THEN returned
+  //      ok:false. A command that refuses must not have already moved another
+  //      project's data. (Reproduced live; see
+  //      tests/scripts/devswarm-cross-repo-partition.test.js.)
+  //   2. AUTHORITY — descriptorFreshRepoKey returns null the moment the
+  //      descriptor's worktreePath stops resolving, silently disengaging the
+  //      guard and making the caller's cwd the de-facto authority for a
+  //      FOREIGN workspace.
+  // (maybeRehomeToCwdProject now carries its own equivalent guard too, so the
+  // data movement is closed at the source for every caller; this refusal is
+  // the caller-visible half.)
+  const callerRepoKeyForGate = repoKeyForCwd(ctx);
+  const descForGate = readDescriptorFile(home, id);
+  const registeredRepoKeyForGate = descForGate ? descriptorRegisteredRepoKey(descForGate, id) : null;
+  if (registeredRepoKeyForGate && registeredRepoKeyForGate !== callerRepoKeyForGate) {
+    return projectContextMismatch(id, registeredRepoKeyForGate, callerRepoKeyForGate,
+      'run this from within that project\'s worktree to gate it');
+  }
   // GH1: re-home a hash-bucket-stranded workspace into store/<repoKey>/ BEFORE
   // opening the store — otherwise the gate lands in / reads from the wrong store,
   // the workspace shows tracked:false, and the gate silently no-ops. Best-effort
   // + under the per-id lock (held internally); a no-op when not stranded.
   try { maybeRehomeToCwdProject(home, id, ctx); } catch (_) { /* fail-open: gate proceeds */ }
-  // A1(c) fix: the SAME project-context-mismatch guard as cmdInboxMessages —
-  // see its comment for the full rationale. An id whose descriptor names a
-  // real, resolvable project that disagrees with (or is unreachable from)
-  // this invocation's own cwd resolution must fail closed instead of
-  // silently gating the legacy/wrong store and reporting tracked:false.
-  const callerRepoKeyForGate = repoKeyForCwd(ctx);
-  const descForGate = readDescriptorFile(home, id);
-  const descRepoKeyForGate = descForGate ? descriptorFreshRepoKey(descForGate) : null;
-  if (descRepoKeyForGate && descRepoKeyForGate !== callerRepoKeyForGate) {
-    return {
-      ok: false, id,
-      reason: 'project-context-mismatch',
-      error: 'workspace ' + JSON.stringify(id) + ' is registered under project ' + JSON.stringify(descRepoKeyForGate)
-        + (callerRepoKeyForGate
-          ? (', but the current context resolves to a DIFFERENT project ' + JSON.stringify(callerRepoKeyForGate))
-          : ', but the current context could not resolve a project (non-git cwd?)')
-        + ' — run this from within that project\'s worktree to gate it',
-    };
-  }
   // v0.57 mesh (D24): gates land in the SAME shared per-project store the
   // registry/roster/archive_ready read (repoKey, when resolvable).
   const s = store.openStore({ home, workspaceId: id, hash: callerRepoKeyForGate || undefined, backend: ctx.backend, env: ctx.env });
@@ -4407,6 +4561,23 @@ function cmdArchive(id, ctx, opts) {
     // bucket marker heals; a REAL differing repoKey (genuine cross-project) is
     // NOT === hashKey, so it falls through to the reject below (P1-6 extended to
     // archive). Lock already held (cmdArchive runs inside withIdLock).
+    // ---- ID-DERIVED AUTHORITY GATE (defect e586afdaa968, P0) ----
+    // Same rehome-then-validate inversion as the `ensure` branch, but this one
+    // also REMOVES the live descriptor on success: archiving a hash-stranded
+    // workspace whose worktree lives in ANOTHER project copied that project's
+    // rows into this one and then retired its live descriptor. Refuse FIRST,
+    // on the id's own registered key, so nothing is copied and — critically —
+    // nothing is removed. Fail-open unchanged for a descriptor that names no
+    // project at all.
+    {
+      const registeredRepoKeyForArchive = descriptorRegisteredRepoKey(desc, id);
+      if (registeredRepoKeyForArchive && registeredRepoKeyForArchive !== currentRepoKey) {
+        return Object.assign(
+          { action: 'archive', descriptorArchived: false },
+          projectContextMismatch(id, registeredRepoKeyForArchive, currentRepoKey,
+            'run this from within that project\'s worktree to archive it'));
+      }
+    }
     if (activeState.exists) {
       const storedOwnerKeyPre = typeof desc.ownerKey === 'string' && desc.ownerKey ? desc.ownerKey : null;
       const hashKey = store.hashFromWorkspaceId(id);

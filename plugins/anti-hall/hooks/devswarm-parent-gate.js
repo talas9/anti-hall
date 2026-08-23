@@ -530,9 +530,52 @@ function main() {
     repoKeyCache.set(wt, k);
     return k;
   }
+  // registeredRepoKeyOf(d) (defect e586afdaa968) — THE SHARED definition, from
+  // companion/lib/devswarm-repokey.js, so this hook and scripts/devswarm.js can
+  // never disagree about which project an id is registered under (they did:
+  // this file fell back to `repoKey` only, the CLI fell back `repoKey` ->
+  // `ownerKey`, and `rehomeCore` emits descriptors carrying ONLY an ownerKey —
+  // so an ownerKey-only descriptor read as "no project" here and as "project X"
+  // there). `resolveFresh` injects the memoized per-worktreePath resolver above
+  // so this never re-spawns git for a worktree already resolved this Stop.
+  // Fail-open (null) when the descriptor names no project at all.
+  function registeredRepoKeyOf(d) {
+    if (!repokeyMod || typeof repokeyMod.registeredRepoKey !== 'function') return null;
+    try { return repokeyMod.registeredRepoKey(d, d && d.id, { resolveFresh: repoKeyOfWorktree }); }
+    catch (_) { return null; }
+  }
   for (const d of descriptors) {
-    const dKey = selfKey ? repoKeyOfWorktree(d && d.worktreePath) : null;
-    if (selfKey && dKey && dKey !== selfKey) continue;
+    // ---- CROSS-PROJECT HANDLING (defect e586afdaa968, P1) ----
+    // Two DIFFERENT facts, deliberately given two DIFFERENT treatments:
+    //
+    //  * `freshKey` — the descriptor's worktree resolves, right now, to a
+    //    project. That is a live filesystem fact and the ONLY basis on which a
+    //    descriptor is DROPPED from this gate (unchanged #36 behavior).
+    //
+    //  * `registeredKey` with NO fresh key — the worktree is gone/moved and all
+    //    we have is the PERSISTED key. An intermediate revision of this fix
+    //    dropped these rows too. That was wrong and hid real work: `repoKey` is
+    //    a store-PARTITION fact, while `realUnread` below is counted from the
+    //    descriptor's NDJSON inbox — which is id-derived and partition-
+    //    INDEPENDENT, and which `devswarm.js inbox read <id>` returns from ANY
+    //    cwd (verified live). Dropping the row turned "the Primary is nagged
+    //    about mail it cannot drain" into "the Primary is never told about mail
+    //    it CAN drain" — a strictly worse failure. Worse still, `repoKey` is
+    //    only ever (re)written while the worktree still resolves, so once it
+    //    stops the stale key can never be refreshed and the row would vanish
+    //    permanently.
+    //    So the row is KEPT and DOWNGRADED instead: the NDJSON (drainable) axis
+    //    still gates, but the two axes that are genuinely NOT actionable from
+    //    here are suppressed — the store-partition union (that partition is the
+    //    other project's) and the liveness stale/escalated verdict (recovering
+    //    another project's wedged child is not this Primary's to do) — and the
+    //    remediation names `inbox read <id>`, which works, instead of
+    //    `inbox peek-primary <id>`, which the CLI refuses outright.
+    const freshKey = selfKey ? repoKeyOfWorktree(d && d.worktreePath) : null;
+    if (selfKey && freshKey && freshKey !== selfKey) continue;
+    const registeredKey = (selfKey && !freshKey) ? registeredRepoKeyOf(d) : freshKey;
+    const foreignProject = !!(selfKey && !freshKey && registeredKey && registeredKey !== selfKey);
+    const dKey = freshKey;
 
     // realUnread (P0 fix): count only unread rows classified REAL — excludes
     // system-generated poke/mirror noise (isNoiseText — see the require
@@ -609,7 +652,7 @@ function main() {
     // matches this Primary's own workspace id (`own.id`, already resolved
     // above via readOwnUnread/#34) — a row with no resolvable sender (absent/
     // malformed) still counts as real (fail-open toward blocking, unchanged).
-    if (!unreadUnknown && dKey) {
+    if (!unreadUnknown && dKey && !foreignProject) {
       try {
         // `repoKey: dKey` reuses the ALREADY-RESOLVED (memoized, above) repoKey
         // for this descriptor's worktree instead of letting openStoreForUnread
@@ -632,7 +675,7 @@ function main() {
       } catch (_) { /* fail-open: NDJSON-only realUnread stands */ }
     }
 
-    const status = readVerdictStatus(d.id, home);
+    const status = foreignProject ? '' : readVerdictStatus(d.id, home);
     let staleOrEscalated = status === 'stale' || status === 'escalated';
     // v0.62 heartbeat-alive decouple (owner-approved — see liveness.js header): a
     // FRESH heartbeat is definitive proof the env is ALIVE (emitted only by the
@@ -663,6 +706,7 @@ function main() {
       staleOrEscalated,
       status: staleOrEscalated ? status : '',
       urgencyMax: null,
+      foreignProject,
     });
   }
 
@@ -707,6 +751,11 @@ function main() {
     // culprit instead of blaming the survivor id for a DIFFERENT member's
     // read failure.
     const unknownMembers = [];
+    // foreignProject (defect e586afdaa968, P1): true only when EVERY member of
+    // this family is a foreign-project row. A family with even one member in
+    // THIS project is a normal local row — the ordinary remediation applies and
+    // must not be weakened.
+    let foreignProject = members.length > 0;
     for (const m of members) {
       unionUnread += Number.isFinite(m.realUnread) ? m.realUnread : 0;
       if (m.unreadUnknown) {
@@ -720,12 +769,14 @@ function main() {
       }
       if (m.staleOrEscalated) { staleOrEscalated = true; if (m.status) status = m.status; }
       if (m.urgencyMax != null) urgencyMax = m.urgencyMax;
+      if (!m.foreignProject) foreignProject = false;
     }
     if (!(unreadUnknown || unionUnread > 0 || staleOrEscalated)) continue; // this family has nothing to report
     const survivor = fam && fam.survivor;
     const survivorId = survivor && survivor.id != null ? String(survivor.id) : (members[0] && members[0].id != null ? String(members[0].id) : null);
     if (!survivorId) continue;
     const entry = { id: survivorId, unread: unionUnread, unknown: unreadUnknown, status };
+    if (foreignProject) entry.foreignProject = true;
     if (urgencyMax != null) entry.urgencyMax = urgencyMax;
     if (unknownMembers.length) entry.unknownMembers = unknownMembers;
     blocking.push(entry);
@@ -1132,7 +1183,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
   }
 
   const ownEntry = ownId ? blocking.find((b) => b.id === ownId && (b.unread > 0 || b.unknown)) : null;
-  const anyChildUnread = blocking.some((b) => (b.unread > 0 || b.unknown) && b.id !== ownId);
+  const anyChildUnread = blocking.some((b) => (b.unread > 0 || b.unknown) && b.id !== ownId && !b.foreignProject);
   const anyStale = blocking.some((b) => b.status === 'stale' || b.status === 'escalated');
 
   // Small fix (Round 2 review): only append this paragraph when there is an
@@ -1176,6 +1227,24 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
       (urgent ? 'URGENT — ' : '') +
       'YOU (the Primary) have ' + ownEntry.unread + ' unread parent/peer message(s) — ' +
       'STOP and read them FIRST via `devswarm.js inbox read-primary ' + ownId + '`. ';
+  }
+  // FOREIGN-PROJECT rows (defect e586afdaa968, P1): these are workspaces whose
+  // registered project is NOT this session's (their worktree is gone, so only
+  // the persisted key remains). Their NDJSON backlog IS readable from here —
+  // `inbox read <id>` is fail-open and partition-independent — but
+  // `inbox peek-primary <id>` is NOT: the CLI refuses it outright with
+  // project-context-mismatch. Naming the working command is the whole point of
+  // keeping these rows: the original defect was a Primary blocked with a
+  // remediation that could never succeed.
+  const foreignChildren = blocking.filter((b) => b.foreignProject && b.id !== ownId).map((b) => b.id);
+  if (foreignChildren.length > 0) {
+    body +=
+      'NOTE — ' + foreignChildren.slice(0, 5).join('; ') +
+      (foreignChildren.length > 5 ? ' (and ' + (foreignChildren.length - 5) + ' more)' : '') +
+      ' ' + (foreignChildren.length === 1 ? 'is' : 'are') + ' registered under a DIFFERENT project ' +
+      '(their worktree no longer resolves), so `inbox peek-primary` will refuse them with ' +
+      'project-context-mismatch. Read that backlog with `devswarm.js inbox read <id>` instead — ' +
+      'it is read-only, works from any project, and shows the durable-inbox messages counted above. ';
   }
   if (anyChildUnread) {
     // NON-DESTRUCTIVE remediation (root cause b fix — live incident): the

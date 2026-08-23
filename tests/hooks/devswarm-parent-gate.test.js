@@ -118,6 +118,9 @@ function seedWorkspace(home, id, opts = {}) {
     cursorPath,
   };
   if (opts.repoId !== undefined) descriptor.repoId = opts.repoId;
+  // repoKey — the PERSISTED, worktree-derived project key scripts/devswarm.js
+  // stamps at register/heartbeat time (defect e586afdaa968).
+  if (opts.repoKey !== undefined) descriptor.repoKey = opts.repoKey;
   fs.writeFileSync(path.join(wsDir, id + '.json'), JSON.stringify(descriptor));
 
   if (opts.messages != null) {
@@ -455,6 +458,125 @@ test('#36 INCLUDE (fail-open): a descriptor whose worktreePath is unresolvable (
     assert.strictEqual(r.json && r.json.decision, 'block', 'an unresolvable-worktree descriptor must not vanish from the gate');
     assert.match(r.json.reason, /legacy-desc/);
   } finally { h.cleanup(); }
+});
+
+// defect e586afdaa968 (P1). An intermediate revision of this fix EXCLUDED a
+// descriptor whose persisted `repoKey` named another project. That hid real,
+// drainable work and is the behavior these tests now forbid:
+//   * `repoKey` is a store-PARTITION fact. `realUnread` is counted from the
+//     descriptor's NDJSON inbox, which is id-derived and partition-INDEPENDENT
+//     — `devswarm.js inbox read <id>` returns those exact lines from ANY cwd
+//     (asserted live in tests/scripts/devswarm-cross-repo-partition.test.js).
+//   * `repoKey` is only ever (re)written while the worktree still resolves, so
+//     once it stops a stale key can never be refreshed and the row would vanish
+//     from this gate permanently.
+// The real defect being cured is narrower: the Primary was told to run
+// `inbox peek-primary <id>`, which the CLI REFUSES outright for a foreign id.
+// So the row is KEPT and DOWNGRADED — it still gates on the drainable NDJSON
+// axis, the un-actionable axes (store partition, liveness verdict) are dropped,
+// and the remediation names a command that actually works.
+test('e586afdaa968 DOWNGRADE: an unresolvable-worktree descriptor whose PERSISTED repoKey is another project still gates, with a WORKING remediation', () => {
+  const h = makeHome();
+  const otherRepo = makeGitRepo();
+  try {
+    const otherKey = repokey.repoKeyForWorktree(otherRepo);
+    assert.notEqual(otherKey, REPO_KEY, 'precondition: genuinely different repoKey');
+    // worktreePath deliberately left at the default (non-existent, non-git) so
+    // the FRESH key is unresolvable — only the persisted key remains.
+    seedWorkspace(h.home, 'foreign-gone', { messages: ['a', 'b'], cursor: 0, repoKey: otherKey });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'drainable mail must NEVER be hidden from the Primary');
+    assert.match(r.json.reason, /foreign-gone \(2 unread\)/);
+    assert.match(r.json.reason, /inbox read <id>/, 'must name the command that WORKS from here');
+    // the NOTE paragraph names `peek-primary` only to say it will REFUSE; what
+    // must be gone is the PRESCRIPTIVE "INSPECT ... via peek-primary" advice.
+    assert.doesNotMatch(r.json.reason, /INSPECT the unread backlog via/,
+      'must never prescribe a command the CLI refuses with project-context-mismatch');
+  } finally { h.cleanup(); fs.rmSync(otherRepo, { recursive: true, force: true }); }
+});
+
+// Same downgrade, reached via the OTHER descriptor shape that carries a project
+// key: `rehomeCore` writes `ownerKey=<repoKey>` and leaves `repoKey` unset. This
+// file used to fall back to `repoKey` ONLY while scripts/devswarm.js fell back
+// `repoKey` -> `ownerKey`, so this exact descriptor read as "names no project"
+// here and as "names project X" there. Both now share
+// devswarm-repokey.registeredRepoKey, so this row is classified identically.
+test('e586afdaa968: an ownerKey-ONLY descriptor (rehomeCore shape) naming another project is downgraded, not hidden', () => {
+  const h = makeHome();
+  const otherRepo = makeGitRepo();
+  try {
+    const otherKey = repokey.repoKeyForWorktree(otherRepo);
+    assert.notEqual(otherKey, REPO_KEY);
+    const wsDir = path.join(h.home, '.anti-hall', 'devswarm', 'workspaces');
+    seedWorkspace(h.home, 'ownerkey-only', { messages: ['a', 'b'], cursor: 0 });
+    const dp = path.join(wsDir, 'ownerkey-only.json');
+    const desc = JSON.parse(fs.readFileSync(dp, 'utf8'));
+    delete desc.repoKey;
+    desc.ownerKey = otherKey; // exactly what rehomeCore persists
+    fs.writeFileSync(dp, JSON.stringify(desc));
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'ownerKey-only foreign mail must still be reported');
+    assert.match(r.json.reason, /ownerkey-only \(2 unread\)/);
+    assert.match(r.json.reason, /inbox read <id>/);
+    assert.doesNotMatch(r.json.reason, /INSPECT the unread backlog via/);
+  } finally { h.cleanup(); fs.rmSync(otherRepo, { recursive: true, force: true }); }
+});
+
+// PRECEDENCE (vacuity fix): both prior e586afdaa968 gate cases had an
+// UNRESOLVABLE worktree, so they were blind to fresh-vs-persisted ORDER —
+// reversing it left them green. Here the worktree RESOLVES to another project
+// while the persisted key claims THIS one. Fresh must win, so the row is
+// DROPPED (the #36 structural exclusion). If persisted won, the row would be
+// treated as local and would block.
+test('e586afdaa968 PRECEDENCE: a RESOLVABLE worktree in another project beats a persisted repoKey claiming this one', () => {
+  const h = makeHome();
+  const otherRepo = makeGitRepo();
+  try {
+    const otherKey = repokey.repoKeyForWorktree(otherRepo);
+    assert.notEqual(otherKey, REPO_KEY, 'precondition: genuinely different repoKey');
+    seedWorkspace(h.home, 'fresh-wins', {
+      messages: ['a', 'b'], cursor: 0,
+      worktreePath: otherRepo, // FRESH key resolves -> otherKey
+      repoKey: REPO_KEY,       // persisted key LIES that it is ours
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '',
+      'the live worktree-derived key is ground truth — a persisted key must never override it');
+  } finally { h.cleanup(); fs.rmSync(otherRepo, { recursive: true, force: true }); }
+});
+
+test('e586afdaa968 INCLUDE: an unresolvable-worktree descriptor whose PERSISTED repoKey is THIS project still gates (full remediation, not the downgrade)', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'mine-gone', { messages: ['a', 'b'], cursor: 0, repoKey: REPO_KEY });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /mine-gone/);
+    assert.match(r.json.reason, /INSPECT the unread backlog via/, 'a LOCAL row keeps the normal remediation');
+    assert.doesNotMatch(r.json.reason, /DIFFERENT project/);
+  } finally { h.cleanup(); }
+});
+
+// A foreign row's LIVENESS verdict is not this Primary's to act on (recovering
+// another project's wedged child is that project's job), so the stale/escalated
+// axis is suppressed for it — unlike the NDJSON unread axis, which IS drainable
+// from here and therefore still gates.
+test('e586afdaa968: a foreign-project row does NOT gate on the liveness (stale) axis alone', () => {
+  const h = makeHome();
+  const otherRepo = makeGitRepo();
+  try {
+    const otherKey = repokey.repoKeyForWorktree(otherRepo);
+    seedWorkspace(h.home, 'foreign-stale', {
+      messages: ['a'], cursor: 1, repoKey: otherKey, verdict: { status: 'stale' },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', 'no drainable mail + a foreign liveness verdict -> nothing for this Primary to do');
+  } finally { h.cleanup(); fs.rmSync(otherRepo, { recursive: true, force: true }); }
 });
 
 test('#36 INCLUDE (fail-open): session cwd is unresolvable (non-git) -> filter disabled, descriptor still gates', () => {

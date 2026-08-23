@@ -1488,7 +1488,12 @@ test('G3: cmdArchive REJECTS a descriptor whose ownerKey is a REAL different rep
     seedRegistry(home, keyB, { id: 'ws-x', worktreePath: repoB, sessionId: 's' });
     const r = cli.cmdArchive('ws-x', ctx(home, { cwd: repoA }));
     assert.equal(r.ok, false);
-    assert.match(String(r.error), /does not belong to the current project/);
+    // Refusal unchanged; the WORDING moved to the shared project-context-mismatch
+    // shape (defect e586afdaa968) so `read`/`gate`/`ensure`/`archive`/`ack` all
+    // report the same fact the same way — and now names BOTH keys structurally.
+    assert.equal(r.reason, 'project-context-mismatch');
+    assert.equal(r.registeredRepoKey, keyB, 'must name the project the workspace is really registered under');
+    assert.match(String(r.error), /is registered under project/);
     assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-x')), true, 'cross-project archive must not remove the descriptor');
   } finally { rm(home); rm(repoA); rm(repoB); }
 });
@@ -1512,7 +1517,9 @@ test('G3: ensure RE-HOMES a hash-bucket-stranded descriptor and REJECTS a real c
     seedRegistry(home, keyB, { id: 'ws-e2', worktreePath: repoB, sessionId: 's' });
     const r2 = cli.run(['ensure', 'ws-e2'], ctx(home, { cwd: repo }));
     assert.equal(r2.result.ok, false, 'ensure must reject a genuine cross-project descriptor');
-    assert.match(String(r2.result.error), /different project|does not belong/);
+    assert.equal(r2.result.reason, 'project-context-mismatch');
+    assert.equal(r2.result.registeredRepoKey, keyB);
+    assert.match(String(r2.result.error), /is registered under project/);
   } finally { rm(home); rm(repo); rm(repoB); }
 });
 

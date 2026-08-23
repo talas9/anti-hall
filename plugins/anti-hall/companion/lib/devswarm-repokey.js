@@ -199,4 +199,60 @@ function repoKeyForWorktree(worktree, opts) {
   return `${base}-${suffix}`;
 }
 
-module.exports = { sanitizeRepoName, gitCommonDir, repoKeyForWorktree, winCanonicalizeCommonDir };
+// registeredRepoKey(desc, id, opts) -> repoKey | null (defect e586afdaa968).
+// THE ONE definition of "which PROJECT is this workspace id registered under",
+// shared by scripts/devswarm.js (descriptorRegisteredRepoKey) and
+// hooks/devswarm-parent-gate.js so the two can never drift. Before this lived
+// here the two files disagreed: devswarm.js fell back repoKey -> ownerKey while
+// the hook fell back to repoKey ONLY, so a legacy descriptor carrying only an
+// `ownerKey` (exactly the shape rehomeCore emits: ownerKey=<repoKey>,
+// repoKey absent) read as "names no project" to the hook and as "names project
+// X" to the CLI — the hook then failed open and printed a remediation command
+// the CLI refuses.
+//
+// PRECEDENCE (fixed, in this order):
+//   1. the worktree-DERIVED key, when `desc.worktreePath` still resolves —
+//      always the fresher truth (a repo split/move changes it without the
+//      persisted field being updated), and the only form backed by a live,
+//      independently-verifiable filesystem fact;
+//   2. else the PERSISTED `repoKey` — written only when the worktree's own
+//      fresh key equalled the registering session's project key, so it is a
+//      provably worktree-derived project key, not a caller-cwd artifact;
+//   3. else the persisted `ownerKey` — the physical partition the workspace's
+//      rows actually live in (rehomeCore writes this and leaves repoKey unset).
+//
+// The legacy per-id HASH bucket is deliberately NOT a project key: a workspace
+// registered outside any git repo persists that hash as its ownerKey, and
+// treating it as a registered project would refuse that workspace's OWN reads
+// and disable the sanctioned re-home heal. Excluded explicitly.
+//
+// Returns null for "names no project at all" — every caller treats null as
+// FAIL-OPEN (proceed as before), never as a refusal.
+//
+// opts.resolveFresh — inject an already-memoized worktree->key resolver (the
+// parent-gate resolves each worktreePath at most once per Stop invocation and
+// must not re-spawn git here). opts.hashKey — inject the already-computed
+// per-id hash bucket. Both optional; both default to the real thing.
+function registeredRepoKey(desc, id, opts) {
+  if (!desc || typeof desc !== 'object') return null;
+  const o = opts || {};
+  const resolveFresh = typeof o.resolveFresh === 'function' ? o.resolveFresh : repoKeyForWorktree;
+  let fresh = null;
+  try { fresh = desc.worktreePath ? resolveFresh(desc.worktreePath) : null; } catch (_) { fresh = null; }
+  if (fresh) return fresh;
+  const persisted = (typeof desc.repoKey === 'string' && desc.repoKey)
+    ? desc.repoKey
+    : ((typeof desc.ownerKey === 'string' && desc.ownerKey) ? desc.ownerKey : null);
+  if (!persisted) return null;
+  let hashKey = null;
+  if (typeof o.hashKey === 'string' && o.hashKey) hashKey = o.hashKey;
+  else {
+    // Lazy require: keeps this module's own load cost (a hook-path primitive)
+    // unchanged for every consumer that never calls this function.
+    try { hashKey = require('./devswarm-store.js').hashFromWorkspaceId(id); } catch (_) { hashKey = null; }
+  }
+  if (hashKey && persisted === hashKey) return null; // legacy hash bucket, not a project
+  return persisted;
+}
+
+module.exports = { sanitizeRepoName, gitCommonDir, repoKeyForWorktree, winCanonicalizeCommonDir, registeredRepoKey };
