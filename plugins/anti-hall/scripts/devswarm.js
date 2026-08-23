@@ -379,6 +379,46 @@ function hasArchivedCounterpart(home, id) {
   try { return fs.existsSync(path.join(archivedDir(home), id + '.json')); }
   catch (_) { return false; }
 }
+
+// archivedCounterpartInfo(home, id, currentWorktreePath) -> discriminates a
+// SAME-id archived record that is genuinely the same workspace being
+// resurrected from one that merely REUSES the id (branch/worktree-derived ids
+// are commonly reused after a workspace is archived — see P1-b field defect).
+// Discriminator: the archived descriptor's `worktreePath` (the one piece of
+// identity every descriptor carries — see buildDescriptorFromFlags; there is
+// no createdAt/sourceBranch/builderId field on the persisted shape) compared,
+// realpath-resolved when possible, against the CURRENT invocation's resolved
+// worktree. Read-only, fail-closed on descriptor-read errors (treated as "no
+// archived counterpart" — never blocks on an unreadable tombstone).
+//   sameWorkspace: true  -> same worktree path: genuinely the same workspace.
+//   sameWorkspace: false -> different worktree path: a NEW workspace reusing
+//     this id; the archive-resurrection guard must not refuse it.
+//   sameWorkspace: null  -> ambiguous (missing/unresolvable worktree info on
+//     either side) — callers should fail OPEN and report loudly (see
+//     cmdRegister's requireNew branch).
+function archivedCounterpartInfo(home, id, currentWorktreePath) {
+  if (!id || !isSafeId(String(id))) return { exists: false };
+  const p = path.join(archivedDir(home), id + '.json');
+  let raw;
+  try { raw = fs.readFileSync(p, 'utf8'); }
+  catch (_) { return { exists: false }; }
+  let desc;
+  try { desc = JSON.parse(raw); }
+  catch (_) { return { exists: true, sameWorkspace: null, unreadable: true }; }
+  const archivedWorktree = desc && typeof desc.worktreePath === 'string' && desc.worktreePath
+    ? desc.worktreePath : null;
+  const current = typeof currentWorktreePath === 'string' && currentWorktreePath
+    ? currentWorktreePath : null;
+  if (!archivedWorktree || !current) {
+    return { exists: true, descriptor: desc, sameWorkspace: null, archivedWorktreePath: archivedWorktree };
+  }
+  let a = archivedWorktree;
+  let c = current;
+  try { a = fs.realpathSync(archivedWorktree); } catch (_) { /* worktree may be gone; compare raw */ }
+  try { c = fs.realpathSync(current); } catch (_) { /* not yet materialized; compare raw */ }
+  const same = path.resolve(a) === path.resolve(c);
+  return { exists: true, descriptor: desc, sameWorkspace: same, archivedWorktreePath: archivedWorktree };
+}
 function checkedArchivedDir(home, { create = false, F } = {}) {
   const G = F || fs;
   const dir = archivedDir(home);
@@ -2819,6 +2859,61 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   const home = ctx.home;
   return withIdLock(id, home, () => {
   let existing = readDescriptorFile(home, id);
+  // ARCHIVE RESURRECTION FIX (field defect a48db2e0ea08): archiving unlinks the
+  // active descriptor (see cmdArchive), so a routine `ensure` — the path
+  // cmdInboxPull's auto-ensure runs on EVERY turn from a still-running child —
+  // saw `existing` as absent and fell through to the CREATE branch below,
+  // silently rewriting a fresh descriptor AND upserting a live registry row:
+  // the archived workspace reappeared active, undone by traffic nobody asked
+  // to undo. Archiving is an operator/lifecycle decision; a background
+  // auto-ensure must not silently reverse it. Gate ONLY the requireNew
+  // (ensure/auto-ensure) path — the explicit `register` verb (requireNew
+  // false, below) is the deliberate re-registration escape hatch and is left
+  // exactly as it was: an operator (or a child) that explicitly re-registers
+  // an archived id still revives it. Read-only, fail-closed check
+  // (hasArchivedCounterpart never throws); never deletes anything.
+  //
+  // REUSED-ID FIX (P1-b field defect): ids are branch/worktree-derived and
+  // branch names are commonly reused, so an exact-id archived match alone is
+  // NOT proof this is the SAME workspace being resurrected — it can just as
+  // easily be a genuinely NEW workspace that happens to reuse an old id.
+  // archivedCounterpartInfo distinguishes the two using the one identity field
+  // every descriptor carries (worktreePath), compared against THIS call's
+  // resolved --worktree. Refusing forever on a false match was the bug; the
+  // resurrection guard itself (below) is still correct and stays.
+  let archivedNote = null;
+  if (requireNew && !existing && hasArchivedCounterpart(home, id)) {
+    const currentWorktree = one(flags, 'worktree');
+    const info = archivedCounterpartInfo(home, id, currentWorktree);
+    if (info.sameWorkspace === true) {
+      return {
+        ok: false, action: 'archived-skip', id, archived: true,
+        reason: 'workspace ' + id + ' is archived; routine auto-ensure does not revive it'
+          + ' (run `devswarm register ' + id + ' ...` to explicitly re-register)',
+      };
+    }
+    if (info.sameWorkspace === false) {
+      // Different worktree than the archived record -> a NEW workspace that
+      // reuses this id. Allow the create below, but surface the archived
+      // record loudly (never let this pass silently).
+      archivedNote = {
+        archivedRecordExists: true, sameWorkspace: false,
+        archivedWorktreePath: info.archivedWorktreePath, currentWorktreePath: currentWorktree,
+        note: 'an archived record for id ' + id + ' exists from a different worktree ('
+          + info.archivedWorktreePath + '); treating this as a new workspace, not a resurrection',
+      };
+    } else {
+      // Ambiguous (missing/unresolvable worktree info on either side): fail
+      // OPEN per the guiding principle (a wrongful refusal is worse than an
+      // occasional miss), but report it loudly rather than passing silently.
+      archivedNote = {
+        archivedRecordExists: true, sameWorkspace: null,
+        archivedWorktreePath: info.archivedWorktreePath, currentWorktreePath: currentWorktree,
+        note: 'an archived record for id ' + id + ' exists but same-workspace-vs-new could not be '
+          + 'determined (missing worktree info); allowing (fail-open) — verify manually',
+      };
+    }
+  }
   if (requireNew && existing) {
     // ensure: idempotent — preserve the descriptor fields, backfilling only a
     // structurally-proven legacy ownerKey, then re-upsert the store registry. Also reconcile
@@ -2942,6 +3037,7 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   const retire = retireWorktreeDuplicates(home, desc, ctx);
   const out = { ok: true, action: existing ? 'updated' : 'registered', id, descriptor: desc };
   if (retire) { out.retiredDuplicates = retire.retired; out.forwardedMessages = retire.forwarded; if (retire.left) out.leftDuplicates = retire.left; if (retire.forwardFailed) out.forwardFailed = retire.forwardFailed; }
+  if (archivedNote) out.archivedNote = archivedNote;
   return out;
   });
 }
@@ -3314,6 +3410,17 @@ function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
 // above now does this work internally, so nothing in this file calls these two
 // directly anymore).
 
+// DEFAULT_INBOX_READ_LIMIT (defect 8d0a66cfc563): read-primary/peek-primary/
+// --ack merge EVERY mesh-group partition plus the NDJSON channel with no cap
+// at all — a real field case returned 489 messages in a single read. 2000 is
+// roughly 4x that largest observed real case, generous enough that no normal
+// mesh-heavy backlog is ever disrupted, while still bounding the genuinely
+// pathological case (a stuck sender loop, a runaway broadcast) that would
+// otherwise grow this read unboundedly forever. --limit overrides it
+// per-call; a non-finite or non-positive override is ignored (falls back to
+// this default) rather than silently disabling the cap.
+const DEFAULT_INBOX_READ_LIMIT = 2000;
+
 function cmdInboxMessages(id, flags, ctx, opts) {
   const home = ctx.home;
   const doAck = !!((opts && opts.ack) || flags.ack);
@@ -3344,6 +3451,15 @@ function cmdInboxMessages(id, flags, ctx, opts) {
         + ' --ack-as-owner` (or add --ack).\n');
     } catch (_) {}
   }
+  // --limit N (defect 8d0a66cfc563): override DEFAULT_INBOX_READ_LIMIT for
+  // this call. Ignored (falls back to the default) unless a finite, positive
+  // number — silently disabling the cap via a bad value is not an option.
+  let inboxReadLimit = DEFAULT_INBOX_READ_LIMIT;
+  const limitRaw = one(flags, 'limit');
+  if (limitRaw !== undefined) {
+    const n = Number(limitRaw);
+    if (Number.isFinite(n) && n > 0) inboxReadLimit = Math.floor(n);
+  }
   const cursorPath = primaryCursorPath(home, id);
   const cursor = inboxCursor.readCursor(cursorPath);
   // defect dca4d2e16926: `messages`/`read-primary`/`peek-primary` used to be
@@ -3361,6 +3477,10 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   if (!openedForRead.ok) return openedForRead;
   const s = openedForRead.store;
   let total, messages, acked, union = null;
+  // 8d0a66cfc563 cap bookkeeping — declared outside the try{} block below (it
+  // is read again while building `out`, after the try/finally has closed `s`).
+  let withheldBySource = null;
+  let truncatedCount = 0;
   let meshAddedUnreadCount = 0; // count of sibling-partition rows folded into `messages` after dedup (0 unless meshUnionActive)
   let meshAddedTotal = 0; // Σ sibling partitions' own full `messageCount` (0 unless meshUnionActive) — undeduped, mirrors how `total` was never cross-source-deduped pre-fix either (only `messages`/`unreadCount` are)
   // P1b: set ONLY when registry/group enumeration itself THREW (could not
@@ -3412,6 +3532,15 @@ function cmdInboxMessages(id, flags, ctx, opts) {
     }
     total = s.messageCount(id); // STORE-side total only — feeds the STORE cursor ack below, unchanged.
     messages = s.listMessages(id, { sinceCursor: unreadOnly ? cursor : 0 });
+    // __srcId/__srcIdx (defect 8d0a66cfc563, internal-only, stripped before
+    // return below): identifies which delivery source each row came from and
+    // its position within that source's OWN natural (positional) order — the
+    // cap step further down needs this to truncate each source by a genuine
+    // structural PREFIX, never an arbitrary subset, so a partition/channel's
+    // cursor can never be advanced past a row the cap withheld. Only tagged
+    // under wantsUnion (read-primary/peek-primary/--ack) — the scope the cap
+    // applies to; a plain `inbox messages <id>` stays byte-for-byte untagged.
+    if (wantsUnion) messages = messages.map((r, i) => Object.assign({}, r, { __srcId: 'own', __srcIdx: i }));
     // ASYMMETRIC PARTITION RESOLUTION fix (P0): `send --to-primary` resolves
     // DYNAMICALLY across every registry row sharing this worktree's
     // canonicalMeshId (resolveMeshTarget/meshCandidateRows, ~line 4849) and
@@ -3476,7 +3605,7 @@ function cmdInboxMessages(id, flags, ctx, opts) {
         const pCursor = inboxCursor.readCursor(pCursorPath);
         const pTotal = s.messageCount(pid);
         const pMessages = s.listMessages(pid, { sinceCursor: unreadOnly ? pCursor : 0 })
-          .map((r) => Object.assign({ partitionId: pid }, r));
+          .map((r, i) => Object.assign({ partitionId: pid }, r, { __srcId: 'sibling:' + pid, __srcIdx: i }));
         meshSiblingPartitions.push({ id: pid, cursorPath: pCursorPath, cursor: pCursor, total: pTotal, messages: pMessages });
         meshAddedTotal += pTotal;
       }
@@ -3497,12 +3626,13 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       // (ascending) so mail interleaves chronologically regardless of which
       // channel carried it — deterministic (Array#sort is stable; a tied/
       // missing ts keeps NDJSON-before-store, its concat order below).
-      const ndjsonRows = union.ndjsonUnreadLines.map((line) => {
+      const ndjsonRows = union.ndjsonUnreadLines.map((line, i) => {
         let o = null;
         try { o = JSON.parse(line); } catch (_) { o = null; }
         const p = (o && typeof o === 'object') ? o : {};
         return {
           origin: 'ndjson',
+          __srcId: 'ndjson', __srcIdx: i,
           ts: Number.isFinite(p.createdAt) ? p.createdAt : null,
           hash: p._h != null ? String(p._h) : null,
           body: p.message != null ? String(p.message) : '',
@@ -3510,7 +3640,7 @@ function cmdInboxMessages(id, flags, ctx, opts) {
           status: p.status != null ? p.status : null,
         };
       });
-      const storeRows = union.storeOnlyUnreadRows.map((r) => Object.assign({ origin: 'store' }, r));
+      const storeRows = union.storeOnlyUnreadRows.map((r, i) => Object.assign({ origin: 'store' }, r, { __srcId: 'own', __srcIdx: i }));
       messages = ndjsonRows.concat(storeRows).sort((a, b) => {
         const ta = Number.isFinite(a.ts) ? a.ts : Number.POSITIVE_INFINITY;
         const tb = Number.isFinite(b.ts) ? b.ts : Number.POSITIVE_INFINITY;
@@ -3574,8 +3704,101 @@ function cmdInboxMessages(id, flags, ctx, opts) {
         });
       }
     }
+    // UNBOUNDED-READ CAP (defect 8d0a66cfc563): the merge above has no limit —
+    // truncate the FINAL merged set to `inboxReadLimit`, but per-SOURCE (own
+    // store / ndjson / each sibling partition) rather than a blind slice of
+    // the ts-sorted array, so every source's kept rows stay a genuine
+    // structural PREFIX of that source's own natural order. This is the
+    // property the ack-cursor math below (and the sibling ack's pre-existing
+    // `deliveredCount` invariant) depends on: a withheld row's own
+    // partition/channel cursor must never advance past it. Naively slicing
+    // the ts-sorted `messages` array would NOT guarantee this — a tied/
+    // reordered ts could keep a source's row N while dropping its row N-1.
+    if (wantsUnion && messages.length > inboxReadLimit) {
+      const naiveKept = new Set(messages.slice(0, inboxReadLimit));
+      // For each source, find the smallest __srcIdx among that source's rows
+      // NOT in naiveKept — every row of that source AT OR AFTER that index is
+      // withheld too, even if the ts-sort happened to place it earlier in
+      // `messages` than the true gap. This makes the kept set a provable
+      // prefix by __srcIdx, independent of ts ordering.
+      const minWithheldIdxBySource = new Map();
+      for (const row of messages) {
+        if (!row || row.__srcId === undefined) continue;
+        if (naiveKept.has(row)) continue;
+        const cur = minWithheldIdxBySource.has(row.__srcId) ? minWithheldIdxBySource.get(row.__srcId) : Infinity;
+        if (row.__srcIdx < cur) minWithheldIdxBySource.set(row.__srcId, row.__srcIdx);
+      }
+      const kept = [];
+      withheldBySource = new Map();
+      for (const row of messages) {
+        const minIdx = (row && row.__srcId !== undefined && minWithheldIdxBySource.has(row.__srcId))
+          ? minWithheldIdxBySource.get(row.__srcId) : Infinity;
+        if (row && row.__srcIdx !== undefined && row.__srcIdx >= minIdx) {
+          withheldBySource.set(row.__srcId, (withheldBySource.get(row.__srcId) || 0) + 1);
+        } else {
+          kept.push(row);
+        }
+      }
+      truncatedCount = messages.length - kept.length;
+      messages = kept;
+    }
+    // Own-store ack target derivation (P0 MESSAGE-LOSS fix): captured HERE,
+    // before the tag-strip below removes `__srcId`/`.index`'s identifying
+    // context. ROOT CAUSE this replaces: the NDJSON union filters store rows
+    // BY HASH (devswarm-unread.js unionUnread — `storeUnreadRows.filter(r =>
+    // !r.hash || !unreadNdjsonHashes.has(r.hash))`), so `union.
+    // storeOnlyUnreadRows` (and therefore the `storeRows` built from it,
+    // ~line 3567) can have GAPS relative to the raw store-unread sequence
+    // (a deduped row is simply absent, neither kept nor withheld). The cap's
+    // `withheldBySource.get('own')` count is then a count over THAT
+    // gapped/filtered index space, while `total` (s.messageCount, above) is
+    // a count over the RAW store sequence — `total - ownWithheldCount`
+    // silently assumed every non-withheld raw slot (including a
+    // deduped-away gap) was delivered, over-advancing the cursor past
+    // messages that were never returned to the caller (proven counterexample:
+    // raw unread 101..105, NDJSON dedups 103, cap keeps only 101 -> old
+    // formula yields 102 as "acked" though 102 was withheld, never
+    // delivered, and permanently lost on the next read).
+    //
+    // Fix: derive the target from the ACTUAL delivered row's raw position,
+    // not by arithmetic. Every store row carries `.index` — a real,
+    // database-backed ABSOLUTE 1-based position within that workspace's full
+    // message history (devswarm-store.js listMessages), stable across every
+    // caller/filter that reads it. The safe cursor is simply the highest
+    // `.index` among the 'own'-source rows actually present in `messages`
+    // after capping (never lower than the pre-read `cursor`, so an ack with
+    // nothing delivered this call never regresses it). This is structurally
+    // safe by construction — the cursor can only ever be set to the position
+    // of a row that was truly returned, so it cannot advance past a
+    // withheld or deduped-away row regardless of which index space produced
+    // the withholding.
+    let ownDeliveredMaxIndex = null;
+    for (const row of messages) {
+      if (row && row.__srcId === 'own' && Number.isFinite(row.index)
+        && (ownDeliveredMaxIndex === null || row.index > ownDeliveredMaxIndex)) {
+        ownDeliveredMaxIndex = row.index;
+      }
+    }
+    // Strip the internal tags before this array reaches the caller — they
+    // were never part of the wire contract.
+    if (wantsUnion) {
+      messages = messages.map((r) => {
+        if (!r || (r.__srcId === undefined && r.__srcIdx === undefined)) return r;
+        const c = Object.assign({}, r);
+        delete c.__srcId;
+        delete c.__srcIdx;
+        return c;
+      });
+    }
     if (doAck) {
-      acked = inboxCursor.ackTo(cursorPath, total); // absolute set to the current total (no inbox clamp)
+      // Own-store ack target: `ownDeliveredMaxIndex` (computed above, before
+      // the tag strip) is the raw absolute `.index` of the last 'own'-source
+      // row actually delivered in `messages` — never regress below `cursor`
+      // (a call that delivered nothing own-side must not move the cursor).
+      // See the P0 MESSAGE-LOSS fix comment above for why this replaces the
+      // prior `total - ownWithheldCount` subtraction.
+      const ownTarget = ownDeliveredMaxIndex !== null ? Math.max(cursor, ownDeliveredMaxIndex) : cursor;
+      acked = inboxCursor.ackTo(cursorPath, ownTarget); // absolute set to the last actually-delivered own row's raw position (no inbox clamp)
       s.setCursor(id, acked); // keep deriveSummary's unread projection in sync with the ACK
       // Per-partition cursors STAY per-partition: each sibling row is acked,
       // and ONLY the rows actually in `meshSiblingPartitions` (the group `id`
@@ -3602,7 +3825,12 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       // reconcile's own per-target `results[].error` convention (cmdReconcile,
       // ~line 6061).
       for (const part of meshSiblingPartitions) {
-        const deliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length;
+        let deliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length;
+        // defect 8d0a66cfc563: subtract whatever the cap withheld from THIS
+        // partition specifically — same structural guarantee as the hash-
+        // dedup guard above (the ack target is derived from what was
+        // actually delivered, never from a raw count).
+        if (withheldBySource) deliveredCount -= (withheldBySource.get('sibling:' + part.id) || 0);
         const ackTarget = part.cursor + deliveredCount;
         try {
           inboxCursor.ackTo(part.cursorPath, ackTarget);
@@ -3623,7 +3851,17 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       // already durably succeeded regardless of this) — but P1a fix: report
       // the persistence failure instead of swallowing it silently.
       if (union && desc && desc.inboxPath && desc.cursorPath) {
-        try { inboxCursor.advanceCursor(desc.inboxPath, desc.cursorPath); }
+        try {
+          // defect 8d0a66cfc563: advanceCursor() marks the ENTIRE current
+          // inbox file read — correct only when every unread ndjson line was
+          // actually delivered. When the cap withheld some, ack only up to
+          // what was delivered (union.cursor + kept ndjson lines) so the
+          // withheld lines resurface as unread on the next read, exactly
+          // like the store-side partitions above.
+          const ndjsonWithheldCount = withheldBySource ? (withheldBySource.get('ndjson') || 0) : 0;
+          const ndjsonAckTarget = union.cursor + union.ndjsonUnreadLines.length - ndjsonWithheldCount;
+          inboxCursor.ackTo(desc.cursorPath, ndjsonAckTarget, undefined, desc.inboxPath);
+        }
         catch (e) { cursorWriteFailures.push({ partitionId: id, channel: 'ndjson-cursor', error: String((e && e.message) || e) }); }
       }
     }
@@ -3649,6 +3887,19 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   // (this change) adds each sibling partition's own full message count on
   // top — 0 whenever meshUnionActive was false.
   const outTotal = (union ? union.total : total) + meshAddedTotal;
+  // P2 (adversarial review): `count`/`messages.length` is NOT guaranteed to
+  // be <= inboxReadLimit. The per-source prefix widening above (~"UNBOUNDED-
+  // READ CAP") can only ever WIDEN a source's kept set relative to the naive
+  // global ts-sorted slice (it keeps every row of a source below that
+  // source's own min-withheld __srcIdx, which is >= that source's count in
+  // the naive slice) — summed across sources this can exceed inboxReadLimit.
+  // That widening is deliberate and required for correctness (it is what
+  // keeps each source's kept set a genuine structural prefix, the property
+  // the ack-cursor math depends on) — trading a hard cap for a soft one was
+  // judged the safer of the two honest options. The actual contract:
+  // `count` may exceed `inboxReadLimit` when `truncated:true` is also set;
+  // use `truncatedCount`/`truncated` (below) to detect withholding, not a
+  // `count` vs `inboxReadLimit` comparison.
   const out = {
     ok: true,
     action: (opts && opts.action) || (doAck ? 'read-primary' : 'messages'),
@@ -3692,6 +3943,23 @@ function cmdInboxMessages(id, flags, ctx, opts) {
     out.meshGroupUnresolved = true;
     out.meshGroupError = meshGroupError;
     out.totalsPartial = true;
+  }
+  // UNBOUNDED-READ CAP report (defect 8d0a66cfc563): never silently truncate.
+  // `count`/`messages` above already reflect only what was actually
+  // delivered this call; `total`/`unreadCount` still report the REAL,
+  // untruncated totals (unchanged by capping) so a caller can see the gap.
+  // `truncated:true` is the explicit, un-missable signal — this call did NOT
+  // return everything, `truncatedCount` more is still pending, and it is
+  // safe to read again (with a higher --limit, or after acking this batch)
+  // to retrieve it, because the cursor math above never advanced past a
+  // withheld row.
+  if (truncatedCount > 0) {
+    out.truncated = true;
+    out.truncatedCount = truncatedCount;
+    out.limit = inboxReadLimit;
+    out.truncatedHint = 'not all unread messages were returned (' + truncatedCount + ' withheld) — '
+      + 'the read cursor was NOT advanced past withheld messages, so re-reading (optionally with a '
+      + 'higher --limit than ' + inboxReadLimit + ') returns them';
   }
   return out;
 }
@@ -3788,6 +4056,9 @@ function cmdInbox(sub, id, flags, ctx) {
     if (!cursorPath) { if (storeHandle) storeHandle.close(); return { ok: false, error: 'no cursorPath for workspace ' + JSON.stringify(id) }; }
     const toRaw = one(flags, 'to');
     let cursor;
+    // P1a fix (defect c35a7ca3056b): populated only if the store-side cursor
+    // sync below throws — see the catch site for the full rationale.
+    let ackCursorWriteFailure = null;
     if (toRaw !== undefined) {
       const n = Number(toRaw);
       if (!Number.isFinite(n)) { if (storeHandle) storeHandle.close(); return { ok: false, error: '--to must be a number' }; }
@@ -3830,11 +4101,30 @@ function cmdInbox(sub, id, flags, ctx) {
             inboxCursor.ackTo(primaryCursorPath(home, id), totalNow);
             store.deriveSummary(storeHandle, { home, env: ctx.env, now: ctx.now });
           }
-        } catch (_) { /* best-effort: the ndjson ack above already durably succeeded */ }
+        } catch (e) {
+          // defect c35a7ca3056b: this catch used to swallow the failure
+          // silently and return a bare `ok:true` — the store-side cursor (and
+          // its primaryCursorPath twin) could then fail to persist while the
+          // NDJSON ack above already durably succeeded, so the caller had no
+          // signal and those messages resurfaced as unread next read. Fail
+          // OPEN on delivery (unchanged — the ndjson ack above already
+          // succeeded regardless; re-serving them is the safe direction) but
+          // report the persistence failure using the SAME field shape
+          // cmdInboxMessages already reports (cursorWriteFailures[]/
+          // cursorPersisted:false, ~line 3810 above) so consumers see one
+          // convention, not two.
+          try { ackCursorWriteFailure = { partitionId: id, channel: 'store-cursor', error: String((e && e.message) || e) }; }
+          catch (_) { ackCursorWriteFailure = { partitionId: id, channel: 'store-cursor', error: 'unknown error' }; }
+        }
       }
     }
     if (storeHandle) storeHandle.close();
-    return { ok: true, action: 'ack', id, cursor, total: inboxCursor.countMessages(inboxPath) };
+    const ackOut = { ok: true, action: 'ack', id, cursor, total: inboxCursor.countMessages(inboxPath) };
+    if (ackCursorWriteFailure) {
+      ackOut.cursorWriteFailures = [ackCursorWriteFailure];
+      ackOut.cursorPersisted = false;
+    }
+    return ackOut;
   }
   return { ok: false, error: 'unknown inbox subcommand: ' + JSON.stringify(sub) + ' (read|ack|count|pull|messages|read-primary|peek-primary)' };
 }
@@ -5363,8 +5653,37 @@ function cmdSend(flags, ctx) {
       const hash = store.meshMessageHash(fields);
       const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
       store.deriveSummary(s, { home, env: ctx.env, now });
-      return {
-        ok: true, action: 'send', from,
+      // READBACK VERIFICATION (defect 84c0b4385f68, REOPENED): better-sqlite3's
+      // INSERT is synchronous, so the row physically exists on disk the instant
+      // appendMeshMessage() returns — but that was never proof a READER can see
+      // it (the v0.77.0 `bytes`/`hash` echo below was flagged by its own comment
+      // as "purely additive", i.e. it never actually re-read anything). Re-select
+      // the exact partition this send targeted (workspace_id) and confirm the row
+      // is present by its unique `hash` (table-wide UNIQUE(hash) constraint,
+      // devswarm-store.js:414) — through s.listMessages(), the SAME read path
+      // read-primary/peek-primary/inbox messages use, so this proves readability
+      // through the real read surface, not a special-cased check. Cheap in the
+      // common case: a fresh append is virtually always the LAST row (id ASC),
+      // so that's checked first; the full-scan fallback only runs if that misses
+      // (e.g. a concurrent writer landed a row after this one).
+      const verifyPartition = type === 'direct' ? targetPartition : store.BROADCAST_PARTITION_ID;
+      let verified = false;
+      let verifyError = null;
+      try {
+        const rows = s.listMessages(verifyPartition) || [];
+        const last = rows.length ? rows[rows.length - 1] : null;
+        verified = !!(last && last.hash === hash) || rows.some((r) => r && r.hash === hash);
+      } catch (e) {
+        // Fail-open on the VERIFICATION step itself only (its own read threw) —
+        // report unverified, never claim absence, never claim failure.
+        verifyError = String((e && e.message) || e);
+      }
+      const out = {
+        // ok stays true unless the readback POSITIVELY shows the row absent
+        // (verifyError is null and verified is false) — a verification error
+        // never flips ok:false (fail-open on the check itself, per spec).
+        ok: verified || verifyError !== null,
+        action: 'send', from,
         to: type === 'direct' ? (toPrimaryFlag ? primaryMeshId : toFlag) : null, type, urgency,
         sent: !!res.inserted, seq: res.seq,
         // FIX 3 (TRACED, purely additive): echo the integrity data already computed
@@ -5378,7 +5697,22 @@ function cmdSend(flags, ctx) {
         // send resolved from — >1 means the target meshId's group is
         // partitioned (never blocks; report-only).
         candidates: type === 'direct' ? candidateCount : undefined,
+        // ADDITIVE (defect 84c0b4385f68): the readback verification result.
+        // `verified:true` means the row was actually confirmed readable in its
+        // target partition. `verified:false` with `verifyError` set means the
+        // check itself errored (unknown, not a failure). `verified:false` with
+        // `verifyError:null` means the readback POSITIVELY found the row
+        // absent — a real delivery failure, surfaced via `ok:false` + `reason`
+        // above/below rather than a silent `ok:true`.
+        verified,
       };
+      if (verifyError !== null) out.verifyError = verifyError;
+      if (!verified && verifyError === null) {
+        out.reason = 'send-not-verified';
+        out.error = 'send appended a row (hash ' + hash + ') but the readback against partition '
+          + JSON.stringify(verifyPartition) + ' did not find it — the message is NOT confirmed delivered';
+      }
+      return out;
     };
     if (type === 'direct') {
       // MESSAGE-LOSS FIX (P1): rehomeAcrossStores always runs under
@@ -5892,13 +6226,57 @@ function cmdDiagnose(flags, ctx) {
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   let d;
   try { d = computeDiagnosis(s, { home, env: ctx.env, now: ctx.now }); } finally { s.close(); }
+  // SURFACING FIX (field defect c55896250399): computeDiagnosis already
+  // classifies the exactly-1-live case correctly (`kind:'mixed'`,
+  // `mixedSplits` populated — verified: mixedSplits[] carries the meshId for
+  // a 2-row/1-live group exactly like deadSplits/splits do for their kinds).
+  // The gap was never the classification, it was that `diagnose` — unlike
+  // `healthcheck` — had NO explicit call-out: its JSON is a flat dump with no
+  // `warning`/`degraded` field, so a caller who checks only the benign
+  // `splits` array (which correctly stays [] for the mixed/dead kinds — that
+  // field's meaning is "2+ LIVE rows", unchanged) sees nothing and concludes
+  // "no split", even though `mixedSplits`/`deadSplits` already carried it.
+  // Reporting-only: adds two NEW fields, touches no existing key, and drives
+  // no fold/retire/adopt/tombstone decision.
+  const dangerCount = d.deadSplits.length + d.mixedSplits.length;
+  const degraded = dangerCount > 0 || d.splits.length > 0;
+  let warning = null;
+  if (d.deadSplits.length > 0) {
+    warning = d.deadSplits.length + ' dead split(s) (2+ registry rows, no live session draining either — mail can strand)';
+  }
+  if (d.mixedSplits.length > 0) {
+    const mixedMsg = d.mixedSplits.length + ' mixed split(s) (2+ registry rows, exactly 1 live — a send can still resolve to the dead row)';
+    warning = warning ? warning + '; ' + mixedMsg : mixedMsg;
+  }
   return {
     ok: true, action: 'diagnose', repoKey,
     count: d.registry.length, registry: d.registry,
     meshTargets: d.meshTargets, splits: d.splits, deadSplits: d.deadSplits, mixedSplits: d.mixedSplits,
     orphans: d.orphans,
     staleRegistryPartitions: d.staleRegistryPartitions,
+    degraded, warning,
   };
+}
+
+// diagnoseHumanLine(result) — the DEFAULT (non-`--json`) render of `diagnose`,
+// giving it the same explicit-WARNING human summary `healthcheck` already has
+// (healthcheckHumanLine above) instead of leaving callers to notice
+// deadSplits/mixedSplits buried in a raw JSON dump.
+function diagnoseHumanLine(r) {
+  if (!r || typeof r !== 'object') return String(r);
+  if (r.reason === 'no-project') return 'diagnose: no-project (cwd is not inside a DevSwarm project)';
+  const parts = [
+    'registry=' + (r.count || 0),
+    'splits=' + (r.splits ? r.splits.length : 0),
+    'deadSplits=' + (r.deadSplits ? r.deadSplits.length : 0),
+    'mixedSplits=' + (r.mixedSplits ? r.mixedSplits.length : 0),
+    'orphans=' + (r.orphans ? r.orphans.length : 0),
+    'stale=' + (r.staleRegistryPartitions ? r.staleRegistryPartitions.length : 0),
+  ];
+  const scope = r.repoKey ? ' (scope: ' + r.repoKey + ')' : '';
+  const status = r.degraded ? 'degraded' : 'ok';
+  const warning = r.warning ? ' — WARNING: ' + r.warning : '';
+  return 'diagnose: ' + status + scope + ' [' + parts.join(' ') + ']' + warning;
 }
 
 // cmdHealthcheck(flags, ctx) — #71: a scriptable PASS/FAIL gate over the SAME data
@@ -7006,11 +7384,16 @@ function run(argv, ctx0) {
 function main() {
   const argv = process.argv.slice(2);
   const { code, result } = run(argv);
-  // `healthcheck` (no --json) prints ONE compact human line; every other verb —
-  // and `healthcheck --json` — prints the raw JSON object. This is the only verb
-  // with a human-line mode (there is no prior --json/--human precedent in this CLI).
-  const wantHuman = argv[0] === 'healthcheck' && !argv.includes('--json');
-  const out = wantHuman ? healthcheckHumanLine(result) : JSON.stringify(result);
+  // `healthcheck`/`diagnose` (no --json) print ONE compact human line; every
+  // other verb — and either of these WITH --json — prints the raw JSON
+  // object. `diagnose` gained a human-line mode alongside healthcheck (field
+  // defect c55896250399): a raw JSON dump left a genuinely partitioned mesh's
+  // `mixedSplits`/`deadSplits` easy to miss when only the benign `splits`
+  // array (correctly empty for those kinds) was eyeballed.
+  const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose') && !argv.includes('--json');
+  const out = wantHuman
+    ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : diagnoseHumanLine(result))
+    : JSON.stringify(result);
   // fs.writeSync(1, ...) per repo rule (macOS node 18/20 exit-vs-async-flush race).
   fs.writeSync(1, out + '\n');
   process.exit(code);
@@ -7028,7 +7411,7 @@ module.exports = {
   foldMeshDuplicatesAllStores,
   healOrphanPartitions, healOrphanPartitionsAllStores,
   retireArchivedWorktreeGroup, foldArchivedRegistryRows, meshRowCopy, MESH_ROW_COPY_FIELDS, cmdRoster,
-  computeDiagnosis, healthcheckHumanLine,
+  computeDiagnosis, healthcheckHumanLine, diagnoseHumanLine, hasArchivedCounterpart,
   resolveMeshTarget, resolveSendTarget,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath, skipFilePath,
   selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,

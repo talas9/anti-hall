@@ -503,8 +503,10 @@ required gate.
   `hooks/tasklist-guard.js` and `hooks/session-history-index.js` — summarizing the shipped
   change (do not invent a new ledger). At **L only**, also write
   `.anti-hall/ship-it/<slug>/SUMMARY.md`, mirroring `PLAN.md`'s Progress section into a
-  terminal summary. Then run `graphify update .` (or, if the coordinator can't
-  invoke it inline, list it as the next owner/session action).
+  terminal summary. Then, if this session is the Primary, run `graphify update .`
+  (or, if the coordinator can't invoke it inline, list it as the next owner/session
+  action). A DevSwarm child workspace must not run this — updating the graph is
+  the Primary's job; list it as the next Primary action instead.
 - **List any owner actions** (deploys, secrets, migrations) explicitly — these never
   autonomy-bypass.
 - **L (and M when it produced a release-worthy change):** version bump / changelog per the

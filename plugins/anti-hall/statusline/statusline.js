@@ -139,7 +139,12 @@ function phaseBarLine(stdinBytes) {
     const result = spawnSync(process.execPath, [phaseBarScript], {
       input: stdinBytes,            // pass the session JSON so the context bar has data
       encoding: 'utf8',
-      timeout: 2000,
+      // Match runBaseCommand's CI-contention-aware timeout above: under heavy
+      // scheduler load (e.g. a large parallel test run) this spawnSync can miss
+      // a too-tight deadline even though the child itself is fast, silently
+      // dropping line 2 (fail-open) and leaving a misleading line-1-only
+      // statusline. 2000ms measured flaky under real full-suite contention.
+      timeout: 10000,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     if (result.error) return null;

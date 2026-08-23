@@ -559,6 +559,83 @@ test('inbox count/read/ack advance the durable cursor', () => {
   } finally { rm(home); }
 });
 
+// defect c35a7ca3056b: `inbox ack`'s store-side cursor sync used to swallow a
+// throw from store.deriveSummary/storeHandle.setCursor silently and return a
+// bare ok:true — the caller had no signal, and store-side unread state could
+// then disagree with the (already-durable) NDJSON ack forever. cmdInboxMessages
+// already reports this honestly via cursorWriteFailures[]/cursorPersisted:false
+// (see the `inbox messages --ack` P1a fix); this mirrors that SAME field shape
+// into `inbox ack`, fail-open on delivery (the ndjson ack stays durable
+// regardless of the store-side failure).
+test('inbox ack: store-side cursor write failure is reported (cursorWriteFailures/cursorPersisted), NDJSON ack stays durable', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'inbox.ndjson');
+    const cursor = path.join(home, 'cursor.json');
+    fs.writeFileSync(inbox, 'm1\nm2\nm3\n');
+    cli.run(['register', 'w2', '--worktree', '/wt/w2', '--session', 's', '--inbox', inbox, '--cursor', cursor], ctx(home));
+
+    const origDerive = storeLib.deriveSummary;
+    storeLib.deriveSummary = () => { throw new Error('ENOSPC (simulated)'); };
+    let r;
+    try {
+      r = cli.run(['inbox', 'ack', 'w2', '--ack-as-owner'], ctx(home));
+    } finally { storeLib.deriveSummary = origDerive; }
+
+    assert.equal(r.result.ok, true, 'delivery must stay fail-open even when the store-side cursor sync throws');
+    assert.equal(r.result.action, 'ack', 'action meaning is unchanged by this fix');
+    assert.equal(r.result.cursor, 3, 'the NDJSON-side ack must still durably advance');
+    assert.deepEqual(r.result.cursorWriteFailures,
+      [{ partitionId: 'w2', channel: 'store-cursor', error: 'ENOSPC (simulated)' }]);
+    assert.equal(r.result.cursorPersisted, false);
+
+    // NDJSON side genuinely consumed regardless of the store-side failure.
+    const c = cli.run(['inbox', 'count', 'w2'], ctx(home));
+    assert.equal(c.result.unreadNdjson, 0, 'the ndjson ack above already durably succeeded');
+  } finally { rm(home); }
+});
+
+test('inbox ack happy path: no cursorWriteFailures/cursorPersisted fields when the store-side sync succeeds', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'inbox.ndjson');
+    const cursor = path.join(home, 'cursor.json');
+    fs.writeFileSync(inbox, 'm1\nm2\n');
+    cli.run(['register', 'w3', '--worktree', '/wt/w3', '--session', 's', '--inbox', inbox, '--cursor', cursor], ctx(home));
+
+    const r = cli.run(['inbox', 'ack', 'w3'], ctx(home));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.action, 'ack');
+    assert.equal(r.result.cursor, 2);
+    assert.equal('cursorWriteFailures' in r.result, false, 'field must be ABSENT, not falsely present, on success');
+    assert.equal('cursorPersisted' in r.result, false, 'field must be ABSENT, not falsely set false, on success');
+  } finally { rm(home); }
+});
+
+// Field-shape parity: `inbox ack` must name failures with the exact same keys
+// cmdInboxMessages already uses (partitionId/channel/error), not a parallel shape.
+test('inbox ack cursorWriteFailures entries use the same field shape as inbox messages --ack', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'inbox.ndjson');
+    const cursor = path.join(home, 'cursor.json');
+    fs.writeFileSync(inbox, 'm1\n');
+    cli.run(['register', 'w4', '--worktree', '/wt/w4', '--session', 's', '--inbox', inbox, '--cursor', cursor], ctx(home));
+
+    const origDerive = storeLib.deriveSummary;
+    storeLib.deriveSummary = () => { throw new Error('boom'); };
+    let r;
+    try {
+      r = cli.run(['inbox', 'ack', 'w4', '--ack-as-owner'], ctx(home));
+    } finally { storeLib.deriveSummary = origDerive; }
+
+    assert.ok(Array.isArray(r.result.cursorWriteFailures) && r.result.cursorWriteFailures.length === 1);
+    const entry = r.result.cursorWriteFailures[0];
+    assert.deepEqual(Object.keys(entry).sort(), ['channel', 'error', 'partitionId'],
+      'same key names cmdInboxMessages reports (partitionId/channel/error), not an invented parallel shape');
+  } finally { rm(home); }
+});
+
 test('inbox on an unregistered workspace fails soft', () => {
   const home = tmpHome();
   try {

@@ -179,18 +179,64 @@ test('FALLBACK: all candidates rank equally on every signal -> falls back to pla
   assert.strictEqual(picked.id, 'newer');
 });
 
-test('FALLBACK: no candidate is live at all -> never strand a mesh, returns the first candidate', () => {
+test('FALLBACK: no candidate is live at all -> never strand a mesh, returns a row (deterministic freshest-updatedAt)', () => {
   const rows = [
     { id: 'dead-a', sessionId: 'unclaimed:x', updatedAt: 1000 },
     { id: 'dead-b', sessionId: null, updatedAt: 2000 },
   ];
   const picked = pickFreshestLive(rows, {});
-  assert.strictEqual(picked.id, 'dead-a', 'with nothing live, the first candidate must still be returned (never null)');
+  assert.strictEqual(picked.id, 'dead-b', 'with nothing live, the freshest-updatedAt row wins deterministically, not raw enumeration order');
 });
 
 test('FALLBACK: empty candidate list -> returns null, never throws', () => {
   assert.strictEqual(pickFreshestLive([], {}), null);
   assert.strictEqual(pickFreshestLive(null, {}), null);
+});
+
+// ============================================================================
+// pickFreshestLive — ZERO-LIVE deterministic ordering (P0 27cd80902435)
+// firstMatch/`listRegistry()` enumeration order is not stable ranking; the
+// zero-live fallback must depend only on row VALUES so the winner is the
+// same regardless of the order candidates are handed in.
+// ============================================================================
+
+test('ZERO-LIVE: updatedAt tie breaks on ascending lexicographic id', () => {
+  const rows = [
+    { id: 'zzz-later-in-enum', sessionId: null, updatedAt: 5000 },
+    { id: 'aaa-earlier-lexically', sessionId: 'unclaimed:x', updatedAt: 5000 },
+  ];
+  const picked = pickFreshestLive(rows, {});
+  assert.strictEqual(picked.id, 'aaa-earlier-lexically', 'equal updatedAt must break on ascending id, not enumeration order');
+});
+
+test('ZERO-LIVE SHUFFLE STABILITY: the same candidate set in different input orders always yields the same winner', () => {
+  const a = { id: 'row-a', sessionId: null, updatedAt: 1000 };
+  const b = { id: 'row-b', sessionId: 'unclaimed:x', updatedAt: 3000 };
+  const c = { id: 'row-c', sessionId: null, updatedAt: 2000 };
+  const orderings = [
+    [a, b, c],
+    [c, a, b],
+    [b, c, a],
+    [c, b, a],
+  ];
+  const winners = orderings.map((rows) => pickFreshestLive(rows, {}).id);
+  for (const w of winners) assert.strictEqual(w, 'row-b', 'winner must be identical across every input order');
+});
+
+test('SINGLE CANDIDATE: zero-live group of one is returned unchanged', () => {
+  const rows = [{ id: 'only-one', sessionId: null, updatedAt: 42 }];
+  const picked = pickFreshestLive(rows, {});
+  assert.strictEqual(picked.id, 'only-one');
+});
+
+test('FAIL-OPEN: a malformed row (non-finite updatedAt, non-string id) never throws and still returns a winner', () => {
+  const rows = [
+    { id: {}, sessionId: null, updatedAt: NaN },
+    { id: 'normal-row', sessionId: undefined, updatedAt: 100 },
+  ];
+  assert.doesNotThrow(() => pickFreshestLive(rows, {}));
+  const picked = pickFreshestLive(rows, {});
+  assert.ok(picked, 'a winner must still be returned, not null, despite a malformed sibling row');
 });
 
 // ============================================================================

@@ -795,3 +795,140 @@ test('nudge maintainer line includes a nonzero regressed count when a defect is 
       'the regressed defect is counted in both the total and the explicit regressed count');
   } finally { rm(home); rm(repoCwd); }
 });
+
+// ============================================================================
+// 23. unknown-flag rejection (defect 479f604daa9c)
+// ============================================================================
+
+test('unknown flag on `report` (e.g. --observed-file) exits non-zero, names the flag, writes NOTHING', () => {
+  const home = tmpHome();
+  try {
+    const r = runCli([
+      'report', '--class', 'other', '--sev', 'p2', '--sym', 'unknown flag test',
+      '--observed-file', '/tmp/whatever-does-not-matter',
+    ], { home });
+    assert.notEqual(r.status, 0, 'must exit non-zero');
+    assert.match(r.stderr, /--observed-file/, 'error names the unknown flag');
+    assert.deepEqual(fs.existsSync(store.defectsDir(home)) ? fs.readdirSync(store.defectsDir(home)) : [], [],
+      'nothing written to the store');
+  } finally { rm(home); }
+});
+
+test('unknown flag on `rule` (e.g. --note-file) exits non-zero, names the flag, writes NOTHING', () => {
+  const home = tmpHome();
+  try {
+    // File a real defect first so a write WOULD have been possible.
+    const filed = store.report(Object.assign(baseReportInput(), { home, sym: 'unknown flag on rule test' }));
+    assert.equal(filed.outcome, 'recorded');
+    const before = store.readRawLines(store.fpFile(filed.fp, home)).length;
+
+    const r = runCli(['rule', filed.fp, '--status', 'ack', '--note-file', '/tmp/whatever-does-not-matter'], { home });
+    assert.notEqual(r.status, 0, 'must exit non-zero');
+    assert.match(r.stderr, /--note-file/, 'error names the unknown flag');
+    assert.equal(store.readRawLines(store.fpFile(filed.fp, home)).length, before, 'no ruling line appended');
+  } finally { rm(home); }
+});
+
+test('a flag valid for a DIFFERENT subcommand names that subcommand in the error', () => {
+  const home = tmpHome();
+  try {
+    const r = runCli(['report', '--class', 'other', '--sev', 'p2', '--sym', 'cross-subcommand flag test', '--fixed-in', '0.80.0'], { home });
+    assert.notEqual(r.status, 0);
+    assert.match(r.stderr, /--fixed-in is valid for `rule`, not `report`/);
+  } finally { rm(home); }
+});
+
+test('checkFlags() rejects a flag unknown to every subcommand with a generic message (not a bogus cross-reference)', () => {
+  const errors = require('../../plugins/anti-hall/scripts/defect.js').checkFlags('report', { 'totally-made-up': 'x' });
+  assert.ok(errors);
+  assert.match(errors[0], /--totally-made-up is not a valid flag for `report`/);
+});
+
+test('every currently-valid flag on every subcommand still works (no over-strict regression)', () => {
+  const home = tmpHome();
+  try {
+    // report: class/sev/sym/repro/sym-file/repro-file/claimed/observed/proj/sid/v/json
+    const r1 = runCli([
+      'report', '--class', 'other', '--sev', 'p2', '--sym', 'full flag coverage',
+      '--repro', 'r', '--claimed', 'c', '--observed', 'o', '--proj', 'p', '--sid', 's', '--v', '1.2.3', '--json',
+    ], { home });
+    assert.equal(r1.status, 0, r1.stderr);
+    const fp = JSON.parse(r1.stdout).fp;
+
+    // list: mine/open/json
+    const r2 = runCli(['list', '--mine', '--open', '--json'], { home, env: { ANTIHALL_DEFECT_PROJ: 'p' } });
+    assert.equal(r2.status, 0, r2.stderr);
+
+    // show: json
+    const r3 = runCli(['show', fp, '--json'], { home });
+    assert.equal(r3.status, 0, r3.stderr);
+
+    // rule: status/fixed-in/commit/note/superseded-by/json
+    const r4 = runCli(['rule', fp, '--status', 'ack', '--fixed-in', '1.0.0', '--commit', 'abc123', '--note', 'n', '--superseded-by', 'deadbeefcafe', '--json'], { home });
+    assert.equal(r4.status, 0, r4.stderr);
+
+    // archive: json
+    const r5 = runCli(['archive', '--json'], { home });
+    assert.equal(r5.status, 0, r5.stderr);
+  } finally { rm(home); }
+});
+
+// ============================================================================
+// 24. `partial` ruling status (defect 001e6bb600c5)
+// ============================================================================
+
+test('`partial` ruling derives to status "partial" (not "fixed"), carries fixedIn, round-trips through show/list', () => {
+  const home = tmpHome();
+  try {
+    const filed = store.report(Object.assign(baseReportInput(), { home, sym: 'partial fix test' }));
+    assert.equal(filed.outcome, 'recorded');
+
+    const ruled = store.rule(filed.fp, { home, status: 'partial', fixedIn: '0.80.0', note: 'display fixed; fold path deliberately not' });
+    assert.equal(ruled.outcome, 'ruled');
+
+    const shown = store.showDefect(filed.fp, home);
+    assert.equal(shown.status, 'partial');
+    assert.notEqual(shown.status, 'fixed');
+    const rulingLine = shown.lines.find((l) => l.t === 'ruling');
+    assert.equal(rulingLine.status, 'partial');
+    assert.equal(rulingLine.fixedIn, '0.80.0');
+    assert.match(rulingLine.note, /fold path deliberately not/);
+
+    const listed = store.listDefects({ dir: store.defectsDir(home) });
+    const entry = listed.find((d) => d.fp === filed.fp);
+    assert.equal(entry.status, 'partial');
+
+    // A later report at/after fixedIn must NOT be derived 'regressed' — a
+    // partial ruling never behaved as a full fix in the first place.
+    const later = store.report(Object.assign(baseReportInput(), { home, sym: 'partial fix test', sid: 'sess-later', v: '0.81.0' }));
+    assert.equal(later.outcome, 'occurrence-appended');
+    const shownAfter = store.showDefect(filed.fp, home);
+    assert.equal(shownAfter.status, 'partial', 'a report after a partial fix stays partial, never regressed');
+  } finally { rm(home); }
+});
+
+test('CLI `rule --status partial --fixed-in V --note T` round-trips through `show --json`', () => {
+  const home = tmpHome();
+  try {
+    const filed = store.report(Object.assign(baseReportInput(), { home, sym: 'cli partial fix test' }));
+    const r = runCli(['rule', filed.fp, '--status', 'partial', '--fixed-in', '0.80.0', '--note', 'half shipped'], { home });
+    assert.equal(r.status, 0, r.stderr);
+    const shown = runCli(['show', filed.fp, '--json'], { home });
+    assert.equal(shown.status, 0);
+    const parsed = JSON.parse(shown.stdout);
+    assert.equal(parsed.status, 'partial');
+  } finally { rm(home); }
+});
+
+test('existing ack/fixed/wontfix/notabug/dup ruling statuses still derive correctly (no regression from adding `partial`)', () => {
+  const home = tmpHome();
+  try {
+    for (const status of ['ack', 'fixed', 'wontfix', 'notabug', 'dup']) {
+      const filed = store.report(Object.assign(baseReportInput(), { home, sym: 'status regression check ' + status, sid: 'sess-' + status }));
+      const ruled = store.rule(filed.fp, { home, status, fixedIn: status === 'fixed' ? '0.80.0' : undefined, note: 'n' });
+      assert.equal(ruled.outcome, 'ruled', `rule() should accept pre-existing status "${status}"`);
+      const shown = store.showDefect(filed.fp, home);
+      assert.equal(shown.status, status);
+    }
+  } finally { rm(home); }
+});

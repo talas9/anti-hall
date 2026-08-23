@@ -25,10 +25,12 @@
 //          old cwd basename) keep matching alongside new reports.
 //   show <fp> [--json]
 //          Show every line of one defect (open or archived).
-//   rule <fp> --status ack|fixed|wontfix|notabug|dup [--fixed-in V --commit SHA
-//        --note T --superseded-by FP] [--json]
-//          Maintainer-only: append a ruling line. Exits non-zero on anything
-//          but 'ruled'.
+//   rule <fp> --status ack|fixed|wontfix|notabug|dup|partial [--fixed-in V
+//        --commit SHA --note T --superseded-by FP] [--json]
+//          Maintainer-only: append a ruling line. 'partial' means only part
+//          of the defect is fixed — use --fixed-in for the part that
+//          shipped and --note for what's still open; it never derives as
+//          'fixed'. Exits non-zero on anything but 'ruled'.
 //   archive [--json]
 //          Rotation sweep: move ruled+stale (30d) defect files into
 //          archive/<YYYY-MM>/. OPEN defects never move.
@@ -107,6 +109,46 @@ function mineIdentities(flags, env, cwd) {
     ids.add(clampIdentity(env.ANTIHALL_DEFECT_PROJ));
   }
   return ids;
+}
+
+// VALID_FLAGS: the closed set of flags each subcommand accepts. Anything
+// else in argv is an unknown flag and must be REJECTED (see checkFlags) —
+// silently accepting an unknown flag and dropping its value caused real
+// data loss (defect 479f604daa9c: --observed-file/--note-file were typed
+// as though they existed, silently wrote empty fields, and exited 0).
+const VALID_FLAGS = {
+  report: ['class', 'sev', 'sym', 'repro', 'sym-file', 'repro-file', 'claimed', 'observed', 'proj', 'sid', 'v', 'json'],
+  list: ['mine', 'open', 'json'],
+  show: ['json'],
+  rule: ['status', 'fixed-in', 'commit', 'note', 'superseded-by', 'json'],
+  archive: ['json'],
+};
+
+// checkFlags(cmd, flags) -> array of human-readable error strings, or null
+// if every flag in `flags` is valid for `cmd`. When an unknown flag IS valid
+// for a *different* subcommand, the error names that subcommand explicitly
+// (e.g. "--fixed-in is valid for `rule`, not `report`") rather than a bare
+// "unknown flag" — the whole point is to catch a flag typed against the
+// wrong verb, not just a typo.
+function checkFlags(cmd, flags) {
+  const valid = VALID_FLAGS[cmd] || [];
+  const unknown = Object.keys(flags || {}).filter((k) => !valid.includes(k));
+  if (unknown.length === 0) return null;
+  return unknown.map((k) => {
+    const others = Object.keys(VALID_FLAGS).filter((c) => c !== cmd && VALID_FLAGS[c].includes(k));
+    if (others.length) {
+      return `--${k} is valid for \`${others.join('`, `')}\`, not \`${cmd}\``;
+    }
+    return `--${k} is not a valid flag for \`${cmd}\``;
+  });
+}
+
+// printFlagError(cmd, errors) -> writes each error plus the full valid-flag
+// list for `cmd` to stderr. Called BEFORE any store write, so nothing is
+// ever written when an unknown flag is present.
+function printFlagError(cmd, errors) {
+  for (const e of errors) process.stderr.write('error: ' + e + '\n');
+  process.stderr.write(`valid flags for \`${cmd}\`: ${(VALID_FLAGS[cmd] || []).map((f) => '--' + f).join(', ')}\n`);
 }
 
 function parseArgs(argv) {
@@ -224,6 +266,13 @@ function main() {
   const argv = process.argv.slice(2);
   const cmd = argv[0];
   const args = parseArgs(argv.slice(1));
+  if (VALID_FLAGS[cmd]) {
+    const errors = checkFlags(cmd, args.flags);
+    if (errors) {
+      printFlagError(cmd, errors);
+      process.exit(1);
+    }
+  }
   let code;
   switch (cmd) {
     case 'report': code = cmdReport(args); break;
@@ -247,4 +296,5 @@ if (require.main === module) {
 module.exports = {
   parseArgs, cmdReport, cmdList, cmdShow, cmdRule, cmdArchive,
   reporterIdentity, mineIdentities, readFileField,
+  VALID_FLAGS, checkFlags,
 };

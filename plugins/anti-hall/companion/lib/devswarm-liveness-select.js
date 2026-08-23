@@ -144,9 +144,10 @@ function compareScore(a, b) {
 //   opts.io: { fs } — injectable for tests.
 // Returns the row whose (aOk, bOk, cCredit, updatedAt, cursorValue) tuple
 // sorts highest, compared left-to-right (priority order per the header
-// above); ties keep the first LIVE row encountered (stable). Falls back to
-// the first candidate overall when none are live (pre-self-register phantom-
-// only case) — a strict refinement of "prefer live", never worse.
+// above); ties keep the first LIVE row encountered (stable). When NO row is
+// live (pre-self-register phantom-only case), falls back to
+// pickDeterministicFallback (freshest updatedAt, then ascending id) instead
+// of raw enumeration order — see that function's comment (P0 27cd80902435).
 function pickFreshestLive(candidates, opts) {
   const o = opts || {};
   const storeHandle = o.storeHandle || null;
@@ -220,7 +221,42 @@ function pickFreshestLive(candidates, opts) {
     if (best === null) { best = d; bestScore = score; continue; }
     if (compareScore(score, bestScore) > 0) { best = d; bestScore = score; }
   }
-  return best || firstMatch;
+  return best || pickDeterministicFallback(list, firstMatch);
+}
+
+// pickDeterministicFallback(list, firstMatch) -> row | null
+//   ZERO-LIVE path only (best === null above — no candidate passed
+//   isLiveSessionId). `listRegistry()` enumeration order is NOT a stable
+//   ranking (P0 27cd80902435): the same zero-live group can be handed to this
+//   function in different orders across successive calls/persisted-shape
+//   migrations, so "first row in `list`" (the old `firstMatch` fallback)
+//   silently changed winner between calls even though no input VALUE changed
+//   — mail scattered across sibling rows unpredictably for the same session.
+//   Rule: freshest updatedAt wins (every row here is equally "not live", so
+//   recency is the only real signal already on the row); ties break on
+//   ascending lexicographic `id` (a stable, always-present, order-independent
+//   key — never a new persisted field). This depends ONLY on row VALUES, so
+//   shuffling `list`'s order can never change the winner. Fail-open: any
+//   throw while scanning returns `firstMatch` (today's behavior) rather than
+//   erroring.
+function pickDeterministicFallback(list, firstMatch) {
+  try {
+    let winner = null;
+    for (const d of list) {
+      if (!d) continue;
+      if (winner === null) { winner = d; continue; }
+      const updatedAt = Number.isFinite(d.updatedAt) ? d.updatedAt : -1;
+      const wUpdatedAt = Number.isFinite(winner.updatedAt) ? winner.updatedAt : -1;
+      if (updatedAt > wUpdatedAt) { winner = d; continue; }
+      if (updatedAt < wUpdatedAt) continue;
+      const idStr = d.id != null ? String(d.id) : '';
+      const wIdStr = winner.id != null ? String(winner.id) : '';
+      if (idStr < wIdStr) winner = d;
+    }
+    return winner || firstMatch;
+  } catch (_) {
+    return firstMatch;
+  }
 }
 
 module.exports = {

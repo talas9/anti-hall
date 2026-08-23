@@ -80,7 +80,16 @@ const CLASS_ENUM = [
   'messaging', 'doc', 'install', 'other',
 ];
 const SEVERITY_ENUM = ['p0', 'p1', 'p2'];
-const RULING_STATUS_ENUM = ['ack', 'fixed', 'wontfix', 'notabug', 'dup'];
+// 'partial' (added for defect 001e6bb600c5): a fix that landed only in part
+// — e.g. a display bug fixed but a related fold-path deliberately left
+// broken, or a release note that overstated a fix that never fully shipped.
+// It carries `fixedIn` for the part that DID ship (same field 'fixed' uses)
+// with the remainder described in `note`. Deliberately its own status value
+// rather than reusing 'ack'+prose (what agents were forced to do before this
+// existed): deriveState() below only special-cases status === 'fixed' when
+// deciding regression/staleBuild, so 'partial' NEVER reads as fully fixed —
+// it falls through unchanged, exactly like 'ack'/'wontfix'/'notabug'/'dup'.
+const RULING_STATUS_ENUM = ['ack', 'fixed', 'wontfix', 'notabug', 'dup', 'partial'];
 
 // Bounds (concrete, precedent: hooks/lib/state-prune.js's bounded-sweep shape
 // for the 47,084-file leak). At any cap the write is REFUSED with a distinct

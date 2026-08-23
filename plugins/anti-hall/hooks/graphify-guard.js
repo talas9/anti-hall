@@ -1,18 +1,37 @@
 #!/usr/bin/env node
-// anti-hall :: graphify-guard (PreToolUse Grep/Glob/Bash — graph-first enforcement)
+// anti-hall :: graphify-guard (PreToolUse Grep/Glob/Bash — graph-first ADVISORY,
+// plus a real child-workspace graphify write-ban)
 //
-// When a graphify knowledge graph exists in the current project, blocks the FIRST
-// code-navigation search of the session and prompts the model to query the graph
-// first instead. Raw search is allowed on the second and subsequent calls (the model
-// tried the graph and it didn't have the answer).
+// TWO independent concerns, two different enforcement levels:
+//
+//   1. CHILD-WORKSPACE WRITE-BAN (real block, exit 2). A DevSwarm child
+//      workspace (isChildWorkspace(process.env)) may READ the graphify graph
+//      but must never WRITE/regenerate it — the graph is maintained by the
+//      Primary only. A Bash command whose effective verb resolves to graphify
+//      AND classifies as a write (`graphify update`, `--update`, `--obsidian`,
+//      or a bare target path with no read subcommand) is blocked with a
+//      specific reason. `/graphify query ...` and anything unclassifiable are
+//      allowed (fail-open).
+//
+//   2. QUERY-FIRST ADVISORY (non-blocking, exit 0). When a graphify knowledge
+//      graph exists in the current project, the FIRST code-navigation search
+//      of the session gets an informational nudge (hookSpecificOutput /
+//      additionalContext) suggesting `/graphify query` first. This never
+//      blocks — isSubagent() already exits before this point, so essentially
+//      all delegated code search never reached this nudge anyway; blocking
+//      only added friction to the coordinator (including on legitimate
+//      commands like `git diff | grep`).
 //
 // SCOPE
 //   Intercepts PreToolUse for:
 //     - Grep tool (any call)
 //     - Glob tool (any call)
-//     - Bash tool: only if the command's first verb is a code-nav search tool
-//       (grep, rg, ag, find, git grep / git log --grep / git log -S).
-//   Does NOT block a Bash command that is itself a graphify query (/graphify).
+//     - Bash tool: the code-nav-search advisory checks the command's effective
+//       verb(s) (grep, rg, ag, find, git grep / git log --grep / git log -S);
+//       the write-ban checks EVERY segment's effective verb for a graphify
+//       write, independent of code-nav search detection.
+//   Does NOT nudge/exempt a Bash command that is itself a graphify query
+//   (/graphify) from the advisory.
 //
 // GRAPH DETECTION
 //   Looks for graphify-out/ at the cwd (from stdin payload) or the git toplevel.
@@ -48,8 +67,11 @@
 //
 // Contract (Claude Code PreToolUse hook):
 //   stdin  : JSON { tool_name, tool_input, session_id?, cwd?, ... }
-//   stdout : JSON { decision: "block", reason: "..." } | nothing
-//   exit 2 : to block; exit 0: allow
+//   stdout : JSON { decision: "block", reason: "..." }               (write-ban)
+//          | JSON { hookSpecificOutput: { hookEventName: "PreToolUse",
+//                   additionalContext: "..." } }                      (advisory)
+//          | nothing
+//   exit 2 : write-ban block only; exit 0: everything else (allow / advisory).
 //   Fail-open on any error (exit 0).
 
 'use strict';
@@ -60,6 +82,7 @@ const os = require('os');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 const { isSubagent } = require('./coordinator-detect.js');
+const { isChildWorkspace } = require('./lib/devswarm-role.js');
 
 // Code-nav search verbs that warrant a graph-first nudge.
 const SEARCH_VERBS = new Set(['grep', 'rg', 'ag', 'find', 'ack']);
@@ -105,6 +128,10 @@ function findGraphRoot(cwd) {
 // Split a command on the shell sequencing operators ; && || | (and newlines) so
 // each segment can be inspected for its OWN effective verb. Quote-aware so an
 // operator inside a quoted string is not a split point.
+// Heredoc opener regex: <<[-]WORD, <<'WORD', <<"WORD", <<WORD. Captures the
+// dash (tab-stripping mode) and the terminator word (quoted or bare).
+const HEREDOC_RE = /^<<(-)?\s*("([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/;
+
 function splitSegments(cmd) {
   const segments = [];
   let cur = '';
@@ -123,6 +150,38 @@ function splitSegments(cmd) {
     }
     if (c === "'") { inSingle = true; cur += c; i++; continue; }
     if (c === '"') { inDouble = true; cur += c; i++; continue; }
+    if (c === '<' && c2 === '<') {
+      const m = HEREDOC_RE.exec(cmd.slice(i));
+      const word = m ? (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5])) : '';
+      if (m && word) {
+        // Keep the opener text (e.g. `<<'EOF'`) as part of the current
+        // segment so the invoking command's own verb is still classified
+        // normally, but SKIP the heredoc body entirely (do not scan its
+        // lines as separate segments/commands) — see P1-a header note.
+        const dashStrip = !!m[1];
+        cur += m[0];
+        i += m[0].length;
+        // Consume the rest of the opener line verbatim (e.g. trailing
+        // redirections) up to the newline that starts the heredoc body.
+        let lineEnd = cmd.indexOf('\n', i);
+        if (lineEnd === -1) lineEnd = n;
+        cur += cmd.slice(i, lineEnd);
+        i = lineEnd;
+        if (i < n && cmd[i] === '\n') i++;
+        // Skip body lines until the terminator line (tab-stripped if `<<-`).
+        while (i < n) {
+          const nextNl = cmd.indexOf('\n', i);
+          const lineRaw = nextNl === -1 ? cmd.slice(i) : cmd.slice(i, nextNl);
+          const line = dashStrip ? lineRaw.replace(/^\t+/, '') : lineRaw;
+          i += (nextNl === -1 ? (cmd.length - i) : (nextNl - i + 1));
+          if (line === word) break;
+          if (nextNl === -1) break; // unterminated heredoc: consumed to EOF
+        }
+        // The heredoc construct closes the current logical command/segment.
+        flush();
+        continue;
+      }
+    }
     if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
     if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
     if (c === '|') { flush(); i++; continue; }
@@ -175,6 +234,102 @@ function isGraphifyBashCommand(command) {
     if (/^\/graphify\b/.test(verb) || verb === '/graphify') return true;
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// CHILD-WORKSPACE WRITE-BAN (Change 1)
+//
+// Owner rule: a DevSwarm child workspace may READ the graphify graph
+// (`/graphify query ...`) but must never WRITE/update it — the graph is
+// maintained by the Primary only. isChildWorkspace(env) is the canonical
+// role signal (hooks/lib/devswarm-role.js), already used by command-guard.js.
+//
+// Recognises BOTH real invocation forms:
+//   - the slash command as a Bash verb: `/graphify . --update --obsidian`
+//   - the bare CLI:                     `graphify update .`
+//
+// Classification (fail-open — uncertain -> NOT a write):
+//   WRITE: `graphify update ...` / `/graphify update ...`, any invocation
+//          carrying --update or --obsidian, or a bare target path with no
+//          recognised read subcommand (e.g. `/graphify .`). A write flag
+//          (--update/--obsidian) always wins, even if `query` is also present
+//          (e.g. `graphify query --update` is a WRITE, not a read).
+//   READ:  `graphify query ...`, --help/-h, --version/-v, or anything that
+//          cannot be positively classified as a write.
+//
+// Wrapped-command recursion covers `bash|sh|zsh|dash|ksh|ash -c '...'`,
+// `eval '...'`, and `$(...)`/backtick substitutions, depth-capped at 3.
+// Known-uncovered: `source <(...)`, shell aliases, and other exotic
+// indirection — those fail open (uncertain -> ALLOW) like any unclassifiable
+// form.
+// ---------------------------------------------------------------------------
+
+// classifyGraphifySegment(seg) -> { args: string[] } | null (null = segment's
+// effective verb is not graphify at all, in either invocation form).
+function classifyGraphifySegment(seg) {
+  const tokens = seg.trim().split(/\s+/).filter(Boolean);
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
+  while (i < tokens.length) {
+    const word = tokens[i].replace(/^.*\//, '').toLowerCase();
+    if (!GRAPHIFY_WRAPPERS.has(word)) break;
+    i++;
+    while (i < tokens.length &&
+           (tokens[i].startsWith('-') ||
+            (word === 'env' && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])))) i++;
+    if ((word === 'timeout') && i < tokens.length && !tokens[i].startsWith('/')) i++;
+  }
+  if (i >= tokens.length) return null;
+  const rawVerb = tokens[i];
+  const baseVerb = rawVerb.replace(/^\//, '').replace(/^.*\//, '').toLowerCase();
+  if (baseVerb !== 'graphify') return null;
+  return { args: tokens.slice(i + 1) };
+}
+
+// classifyGraphifyArgs(args) -> 'read' | 'write' | 'uncertain'.
+function classifyGraphifyArgs(args) {
+  if (!args.length) return 'uncertain';
+  const flags = new Set(args.filter((a) => a.startsWith('-')));
+  if (flags.has('--help') || flags.has('-h') || flags.has('--version') || flags.has('-v')) {
+    return 'read';
+  }
+  // A write flag wins regardless of subcommand position: `graphify query
+  // --update` and `/graphify query "x" --obsidian` are writes even though
+  // `query` is the first non-flag token (see header comment above).
+  if (flags.has('--update') || flags.has('--obsidian')) return 'write';
+  const firstNonFlag = args.find((a) => !a.startsWith('-'));
+  if (firstNonFlag === 'query') return 'read';
+  if (firstNonFlag === 'update') return 'write';
+  // A bare target path (e.g. `.`) with no recognised read subcommand -> write.
+  if (firstNonFlag) return 'write';
+  return 'uncertain'; // only unrecognised flags, no subcommand/path.
+}
+
+// findGraphifyWriteSegment(command) -> the offending segment string, or null.
+// Mirrors isCodeNavBashCommand's recursion into `bash -c "..."` payloads and
+// `$(...)`/backtick substitutions (same depth cap) so a wrapped write is still
+// caught in a child workspace.
+function findGraphifyWriteSegment(command, depth) {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  const d = typeof depth === 'number' ? depth : 0;
+  for (const seg of splitSegments(command)) {
+    const cls = classifyGraphifySegment(seg);
+    if (cls && classifyGraphifyArgs(cls.args) === 'write') return seg;
+    if (d < 3) {
+      const payload = extractShellCPayload(seg) || extractEvalPayload(seg);
+      if (payload) {
+        const found = findGraphifyWriteSegment(payload, d + 1);
+        if (found) return found;
+      }
+    }
+  }
+  if (d < 3) {
+    for (const inner of extractSubstitutions(command)) {
+      const found = findGraphifyWriteSegment(inner, d + 1);
+      if (found) return found;
+    }
+  }
+  return null;
 }
 
 // Shell verbs whose `-c '<payload>'` argument is itself command(s) to recurse into.
@@ -240,6 +395,28 @@ function extractShellCPayload(segment) {
     }
   }
   return '';
+}
+
+// If a segment is `eval '<payload>'` / `eval "<payload>"` / `eval payload`,
+// return the reconstructed payload command string (eval concatenates its
+// operands with a space, mirroring shell eval semantics), else ''. Same
+// quote-aware tokenizer as extractShellCPayload.
+function extractEvalPayload(segment) {
+  const verb = segmentVerb(segment).replace(/^.*\//, '').toLowerCase();
+  if (verb !== 'eval') return '';
+  const tokens = [];
+  let cur = ''; let q = ''; let any = false;
+  const str = segment.trim();
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (q) { if (c === q) { q = ''; } else cur += c; any = true; continue; }
+    if (c === "'" || c === '"') { q = c; any = true; continue; }
+    if (/\s/.test(c)) { if (any) { tokens.push(cur); cur = ''; any = false; } continue; }
+    cur += c; any = true;
+  }
+  if (any) tokens.push(cur);
+  // tokens[0] is `eval` itself; join the rest as the reconstructed command.
+  return tokens.slice(1).join(' ');
 }
 
 function isCodeNavBashCommand(command, depth) {
@@ -382,6 +559,33 @@ function main() {
     isSearch = true;
   } else if (toolName === 'Bash') {
     const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+
+    // Change 1: a DevSwarm child workspace may READ graphify but never WRITE
+    // it — the graph is maintained by the Primary. This is a REAL block
+    // (exit 2), independent of the query-first advisory below and
+    // independent of whether a graph currently exists at cwd. Fail-open on
+    // any classification error: never block a legitimate write over an
+    // uncertain read of process.env or the command string.
+    try {
+      if (isChildWorkspace(process.env)) {
+        const writeSeg = findGraphifyWriteSegment(command);
+        if (writeSeg) {
+          const reason =
+            'GRAPHIFY IS READ-ONLY IN CHILD WORKSPACES: the knowledge graph is ' +
+            'maintained by the Primary only. This child workspace may READ it ' +
+            '(`/graphify query "<question>"`) but must not update/regenerate it ' +
+            '(blocked: `' + sanitizePath(writeSeg) + '`). Report findings to the ' +
+            'Primary if the graph looks stale — do not run `graphify update` or ' +
+            '`--obsidian`/`--update` here. User override: ~/.anti-hall/skip.json ' +
+            '{"graphify-guard": <expiry-ms>}.';
+          process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+          process.exit(2);
+        }
+      }
+    } catch (_) {
+      // fail-open: fall through to the read-only-advisory path below.
+    }
+
     // Graphify queries are explicitly allowed — do not intercept them.
     if (isGraphifyBashCommand(command)) {
       process.exit(0);
@@ -468,17 +672,27 @@ function main() {
     extraRecommendation = ' or read the graph manifest at "' + safeManifest + '"';
   }
 
+  // Change 2: this is now an ADVISORY, not a block. Delegation-first work
+  // routes essentially all code search through subagents, and isSubagent()
+  // exits above BEFORE this point — so a Bash/Grep/Glob call from the
+  // COORDINATOR is the only traffic that can ever reach here, and blocking
+  // it produced friction (including on legitimate non-search-adjacent
+  // commands like `git diff | grep`) without reaching the traffic the nudge
+  // targets. Keep the informational pointer, drop the block/exit 2.
   const reason =
     'GRAPHIFY-FIRST: this project has a knowledge graph at "' + safeGraphDir + '". ' +
-    'Query it FIRST before raw code search: run `/graphify query "<question>"`' +
+    'Consider querying it before raw code search: run `/graphify query "<question>"`' +
     extraRecommendation + '. ' +
-    'Raw search (' + toolLabel + ') is allowed after the graph has been consulted ' +
-    'or lacks the answer (this nudge re-arms after ~240KB of transcript growth ' +
-    'or 2h, not just once). ' +
-    'Stop. Query the graph. Then come back to search if needed.';
+    'Raw search (' + toolLabel + ') is not blocked (this pointer re-arms after ' +
+    '~240KB of transcript growth or 2h, not just once).';
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
-  process.exit(2);
+  process.stdout.write(JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      additionalContext: reason,
+    },
+  }) + '\n');
+  process.exit(0);
 }
 
 try {

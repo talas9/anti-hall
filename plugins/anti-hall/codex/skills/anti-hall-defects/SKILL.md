@@ -49,6 +49,15 @@ node "$ANTI_HALL_ROOT/scripts/defect.js" show <fp> --json
 node "$ANTI_HALL_ROOT/scripts/defect.js" rule <fp> --status fixed --fixed-in 0.79.0 --commit <sha>
 ```
 
+`--status` (exactly 6, closed vocabulary): `ack`, `fixed`, `partial`, `wontfix`,
+`notabug`, `dup`. Use `partial` (with `--fixed-in` for the part that shipped and
+`--note` for what's still open) for a fix that landed only in part — it never derives
+as fully `fixed` and never feeds regression detection.
+
+Unknown flags are REJECTED, not silently dropped — nothing is written on an
+unrecognized flag. Only `--sym-file`/`--repro-file` (on `report`) take file paths;
+there is no `--note-file` or `--observed-file`.
+
 `class` (exactly 8, closed vocabulary): `guard-false-positive`, `guard-miss`,
 `hook-crash`, `state-leak`, `messaging`, `doc`, `install`, `other`.
 `sev` (exactly 3): `p0`, `p1`, `p2`. Any other value is rejected, not coerced.

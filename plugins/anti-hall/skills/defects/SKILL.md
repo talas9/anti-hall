@@ -35,11 +35,18 @@ the plugin root generically (mirrors the `doctor`/`debt` skills' invocation styl
    node plugins/anti-hall/scripts/defect.js list --mine --json
    ```
 3. **show `<fp>`** — every line of one defect (its fingerprint), open or archived.
-4. **rule `<fp>` --status ack|fixed|wontfix|notabug|dup** — MAINTAINER-ONLY. Appends a
-   ruling. `--fixed-in V` and `--commit SHA` are the fields that make regression
-   detection possible later — always set `--fixed-in` when ruling `fixed`.
+4. **rule `<fp>` --status ack|fixed|partial|wontfix|notabug|dup** — MAINTAINER-ONLY.
+   Appends a ruling. `--fixed-in V` and `--commit SHA` are the fields that make
+   regression detection possible later — always set `--fixed-in` when ruling `fixed`.
+   Use `partial` (with `--fixed-in` for the part that shipped and `--note` for what's
+   still open) for a fix that landed only in part — it never derives as fully `fixed`
+   and never feeds regression detection, unlike `ack` + prose.
 5. **archive** — rotation sweep; maintainer/CI housekeeping, not something a reporting
    agent needs to run.
+
+Unknown flags are REJECTED, not silently dropped — an unrecognized flag exits non-zero
+and nothing is written. Only `--sym-file`/`--repro-file` (on `report`) take file paths;
+there is no `--note-file` or `--observed-file`.
 
 ## `class` and `sev` (closed vocabularies — copied verbatim from `hooks/lib/defect-store.js`)
 

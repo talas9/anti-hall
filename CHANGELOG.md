@@ -6,6 +6,84 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.83.0 (2026-08-23)
+
+- **DevSwarm child workspaces can no longer update the knowledge graph.** A
+  child workspace may still query the graph freely, but any command that
+  writes or rebuilds it (`graphify update`, `--update`, `--obsidian`) is now
+  refused there — maintaining the graph is the Primary's job. Previously
+  every child workspace carried the same doctrine text and built its own
+  duplicate copy of the graph, so many copies of the same data accumulated
+  and none of them were ever read. Detection reuses the existing DevSwarm
+  child-workspace signal, and the check fails open, so a Primary is never
+  blocked.
+- **The query-the-graph-first guard no longer blocks — it's advisory now.**
+  The guard already exempted subagents, and under anti-hall's own
+  delegation-first doctrine essentially all code search happens inside
+  subagents, so the block could never reach the work it was aimed at while
+  still adding friction to the coordinator and occasionally blocking
+  legitimate commands. The recommendation stays; the block is gone.
+- **Write detection sees through more wrapping.** `bash -c`, `eval`, and
+  `$()`/backtick wrapping are now unwrapped up to a bounded depth before the
+  write check runs, and a write flag takes precedence over the subcommand —
+  `graphify query --update` counts as a write, not a query.
+- **Fix: mesh routing is now deterministic when no workspace in a group is
+  live.** This closes the non-determinism noted as a known limitation in
+  0.82.0 — the send target used to fall back to whatever the registry
+  happened to enumerate first, so successive sends from one session could
+  land in different partitions minutes apart. The fallback now selects by
+  most-recently-updated with a stable tiebreak, so the same set of rows
+  always yields the same target. Live-workspace selection is unchanged.
+- **Fix: a send now verifies the message is actually readable before
+  reporting success.** Earlier releases reported success straight from the
+  write call; a claimed fix in an earlier version only added echo fields to
+  the response and never verified anything. The send now re-reads the
+  target partition and confirms the message is there. A verification
+  *error* (couldn't check) is reported as unverified, not as failure — only
+  a positive absence of the message is reported as a failed send.
+- **Merged inbox reads are now bounded.** A read that merges several
+  registry partitions plus the file-based channel had no size limit. There
+  is now a generous default limit with an override. A truncated read never
+  advances a cursor past a withheld message, and the response says
+  explicitly that it was truncated and how many messages were withheld.
+- **Fix: archiving a workspace could be silently undone.** Routine
+  per-turn re-registration could recreate an archived workspace's
+  descriptor and registry row, quietly reversing the archive. Re-registering
+  an archived workspace id is now refused — unless the registration is for
+  a genuinely different workspace that happens to reuse the same id, which
+  is allowed and reported as such.
+- **`diagnose` now surfaces a partition that has exactly one live
+  workspace.** The condition was already detected internally but nothing in
+  the output showed it, so a genuinely split mesh could still look healthy
+  at a glance. Adds a degraded/warning field plus a human-readable line.
+- **Fix: acknowledging mail now reports when the read cursor could not be
+  saved.** A store-side cursor write failure was previously swallowed
+  behind a success result, so already-read messages could silently
+  reappear as unread. The failure is now reported, naming the partition and
+  channel that failed to persist. Delivery behavior is unchanged — messages
+  are still acknowledged on the durable channel.
+- **The defect CLI now rejects unknown flags instead of ignoring them.**
+  Previously an unrecognised flag was accepted, its value silently dropped,
+  and success reported — which repeatedly produced defect records with
+  empty fields. Also adds a `partial` ruling status for a fix that shipped
+  in part, and documents that only `--sym-file`/`--repro-file` accept file
+  paths (other value flags do not).
+- **Fix: the status line no longer drops its second line under load.** A
+  too-short internal timeout made a healthy-but-slow render fail open into
+  a misleading single-line status.
+
+Known limitations:
+
+- Write detection does not see through `source <(...)` process substitution,
+  shell aliases, or an absolute path straight to the `graphify` binary. This
+  is a guardrail, not a security boundary — a determined bypass is still
+  possible. Heredoc wrapping is now unwrapped for the common forms, but
+  nested or multiple heredocs on one line, and `<<<` here-strings, fall back
+  to prior behavior, erring toward allowing.
+- A merged inbox read's returned count may exceed the stated limit when
+  truncation occurs — per-source boundaries are deliberately widened so
+  that no cursor ever advances past a withheld message.
+
 ## 0.82.0 (2026-08-23)
 
 - **Fix: a Primary could not see mail delivered to it.** anti-hall addresses
@@ -14,9 +92,10 @@ the update.
   one by anti-hall's derived id. Sending resolved that group dynamically
   (picking the live row); the Primary's own inbox read used a fixed derived
   id and looked at only one partition. Mail delivered to the other row was
-  invisible to the reader. Reading now covers every partition in the mesh
-  group, so a Primary sees all of its mail regardless of which row a sender
-  resolved to.
+  invisible to the reader. The Primary's own inbox read verbs (`read-primary`,
+  `peek-primary`, and any `--ack` read) now cover every partition in the mesh
+  group, so a Primary using those verbs sees all of its mail regardless of
+  which row a sender resolved to.
 - **Fix: `peek-primary` and `read-primary` only read one of the two message
   channels.** anti-hall keeps a file-based inbox and a store partition; the
   counting verbs already merged both, but the two verbs a Primary uses to
@@ -35,6 +114,14 @@ the update.
 - **By design: duplicate delivery over suppression.** Where two messages
   cannot be proven to be the same message, both are delivered — a duplicate
   is visible and recoverable, while a dropped message is neither.
+
+Known limitations:
+
+- The counting/reading verbs that take an explicit workspace id (`inbox count <id>`,
+  `inbox read <id>`, `inbox messages <id>`) still resolve a single partition and can
+  under-report mail sitting in the sibling row, unlike the Primary's own read verbs above.
+- When no row in a mesh group is currently live, which row a send resolves to is not
+  deterministic — it falls back to registry enumeration order rather than a stable rule.
 
 ## 0.81.0 (2026-08-23)
 

@@ -1767,3 +1767,214 @@ test('G2/P1: a stale recovery-intent marker does NOT clobber a re-registered wor
     assert.equal(live[0].sessionId, 'session-B', 'the FRESH registry row (B) must survive untouched — NOT clobbered by the stale marker (A: session-A)');
   } finally { rm(home); rm(repo); }
 });
+
+// ============================================================================
+// Field defect a48db2e0ea08: archived row resurrected by a routine auto-ensure
+// ============================================================================
+// Root cause: cmdArchive unlinks the ACTIVE descriptor (archived/<id>.json is
+// the only surviving copy). cmdInboxPull's auto-ensure — run on EVERY turn by
+// a still-running child — calls cmdRegister(id, ensureFlags, ctx,
+// {requireNew:true}). With the active descriptor gone, `existing` read null,
+// so `requireNew && existing` was false and execution fell through to the
+// CREATE branch, which unconditionally wrote a fresh descriptor AND upserted
+// a live registry row — silently undoing the archive. Fixed: cmdRegister now
+// checks hasArchivedCounterpart() before falling into CREATE when
+// requireNew && !existing, and returns ok:false/archived:true instead of
+// recreating. `register` (no requireNew) is untouched — the deliberate
+// re-registration escape hatch — and so is the pre-existing `unarchive` verb.
+
+test('a48db2e0: routine auto-ensure (inbox pull\'s ensure path) does NOT resurrect an archived workspace, and says so', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('a48-ensure');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const id = 'ws-arc-ensure';
+    const reg = cli.run(['register', id, '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    assert.equal(reg.result.ok, true, 'precondition: register succeeded');
+    const arc = cli.run(['archive', id], ctx(home, { cwd: repo }));
+    assert.equal(arc.result.ok, true, 'precondition: archive succeeded');
+    assert.equal(fs.existsSync(cli.descriptorPath(home, id)), false, 'precondition: active descriptor removed by archive');
+
+    // Simulate the EXACT shape cmdInboxPull's auto-ensure uses: requireNew via
+    // the `ensure` verb, with the child's own cached worktree/session (a
+    // still-running child that has not noticed it was archived).
+    const r = cli.run(['ensure', id, '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, false, 'routine auto-ensure must refuse to revive an archived workspace');
+    assert.equal(r.result.archived, true, 'result must say WHY — archived, not a generic failure');
+    assert.match(String(r.result.reason || ''), /archived/i);
+
+    // No resurrection: no active descriptor, no live registry row.
+    assert.equal(fs.existsSync(cli.descriptorPath(home, id)), false, 'active descriptor must stay absent');
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    let rows; try { rows = s.listRegistry(); } finally { s.close(); }
+    assert.equal(rows.filter((x) => x && x.id === id).length, 0, 'no registry row was resurrected');
+  } finally { rm(home); rm(repo); }
+});
+
+test('a48db2e0: a DELIBERATE re-registration (explicit `register`) of an archived id is still allowed', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('a48-register');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const id = 'ws-arc-register';
+    cli.run(['register', id, '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    const arc = cli.run(['archive', id], ctx(home, { cwd: repo }));
+    assert.equal(arc.result.ok, true, 'precondition: archive succeeded');
+
+    const r = cli.run(['register', id, '--worktree', repo, '--session', 's2'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, 'an explicit register is a deliberate operator action and must still succeed');
+    assert.equal(fs.existsSync(cli.descriptorPath(home, id)), true, 'active descriptor restored');
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    let rows; try { rows = s.listRegistry(); } finally { s.close(); }
+    assert.equal(rows.filter((x) => x && x.id === id).length, 1, 'registry row restored by the deliberate register');
+  } finally { rm(home); rm(repo); }
+});
+
+test('P1-b: reused id — archived record for a DIFFERENT worktree does not permanently refuse a genuinely new workspace', () => {
+  const home = tmpHome();
+  const repoOld = makeGitRepo('p1b-old');
+  const repoNew = makeGitRepo('p1b-new');
+  try {
+    const id = 'hotfix'; // a branch/worktree-derived id, commonly reused
+    cli.run(['register', id, '--worktree', repoOld, '--session', 's-old'], ctx(home, { cwd: repoOld }));
+    const arc = cli.run(['archive', id], ctx(home, { cwd: repoOld }));
+    assert.equal(arc.result.ok, true, 'precondition: old workspace archived');
+
+    // Weeks later: a genuinely NEW workspace reuses the same id from a
+    // DIFFERENT worktree. Routine auto-ensure (the cmdInboxPull shape) must
+    // not silently refuse it forever.
+    const r = cli.run(['ensure', id, '--worktree', repoNew, '--session', 's-new'], ctx(home, { cwd: repoNew }));
+    assert.equal(r.result.ok, true, 'a new workspace reusing an archived id must be allowed, not archived-skip');
+    assert.notEqual(r.result.action, 'archived-skip');
+    assert.ok(r.result.archivedNote, 'the archived record must be surfaced visibly, not swallowed silently');
+    assert.equal(r.result.archivedNote.sameWorkspace, false);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, id)), true, 'new descriptor was created');
+  } finally { rm(home); rm(repoOld); rm(repoNew); }
+});
+
+test('P1-b: same-workspace resurrection via routine auto-ensure still refuses (archived-skip), no regression', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('p1b-same');
+  try {
+    const id = 'hotfix-same';
+    cli.run(['register', id, '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    const arc = cli.run(['archive', id], ctx(home, { cwd: repo }));
+    assert.equal(arc.result.ok, true, 'precondition: archived');
+
+    // Same worktree, still-running child calling ensure again (a48db2e0 shape).
+    const r = cli.run(['ensure', id, '--worktree', repo, '--session', 's'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, false, 'the SAME workspace resurrecting via routine auto-ensure must still be refused');
+    assert.equal(r.result.action, 'archived-skip');
+    assert.equal(fs.existsSync(cli.descriptorPath(home, id)), false, 'no resurrection');
+  } finally { rm(home); rm(repo); }
+});
+
+test('P1-b: ambiguous case (archived descriptor missing worktreePath) fails OPEN and reports it loudly', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('p1b-ambiguous');
+  try {
+    const id = 'ambiguous-ws';
+    // Craft an archived descriptor directly with no worktreePath — simulates
+    // a legacy/corrupted tombstone where the discriminator field is absent.
+    fs.mkdirSync(cli.archivedDir(home), { recursive: true });
+    fs.writeFileSync(
+      path.join(cli.archivedDir(home), id + '.json'),
+      JSON.stringify({ id, worktreePath: null, sessionId: 's-old' }),
+    );
+
+    const r = cli.run(['ensure', id, '--worktree', repo, '--session', 's-new'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, 'ambiguous same-vs-new must fail OPEN (allow), never silently refuse');
+    assert.notEqual(r.result.action, 'archived-skip');
+    assert.ok(r.result.archivedNote, 'ambiguity must be reported, not silent');
+    assert.equal(r.result.archivedNote.sameWorkspace, null);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, id)), true, 'new descriptor was created');
+  } finally { rm(home); rm(repo); }
+});
+
+// ============================================================================
+// Field defect c55896250399: `diagnose` did not surface a genuine 1-live split
+// ============================================================================
+// computeDiagnosis already classified the exactly-1-live-of-2+-rows shape
+// correctly (kind:'mixed', mixedSplits populated) — this is a REPORTING gap,
+// not a classification gap: `diagnose` had no explicit warning/degraded
+// signal (unlike `healthcheck`) and no human-line mode, so a caller checking
+// only the benign `splits` array (correctly [] for the mixed kind) sees
+// nothing. Fixed additively: `degraded`/`warning` fields on the JSON result,
+// plus a `diagnose` human-line mode mirroring healthcheck's. No fold/retire/
+// adopt/tombstone signal changed.
+test('c558962503: diagnose surfaces a genuine 1-live split via degraded/warning (mixedSplits was already correct)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('c558-mixed');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'row-live', worktreePath: repo, sessionId: 'sess-live' });
+    seedRegistry(home, repoKey, { id: 'row-dead', worktreePath: repo, sessionId: null });
+
+    const d = cli.run(['diagnose'], ctx(home, { cwd: repo }));
+    assert.equal(d.result.ok, true);
+    assert.equal(d.result.splits.length, 0, 'benign splits[] correctly stays empty (not a 2+ live case)');
+    assert.equal(d.result.mixedSplits.length, 1, 'classification was already correct: mixedSplits carries the meshId');
+    assert.equal(d.result.degraded, true, 'NEW: diagnose now surfaces this as degraded');
+    assert.match(String(d.result.warning || ''), /mixed split/, 'NEW: diagnose now surfaces an explicit warning');
+
+    const line = cli.diagnoseHumanLine(d.result);
+    assert.match(line, /mixedSplits=1/, 'human line carries the mixedSplits count');
+    assert.match(line, /WARNING/, 'human line surfaces the dangerous 1-live split distinctly');
+  } finally { rm(home); rm(repo); }
+});
+
+test('c558962503: a single healthy row — diagnose output unchanged (no false split)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('c558-healthy');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'row-solo', worktreePath: repo, sessionId: 'sess-solo' });
+
+    const d = cli.run(['diagnose'], ctx(home, { cwd: repo }));
+    assert.equal(d.result.ok, true);
+    assert.deepStrictEqual(d.result.splits, []);
+    assert.deepStrictEqual(d.result.deadSplits, []);
+    assert.deepStrictEqual(d.result.mixedSplits, []);
+    assert.equal(d.result.degraded, false, 'a single healthy row is not degraded');
+    assert.equal(d.result.warning, null, 'a single healthy row carries no warning');
+
+    const line = cli.diagnoseHumanLine(d.result);
+    assert.match(line, /diagnose: ok/);
+    assert.ok(!/WARNING/.test(line), 'no warning suffix for a healthy single row');
+  } finally { rm(home); rm(repo); }
+});
+
+// ============================================================================
+// Fold-facing signals byte-identical before/after both defect fixes
+// ============================================================================
+test('both fixes: fold-facing signals (groupRegistryByMeshId / resolveMeshTarget / meshTargets split flags) are byte-identical', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('foldsig');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    seedRegistry(home, repoKey, { id: 'row-live', worktreePath: repo, sessionId: 'sess-live' });
+    seedRegistry(home, repoKey, { id: 'row-dead', worktreePath: repo, sessionId: null });
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    let byMesh, target;
+    try {
+      byMesh = cli.groupRegistryByMeshId(s.listRegistry());
+      const meshId = [...byMesh.keys()][0];
+      target = cli.resolveMeshTarget(s, meshId, home);
+    } finally { s.close(); }
+    const group = [...byMesh.values()][0];
+    // These are the EXACT signals fold/retire/adopt/tombstone paths consume —
+    // unchanged by either the archive-resurrection fix (register/ensure path
+    // only) or the diagnose-surfacing fix (additive JSON fields only).
+    assert.deepStrictEqual(group.ids.sort(), ['row-dead', 'row-live']);
+    assert.strictEqual(group.liveRows, 1);
+    assert.strictEqual(target && target.id, 'row-live', 'resolveMeshTarget still resolves to the live row');
+
+    const d = cli.run(['diagnose'], ctx(home, { cwd: repo }));
+    const mt = d.result.meshTargets[0];
+    assert.strictEqual(mt.split, false);
+    assert.strictEqual(mt.deadSplit, false);
+    assert.strictEqual(mt.mixedSplit, true);
+    assert.strictEqual(mt.kind, 'mixed');
+    assert.strictEqual(mt.resolvesTo, 'row-live');
+  } finally { rm(home); rm(repo); }
+});

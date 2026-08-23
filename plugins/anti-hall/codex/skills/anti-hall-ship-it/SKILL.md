@@ -106,4 +106,4 @@ At the end of a ship-it run (L, and M when release-worthy):
 
 1. Write a session-history entry to `.anti-hall/history/<date>/<session-id>.md` (same dated/session-id convention used elsewhere — plain files on disk, not Claude-specific).
 2. For L tier, write `.anti-hall/ship-it/<slug>/SUMMARY.md`.
-3. Run `graphify update .` if graphify is available in this environment; otherwise note it as a follow-up action.
+3. If this session is the Primary, run `graphify update .` if graphify is available in this environment; otherwise note it as a follow-up action. A DevSwarm child workspace must not run this — updating the graph is the Primary's job; children query only.
