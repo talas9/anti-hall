@@ -2333,3 +2333,80 @@ checkout (not a live DevSwarm capture). Per the §13 convention, the `isLiveSess
 they do not carry the same version-fragility caveat as vendor-behavior sections — but line
 numbers will drift with future edits to `devswarm.js` and `update.js`; re-grep the cited
 function/symbol names rather than trusting the line numbers verbatim after either file changes.
+
+## 27. Asymmetric partition resolution — the shape that caused a message-delivery P0
+
+One logical mesh id can legitimately have TWO registry rows for the same worktree: the host
+tool's own workspace UUID (`DEVSWARM_BUILDER_ID`) and anti-hall's own derived
+`primary-<8hex>` id (sha256 of the canonical worktree real path,
+`primaryWorkspaceId(wt)` at `plugins/anti-hall/companion/install-devswarm-ingest.js:550`).
+Both are valid rows for the same logical Primary; §26's own citation of
+`devswarm-identity-family.js` documents that two descriptors may legitimately share one
+`worktreePath` (`plugins/anti-hall/companion/lib/devswarm-identity-family.js:7`).
+
+**The asymmetry that broke delivery.** `send` resolved the target group DYNAMICALLY —
+`resolveMeshTarget` (`plugins/anti-hall/scripts/devswarm.js:5060`) delegates to
+`pickFreshestLive`, so a message could land on whichever of the two rows was currently
+freshest/live. The Primary's OWN read, by contrast, resolved STATICALLY: `readOwnUnread`
+computes `id = installIngest.primaryWorkspaceId(top)` (`plugins/anti-hall/hooks/devswarm-parent-gate.js:318`)
+and that fixed derived id feeds every downstream lookup for that read — never re-resolved
+through `resolveMeshTarget`/`pickFreshestLive` the way sending was. A message delivered to
+the sibling row (the builder-id row) was therefore structurally invisible to a Primary that
+only ever read its own derived-id row.
+
+**The fix did not need new knowledge — it needed to USE knowledge that already existed.**
+`canonicalMeshId`/`groupRegistryByMeshId` (`plugins/anti-hall/scripts/devswarm.js:202`
+region) already treat both rows as one target — a diagnose pass reports one `meshTargets`
+entry covering both ids. That grouping was already correct; the read path simply never
+consulted it. The reconciler that would MERGE the two rows into one survivor
+(`foldMeshDuplicates`) only ever runs at update/doctor time, not on every read — so between
+reconciliation passes, the split is normal, expected, and must be tolerated by any reader.
+
+Fixed in v0.82.0 by widening the READ to cover every partition in the mesh group, not by
+folding the rows. Read-side only: no fold, no survivor selection, no row retired — the same
+conservative posture §26 already established for the `isLiveSessionId` split (making a read
+path smarter must never itself become a destructive-capability change).
+
+**Duplicates across partitions are schema-impossible, not merely rare.** `meshMessageHash`
+includes the RECIPIENT in its hash input, and the `messages` table carries a store-wide
+`UNIQUE(hash)` constraint — single-column, not composite with `workspace_id`
+(`plugins/anti-hall/companion/lib/devswarm-store.js:414`). Consequence: the same logical
+message routed to two different partitions produces two DIFFERENT hashes, and two rows
+sharing one hash cannot coexist in the table at all. Cross-partition duplicate content is
+therefore impossible by construction, and no content-level suppression/dedupe is needed when
+merging reads across partitions. Recorded because a forensic pass this session wasted effort
+searching for a source-partition message's hash inside a destination partition and wrongly
+concluded messages had been lost — the hash was never expected to match across partitions in
+the first place.
+
+**Design rule adopted: at-least-once beats at-most-once.** Wherever two rows cannot be
+PROVEN to be the same message, deliver both rather than risk suppressing one. A visible
+duplicate is recoverable; a silently dropped message is neither detectable nor recoverable.
+Correspondingly, a read cursor may never advance past a message that was not actually
+delivered to the caller — enforced structurally by deriving the cursor from
+`cursor + deliveredCount` (what was actually returned), never from a partition-wide total.
+
+**A global counter is not evidence of loss.** `seq` is a single GLOBAL, table-wide counter
+(`SELECT COALESCE(MAX(seq),0)+1 FROM messages`, no `WHERE` clause) shared across every
+recipient, every broadcast, and every heartbeat row in the store. A `seq` gap observed
+between two sends to ONE recipient is therefore NOT evidence that a message addressed to
+that recipient was lost — other traffic in the shared counter fills the gap. Recorded
+because a field report this session drew exactly that wrong inference from a `seq` gap.
+
+**A review lens worth reusing, surfaced repeatedly this session:** *"does this operation
+report success while dropping part of the job?"* Six independent instances of that exact
+shape turned up in one review pass: a reconcile step masking a real error as `unknown`; an
+`ok:true` result returned with no verification that the message actually arrived; a cursor
+write failure that was silently swallowed instead of surfacing; a registry-enumeration
+failure that silently narrowed a group instead of failing loud; an unknown CLI flag accepted
+silently while writing an empty field instead of rejecting it; and a count that unioned two
+channels while the corresponding read still consulted only one. None of the six were fixed
+by pattern-matching a rule — each required tracing what the operation's REPORTED outcome
+implied versus what it actually did.
+
+---
+
+Section §27 facts were verified 2026-08-23 from source at the versions on disk in this repo
+checkout (anti-hall's own code, not vendor behavior — no version-fragility caveat applies,
+but re-grep the cited function/symbol names rather than trusting line numbers verbatim after
+either file changes further).
