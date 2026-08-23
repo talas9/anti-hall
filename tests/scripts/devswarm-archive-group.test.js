@@ -495,7 +495,7 @@ test('foldArchivedRegistryRows: the migration also forwards a phantom unread to 
   } finally { rm(W); rm(home); }
 });
 
-test('cmdArchive: with NO live workspace left on the worktree, the archived id IS the survivor and its partition is SURFACED as an orphan (nothing lost, nothing deleted)', () => {
+test('cmdArchive: with NO live workspace left on the worktree, the archived id IS the survivor and its partition is SURFACED (quietly, as archivedStranded — nothing lost, nothing deleted)', () => {
   const home = tmpHome();
   const W = makeGitRepo('lonely');
   try {
@@ -520,13 +520,20 @@ test('cmdArchive: with NO live workspace left on the worktree, the archived id I
     assert.strictEqual(msgCount(home, repoKey, F.builderUuid), 1, 'the backlog is consolidated in the archived partition');
     assert.deepStrictEqual(activeIds(home, repoKey), [], 'nothing projects active');
 
-    // SURFACED, never deleted: computeSummary reports the now-registry-less
-    // partition as an orphan, which is the no-delete posture — not message loss.
+    // SURFACED, never deleted: computeSummary still reports the now-registry-less
+    // partition — the no-delete posture, not message loss. It lands in the QUIET
+    // archivedStranded[] rather than orphans[] because the whole worktree retired:
+    // archived + no live identity family is exactly healOrphanPartitions'
+    // `archived-no-family`, which can never forward or adopt, so warning about it
+    // every turn is a permanent unactionable nag. Re-register a workspace on this
+    // worktree and it returns to orphans[] (see devswarm-store-archived-stranded).
     const s = openS(home, repoKey);
     try {
       const sum = storeLib.computeSummary(s, { home });
-      const o = (sum.orphans || []).find((x) => String(x.id) === F.builderUuid);
-      assert.ok(o, 'the archived partition is surfaced as an orphan: ' + JSON.stringify(sum.orphans));
+      assert.ok(!(sum.orphans || []).some((x) => String(x.id) === F.builderUuid),
+        'an unreadable-forever archived partition must not nag as an actionable orphan');
+      const o = (sum.archivedStranded || []).find((x) => String(x.id) === F.builderUuid);
+      assert.ok(o, 'the archived partition is still surfaced: ' + JSON.stringify(sum.archivedStranded));
       assert.strictEqual(o.messageCount, 1, JSON.stringify(o));
     } finally { s.close(); }
     assert.strictEqual(msgCount(home, repoKey, F.meshId), 1, 'NO-DELETE: the original phantom row is still there');

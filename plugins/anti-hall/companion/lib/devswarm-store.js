@@ -41,6 +41,10 @@ const path = require('path');
 const crypto = require('crypto');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
 const livenessSelect = require('./devswarm-liveness-select.js');
+// archived-stranded classifier (A2 split). This module require is CHEAP and
+// side-effect free; the heavy scripts/devswarm.js require it needs is LAZY, paid
+// only when a store actually has an unread orphan candidate. See its header.
+const orphanPolicy = require('./devswarm-orphan-policy.js');
 
 // worktreeRealPath (install-devswarm-ingest.js) — the CANONICAL real-path resolver
 // used for stale-worktree detection (A3). Required fail-open (the installer guards
@@ -1637,10 +1641,17 @@ function summaryHashFor(store, o) {
 // ADDITIVE surface-only fields (A2/A3 — omitted entirely when empty so an existing
 // no-orphan/no-stale summary stays byte-identical for existing readers):
 //   orphans[]                 — {id, messageCount, unread}: partitions with real
-//                               unread but no live registry row.
+//                               unread but no live registry row, EXCLUDING the
+//                               archived-stranded ones below. This is the
+//                               ACTIONABLE stuck-mesh signal parent-inbox warns on.
+//   archivedStranded[]        — {id, messageCount, unread}: same shape, but the
+//                               workspace is archived AND its identity family has no
+//                               registry row — heal's `archived-no-family`, i.e.
+//                               provably unreadable forever. QUIET: kept for
+//                               doctor/diagnostics, never warned about per turn.
 //   staleRegistryPartitions[] — {id, worktreePath, unread}: registry rows whose
 //                               worktreePath no longer exists on disk.
-// Both are computed fresh each call from current store state (NO persisted cooldown
+// All are computed fresh each call from current store state (NO persisted cooldown
 // state). NEVER auto-forwarded / auto-deleted — surface only (owner no-delete rule).
 function computeSummary(store, opts) {
   const o = opts || {};
@@ -1672,8 +1683,12 @@ function computeSummary(store, opts) {
   // registryIds instead lets the A2 orphan pass see them as unregistered and report
   // {id, unread} same as it would for any other unregistered partition.
   // Net behaviour: an archived workspace with 0 unread is fully invisible (quiet,
-  // as it should be — nothing left to report). One with real unread surfaces as an
-  // orphan (honest — someone messaged a dead workspace and that must not vanish).
+  // as it should be — nothing left to report). One with real unread surfaces
+  // (honest — someone messaged a dead workspace and that must not vanish) — in
+  // `orphans[]` while its identity family still has a live row to forward into, and
+  // otherwise in the QUIET `archivedStranded[]` (see the A2 split below: that shape
+  // is heal's `archived-no-family`, which can never be healed, so warning about it
+  // per turn is a permanent unactionable nag — but the count is never dropped).
   // This also MATCHES the post-doctor end state: once foldArchivedRegistryRows
   // tombstones the registry row, the A2 orphan pass reports the exact same thing —
   // so the read path and the doctor path now agree instead of diverging until doctor
@@ -1963,7 +1978,21 @@ function computeSummary(store, opts) {
   // filtered to messageCount > cursorValue (REAL unread). listWorkspaceIds() already
   // enumerates every partition with any message/cursor/gate/registry row on BOTH
   // backends — no new primitive. Surface only: NEVER auto-forwarded or deleted.
+  //
+  // ARCHIVED-STRANDED SPLIT (field defect — permanent false-positive warning):
+  // an orphan whose workspace was DELIBERATELY archived and whose identity family
+  // has no registry row can never be read by anyone — healOrphanPartitions
+  // classifies exactly that shape as `unhealable / archived-no-family` and writes
+  // NOTHING, so parent-inbox's "N partition(s) with unread but no live workspace to
+  // read them" warning re-fired every single turn with no action a human or a heal
+  // pass could ever take. Those ids move OUT of `orphans[]` (the ACTIONABLE stuck-
+  // mesh signal) and into `archivedStranded[]` — NOT dropped: the count and the ids
+  // stay in the projection for doctor/diagnostics, they just stop nagging.
+  // The predicate is NOT re-derived here — devswarm-orphan-policy.js calls heal's
+  // OWN exported helpers (see that file's header), so the two cannot drift apart.
   const orphans = [];
+  const archivedStranded = [];
+  const isArchivedStranded = orphanPolicy.makeArchivedStrandedTest(home, registry);
   let allPartitionIds = [];
   try { allPartitionIds = typeof store.listWorkspaceIds === 'function' ? store.listWorkspaceIds() : []; } catch (_) { allPartitionIds = []; }
   for (const raw of allPartitionIds) {
@@ -1976,6 +2005,9 @@ function computeSummary(store, opts) {
     try { cursor = store.cursorValue(id); } catch (_) { cursor = 0; }
     const unread = Math.max(0, total - cursor);
     if (unread <= 0) continue;              // real unread only
+    // fail-open by contract: the classifier returns false on ANY doubt, so an id it
+    // could not positively prove unreadable stays in `orphans[]` exactly as before.
+    if (isArchivedStranded(id)) { archivedStranded.push({ id, messageCount: total, unread }); continue; }
     orphans.push({ id, messageCount: total, unread });
   }
 
@@ -2011,6 +2043,13 @@ function computeSummary(store, opts) {
   // auto-forwarded / auto-deleted. (No persisted cooldown state — any surfacing
   // de-dup is a trivial render-time cap in Phase D, not a state machine here.)
   if (orphans.length) summary.orphans = orphans;
+  // QUIET diagnostic field (never rendered as a per-turn warning): the orphans that
+  // are provably unreadable-forever. Same {id, messageCount, unread} shape as
+  // orphans[], same omitted-when-empty convention, so a project with none produces a
+  // byte-identical summary. Surfacing them here (rather than dropping the count) is
+  // deliberate — a silent drop would BE the "success while dropping part of the job"
+  // defect shape this repo keeps re-learning.
+  if (archivedStranded.length) summary.archivedStranded = archivedStranded;
   if (staleRegistryPartitions.length) summary.staleRegistryPartitions = staleRegistryPartitions;
 
   return summary;

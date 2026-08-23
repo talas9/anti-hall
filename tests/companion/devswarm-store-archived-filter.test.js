@@ -81,7 +81,7 @@ for (const B of backends) {
     } finally { rm(home); }
   });
 
-  test(`[${B.name}] archived workspace WITH unread surfaces as an ORPHAN (not active, not vanished)`, () => {
+  test(`[${B.name}] archived workspace WITH unread surfaces (quietly) as archivedStranded (not active, not vanished)`, () => {
     const home = tmpHome();
     try {
       const s = open(home);
@@ -94,10 +94,20 @@ for (const B of backends) {
       const summary = store.computeSummary(s, { home, now: 1000 });
       assert.ok(!Object.prototype.hasOwnProperty.call(summary.workspaces, 'archived-unread'),
         'archived workspace must NOT be projected as ACTIVE');
+      // NOTHING LOST — but this id is provably UNREADABLE FOREVER (archived, and its
+      // identity family has no registry row: healOrphanPartitions' `archived-no-family`,
+      // which writes nothing, every pass, forever). It therefore surfaces in the QUIET
+      // archivedStranded[] rather than the actionable orphans[] the per-turn hook warns
+      // on — same shape, same counts, just no permanent unactionable nag. It moves back
+      // into orphans[] the moment a live family row exists (see
+      // devswarm-store-archived-stranded.test.js).
       const orphans = summary.orphans || [];
-      const found = orphans.find((o) => o.id === 'archived-unread');
-      assert.ok(found, 'archived workspace with real unread must surface as an orphan');
-      assert.equal(found.unread, 1, 'orphan unread count must reflect the stranded message');
+      assert.ok(!orphans.some((o) => o.id === 'archived-unread'),
+        'an unreadable-forever archived partition must not nag as an actionable orphan');
+      const stranded = summary.archivedStranded || [];
+      const found = stranded.find((o) => o.id === 'archived-unread');
+      assert.ok(found, 'archived workspace with real unread must still surface (quietly), never vanish');
+      assert.equal(found.unread, 1, 'unread count must reflect the stranded message');
       const stale = summary.staleRegistryPartitions || [];
       assert.ok(!stale.some((p) => (p.id || p) === 'archived-unread'),
         'archived workspace must not also appear in staleRegistryPartitions');
