@@ -6,6 +6,36 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.82.0 (2026-08-23)
+
+- **Fix: a Primary could not see mail delivered to it.** anti-hall addresses
+  a workspace by a logical mesh id, but one logical Primary can legitimately
+  have two registry rows — one keyed by the host tool's own workspace id,
+  one by anti-hall's derived id. Sending resolved that group dynamically
+  (picking the live row); the Primary's own inbox read used a fixed derived
+  id and looked at only one partition. Mail delivered to the other row was
+  invisible to the reader. Reading now covers every partition in the mesh
+  group, so a Primary sees all of its mail regardless of which row a sender
+  resolved to.
+- **Fix: `peek-primary` and `read-primary` only read one of the two message
+  channels.** anti-hall keeps a file-based inbox and a store partition; the
+  counting verbs already merged both, but the two verbs a Primary uses to
+  actually read its mail did not — so the unread count and the visible
+  mailbox could disagree substantially. Both now use the same merge.
+- **Fix: cursor safety.** A read cursor is only ever advanced past messages
+  that were actually delivered to the caller — derived from what the read
+  returned, never from a partition total. Prevents the failure where a
+  cursor claims mail was read that was never delivered.
+- **Fix: honest reporting when a read is incomplete.** If a cursor cannot be
+  persisted, the result now says so and names the partition and channel
+  instead of reporting plain success. If the set of sibling partitions
+  cannot be determined, the result marks the group unresolved and the
+  totals partial, rather than silently reading a narrower set and
+  presenting the total as complete.
+- **By design: duplicate delivery over suppression.** Where two messages
+  cannot be proven to be the same message, both are delivered — a duplicate
+  is visible and recoverable, while a dropped message is neither.
+
 ## 0.81.0 (2026-08-23)
 
 - **Fix: a Primary's own inbox could be permanently unreachable.** A

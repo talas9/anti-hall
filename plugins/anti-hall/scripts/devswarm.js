@@ -3346,10 +3346,34 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   }
   const cursorPath = primaryCursorPath(home, id);
   const cursor = inboxCursor.readCursor(cursorPath);
+  // defect dca4d2e16926: `messages`/`read-primary`/`peek-primary` used to be
+  // STORE-ONLY (s.messageCount/s.listMessages below), while `inbox count/read/
+  // ack` already union the store partition with the NDJSON descriptor inbox
+  // (devswarmUnread.unionUnread — see that sub's own header comment a few
+  // hundred lines down). That let `inbox count` report real unread mail a
+  // Primary's OWN read path (`read-primary`) could never see. Wire this verb
+  // onto the SAME union, gated to the unread-scoped calls (read-primary,
+  // peek-primary, and any `--ack`) — a plain `inbox messages <id>` (full
+  // history, no ack) is unaffected, matching its pre-fix contract exactly.
+  const wantsUnion = doAck || forceUnread;
+  const desc = wantsUnion ? readDescriptorFile(home, id) : null;
   const openedForRead = resolveWorkspaceStoreForRead(id, ctx, home, { skipExistenceGuard: doAck && !ackAsOwner });
   if (!openedForRead.ok) return openedForRead;
   const s = openedForRead.store;
-  let total, messages, acked;
+  let total, messages, acked, union = null;
+  let meshAddedUnreadCount = 0; // count of sibling-partition rows folded into `messages` after dedup (0 unless meshUnionActive)
+  let meshAddedTotal = 0; // Σ sibling partitions' own full `messageCount` (0 unless meshUnionActive) — undeduped, mirrors how `total` was never cross-source-deduped pre-fix either (only `messages`/`unreadCount` are)
+  // P1b: set ONLY when registry/group enumeration itself THREW (could not
+  // determine whether siblings exist) — distinct from "resolved cleanly, no
+  // siblings found" (meshUnionActive stays false, silently — that's fine).
+  let meshGroupUnresolved = false;
+  let meshGroupError = null;
+  // P1a: cursor-write failures for the sibling-store and NDJSON-descriptor
+  // channels (never the caller's own primary store cursor, which throws
+  // loud/unswallowed as before). Named per partition/channel so the RESULT
+  // can honestly report persistence failure even though delivery (the safe,
+  // fail-open direction) always succeeds regardless.
+  const cursorWriteFailures = [];
   try {
     if (doAck && !ackAsOwner) {
       const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
@@ -3386,18 +3410,245 @@ function cmdInboxMessages(id, flags, ctx, opts) {
         };
       }
     }
-    total = s.messageCount(id);
+    total = s.messageCount(id); // STORE-side total only — feeds the STORE cursor ack below, unchanged.
     messages = s.listMessages(id, { sinceCursor: unreadOnly ? cursor : 0 });
+    // ASYMMETRIC PARTITION RESOLUTION fix (P0): `send --to-primary` resolves
+    // DYNAMICALLY across every registry row sharing this worktree's
+    // canonicalMeshId (resolveMeshTarget/meshCandidateRows, ~line 4849) and
+    // picks whichever row is freshest-LIVE — but this read path resolved
+    // STATICALLY to the ONE `id` the parent-gate hook computed
+    // (installIngest.primaryWorkspaceId), which can be a DIFFERENT registry
+    // row than the one a given `send` actually delivered into (proven live:
+    // a DevSwarm-native builder-id UUID row + anti-hall's minted
+    // primary-<hash> row for the SAME worktree — sends landed on the UUID
+    // partition, `read-primary` only ever opened the hash partition).
+    // `canonicalMeshId`/`groupRegistryByMeshId` already know both rows are
+    // ONE logical target (`diagnose` reports them under a single
+    // `meshTargets` entry) — this reuses that SAME grouping primitive
+    // (meshCandidateRows, no parallel reimplementation) to widen the READ
+    // to every row in the group. Gated to the SAME `wantsUnion` scope as the
+    // NDJSON union above (read-primary/peek-primary/--ack only) so a plain
+    // `inbox messages <id>` keeps its pre-fix, single-partition contract
+    // exactly. Fail-open: any resolution error leaves meshPartitionIds at
+    // just [id] — identical to the pre-fix single-partition read.
+    let meshPartitionIds = [String(id)];
+    let meshUnionActive = false;
+    if (wantsUnion) {
+      try {
+        const selfRow = (s.listRegistry() || []).find((r) => r && String(r.id) === String(id));
+        const wtPath = (selfRow && selfRow.worktreePath) || (desc && desc.worktreePath) || null;
+        const meshId = wtPath ? canonicalMeshId(wtPath) : null;
+        if (meshId) {
+          const candidates = meshCandidateRows(s, meshId);
+          const ids = Array.from(new Set((candidates || []).map((r) => String(r.id))));
+          if (ids.length > 1 && ids.indexOf(String(id)) !== -1) {
+            meshPartitionIds = ids;
+            meshUnionActive = true;
+          }
+        }
+      } catch (e) {
+        // P1b fix: this used to be a silent catch-all that narrowed the group
+        // to `[id]` on ANY thrown error — indistinguishable from the
+        // legitimate "resolved cleanly, no siblings exist" case, so a caller
+        // saw ok:true and a total that LOOKED complete while sibling unread
+        // mail was actually omitted because enumeration itself failed
+        // (corrupt registry read, canonicalMeshId throw, etc). Surface it
+        // instead: narrowing is still the correct FALLBACK for delivery
+        // (fail toward `[id]`, never toward blocking the read), but the
+        // failure must be visible so a caller doesn't mistake a partial read
+        // for a complete one.
+        meshPartitionIds = [String(id)];
+        meshUnionActive = false;
+        meshGroupUnresolved = true;
+        meshGroupError = String((e && e.message) || e);
+      }
+    }
+    // meshSiblingPartitions: each OTHER row's own read-cursor + unread slice,
+    // tagged with its OWN partitionId so ack (below) can advance exactly that
+    // partition's own cursor file — "per-partition cursors stay per-
+    // partition". Empty (a no-op) whenever meshUnionActive is false, so the
+    // single-row-Primary path below is byte-for-byte unaffected.
+    const meshSiblingPartitions = [];
+    if (meshUnionActive) {
+      for (const pid of meshPartitionIds) {
+        if (pid === String(id)) continue; // `id`'s own slice is already `total`/`messages` above
+        const pCursorPath = primaryCursorPath(home, pid);
+        const pCursor = inboxCursor.readCursor(pCursorPath);
+        const pTotal = s.messageCount(pid);
+        const pMessages = s.listMessages(pid, { sinceCursor: unreadOnly ? pCursor : 0 })
+          .map((r) => Object.assign({ partitionId: pid }, r));
+        meshSiblingPartitions.push({ id: pid, cursorPath: pCursorPath, cursor: pCursor, total: pTotal, messages: pMessages });
+        meshAddedTotal += pTotal;
+      }
+    }
+    // defect dca4d2e16926: fold in the NDJSON descriptor channel, using the
+    // SAME `unionUnread` primitive `inbox count/read/ack` already use (not a
+    // parallel reimplementation). `storeHandle: s` lets unionUnread dedupe the
+    // store's own unread rows against NDJSON hashes internally — a message
+    // present in BOTH channels (native-drained) is returned only once, on the
+    // NDJSON side (union.storeOnlyUnreadRows already excludes it).
+    if (wantsUnion && desc && desc.inboxPath) {
+      try {
+        union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle: s });
+      } catch (_) { union = null; } // fail-open: falls back to store-only reporting below
+    }
+    if (union) {
+      // Merge the two channels into ONE `messages` array, ordered by ts
+      // (ascending) so mail interleaves chronologically regardless of which
+      // channel carried it — deterministic (Array#sort is stable; a tied/
+      // missing ts keeps NDJSON-before-store, its concat order below).
+      const ndjsonRows = union.ndjsonUnreadLines.map((line) => {
+        let o = null;
+        try { o = JSON.parse(line); } catch (_) { o = null; }
+        const p = (o && typeof o === 'object') ? o : {};
+        return {
+          origin: 'ndjson',
+          ts: Number.isFinite(p.createdAt) ? p.createdAt : null,
+          hash: p._h != null ? String(p._h) : null,
+          body: p.message != null ? String(p.message) : '',
+          sender: p.fromBranch != null ? String(p.fromBranch) : null,
+          status: p.status != null ? p.status : null,
+        };
+      });
+      const storeRows = union.storeOnlyUnreadRows.map((r) => Object.assign({ origin: 'store' }, r));
+      messages = ndjsonRows.concat(storeRows).sort((a, b) => {
+        const ta = Number.isFinite(a.ts) ? a.ts : Number.POSITIVE_INFINITY;
+        const tb = Number.isFinite(b.ts) ? b.ts : Number.POSITIVE_INFINITY;
+        return ta - tb;
+      });
+    }
+    // P0 fix (adversarial review): fold in the mesh siblings' unread slices.
+    // The PRIOR version deduped cross-partition rows on a WEAK content key
+    // (sender, ts, body) -- two GENUINELY DISTINCT messages (different sends,
+    // different recipients) that merely happened to share sender+ts+body
+    // collapsed into one, and the ack loop below then advanced BOTH
+    // partitions' cursors past the suppressed twin, losing it permanently.
+    //
+    // Identity investigated: `hash` (meshMessageHash, companion/lib/
+    // devswarm-store.js:285) hashes {from, to, type, urgency, message,
+    // timestamp[, needsReply]} -- `to` (the partition) is IN the hash, and
+    // `hash` carries a STORE-WIDE `UNIQUE(hash)` constraint across every
+    // workspace_id in one store (devswarm-store.js CREATE TABLE messages,
+    // ~line 414). Two rows in DIFFERENT partitions can therefore never share
+    // a hash by construction, and a row's workspace_id is fixed at insert
+    // time so the SAME physical row can never come back from two different
+    // partitions' listMessages() calls either. There is no schema-provable
+    // "cross-partition duplicate" case at all -- so nothing here is provably
+    // identical, and per the governing principle (never lose a message;
+    // at-least-once beats at-most-once) NOTHING is suppressed: every sibling
+    // row is delivered. `hash` is still used below as a defensive,
+    // belt-and-suspenders guard (mirrors devswarmUnread.unionUnread's own
+    // `!r.hash || !hashes.has(r.hash)` convention -- a null hash is NEVER
+    // treated as a match) against a theoretical sha256 collision; it cannot
+    // fire in practice given the constraint above.
+    if (meshSiblingPartitions.length) {
+      const seenHashes = new Set(messages.filter((m) => m && m.hash).map((m) => m.hash));
+      const dedupedSiblingRows = [];
+      // HARD INVARIANT (structural, not conventional): each sibling's actual
+      // delivered count is recorded on `part.deliveredCount` here, and the
+      // ack loop below derives that partition's cursor target FROM THIS
+      // NUMBER -- never from `part.total` directly. A row suppressed by the
+      // defensive hash guard above therefore structurally cannot have its
+      // partition's cursor advanced past it, regardless of how that
+      // suppression happened.
+      for (const part of meshSiblingPartitions) {
+        let delivered = 0;
+        for (const row of part.messages) {
+          if (row && row.hash && seenHashes.has(row.hash)) continue; // schema-impossible; defensive only
+          if (row && row.hash) seenHashes.add(row.hash);
+          dedupedSiblingRows.push(row);
+          delivered++;
+        }
+        part.deliveredCount = delivered;
+      }
+      meshAddedUnreadCount = dedupedSiblingRows.length;
+      if (dedupedSiblingRows.length) {
+        // Deterministic ordering: concat in a fixed (id-first, then
+        // meshPartitionIds order) sequence, THEN a stable sort by ts -- Node's
+        // Array#sort is a stable sort (ES2019+), so a tied/missing ts keeps
+        // this concat order as its tiebreak, never an arbitrary one.
+        messages = messages.concat(dedupedSiblingRows).sort((a, b) => {
+          const ta = Number.isFinite(a.ts) ? a.ts : Number.POSITIVE_INFINITY;
+          const tb = Number.isFinite(b.ts) ? b.ts : Number.POSITIVE_INFINITY;
+          return ta - tb;
+        });
+      }
+    }
     if (doAck) {
       acked = inboxCursor.ackTo(cursorPath, total); // absolute set to the current total (no inbox clamp)
       s.setCursor(id, acked); // keep deriveSummary's unread projection in sync with the ACK
+      // Per-partition cursors STAY per-partition: each sibling row is acked,
+      // and ONLY the rows actually in `meshSiblingPartitions` (the group `id`
+      // resolved to this call) — a partition outside the group, or one this
+      // call never touched, is never written.
+      //
+      // P0 HARD INVARIANT (structural): the ack target is
+      // `part.cursor + part.deliveredCount` — deliveredCount is the actual
+      // number of that partition's rows folded into `messages` above, NEVER
+      // `part.total` directly. In the normal (nothing suppressed) case this
+      // is arithmetically identical to `part.total` (part.messages was
+      // fetched with sinceCursor:part.cursor and unreadOnly is always true on
+      // an ack call, so part.cursor + part.messages.length === part.total
+      // exactly) — but if a future change (or the defensive hash guard above)
+      // ever DOES suppress a row, the cursor for that partition structurally
+      // cannot advance past it, because the target is computed FROM what was
+      // delivered, not from the partition's raw count.
+      //
+      // P1a fix: a cursor-write failure here used to be silently swallowed —
+      // delivery had already happened (the safe, fail-open direction; a
+      // redelivered message next read is the expected/safe outcome), but
+      // `ok:true` gave no signal that the SIDE EFFECT (the ack) didn't
+      // persist. Name which partition/channel failed and why, matching
+      // reconcile's own per-target `results[].error` convention (cmdReconcile,
+      // ~line 6061).
+      for (const part of meshSiblingPartitions) {
+        const deliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length;
+        const ackTarget = part.cursor + deliveredCount;
+        try {
+          inboxCursor.ackTo(part.cursorPath, ackTarget);
+          s.setCursor(part.id, ackTarget);
+        } catch (e) {
+          cursorWriteFailures.push({ partitionId: part.id, channel: 'sibling-store-cursor', error: String((e && e.message) || e) });
+        }
+      }
       store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); // refresh the persisted projection now
+      // Advance the NDJSON descriptor's OWN cursor too (a THIRD, separate
+      // cursor file from primaryCursorPath/the store cursor above) — mirrors
+      // the ack-all path `inbox ack <id>` already performs (below, ~line
+      // 3521). Without this, `read-primary` would durably consume the
+      // NDJSON-channel messages it just returned in `messages` above while
+      // never marking them read on the NDJSON side, so they would resurface
+      // as "unread" on the next `inbox count`/`peek-primary`/`read-primary`
+      // forever. Best-effort/fail-open on DELIVERY (the store-side ack above
+      // already durably succeeded regardless of this) — but P1a fix: report
+      // the persistence failure instead of swallowing it silently.
+      if (union && desc && desc.inboxPath && desc.cursorPath) {
+        try { inboxCursor.advanceCursor(desc.inboxPath, desc.cursorPath); }
+        catch (e) { cursorWriteFailures.push({ partitionId: id, channel: 'ndjson-cursor', error: String((e && e.message) || e) }); }
+      }
     }
   } finally { s.close(); }
   // unreadCount (FIX 2): the actual count of unread messages AS OF the cursor
   // read at the top of this call (before any ack this call itself performs) —
-  // a real number, never conflated with `unreadOnly`'s boolean mode.
-  const unreadCount = Number.isFinite(total) && Number.isFinite(cursor) ? Math.max(0, total - cursor) : 0;
+  // a real number, never conflated with `unreadOnly`'s boolean mode. When the
+  // NDJSON union is active this is the MERGED unread count (matches `inbox
+  // count`'s `unreadTotal`) — union.unread already equals messages.length
+  // exactly (ndjsonUnreadLines.length + storeOnlyUnreadRows.length).
+  // meshAddedUnreadCount folds in the mesh-partition widening (P0 fix, this
+  // change): sibling-partition rows already deduped by content identity
+  // against everything else in `messages`, so this is purely additive — 0
+  // whenever meshUnionActive was false (single-row Primary, byte-identical).
+  const unreadCount = (union
+    ? union.unread
+    : (Number.isFinite(total) && Number.isFinite(cursor) ? Math.max(0, total - cursor) : 0)) + meshAddedUnreadCount;
+  // total: merged (dedup'd) total across both channels when the union is
+  // active — matches `inbox count`'s `total` field, closing the exact
+  // field-reported mismatch (457 unread via `count` vs 57 via `peek-primary`)
+  // this defect describes. Store-only setups (no descriptor / union
+  // unavailable) keep the pre-fix store-only total, unchanged. meshAddedTotal
+  // (this change) adds each sibling partition's own full message count on
+  // top — 0 whenever meshUnionActive was false.
+  const outTotal = (union ? union.total : total) + meshAddedTotal;
   const out = {
     ok: true,
     action: (opts && opts.action) || (doAck ? 'read-primary' : 'messages'),
@@ -3405,10 +3656,18 @@ function cmdInboxMessages(id, flags, ctx, opts) {
     unreadOnly,
     unreadCount,
     cursor: acked !== undefined ? acked : cursor,
-    total,
+    total: outTotal,
     count: messages.length,
     messages,
   };
+  if (union) {
+    // Additive channel-scoped cursor visibility, naming convention matching
+    // `inbox count`'s own cursorNdjson/cursorStore fields (a few hundred
+    // lines below) so a caller reading BOTH verbs sees consistent field
+    // names for the two distinct cursor files.
+    out.cursorNdjson = union.cursor;
+    out.cursorStore = union.storeCursor;
+  }
   // FIX 5 (zero-progress ack visibility): `ok:true` alone cannot distinguish an
   // ack that actually advanced the cursor from one that moved nothing (e.g. an
   // already-fully-read workspace, or — pre-FIX-5 — an unregistered id that
@@ -3416,6 +3675,23 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   if (doAck) {
     out.ackedFrom = cursor;
     out.acked = acked;
+  }
+  // P1a: delivery ALWAYS succeeds regardless (fail-open on delivery — a
+  // redelivered message next read is the safe direction), but a cursor
+  // persistence failure must not hide behind a bare `ok:true`. Named per
+  // partition/channel so a caller can see exactly what did not persist.
+  if (cursorWriteFailures.length) {
+    out.cursorWriteFailures = cursorWriteFailures;
+    out.cursorPersisted = false;
+  }
+  // P1b: registry/group enumeration THREW (not "resolved cleanly, no
+  // siblings exist") — the read fell back to `[id]` only, so `total`/
+  // `unreadCount`/`messages` reflect `id`'s own partition (+ NDJSON union, if
+  // that succeeded) only. Never let this look like a complete read.
+  if (meshGroupUnresolved) {
+    out.meshGroupUnresolved = true;
+    out.meshGroupError = meshGroupError;
+    out.totalsPartial = true;
   }
   return out;
 }
