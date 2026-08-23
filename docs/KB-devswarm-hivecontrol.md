@@ -2410,3 +2410,90 @@ Section §27 facts were verified 2026-08-23 from source at the versions on disk 
 checkout (anti-hall's own code, not vendor behavior — no version-fragility caveat applies,
 but re-grep the cited function/symbol names rather than trusting line numbers verbatim after
 either file changes further).
+
+## 28. "Success while dropping part of the job" — a recurring defect shape, and the review lens for it
+
+Seven independent instances of the same defect shape turned up in a single review session,
+all verified from source. None were found by the (green) test suite; every one was caught by
+adversarial review reading the code, not by running it.
+
+1. A reconcile step masking a real per-target error as `unknown error`.
+2. An `ok:true` result returned from a send with no verification that the message actually
+   arrived — a prior "fix" for this had added echo fields to the response without adding
+   arrival verification, so the shape persisted under a response that looked more complete.
+3. A swallowed store-side cursor-write failure inside `cmdInboxMessages`.
+4. A registry-enumeration failure silently narrowing a mesh group while still reporting
+   totals as if the group were complete.
+5. The defect CLI (`plugins/anti-hall/scripts/defect.js`) accepting an unknown `--x-file`-shaped
+   flag, dropping its value, and exiting 0. Fixed: `checkFlags` now rejects any unrecognized
+   flag for a subcommand outright (`defect.js:115-148`) — nothing is written when an unknown
+   flag is present, matching the CLI's stated contract in `plugins/anti-hall/README.md`.
+6. `inbox count` unioning two channels (durable NDJSON inbox + store partition, via
+   `unionUnread` in `plugins/anti-hall/companion/lib/devswarm-unread.js:129` region) while
+   `peek-primary`/`read-primary` read only one channel — unread count and visible mailbox
+   could disagree. (This is the same shape as, but a distinct instance from, §27's asymmetric
+   partition read — that one was two REGISTRY ROWS for one Primary; this one is two CHANNELS
+   for one row.)
+7. The plain `inbox ack` verb (`cmdInboxMessages`'s ack path, `plugins/anti-hall/scripts/devswarm.js`
+   near line 4103) swallowing a store-side cursor-write failure behind a bare `ok:true`. Fixed
+   under defect `c35a7ca3056b`: the NDJSON ack still succeeds and is NOT rolled back (fail-open
+   on delivery — re-serving an already-acked message as unread again is the safe direction),
+   but the store-cursor failure is now captured and surfaced as `cursorWriteFailures`
+   (`{partitionId, channel:'store-cursor', error}`) + `cursorPersisted:false` on the ack
+   response, reusing the exact field shape `cmdInboxMessages`'s read path already used —
+   one convention for "this read/ack was partial," not two.
+
+**The review lens to reuse:** *does this operation report success while dropping part of the
+job?* Apply it specifically to any code path that (a) has a fail-open `catch`, (b) merges or
+unions two sources (two channels, two registry rows, two partitions), or (c) returns a bare
+`{ok:true}` with no field distinguishing "fully done" from "partially done."
+
+**Two index spaces, one subtraction — the v0.83.0 P0.** The NDJSON∪store union above
+(`devswarm-unread.js:129` region) filters store rows down to what the CALLER receives; a
+separate read cap then counted rows WITHHELD BY THAT CAP in the same filtered space; the ack
+path subtracted that withheld count from the RAW, unfiltered `storeHandle.messageCount(id)`.
+Because the subtraction was performed against the wrong (raw) space, the resulting cursor
+could advance past a message that was never actually delivered to the caller — a permanent,
+undetectable message loss for that recipient. Fix: derive the ack target strictly from the
+`.index` of a row the caller actually received — `Math.max(cursor, ownDeliveredMaxIndex)` —
+never by subtracting a filtered-space count from a raw-space total. This generalizes §27's
+"design rule adopted" (cursor derived from `cursor + deliveredCount`, never a partition-wide
+total): the same rule, restated for a THIRD instance of two mismatched counting spaces.
+
+**A green suite is not evidence for delivery/cursor code.** 3472 tests passed over that
+permanent message-loss bug before it was found. Of the defects introduced by the FIXES made
+in that same session, three were caught, and all three were caught by adversarial review on a
+frozen tree — none by the test suite. For any code path that advances a cursor or decides
+message delivery, treat "tests are green" as necessary but explicitly insufficient; budget a
+dedicated review pass on a tree that is not still moving underneath it.
+
+**Heredoc bodies are not commands.** A shell-command guard that classifies risk by splitting
+input on newlines will misclassify heredoc BODY lines as standalone commands. A commit
+message whose body happened to contain the literal text `graphify update ...` (quoting a KB
+fact, not invoking anything) was blocked as if it were itself a live invocation of a
+throttle-required command. The correct behavior: keep the heredoc's OPENER line in the
+command segment it belongs to, and skip everything between opener and closing delimiter when
+splitting for command classification.
+
+**`DEVSWARM_SOURCE_BRANCH` is the only child-workspace signal**, consumed by both
+`command-guard.js` and (as of this session) `graphify-guard.js`. It is a plain environment
+variable, which means it can in principle leak into (be inherited by) a Primary's own
+process — a pre-existing, accepted risk that is now shared by two independent hard blocks
+instead of one.
+
+**The parent gate and the drain verb disagree about store scope** (filed as defect
+`e586afdaa968`). The parent gate's neglect check reads ACROSS stores (multi-store aware); the
+prescribed remediation, `inbox read-primary`, resolves its target repo key from the CURRENT
+WORKING DIRECTORY (single-store, CWD-scoped). Consequence: a Primary can be escalated at —
+and, unresolved, eventually escalated to a human about — a workspace it structurally cannot
+drain by running the gate's own prescribed command from its own directory, and running that
+command from the wrong directory risks writing a cursor into the wrong store partition
+entirely. Open at time of writing; recorded here as a known gate/verb scope mismatch, not
+resolved by anything in this section.
+
+---
+
+Section §28 facts were verified 2026-08-23 from source at the versions on disk in this repo
+checkout (anti-hall's own code, not vendor behavior — no version-fragility caveat applies,
+but re-grep the cited function/symbol names rather than trusting line numbers verbatim after
+either file changes further).
