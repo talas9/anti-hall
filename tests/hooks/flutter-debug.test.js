@@ -448,15 +448,41 @@ function runDoctor(cwd, extraEnv) {
   // --quiet still computes every section; it just suppresses the banner print.
   // doctor.js exits non-zero when other anti-hall checks fail in a bare tmpdir,
   // so capture stdout regardless of exit status.
+  //
+  // ISOLATION (two independent layers — do not remove either):
+  //
+  //  (1) `--check` makes doctor PURE READ-ONLY. Plain `doctor` defaults to
+  //      DO_REPAIR = !CHECK (plugins/anti-hall/hooks/doctor.js:30), and the 12
+  //      migrationFix passes in hooks/lib/doctor-repair.js sit OUTSIDE the
+  //      `gateOpen` block, so a bare tmpdir cwd does NOT stop them: they fold
+  //      store DBs, rewrite registry rows and migrate owner keys against
+  //      os.homedir() for real. This test only asserts on section PRESENCE,
+  //      and --check still renders every section (verified: the flutter-debug
+  //      section appears with --check when a pubspec.yaml is in cwd), so the
+  //      repair pass is pure downside here.
+  //
+  //  (2) An isolated HOME. `Object.assign({}, process.env, ...)` inherits the
+  //      developer's REAL HOME, and doctor resolves everything it touches
+  //      through os.homedir(). Even under --check doctor WRITES cache/state
+  //      files into ~/.anti-hall/, so the spawn gets its own disposable home —
+  //      the same mkdtemp idiom the other doctor.js spawner tests use, and the
+  //      one tests/hooks/doctor-default-home-isolation.test.js enforces.
+  const fallbackHome = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-default-home-'));
   try {
-    return execFileSync(process.execPath, [DOCTOR_JS], {
+    return execFileSync(process.execPath, [DOCTOR_JS, '--check'], {
       cwd,
       encoding: 'utf8',
-      env: Object.assign({}, process.env, { ANTIHALL_DOCTOR_CONTEXT: '' }, extraEnv || {}),
+      env: Object.assign(
+        {}, process.env,
+        { ANTIHALL_DOCTOR_CONTEXT: '', HOME: fallbackHome, USERPROFILE: fallbackHome },
+        extraEnv || {},
+      ),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
   } catch (e) {
     return (e && e.stdout ? String(e.stdout) : '') + (e && e.stderr ? String(e.stderr) : '');
+  } finally {
+    try { fs.rmSync(fallbackHome, { recursive: true, force: true }); } catch (_) {}
   }
 }
 

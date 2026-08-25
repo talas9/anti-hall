@@ -9,7 +9,25 @@
 // only what a test explicitly passes via opts.env. Nothing leaks in.
 
 const { spawnSync } = require('node:child_process');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+
+// defaultHome() — the HOME a testHook/testHookRaw call gets when it does NOT
+// pass opts.home. This used to fall back to `process.env.HOME`: the DEVELOPER'S
+// REAL HOME. Hooks write state under ~/.anti-hall/ (e.g. devswarm-child-gate's
+// drain records land in ~/.anti-hall/devswarm/child-drain/), so every call site
+// that forgot opts.home silently polluted real machine state on `npm test`.
+// A per-process disposable temp dir is created LAZILY (only if some call site
+// actually omits opts.home) and reused for the rest of the run, so the fallback
+// costs nothing when every caller is well-behaved.
+let _defaultHome = null;
+function defaultHome() {
+  if (_defaultHome === null) {
+    _defaultHome = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-spawn-hook-default-home-'));
+  }
+  return _defaultHome;
+}
 
 // Hooks live in plugins/anti-hall/hooks, resolved absolutely from this file.
 const HOOKS_DIR = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks');
@@ -57,7 +75,8 @@ function isolatedEnv(home) {
 //   - hookRelPathOrAbs: a bare hook filename (e.g. 'git-guard.js'), a path under
 //     the hooks dir, or an absolute path.
 //   - payloadObj: the JSON object piped to the hook on stdin.
-//   - opts.home: HOME for the child (fake home). Defaults to process.env.HOME.
+//   - opts.home: HOME for the child (fake home). Defaults to a disposable
+//     per-process mkdtemp dir (defaultHome()) — NEVER the real machine home.
 //   - opts.env: extra env vars merged onto the controlled base.
 //   - opts.expectJson: when true, RE-SPAWN (up to 4 attempts) on the macOS
 //     spawnSync empty-stdout flake until stdout parses as JSON (see spawnHook).
@@ -136,7 +155,7 @@ function testHook(hookRelPathOrAbs, payloadObj, opts = {}) {
     : path.join(HOOKS_DIR, hookRelPathOrAbs);
 
   const env = {
-    ...isolatedEnv(opts.home || process.env.HOME),
+    ...isolatedEnv(opts.home || defaultHome()),
     ...(opts.env || {}),
   };
 
@@ -150,7 +169,7 @@ function testHookRaw(hookRelPathOrAbs, rawStdin, opts = {}) {
     ? hookRelPathOrAbs
     : path.join(HOOKS_DIR, hookRelPathOrAbs);
   const env = {
-    ...isolatedEnv(opts.home || process.env.HOME),
+    ...isolatedEnv(opts.home || defaultHome()),
     ...(opts.env || {}),
   };
   return spawnHook(hookAbs, rawStdin, env, opts.expectJson === true);

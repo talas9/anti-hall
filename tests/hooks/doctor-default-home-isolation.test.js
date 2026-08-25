@@ -46,12 +46,72 @@ const path = require('node:path');
 const cp = require('node:child_process');
 
 const REPO_ROOT = path.join(__dirname, '..', '..');
-const FIXED_FILES = [
-  'tests/hooks/doctor.test.js',
-  'tests/hooks/doctor-repair.test.js',
-  'tests/hooks/doctor-repair-reclaim.test.js',
-  'tests/hooks/doctor-logs.test.js',
-].map((rel) => path.join(REPO_ROOT, rel));
+const TESTS_ROOT = path.join(REPO_ROOT, 'tests');
+
+// ---------------------------------------------------------------------------
+// DISCOVERY (not a hardcoded allowlist).
+//
+// This guard originally listed 4 filenames by hand. That list is a trap: it
+// silently missed tests/hooks/flutter-debug.test.js, which spawns the SAME
+// doctor.js with a wholesale `process.env` spread and no HOME override — so
+// `npm test` ran the REAL doctor's REAL repair pass against the developer's
+// REAL home (proven: doctor.js:30 `const DO_REPAIR = !CHECK` makes repair the
+// DEFAULT, and none of the 12 migrationFix passes in hooks/lib/doctor-repair.js
+// sit inside the `gateOpen` block, so a bare tmpdir cwd does not stop them).
+// Adding a 5th filename would just re-arm the trap for the 6th file.
+//
+// So: SCAN the whole tests/ tree for every file that spawns hooks/doctor.js as
+// a real subprocess, and hold each one to the isolation contract. A new test
+// that spawns doctor.js is covered the moment it is written.
+// ---------------------------------------------------------------------------
+function listTestFiles(dir, acc) {
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, ent.name);
+    if (ent.isDirectory()) listTestFiles(p, acc);
+    else if (/\.test\.js$/.test(ent.name)) acc.push(p);
+  }
+  return acc;
+}
+
+// True when `src` spawns a child process whose argv contains hooks/doctor.js —
+// either via a local const bound to that path (the idiom every current spawner
+// uses: `const DOCTOR_JS = path.join(..., 'doctor.js')` then
+// `spawnSync(process.execPath, [DOCTOR_JS, ...])`) or via an inline literal.
+function spawnsDoctor(src) {
+  const SPAWN = '(?:spawnSync|execFileSync|execFile|spawn)\\s*\\(';
+  // 1. identifiers bound to a .../doctor.js path
+  const ids = new Set();
+  const bind = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*[^;\n]*['"]doctor\.js['"]/g;
+  for (let m = bind.exec(src); m; m = bind.exec(src)) ids.add(m[1]);
+  for (const id of ids) {
+    if (new RegExp(SPAWN + '[^;]*?\\[\\s*' + id + '\\b').test(src)) return true;
+  }
+  // 2. inline literal path passed straight into the spawn's argv array
+  return new RegExp(SPAWN + '[^;]*?[\'"][^\'"]*doctor\\.js[\'"]').test(src);
+}
+
+const FIXED_FILES = listTestFiles(TESTS_ROOT, [])
+  // This guard file itself is exempt: its VACUOUS-RED test deliberately
+  // executes the old `HOME: undefined` pattern to prove the leak is real.
+  .filter((f) => path.resolve(f) !== path.resolve(__filename))
+  .filter((f) => spawnsDoctor(fs.readFileSync(f, 'utf8')))
+  .sort();
+
+// Anti-vacuous self-check: if the scan regex ever silently stops matching, the
+// per-file loop below would iterate zero files and the whole guard would pass
+// while protecting nothing. Pin the known spawners so a broken scan goes RED.
+test('scan self-check: the doctor.js spawner discovery is not vacuous', () => {
+  const rel = FIXED_FILES.map((f) => path.relative(REPO_ROOT, f).split(path.sep).join('/'));
+  for (const known of [
+    'tests/hooks/doctor.test.js',
+    'tests/hooks/doctor-repair.test.js',
+    'tests/hooks/doctor-repair-reclaim.test.js',
+    'tests/hooks/doctor-logs.test.js',
+    'tests/hooks/flutter-debug.test.js',
+  ]) {
+    assert.ok(rel.includes(known), 'scan must discover known doctor.js spawner ' + known + '; found: ' + rel.join(', '));
+  }
+});
 
 // ---------------------------------------------------------------------------
 // 1. Static regression guard: the dangerous literal must never come back.
