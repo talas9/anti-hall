@@ -617,6 +617,62 @@ function readDescriptorPathState(p, F) {
     return { exists: true, descriptor: null, error: String(e && e.message || e) };
   }
 }
+// descriptorFileGeneration(p) -> { dev, ino, size, mtimeMs, bytes, descriptor } | null
+// NAME NOTE: deliberately NOT `descriptorFingerprint` — that name is already taken
+// above by the recovery-intent marker's sha256-of-an-OBJECT helper. Two function
+// declarations of one name in a module do not coexist: the later one WINS for the
+// whole scope, so reusing it would silently repoint every recovery-intent call
+// site at this path-taking function and quietly disable the stale-marker guard.
+// The GENERATION identity of one descriptor FILE: its inode identity AND its
+// exact bytes. Read as ONE lstat+read so the pair is coherent.
+//
+// WHY (P0-1/P0-2, retire-a-live-descriptor): every descriptor writer in this
+// tree publishes via `writeFileSync(tmp) + renameSync(tmp, path)` — an ATOMIC
+// REPLACE, which allocates a NEW INODE at the SAME pathname. So a retirement
+// that classified a twin at scan time and then unlinks it BY PATHNAME can
+// destroy a completely different, freshly-registered LIVE descriptor that
+// happened to take that pathname in between. Comparing this fingerprint,
+// re-read INSIDE the per-id lock, against the scan-time one is what proves
+// "the thing I classified is still the thing I am about to retire". A rename
+// changes `ino` even when the bytes are byte-identical, so this catches a
+// same-content re-registration too. Returns null on any error (FAIL CLOSED —
+// an unreadable descriptor can never satisfy an equality check).
+function descriptorFileGeneration(p, F) {
+  const G = F || fs;
+  try {
+    const st = G.lstatSync(p);
+    if (!st.isFile() || st.isSymbolicLink()) return null;
+    const raw = G.readFileSync(p);
+    let d = null;
+    try { d = JSON.parse(raw.toString('utf8')); } catch (_) { return null; }
+    if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+    return {
+      dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs,
+      bytes: raw.toString('utf8'), descriptor: d,
+    };
+  } catch (_) { return null; }
+}
+// sameDescriptorGeneration(a, b) -> boolean. FAIL CLOSED on either side absent.
+function sameDescriptorGeneration(a, b) {
+  if (!a || !b) return false;
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.bytes === b.bytes;
+}
+
+// worktreeIsProvablyGone(worktreePath) -> boolean. TRUE only when we can POSITIVELY
+// prove the path names nothing on disk: an ABSOLUTE path whose lstat is ENOENT.
+//
+// Every other answer is FALSE — a relative path (unresolvable without knowing the
+// cwd it was persisted under), a missing/empty value, a dangling symlink (a real
+// entry), ENOTDIR/EACCES/anything else ("I could not tell"). "I could not prove it
+// is gone" must NEVER be read as "it is gone" on a path whose only consumer is a
+// decision to RETIRE a descriptor. lstat, not stat, for the dangling-symlink case.
+function worktreeIsProvablyGone(worktreePath) {
+  if (!worktreePath || typeof worktreePath !== 'string') return false;
+  if (!path.isAbsolute(worktreePath)) return false;
+  try { fs.lstatSync(worktreePath); return false; }
+  catch (e) { return !!(e && e.code === 'ENOENT'); }
+}
+
 function descriptorStructuralRepoKey(desc) {
   if (!desc || typeof desc !== 'object') return null;
   if (typeof desc.repoKey === 'string' && desc.repoKey) return desc.repoKey;
@@ -710,7 +766,19 @@ function buildDescriptorFromFlags(id, flags, existing, env) {
   const cursor = one(flags, 'cursor');
   const nudge = many(flags, 'nudge');
   const repoIdFlag = one(flags, 'repo-id');
-  if (worktree !== undefined) base.worktreePath = worktree;
+  // ABSOLUTE, always (P1). A persisted RELATIVE worktreePath is only meaningful
+  // against the cwd it was registered from — a fact the descriptor does not carry.
+  // Every consumer resolves it against its OWN cwd instead: hooks/devswarm-parent-
+  // gate.js's `worktreeIsGone` lstats it from the Primary's repo root, gets ENOENT
+  // for a LIVE workspace registered elsewhere, and suppresses the missing-inbox
+  // block for it. Resolve here, at the one place descriptors are built, so the
+  // persisted value means the same thing to every reader. `path.resolve` is a pure
+  // string op (no fs, no throw) and is a no-op on an already-absolute path.
+  if (worktree !== undefined) {
+    base.worktreePath = (typeof worktree === 'string' && worktree)
+      ? path.resolve(worktree)
+      : worktree;
+  }
   if (session !== undefined) base.sessionId = session;
   if (inbox !== undefined) base.inboxPath = inbox;
   if (cursor !== undefined) base.cursorPath = cursor;
@@ -2581,6 +2649,84 @@ function healOrphanPartitionsAllStores(home, ctx) {
 // under withIdLock(id) — an unlocked read-modify-write here is a lost-update bug
 // against a concurrent unarchive/register for the same id (the same reasoning as
 // rekeySubdirRegistryRows). A lock-busy id is SURFACED and retried next run.
+// foldArchivedFamilyDescriptors(home, ctx0) — FORWARD MIGRATION for descriptor
+// sets ALREADY split by the archive bug before the fix shipped (this repo's
+// persisted-shape rule: a shape change ships a migration in BOTH update and
+// doctor). It is the DESCRIPTOR-file counterpart of foldArchivedRegistryRows
+// below, which covers only the REGISTRY half.
+//
+// WHY A MIGRATION IS REQUIRED AND NOT OPTIONAL: cmdArchive's new whole-family
+// retire only runs at archive TIME. Every workspace archived under the old code
+// can still have a live cross-linked twin sitting in `workspaces/` right now, and
+// that live descriptor is exactly what readDescriptors (companion/devswarm-
+// supervisor.js) enumerates and what hooks/devswarm-parent-gate.js nags about —
+// the un-clearable, every-turn block this whole change exists to end. Verified
+// against a real install: `archived/fb-…-a55f20ef.json` (sessionId
+// `8f3d585d-…`) sat beside a LIVE `workspaces/8f3d585d-….json`.
+//
+// SCOPE: only workspaces that are GENUINELY archived — `archived/<id>.json`
+// present AND `workspaces/<id>.json` absent (the same isArchivedOnlyWorkspace
+// test foldArchivedRegistryRows uses; a mid-archive/crashed state has BOTH and is
+// applyRecoveryIntents' job, not this migration's).
+//
+// PROPERTIES (all load-bearing, matching foldArchivedRegistryRows' contract):
+//   - IDEMPOTENT: a retired twin is gone from `workspaces/`, so a re-run finds no
+//     candidate and reports nothing to do.
+//   - NO-DELETE: a twin's bytes are hardlinked into `archived/` and the active
+//     path is unlinked ONLY after a fresh lstat proves both are the same inode. A
+//     tombstone already holding DIFFERENT bytes is never clobbered — that twin is
+//     left live and surfaced. No message row is touched at all by this pass.
+//   - SAFETY-GATED: the grouping is identityFamilyTwins' cross-link ONLY (one
+//     row's sessionId IS the other's id), never bare worktree equality, so two
+//     legitimately-live tabs on one worktree are never retired.
+//   - FAIL-OPEN, HONESTLY: never throws into update/doctor, but a run that RAISED
+//     reports ok:false with the error rather than a clean no-op.
+// `ctx0.dryRun` classifies without writing and takes no lock (doctor's detect()).
+function foldArchivedFamilyDescriptors(home, ctx0) {
+  const dryRun = !!(ctx0 && ctx0.dryRun);
+  const out = { ok: true, action: 'fold-archived-family-descriptors', dryRun, scanned: 0, pending: 0, retired: [], left: [], errors: 0 };
+  try {
+    const ad = checkedArchivedDir(home);
+    if (!ad.ok || !ad.exists) return out;
+    let names = [];
+    try { names = fs.readdirSync(ad.path); } catch (_) { names = []; }
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      const aid = n.slice(0, -5);
+      if (!isSafeId(aid)) continue;
+      // GENUINELY archived only: a live descriptor for the SAME id means a
+      // mid-archive/crashed state, which this pass must not touch.
+      if (fs.existsSync(descriptorPath(home, aid))) continue;
+      let desc = null;
+      try {
+        const st = readDescriptorPathState(path.join(ad.path, n));
+        if (st && !st.error && st.exists) desc = st.descriptor;
+      } catch (_) { desc = null; }
+      if (!desc || String(desc.id) !== String(aid)) continue;
+      out.scanned++;
+      let r;
+      // requireWorktreeGone (P0-3): `desc` here is a TOMBSTONE — a historical
+      // record of an identity that was archived, possibly long ago. Its
+      // `sessionId` naming another descriptor's id is a one-way HISTORICAL link,
+      // not proof that today's holder of that id is the same workspace. So this
+      // path demands the twin's worktree be provably absent before retiring it;
+      // anything else is left ACTIVE and reported in `left`. (cmdArchive's own
+      // path does NOT set this: there the link is read from the LIVE descriptor
+      // the operator is archiving right now, which IS contemporaneous authority.)
+      try { r = retireIdentityFamilyDescriptors(home, aid, desc, { dryRun, requireWorktreeGone: true }); }
+      catch (_) { out.errors++; continue; }
+      for (const x of r.retired) out.retired.push(String(x));
+      for (const x of r.left) out.left.push(x);
+    }
+    out.pending = out.retired.length;
+    return out;
+  } catch (e) {
+    out.ok = false;
+    out.error = String((e && e.message) || e);
+    return out;
+  }
+}
+
 function foldArchivedRegistryRows(home, ctx0) {
   const ctx = Object.assign({ home, env: process.env }, ctx0 || {});
   const dryRun = !!(ctx0 && ctx0.dryRun);
@@ -4516,6 +4662,138 @@ function archivedTombstoneIsOrphaned(home, archivedStat) {
 // candidate collection and the archive call). All-or-nothing (P1-3): the active
 // descriptor hardlink is RETAINED until the registry tombstone is durable, then
 // the active descriptor is unlinked LAST; any mid-sequence failure ROLLS BACK.
+// retireIdentityFamilyDescriptors(home, archivedId, desc) — the DESCRIPTOR-FILE
+// half of "archive retires the whole identity family".
+//
+// ROOT CAUSE this closes (live incident): cmdArchive keys its tombstone as
+// `archived/<id>.json` and retires exactly ONE descriptor file. When the SAME
+// workspace is registered under TWO descriptor ids — the builder-id UUID row and
+// the slug row named in companion/lib/devswarm-identity-family.js's header —
+// archiving one of them could never retire the other. The survivor stayed in
+// `workspaces/`, `readDescriptors` (companion/devswarm-supervisor.js) kept
+// enumerating it (it cross-checks no tombstone), and hooks/devswarm-parent-gate.js
+// kept nagging the Primary about a workspace the user had already archived.
+//
+// SCOPE — DESCRIPTORS ONLY, deliberately. The REGISTRY half already has an owner:
+// retireArchivedWorktreeGroup (above), which folds same-worktree registry rows in
+// THIS project's store. A twin can legitimately carry a DIFFERENT repoKey (the
+// live incident's pair did: `skycrew-a7a7a5` vs `modules-ba76c8`, a nested module
+// worktree), and cmdArchive's own ID-DERIVED AUTHORITY GATE exists precisely to
+// refuse cross-project store mutation. So this pass never touches another
+// project's store — it retires the descriptor FILE, which is the artifact the
+// gate/supervisor actually read, and SURFACES every twin it did not retire.
+//
+// GROUPING RULE: NOT re-derived here. `identityFamilyTwins`
+// (companion/lib/devswarm-identity-family.js) owns it — the same module that owns
+// the read-time collapse — so there is exactly ONE identity-grouping rule in the
+// tree. It uses the STRONGEST link only (one row's sessionId IS the other row's
+// id), never bare worktree equality, so two legitimately-live tabs on one
+// worktree are never retired. See that module for the full argument.
+//
+// NEVER DELETES: a twin's bytes are hardlinked into `archived/` and only THEN is
+// the active path unlinked, and the unlink runs ONLY after a fresh lstat of BOTH
+// paths proves they are the same inode. If the archived path already holds
+// DIFFERENT bytes, nothing is unlinked — the twin is left live and surfaced.
+// IDEMPOTENT: a re-run finds no active twin descriptor and does nothing.
+// FAIL-OPEN: never throws; a failure here must never break archive itself.
+// LOCKING: each twin is taken under its OWN withIdLock. `archivedId` is never
+// locked here (cmdArchive already holds it, and the lock is not re-entrant) —
+// every twin is != archivedId by identityFamilyTwins' own guard. A lock-busy
+// twin is SKIPPED and surfaced, never blocked on.
+// `opts.dryRun` classifies WITHOUT writing (doctor's detect()): twins that WOULD
+// be retired land in `retired`, nothing is linked, unlinked, or locked.
+// `opts.requireWorktreeGone` (P0-3): demand POSITIVE liveness evidence before
+// retiring. Used by the MIGRATION path only — see foldArchivedFamilyDescriptors.
+function retireIdentityFamilyDescriptors(home, archivedId, desc, opts) {
+  const dryRun = !!(opts && opts.dryRun);
+  const requireWorktreeGone = !!(opts && opts.requireWorktreeGone);
+  const out = { retired: [], left: [] };
+  try {
+    if (!desc || archivedId == null) return out;
+    const idFam = require('../companion/lib/devswarm-identity-family.js');
+    const archiveDirState = checkedArchivedDir(home, { create: true });
+    if (!archiveDirState.ok) return out;
+    let names = [];
+    try { names = fs.readdirSync(workspacesDir(home)); } catch (_) { return out; }
+    const candidates = [];
+    // SCAN-TIME GENERATION, per candidate id. The classification below is made
+    // against THESE bytes/inode; the write below re-proves them INSIDE the lock.
+    const scanFp = new Map();
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      const cid = n.slice(0, -5);
+      if (String(cid) === String(archivedId)) continue;
+      if (!isSafeId(cid)) continue;
+      let fp;
+      try { fp = descriptorFileGeneration(path.join(workspacesDir(home), n)); } catch (_) { continue; }
+      if (!fp || !fp.descriptor) continue;
+      const d = fp.descriptor;
+      // The filename IS the id of record; a descriptor whose body disagrees is
+      // malformed and must never be acted on (same identity check cmdArchive
+      // applies to its own target).
+      if (!isSafeId(d.id) || String(d.id) !== String(cid)) continue;
+      candidates.push(d);
+      scanFp.set(String(d.id), fp);
+    }
+    for (const twin of idFam.identityFamilyTwins(desc, candidates)) {
+      const tid = String(twin.id);
+      // P0-3 SAFETY REFUSAL (migration path only). A one-way historical link read
+      // out of a STALE tombstone is NOT write authority: descriptor ids get
+      // reused, so `archived/A.json`.sessionId === 'B' may name a B that is today
+      // an unrelated, genuinely LIVE workspace. Retire only with positive
+      // evidence that this twin is not live — its worktree provably absent.
+      // Anything we cannot prove leaves it ACTIVE and SURFACED.
+      if (requireWorktreeGone && !worktreeIsProvablyGone(twin.worktreePath)) {
+        out.left.push({ id: tid, reason: 'live-or-unprovable-worktree' });
+        continue;
+      }
+      if (dryRun) { out.retired.push(tid); continue; }
+      const activePath = descriptorPath(home, tid);
+      const archivedPath = path.join(archiveDirState.path, tid + '.json');
+      const before = scanFp.get(tid);
+      const r = withIdLock(tid, home, () => {
+        try {
+          // P0-1 RE-PROVE INSIDE THE LOCK. Between the scan above and this lock a
+          // concurrent `register`/`ensure`/child-turn may have atomically replaced
+          // this pathname with a NEW, LIVE descriptor (rename => new inode). The
+          // classification was made against `before`; if what is on disk NOW is a
+          // different generation, our authority to retire it does not exist.
+          // SAFETY REFUSAL: leave it active, surface it, let a later run decide.
+          const now = descriptorFileGeneration(activePath);
+          if (!now) return { ok: false, reason: 'descriptor-unreadable-at-retire' };
+          if (!sameDescriptorGeneration(before, now)) {
+            return { ok: false, reason: 'descriptor-changed-since-scan' };
+          }
+          try { fs.linkSync(activePath, archivedPath); }
+          catch (e) { if (!e || e.code !== 'EEXIST') throw e; }
+          const a = fs.lstatSync(activePath);
+          const b = fs.lstatSync(archivedPath);
+          if (a.dev !== b.dev || a.ino !== b.ino) {
+            // A pre-existing tombstone holding DIFFERENT bytes — or the SAME bytes
+            // at a DIFFERENT inode, which is equally not ours to clobber. Never
+            // overwrite and never unlink — leave the twin live and say so.
+            return { ok: false, reason: 'archived-tombstone-differs' };
+          }
+          // Final re-proof: the inode we are about to unlink must STILL be the
+          // generation we classified. (Belt-and-braces under the lock; the lock
+          // itself is what makes this authoritative — see devswarm-child-turn.js.)
+          if (a.dev !== before.dev || a.ino !== before.ino) {
+            return { ok: false, reason: 'descriptor-changed-since-scan' };
+          }
+          fs.unlinkSync(activePath);
+          return { ok: true };
+        } catch (e) {
+          return { ok: false, reason: 'retire-failed: ' + String((e && e.message) || e) };
+        }
+      });
+      if (r && r.ok) out.retired.push(tid);
+      else if (r && r.lockBusy) out.left.push({ id: tid, reason: 'lock-busy' });
+      else out.left.push({ id: tid, reason: (r && r.reason) || 'retire-failed' });
+    }
+    return out;
+  } catch (_) { return out; }
+}
+
 function cmdArchive(id, ctx, opts) {
   const home = ctx.home;
   const revalidate = opts && typeof opts.revalidate === 'function' ? opts.revalidate : null;
@@ -4798,6 +5076,10 @@ function cmdArchive(id, ctx, opts) {
   }
   // Archive fully completed — the recovery-intent is discharged.
   clearRecoveryIntent(home, id);
+  // WHOLE-FAMILY DESCRIPTOR RETIRE — runs only after this id's own archive is
+  // fully durable, so a failure here can never leave the primary half-applied.
+  // Fail-open by construction (see retireIdentityFamilyDescriptors).
+  const familyRetire = retireIdentityFamilyDescriptors(home, id, desc);
   const archived = {
     ok: true, action: 'archive', id, descriptorArchived: moved,
     manualStep: 'hivecontrol has no teardown command — REMOVE workspace ' + id +
@@ -4811,6 +5093,12 @@ function cmdArchive(id, ctx, opts) {
     if (groupRetire.retired.length) archived.retiredDuplicates = groupRetire.retired;
     if (groupRetire.forwarded) archived.forwardedFromDuplicates = groupRetire.forwarded;
     if (groupRetire.left.length) archived.leftDuplicates = groupRetire.left;
+  }
+  // Same shape discipline as groupRetire: surfaced ONLY when it did something,
+  // so a plain single-descriptor archive keeps its return byte-for-byte.
+  if (familyRetire) {
+    if (familyRetire.retired.length) archived.retiredFamilyDescriptors = familyRetire.retired;
+    if (familyRetire.left.length) archived.leftFamilyDescriptors = familyRetire.left;
   }
   return archived;
   });
@@ -7581,7 +7869,8 @@ module.exports = {
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
   foldMeshDuplicatesAllStores,
   healOrphanPartitions, healOrphanPartitionsAllStores,
-  retireArchivedWorktreeGroup, foldArchivedRegistryRows, meshRowCopy, MESH_ROW_COPY_FIELDS, cmdRoster,
+  retireArchivedWorktreeGroup, foldArchivedRegistryRows, foldArchivedFamilyDescriptors,
+  retireIdentityFamilyDescriptors, meshRowCopy, MESH_ROW_COPY_FIELDS, cmdRoster,
   computeDiagnosis, healthcheckHumanLine, diagnoseHumanLine, hasArchivedCounterpart,
   resolveMeshTarget, resolveSendTarget,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath, skipFilePath,

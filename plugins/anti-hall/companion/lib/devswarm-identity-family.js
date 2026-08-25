@@ -126,4 +126,63 @@ function collapseFamilies(descriptors, opts) {
   });
 }
 
-module.exports = { familyKeyOf, collapseFamilies };
+// ---------------------------------------------------------------------------
+// MUTATING-SIDE grouping (archive). Everything above is READ-TIME only; the two
+// helpers below are the SAME module's answer to the strictly different question
+// `cmdArchive` (scripts/devswarm.js) asks: "which OTHER descriptor FILES name the
+// same identity as the one I am retiring, such that leaving them live would keep
+// a workspace the user just archived alive?"
+//
+// WHY THIS LIVES HERE and not in scripts/devswarm.js: identity grouping already
+// has exactly ONE owner (this module). A second, parallel grouping rule written
+// at the archive call site is precisely the drift this repo has shipped twice.
+// So the rule lives beside familyKeyOf/collapseFamilies even though the archive
+// path needs a STRICTER predicate than they do — see next paragraph.
+//
+// WHY THE PREDICATE IS STRICTER THAN familyKeyOf: familyKeyOf groups by resolved
+// worktree, which is correct for COUNTING (two rows on one worktree are one
+// workspace in a list) but NOT sufficient to justify a WRITE. This module's own
+// header records the reason: two legitimately-live tabs can share one worktree,
+// and retirePhantomWorktreeDuplicates / the store-layer fold deliberately
+// decline to collapse that case. Retiring a descriptor on worktree equality
+// alone would archive a workspace nobody asked to archive. So the mutating
+// predicate uses only the STRONGEST, unambiguous link: one row's `sessionId` IS
+// the other row's `id`. That is the builder-id-UUID-row / slug-row pair named in
+// this file's header — the SAME identity registered twice, never two live tabs
+// (two live tabs have distinct ids AND distinct sessionIds, with no cross-link).
+//
+// PURITY CONTRACT (unchanged): no fs, no store, no git. The caller supplies the
+// candidate descriptors and performs every write itself.
+
+// crossLinkedIdentity(a, b) -> boolean. True iff a and b are the SAME identity
+// registered under two descriptor ids: either a.sessionId === b.id or
+// b.sessionId === a.id. Deliberately NOT true for a row cross-linked to itself
+// (a.sessionId === a.id would otherwise make every self-registered row its own
+// twin), and never true on empty/missing fields.
+function crossLinkedIdentity(a, b) {
+  if (!a || !b) return false;
+  const aId = a.id != null ? String(a.id) : '';
+  const bId = b.id != null ? String(b.id) : '';
+  if (!aId || !bId || aId === bId) return false;
+  const aSess = a.sessionId != null ? String(a.sessionId) : '';
+  const bSess = b.sessionId != null ? String(b.sessionId) : '';
+  if (aSess && aSess === bId) return true;
+  if (bSess && bSess === aId) return true;
+  return false;
+}
+
+// identityFamilyTwins(target, candidates) -> [candidate, ...]
+// Every candidate cross-linked to `target` (crossLinkedIdentity), in input
+// order, excluding target itself. Pure: returns a filtered view, mutates
+// nothing. An empty/absent candidate list yields [].
+function identityFamilyTwins(target, candidates) {
+  const list = Array.isArray(candidates) ? candidates : [];
+  const out = [];
+  for (const c of list) {
+    if (!crossLinkedIdentity(target, c)) continue;
+    out.push(c);
+  }
+  return out;
+}
+
+module.exports = { familyKeyOf, collapseFamilies, crossLinkedIdentity, identityFamilyTwins };

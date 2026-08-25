@@ -1530,3 +1530,126 @@ test('HEARTBEAT PUSH-STATE: no resolvable worktree (default /tmp cwd) -> keys om
     h.cleanup();
   }
 });
+
+// ---------------------------------------------------------------------------
+// P0-2 — THIS WRITER MUST PARTICIPATE IN THE PER-ID LOCK.
+//
+// registerChildDescriptor publishes `workspaces/<id>.json` with an ATOMIC
+// REPLACE (writeFileSync(tmp) + renameSync), which installs a NEW INODE at that
+// pathname. scripts/devswarm.js's archive/retire path classifies a descriptor,
+// then hardlinks + inode-verifies + unlinks it BY PATHNAME under
+// `withIdLock(<id>)`. While THIS hook took no lock, the two could interleave:
+// retirement verifies the inode, this hook renames a FRESH LIVE descriptor over
+// the pathname, retirement unlinks the new one. A live child workspace silently
+// de-registered, with only the OLD generation surviving in `archived/`.
+//
+// Fingerprinting on the retirement side cannot close that — Node has no
+// unlink-by-inode, so nothing makes check-then-unlink atomic except BOTH writers
+// holding the same lock.
+//
+// MUTATION CHECK M8 — a variant that skips the lock here. Note what does NOT
+// kill it: merely observing that `locks/<id>.lock` was touched during the run.
+// Other parts of this same hook (the phantom-duplicate retirement, which calls
+// cmdArchive) take per-id locks AFTER the descriptor write, so a lock-touch
+// assertion passes for the unlocked variant too — verified by running M8
+// against exactly such a test. The discriminating observable is TIMING OF THE
+// WRITE ITSELF: with the lock, the descriptor cannot appear while a live holder
+// still owns the lock; without it, the descriptor appears immediately.
+// ---------------------------------------------------------------------------
+
+const cpMod = require('node:child_process');
+const HOOK_ABS = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', HOOK);
+
+function lockPath(home, id) {
+  return path.join(home, '.anti-hall', 'devswarm', 'locks', id + '.lock');
+}
+// Plant a LIVE, FRESH lock holder: this very test process (alive) with ts = now
+// (not stale). recovery.js's acquireLock respects exactly this and refuses.
+function plantLiveLock(home, id) {
+  const p = lockPath(home, id);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ pid: process.pid, ts: Date.now(), token: 'held-by-test' }));
+  return p;
+}
+// Async spawn of the hook with the SAME controlled env tests/helpers/spawn-hook.js
+// builds (PATH + HOME only on POSIX; USERPROFILE/HOMEDRIVE/HOMEPATH added on
+// win32 because os.homedir() ignores $HOME there). Spawned ASYNCHRONOUSLY —
+// unlike testHook's spawnSync — because this test must observe the filesystem
+// WHILE the hook is still running.
+function spawnHookAsync(home, id, sessionId) {
+  const env = process.platform === 'win32'
+    ? (() => {
+      const e = { ...process.env };
+      for (const k of Object.keys(e)) if (/^DEVSWARM_/.test(k) || /^ANTIHALL_/.test(k)) delete e[k];
+      const root = path.parse(home).root;
+      return { ...e, HOME: home, USERPROFILE: home, HOMEDRIVE: root, HOMEPATH: home.slice(root.length) };
+    })()
+    : { PATH: process.env.PATH, HOME: home };
+  const child = cpMod.spawn(process.execPath, [HOOK_ABS], {
+    env: {
+      ...env,
+      DEVSWARM_REPO_ID: 'repo-1',
+      DEVSWARM_SOURCE_BRANCH: 'main',
+      DEVSWARM_BUILDER_ID: id,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  let out = '';
+  child.stdout.on('data', (d) => { out += d; });
+  child.stderr.on('data', () => {});
+  child.stdin.end(JSON.stringify(promptPayload(sessionId || 'sess-lock', REPO_CWD)));
+  const done = new Promise((resolve) => child.on('close', (code) => resolve({ code, stdout: out })));
+  return { child, done };
+}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('P0-2: the descriptor write is SERIALIZED by the per-id lock — it cannot land while a live holder owns it', async () => {
+  const h = makeHome();
+  try {
+    const id = 'lock-contended';
+    const descPath = workspaceDescPath(h.home, id);
+    const lp = plantLiveLock(h.home, id);
+
+    const { done } = spawnHookAsync(h.home, id);
+
+    // Baseline sanity: an UNCONTENDED hook writes its descriptor in well under
+    // this window (the sibling REGISTER tests above complete end-to-end in ~150ms
+    // via spawnSync). So if the descriptor is absent here, it is because the
+    // writer is WAITING on the lock we are holding — not because it is slow.
+    let appearedWhileHeld = false;
+    for (let i = 0; i < 14; i++) {              // ~700ms, inside the 1000ms budget
+      await sleep(50);
+      if (fs.existsSync(descPath)) { appearedWhileHeld = true; break; }
+    }
+    assert.strictEqual(appearedWhileHeld, false,
+      'the descriptor must NOT be published while another holder owns locks/<id>.lock');
+
+    // Release: the hook's bounded retry now succeeds and it publishes normally.
+    fs.unlinkSync(lp);
+    const r = await done;
+    assert.strictEqual(r.code, 0, 'the hook exits cleanly');
+    assert.ok(fs.existsSync(descPath), 'and the descriptor IS published once the lock frees');
+    const desc = JSON.parse(fs.readFileSync(descPath, 'utf8'));
+    assert.strictEqual(desc.id, id);
+    assert.strictEqual(desc.worktreePath, path.resolve(REPO_CWD));
+  } finally { h.cleanup(); }
+});
+
+test('P0-2 FAIL-OPEN: a lock held past the budget NEVER breaks the turn — the descriptor is still written and the reminder still emitted', async () => {
+  const h = makeHome();
+  try {
+    const id = 'lock-failopen';
+    // Held for the WHOLE run. Refusing to register would make this child
+    // undiscoverable to the parent gate for the entire turn — strictly worse
+    // than the narrow residual race. So after the bounded budget it writes anyway.
+    plantLiveLock(h.home, id);
+    const { done } = spawnHookAsync(h.home, id, 'sess-failopen');
+    const r = await done;
+    assert.strictEqual(r.code, 0, 'exit 0 — a hook must never fail a turn on a lock');
+    assert.ok(fs.existsSync(workspaceDescPath(h.home, id)),
+      'the descriptor MUST still be written (fail-open)');
+    const parsed = JSON.parse(r.stdout);
+    const additional = parsed && parsed.hookSpecificOutput && parsed.hookSpecificOutput.additionalContext;
+    assert.ok(String(additional).includes(REMINDER_PHRASE), 'and the turn output is unaffected');
+  } finally { h.cleanup(); }
+});

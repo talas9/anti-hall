@@ -121,6 +121,10 @@ function seedWorkspace(home, id, opts = {}) {
   // repoKey — the PERSISTED, worktree-derived project key scripts/devswarm.js
   // stamps at register/heartbeat time (defect e586afdaa968).
   if (opts.repoKey !== undefined) descriptor.repoKey = opts.repoKey;
+  // ownerKey — the ONLY project key `rehomeCore` persists (it writes ownerKey and
+  // leaves repoKey unset). A descriptor of that shape must resolve to the same
+  // project as a repoKey-carrying one everywhere the gate reads a project key.
+  if (opts.ownerKey !== undefined) descriptor.ownerKey = opts.ownerKey;
   fs.writeFileSync(path.join(wsDir, id + '.json'), JSON.stringify(descriptor));
 
   if (opts.messages != null) {
@@ -985,13 +989,21 @@ test('FAIL-OPEN: inbox file EXISTS but is unreadable (corrupt cursor) -> BLOCKS,
 // child, a failed inbox write, or a native backlog that was never
 // inbox-pulled. Any of those is exactly the kind of silent neglect this gate
 // exists to catch — silently reading it as "0 unread" would defeat the gate.
-test('FAIL-OPEN (P0-2): a descriptor whose inbox file is genuinely ABSENT (known:false) BLOCKS unconditionally, not silently dropped', () => {
+test('FAIL-OPEN (P0-2): a LIVE descriptor whose inbox file is genuinely ABSENT (known:false) BLOCKS, not silently dropped', () => {
   const h = makeHome();
   try {
     // No messages/messageRows/rawLines opt -> seedWorkspace never creates the
     // inbox file, simulating a descriptor that was never register-precreated
     // (or whose precreate failed) and whose native backlog was never pulled.
-    seedWorkspace(h.home, 'absent1', { cursor: 0, verdict: { status: 'alive' } });
+    // The worktree dir IS created: this fixture is the GENUINE ANOMALY case (a
+    // pre-fix legacy child / failed inbox write on a workspace that still
+    // physically exists), which the un-clearable-axis rule deliberately leaves
+    // blocking. Previously this fixture left worktreePath uncreated too, which
+    // made it indistinguishable from a DEAD descriptor — see the UN-CLEARABLE
+    // AXIS block at the end of this file for that separate case.
+    const liveWt = path.join(h.home, 'live-wt-absent1');
+    fs.mkdirSync(liveWt, { recursive: true });
+    seedWorkspace(h.home, 'absent1', { worktreePath: liveWt, cursor: 0, verdict: { status: 'alive' } });
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block', 'an absent inbox must never be silently read as 0 unread');
     assert.match(r.json.reason, /absent1/);
@@ -1649,7 +1661,11 @@ test('IDENTITY-FAMILY: unreadUnknown on any family member propagates (blocks + a
   const h = makeHome();
   const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
   try {
+    // The shared worktree is CREATED on disk: this test is about the family
+    // aggregate of a LIVE workspace's unknown axis, not about a dead descriptor
+    // (see the UN-CLEARABLE AXIS block at the end of this file).
     const sharedWt = path.join(h.home, 'shared-wt-unknown');
+    fs.mkdirSync(sharedWt, { recursive: true });
     // 'known-quiet' has a confirmed-empty (0 unread) inbox; 'unknown-one' has
     // NO inbox file at all (known:false -> unreadUnknown), sharing the SAME
     // worktreePath -> one family whose aggregate must still surface unknown.
@@ -1696,7 +1712,13 @@ test('LABEL TAXONOMY: inbox file missing (ENOENT) vs present-but-unreadable (EIS
   const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
   try {
     // 'missing-one': a real inboxPath that was simply never written (ENOENT).
-    seedWorkspace(h.home, 'missing-one', { worktreePath: path.join(h.home, 'wt-missing'), cursor: 0 });
+    // Its worktree is CREATED: the "inbox file missing" LABEL is only reachable
+    // on a workspace that still exists — an ENOENT inbox on a GONE worktree is a
+    // dead descriptor and no longer raises the unknown axis at all (see the
+    // UN-CLEARABLE AXIS block at the end of this file).
+    const missingWt = path.join(h.home, 'wt-missing');
+    fs.mkdirSync(missingWt, { recursive: true });
+    seedWorkspace(h.home, 'missing-one', { worktreePath: missingWt, cursor: 0 });
     // 'unreadable-one': inboxPath points AT A DIRECTORY — present on disk,
     // genuinely not readable as a file (EISDIR), distinct cause from ENOENT.
     const dirInbox = path.join(h.home, 'wt-unreadable-inbox-dir');
@@ -1960,5 +1982,207 @@ test('STATED-INTENT: FAIL-OPEN — a corrupt/unreadable gate-state file behaves 
     assert.strictEqual(r.status, 0, 'must exit 0, never throw on a corrupt state file');
     assert.strictEqual(r.json && r.json.decision, 'block', 'must fail open toward a normal first block, exactly as pre-intent behavior');
     assert.doesNotMatch(r.json.reason, /DEVSWARM ESCALATION/, 'a corrupt file must be treated as fresh state, not pre-exhausted');
+  } finally { h.cleanup(); }
+});
+
+// =========================================================================
+// UN-CLEARABLE AXIS (defect: a Primary blocked EVERY turn, permanently, over a
+// workspace whose worktree no longer exists).
+//
+// Live evidence this reproduces: `~/.anti-hall/devswarm/workspaces/8f3d585d-…`
+// stayed LIVE while its slug twin was archived, its worktree dir was EMPTY on
+// disk, liveness.js mapped the ENOENT inbox to reason 'inbox-missing'/known:false,
+// and `unreadUnknown` ALONE satisfied the block predicate. The Primary could not
+// clear it by ANY action — there was no inbox to read and no child to poke.
+//
+// The refined rule: 'inbox-missing' (ENOENT) AND a gone worktreePath is a DEAD
+// DESCRIPTOR, not neglect. Every other axis is deliberately left intact, and the
+// tests below pin each one so the suppression can never widen into silence.
+// =========================================================================
+
+test('UN-CLEARABLE AXIS: inbox ENOENT + worktree GONE -> does NOT block (the permanent unclearable nag)', () => {
+  const h = makeHome();
+  try {
+    // worktreePath defaults to <home>/wt/<id>, which is NEVER created -> gone.
+    seedWorkspace(h.home, 'dead-ws', {}); // no messages/cursor -> inbox file absent (ENOENT)
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `a physically-gone workspace is a dead descriptor, not neglect; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('MUST NOT BREAK: LIVE worktree + inbox ENOENT -> STILL blocks (the genuine anomaly fail-open survives)', () => {
+  const h = makeHome();
+  try {
+    const liveWt = path.join(h.home, 'live-wt-enoent');
+    fs.mkdirSync(liveWt, { recursive: true }); // the worktree EXISTS -> not a dead descriptor
+    seedWorkspace(h.home, 'live-anomaly', { worktreePath: liveWt }); // inbox absent
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'a pre-fix legacy child / failed inbox write on a LIVE worktree must still be surfaced');
+    assert.match(r.json.reason, /live-anomaly/);
+    assert.match(r.json.reason, /inbox file missing/);
+  } finally { h.cleanup(); }
+});
+
+test('MUST NOT BREAK: LIVE worktree + a real unread backlog -> STILL blocks on the realUnread axis', () => {
+  const h = makeHome();
+  try {
+    const liveWt = path.join(h.home, 'live-wt-backlog');
+    fs.mkdirSync(liveWt, { recursive: true });
+    seedWorkspace(h.home, 'live-backlog', { worktreePath: liveWt, messages: ['a', 'b', 'c'], cursor: 0 });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /live-backlog/);
+    assert.match(r.json.reason, /3 unread/);
+  } finally { h.cleanup(); }
+});
+
+test('MUST NOT BREAK: worktree GONE + STORE-side unread -> STILL blocks on the unionUnread axis (nothing is hidden)', () => {
+  const h = makeHome();
+  try {
+    // Gone worktree (never created) BUT a persisted repoKey naming THIS project,
+    // so the union falls back to the only key still knowable. Sender is NOT this
+    // Primary, so the outbound-not-neglect exclusion does not apply.
+    seedWorkspace(h.home, 'gone-with-store', { repoKey: REPO_KEY }); // inbox absent (ENOENT)
+    seedStoreOnlyRow(h.home, 'gone-with-store', 'some-child', 'test-dead-union-1');
+    const r = run(h.home, stopPayload()); // cwd = REPO_CWD -> selfKey resolves
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'a removed workspace with real store-side backlog must NOT go silent');
+    assert.match(r.json.reason, /gone-with-store/);
+    assert.match(r.json.reason, /1 unread/);
+  } finally { h.cleanup(); }
+});
+
+test('MUST NOT BREAK: worktree GONE + a STALE verdict -> STILL blocks on the staleOrEscalated axis', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'gone-stale', { verdict: { status: 'stale' } }); // inbox absent, worktree gone
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /gone-stale/);
+  } finally { h.cleanup(); }
+});
+
+test('STRICTLY SCOPED: worktree GONE but inbox present-and-UNREADABLE (EISDIR, not ENOENT) -> STILL blocks', () => {
+  const h = makeHome();
+  try {
+    // inboxPath points AT A DIRECTORY: the file IS there, it is genuinely not
+    // readable. Only ENOENT means "there is nothing to read"; every other errno
+    // is a real anomaly and must survive the suppression untouched.
+    const dirInbox = path.join(h.home, 'gone-eisdir-inbox-dir');
+    fs.mkdirSync(dirInbox, { recursive: true });
+    seedWorkspaceWithInboxPath(h.home, 'gone-eisdir', dirInbox, { worktreePath: path.join(h.home, 'never-created-wt') });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'EISDIR is not ENOENT — a gone worktree must not launder an unreadable inbox into silence');
+    assert.match(r.json.reason, /gone-eisdir \(inbox file unreadable/);
+  } finally { h.cleanup(); }
+});
+
+test('STRICTLY SCOPED: worktree GONE + descriptor with inboxPath:null (no-inbox-path) -> STILL blocks', () => {
+  const h = makeHome();
+  try {
+    seedWorkspaceWithInboxPath(h.home, 'gone-nullinbox', null, { worktreePath: path.join(h.home, 'never-created-wt-2') });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'a malformed descriptor is an anomaly regardless of its worktree');
+    assert.match(r.json.reason, /descriptor has no inboxPath/i);
+  } finally { h.cleanup(); }
+});
+
+test('FAIL-CLOSED TO BLOCK: worktreePath that EXISTS as a dangling symlink is NOT "gone" -> inbox ENOENT still blocks', () => {
+  const h = makeHome();
+  try {
+    // lstat (not stat) is what worktreeIsGone uses: a dangling symlink is a real
+    // entry on disk. "I could not prove it is gone" must never read as gone.
+    const link = path.join(h.home, 'dangling-wt-link');
+    fs.symlinkSync(path.join(h.home, 'no-such-target'), link);
+    seedWorkspace(h.home, 'dangling-ws', { worktreePath: link });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /dangling-ws/);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// WORKTREE-GONE AUTHORITY (adversarial-review round). `worktreeIsGone` is the
+// ONLY signal that can SUPPRESS the missing-inbox block, so every answer it
+// gives that is not a positively-proven ENOENT on an ABSOLUTE path is a live
+// workspace silently going un-nagged. Mutation checks these kill:
+//   M4 — `gone = !!e` (any lstat error read as gone): ENOTDIR case below.
+//   M5 — lstat'ing a RELATIVE path against the READER's cwd: P1 case below.
+// (See tests/scripts/devswarm-archive-identity-family.test.js for the full
+// mutation list; these two live here because the gate owns the predicate.)
+// ---------------------------------------------------------------------------
+
+test('P1 FAIL-CLOSED: a RELATIVE worktreePath is NEVER "gone" -> a LIVE workspace with a missing inbox still blocks', () => {
+  const h = makeHome();
+  try {
+    // The exact live shape: registration persisted a relative path that resolved
+    // fine from the REGISTERING cwd. The Primary's Stop hook runs from a
+    // DIFFERENT cwd, where lstat('live-wt') is ENOENT — and the pre-fix predicate
+    // read that as "the workspace is gone", suppressing the block for a workspace
+    // that is very much alive.
+    const rel = 'live-wt-' + process.pid;
+    assert.strictEqual(fs.existsSync(path.join(process.cwd(), rel)), false,
+      'precondition: the relative path must NOT resolve from the hook process cwd');
+    seedWorkspace(h.home, 'relative-live', { worktreePath: rel }); // inbox absent (ENOENT)
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'an unresolvable RELATIVE path is not proof of death — it must not silence the gate');
+    assert.match(r.json.reason, /relative-live/);
+  } finally { h.cleanup(); }
+});
+
+test('V4 FAIL-CLOSED (kills any-error-is-gone): worktreePath under a FILE (ENOTDIR, not ENOENT) is NOT "gone" -> still blocks', () => {
+  const h = makeHome();
+  try {
+    // lstat here fails with ENOTDIR, not ENOENT. A predicate that treats every
+    // lstat error as "gone" passes the dangling-symlink test above (that one
+    // SUCCEEDS) while still laundering this real anomaly into silence.
+    const file = path.join(h.home, 'a-regular-file');
+    fs.writeFileSync(file, 'x');
+    const under = path.join(file, 'sub-wt');
+    let errno = null;
+    try { fs.lstatSync(under); } catch (e) { errno = e && e.code; }
+    assert.strictEqual(errno, 'ENOTDIR', 'precondition: lstat must fail with ENOTDIR, not ENOENT');
+    seedWorkspace(h.home, 'enotdir-ws', { worktreePath: under }); // inbox absent
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'ENOTDIR is "I could not tell", never "it is gone"');
+    assert.match(r.json.reason, /enotdir-ws/);
+  } finally { h.cleanup(); }
+});
+
+test('V3 (kills the repoKey-only union fallback): worktree GONE + STORE-side unread on an ownerKey-ONLY descriptor STILL blocks', () => {
+  const h = makeHome();
+  try {
+    // The rehomeCore shape: ownerKey set, repoKey ABSENT. The sibling test above
+    // seeds `repoKey`, so an implementation that falls back to repoKey ONLY —
+    // and reads this descriptor as "names no project" — survives it untouched
+    // while hiding real store-side backlog for every re-homed workspace.
+    seedWorkspace(h.home, 'gone-ownerkey-only', { ownerKey: REPO_KEY });
+    const desc = JSON.parse(fs.readFileSync(
+      path.join(h.home, '.anti-hall', 'devswarm', 'workspaces', 'gone-ownerkey-only.json'), 'utf8'));
+    assert.strictEqual(desc.repoKey, undefined, 'precondition: repoKey must be ABSENT');
+    assert.strictEqual(desc.ownerKey, REPO_KEY, 'precondition: ownerKey carries the project');
+    seedStoreOnlyRow(h.home, 'gone-ownerkey-only', 'some-child', 'test-ownerkey-union-1');
+
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'an ownerKey-only descriptor with real store-side backlog must NOT go silent');
+    assert.match(r.json.reason, /gone-ownerkey-only/);
+    assert.match(r.json.reason, /1 unread/);
   } finally { h.cleanup(); }
 });

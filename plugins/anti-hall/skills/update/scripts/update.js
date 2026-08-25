@@ -1025,6 +1025,41 @@ function foldArchivedRowsPostUpdate(opts) {
       return { attempted: false, detail: 'fold-archived-rows skipped: this devswarm.js build has no foldArchivedRegistryRows' };
     }
     const r = devswarm.foldArchivedRegistryRows(home, { cwd, env }) || {};
+    // Descriptor half of the SAME defect (see devswarm.js
+    // foldArchivedFamilyDescriptors): an archived workspace's cross-linked twin
+    // DESCRIPTOR stayed live in `workspaces/` and kept the parent gate nagging
+    // unclearably. Folded into this same pass rather than given its own post-update
+    // step: both are idempotent, fail-open, NO-DELETE archive-cleanup migrations
+    // gated on the same DevSwarm-session check, and reporting them together keeps
+    // the update's output honest about everything the archive fix repaired.
+    //
+    // REPORT THE REFUSALS, NOT JUST THE WINS (P2). This pass can decline to
+    // retire a twin — a tombstone holding different bytes, a lock-busy id, a
+    // descriptor that changed since the scan, or (the migration gate) a twin
+    // whose worktree is still there. Those land in `left`, and a run that raised
+    // reports ok:false. Folding only `retired.length` into the result made every
+    // one of those look like a clean "0 to migrate" no-op — the exact
+    // success-while-dropping-part-of-the-job shape docs/KB-devswarm-hivecontrol.md
+    // §28 names as the worst failure mode for a safety refusal. Propagated using
+    // the SAME retired/left/errors contract the registry fold above already uses.
+    let famRetired = 0;
+    let famLeft = 0;
+    let famErrors = 0;
+    let famOk = true;
+    if (typeof devswarm.foldArchivedFamilyDescriptors === 'function') {
+      try {
+        const fr = devswarm.foldArchivedFamilyDescriptors(home, { cwd, env }) || {};
+        famRetired = Array.isArray(fr.retired) ? fr.retired.length : 0;
+        famLeft = Array.isArray(fr.left) ? fr.left.length : 0;
+        famErrors = fr.errors || 0;
+        famOk = fr.ok !== false;
+      } catch (_) {
+        // fail-open for the update's own success, but NEVER silent: a raise is an
+        // error the caller must see.
+        famOk = false;
+        famErrors += 1;
+      }
+    }
     const retired = Array.isArray(r.retired) ? r.retired.length : 0;
     const left = Array.isArray(r.left) ? r.left.length : 0;
     return {
@@ -1033,10 +1068,18 @@ function foldArchivedRowsPostUpdate(opts) {
       forwarded: r.forwarded || 0,
       left,
       errors: r.errors || 0,
+      familyDescriptorsRetired: famRetired,
+      familyDescriptorsLeft: famLeft,
+      familyDescriptorsErrors: famErrors,
+      familyDescriptorsOk: famOk,
       detail: 'fold-archived-rows: retired ' + retired + ' registry row(s) of archived workspace(s)'
+        + (famRetired ? ' + ' + famRetired + ' orphaned twin descriptor(s)' : '')
         + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
         + (left ? ' — ' + left + ' row(s) left in place (safety-gated)' : '')
-        + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+        + (famLeft ? ' — ' + famLeft + ' twin descriptor(s) left in place (safety-gated)' : '')
+        + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : '')
+        + (famErrors ? ' (' + famErrors + ' twin-descriptor error(s), fail-open)' : '')
+        + (famOk ? '' : ' (twin-descriptor pass did NOT complete cleanly)'),
     };
   } catch (e) {
     return { attempted: false, detail: 'fold-archived-rows raised: ' + (e && e.message ? e.message : String(e)) };

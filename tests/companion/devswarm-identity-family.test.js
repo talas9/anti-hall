@@ -10,7 +10,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { familyKeyOf, collapseFamilies } = require('../../plugins/anti-hall/companion/lib/devswarm-identity-family.js');
+const { familyKeyOf, collapseFamilies, crossLinkedIdentity, identityFamilyTwins } = require('../../plugins/anti-hall/companion/lib/devswarm-identity-family.js');
 
 test('familyKeyOf: same worktreePath -> same key via the injected resolver', () => {
   const resolve = (wt) => 'canon:' + wt;
@@ -160,4 +160,53 @@ test('collapseFamilies: preserves input order of families and members', () => {
   assert.strictEqual(families.length, 2);
   assert.strictEqual(families[0].members.map((m) => m.id).join(','), 'first,third');
   assert.strictEqual(families[1].members[0].id, 'second');
+});
+
+// ---------------------------------------------------------------------------
+// MUTATING-SIDE grouping (used by cmdArchive). STRICTER than familyKeyOf on
+// purpose: a WRITE may only follow the unambiguous id/sessionId cross-link,
+// never bare worktree equality (two live tabs share a worktree legitimately).
+// ---------------------------------------------------------------------------
+
+test('crossLinkedIdentity: a.sessionId === b.id -> linked (the slug-row / builder-UUID-row pair)', () => {
+  const slug = { id: 'fb-slug-a55f20ef', sessionId: '8f3d585d-uuid', worktreePath: '/w' };
+  const uuid = { id: '8f3d585d-uuid', sessionId: 'ec774c7f-other', worktreePath: '/w/nested' };
+  assert.strictEqual(crossLinkedIdentity(slug, uuid), true);
+  assert.strictEqual(crossLinkedIdentity(uuid, slug), true, 'the relation is symmetric');
+});
+
+test('crossLinkedIdentity: same worktreePath but NO cross-link -> NOT linked (two live tabs are not one identity)', () => {
+  const a = { id: 'tab-a', sessionId: 'sess-a', worktreePath: '/same' };
+  const b = { id: 'tab-b', sessionId: 'sess-b', worktreePath: '/same' };
+  assert.strictEqual(crossLinkedIdentity(a, b), false);
+});
+
+test('crossLinkedIdentity: a row is never linked to itself, even when sessionId === its own id', () => {
+  const self = { id: 'x', sessionId: 'x', worktreePath: '/w' };
+  assert.strictEqual(crossLinkedIdentity(self, self), false);
+  assert.strictEqual(crossLinkedIdentity(self, { id: 'x', sessionId: 'x' }), false, 'same id -> same row, never a twin');
+});
+
+test('crossLinkedIdentity: missing/empty ids or sessionIds -> never linked (no empty-string collapse)', () => {
+  assert.strictEqual(crossLinkedIdentity(null, { id: 'a' }), false);
+  assert.strictEqual(crossLinkedIdentity({ id: 'a' }, null), false);
+  assert.strictEqual(crossLinkedIdentity({ id: 'a', sessionId: '' }, { id: '', sessionId: '' }), false);
+  assert.strictEqual(crossLinkedIdentity({ id: 'a' }, { id: 'b' }), false, 'no sessionId on either side');
+});
+
+test('identityFamilyTwins: returns only cross-linked candidates, in input order, excluding the target', () => {
+  const target = { id: 'slug', sessionId: 'uuid' };
+  const candidates = [
+    { id: 'unrelated', sessionId: 'z' },
+    { id: 'uuid', sessionId: 'own' },        // linked: target.sessionId === its id
+    { id: 'slug', sessionId: 'uuid' },       // the target itself -> excluded
+    { id: 'back', sessionId: 'slug' },       // linked: its sessionId === target.id
+  ];
+  assert.deepStrictEqual(identityFamilyTwins(target, candidates).map((d) => d.id), ['uuid', 'back']);
+});
+
+test('identityFamilyTwins: empty/absent candidate list -> [] (never throws)', () => {
+  assert.deepStrictEqual(identityFamilyTwins({ id: 'a', sessionId: 'b' }, []), []);
+  assert.deepStrictEqual(identityFamilyTwins({ id: 'a', sessionId: 'b' }, undefined), []);
+  assert.deepStrictEqual(identityFamilyTwins(null, [{ id: 'x' }]), []);
 });

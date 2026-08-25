@@ -396,6 +396,30 @@ function defaultCursorPath(home, id) {
 // writeDescriptorAtomic in scripts/devswarm.js. Skips silently (fail-open) when the
 // id is unsafe, sessionId is absent, or no git worktree resolves from cwd — a child
 // running outside a worktree, or a malformed env, must never crash or block a turn.
+// acquireDescriptorLock(id, home) -> release() | null. The SAME per-id advisory
+// lock scripts/devswarm.js's withIdLock uses (companion/lib/recovery.js's
+// acquireLock — atomic O_EXCL create of `locks/<id>.lock`, dead/stale-holder
+// steal, token-checked release), with a BOUNDED sync retry so the common case
+// actually serializes. Returns null when the lock could not be taken within the
+// budget, or when recovery.js cannot be loaded — the caller then proceeds
+// UNLOCKED (fail-open; see the call site's own note for why that is the correct
+// trade on a per-turn hook). Never throws.
+const DESCRIPTOR_LOCK_BUDGET_MS = 1000;
+function acquireDescriptorLock(id, home) {
+  let acquire = null;
+  try { acquire = require('../companion/lib/recovery.js').acquireLock; } catch (_) { return null; }
+  if (typeof acquire !== 'function') return null;
+  const deadline = Date.now() + DESCRIPTOR_LOCK_BUDGET_MS;
+  for (;;) {
+    let release = null;
+    try { release = acquire(id, home); } catch (_) { release = null; }
+    if (typeof release === 'function') return release;
+    if (Date.now() >= deadline) return null;
+    // Cross-platform sync sleep with no busy-spin — same idiom as acquireIdLock.
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25); } catch (_) { return null; }
+  }
+}
+
 function registerChildDescriptor(env, sessionId, cwd, home) {
   let id = env.DEVSWARM_BUILDER_ID;
   if (typeof id !== 'string' || !isSafeId(id)) return null;
@@ -496,10 +520,42 @@ function registerChildDescriptor(env, sessionId, cwd, home) {
   // exist. `dir` (the workspaces directory the descriptor itself lives under)
   // is independent of inboxPath/cursorPath (which live under devswarmRoot's
   // own inbox/ and cursors/ dirs), so this reorder has no other dependency.
+  // P0-2 — PARTICIPATE IN THE PER-ID LOCK.
+  //
+  // This rename is an ATOMIC REPLACE of `workspaces/<id>.json`: it installs a
+  // NEW INODE at that pathname. scripts/devswarm.js's archive/retire paths
+  // classify a descriptor, then hardlink + inode-verify + unlink it BY PATHNAME
+  // under `withIdLock(<id>)`. While THIS writer took no lock, that whole
+  // sequence could interleave: retirement verifies the inode, this hook renames
+  // a FRESH LIVE descriptor over the pathname, and retirement then unlinks the
+  // new one — a live child workspace silently de-registered, with the OLD
+  // generation left in `archived/`. Fingerprinting on the retirement side cannot
+  // close that: there is no unlink-by-inode in Node, so the only thing that
+  // makes the check-then-unlink atomic is BOTH writers holding the same lock.
+  //
+  // HOT-PATH SAFETY (this is a per-turn UserPromptSubmit hook):
+  //   * BOUNDED — acquireLock is non-blocking; the retry budget below caps the
+  //     wait at ~1s. A turn can never be delayed beyond that, let alone wedged.
+  //   * NO DEADLOCK — exactly one lock is held here, over a mkdir + write +
+  //     rename with no nested lock acquisition and no subprocess. (The phantom
+  //     retirement below, which DOES take other ids' locks via cmdArchive, runs
+  //     strictly AFTER this one is released.) A stale/dead holder is stolen by
+  //     acquireLock itself (recovery.js), so a crashed peer cannot block us.
+  //   * FAILS OPEN — if the lock is unavailable, or recovery.js cannot be
+  //     loaded at all, we STILL write. A hook that refused to register the
+  //     child's descriptor would break discoverability for the whole turn, which
+  //     is a worse failure than the narrow residual race it would avoid. The
+  //     common case (an uncontended lock, or a peer critical section of a few
+  //     fs ops) serializes properly, which is what the race needs.
   fs.mkdirSync(dir, { recursive: true });
-  const tmp = target + '.tmp';
-  fs.writeFileSync(tmp, JSON.stringify(desc));
-  fs.renameSync(tmp, target);
+  const releaseIdLock = acquireDescriptorLock(id, home);
+  try {
+    const tmp = target + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(desc));
+    fs.renameSync(tmp, target);
+  } finally {
+    if (typeof releaseIdLock === 'function') { try { releaseIdLock(); } catch (_) {} }
+  }
 
   // F3 defensive fix, part 2: retire any OTHER descriptor file in this SAME
   // dir that shares this worktreePath but carries a DIFFERENT id — the

@@ -213,6 +213,44 @@ function resolveCap(env) {
 // already-written per-workspace verdict file (no computeLiveness, no git).
 // Absent / unreadable / malformed -> null (fail-safe: no verdict = not
 // blocking on the liveness axis).
+// worktreeIsGone(worktreePath) -> boolean. TRUE only when the path is
+// DEFINITIVELY absent from disk (a stat that failed with ENOENT). Everything
+// else is FALSE — an empty/missing worktreePath field, a path that stats fine,
+// and critically a stat that failed for any OTHER reason (EACCES, EIO, ELOOP,
+// ENOTDIR on a parent) — because "I could not tell" must never be read as
+// "gone" on a path whose only consumer suppresses a nag. This is the
+// fail-closed-to-BLOCK half of the un-clearable-axis rule in main().
+//
+// Memoized per distinct path for the life of the process: one Stop-hook run can
+// see the same worktreePath on several descriptors (that is the whole premise of
+// the identity-family collapse), and the Stop path is explicitly budgeted to
+// touch only already-written files — the same idiom the repoKeyForWorktree call
+// site in main() already uses. lstat, not stat: a DANGLING SYMLINK at that path
+// is a real entry on disk, not an absent worktree, and must not read as gone.
+const worktreeGoneCache = new Map();
+function worktreeIsGone(worktreePath) {
+  if (!worktreePath) return false;
+  const key = String(worktreePath);
+  if (worktreeGoneCache.has(key)) return worktreeGoneCache.get(key);
+  // NON-ABSOLUTE -> NOT GONE (P1, fail closed). A legacy descriptor can carry a
+  // RELATIVE worktreePath, which is only meaningful against the cwd it was
+  // registered from — a fact the descriptor does not carry. lstat'ing it from the
+  // Primary's cwd answers a DIFFERENT question, and its ENOENT would suppress the
+  // missing-inbox block for a workspace that is very much alive. We cannot prove
+  // it is gone, so it is not gone. (scripts/devswarm.js now persists ABSOLUTE
+  // paths at build time; this is the fail-closed read for values written before.)
+  if (!path.isAbsolute(key)) { worktreeGoneCache.set(key, false); return false; }
+  let gone = false;
+  try {
+    fs.lstatSync(key);
+    gone = false;
+  } catch (e) {
+    gone = !!(e && e.code === 'ENOENT');
+  }
+  worktreeGoneCache.set(key, gone);
+  return gone;
+}
+
 function readVerdictStatus(id, home) {
   try {
     const p = livenessPathFor(id, home); // throws on an unsafe id
@@ -587,16 +625,38 @@ function main() {
     // dropping a real neglect signal.
     //   - a row that fails to parse (malformed JSON / non-object) -> counts
     //     toward realUnread (never assumed noise).
-    //   - `known:false` (cursor/inbox not conclusively readable, INCLUDING an
-    //     absent inbox file) -> ALWAYS blocks, unconditionally, per spec. A
+    //   - `known:false` (cursor/inbox not conclusively readable) -> blocks. A
     //     corrupt cursor, an unreadable inbox behind a real file, or an
     //     absent inbox must never read as "0 unread". This does NOT nag a
     //     freshly-registered child: scripts/devswarm.js's register now
     //     precreates an EMPTY inbox file (alongside the cursor), so "just
     //     registered, never messaged" reads as known:true/0-unread
-    //     (confirmed-empty), not known:false. An absent inbox at this point
-    //     is therefore a genuine anomaly (a pre-fix legacy child, or a failed
+    //     (confirmed-empty), not known:false. An absent inbox is therefore
+    //     normally a genuine anomaly (a pre-fix legacy child, or a failed
     //     inbox write) that must not be silently swallowed.
+    //
+    //     ONE REFINEMENT (this comment previously read "INCLUDING an absent
+    //     inbox file -> ALWAYS blocks, unconditionally, per spec" — that
+    //     absolute WAS the defect, and a stale comment asserting it next to
+    //     code that no longer does would be its own defect):
+    //     `inbox-missing` (ENOENT, and ONLY ENOENT) on a descriptor whose
+    //     `worktreePath` is ALSO gone from disk does NOT set unreadUnknown.
+    //     WHY: that conjunction is not neglect, it is a DEAD DESCRIPTOR — the
+    //     workspace is physically gone, so the unknown axis is UN-CLEARABLE by
+    //     construction. There is no inbox to read, no child to poke, and no
+    //     acknowledgement the Primary can perform that would ever retire it,
+    //     so it blocked EVERY turn, permanently. The original spec conflated
+    //     "anomaly worth blocking on" with "workspace physically gone".
+    //     NOTHING IS HIDDEN BY THIS: only the UN-CLEARABLE axis stops firing.
+    //     The other two axes are untouched — a gone worktree that still has
+    //     STORE-side unread still blocks on `unionUnread`, and a stale/
+    //     escalated verdict still blocks on `staleOrEscalated`.
+    //     STRICTLY SCOPED, FAIL-CLOSED-TO-BLOCK: any OTHER reason
+    //     (inbox-unreadable/EACCES/EISDIR, cursor-*, no-inbox-path,
+    //     read-threw) still blocks regardless of the worktree, and the
+    //     worktree is treated as GONE only on a definitive ENOENT stat — a
+    //     missing/empty worktreePath, or a stat failing for ANY other reason
+    //     (EACCES, EIO), is NOT provably gone and therefore still blocks.
     // Only a row that PARSES and whose message text POSITIVELY matches the
     // noise marker is excluded — everything else (including an ambiguous
     // parsed row with no recognizable text field) counts as real.
@@ -612,13 +672,28 @@ function main() {
     let unreadReason = null;
     let unreadReasonPath = null;
     let unreadReasonErrno = null;
+    // deadDescriptor: the un-clearable-axis rule below fired for this row (ENOENT
+    // inbox AND a gone worktree). Carried out of the try so the UNION guard can
+    // widen for exactly this row — see its own note there.
+    let deadDescriptor = false;
     try {
       const u = readUnreadMessages(d.inboxPath, d.cursorPath);
       if (!u || !u.known) {
-        unreadUnknown = true;
-        unreadReason = (u && u.reason) || 'unknown';
-        unreadReasonPath = (u && u.path) || null;
-        unreadReasonErrno = (u && u.errno) || null;
+        const reason = (u && u.reason) || 'unknown';
+        // UN-CLEARABLE-AXIS RULE — see the design note above. ENOENT inbox AND a
+        // gone worktree = a dead descriptor, not neglect: do not raise the
+        // unknown axis. Every other axis (unionUnread, staleOrEscalated) is
+        // untouched, so nothing is silently hidden.
+        if (reason === 'inbox-missing' && worktreeIsGone(d.worktreePath)) {
+          deadDescriptor = true;
+          // realUnread stays 0 and unreadUnknown stays false; the row survives
+          // into the family reduce and still blocks if another axis fires.
+        } else {
+          unreadUnknown = true;
+          unreadReason = reason;
+          unreadReasonPath = (u && u.path) || null;
+          unreadReasonErrno = (u && u.errno) || null;
+        }
       } else {
         for (const row of u.rows) {
           if (row === null) { realUnread++; continue; } // unparseable -> fail open (real)
@@ -652,12 +727,26 @@ function main() {
     // matches this Primary's own workspace id (`own.id`, already resolved
     // above via readOwnUnread/#34) — a row with no resolvable sender (absent/
     // malformed) still counts as real (fail-open toward blocking, unchanged).
-    if (!unreadUnknown && dKey && !foreignProject) {
+    // UNION KEY (dead-descriptor widening — NOTHING IS SILENTLY HIDDEN). `dKey`
+    // is `freshKey`, and freshKey is by DEFINITION null for a gone worktree
+    // (repoKeyOfWorktree spawns git against a path that no longer exists), so
+    // without this the union axis is structurally unreachable on exactly the rows
+    // the un-clearable-axis rule above just stopped blocking on — the store-side
+    // backlog of a removed workspace would go from "nagged about generically,
+    // forever" to "never mentioned at all". Live evidence: the descriptor that
+    // motivated this fix has 11 real store-side rows.
+    // So for THAT row and only that row, fall back to the PERSISTED key
+    // (`registeredKey`), which is the only key still knowable once the worktree
+    // is gone. This can only ever ADD blocking — `foreignProject` still gates it
+    // (another project's partition is not this Primary's to drain), and every
+    // other row keeps using `dKey` exactly as before.
+    const unionKey = dKey || (deadDescriptor ? registeredKey : null);
+    if (!unreadUnknown && unionKey && !foreignProject) {
       try {
         // `repoKey: dKey` reuses the ALREADY-RESOLVED (memoized, above) repoKey
         // for this descriptor's worktree instead of letting openStoreForUnread
         // re-spawn git for the SAME worktree a second time this Stop invocation.
-        const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: d.worktreePath, id: d.id, home, env: process.env, repoKey: dKey });
+        const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: d.worktreePath, id: d.id, home, env: process.env, repoKey: unionKey });
         if (storeHandle) {
           try {
             const union = devswarmUnread.unionUnread({ inboxPath: d.inboxPath, cursorPath: d.cursorPath, id: d.id, storeHandle });

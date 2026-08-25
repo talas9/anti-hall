@@ -1117,6 +1117,44 @@ function runRepairs(opts) {
     };
   }, () => require(DEVSWARM_SCRIPT).foldArchivedRegistryRows(home, { cwd, env }));
 
+  // Archived-family DESCRIPTOR forward-migration — the descriptor-file half of the
+  // same defect the pass above fixes for registry rows. cmdArchive used to tombstone
+  // exactly ONE descriptor per archive, so a workspace registered under TWO ids (a
+  // builder-UUID row and a slug row whose `sessionId` IS that UUID) kept its twin
+  // LIVE in `workspaces/` after being archived — and a live descriptor is what
+  // devswarm-parent-gate.js nags the Primary about, every turn, unclearably.
+  // Grouping is the id/sessionId cross-link ONLY (never bare worktree equality), so
+  // two legitimately-live tabs on one worktree are never retired. Pure descriptor
+  // file read+write, NO-DELETE (bytes are tombstoned into archived/ first, and a
+  // tombstone already holding different bytes is never clobbered) -> AUTO-SAFE, same
+  // posture as fold-archived-rows above. One code path for detect and apply.
+  migrationFix('fold-archived-family-descriptors', 'fold-archived-family-descriptors', () => {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.foldArchivedFamilyDescriptors !== 'function') return { pending: false, detail: 'build has no foldArchivedFamilyDescriptors' };
+    const r = dw.foldArchivedFamilyDescriptors(home, { cwd, env, dryRun: true }) || {};
+    const n = r.pending || 0;
+    // SAFETY REFUSALS ARE NOT A CLEAN NO-OP (P2). `left` carries every twin this
+    // pass DECLINED to retire (worktree still live/unprovable, tombstone bytes
+    // differ, lock busy, descriptor changed since the scan) and `ok:false` marks a
+    // run that raised. Reporting only `pending` made all of those print as
+    // "nothing to migrate". They are surfaced via `notice`, which migrationFix
+    // renders on BOTH the pending and the not-pending path — a refusal must never
+    // be indistinguishable from having nothing to do. They do NOT set `pending`:
+    // apply cannot clear them, and claiming otherwise would make every run report
+    // "still pending after migrate".
+    const leftN = Array.isArray(r.left) ? r.left.length : 0;
+    const errN = r.errors || 0;
+    const notice = (leftN ? leftN + ' twin descriptor(s) left in place (safety-gated: '
+        + r.left.map((x) => (x && x.reason) || 'unknown').join(', ') + ')' : '')
+      + (errN ? (leftN ? '; ' : '') + errN + ' error(s)' : '')
+      + (r.ok === false ? ((leftN || errN) ? '; ' : '') + 'pass did NOT complete: ' + (r.error || 'unknown') : '');
+    return {
+      pending: n > 0,
+      detail: n + ' orphaned twin descriptor(s) of archived workspace(s) to retire',
+      notice: notice || null,
+    };
+  }, () => require(DEVSWARM_SCRIPT).foldArchivedFamilyDescriptors(home, { cwd, env }));
+
   // P1-8: backfill the new `ownerKey` descriptor field on every descriptor
   // (active AND archived) + heal prior hash-bucket split-brain via re-home. A
   // pure descriptor/store forward-migration (idempotent, fail-open, NO-DELETE) —
@@ -1575,12 +1613,18 @@ function runRepairs(opts) {
   function migrationFix(id, action, detect, apply) {
     try {
       const before = detect();
-      if (!before.pending) { push(id, action, 'skipped', 'nothing to migrate'); return; }
-      if (dryRun) { push(id, action, 'skipped', '[dry-run] would migrate: ' + (before.detail || 'pending')); return; }
+      // `notice` (optional): something the migration DECLINED to do or could not
+      // complete. It never gates `pending` (apply cannot clear a safety refusal),
+      // but it must never be swallowed either — a refusal reported as "nothing to
+      // migrate" is the failure mode this plumbing exists to prevent.
+      const note = (s) => (before.notice ? s + ' — ' + before.notice : s);
+      if (!before.pending) { push(id, action, 'skipped', note('nothing to migrate')); return; }
+      if (dryRun) { push(id, action, 'skipped', note('[dry-run] would migrate: ' + (before.detail || 'pending'))); return; }
       apply();
       const after = detect();
-      if (!after.pending) push(id, action, 'fixed', 'migrated: ' + (before.detail || 'pending'));
-      else push(id, action, 'failed', 'still pending after migrate: ' + (after.detail || ''));
+      const afterNote = (s) => (after.notice ? s + ' — ' + after.notice : s);
+      if (!after.pending) push(id, action, 'fixed', afterNote('migrated: ' + (before.detail || 'pending')));
+      else push(id, action, 'failed', afterNote('still pending after migrate: ' + (after.detail || '')));
     } catch (e) {
       push(id, action, 'failed', id + ' raised: ' + errMsg(e));
     }
