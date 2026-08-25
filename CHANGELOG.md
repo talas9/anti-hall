@@ -6,6 +6,79 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.85.0 (2026-08-25)
+
+- **Fix: archiving a workspace now retires its whole identity family, so the
+  Primary's Stop gate can no longer be blocked forever by an inbox that cannot
+  exist.** `archive` tombstoned by `<id>` only, but a descriptor's identity family
+  can be cross-linked by `sessionId` instead (one row's `sessionId` IS the other
+  row's `id`), so the twin stayed live in `workspaces/` after its sibling was
+  archived. `devswarm-parent-gate.js` then nagged every turn about the missing
+  inbox file of a workspace that by design could never produce one — un-clearable
+  without editing state by hand. `cmdArchive` now retires the whole family at
+  archive time, and `foldArchivedFamilyDescriptors` is a forward migration for the
+  descriptor sets already split by the bug (wired into BOTH
+  `skills/update/scripts/update.js` and `doctor`'s AUTO-SAFE
+  `fold-archived-family-descriptors` repair, per this repo's persisted-shape rule).
+  It is the descriptor-file counterpart of v0.70.0's `foldArchivedRegistryRows`,
+  which only covered the registry half.
+- **The parent gate distinguishes a dead descriptor from neglect.** The rule used
+  to be that `known:false` on the unread read ALWAYS blocked, unconditionally,
+  including an absent inbox file. That absolute was the defect: an `inbox-missing`
+  (ENOENT, and only ENOENT) on a descriptor whose `worktreePath` is ALSO provably
+  gone from disk is not neglect, it is a dead descriptor, and no action the Primary
+  can take would ever clear it. That one conjunction no longer raises the unknown
+  axis. **Nothing is hidden:** a gone worktree with store-side unread still blocks
+  on `unionUnread`, a stale/escalated verdict still blocks, and every other
+  unreadable reason (`inbox-unreadable`/EACCES/EISDIR, `cursor-*`, `no-inbox-path`,
+  `read-threw`) still blocks regardless of the worktree. "Gone" requires a
+  definitive ENOENT `lstat` on an ABSOLUTE path — a missing/empty `worktreePath`, a
+  relative path, a dangling symlink, or a stat failing for any other reason is NOT
+  provably gone and therefore still blocks.
+- **A descriptor is retired only against PROVEN write authority.** Adversarial
+  review of the first pass found three ways the retire path could delete a LIVE
+  descriptor instead of the intended tombstone twin: a classification made before
+  the lock and acted on after it, a race with the non-locking child-turn descriptor
+  writer, and a reused id whose old tombstone was accepted as authority over a
+  brand-new unrelated descriptor. All three are closed by proving authority before
+  any write — a coherent inode+bytes generation fingerprint
+  (`descriptorFileGeneration`/`sameDescriptorGeneration`) re-read INSIDE the per-id
+  lock and compared against the scan-time snapshot, a per-id lock now taken by
+  `devswarm-child-turn.js` around its own descriptor rename (bounded ~1s, fail-open,
+  no nested acquisition), and `worktreeIsProvablyGone`'s fail-closed gate on the
+  migration path. A generation mismatch or unproven gone-ness REFUSES the retire
+  rather than guessing. Grouping uses the id/`sessionId` cross-link only, never bare
+  worktree equality, so two legitimately-live tabs on one worktree are never
+  retired.
+- **Safety refusals are reported, not rendered as a clean no-op.** A pass that
+  declines to retire a twin (tombstone bytes differ, lock busy, descriptor changed
+  since the scan, worktree still present) now surfaces those in `left[]` — through
+  `update`'s summary line and through a doctor `notice` rendered on both the pending
+  and the not-pending path — and a run that raised reports `ok:false`. Reporting
+  only the retire count made every refusal look identical to "nothing to migrate".
+- **Worktree paths are persisted absolute, and legacy relative paths fail closed.**
+  A relative `worktreePath` is only meaningful against the cwd it was registered
+  from, which the descriptor does not record; resolving it from the Primary's cwd
+  answers a different question. `scripts/devswarm.js` now writes absolute paths, and
+  both readers treat a non-absolute path as "not provably gone" — i.e. keep
+  blocking, keep the descriptor.
+- **Fix: `npm test` no longer writes into the developer's real HOME.**
+  `tests/hooks/flutter-debug.test.js` spawned the REAL `hooks/doctor.js` with a
+  wholesale `process.env` spread and no HOME override, and `doctor.js` defaults to
+  repairs ON with `dryRun:false`. None of the 12 `migrationFix` passes in
+  `hooks/lib/doctor-repair.js` sit inside the `gateOpen` block, so running the suite
+  folded store DBs, rewrote registry rows, migrated owner keys, and touched
+  recovery-intent markers against the real `~/.anti-hall/` and
+  `~/.claude/settings.json`. CI was never affected (a fresh runner has no state), so
+  this was a developer-machine-only hazard, and it predates this release. The test
+  now runs doctor with `--check` plus an isolated disposable HOME, and
+  `tests/helpers/spawn-hook.js`'s `testHook`/`testHookRaw` fall back to a
+  per-process `mkdtemp` dir instead of the real machine home. The regression guard
+  that should have caught it was a hardcoded 4-file allowlist that missed this fifth
+  spawner entirely; it is now a scan over the whole `tests/` tree for anything that
+  spawns `doctor.js` as a child process, with a self-check so a broken scan fails
+  loudly instead of silently protecting nothing.
+
 ## 0.84.0 (2026-08-23)
 
 - **Fix: a mesh partition now resolves from the workspace's own registered

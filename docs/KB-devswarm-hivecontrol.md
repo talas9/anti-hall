@@ -2566,3 +2566,87 @@ orphan candidate.
 Section §29 facts were verified 2026-08-23 from source at the versions on disk in this repo
 checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol
 names rather than trusting line numbers verbatim after either file changes further).
+
+---
+
+## 30. A historical identity link is not write authority (v0.85.0)
+
+**The defect this section generalizes.** `cmdArchive` retired exactly one descriptor per
+archive, keyed by `<id>`. A DevSwarm workspace can be registered under two ids whose
+identity family is cross-linked by `sessionId` rather than by `id` — one row's `sessionId`
+IS the other row's `id` (the builder-UUID row / slug row pair). Archiving one left the
+twin live in `workspaces/`, and `hooks/devswarm-parent-gate.js` then blocked every Primary
+turn on the missing inbox file of a workspace that by construction could never produce one.
+Verified against a real install: `archived/fb-…-a55f20ef.json` (`sessionId` `8f3d585d-…`)
+sitting beside a LIVE `workspaces/8f3d585d-….json`.
+
+**The rule.** *A one-way historical identity link is NOT, by itself, authority to retire a
+descriptor.* Knowing that row A once named the same identity as row B tells you about the
+past. Retiring B is a write against B's CURRENT state, and that write needs authority
+proven at the moment it happens, inside the same lock that serializes it. Three concrete
+ways the first pass violated it, each of which could have deleted a LIVE descriptor:
+
+1. **Stale pre-lock classification.** A twin classified during the scan can be replaced by
+   a fresh atomic rename before the retire actually runs.
+2. **A race with a non-locking writer.** `hooks/devswarm-child-turn.js` publishes a
+   descriptor by `rename` and took no lock, so it could install a brand-new live descriptor
+   at that pathname between classification and `unlink`.
+3. **A reused id.** An old `archived/<id>.json` tombstone was accepted as authority over a
+   completely unrelated, newly-registered live descriptor that happened to take the id.
+
+**Why pathname identity is not enough.** Every descriptor writer in this tree publishes via
+`writeFileSync(tmp) + renameSync(tmp, path)` — an ATOMIC REPLACE, which allocates a NEW
+INODE at the SAME pathname. Node has no unlink-by-inode, so an inode check followed by an
+`unlink(path)` is only atomic if BOTH writers hold the same lock. Fingerprinting on the
+retirement side alone cannot close it.
+
+**What proving authority looks like here.**
+
+- `descriptorFileGeneration(p)` reads inode identity AND exact bytes as ONE coherent
+  `lstat`+read, and `sameDescriptorGeneration(a, b)` fails closed when either side is
+  absent. The generation is re-read INSIDE `withIdLock(<id>)` and compared against the
+  scan-time snapshot; a rename changes `ino` even for byte-identical content, so a
+  same-content re-registration is caught too.
+- `devswarm-child-turn.js` now takes that same per-id advisory lock around its rename —
+  bounded (~1s non-blocking retry), fail-open, exactly one lock over mkdir+write+rename,
+  no nested acquisition, no subprocess.
+- `worktreeIsProvablyGone(worktreePath)` is TRUE only for an ABSOLUTE path whose `lstat`
+  returns ENOENT. A relative path (unresolvable without the cwd it was persisted under), a
+  missing/empty value, a dangling symlink (a real entry), and any other errno are all
+  FALSE. "I could not prove it is gone" must never be read as "it is gone" by a consumer
+  whose next act is to retire a descriptor. `scripts/devswarm.js` now persists ABSOLUTE
+  worktree paths; the fail-closed read covers values written before that.
+- The grouping predicate for a WRITE is stricter than the one for a READ.
+  `companion/lib/devswarm-identity-family.js` keeps both in one module on purpose:
+  `familyKeyOf` groups by resolved worktree (correct for counting), while
+  `crossLinkedIdentity`/`identityFamilyTwins` use only the id/`sessionId` cross-link,
+  because two legitimately-live tabs share one worktree and must never be collapsed by a
+  mutating path.
+
+**The same rule applied to the READ side.** The gate's spec said `known:false` ALWAYS
+blocks, unconditionally, including an absent inbox. That absolute conflated "anomaly worth
+blocking on" with "workspace physically gone". An `inbox-missing` (ENOENT, and only ENOENT)
+on a descriptor whose worktree is ALSO provably gone is a dead descriptor, and the axis is
+UN-CLEARABLE by construction — no inbox to read, no child to poke, no acknowledgement that
+would ever retire it. That single conjunction no longer raises the unknown axis, and
+nothing else changes: store-side unread still blocks on `unionUnread`, a stale/escalated
+verdict still blocks, and every other unreadable reason still blocks regardless of the
+worktree. Note the deliberate ASYMMETRY with the write side — the same "provably gone"
+predicate fails closed toward BLOCKING on the read path and toward REFUSING on the write
+path, because those are the safe directions for their respective consumers.
+
+**Refusals must be reported.** `foldArchivedFamilyDescriptors` can decline to retire a twin
+(tombstone bytes differ, lock busy, descriptor changed since the scan, worktree still
+present or unprovable). Those land in `left[]` with a reason and surface through `update`'s
+summary line and a doctor `notice` rendered on BOTH the pending and the not-pending path;
+a run that raised reports `ok:false`. Reporting only the retire count made every safety
+refusal indistinguishable from "nothing to migrate" — the same success-while-dropping-part-
+of-the-job shape §28 names as the worst failure mode. Refusals do NOT set `pending`, since
+apply cannot clear them and claiming otherwise would report "still pending after migrate"
+forever.
+
+---
+
+Section §30 facts were verified 2026-08-25 from source at the versions on disk in this repo
+checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol
+names rather than trusting line numbers verbatim after either file changes further).

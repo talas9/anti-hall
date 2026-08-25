@@ -371,6 +371,40 @@ plugin depends on it.
   and the caps for `note` (300 → 1200), `claimed`, and `observed` were raised — bounded so
   a maximum-length field still cannot push a record past `MAX_LINE_BYTES`. The write never
   fails.
+- **Archive retires the whole identity family (v0.85.0)** — `archive` tombstoned by
+  `<id>` only, but a descriptor's identity family can be cross-linked by `sessionId`
+  instead (one row's `sessionId` IS the other row's `id`), so the twin stayed live in
+  `workspaces/` after its sibling was archived and the Stop gate nagged every turn about
+  an inbox that, by design, could never exist — un-clearable without editing state by
+  hand. `cmdArchive` now retires the whole family at archive time, and
+  `foldArchivedFamilyDescriptors` folds sets already split by the bug (a forward
+  migration wired into BOTH `update` and doctor's AUTO-SAFE
+  `fold-archived-family-descriptors` repair) — the descriptor-file counterpart of
+  v0.70.0's registry-row `foldArchivedRegistryRows`.
+- **The parent gate tells a dead descriptor from neglect (v0.85.0)** — the old rule was
+  that `known:false` on the unread read ALWAYS blocked, unconditionally, including an
+  absent inbox file; that absolute was the defect. An `inbox-missing` (ENOENT, and only
+  ENOENT) on a descriptor whose `worktreePath` is ALSO provably gone no longer raises the
+  unknown axis, because no action the Primary can take would ever clear it. Nothing is
+  hidden: store-side unread still blocks on `unionUnread`, a stale/escalated verdict
+  still blocks, and every other unreadable reason (`inbox-unreadable`, `cursor-*`,
+  `no-inbox-path`, `read-threw`) still blocks regardless of the worktree. "Gone" requires
+  a definitive ENOENT `lstat` on an ABSOLUTE path — a relative/missing path, a dangling
+  symlink, or a stat that failed for any other reason is NOT provably gone and still
+  blocks.
+- **A descriptor is retired only against PROVEN write authority (v0.85.0)** — every
+  descriptor writer publishes by atomic rename, which installs a NEW INODE at the same
+  pathname, so a retire that classified a twin at scan time and unlinked it by pathname
+  could destroy a freshly-registered LIVE descriptor. Retirement now re-reads a coherent
+  inode+bytes generation fingerprint INSIDE the per-id lock and compares it against the
+  scan-time snapshot; `devswarm-child-turn.js` takes that same per-id lock around its own
+  descriptor rename (bounded ~1s, fail-open, no nested acquisition); and the migration
+  path is additionally gated on `worktreeIsProvablyGone`. A mismatch or unproven
+  gone-ness REFUSES the retire rather than guessing, and a one-way historical identity
+  link is never by itself sufficient authority. Grouping uses the id/`sessionId`
+  cross-link only, never bare worktree equality, so two legitimately-live tabs on one
+  worktree are never retired. Safety refusals surface through `update`'s summary and a
+  doctor `notice` instead of reading as a clean no-op.
 - **Per-project mesh store** — one shared store per project keyed by a stable `repoKey`,
   so any worktree can message any other directly; **#36-STRUCTURAL scoping** closes a
   spoofable cross-project bleed.
