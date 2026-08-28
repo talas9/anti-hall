@@ -4,10 +4,16 @@
 //
 // READ-ONLY REPORT ONLY. Classifies every bucket under
 // ~/.anti-hall/devswarm/store (or --home <dir>) as REAL, UNKNOWN, or GARBAGE
-// using companion/lib/devswarm-store-audit.js's auditStore(), then writes a
-// JSON report and prints a summary. Deletes, moves, renames, and truncates
-// NOTHING — there is no cleanup/fix flag on this script by design. Any
-// cleanup decision belongs to the human owner reviewing this report.
+// using companion/lib/devswarm-store-audit.js's auditStore(), then prints a
+// summary. Deletes, moves, renames, and truncates NOTHING — there is no
+// cleanup/fix flag on this script by design. Any cleanup decision belongs to
+// the human owner reviewing this report.
+//
+// WRITES NOTHING WITHOUT --out (v0.86.0). The JSON report file is OPT-IN.
+// `--out` used to default to a timestamped path under .anti-hall/reports/, so
+// a tool whose own banner promises READ-ONLY deposited a file on EVERY
+// invocation — merely asking a question about the store mutated the tree.
+// Analysis is unchanged; anyone who wants the artifact names a path.
 //
 // --out SAFETY: --out is validated (validateOutPath) before anything is
 // written. The run REFUSES (non-zero exit, nothing written) when the
@@ -255,19 +261,31 @@ function run(argv, opts) {
   const args = parseArgs(argv || []);
   const home = args.home || o.home || os.homedir();
   const F = o.fsi || fs;
-  const outPath = args.out || defaultOutPath();
 
-  const validation = validateOutPath(outPath, home, F);
-  if (!validation.ok) {
-    return { ok: false, error: validation.error };
+  // The file write is OPT-IN (only with an explicit --out). This tool tells its
+  // reader, in its own banner, that it is READ-ONLY and modifies nothing — and a
+  // default --out made that false on EVERY invocation, silently depositing a JSON
+  // file under .anti-hall/reports/ merely for asking a question about the store.
+  // A tool a reviewer is told is read-only has to actually be read-only; anyone
+  // who wants the artifact still gets it by naming a path.
+  const outPath = args.out || null;
+
+  let validation = null;
+  if (outPath) {
+    validation = validateOutPath(outPath, home, F);
+    if (!validation.ok) {
+      return { ok: false, error: validation.error };
+    }
   }
 
   const report = auditStore({ home, fsi: o.fsi });
   report[REPORT_MARKER] = true;
 
-  const writeResult = writeReport(validation.resolved, validation.storeRootCanonical, report, F);
-  if (!writeResult.ok) {
-    return { ok: false, error: writeResult.error, report };
+  if (validation) {
+    const writeResult = writeReport(validation.resolved, validation.storeRootCanonical, report, F);
+    if (!writeResult.ok) {
+      return { ok: false, error: writeResult.error, report };
+    }
   }
 
   if (!args.quiet) {
@@ -279,7 +297,9 @@ function run(argv, opts) {
       '  REAL buckets:    ' + report.realCount,
       '  GARBAGE buckets: ' + report.garbageCount,
       '  UNKNOWN buckets: ' + report.unknownCount,
-      '  report written:  ' + validation.resolved,
+      validation
+        ? '  report written:  ' + validation.resolved
+        : '  report file:     not written (read-only; pass --out <path>.json to save the JSON)',
     ];
     if (report.storeEnumerationError) {
       lines.push('  WARNING: store-root enumeration FAILED (' + report.storeEnumerationError + ') — total/bucket counts above are NOT a confident zero-leak result.');
@@ -287,7 +307,7 @@ function run(argv, opts) {
     for (const l of lines) process.stdout.write(l + '\n');
   }
 
-  return { ok: true, outPath: validation.resolved, report };
+  return { ok: true, outPath: validation ? validation.resolved : null, report };
 }
 
 if (require.main === module) {

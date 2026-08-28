@@ -488,14 +488,67 @@ test('devswarm-store-leak-report CLI: a valid --out .json path outside the store
 // 12e. Default out path (no --out given) is unaffected by the new validation
 // (repo-relative .anti-hall/reports/*.json is never under the devswarm store
 // root and always ends in .json).
-test('devswarm-store-leak-report CLI: default --out path (no --out flag) still passes validation', () => {
+// ---------------------------------------------------------------------------
+// The banner promises READ-ONLY — so the tool has to actually be read-only.
+//
+// ROOT CAUSE (v0.86): run() defaulted `--out` to defaultOutPath(), so EVERY
+// invocation deposited .anti-hall/reports/devswarm-store-leak-report-<ts>.json
+// while printing "READ-ONLY — nothing deleted/moved/modified" to the reviewer
+// reading it. The write is now OPT-IN (only with an explicit --out).
+//
+// MUTATION LIST (each applied to scripts/devswarm-store-leak-report.js and this
+// file re-run; the named test FAILED for each — none of these is vacuous):
+//   L1  restore `const outPath = args.out || defaultOutPath();`
+//         -> KILLED by 'no --out -> NOTHING is written anywhere'
+//   L2  keep the opt-in outPath but always call writeReport(defaultOutPath()...)
+//         -> KILLED by 'no --out -> NOTHING is written anywhere'
+//   L3  return `outPath: defaultOutPath()` instead of null when not writing
+//         -> KILLED by 'no --out -> NOTHING is written anywhere' (outPath null)
+//   L4  skip the write even WHEN --out is passed
+//         -> KILLED by 'an explicit --out still writes the report'
+// ---------------------------------------------------------------------------
+test('devswarm-store-leak-report CLI: no --out -> NOTHING is written anywhere (the banner says READ-ONLY)', () => {
   const { home, cleanup } = tmpHome();
+  const reportsDir = path.join(__dirname, '..', '..', '.anti-hall', 'reports');
+  const listing = () => { try { return fs.readdirSync(reportsDir).sort().join('|'); } catch (_) { return '<absent>'; } };
+  const before = listing();
   try {
     makeSqliteOnlyBucket(home, 'deadbeef');
     const result = reportCli.run(['--home', home, '--quiet']);
     assert.strictEqual(result.ok, true, JSON.stringify(result));
-    try { fs.unlinkSync(result.outPath); } catch (_) {}
+    assert.strictEqual(result.outPath, null, 'no file path is reported because no file was written');
+    assert.ok(result.report && result.report.total >= 1, 'the analysis itself is unchanged');
+    assert.strictEqual(listing(), before,
+      'FAILS pre-fix: the default --out deposited a JSON report on every single invocation ' +
+      'of a tool that advertises itself as modifying nothing');
   } finally { cleanup(); }
+});
+
+test('devswarm-store-leak-report CLI: an explicit --out still writes the report (opt-in, not removed)', () => {
+  const { home, cleanup } = tmpHome();
+  const out = path.join(home, 'explicit-report.json');
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    const result = reportCli.run(['--home', home, '--quiet', '--out', out]);
+    assert.strictEqual(result.ok, true, JSON.stringify(result));
+    assert.strictEqual(result.outPath, out);
+    assert.ok(JSON.parse(fs.readFileSync(out, 'utf8'))[reportCli.REPORT_MARKER], 'the JSON landed at the requested path');
+  } finally { cleanup(); }
+});
+
+test('devswarm-store-leak-report CLI: the banner tells the truth about the file (no --out -> says not written)', () => {
+  const { home, cleanup } = tmpHome();
+  const chunks = [];
+  const orig = process.stdout.write;
+  try {
+    makeSqliteOnlyBucket(home, 'deadbeef');
+    process.stdout.write = (c) => { chunks.push(String(c)); return true; };
+    try { reportCli.run(['--home', home]); } finally { process.stdout.write = orig; }
+    const text = chunks.join('');
+    assert.match(text, /READ-ONLY/);
+    assert.match(text, /not written/, 'the banner must not imply a file exists when none does');
+    assert.ok(!/report written:/.test(text));
+  } finally { process.stdout.write = orig; cleanup(); }
 });
 
 // ---------------------------------------------------------------------------
