@@ -453,22 +453,47 @@ function hivecontrolUnresolvedWarningLines() {
   ];
 }
 
-// unitEnvFor(hivecontrolPath) -> {PATH, ANTIHALL_DEVSWARM_HIVECONTROL} | null.
+// unitEnvFor(hivecontrolPath, execPath) -> {PATH, ANTIHALL_DEVSWARM_HIVECONTROL?} | null.
 // PURE and DETERMINISTIC (same input -> byte-identical output), which is what
 // makes the generated unit byte-stable across the repeated reconcile/regenerate
 // cycles that silently reverted every hand-patched plist.
 //
-// BOTH keys are emitted on purpose: PATH alone would fix only this ONE lookup
-// (and only while the CLI stays put), whereas the explicit absolute binary in
-// ANTIHALL_DEVSWARM_HIVECONTROL is what the daemon actually spawns.
-function unitEnvFor(hivecontrolPath) {
-  if (!hivecontrolPath || !path.isAbsolute(String(hivecontrolPath))) return null;
-  const bin = String(hivecontrolPath);
-  const dir = path.dirname(bin);
-  const parts = [dir].concat(MINIMAL_UNIT_PATH.split(':').filter((p) => p && p !== dir));
+// BOTH hivecontrol keys are emitted on purpose: PATH alone would fix only this ONE
+// lookup (and only while the CLI stays put), whereas the explicit absolute binary
+// in ANTIHALL_DEVSWARM_HIVECONTROL is what the daemon actually spawns.
+//
+// execPath's DIRECTORY is prepended too (v0.86 — the `env: node: No such file or
+// directory` storm). The unit's ExecStart/ProgramArguments is an ABSOLUTE node
+// path (process.execPath at install time — commonly a version-manager dir such as
+// ~/.nvm/versions/node/vX/bin that is NOT on any scheduler's default PATH), so the
+// daemon ITSELF always starts. But `hivecontrol` is a SCRIPT whose shebang
+// re-resolves `node` THROUGH PATH — so every grandchild spawn died exit 127 and
+// reconciliation healed nothing, on every sweep, for every repo. Baking the node
+// bin dir into PATH is what makes the interpreter the daemon was launched with
+// resolvable to the processes it launches. This is the SINGLE chokepoint for the
+// unit environment: both installers' plist/service/cron emitters (six in total,
+// install-devswarm-supervisor.js imports this very function) derive from it, so
+// the fix cannot be applied to one emitter and missed on another.
+//
+// execPath is REQUIRED (no default): each emitter passes the SAME `exec` it bakes
+// into the unit, so the PATH can never disagree with the interpreter actually
+// launched. Passing neither an absolute hivecontrol nor an absolute exec yields
+// null (no environment emitted) — the pre-v0.66 fail-open shape.
+function unitEnvFor(hivecontrolPath, execPath) {
+  const usable = (p) => !!p && path.isAbsolute(String(p)) && pathIsEmittable(String(p));
+  const bin = usable(hivecontrolPath) ? String(hivecontrolPath) : null;
+  const nodeDir = usable(execPath) ? path.dirname(String(execPath)) : null;
+  if (!bin && !nodeDir) return null;
+  const parts = [];
+  const push = (p) => { if (p && parts.indexOf(p) === -1) parts.push(p); };
+  if (bin) push(path.dirname(bin));
+  push(nodeDir);
+  for (const p of MINIMAL_UNIT_PATH.split(':')) push(p);
   const out = {};
   out.PATH = parts.join(':');
-  out[HIVECONTROL_ENV_VAR] = bin;
+  // Only pinned when the binary itself is emittable — a PATH that resolves node
+  // is still worth emitting for a daemon whose hivecontrol could not be resolved.
+  if (bin) out[HIVECONTROL_ENV_VAR] = bin;
   return out;
 }
 
@@ -829,7 +854,7 @@ function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG, wo
   // FIXED key order from a pure function of `hivecontrol`, so regenerating the
   // unit (doctor --repair / update reconcile) reproduces it byte-for-byte instead
   // of dropping it. Omitted entirely when the binary could not be resolved.
-  const env = pathIsEmittable(hivecontrol || '') ? unitEnvFor(hivecontrol) : null;
+  const env = unitEnvFor(hivecontrol, exec);
   const envKey = env
     ? '  <key>EnvironmentVariables</key>\n  <dict>\n'
       + Object.keys(env).sort().map((k) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(env[k])}</string>\n`).join('')
@@ -903,7 +928,7 @@ function buildService({ exec = EXEC, script = SCRIPT, restartSec = RESTART_SEC, 
   // does not contain the DevSwarm CLI — the systemd-side equivalent of the
   // launchd EnvironmentVariables fix above. Same pure, fixed-order derivation,
   // so a regenerated unit is byte-identical.
-  const unitEnv = pathIsEmittable(hivecontrol || '') ? unitEnvFor(hivecontrol) : null;
+  const unitEnv = unitEnvFor(hivecontrol, exec);
   const envLines = unitEnv
     ? Object.keys(unitEnv).sort().map((k) => `Environment=${sdEnvValue(k + '=' + unitEnv[k])}\n`).join('')
     : '';
@@ -945,7 +970,7 @@ function buildCronLine({ exec = EXEC, script = SCRIPT, workdir, log = LOG, hivec
   // plist/service get. `VAR=value cmd` is a POSIX assignment prefix (scoped to
   // this command only); every value is single-quoted exactly like exec/script.
   // parseCronCommand's readback strips these back off — keep the two in sync.
-  const unitEnv = pathIsEmittable(hivecontrol || '') ? unitEnvFor(hivecontrol) : null;
+  const unitEnv = unitEnvFor(hivecontrol, exec);
   const envPrefix = unitEnv
     ? Object.keys(unitEnv).sort().map((k) => `${k}=${shSingleQuote(unitEnv[k])} `).join('')
     : '';
@@ -1374,6 +1399,13 @@ function main() {
     validateArgs(args); // footgun fix: --help/-h or an unknown flag exits here, no install
     if (process.platform === 'win32') return windowsNoop();
     if (!fs.existsSync(SCRIPT)) { say(`error: ingest daemon script not found at ${SCRIPT}`); process.exit(1); return; }
+    // The node binary baked into the unit is validated the same way the script is.
+    // process.execPath is normally self-evidently present (it is the interpreter
+    // currently executing), so this is a cheap invariant assertion rather than a
+    // likely-to-fire branch — but the unit bakes EXEC as a PERMANENT absolute path,
+    // so emitting one for a path that is not a real file would install a daemon
+    // that can never start and whose failure surfaces only in a scheduler log.
+    if (!fs.existsSync(EXEC)) { say(`error: node binary not found at ${EXEC}; refusing to bake an unstartable unit`); process.exit(1); return; }
     // Report (never fix) a local process-reaper that would SIGKILL this daemon.
     // Emitted BEFORE the install branches so it is shown regardless of which
     // path (per-project / legacy per-worktree / cron fallback) is taken, and

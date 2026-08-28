@@ -508,13 +508,20 @@ test('buildPlist bakes EnvironmentVariables and is BYTE-STABLE across regenerati
   assert.match(a, /<key>EnvironmentVariables<\/key>/);
   assert.match(a, /<key>ANTIHALL_DEVSWARM_HIVECONTROL<\/key>\s*<string>\/opt\/dv\/bin\/hivecontrol<\/string>/);
   assert.match(a, /<key>PATH<\/key>\s*<string>\/opt\/dv\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin<\/string>/);
-  // Unresolved -> the key is omitted entirely (valid plist, pre-v0.66 shape).
-  const none = installer.buildPlist({ label: 'com.x', exec: '/n', script: '/s', log: '/l', workdir: '/w' });
-  assert.ok(!/EnvironmentVariables/.test(none), 'no resolution -> no environment key (never an empty dict)');
+  // Unresolved hivecontrol -> the PIN is omitted, but PATH still carries the dir
+  // of the baked node (v0.86): the unit's interpreter is an absolute
+  // version-manager path no scheduler default PATH contains, and hivecontrol's
+  // shebang re-resolves `node` THROUGH PATH. Nothing absolute at all -> no key.
+  const none = installer.buildPlist({ label: 'com.x', exec: '/opt/nvm/bin/node', script: '/s', log: '/l', workdir: '/w' });
+  assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(none), 'no resolution -> nothing pinned');
+  assert.match(none, /<key>PATH<\/key>\s*<string>\/opt\/nvm\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin<\/string>/);
+  const bare = installer.buildPlist({ label: 'com.x', exec: 'node', script: '/s', log: '/l', workdir: '/w' });
+  assert.ok(!/EnvironmentVariables/.test(bare), 'nothing absolute -> no environment key (never an empty dict)');
   assert.equal((a.match(/<dict>/g) || []).length, (a.match(/<\/dict>/g) || []).length, 'plist stays well-formed');
   // A hostile path is refused rather than emitted (existing safety posture).
   const nasty = installer.buildPlist(Object.assign({}, args, { hivecontrol: '/opt/"evil"/hivecontrol' }));
-  assert.ok(!/EnvironmentVariables/.test(nasty), 'a quote-carrying path is never emitted into a unit');
+  assert.ok(!/evil/.test(nasty), 'a quote-carrying path is never emitted into a unit — not pinned, not in PATH');
+  assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(nasty), 'and nothing is pinned from it');
 });
 
 test('buildService bakes Environment= lines (systemd equivalent) and is byte-stable', () => {
@@ -524,7 +531,10 @@ test('buildService bakes Environment= lines (systemd equivalent) and is byte-sta
   assert.match(a, /^Environment="PATH=\/opt\/dv\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin"$/m);
   assert.match(a, /^Environment="ANTIHALL_DEVSWARM_HIVECONTROL=\/opt\/dv\/bin\/hivecontrol"$/m);
   assert.ok(a.indexOf('Environment=') < a.indexOf('ExecStart='), 'environment is declared before ExecStart');
-  assert.ok(!/Environment=/.test(installer.buildService({ exec: '/n', script: '/s' })), 'omitted when unresolved');
+  const svcNone = installer.buildService({ exec: '/opt/nvm/bin/node', script: '/s' });
+  assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(svcNone), 'the pin is omitted when unresolved');
+  assert.match(svcNone, /^Environment="PATH=\/opt\/nvm\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin"$/m, 'but node stays resolvable (v0.86)');
+  assert.ok(!/Environment=/.test(installer.buildService({ exec: 'node', script: '/s' })), 'nothing absolute -> omitted entirely');
   // systemd expands % specifiers inside Environment= — they must be escaped.
   assert.match(installer.sdEnvValue('PATH=/a%b'), /%%/);
 });
@@ -538,7 +548,13 @@ test('buildCronLine bakes an assignment prefix AND the readback still parses (pa
   const parsed = installer.parseCronCommand(line);
   assert.equal(parsed.workingDir, '/w');
   assert.equal(parsed.scriptPath, '/s/ingest.js', 'the env prefix is stripped before tokenizing');
-  const plain = installer.buildCronLine({ exec: '/usr/bin/node', script: '/s/ingest.js', workdir: '/w', log: '/l' });
+  // Unresolved hivecontrol still emits a PATH prefix (v0.86) — the readback must
+  // strip that too, or doctor's classifier reads a PATH value as the script path.
+  const plain = installer.buildCronLine({ exec: '/opt/nvm/bin/node', script: '/s/ingest.js', workdir: '/w', log: '/l' });
+  assert.ok(plain.includes("PATH='/opt/nvm/bin:/usr/bin:/bin:/usr/sbin:/sbin'"));
   assert.deepEqual(installer.parseCronCommand(plain), { workingDir: '/w', scriptPath: '/s/ingest.js' },
-    'a pre-v0.66 (prefix-less) cron line still parses identically');
+    'the env prefix is stripped whether or not a hivecontrol pin is present');
+  const bare = installer.buildCronLine({ exec: 'node', script: '/s/ingest.js', workdir: '/w', log: '/l' });
+  assert.deepEqual(installer.parseCronCommand(bare), { workingDir: '/w', scriptPath: '/s/ingest.js' },
+    'a genuinely prefix-less (pre-v0.66) cron line still parses identically');
 });

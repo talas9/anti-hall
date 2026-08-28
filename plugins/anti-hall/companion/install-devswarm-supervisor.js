@@ -103,7 +103,7 @@ function buildPlist({ label = LABEL, exec = EXEC, script = SCRIPT, log = LOG, in
   // reconcile) reproduces it byte-for-byte instead of dropping it. Omitted
   // entirely when the binary could not be resolved (fail-open: still installs
   // the supervisor, just without the env, exactly like the ingest path).
-  const env = pathIsEmittable(hivecontrol || '') ? unitEnvFor(hivecontrol) : null;
+  const env = unitEnvFor(hivecontrol, exec);
   const envKey = env
     ? '  <key>EnvironmentVariables</key>\n  <dict>\n'
       + Object.keys(env).sort().map((k) => `    <key>${xmlEscape(k)}</key>\n    <string>${xmlEscape(env[k])}</string>\n`).join('')
@@ -156,7 +156,7 @@ function buildService({ exec = EXEC, script = SCRIPT, hivecontrol = RESOLVED_HIV
   // sdEnvValue (systemd's Environment= does NOT do $VAR expansion but DOES
   // expand `%` specifiers, so `%` must be doubled — reusing sdEnvValue instead
   // of re-deriving that escaping here).
-  const env = pathIsEmittable(hivecontrol || '') ? unitEnvFor(hivecontrol) : null;
+  const env = unitEnvFor(hivecontrol, exec);
   const envLines = env
     ? Object.keys(env).sort().map((k) => `Environment=${sdEnvValue(k + '=' + env[k])}\n`).join('')
     : '';
@@ -192,7 +192,7 @@ function buildCronLine({ exec = EXEC, script = SCRIPT, hivecontrol = RESOLVED_HI
   // Double-quoted like exec/script here (this file's existing cron-quoting
   // convention); safe because pathIsEmittable already refuses any hivecontrol
   // path carrying a quote character before an env is ever built.
-  const env = pathIsEmittable(hivecontrol || '') ? unitEnvFor(hivecontrol) : null;
+  const env = unitEnvFor(hivecontrol, exec);
   const envPrefix = env
     ? Object.keys(env).sort().map((k) => `${k}="${env[k]}" `).join('')
     : '';

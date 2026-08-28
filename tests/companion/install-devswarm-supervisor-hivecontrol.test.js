@@ -50,15 +50,23 @@ test('buildPlist: WITHOUT the fix this would fail — bakes EnvironmentVariables
   assert.equal((a.match(/<string>/g) || []).length, (a.match(/<\/string>/g) || []).length);
 });
 
-test('buildPlist: unresolved binary omits the key entirely — never crashes, never an empty dict (fail-open)', () => {
-  const none = m.buildPlist({ label: 'com.x', exec: '/n', script: '/s', log: '/l', interval: 90 });
-  assert.ok(!/EnvironmentVariables/.test(none), 'no resolution -> no environment key');
+test('buildPlist: unresolved binary omits the hivecontrol PIN but keeps a node-resolvable PATH (v0.86)', () => {
+  const none = m.buildPlist({ label: 'com.x', exec: '/opt/nvm/bin/node', script: '/s', log: '/l', interval: 90 });
+  assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(none), 'no resolution -> nothing is pinned');
+  // v0.86: a unit whose hivecontrol could not be resolved STILL needs `node` on
+  // PATH — its baked interpreter is an absolute version-manager path that no
+  // scheduler default PATH contains, and hivecontrol's shebang re-resolves
+  // `node` through PATH. Omitting the whole env here was half of the ENOENT storm.
+  assert.match(none, /<key>PATH<\/key>\s*<string>\/opt\/nvm\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin<\/string>/);
+  const bare = m.buildPlist({ label: 'com.x', exec: 'node', script: '/s', log: '/l', interval: 90 });
+  assert.ok(!/EnvironmentVariables/.test(bare), 'nothing absolute to bake -> no environment key at all (never an empty dict)');
   assert.equal((none.match(/<dict>/g) || []).length, (none.match(/<\/dict>/g) || []).length);
 });
 
 test('buildPlist: a hostile (quote-carrying) hivecontrol path is refused, not emitted', () => {
-  const nasty = m.buildPlist({ label: 'com.x', exec: '/n', script: '/s', log: '/l', interval: 90, hivecontrol: '/opt/"evil"/hivecontrol' });
-  assert.ok(!/EnvironmentVariables/.test(nasty), 'a quote-carrying path is never baked into a unit');
+  const nasty = m.buildPlist({ label: 'com.x', exec: '/opt/nvm/bin/node', script: '/s', log: '/l', interval: 90, hivecontrol: '/opt/"evil"/hivecontrol' });
+  assert.ok(!/evil/.test(nasty), 'a quote-carrying path is never baked into a unit — not as a pin, not in PATH');
+  assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(nasty), 'and nothing is pinned from it');
 });
 
 test('buildService: WITHOUT the fix this would fail — bakes Environment= lines ahead of ExecStart, byte-stable', () => {
@@ -71,9 +79,11 @@ test('buildService: WITHOUT the fix this would fail — bakes Environment= lines
   assert.ok(a.includes('ExecStart="/usr/bin/node" "/s/devswarm-supervisor.js"'), 'ExecStart itself is unchanged');
 });
 
-test('buildService: unresolved binary omits Environment= entirely (fail-open, still installs)', () => {
-  const none = m.buildService({ exec: '/n', script: '/s' });
-  assert.ok(!/Environment=/.test(none));
+test('buildService: unresolved binary omits the hivecontrol PIN but keeps a node-resolvable PATH (v0.86)', () => {
+  const none = m.buildService({ exec: '/opt/nvm/bin/node', script: '/s' });
+  assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(none), 'no resolution -> nothing pinned');
+  assert.match(none, /^Environment="PATH=\/opt\/nvm\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin"$/m, 'but node stays resolvable (v0.86)');
+  assert.ok(!/Environment=/.test(m.buildService({ exec: 'node', script: '/s' })), 'nothing absolute -> no Environment= at all');
   assert.ok(none.includes('Type=oneshot'), 'the rest of the unit is unaffected');
 });
 
@@ -86,9 +96,14 @@ test('buildCronLine: WITHOUT the fix this would fail — bakes an env prefix ahe
   assert.ok(a.includes('"/usr/bin/node" "/s/devswarm-supervisor.js" >/dev/null 2>&1'), 'the underlying cron command is unchanged');
 });
 
-test('buildCronLine: unresolved binary omits the env prefix entirely (fail-open)', () => {
-  const line = m.buildCronLine({ exec: '/usr/bin/node', script: '/s/devswarm-supervisor.js' });
-  assert.equal(line, '* * * * * "/usr/bin/node" "/s/devswarm-supervisor.js" >/dev/null 2>&1', 'identical to the pre-v0.66 shape when nothing resolves');
+test('buildCronLine: unresolved binary omits the hivecontrol PIN but keeps a node-resolvable PATH (v0.86)', () => {
+  const line = m.buildCronLine({ exec: '/opt/nvm/bin/node', script: '/s/devswarm-supervisor.js' });
+  assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(line), 'nothing is pinned when nothing resolved');
+  assert.ok(line.includes('PATH="/opt/nvm/bin:/usr/bin:/bin:/usr/sbin:/sbin"'),
+    'cron\'s PATH is the narrowest of all — a version-manager node MUST be baked in');
+  const bare = m.buildCronLine({ exec: 'node', script: '/s/devswarm-supervisor.js' });
+  assert.equal(bare, '* * * * * "node" "/s/devswarm-supervisor.js" >/dev/null 2>&1',
+    'nothing absolute to bake -> identical to the pre-v0.66 prefix-less shape');
 });
 
 test('resolveHivecontrolPath: explicit env override short-circuits the shell probe (hermetic — no real shell spawned)', () => {
