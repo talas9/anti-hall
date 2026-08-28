@@ -405,6 +405,35 @@ plugin depends on it.
   cross-link only, never bare worktree equality, so two legitimately-live tabs on one
   worktree are never retired. Safety refusals surface through `update`'s summary and a
   doctor `notice` instead of reading as a clean no-op.
+- **Daemon units now ship a PATH that can resolve their own interpreter (v0.86.0)** — the
+  ingest/supervisor installers bake an ABSOLUTE node path as the unit's interpreter
+  (`process.execPath`, commonly a version-manager dir on no scheduler's default `PATH`)
+  but built the unit's `PATH` from the `hivecontrol` dir plus a minimal fallback only. The
+  daemon itself always started and looked healthy (absolute `argv[0]`), while
+  `hivecontrol` — a SCRIPT whose shebang re-resolves `node` THROUGH `PATH` — died on every
+  grandchild spawn with `env: node: No such file or directory`, exit 127: 23,928
+  occurrences over 1,757 supervisor sweeps across three repoKeys, `healed:0` on every one,
+  i.e. reconciliation had never once succeeded. Fixed at the single chokepoint all six
+  plist/service/cron emitters derive from — `unitEnvFor` prepends `dirname(execPath)` and
+  takes `execPath` as a REQUIRED argument, so a unit's `PATH` structurally cannot disagree
+  with the interpreter baked into it. Install refuses if that node binary is not a real
+  file, and a unit whose `hivecontrol` could not be resolved now still gets a
+  node-resolving `PATH` instead of no environment at all.
+- **Auto-heal can now fire when it is actually needed (v0.86.0)** — `update.js` only
+  attempted `healIngestDaemon` on a run that had synced new bytes into the version cache.
+  But a daemon's baked script path goes stale with NO version bump (the plugin manager
+  relocates the version-pinned cache dir it was built from) — exactly the case the heal
+  exists for — and in that steady state `syncCache` no-ops and the classifier that would
+  spot the dangling path never ran. The heal now also fires when the installed unit fails
+  to classify `ok`, through the same lookup the heal action itself uses so the decision and
+  the action cannot disagree. Read-only and fail-open on a no-sync run; `absent` is
+  deliberately excluded, so a no-op update never first-installs an opt-in daemon.
+- **The store leak report is now genuinely read-only (v0.86.0)** —
+  `devswarm-store-leak-report.js` promises in its own banner that it modifies nothing, then
+  defaulted `--out` to a timestamped path and wrote a JSON file on every invocation. The
+  file is now opt-in: no `--out`, no write. All `--out` safety (realpath containment,
+  `.json` requirement, `O_EXCL`/`O_NOFOLLOW`, report-marker check) is unchanged, and the
+  analysis logic is untouched.
 - **Per-project mesh store** — one shared store per project keyed by a stable `repoKey`,
   so any worktree can message any other directly; **#36-STRUCTURAL scoping** closes a
   spoofable cross-project bleed.

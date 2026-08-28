@@ -2650,3 +2650,67 @@ forever.
 Section §30 facts were verified 2026-08-25 from source at the versions on disk in this repo
 checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol
 names rather than trusting line numbers verbatim after either file changes further).
+
+---
+
+## 31. A unit's PATH must contain the directory of the interpreter it bakes (v0.86.0)
+
+**The defect this section generalizes.** `install-devswarm-ingest.js` and
+`install-devswarm-supervisor.js` bake an ABSOLUTE node path as the generated
+launchd/systemd/cron unit's interpreter — `process.execPath` captured at install time,
+which on a developer machine is commonly a version-manager directory
+(`~/.nvm/versions/node/vX.Y.Z/bin/node`) that appears on no scheduler's default `PATH`.
+The same emitters built the unit's `PATH` from the resolved `hivecontrol` directory plus
+`MINIMAL_UNIT_PATH`. The node bin dir was in neither.
+
+**Why every health signal said "fine".** The daemon starts by absolute `argv[0]`, so it
+launched, held its lock, wrote heartbeats, and passed every check that asks "is the daemon
+running?". The failure lived exactly ONE process lower: `hivecontrol` is a SCRIPT whose
+shebang re-resolves `node` THROUGH `PATH`, so every grandchild the daemon spawned died
+`env: node: No such file or directory`, exit 127. Measured on a live install before the
+fix: **23,928 occurrences across 1,757 supervisor sweeps spanning three repoKeys, with
+`healed:0` on every single sweep** — reconciliation had never succeeded for any scope, for
+as long as the units had existed.
+
+**The rule.** *Baking an absolute interpreter into a unit is only half the contract. The
+environment that unit hands to its children must be able to resolve that same interpreter
+by name.* An absolute `ExecStart` guarantees the process you launch; it guarantees nothing
+about the scripts that process launches, and a shebang is a by-name lookup. Any time a
+generated unit pins an interpreter path, `dirname` of that path belongs on the unit's
+`PATH`.
+
+**Why this is a chokepoint fix, not a per-emitter patch.** Six emitters across the two
+installers write a unit environment (plist / systemd service / cron line, times two
+installers), and `install-devswarm-supervisor.js` imports `unitEnvFor` from the ingest
+installer. Patching the PATH at each emitter would leave the fix one refactor away from
+being missed on one of them. Instead `unitEnvFor(hivecontrolPath, execPath)` now takes
+`execPath` as a REQUIRED argument and prepends `dirname(execPath)`, and every emitter
+passes the very `exec` it is writing into that unit — so the PATH and the baked
+interpreter are derived from one value and *structurally cannot* disagree. The function
+stays pure and deterministic, which is what keeps a regenerated unit byte-identical across
+the repeated reconcile/regenerate cycles that silently reverted every hand-patched plist.
+
+**Two smaller invariants that fell out of the same pass.**
+
+- The environment block used to be suppressed ENTIRELY when `hivecontrol` could not be
+  resolved (`pathIsEmittable(hivecontrol) ? unitEnvFor(...) : null`). That coupled two
+  independent facts: a `PATH` that can resolve `node` is worth emitting even when the CLI
+  path could not be pinned. `unitEnvFor` now returns null only when NEITHER input is
+  usable, and pins `ANTIHALL_DEVSWARM_HIVECONTROL` only when the binary itself is
+  emittable.
+- Install now fails loudly if the node binary at `EXEC` is not a real file, exactly as it
+  already did for the daemon script. `process.execPath` is self-evidently present at
+  install time, so this is a cheap invariant assertion rather than a likely branch — but
+  the unit bakes that path PERMANENTLY, and a unit that can never start surfaces only as a
+  line in a scheduler log nobody reads.
+
+**The review lens.** When a generated unit, container spec, cron line, or CI step pins an
+absolute interpreter, ask separately: (1) will the process start? and (2) can everything it
+spawns resolve that interpreter by name? A green answer to (1) is routinely mistaken for a
+green answer to (2), and the gap is invisible from every "is it running" health check.
+
+---
+
+Section §31 facts were verified 2026-08-28 from source at the versions on disk in this repo
+checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol
+names rather than trusting line numbers verbatim after either file changes further).

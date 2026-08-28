@@ -6,6 +6,62 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.86.0 (2026-08-28)
+
+- **Fix: the ingest/supervisor daemon units emitted a `PATH` that could not resolve
+  `node`, so every `hivecontrol` grandchild died exit 127 and reconciliation
+  silently healed nothing.** The installers bake an ABSOLUTE node path as the unit's
+  interpreter (`process.execPath` at install time — commonly a version-manager
+  directory such as `~/.nvm/versions/node/vX/bin`, which is on no scheduler's default
+  `PATH`), but built the unit's `PATH` from the resolved `hivecontrol` directory plus
+  a minimal fallback only. The node bin dir was in neither. The daemon itself
+  therefore always started and passed every "is it running" check (absolute
+  `argv[0]`); the failure lived one process lower, because `hivecontrol` is a SCRIPT
+  whose shebang re-resolves `node` THROUGH `PATH`. Measured on a live install before
+  the fix: **23,928 `env: node: No such file or directory` failures across 1,757
+  supervisor sweeps spanning three repoKeys, with `healed:0` on every single sweep** —
+  reconciliation had never once succeeded, for any scope, for as long as the units had
+  existed. Fixed at the single chokepoint all six plist/service/cron emitters across
+  both installers derive from (`install-devswarm-supervisor.js` imports this very
+  function): `unitEnvFor` now prepends `dirname(execPath)` and takes `execPath` as a
+  REQUIRED argument, with each emitter passing the very `exec` it writes — so a unit's
+  `PATH` structurally cannot disagree with the interpreter baked into that same unit.
+  This completes the v0.65.0/v0.66.0 `hivecontrol`-path fixes, which addressed finding
+  the CLI but not running it. See `docs/KB-devswarm-hivecontrol.md` §31 for the
+  generalized invariant.
+- **Also closed in the same pass:** the unit environment used to be suppressed
+  ENTIRELY when `hivecontrol` could not be resolved, coupling two independent facts —
+  a `PATH` that resolves `node` is worth emitting even when the CLI path cannot be
+  pinned, so an environment is now omitted only when NEITHER input is usable. And
+  install refuses outright if the node binary at `EXEC` is not a real file, rather than
+  baking a permanently unstartable unit whose only symptom is a line in a scheduler
+  log.
+- **Fix: the ingest auto-heal was gated so it could never fire when it was needed.**
+  `runUpdate` attempted `healIngestDaemon` only when that run had synced new bytes into
+  the version cache. But a daemon's baked script path goes stale with NO version bump —
+  the plugin manager relocating or `.bak`-ing the version-pinned cache dir the unit was
+  built from, which is precisely the case the heal function's own header describes. In
+  that steady state the installed version already equals latest, `syncCache` no-ops,
+  and `classifyIngestUnit` — the one thing that would notice the dangling `scriptPath` —
+  was never reached. The heal now ALSO fires when the installed unit fails to classify
+  `ok`, via the extracted `inspectInstalledIngest` so the heal DECISION and the heal
+  ACTION read the same unit through the same lookup and cannot drift. On a no-sync run
+  the added arm is read-only (a unit enumeration plus a few `statSync`s — no spawn, no
+  writes) and fail-open. `absent` is deliberately NOT a trigger: first-installing an
+  opt-in daemon is the update skill's own documented step, so treating it as "needs
+  heal" would spawn an installer on every no-op update for every user who never enabled
+  the daemon.
+- **Fix: `devswarm-store-leak-report.js` advertised itself as read-only but wrote a
+  file on every run.** The script's own banner promises it "deletes, moves, renames,
+  and truncates NOTHING", yet `--out` defaulted to a timestamped path under
+  `.anti-hall/reports/`, so merely asking a question about the store deposited a JSON
+  file in the tree. The write is now OPT-IN — no `--out`, no file — and the summary
+  says plainly that nothing was written and how to ask for the artifact. Every `--out`
+  safety property is unchanged and still applies whenever a path is named (realpath
+  containment against the store root, the `.json` requirement, the
+  `O_EXCL`/`O_NOFOLLOW` create, and the report-marker check before any overwrite). The
+  audit/classification logic is untouched.
+
 ## 0.85.0 (2026-08-25)
 
 - **Fix: archiving a workspace now retires its whole identity family, so the
