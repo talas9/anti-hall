@@ -50,9 +50,17 @@ daemon. The installer now bakes the **git marketplace clone's own copy** of
 `devswarm-ingest.js` (the exact path the update helper above just `git pull --ff-only`ed
 **in place**), so a fresh install never goes stale again.
 
-Immediately after a cache sync, the update helper (`scripts/update.js`) ALSO attempts to
-heal an already-installed daemon in-process via `healIngestDaemon` — no separate step
-needed. It runs ONLY under the same DevSwarm-session-only gate
+The update helper (`scripts/update.js`) ALSO attempts to heal an already-installed daemon
+in-process via `healIngestDaemon` — no separate step needed. **v0.86.0 — the heal fires
+when EITHER this run synced new bytes into the cache OR the installed unit fails to
+classify `ok`.** Gating it on a cache sync alone made it unreachable in exactly the state
+it was written for: a daemon goes stale with NO version bump, and in that steady state the
+installed version already equals latest, `syncCache` no-ops, and the classifier that would
+have spotted the dangling script path never ran. The extra arm is read-only on a no-sync
+run (a unit enumeration plus a few `statSync`s — no spawn, no writes) and deliberately
+does NOT treat `absent` as "needs heal", so a no-op update can never first-install an
+opt-in daemon for a user who never enabled it. It runs ONLY under the same
+DevSwarm-session-only gate
 `hooks/lib/doctor-repair.js`'s own gated ingest fix uses
 (`isDevswarmActive(env) && resolveWorktree(cwd) !== null`), and re-runs the
 (freshly-pulled) installer only when the unit is genuinely `wrong-path` or `stale-script`
@@ -74,8 +82,9 @@ a per-worktree native hivecontrol queue whose child never ran `inbox pull` itsel
 worktree torn down before it drained). Previously a MANUAL-only verb; now auto-run
 whenever `isDevswarmActive(process.env)` — `DEVSWARM_REPO_ID` set, i.e. an actual
 DevSwarm session (do NOT trigger on machine-level descriptor/registry-file presence
-alone) — regardless of whether the cache actually synced this run (unlike the ingest heal
-above: a stranded queue is unrelated to whether the plugin version changed). Safe to
+alone) — regardless of whether the cache actually synced this run (a stranded queue is
+unrelated to whether the plugin version changed — the same reasoning that, in v0.86.0,
+freed the ingest heal above from its own cache-sync gate). Safe to
 auto-run: idempotent (content-hash dedup), lock-respecting (a worktree a live child is
 already draining is skipped, never raced), and loss-free (a short-received batch fails
 loud rather than silently dropping messages). Reported as

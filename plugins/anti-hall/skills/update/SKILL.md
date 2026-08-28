@@ -44,9 +44,19 @@ the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a 
 4. Read the NEW version from the (now-updated) clone `plugin.json`.
 5. If `cache/.../<newver>/` is missing **and** the cache root exists, mirror the clone's
    plugin dir into it so `/reload-plugins` can resolve the new version.
-   - **Ingest-daemon heal (auto, gated, fail-open — `healIngestDaemon`):** immediately
-     after a cache sync, the helper ALSO attempts to heal the DevSwarm ingest daemon's
-     launchd/systemd/cron unit in-process (no separate agent step needed for this part).
+   - **Ingest-daemon heal (auto, gated, fail-open — `healIngestDaemon`):** the helper
+     ALSO attempts to heal the DevSwarm ingest daemon's launchd/systemd/cron unit
+     in-process (no separate agent step needed for this part). **v0.86.0 — the heal
+     now fires when EITHER this run synced new bytes into the cache OR the installed
+     unit fails to classify `ok`.** Gating it on a cache sync alone made it
+     unreachable in exactly the state it was written for: a daemon goes stale with NO
+     version bump (the plugin manager relocates or `.bak`s the version-pinned cache
+     dir the unit was baked from), and in that steady state the installed version
+     already equals latest, `syncCache` no-ops, and the classifier that would have
+     spotted the dangling script path never ran. The extra arm is read-only on a
+     no-sync run (a unit enumeration plus a few `statSync`s — no spawn, no writes)
+     and deliberately does NOT treat `absent` as "needs heal", so a no-op update can
+     never first-install an opt-in daemon for a user who never enabled it.
      Root cause: `install-devswarm-ingest.js`'s daemon unit used to bake an install-time
      script path (`__dirname`) that could go stale across a plugin update — the plugin
      manager relocating the version-pinned cache dir the daemon was baked from, crash-
@@ -73,8 +83,9 @@ the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a 
      MANUAL-only verb; now auto-run whenever `isDevswarmActive(env)` — `DEVSWARM_REPO_ID`
      set, i.e. an actual DevSwarm session (do NOT trigger on machine-level
      descriptor/registry-file presence alone) — regardless of whether the cache actually
-     synced this run (unlike the ingest heal above: a stranded queue is unrelated to
-     whether the plugin version changed). Safe to auto-run: idempotent (content-hash
+     synced this run (a stranded queue is unrelated to whether the plugin version
+     changed — the same reasoning that, in v0.86.0, freed the ingest heal above from
+     its own cache-sync gate). Safe to auto-run: idempotent (content-hash
      dedup — a re-run imports 0 new messages), lock-respecting (a worktree a live child
      is already draining is skipped via the per-id O_EXCL pull lock, never raced), and
      loss-free (a short-received batch fails loud rather than silently dropping

@@ -715,30 +715,50 @@ function recordSweepResult(home, state, key, version, sweep, opts) {
  * Fully fail-open: ANY error here is reported in `detail` and NEVER thrown — a
  * heal failure must never fail the update itself.
  */
-function healIngestDaemon(opts) {
+/**
+ * inspectInstalledIngest(opts) -> { gated, detail, installIngest, worktree, repoKey, bestUnit, cls }
+ *
+ * The SHARED read-only half of the ingest heal: resolve the freshly-pulled
+ * plugin modules, apply the DevSwarm/worktree gate, locate the unit that is
+ * actually installed for this repo, and classify it. Extracted (v0.86) so the
+ * heal DECISION and the heal ACTION read the exact same unit through the exact
+ * same lookup — the two cannot drift into disagreeing about what "ok" means.
+ *
+ * `gated:true` means "do not heal, and this is not a defect" (not a DevSwarm
+ * session, cwd is not a worktree, or the expected plugin files are missing);
+ * `detail` then carries the reason verbatim for the caller's result object.
+ *
+ * READ-ONLY: readInstalledIngestWorkingDir enumerates the installed units and
+ * classifyIngestUnit statSyncs the baked WorkingDirectory/script path. Neither
+ * writes, spawns, or mutates anything — verified in hooks/lib/doctor-repair.js.
+ * Fully fail-open: never throws.
+ */
+function inspectInstalledIngest(opts) {
   const o = opts || {};
   const env = o.env || process.env;
   const cwd = o.cwd || process.cwd();
   const home = o.home || os.homedir();
   const paths = o.paths;
+  const gate = (detail) => ({ gated: true, detail, cls: null });
   try {
+    if (!paths || !paths.pluginSrcDir) return gate('ingest heal skipped: no plugin source dir resolved');
     const installerPath = path.join(paths.pluginSrcDir, 'companion', 'install-devswarm-ingest.js');
     const repairPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'doctor-repair.js');
     const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
     const repokeyPath = path.join(paths.pluginSrcDir, 'companion', 'lib', 'devswarm-repokey.js');
     if (!fs.existsSync(installerPath) || !fs.existsSync(repairPath) || !fs.existsSync(detectPath)) {
-      return { attempted: false, healed: false, detail: 'ingest heal skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+      return gate('ingest heal skipped: expected plugin files not found under ' + paths.pluginSrcDir);
     }
     const installIngest = require(installerPath);
     const { isDevswarmActive } = require(detectPath);
     const { readInstalledIngestWorkingDir, classifyIngestUnit } = require(repairPath);
 
     if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
-      return { attempted: false, healed: false, detail: 'not a DevSwarm session — ingest heal skipped (gate closed)' };
+      return gate('not a DevSwarm session — ingest heal skipped (gate closed)');
     }
     const worktree = typeof installIngest.resolveWorktree === 'function' ? installIngest.resolveWorktree(cwd) : null;
     if (!worktree) {
-      return { attempted: false, healed: false, detail: 'cwd is not a git worktree — ingest heal skipped (gate closed)' };
+      return gate('cwd is not a git worktree — ingest heal skipped (gate closed)');
     }
 
     // repoKey (v0.57 mesh): fail-open to null on ANY error (older marketplace
@@ -762,9 +782,51 @@ function healIngestDaemon(opts) {
       if (project.present) return project;
       return readInstalledIngestWorkingDir({ worktree, home, platform: o.platform });
     };
-
     const before = bestUnit();
     const cls = classifyIngestUnit({ workingDir: before.workingDir, scriptPath: before.scriptPath, home, env });
+    return { gated: false, detail: null, installerPath, classifyIngestUnit, bestUnit, cls };
+  } catch (e) {
+    return gate('ingest inspect raised: ' + (e && e.message ? e.message : String(e)));
+  }
+}
+
+/**
+ * ingestUnitNeedsHeal(opts) -> boolean
+ *
+ * The heal TRIGGER for a run that synced no new bytes (v0.86 root-cause fix).
+ *
+ * Pre-fix, runUpdate gated healIngestDaemon on `cache.synced` alone — i.e. heal
+ * only ever ran when THIS run copied a new version into the cache. But a daemon
+ * goes stale WITHOUT any version bump (the plugin manager relocates or .bak's
+ * the version-pinned cache dir the unit was baked from), and in that steady
+ * state syncCache no-ops, `cache.synced` is false, and classifyIngestUnit — the
+ * one thing that would notice the dangling scriptPath — was never reached. The
+ * function whose own header describes re-baking exactly that daemon was
+ * unreachable precisely when it was needed.
+ *
+ * Returns true ONLY for a unit that is installed AND classified broken.
+ * 'absent' is deliberately NOT a trigger: first-installing an opt-in daemon
+ * unprompted is the update SKILL's explicit step, not this code path's job
+ * (healIngestDaemon already returns a no-op for it), so treating 'absent' as
+ * "needs heal" would spawn an installer on every no-op update for every user
+ * who never opted in. A closed gate (`cls === null`) is likewise not a trigger.
+ */
+function ingestUnitNeedsHeal(opts) {
+  const info = inspectInstalledIngest(opts);
+  if (info.gated || !info.cls) return false;
+  return info.cls !== 'ok' && info.cls !== 'absent';
+}
+
+function healIngestDaemon(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  try {
+    // Shared read-only lookup + gate + classification (see inspectInstalledIngest).
+    const info = inspectInstalledIngest(o);
+    if (info.gated) return { attempted: false, healed: false, detail: info.detail };
+    const { installerPath, classifyIngestUnit, bestUnit, cls } = info;
     if (cls === 'absent') {
       // Not installed here — first-installing an opt-in daemon unprompted stays
       // the update SKILL's own explicit, documented step (SKILL.md step 7), not
@@ -1993,13 +2055,19 @@ function runUpdate(opts) {
   // even when installed is unknown — mirroring the pulled version aids recovery.
   const cache = syncCache(paths, latest, fsImpl);
 
-  // Ingest-daemon heal: only worth attempting once something was actually
-  // synced this run (see healIngestDaemon doc comment for the full root-cause
-  // rationale). Fully fail-open — never affects `stop` or the update's own
-  // success/failure.
-  const ingestHeal = cache.synced
-    ? healIngestDaemon({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, spawnFn: opts.spawnIngestInstaller, version: latest })
-    : { attempted: false, healed: false, detail: 'no cache sync this run — nothing to heal' };
+  // Ingest-daemon heal (see healIngestDaemon's doc comment for the root cause).
+  // Fires when EITHER this run actually synced new bytes into the cache OR the
+  // installed unit fails to classify 'ok'. The second arm is the v0.86 fix: a
+  // daemon goes stale with NO version bump (the plugin manager relocates the
+  // cache dir it was baked from), and gating on cache.synced alone made the heal
+  // unreachable in exactly that steady state — the installed version already
+  // equals latest, syncCache no-ops, and the classifier that would spot the
+  // dangling scriptPath never ran. Read-only and fail-open on non-sync runs
+  // (a unit enumeration plus a few statSyncs; no spawn, no writes).
+  const ingestHealArgs = { paths, env: opts.env, cwd: opts.cwd, home: opts.home, spawnFn: opts.spawnIngestInstaller, version: latest };
+  const ingestHeal = (cache.synced || ingestUnitNeedsHeal(ingestHealArgs))
+    ? healIngestDaemon(ingestHealArgs)
+    : { attempted: false, healed: false, detail: 'no cache sync this run and the installed ingest unit classifies ok — nothing to heal' };
 
   // Shared store-hash enumeration (throttle/pacing fix, spec item 1): ONE
   // listStoreHashes pass this run, reused by BOTH foldAllStoresPostUpdate and
@@ -2271,6 +2339,8 @@ module.exports = {
   sweepItemsFor,
   recordSweepResult,
   healIngestDaemon,
+  inspectInstalledIngest,
+  ingestUnitNeedsHeal,
   reconcilePostUpdate,
   foldMeshPostUpdate,
   foldAllStoresPostUpdate,
