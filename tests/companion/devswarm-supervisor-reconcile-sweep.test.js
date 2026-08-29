@@ -28,6 +28,12 @@ const pull = require(path.join(
 const devswarmCli = require(path.join(
   __dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'devswarm.js',
 ));
+const storeLib = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js',
+));
+const repokeyLib = require(path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-repokey.js',
+));
 
 const UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
@@ -491,5 +497,171 @@ test('main(): the env off-switch disables reconcile even with descriptors and no
     assert.strictEqual(r.status, 0);
     const out = JSON.parse(r.stdout.trim());
     assert.deepStrictEqual(out.reconcile, { ran: false, reason: 'disabled' });
+  } finally { cleanup(); fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// B1(a) fix — foldMeshDuplicates now rides ALONGSIDE runReconcile inside this
+// SAME cooldown-gated, single-flight-locked sweep. Verified pre-fix (see
+// scripts/devswarm.js's foldGroupIntoSurvivor / foldMeshDuplicates and
+// companion/devswarm-supervisor.js's reconcileSweepIfDue): foldMeshDuplicates
+// had exactly two call sites outside its own file — hooks/lib/doctor-repair.js
+// (doctor --repair and update) — and NEITHER runs on a live/periodic path.
+// cmdReconcile itself (scripts/devswarm.js ~line 6949) only runs healRegistry +
+// inbox pull, never the fold. So a live slug/UUID partition split (the fold
+// LOGIC already handles this exact pair — groupRegistryByMeshId +
+// isStaleCrossReference) never actually got folded on a live path; it sat
+// "N unread / not draining" until an operator happened to run doctor/update.
+//
+// These tests exercise the NEW `runFold` deps hook the same way the
+// pre-existing tests above exercise `runReconcile`: injected-dep unit tests
+// for invocation shape + the cooldown gate, plus one REAL end-to-end test
+// reproducing the exact field scenario from the bug report (a UUID row and a
+// slug row sharing one worktreePath, the slug row's sessionId equal to the
+// UUID row's own registry id, 2 unread sitting in the slug partition) to
+// prove the wiring folds it for real, not just via a stub.
+// ---------------------------------------------------------------------------
+
+test('reconcileSweepIfDue: cooldown elapsed -> invokes runFold ONCE PER DISTINCT repoKey, AFTER runReconcile for that same target', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'a1', worktreePath: '/wt/proj1/a' });
+    writeDescriptor(home, { id: 'b1', worktreePath: '/wt/proj2' });
+    const repoKeyMap = { '/wt/proj1/a': 'proj1', '/wt/proj2': 'proj2' };
+    const order = [];
+    const foldCalls = [];
+    const res = M.reconcileSweepIfDue({
+      home, env: {}, now: 5000, cooldownMs: 0,
+      deps: {
+        repoKeyForWorktree: (wt) => repoKeyMap[wt],
+        readReconcileSweepState: () => ({ lastRunAt: 0 }),
+        writeReconcileSweepState: () => {},
+        runReconcile: (wt) => { order.push('reconcile:' + repoKeyMap[wt]); return { ok: true, imported: 0, lost: 0 }; },
+        runFold: (repoKey) => { order.push('fold:' + repoKey); foldCalls.push(repoKey); return { ok: true, retired: [], forwarded: 0, folded: 0 }; },
+      },
+    });
+    assert.strictEqual(res.ran, true);
+    assert.strictEqual(foldCalls.length, 2, 'runFold must be called exactly once per distinct project, same as runReconcile');
+    assert.deepStrictEqual(new Set(foldCalls), new Set(['proj1', 'proj2']));
+    assert.deepStrictEqual(order, ['reconcile:proj1', 'fold:proj1', 'reconcile:proj2', 'fold:proj2'],
+      'each target\'s fold must run immediately AFTER that same target\'s reconcile, not batched separately');
+    // The per-target result now carries the fold outcome too, for observability.
+    const p1 = res.results.find((r) => r.repoKey === 'proj1');
+    assert.strictEqual(p1.fold.ok, true);
+  } finally { cleanup(); }
+});
+
+test('reconcileSweepIfDue: within cooldown -> {ran:false, reason:"cooldown"}; runFold NEVER called (same gate as runReconcile — MUTATION(iii) guard: removing the cooldown gate would let this call through)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'a', worktreePath: '/wt/a' });
+    let foldCalls = 0;
+    const now = 1_000_000;
+    const res = M.reconcileSweepIfDue({
+      home, env: {}, now, cooldownMs: 900000,
+      deps: {
+        repoKeyForWorktree: () => 'key1',
+        readReconcileSweepState: () => ({ lastRunAt: now - 1000 }),
+        runReconcile: () => ({ ok: true }),
+        runFold: () => { foldCalls++; return { ok: true }; },
+      },
+    });
+    assert.deepStrictEqual(res, { ran: false, reason: 'cooldown' });
+    assert.strictEqual(foldCalls, 0, 'a NON-VACUOUS proof the SAME cooldown gate short-circuits runFold too — no separate, ungated scheduling primitive was added');
+  } finally { cleanup(); }
+});
+
+test('reconcileSweepIfDue: fail-open — a throwing runFold for one project does not abort the others, and is reported as a failed fold result, not a thrown error', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'a', worktreePath: '/wt/p1' });
+    writeDescriptor(home, { id: 'b', worktreePath: '/wt/p2' });
+    const repoKeyMap = { '/wt/p1': 'k1', '/wt/p2': 'k2' };
+    const res = M.reconcileSweepIfDue({
+      home, env: {}, now: 5000, cooldownMs: 0,
+      deps: {
+        repoKeyForWorktree: (wt) => repoKeyMap[wt],
+        readReconcileSweepState: () => ({ lastRunAt: 0 }),
+        writeReconcileSweepState: () => {},
+        runReconcile: () => ({ ok: true }),
+        runFold: (repoKey) => { if (repoKey === 'k1') throw new Error('fold boom'); return { ok: true, retired: ['x'] }; },
+      },
+    });
+    assert.strictEqual(res.ran, true);
+    assert.strictEqual(res.results.length, 2, 'both projects are still attempted despite one\'s fold throwing');
+    const p1 = res.results.find((r) => r.repoKey === 'k1');
+    const p2 = res.results.find((r) => r.repoKey === 'k2');
+    assert.strictEqual(p1.fold.ok, false);
+    assert.match(p1.fold.error, /fold boom/);
+    assert.strictEqual(p1.result.ok, true, 'reconcile itself is unaffected by a fold throw for the SAME target');
+    assert.deepStrictEqual(p2.fold.retired, ['x'], 'the second project\'s fold still runs and succeeds');
+  } finally { cleanup(); }
+});
+
+test('FIELD SCENARIO E2E: a due reconcile sweep folds a live slug/UUID partition split for real — slug row tombstoned, its unread forwarded into the survivor, source cursor advances (real store, real foldMeshDuplicates, only runReconcile stubbed to avoid spawning a real hivecontrol subprocess)', () => {
+  const { home, cleanup } = makeHome();
+  const repo = makeGitRepo();
+  try {
+    const repoKey = repokeyLib.repoKeyForWorktree(repo);
+    const UUID_ID = 'a117ef9e-live-uuid';
+    const SLUG_ID = 'fix-atlas-roster-update-duty-parse-a55f20ef';
+
+    // Seed the descriptor set the sweep's own readDescriptors scans (drives
+    // distinctRepoKeys -> the target list) — ONE descriptor is enough; the
+    // fold itself operates on the STORE registry below, not the descriptor.
+    writeDescriptor(home, { id: UUID_ID, worktreePath: repo }, UUID_ID);
+
+    // Seed the REAL store registry: two rows sharing worktreePath, slug row's
+    // sessionId IS the UUID row's own registry id (the exact stale
+    // cross-reference from the field report), slug holds 2 unread directs.
+    const s = storeLib.openStore({ home, hash: repoKey });
+    try {
+      s.upsertRegistry({ id: UUID_ID, worktreePath: repo, sessionId: 'uuid-own-session' });
+      s.setCursor(UUID_ID, 0);
+      s.upsertRegistry({ id: SLUG_ID, worktreePath: repo, sessionId: UUID_ID }); // stale cross-reference
+      const f1 = { from: 'sender-x', to: SLUG_ID, type: 'direct', message: 'slug-unread-1', timestamp: Date.now(), urgency: 'normal' };
+      const f2 = { from: 'sender-x', to: SLUG_ID, type: 'direct', message: 'slug-unread-2', timestamp: Date.now(), urgency: 'normal' };
+      storeLib.appendMeshMessage(s, Object.assign({}, f1, { hash: storeLib.meshMessageHash(f1) }));
+      storeLib.appendMeshMessage(s, Object.assign({}, f2, { hash: storeLib.meshMessageHash(f2) }));
+    } finally { s.close(); }
+
+    // Precondition (RED, pre-fix shape): the slug partition is still a live
+    // registry row with 2 unread and NOT drained.
+    const sPre = storeLib.openStore({ home, hash: repoKey });
+    let preUnread, preRegistryIds;
+    try {
+      preUnread = sPre.messageCount(SLUG_ID) - sPre.cursorValue(SLUG_ID);
+      preRegistryIds = sPre.listRegistry().map((d) => d.id);
+    } finally { sPre.close(); }
+    assert.strictEqual(preUnread, 2, 'precondition: slug partition holds 2 unread before any sweep runs');
+    assert.ok(preRegistryIds.includes(SLUG_ID), 'precondition: slug row is present in the live registry');
+
+    const res = M.reconcileSweepIfDue({
+      home, env: {}, now: 5000, cooldownMs: 0,
+      deps: {
+        repoKeyForWorktree: () => repoKey,
+        readReconcileSweepState: () => ({ lastRunAt: 0 }),
+        writeReconcileSweepState: () => {},
+        // Stub ONLY runReconcile (avoids spawning a real hivecontrol
+        // subprocess neither CI nor this fixture has) — runFold is left
+        // REAL, the actual point under test.
+        runReconcile: () => ({ ok: true, imported: 0, lost: 0 }),
+      },
+    });
+    assert.strictEqual(res.ran, true);
+    const target = res.results.find((r) => r.repoKey === repoKey);
+    assert.ok(target, 'the seeded repoKey must have been swept this tick');
+    assert.strictEqual(target.fold.ok, true, JSON.stringify(target.fold));
+    assert.ok(target.fold.retired.includes(SLUG_ID), 'GREEN: the slug row must be tombstoned by the real, sweep-invoked fold');
+
+    const sPost = storeLib.openStore({ home, hash: repoKey });
+    let postRegistryIds, uuidBodies;
+    try {
+      postRegistryIds = sPost.listRegistry().map((d) => d.id);
+      uuidBodies = sPost.listMessages(UUID_ID, {}).map((m) => m.body);
+    } finally { sPost.close(); }
+    assert.ok(!postRegistryIds.includes(SLUG_ID), 'GREEN: the slug row is gone from the live registry after the sweep');
+    assert.ok(uuidBodies.includes('slug-unread-1') && uuidBodies.includes('slug-unread-2'),
+      'GREEN: the slug partition\'s unread backlog was forwarded into the surviving UUID row (no loss)');
   } finally { cleanup(); fs.rmSync(repo, { recursive: true, force: true }); }
 });

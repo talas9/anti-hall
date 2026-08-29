@@ -1604,8 +1604,9 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
     // taken to prevent — rekeySubdirRegistryRows' rule).
     const foldOne = (row) => {
       let forwardOk = true;
+      let since = 0;
       try {
-        const since = s.cursorValue(row.id);
+        since = s.cursorValue(row.id);
         for (const m of s.listMessages(row.id, { sinceCursor: since })) {
           if (!isForwardable(m)) continue; // #67: forward only a real actionable direct — skips broadcast/heartbeat AND stale native poke/hash-mirror rows (mtype/sender null)
           // FORWARD: same ONE shared MESH_ROW_COPY_FIELDS table as the verbatim
@@ -1624,6 +1625,29 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
         }
       } catch (_) { forwardOk = false; }
       if (!forwardOk) return { outcome: 'forward-failed' };
+      // B1(b) fix — advance the CANDIDATE's OWN cursor now that every one of its
+      // rows since `since` has fully forwarded (the try block above completed with
+      // NO exception — every appendMeshMessage call either inserted the row into
+      // the survivor or hit the hash-dedupe OR-IGNORE path because it was already
+      // forwarded by a prior pass; both are "safely delivered", never "lost"). This
+      // closes the second, independent defect: a candidate this pass classifies
+      // `left` (a live descriptor it correctly never tombstones) previously kept
+      // its pre-fold cursor forever, so its already-forwarded backlog rendered as
+      // "N unread / not draining" indefinitely even though every message had
+      // already reached the survivor. Gated on COMPLETE success only — the
+      // `!forwardOk` branch above already returned before reaching here, so a
+      // partial/failed forward (an exception mid-loop, e.g. a store write that
+      // throws after some but not all rows were appended) NEVER runs this: the
+      // cursor stays exactly where it was, so the next fold pass re-attempts the
+      // whole unread range and the already-forwarded rows are re-forwarded
+      // idempotently (hash dedupe) rather than silently dropped off the read
+      // frontier. `since` is read BEFORE the loop and messageCount() AFTER, so a
+      // message that arrives concurrently mid-fold is simply left unread for the
+      // next pass, never swallowed.
+      try {
+        const nowCount = s.messageCount(row.id);
+        if (nowCount > since) s.setCursor(row.id, nowCount);
+      } catch (_) { /* best-effort bookkeeping; never blocks the fold itself */ }
       // `row` here is whatever foldOne was called with — the in-lock re-read `cur`
       // when locked, the pre-lock candidate `d` when not — so a caller keying its
       // reported reason off this row (leftRows, below) reports what THIS pass

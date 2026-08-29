@@ -510,6 +510,25 @@ function reconcileSweepIfDue(opts) {
       const { result } = devswarmCli.run(['reconcile'], { home, env, cwd: worktreePath });
       return result;
     };
+    // runFold(repoKey) — B1(a) fix: invoke the SAME canonical-fold primitive
+    // doctor --repair/update already run (scripts/devswarm.js's
+    // foldMeshDuplicates), but from THIS periodic, cooldown-gated sweep, so a
+    // live slug/UUID partition split (fold logic already handles the pair —
+    // groupRegistryByMeshId + isStaleCrossReference — but nothing on a LIVE
+    // path ever invoked it) gets folded without waiting for a manual
+    // doctor/update run. No new gate/lock/scheduling primitive: this rides
+    // INSIDE the exact same reconcileSweepEnabled/cooldown gate and the same
+    // single-flight supervisor sweep-lock (main()'s acquireSweepLock) the
+    // reconcile call above already uses — `ctx.repoKey` bypasses cwd/git
+    // resolution entirely, matching doctor-repair.js's own call shape. LAZY
+    // require for the same circular-require reason as runReconcile above.
+    // Ordering: runFold AFTER runReconcile per target, so a project that was
+    // just reconciled (its native inbox freshly pulled into the registry) is
+    // folded against its now-current state, not a stale pre-reconcile one.
+    const runFold = deps.runFold || function (repoKey) {
+      const devswarmCli = require('../scripts/devswarm.js');
+      return devswarmCli.foldMeshDuplicates(home, { repoKey, env });
+    };
 
     const results = [];
     let anyLost = false;
@@ -521,7 +540,13 @@ function reconcileSweepIfDue(opts) {
         result = { ok: false, error: String(e && e.message || e) };
       }
       if (result && result.lost) anyLost = true;
-      results.push({ repoKey: t.repoKey, worktreePath: t.worktreePath, result });
+      let fold = null;
+      try {
+        fold = runFold(t.repoKey);
+      } catch (e) {
+        fold = { ok: false, error: String(e && e.message || e) };
+      }
+      results.push({ repoKey: t.repoKey, worktreePath: t.worktreePath, result, fold });
     }
 
     // OBSERVE, DON'T ASSERT: log exactly what the (real, already-executed)
