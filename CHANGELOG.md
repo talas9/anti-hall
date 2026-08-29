@@ -6,6 +6,83 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.87.0 (2026-08-29)
+
+- **Fix: a stale/escalated liveness verdict alone could hard-block the Primary
+  indefinitely, even after a workspace had genuinely finished.**
+  `readVerdictStatus()` in `devswarm-parent-gate.js` discarded the verdict
+  file's own `pending`/`notDraining` flags and returned only the bare
+  `status` string. Because `escalated` is STICKY (`liveness.js`'s terminal
+  short-circuit returns it unchanged until a fresh heartbeat a finished
+  session will never emit again), a persisted verdict of
+  `{"status":"escalated","pending":false,"notDraining":false}` — the verdict
+  itself saying nothing was outstanding — force-blocked the Primary on
+  ~20 consecutive turns. `readVerdict()` now threads `pending`/`notDraining`
+  through to `main()`, and a bare `stale`/`escalated` status can no longer
+  drive a hard block by itself: it now needs corroboration from at least one
+  of four independent axes (the verdict's own `pending` flag, a real
+  union-unread backlog, an unreadable unread axis — fail-open toward
+  blocking, never toward silence — or an unanswered question from that
+  family). An uncorroborated status degrades to a one-time stderr advisory
+  instead of a hard block; a family with any other real signal still blocks
+  normally. See `docs/KB-devswarm-hivecontrol.md` for the corroboration
+  invariant this generalizes: **a bare verdict label is not evidence.**
+- **Fix: `liveness.js`'s own union-unread signal double-counted a caller's own
+  outbound message as evidence the target was neglecting inbound work.** A
+  message the Primary itself just sent into a child's mailbox, still sitting
+  unread pending the CHILD's own read, was being read as the child "not
+  draining." `resolveSelfId()` resolves the caller's real Primary id
+  (mirroring `recovery.js`'s addressee-hash fix — `primaryWorkspaceId()` is a
+  pure hash of the path handed to it, and a linked worktree's own root hashes
+  to that worktree's id, not the real Primary's, unless resolved through
+  `resolveMainWorktree()` first). A new `pendingInbound` value excludes
+  store-only rows sent by that resolved self id from the staleness gate,
+  while the pre-existing `pending` value is unchanged and still reports full
+  mailbox depth for drain/ack accounting elsewhere.
+- **Fix: the DevSwarm wake instruction unconditionally told an agent to run
+  the full mailbox drain+read sequence on every wake turn, which the
+  agent's own cron prompt routinely delegated to a subagent even when the
+  mailbox was empty.** `drainCmd()` in `devswarm-wake.js` now runs the
+  cheap, inline, non-mutating `inbox count` first and only pays for a
+  drain/read (optionally delegated) when `unreadTotal > 0`. The child branch
+  still pulls its native queue unconditionally (cheap and the only way a
+  native-queue-only backlog becomes visible to a later count); only the read
+  step is gated on the count.
+- **Fix: `ackTo()` (the durable-inbox cursor primitive) was callable unlocked
+  from multiple sites, so two overlapping drains could race a cursor
+  backward** — a slow writer's lower `ackTo()` landing after a fast writer's
+  higher one regressed the cursor, causing re-delivery. `ackTo()` is now
+  monotonic by default (raises the write target to at least the current
+  on-disk cursor). `reconcileOrphanCursor()` in `scripts/devswarm.js` is the
+  one proven legitimate exception — a MIN-only reconciliation across three
+  cursor namespaces that must be able to lower a namespace stuck above the
+  others — and opts in explicitly via `{ allowRewind: true }`.
+- **Fix: a fold pass never advanced a folded-away candidate's own cursor**,
+  even after every one of its unread rows had fully forwarded to the
+  survivor, so an already-forwarded backlog kept rendering as "N unread /
+  not draining" on a `left` (never-tombstoned) candidate indefinitely. The
+  cursor now advances once the fold's forward loop completes with no
+  exception; a partial/failed forward still leaves the cursor untouched so
+  the next pass safely re-forwards idempotently (hash dedupe) instead of
+  silently dropping rows off the read frontier. The supervisor's reconcile
+  sweep is unaffected by the same stale-cursor condition as a result.
+- **Fix: the orphan-entry classifier treated a forwarded entry as orphaned
+  without checking whether it had also been drained by the consumer.** A
+  forwarded entry that is later drained is not an orphan; the classifier and
+  the store's forwarded/drained bookkeeping now agree on entry state.
+- **Docs:** every hard-coded remediation/usage string that told an agent to
+  run `send --to <id> --message "..."` (the command-guard block reason, the
+  child role/turn per-turn reminders, the parent-inbox unread/urgent/
+  unanswered nudges, and the gate's unanswered-question segment) now points
+  at `--message-file <path>` (or `--message-stdin`) instead — a
+  shell-quoted `--message` body with embedded newlines/quotes, exactly the
+  shape a structured question/reply tends to have, is prone to
+  shell-quoting mangling. Also documents the `seq` (durable, store-wide,
+  comparable across calls) vs `index` (page-local positional ordinal, the
+  unit `--to N`/the ack cursor advance in) distinction on every returned
+  message row, in both `SKILL.md` docs, to prevent a future caller from
+  comparing `index` values across separate calls.
+
 ## 0.86.0 (2026-08-28)
 
 - **Fix: the ingest/supervisor daemon units emitted a `PATH` that could not resolve

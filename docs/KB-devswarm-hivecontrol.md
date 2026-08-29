@@ -2711,6 +2711,63 @@ green answer to (2), and the gap is invisible from every "is it running" health 
 
 ---
 
+## 32. A bare verdict label is not evidence — a status needs corroboration before it hard-blocks (v0.87.0)
+
+**The proof.** A persisted per-workspace verdict of
+`{"status":"escalated","pending":false,"notDraining":false}` — the verdict's OWN payload
+saying nothing is outstanding — force-blocked the Primary on ~20 consecutive turns.
+`devswarm-parent-gate.js`'s `readVerdictStatus(id, home)` read only the bare `status`
+string out of the verdict file and discarded `pending`/`notDraining` entirely, so
+`main()` had no way to ask "does this status actually mean something is unread right
+now?" It could only ask "what's the label?" — and the label was permanently wrong.
+
+**Why the label goes stale and stays stale.** `escalated` is a TERMINAL state in
+`liveness.js`'s own state machine: once written, `computeLiveness` short-circuits and
+returns it unchanged on every subsequent call, forever, until a FRESH heartbeat clears
+it — and a heartbeat is emitted only by that workspace's own live session. A workspace
+that finishes its work and exits will never emit another heartbeat. So `escalated` is not
+"this is currently a problem," it is "this was once a problem, and nothing will ever
+un-flag it automatically." Reading that label as current truth is the bug.
+
+**The fix — corroboration, not suppression.** The label is real signal (it means SOMETHING
+happened) so it cannot simply be ignored; the owner's governing constraint was explicit:
+fix the misclassification, never mute the alarm. `readVerdict()` now returns the full
+`{status, pending, notDraining}` shape, and a bare `stale`/`escalated` status can drive a
+hard block ONLY when corroborated by at least one of four independent, OR'd axes:
+
+1. the verdict's own `pending` flag (the verdict itself says something is outstanding),
+2. a real `unionUnread` backlog for the family (computed independently of the verdict),
+3. `unreadUnknown` — a member's unread axis could not be read at all (fail-open TOWARD
+   blocking, never toward silence — an unreadable mailbox is never treated as an empty
+   one), or
+4. an unanswered question addressed FROM one of this family's own member ids.
+
+This set is intentionally an OR, and intentionally NOT narrowed to axis 2 alone — a
+genuinely wedged child holding an unanswered question with an otherwise-drained mailbox
+must still corroborate via axis 4. An uncorroborated stale/escalated status degrades to a
+ONE-TIME advisory line on stderr (never the stdout decision channel) instead of a hard
+block; the family still blocks normally on any OTHER real axis it separately carries
+(`unionUnread`/`unreadUnknown` outside the `staleOrEscalated` branch).
+
+**The general review lens — apply this anywhere a system persists a computed verdict and
+a LATER consumer reads only the label.** A verdict computed at time T and consumed at
+time T+N is not automatically still true at T+N, especially when the state machine that
+produced it has any STICKY/terminal state. Ask two separate questions before trusting a
+persisted status string to gate an action: (1) *can this label go stale relative to the
+condition it names* — is there a terminal/sticky state, or any path where the label
+survives past the event that made it true? and (2) *does the payload carry its own
+supporting evidence*, and is the consumer actually reading that evidence, or just the
+label on top of it? A verdict with corroborating fields sitting unread right next to the
+label it should have widened is exactly this bug's shape, and it is invisible from the
+verdict-computation side — `computeLiveness` was already correct; the defect was 100%
+in what the CONSUMER chose to look at.
+
+---
+
 Section §31 facts were verified 2026-08-28 from source at the versions on disk in this repo
+checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol
+names rather than trusting line numbers verbatim after either file changes further).
+
+Section §32 facts were verified 2026-08-29 from source at the versions on disk in this repo
 checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol
 names rather than trusting line numbers verbatim after either file changes further).

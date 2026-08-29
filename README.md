@@ -434,6 +434,37 @@ plugin depends on it.
   file is now opt-in: no `--out`, no write. All `--out` safety (realpath containment,
   `.json` requirement, `O_EXCL`/`O_NOFOLLOW`, report-marker check) is unchanged, and the
   analysis logic is untouched.
+- **A stale/escalated verdict alone can no longer hard-block the Primary indefinitely
+  (v0.87.0)** — `escalated` is STICKY (`liveness.js`'s terminal short-circuit returns it
+  unchanged until a fresh heartbeat a finished session will never emit again), so a
+  verdict of `{"status":"escalated","pending":false,"notDraining":false}` — the verdict
+  itself saying nothing was outstanding — force-blocked the Primary on ~20 consecutive
+  turns, because the gate read only the bare `status` string and discarded the verdict's
+  own `pending`/`notDraining` flags. A bare `stale`/`escalated` status now needs
+  corroboration from at least one of four independent axes (the verdict's own `pending`
+  flag, a real union-unread backlog, an unreadable unread axis — fail-open toward
+  blocking — or an unanswered question from that family) before it can drive a hard
+  block; an uncorroborated status degrades to a one-time stderr advisory instead. A bare
+  verdict label is not evidence — see `docs/KB-devswarm-hivecontrol.md` for the
+  generalized invariant.
+- **Liveness's own union-unread signal no longer double-counts a caller's own outbound
+  message as evidence a target is neglecting inbound work (v0.87.0)** — `resolveSelfId()`
+  resolves the caller's real Primary id (mirroring the addressee-hash fix `recovery.js`
+  already carries) and excludes store-only rows sent by that id from the staleness gate.
+- **DevSwarm wake is count-first (v0.87.0)** — the wake instruction used to tell an agent
+  to run the full mailbox drain+read sequence every turn, which the agent's own cron
+  prompt routinely delegated to a subagent even on an empty mailbox. It now runs the
+  cheap, inline `inbox count` first and only pays for a drain/read when `unreadTotal > 0`.
+- **The durable-inbox ack cursor is monotonic by default (v0.87.0)** — `ackTo()` was
+  callable unlocked from multiple sites, so two overlapping drains could race a cursor
+  backward and cause re-delivery. The one proven legitimate exception (a MIN-only
+  cross-namespace reconciliation) opts in explicitly via `{ allowRewind: true }`.
+- **A fold pass now advances a folded-away candidate's own cursor (v0.87.0)** once its
+  unread rows have fully forwarded to the survivor, so an already-forwarded backlog on a
+  `left` candidate stops rendering as permanently "not draining"; a partial/failed
+  forward still leaves the cursor untouched for a safe idempotent re-forward.
+- **The orphan-entry classifier now checks drained state, not just forwarded state
+  (v0.87.0)** — a forwarded entry that was later drained is not an orphan.
 - **Per-project mesh store** — one shared store per project keyed by a stable `repoKey`,
   so any worktree can message any other directly; **#36-STRUCTURAL scoping** closes a
   spoofable cross-project bleed.
