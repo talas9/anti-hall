@@ -6,6 +6,28 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.87.1 (2026-08-29)
+
+- **Fix: the parent gate never consulted the mesh store on a live worktree's
+  mid-teardown inbox ENOENT, treating it as neglect it could not clear.**
+  `devswarm-parent-gate.js`'s un-clearable-axis rule only recognized a dead
+  descriptor when `worktreeIsGone()` fired on a definitive ENOENT stat of the
+  worktree path itself. A worktree that still existed on disk but whose
+  native `inbox.ndjson` was absent (mid-teardown, or before the first
+  message) fell straight to `unreadUnknown = true` and never asked the
+  store — the actual source of delivery truth (`storeSeq`) — even when the
+  Primary's own messages had already been delivered there. Added a new
+  branch, `reason === 'inbox-missing' && !foreignProject`, that opens the
+  store and requires REAL, non-empty message history
+  (`cursorValue` + `listMessages().length > 0`) before clearing the unknown
+  axis; a bare store open is not sufficient evidence, since `openStore`
+  auto-creates the partition on first touch and the real per-turn
+  registration path already opens it for unrelated bookkeeping. EACCES and
+  every other non-ENOENT reason, plus foreign-project descriptors, still
+  fall through and fail closed exactly as before. Ships alongside 0.87.0's
+  verdict-corroboration gate in the same file; both fixes coexist (110/110
+  tests in `devswarm-parent-gate.test.js` pass).
+
 ## 0.87.0 (2026-08-29)
 
 - **Fix: a stale/escalated liveness verdict alone could hard-block the Primary
