@@ -24,7 +24,15 @@
 //                  invoked ONLY — never a background ticker (PLAN.md heartbeat
 //                  authorship rule).
 //   inbox count <id> | inbox read <id> | inbox ack <id> [--to N]
-//                  the durable-inbox cursor primitive (advance = ack-all).
+//                  the durable-inbox cursor primitive (advance = ack-all). B4:
+//                  each returned message row carries BOTH `seq` (the durable,
+//                  store-wide physical id — the SAME value `send`'s own `seq`
+//                  returns; safe to compare across calls) and `index` (a
+//                  PAGE-LOCAL positional ordinal within THIS call's result, and
+//                  the unit `--to N`/the ack cursor actually advances in —
+//                  never compare `index` across calls). Prefer `hash`
+//                  (table-wide UNIQUE) over either when verifying a specific
+//                  message.
 //   inbox pull <id> [--session S]
 //                  child-side reception drain: auto-ensure the descriptor, then ONE
 //                  bounded guard-safe pull — non-destructive `message-count` gate,
@@ -81,7 +89,13 @@
 //                  win32 short/long-name spelling) still resolve. A non-git cwd
 //                  returns
 //                  {ok:false,reason:'no-project'} BEFORE any identity is derived
-//                  (D28 — never emits an env-derived `from`).
+//                  (D28 — never emits an env-derived `from`). B4: the returned
+//                  `seq` is the durable, store-wide physical id — compare it
+//                  across calls, and against `inbox messages`/`inbox count/read`'s
+//                  own `seq` field, freely. It is NOT the same thing as `index`
+//                  (see `inbox count/read/ack` below) — never compare `seq` to an
+//                  `index`. For verifying a specific message landed, match on
+//                  `hash` instead (table-wide UNIQUE).
 //   roster [--ack]
 //                  ALLOW-listed projection read of this project's shared registry +
 //                  `working_on` + `recent[]` broadcast digest. `--ack` (alias of
@@ -2255,8 +2269,12 @@ function reconcileOrphanCursor(home, s, id, desc, dryRun) {
   try { storeCursor = s.cursorValue(id); } catch (_) { storeCursor = 0; }
   const min = Math.min(jsonCursor, fileCursor, storeCursor);
   let changed = false;
-  if (jsonCursor > min) { if (!dryRun) { try { inboxCursor.ackTo(primaryCursorPath(home, id), min); } catch (_) {} } changed = true; }
-  if (desc && desc.cursorPath && fileCursor > min) { if (!dryRun) { try { inboxCursor.ackTo(desc.cursorPath, min); } catch (_) {} } changed = true; }
+  // C2 fix: ackTo() is monotonic by default (guards against unlocked-drain
+  // races elsewhere) — this reconciliation is the ONE proven legitimate
+  // exception (MIN-only by design, may need to lower a namespace stuck above
+  // the others), so it opts in explicitly to keep its pre-fix behavior.
+  if (jsonCursor > min) { if (!dryRun) { try { inboxCursor.ackTo(primaryCursorPath(home, id), min, undefined, undefined, { allowRewind: true }); } catch (_) {} } changed = true; }
+  if (desc && desc.cursorPath && fileCursor > min) { if (!dryRun) { try { inboxCursor.ackTo(desc.cursorPath, min, undefined, undefined, { allowRewind: true }); } catch (_) {} } changed = true; }
   if (storeCursor > min) { if (!dryRun) { try { s.setCursor(id, min); } catch (_) {} } changed = true; }
   return { changed, min };
 }

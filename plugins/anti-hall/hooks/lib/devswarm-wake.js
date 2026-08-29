@@ -104,15 +104,37 @@ function isClaudeAgent(env) {
   return agentName(env) === 'claude';
 }
 
-// drainCmd(cli, isChild) -> the mailbox-drain command text for this role. A child
-// pulls its native queue into the durable inbox first, then reads it (the same
-// pull->read sequence devswarm-child-gate.js already instructs); a Primary uses the
-// read-primary verb (read + ack in one).
+// drainCmd(cli, isChild) -> the mailbox-drain instruction text for this role.
+//
+// C1 fix: the pre-fix text unconditionally told the agent to run the FULL
+// drain+read sequence on every wake turn — the model's own cron prompt then
+// (routinely, per the guard's LIGHT_EXCEPTIONS carve-out for `node …/scripts/
+// devswarm.js`) spawns a subagent to run it, even when the mailbox is empty.
+// That is a full subagent context spent on a no-op. `inbox count` is a cheap,
+// inline, non-mutating read — running it FIRST lets the instruction tell the
+// agent to stop (never spawn anything) when there is nothing to do, and only
+// pay for a drain/read (optionally delegated) when `unreadTotal > 0`.
+//
+// Child ordering is deliberately NOT "count, then maybe pull": `inbox count`
+// reads only the durable NDJSON + store union — it does NOT see whatever is
+// still sitting in the native hivecontrol queue, which `inbox pull` is what
+// imports. Gating pull itself behind count would make a native-only backlog
+// permanently invisible (count would keep reporting 0 forever, since nothing
+// ever pulls it in). `inbox pull` is cheap/inline either way (no subagent
+// needed to run it), so it stays unconditional for the child branch; only the
+// READ (and any processing of the messages it returns) is gated on count.
 function drainCmd(cli, isChild) {
-  return isChild
-    ? '`node ' + cli + ' inbox pull <DEVSWARM_BUILDER_ID>` then `node ' + cli +
-      ' inbox read <DEVSWARM_BUILDER_ID>`'
-    : '`node ' + cli + ' inbox read-primary <DEVSWARM_BUILDER_ID>`';
+  const id = '<DEVSWARM_BUILDER_ID>';
+  const countCmd = '`node ' + cli + ' inbox count ' + id + '`';
+  if (isChild) {
+    return 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
+      'anything waiting in your native queue) then ' + countCmd + '; if `unreadTotal` is 0, ' +
+      'say so and stop — do NOT spawn a subagent; only if `unreadTotal` is greater than 0, run ' +
+      '`node ' + cli + ' inbox read ' + id + '` (delegate to a subagent only if the payload is large)';
+  }
+  return 'first run ' + countCmd + '; if `unreadTotal` is 0, say so and stop — do NOT spawn a ' +
+    'subagent; only if `unreadTotal` is greater than 0, run `node ' + cli + ' inbox read-primary ' +
+    id + '` (delegate to a subagent only if the payload is large)';
 }
 
 // monitorArmLine(watcher) -> the Monitor-arm addition to the Claude-branch wake
@@ -210,4 +232,4 @@ function wakeReassert(env, cli, isChild, watcher) {
   }
 }
 
-module.exports = { WAKE_CRON_DEFAULT, wakeCron, isClaudeAgent, wakeDirective, wakeReassert };
+module.exports = { WAKE_CRON_DEFAULT, wakeCron, isClaudeAgent, wakeDirective, wakeReassert, drainCmd };

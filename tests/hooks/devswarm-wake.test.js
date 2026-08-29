@@ -16,7 +16,7 @@ const assert = require('node:assert');
 const path = require('node:path');
 
 const WAKE = require('../../plugins/anti-hall/hooks/lib/devswarm-wake.js');
-const { wakeDirective, wakeReassert, WAKE_CRON_DEFAULT } = WAKE;
+const { wakeDirective, wakeReassert, WAKE_CRON_DEFAULT, drainCmd } = WAKE;
 
 const CLI = '/fake/plugin/root/scripts/devswarm.js';
 const WATCHER = '/fake/plugin/root/companion/lib/devswarm-wake-watch.js';
@@ -65,11 +65,22 @@ for (const isChild of [true, false]) {
 // and never contains Monitor or CronCreate — regardless of `watcher`.
 // ---------------------------------------------------------------------------
 
+// C1 fix (v0.86.0): drainCmd now gates the read/spawn-worthy step behind a
+// cheap inline `inbox count` check first, literal golden text kept
+// independent of drainCmd itself (not a call-through) so a regression in
+// drainCmd's own logic cannot silently rewrite its own expectation.
 function nonClaudeGolden(agent, cli, isChild) {
+  const id = '<DEVSWARM_BUILDER_ID>';
   const drain = isChild
-    ? '`node ' + cli + ' inbox pull <DEVSWARM_BUILDER_ID>` then `node ' + cli +
-      ' inbox read <DEVSWARM_BUILDER_ID>`'
-    : '`node ' + cli + ' inbox read-primary <DEVSWARM_BUILDER_ID>`';
+    ? 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
+      'anything waiting in your native queue) then `node ' + cli + ' inbox count ' + id +
+      '`; if `unreadTotal` is 0, say so and stop — do NOT spawn a subagent; only if ' +
+      '`unreadTotal` is greater than 0, run `node ' + cli + ' inbox read ' + id +
+      '` (delegate to a subagent only if the payload is large)'
+    : 'first run `node ' + cli + ' inbox count ' + id + '`; if `unreadTotal` is 0, say so ' +
+      'and stop — do NOT spawn a subagent; only if `unreadTotal` is greater than 0, run ' +
+      '`node ' + cli + ' inbox read-primary ' + id + '` (delegate to a subagent only if the ' +
+      'payload is large)';
   return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
     'primitive — once you go idle, nothing can wake you, so a message that lands after ' +
     'you stop waits for your next turn. Drain your mailbox at the START of every turn ' +
@@ -155,4 +166,44 @@ test('FAIL-OPEN: never throws for hostile env / watcher values', () => {
 // above is representative of real usage.
 test('sanity: WATCHER fixture used throughout this file is absolute (matches real consumer usage)', () => {
   assert.ok(path.isAbsolute(WATCHER));
+});
+
+// ---------------------------------------------------------------------------
+// C1 fix (v0.86.0): every no-op mailbox drain used to unconditionally spend a
+// full subagent context (drainCmd emitted an unconditional drain instruction,
+// funneled by wakeDirective/wakeReassert into SessionStart/Stop/cron text).
+// Now drainCmd runs a cheap inline `inbox count` FIRST and tells the agent
+// explicitly not to spawn anything when it comes back empty.
+// ---------------------------------------------------------------------------
+
+// C1 MUTATION-CHECK (killed):
+//   1. Revert drainCmd to the pre-fix unconditional form (no `inbox count`, no
+//      "do NOT spawn") -> all 3 tests below fail. This is also the RED
+//      baseline verified against the pre-fix source.
+//   2. Swap the child branch's leading `inbox pull` for `inbox count` (so
+//      count would run before pull instead of after) -> the "keeps inbox pull
+//      unconditional" test below fails (pullIdx < countIdx assertion trips).
+test('C1: drainCmd(cli, false) [Primary] gates the drain behind an inline `inbox count` check and forbids spawning on empty', () => {
+  const out = drainCmd(CLI, false);
+  assert.ok(out.includes('inbox count'), `must run inbox count first; out=${out}`);
+  assert.ok(/do NOT spawn/.test(out), `must explicitly forbid spawning a subagent on empty; out=${out}`);
+  assert.ok(out.includes('inbox read-primary'), `must still name the drain verb for the non-empty branch; out=${out}`);
+});
+
+test('C1: drainCmd(cli, true) [child] also gates the READ step behind `inbox count`, but keeps `inbox pull` unconditional', () => {
+  const out = drainCmd(CLI, true);
+  assert.ok(out.includes('inbox count'), `must run inbox count; out=${out}`);
+  assert.ok(/do NOT spawn/.test(out), `must forbid spawning on empty; out=${out}`);
+  // inbox pull must NOT be gated behind count: count cannot see the native
+  // queue pull imports, so gating pull itself would make native-only mail
+  // permanently invisible (count would keep reporting 0 forever).
+  const pullIdx = out.indexOf('inbox pull');
+  const countIdx = out.indexOf('inbox count');
+  assert.ok(pullIdx !== -1 && countIdx !== -1 && pullIdx < countIdx,
+    `inbox pull must run BEFORE inbox count, unconditionally; out=${out}`);
+});
+
+test('C1: unreadTotal field is the value gated on (matches `inbox count`s real JSON field name)', () => {
+  assert.ok(drainCmd(CLI, false).includes('unreadTotal'));
+  assert.ok(drainCmd(CLI, true).includes('unreadTotal'));
 });

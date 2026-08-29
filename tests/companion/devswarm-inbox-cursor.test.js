@@ -149,6 +149,40 @@ test('ackTo: negative / non-numeric input clamps to 0 (fail-safe)', () => {
   } finally { cleanup(); }
 });
 
+// C2 MUTATION-CHECK (killed):
+//   1. Delete the monotonic guard entirely (revert to pre-fix ackTo) -> this
+//      exact test fails (staleResult 2 !== 4). This is also the RED baseline
+//      verified against the pre-fix source.
+//   2. Invert `if (!(opts && opts.allowRewind))` to `if (opts && opts.allowRewind))`
+//      -> "ackTo: allowRewind opt-in ..." below fails (lowered 4 !== 2, since the
+//      allowRewind call would now ALSO be monotonic-guarded).
+test('ackTo: monotonic by default — a stale/racing lower ack cannot regress the cursor (C2)', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const inbox = seedInbox(d, ['{"m":1}', '{"m":2}', '{"m":3}', '{"m":4}']);
+    const cur = path.join(d, 'cursor');
+    // Simulate the race: a fast writer already advanced the cursor further,
+    // then a slow/stale writer's ackTo(2) lands after it.
+    const highTarget = C.ackTo(cur, 4, undefined, inbox);
+    assert.strictEqual(highTarget, 4);
+    const staleResult = C.ackTo(cur, 2, undefined, inbox);
+    assert.strictEqual(staleResult, 4); // NOT regressed to 2
+    assert.strictEqual(C.readCursor(cur), 4);
+  } finally { cleanup(); }
+});
+
+test('ackTo: allowRewind opt-in preserves the intentional-lower path (reconcileOrphanCursor)', () => {
+  const { d, cleanup } = tmp();
+  try {
+    const inbox = seedInbox(d, ['{"m":1}', '{"m":2}', '{"m":3}', '{"m":4}']);
+    const cur = path.join(d, 'cursor');
+    C.ackTo(cur, 4, undefined, inbox);
+    const lowered = C.ackTo(cur, 2, undefined, undefined, { allowRewind: true });
+    assert.strictEqual(lowered, 2);
+    assert.strictEqual(C.readCursor(cur), 2);
+  } finally { cleanup(); }
+});
+
 test('ackTo: write is atomic and leaves no .tmp behind', () => {
   const { d, cleanup } = tmp();
   try {

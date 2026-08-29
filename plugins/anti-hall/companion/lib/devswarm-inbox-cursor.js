@@ -105,13 +105,25 @@ function readUnreadMessages(inboxPath, cursorPath, fsi) {
   return { rows, count: u.count, known: u.known, reason: u.reason, path: u.path, errno: u.errno };
 }
 
-// ackTo(cursorPath, n, fsi, inboxPath?) -> int. Set the cursor to an absolute
-// consumed-count `n`, clamped to [0, total]. Clamping to the current message total
-// prevents an over-ack (n > total) from silently swallowing messages that arrive
-// later (cursor stuck past the end). When inboxPath is omitted the upper clamp is
-// skipped (raw absolute set) — advanceCursor always passes it. Returns the value
-// actually written.
-function ackTo(cursorPath, n, fsi, inboxPath) {
+// ackTo(cursorPath, n, fsi, inboxPath?, opts?) -> int. Set the cursor to an
+// absolute consumed-count `n`, clamped to [0, total]. Clamping to the current
+// message total prevents an over-ack (n > total) from silently swallowing
+// messages that arrive later (cursor stuck past the end). When inboxPath is
+// omitted the upper clamp is skipped (raw absolute set) — advanceCursor
+// always passes it. Returns the value actually written.
+//
+// C2 fix: `ackTo` is called UNLOCKED from several sites (scripts/devswarm.js),
+// so two overlapping drains can race — a slow writer's `ackTo(12)` landing
+// after a fast writer's `ackTo(14)` would push the cursor BACKWARD, causing
+// re-delivery (append-only + clamped means no message LOSS, but an
+// idempotency bug). Default behavior is now MONOTONIC: `target` is raised to
+// at least the cursor's current on-disk value before writing, so a stale/
+// racing lower ack can never regress it. `reconcileOrphanCursor`
+// (scripts/devswarm.js) is the ONE proven legitimate exception — a MIN-only
+// reconciliation across 3 cursor namespaces that must be able to lower a
+// namespace stuck above the others — so it opts in explicitly via
+// `opts.allowRewind: true` to keep its pre-fix behavior unchanged.
+function ackTo(cursorPath, n, fsi, inboxPath, opts) {
   const F = fsi || fs;
   let target = Number(n);
   if (!Number.isFinite(target) || target < 0) target = 0;
@@ -119,6 +131,10 @@ function ackTo(cursorPath, n, fsi, inboxPath) {
   if (inboxPath !== undefined) {
     const total = countMessages(inboxPath, F);
     if (target > total) target = total;
+  }
+  if (!(opts && opts.allowRewind)) {
+    const current = readCursor(cursorPath, F);
+    if (target < current) target = current;
   }
   writeCursorAtomic(cursorPath, target, F);
   return target;
