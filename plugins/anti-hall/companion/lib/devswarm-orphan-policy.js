@@ -43,6 +43,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const livenessSelect = require('./devswarm-liveness-select.js');
+// isForwardableRow is the ACTUAL function scripts/devswarm.js's isForwardable
+// delegates to (`const { isForwardableRow } = require('../companion/lib/devswarm-noise.js')`
+// there) — requiring it directly here is not a re-implementation, it is the
+// identical shared helper. No cycle: devswarm-noise.js is pure/stateless.
+const { isForwardableRow } = require('./devswarm-noise.js');
 
 let devswarmMod = null;
 let devswarmTried = false;
@@ -131,4 +137,143 @@ function makeArchivedStrandedTest(home, registry) {
   };
 }
 
-module.exports = { makeArchivedStrandedTest };
+// archivedForwardProvenancePrefixMirror(id) — MUST stay byte-identical to
+// scripts/devswarm.js's private `archivedForwardProvenancePrefix(id)`
+// ('[forwarded from archived ' + id + '] '), which forwardArchivedOrphanUnread
+// prepends to every row it forwards. That helper is NOT exported (this file may
+// not edit scripts/devswarm.js — see the worktree isolation note this change was
+// made under), so unlike every other primitive in this file it cannot be called
+// directly and is duplicated here as a literal. Kept honest, not by inspection,
+// by tests/companion/devswarm-store-forwarded-drained.test.js's real-forward
+// equivalence case: it runs the ACTUAL healOrphanPartitions({dryRun:false})
+// against a fixture, lets it really forward rows using devswarm.js's own
+// (private) prefix, and then asserts makeForwardedDrainedTest — using THIS
+// mirrored prefix — classifies the result correctly. If the two prefixes ever
+// diverge, the computed hash below stops matching the real forwarded row's
+// hash and that test goes red.
+function archivedForwardProvenancePrefixMirror(id) { return '[forwarded from archived ' + id + '] '; }
+
+// makeForwardedDrainedTest(home, registry, store, meshMessageHashFn) -> (id) => boolean.
+//
+// Companion to makeArchivedStrandedTest, for the DIFFERENT unhealable shape B2
+// targets: an archived orphan whose identity family DOES still have a live
+// registry row (so makeArchivedStrandedTest returns false for it — heal would
+// FORWARD, not give up), but healOrphanPartitions' forward is FORWARD-ONLY
+// (scripts/devswarm.js: "the source row is always LEFT in place") and cursor
+// reconciliation is MIN-only (never raises a cursor) — so once every unread row
+// has actually been forwarded into the live survivor, the source partition's
+// `unread` count never decrements and `orphans[]` nags about it forever with
+// nothing left for a human or a heal pass to do.
+//
+// `true` means: archived, descriptor resolves, identity family has a live
+// survivor (pickFreshestLive — the SAME selection healOrphanPartitions'
+// pickSurvivor uses), AND every one of this id's CURRENTLY UNREAD rows has a
+// row with the IDENTICAL hash already present in the survivor's partition —
+// proof checked PER ROW BY HASH, never inferred from a count. A single unread
+// row that cannot be matched (never forwarded, age-capped and skipped, or
+// structurally non-forwardable) fails the whole id back to false, i.e. it
+// stays in orphans[] — this can only ever move an id OUT of orphans[] on
+// positive per-row proof, never on an aggregate or an assumption.
+//
+// meshMessageHashFn is passed in (devswarm-store.js's own meshMessageHash)
+// rather than required — devswarm-store.js is this module's own caller/parent
+// (see the REQUIRE DIRECTION note above), so requiring it back here would close
+// a cycle; it is the SAME function reference already in scope at the one call
+// site, not a re-implementation.
+function makeForwardedDrainedTest(home, registry, store, meshMessageHashFn) {
+  const rows = Array.isArray(registry) ? registry : [];
+  let M = null;
+  let loaded = false;
+  let usable = false;
+  let byMesh = null;
+  const meshCache = new Map();
+  const survivorHashCache = new Map(); // survivorId -> Set<hash>, computed at most once per projection
+
+  function survivorHashes(survivorId) {
+    if (survivorHashCache.has(survivorId)) return survivorHashCache.get(survivorId);
+    let set = new Set();
+    try {
+      const msgs = store.listMessages(survivorId);
+      for (const m of msgs) { if (m && m.hash != null) set.add(String(m.hash)); }
+    } catch (_) { set = new Set(); }
+    survivorHashCache.set(survivorId, set);
+    return set;
+  }
+
+  return function isForwardedDrained(id) {
+    try {
+      if (!loaded) {
+        loaded = true;
+        M = loadDevswarm();
+        usable = !!(M
+          && typeof M.hasArchivedCounterpart === 'function'
+          && typeof M.readDescriptorFile === 'function'
+          && typeof M.archivedDir === 'function'
+          && typeof M.canonicalMeshId === 'function'
+          && typeof M.groupRegistryByMeshId === 'function'
+          && typeof M.meshRowCopy === 'function')
+          && typeof meshMessageHashFn === 'function'
+          && store && typeof store.listMessages === 'function'
+          && typeof store.cursorValue === 'function';
+      }
+      if (!usable) return false; // fail-open: nothing excluded, today's behaviour
+
+      // 1. archived counterpart — same gate makeArchivedStrandedTest uses.
+      if (!M.hasArchivedCounterpart(home, id)) return false;
+
+      // 2. descriptor must resolve (no-descriptor is a different, adoptable class).
+      const desc = resolveOrphanDescriptor(M, home, id);
+      if (!desc || !desc.worktreePath) return false;
+
+      // 3. identity family MUST have a live registry row — the opposite gate from
+      //    makeArchivedStrandedTest (a no-family id belongs to archivedStranded,
+      //    never to this test; the two are mutually exclusive by construction).
+      const wt = String(desc.worktreePath);
+      let familyKey;
+      if (meshCache.has(wt)) familyKey = meshCache.get(wt);
+      else { familyKey = M.canonicalMeshId(wt); meshCache.set(wt, familyKey); }
+      if (!familyKey) return false;
+      if (byMesh === null) byMesh = M.groupRegistryByMeshId(rows);
+      const group = byMesh.get(familyKey);
+      if (!group || !group.rows.length) return false;
+
+      // 4. the SAME survivor selection healOrphanPartitions' pickSurvivor uses
+      //    (livenessSelect.pickFreshestLive — the shared primitive, not a
+      //    re-derivation of the ranking rule).
+      const survivor = livenessSelect.pickFreshestLive(group.rows, { storeHandle: store, home });
+      if (!survivor || survivor.id == null) return false;
+      const survivorId = String(survivor.id);
+      if (survivorId === String(id)) return false; // defensive: never itself
+
+      // 5. every CURRENTLY UNREAD row must PROVE it already landed in the
+      //    survivor — proof is an exact hash match against the hash
+      //    forwardArchivedOrphanUnread would have computed for that exact row.
+      let cursor = 0;
+      try { cursor = store.cursorValue(id); } catch (_) { cursor = 0; }
+      let unreadRows = [];
+      try { unreadRows = store.listMessages(id, { sinceCursor: cursor }); } catch (_) { return false; }
+      if (!unreadRows.length) return false; // nothing to prove (caller already gates unread>0; stay defensive)
+
+      const hashes = survivorHashes(survivorId);
+      for (const m of unreadRows) {
+        // A row forwardArchivedOrphanUnread would never even attempt (not a
+        // structurally-forwardable direct) can never be proven forwarded —
+        // fail the WHOLE id back to orphans[] rather than silently ignoring it.
+        if (!isForwardableRow(m)) return false;
+        const fields = M.meshRowCopy(m, 'message', {
+          to: survivorId,
+          type: 'direct',
+          urgency: m.urgency || 'normal',
+          message: archivedForwardProvenancePrefixMirror(id) + (m.body != null ? m.body : ''),
+        });
+        const hash = meshMessageHashFn(fields);
+        if (!hash || !hashes.has(String(hash))) return false; // this exact row not proven forwarded
+      }
+      return true;
+    } catch (_) {
+      return false; // fail-open
+    }
+  };
+}
+
+module.exports = { makeArchivedStrandedTest, makeForwardedDrainedTest };

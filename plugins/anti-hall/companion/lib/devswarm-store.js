@@ -1649,6 +1649,16 @@ function summaryHashFor(store, o) {
 //                               registry row — heal's `archived-no-family`, i.e.
 //                               provably unreadable forever. QUIET: kept for
 //                               doctor/diagnostics, never warned about per turn.
+//   forwardedDrained[]        — {id, messageCount, unread}: same shape, but the
+//                               workspace is archived, its identity family DOES have
+//                               a live survivor, and every currently-unread row has
+//                               been PROVEN (per row, by exact hash match) to have
+//                               already been forwarded into that survivor by
+//                               healOrphanPartitions' forward-only heal. Because that
+//                               heal never raises the source cursor, such an id would
+//                               otherwise nag in orphans[] forever with nothing left
+//                               to do. QUIET: same doctor/diagnostics-only posture as
+//                               archivedStranded.
 //   staleRegistryPartitions[] — {id, worktreePath, unread}: registry rows whose
 //                               worktreePath no longer exists on disk.
 // All are computed fresh each call from current store state (NO persisted cooldown
@@ -1992,7 +2002,15 @@ function computeSummary(store, opts) {
   // OWN exported helpers (see that file's header), so the two cannot drift apart.
   const orphans = [];
   const archivedStranded = [];
+  const forwardedDrained = [];
   const isArchivedStranded = orphanPolicy.makeArchivedStrandedTest(home, registry);
+  // B2 fix: an archived orphan whose identity family DOES have a live survivor
+  // (so isArchivedStranded above is false for it) but whose every unread row has
+  // already been PROVEN — per row, by exact hash match, never by count — to have
+  // landed in that survivor's partition via healOrphanPartitions' forward-only
+  // (never-cursor-raising) heal. See devswarm-orphan-policy.js's
+  // makeForwardedDrainedTest for the full defect writeup.
+  const isForwardedDrained = orphanPolicy.makeForwardedDrainedTest(home, registry, store, meshMessageHash);
   let allPartitionIds = [];
   try { allPartitionIds = typeof store.listWorkspaceIds === 'function' ? store.listWorkspaceIds() : []; } catch (_) { allPartitionIds = []; }
   for (const raw of allPartitionIds) {
@@ -2005,9 +2023,14 @@ function computeSummary(store, opts) {
     try { cursor = store.cursorValue(id); } catch (_) { cursor = 0; }
     const unread = Math.max(0, total - cursor);
     if (unread <= 0) continue;              // real unread only
-    // fail-open by contract: the classifier returns false on ANY doubt, so an id it
-    // could not positively prove unreadable stays in `orphans[]` exactly as before.
+    // fail-open by contract: each classifier returns false on ANY doubt, so an id
+    // it could not positively prove unreadable/drained stays in `orphans[]` exactly
+    // as before. Order matters: archivedStranded (no family at all) is checked
+    // first — the two classifiers are mutually exclusive by construction (this one
+    // requires a live family survivor, that one requires there be none), but
+    // checking stranded first keeps the cheaper, more-common-shape check first.
     if (isArchivedStranded(id)) { archivedStranded.push({ id, messageCount: total, unread }); continue; }
+    if (isForwardedDrained(id)) { forwardedDrained.push({ id, messageCount: total, unread }); continue; }
     orphans.push({ id, messageCount: total, unread });
   }
 
@@ -2050,6 +2073,14 @@ function computeSummary(store, opts) {
   // deliberate — a silent drop would BE the "success while dropping part of the job"
   // defect shape this repo keeps re-learning.
   if (archivedStranded.length) summary.archivedStranded = archivedStranded;
+  // QUIET diagnostic field (never rendered as a per-turn warning), same
+  // {id, messageCount, unread} shape and same omitted-when-empty convention as
+  // archivedStranded above: orphans that are provably fully forwarded into a
+  // live identity-family survivor (per-row hash-proven — see
+  // makeForwardedDrainedTest). The count/ids are surfaced here, never dropped —
+  // a silent drop would BE the "success while dropping part of the job" defect
+  // shape this repo keeps re-learning.
+  if (forwardedDrained.length) summary.forwardedDrained = forwardedDrained;
   if (staleRegistryPartitions.length) summary.staleRegistryPartitions = staleRegistryPartitions;
 
   return summary;
