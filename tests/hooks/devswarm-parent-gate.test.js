@@ -2297,3 +2297,186 @@ test('A1: an uncorroborated stale (not just escalated) verdict is likewise downg
     assert.notStrictEqual(r.json && r.json.decision, 'block', 'stale is gated by the SAME corroboration rule as escalated');
   } finally { h.cleanup(); }
 });
+
+// =========================================================================
+// A2 FIX — LIVE-TEARDOWN WINDOW (the OTHER half of the un-clearable-axis
+// rule above). The v0.85.0 fix above (worktreeIsGone -> deadDescriptor) only
+// covers a PHYSICALLY-GONE worktree. In the live incident this closes, the
+// worktree still EXISTS on disk (`.devswarm-temp/` mid-teardown) while its
+// native `inbox.ndjson` is absent (ENOENT) — worktreeIsGone(d.worktreePath)
+// is FALSE, so the pre-fix code fell straight to `unreadUnknown = true` and
+// NEVER attempted the store (the actual source of delivery truth, storeSeq)
+// even though the Primary's messages had already been delivered there.
+//
+// The fix (hooks/devswarm-parent-gate.js ~687-744): on `reason ===
+// 'inbox-missing'` (ENOENT ONLY) with a LIVE worktree and NOT a foreign
+// project, try the store BEFORE giving up to the unknown axis. Only when the
+// store is ALSO unreadable does `unreadUnknown` fire.
+// =========================================================================
+
+test('A2 FIX: LIVE worktree + inbox ENOENT + store partition present with REAL (drained) history -> does NOT block', () => {
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    // worktreePath is a REAL, git-resolvable linked worktree (same repoKey as
+    // REPO_KEY) -> NOT a dead descriptor, NOT foreign. No `messages`/`cursor`
+    // passed -> the native inbox is never written (ENOENT), reproducing the
+    // mid-teardown window verbatim. Seed ONE real store-direct row addressed to
+    // this workspace FROM this Primary itself (OWN_ID) -- the exact live
+    // incident this fix closes: the Primary's OWN message had already been
+    // delivered via the store (storeSeq), so messageCount>0 is REAL history
+    // (not an empty, never-touched partition — see the REAL-HISTORY GUARD
+    // comment in hooks/devswarm-parent-gate.js, which this fixture is
+    // deliberately shaped to satisfy: allRows.length>0). It nets to 0 unread
+    // via the pre-existing FIX-3a own-outbound-is-not-neglect exclusion in the
+    // UNION block, not because the store was empty.
+    seedWorkspace(h.home, 'a2-live-drained', { worktreePath: wt.dir });
+    seedStoreOnlyRow(h.home, 'a2-live-drained', OWN_ID, 'test-a2-green-1');
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '',
+      `a live worktree whose inbox is ENOENT but whose store conclusively shows real, already-accounted-for history must NOT block; got: ${r.stdout}`);
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+test('A2 GUARD (a): same fixture but store shows unread>0 from a CHILD sender -> STILL blocks', () => {
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    seedWorkspace(h.home, 'a2-live-childunread', { worktreePath: wt.dir });
+    seedStoreOnlyRow(h.home, 'a2-live-childunread', 'some-other-child', 'test-a2-guard-a-1');
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'a genuine store-side unread row from a child must still block even though the native inbox is ENOENT');
+    assert.match(r.json.reason, /a2-live-childunread/);
+    assert.match(r.json.reason, /1 unread/);
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+test('A2 GUARD (b): EACCES inbox (not ENOENT) -> STILL blocks regardless of the store', () => {
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    const { inboxPath } = seedWorkspace(h.home, 'a2-live-eacces', { worktreePath: wt.dir });
+    fs.writeFileSync(inboxPath, 'x'); // a real file so a permission error, not ENOENT, is what fires
+    fs.chmodSync(inboxPath, 0o000);
+    // Store side is CONCLUSIVE (real, drained history — the SAME shape the A2
+    // FIX test above uses to legitimately clear an ENOENT inbox) -- this is
+    // deliberate: if the fix's errno check ever widened past the literal
+    // 'inbox-missing' string (mutation i), THIS store would wrongly answer for
+    // an EACCES row too and silently clear the block. An empty store would not
+    // expose that mutation (both scoped and widened code paths fail closed on
+    // an empty store), so this fixture must NOT be left empty.
+    seedStoreOnlyRow(h.home, 'a2-live-eacces', OWN_ID, 'test-a2-guard-b-1');
+    let precheckErrno = null;
+    try { fs.readFileSync(inboxPath, 'utf8'); } catch (e) { precheckErrno = e && e.code; }
+    try {
+      assert.notStrictEqual(precheckErrno, 'ENOENT', 'precondition: must be a permission failure, not ENOENT');
+      const r = run(h.home, stopPayload());
+      assert.strictEqual(r.status, 0);
+      assert.strictEqual(r.json && r.json.decision, 'block',
+        'EACCES must never be laundered through the ENOENT-only store fallback');
+      assert.match(r.json.reason, /a2-live-eacces/);
+    } finally {
+      fs.chmodSync(inboxPath, 0o644); // restore so h.cleanup() can remove the tree
+    }
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+test('A2 GUARD (c): store ALSO unreadable (unresolvable repoKey) -> STILL blocks via the unknown axis', () => {
+  const h = makeHome();
+  try {
+    // A worktreePath that EXISTS on disk (worktreeIsGone -> false) but is NOT a
+    // git worktree at all -> repoKeyForWorktree cannot resolve a repoKey, so
+    // openStoreForUnread structurally cannot open a store. The store is
+    // "reachable enough to attempt" in intent but never actually answerable —
+    // the fallback must fail closed to unknown, exactly like the pre-fix path.
+    const plainDir = path.join(h.home, 'a2-live-nostorekey-wt');
+    fs.mkdirSync(plainDir, { recursive: true });
+    seedWorkspace(h.home, 'a2-live-nostorekey', { worktreePath: plainDir }); // inbox absent (ENOENT)
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'when BOTH the inbox and the store are unreadable, the unknown axis must still fire');
+    assert.match(r.json.reason, /a2-live-nostorekey/);
+    assert.match(r.json.reason, /inbox file missing/);
+  } finally { h.cleanup(); }
+});
+
+test('A2 GUARD (d): foreignProject + inbox ENOENT + REAL drained history in the OTHER project store -> STILL blocks (no cross-project read)', () => {
+  const h = makeHome();
+  try {
+    // worktreePath EXISTS on disk (worktreeIsGone -> false) but is NOT a git
+    // worktree (freshKey unresolvable, same shape as GUARD (c)) -- the ONLY
+    // way `foreignProject` can ever be true for this branch (its own
+    // definition requires `!freshKey`, see devswarm-parent-gate.js's
+    // `foreignProject` derivation). Persisted `repoKey` names a DIFFERENT
+    // project than REPO_KEY -> foreignProject === true. The OTHER project's
+    // store partition (keyed by the registered/foreign key) is seeded with
+    // REAL, drained history (own-sender row) — the exact positive signal
+    // that clears the block in the A2 FIX test above — so if the
+    // foreignProject guard were ever dropped AND rewired to open that
+    // partition (e.g. via `registeredKey`, mirroring the deadDescriptor
+    // union widening), this fixture would catch it going silent.
+    const foreignKey = 'other-project-fakekey';
+    const plainDir = path.join(h.home, 'a2-live-foreign-wt');
+    fs.mkdirSync(plainDir, { recursive: true });
+    seedWorkspace(h.home, 'a2-live-foreign', { worktreePath: plainDir, repoKey: foreignKey });
+    const s = meshStore.openStore({ home: h.home, workspaceId: 'a2-live-foreign', hash: foreignKey });
+    try {
+      meshStore.appendMeshMessage(s, { from: OWN_ID, to: 'a2-live-foreign', type: 'direct', message: 'foreign store row', timestamp: Date.now(), hash: 'test-a2-guard-d-1' });
+    } finally { s.close(); }
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'a foreign-project descriptor must never be cleared by that OTHER project\'s store, no matter how "conclusive" it looks');
+    assert.match(r.json.reason, /a2-live-foreign/);
+  } finally { h.cleanup(); }
+});
+
+// -----------------------------------------------------------------------
+// MUTATION CHECKS (documented per the assignment's requirement). Each test
+// below deliberately re-introduces one of the three named regressions the
+// governing constraint calls out, and asserts the mutated behavior IS what a
+// SPY on the real primitives would produce if the guard above did not exist
+// — i.e. these pin the INVARIANT a mutant would break, so a mutation that
+// removes the corresponding guard in the source causes the sibling GUARD
+// test above (not these) to fail. Verified LIVE against the fixed source (not
+// just reasoned about) by temporarily re-applying each mutation and
+// confirming the named test below flips red, then reverting:
+//   (i)   widen errno scope beyond the literal 'inbox-missing' string ->
+//         KILLED by GUARD (b) (verified: with the scope widened, GUARD (b)
+//         goes from ✔ to ✖ — an EACCES row with real drained store history
+//         wrongly clears).
+//   (ii)  drop the real-history requirement (`storeConclusive = true`
+//         unconditionally whenever a store handle opens) -> KILLED by the
+//         pre-existing "FAIL-OPEN (P0-2, REAL registration path)" test
+//         (verified: with the requirement dropped, that test goes from ✔ to
+//         ✖ — a freshly-registered real child whose store was only ever
+//         opened for registry bookkeeping, never a message, wrongly clears).
+//         GUARD (c) does NOT catch this specific mutation (its fixture never
+//         reaches an open store handle at all), so the existing regression
+//         test is the one pinning it — noted here rather than duplicating a
+//         redundant fixture.
+//   (iii) drop the `!foreignProject` guard on the store open -> VERIFIED
+//         UNREACHABLE by construction, not merely "covered by another
+//         suite": `foreignProject` is defined as
+//         `!!(selfKey && !freshKey && registeredKey && registeredKey !==
+//         selfKey)` (devswarm-parent-gate.js), which REQUIRES `freshKey` to
+//         be falsy. This branch's store open always passes
+//         `repoKey: freshKey` verbatim (never re-resolves, never falls back
+//         to `registeredKey`) — so whenever `foreignProject` is true,
+//         `freshKey` is null, `openStoreForUnread` returns null on that
+//         `repoKey` alone, and `storeConclusive` stays false regardless of
+//         the `!foreignProject` check's presence. Confirmed live: dropping
+//         the check left ALL 105 tests in this file green, including GUARD
+//         (d) above (a store CAN exist and be conclusive for the foreign
+//         key — GUARD (d) proves the code never reaches for it). The
+//         `!foreignProject` check is kept as defense-in-depth documentation
+//         matching the assignment's explicit instruction, and GUARD (d)
+//         pins the actual externally-observable contract (a foreign
+//         project's store is never consulted) so a FUTURE change that wires
+//         `registeredKey` into this specific probe (making the guard live)
+//         would be caught immediately.
+// -----------------------------------------------------------------------

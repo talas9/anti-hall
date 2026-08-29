@@ -701,6 +701,83 @@ function main() {
           deadDescriptor = true;
           // realUnread stays 0 and unreadUnknown stays false; the row survives
           // into the family reduce and still blocks if another axis fires.
+        } else if (reason === 'inbox-missing' && !foreignProject) {
+          // A2 FIX — LIVE-TEARDOWN WINDOW. worktreeIsGone(d.worktreePath) is
+          // FALSE here (the branch above didn't fire): the worktree still
+          // EXISTS on disk, so this is NOT a dead descriptor — most likely a
+          // mid-teardown or pre-first-message window where the native NDJSON
+          // inbox hasn't been (re)written yet. The v0.85.0 fix only covered
+          // the dead-descriptor half; this is the other half. Before
+          // surrendering to the unknown axis, ask the STORE — the actual
+          // source of delivery truth (storeSeq) — whether it can answer
+          // conclusively. STRICTLY ENOENT-SCOPED: only the literal
+          // `reason === 'inbox-missing'` string reaches this branch;
+          // inbox-unreadable/EACCES/EISDIR/ENOTDIR/no-inbox-path/cursor-* all
+          // still fall to the `else` below and fail closed exactly as before.
+          // `foreignProject` is checked BEFORE attempting the store open — an
+          // inbox-missing row on a foreign project's descriptor must never
+          // open that other project's store partition (keeps the v0.84.0
+          // cross-project-read closure intact); it falls to the `else` below
+          // and fails closed, same as an unresolvable store.
+          //
+          // REAL-HISTORY GUARD (regression caught while writing THIS fix's own
+          // tests — pinned by "FAIL-OPEN (P0-2, REAL registration path): a real
+          // child whose inbox file is later REMOVED still BLOCKS
+          // unconditionally"). `storeMod.openStore` ALWAYS `mkdirSync`s the
+          // project's store dir and creates `devswarm.db` on first open
+          // (devswarm-store.js openSqlite) — AND the real per-turn registration
+          // path (devswarm-child-turn.js) already opens/closes that SAME
+          // project-wide store on every child's very first turn (an
+          // `upsertRegistry` write, unrelated to messages). So checking merely
+          // "does the store partition dir exist" is NOT a reliable "was this
+          // conclusively drained" signal — it is true for nearly every real
+          // project immediately after ANY workspace registers, message or not.
+          // The actual discriminator this fix's own incident narrative (storeSeq
+          // 27107-27109) rests on is REAL MESSAGE HISTORY: `cursorValue(id) ===
+          // messageCount(id)` is ONLY conclusive when `messageCount(id) > 0` —
+          // i.e. the store has actually recorded and fully drained at least one
+          // message for THIS workspace, EITHER unread or already drained. A
+          // workspace the store has never recorded ANY message for
+          // (messageCount === 0, the untouched-registration case) is NOT
+          // evidence of "nothing pending" — it is simply "the store never saw
+          // this id do anything", indistinguishable from a store that was
+          // never asked, and per the governing "when in doubt, keep blocking"
+          // constraint must NOT clear the unknown axis. Real (nonzero) history
+          // that is STILL unread is equally conclusive — it flows through the
+          // UNION block below and blocks on the realUnread axis instead.
+          let storeConclusive = false;
+          try {
+            const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: d.worktreePath, id: d.id, home, env: process.env, repoKey: freshKey });
+            if (storeHandle) {
+              try {
+                // Both calls throw if the store cannot actually answer (corrupt
+                // DB, unreadable partition, etc.) — that failure is caught below
+                // and falls through to the unknown axis, same as today.
+                storeHandle.cursorValue(d.id);
+                const allRows = storeHandle.listMessages(d.id);
+                storeConclusive = allRows.length > 0;
+              } finally {
+                try { storeHandle.close(); } catch (_) {}
+              }
+            }
+          } catch (_) { storeConclusive = false; }
+          if (storeConclusive) {
+            // Store answered conclusively -> unreadUnknown stays false. Do NOT
+            // increment realUnread here: the UNION block below (unchanged)
+            // resolves `unionKey` to this SAME `freshKey` (dKey) since
+            // unreadUnknown is now false and foreignProject is false, and opens
+            // its own store handle there to compute realUnread from
+            // storeOnlyUnreadRows with the identical noise + own-sender
+            // filtering every other descriptor already gets — never duplicated
+            // here.
+          } else {
+            // Store ALSO unreadable -> genuinely unknown; fail closed exactly
+            // as before this fix.
+            unreadUnknown = true;
+            unreadReason = reason;
+            unreadReasonPath = (u && u.path) || null;
+            unreadReasonErrno = (u && u.errno) || null;
+          }
         } else {
           unreadUnknown = true;
           unreadReason = reason;
