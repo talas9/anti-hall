@@ -128,7 +128,7 @@ const REMINDER =
   'DEVSWARM CHILD WORKSPACE (per turn): keep the parent orchestrator updated — ' +
   'run `node ' + CLI + ' heartbeat <DEVSWARM_BUILDER_ID> --summary ' +
   '"<status>"` to report progress/blockers as you make them — this is what satisfies ' +
-  'your Stop-gate report (`send --to-primary --message "<text>"` is a SEPARATE direct ' +
+  'your Stop-gate report (`send --to-primary --message-file <path>` is a SEPARATE direct ' +
   'message, not a substitute) — and check for + act on any parent ' +
   'messages before continuing, so you stay visible on the parent\'s task list ' +
   'instead of drifting off it.';

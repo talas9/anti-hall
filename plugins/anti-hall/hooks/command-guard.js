@@ -306,7 +306,7 @@ function buildDevswarmSendReason(kind) {
     'DevSwarm — native per-worktree messaging (no from/to/broadcast) is replaced. Do NOT ' +
     'delegate this to a subagent either — a delegated send writes the native queue ' +
     'identically. Use the anti-hall DevSwarm CLI instead: `node scripts/devswarm.js send ' +
-    '--to-primary --message "<text>"` (or `--to <meshId>`) to direct-message, or `node ' +
+    '--to-primary --message-file <path>` (or `--to <meshId>`) to direct-message, or `node ' +
     'scripts/devswarm.js heartbeat <id> --summary "<text>"` to report status.' + killSwitch;
 }
 

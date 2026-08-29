@@ -613,7 +613,7 @@ function buildUnreadSegment(list, home) {
   );
   body += anyUnread
     ? ('CHILD NOT DRAINING: these are message(s) YOU sent that the child has NOT yet '
-      + 'drained. Poke it (`node ' + CLI + ' send --to <id> --message "..."`) or '
+      + 'drained. Poke it (`node ' + CLI + ' send --to <id> --message-file <path>`) or '
       + 'escalate/reassign it — do not assume it has seen the backlog just because '
       + 'time has passed. ')
     : ('Read/ack each workspace inbox (or reassign/archive it) so it does not sit '
@@ -665,7 +665,7 @@ function buildUrgentUnreadSegment(list, home) {
   return (
     'DEVSWARM URGENT INBOX: ' + list.length + ' workspace(s) have an URGENT/HIGH-priority '
     + 'direct message waiting, unread — ' + shown.join('; ') + extra + '. CHILD NOT DRAINING: '
-    + 'STOP and poke it NOW (`node ' + CLI + ' send --to <id> --message "..."`) or escalate — '
+    + 'STOP and poke it NOW (`node ' + CLI + ' send --to <id> --message-file <path>`) or escalate — '
     + 'do not wait to see if it drains on its own — before continuing.'
   );
 }
@@ -748,7 +748,7 @@ function buildOwnUnreadSegment(count, id, urgencyMax, unanswered) {
       body += (
         ' READING IS NOT SUFFICIENT: ' + questionClause
         + ' from ' + askers.join(', ') + extra + ' — you must DECIDE from context and '
-        + 'REPLY, not merely read, via `node ' + CLI + ' send --to <id> --message "..."` '
+        + 'REPLY, not merely read, via `node ' + CLI + ' send --to <id> --message-file <path>` '
         + '(use the asker\'s id above as <id>).'
       );
     }
@@ -769,7 +769,7 @@ function buildOwnUnreadSegment(count, id, urgencyMax, unanswered) {
     prefix + 'you have already read your parent/peer messages, but '
     + unansweredList.length + ' remain UNANSWERED — from ' + askers.join(', ') + extra
     + '. READING IS NOT SUFFICIENT: you must DECIDE from context and REPLY, not merely '
-    + 'read/ack, via `node ' + CLI + ' send --to <id> --message "..."` (use the '
+    + 'read/ack, via `node ' + CLI + ' send --to <id> --message-file <path>` (use the '
     + 'asker\'s id above as <id>).'
   );
 }

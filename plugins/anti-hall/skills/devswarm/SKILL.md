@@ -54,7 +54,7 @@ read-only `message-count` counter are explicitly OUT of scope and stay default-a
 breaking those would break DevSwarm spawn/merge. Own skip name `devswarm-send-guard`
 (independent of `devswarm-read-guard` and command-guard's own skip), honors
 `DISABLE_ANTIHALL_DEVSWARM=1`. The block's reason redirects to the mesh CLI: `node
-scripts/devswarm.js send --to-primary --message "<text>"` (or `--to <meshId>`) to
+scripts/devswarm.js send --to-primary --message-file <path>` (or `--to <meshId>`) to
 direct-message, `node scripts/devswarm.js heartbeat <id> --summary "<text>"` to report
 status. Fires on both platforms — `command-guard.js` is the single shared hook file, so a
 Codex Bash tool call is blocked identically — but the PROACTIVE per-turn reminder that
@@ -173,8 +173,11 @@ a child mid-task that hit a decision point and still has other work it could be 
    sub-task inside your workspace, not the whole workspace.
 2. **Send the question to the parent, not the terminal:**
    ```bash
-   node scripts/devswarm.js send --to-primary --question --urgency high --message "<structured question>"
+   node scripts/devswarm.js send --to-primary --question --urgency high --message-file <path>
    ```
+   (a multi-part structured question has newlines — `--message-file <path>` or
+   `--message-stdin` avoid the shell-quoting mangling a `--message "..."` body with
+   newlines/quotes is prone to; write the question text to `<path>` first)
    The message MUST contain all five parts, every time:
    - **(a) what is blocked** — one line.
    - **(b) the options considered.**
@@ -216,7 +219,7 @@ a child mid-task that hit a decision point and still has other work it could be 
    genuinely human ones.
 5. **Reply on the mesh, to that child specifically:**
    ```bash
-   node scripts/devswarm.js send --to <meshId> --message "<answer>"
+   node scripts/devswarm.js send --to <meshId> --message-file <path>
    ```
    not a broadcast — a parked question is addressed to one child, and the answer
    should be too.
@@ -256,6 +259,13 @@ recovery" below) is a third, explicitly-invoked script, not a daemon.
 | `inbox ack <id> [--to N]` | `--to` = ack to absolute count; omitted = ack-all **(v0.84.0)** A refused read may not acknowledge: `ack` on a workspace the caller does not own no longer advances the cursor (it used to, permanently skipping that workspace's mail). | Advance the durable-inbox cursor. | After processing durable-inbox messages. | **Writes** (cursor file). |
 | `inbox messages <id> [--unread] [--ack] [--ack-as-owner]` | none | Primary/store non-destructive read — bodies straight from the store, no descriptor needed, never touches the native queue. **Ack-ownership guard (v0.56.0):** `--ack` refuses (`ok:false`) unless the caller's own cwd-derived identity provably owns `<id>` (`DEVSWARM_BUILDER_ID` cannot override a *different* cwd-derived identity). Pass `--ack-as-owner` for a legitimate cross-workspace ack (e.g. a supervisor clearing a dead workspace's backlog). | Primary/observer reading a workspace's store-backed inbox. | Read-only unless `--ack` (then **writes** the store cursor + refreshes `summary.json`). |
 | `inbox read-primary <id> [--ack-as-owner]` | none | `inbox messages <id> --unread --ack` under one name — same ack-ownership guard. | Primary consuming+acking in one call. | **Writes.** |
+
+**B4: `seq` vs `index` (both fields on every returned message row).** `seq` is the
+durable, store-wide physical id — the SAME value `send`'s own `seq` returns; safe to
+compare across `inbox count`/`inbox read`/`inbox messages`/`send` calls. `index` is a
+PAGE-LOCAL positional ordinal within that one call's result, and it is the unit `--to
+N` and the ack cursor itself advance in — never compare `index` across calls. Prefer
+matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
 | `workspaces list [--workspace <id>] [--worktree P]` | none | Emit the `summary.json` projection for a project (defaults to the current worktree's own store). Pure `computeSummary` read (fixed under #62 — no longer writes `summary.json` on a plain read, unlike some older docs/specs claim). | Full projection dump including gates/`archive_ready`. | **Read-only.** |
 | `gate <id> --set CSV --clear CSV` | at least one of `--set`/`--clear` required | Mark/unmark named append-only completion gates; drives `archive_ready`. | Consumer marking `done`/`merged`/`tests_passed` etc. | **Writes.** |
 | `nudge <id>` | none | Poke-or-escalate one workspace on demand (reuses the supervisor's own `pokeOrEscalate`, honoring persisted attempt count/cooldown). | Manual on-demand nudge outside the automatic sweep. | **Writes** (poke/escalation state). |
@@ -428,7 +438,9 @@ per-worktree identity uses). Every worktree of a project now shares ONE store
 other directly, not just its own parent/child pair.
 
 **New CLI verbs (daemon-independent — write the shared store directly, no `hivecontrol` call):**
-- `node scripts/devswarm.js send --to <meshId>|--broadcast --message "TEXT" [--urgency low|normal|high|urgent]`
+- `node scripts/devswarm.js send --to <meshId>|--broadcast --message-file <path> [--urgency low|normal|high|urgent]`
+  (or `--message TEXT` / `--message-stdin` — `--message-file`/`--message-stdin` avoid shell
+  quoting entirely, the safer default for a body with newlines/quotes/shell metacharacters)
   — a non-git cwd fails closed (`{ok:false, reason:'no-project'}`) BEFORE any identity is
   derived; `--from` is always the hardened cwd-derived identity (spoofing a mismatched
   `--from` is rejected); `--to` is fail-closed against the shared registry (an unregistered

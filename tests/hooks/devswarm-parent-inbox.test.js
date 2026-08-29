@@ -1942,7 +1942,7 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
         + 'command strings (`send --to <meshId>`, etc).',
       'DEVSWARM PARENT INBOX: 1 active workspace(s) need attention — wsA (2 unread). '
         + 'CHILD NOT DRAINING: these are message(s) YOU sent that the child has NOT yet '
-        + 'drained. Poke it (`node ' + cliPath + ' send --to <id> --message "..."`) or '
+        + 'drained. Poke it (`node ' + cliPath + ' send --to <id> --message-file <path>`) or '
         + 'escalate/reassign it — do not assume it has seen the backlog just because '
         + 'time has passed. '
         + 'A workspace flagged stale/escalated has a wedged child — check on it.',

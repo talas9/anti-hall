@@ -179,8 +179,11 @@ child mid-task that hit a decision point and still has other work it could be do
    sub-task inside your workspace, not the whole workspace.
 2. **Send the question to the parent, not the terminal:**
    ```bash
-   node scripts/devswarm.js send --to-primary --question --urgency high --message "<structured question>"
+   node scripts/devswarm.js send --to-primary --question --urgency high --message-file <path>
    ```
+   (a multi-part structured question has newlines — `--message-file <path>` or
+   `--message-stdin` avoid the shell-quoting mangling a `--message "..."` body with
+   newlines/quotes is prone to; write the question text to `<path>` first)
    The message MUST contain all five parts, every time:
    - **(a) what is blocked** — one line.
    - **(b) the options considered.**
@@ -223,7 +226,7 @@ child mid-task that hit a decision point and still has other work it could be do
    genuinely human ones.
 5. **Reply on the mesh, to that child specifically:**
    ```bash
-   node scripts/devswarm.js send --to <meshId> --message "<answer>"
+   node scripts/devswarm.js send --to <meshId> --message-file <path>
    ```
    not a broadcast — a parked question is addressed to one child, and the answer
    should be too.
@@ -317,6 +320,14 @@ the operational truth regardless of promotion status.
 | `inbox ack <id> [--to N]` | `--to` = ack to absolute count; omitted = ack-all **(v0.84.0)** A refused read may not acknowledge: `ack` on a workspace the caller does not own no longer advances the cursor (it used to, permanently skipping that workspace's mail). | Advance the durable-inbox cursor. | After processing durable-inbox messages. | **Writes.** |
 | `inbox messages <id> [--unread] [--ack] [--ack-as-owner]` | none | Primary/store non-destructive read — no descriptor needed, never touches the native queue. **Ack-ownership guard (v0.56.0):** `--ack` refuses unless the caller's own cwd-derived identity provably owns `<id>` (`DEVSWARM_BUILDER_ID` cannot override a different cwd-derived identity). `--ack-as-owner` overrides for a legitimate cross-workspace ack. | Primary/observer reading a workspace's store-backed inbox. | Read-only unless `--ack` (then **writes**). |
 | `inbox read-primary <id> [--ack-as-owner]` | none | `inbox messages <id> --unread --ack` under one name. | Primary consuming+acking in one call. | **Writes.** |
+
+**B4: `seq` vs `index` (both fields on every returned message row).** `seq` is the
+durable, store-wide physical id — the SAME value `send`'s own `seq` returns; safe to
+compare across `inbox count`/`inbox read`/`inbox messages`/`send` calls. `index` is a
+PAGE-LOCAL positional ordinal within that one call's result, and it is the unit `--to
+N` and the ack cursor itself advance in — never compare `index` across calls. Prefer
+matching on `hash` (table-wide UNIQUE) when verifying a specific message landed.
+
 | `workspaces list [--workspace <id>] [--worktree P]` | none | Emit the `summary.json` projection. Pure `computeSummary` read (#62 fix — no longer writes on a plain read). | Full projection dump including gates/`archive_ready`. | **Read-only.** |
 | `gate <id> --set CSV --clear CSV` | at least one required | Mark/unmark named completion gates; drives `archive_ready`. | Consumer marking `done`/`merged`/`tests_passed` etc. | **Writes.** |
 | `nudge <id>` | none | Poke-or-escalate one workspace on demand. | Manual on-demand nudge outside the automatic sweep. | **Writes.** |
