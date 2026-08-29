@@ -495,3 +495,143 @@ test('UNION FAIL-OPEN: an unresolvable worktree (non-git) degrades to the pre-fi
     assert.strictEqual(v.notDraining, false, 'no oldest-ts signal available on the NDJSON-only fallback path -> never fabricated as notDraining');
   } finally { cleanup(); }
 });
+
+// ============================================================================
+// A3 (field defect, live-verified 2026-08-28): liveness.js's OWN copy of the
+// union-unread computation counted EVERY undrained store row with no sender
+// attribution, so the caller's (Primary's) own just-sent messages, sitting in
+// an idle target's mailbox, read as that target neglecting inbound work and
+// drove `stale`. hooks/devswarm-parent-gate.js:757 already skips
+// `row.sender === own.id` in its OWN local union copy for exactly this reason
+// — this closes the same hole in liveness.js's independent copy, which feeds
+// the PERSISTED verdict (and therefore A1's `escalated` stickiness).
+//
+// Fix shape: unionPendingFor gained a `pendingInbound` axis (opts.selfId
+// filters out STORE-ONLY rows whose `sender === selfId`; NDJSON rows always
+// count — they carry no sender field at all, fail-open toward the alarm).
+// computeLiveness resolves `selfId` from the descriptor's OWN worktreePath via
+// the new `resolveSelfId` (mirrors recovery.js's notifyParentEscalation
+// ADDRESSEE FIX: resolveMainWorktree() then primaryWorkspaceId(), NOT a naive
+// hash of a linked worktree's own root) and gates `stale` on `pendingInbound`
+// instead of the raw `pending` reporting value.
+//
+// MUTATION-CHECK (documented per anti-hall discipline — a mutation list that
+// exists only in a transcript is not evidence; each entry below was ACTUALLY
+// applied to liveness.js and the suite re-run to confirm the kill):
+//   1. `selfId && row.sender != null && String(row.sender) === selfId` ->
+//      `selfId && row.sender != null` (drop the equality, so ANY non-null
+//      sender is skipped). KILLED by "A3 guard: ... DIFFERENT (non-self,
+//      non-null) sender" (a solo non-self, non-null row must still be
+//      'stale'; the mutant wrongly filters it too -> 'alive'). Verified:
+//      applying this mutant flips that test from pass to fail.
+//   2. Dropping `row.sender != null` (so a null-sender row is compared
+//      `String(null) === selfId`, always false) is a NO-OP mutant — a
+//      null-sender row was never equal to a real selfId string either way,
+//      so no test distinguishes it; both "A3 fix" and both "A3 guard" tests
+//      still pass. NOT independently killable (semantically equivalent to
+//      the unmutated code on every reachable input) — documented rather than
+//      silently omitted.
+//   3. Flip `continue` to an unconditional skip regardless of selfId (drop
+//      ALL store-only rows unconditionally). KILLED by EITHER "A3 guard"
+//      test (both rely on a store-only row surviving to drive 'stale').
+//   4. Using `pending` instead of `pendingInbound` at the `stale` computation
+//      (reverting the actual A3 fix). KILLED by "A3 fix" (expects 'alive',
+//      mutant yields 'stale') — this is also the literal RED case, verified
+//      live against the pre-fix module (see the reproduction note below).
+// ============================================================================
+
+const installIngestForLiveness = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+
+// seedStoreOnlyBacklogFrom(home, id, rows) — rows: [{ sender, message }]. Same
+// store-only mesh-direct shape as seedStoreOnlyBacklog above, but with an
+// explicit per-row `sender` (`from`) instead of the fixed 'primary-x'.
+function seedStoreOnlyBacklogFrom(home, id, rows) {
+  const s = devswarmStoreForLiveness.openStore({ home, workspaceId: id, hash: LIVENESS_REPO_KEY });
+  try {
+    const ts = Date.now();
+    rows.forEach((r, i) => {
+      const fields = { from: r.sender != null ? r.sender : null, to: id, type: 'direct', message: r.message || ('row ' + i), timestamp: ts };
+      devswarmStoreForLiveness.appendMeshMessage(s, Object.assign({}, fields, { hash: devswarmStoreForLiveness.meshMessageHash(fields) }));
+    });
+  } finally { s.close(); }
+}
+
+// buildIdleDescriptor(home, id) -> { d, oldTs }. A descriptor whose transcript
+// AND worktree-activity signals are both idle past IDLE, using the REAL repo
+// cwd as worktreePath (so resolveSelfId can actually resolve a primary id —
+// mirrors the existing UNION tests' LIVENESS_REPO_CWD usage above).
+function buildIdleDescriptor(home, id) {
+  const worktreePath = LIVENESS_REPO_CWD;
+  const projectDir = M.projectDirFor(worktreePath, home);
+  fs.mkdirSync(projectDir, { recursive: true });
+  const sessionId = UUID;
+  const tp = path.join(projectDir, sessionId + '.jsonl');
+  fs.writeFileSync(tp, '{}\n');
+  const oldTs = Date.now() - 40 * 60 * 1000;
+  fs.utimesSync(tp, oldTs / 1000, oldTs / 1000);
+  const inboxPath = path.join(home, id + '.inbox.ndjson');
+  const cursorPath = path.join(home, id + '.cursor');
+  fs.writeFileSync(inboxPath, '');
+  fs.writeFileSync(cursorPath, '0');
+  return { d: { id, worktreePath, inboxPath, cursorPath, sessionId }, oldTs };
+}
+
+test('A3 fix: rows sent by the caller\'s own (primary) id do not count as inbound neglect -> alive, not stale', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'a3wedge';
+    const { d, oldTs } = buildIdleDescriptor(home, id);
+    const selfId = installIngestForLiveness.primaryWorkspaceId(
+      installIngestForLiveness.resolveMainWorktree(d.worktreePath) || d.worktreePath,
+    );
+    assert.ok(M.isSafeId(selfId), 'selfId must resolve for the real repo worktree fixture');
+    assert.strictEqual(M.resolveSelfId(d.worktreePath), selfId, 'resolveSelfId must derive the SAME primary id computeLiveness will use internally');
+    // 2 store-only rows, BOTH sender === the caller's own (primary) id — exactly
+    // the field-evidence shape (the Primary's own just-sent messages).
+    seedStoreOnlyBacklogFrom(home, id, [{ sender: selfId }, { sender: selfId }]);
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => oldTs } });
+    assert.strictEqual(v.status, 'alive', 'the caller\'s own just-sent messages must never read as the target neglecting inbound work');
+    assert.strictEqual(v.pending, true, 'reporting `pending` (mailbox depth) must stay UNCHANGED — still reflects the real backlog');
+  } finally { cleanup(); }
+});
+
+test('A3 guard: a row from a DIFFERENT (non-self, non-null) sender still drives stale — the fix must not widen past selfId', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'a3guard1';
+    const { d, oldTs } = buildIdleDescriptor(home, id);
+    // ONLY a row sender === some OTHER child id (never null, never selfId) —
+    // isolates the equality check itself: a mutant that drops the `===selfId`
+    // comparison (skipping on ANY non-null sender) would wrongly filter this
+    // row out too and flip this test to 'alive'.
+    seedStoreOnlyBacklogFrom(home, id, [{ sender: 'some-other-child-id' }]);
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => oldTs } });
+    assert.strictEqual(v.status, 'stale', 'a genuinely wedged target with real inbound backlog from someone else must still be caught');
+  } finally { cleanup(); }
+});
+
+test('A3 guard: a row with NO resolvable sender (null) still drives stale — fail-open, never silently dropped', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const id = 'a3guard2';
+    const { d, oldTs } = buildIdleDescriptor(home, id);
+    // ONLY a null-sender row — isolates the `row.sender != null` guard: a
+    // mutant that drops it (comparing String(null) === selfId, always false)
+    // still counts this row as-is, so this test alone does not distinguish
+    // that mutant, but it DOES prove the null-sender row is never silently
+    // treated as "the caller's own" and dropped.
+    seedStoreOnlyBacklogFrom(home, id, [{ sender: null }]);
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => oldTs } });
+    assert.strictEqual(v.status, 'stale', 'an unattributable row must fail OPEN toward the alarm, never be silently excluded');
+  } finally { cleanup(); }
+});
+
+// RED reproduction (documented, not re-run every suite pass — see the task's
+// "RED->GREEN, both outputs shown" requirement). Verified live against the
+// pre-fix module content (git HEAD before this fix) with the EXACT fixture the
+// GREEN test above uses:
+//   RED  (pre-fix): {"status":"stale", ..., "pending":true,"notDraining":false}
+//   GREEN (post-fix): {"status":"alive", ..., "pending":true,"notDraining":false}
+// i.e. the fix flips ONLY `status`; `pending` (reporting) is byte-identical
+// before and after, confirming computeSummary's/`pending`'s reporting semantics
+// were never touched — only the NEW `pendingInbound` axis feeds `stale`.

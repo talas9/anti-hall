@@ -209,10 +209,22 @@ function resolveCap(env) {
   return DEFAULT_CAP;
 }
 
-// readVerdictStatus(id, home) -> string | null. Reads ONLY the supervisor's
-// already-written per-workspace verdict file (no computeLiveness, no git).
-// Absent / unreadable / malformed -> null (fail-safe: no verdict = not
-// blocking on the liveness axis).
+// readVerdict(id, home) -> { status, pending, notDraining } | null. Reads ONLY
+// the supervisor's already-written per-workspace verdict file (no
+// computeLiveness, no git). Absent / unreadable / malformed -> null
+// (fail-safe: no verdict = not blocking on the liveness axis).
+//
+// A1 fix: this used to be `readVerdictStatus`, returning ONLY `v.status`,
+// discarding the verdict's own `pending`/`notDraining`. Live proof this was
+// wrong: a persisted verdict of `{"status":"escalated","pending":false,
+// "notDraining":false}` — the verdict itself says nothing is outstanding —
+// still force-blocked the Primary ~20 consecutive turns, because `escalated`
+// is STICKY (liveness.js's TERMINAL short-circuit returns it unchanged,
+// `pending:false`, forever) and is cleared only by a fresh heartbeat a
+// finished session will never emit. `pending`/`notDraining` are now threaded
+// to main() so `status === 'stale' | 'escalated'` alone can never drive a hard
+// block without at least one corroborating axis — see the CORROBORATION
+// comment at the family-loop call site below.
 // worktreeIsGone(worktreePath) -> boolean. TRUE only when the path is
 // DEFINITIVELY absent from disk (a stat that failed with ENOENT). Everything
 // else is FALSE — an empty/missing worktreePath field, a path that stats fine,
@@ -251,11 +263,12 @@ function worktreeIsGone(worktreePath) {
   return gone;
 }
 
-function readVerdictStatus(id, home) {
+function readVerdict(id, home) {
   try {
     const p = livenessPathFor(id, home); // throws on an unsafe id
     const v = JSON.parse(fs.readFileSync(p, 'utf8'));
-    return v && typeof v.status === 'string' ? v.status : null;
+    if (!v || typeof v.status !== 'string') return null;
+    return { status: v.status, pending: v.pending === true, notDraining: v.notDraining === true };
   } catch (_) {
     return null;
   }
@@ -764,8 +777,13 @@ function main() {
       } catch (_) { /* fail-open: NDJSON-only realUnread stands */ }
     }
 
-    const status = foreignProject ? '' : readVerdictStatus(d.id, home);
+    const verdict = foreignProject ? null : readVerdict(d.id, home);
+    const status = verdict ? verdict.status : '';
     let staleOrEscalated = status === 'stale' || status === 'escalated';
+    // A1 fix: carried forward per-member (OR'd at the family loop below,
+    // alongside unreadUnknown) as one of the four corroborating axes a
+    // stale/escalated STATUS needs before it can drive a hard block.
+    const verdictPending = !!(verdict && verdict.pending);
     // v0.62 heartbeat-alive decouple (owner-approved — see liveness.js header): a
     // FRESH heartbeat is definitive proof the env is ALIVE (emitted only by the
     // workspace's OWN live session), so it must NOT be nudged as gone/stale/
@@ -794,6 +812,7 @@ function main() {
       unreadReasonErrno,
       staleOrEscalated,
       status: staleOrEscalated ? status : '',
+      verdictPending,
       urgencyMax: null,
       foreignProject,
     });
@@ -831,6 +850,7 @@ function main() {
     let unionUnread = 0;
     let unreadUnknown = false;
     let staleOrEscalated = false;
+    let verdictPending = false;
     let status = '';
     let urgencyMax = null;
     // unknownMembers (regression fix, d1c8625): the family-wide `unreadUnknown`
@@ -857,8 +877,38 @@ function main() {
         });
       }
       if (m.staleOrEscalated) { staleOrEscalated = true; if (m.status) status = m.status; }
+      if (m.verdictPending) verdictPending = true;
       if (m.urgencyMax != null) urgencyMax = m.urgencyMax;
       if (!m.foreignProject) foreignProject = false;
+    }
+    // A1 CORROBORATION (owner's governing constraint: fix the misclassification,
+    // never the alarm — a status-only `stale`/`escalated` must never drive a hard
+    // block by itself). `staleOrEscalated` alone is corroborated ONLY by an OR of
+    // FOUR independent axes:
+    //   1. verdictPending    — the verdict file's OWN `pending` flag (any member).
+    //   2. unionUnread > 0   — this family's REAL union-unread backlog.
+    //   3. unreadUnknown     — a member's unread axis could not be read at all
+    //                          (fail-open toward blocking, never toward silence).
+    //   4. an unanswered question FROM one of this family's own member ids.
+    // This set MUST stay an OR — narrowing it (e.g. to `unread > 0` alone) would
+    // drop a genuinely wedged child holding an unanswered question with an
+    // otherwise-drained mailbox. Uncorroborated -> ONE-TIME advisory line on
+    // stderr (never on the stdout decision channel), NOT a hard block; the
+    // family still blocks normally on any other real axis (unionUnread/
+    // unreadUnknown) it may separately carry.
+    if (staleOrEscalated) {
+      const memberIdSet = new Set(members.map((m) => (m && m.id != null ? String(m.id) : null)).filter(Boolean));
+      const familyHasUnansweredQuestion = unanswered.some((q) => q && q.from != null && memberIdSet.has(String(q.from)));
+      const corroborated = verdictPending || unionUnread > 0 || unreadUnknown || familyHasUnansweredQuestion;
+      if (!corroborated) {
+        try {
+          const advisoryId = (fam && fam.survivor && fam.survivor.id != null) ? String(fam.survivor.id) : (members[0] && members[0].id);
+          fs.writeSync(2, 'anti-hall: workspace ' + advisoryId + ' verdict is \'' + status
+            + '\' but uncorroborated (no pending unread, no unanswered question) — not blocking\n');
+        } catch (_) {}
+        staleOrEscalated = false;
+        status = '';
+      }
     }
     if (!(unreadUnknown || unionUnread > 0 || staleOrEscalated)) continue; // this family has nothing to report
     const survivor = fam && fam.survivor;
@@ -1119,7 +1169,8 @@ function buildUnansweredSegment(unanswered) {
   return (
     'UNANSWERED QUESTION' + (unanswered.length > 1 ? 'S' : '') + ' — ' + items + more + ': ' +
     'reading it via `inbox read-primary` is NOT sufficient to clear this. ' +
-    'You must DECIDE from context and REPLY: `send --to <id> --message "..."`. '
+    'You must DECIDE from context and REPLY: `send --to <id> --message-file <path>` (or ' +
+    '--message-stdin). '
   );
 }
 

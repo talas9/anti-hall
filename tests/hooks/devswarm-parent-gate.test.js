@@ -201,7 +201,7 @@ test('BLOCK: unread backlog past cursor -> decision:block naming the workspace +
 test('BLOCK: stale verdict with no unread -> blocks on the liveness axis', () => {
   const h = makeHome();
   try {
-    seedWorkspace(h.home, 'ws1', { messages: ['a'], cursor: 1, verdict: { status: 'stale' } });
+    seedWorkspace(h.home, 'ws1', { messages: ['a'], cursor: 1, verdict: { status: 'stale', pending: true } }); // A1: corroborated by the verdict's own `pending`
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.match(r.json.reason, /stale/);
@@ -211,7 +211,7 @@ test('BLOCK: stale verdict with no unread -> blocks on the liveness axis', () =>
 test('BLOCK: escalated verdict counts as blocking (P1-C: same severity as stale)', () => {
   const h = makeHome();
   try {
-    seedWorkspace(h.home, 'ws1', { messages: ['a'], cursor: 1, verdict: { status: 'escalated' } });
+    seedWorkspace(h.home, 'ws1', { messages: ['a'], cursor: 1, verdict: { status: 'escalated', pending: true } }); // A1: corroborated
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.match(r.json.reason, /escalated/);
@@ -938,7 +938,7 @@ test('stale/escalated with all-noise unread -> STILL BLOCKS (never "merely noisy
     seedWorkspace(h.home, 'wedged1', {
       messageRows: [{ _h: 'native:f1', message: '[Primary poke] wake up' }],
       cursor: 0,
-      verdict: { status: 'stale' },
+      verdict: { status: 'stale', pending: true }, // A1: corroborated by the verdict's own `pending`
     });
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block', 'a wedged (stale) child blocks regardless of unread content');
@@ -953,7 +953,7 @@ test('escalated with all-noise unread -> STILL BLOCKS', () => {
     seedWorkspace(h.home, 'esc1', {
       messageRows: [{ _h: 'native:g1', message: '[Primary poke] wake up' }],
       cursor: 0,
-      verdict: { status: 'escalated' },
+      verdict: { status: 'escalated', pending: true }, // A1: corroborated
     });
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block', 'an escalated child blocks regardless of unread content');
@@ -1110,7 +1110,7 @@ test('FIX 3: a fresh-heartbeat workspace with a STALE verdict is NOT nudged (liv
 test('FIX 3 control: the SAME stale workspace WITHOUT a fresh heartbeat DOES block', () => {
   const h = makeHome();
   try {
-    seedWorkspace(h.home, 'ws-hb', { messages: ['a'], cursor: 1, verdict: { status: 'stale' } });
+    seedWorkspace(h.home, 'ws-hb', { messages: ['a'], cursor: 1, verdict: { status: 'stale', pending: true } }); // A1: corroborated
     // no heartbeat written
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block');
@@ -1121,7 +1121,7 @@ test('FIX 3 control: the SAME stale workspace WITHOUT a fresh heartbeat DOES blo
 test('FIX 3: an OLD heartbeat does NOT suppress the stale nudge (no false proof-of-life)', () => {
   const h = makeHome();
   try {
-    seedWorkspace(h.home, 'ws-hb', { messages: ['a'], cursor: 1, verdict: { status: 'stale' } });
+    seedWorkspace(h.home, 'ws-hb', { messages: ['a'], cursor: 1, verdict: { status: 'stale', pending: true } }); // A1: corroborated
     writeHeartbeat(h.home, 'ws-hb', Date.now() - 60 * 60 * 1000); // 1h ago -> not fresh
     const r = run(h.home);
     assert.strictEqual(r.json && r.json.decision, 'block', 'a stale heartbeat is not proof of life');
@@ -2057,14 +2057,37 @@ test('MUST NOT BREAK: worktree GONE + STORE-side unread -> STILL blocks on the u
   } finally { h.cleanup(); }
 });
 
-test('MUST NOT BREAK: worktree GONE + a STALE verdict -> STILL blocks on the staleOrEscalated axis', () => {
+test('MUST NOT BREAK: worktree GONE + a CORROBORATED stale verdict -> STILL blocks on the staleOrEscalated axis', () => {
   const h = makeHome();
   try {
-    seedWorkspace(h.home, 'gone-stale', { verdict: { status: 'stale' } }); // inbox absent, worktree gone
+    // A1 fix note: the un-clearable-axis rule (above) deliberately makes the
+    // unread-unknown axis permanently un-clearable for a gone worktree with a
+    // missing inbox — unionUnread stays 0 forever and unreadUnknown stays
+    // false forever for this row. Without a corroborating `pending:true` on
+    // the verdict itself (or an unanswered question), a bare stale/escalated
+    // STATUS here would now be exactly the A1 defect shape: a block with
+    // NO axis that could ever clear it. `pending:true` is what makes this a
+    // legitimate, correctable block instead.
+    seedWorkspace(h.home, 'gone-stale', { verdict: { status: 'stale', pending: true } }); // inbox absent, worktree gone
     const r = run(h.home, stopPayload());
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.match(r.json.reason, /gone-stale/);
+  } finally { h.cleanup(); }
+});
+
+test('A1 fix: worktree GONE + an UNCORROBORATED stale verdict -> does NOT block (would otherwise block forever)', () => {
+  const h = makeHome();
+  try {
+    // Same fixture as the corroborated test above, MINUS `pending:true` — the
+    // un-clearable-axis rule means unionUnread/unreadUnknown can NEVER
+    // corroborate this row, so an uncorroborated status here would block
+    // every single turn with no possible remediation. This is the exact
+    // pathology A1 closes.
+    seedWorkspace(h.home, 'gone-stale-uncorr', { verdict: { status: 'stale' } });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.notStrictEqual(r.json && r.json.decision, 'block', 'an uncorroborated stale verdict on a permanently un-clearable row must never block forever');
   } finally { h.cleanup(); }
 });
 
@@ -2184,5 +2207,93 @@ test('V3 (kills the repoKey-only union fallback): worktree GONE + STORE-side unr
       'an ownerKey-only descriptor with real store-side backlog must NOT go silent');
     assert.match(r.json.reason, /gone-ownerkey-only/);
     assert.match(r.json.reason, /1 unread/);
+  } finally { h.cleanup(); }
+});
+
+// ============================================================================
+// A1 (field defect, live-verified 2026-08-28): a PERSISTED verdict of
+// `{"status":"escalated","pending":false,"notDraining":false}` — the verdict
+// ITSELF says nothing is outstanding — still force-blocked the Primary ~20
+// consecutive turns, because `readVerdictStatus` (now `readVerdict`) discarded
+// everything but `v.status`, and `escalated` is STICKY (liveness.js's TERMINAL
+// short-circuit returns it unchanged forever, cleared only by a fresh
+// heartbeat a finished session will never emit).
+//
+// Fix: `status === 'stale' | 'escalated'` alone can no longer drive a hard
+// block. It must be corroborated by an OR of FOUR axes: (1) the verdict's own
+// `pending`, (2) this family's union unread > 0, (3) unreadUnknown, (4) an
+// unanswered question FROM one of this family's own member ids. Exact
+// expression (family loop, devswarm-parent-gate.js):
+//   const corroborated = verdictPending || unionUnread > 0 || unreadUnknown || familyHasUnansweredQuestion;
+// Uncorroborated -> ONE-TIME stderr advisory, decision left non-blocking
+// (never `decision:'block'`) — the alarm is not silenced project-wide, only
+// this specific unsubstantiated block is downgraded.
+//
+// MUTATION-CHECK (documented per anti-hall discipline; each entry below was
+// ACTUALLY applied to devswarm-parent-gate.js and the suite re-run to confirm
+// the kill):
+//   1. Drop `verdictPending ||` from the OR -> a verdict carrying
+//      `pending:true` with NOTHING else corroborating would flip from
+//      'block' to no-block. KILLED by "A1 GREEN companion" below (also
+//      re-verifies "MUST NOT BREAK: worktree GONE + a CORROBORATED stale
+//      verdict" above, which relies on `pending:true` ALONE).
+//   2. Drop `unionUnread > 0 ||` from the OR -> a family with real unread
+//      but a status-only verdict would flip. KILLED by the pre-existing
+//      "REAL: unread has a genuine inbound message -> BLOCKS" test (unread
+//      alone, no verdict at all, must still block) and by "MUST NOT BREAK:
+//      worktree GONE + STORE-side unread -> STILL blocks on the unionUnread
+//      axis" (both already in this file, both re-run green against the
+//      unmutated fix).
+//   3. Drop the WHOLE corroboration gate (i.e. revert to bare
+//      `status==='stale'||status==='escalated'`) -> the A1 RED case below
+//      would return to blocking. This IS the literal RED case, reproduced
+//      live below.
+//   4. Invert the gate (block ONLY when corroborated is FALSE) -> every
+//      corroborated test in this file (e.g. "BLOCK: stale verdict with no
+//      unread", now carrying `pending:true`) would flip to no-block.
+//      KILLED by re-running this file's full corroborated-block suite.
+// ============================================================================
+
+test('A1 RED->GREEN: an escalated verdict with pending:false/notDraining:false, live worktree, readable+0-unread inbox, no pending question -> does NOT block (live-proof shape)', () => {
+  const h = makeHome();
+  try {
+    // Matches the live incident's verdict file byte-for-byte:
+    // {"status":"escalated","pending":false,"notDraining":false}
+    seedWorkspace(h.home, 'a1-live', {
+      messages: ['a'], cursor: 1, // 0 unread — fully acked
+      verdict: { status: 'escalated', pending: false, notDraining: false },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.notStrictEqual(r.json && r.json.decision, 'block',
+      'an uncorroborated escalated verdict (no pending, no unread, no unanswered question) must not force-block forever');
+  } finally { h.cleanup(); }
+});
+
+test('A1 GREEN companion: the SAME shape but pending:true STILL blocks — the fix must not be widened to ignore a genuinely corroborated verdict', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'a1-live-corr', {
+      messages: ['a'], cursor: 1, // still 0 unread on the NDJSON/union axis
+      verdict: { status: 'escalated', pending: true, notDraining: false },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'the verdict\'s OWN pending:true must still corroborate and block — never narrow the axis set to unread alone');
+    assert.match(r.json.reason, /escalated/);
+  } finally { h.cleanup(); }
+});
+
+test('A1: an uncorroborated stale (not just escalated) verdict is likewise downgraded — same corroboration gate for both statuses', () => {
+  const h = makeHome();
+  try {
+    seedWorkspace(h.home, 'a1-stale-uncorr', {
+      messages: ['a'], cursor: 1,
+      verdict: { status: 'stale', pending: false, notDraining: false },
+    });
+    const r = run(h.home);
+    assert.strictEqual(r.status, 0);
+    assert.notStrictEqual(r.json && r.json.decision, 'block', 'stale is gated by the SAME corroboration rule as escalated');
   } finally { h.cleanup(); }
 });

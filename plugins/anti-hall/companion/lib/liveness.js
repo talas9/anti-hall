@@ -428,7 +428,32 @@ function unreadBacklog(inboxPath, cursorPath, fsi) {
 // closes (a mesh-direct backlog sitting unseen for a full session).
 const NOT_DRAINING_AGE_MS = 20 * 60 * 1000;
 
-// unionPendingFor(descriptor, home, opts) -> { pending, notDraining, oldestUnreadAgeMs }.
+// resolveSelfId(worktreePath) -> primary workspace id | null. A3 fix: mirrors
+// recovery.js's notifyParentEscalation ADDRESSEE FIX verbatim — primaryWorkspaceId()
+// is a PURE HASH of the path it is handed, and `worktreePath` here is the TARGET's
+// (often a linked worktree's) own root, whose `.git` is a FILE, not a dir, so
+// naively hashing it yields THAT workspace's own id, never the real Primary's.
+// resolveMainWorktree() resolves via git-common-dir (identical for every worktree
+// of one project) to the actual main worktree first. LAZY + GUARDED (D27 idiom):
+// install-devswarm-ingest.js itself `require`s this module at its top level, so a
+// top-level require here would be circular — this lazy require resolves fine at
+// call time either way. Any failure (missing module, non-git path, throwing
+// resolver) yields null; callers must treat null as "no self id to filter by"
+// (fail-open TOWARD counting the row, never toward hiding a real backlog).
+function resolveSelfId(worktreePath) {
+  if (!worktreePath) return null;
+  try {
+    const inst = require('../install-devswarm-ingest.js');
+    const parentWorktree = inst.resolveMainWorktree(worktreePath) || worktreePath;
+    const id = inst.primaryWorkspaceId(parentWorktree);
+    return isSafeId(id) ? id : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+// unionPendingFor(descriptor, home, opts) -> { pending, pendingInbound, notDraining,
+//   oldestUnreadAgeMs }.
 // The mesh-aware (NDJSON durable inbox ∪ store-only mesh-direct backlog) unread
 // signal — closes the root cause this file's header documents (a `send --to`
 // direct is STORE-ONLY; unreadBacklog()/NDJSON-only reads it as empty). LAZY +
@@ -437,9 +462,28 @@ const NOT_DRAINING_AGE_MS = 20 * 60 * 1000;
 // devswarm-unread.js, an unresolvable repoKey, or a store-open failure all
 // degrade to the pre-fix unreadBacklog() NDJSON-only signal — NEVER throws,
 // NEVER makes a previously-passing check newly fail closed.
+//
+// `pending` (UNCHANGED, A3): counts every undrained row with no sender
+// attribution — the REPORTING view, still what a caller wants when it just needs
+// "does this mailbox hold anything at all" (e.g. the heartbeat-alive surface).
+//
+// `pendingInbound` (NEW, A3 fix): the axis liveness's own `stale` decision must
+// use — it excludes any STORE-ONLY row whose `sender` equals `opts.selfId` (a
+// message the CALLER itself just sent, sitting in the target's mailbox awaiting
+// THEIR read — not evidence the target is neglecting inbound work; mirrors
+// hooks/devswarm-parent-gate.js's own `row.sender === own.id` skip, applied here
+// so liveness.js's independent copy of this same union stops double-counting the
+// caller's own outbound as the target's neglect). NDJSON rows carry NO sender
+// field at all (devswarm-pull.js's `{_h, fromBranch, message, createdAt, status}`
+// wire shape) so they ALWAYS count here — attributing them by e.g. `fromBranch`
+// would be a heuristic, not a sender identity; failing open toward the alarm.
+// A store-only row with an absent/unresolvable sender likewise always counts
+// (fail-open). `selfId` absent (resolveSelfId couldn't resolve one) -> identical
+// to `pending` (no filtering possible, matches pre-fix behavior exactly).
 function unionPendingFor(descriptor, home, opts) {
   const o = opts || {};
   const fsi = o.fs || fs;
+  const selfId = o.selfId != null ? String(o.selfId) : null;
   const fallback = unreadBacklog(descriptor.inboxPath, descriptor.cursorPath, fsi);
   try {
     const unreadLib = require('./devswarm-unread.js');
@@ -447,7 +491,8 @@ function unionPendingFor(descriptor, home, opts) {
       worktreePath: descriptor.worktreePath, id: descriptor.id, home, env: o.env,
     });
     if (!storeHandle) {
-      return { pending: fallback.known && fallback.lines.length > 0, notDraining: false, oldestUnreadAgeMs: null };
+      const p = fallback.known && fallback.lines.length > 0;
+      return { pending: p, pendingInbound: p, notDraining: false, oldestUnreadAgeMs: null };
     }
     try {
       const union = unreadLib.unionUnread({
@@ -456,12 +501,18 @@ function unionPendingFor(descriptor, home, opts) {
       });
       const pending = union.unread > 0;
       const notDraining = pending && Number.isFinite(union.oldestUnreadAgeMs) && union.oldestUnreadAgeMs > NOT_DRAINING_AGE_MS;
-      return { pending, notDraining, oldestUnreadAgeMs: union.oldestUnreadAgeMs };
+      let pendingInboundCount = (union.ndjsonUnreadLines || []).length;
+      for (const row of (union.storeOnlyUnreadRows || [])) {
+        if (selfId && row && row.sender != null && String(row.sender) === selfId) continue;
+        pendingInboundCount++;
+      }
+      return { pending, pendingInbound: pendingInboundCount > 0, notDraining, oldestUnreadAgeMs: union.oldestUnreadAgeMs };
     } finally {
       try { storeHandle.close(); } catch (_) {}
     }
   } catch (_) {
-    return { pending: fallback.known && fallback.lines.length > 0, notDraining: false, oldestUnreadAgeMs: null };
+    const p = fallback.known && fallback.lines.length > 0;
+    return { pending: p, pendingInbound: p, notDraining: false, oldestUnreadAgeMs: null };
   }
 }
 
@@ -529,8 +580,13 @@ function computeLiveness(opts) {
   // this file's ORIGINAL name for "known unread backlog"; `notDraining` (item 3,
   // REPORT/ESCALATE ONLY — never gates a kill) additionally flags a pending
   // backlog whose OLDEST row is older than NOT_DRAINING_AGE_MS, independent of
-  // the alive/stale/nudged/escalated axis below.
-  const unionInfo = unionPendingFor(descriptor, home, { fs: fsi, now, env: opts.env });
+  // the alive/stale/nudged/escalated axis below. `selfId` (A3 fix) is resolved
+  // from THIS descriptor's own worktreePath — see resolveSelfId's header — so
+  // `unionInfo.pendingInbound` below excludes rows this same party (its own
+  // Primary) just sent into this mailbox, which is never evidence THIS target is
+  // neglecting inbound work.
+  const selfId = resolveSelfId(descriptor.worktreePath);
+  const unionInfo = unionPendingFor(descriptor, home, { fs: fsi, now, env: opts.env, selfId });
   const pending = unionInfo.pending;
 
   // NUDGE hold: a poke is outstanding. Stay `nudged` unless the fresh outbound
@@ -561,7 +617,10 @@ function computeLiveness(opts) {
   // stale (fail-safe). max() being idle is equivalent to "both idle".
   const haveBoth = tMtime !== null && wMtime !== null;
   const bothIdle = haveBoth && (now - tMtime) > idle && (now - wMtime) > idle;
-  const stale = bothIdle && pending;
+  // A3 fix: `stale` gates on `pendingInbound`, NOT the raw `pending` reporting
+  // value — see unionPendingFor's header. `pending` (reported below, unchanged)
+  // still reflects the full mailbox depth for drain/ack accounting elsewhere.
+  const stale = bothIdle && unionInfo.pendingInbound;
 
   return {
     status: stale ? 'stale' : 'alive',
@@ -590,7 +649,7 @@ module.exports = {
   DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS, DEFAULT_HEARTBEAT_FRESH_MS, DEFAULT_DORMANT_MS,
   DEFAULT_ROSTER_IDLE_MS, NOT_DRAINING_AGE_MS,
   isSafeId, devswarmRoot, livenessPathFor, heartbeatPathFor, projectDirFor,
-  transcriptMtime, worktreeActivityMtime, unreadBacklog, unionPendingFor, computeLiveness, writeVerdict,
+  transcriptMtime, worktreeActivityMtime, unreadBacklog, unionPendingFor, resolveSelfId, computeLiveness, writeVerdict,
   heartbeatTs, hasFreshHeartbeat, isFreshBeat, dormantThresholdMs, isDormantActivity,
   idleThresholdMs, readActivityTs, isDormantRow,
 };
