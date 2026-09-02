@@ -177,3 +177,151 @@ test('PARTIAL-FORWARD GUARD: foldGroupIntoSurvivor never advances a candidate\'s
   assert.strictEqual(appendCalls, 2, 'precondition: the second (throwing) row was actually attempted, proving this is a genuine partial forward, not a zero-attempt no-op');
   assert.deepStrictEqual(setCursorCalls, [], 'THE GUARD: setCursor must NEVER be called for a candidate whose forward loop threw — a partial fold must never lose the un-forwarded remainder off the read frontier');
 });
+
+// ---------------------------------------------------------------------------
+// 0a668d81c0c6 — the `messageCount`-based advance above is ITSELF the bug.
+// `messageCount(id)` is `SELECT COUNT(*) WHERE workspace_id = ?` (devswarm-
+// store.js:708-710): it counts EVERY row in the partition, including rows
+// `isForwardable` (companion/lib/devswarm-noise.js:58-63) skips and NEVER
+// forwards — most importantly native-ingested mail, which devswarm-
+// ingest.js:758-763 inserts via the bare `appendMessage` path (mtype/sender/
+// recipient all NULL, so `isForwardableRow` is false). Advancing the cursor
+// to `messageCount` after the loop therefore sweeps the read frontier PAST
+// unforwarded native rows the loop explicitly, correctly, left alone —
+// silently marking real mail "read" on a row that was never told it, with no
+// copy of it anywhere else (unlike a forwardable row, which IS safely
+// sitting in the survivor's partition once forwarded). That is permanent
+// loss on a `left` (live, never-tombstoned) candidate.
+//
+// THE CURSOR'S MEANING, decided here: `cursorValue`/`setCursor` is a
+// per-workspace CONSUMED-COUNT into `listMessages`' insertion-ordered
+// sequence (devswarm-store.js:716, "sinceCursor ... skips the first N
+// rows"). Advancing it to N asserts "rows 1..N are fully handled, in order,
+// no gaps" — every downstream reader (inbox unread-count, `mesh read`) relies
+// on that being a true prefix, not a popcount of "handled somewhere in this
+// range". So the fold's advance may only ever move the cursor to the end of
+// a CONTIGUOUS run of forwarded-or-dedup-confirmed rows starting at `since`;
+// the first non-forwardable row in the range must stop the advance (its own
+// position and everything after stays unread), even though forwarding keeps
+// running past it for any later forwardable rows (forwarding is idempotent
+// and independent of the cursor).
+//
+// THE LIVE-CHILD QUESTION, answered: is a supervisor sweep advancing a live
+// (`left`) child's OWN read cursor on its behalf — for traffic it never
+// asked to have read — a sound primitive at all? Yes, WITH the contiguous-
+// prefix constraint above, because a forwarded row is not being silently
+// dropped: it now exists, verbatim, in the survivor's partition (that's
+// what "forwarded" means), so marking it read on the LOSING partition does
+// not lose access to it — the child (or whoever eventually reads on its
+// behalf) can still read it via the survivor. A non-forwardable row has no
+// such second home, so it is not safe to mark read this way, and the fix
+// stops there. Applying the SAME contiguous-prefix rule to the `tombstoned`
+// outcome (not exercised by these two tests, which target the fake-store
+// harness's `left`-shaped candidate) is unaffected: a tombstoned row's mail
+// was ALL forwarded before removeRegistryIf ever runs (same loop, same
+// gate), so its full range is always a contiguous forwarded prefix already.
+//
+// THE FIX (scripts/devswarm.js, foldOne): track a running `advanceTo`
+// starting at `since`, incremented ONLY while the run since `since` has
+// contained nothing but successfully-forwarded-or-dedup-confirmed rows in
+// order; the first non-forwardable row seen sets a `sawGap` flag that keeps
+// `advanceTo` from moving any further (later forwardable rows still forward,
+// they just no longer bump `advanceTo`). After the loop (same `forwardOk`
+// gate as before — an exception mid-loop still returns 'forward-failed'
+// before any cursor write):
+//     if (advanceTo > since) s.setCursor(row.id, advanceTo);
+//
+// MUTATION-CHECK (documented per the task's requirement):
+//   (i) revert to `s.setCursor(row.id, s.messageCount(row.id))` -> KILLED by
+//       "RED: a native (non-forwardable) row sandwiched between two
+//       forwardable rows must not be swept past" below — it demands
+//       cursorCalls===[{id:CANDIDATE,val:1}], the messageCount build gives
+//       val:3.
+//   (ii) advance past a non-forwardable row (e.g. drop the `sawGap` guard
+//       and let `advanceTo` keep incrementing through native rows too) ->
+//       KILLED by the same RED test, and also by "GUARD: a candidate whose
+//       ENTIRE unread range is non-forwardable native mail never advances at
+//       all", which demands cursorCalls===[] (a broken guard would emit a
+//       spurious setCursor(CANDIDATE, 1)).
+//   (iii) drop the `forwardOk` guard around the new advance write -> KILLED
+//       by the pre-existing "PARTIAL-FORWARD GUARD" test above (unchanged,
+//       re-run below as a guard-still-passes check).
+
+test('RED: a native (non-forwardable) row sandwiched between two forwardable rows must not be swept past', () => {
+  const setCursorCalls = [];
+  let appendCalls = 0;
+  const CANDIDATE = 'candidate-native-gap';
+  const SURVIVOR = 'survivor-uuid';
+  // Row 2 mirrors exactly what devswarm-ingest.js:758-763 inserts via the
+  // bare appendMessage path: no mtype/sender/recipient at all (NULL), which
+  // is precisely what makes isForwardableRow/isForwardable return false.
+  const rows = [
+    { hash: 'h1', ts: 1000, body: 'msg-1', sender: 'x', recipient: CANDIDATE, mtype: 'direct', urgency: 'normal', needsReply: false, isHeartbeat: false },
+    { hash: 'h2', ts: 2000, body: 'native-mail-still-needed', sender: null, recipient: null, mtype: null, urgency: null, needsReply: false, isHeartbeat: false },
+    { hash: 'h3', ts: 3000, body: 'msg-3', sender: 'x', recipient: CANDIDATE, mtype: 'direct', urgency: 'normal', needsReply: false, isHeartbeat: false },
+  ];
+  const fakeS = {
+    cursorValue(id) { return id === CANDIDATE ? 0 : 0; },
+    listMessages(id) { return id === CANDIDATE ? rows.slice() : []; },
+    messageCount(id) { return id === CANDIDATE ? rows.length : 0; },
+    setCursor(id, val) { setCursorCalls.push({ id, val }); },
+    appendMeshRow() { appendCalls++; return { inserted: true, seq: appendCalls }; },
+    removeRegistryIf() { return false; }, // live descriptor path isn't reachable via readDescriptorFile in this fake-home harness; irrelevant to what this test asserts
+  };
+  const candidateRow = { id: CANDIDATE, worktreePath: '/wt/fake', sessionId: 'sess-candidate', updatedAt: 1, writeSeq: 1 };
+
+  cli.foldGroupIntoSurvivor(fakeS, /* home */ '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+
+  assert.strictEqual(appendCalls, 2, 'precondition: both forwardable rows (h1, h3) were actually forwarded — the gap does not stop forwarding, only cursor advance');
+  assert.deepStrictEqual(setCursorCalls, [{ id: CANDIDATE, val: 1 }],
+    `cursor must advance ONLY through the contiguous forwarded prefix before the native gap (val=1, i.e. just past h1) — got ${JSON.stringify(setCursorCalls)}. A val of 3 (messageCount) means the native row h2 was swept past and is now silently lost.`);
+});
+
+test('GUARD: a candidate whose ENTIRE unread range is non-forwardable native mail never advances at all', () => {
+  const setCursorCalls = [];
+  const CANDIDATE = 'candidate-all-native';
+  const SURVIVOR = 'survivor-uuid';
+  const rows = [
+    { hash: 'h1', ts: 1000, body: 'native-1', sender: null, recipient: null, mtype: null, urgency: null, needsReply: false, isHeartbeat: false },
+    { hash: 'h2', ts: 2000, body: 'native-2', sender: null, recipient: null, mtype: null, urgency: null, needsReply: false, isHeartbeat: false },
+  ];
+  const fakeS = {
+    cursorValue(id) { return id === CANDIDATE ? 0 : 0; },
+    listMessages(id) { return id === CANDIDATE ? rows.slice() : []; },
+    messageCount(id) { return id === CANDIDATE ? rows.length : 0; },
+    setCursor(id, val) { setCursorCalls.push({ id, val }); },
+    appendMeshRow() { throw new Error('must never be reached — no row here is forwardable'); },
+    removeRegistryIf() { return false; },
+  };
+  const candidateRow = { id: CANDIDATE, worktreePath: '/wt/fake', sessionId: 'sess-candidate', updatedAt: 1, writeSeq: 1 };
+
+  cli.foldGroupIntoSurvivor(fakeS, '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+
+  assert.deepStrictEqual(setCursorCalls, [], 'a candidate with nothing forwardable in its unread range must never have its cursor touched — every unread row is real mail it still needs');
+});
+
+test('GUARD (unaffected by this fix): a fully-forwardable candidate still advances its cursor all the way to the end of its unread range', () => {
+  const setCursorCalls = [];
+  let appendCalls = 0;
+  const CANDIDATE = 'candidate-all-forwardable';
+  const SURVIVOR = 'survivor-uuid';
+  const rows = [
+    { hash: 'h1', ts: 1000, body: 'msg-1', sender: 'x', recipient: CANDIDATE, mtype: 'direct', urgency: 'normal', needsReply: false, isHeartbeat: false },
+    { hash: 'h2', ts: 2000, body: 'msg-2', sender: 'x', recipient: CANDIDATE, mtype: 'direct', urgency: 'normal', needsReply: false, isHeartbeat: false },
+  ];
+  const fakeS = {
+    cursorValue(id) { return id === CANDIDATE ? 0 : 0; },
+    listMessages(id) { return id === CANDIDATE ? rows.slice() : []; },
+    messageCount(id) { return id === CANDIDATE ? rows.length : 0; },
+    setCursor(id, val) { setCursorCalls.push({ id, val }); },
+    appendMeshRow() { appendCalls++; return { inserted: true, seq: appendCalls }; },
+    removeRegistryIf() { return false; },
+  };
+  const candidateRow = { id: CANDIDATE, worktreePath: '/wt/fake', sessionId: 'sess-candidate', updatedAt: 1, writeSeq: 1 };
+
+  cli.foldGroupIntoSurvivor(fakeS, '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+
+  assert.strictEqual(appendCalls, 2);
+  assert.deepStrictEqual(setCursorCalls, [{ id: CANDIDATE, val: 2 }],
+    'when the entire unread range forwards cleanly, the contiguous-prefix rule reduces to the same full advance as before this fix');
+});

@@ -1605,10 +1605,31 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
     const foldOne = (row) => {
       let forwardOk = true;
       let since = 0;
+      // advanceTo/sawGap (0a668d81c0c6 fix) — the cursor is a per-workspace
+      // CONSUMED-COUNT into listMessages' insertion-ordered sequence
+      // (devswarm-store.js:716); setting it to N asserts "rows 1..N since
+      // `since` are fully handled, in order, no gaps". A non-forwardable row
+      // (native-ingested mail: devswarm-ingest.js inserts it with mtype/
+      // sender/recipient all NULL, so isForwardable is false) is NOT a copy
+      // that safely exists elsewhere — it is real mail the row still needs —
+      // so the advance may only cover the CONTIGUOUS run of forwarded-or-
+      // dedup-confirmed rows starting at `since`. The first non-forwardable
+      // row flips `sawGap` and permanently stops `advanceTo` from moving any
+      // further, even though forwarding itself keeps running past it for any
+      // later forwardable rows (forwarding is idempotent and independent of
+      // the cursor). Was previously `s.messageCount(row.id)` — a raw COUNT(*)
+      // over the whole partition that counts non-forwardable rows too, so it
+      // swept the cursor past unforwarded native mail and silently lost it
+      // (defect 0a668d81c0c6).
+      let advanceTo = 0;
+      let sawGap = false;
       try {
         since = s.cursorValue(row.id);
+        advanceTo = since;
+        let pos = since;
         for (const m of s.listMessages(row.id, { sinceCursor: since })) {
-          if (!isForwardable(m)) continue; // #67: forward only a real actionable direct — skips broadcast/heartbeat AND stale native poke/hash-mirror rows (mtype/sender null)
+          pos += 1;
+          if (!isForwardable(m)) { sawGap = true; continue; } // #67: forward only a real actionable direct — skips broadcast/heartbeat AND stale native poke/hash-mirror rows (mtype/sender null); also stops the cursor advance below, since this row's mail has no other home
           // FORWARD: same ONE shared MESH_ROW_COPY_FIELDS table as the verbatim
           // re-home site (see meshRowCopy). The overrides re-address the copy to the
           // survivor partition; `type:'direct'` is pinned (not m.mtype) because only
@@ -1622,31 +1643,37 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
           const hash = store.meshMessageHash(fields);
           const r = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
           if (r && r.inserted) forwarded++;
+          if (!sawGap) advanceTo = pos; // still a contiguous forwarded prefix — safe to advance through this row
         }
       } catch (_) { forwardOk = false; }
       if (!forwardOk) return { outcome: 'forward-failed' };
-      // B1(b) fix — advance the CANDIDATE's OWN cursor now that every one of its
-      // rows since `since` has fully forwarded (the try block above completed with
-      // NO exception — every appendMeshMessage call either inserted the row into
-      // the survivor or hit the hash-dedupe OR-IGNORE path because it was already
-      // forwarded by a prior pass; both are "safely delivered", never "lost"). This
-      // closes the second, independent defect: a candidate this pass classifies
-      // `left` (a live descriptor it correctly never tombstones) previously kept
-      // its pre-fold cursor forever, so its already-forwarded backlog rendered as
+      // B1(b) fix — advance the CANDIDATE's OWN cursor now that the try block
+      // above completed with NO exception (every appendMeshMessage call
+      // either inserted the row into the survivor or hit the hash-dedupe
+      // OR-IGNORE path because it was already forwarded by a prior pass —
+      // both are "safely delivered", never "lost"). This closes the second,
+      // independent defect: a candidate this pass classifies `left` (a live
+      // descriptor it correctly never tombstones) previously kept its
+      // pre-fold cursor forever, so its already-forwarded backlog rendered as
       // "N unread / not draining" indefinitely even though every message had
-      // already reached the survivor. Gated on COMPLETE success only — the
-      // `!forwardOk` branch above already returned before reaching here, so a
-      // partial/failed forward (an exception mid-loop, e.g. a store write that
-      // throws after some but not all rows were appended) NEVER runs this: the
-      // cursor stays exactly where it was, so the next fold pass re-attempts the
-      // whole unread range and the already-forwarded rows are re-forwarded
+      // already reached the survivor. Advancing a LIVE child's cursor on its
+      // behalf, from a sweep it never requested, IS a sound primitive here —
+      // but ONLY up to `advanceTo`: every row up to that point is either
+      // forwarded (verbatim, in the survivor's partition — reachable there)
+      // or dedup-confirmed already forwarded by a prior pass, so marking it
+      // read on the losing partition does not lose access to it. Gated on
+      // COMPLETE success only — the `!forwardOk` branch above already
+      // returned before reaching here, so a partial/failed forward (an
+      // exception mid-loop, e.g. a store write that throws after some but
+      // not all rows were appended) NEVER runs this: the cursor stays
+      // exactly where it was, so the next fold pass re-attempts the whole
+      // unread range and the already-forwarded rows are re-forwarded
       // idempotently (hash dedupe) rather than silently dropped off the read
-      // frontier. `since` is read BEFORE the loop and messageCount() AFTER, so a
-      // message that arrives concurrently mid-fold is simply left unread for the
-      // next pass, never swallowed.
+      // frontier. `since`/`advanceTo` are computed from the SAME listMessages
+      // read used for forwarding, so a message that arrives concurrently
+      // mid-fold is simply left unread for the next pass, never swallowed.
       try {
-        const nowCount = s.messageCount(row.id);
-        if (nowCount > since) s.setCursor(row.id, nowCount);
+        if (advanceTo > since) s.setCursor(row.id, advanceTo);
       } catch (_) { /* best-effort bookkeeping; never blocks the fold itself */ }
       // `row` here is whatever foldOne was called with — the in-lock re-read `cur`
       // when locked, the pre-lock candidate `d` when not — so a caller keying its
