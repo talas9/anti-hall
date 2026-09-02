@@ -412,7 +412,7 @@ test('nudge hook: maintainer branch emits a fixed-format line with ZERO reporter
     assert.equal(res.status, 0);
     const out = JSON.parse(res.stdout);
     const ctx = out.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /^anti-hall: \d+ open defect reports \(\d+ regressed\), oldest \d+d — \/anti-hall:defects$/,
+    assert.match(ctx, /^anti-hall: \d+ unfinished defect reports \(\d+ regressed\), oldest \d+d — \/anti-hall:defects$/,
       'output matches the fixed closed-vocabulary format exactly, including the regressed count');
     assert.ok(!ctx.includes(injected), 'zero reporter-supplied substrings in the emitted line');
     assert.ok(!ctx.toLowerCase().includes('ignore'), 'no injected text leaked through');
@@ -791,7 +791,7 @@ test('nudge maintainer line includes a nonzero regressed count when a defect is 
     assert.equal(res.status, 0);
     const out = JSON.parse(res.stdout);
     const ctx = out.hookSpecificOutput.additionalContext;
-    assert.match(ctx, /^anti-hall: 1 open defect reports \(1 regressed\), oldest \d+d — \/anti-hall:defects$/,
+    assert.match(ctx, /^anti-hall: 1 unfinished defect reports \(1 regressed\), oldest \d+d — \/anti-hall:defects$/,
       'the regressed defect is counted in both the total and the explicit regressed count');
   } finally { rm(home); rm(repoCwd); }
 });
@@ -931,6 +931,137 @@ test('existing ack/fixed/wontfix/notabug/dup ruling statuses still derive correc
       assert.equal(shown.status, status);
     }
   } finally { rm(home); }
+});
+
+// ============================================================================
+// 25. `list --unfinished` (defect: `list --open` under-reports `partial`/`ack`
+// as if they were resolved — root cause: scripts/defect.js's `--open` filter
+// checked `d.status === 'open'` literally, so any status other than the
+// exact string 'open' (including 'partial' and 'ack', both genuinely
+// unfinished) silently vanished from the count). `--open` keeps its existing,
+// already-documented narrow meaning (untriaged only); `--unfinished` is the
+// new, wider filter added by this fix: every status except the closed set
+// (fixed/wontfix/notabug/dup).
+//
+// MUTATION CHECKS documented here (each killed by a named assertion below):
+//   (i)   including 'fixed' in the unfinished set        -> killed by the
+//         'fixed is NEVER in --unfinished output' assertion.
+//   (ii)  dropping 'ack' from the unfinished set          -> killed by the
+//         'ack IS in --unfinished output' assertion.
+//   (iii) flattening the status column (e.g. partial rendered as 'open')
+//                                                          -> killed by the
+//         'each returned entry reports its OWN real status, not "open"'
+//         assertions (checked per-fp, not just presence/absence).
+// ============================================================================
+
+// RED (documented, not re-run against old code): before this fix,
+// `list --open` on this exact seed (open/partial/ack/fixed/notabug) returned
+// ONLY the untriaged 'open' defect — 1 entry — silently dropping the
+// genuinely-unfinished 'partial' and 'ack' ones. GREEN below proves
+// `--unfinished` returns all three unfinished statuses while still excluding
+// 'fixed' and 'notabug', and that `--open` is UNCHANGED (still 1 entry).
+test('list --open stays narrow (status === "open" only); list --unfinished widens to open+partial+ack, excludes fixed/notabug', () => {
+  const home = tmpHome();
+  try {
+    const filedOpen = store.report(Object.assign(baseReportInput(), { home, sym: 'unfinished-filter open case' }));
+    const filedPartial = store.report(Object.assign(baseReportInput(), { home, sym: 'unfinished-filter partial case' }));
+    store.rule(filedPartial.fp, { home, status: 'partial', fixedIn: '0.80.0', note: 'half shipped' });
+    const filedAck = store.report(Object.assign(baseReportInput(), { home, sym: 'unfinished-filter ack case' }));
+    store.rule(filedAck.fp, { home, status: 'ack', note: 'looked at, not yet fixed' });
+    const filedFixed = store.report(Object.assign(baseReportInput(), { home, sym: 'unfinished-filter fixed case' }));
+    store.rule(filedFixed.fp, { home, status: 'fixed', fixedIn: '0.80.0', note: 'shipped' });
+    const filedNotabug = store.report(Object.assign(baseReportInput(), { home, sym: 'unfinished-filter notabug case' }));
+    store.rule(filedNotabug.fp, { home, status: 'notabug', note: 'not a bug' });
+
+    // GREEN: --open is unchanged — only the untriaged defect.
+    const openResult = runCli(['list', '--open', '--json'], { home });
+    assert.equal(openResult.status, 0, openResult.stderr);
+    const openList = JSON.parse(openResult.stdout);
+    const openFps = openList.map((d) => d.fp).sort();
+    assert.deepEqual(openFps, [filedOpen.fp], '--open still returns ONLY the untriaged defect (unchanged, documented contract)');
+
+    // GREEN: --unfinished returns open + partial + ack (3), never fixed/notabug.
+    const unfResult = runCli(['list', '--unfinished', '--json'], { home });
+    assert.equal(unfResult.status, 0, unfResult.stderr);
+    const unfList = JSON.parse(unfResult.stdout);
+    const unfFps = unfList.map((d) => d.fp).sort();
+    assert.deepEqual(
+      unfFps,
+      [filedOpen.fp, filedPartial.fp, filedAck.fp].sort(),
+      '--unfinished returns open + partial + ack'
+    );
+
+    // Mutation (i): fixed must NEVER be in --unfinished output.
+    assert.ok(!unfFps.includes(filedFixed.fp), 'fixed is NEVER in --unfinished output');
+    // notabug must NEVER be in --unfinished output either (closed set).
+    assert.ok(!unfFps.includes(filedNotabug.fp), 'notabug is NEVER in --unfinished output');
+
+    // Mutation (ii): ack IS in --unfinished output.
+    assert.ok(unfFps.includes(filedAck.fp), 'ack IS in --unfinished output');
+
+    // Mutation (iii): each returned entry reports its OWN real status —
+    // a flattening bug would render everything as 'open'.
+    const byFp = Object.fromEntries(unfList.map((d) => [d.fp, d.status]));
+    assert.equal(byFp[filedOpen.fp], 'open', 'the untriaged entry reports status "open"');
+    assert.equal(byFp[filedPartial.fp], 'partial', 'the partial entry reports its REAL status "partial", not flattened to "open"');
+    assert.equal(byFp[filedAck.fp], 'ack', 'the ack entry reports its REAL status "ack", not flattened to "open"');
+  } finally { rm(home); }
+});
+
+test('list --unfinished also includes a regressed defect (was fixed, reappeared)', () => {
+  const home = tmpHome();
+  try {
+    const filed = store.report(Object.assign(baseReportInput(), { home, sym: 'unfinished-filter regressed case', v: '0.70.0' }));
+    store.rule(filed.fp, { home, status: 'fixed', fixedIn: '0.79.0', note: 'shipped' });
+    store.report(Object.assign(baseReportInput(), { home, sym: 'unfinished-filter regressed case', v: '0.79.5', sid: 'sess-regr' }));
+    const state = store.showDefect(filed.fp, home);
+    assert.equal(state.status, 'regressed', 'sanity: this defect derives regressed');
+
+    const r = runCli(['list', '--unfinished', '--json'], { home });
+    assert.equal(r.status, 0, r.stderr);
+    const list = JSON.parse(r.stdout);
+    const entry = list.find((d) => d.fp === filed.fp);
+    assert.ok(entry, 'the regressed defect is included in --unfinished');
+    assert.equal(entry.status, 'regressed', 'its real status is "regressed", not flattened');
+
+    // --open, by contrast, still excludes it (documented, unchanged behavior).
+    const openR = runCli(['list', '--open', '--json'], { home });
+    const openList = JSON.parse(openR.stdout);
+    assert.ok(!openList.some((d) => d.fp === filed.fp), '--open still excludes a regressed defect, unchanged');
+  } finally { rm(home); }
+});
+
+test('store.isUnfinished() / CLOSED_STATUSES: unit-level source of truth for the CLI filter', () => {
+  for (const s of ['open', 'ack', 'partial', 'regressed']) {
+    assert.equal(store.isUnfinished(s), true, `"${s}" must be unfinished`);
+  }
+  for (const s of ['fixed', 'wontfix', 'notabug', 'dup']) {
+    assert.equal(store.isUnfinished(s), false, `"${s}" must be closed (not unfinished)`);
+  }
+  assert.deepEqual(store.CLOSED_STATUSES.slice().sort(), ['dup', 'fixed', 'notabug', 'wontfix'].sort());
+});
+
+test('maintainer nudge line now counts partial/ack as unfinished too (not just open+regressed)', () => {
+  const home = tmpHome();
+  const repoCwd = tmpHome();
+  const pluginDir = path.join(repoCwd, 'plugins', 'anti-hall', '.claude-plugin');
+  fs.mkdirSync(pluginDir, { recursive: true });
+  fs.writeFileSync(path.join(pluginDir, 'plugin.json'), JSON.stringify({ version: '0.0.0' }));
+  try {
+    // Only a 'partial'-status defect exists — no literal 'open', no 'regressed'.
+    // Before this fix, maintainerLine's `open.concat(regressed)` would be
+    // empty here and the nudge would stay silent despite a genuinely
+    // unfinished defect existing.
+    const filed = store.report(Object.assign(baseReportInput(), { home, sym: 'nudge partial-only test' }));
+    store.rule(filed.fp, { home, status: 'partial', fixedIn: '0.80.0', note: 'half shipped' });
+
+    const res = runNudge(home, repoCwd, { cwd: repoCwd });
+    assert.equal(res.status, 0);
+    const out = JSON.parse(res.stdout);
+    const ctx = out.hookSpecificOutput.additionalContext;
+    assert.notEqual(ctx, '', 'the nudge must NOT be silent — a partial-only defect is unfinished');
+    assert.match(ctx, /^anti-hall: 1 unfinished defect reports \(0 regressed\), oldest \d+d — \/anti-hall:defects$/);
+  } finally { rm(home); rm(repoCwd); }
 });
 
 // ============================================================================

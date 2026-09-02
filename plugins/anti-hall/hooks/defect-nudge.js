@@ -87,18 +87,25 @@ function daysAgo(iso, now) {
 }
 
 // maintainerLine(store, home, now) -> the fixed-format triage nudge, or ''
-// when there are no open defects.
+// when there is nothing outstanding.
+//
+// Uses store.isUnfinished() (open/ack/partial/regressed), not a literal
+// status === 'open' check — the same under-count bug this hook had before
+// this fix: a defect ruled 'partial' or 'ack' is genuinely unfinished but is
+// not status 'open', so a literal check silently dropped it from the
+// maintainer's own SessionStart nudge (the exact defect this fix addresses,
+// observed live: three unfinished defects — including a P0 — while every
+// "0 open" status read as "we're clear").
 function maintainerLine(store, home, now) {
   const defects = store.listDefects({ home });
-  const open = defects.filter((d) => d.status === 'open');
+  const active = defects.filter((d) => store.isUnfinished(d.status));
   const regressed = defects.filter((d) => d.status === 'regressed');
-  const active = open.concat(regressed);
   if (active.length === 0) return '';
   let oldestDays = 0;
   for (const d of active) {
     oldestDays = Math.max(oldestDays, daysAgo(d.firstSeen, now));
   }
-  return `anti-hall: ${active.length} open defect reports (${regressed.length} regressed), oldest ${oldestDays}d — /anti-hall:defects`;
+  return `anti-hall: ${active.length} unfinished defect reports (${regressed.length} regressed), oldest ${oldestDays}d — /anti-hall:defects`;
 }
 
 // reporterLine(store, home, cwd, now) -> the fixed-format ruling nudge, or ''

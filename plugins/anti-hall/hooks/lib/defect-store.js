@@ -91,6 +91,26 @@ const SEVERITY_ENUM = ['p0', 'p1', 'p2'];
 // it falls through unchanged, exactly like 'ack'/'wontfix'/'notabug'/'dup'.
 const RULING_STATUS_ENUM = ['ack', 'fixed', 'wontfix', 'notabug', 'dup', 'partial'];
 
+// CLOSED_STATUSES: derived `status` values (see deriveState() below) that
+// mean a defect is FINISHED — no further action outstanding. Everything
+// else derives to one of: 'open' (nobody has ruled on it yet), 'ack'
+// (looked at, not resolved), 'partial' (fixed in part, remainder tracked in
+// the ruling's `note`), or 'regressed' (was 'fixed', reappeared in a build
+// at/after `fixedIn`). Root cause of defect <this defect's own fp>: `list
+// --open` (scripts/defect.js) filtered on the literal string 'open', so a
+// defect sitting at 'partial' or 'ack' — genuinely unfinished — vanished
+// from every "N open defects" count. `isUnfinished()` below is the single
+// source of truth callers use instead of re-deriving "not closed" from
+// RULING_STATUS_ENUM by hand (which would silently drift if a new closed-ish
+// status is ever added).
+const CLOSED_STATUSES = ['fixed', 'wontfix', 'notabug', 'dup'];
+
+// isUnfinished(status) -> true iff `status` (a deriveState() output, so also
+// covers the derived-only 'regressed') represents work still outstanding.
+function isUnfinished(status) {
+  return !CLOSED_STATUSES.includes(status);
+}
+
 // Bounds (concrete, precedent: hooks/lib/state-prune.js's bounded-sweep shape
 // for the 47,084-file leak). At any cap the write is REFUSED with a distinct
 // outcome — never silently dropped.
@@ -663,7 +683,7 @@ function showDefect(fp, home) {
 
 module.exports = {
   defectsDir, archiveDir, nudgeStampFile,
-  CLASS_ENUM, SEVERITY_ENUM, RULING_STATUS_ENUM,
+  CLASS_ENUM, SEVERITY_ENUM, RULING_STATUS_ENUM, CLOSED_STATUSES, isUnfinished,
   MAX_OPEN_FILES, MAX_FILE_BYTES, MAX_REPORT_LINES, REGRESSION_EXTRA, MAX_LINE_BYTES,
   MAX_ARCHIVE_FILES, ARCHIVE_AGE_MS, FIELD_CAPS,
   ensureDir, clampField, clampFieldInfo, truncationNotice, truncationCollector,

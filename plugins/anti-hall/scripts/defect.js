@@ -18,11 +18,22 @@
 //          invalid-class, invalid-severity) exits non-zero. This is the
 //          point of the feature: no silent success. On success the printed
 //          result also carries the freshly re-derived `status`/`staleBuild`.
-//   list [--mine|--open] [--json]
-//          List open defects (derived state only). --mine matches a UNION of
-//          identities (repoKeyForWorktree(cwd), basename(cwd), --proj/
-//          ANTIHALL_DEFECT_PROJ if given) so already-filed reports (proj =
-//          old cwd basename) keep matching alongside new reports.
+//   list [--mine|--open|--unfinished] [--json]
+//          List defects (derived state only; open ones by default when no
+//          filter is given — the JSON payload also includes fixed/wontfix/
+//          notabug/dup/regressed entries when unfiltered). --mine matches a
+//          UNION of identities (repoKeyForWorktree(cwd), basename(cwd),
+//          --proj/ANTIHALL_DEFECT_PROJ if given) so already-filed reports
+//          (proj = old cwd basename) keep matching alongside new reports.
+//          --open is the narrow, literal filter: status === 'open' only
+//          (untriaged — nobody has ruled on it yet); 'ack'/'partial'/
+//          'regressed' are all EXCLUDED, same as 'regressed' always was
+//          (this is an established, documented contract — do not widen it).
+//          --unfinished is the wider "still needs attention" filter: every
+//          status EXCEPT the closed set (fixed/wontfix/notabug/dup) — i.e.
+//          open + ack + partial + regressed. Use --unfinished for an
+//          accurate "how many defects are outstanding" count; --open when
+//          you specifically want only the untriaged ones.
 //   show <fp> [--json]
 //          Show every line of one defect (open or archived).
 //   rule <fp> --status ack|fixed|wontfix|notabug|dup|partial [--fixed-in V
@@ -136,7 +147,7 @@ function mineIdentities(flags, env, cwd) {
 // as though they existed, silently wrote empty fields, and exited 0).
 const VALID_FLAGS = {
   report: ['class', 'sev', 'sym', 'repro', 'sym-file', 'repro-file', 'claimed', 'observed', 'proj', 'sid', 'v', 'json'],
-  list: ['mine', 'open', 'json'],
+  list: ['mine', 'open', 'unfinished', 'json'],
   show: ['json'],
   rule: ['status', 'fixed-in', 'commit', 'note', 'superseded-by', 'json'],
   archive: ['json'],
@@ -253,6 +264,9 @@ function cmdList(args) {
   }
   if (f.open) {
     defects = defects.filter((d) => d.status === 'open');
+  }
+  if (f.unfinished) {
+    defects = defects.filter((d) => store.isUnfinished(d.status));
   }
   printResult(defects, !!f.json);
   return 0;

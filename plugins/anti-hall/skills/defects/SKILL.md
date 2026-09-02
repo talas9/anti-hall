@@ -27,12 +27,21 @@ the plugin root generically (mirrors the `doctor`/`debt` skills' invocation styl
      --repro "run command-guard.js with stdin ''" \
      --claimed "should exit 0" --observed "TypeError: Cannot read...stack"
    ```
-2. **list** — see open defects. `--mine` filters to defects YOU reported (identity is
-   derived automatically — see below); `--open` filters to `status === 'open'` only
-   (regressed defects are excluded by `--open`, since their status is `regressed`, not
-   `open` — omit `--open` to see both). `--json` for machine output.
+2. **list** — see defects (unfiltered = everything, every status). `--mine` filters to
+   defects YOU reported (identity is derived automatically — see below); `--open`
+   filters to `status === 'open'` only — untriaged, nobody has ruled on it yet (`ack`,
+   `partial`, and `regressed` are all EXCLUDED, same as `regressed` always was — omit
+   `--open` to see everything). `--unfinished` is the wider, "still needs attention"
+   filter: every status EXCEPT the closed set (`fixed`/`wontfix`/`notabug`/`dup`) — i.e.
+   `open` + `ack` + `partial` + `regressed`. Prefer `--unfinished` when the goal is an
+   accurate "how many defects are outstanding" count — `--open` alone under-reports:
+   a defect ruled `partial` or `ack` is genuinely unfinished but is not `status ===
+   'open'`, so `--open` silently drops it (this under-report is exactly what caused
+   defect 001e6bb600c5's `partial` status to make `list --open` report 0 while real
+   P0/P1 defects sat unresolved). `--json` for machine output.
    ```
    node plugins/anti-hall/scripts/defect.js list --mine --json
+   node plugins/anti-hall/scripts/defect.js list --unfinished --json
    ```
 3. **show `<fp>`** — every line of one defect (its fingerprint), open or archived.
 4. **rule `<fp>` --status ack|fixed|partial|wontfix|notabug|dup** — MAINTAINER-ONLY.

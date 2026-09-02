@@ -43,7 +43,8 @@ node "$ANTI_HALL_ROOT/scripts/defect.js" report \
   --claimed "should exit 0" --observed "TypeError: Cannot read...stack"
 
 node "$ANTI_HALL_ROOT/scripts/defect.js" list --mine --json
-node "$ANTI_HALL_ROOT/scripts/defect.js" list --open --json
+node "$ANTI_HALL_ROOT/scripts/defect.js" list --open --json         # status === 'open' only (untriaged)
+node "$ANTI_HALL_ROOT/scripts/defect.js" list --unfinished --json   # open + ack + partial + regressed (closed set excluded)
 node "$ANTI_HALL_ROOT/scripts/defect.js" show <fp> --json
 # rule is MAINTAINER-ONLY:
 node "$ANTI_HALL_ROOT/scripts/defect.js" rule <fp> --status fixed --fixed-in 0.79.0 --commit <sha>
