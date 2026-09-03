@@ -1163,3 +1163,132 @@ test('caps are large enough for a real ruling note, and a max-length note can ne
   const worstCase = store.FIELD_CAPS.note * 3 + 200; // + ruling-line overhead
   assert.ok(worstCase < store.MAX_LINE_BYTES, `note cap ${store.FIELD_CAPS.note} must stay inside MAX_LINE_BYTES`);
 });
+
+// ============================================================================
+// P1-C (Fix Wave 1, Codex review of HEAD): an 'ack' or 'partial' ruling —
+// genuinely UNFINISHED per store.isUnfinished(), the single source of truth
+// `defect.js list --unfinished` and hooks/defect-nudge.js already use — used
+// to be eligible for rotation into archive/ once 30+ days stale, same as a
+// truly CLOSED (fixed/wontfix/notabug/dup) defect. listDefects({}) (what
+// `list`/the nudge both call) only reads defectsDir(home) directly, never
+// archive/, so an archived-but-unfinished defect silently vanished from
+// every unfinished/nudge count — reintroducing the exact invisible-
+// unfinished-defect failure this store's own header comment describes, one
+// layer deeper (archiveSweep's own doc comment already said only
+// fixed|wontfix|notabug|dup should rotate; the code did not match it).
+//
+// Fix (hooks/lib/defect-store.js, archiveSweep, ~line 614): gate on
+// isUnfinished(state.status) instead of the literal status === 'open' ||
+// status === 'regressed' pair — this makes "archived but unfinished"
+// PROVABLY IMPOSSIBLE going forward (archivedness now implies CLOSED_STATUSES
+// by construction, not by a parallel status list that can drift from
+// isUnfinished()'s own definition).
+//
+// MUTATION CHECK (documented per anti-hall protocol; each applied to the fix
+// and confirmed to flip a test below from pass to fail, then reverted):
+//   M1: revert the gate to `state.status === 'open' || state.status ===
+//       'regressed'` (the pre-fix condition) -> KILLED by "an 'ack' ruled
+//       defect ... is never archived" and "a 'partial' ruled defect ... is
+//       never archived" below (both assert `!entry.moved`; the reverted
+//       condition moves them).
+//   M2: gate on `state.status === 'open'` only (drop the 'regressed' guard
+//       entirely, folding it into isUnfinished implicitly) -> would still be
+//       CAUGHT by isUnfinished() correctly EXCLUDING 'regressed' from
+//       archival (isUnfinished('regressed') is true), so this specific
+//       mutation does not diverge from the fix — not a distinguishing
+//       mutation; the pre-existing "a regressed defect is never archived"
+//       test (test #20 above) already guards this case directly regardless
+//       of which of the two equivalent gates is used, so no NEW test is
+//       needed to kill it — noted for completeness, not claimed as newly
+//       killed here.
+//   M3: invert the condition (`if (!isUnfinished(state.status))` moved
+//       WHERE the `continue` used to be, silently archiving 'open' itself)
+//       -> KILLED by the same pre-existing "OPEN defect never moves"
+//       assertion inside test #10 ('archival: ...') above, re-run green
+//       below as an explicit guard-still-passes check.
+// ============================================================================
+
+test('P1-C: an \'ack\' ruled defect (genuinely unfinished) is never archived, even 31+ days stale', () => {
+  const home = tmpHome();
+  try {
+    store.ensureDir(store.defectsDir(home));
+    const now = Date.now();
+    const old = now - 31 * 24 * 60 * 60 * 1000;
+    const oldIso = new Date(old).toISOString();
+
+    const fp = 'p1cack000001';
+    const file = store.fpFile(fp, home);
+    const reportLine = JSON.stringify({ t: 'report', at: oldIso, v: '0.80.0', proj: 'p', sid: 's1', class: 'other', sev: 'p1', sym: 'p1-c ack archival test', repro: '', claimed: '', observed: '' });
+    const rulingLine = JSON.stringify({ t: 'ruling', at: oldIso, status: 'ack', note: 'looked at, not resolved yet' });
+    fs.writeFileSync(file, [reportLine, rulingLine].join('\n') + '\n');
+
+    const state = store.showDefect(fp, home);
+    assert.equal(state.status, 'ack', 'sanity: this defect derives to ack');
+    assert.equal(store.isUnfinished(state.status), true, 'sanity: ack is unfinished');
+
+    const results = store.archiveSweep(now, home);
+    const entry = results.find((r) => r.fp === fp);
+    assert.ok(entry && !entry.moved, 'an unfinished (ack) defect must never be archived, regardless of age');
+    assert.equal(entry.reason, 'ack');
+    assert.ok(fs.existsSync(file), 'the ack defect file is still in place');
+
+    // The failure this fix closes: an unfinished defect must still be
+    // COUNTED as unfinished after a sweep runs against it — proving this is
+    // not just "the file didn't move" but "the invisible-unfinished-defect
+    // failure cannot recur through this path".
+    store.archiveSweep(now, home);
+    // store.listDefects({home}) is the exact function defect.js's `list
+    // --unfinished` and the nudge both call — checking it directly here is
+    // checking the SAME source those two consumers read, not a re-invented
+    // parallel check.
+    const stillCounted = store.listDefects({ home }).filter((d) => store.isUnfinished(d.status));
+    assert.ok(stillCounted.some((d) => d.fp === fp), 'the ack defect is still visible to the unfinished count after a sweep runs');
+  } finally { rm(home); }
+});
+
+test('P1-C: a \'partial\' ruled defect (genuinely unfinished) is never archived, even 31+ days stale', () => {
+  const home = tmpHome();
+  try {
+    store.ensureDir(store.defectsDir(home));
+    const now = Date.now();
+    const old = now - 31 * 24 * 60 * 60 * 1000;
+    const oldIso = new Date(old).toISOString();
+
+    const fp = 'p1cpartial01';
+    const file = store.fpFile(fp, home);
+    const reportLine = JSON.stringify({ t: 'report', at: oldIso, v: '0.80.0', proj: 'p', sid: 's1', class: 'other', sev: 'p1', sym: 'p1-c partial archival test', repro: '', claimed: '', observed: '' });
+    const rulingLine = JSON.stringify({ t: 'ruling', at: oldIso, status: 'partial', fixedIn: '0.80.0', note: 'display bug fixed; fold-path residual left open' });
+    fs.writeFileSync(file, [reportLine, rulingLine].join('\n') + '\n');
+
+    const state = store.showDefect(fp, home);
+    assert.equal(state.status, 'partial', 'sanity: this defect derives to partial');
+
+    const results = store.archiveSweep(now, home);
+    const entry = results.find((r) => r.fp === fp);
+    assert.ok(entry && !entry.moved, 'an unfinished (partial) defect must never be archived, regardless of age');
+    assert.equal(entry.reason, 'partial');
+    assert.ok(fs.existsSync(file), 'the partial defect file is still in place');
+  } finally { rm(home); }
+});
+
+test('P1-C guard: a genuinely CLOSED (fixed) defect still archives normally — the fix does not over-widen the refusal', () => {
+  const home = tmpHome();
+  try {
+    store.ensureDir(store.defectsDir(home));
+    const now = Date.now();
+    const old = now - 31 * 24 * 60 * 60 * 1000;
+    const oldIso = new Date(old).toISOString();
+
+    const fp = 'p1cfixed0001';
+    const file = store.fpFile(fp, home);
+    const reportLine = JSON.stringify({ t: 'report', at: oldIso, v: '0.80.0', proj: 'p', sid: 's1', class: 'other', sev: 'p2', sym: 'p1-c fixed control', repro: '', claimed: '', observed: '' });
+    const rulingLine = JSON.stringify({ t: 'ruling', at: oldIso, status: 'fixed', fixedIn: '0.80.0', note: 'shipped' });
+    fs.writeFileSync(file, [reportLine, rulingLine].join('\n') + '\n');
+
+    const results = store.archiveSweep(now, home);
+    const entry = results.find((r) => r.fp === fp);
+    assert.ok(entry && entry.moved, 'a genuinely closed (fixed) defect still archives normally — this fix narrows the ELIGIBLE set correctly, it does not disable archival');
+    assert.ok(!fs.existsSync(file));
+    assert.ok(fs.existsSync(entry.dest));
+  } finally { rm(home); }
+});

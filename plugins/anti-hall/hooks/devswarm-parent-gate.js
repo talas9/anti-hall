@@ -457,6 +457,15 @@ function main() {
   // unread too, not just children's).
   const own = readOwnUnread(home, cwd, selfKey);
 
+  // descriptors (moved up from its original position below `unanswered`,
+  // read-only, no dependency on `own`/`unanswered`): needed HERE now too, for
+  // the identity-family cross-check the unanswered-questions block below
+  // performs (defect 427dbff95f28). The original later use (building
+  // `rawEntries`/`families` for the blocking-set reduction) is unchanged —
+  // this is the SAME `descriptors` value, just resolved once, earlier.
+  let descriptors = [];
+  try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
+
   // UNANSWERED QUESTIONS (§4.4 requirement C): cross-reference this PROJECT's
   // OBSERVED replies (companion/lib/devswarm-reply-state.js — pure fs, never
   // opens the store DB, same Stop-hook budget constraint as everything else
@@ -476,7 +485,85 @@ function main() {
   try {
     const replyStateLib = require('../companion/lib/devswarm-reply-state.js');
     const replyState = replyStateLib.readReplyState(selfKey, home);
-    unanswered = replyStateLib.unansweredQuestions(own.pendingQuestions || [], replyState);
+    const rawUnanswered = replyStateLib.unansweredQuestions(own.pendingQuestions || [], replyState);
+
+    // IDENTITY-FAMILY CROSS-CHECK (defect 427dbff95f28, P1 field report): a
+    // pendingQuestion's `from` is the sender's resolved REGISTRY-ROW id —
+    // devswarm-store.js's resolveSenderRegistryId picks whichever row is
+    // "freshest LIVE" among every row sharing that sender's worktree-derived
+    // meshId. A reply's recorded key, by contrast, is whichever row
+    // scripts/devswarm.js's resolveSendTarget ACTUALLY resolved `--to` to —
+    // an EXACT registry-id match (e.g. a plain `send --to <uuid-row>`) wins
+    // there regardless of liveness. These are two INDEPENDENTLY computed
+    // identities for the very same logical agent (a child can be known by a
+    // UUID row, a slug row, AND a primary-<8hex> builder id — see
+    // devswarm-identity-family.js's own header), and they can legitimately
+    // diverge: the reply then lands under a DIFFERENT row than the question's
+    // `from`, and unansweredQuestions()'s raw string compare never sees it —
+    // reproduced via companion/lib/devswarm-store.js + devswarm-reply-state.js
+    // directly (field defect repro, 2026-08-31).
+    //
+    // Before trusting a rawUnanswered entry, re-check every OTHER member of
+    // q.from's identity family — grouped by resolved worktree via
+    // devswarm-identity-family.js's collapseFamilies, the SAME grouping this
+    // file already uses below (families/rawEntries) to reduce the blocking
+    // set — for a reply recorded at-or-after this question's effective ts.
+    // Any family member's reply counts as answering the question; this can
+    // ONLY ever remove a FALSE POSITIVE (a real reply the raw string compare
+    // missed because it landed on a sibling row of the SAME worktree), never
+    // manufacture a FALSE NEGATIVE: collapseFamilies groups strictly by
+    // canonicalMeshId(worktreePath), so two DIFFERENT children (different
+    // worktrees) can never share a family, and a genuinely unresolvable/
+    // unknown `from` or a family with no later reply anywhere is returned
+    // completely UNCHANGED (kept unanswered). A non-finite q.ts (unparsable —
+    // "always newer" per devswarm-store.js's pendingQuestionEffTs) can never
+    // satisfy `qTs <= lastReplyTs` against any finite recorded reply ts, so a
+    // permanently-blocking malformed-ts question stays permanently blocking,
+    // exactly as before. Fail-open toward the ORIGINAL rawUnanswered set on
+    // any surprise (missing module, throwing resolver, empty descriptors) —
+    // this cross-check is strictly additive, never a replacement for the
+    // underlying unansweredQuestions() computation.
+    if (rawUnanswered.length > 0 && descriptors.length > 0) {
+      let crossChecked = null;
+      try {
+        const identityFamily = require('../companion/lib/devswarm-identity-family.js');
+        const devswarmCli = require('../scripts/devswarm.js');
+        const meshIdCache = new Map();
+        const resolveMeshId = (wt) => {
+          if (meshIdCache.has(wt)) return meshIdCache.get(wt);
+          let k = null;
+          try { k = devswarmCli.canonicalMeshId(wt); } catch (_) { k = null; }
+          meshIdCache.set(wt, k);
+          return k;
+        };
+        const crossFamilies = identityFamily.collapseFamilies(descriptors, { resolve: resolveMeshId });
+        const familyByMemberId = new Map();
+        for (const fam of crossFamilies) {
+          for (const m of (fam && fam.members) || []) {
+            if (m && m.id != null) familyByMemberId.set(String(m.id), fam);
+          }
+        }
+        crossChecked = rawUnanswered.filter((q) => {
+          if (!q || q.from == null) return true; // malformed -> keep (fail-open, unchanged)
+          const fam = familyByMemberId.get(String(q.from));
+          if (!fam) return true; // no known family for this sender -> unchanged
+          const qTs = Number.isFinite(q.ts) ? q.ts : Infinity;
+          for (const m of (fam.members || [])) {
+            const mid = m && m.id != null ? String(m.id) : null;
+            if (!mid) continue;
+            const entry = replyState[mid];
+            const lastReplyTs = entry && Number.isFinite(entry.lastReplyTs) ? entry.lastReplyTs : 0;
+            if (qTs <= lastReplyTs) return false; // answered via a family sibling's reply record
+          }
+          return true; // no family member's reply covers this question -> still unanswered
+        });
+      } catch (_) {
+        crossChecked = null; // fail-open: fall through to rawUnanswered below
+      }
+      unanswered = crossChecked || rawUnanswered;
+    } else {
+      unanswered = rawUnanswered;
+    }
   } catch (_) {
     // The lib itself is fail-open-toward-unanswered; mirror that here too —
     // an unreadable reply-state module must never silently clear a question.
@@ -506,9 +593,8 @@ function main() {
   // consulted below) OR pendingQuestions is truncated (same "never swallow a
   // real signal before it's consulted" reasoning — a fresh/never-touched
   // Primary can never hit the 200-sender backstop, so this cannot make a
-  // vanilla project noisy either).
-  let descriptors = [];
-  try { descriptors = readDescriptors(home) || []; } catch (_) { descriptors = []; }
+  // vanilla project noisy either). `descriptors` was already resolved above
+  // (moved up for the identity-family cross-check) — reused here unchanged.
   if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated) return;
 
   // Build the blocking SET: workspaces with unread backlog past their cursor OR a

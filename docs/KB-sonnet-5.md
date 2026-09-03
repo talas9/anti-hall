@@ -26,6 +26,12 @@
 > token** (`opus`/`sonnet`/`haiku`/`fable`), resolved to the newest model in-family at runtime, so
 > it was NOT stale — only this KB's hardcoded "Opus 4.8" labels in the seat map are. Per this KB's
 > own §10 "Discrepancies / caveats" pattern, left as stacked annotation, not rewritten.]**
+>
+> **[UPDATE 2026-09-03 — Fable point release.** `claude-fable-5-1` (released 2026-09-01)
+> supersedes `claude-fable-5` as current Fable; this is a point release, not a new generation, so
+> nothing else in the lineup above changes. Pricing/context for `claude-fable-5-1` are not
+> independently verified here — see `KB-fable-5.md`'s 2026-09-03 update. `fable` tier-token
+> routing is unaffected.]**
 
 ## 1. TL;DR
 - **Sonnet 5** (`claude-sonnet-5`, 2026-06-30) is a **clear win for implementation** — near-Opus

@@ -175,12 +175,26 @@ const OVERRIDE_REASSERT =
 // pull is what populates the durable inbox it checks. Static string only: the hook
 // itself never spawns hivecontrol (that would put a destructive read on the hot
 // per-turn path); it just tells the child which command to run.
+// Fix Wave 5 Item 3: this used to prescribe `inbox read` (the NON-ACKING
+// verb) as the FINAL step with no paired ack anywhere — the exact condition
+// devswarm-parent-gate.js:1403's own-inbound paragraph blocks the Primary on
+// (it prescribes the acking `read-primary` for a party's OWN durable-inbox
+// unread, never bare `read`). `inbox read` never advances any cursor
+// (scripts/devswarm.js cmdInboxMessages doc, ~line 4319), so a child
+// following this nudge verbatim would see the SAME messages as unread on
+// every subsequent turn forever. Routed to `read-primary` — the same verb
+// buildOwnUnreadSegment/buildMeshDirectSegment already use for a child's own
+// inbound — which acks the durable NDJSON + store cursor together (Fix Wave
+// 5 Item 2 hardened this path's ack-target math). Unlike
+// devswarm-child-gate.js:405-409's `inbox read` (justified there — always
+// paired with an explicit follow-up `inbox ack`), this nudge has no such
+// pairing, so it must ack itself.
 const RECEIVE_NUDGE =
   'DEVSWARM CHILD RECEPTION: to RECEIVE parent messages, run ' +
   '`node ' + CLI + ' inbox pull <DEVSWARM_BUILDER_ID>` (anti-hall devswarm ' +
   'CLI) — a SAFE, bounded drain that folds the native parent->child queue into your ' +
   'durable inbox (non-destructive count gate, one bounded read, never `monitor`). ' +
-  'Then read them the non-draining way via `node ' + CLI + ' inbox read ' +
+  'Then read AND ack them via `node ' + CLI + ' inbox read-primary ' +
   '<DEVSWARM_BUILDER_ID>`. Substitute your own DEVSWARM_BUILDER_ID for <...>.';
 
 // heartbeatKey(builderId, branch) -> a safe single path segment for the heartbeat
@@ -275,12 +289,25 @@ function unreadInfo(env, home) {
 // buildUnreadSegment(info) -> string. IMPERATIVE PRIORITY wording (escalated from
 // advisory, #29): a child must not treat parent messages as optional background
 // noise — it is told to stop and address them before continuing.
+//
+// Fix Wave 5 Item 3: this used to prescribe `inbox read <id>` (the
+// NON-ACKING verb) for the child's OWN durable-inbox unread — the exact
+// condition devswarm-parent-gate.js:1403's own-inbound paragraph blocks the
+// Primary on and never lets it clear via the non-acking verb (it prescribes
+// `read-primary` there). `inbox read` never advances any cursor, so a child
+// prescribed it here would see the same "unread" count forever, even after
+// reading. Routed to `read-primary` (the acking verb; `--ack-as-owner` is
+// unnecessary here since `info.id === DEVSWARM_BUILDER_ID`, a self-read that
+// already owns its own partition). "SAFE" below still means "not the
+// destructive native-queue drain" (`hivecontrol workspace read-messages` /
+// `monitor`) — `read-primary` only ever touches this durable-inbox cursor,
+// never the native queue, so it keeps that safety property.
 function buildUnreadSegment(info) {
   return (
     'DEVSWARM CHILD INBOX — PRIORITY: you have ' + info.count + ' unread parent '
     + 'message(s). STOP and address these parent message(s) FIRST before '
-    + 'continuing. Read them the SAFE, NON-DRAINING way via the durable inbox '
-    + 'cursor — `node ' + CLI + ' inbox read ' + info.id + '` (anti-hall devswarm CLI). '
+    + 'continuing. Read AND ack them the SAFE way via the durable inbox '
+    + 'cursor — `node ' + CLI + ' inbox read-primary ' + info.id + '` (anti-hall devswarm CLI). '
     + 'Do NOT run `hivecontrol workspace read-messages` or `monitor` — those '
     + 'DESTRUCTIVELY drain the native queue.'
   );

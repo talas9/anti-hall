@@ -71,16 +71,20 @@ for (const isChild of [true, false]) {
 // drainCmd's own logic cannot silently rewrite its own expectation.
 function nonClaudeGolden(agent, cli, isChild) {
   const id = '<DEVSWARM_BUILDER_ID>';
+  const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true`';
   const drain = isChild
     ? 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
       'anything waiting in your native queue) then `node ' + cli + ' inbox count ' + id +
-      '`; if `unreadTotal` is 0, say so and stop — do NOT spawn a subagent; only if ' +
-      '`unreadTotal` is greater than 0, run `node ' + cli + ' inbox read ' + id +
-      '` (delegate to a subagent only if the payload is large)'
-    : 'first run `node ' + cli + ' inbox count ' + id + '`; if `unreadTotal` is 0, say so ' +
-      'and stop — do NOT spawn a subagent; only if `unreadTotal` is greater than 0, run ' +
-      '`node ' + cli + ' inbox read-primary ' + id + '` (delegate to a subagent only if the ' +
-      'payload is large)';
+      '`; ' + stopCond + ', say so and stop — do NOT spawn a subagent; otherwise (either ' +
+      '`unreadTotal` is greater than 0, or `meshGapWithheld` is `true`), run `node ' + cli +
+      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large ' +
+      '— this is the cursor-advancing verb, matching devswarm-child-turn.js\'s own ' +
+      'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
+      'withheld gap)'
+    : 'first run `node ' + cli + ' inbox count ' + id + '`; ' + stopCond + ', say so ' +
+      'and stop — do NOT spawn a subagent; otherwise (either `unreadTotal` is greater than ' +
+      '0, or `meshGapWithheld` is `true`), run `node ' + cli + ' inbox read-primary ' + id +
+      '` (delegate to a subagent only if the payload is large)';
   return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
     'primitive — once you go idle, nothing can wake you, so a message that lands after ' +
     'you stop waits for your next turn. Drain your mailbox at the START of every turn ' +
@@ -201,6 +205,20 @@ test('C1: drainCmd(cli, true) [child] also gates the READ step behind `inbox cou
   const countIdx = out.indexOf('inbox count');
   assert.ok(pullIdx !== -1 && countIdx !== -1 && pullIdx < countIdx,
     `inbox pull must run BEFORE inbox count, unconditionally; out=${out}`);
+});
+
+// Wave 4 P1 fix: the child branch used to send bare `inbox read <id>` on the
+// "otherwise" (unreadTotal>0 || meshGapWithheld) leg — a NON-MUTATING peek
+// (devswarm.js cmdInbox `sub === 'read'` never calls ackTo/setCursor), so a
+// child could never clear a `meshGapWithheld:true` condition; the gate could
+// re-fire forever. Must now say `inbox read-primary` (the cursor-advancing
+// verb, matching devswarm-child-turn.js's own mesh-direct instruction) and
+// must NEVER emit the bare non-acking `inbox read <id>` form.
+test('P1 (Wave 4): drainCmd(cli, true) [child] names the cursor-advancing `inbox read-primary`, never the non-mutating bare `inbox read`', () => {
+  const out = drainCmd(CLI, true);
+  assert.ok(out.includes('inbox read-primary'), `child otherwise-branch must run inbox read-primary (cursor-advancing); out=${out}`);
+  const id = '<DEVSWARM_BUILDER_ID>';
+  assert.ok(!out.includes('inbox read ' + id), `must never emit the non-mutating bare "inbox read <id>" form; out=${out}`);
 });
 
 test('C1: unreadTotal field is the value gated on (matches `inbox count`s real JSON field name)', () => {

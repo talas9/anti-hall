@@ -19,6 +19,18 @@
 > 2×/read 0.1× base) is confirmed to apply across all current models including Fable 5. Left as
 > stacked annotation per this KB's own draft/spot-check convention, not rewritten.]**
 
+> **[UPDATE 2026-09-03 — Fable point release: `claude-fable-5-1` is now current, superseding
+> `claude-fable-5`.** `claude-fable-5-1` was released 2026-09-01. This is a point release of
+> Fable, not a new generation — Opus 5 / Sonnet 5 / Haiku 4.5 lineage above is unaffected by this
+> update. Pricing, context window, and effort-scale specifics for `claude-fable-5-1` are NOT
+> independently verified in this KB — do not assume they are unchanged from Fable 5's $10/$50,
+> 1M/128k without checking the vendor docs. Every `claude-fable-5` ID and "current flagship"
+> claim throughout this doc (§1 identity table, §1 tier hierarchy, §4 availability, §7 migration
+> title) refers to the now-superseded prior point release; left as historical per this KB's own
+> stacked-annotation convention. Route by tier token (`model:"fable"`) in all live spawn paths —
+> per `MODEL-POLICY.md`, the token resolves to the newest Fable build at call time, so no routing
+> code needs a version bump for this change.]**
+
 ## 1. Identity
 
 **Model IDs**

@@ -104,6 +104,12 @@ window — "a 900k-token request is billed at the same per-token rate as a 9k-to
 > Resolves the "side finding" below: this is no longer out of scope — Fable 5 is the flagship and
 > `docs/KB-fable-5.md` is the dedicated KB for it (re-verified same date, see its own
 > `[UPDATE 2026-08-22]` annotation).
+>
+> **[UPDATE 2026-09-03]** The "Claude Fable 5 (current flagship)" row above is now one point
+> release stale: `claude-fable-5-1` (released 2026-09-01) is current Fable, superseding
+> `claude-fable-5`. Pricing/cache-multiplier figures for `claude-fable-5-1` are NOT independently
+> verified — the row above is left as the last-verified Fable pricing, not re-stated as current.
+> See `docs/KB-fable-5.md`'s 2026-09-03 update.
 
 **⚠ Side finding (out of this KB's scope, flagged for the owner) — [UPDATE 2026-08-22: RESOLVED,
 see the table update immediately above]:** the live official docs fetched

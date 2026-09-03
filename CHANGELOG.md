@@ -6,6 +6,40 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.88.0 (2026-09-03)
+
+- **Fix: `inbox ack` and `read-primary` sibling acks could each independently
+  consume a live sibling child's mail on stale-looking liveness signals.**
+  Both surfaces now route through a single shared `siblingAckGate` that
+  requires positive evidence of death before an ack is allowed to drain a
+  sibling's messages, instead of two separately-maintained gates that could
+  diverge. **This gate controls whether an ack is allowed to happen — it is
+  not a display-only signal.**
+- **Fix: `inbox ack` re-counted the live file tail at ack time (both the
+  NDJSON and store code paths), racing a concurrently-arriving message.** A
+  message that landed between the initial read and the ack call could be
+  acked-away undelivered. `inbox ack` now acks only the snapshot captured at
+  the initial read.
+- **Fix: a registry row that registered but never launched could resurface
+  its backlog forever.** Such a row is now classified dead after a 6-hour
+  deadline, allowing its partition to be drained instead of blocking
+  indefinitely. Known limitation: the deadline reads a descriptor file mtime
+  that several routine operations legitimately rewrite (`ensure` on every
+  `inbox pull`, rehome/heal, archive/unarchive round-trips,
+  `migrateOwnerKeys` via doctor-repair or the updater) — a repair, update
+  migration, or archive round-trip can extend the 6h window. The fail
+  direction is toward protection (no mail loss), never toward premature
+  drain.
+- **Change: child wake/drain instructions now use the cursor-advancing
+  `read-primary` instead of the non-mutating `inbox read`.** `inbox read`
+  could never clear a withheld gap on its own.
+- **Fix: the parent gate could report an already-answered question as
+  unanswered.** Replies are now matched across an agent's full identity
+  family instead of by raw string equality against a single id.
+- **Test infra: mutation tests now run against a scratch copy of the plugin
+  tree.** Previously a green `node --test` run could leave an injected
+  mutant sitting in the working tree's real source.
+
 ## 0.87.1 (2026-08-29)
 
 - **Fix: the parent gate never consulted the mesh store on a live worktree's

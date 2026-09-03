@@ -140,7 +140,7 @@ const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const {
   isSafeId, devswarmRoot, livenessPathFor,
   writeVerdict, hasFreshHeartbeat, worktreeActivityMtime, unreadBacklog, DEFAULT_IDLE_MS,
-  isDormantRow, unionPendingFor,
+  isDormantRow, unionPendingFor, isSiblingPartitionLive,
 } = require('../companion/lib/liveness.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
@@ -247,6 +247,36 @@ function isLiveSessionId(sessionId) {
   const s = String(sessionId);
   if (s === '') return false;
   return !s.startsWith(SYNTHETIC_SESSION_PREFIX);
+}
+
+// siblingAckGate(storeHandle, partId, home, now) -> bool (true == LIVE, skip
+// the ack). Fix Wave 7 Item 1 + Item 2: the ONE mesh-sibling cursor-write gate,
+// used by BOTH `cmdInboxMessages`'s read-primary/peek-primary ack loop AND
+// `inbox ack`'s own separate sibling-store-cursor loop — Wave 6 gated only the
+// former (`hasFreshHeartbeat(part.id, home, {now})` inline), leaving `inbox
+// ack` (and `--ack-as-owner`) free to drive a live sibling's cursor forward
+// and consume its backlog undelivered (reproduced, P0). Factoring this into
+// ONE function callable from both sites is what makes a future THIRD surface
+// structurally unable to add itself ungated (call this, or diverge visibly in
+// review — there is no longer an inline copy to half-port).
+//
+// Looks up `partId`'s OWN registry row (worktreePath/sessionId) — the
+// liveness composition (`isSiblingPartitionLive`, companion/lib/liveness.js)
+// needs both, not just the id, to tell a positively-stale real session apart
+// from a register-only phantom. A registry-read failure or a row that has
+// vanished from `listRegistry()` between the fold and this check is
+// UNDETERMINED, not evidence of anything — fails toward LIVE (skip the ack)
+// for the same reason `isSiblingPartitionLive` itself fails open: a spurious
+// skip only risks a harmless re-delivery, a spurious ack risks permanently
+// losing a live sibling's own unread backlog.
+function siblingAckGate(storeHandle, partId, home, now) {
+  try {
+    const row = (storeHandle.listRegistry() || []).find((r) => r && String(r.id) === String(partId));
+    if (!row) return true; // vanished from the registry read -> undetermined -> fail toward live
+    return isSiblingPartitionLive({ id: partId, worktreePath: row.worktreePath, sessionId: row.sessionId }, home, { now });
+  } catch (_) {
+    return true; // undetermined -> fail toward live, never ack
+  }
 }
 
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
@@ -1403,6 +1433,107 @@ function maybeRehomeToCwdProject(home, id, ctx) {
 // structural rule.
 function isForwardable(msg) {
   return isForwardableRow(msg);
+}
+
+// foldSiblingGapRows(rows, seenHashes) — Fix Wave 2 F1/F3 (P0 message-loss fix
+// + surface-parity fix): shared gap-withholding fold used by BOTH mesh-sibling
+// read paths (cmdInboxMessages's read-primary/peek-primary/--ack, and `inbox
+// count/read/ack`'s own sibling loop) so they can no longer silently diverge
+// (that divergence was F3/F2's root cause).
+//
+// ROOT CAUSE this replaces (F1, defect confirmed live): the prior fold set
+// `gapSeen` on a non-forwardable/null row but still PUSHED that row into
+// `deliveredRows`, so withholding was NON-SUFFIX — a withheld forwardable row
+// could sit BETWEEN two delivered rows (e.g. [native N0, direct F1, native
+// N2] delivered [N0, N2], withholding only F1). The sibling ack target is
+// POSITIONAL (`part.cursor + deliveredCount`), which is only valid over a
+// CONTIGUOUS PREFIX of the partition's natural (cursor) order. `ack` on that
+// window advanced the cursor by 2 (past N0 AND the withheld F1), destroying
+// F1 permanently — proven live, absent at HEAD.
+//
+// FIX (option (b), chosen over capping ackTarget at the first-gap index):
+// restore the documented invariant VERBATIM — once a gap is seen, EVERY
+// subsequent row is withheld, including non-forwardable ones. This makes
+// `deliveredRows` a genuine index-based PREFIX of `rows` (the row that
+// TRIGGERS the gap is itself still delivered — "never excluded" — but
+// nothing after it is), so `deliveredCount` is always safe to add to
+// `part.cursor` for the ack target. A partition with no non-forwardable row
+// in its window has no gap at all, so nothing is withheld (P0 case
+// unaffected, re-asserted as a guard test).
+//
+// F5 fix folded in here too: a null row (store corruption) is skipped
+// entirely (never pushed as a literal `null`) but still poisons the window
+// like any other non-forwardable row, since its safety cannot be determined.
+// Fix Wave 3 G1/G2 (P0/P1): `deliveredCount` (== `deliveredRows.length`) used
+// to ALSO be the number the ack loops (~line 4064/4209, ~line 4580/4803) add
+// to `part.cursor` for the ack target. That conflated two DIFFERENT things:
+// (1) how many rows the CALLER actually got back (the payload), and (2) how
+// many PHYSICAL rows of `rows` were resolved and can safely be skipped past
+// on the next read. They agree only when every resolved row is also a
+// delivered row (the common case) — they diverge whenever a row is resolved
+// WITHOUT being delivered:
+//   G1 (P0, corrupted/null row): `if (!row)` skips a hole entirely — never
+//   pushed, so it never counted toward `deliveredCount`. The ack target
+//   `part.cursor + deliveredCount` then NEVER advances past that row, so
+//   EVERY future read starts the window at the same hole again — permanent,
+//   operator-unrecoverable wedge (no read/ack sequence can ever progress),
+//   with `count` silently reporting `unreadTotal: 0` on top of it (nothing
+//   in the window counted as delivered either).
+//   G2 (P1, exact-hash duplicate): `if (row.hash && seenHashes.has(...))`
+//   skips a dedup match — also never pushed. `deliveredRows` then stops
+//   being a genuine PHYSICAL index-prefix of `rows` (it can be shorter than
+//   the number of physical rows actually consumed to produce it), so an ack
+//   loop that advances a sibling's cursor by `deliveredCount` UNDER-covers
+//   the physical rows behind it and can redeliver a row already returned.
+//
+// FIX: track `consumedCount`/`consumedThrough` SEPARATELY from
+// `deliveredRows`/`deliveredCount`. `consumedCount` is the number of
+// PHYSICAL rows from the front of `rows` that have been resolved one way or
+// another (delivered, exact-hash-deduped, OR corrupted/null) while still
+// inside the ackable prefix (i.e. before `gapSeen` was true at the START of
+// processing that row) — this is what an ack target must add to
+// `part.cursor`, never `deliveredCount`. `consumedThrough[i]` records
+// `consumedCount` at the moment `deliveredRows[i]` was pushed, so a caller
+// that only delivers/keeps the first K of `deliveredRows` (the P2-D read cap)
+// can still derive the CORRECT physical ack target for that partial delivery
+// (`consumedThrough[K - 1]`, or 0 when K is 0) rather than assuming K
+// physical rows were consumed to produce K delivered rows.
+//
+// A corrupted/null row is therefore consumed (the ack cursor moves past it —
+// there both was never a real message there, and it is unrecoverable either
+// way) but still poisons the REST of THIS read's window exactly as before
+// (nothing after it in this call is delivered or consumed) — the wedge is
+// broken because the poisoned row itself is gone from the NEXT read's
+// window, so whatever follows it becomes the new (clean) window head and
+// gets a normal chance to deliver. `deliveredRows`/`deliveredCount`/
+// `gapWithheldCount` are computed IDENTICALLY to before this fix — this is a
+// strictly additive change, byte-compatible with every existing caller that
+// only reads those three fields.
+function foldSiblingGapRows(rows, seenHashes) {
+  const deliveredRows = [];
+  const consumedThrough = [];
+  let gapSeen = false;
+  let gapWithheldCount = 0;
+  let consumedCount = 0;
+  for (const row of rows) {
+    const wasGapSeen = gapSeen; // gapSeen state at the START of this row, before any mutation below
+    if (!row) { // F5: corrupted row skipped, still poisons subsequent rows
+      gapSeen = true;
+      if (!wasGapSeen) consumedCount++; // G1: unrecoverable either way — consume it so the ack cursor can pass it forever
+      continue;
+    }
+    if (row.hash && seenHashes.has(row.hash)) { // exact-hash duplicate — never counted as withheld
+      if (!wasGapSeen) consumedCount++; // G2: a physical row was resolved here even though nothing was delivered
+      continue;
+    }
+    if (wasGapSeen) { gapWithheldCount++; continue; } // ambiguous suffix — withheld (never lost, cursor never touches it)
+    if (!isForwardable(row)) gapSeen = true; // non-forwardable: delivered now, ends this window's deliverable prefix
+    if (row.hash) seenHashes.add(row.hash);
+    consumedCount++;
+    deliveredRows.push(row);
+    consumedThrough.push(consumedCount);
+  }
+  return { deliveredRows, deliveredCount: deliveredRows.length, gapWithheldCount, consumedCount, consumedThrough };
 }
 
 // retireWorktreeDuplicates(home, keepDesc, ctx) — DELIVERY-CONVERGENCE reconcile
@@ -3773,7 +3904,7 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   const limitRaw = one(flags, 'limit');
   if (limitRaw !== undefined) {
     const n = Number(limitRaw);
-    if (Number.isFinite(n) && n > 0) inboxReadLimit = Math.floor(n);
+    if (Number.isFinite(n) && n > 0) inboxReadLimit = Math.max(1, Math.floor(n)); // F4: a fractional --limit (e.g. 0.5) must not floor to 0 and disable the cap
   }
   const cursorPath = primaryCursorPath(home, id);
   const cursor = inboxCursor.readCursor(cursorPath);
@@ -3798,6 +3929,13 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   let truncatedCount = 0;
   let meshAddedUnreadCount = 0; // count of sibling-partition rows folded into `messages` after dedup (0 unless meshUnionActive)
   let meshAddedTotal = 0; // Σ sibling partitions' own full `messageCount` (0 unless meshUnionActive) — undeduped, mirrors how `total` was never cross-source-deduped pre-fix either (only `messages`/`unreadCount` are)
+  // Fix Wave 2 F3: this verb (read-primary/peek-primary, the one
+  // `hooks/lib/devswarm-wake.js` actually routes the Primary through) never
+  // tracked forwardable-row gap withholding at all — only `inbox count/read/
+  // ack` did (foldSiblingGapRows, ~line 1408) — so the two surfaces silently
+  // disagreed (F2's own root cause). Declared here, populated in the sibling
+  // merge loop below via the same shared fold.
+  let meshGapWithheldCount = 0;
   // P1b: set ONLY when registry/group enumeration itself THREW (could not
   // determine whether siblings exist) — distinct from "resolved cleanly, no
   // siblings found" (meshUnionActive stays false, silently — that's fine).
@@ -3809,6 +3947,19 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   // can honestly report persistence failure even though delivery (the safe,
   // fail-open direction) always succeeds regardless.
   const cursorWriteFailures = [];
+  // Wave 6 P0 fix (live-sibling ack gate): a mesh partition belonging to a
+  // DIFFERENT LIVE session must never have its cursor written by THIS
+  // caller's read-primary/ack. Two live children sharing one canonical
+  // worktree (canonicalMeshId groups purely on worktree path — no liveness
+  // check, meshCandidateRows above) were silently acking each other's mail:
+  // whichever child called read-primary first advanced the SIBLING's own
+  // cursor, so the sibling's own next read saw its own backlog as already
+  // consumed. `messages` (built earlier, before this ack loop) already
+  // contains every sibling row regardless of liveness — visibility is
+  // unaffected by this gate; only the cursor WRITE below is conditional.
+  // Genuinely orphaned/dead siblings (the legitimate mesh-drain case this
+  // ack loop exists for) are NOT protected — they still get drained+acked.
+  const liveSiblingsSkipped = [];
   try {
     if (doAck && !ackAsOwner) {
       const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
@@ -3994,15 +4145,29 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       // defensive hash guard above therefore structurally cannot have its
       // partition's cursor advanced past it, regardless of how that
       // suppression happened.
+      //
+      // Fix Wave 2 F3/F1: delegated to foldSiblingGapRows (shared with `inbox
+      // count/read/ack`, ~line 1408) — this loop used to deliver EVERY
+      // sibling row (hash-dedup only), with no forwardable-row gap tracking
+      // at all, while `inbox count/read/ack` grew its own (differently-
+      // behaved) version of the same mechanism. Both surfaces now share one
+      // fold, so they can no longer silently disagree. `part.deliveredCount`
+      // remains a genuine index-based PREFIX of `part.messages` (never
+      // `part.total`), which is what the ack loop below (and the
+      // `withheldBySource` cap-subtraction it also applies) depends on.
       for (const part of meshSiblingPartitions) {
-        let delivered = 0;
-        for (const row of part.messages) {
-          if (row && row.hash && seenHashes.has(row.hash)) continue; // schema-impossible; defensive only
-          if (row && row.hash) seenHashes.add(row.hash);
+        const folded = foldSiblingGapRows(part.messages, seenHashes);
+        meshGapWithheldCount += folded.gapWithheldCount;
+        for (const row of folded.deliveredRows) {
           dedupedSiblingRows.push(row);
-          delivered++;
         }
-        part.deliveredCount = delivered;
+        part.deliveredCount = folded.deliveredCount;
+        // G1/G2 fix: `consumedThrough` lets the ack loop below derive the
+        // PHYSICAL row count to advance past for however many of this
+        // partition's leading `deliveredRows` actually survive the P2-D cap
+        // — see foldSiblingGapRows's own header comment (~line 1437).
+        part.consumedThrough = folded.consumedThrough;
+        part.consumedCount = folded.consumedCount;
       }
       meshAddedUnreadCount = dedupedSiblingRows.length;
       if (dedupedSiblingRows.length) {
@@ -4141,13 +4306,54 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       // reconcile's own per-target `results[].error` convention (cmdReconcile,
       // ~line 6061).
       for (const part of meshSiblingPartitions) {
-        let deliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length;
+        // LIVE-SIBLING GATE (Fix Wave 7 Item 2): skip the cursor write (never
+        // the delivery — `part` is already in `messages`) unless we have
+        // POSITIVE evidence the partition's owner is dead, not merely absent
+        // evidence of life. `hasFreshHeartbeat` ALONE (the Wave 6 gate) misread
+        // a child mid-long-turn, a never-yet-heartbeated child, and an
+        // EACCES-on-heartbeat child as dead — see siblingAckGate's own header
+        // and companion/lib/liveness.js's isSiblingPartitionLive for the full
+        // composition (fresh heartbeat OR a real session with no positively-
+        // stale activity -> live). Shared with `inbox ack`'s own sibling loop
+        // via `siblingAckGate` so the two verbs cannot diverge.
+        if (siblingAckGate(s, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }
+        const fullDeliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length; // fold's own full, pre-cap count — never mutated below
+        let deliveredCount = fullDeliveredCount;
         // defect 8d0a66cfc563: subtract whatever the cap withheld from THIS
         // partition specifically — same structural guarantee as the hash-
         // dedup guard above (the ack target is derived from what was
         // actually delivered, never from a raw count).
         if (withheldBySource) deliveredCount -= (withheldBySource.get('sibling:' + part.id) || 0);
-        const ackTarget = part.cursor + deliveredCount;
+        // Fix Wave 3 G1/G2 (P0/P1): the ack target must be the PHYSICAL row
+        // count the (possibly cap-truncated) `deliveredCount` corresponds
+        // to, not `deliveredCount` itself — a corrupted/null row or an
+        // exact-hash duplicate can be resolved (consumed) WITHOUT being
+        // delivered, so `deliveredCount` alone can undercount the physical
+        // prefix (permanently wedging a corrupt-row partition, G1) or point
+        // at the wrong physical offset (G2). When nothing was capped for
+        // this partition (`deliveredCount === fullDeliveredCount`), use the
+        // fold's own full `consumedCount` — it also covers any TRAILING
+        // consumed-but-undelivered row (e.g. a dedup after the last
+        // delivered row, before any gap trigger) that `consumedThrough`'s
+        // per-delivered-row snapshot cannot see. Otherwise, use
+        // `consumedThrough[k - 1]`, the physical count consumed to produce
+        // the first `k` delivered rows. Fall back to `deliveredCount` itself
+        // when neither is available (fail-open — never worse than pre-fix).
+        // NOTE: the "nothing capped for this partition" check MUST run
+        // BEFORE the `deliveredCount <= 0` short-circuit — G1's exact wedge
+        // case has `deliveredCount === 0 === fullDeliveredCount` (nothing
+        // delivered AND nothing capped, e.g. a `[hole]`-only window), and
+        // that case still needs `part.consumedCount` (1, the hole itself),
+        // not a hard 0.
+        const consumedThrough = Array.isArray(part.consumedThrough) ? part.consumedThrough : null;
+        const physicalConsumed = (deliveredCount >= fullDeliveredCount && Number.isFinite(part.consumedCount))
+          ? part.consumedCount
+          : (deliveredCount <= 0
+            ? 0
+            : (consumedThrough && Number.isFinite(consumedThrough[deliveredCount - 1])
+              ? consumedThrough[deliveredCount - 1]
+              : deliveredCount));
+        const ackTarget = part.cursor + physicalConsumed;
         try {
           inboxCursor.ackTo(part.cursorPath, ackTarget);
           s.setCursor(part.id, ackTarget);
@@ -4251,6 +4457,10 @@ function cmdInboxMessages(id, flags, ctx, opts) {
     out.cursorWriteFailures = cursorWriteFailures;
     out.cursorPersisted = false;
   }
+  // Live-sibling ack gate visibility (Wave 6): which partitions were
+  // delivered (still in `messages`) but NOT ack-written because their owner
+  // looked live. Empty/absent whenever no sibling partitions were live.
+  if (liveSiblingsSkipped.length) out.liveSiblingsSkipped = liveSiblingsSkipped;
   // P1b: registry/group enumeration THREW (not "resolved cleanly, no
   // siblings exist") — the read fell back to `[id]` only, so `total`/
   // `unreadCount`/`messages` reflect `id`'s own partition (+ NDJSON union, if
@@ -4259,6 +4469,14 @@ function cmdInboxMessages(id, flags, ctx, opts) {
     out.meshGroupUnresolved = true;
     out.meshGroupError = meshGroupError;
     out.totalsPartial = true;
+  }
+  // Fix Wave 2 F3: same honesty signal `inbox count/read/ack` already emits
+  // (~line 4656/4690/4814) — a forwardable sibling row sitting after a
+  // non-forwardable gap was withheld from this call too (never lost, no
+  // cursor touched; see foldSiblingGapRows).
+  if (meshGapWithheldCount > 0) {
+    out.meshGapWithheld = true;
+    out.meshGapWithheldCount = meshGapWithheldCount;
   }
   // UNBOUNDED-READ CAP report (defect 8d0a66cfc563): never silently truncate.
   // `count`/`messages` above already reflect only what was actually
@@ -4403,7 +4621,23 @@ function cmdInbox(sub, id, flags, ctx) {
               .map((r) => Object.assign({ partitionId: pid }, r));
             meshSiblingPartitions.push({ id: pid, cursor: pCursor, total: pTotal, messages: pMessages });
             meshAddedTotal += pTotal;
-          } catch (_) { /* fail-open: this sibling partition unreadable this call, skip it */ }
+          } catch (e) {
+            // P1-B fix (Codex review of HEAD): pre-fix this swallowed a
+            // sibling-partition READ failure (cursorValue/messageCount/
+            // listMessages throwing — e.g. a corrupt journal file for THAT
+            // one sibling) with no signal at all, unlike the resolution-step
+            // failure a few lines above (resolved.meshGroupUnresolved) which
+            // DOES surface. An unreadable sibling then read as
+            // indistinguishable from "this sibling genuinely has no unread
+            // mail" — `count`/`read` returned ok:true with an honest-looking
+            // but silently undercounted total. Surface it the SAME way the
+            // resolution-step failure already does (same field shape, one
+            // convention for callers to check) — fail-open stays (this
+            // sibling is skipped, delivery for every OTHER readable source
+            // still succeeds), but the result must say so.
+            meshGroupUnresolved = true;
+            meshGroupError = 'sibling partition ' + JSON.stringify(pid) + ' unreadable: ' + String((e && e.message) || e);
+          }
         }
       }
     }
@@ -4414,22 +4648,186 @@ function cmdInbox(sub, id, flags, ctx) {
     // so this can never actually fire in practice. Belt-and-suspenders only,
     // mirroring that same convention — never suppresses a genuinely distinct
     // message (at-least-once beats at-most-once).
+    //
+    // P1-A fix (composed duplicate-delivery: fold's gapped-cursor fix x
+    // send-forwarding — Codex review of HEAD): the ABOVE hash check alone
+    // cannot catch a real duplicate here. foldOne (~1611-1646) forwards every
+    // FORWARDABLE row for a candidate's whole unread range even PAST a
+    // non-forwardable gap, but only advances that candidate's OWN cursor
+    // through the CONTIGUOUS forwarded prefix before the first gap
+    // (advanceTo/sawGap). A `[forwardable, non-forwardable, forwardable]`
+    // sequence on a candidate the fold leaves LIVE (a real mesh sibling,
+    // sharing `id`'s worktreePath/meshId — meshCandidateRows) therefore has
+    // its THIRD row already forwarded into `id`'s own partition (a real copy
+    // exists there) while the candidate's own cursor is stuck at 1, so that
+    // SAME row also still reads as "unread" on the candidate's own
+    // partition. meshMessageHash hashes the recipient, so the original
+    // (to: candidate) and the forward (to: id) hash differently — the
+    // existing hash-equality check structurally cannot see they are the same
+    // logical message, and the union would deliver it twice.
+    //
+    // FIX CHOSEN AND WHY (both options in the assignment were tried; this is
+    // the one that survived): a first attempt recomputed the hash a sibling
+    // row WOULD carry if forwarded into `id`'s own partition (same envelope
+    // foldOne's forward step uses) and suppressed a match — i.e. dedup on
+    // "original message identity" via a CONTENT-derived hash. That is
+    // UNSOUND: it is content-addressed with no real provenance link, so it
+    // ALSO matches the exact P0 case this repo already fixed and tests
+    // (devswarm-mesh-union-review-fixes.test.js) — two INDEPENDENT real
+    // sends to DIFFERENT recipients that happen to share sender+ts+body+
+    // urgency. Verified live: that content-hash approach collapsed the P0
+    // guard test from 2 delivered messages to 1 — a genuine message-loss
+    // regression, not a fix. A sound identity link would need real
+    // PROVENANCE (e.g. the archived-orphan forward path's body-prefix
+    // marker, forwardArchivedOrphanUnread/archivedForwardProvenancePrefix —
+    // the ONE place in this codebase that already does content-hash
+    // matching safely, because ITS forwarded body is prefixed and therefore
+    // never coincidentally matches unrelated real content) — but foldOne's
+    // own forward is contractually BODY-VERBATIM (devswarm-fold-mesh.test.js
+    // asserts `forwarded.body === 'which approach?'`, an established,
+    // tested contract), and adding a schema column to carry real provenance
+    // is out of proportion for this fix.
+    //
+    // Fix instead (option (b), STRUCTURAL, no content guessing): within a
+    // sibling's currently-unread window (already fetched above, in its own
+    // natural order), walk it in order and track the first NON-forwardable
+    // row seen. STALE as of Fix Wave 2 (F1): this used to say "a
+    // non-forwardable row is NEVER excluded" — true only of the FIRST
+    // non-forwardable row in the window (the gap TRIGGER, still always
+    // delivered — foldOne never forwards one, so it can never have a
+    // duplicate anywhere, always safe, always genuinely unread). Once that
+    // trigger sets the gap, EVERY subsequent row — forwardable or not — is
+    // withheld as part of the ambiguous suffix (foldSiblingGapRows, ~line
+    // 1437); a SECOND non-forwardable row later in the same window is no
+    // longer exempt. EVERY forwardable row AT OR AFTER that first
+    // non-forwardable row is withheld from this widened view —
+    // exactly the ambiguous suffix a fold's own advanceTo/sawGap logic also
+    // refuses to advance the CANDIDATE's cursor past, for the identical
+    // reason: a forwardable row past a gap MIGHT already be a forwarded
+    // duplicate (if a fold has already run), or MIGHT be genuinely new
+    // unforwarded mail (if none has run since) — this call cannot tell
+    // which, structurally, without either guessing (unsound, see above) or
+    // side-effecting a live re-forward from a read path (a much larger,
+    // riskier change than this fix's scope). Withholding is never silent —
+    // see meshGapWithheld/meshGapWithheldCount below — and NOTHING is ever
+    // lost: no cursor is touched here, so a withheld row stays reachable by
+    // reading that sibling id directly, and is delivered here automatically
+    // once a fold actually processes it (removing the gap) or the next
+    // fold's forward genuinely lands a hash-identical copy in `id`'s own
+    // partition (still caught by the pre-existing exact-hash check above).
+    // Sound against the P0 case: a partition with NO non-forwardable row in
+    // its unread window has no "gap" at all, so nothing is withheld — the P0
+    // test's two single-row sends each sit in a gap-free window and both
+    // pass through unaffected (re-asserted as a guard test).
+    // Fix Wave 2 F1 (P0 message-loss): delegated to foldSiblingGapRows (see
+    // its own header comment, ~line 1408) — the fold now produces a genuine
+    // index-based PREFIX per partition, so `part.deliveredCount` is always
+    // safe to add to `part.cursor` for the ack target below. deliveredRows
+    // (P2-D cap support) stays its OWN array per part, not flattened into
+    // one global list, so the cap step below can slice each source's
+    // contribution independently and preserve the "never withhold row N-1
+    // while keeping row N of the same source" invariant — see that step's
+    // own comment.
+    let meshGapWithheldCount = 0;
     if (meshSiblingPartitions.length) {
       const seenHashes = new Set(storeOnlyUnreadRows.filter((r) => r && r.hash).map((r) => r.hash));
-      const dedupedSiblingRows = [];
       for (const part of meshSiblingPartitions) {
-        let delivered = 0;
-        for (const row of part.messages) {
-          if (row && row.hash && seenHashes.has(row.hash)) continue;
-          if (row && row.hash) seenHashes.add(row.hash);
-          dedupedSiblingRows.push(row);
-          delivered++;
-        }
-        part.deliveredCount = delivered;
+        const folded = foldSiblingGapRows(part.messages, seenHashes);
+        part.deliveredRows = folded.deliveredRows;
+        part.deliveredCount = folded.deliveredCount;
+        // G1/G2 fix: see foldSiblingGapRows's own header comment (~line
+        // 1437) and the cmdInboxMessages call site's analogous field
+        // (~line 4126) — the ack step below (post-cap) derives the PHYSICAL
+        // ack target from this, never from `deliveredCount` alone.
+        part.consumedThrough = folded.consumedThrough;
+        part.consumedCount = folded.consumedCount;
+        meshGapWithheldCount += folded.gapWithheldCount;
       }
-      meshAddedUnreadCount = dedupedSiblingRows.length;
-      if (dedupedSiblingRows.length) storeOnlyUnreadRows = storeOnlyUnreadRows.concat(dedupedSiblingRows);
     }
+    // P2-D fix (Codex review of HEAD): read-primary/peek-primary/--ack
+    // already cap via DEFAULT_INBOX_READ_LIMIT/--limit (cmdInboxMessages,
+    // ~line 3737) — `count`/`read`/`ack` never did, and the mesh-partition
+    // widening above makes an unbounded sibling backlog newly reachable
+    // here too. Apply the SAME cap mechanism (same constant, same --limit
+    // override rule: a non-finite/non-positive override is ignored, never
+    // silently disables the cap) rather than inventing a second one.
+    // Unlike cmdInboxMessages, this array is never ts-sort-merged across
+    // sources — it is a plain concatenation (id's own rows, in their own
+    // natural listMessages order, then each sibling's already-deduped rows,
+    // each still in ITS OWN natural order) — so a straight per-source
+    // length slice already IS a genuine structural prefix; no source-index
+    // withholding/recovery machinery is needed to keep cmdInboxMessages's
+    // own cap invariant. `part.deliveredCount` is overwritten here to the
+    // POST-cap kept length so the ack step below (which reads it to derive
+    // each sibling's cursor-ack target) never advances a sibling's cursor
+    // past a row this call withheld.
+    let inboxCapLimit = DEFAULT_INBOX_READ_LIMIT;
+    {
+      const limitRaw = one(flags, 'limit');
+      if (limitRaw !== undefined) {
+        const n = Number(limitRaw);
+        if (Number.isFinite(n) && n > 0) inboxCapLimit = Math.max(1, Math.floor(n)); // F4: same fix, same reasoning as inboxReadLimit above
+      }
+    }
+    const ownRows = storeOnlyUnreadRows; // id's own rows, pre-sibling-merge
+    const ownRowsTotal = ownRows.length;
+    const preCapTotal = ownRowsTotal + meshSiblingPartitions.reduce((n, p) => n + (p.deliveredRows ? p.deliveredRows.length : 0), 0);
+    let inboxTruncatedCount = 0;
+    let ownKeptCount;
+    if (preCapTotal > inboxCapLimit) {
+      inboxTruncatedCount = preCapTotal - inboxCapLimit;
+      let remaining = inboxCapLimit;
+      ownKeptCount = Math.min(ownRowsTotal, remaining);
+      remaining -= ownKeptCount;
+      storeOnlyUnreadRows = ownRows.slice(0, ownKeptCount);
+      for (const part of meshSiblingPartitions) {
+        const rows = part.deliveredRows || [];
+        const keep = Math.min(rows.length, remaining);
+        remaining -= keep;
+        part.deliveredCount = keep; // overwrite: post-cap kept count, what the ack step below may advance past
+        // G1/G2 fix: the PHYSICAL row count to advance past for these `keep`
+        // delivered rows — see foldSiblingGapRows's header comment
+        // (~line 1437) and the cmdInboxMessages call site (~line 4282). When
+        // `keep` covers the partition's ENTIRE deliveredRows (nothing
+        // actually capped here), use the fold's own full `consumedCount` —
+        // it also covers a TRAILING consumed-but-undelivered row (e.g. a
+        // dedup after the last delivered row) that `consumedThrough` cannot
+        // see. Otherwise use `consumedThrough[keep - 1]`.
+        // NOTE: the "nothing capped for this partition" check MUST run
+        // BEFORE the `keep <= 0` short-circuit — G1's exact wedge case has
+        // `keep === 0 === rows.length` (nothing delivered AND nothing
+        // capped, e.g. a `[hole]`-only window), and that case still needs
+        // `part.consumedCount` (1, the hole itself), not a hard 0.
+        const consumedThrough = Array.isArray(part.consumedThrough) ? part.consumedThrough : null;
+        part.physicalConsumed = (keep >= rows.length && Number.isFinite(part.consumedCount))
+          ? part.consumedCount
+          : (keep <= 0
+            ? 0
+            : (consumedThrough && Number.isFinite(consumedThrough[keep - 1]) ? consumedThrough[keep - 1] : keep));
+        if (keep) storeOnlyUnreadRows = storeOnlyUnreadRows.concat(rows.slice(0, keep));
+      }
+    } else {
+      ownKeptCount = ownRowsTotal;
+      for (const part of meshSiblingPartitions) {
+        if (part.deliveredRows && part.deliveredRows.length) storeOnlyUnreadRows = storeOnlyUnreadRows.concat(part.deliveredRows);
+        // G1/G2 fix: nothing capped for this partition — the physical
+        // ack target is the fold's own full consumed count (may exceed
+        // `deliveredCount` when a corrupted/deduped row was resolved
+        // without being delivered).
+        part.physicalConsumed = Number.isFinite(part.consumedCount) ? part.consumedCount : (part.deliveredCount || 0);
+      }
+    }
+    // Fix Wave 2 F2 (undercount + missing honesty flag): `meshAddedUnreadCount`
+    // must be the REAL, UNTRUNCATED sibling count — not the post-cap kept
+    // count (`storeOnlyUnreadRows.length - ownKeptCount`, which is <= the
+    // real total whenever `inboxTruncatedCount > 0`). Matches
+    // cmdInboxMessages, which sets its own `meshAddedUnreadCount` from
+    // `dedupedSiblingRows.length` BEFORE its cap step ever runs (~line 4007).
+    // `part.deliveredRows` (the gap-fold output) is untouched by the cap step
+    // above — only `part.deliveredCount`/`storeOnlyUnreadRows` are
+    // overwritten/sliced — so summing `.deliveredRows.length` here is exactly
+    // the pre-cap, real total (equal to `preCapTotal - ownRowsTotal`).
+    meshAddedUnreadCount = meshSiblingPartitions.reduce((n, p) => n + (p.deliveredRows ? p.deliveredRows.length : 0), 0);
 
     // FIX 6 (TRACED): the two parallel, independently-cursored channels — the
     // NDJSON descriptor inbox and the store partition — were surfaced as a bare
@@ -4460,6 +4858,25 @@ function cmdInbox(sub, id, flags, ctx) {
         total: outTotal, known: union.known && !storeUnavailable,
         ...(storeUnavailable ? { storeUnavailable, unreadStoreUnknown: true } : {}),
         ...(meshGroupUnresolved ? { meshGroupUnresolved: true, meshGroupError, totalsPartial: true } : {}),
+        // Fix Wave 2 F2: `count` used to omit `meshGapWithheld`/
+        // `meshGapWithheldCount` entirely (they went only to `read`/`ack`
+        // below), so a caller relying on `count` alone had no honesty signal
+        // that some sibling mail was withheld pending a gap resolving. Same
+        // fields, same meaning, as `read`/`ack` emit.
+        ...(meshGapWithheldCount > 0 ? { meshGapWithheld: true, meshGapWithheldCount } : {}),
+        // P2-D cap report — same shape/fields as cmdInboxMessages's own
+        // (defect 8d0a66cfc563): `total`/`unreadTotal` above NOW genuinely
+        // reflect the REAL, untruncated totals (Fix Wave 2 F2 — previously
+        // `meshAddedUnreadCount` was computed POST-cap here, so this claim
+        // was false whenever `inboxTruncatedCount > 0`); `unreadStore`
+        // reflects only what this call actually returned. `truncated:true`
+        // is the explicit signal this call did not return everything.
+        ...(inboxTruncatedCount > 0 ? {
+          truncated: true, truncatedCount: inboxTruncatedCount, limit: inboxCapLimit,
+          truncatedHint: 'not all unread messages were returned (' + inboxTruncatedCount + ' withheld) — '
+            + 'the read cursor was NOT advanced past withheld messages, so re-reading (optionally with a '
+            + 'higher --limit than ' + inboxCapLimit + ') returns them',
+        } : {}),
         // compat aliases (see comment above) — do not treat as primary:
         unread: outUnreadTotal, cursor: union.cursor, storeCursor: storeCursorVal, storeUnread: unreadStoreCount,
       };
@@ -4474,6 +4891,19 @@ function cmdInbox(sub, id, flags, ctx) {
         total: outTotal, known: union.known && !storeUnavailable,
         ...(storeUnavailable ? { storeUnavailable, unreadStoreUnknown: true } : {}),
         ...(meshGroupUnresolved ? { meshGroupUnresolved: true, meshGroupError, totalsPartial: true } : {}),
+        // P1-A honesty report: a forwardable row sitting AFTER a
+        // non-forwardable gap in a sibling's unread window was withheld
+        // from this call (see the fix's own comment above) — never lost
+        // (no cursor touched), but not shown here either. `meshGapWithheld`
+        // is the explicit signal; read that sibling id directly, or wait
+        // for its next fold pass, to see it.
+        ...(meshGapWithheldCount > 0 ? { meshGapWithheld: true, meshGapWithheldCount } : {}),
+        ...(inboxTruncatedCount > 0 ? {
+          truncated: true, truncatedCount: inboxTruncatedCount, limit: inboxCapLimit,
+          truncatedHint: 'not all unread messages were returned (' + inboxTruncatedCount + ' withheld) — '
+            + 'the read cursor was NOT advanced past withheld messages, so re-reading (optionally with a '
+            + 'higher --limit than ' + inboxCapLimit + ') returns them',
+        } : {}),
         // compat aliases (see comment above) — do not treat as primary:
         count: outUnreadTotal, cursor: union.cursor, storeCursor: storeCursorVal,
       };
@@ -4505,6 +4935,13 @@ function cmdInbox(sub, id, flags, ctx) {
     // P1a fix (defect c35a7ca3056b): populated only if the store-side cursor
     // sync below throws — see the catch site for the full rationale.
     const ackCursorWriteFailures = [];
+    // Fix Wave 7 Item 1 (P0): this verb's OWN sibling cursor-write loop
+    // (below) used to have NO liveness gate at all — a plain `inbox ack`
+    // (or `--ack-as-owner`) from a shared canonical worktree drove a live
+    // sibling's cursor forward and consumed its unread backlog undelivered,
+    // reproduced with BOTH heartbeats fresh. Tracked the same shape as
+    // cmdInboxMessages's `liveSiblingsSkipped` (~line 3932) for parity.
+    const liveSiblingsSkipped = [];
     if (toRaw !== undefined) {
       const n = Number(toRaw);
       if (!Number.isFinite(n)) { if (storeHandle) storeHandle.close(); return { ok: false, error: '--to must be a number' }; }
@@ -4514,7 +4951,23 @@ function cmdInbox(sub, id, flags, ctx) {
       // clears the store side.
       cursor = inboxCursor.ackTo(cursorPath, n, undefined, inboxPath);
     } else {
-      cursor = inboxCursor.advanceCursor(inboxPath, cursorPath); // ack-all (ndjson side)
+      // Fix Wave 5 Item 2 (P0 message-loss): `advanceCursor()` used to RECOUNT
+      // the LIVE inbox file tail at ack time (`countMessages(inboxPath)`
+      // inside advanceCursor) rather than acking over the tail snapshot this
+      // call actually read/delivered (`union`, captured above via
+      // unionUnread — the SAME initial-read snapshot `read-primary` already
+      // honors via its own `physicalConsumed`/`ownDeliveredMaxIndex` math).
+      // Race: cursor=5, rows 1-6 exist, this call reads/delivers row 6, a
+      // concurrent sender appends row 7 between the read and this ack —
+      // `advanceCursor` recounts 7 live and writes cursor=7, permanently
+      // consuming row 7 though it was never returned to this caller. Fix:
+      // ack only `union.cursor + union.ndjsonUnreadLines.length` — the exact
+      // contiguous prefix snapshotted at the read above — never the live
+      // file's current tail. `ackTo`'s own upper clamp (via `inboxPath`)
+      // still protects against a corrupt/negative target; its monotonic
+      // guard still protects against under-acking a previously-further-along
+      // cursor.
+      cursor = inboxCursor.ackTo(cursorPath, union.cursor + union.ndjsonUnreadLines.length, undefined, inboxPath); // ack-all (ndjson side) — over THIS call's read snapshot only
       // Store-side ack-all (P0 fix): advance the STORE's OWN cursor for `id` too,
       // so deriveSummary's persisted projection (what the parent-gate banner
       // reads) agrees with what this read path just reported as consumed —
@@ -4537,7 +4990,38 @@ function cmdInbox(sub, id, flags, ctx) {
             owns = caller === id || (ownEntry && ownEntry.id === id);
           }
           if (owns) {
-            const totalNow = storeHandle.messageCount(id);
+            // Fix Wave 7 Item 3 (P0 message-loss): `storeHandle.messageCount(id)`
+            // used to RECOUNT the LIVE store table at ack time — the same
+            // message-loss shape Fix Wave 5 Item 2 already fixed on the NDJSON
+            // side (`inboxCursor.ackTo(cursorPath, union.cursor +
+            // union.ndjsonUnreadLines.length, ...)` above, over the READ
+            // snapshot, never a live recount), left unfixed here on the store
+            // side. Race: a concurrent sender appends a NEW row to `id`'s own
+            // store partition between the `union`/`storeOnlyUnreadRows`
+            // snapshot (captured above, ~line 4576) and this ack — the live
+            // recount includes that row (never returned to this caller) and
+            // sets the cursor past it, permanently losing it.
+            // Fix: derive the ack target from the ACTUAL delivered rows' own
+            // `.index` (a real, database-backed absolute 1-based position —
+            // devswarm-store.js listMessages), the SAME primitive
+            // cmdInboxMessages's own-store ack already uses
+            // (`ownDeliveredMaxIndex`, ~line 4210) — never arithmetic over a
+            // possibly-gapped row count (storeOnlyUnreadRows can have gaps
+            // relative to the raw sequence: it is filtered by hash against the
+            // NDJSON channel, same root cause as that fix's own header note).
+            // `ownRows`/`ownKeptCount` (captured above, ~line 4772/4782) are
+            // the pre-sibling-merge id-only rows and the post-cap count of
+            // them actually delivered THIS call — re-sliced here rather than
+            // re-derived, so this can never drift from what was truly
+            // returned. Never regresses below the pre-read snapshot
+            // (`storeCursorVal`), matching every other ack-target invariant
+            // in this file.
+            const ownDeliveredRows = ownRows.slice(0, ownKeptCount);
+            let ownMaxIndex = null;
+            for (const row of ownDeliveredRows) {
+              if (row && Number.isFinite(row.index) && (ownMaxIndex === null || row.index > ownMaxIndex)) ownMaxIndex = row.index;
+            }
+            const totalNow = ownMaxIndex !== null ? Math.max(storeCursorVal, ownMaxIndex) : storeCursorVal;
             storeHandle.setCursor(id, totalNow);
             // Keep the SEPARATE `inbox messages --ack`/`read-primary` ACK-cursor
             // FILE (primaryCursorPath, a DIFFERENT namespace than this
@@ -4556,8 +5040,23 @@ function cmdInbox(sub, id, flags, ctx) {
             // as `id`'s own ack (a caller that doesn't own `id` doesn't own
             // its siblings either).
             for (const part of meshSiblingPartitions) {
+              // LIVE-SIBLING GATE (Fix Wave 7 Item 1): the SAME gate
+              // cmdInboxMessages's read-primary/peek-primary ack loop applies
+              // (~line 4308), via the SAME shared `siblingAckGate` — this loop
+              // used to have none at all, which is exactly what let a live
+              // sibling sharing this worktree get its cursor driven forward
+              // and its backlog consumed undelivered by a plain `inbox ack`.
+              if (siblingAckGate(storeHandle, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }
+              // Fix Wave 3 G1/G2 (P0/P1): `part.physicalConsumed` (set
+              // above alongside `part.deliveredCount` — see the cap-step
+              // comment ~line 4682) is the PHYSICAL row count to advance
+              // past, which can exceed `deliveredCount` when a corrupted/
+              // null row or exact-hash duplicate was consumed without being
+              // delivered. Falls back to `deliveredCount` when unset
+              // (fail-open — never worse than the pre-fix behavior).
               const deliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length;
-              const ackTarget = part.cursor + deliveredCount;
+              const physicalConsumed = Number.isFinite(part.physicalConsumed) ? part.physicalConsumed : deliveredCount;
+              const ackTarget = part.cursor + physicalConsumed;
               try {
                 storeHandle.setCursor(part.id, ackTarget);
                 inboxCursor.ackTo(primaryCursorPath(home, part.id), ackTarget);
@@ -4589,6 +5088,17 @@ function cmdInbox(sub, id, flags, ctx) {
     if (ackCursorWriteFailures.length) {
       ackOut.cursorWriteFailures = ackCursorWriteFailures;
       ackOut.cursorPersisted = false;
+    }
+    if (liveSiblingsSkipped.length) ackOut.liveSiblingsSkipped = liveSiblingsSkipped;
+    if (meshGroupUnresolved) { ackOut.meshGroupUnresolved = true; ackOut.meshGroupError = meshGroupError; ackOut.totalsPartial = true; }
+    if (meshGapWithheldCount > 0) { ackOut.meshGapWithheld = true; ackOut.meshGapWithheldCount = meshGapWithheldCount; }
+    if (inboxTruncatedCount > 0) {
+      ackOut.truncated = true;
+      ackOut.truncatedCount = inboxTruncatedCount;
+      ackOut.limit = inboxCapLimit;
+      ackOut.truncatedHint = 'not all unread messages were acked this call (' + inboxTruncatedCount + ' withheld) — '
+        + 'sibling cursors were NOT advanced past withheld messages, so acking again (optionally with a '
+        + 'higher --limit than ' + inboxCapLimit + ') consumes them';
     }
     return ackOut;
   }

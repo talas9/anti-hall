@@ -61,11 +61,11 @@ function makeGitRepo(tag) {
 
 const ctx = (home, over) => Object.assign({ home, backend: 'journal', env: {} }, over || {});
 
-function register(home, repoDir, id, over) {
+function register(home, repoDir, id, over, sessionId) {
   const inboxPath = path.join(home, 'descriptor-inboxes', id + '.ndjson');
   const cursorPath = path.join(home, 'descriptor-cursors', id + '.cursor');
   const r = cli.run(
-    ['register', id, '--worktree', repoDir, '--session', 's-' + id, '--inbox', inboxPath, '--cursor', cursorPath],
+    ['register', id, '--worktree', repoDir, '--session', sessionId || ('s-' + id), '--inbox', inboxPath, '--cursor', cursorPath],
     ctx(home, Object.assign({ cwd: repoDir }, over || {}))
   );
   assert.equal(r.result.ok, true, 'register failed: ' + JSON.stringify(r.result));
@@ -93,7 +93,7 @@ test('P0: two genuinely distinct messages sharing sender+ts+body across sibling 
   const repo = makeGitRepo('p0-distinct');
   try {
     register(home, repo, 'primary-p0', undefined);
-    register(home, repo, 'sibling-p0', undefined);
+    register(home, repo, 'sibling-p0', undefined, 'unclaimed:sibling-p0');
 
     // Two REAL, SEPARATE sends — different `to`, hence different `hash` —
     // that happen to carry identical sender/ts/body. Pre-fix, the weak
@@ -126,7 +126,7 @@ test('P0 invariant: sibling cursor advances by exactly what THIS call delivered,
   const repo = makeGitRepo('p0-invariant');
   try {
     register(home, repo, 'primary-inv', undefined);
-    register(home, repo, 'sibling-inv', undefined);
+    register(home, repo, 'sibling-inv', undefined, 'unclaimed:sibling-inv');
 
     seedPartition(home, repo, 'sibling-inv', [{ body: 'sib-1', ts: 1000 }]);
     // First ack: consumes sibling-inv's one existing message.
@@ -155,7 +155,7 @@ test('P1a: a sibling cursor-write failure still delivers the message AND names t
   const repo = makeGitRepo('p1a');
   try {
     register(home, repo, 'primary-p1a', undefined);
-    register(home, repo, 'sibling-p1a', undefined);
+    register(home, repo, 'sibling-p1a', undefined, 'unclaimed:sibling-p1a');
     seedPartition(home, repo, 'sibling-p1a', [{ body: 'undeliverable-cursor mail', ts: 1000 }]);
 
     // Force the sibling's cursor WRITE to fail: pre-create its cursor path

@@ -307,6 +307,23 @@ for the main agent though still correct for leaf subagent work. The
 bumped from `2026-05-29` to `2026-08-22` to reflect this re-audit (threshold
 unchanged at 60 days).
 
+**[APPENDED 2026-09-03] Fable point-release re-audit:** `claude-fable-5-1`
+(released 2026-09-01) supersedes `claude-fable-5` as current Fable — a point
+release, not a new generation, so Opus 5 / Sonnet 5 / Haiku 4.5 lineage above
+is unaffected. `docs/KB-fable-5.md`, `docs/KB-sonnet-5.md`,
+`docs/KB-model-modes.md`, `docs/KB-codex-vs-opus-coding.md`, and
+`docs/KB-token-usage-models.md` were corrected via stacked dated annotations
+(`[UPDATE 2026-09-03]`), not silent rewrites. Pricing/context/effort-scale
+specifics for `claude-fable-5-1` are **not verified** in this repo — flagged in
+each updated doc rather than assumed unchanged from Fable 5's $10/$50, 1M/128k.
+`MODEL-POLICY.md` (both Claude and Codex variants) needed no correction —
+already routes by tier token (`fable`), resolved at call time.
+`plugins/anti-hall/hooks/lib/repo-audit-baseline.js` `MODEL_KB_AUDIT_DATE`
+bumped `2026-08-22` → `2026-09-03`. No routing logic found hardcoding a Fable
+model id; the sole hardcoded-model-id exception repo-wide remains
+`speculation-judge.js`'s direct Anthropic Messages API call
+(`claude-haiku-4-5`, unrelated to Fable, unchanged this pass).
+
 **Historical docs — pre-redesign claims (do NOT fix; they are frozen records):**
 These describe the plugin *before* the cadence redesign and are intentionally
 stale. Listed here so no one mistakes them for current spec.

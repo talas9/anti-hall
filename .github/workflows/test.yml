@@ -23,4 +23,16 @@ jobs:
       # behaves identically on bash, zsh, and PowerShell — unlike `node --test
       # 'tests/**/*.test.js'` (PowerShell does not expand the glob) or
       # `node --test tests/` (Node >=22 treats a directory arg as a module path).
+      #
+      # Fix Wave 5 Item 5: `--test-concurrency=1` (a belt-and-braces mitigation
+      # against cross-file interleaving over the one shared
+      # plugins/anti-hall/scripts/devswarm.js path) is removed — the mutation
+      # race it guarded against is now structurally fixed: no test file
+      # mutates that live path on disk at all (every mutation test runs
+      # against its own throwaway scratch copy, see
+      # tests/scripts/lib/devswarm-mutant-kit.js, verified via a repo-wide
+      # grep for writeFileSync against DEVSWARM_PATH/devswarm.js finding none
+      # outside that kit's own scratch-copy writes). Measured: 126s wall /
+      # 362% CPU parallel vs ~7-8 min per matrix cell serialized — the flag
+      # cost ~4x CI minutes for a race this codebase no longer has.
       - run: node --test

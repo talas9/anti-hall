@@ -26,6 +26,12 @@
 > rewrite) — read it as historical/"whichever top-tier model" prose, not a current model pin. See
 > §13 "Downshift guidance" (new, appended 2026-08-22) for the separate main-agent downshift
 > question this doc previously had no answer to.]**
+>
+> **[UPDATE 2026-09-03 — Fable point release.** `claude-fable-5-1` (released 2026-09-01)
+> supersedes `claude-fable-5` as current Fable; point release only, rest of the lineup above is
+> unaffected. Pricing/context/effort-scale specifics for `claude-fable-5-1` are not independently
+> verified here — see `KB-fable-5.md`'s 2026-09-03 update. `fable` tier-token routing is
+> unaffected.]**
 
 ## Coverage note (verification integrity)
 

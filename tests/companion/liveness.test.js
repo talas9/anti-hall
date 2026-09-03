@@ -635,3 +635,212 @@ test('A3 guard: a row with NO resolvable sender (null) still drives stale — fa
 // i.e. the fix flips ONLY `status`; `pending` (reporting) is byte-identical
 // before and after, confirming computeSummary's/`pending`'s reporting semantics
 // were never touched — only the NEW `pendingInbound` axis feeds `stale`.
+
+// ============================================================================
+// NEVER-LAUNCHED gap (Wave 8 Item 1): a registry row with a REAL sessionId
+// that never once produced a transcript (tMtime permanently null — never
+// launched at all, or died before its first turn) used to make `haveBoth`
+// permanently false, so `bothIdle`/`stale` could never fire: the persisted
+// verdict stayed 'alive' forever, cmdReapStale never listed it, and
+// siblingAckGate (via isSiblingPartitionLive -> isDormantRow -> readActivityTs)
+// never classified it dead either. The fix adds a FALLBACK, gated to fire
+// ONLY when the transcript signal is entirely absent: the descriptor file's
+// own mtime (workspaces/<id>.json — descriptorRegistrationTs, written once by
+// the explicit `register` CREATE path and untouched again unless a live
+// session's own `ensure` call rewrites it) stands in for "registration time".
+// Past DEFAULT_NEVER_LAUNCHED_MS (6h — same wide-default philosophy as this
+// file's own DEFAULT_ROSTER_IDLE_MS), the row is treated as dead.
+//
+// MUTATION LIST (documented here, applied against an ISOLATED SCRATCH COPY of
+// companion/lib/liveness.js — never the live file, matching this repo's
+// established mutation-test pattern in tests/scripts/lib/devswarm-mutant-kit.js):
+//   M1 — computeLiveness / cmdReapStale's path: revert
+//        `const stale = (bothIdle || neverLaunchedDead) && unionInfo.pendingInbound;`
+//        back to the pre-fix `const stale = bothIdle && unionInfo.pendingInbound;`
+//        (neverLaunchedDead computed but never consulted — the exact pre-fix gap).
+//   M2 — readActivityTs / siblingAckGate's path: remove the `if (best === 0) { ... }`
+//        descriptorRegistrationTs fallback block entirely, reverting to the
+//        pre-fix `return { ts: best > 0 ? best : null, sawTranscript };` with no
+//        registration-ts rescue.
+// Each mutant is proven non-vacuous below: applied to a scratch copy, the
+// SAME fixture that passes GREEN against the live (fixed) module goes RED
+// against the mutant (reproducing the original defect), then the live module
+// is proven byte-untouched.
+
+const mutantKit = require(path.join(__dirname, '..', 'scripts', 'lib', 'devswarm-mutant-kit.js'));
+const LIVE_LIVENESS_PATH = path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'liveness.js',
+);
+const LIVE_TARGET_SESSION_PATH = path.join(
+  __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib', 'target-session.js',
+);
+
+// createLivenessCopy: an isolated scratch copy of JUST liveness.js + its one
+// dependency (target-session.js, itself node-builtins-only — see its own
+// header). Mirrors devswarm-mutant-kit.js's createCopy pattern (own tmp dir,
+// mutate ONLY the copy, discard afterward) but scoped to this one module
+// instead of the whole scripts/devswarm.js + companion/ + hooks/ tree, since
+// computeLiveness/readActivityTs are exercised directly here, not via the CLI.
+function createLivenessCopy(prefix) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), (prefix || 'anti-hall-liveness-mutant') + '-'));
+  const libDir = path.join(dir, 'lib');
+  fs.mkdirSync(libDir);
+  const livenessPath = path.join(libDir, 'liveness.js');
+  fs.copyFileSync(LIVE_LIVENESS_PATH, livenessPath);
+  fs.copyFileSync(LIVE_TARGET_SESSION_PATH, path.join(libDir, 'target-session.js'));
+  return { dir, livenessPath };
+}
+
+// seedNeverLaunched: a registry row with a REAL (non-empty, non-`unclaimed:`)
+// sessionId whose worktree/inbox/cursor exist but whose projectDir/transcript
+// NEVER gets created — the never-launched shape. The descriptor file
+// (workspaces/<id>.json, what descriptorRegistrationTs stats) is written with
+// its mtime backdated by `registrationAgeMs` when given, standing in for "this
+// is how long ago `register` ran and nothing has touched the file since".
+function seedNeverLaunched(home, { id, registrationAgeMs, inboxLines, cursor, sessionId }) {
+  const worktreePath = path.join(home, 'wt', id);
+  fs.mkdirSync(worktreePath, { recursive: true });
+  const inboxPath = path.join(worktreePath, 'inbox.ndjson');
+  const cursorPath = path.join(worktreePath, 'cursor');
+  if (inboxLines) fs.writeFileSync(inboxPath, inboxLines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  if (typeof cursor === 'number') fs.writeFileSync(cursorPath, String(cursor));
+  const descPath = M.descriptorPathFor(id, home);
+  fs.mkdirSync(path.dirname(descPath), { recursive: true });
+  fs.writeFileSync(descPath, JSON.stringify({ id, worktreePath, sessionId: sessionId || ('real-sid-' + id) }));
+  if (typeof registrationAgeMs === 'number') {
+    const t = (Date.now() - registrationAgeMs) / 1000;
+    fs.utimesSync(descPath, t, t);
+  }
+  return { id, worktreePath, inboxPath, cursorPath, sessionId: sessionId || ('real-sid-' + id) };
+}
+
+const SEVEN_HOURS = 7 * 60 * 60 * 1000; // > DEFAULT_NEVER_LAUNCHED_MS (6h)
+const FIVE_MINUTES = 5 * 60 * 1000; // << DEFAULT_NEVER_LAUNCHED_MS
+
+test('NEVER-LAUNCHED GREEN: a real-sessionId row with NO transcript, registered past the deadline, becomes stale (reapable/ack-eligible)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seedNeverLaunched(home, {
+      id: 'w-never-old', registrationAgeMs: SEVEN_HOURS, inboxLines: [{ m: 1 }], cursor: 0,
+    });
+    // Worst case: no git signal either (a brand-new worktree with no commits
+    // yet) — proves the fallback fires even without wMtime's help.
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => null } });
+    assert.strictEqual(v.status, 'stale', 'a row that never produced a transcript, registered 7h ago (> 6h deadline), must be classified dead');
+    assert.ok(v.staleSince > 0);
+  } finally { cleanup(); }
+});
+
+test('NEVER-LAUNCHED GUARD (GREEN): a real-sessionId row with NO transcript, registered RECENTLY, stays alive (protected)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seedNeverLaunched(home, {
+      id: 'w-never-recent', registrationAgeMs: FIVE_MINUTES, inboxLines: [{ m: 1 }], cursor: 0,
+    });
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => null } });
+    assert.strictEqual(v.status, 'alive', 'a row registered only 5 minutes ago must NOT be reaped — normal register-to-first-turn gap');
+  } finally { cleanup(); }
+});
+
+test('NEVER-LAUNCHED GUARD (GREEN): a missing/unreadable registration timestamp fails safe to alive, never fabricated', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    // No descriptor file written at all (id never even ran through
+    // seedNeverLaunched's descriptor write) — descriptorRegistrationTs must
+    // return null, and computeLiveness must never treat that as "old enough".
+    const worktreePath = path.join(home, 'wt', 'w-never-nodesc');
+    fs.mkdirSync(worktreePath, { recursive: true });
+    const inboxPath = path.join(worktreePath, 'inbox.ndjson');
+    fs.writeFileSync(inboxPath, JSON.stringify({ m: 1 }) + '\n');
+    const d = { id: 'w-never-nodesc', worktreePath, inboxPath, cursorPath: path.join(worktreePath, 'cursor'), sessionId: 'real-sid' };
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => null } });
+    assert.strictEqual(v.status, 'alive', 'undetermined registration time must never mean "consume the mail"');
+  } finally { cleanup(); }
+});
+
+test('NEVER-LAUNCHED GUARD (GREEN): a row WITH a transcript is unaffected by an old descriptor mtime (fallback only fires when the signal is entirely absent)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    // Same 7h-old descriptor as the dead case above, but this row DID produce
+    // a transcript (fresh) — must go through the EXISTING bothIdle path,
+    // completely untouched by the never-launched fallback.
+    const d = seed(home, { id: 'w-has-transcript', transcriptAgeMs: 60 * 1000, inboxLines: [{ m: 1 }], cursor: 0 });
+    const descPath = M.descriptorPathFor(d.id, home);
+    fs.mkdirSync(path.dirname(descPath), { recursive: true });
+    fs.writeFileSync(descPath, JSON.stringify({ id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId }));
+    const t = (Date.now() - SEVEN_HOURS) / 1000;
+    fs.utimesSync(descPath, t, t);
+    const v = M.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => Date.now() - 60 * 1000 } });
+    assert.strictEqual(v.status, 'alive', 'a fresh transcript must win — the never-launched fallback must never override a row that ever ran');
+  } finally { cleanup(); }
+});
+
+test('NEVER-LAUNCHED mutation check M1 (computeLiveness): reverting `stale` to ignore neverLaunchedDead reproduces the pre-fix cmdReapStale gap (RED), live source untouched (GREEN elsewhere)', () => {
+  const liveBefore = fs.readFileSync(LIVE_LIVENESS_PATH, 'utf8');
+  const copy = createLivenessCopy('anti-hall-liveness-m1');
+  try {
+    mutantKit.mutate(
+      copy.livenessPath,
+      'const stale = (bothIdle || neverLaunchedDead) && unionInfo.pendingInbound;',
+      'const stale = bothIdle && unionInfo.pendingInbound;',
+    );
+    const mutated = mutantKit.requireFresh(copy.livenessPath);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-liveness-m1-'));
+    try {
+      const d = seedNeverLaunched(home, {
+        id: 'w-m1', registrationAgeMs: SEVEN_HOURS, inboxLines: [{ m: 1 }], cursor: 0,
+      });
+      const v = mutated.computeLiveness({ descriptor: d, home, idleThresholdMs: IDLE, runners: { gitCommitTs: () => null } });
+      // RED: the SAME fixture that is 'stale' against the live (fixed)
+      // module (see the GREEN test above) stays 'alive' forever against the
+      // mutant — the exact pre-fix defect (visible-but-never-consumable).
+      assert.strictEqual(v.status, 'alive', 'RED: with the fix reverted, a 7h-old never-launched row is (wrongly) never classified dead');
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  } finally {
+    mutantKit.discardCopy(copy);
+    assert.equal(fs.readFileSync(LIVE_LIVENESS_PATH, 'utf8'), liveBefore, 'live companion/lib/liveness.js must never be modified by a mutation test');
+  }
+});
+
+test('NEVER-LAUNCHED mutation check M2 (readActivityTs): removing the descriptorRegistrationTs fallback reproduces the pre-fix siblingAckGate gap (RED), live source untouched (GREEN elsewhere)', () => {
+  const liveBefore = fs.readFileSync(LIVE_LIVENESS_PATH, 'utf8');
+  const copy = createLivenessCopy('anti-hall-liveness-m2');
+  try {
+    mutantKit.mutate(
+      copy.livenessPath,
+      "  if (best === 0) {\n    try {\n      const rt = descriptorRegistrationTs(id, home, F);\n      if (Number.isFinite(rt) && rt > 0) best = rt;\n    } catch (_) {}\n  }\n  return { ts: best > 0 ? best : null, sawTranscript };",
+      '  return { ts: best > 0 ? best : null, sawTranscript };',
+    );
+    const mutated = mutantKit.requireFresh(copy.livenessPath);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-liveness-m2-'));
+    try {
+      const d = seedNeverLaunched(home, { id: 'w-m2', registrationAgeMs: SEVEN_HOURS });
+      const r = mutated.readActivityTs({ id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId }, home, {});
+      // RED: with the fallback removed, a never-launched row (no heartbeat,
+      // no transcript, no verdict) reads back `ts: null` forever — the exact
+      // pre-fix input that made isDormantRow (and therefore
+      // isSiblingPartitionLive/siblingAckGate) fail open to "live" forever.
+      assert.strictEqual(r.ts, null, 'RED: with the fallback removed, readActivityTs never resolves a ts for a never-launched row, no matter its age');
+      assert.strictEqual(mutated.isDormantRow({ id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId }, home, {}), false,
+        'RED: isDormantRow (siblingAckGate\'s underlying rule) still reads this 7h-old never-launched row as NOT dormant');
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
+  } finally {
+    mutantKit.discardCopy(copy);
+    assert.equal(fs.readFileSync(LIVE_LIVENESS_PATH, 'utf8'), liveBefore, 'live companion/lib/liveness.js must never be modified by a mutation test');
+  }
+});
+
+test('NEVER-LAUNCHED GREEN (readActivityTs/isDormantRow — siblingAckGate\'s path): a never-launched row past the deadline reads dormant on the LIVE (fixed) module', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    const d = seedNeverLaunched(home, { id: 'w-live-m2', registrationAgeMs: SEVEN_HOURS });
+    const r = M.readActivityTs({ id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId }, home, {});
+    assert.ok(Number.isFinite(r.ts), 'GREEN: the live module resolves a ts from the descriptor registration fallback');
+    assert.strictEqual(r.sawTranscript, false);
+    assert.strictEqual(
+      M.isDormantRow({ id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId }, home, {}),
+      true,
+      'GREEN: isDormantRow (siblingAckGate\'s underlying rule) now classifies this row dormant',
+    );
+  } finally { cleanup(); }
+});

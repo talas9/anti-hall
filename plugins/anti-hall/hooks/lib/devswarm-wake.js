@@ -123,18 +123,72 @@ function isClaudeAgent(env) {
 // ever pulls it in). `inbox pull` is cheap/inline either way (no subagent
 // needed to run it), so it stays unconditional for the child branch; only the
 // READ (and any processing of the messages it returns) is gated on count.
+// G1 fix (Fix Wave 3, P0): the stop condition used to be `unreadTotal === 0`
+// alone. `count` can report `unreadTotal: 0` while ALSO carrying
+// `meshGapWithheld: true` (a sibling window whose leading row is a gap
+// trigger, so nothing in it counted as delivered YET) — treating that as
+// "nothing to do" left the automatic wake loop silently never draining a
+// mailbox that genuinely has mail sitting behind the gap. The stop condition
+// now requires BOTH `unreadTotal` is 0 AND `meshGapWithheld` is absent/false;
+// `meshGapWithheld: true` alone is enough to force the read step, which is
+// exactly what makes the corrupt/gap slot get consumed and the ack cursor
+// advance past it (scripts/devswarm.js foldSiblingGapRows consumedCount fix).
+//
+// Wave 4 P1 fix (Round-4 Reviewer, corroborated by a second auditor): the
+// child branch used to send `inbox read <id>` on the "otherwise" leg — but
+// `inbox read` is a NON-MUTATING peek (devswarm.js cmdInbox `sub === 'read'`,
+// ~line 4826: returns lines/meshMessages, never calls ackTo/setCursor). Only
+// `inbox ack`/`inbox read-primary` (`inbox messages --unread --ack`) advance
+// any cursor. So the child was told to run a verb that structurally CANNOT
+// clear a `meshGapWithheld:true` condition — the gate could re-fire forever
+// for children, unmet objective for Wave 3.
+// Fixed to `inbox read-primary <id>` (cmdInboxMessages with ack:true), NOT a
+// bare `inbox ack <id>`, for two independently-verified reasons:
+//   1. Precedent/consistency: hooks/devswarm-child-turn.js:305-311 ALREADY
+//      prescribes `inbox read-primary <id>` as "the ACTUAL cursor-advancing
+//      command" for a child with a mesh-direct-unread condition, explicitly
+//      noting `inbox read <id>` does NOT advance any cursor. `inbox read`
+//      here was NOT actually the only place in the codebase prescribing the
+//      non-acking verb to a child (Fix Wave 5 Item 3 found and fixed two
+//      more: hooks/devswarm-child-turn.js's `buildUnreadSegment` and
+//      `RECEIVE_NUDGE`, both since routed to `read-primary` too) — but it
+//      was still an internal inconsistency here, not a deliberate choice.
+//   2. Safety: `read-primary`'s sibling-partition ack target
+//      (devswarm.js ~line 4247-4302) uses the EXACT SAME shared fold
+//      (foldSiblingGapRows, ~line 1478) and the same
+//      `part.cursor + physicalConsumed` derivation as `inbox ack`'s own
+//      sibling loop (~line 4931-4940) — `physicalConsumed` is `consumedCount`/
+//      `consumedThrough[k-1]`, which by construction excludes every row for
+//      which `wasGapSeen` was already true when it was processed (the
+//      withheld suffix), so it cannot advance past a real withheld message.
+//      `read-primary`'s OWN-channel (NDJSON) ack targets the highest
+//      `.index` of a row it actually delivered (`ownDeliveredMaxIndex`,
+//      devswarm.js ~line 4218). Plain `inbox ack`'s NDJSON side (no `--to`)
+//      used to be a whole-file `advanceCursor()` sweep (marks the ENTIRE
+//      current inbox file read, regardless of what this call actually
+//      returned) — Fix Wave 5 Item 2 closed that gap too: it now acks only
+//      over the same read-time tail snapshot (`union.cursor +
+//      union.ndjsonUnreadLines.length`) it delivered, matching
+//      `read-primary`'s own invariant. See tests/hooks/devswarm-wake.test.js:210-223
+//      and tests/hooks/devswarm-child-role.test.js:178-181 for the regression
+//      proof.
 function drainCmd(cli, isChild) {
   const id = '<DEVSWARM_BUILDER_ID>';
   const countCmd = '`node ' + cli + ' inbox count ' + id + '`';
+  const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true`';
   if (isChild) {
     return 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
-      'anything waiting in your native queue) then ' + countCmd + '; if `unreadTotal` is 0, ' +
-      'say so and stop — do NOT spawn a subagent; only if `unreadTotal` is greater than 0, run ' +
-      '`node ' + cli + ' inbox read ' + id + '` (delegate to a subagent only if the payload is large)';
+      'anything waiting in your native queue) then ' + countCmd + '; ' + stopCond + ', ' +
+      'say so and stop — do NOT spawn a subagent; otherwise (either `unreadTotal` is greater ' +
+      'than 0, or `meshGapWithheld` is `true`), run `node ' + cli + ' inbox read-primary ' + id +
+      '` (delegate to a subagent only if the payload is large — this is the cursor-advancing ' +
+      'verb, matching devswarm-child-turn.js\'s own mesh-direct instruction; `inbox read` is a ' +
+      'non-mutating peek and cannot clear the withheld gap)';
   }
-  return 'first run ' + countCmd + '; if `unreadTotal` is 0, say so and stop — do NOT spawn a ' +
-    'subagent; only if `unreadTotal` is greater than 0, run `node ' + cli + ' inbox read-primary ' +
-    id + '` (delegate to a subagent only if the payload is large)';
+  return 'first run ' + countCmd + '; ' + stopCond + ', say so and stop — do NOT spawn a ' +
+    'subagent; otherwise (either `unreadTotal` is greater than 0, or `meshGapWithheld` is ' +
+    '`true`), run `node ' + cli + ' inbox read-primary ' + id +
+    '` (delegate to a subagent only if the payload is large)';
 }
 
 // monitorArmLine(watcher) -> the Monitor-arm addition to the Claude-branch wake

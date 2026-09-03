@@ -203,7 +203,7 @@ test('combined: own (deduped+capped) + mesh sibling + NDJSON, each source acks i
     // union widens the read across both partitions (mirrors
     // devswarm-inbox-cap.test.js's mesh setup).
     const r2reg = cli.run(
-      ['register', siblingId, '--worktree', repo, '--session', 's-' + siblingId,
+      ['register', siblingId, '--worktree', repo, '--session', 'unclaimed:' + siblingId,
         '--inbox', path.join(home, 'descriptor-inboxes', siblingId + '.ndjson'),
         '--cursor', path.join(home, 'descriptor-cursors', siblingId + '.cursor')],
       ctx(home, { cwd: repo })

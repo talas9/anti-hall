@@ -174,7 +174,11 @@ test('WAKE: Claude child -> CronCreate directive, default */5 schedule, ABSOLUTE
     assert.ok(/`CronCreate`/.test(c), `must name the CronCreate tool; ctx=${c}`);
     assert.ok(c.includes('`*/5 * * * *`'), `must carry the default 5-minute schedule; ctx=${c}`);
     assert.ok(/inbox pull <DEVSWARM_BUILDER_ID>/.test(c), `child drain must pull first; ctx=${c}`);
-    assert.ok(/inbox read <DEVSWARM_BUILDER_ID>/.test(c), `child drain must then read; ctx=${c}`);
+    // Wave 4 P1 fix: the child otherwise-branch must name the cursor-advancing
+    // `inbox read-primary` (bare `inbox read` is a non-mutating peek that can
+    // never clear a `meshGapWithheld:true` condition — see devswarm-wake.js).
+    assert.ok(/inbox read-primary <DEVSWARM_BUILDER_ID>/.test(c), `child drain must then read-primary (cursor-advancing); ctx=${c}`);
+    assert.ok(!/inbox read <DEVSWARM_BUILDER_ID>/.test(c), `child drain must NOT use the non-mutating bare inbox read; ctx=${c}`);
     // The wake instruction's own `node <cli>` paths must be absolute + real (P1 rule).
     const matches = [...c.matchAll(/`node ([^`]*?devswarm\.js)\b/g)];
     for (const m of matches) {

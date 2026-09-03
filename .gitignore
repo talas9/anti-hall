@@ -4,6 +4,9 @@ plugins/anti-hall/statusline/demo-wrapper.sh
 CONTINUE-HERE.md
 HANDOVER-*.md
 .anti-hall/
+# Exception: committable project-scoped skills
+!.anti-hall/skills/
+!.anti-hall/skills/**
 # anti-hall task-work progress file (tasklist-guard) — local state, never ship
 .anti-hall-progress.md
 # anti-hall fix/task history ledger (cause+fix per completed task) — local, Obsidian-readable

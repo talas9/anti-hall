@@ -28,6 +28,11 @@
 > KB's own dated-annotation convention (see the 2026-07-01 note above) — read the whole doc as a
 > **snapshot of the Opus-4.8-vs-GPT-5.5 era**, not current routing guidance. For current routing,
 > see `docs/KB-sonnet-5.md` §7–§8 and `KB-model-modes.md`.
+>
+> **[UPDATE 2026-09-03]** The "true current Claude flagship" note above (`claude-fable-5`) is
+> itself now one point release stale: `claude-fable-5-1` (released 2026-09-01) supersedes
+> `claude-fable-5`. See `docs/KB-fable-5.md`'s 2026-09-03 update. Not re-stated in full here per
+> this KB's own out-of-scope framing above.
 
 ## TL;DR (verdict)
 

@@ -30,7 +30,16 @@
 // the now-deprecated Opus 4.8, Sonnet 5 unchanged at $2/$10, Haiku 4.5
 // unchanged at 200k ctx) and corrected via stacked dated annotations. Prior
 // baseline was 2026-05-29 (research date of docs/opus-4-8-features.md).
-const MODEL_KB_AUDIT_DATE = '2026-08-22';
+//
+// 2026-09-03 re-audit (point-release only): claude-fable-5-1 (released
+// 2026-09-01) supersedes claude-fable-5 as current Fable. docs/KB-fable-5.md,
+// docs/KB-sonnet-5.md, docs/KB-model-modes.md, docs/KB-codex-vs-opus-coding.md,
+// and docs/KB-token-usage-models.md were corrected via stacked dated
+// annotations. Opus 5 / Sonnet 5 / Haiku 4.5 lineage unchanged — not
+// re-verified this pass, no evidence found to disturb the 2026-08-22 findings
+// on those. MODEL-POLICY.md (both variants) needed no change — already routes
+// by tier token, resolved at call time.
+const MODEL_KB_AUDIT_DATE = '2026-09-03';
 const STALENESS_THRESHOLD_DAYS = 60;
 
 module.exports = { MODEL_KB_AUDIT_DATE, STALENESS_THRESHOLD_DAYS };

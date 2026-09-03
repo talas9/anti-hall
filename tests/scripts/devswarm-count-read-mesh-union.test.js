@@ -86,11 +86,11 @@ function makeGitRepo(tag) {
 
 const ctx = (home, over) => Object.assign({ home, backend: 'journal', env: {} }, over || {});
 
-function register(home, repoDir, id, over) {
+function register(home, repoDir, id, over, sessionId) {
   const inboxPath = path.join(home, 'descriptor-inboxes', id + '.ndjson');
   const cursorPath = path.join(home, 'descriptor-cursors', id + '.cursor');
   const r = cli.run(
-    ['register', id, '--worktree', repoDir, '--session', 's-' + id, '--inbox', inboxPath, '--cursor', cursorPath],
+    ['register', id, '--worktree', repoDir, '--session', sessionId || ('s-' + id), '--inbox', inboxPath, '--cursor', cursorPath],
     ctx(home, Object.assign({ cwd: repoDir }, over || {}))
   );
   assert.equal(r.result.ok, true, 'register failed: ' + JSON.stringify(r.result));
@@ -222,7 +222,7 @@ test('inbox ack (ack-all) advances the sibling\'s OWN store cursor, never regres
   const repo = makeGitRepo('ack');
   try {
     register(home, repo, 'primary-ack');
-    register(home, repo, 'sibling-ack');
+    register(home, repo, 'sibling-ack', undefined, 'unclaimed:sibling-ack');
     seedPartition(home, repo, 'primary-ack', [{ body: 'own 1', ts: 1000 }]);
     seedPartition(home, repo, 'sibling-ack', [{ body: 'sib 1', ts: 1100 }, { body: 'sib 2', ts: 1200 }]);
 

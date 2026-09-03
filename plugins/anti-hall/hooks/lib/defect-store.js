@@ -612,7 +612,21 @@ function archiveSweep(now, home) {
       continue;
     }
     const state = deriveState(parsed);
-    if (state.status === 'open' || state.status === 'regressed') {
+    // P1-C fix (Codex review of HEAD): this used to gate on the literal
+    // pair 'open'/'regressed' — NOT the same test as this function's own
+    // doc comment above, which says only fixed|wontfix|notabug|dup
+    // (CLOSED_STATUSES) may rotate. That let a defect ruled 'ack' or
+    // 'partial' — genuinely UNFINISHED per isUnfinished(), the single
+    // source of truth `list --unfinished` (scripts/defect.js) and the
+    // maintainer nudge (hooks/defect-nudge.js) already use — age out of
+    // defectsDir into archive/, where listDefects({}) never looks (no
+    // `dir` override), so it silently vanished from every unfinished/nudge
+    // count. Reintroduced the exact invisible-unfinished-defect failure
+    // this store's own header comment describes, one layer deeper. Fix:
+    // refuse to archive anything isUnfinished() still calls outstanding —
+    // matches the doc comment exactly and makes "archived but unfinished"
+    // provably impossible going forward (archivedness now implies closed).
+    if (isUnfinished(state.status)) {
       results.push({ fp, moved: false, reason: state.status });
       continue;
     }

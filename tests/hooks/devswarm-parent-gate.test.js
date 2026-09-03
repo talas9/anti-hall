@@ -2480,3 +2480,106 @@ test('A2 GUARD (d): foreignProject + inbox ENOENT + REAL drained history in the 
 //         `registeredKey` into this specific probe (making the guard live)
 //         would be caught immediately.
 // -----------------------------------------------------------------------
+
+// ============================================================================
+// DEFECT 427dbff95f28 (P1, field report): the Primary replies to a child's
+// needsReply question via a plain `send --to <uuid-row>`, but the Stop-gate
+// still reports UNANSWERED forever. Root cause: a pendingQuestion's `from` is
+// the sender's REGISTRY-ROW id as resolveSenderRegistryId (devswarm-store.js)
+// resolves it — whichever row is "freshest LIVE" among every row sharing the
+// sender's worktree-derived meshId — but a reply's recorded key
+// (devswarm-parent-reply-tracker.js's recordReply(repoKey, home, resp.toId,
+// ts)) is whichever row scripts/devswarm.js's resolveSendTarget ACTUALLY
+// resolved `--to` to: an EXACT registry-id match (e.g. addressing the child's
+// UUID row directly) wins there independent of liveness. A child can be known
+// by a UUID row, a slug row, AND a primary-<8hex> builder id — different rows,
+// same logical agent (devswarm-identity-family.js's own header) — so these two
+// independently-computed identities can diverge for the SAME agent, and
+// unansweredQuestions()'s raw string compare (`state[q.from]`) never sees a
+// reply that landed on a sibling row.
+//
+// The fix (devswarm-parent-gate.js, in the `unanswered` block right after
+// `unansweredQuestions()` runs): cross-check every remaining "unanswered"
+// entry against every OTHER member of its identity family (grouped by
+// resolved worktree, via devswarm-identity-family.js's collapseFamilies — the
+// SAME grouping this file already uses for the blocking-family reduction) for
+// a reply recorded at-or-after the question's effective ts.
+// ============================================================================
+
+test('DEFECT 427dbff95f28 FIX: a reply to a DIFFERENT registry row of the SAME identity family (UUID row vs builder-id row, same worktree) clears the question', () => {
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    const childUuidRow = 'a1b2c3d4-1111-2222-3333-444455556666';
+    const childBuilderRow = 'primary-63f9261d';
+    // Both rows registered against the SAME child worktree — the UUID-row /
+    // builder-id-row shape this defect's report names explicitly.
+    seedWorkspace(h.home, childUuidRow, { messages: [], cursor: 0, worktreePath: wt.dir });
+    seedWorkspace(h.home, childBuilderRow, { messages: [], cursor: 0, worktreePath: wt.dir });
+
+    const ts = Date.now() - 5 * 60000;
+    // The question's `from` is the builder-id row — what
+    // resolveSenderRegistryId's "freshest LIVE" pick would resolve to.
+    writeOwnSummary(h.home, 0, undefined, [{ from: childBuilderRow, ts, seq: 1 }]);
+    const p = stopPayload('idfam-427-sess', true); // withCwd -> REPO_CWD -> resolvable REPO_KEY
+
+    const before = run(h.home, p);
+    assert.strictEqual(before.json && before.json.decision, 'block', 'must block while genuinely unanswered');
+    assert.match(before.json.reason, /UNANSWERED QUESTION/);
+
+    // The Primary replies by a PLAIN send addressed to the child's UUID row
+    // instead — recordReply is keyed under the UUID row's id (resp.toId), a
+    // DIFFERENT string than the question's `from`, reproducing the exact field
+    // defect (repro verified directly against devswarm-store.js +
+    // devswarm-reply-state.js before this fix was written).
+    replyStateLib.recordReply(REPO_KEY, h.home, childUuidRow, ts + 60000);
+
+    const after = run(h.home, p);
+    assert.strictEqual(after.status, 0);
+    assert.strictEqual(after.stdout, '',
+      `a reply landing on ANY member of the SAME identity family must clear the question; got: ${after.stdout}`);
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+test('DEFECT 427dbff95f28 NEGATIVE CONTROL: a reply recorded under an UNRELATED workspace (different worktree/family) must NOT clear the question (no false negative)', () => {
+  const h = makeHome();
+  const wtA = makeLinkedWorktree();
+  const wtB = makeLinkedWorktree();
+  try {
+    const askerRow = 'primary-aaaaaaaa';
+    const unrelatedRow = 'primary-bbbbbbbb';
+    seedWorkspace(h.home, askerRow, { messages: [], cursor: 0, worktreePath: wtA.dir });
+    seedWorkspace(h.home, unrelatedRow, { messages: [], cursor: 0, worktreePath: wtB.dir });
+
+    const ts = Date.now() - 5 * 60000;
+    writeOwnSummary(h.home, 0, undefined, [{ from: askerRow, ts, seq: 1 }]);
+    const p = stopPayload('idfam-427-negctrl-sess', true);
+
+    // Reply recorded for a GENUINELY different worktree/identity family.
+    replyStateLib.recordReply(REPO_KEY, h.home, unrelatedRow, ts + 60000);
+
+    const r = run(h.home, p);
+    assert.strictEqual(r.json && r.json.decision, 'block',
+      'a reply to an UNRELATED workspace (different family) must never clear a DIFFERENT family\'s unanswered question');
+    assert.match(r.json.reason, /UNANSWERED QUESTION/);
+  } finally { h.cleanup(); wtA.cleanup(); wtB.cleanup(); }
+});
+
+// MUTATION-TESTED (non-vacuousness proof for the two tests above). Both
+// mutations were applied live to devswarm-parent-gate.js's unanswered-block
+// identity-family cross-check, confirmed RED, then reverted and confirmed
+// GREEN again (see the task's returned evidence for the actual command
+// output — recorded here so a future reader can reproduce the same proof):
+//   (i)  Delete the entire identity-family cross-check block (restore
+//        `unanswered = rawUnanswered;` unconditionally, i.e. revert to the
+//        PRE-FIX behavior) -> KILLS the FIX test above (goes from ✔ to ✖: the
+//        question never clears, `after.stdout` carries the block instead of
+//        '').
+//   (ii) Widen the family match into a no-op that treats EVERY sender as
+//        "in the same family as everything" (e.g. hard-code `if (!fam)
+//        return true;` branch to always fall through and short-circuit
+//        the whole filter to `() => false`, i.e. everything is
+//        unconditionally "answered") -> KILLS the NEGATIVE CONTROL test
+//        above (goes from ✔ to ✖: an unrelated reply wrongly clears a
+//        DIFFERENT family's question) — proving the fix is neither a no-op
+//        nor an over-broad "always clear" shortcut.

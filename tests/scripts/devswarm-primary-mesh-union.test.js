@@ -67,11 +67,11 @@ const ctx = (home, over) => Object.assign({ home, backend: 'journal', env: {} },
 // register(home, repoDir, id, over) -> registers `id` under repoDir's OWN
 // worktree (ctx.cwd = repoDir too, so repoKeyForCwd resolves the store this
 // row actually lands in — the D24 mesh re-key path).
-function register(home, repoDir, id, over) {
+function register(home, repoDir, id, over, sessionId) {
   const inboxPath = path.join(home, 'descriptor-inboxes', id + '.ndjson');
   const cursorPath = path.join(home, 'descriptor-cursors', id + '.cursor');
   const r = cli.run(
-    ['register', id, '--worktree', repoDir, '--session', 's-' + id, '--inbox', inboxPath, '--cursor', cursorPath],
+    ['register', id, '--worktree', repoDir, '--session', sessionId || ('s-' + id), '--inbox', inboxPath, '--cursor', cursorPath],
     ctx(home, Object.assign({ cwd: repoDir }, over || {}))
   );
   assert.equal(r.result.ok, true, 'register failed: ' + JSON.stringify(r.result));
@@ -129,7 +129,7 @@ test('ack advances each contributing partition\'s OWN cursor, and only that part
   const repo = makeGitRepo('cursors');
   try {
     register(home, repo, 'primary-a');
-    register(home, repo, 'sibling-b');
+    register(home, repo, 'sibling-b', undefined, 'unclaimed:sibling-b');
 
     seedPartition(home, repo, 'primary-a', [{ body: 'from a', ts: 1000 }, { body: 'from a 2', ts: 1100 }]);
     seedPartition(home, repo, 'sibling-b', [{ body: 'from b', ts: 1200 }]);

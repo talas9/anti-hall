@@ -212,7 +212,12 @@ test('UNREAD: durable child inbox with unread parent messages -> count + safe re
     assert.strictEqual(r.status, 0);
     const c = ctx(r);
     assert.ok(/2 unread parent message/.test(c), `must surface the unread count; ctx=${c}`);
-    assert.ok(/inbox read child-1/.test(c), `must name the safe durable read path; ctx=${c}`);
+    // Fix Wave 5 Item 3: `inbox read <id>` never advances any cursor (see
+    // hooks/devswarm-child-turn.js's buildUnreadSegment header comment) — a
+    // child following that verb would see the same "unread" count forever.
+    // The safe durable path is the ACKING `read-primary` verb.
+    assert.ok(/inbox read-primary child-1/.test(c), `must name the safe, cursor-advancing durable read path; ctx=${c}`);
+    assert.ok(!/inbox read child-1\b/.test(c), `must never name the non-acking bare "inbox read <id>" form; ctx=${c}`);
     assert.ok(/read-messages|monitor/.test(c), `must warn off the destructive drains; ctx=${c}`);
     assert.ok(c.includes(REMINDER_PHRASE), 'the base reminder must still be present');
   } finally {

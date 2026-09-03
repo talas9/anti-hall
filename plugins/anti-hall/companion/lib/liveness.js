@@ -120,6 +120,64 @@ function heartbeatPathFor(id, home) {
   if (!isSafeId(id)) throw new Error('unsafe workspace id: ' + JSON.stringify(id));
   return path.join(devswarmRoot(home), 'heartbeats', String(id) + '.json');
 }
+// descriptorPathFor(id, home) — scripts/devswarm.js's own workspaces/<id>.json
+// (workspacesDir(home) there == devswarmRoot(home)/workspaces here; duplicated,
+// not required, matching this file's existing precedent of duplicating
+// devswarm.js's path shape locally — see livenessPathFor/heartbeatPathFor).
+// SAME id-safety gate as the others.
+function descriptorPathFor(id, home) {
+  if (!isSafeId(id)) throw new Error('unsafe workspace id: ' + JSON.stringify(id));
+  return path.join(devswarmRoot(home), 'workspaces', String(id) + '.json');
+}
+// descriptorRegistrationTs(id, home, fsi) -> ms | null. NEVER-LAUNCHED gap
+// fallback: a registry row with a REAL sessionId that never once produced a
+// transcript has tMtime permanently null, so computeLiveness's `haveBoth` (and
+// readActivityTs's combined `ts` below) can never resolve — the row is
+// visible-but-never-consumable forever. Neither backend's registry row carries
+// a durable registration timestamp: it exposes only `updated_at`/`updatedAt`,
+// which is refreshed by activity UNRELATED to this specific row's own launch —
+// verified: devswarm-ingest.js's self-registration upserts the daemon's OWN
+// primary row on EVERY daemon startup, and `ensure`/auto-ensure re-upserts on
+// EVERY child turn (companion/devswarm-ingest.js ~1361, scripts/devswarm.js
+// cmdRegister's `requireNew && existing` branch). The descriptor FILE is NOT
+// write-once — many paths rewrite it: `ensure` (scripts/devswarm.js:3404,
+// unconditional, fires on every `inbox pull`), :3448, rehome/heal (:1149,
+// :1256), archive backfill (:5568), unarchive (:5920), and migrateOwnerKeys
+// (:6221, invoked by hooks/lib/doctor-repair.js:1166-1169 and by the
+// updater). So this function measures time since the descriptor was last
+// WRITTEN, not time since registration — and the mtime can be STALE as well
+// as fresh: cmdArchive hardlinks the descriptor (devswarm.js:5596) and
+// cmdUnarchive links it back (:5897), so an archive->unarchive round-trip
+// restores an active descriptor still carrying its pre-archive mtime; an
+// `rsync -a` / Time Machine restore preserves old mtimes too. This is safe
+// despite the imprecision because the never-launched fallback only fires
+// when heartbeat, transcript, and lastOutbound are ALL absent (`best === 0`),
+// which a live session never satisfies (it always has a transcript `.jsonl`
+// and heartbeats after its first prompt) — worst case is an early orphan
+// drain to a mesh sibling (delivery, not loss), and `ensure` heals the
+// timestamp on the next `inbox pull`. Fail-open to null on unsafe id /
+// missing / unreadable descriptor (no signal, never fabricated).
+function descriptorRegistrationTs(id, home, fsi) {
+  const F = fsi || fs;
+  let p;
+  try { p = descriptorPathFor(id, home); } catch (_) { return null; }
+  try {
+    const st = F.statSync(p);
+    return Number.isFinite(st.mtimeMs) ? st.mtimeMs : null;
+  } catch (_) { return null; }
+}
+// DEFAULT_NEVER_LAUNCHED_MS — the generous ABSOLUTE deadline for the
+// never-launched fallback above: how long a row may sit registered with NO
+// transcript at all (and, via readActivityTs, no heartbeat/verdict-outbound
+// either) before it is treated as dead. This is a fallback for "never
+// launched at all", NOT a liveness heartbeat — deliberately hours, not
+// minutes, comfortably longer than any plausible register-to-first-turn gap
+// (spawn scheduling, hivecontrol worktree creation, model cold-start). Kept
+// the SAME 6h value as DEFAULT_ROSTER_IDLE_MS above (this file's existing
+// "defensible wide default" for the sibling "no transcript signal" case) —
+// distinct name so the two axes can be tuned independently later without
+// silently colliding, matching this file's own stated practice.
+const DEFAULT_NEVER_LAUNCHED_MS = 6 * 60 * 60 * 1000;
 // heartbeatTs(id, home, fsi) -> ms | null. The recorded `ts` from
 // heartbeats/<id>.json (cmdHeartbeat writes `ts: now`), falling back to the
 // file's mtime if the JSON is torn/missing the field. null when absent /
@@ -272,6 +330,20 @@ function readActivityTs(row, home, opts) {
   try {
     if (Number.isFinite(o.lastOutboundTs) && o.lastOutboundTs > best) best = o.lastOutboundTs;
   } catch (_) {}
+  // NEVER-LAUNCHED fallback (see descriptorRegistrationTs's header): reached
+  // ONLY when heartbeat, transcript, AND lastOutboundTs are ALL absent (best
+  // still 0) — i.e. every other activity signal this row could offer is
+  // missing, not merely the transcript one. `sawTranscript` stays false, so
+  // isDormantRow below applies its EXISTING "no transcript" window
+  // (idleThresholdMs, the same 6h default DEFAULT_NEVER_LAUNCHED_MS mirrors)
+  // to this registration timestamp exactly as it already does for a
+  // heartbeat-only row — no new comparison logic needed here.
+  if (best === 0) {
+    try {
+      const rt = descriptorRegistrationTs(id, home, F);
+      if (Number.isFinite(rt) && rt > 0) best = rt;
+    } catch (_) {}
+  }
   return { ts: best > 0 ? best : null, sawTranscript };
 }
 
@@ -325,6 +397,80 @@ function hasFreshHeartbeat(id, home, opts) {
   const freshMs = Number.isFinite(o.freshMs) ? o.freshMs : DEFAULT_HEARTBEAT_FRESH_MS;
   const ts = heartbeatTs(id, home, o.fs);
   return isFreshBeat(ts, now, freshMs);
+}
+
+// isSiblingPartitionLive(row, home, opts) -> bool. Fix Wave 7 Item 2: the ONE
+// positive-evidence liveness check for a MESH-SIBLING partition before any
+// cursor-ack (shared by scripts/devswarm.js's cmdInboxMessages read-primary/
+// peek-primary ack loop AND `inbox ack`'s own sibling-store-cursor loop, so
+// the two verbs cannot silently diverge on what "safe to ack" means).
+//
+// ROOT CAUSE this replaces: the prior gate (`hasFreshHeartbeat` alone) treated
+// ABSENCE of a recent heartbeat as evidence of death. Three ways that is
+// wrong, all reproduced live:
+//   - a child mid-long-turn: writeHeartbeat is called once per
+//     UserPromptSubmit (once per PROMPT), not per tool-call round, so 40
+//     minutes of autonomous work on one prompt reads as stale though the
+//     session is very much alive.
+//   - a genuinely live child that has not yet completed its first turn:
+//     `register` writes no heartbeat file at all, so a brand-new live child
+//     reads identically to a dead one.
+//   - an unreadable heartbeat file (EACCES etc): `heartbeatTs` swallows the
+//     error and returns null ("never throws"), which the old gate could not
+//     distinguish from "no heartbeat ever recorded" (i.e. dead).
+//
+// FIX: compose the SAME three-branch rule already relied on for `diagnose`'s
+// rows[].live (scripts/devswarm.js computeDiagnosis, ~line 7305) — reused,
+// not reinvented:
+//   1. a FRESH heartbeat -> definitive proof-of-life (see this file's header)
+//      -> live. Kept as an ADDITIONAL/fast-path signal, never the sole
+//      permission to ack (that was the bug).
+//   2. else a REAL (non-synthetic, non-`unclaimed:`) sessionId whose OWN
+//      activity is NOT positively stale (`isDormantRow` — false unless it has
+//      POSITIVE evidence of prolonged silence) -> live. `isDormantRow`'s
+//      transcript term refreshes on EVERY tool call, not once per turn, so a
+//      child mid-long-turn keeps reading live even once its heartbeat alone
+//      has gone stale; and `isDormantRow` is itself fail-open (no signal at
+//      all -> not dormant), so a never-heartbeated child, or one whose
+//      heartbeat file is transiently unreadable, ALSO reads live rather than
+//      dead — closing both the never-heartbeated and the EACCES-fails-toward-
+//      death holes as a byproduct of gating on evidence-of-death rather than
+//      absence-of-evidence-of-life.
+//   3. else (no fresh heartbeat AND either no real sessionId or positively
+//      stale activity) -> NOT live. This IS positive evidence of death: the
+//      row was either never claimed by a real session at all (the
+//      register-only phantom — the legitimate cross-drain/orphan case this
+//      gate exists to allow through) or its own evidence (heartbeat AND
+//      transcript) is measurably stale past the dormancy window — never mere
+//      absence of a signal.
+// A durable "registry row removed/tombstoned" signal was evaluated and
+// rejected as the primitive here: `meshSiblingPartitions` (the set this gate
+// is ever consulted for) is built FROM `listRegistry()`, so every candidate
+// row it contains structurally still HAS a registry row by construction — a
+// tombstoned id is simply absent from that set already and never reaches this
+// function. The `unclaimed:`/dormancy composition above is the one that
+// actually discriminates live-vs-dead WITHIN that set.
+//
+// Fail-open on throw (malformed row / registry read failure): treat as LIVE
+// (skip the ack) — the same asymmetry already documented at both call sites:
+// a spurious skip only risks a harmless re-delivery next read, while a
+// spurious ack risks PERMANENTLY losing a live sibling's own unread backlog.
+// opts: { now, freshMs } — forwarded to hasFreshHeartbeat/isDormantRow.
+function isSiblingPartitionLive(row, home, opts) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  try {
+    const id = row && row.id != null ? String(row.id) : null;
+    if (!id) return true; // no id to check -> undetermined -> fail toward live
+    if (hasFreshHeartbeat(id, home, { now, freshMs: o.freshMs })) return true;
+    const sidRaw = row.sessionId;
+    const sid = sidRaw == null ? '' : String(sidRaw);
+    const isLiveSid = sid !== '' && !sid.startsWith('unclaimed:');
+    if (!isLiveSid) return false; // register-only phantom -> positive evidence of the legitimate orphan case
+    return !isDormantRow({ id, worktreePath: row.worktreePath, sessionId: sidRaw }, home, { now });
+  } catch (_) {
+    return true; // undetermined -> fail toward live, never ack
+  }
 }
 
 // transcriptMtime(projectDir, sessionId, fsi) -> ms | null. uuid-SCOPED: stats
@@ -617,10 +763,23 @@ function computeLiveness(opts) {
   // stale (fail-safe). max() being idle is equivalent to "both idle".
   const haveBoth = tMtime !== null && wMtime !== null;
   const bothIdle = haveBoth && (now - tMtime) > idle && (now - wMtime) > idle;
+
+  // NEVER-LAUNCHED fallback (see descriptorRegistrationTs's header): applies
+  // ONLY when the transcript signal is ENTIRELY absent (tMtime === null) — a
+  // row that ever produced a transcript keeps going through bothIdle above,
+  // untouched. regTs must be a positive, non-future, finite timestamp, else
+  // this stays false and the row falls through to the existing haveBoth-false
+  // fail-safe (undetermined -> never dead, never ack, never reap).
+  const neverLaunchedDeadlineMs = Number.isFinite(opts.neverLaunchedDeadlineMs)
+    ? opts.neverLaunchedDeadlineMs : DEFAULT_NEVER_LAUNCHED_MS;
+  const regTs = tMtime === null ? descriptorRegistrationTs(descriptor.id, home, fsi) : null;
+  const regTsValid = tMtime === null && Number.isFinite(regTs) && regTs > 0 && regTs <= now;
+  const neverLaunchedDead = regTsValid && (now - regTs) > neverLaunchedDeadlineMs;
+
   // A3 fix: `stale` gates on `pendingInbound`, NOT the raw `pending` reporting
   // value — see unionPendingFor's header. `pending` (reported below, unchanged)
   // still reflects the full mailbox depth for drain/ack accounting elsewhere.
-  const stale = bothIdle && unionInfo.pendingInbound;
+  const stale = (bothIdle || neverLaunchedDead) && unionInfo.pendingInbound;
 
   return {
     status: stale ? 'stale' : 'alive',
@@ -647,9 +806,9 @@ function writeVerdict(id, verdict, home, fsi) {
 
 module.exports = {
   DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS, DEFAULT_HEARTBEAT_FRESH_MS, DEFAULT_DORMANT_MS,
-  DEFAULT_ROSTER_IDLE_MS, NOT_DRAINING_AGE_MS,
-  isSafeId, devswarmRoot, livenessPathFor, heartbeatPathFor, projectDirFor,
+  DEFAULT_ROSTER_IDLE_MS, NOT_DRAINING_AGE_MS, DEFAULT_NEVER_LAUNCHED_MS,
+  isSafeId, devswarmRoot, livenessPathFor, heartbeatPathFor, descriptorPathFor, descriptorRegistrationTs, projectDirFor,
   transcriptMtime, worktreeActivityMtime, unreadBacklog, unionPendingFor, resolveSelfId, computeLiveness, writeVerdict,
   heartbeatTs, hasFreshHeartbeat, isFreshBeat, dormantThresholdMs, isDormantActivity,
-  idleThresholdMs, readActivityTs, isDormantRow,
+  idleThresholdMs, readActivityTs, isDormantRow, isSiblingPartitionLive,
 };
