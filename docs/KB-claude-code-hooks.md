@@ -75,7 +75,7 @@ a state-change edge.
 | 30 | `TaskCompleted` | A task is being marked completed | Per task completion (state change) | `session_id`, `task_id`, `task_title`, `task_status`, `task_outcome` | Yes — exit 2 prevents the task from being marked complete | Yes — `additionalContext` | Supported |
 | 31 | `Elicitation` | An MCP server requests user input during a tool call | Per MCP elicitation request | `session_id`, `mcp_server`, `elicitation_prompt`, `mcp_tool_use_id` | Yes — exit 2 (note: an exit-2 hook's `hookSpecificOutput` is ignored) | Yes — `hookSpecificOutput.elicitationResponse` | Supported |
 | 32 | `ElicitationResult` | After a user responds to an MCP elicitation, before the response returns to the server | Per elicitation response | `session_id`, `mcp_server`, `mcp_tool_use_id`, `user_response`, `original_elicitation` | Yes — exit 2 (same caveat as above) | Yes — `hookSpecificOutput.updatedResponse` | Supported |
-| 33 | `SessionEnd` | Session terminates | Per session | `session_id`, `end_reason` (`clear`/`resume`/`logout`/`prompt_input_exit`/`other`), `transcript_path` | No | No | Not supported; all `SessionEnd` hooks share a 1.5s budget (raised up to 60s if a configured per-hook timeout exceeds it) |
+| 33 | `SessionEnd` | Session terminates | Per session | **CORRECTED, MEASURED 2026-09-05 via a real `claude -p` probe**: the field is `reason` (`clear`/`resume`/`logout`/`prompt_input_exit`/`other`), NOT `end_reason` — the row previously stated `end_reason` here, sourced from the official docs page, but the actual observed wire payload never carries that key. Full observed key set: `session_id`, `transcript_path`, `cwd`, `prompt_id`, `hook_event_name`, `reason`. A consumer should read `reason` as primary and may accept `end_reason` only as a defensive fallback alias in case a future/different harness build reintroduces it. | No | No | Not supported; all `SessionEnd` hooks share a 1.5s budget (raised up to 60s if a configured per-hook timeout exceeds it) |
 
 **Note on the anti-hall research prompt's 21-event baseline:** that list was missing 12
 events found here — `Setup`, `UserPromptExpansion`, `PermissionDenied`, `PostToolBatch`,
@@ -334,6 +334,16 @@ if Claude Code cannot statically determine what a command expands to.
   `SessionEnd` hooks combined, not 1.5s per hook — a slow `SessionEnd` hook can starve
   others. The budget only rises (up to 60s) if a hook's own configured `timeout` exceeds
   1.5s.
+- **MEASURED 2026-09-05 (round 3, live `claude -p` with a real stdio MCP server, sampled
+  every 500ms, 3/3 runs)**: on a CLEAN exit, Claude Code shuts down and reaps its own MCP
+  server children BEFORE `SessionEnd` fires — the MCP child process was already gone from
+  `ps` by the time `SessionEnd` ran in every run. On a hard crash (`kill -9` the claude
+  process), `SessionEnd` does NOT run at all. Practical implication: a `SessionEnd` hook
+  can never observe or clean up ITS OWN session's still-running MCP children on a clean
+  exit (there aren't any left to find), and cannot run at all to react to a crash of its
+  own session — the only thing such a hook can usefully do is sweep MCP-signature
+  processes reparented to PID 1 that were LEFT BEHIND by a PREVIOUSLY crashed session,
+  at the start of whatever session's `SessionEnd` runs next.
 - **Elicitation and ElicitationResult**: an exit-2 hook's `hookSpecificOutput` is ignored
   for these two events specifically — the block takes effect but any structured response
   payload in the same output is dropped.
