@@ -56,6 +56,23 @@
 //                  archived/ + tombstone the store registry. hivecontrol has NO
 //                  teardown command, so this SURFACES a manual "remove workspace in
 //                  the DevSwarm app" step; it never runs a delete (none exists).
+//                  --force-cross-project <id>: the ONE escape hatch past the
+//                  id-derived authority gate, accepted only when its value equals
+//                  the id exactly, and logged to logs/devswarm-authority-override.log.
+//                  Archive ONLY — never ensure/ack/gate (see KB §35).
+//   reap-orphans [--apply --max N] [--i-am-a-human]
+//                  retire mesh partitions that hold unread mail with NO live reader
+//                  (the same set the per-turn ORPHANED MESH warning reports, read
+//                  from computeSummary, not re-derived). DRY RUN BY DEFAULT. --apply
+//                  requires --max N; refuses under ANTIHALL_DEVSWARM_AUTOMATION=1 or
+//                  a non-TTY stdin without --i-am-a-human. Each partition's unread
+//                  rows are archived to reaped/<id>.ndjson and VERIFIED before its
+//                  cursor is advanced; no message row is ever deleted (KB §33).
+//   reconcile-registry
+//                  REPORT-ONLY drift between the mesh registry and `hivecontrol
+//                  workspace list all`, both directions + worktreePath mismatches.
+//                  Never mutates. Pins the upstream JSON shape and fails soft with
+//                  `hivecontrol-shape-unrecognized` rather than guessing (KB §34).
 //   archive-ignore <id> | archive-unignore <id>
 //                  write/remove archive-ignore/<id>.json — the per-workspace ignore
 //                  mark the archive-ready surfacing consults (PLAN.md P1-E).
@@ -147,7 +164,7 @@ const inboxCursor = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const {
   isSafeId, devswarmRoot, livenessPathFor,
-  writeVerdict, hasFreshHeartbeat, worktreeActivityMtime, unreadBacklog, DEFAULT_IDLE_MS,
+  writeVerdict, hasFreshHeartbeat, heartbeatTs, worktreeActivityMtime, unreadBacklog, DEFAULT_IDLE_MS,
   isDormantRow, unionPendingFor, isSiblingPartitionLive,
 } = require('../companion/lib/liveness.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
@@ -851,6 +868,68 @@ function projectContextMismatch(id, registeredKey, callerKey, tail) {
       + ' — ' + tail,
   };
 }
+// ---- CROSS-PROJECT AUTHORITY OVERRIDE (defect c2a7813aa7d3, P1) ----------
+// The v0.85.0 id-derived authority gate (projectContextMismatch above) closed a
+// real cross-project re-home/theft P0 and is working AS DESIGNED — but it left
+// NO escape hatch at all, so a legitimate cross-project ARCHIVE (a workspace
+// whose worktree lives under another project's repo root, which the owning
+// project can no longer reach because its own registration points elsewhere)
+// became impossible by any supported route.
+//
+// THE HATCH IS DELIBERATELY NARROW, because the gate it opens is the one that
+// stops data theft:
+//   * OPT-IN PER CALL — never an env var, never a config file, never sticky.
+//   * MUST NAME THE TARGET — `--force-cross-project <targetId>` is accepted
+//     ONLY when its value is EXACTLY the id being acted on. A bare boolean
+//     flag, or a copy-pasted flag carrying a DIFFERENT id, is refused. This is
+//     what makes the override impossible to apply by accident or by a
+//     half-remembered shell-history line: the operator has to restate which
+//     workspace they mean, and the two must agree.
+//   * AUDITED — every accepted override appends one NDJSON line naming the
+//     verb, the id, and BOTH project keys, so a cross-project archive is never
+//     invisible after the fact.
+//   * ARCHIVE ONLY (see the call sites): the gate also guards `ensure`, `inbox
+//     ack` and `gate`, and those are NOT given the hatch. Archive refuses
+//     BEFORE it copies or removes anything, so overriding it moves no data —
+//     whereas overriding `ensure`/`ack`/`gate` would re-open exactly the
+//     cross-project row-copying and foreign-cursor-advancing the gate exists
+//     to prevent. The defect asked for an archive hatch; widening it further
+//     would re-introduce the P0.
+const AUTHORITY_OVERRIDE_LOG_FILE = 'devswarm-authority-override.log';
+// forceCrossProjectOverride(flags, id) -> {provided, accepted, value}
+function forceCrossProjectOverride(flags, id) {
+  const raw = one(flags, 'force-cross-project');
+  if (raw === undefined) return { provided: false, accepted: false, value: null };
+  const value = String(raw);
+  return { provided: true, accepted: value === String(id), value };
+}
+// logAuthorityOverride(entry) -> void. ONE NDJSON line per accepted override.
+// Best-effort by design: an unwritable log directory must never turn a
+// legitimate, explicitly-authorised archive into a failure — but the write is
+// attempted first and only its FAILURE is swallowed, so the audit trail exists
+// in every normal environment. Uses alog.logDir() (not a hand-rolled
+// os.homedir() join) so it honours the same ANTI_HALL_LOG_DIR override every
+// other log in this plugin does, and tests never touch the real home.
+function logAuthorityOverride(entry) {
+  try {
+    const dir = (alog && typeof alog.logDir === 'function')
+      ? alog.logDir()
+      : path.join(os.homedir(), '.anti-hall', 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.appendFileSync(path.join(dir, AUTHORITY_OVERRIDE_LOG_FILE), JSON.stringify(entry) + '\n');
+  } catch (_) { /* best-effort audit: never fails the authorised operation */ }
+}
+// forceCrossProjectHint(id) — appended to the refusal so the hatch is
+// DISCOVERABLE from the error itself rather than only from the source.
+function forceCrossProjectHint(id, provided, value) {
+  if (provided) {
+    return ' — `--force-cross-project ' + JSON.stringify(value) + '` does NOT match this workspace id; '
+      + 'the override must name the EXACT id being archived: `--force-cross-project ' + String(id) + '`';
+  }
+  return ' — if this cross-project archive is intentional, re-run with `--force-cross-project '
+    + String(id) + '` (the flag must name this exact id; the override is logged)';
+}
+
 function descriptorPhysicalOwnerKey(desc) {
   if (desc && typeof desc.ownerKey === 'string' && desc.ownerKey) return desc.ownerKey;
   return descriptorStructuralRepoKey(desc);
@@ -1953,7 +2032,41 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
       if (anchorShaped) {
         const readerEvidence = hasReaderEvidence(d.id);
         if (isStaleCrossReference(d)) {
-          isMeshAnchor = readerEvidence;
+          // R11-A5 — LIVENESS RESTORED HERE AS ITS HEARTBEAT TERM ONLY;
+          // DESCRIPTOR STILL WITHDRAWN.
+          //
+          // Carry-out (b) withdrew liveness from a stale cross-reference on
+          // the reasoning "the forged sessionId is what makes liveness true".
+          // That reasoning holds for `isLiveSessionId` (a pure SHAPE test on
+          // the sessionId string, which a cross-reference trivially satisfies)
+          // and it is right to keep that withdrawn. But it swept away a term
+          // that is NOT forgeable: `hasFreshHeartbeat(d.id, ...)` is keyed on
+          // the ROW'S OWN id and read off that partition's own heartbeat file,
+          // so nothing sitting in the sessionId field can produce it. A
+          // cross-referenced anchor that is heartbeating RIGHT NOW has a real
+          // session behind it, and retiring it is the same live-frontier sweep
+          // the reader-evidence half exists to prevent.
+          //
+          // WHY NOT THE WHOLE `isSiblingPartitionLive` COMPOSITION (verified,
+          // not assumed): after its heartbeat term, that function falls back to
+          // `!isDormantRow(...)`, and isDormantRow is FAIL-OPEN on absence of
+          // evidence (companion/lib/liveness.js:433-438 — "no signal at all ->
+          // not dormant"). A cross-referenced anchor with no heartbeat and no
+          // transcript therefore reads LIVE, which would protect essentially
+          // EVERY cross-referenced anchor and re-create the immortal row
+          // carry-out (b) exists to kill (proven: it turns the WAVE 11 (b) test
+          // above red). Its dormancy term is also the one leg a borrowed uuid
+          // CAN influence. So exactly the unforgeable half is restored here,
+          // and the fail-open half is not.
+          //
+          // The DESCRIPTOR half stays withdrawn: :1976/:2064 already treat a
+          // descriptor as insufficient for a stale cross-reference, and
+          // honouring it here would contradict the fold's own rule.
+          let beating = false;
+          try {
+            beating = hasFreshHeartbeat(d.id, home, { now: opts && opts.now });
+          } catch (_) { beating = false; } // unreadable heartbeat is NOT positive proof of a live reader
+          isMeshAnchor = readerEvidence || beating;
         } else {
           let live = false;
           try {
@@ -3870,8 +3983,22 @@ function cmdHeartbeat(id, flags, ctx) {
             meshBroadcast = {
               ok: false,
               reason: cause,
+              // CARRY-OUT (g): the refusal stays BENIGN — `ok:true` at the top
+              // level, exit code 0 — because it is a working security control
+              // doing its job, and the BASE heartbeat genuinely succeeded (see
+              // BENIGN_MESH_BROADCAST_REASONS). But "benign" was being read by
+              // callers as "applied": nothing in the response said the SUMMARY
+              // itself was thrown away, so a caller that set --summary and got
+              // ok:true had no way to learn its working_on text never reached
+              // the mesh. `dropped`/`dropReason` say so explicitly, WITHOUT
+              // changing the ok:true contract this reason deliberately keeps.
+              // Scoped to this refusal only — no other benign reason's shape
+              // changes (the no-project dormancy case is untouched).
+              dropped: true,
+              dropReason: cause,
               error: 'heartbeat --summary refused (' + cause + '): caller ' + JSON.stringify(caller)
-                + ' does not own workspace ' + JSON.stringify(id),
+                + ' does not own workspace ' + JSON.stringify(id)
+                + ' — the summary was DROPPED (not broadcast); the base heartbeat still succeeded',
               callerIdentity: caller,
             };
           } else {
@@ -4224,9 +4351,84 @@ function parseInboxSince(raw) {
   return { kind: 'ts', value: ts };
 }
 
+// inboxReadDoesAck(flags, opts) -> boolean. The ONE derivation of "this call
+// will advance a cursor", shared by cmdInboxMessages' drain-marker wrapper and
+// the read body itself so the two can never disagree about whether a drain is
+// in flight (a wrapper that marked a drain the body then didn't perform would
+// silence the parent gate for a read that acked nothing).
+function inboxReadDoesAck(flags, opts) {
+  return !!((opts && opts.ack) || (flags && flags.ack));
+}
+
+// cmdInboxMessages — DRAIN-MARKER WRAPPER (defect 13dedc334eb6, P2).
+//
+// The write half of companion/lib/devswarm-drain-marker.js, whose header names
+// this exact call site: the ack-bearing read path (`inbox read-primary`,
+// `inbox read`, any `--ack`) declares "I am draining my mailbox right now" at
+// ENTRY and clears it in a `finally`. devswarm-parent-gate.js's Stop hook
+// (~:1389-1402) reads that marker and, when it is fresh AND belongs to this
+// session, downgrades its forced acknowledgement to a non-blocking notice —
+// instead of firing repeated forced acks (and an escalation) at a mailbox a
+// delegated subagent is already draining, whose pressure pushes toward a
+// SECOND reader against the same cursor, the action most likely to lose mail.
+//
+// SESSION ID: the gate compares `marker.sessionId` against the Stop payload's
+// `payload.session_id` — the real Claude Code session uuid. `CLAUDE_CODE_
+// SESSION_ID` is the env var Claude Code sets on every process it spawns and
+// is therefore the SAME value the hook sees (this file already treats it as
+// the authoritative session handle in cmdRegisterPrimary and cmdGateIntent).
+// It is preferred for that reason; the descriptor's recorded sessionId is only
+// a fallback for a CLI invoked outside a Claude session. `pid` is recorded by
+// the marker module itself and gives the gate a second identity leg, though it
+// rarely matches in practice (the hook and this CLI are different processes).
+//
+// NON-ACKING reads are deliberately NOT marked: a pure `inbox messages` read
+// consumes nothing, so it is not a drain and must never silence the gate.
+//
+// NEVER THROWS: the lazy require, the marker write and the clear are each
+// individually guarded. A missing/broken marker module, an unwritable home, or
+// an unsafe id degrade to "no marker" — the gate simply blocks as it did
+// before, which is the safe direction. The marker must never be able to break
+// a read that would otherwise have succeeded.
 function cmdInboxMessages(id, flags, ctx, opts) {
+  if (!inboxReadDoesAck(flags, opts)) return cmdInboxMessagesInner(id, flags, ctx, opts);
+  let marker = null;
+  try {
+    marker = require('../companion/lib/devswarm-drain-marker.js');
+  } catch (_) { marker = null; }
+  if (!marker || typeof marker.markDrainStart !== 'function') {
+    return cmdInboxMessagesInner(id, flags, ctx, opts);
+  }
+  let sessionId = (ctx && ctx.env && ctx.env.CLAUDE_CODE_SESSION_ID) || null;
+  if (!sessionId) {
+    // Descriptor fallback — a plain file read (no store open), so a drain is
+    // never slowed by resolving its own identity.
+    try {
+      const d = readDescriptorFile(ctx.home, id);
+      if (d && d.sessionId != null && String(d.sessionId) !== '') sessionId = String(d.sessionId);
+    } catch (_) { /* no identity available -> marker still written, pid-only */ }
+  }
+  try {
+    // `count` is 0 = NOT YET KNOWN at entry, which is the honest value here:
+    // the number of rows this drain will deliver is only established by the
+    // read itself, and computing it up front would mean a second store open +
+    // a full union recompute — precisely the expense this marker exists to let
+    // the gate stop provoking. The marker's sole consumer (the parent gate)
+    // reads startedAt/sessionId/pid and never `count`.
+    marker.markDrainStart(ctx.home, id, { sessionId, count: 0, now: ctx && ctx.now });
+  } catch (_) { /* fail-soft: an unmarked drain is just an un-silenced gate */ }
+  try {
+    return cmdInboxMessagesInner(id, flags, ctx, opts);
+  } finally {
+    // `finally`, not a post-return call: a THROW mid-drain must still clear the
+    // marker rather than leave it silencing the gate until its TTL expires.
+    try { marker.clearDrainMarker(ctx.home, id); } catch (_) { /* fail-soft */ }
+  }
+}
+
+function cmdInboxMessagesInner(id, flags, ctx, opts) {
   const home = ctx.home;
-  const doAck = !!((opts && opts.ack) || flags.ack);
+  const doAck = inboxReadDoesAck(flags, opts);
   // forceUnread (spec item 5b / D): lets `peek-primary` request the SAME
   // unread-only view as `read-primary` (opts.ack:true implies it) WITHOUT
   // itself acking — a genuinely non-mutating peek at what read-primary would
@@ -4905,6 +5107,42 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   let windowWithheld = 0;
   let windowUndated = 0;
   if (windowActive && Array.isArray(messages)) {
+    // TAIL-UNDER-TRUNCATION REFUSAL (R11-A3, P2). `--tail N` promises "the
+    // NEWEST N". It cannot keep that promise once the per-source read cap
+    // above (the `(wantsUnion || meshUnionActive) && messages.length >
+    // inboxReadLimit` block) has fired: that cap deliberately keeps an
+    // EARLIEST structural PREFIX of every source, so `messages` here is the
+    // OLDEST `inboxReadLimit` rows and `slice(-N)` returns the last N of the
+    // EARLIEST batch — mail that is arbitrarily far from the newest, silently
+    // presented as if it were the tail. Nothing about the ordering can be
+    // reversed to fix this: the prefix direction is exactly what the ack
+    // arithmetic below (and the sibling `deliveredCount` invariant) depends
+    // on — a withheld row's cursor must never advance past it — so keeping a
+    // LATEST suffix instead would break cursor safety on every acking caller
+    // that shares this function.
+    // REFUSING is therefore the only honest option, and it is safe: this verb
+    // is non-acking (windowActive is false whenever doAck is set), so nothing
+    // has been consumed and re-running with `--since` returns the mail. The
+    // hint names `--since` because a since-bounded read narrows the set
+    // BEFORE the cap can bite, which is the actual way to reach recent mail
+    // on an over-cap partition.
+    if (windowTail !== null && truncatedCount > 0) {
+      return {
+        ok: false,
+        action: (opts && opts.action) || 'messages',
+        id,
+        reason: 'tail-under-truncation',
+        truncated: true,
+        truncatedCount,
+        limit: inboxReadLimit,
+        requestedTail: windowTail,
+        error: '--tail ' + windowTail + ' cannot be honoured: this read was truncated by the '
+          + inboxReadLimit + '-row per-source cap (' + truncatedCount + ' row(s) withheld), and the cap keeps '
+          + 'the EARLIEST rows, so the last ' + windowTail + ' of what was read are NOT the newest messages.',
+        hint: 'use `--since <index|ISO date>` to bound the read to recent mail before the cap applies '
+          + '(or raise --limit above ' + inboxReadLimit + ' so nothing is truncated). Nothing was acked; no mail was lost.',
+      };
+    }
     const before = messages.length;
     if (windowSince) {
       messages = messages.filter((m) => {
@@ -4919,6 +5157,20 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       });
     }
     if (windowTail !== null && messages.length > windowTail) messages = messages.slice(-windowTail);
+    // A7 — UNDATED ROWS ON THE TAIL PATH. The merge sort above orders by
+    // `Number.isFinite(a.ts) ? a.ts : Number.POSITIVE_INFINITY`, so every row
+    // with a missing/non-numeric `ts` (a legacy partition's rows) sorts to the
+    // very END — exactly where `slice(-N)` takes from. A single legacy
+    // partition can therefore fill the WHOLE tail with rows that are not
+    // actually the newest, they are merely undated. `--since` already reports
+    // `window.undatedKept` for the same class of row; the tail path was silent
+    // about it. Recount over what was ACTUALLY RETURNED (not over what --since
+    // kept, which the slice may since have dropped) using the SAME predicate
+    // the sort uses, so the number always describes the delivered set. Only
+    // runs when --tail is in play — a --since-only read's count is unchanged.
+    if (windowTail !== null) {
+      windowUndated = messages.filter((m) => !(m && Number.isFinite(m.ts))).length;
+    }
     windowWithheld = before - messages.length;
   }
   const out = {
@@ -6053,6 +6305,13 @@ function cmdArchive(id, ctx, opts) {
   const currentRepoKey = repoKeyForCwd(ctx);
   const currentOwnerKey = currentRepoKey || store.hashFromWorkspaceId(id);
   let ownerKey = currentOwnerKey;
+  // Set once, by the id-derived authority gate below, when an explicit
+  // `--force-cross-project <id>` was accepted. Threaded to the PHYSICAL
+  // ownership check further down because the two gates ask the SAME authority
+  // question from two angles (registered project key vs persisted ownerKey) —
+  // clearing only the first would leave the override cosmetic, the archive
+  // still refused, and the defect unfixed.
+  let crossProjectOverride = false;
   if (desc) {
     if (!isSafeId(desc.id) || String(desc.id) !== String(id) || !desc.worktreePath) {
       return { ok: false, action: 'archive', id, descriptorArchived: false, error: 'descriptor identity does not match workspace ' + JSON.stringify(id) };
@@ -6078,10 +6337,31 @@ function cmdArchive(id, ctx, opts) {
     {
       const registeredRepoKeyForArchive = descriptorRegisteredRepoKey(desc, id);
       if (registeredRepoKeyForArchive && registeredRepoKeyForArchive !== currentRepoKey) {
-        return Object.assign(
-          { action: 'archive', descriptorArchived: false },
-          projectContextMismatch(id, registeredRepoKeyForArchive, currentRepoKey,
-            'run this from within that project\'s worktree to archive it'));
+        // c2a7813aa7d3: the ONE escape hatch. See forceCrossProjectOverride's
+        // header for why it is opt-in, id-exact, audited, and archive-only.
+        // `opts.flags` is supplied ONLY by the interactive `archive` CLI verb.
+        // The BULK sweeps that also call cmdArchive (reap-stale, the archive
+        // sweep) pass no flags and therefore can NEVER take this hatch — an
+        // automated pass must not silently archive across projects.
+        const override = forceCrossProjectOverride((opts && opts.flags) || {}, id);
+        if (override.accepted) {
+          crossProjectOverride = true;
+          logAuthorityOverride({
+            ts: new Date().toISOString(),
+            verb: 'archive',
+            id: String(id),
+            cwdProject: currentRepoKey || null,
+            targetProject: registeredRepoKeyForArchive,
+          });
+        } else {
+          const refusal = Object.assign(
+            { action: 'archive', descriptorArchived: false },
+            projectContextMismatch(id, registeredRepoKeyForArchive, currentRepoKey,
+              'run this from within that project\'s worktree to archive it'));
+          refusal.error += forceCrossProjectHint(id, override.provided, override.value);
+          if (override.provided) refusal.forceCrossProjectRejected = override.value;
+          return refusal;
+        }
       }
     }
     if (activeState.exists) {
@@ -6100,13 +6380,24 @@ function cmdArchive(id, ctx, opts) {
     const freshRepoKey = descriptorFreshRepoKey(desc);
     const activeLegacyPerId = activeState.exists && !storedOwnerKey && !structuralRepoKey && currentRepoKey === null;
     ownerKey = storedOwnerKey || structuralRepoKey || (activeLegacyPerId ? currentOwnerKey : null);
-    if (!ownerKey || ownerKey !== currentOwnerKey) {
+    if ((!ownerKey || ownerKey !== currentOwnerKey) && !crossProjectOverride) {
       return {
         ok: false, action: 'archive', id, descriptorArchived: false,
         error: 'descriptor does not belong to the current project',
       };
     }
-    if (activeState.exists && !storedOwnerKey) {
+    // An override can only fire when the id HAS a resolvable registered key, so
+    // fall back to it rather than leaving `ownerKey` null and letting the
+    // tombstone store open against an unspecified bucket.
+    if (crossProjectOverride && !ownerKey) ownerKey = descriptorRegisteredRepoKey(desc, id) || currentOwnerKey;
+    // CRITICAL under an override: `ownerKey` stays the workspace's OWN key and
+    // is deliberately NOT re-stamped to the caller's. The registry tombstone
+    // below opens its store with `hash: ownerKey`, so leaving it alone puts the
+    // tombstone in the OWNING project's store, where it belongs. Re-homing the
+    // descriptor to the caller's project instead would be precisely the
+    // cross-project theft the authority gate exists to prevent — the override
+    // authorises archiving a foreign workspace, never adopting one.
+    if (activeState.exists && !storedOwnerKey && !crossProjectOverride) {
       desc.ownerKey = currentOwnerKey;
       ownerKey = currentOwnerKey;
       if (currentRepoKey && freshRepoKey === currentRepoKey) desc.repoKey = currentRepoKey;
@@ -8703,46 +8994,440 @@ function deriveTitleFromBrief(brief) {
 // the poll returns the instant evidence appears. Any throw inside it yields
 // 'unknown', exactly like a clean timeout.
 const SPAWN_LAUNCH_WAIT_MS_DEFAULT = 750;
-function spawnLaunchWaitMs(env) {
+// SPAWN_LAUNCH_WAIT_MAX_MS — hard ceiling on how long `spawn` may block for
+// launch evidence. `checkSpawnLaunch`'s poll is SYNCHRONOUS (Atomics.wait), so
+// the configured window is wall-clock time the whole CLI is frozen with no
+// output and no way to interrupt it: `ANTIHALL_DEVSWARM_SPAWN_LAUNCH_WAIT_MS=
+// 999999999` wedged `spawn` for eleven and a half days. The verdict this poll
+// produces is explicitly best-effort ('unknown' is never a failure, and the
+// hint already tells the caller to re-check with `roster`/`heartbeat` in a
+// minute), so no legitimate use is served by waiting longer than a few
+// seconds. 10s is generous against a normal launch and still bounded.
+const SPAWN_LAUNCH_WAIT_MAX_MS = 10000;
+
+// spawnLaunchWaitRequestedMs(env) -> the UNCLAMPED configured window (the
+// pre-clamp behaviour), kept separate so checkSpawnLaunch can report WHETHER a
+// clamp was applied rather than silently honouring a different number than the
+// operator asked for.
+function spawnLaunchWaitRequestedMs(env) {
   const raw = env ? env.ANTIHALL_DEVSWARM_SPAWN_LAUNCH_WAIT_MS : undefined;
   if (raw === undefined || raw === null || String(raw).trim() === '') return SPAWN_LAUNCH_WAIT_MS_DEFAULT;
   const n = Number(raw);
   if (!Number.isFinite(n) || n < 0) return SPAWN_LAUNCH_WAIT_MS_DEFAULT; // a bad value falls back to the default, never disables the check silently
   return Math.floor(n);
 }
+function spawnLaunchWaitMs(env) {
+  return Math.min(spawnLaunchWaitRequestedMs(env), SPAWN_LAUNCH_WAIT_MAX_MS);
+}
 // checkSpawnLaunch(meshId, ctx, storeOpen) -> {launched, evidence, waitedMs, windowMs}
 // storeOpen() -> a fresh store handle | null (injected so the poll re-reads the
 // registry rather than trusting the handle the seed write already closed).
-function checkSpawnLaunch(meshId, ctx, storeOpen) {
+// `opts.since` (ms) — the RECENCY FLOOR. Evidence only counts as proof that
+// THIS spawn launched something if it was produced AT OR AFTER the given
+// instant (inclusive: a beat written in the same millisecond the spawn started
+// is genuinely new, and ms resolution is far too coarse to spend a boundary on
+// when the hazard being excluded is measured in MINUTES);
+// cmdSpawn passes the wall-clock it captured BEFORE the hivecontrol `create`
+// call, so anything predating the spawn is ignored.
+//
+// ROOT CAUSE this closes: `hasFreshHeartbeat` accepts any beat inside its
+// 15-minute freshness window, and a meshId is derived from the WORKTREE PATH —
+// so re-spawning a branch onto a path a prior occupant used (branch reuse)
+// found that occupant's minutes-old heartbeat sitting there and reported
+// `launched:true, launchEvidence:'heartbeat', launchCheckedMs:0` having
+// observed nothing new whatsoever. The same applies to a stale registry row
+// and a leftover descriptor file. `since` makes every signal answer "did this
+// appear because of THIS spawn", which is the question the field actually asks.
+//
+// BACK-COMPAT: `since` absent/non-finite = no floor, i.e. exactly the previous
+// predicate. Direct callers that assert on the predicate itself (rather than
+// through cmdSpawn) are unaffected; production always passes it.
+function checkSpawnLaunch(meshId, ctx, storeOpen, opts) {
+  const requestedMs = spawnLaunchWaitRequestedMs(ctx && ctx.env);
   const windowMs = spawnLaunchWaitMs(ctx && ctx.env);
+  const windowClamped = requestedMs > windowMs;
+  const since = opts && Number.isFinite(opts.since) ? opts.since : null;
   const started = Date.now();
   const stepMs = 150;
+  // A8 — ONE store handle for the WHOLE poll, not one per 150ms iteration.
+  // `storeOpen()` runs mkdir + PRAGMAs + `CREATE TABLE IF NOT EXISTS` on every
+  // call, so a 10s window paid ~66 full store initialisations to answer one
+  // question. Hoisting is safe for freshness (the property the injected
+  // `storeOpen` exists to guarantee): BOTH backends re-read their source on
+  // every `listRegistry()` call — sqlite issues a fresh `SELECT * FROM
+  // registry`, the journal backend re-reduces its append-only log off disk —
+  // so a held handle observes the child's registration exactly as a reopened
+  // one would. Fail-soft is preserved in both directions: a throwing
+  // `storeOpen` leaves `handle` null and the registry signal simply yields no
+  // evidence, and the handle is closed in the `finally` below even if the poll
+  // returns early or throws.
+  let handle = null;
+  let handleTried = false;
+  const registryHandle = () => {
+    if (!handleTried) {
+      handleTried = true;
+      try { handle = storeOpen(); } catch (_) { handle = null; }
+    }
+    return handle;
+  };
+  // fileNewerThan(p) -> true when p's mtime postdates `since` (always true when
+  // there is no floor). Used for the descriptor signal, whose only timestamp is
+  // its file mtime.
+  const fileNewerThan = (p) => {
+    if (since === null) return true;
+    try { return fs.statSync(p).mtimeMs >= since; } catch (_) { return false; }
+  };
   const evidenceNow = () => {
     try {
-      if (hasFreshHeartbeat(meshId, ctx.home, {})) return 'heartbeat';
-    } catch (_) { /* no evidence from this signal */ }
-    try {
-      const s = storeOpen();
-      if (s) {
-        try {
-          const row = (s.listRegistry() || []).find((r) => r && String(r.id) === String(meshId));
-          // The seed wrote sessionId/inboxPath as null; ONLY the child's own
-          // register can make either non-null, so either is positive evidence.
-          if (row && row.sessionId != null && String(row.sessionId) !== '') return 'registry-session';
-          if (row && row.inboxPath != null && String(row.inboxPath) !== '') return 'registry-inbox';
-        } finally { s.close(); }
+      if (since === null) {
+        if (hasFreshHeartbeat(meshId, ctx.home, {})) return 'heartbeat';
+      } else {
+        // Compare the beat's OWN timestamp against the floor rather than
+        // asking hasFreshHeartbeat, whose 15-minute window is exactly what
+        // let a prior occupant's beat through.
+        const ts = heartbeatTs(meshId, ctx.home);
+        if (Number.isFinite(ts) && ts >= since) return 'heartbeat';
       }
     } catch (_) { /* no evidence from this signal */ }
-    try { if (readDescriptorFile(ctx.home, meshId)) return 'descriptor'; } catch (_) { /* no evidence from this signal */ }
+    try {
+      const s = registryHandle();
+      if (s) {
+        const row = (s.listRegistry() || []).find((r) => r && String(r.id) === String(meshId));
+        // The seed wrote sessionId/inboxPath as null; ONLY the child's own
+        // register can make either non-null, so either is positive evidence.
+        // With a floor, ALSO require the row's own last-upsert time to
+        // postdate it — otherwise a prior occupant's row (non-null sessionId,
+        // written long before this spawn) reads as a launch. `updatedAt` null
+        // (a pre-migration row never re-upserted) cannot clear the floor and
+        // is treated as no evidence, the conservative direction: 'unknown' is
+        // never a hard failure, a false 'launched:true' is.
+        const rowFresh = (r) => since === null || (r && Number.isFinite(r.updatedAt) && r.updatedAt >= since);
+        if (row && rowFresh(row)) {
+          if (row.sessionId != null && String(row.sessionId) !== '') return 'registry-session';
+          if (row.inboxPath != null && String(row.inboxPath) !== '') return 'registry-inbox';
+        }
+      }
+    } catch (_) { /* no evidence from this signal */ }
+    try {
+      if (readDescriptorFile(ctx.home, meshId) && fileNewerThan(descriptorPath(ctx.home, meshId))) return 'descriptor';
+    } catch (_) { /* no evidence from this signal */ }
     return null;
   };
-  for (;;) {
-    const ev = evidenceNow();
-    if (ev) return { launched: true, evidence: ev, waitedMs: Date.now() - started, windowMs };
-    if (Date.now() - started >= windowMs) break;
-    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stepMs); } catch (_) { break; }
+  const verdict = (launched, evidence) => {
+    const out = { launched, evidence, waitedMs: Date.now() - started, windowMs };
+    // Never silently honour a different number than the operator configured.
+    if (windowClamped) { out.launchWindowClamped = true; out.launchWindowRequestedMs = requestedMs; }
+    return out;
+  };
+  try {
+    for (;;) {
+      const ev = evidenceNow();
+      if (ev) return verdict(true, ev);
+      if (Date.now() - started >= windowMs) break;
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stepMs); } catch (_) { break; }
+    }
+    return verdict('unknown', null);
+  } finally {
+    if (handle) { try { handle.close(); } catch (_) { /* best-effort */ } }
   }
-  return { launched: 'unknown', evidence: null, waitedMs: Date.now() - started, windowMs };
+}
+
+// ===== reap-orphans (defect b712da3bf077, P1) ==============================
+// reapedDir(home) — where a reap's loss-free archive of a partition's unread
+// rows lands, one NDJSON file per partition.
+function reapedDir(home) { return path.join(devswarmRoot(home), 'reaped'); }
+
+// collectOrphanCandidates(ctx) -> { ok, candidates[], repoKey } — the mesh
+// partitions with unread mail and NO live reader.
+//
+// REUSES the EXISTING detector rather than re-deriving it: this is exactly the
+// set devswarm-store.js's computeSummary A2 pass publishes as `summary.orphans`
+// (`listWorkspaceIds() − registry ids − broadcast`, filtered to real unread,
+// minus the archived-stranded and forwarded-drained classes), and it is the
+// SAME array hooks/devswarm-parent-inbox.js renders as the per-turn "⚠ DEVSWARM
+// ORPHANED MESH: N partition(s) with unread but no live workspace to read them"
+// warning. Reaping something the warning does not report — or failing to reap
+// something it does — is the drift this reuse exists to make impossible.
+// computeSummary is the PURE half (zero writes), which is what a dry-run-first
+// verb must call.
+function collectOrphanCandidates(ctx) {
+  const home = ctx.home;
+  const repoKey = repoKeyForCwd(ctx);
+  if (!repoKey) return { ok: false, reason: 'no-project', error: 'reap-orphans must run inside a git worktree (the mesh store is per-project)' };
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  try {
+    const sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now });
+    const orphans = Array.isArray(sum && sum.orphans) ? sum.orphans : [];
+    const candidates = orphans.filter((o) => o && o.id != null && isSafeId(String(o.id))).map((o) => {
+      // lastMessageTs: the newest row actually sitting in the partition, so a
+      // human can see whether this is week-old sediment or something that
+      // arrived an hour ago before authorising anything.
+      let lastMessageTs = null;
+      try {
+        for (const m of (s.listMessages(String(o.id)) || [])) {
+          const t = Number(m && m.ts);
+          if (Number.isFinite(t) && (lastMessageTs === null || t > lastMessageTs)) lastMessageTs = t;
+        }
+      } catch (_) { lastMessageTs = null; }
+      return {
+        partitionId: String(o.id),
+        unread: Number.isFinite(o.unread) ? o.unread : 0,
+        messageCount: Number.isFinite(o.messageCount) ? o.messageCount : 0,
+        lastMessageTs,
+        reason: 'unread-with-no-live-reader',
+      };
+    });
+    return { ok: true, candidates, repoKey };
+  } finally { s.close(); }
+}
+
+// cmdReapOrphans(flags, ctx) — retire orphaned mesh partitions, SAFELY.
+//
+// WHAT "REAP" MEANS HERE, stated exactly (this is NOT a row deletion, and the
+// difference is deliberate):
+//   1. every UNREAD row of the partition is written to
+//      <devswarmRoot>/reaped/<partitionId>.ndjson and READ BACK AND VERIFIED
+//      line-for-line before anything else happens;
+//   2. only then is the partition RETIRED by advancing its cursor to its own
+//      message count, which is what removes it from computeSummary's
+//      `orphans[]` (that set is gated on `unread > 0`) and therefore silences
+//      the per-turn warning.
+// The message rows themselves are LEFT INTACT in the store. Two reasons, both
+// load-bearing rather than a limitation being dressed up: the store exposes no
+// partition-delete primitive at all (there is `removeRegistry`, but an orphan
+// by definition HAS no registry row), and this file's whole surrounding posture
+// on this data is "surface only: NEVER auto-forwarded or deleted". Retiring
+// rather than destroying achieves everything the defect asked for — 65 orphans
+// stop nagging, in bulk, without a 20-of-88 partial failure — while keeping the
+// mail recoverable from BOTH the store and the archive file. A caller who
+// genuinely wants the bytes gone still has the archive plus an intact store to
+// do it from, deliberately, by hand.
+//
+// SAFETY GATES (belt and braces — every one of these is a REFUSAL, not a
+// warning, because the failure mode being guarded is "an automated loop
+// quietly retires a live Primary's backlog"):
+//   * DRY RUN IS THE DEFAULT. Bare `reap-orphans` only ever prints candidates.
+//   * `--apply` REQUIRES `--max N`, N a positive integer. No unbounded apply
+//     exists at all, so a runaway pass has a hard ceiling the caller chose.
+//   * Never acts on more than N candidates, even if more qualify.
+//   * REFUSES when ANTIHALL_DEVSWARM_AUTOMATION=1 — the marker a supervisor /
+//     cron / hook context sets. Not overridable.
+//   * REFUSES when stdin is not a TTY (the shape of a cron job, a pipeline, or
+//     a subagent shell) unless `--i-am-a-human` is ALSO passed, which is a
+//     claim a scheduled job has no reason to make.
+//   * Per-partition, REFUSES to retire if the archive write or its verify
+//     read-back fails — loss-free means the copy is PROVEN before the source
+//     is touched, never assumed.
+function cmdReapOrphans(flags, ctx) {
+  const home = ctx.home;
+  const apply = !!flags.apply;
+  const collected = collectOrphanCandidates(ctx);
+  if (!collected.ok) return Object.assign({ ok: false, action: 'reap-orphans' }, collected);
+  const candidates = collected.candidates;
+  if (!apply) {
+    return {
+      ok: true, action: 'reap-orphans', mode: 'dry-run', repoKey: collected.repoKey,
+      candidateCount: candidates.length, candidates,
+      note: candidates.length
+        ? 'DRY RUN — nothing was changed. To act, re-run with `--apply --max N` (N = the most partitions '
+          + 'this pass may retire). Each retired partition\'s unread rows are archived to '
+          + reapedDir(home) + '/<partitionId>.ndjson and verified BEFORE its cursor is advanced; '
+          + 'no message row is deleted.'
+        : 'no orphaned partitions with unread mail in this project',
+    };
+  }
+  // ---- apply-path refusals (checked BEFORE any work) ----
+  const maxRaw = one(flags, 'max');
+  if (maxRaw === undefined) {
+    return { ok: false, action: 'reap-orphans', reason: 'max-required',
+      error: '--apply requires --max N (the maximum number of partitions this pass may retire). '
+        + 'There is deliberately no unbounded apply.' };
+  }
+  const maxN = Number(maxRaw);
+  if (!Number.isFinite(maxN) || maxN < 1 || Math.floor(maxN) !== maxN) {
+    return { ok: false, action: 'reap-orphans', reason: 'bad-max',
+      error: '--max must be a positive integer (got ' + JSON.stringify(String(maxRaw)) + ')' };
+  }
+  if (ctx.env && String(ctx.env.ANTIHALL_DEVSWARM_AUTOMATION) === '1') {
+    return { ok: false, action: 'reap-orphans', reason: 'automation-refused',
+      error: 'refusing to --apply with ANTIHALL_DEVSWARM_AUTOMATION=1 set: retiring a partition is a '
+        + 'human decision, never a scheduled sweep. Run it yourself from an interactive shell.' };
+  }
+  const humanClaimed = !!flags['i-am-a-human'];
+  const isTty = !!(ctx.stdinIsTty !== undefined ? ctx.stdinIsTty : (process.stdin && process.stdin.isTTY));
+  if (!isTty && !humanClaimed) {
+    return { ok: false, action: 'reap-orphans', reason: 'non-interactive-refused',
+      error: 'refusing to --apply from a non-interactive stdin (cron/pipeline/subagent shape). '
+        + 'If a human really is driving this, pass --i-am-a-human as well.' };
+  }
+  const targets = candidates.slice(0, maxN);
+  const repoKey = collected.repoKey;
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  const reaped = [];
+  const failed = [];
+  try {
+    for (const c of targets) {
+      const pid = c.partitionId;
+      try {
+        const cursor = s.cursorValue(pid);
+        const total = s.messageCount(pid);
+        const unreadRows = (s.listMessages(pid, { sinceCursor: cursor }) || []);
+        if (!unreadRows.length) { failed.push({ partitionId: pid, reason: 'no-unread-rows' }); continue; }
+        // ---- ARCHIVE, THEN VERIFY, THEN (and only then) RETIRE ----
+        fs.mkdirSync(reapedDir(home), { recursive: true });
+        const archivePath = path.join(reapedDir(home), pid + '.ndjson');
+        const payload = unreadRows.map((m) => JSON.stringify({
+          partitionId: pid, reapedAt: new Date().toISOString(), message: m,
+        })).join('\n') + '\n';
+        fs.writeFileSync(archivePath, payload);
+        // VERIFY by reading the file back and counting the rows that actually
+        // landed — not by trusting writeFileSync's return. A short write, a
+        // full disk, or a truncating filesystem is exactly the case where
+        // "assumed archived" would silently become "lost".
+        const readBack = fs.readFileSync(archivePath, 'utf8');
+        const landed = readBack.split('\n').filter((l) => l.trim() !== '');
+        if (landed.length !== unreadRows.length) {
+          failed.push({ partitionId: pid, reason: 'archive-verify-failed',
+            expected: unreadRows.length, got: landed.length });
+          continue; // REFUSE to retire — the source stays exactly as it was
+        }
+        let parsedOk = true;
+        for (const line of landed) { try { JSON.parse(line); } catch (_) { parsedOk = false; break; } }
+        if (!parsedOk) {
+          failed.push({ partitionId: pid, reason: 'archive-verify-unparseable' });
+          continue; // REFUSE to retire
+        }
+        s.setCursor(pid, total);
+        reaped.push({ partitionId: pid, unread: unreadRows.length, archivePath, cursorAdvancedTo: total });
+      } catch (e) {
+        failed.push({ partitionId: pid, reason: 'error', error: String((e && e.message) || e) });
+      }
+    }
+    if (reaped.length) {
+      try { store.deriveSummary(s, { home, env: ctx.env, now: ctx.now }); } catch (_) { /* projection refresh is best-effort */ }
+    }
+  } finally { s.close(); }
+  return {
+    ok: true, action: 'reap-orphans', mode: 'apply', repoKey,
+    max: maxN, candidateCount: candidates.length, consideredCount: targets.length,
+    reapedCount: reaped.length, reaped,
+    failedCount: failed.length, failed,
+    // Never let a capped pass look like a complete one.
+    capped: candidates.length > targets.length,
+    remaining: candidates.length - targets.length,
+    note: 'unread rows were archived + verified under ' + reapedDir(home)
+      + ' and each partition retired by advancing its cursor; NO message rows were deleted',
+  };
+}
+
+// ===== reconcile-registry (defect d9a823ff1ca0, P1) ========================
+// REPORT-ONLY, by construction: drift between the mesh registry and hivecontrol
+// runs in BOTH directions (a row archived here but still open there; a row
+// worktree-gone here but listed active there), and neither side is
+// unconditionally authoritative — "fixing" one from the other automatically is
+// how a live workspace gets retired from under its owner. This verb therefore
+// only ever READS and PRINTS; there is no --apply, deliberately.
+//
+// SHAPE PINNING: `hivecontrol workspace list all`'s JSON is not pinned in the
+// KB, and this file's other consumer (parseChildrenList) is deliberately
+// TOLERANT — it normalises every missing field to null. Tolerance is right for
+// a best-effort roster fold, but WRONG here: a drift report built from
+// all-null records would confidently claim every workspace is missing/
+// mismatched, which is worse than no report. So the RAW records are inspected
+// for the fields this comparison actually depends on, and an unrecognised
+// shape FAILS SOFT with the keys actually seen rather than guessing.
+const HIVECONTROL_EXPECTED_FIELDS = ['id', 'path'];
+// reconcileRealPath(p) — worktree-path identity, resolved the same way the
+// store's own resolveWorktreeReal does (inst.worktreeRealPath, else
+// path.resolve). Never throws: an unresolvable path degrades to its literal
+// form, so a comparison still happens instead of the report dying.
+function reconcileRealPath(p) {
+  try {
+    if (inst && typeof inst.worktreeRealPath === 'function') return inst.worktreeRealPath(p);
+  } catch (_) { /* fall through to a plain resolve */ }
+  try { return path.resolve(String(p == null ? '' : p)); } catch (_) { return String(p == null ? '' : p); }
+}
+function cmdReconcileRegistry(flags, ctx) {
+  const home = ctx.home;
+  const repoKey = repoKeyForCwd(ctx);
+  if (!repoKey) {
+    return { ok: false, action: 'reconcile-registry', reason: 'no-project',
+      error: 'reconcile-registry must run inside a git worktree (the mesh registry is per-project)' };
+  }
+  const run = (ctx.io && ctx.io.run) || pull.defaultRun;
+  let res;
+  try {
+    res = run({ args: ['workspace', 'list', 'all'], env: ctx.env, cwd: ctx.cwd || process.cwd(), timeout: LIST_CHILDREN_TIMEOUT_MS });
+  } catch (e) {
+    return { ok: false, action: 'reconcile-registry', reason: 'hivecontrol-unavailable',
+      error: 'hivecontrol workspace list all failed: ' + String((e && e.message) || e) };
+  }
+  if (!res || !res.ok) {
+    return { ok: false, action: 'reconcile-registry', reason: 'hivecontrol-unavailable',
+      error: 'hivecontrol workspace list all failed: ' + String((res && res.error) || 'no output') };
+  }
+  let parsed;
+  try { parsed = JSON.parse(res.raw); } catch (_) {
+    return { ok: false, action: 'reconcile-registry', reason: 'hivecontrol-shape-unrecognized',
+      error: 'hivecontrol workspace list all did not return parseable JSON', rawKeys: [] };
+  }
+  const rawList = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.children) ? parsed.children : null);
+  if (!rawList) {
+    return { ok: false, action: 'reconcile-registry', reason: 'hivecontrol-shape-unrecognized',
+      error: 'expected an array of workspace records (bare, or under `children`)',
+      rawKeys: (parsed && typeof parsed === 'object') ? Object.keys(parsed) : [] };
+  }
+  const records = rawList.filter((e) => e && typeof e === 'object');
+  // An EMPTY list is a legitimate answer (no workspaces), not an unrecognised
+  // shape — only a NON-empty list whose records lack the fields this report
+  // depends on is a shape failure.
+  if (records.length) {
+    const seenKeys = Array.from(new Set(records.flatMap((e) => Object.keys(e))));
+    const missing = HIVECONTROL_EXPECTED_FIELDS.filter((f) => {
+      if (f === 'path') return !seenKeys.includes('path') && !seenKeys.includes('worktreePath');
+      return !seenKeys.includes(f);
+    });
+    if (missing.length) {
+      return { ok: false, action: 'reconcile-registry', reason: 'hivecontrol-shape-unrecognized',
+        error: 'hivecontrol workspace records are missing expected field(s): ' + missing.join(', ')
+          + ' — refusing to guess at the mapping rather than emit a drift report built on assumptions',
+        missingFields: missing, rawKeys: seenKeys };
+    }
+  }
+  const hc = parseChildrenList(res.raw).filter((e) => e.id);
+  const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
+  let registry;
+  try { registry = s.listRegistry() || []; } finally { s.close(); }
+  const hcById = new Map(hc.map((e) => [String(e.id), e]));
+  const regById = new Map(registry.filter((d) => d && d.id != null).map((d) => [String(d.id), d]));
+  const registryWithoutWorkspace = [];
+  const workspaceWithoutRegistry = [];
+  const worktreePathMismatch = [];
+  for (const [id, d] of regById) {
+    const w = hcById.get(id);
+    if (!w) { registryWithoutWorkspace.push({ id, worktreePath: d.worktreePath || null }); continue; }
+    const a = d.worktreePath ? String(d.worktreePath) : null;
+    const b = w.path ? String(w.path) : null;
+    // Compare RESOLVED paths — a symlinked or trailing-slash difference is not
+    // real drift and reporting it as such would bury the genuine cases. Uses
+    // the SAME worktreeRealPath primitive devswarm-store.js's own
+    // resolveWorktreeReal wraps, so the two cannot disagree about identity.
+    if (a && b && reconcileRealPath(a) !== reconcileRealPath(b)) {
+      worktreePathMismatch.push({ id, registryWorktreePath: a, hivecontrolPath: b });
+    }
+  }
+  for (const [id, w] of hcById) {
+    if (!regById.has(id)) workspaceWithoutRegistry.push({ id, path: w.path || null, label: w.label || null });
+  }
+  const driftCount = registryWithoutWorkspace.length + workspaceWithoutRegistry.length + worktreePathMismatch.length;
+  return {
+    ok: true, action: 'reconcile-registry', repoKey, reportOnly: true,
+    registryCount: regById.size, hivecontrolCount: hcById.size,
+    driftCount,
+    registryWithoutWorkspace, workspaceWithoutRegistry, worktreePathMismatch,
+    note: 'REPORT ONLY — nothing was changed. Drift runs in both directions and neither side is '
+      + 'unconditionally authoritative, so reconciling is a human decision made per row.',
+  };
 }
 
 function cmdSpawn(rest, ctx) {
@@ -8751,6 +9436,12 @@ function cmdSpawn(rest, ctx) {
   const cwd = ctx.cwd || process.cwd();
   const run = (ctx.io && ctx.io.run) || pull.defaultRun;
   const args = ['workspace', 'create'].concat(rest);
+  // RECENCY FLOOR for the launch check below — captured BEFORE `create` so any
+  // evidence produced during the create call still counts, while anything that
+  // predates this spawn entirely (a prior occupant of a reused branch/worktree,
+  // whose meshId is identical because meshIds derive from the worktree PATH)
+  // does not. See checkSpawnLaunch's header.
+  const spawnStartedAt = Date.now();
   const res = run({ args, env: ctx.env, cwd });
   if (!res || !res.ok) {
     return { ok: false, error: (res && res.error) || 'hivecontrol workspace create failed', branch };
@@ -8825,7 +9516,7 @@ function cmdSpawn(rest, ctx) {
       const repoKey = repoKeyForCwd(ctx);
       launch = checkSpawnLaunch(meshId, ctx, () => store.openStore({
         home: ctx.home, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env,
-      }));
+      }), { since: spawnStartedAt });
     } catch (_) { launch = { launched: 'unknown', evidence: null, waitedMs: 0, windowMs: spawnLaunchWaitMs(ctx.env) }; }
   }
 
@@ -8839,6 +9530,10 @@ function cmdSpawn(rest, ctx) {
     launchEvidence: launch.evidence,
     launchCheckedMs: launch.waitedMs,
     launchWindowMs: launch.windowMs,
+    // Present ONLY when the configured window exceeded SPAWN_LAUNCH_WAIT_MAX_MS
+    // and was capped — never let the caller believe a longer wait happened.
+    launchWindowClamped: launch.launchWindowClamped,
+    launchWindowRequestedMs: launch.launchWindowRequestedMs,
     launchHint: launch.launched === true ? undefined
       : 'created, but NO session has registered/heartbeated for ' + String(meshId || branch)
         + ' yet (checked ' + launch.waitedMs + 'ms). This is normal right after a spawn — a launch takes '
@@ -9085,7 +9780,15 @@ function run(argv, ctx0) {
         if (!isSafeId(rawId)) return { code: 2, result: { ok: false, error: 'invalid or missing workspace id' } };
         const resolved = resolveArchiveId(rawId, ctx);
         if (!resolved.ok) return { code: 2, result: Object.assign({ action: 'archive', id: rawId, descriptorArchived: false }, resolved) };
-        const r = cmdArchive(resolved.id, ctx);
+        const r = cmdArchive(resolved.id, ctx, { flags });
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'reap-orphans': {
+        const r = cmdReapOrphans(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'reconcile-registry': {
+        const r = cmdReconcileRegistry(flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
       case 'unarchive': {
@@ -9279,6 +9982,8 @@ module.exports = {
   // "child registered during the window" branch is unreachable from a
   // fixture that pre-seeds a sessionId — it has to be exercised against the
   // predicate itself.
-  checkSpawnLaunch, spawnLaunchWaitMs,
+  checkSpawnLaunch, spawnLaunchWaitMs, spawnLaunchWaitRequestedMs, SPAWN_LAUNCH_WAIT_MAX_MS,
+  cmdReapOrphans, cmdReconcileRegistry, collectOrphanCandidates, reapedDir,
+  forceCrossProjectOverride,
   inboxWindowRejection, parseInboxSince,
 };

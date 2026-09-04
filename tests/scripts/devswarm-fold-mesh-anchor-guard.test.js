@@ -606,7 +606,14 @@ test('MUTATION-KILL (Wave 11 a): restoring the shape-only isLiveSessionId livene
 
 test('MUTATION-KILL (Wave 11 b): protecting a cross-referenced anchor unconditionally re-creates the immortal row', () => {
   mutantKit.withMutant(
-    "          isMeshAnchor = readerEvidence;\n",
+    // R11-A5 re-targeted: the cross-ref branch now reads
+    // `readerEvidence || beating` (the UNFORGEABLE heartbeat term restored;
+    // descriptor and the fail-open dormancy term still withdrawn). The
+    // mutation this test kills is unchanged in SPIRIT — protect a
+    // cross-referenced anchor UNCONDITIONALLY — and the fixture below (no
+    // reader evidence AND no heartbeat file, i.e. both disjuncts false) still
+    // discriminates the fix from the mutant.
+    "          isMeshAnchor = readerEvidence || beating;\n",
     "          isMeshAnchor = true;\n",
     (mutatedCli) => {
       const SURVIVOR = 'builder-uuid-twin-wave11b-mutant';
@@ -623,5 +630,93 @@ test('MUTATION-KILL (Wave 11 b): protecting a cross-referenced anchor unconditio
       } finally { rm(f.W); rm(f.home); }
     },
     { prefix: 'anti-hall-fold-anchor-wave11b-mutant' }
+  );
+});
+
+// ===========================================================================
+// R11-A5 — liveness RESTORED to the cross-reference branch, as its HEARTBEAT
+// term only.
+//
+// Carry-out (b) withdrew liveness from a stale cross-reference reasoning that
+// "the forged sessionId is what makes it true". That holds for the SHAPE test
+// `isLiveSessionId`, but not for the whole predicate: `isSiblingPartitionLive`
+// leads with `hasFreshHeartbeat(row.id, ...)`, which is keyed on the ROW'S OWN
+// id and read from that partition's own heartbeat file — nothing in the
+// sessionId field can produce it. That term is restored here.
+//
+// The rest of `isSiblingPartitionLive` is deliberately NOT restored, and the
+// WAVE 11 (b) test above is the proof of why: after the heartbeat term it falls
+// back to `!isDormantRow(...)`, which is fail-open on absence of evidence
+// (companion/lib/liveness.js:433-438 — "no signal at all -> not dormant"). A
+// cross-referenced anchor with no heartbeat and no transcript would therefore
+// read LIVE, protecting essentially every cross-referenced anchor and
+// re-creating the immortal row carry-out (b) exists to kill.
+// ===========================================================================
+
+test('R11-A5: a cross-referenced anchor with a FRESH HEARTBEAT is PROTECTED (a heartbeat cannot be forged by a sessionId) and its cursor never moves', () => {
+  const SURVIVOR = 'builder-uuid-twin-r11a5-fresh';
+  // The exact shape asked for: sessionId IS a sibling row's id (a proven stale
+  // cross-reference), NO descriptor, cursor 0 (no reader evidence at all) —
+  // so the heartbeat is the ONLY thing that can protect it.
+  const f = seedFieldFixture({ tag: 'r11a5-fresh', descriptor: false, cursor: 0, sessionId: () => SURVIVOR });
+  try {
+    const pre = readState(f.home, f.repoKey, f.meshId);
+    assert.strictEqual(pre.cursor, 0, 'precondition: NO reader evidence — the heartbeat must be doing the work');
+    assert.ok(!fs.existsSync(descriptorFileFor(f.home, f.meshId)), 'precondition: no descriptor either');
+    writeStaleHeartbeat(f.home, f.meshId, 1000); // 1s old == FRESH
+
+    const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+    let res, cursorAfter, countAfter;
+    try {
+      res = cli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+        [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
+      cursorAfter = s.cursorValue(f.meshId);
+      countAfter = s.messageCount(f.meshId);
+    } finally { s.close(); }
+
+    assert.ok(res.anchorLeft && res.anchorLeft.has(String(f.meshId)),
+      'a heartbeating anchor has a REAL session behind it right now — sweeping it is the live-frontier loss this guard exists to prevent');
+    assert.strictEqual(cursorAfter, 0, `CURSOR-ADJACENT: no cursor may advance for a protected anchor (got ${cursorAfter})`);
+    assert.strictEqual(countAfter, pre.count, 'and no rows are forwarded out from under the live reader');
+  } finally { rm(f.W); rm(f.home); }
+});
+
+test('R11-A5 THE OTHER SIDE: the SAME shape with a STALE heartbeat still retires (the fix must not make cross-referenced anchors immortal again)', () => {
+  const SURVIVOR = 'builder-uuid-twin-r11a5-stale';
+  const f = seedFieldFixture({ tag: 'r11a5-stale', descriptor: false, cursor: 0, sessionId: () => SURVIVOR });
+  try {
+    writeStaleHeartbeat(f.home, f.meshId, VERY_STALE_MS);
+    const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+    let res;
+    try {
+      res = cli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+        [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
+    } finally { s.close(); }
+    assert.ok(!(res.anchorLeft && res.anchorLeft.has(String(f.meshId))),
+      'a 30-day-old beat is not evidence of a reader — this row must still be reachable by the sweep');
+  } finally { rm(f.W); rm(f.home); }
+});
+
+test('R11-A5 MUTATION-KILL: dropping the heartbeat term re-sweeps a live, heartbeating cross-referenced anchor', () => {
+  mutantKit.withMutant(
+    "          isMeshAnchor = readerEvidence || beating;\n",
+    "          isMeshAnchor = readerEvidence;\n",
+    (mutatedCli) => {
+      const SURVIVOR = 'builder-uuid-twin-r11a5-mutant';
+      const f = seedFieldFixture({ tag: 'r11a5-mutant', descriptor: false, cursor: 0, sessionId: () => SURVIVOR });
+      try {
+        writeStaleHeartbeat(f.home, f.meshId, 1000); // FRESH
+        const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+        let res;
+        try {
+          res = mutatedCli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+            [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
+        } finally { s.close(); }
+        assert.ok(!(res.anchorLeft && res.anchorLeft.has(String(f.meshId))),
+          'RED (expected on the mutant): with the heartbeat term gone, an anchor that is heartbeating RIGHT NOW is swept anyway. '
+          + 'If this fails, the restored heartbeat term is not what fixes A5.');
+      } finally { rm(f.W); rm(f.home); }
+    },
+    { prefix: 'anti-hall-fold-anchor-r11a5-mutant' }
   );
 });

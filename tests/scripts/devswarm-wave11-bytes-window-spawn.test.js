@@ -390,12 +390,19 @@ test('spawn: a fresh heartbeat for the new mesh id upgrades `launched` to true w
     const newWt = path.join(os.tmpdir(), 'anti-hall-wave11-hb-' + Date.now());
     const meshId = inst.primaryWorkspaceId(newWt);
     // The child's own session writes this; here it stands in for a session that
-    // came up between create and the check.
+    // came up between create and the check. Written INSIDE the `create` stub so
+    // it genuinely postdates the spawn's recency floor (captured just before
+    // `create`) — the floor is what stops a PRIOR occupant's leftover beat from
+    // counting as this spawn's launch evidence, so the beat that is supposed to
+    // count must really be produced during the spawn, as it is in production.
     const hb = liveness.heartbeatPathFor(meshId, home);
-    fs.mkdirSync(path.dirname(hb), { recursive: true });
-    fs.writeFileSync(hb, JSON.stringify({ id: meshId, ts: Date.now() }));
-
-    const io = { run: () => ({ ok: true, raw: JSON.stringify({ path: newWt }) }) };
+    const io = {
+      run: () => {
+        fs.mkdirSync(path.dirname(hb), { recursive: true });
+        fs.writeFileSync(hb, JSON.stringify({ id: meshId, ts: Date.now() }));
+        return { ok: true, raw: JSON.stringify({ path: newWt }) };
+      },
+    };
     const r = cli.run(['spawn', 'feature/hb'], spawnCtx(home, repo, io, 0));
     assert.strictEqual(r.result.launched, true, JSON.stringify(r.result));
     assert.strictEqual(r.result.launchEvidence, 'heartbeat', 'the evidence must be named, not just asserted');

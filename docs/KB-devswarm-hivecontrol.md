@@ -2771,3 +2771,108 @@ names rather than trusting line numbers verbatim after either file changes furth
 Section §32 facts were verified 2026-08-29 from source at the versions on disk in this repo
 checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol
 names rather than trusting line numbers verbatim after either file changes further).
+
+---
+
+## §33 — `reap-orphans`: retiring stranded mesh partitions safely
+
+An **orphaned mesh partition** is a partition that still holds unread mail but has no
+registry row, so nothing is ever going to read it. `computeSummary`'s A2 pass publishes
+them as `summary.orphans[]`, and `hooks/devswarm-parent-inbox.js` renders that array as the
+per-turn `⚠ DEVSWARM ORPHANED MESH: N partition(s) with unread but no live workspace to read
+them` warning. Before this verb existed there was no CLI targeting that shape at all — the
+warning re-fired every turn with nothing a human could do about it, and one field attempt to
+clear 88 of them with the general-purpose tooling died at 20 (defect `b712da3bf077`).
+
+`reap-orphans` reuses `computeSummary` directly rather than re-deriving the set, so the verb
+and the warning can never disagree about what qualifies.
+
+### What "reap" actually does — read this before using it
+
+It is **not** a row deletion, and the difference is deliberate:
+
+1. every unread row of the partition is written to `<devswarmRoot>/reaped/<partitionId>.ndjson`
+   and **read back and verified** line-for-line;
+2. **only then** is the partition retired by advancing its cursor to its own message count,
+   which is what drops it out of `orphans[]` (that set requires `unread > 0`).
+
+The message rows stay in the store. Two reasons: the store exposes no partition-delete
+primitive (there is `removeRegistry`, but an orphan by definition has no registry row), and
+this data's whole surrounding posture is *surface only — never auto-forwarded or deleted*.
+Retiring rather than destroying clears the nagging in bulk while leaving the mail recoverable
+from both the store and the archive file.
+
+### Usage
+
+| Command | Effect |
+|---|---|
+| `devswarm reap-orphans` | **Dry run (the default).** Lists candidates as `{partitionId, unread, lastMessageTs, reason}`. Changes nothing. |
+| `devswarm reap-orphans --apply --max N` | Retires at most `N` candidates. Both flags required. |
+| `… --i-am-a-human` | Additionally required when stdin is not a TTY. |
+
+### Refusals (all hard, none overridable by config)
+
+| Condition | Reason code |
+|---|---|
+| `--apply` without `--max` | `max-required` |
+| `--max` not a positive integer | `bad-max` |
+| `ANTIHALL_DEVSWARM_AUTOMATION=1` | `automation-refused` |
+| stdin not a TTY, without `--i-am-a-human` | `non-interactive-refused` |
+| archive write/read-back mismatch, per partition | `archive-verify-failed` (that partition is skipped; its cursor is **not** touched) |
+
+The automation and TTY refusals are belt-and-braces against the same thing: retiring a
+partition is a human decision, and a cron job, supervisor sweep, or subagent shell has no
+business making it. A capped pass reports `capped:true` and `remaining:N` so it can never be
+mistaken for a complete one.
+
+## §34 — `reconcile-registry`: seeing mesh-vs-hivecontrol drift
+
+Drift between the mesh registry and hivecontrol runs in **both** directions (defect
+`d9a823ff1ca0`): a workspace archived in the registry but still open in the app, and a
+workspace the registry lists as worktree-gone that the app reports active. Neither side is
+unconditionally authoritative, so this verb **only reports** — there is no `--apply`, by
+design. Reconciling one system from the other automatically is how a live workspace gets
+retired out from under its owner.
+
+`devswarm reconcile-registry` runs one `hivecontrol workspace list all` and returns
+`registryWithoutWorkspace[]`, `workspaceWithoutRegistry[]`, `worktreePathMismatch[]`, plus a
+`driftCount`. Worktree paths are compared **resolved**, so a symlink or trailing-slash
+difference is not reported as drift.
+
+**Shape pinning.** hivecontrol's `list all` JSON is not pinned in this KB, and the roster's
+`parseChildrenList` is deliberately tolerant (every missing field normalises to `null`). That
+tolerance is right for a best-effort roster fold and wrong here: a drift report built from
+all-null records would confidently claim every workspace is missing or mismatched. So the raw
+records are checked for the fields the comparison depends on (`id`, and `path`/`worktreePath`),
+and an unrecognised shape returns `ok:false, reason:'hivecontrol-shape-unrecognized'` together
+with the keys actually seen — fail soft, never guess. An **empty** list is a valid answer (no
+workspaces), not a shape failure.
+
+## §35 — `--force-cross-project`: the one authority-gate escape hatch
+
+The v0.85.0 id-derived authority gate closed a real cross-project re-home/theft P0, but left
+no legitimate route to archive a workspace whose worktree lives under another project
+(defect `c2a7813aa7d3`). `devswarm archive <id> --force-cross-project <id>` opens it, and only
+it:
+
+- **opt-in per call** — never an env var, never config, never sticky;
+- **must name the target exactly** — the flag value has to equal the id being archived, so a
+  bare boolean or a copy-pasted flag carrying a different id is refused. The operator has to
+  restate which workspace they mean and the two must agree;
+- **audited** — one NDJSON line per accepted override in
+  `~/.anti-hall/logs/devswarm-authority-override.log` as `{ts, verb, id, cwdProject, targetProject}`;
+- **archive only.** The same gate guards `ensure`, `inbox ack` and `gate`; those deliberately
+  do **not** get the hatch. Archive refuses before it copies or removes anything, so
+  overriding it moves no data — whereas overriding the others would re-open exactly the
+  cross-project row-copying and foreign-cursor-advancing the gate exists to prevent.
+
+Under an override the descriptor's `ownerKey` is **not** re-stamped to the caller's project, so
+the registry tombstone still lands in the owning project's store. The override authorises
+archiving a foreign workspace, never adopting one. The bulk sweeps that also call `cmdArchive`
+pass no flags and therefore can never take this hatch.
+
+---
+
+Sections §33-§35 were verified 2026-09-05 from source at the versions on disk in this repo
+checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol names
+rather than trusting line numbers verbatim after either file changes further).
