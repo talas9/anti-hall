@@ -6,6 +6,73 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.90.0 (2026-09-05)
+
+- **Feature: `inbox messages` gains `--since <index|date>` and `--tail N`** as a
+  post-delivery projection window. Every ack-bearing verb refuses the window
+  flags outright, and `--tail` under truncation refuses with
+  `tail-under-truncation` (pointing callers at `--since`) instead of silently
+  returning the last N rows of the oldest surviving batch as if they were the
+  newest.
+- **Fix: `cmdSend` now reports the UTF-8 byte length** of the sent payload in
+  its receipt, instead of a character count that undercounts multi-byte text.
+- **Fix: `cmdSpawn` reports `launched: true | 'unknown'`** from positive
+  post-spawn evidence within a bounded, clamped poll, rather than conflating
+  "created" with "launched." A prior occupant's still-fresh heartbeat on a
+  reused worktree is no longer misread as the new spawn's own launch signal.
+- **Fix: fold anchor guard now cross-references liveness.** The liveness half
+  of the guard uses heartbeat- and reader-evidence together
+  (`isSiblingPartitionLive`); a cross-referenced anchor keeps both heartbeat
+  and reader-evidence protection so a live anchor row is never folded away as
+  a candidate.
+- **Fix: a same-worktree UUID twin is now classified as the Primary's own
+  identity family**, not a neglected child, closing a false-positive
+  escalation path in the parent gate.
+- **Feature: in-flight drain marker.** A writer marks an ack-bearing read at
+  entry and clears it in a `finally`; the parent-gate consumer now treats a
+  downgrade from an active marker as non-escalation-spending, so a crashed
+  drain can no longer silence the gate for a TTL. A doctor sweep removes
+  stale (TTL-expired) markers.
+- **Feature: `reap-orphans`** (dry-run by default; `--apply --max N` required
+  for a live pass) archives a DevSwarm partition's unread rows to
+  `reaped/<id>.ndjson` and verifies the archive before advancing its cursor —
+  no message row is ever deleted. Gated to human-only invocation (refuses
+  under automation env or non-TTY stdin without an explicit human flag).
+- **Feature: `--force-cross-project <id>`** on `archive`, accepted only when
+  the value matches the target id exactly, audited to a dedicated log file.
+  Deliberately archive-only — it does not reopen ack/gate cross-project data
+  movement.
+- **Feature: `reconcile-registry`**, a report-only verb that surfaces
+  registry/hivecontrol drift in both directions plus `worktreePath`
+  mismatches, failing soft (not crashing) on an unrecognized hivecontrol JSON
+  shape.
+- **Feature: `heartbeat --summary`** now reports `dropped`/`dropReason` when
+  an ownership refusal discards a summary, instead of silently reporting
+  `ok: true` with no indication anything was dropped.
+- **Feature: a new PreToolUse hook additively throttles repeat-prone,
+  repo-wide scan commands** (e.g. a knowledge-graph update) by rewriting them
+  to run at background priority (`taskpolicy -c utility nice -n 19` on macOS,
+  `nice`/`ionice` on Linux) via `hookSpecificOutput.updatedInput`. Prefix-only
+  and idempotent, extendable via an environment variable allowlist, with a
+  kill switch, and it fails open when the platform's throttling tool isn't
+  available.
+- **Feature: a new SessionEnd hook sweeps orphaned MCP server processes left
+  by prior crashes.** Claude Code shuts down its own MCP children on a normal
+  SessionEnd, and SessionEnd never runs on SIGKILL, so any leaked MCP process
+  it finds is necessarily left over from an earlier crash. The sweep only
+  matches processes already reparented to PID 1 (a genuine init), requires a
+  minimum process age, caps how many it will touch per run, and is on by
+  default with a kill switch; it skips processes under a launchd/systemd
+  supervisor. (Corrects an earlier internal note: the SessionEnd payload's
+  field is `reason`, not `end_reason`.)
+- **Fix: a latent bug** where `heartbeatTs` was never imported into the
+  DevSwarm CLI module, left over from an earlier refactor.
+
+Deferred to v0.91.0: unread-count unification, `unclaimed:` session-id
+promotion + migration, delivery/send receipts, exact dedup of
+archived-then-forwarded message copies, and a retention sweep for the
+`reaped/` archive directory.
+
 ## 0.89.0 (2026-09-04)
 
 - **Fix (P0): the parent-gate reply tracker silently dropped credited
