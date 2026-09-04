@@ -193,6 +193,107 @@ test('scan-throttle: mid-compound match is untouched, with an advisory note', ()
 });
 
 // ---------------------------------------------------------------------------
+// P1 fix #1: leading NAME=value assignments must be RE-ATTACHED before the
+// prefix, not left after it (`taskpolicy ... FOO=1 graphify ...` is a shell
+// syntax/exec error — `nice` tries to exec the literal string `FOO=1`).
+// Verified end-to-end with a real `sh -c` execution using `env` as a
+// harmless stand-in for `graphify` (see the report for the raw output);
+// here we assert the exact rewritten TEXT the hook produces.
+// ---------------------------------------------------------------------------
+test('scan-throttle: P1 — leading NAME=value assignment is re-attached BEFORE the prefix', () => {
+  const prefix = expectedFullPrefix();
+  if (!prefix) return;
+  const r = runAvailable('GRAPHIFY_X=1 graphify update .');
+  assert.ok(r.json);
+  assert.strictEqual(
+    r.json.hookSpecificOutput.updatedInput.command,
+    'GRAPHIFY_X=1 ' + prefix + 'graphify update .'
+  );
+});
+
+// NOTE: the underlying segment classifier (isGraphifyScanSegment, mirroring
+// graphify-guard.js's own segmentVerb) tokenizes on bare `/\s+/` and does not
+// understand quoted whitespace — a pre-existing, consistent limitation
+// across this file's sibling guards, not something this P1 fix introduces or
+// is scoped to correct. So this case uses a quoted value WITHOUT embedded
+// whitespace (still exercises the quote-stripping in ASSIGN_ONE_RE) plus a
+// second, unquoted assignment, to prove MULTIPLE leading assignments are all
+// re-attached in order.
+test('scan-throttle: P1 — multiple leading assignments (one quoted) are all re-attached, in order', () => {
+  const prefix = expectedFullPrefix();
+  if (!prefix) return;
+  const r = runAvailable('FOO=1 BAR="baz" graphify update .');
+  assert.ok(r.json);
+  assert.strictEqual(
+    r.json.hookSpecificOutput.updatedInput.command,
+    'FOO=1 BAR="baz" ' + prefix + 'graphify update .'
+  );
+});
+
+// ---------------------------------------------------------------------------
+// P1 fix #2: a command wrapped in a subshell `( ... )` or brace group
+// `{ ... ; }` must NEVER be rewritten — the naive segment-0 match used to
+// misfire here because splitSegments() flushes an empty segment at `(`/`{`
+// before any real text is accumulated, so the "first segment" it reports
+// does not actually start at offset 0 of the raw string. Prefixing there
+// produces a bash syntax error (verified separately via `sh -c`).
+// ---------------------------------------------------------------------------
+test('scan-throttle: P1 — subshell-wrapped `( graphify update . )` is never rewritten', () => {
+  const r = runAvailable('( graphify update . )');
+  assert.strictEqual(r.status, 0);
+  assert.ok(r.json);
+  assert.strictEqual(r.json.hookSpecificOutput.updatedInput, undefined);
+  assert.ok(typeof r.json.hookSpecificOutput.additionalContext === 'string');
+});
+
+test('scan-throttle: P1 — brace-group-wrapped `{ graphify update . ; }` is never rewritten', () => {
+  const r = runAvailable('{ graphify update . ; }');
+  assert.strictEqual(r.status, 0);
+  assert.ok(r.json);
+  assert.strictEqual(r.json.hookSpecificOutput.updatedInput, undefined);
+});
+
+test('scan-throttle: P1 — subshell wrapped AFTER a leading assignment is also refused', () => {
+  const r = runAvailable('FOO=1 ( graphify update . )');
+  assert.strictEqual(r.status, 0);
+  assert.ok(r.json);
+  assert.strictEqual(r.json.hookSpecificOutput.updatedInput, undefined);
+});
+
+// Regression: env-assignment-prefixed mid-compound command must still be
+// refused for the RIGHT reason (mid-compound), not accidentally accepted
+// because its rest-of-string happens to look like plain text.
+test('scan-throttle: P1 — leading assignment does not mask a mid-compound match', () => {
+  const r = runAvailable('FOO=1 cd app && graphify update .');
+  assert.strictEqual(r.status, 0);
+  assert.ok(r.json);
+  assert.strictEqual(r.json.hookSpecificOutput.updatedInput, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Regression: still-valid wrapper shapes (`time`, `sudo`) must continue to be
+// rewritten normally — the P1 fixes must not over-correct into refusing
+// everything with a leading wrapper word. Verified separately via `sh -c`
+// that the rewritten shape actually executes (reaches the wrapped program,
+// no syntax error / no exit 127 from the prefix itself).
+// ---------------------------------------------------------------------------
+test('scan-throttle: regression — `time graphify update .` still rewrites normally', () => {
+  const prefix = expectedFullPrefix();
+  if (!prefix) return;
+  const r = runAvailable('time graphify update .');
+  assert.ok(r.json);
+  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + 'time graphify update .');
+});
+
+test('scan-throttle: regression — `sudo graphify update .` still rewrites normally', () => {
+  const prefix = expectedFullPrefix();
+  if (!prefix) return;
+  const r = runAvailable('sudo graphify update .');
+  assert.ok(r.json);
+  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + 'sudo graphify update .');
+});
+
+// ---------------------------------------------------------------------------
 // Kill switch.
 // ---------------------------------------------------------------------------
 test('scan-throttle: ANTI_HALL_SCAN_THROTTLE=0 disables the hook entirely', () => {

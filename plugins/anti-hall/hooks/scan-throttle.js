@@ -42,24 +42,36 @@
 //      text/data is never matched.
 //   5. Kill switch: ANTI_HALL_SCAN_THROTTLE=0 disables this hook entirely.
 //
-// COMPOSITION WITH OTHER PreToolUse:Bash HOOKS (verified 2026-09-05 against
-// code.claude.com/docs/en/hooks via WebFetch; see docs/KB-claude-code-hooks.md
-// for the general hook-event contract this hook otherwise follows):
-//   "All matching hooks run in parallel." There is no sequential/chained
-//   execution and no documented merge order for multiple `updatedInput`
-//   outputs — each PreToolUse:Bash hook (git-guard, command-guard,
-//   graphify-guard, merge-gate, this hook) independently receives the SAME
-//   original tool_input and computes its own decision from it. This does
-//   NOT create a conflict with the deny-guards already registered: per the
-//   same doc fetch, a `decision:"block"`/exit-2 from ANY hook takes effect
-//   "regardless of what other hooks return" — so command-guard's heavy-
-//   command gate or graphify-guard's child-workspace write-ban still wins
-//   over this hook's rewrite even though both computed their outputs from
-//   the same unmodified input in the same parallel batch. This hook is
-//   registered in hooks.json AFTER the existing Bash guards purely so the
-//   deny-guards read first for a human skimming the file — it has no
-//   bearing on actual precedence, which the harness enforces on its own
-//   (a block always wins over a rewrite, per the docs).
+// COMPOSITION WITH OTHER PreToolUse:Bash HOOKS — what was actually verified,
+// and where. docs/KB-claude-code-hooks.md does NOT document how multiple
+// hooks for the same event+matcher compose (confirmed by re-reading it — no
+// such row exists there), so the following is sourced separately, directly
+// from the live docs, NOT from the KB:
+//   A WebFetch of https://code.claude.com/docs/en/hooks on 2026-09-05 (tool
+//   fetches the page, converts to markdown, and has a small model summarize
+//   it against a prompt — this is a SUMMARY of that page, not a byte-exact
+//   HTML quote independently re-verified by this author) returned, under an
+//   "Execution Model" heading: "All matching hooks run in parallel. If you
+//   define the same handler in more than one settings file, it runs once."
+//   The same fetch's summary additionally stated, in its own words rather
+//   than as a further page quote: "if any hook blocks with exit code 2, the
+//   tool call is prevented regardless of what other hooks return."
+//   How multiple `updatedInput` outputs from parallel hooks are MERGED is
+//   explicitly UNDOCUMENTED — the same fetch's response states: "The
+//   documentation does not specify how multiple `updatedInput` outputs are
+//   combined. This is a gap in the reference documentation provided."
+//   Practical consequence for THIS hook, stated as best-effort reasoning
+//   from the above (not as a separately-verified fact): this hook is
+//   registered in hooks.json AFTER git-guard/command-guard/graphify-guard/
+//   merge-gate for human readability only (deny-guards read first in the
+//   file); JSON-array order is not known to control actual precedence. If a
+//   block from another Bash PreToolUse hook and this hook's rewrite fire on
+//   the same call, this hook's own summarized understanding of the block
+//   behavior above says the block should still take effect — but the
+//   updatedInput-merge gap means this is not fully verified end-to-end for
+//   a case where BOTH a block and an updatedInput are returned in the same
+//   parallel batch. Re-verify directly against the live docs (not this
+//   comment, not the KB) before relying on this for anything safety-critical.
 //
 // Contract (Claude Code PreToolUse hook):
 //   stdin  : JSON { tool_name, tool_input: { command }, ... }
@@ -254,6 +266,69 @@ function alreadyPrefixed(command) {
   return KNOWN_PREFIXES.some((p) => trimmed.startsWith(p));
 }
 
+// ---------------------------------------------------------------------------
+// Leading env-assignment handling (P1 fix).
+//
+// A naive `prefix + command` rewrite breaks `GRAPHIFY_X=1 graphify update .`:
+// the assignment ends up positioned as an ARGUMENT to `nice`/`taskpolicy`
+// (`taskpolicy -c utility nice -n 19 GRAPHIFY_X=1 graphify update .`), and
+// `nice` tries to exec the literal string `GRAPHIFY_X=1` as a command ->
+// `No such file or directory`, exit 127 — the real command never runs. Shell
+// assignment-prefix semantics only apply when NAME=value tokens are the
+// FIRST thing in a simple command; once something else (a wrapper program)
+// is inserted before them, they are just plain argv words to that program.
+//
+// Fix: detect one or more leading `NAME=value` assignments (POSIX name,
+// quoted or unquoted value) and RE-ATTACH them before the prefix instead of
+// after it: `GRAPHIFY_X=1 taskpolicy -c utility nice -n 19 graphify update .`
+// — valid, because a leading assignment on a simple command applies to
+// (exports into) that whole simple command's exec chain, including a
+// wrapper program that then execs a further program.
+// ---------------------------------------------------------------------------
+const ASSIGN_ONE_RE = /^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|[^\s]*)/;
+
+// stripLeadingAssignments(command) -> the index in `command` where the
+// "rest" (the actual command, past any leading whitespace and leading
+// NAME=value assignment tokens) begins. `command.slice(0, idx)` is the
+// leading whitespace + assignments + their separating whitespace, verbatim;
+// `command.slice(idx)` is the rest. Only consumes an assignment token when
+// it is followed by whitespace (i.e. clearly its own token) — an ambiguous
+// trailing token (`FOO=1` at the very end of the string with nothing after
+// it, or glued to non-whitespace) is left alone rather than guessed at.
+function stripLeadingAssignments(command) {
+  let i = /^\s*/.exec(command)[0].length;
+  while (true) {
+    const slice = command.slice(i);
+    const m = ASSIGN_ONE_RE.exec(slice);
+    if (!m) break;
+    const afterAssign = i + m[0].length;
+    const wsMatch = /^\s+/.exec(command.slice(afterAssign));
+    if (!wsMatch) break; // not clearly a standalone assignment token -> stop
+    i = afterAssign + wsMatch[0].length;
+  }
+  return i;
+}
+
+// looksLikeUnsafeInsertionPoint(rest) — true when `rest` (the command text
+// starting at the point where the prefix would be inserted, i.e. right after
+// any leading assignments) begins with a shell token that is NOT itself the
+// start of a plain simple command: `(` (subshell), `{` (brace group), `;`,
+// `|`, `&`, a backtick, or `$(` (command substitution). splitSegments()
+// treats each of these as an immediate flush point BEFORE any text is
+// accumulated, which means the classifier's matched "first segment" can
+// silently refer to text that does NOT actually start at this insertion
+// point (P1 fix #2: `( graphify update . )` was misclassified as a safe
+// segment-0 match and rewritten to `taskpolicy ... ( graphify update . )`,
+// a bash syntax error, because `(` had already triggered an empty flush).
+// Inserting a prefix directly before any of these characters would corrupt
+// or misparse the command, so treat it as unsafe and refuse to rewrite.
+function looksLikeUnsafeInsertionPoint(rest) {
+  if (!rest) return true; // nothing left to prefix
+  if (/^[)(;{}|&`]/.test(rest)) return true;
+  if (rest.startsWith('$(')) return true;
+  return false;
+}
+
 function emit(hookSpecificOutputExtra) {
   const out = {
     hookSpecificOutput: Object.assign({ hookEventName: 'PreToolUse' }, hookSpecificOutputExtra),
@@ -306,29 +381,50 @@ function main() {
   }
   if (matchIndex === -1) return; // no scan command anywhere -> untouched, silently
 
-  if (matchIndex !== 0) {
-    // A scan command exists, but not as the first simple command of a
-    // compound command — we cannot rewrite a mid-command segment with total
-    // positional confidence, so fail-open: leave it unmodified and only
-    // surface a short advisory note.
+  // Position safety: the match must be (1) the command's first simple
+  // command (matchIndex === 0 over the FULL command's segments), AND (2) the
+  // literal insertion point for the prefix — right after any leading
+  // NAME=value assignments — must not be a subshell/group/other shell
+  // boundary token (see looksLikeUnsafeInsertionPoint). Both are required:
+  // matchIndex alone is fooled by a leading `(`/`{` (splitSegments flushes
+  // an empty segment there, so the "first segment" it reports does not
+  // actually start at offset 0 of the raw string); the insertion-point check
+  // alone is fooled by `FOO=1 cd app && graphify update .` (insertion point
+  // right after `FOO=1 ` looks like plain text, but the real match is a
+  // LATER segment, not this one).
+  const restStart = stripLeadingAssignments(command);
+  const leadingText = command.slice(0, restStart);
+  const rest = command.slice(restStart);
+  const positionSafe = matchIndex === 0 && !looksLikeUnsafeInsertionPoint(rest);
+
+  if (!positionSafe) {
+    // A scan command exists, but this hook cannot position the prefix with
+    // total confidence (mid-compound match, or wrapped in a subshell/brace
+    // group) — fail-open: leave it unmodified and only surface a short
+    // advisory note.
     emit({
       additionalContext:
-        'SCAN-THROTTLE: a repo-wide scan command was detected but not in the ' +
-        'first position of this compound command, so it was left unmodified ' +
-        '(fail-open — this hook never rewrites a segment it cannot position ' +
-        'exactly). Consider running it background-throttled manually, e.g. ' +
+        'SCAN-THROTTLE: a repo-wide scan command was detected but this hook ' +
+        'could not confidently position a throttle prefix for it (not the ' +
+        'first simple command, or wrapped in a subshell/brace group), so it ' +
+        'was left unmodified (fail-open — this hook never guesses a rewrite ' +
+        'position). Consider running it background-throttled manually, e.g. ' +
         '`' + prefix.trim() + ' <that command>`.',
     });
     return;
   }
 
-  // Safe case: the match is the command's first simple command. Prefixing
-  // the very start of the string is exact and additive — it does not change
-  // what runs, only the OS scheduling priority it runs under. (Any leading
-  // `VAR=value` assignment before the matched verb still propagates through
-  // the prefix's own exec chain to the eventual `graphify` process, so this
-  // is safe even for `FOO=1 graphify update .`.)
-  const rewritten = prefix + command;
+  // Safe case: the match is the command's first simple command, and the
+  // insertion point (right after any leading assignments) is plain command
+  // text, not a shell boundary token. RE-ATTACH any leading `NAME=value`
+  // assignments BEFORE the prefix (not after it) — a leading assignment on a
+  // simple command applies to that command's whole exec chain, including a
+  // wrapper program inserted before the real one, so
+  // `GRAPHIFY_X=1 graphify update .` becomes
+  // `GRAPHIFY_X=1 taskpolicy -c utility nice -n 19 graphify update .`
+  // (valid), never `taskpolicy ... GRAPHIFY_X=1 graphify update .`
+  // (invalid — `nice` would try to exec the literal string `GRAPHIFY_X=1`).
+  const rewritten = leadingText + prefix + rest;
   emit({ updatedInput: { command: rewritten } });
 }
 
