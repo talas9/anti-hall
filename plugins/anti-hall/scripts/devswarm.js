@@ -33,6 +33,14 @@
 //                  never compare `index` across calls). Prefer `hash`
 //                  (table-wide UNIQUE) over either when verifying a specific
 //                  message.
+//   inbox messages <id> [--limit N] [--since <index>|<ISO date>] [--tail N]
+//                  NON-ACKING read of a partition's rows (earliest-first). --since
+//                  and --tail bound it to recent mail WITHOUT the destructive
+//                  read-primary path (defect 3f6027ee462a). Both are REJECTED on
+//                  every ack-bearing verb (`inbox read/ack/count`, `read-primary`,
+//                  `peek-primary`, `inbox messages --ack`) — a window is not a
+//                  contiguous prefix, and this file's ack arithmetic can only
+//                  express a prefix. Rejected loudly, never silently ignored.
 //   inbox pull <id> [--session S]
 //                  child-side reception drain: auto-ensure the descriptor, then ONE
 //                  bounded guard-safe pull — non-destructive `message-count` gate,
@@ -1899,10 +1907,64 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
       try { if (inboxCursor.readCursor(primaryCursorPath(home, id)) > 0) return true; } catch (_) { /* no evidence on disk */ }
       return false;
     };
+    //
+    // LIVENESS HALF — `isSiblingPartitionLive`, NOT `isLiveSessionId` (carry-out
+    // (a)). `isLiveSessionId` is a pure SHAPE test: non-empty and not
+    // 'unclaimed:'. It says nothing about whether that session still exists, so
+    // a PHANTOM anchor carrying a stale non-null sessionId (a session that
+    // ended hours ago, its id never cleared from the registry row) read
+    // ATTENDED forever and could never be retired by any sweep — the anchor
+    // became immortal, and the phantom kept projecting ACTIVE in the roster.
+    // `isSiblingPartitionLive` (companion/lib/liveness.js:459) is the SAME
+    // composed predicate `siblingAckGate` (:314 in this file) already uses for
+    // exactly this "is there really a reader behind this partition" question,
+    // so the two cursor-safety surfaces cannot drift: fresh heartbeat -> live;
+    // empty/'unclaimed:' sessionId -> not live; otherwise live unless the row
+    // is provably dormant. It fails OPEN (undetermined -> live -> protected),
+    // which is the loss-free direction this guard already commits to.
+    // The descriptor and reader-evidence halves are UNCHANGED — they are what
+    // hold the FIELD case (an 'unclaimed:' anchor whose liveness half is false
+    // by design), and the FIELD CASE tests pin them independently.
+    //
+    // CROSS-REFERENCE NARROWING (carry-out (b)). This branch used to `continue`
+    // BEFORE the `isStaleCrossReference` check below ever ran, so an anchor
+    // whose sessionId is ANOTHER GROUP MEMBER'S REGISTRY ID — the proven-stale
+    // shape isStaleCrossReference exists to catch, and the exact evidence
+    // devswarm-liveness-select.js uses to tell a dead duplicate from a real
+    // live child — was immortal too, and worse: that bogus sessionId is
+    // precisely what made the liveness half true. The two protections that a
+    // stale cross-reference can FORGE are therefore withdrawn for it:
+    //   * liveness — the cross-referenced sessionId IS the forged signal;
+    //   * descriptor — :1914/:2002 already treat a descriptor as insufficient
+    //     for a stale cross-reference, so honouring it here would contradict
+    //     the fold's own rule two branches down.
+    // READER EVIDENCE is NOT withdrawn, and that asymmetry is the whole point:
+    // it is the FIELD P0 shape (a real reader draining this exact partition),
+    // it cannot be forged by a sessionId — a cursor only moves because
+    // something actually read — and sweeping a live frontier is the precise
+    // loss this guard exists to prevent. So a cross-referenced anchor WITH a
+    // read frontier stays fully protected; one with NO reader evidence falls
+    // through to the ordinary path, where isStaleCrossReference governs it
+    // exactly as it governs every other row (CAS-guarded tombstone, forward
+    // first — loss-free).
     let isMeshAnchor = false;
     try {
-      isMeshAnchor = !!(d.worktreePath && String(d.id) === String(meshIdFor(d.worktreePath)))
-        && (isLiveSessionId(d.sessionId) || !!readDescriptorFile(home, d.id) || hasReaderEvidence(d.id));
+      const anchorShaped = !!(d.worktreePath && String(d.id) === String(meshIdFor(d.worktreePath)));
+      if (anchorShaped) {
+        const readerEvidence = hasReaderEvidence(d.id);
+        if (isStaleCrossReference(d)) {
+          isMeshAnchor = readerEvidence;
+        } else {
+          let live = false;
+          try {
+            live = isSiblingPartitionLive(
+              { id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId },
+              home, { now: opts && opts.now }
+            );
+          } catch (_) { live = true; } // undetermined -> fail toward attended (loss-free), matching isSiblingPartitionLive's own posture
+          isMeshAnchor = live || !!readDescriptorFile(home, d.id) || readerEvidence;
+        }
+      }
     } catch (_) { isMeshAnchor = false; }
     if (isMeshAnchor) { left.push(d.id); leftRows.set(String(d.id), d); anchorLeft.add(String(d.id)); continue; }
     if (dryRun) {
@@ -4099,6 +4161,69 @@ const DEFAULT_INBOX_READ_LIMIT = 2000;
 // rows; the general cap above still bounds the combined total).
 const NEVER_READ_SIBLING_CAP = 200;
 
+// ---------------------------------------------------------------------------
+// BOUNDED RECENT-MAIL WINDOW: `--since` / `--tail` (defect 3f6027ee462a).
+//
+// THE GAP: `inbox messages` returned an EARLIEST-FIRST prefix bounded only by
+// `--limit`, so the only ways to see RECENT mail were (a) the destructive
+// `read-primary` (which acks and consumes) or (b) dumping the whole store. And
+// a `--tail 3` typed against it today is SILENTLY DROPPED — this file never
+// rejects unknown flags, so the caller gets the earliest rows back believing
+// they got the newest. Silent-drop is the actual defect; honoring the flag on
+// the safe verb and REJECTING it on the unsafe ones both fix it.
+//
+// WHY NON-ACKING VERBS ONLY (this is a hard constraint, not a scoping choice):
+// every ack path in this file derives its cursor target from "the rows actually
+// delivered, as a contiguous structural PREFIX" (see NEVER_READ_SIBLING_CAP's
+// header and the P2-D cap). A most-recent-N tail is by construction NOT a
+// prefix — it skips untouched middle rows — and this file's ack arithmetic
+// cannot express "delivered rows 98..100, rows 1..97 still pending" without
+// re-introducing exactly the message-loss shape Fix Wave 2/3 closed. So the
+// window is a PURE READ PROJECTION applied to the already-computed result of
+// the plain, non-acking `inbox messages` verb, and any ack-bearing verb
+// (`inbox read`, `inbox ack`, `read-primary`, `inbox messages --ack`) REJECTS
+// these flags loudly instead of ignoring them.
+// `peek-primary` is non-acking but is deliberately also refused: it exists to
+// answer exactly one question ("what would read-primary show me"), and a
+// windowed answer to that question would be a lie about what read-primary
+// would deliver.
+const INBOX_WINDOW_FLAGS = ['tail', 'since'];
+// inboxWindowRejection(flags, verb) -> {ok:false,...} | null. `null` == no
+// window flag was passed (nothing to reject).
+function inboxWindowRejection(flags, verb) {
+  const used = INBOX_WINDOW_FLAGS.filter((f) => one(flags, f) !== undefined);
+  if (!used.length) return null;
+  return {
+    ok: false,
+    error: '--' + used.join('/--') + ' is not supported on `' + verb + '` — it acks (or reports on) a '
+      + 'CONTIGUOUS unread prefix, and a windowed/most-recent-N view cannot be expressed as a prefix '
+      + 'without risking skipped mail. Use the non-acking read instead: `inbox messages <id> '
+      + used.map((f) => '--' + f + ' <v>').join(' ') + '`.',
+    reason: 'window-flags-unsupported-on-acking-verb',
+    flags: used,
+    verb,
+  };
+}
+// parseInboxSince(raw) -> {kind:'index', value:n} | {kind:'ts', value:ms} | null.
+// A bare NON-NEGATIVE INTEGER is an INDEX (the per-partition positional ordinal
+// listMessages emits as `index`, and the same space `cursor` counts in) — that
+// is what the field request asked for ("--since <index>"). Anything else is
+// parsed as a DATE via Date.parse (ISO 8601 and every other format V8 accepts).
+// Deliberately NOT a magnitude heuristic ("big numbers are epoch ms"): an
+// operator wanting a timestamp writes an ISO string, which is unambiguous.
+function parseInboxSince(raw) {
+  const str = String(raw).trim();
+  if (str === '') return null;
+  if (/^\d+$/.test(str)) {
+    const n = Number(str);
+    if (!Number.isFinite(n)) return null;
+    return { kind: 'index', value: Math.floor(n) };
+  }
+  const ts = Date.parse(str);
+  if (!Number.isFinite(ts)) return null;
+  return { kind: 'ts', value: ts };
+}
+
 function cmdInboxMessages(id, flags, ctx, opts) {
   const home = ctx.home;
   const doAck = !!((opts && opts.ack) || flags.ack);
@@ -4128,6 +4253,45 @@ function cmdInboxMessages(id, flags, ctx, opts) {
         + " owner's behalf use `inbox read-primary " + String(id)
         + ' --ack-as-owner` (or add --ack).\n');
     } catch (_) {}
+  }
+  // --since / --tail (defect 3f6027ee462a) — see INBOX_WINDOW_FLAGS' header for
+  // WHY this is refused on every ack-bearing/unread-scoped call rather than
+  // silently ignored there. Refusal happens BEFORE any store open or read, so a
+  // rejected call is a pure no-op.
+  {
+    const rej = inboxWindowRejection(flags, doAck
+      ? ((opts && opts.action) || 'inbox read-primary')
+      : 'inbox peek-primary');
+    if (rej && (doAck || forceUnread)) return rej;
+  }
+  let windowTail = null;
+  let windowSince = null;
+  const windowActive = !doAck && !forceUnread
+    && INBOX_WINDOW_FLAGS.some((f) => one(flags, f) !== undefined);
+  if (windowActive) {
+    const tailRaw = one(flags, 'tail');
+    if (tailRaw !== undefined) {
+      const n = Number(tailRaw);
+      // A bad --tail is an ERROR, never a silent fallback: the whole point of
+      // this defect is that an ignored window flag makes the caller believe a
+      // bounded recent view was applied when it was not.
+      if (!Number.isFinite(n) || n < 1) {
+        return { ok: false, error: '--tail must be a positive integer (got ' + JSON.stringify(String(tailRaw)) + ')', reason: 'bad-tail' };
+      }
+      windowTail = Math.max(1, Math.floor(n));
+    }
+    const sinceRaw = one(flags, 'since');
+    if (sinceRaw !== undefined) {
+      windowSince = parseInboxSince(sinceRaw);
+      if (!windowSince) {
+        return {
+          ok: false,
+          reason: 'bad-since',
+          error: '--since must be a non-negative integer (a per-partition message index, the same space `cursor` counts in) '
+            + 'or a parseable date such as an ISO 8601 timestamp (got ' + JSON.stringify(String(sinceRaw)) + ')',
+        };
+      }
+    }
   }
   // --limit N (defect 8d0a66cfc563): override DEFAULT_INBOX_READ_LIMIT for
   // this call. Ignored (falls back to the default) unless a finite, positive
@@ -4728,6 +4892,35 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   // `count` may exceed `inboxReadLimit` when `truncated:true` is also set;
   // use `truncatedCount`/`truncated` (below) to detect withholding, not a
   // `count` vs `inboxReadLimit` comparison.
+  // WINDOW PROJECTION (--since / --tail, defect 3f6027ee462a). Applied LAST, to
+  // the already-delivered row set, and ONLY on the non-acking `inbox messages`
+  // verb (windowActive is false everywhere else — the ack-bearing verbs already
+  // returned a rejection above). Nothing here touches a cursor, a total, or an
+  // ack: `total`/`unreadCount` below keep reporting the REAL untruncated
+  // figures, and the withheld rows are still exactly where they were.
+  // Rows with no comparable field (`ts`/`index` null — a legacy row) are KEPT
+  // by --since rather than dropped: hiding mail because its metadata is missing
+  // is the one failure mode a "show me recent mail" flag must never have. They
+  // are counted in `windowUndated` so the caller can see it happened.
+  let windowWithheld = 0;
+  let windowUndated = 0;
+  if (windowActive && Array.isArray(messages)) {
+    const before = messages.length;
+    if (windowSince) {
+      messages = messages.filter((m) => {
+        if (windowSince.kind === 'ts') {
+          const t = m && Number(m.ts);
+          if (!Number.isFinite(t)) { windowUndated += 1; return true; }
+          return t >= windowSince.value;
+        }
+        const ix = m && Number(m.index);
+        if (!Number.isFinite(ix)) { windowUndated += 1; return true; }
+        return ix > windowSince.value;
+      });
+    }
+    if (windowTail !== null && messages.length > windowTail) messages = messages.slice(-windowTail);
+    windowWithheld = before - messages.length;
+  }
   const out = {
     ok: true,
     action: (opts && opts.action) || (doAck ? 'read-primary' : 'messages'),
@@ -4803,6 +4996,22 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       + capNames.length + ' sibling partition(s) (cap ' + NEVER_READ_SIBLING_CAP + '); read them directly with: '
       + capNames.map((pid) => 'inbox messages ' + pid).join(' ; ');
   }
+  // WINDOW report (--since/--tail): same never-silently-truncate posture as
+  // every other withholding signal in this function. `windowWithheld` rows were
+  // NOT delivered by this call and NOTHING was acked, so they remain readable by
+  // re-running without the window flags.
+  if (windowActive) {
+    out.window = {
+      since: windowSince ? { kind: windowSince.kind, value: windowSince.value } : null,
+      tail: windowTail,
+      withheld: windowWithheld,
+    };
+    if (windowUndated > 0) out.window.undatedKept = windowUndated;
+    // A merged multi-partition read makes `index` PER-PARTITION, so an
+    // index-form --since is not a single global ordinal there. Say so rather
+    // than let the caller assume one sequence.
+    if (windowSince && windowSince.kind === 'index' && meshAddedTotal > 0) out.window.indexIsPerPartition = true;
+  }
   // UNBOUNDED-READ CAP report (defect 8d0a66cfc563): never silently truncate.
   // `count`/`messages` above already reflect only what was actually
   // delivered this call; `total`/`unreadCount` still report the REAL,
@@ -4825,6 +5034,17 @@ function cmdInboxMessages(id, flags, ctx, opts) {
 
 function cmdInbox(sub, id, flags, ctx) {
   const home = ctx.home;
+  // --since/--tail belong to the NON-ACKING `inbox messages` verb only. Every
+  // other sub-verb here either acks a contiguous unread prefix (`read`, `ack`,
+  // `read-primary`) or reports counts over one (`count`), and a window cannot
+  // be expressed as a prefix — see INBOX_WINDOW_FLAGS' header. Reject loudly;
+  // the pre-fix behaviour (silently ignoring the flag and returning the
+  // EARLIEST rows while the caller believed they asked for the newest) is the
+  // defect. `messages` is excluded here and handles the flags itself.
+  if (sub !== 'messages') {
+    const rej = inboxWindowRejection(flags, 'inbox ' + String(sub));
+    if (rej) return rej;
+  }
   if (sub === 'pull') return cmdInboxPull(id, flags, ctx);
   if (sub === 'messages') return cmdInboxMessages(id, flags, ctx);
   if (sub === 'read-primary') return cmdInboxMessages(id, flags, ctx, { ack: true });
@@ -7203,7 +7423,19 @@ function cmdSend(flags, ctx) {
         sent: !!res.inserted, seq: res.seq,
         // FIX 3 (TRACED, purely additive): echo the integrity data already computed
         // above so `ok:true` is verifiable without a read-back-and-tail-compare.
-        bytes: String(message).length,
+        // defect 0960924d28be: this was `String(message).length` — UTF-16 CODE
+        // UNITS, not bytes. Every multi-byte codepoint (an em dash U+2014 is 3
+        // UTF-8 bytes but 1 UTF-16 unit) under-reported by exactly (utf8Bytes -
+        // utf16Units), which the field report reconciled to the codepoint on two
+        // independent sends (5807->5805 with 1 em dash, 3760->3756 with 2). The
+        // field reading of that gap was "the body was TRUNCATED in transit" — a
+        // false data-loss alarm from a purely cosmetic measurement bug. A field
+        // named `bytes` must report BYTES. This is the ONLY size measurement in
+        // this file (verified: no other `bytes:`/byteLength site exists here);
+        // companion/devswarm-ingest.js:816/1483 already used Buffer.byteLength
+        // for its quarantine cap, so no cap/limit anywhere shared the wrong
+        // measure and nothing else needed changing.
+        bytes: Buffer.byteLength(String(message), 'utf8'),
         hash,
         rehomedFromHashBucket: rehomedSend || undefined,
         needsReply: questionFlag,
@@ -8436,6 +8668,83 @@ function deriveTitleFromBrief(brief) {
 // update-title failure/exception NEVER fails the spawn verb (mirrors
 // registration's own best-effort-skip posture — `registered:false`/
 // `titled:false` are legitimate reported outcomes, never verb failures).
+// SPAWN LAUNCH VERIFICATION (defect f85dedeaf61f, anti-hall half).
+//
+// FIELD SHAPE: `hivecontrol workspace create` returned success, this verb
+// blind-seeded a registry row (sessionId null, inboxPath null) and returned
+// `ok:true, created:true, registered:true` — and NO session ever started. The
+// row read ACTIVE in the roster for 25 minutes, working_on null, the worktree's
+// own inbox and heartbeat log both 0 bytes, a Primary's message to it unread the
+// whole time. WHY the launch failed is UNKNOWN and external (the reporter tested
+// and REFUTED the obvious self-collision hypothesis); this fix does not touch it.
+//
+// WHAT WAS WRONG ON OUR SIDE: the return conflated CREATE with LAUNCH. The
+// create success schema carries NO session field (verified: resolveCreatedWorktreePath
+// parses a path only), so `created:true` was never evidence a child was running,
+// yet the response offered nothing else to read. `launched` now reports that
+// separately, from POSITIVE EVIDENCE ONLY.
+//
+// EVIDENCE (any one is proof-of-launch — all three are written by the CHILD's own
+// session, never by this verb): a fresh heartbeat for the mesh id; a registry row
+// whose sessionId/inboxPath the child filled in over our null seed; or the child's
+// own descriptor file.
+//
+// `launched` IS TRI-STATE AND NEVER `false`: absence of a heartbeat inside a short
+// window is NOT proof the child failed to launch — a real session can take far
+// longer than any window this verb may block for. Reporting `false` there would be
+// the same class of unearned claim as the `created:true`-implies-launched this
+// fixes. So: `true` (evidence seen) or `'unknown'` (none yet, verdict open), with
+// `launchHint` naming the verb that settles it later. On the default window
+// `'unknown'` is the EXPECTED outcome for a healthy spawn — it means "not yet
+// confirmed", not "broken".
+//
+// NEVER BLOCKS LONG and NEVER FAILS THE VERB: default 750ms, overridable via
+// ANTIHALL_DEVSWARM_SPAWN_LAUNCH_WAIT_MS (0 = one immediate check, no sleep), and
+// the poll returns the instant evidence appears. Any throw inside it yields
+// 'unknown', exactly like a clean timeout.
+const SPAWN_LAUNCH_WAIT_MS_DEFAULT = 750;
+function spawnLaunchWaitMs(env) {
+  const raw = env ? env.ANTIHALL_DEVSWARM_SPAWN_LAUNCH_WAIT_MS : undefined;
+  if (raw === undefined || raw === null || String(raw).trim() === '') return SPAWN_LAUNCH_WAIT_MS_DEFAULT;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return SPAWN_LAUNCH_WAIT_MS_DEFAULT; // a bad value falls back to the default, never disables the check silently
+  return Math.floor(n);
+}
+// checkSpawnLaunch(meshId, ctx, storeOpen) -> {launched, evidence, waitedMs, windowMs}
+// storeOpen() -> a fresh store handle | null (injected so the poll re-reads the
+// registry rather than trusting the handle the seed write already closed).
+function checkSpawnLaunch(meshId, ctx, storeOpen) {
+  const windowMs = spawnLaunchWaitMs(ctx && ctx.env);
+  const started = Date.now();
+  const stepMs = 150;
+  const evidenceNow = () => {
+    try {
+      if (hasFreshHeartbeat(meshId, ctx.home, {})) return 'heartbeat';
+    } catch (_) { /* no evidence from this signal */ }
+    try {
+      const s = storeOpen();
+      if (s) {
+        try {
+          const row = (s.listRegistry() || []).find((r) => r && String(r.id) === String(meshId));
+          // The seed wrote sessionId/inboxPath as null; ONLY the child's own
+          // register can make either non-null, so either is positive evidence.
+          if (row && row.sessionId != null && String(row.sessionId) !== '') return 'registry-session';
+          if (row && row.inboxPath != null && String(row.inboxPath) !== '') return 'registry-inbox';
+        } finally { s.close(); }
+      }
+    } catch (_) { /* no evidence from this signal */ }
+    try { if (readDescriptorFile(ctx.home, meshId)) return 'descriptor'; } catch (_) { /* no evidence from this signal */ }
+    return null;
+  };
+  for (;;) {
+    const ev = evidenceNow();
+    if (ev) return { launched: true, evidence: ev, waitedMs: Date.now() - started, windowMs };
+    if (Date.now() - started >= windowMs) break;
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, stepMs); } catch (_) { break; }
+  }
+  return { launched: 'unknown', evidence: null, waitedMs: Date.now() - started, windowMs };
+}
+
 function cmdSpawn(rest, ctx) {
   const branch = rest && rest[0];
   if (!branch) return { ok: false, error: 'spawn requires a branch name' };
@@ -8507,9 +8816,36 @@ function cmdSpawn(rest, ctx) {
     }
   } catch (_) { registered = false; }
 
+  // LAUNCH VERIFICATION — see checkSpawnLaunch's header. Only meaningful once a
+  // meshId resolved (no path -> nothing to poll for); best-effort in every
+  // direction, and it can never fail the verb or change `created`/`registered`.
+  let launch = { launched: 'unknown', evidence: null, waitedMs: 0, windowMs: spawnLaunchWaitMs(ctx.env) };
+  if (meshId) {
+    try {
+      const repoKey = repoKeyForCwd(ctx);
+      launch = checkSpawnLaunch(meshId, ctx, () => store.openStore({
+        home: ctx.home, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env,
+      }));
+    } catch (_) { launch = { launched: 'unknown', evidence: null, waitedMs: 0, windowMs: spawnLaunchWaitMs(ctx.env) }; }
+  }
+
   return {
     ok: true, action: 'spawn', branch, created: true,
-    worktreePath, meshId, registered, titled, raw: res.raw,
+    worktreePath, meshId, registered, titled,
+    // DISTINCT from `created`: the workspace exists, but a session running in it
+    // is a separate fact with separate evidence. Never `false` — absence of a
+    // signal inside a short window is not proof of failure (see header).
+    launched: launch.launched,
+    launchEvidence: launch.evidence,
+    launchCheckedMs: launch.waitedMs,
+    launchWindowMs: launch.windowMs,
+    launchHint: launch.launched === true ? undefined
+      : 'created, but NO session has registered/heartbeated for ' + String(meshId || branch)
+        + ' yet (checked ' + launch.waitedMs + 'ms). This is normal right after a spawn — a launch takes '
+        + 'longer than this verb may block for. Confirm with `devswarm roster` or `devswarm heartbeat '
+        + String(meshId || '<meshId>') + '` in a minute; a row still showing sessionId null with a 0-byte '
+        + 'heartbeat log after several minutes never launched.',
+    raw: res.raw,
   };
 }
 
@@ -8938,4 +9274,11 @@ module.exports = {
   cmdLogs, cmdInboxMessages, parseSinceDuration,
   descriptorFreshRepoKey, descriptorStructuralRepoKey,
   siblingAckGate, cmdInbox,
+  // Exported for direct testing: cmdSpawn's own registry SEED (sessionId null)
+  // runs before the poll and overwrites any row already present, so the
+  // "child registered during the window" branch is unreachable from a
+  // fixture that pre-seeds a sessionId — it has to be exercised against the
+  // predicate itself.
+  checkSpawnLaunch, spawnLaunchWaitMs,
+  inboxWindowRejection, parseInboxSince,
 };

@@ -19,6 +19,7 @@ const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.
 const replyStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-reply-state.js');
 const meshStore = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 const gateStateLib = require('../../plugins/anti-hall/companion/lib/devswarm-gate-state.js');
+const drainMarkerLib = require('../../plugins/anti-hall/companion/lib/devswarm-drain-marker.js');
 
 const HOOK = 'devswarm-parent-gate.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + Primary (no SOURCE_BRANCH)
@@ -2755,3 +2756,66 @@ test('DEFECT 427dbff95f28 NEGATIVE CONTROL: a reply recorded under an UNRELATED 
 //        above (goes from ✔ to ✖: an unrelated reply wrongly clears a
 //        DIFFERENT family's question) — proving the fix is neither a no-op
 //        nor an over-broad "always clear" shortcut.
+
+// ---- IN-FLIGHT DRAIN MARKER (defect 13dedc334eb6, P2) ---------------------
+// companion/lib/devswarm-drain-marker.js — a Primary that has declared (via
+// markDrainStart) it is actively draining its own mailbox THIS turn gets its
+// unread block downgraded to a non-blocking stderr notice, for THIS session/
+// pid only, ONLY while the marker is fresh (non-stale). A stale or
+// different-session marker must never suppress the real block.
+
+test('DRAIN MARKER: fresh marker for this session -> notice, not a block', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 3);
+    drainMarkerLib.markDrainStart(h.home, OWN_ID, { now: Date.now(), sessionId: 'drain-sess-1' });
+    const r = run(h.home, stopPayload('drain-sess-1', true));
+    assert.strictEqual(r.status, 0, 'must exit 0');
+    assert.strictEqual(r.stdout, '', `a fresh in-flight drain marker must suppress the stdout block; stdout=${r.stdout}`);
+    assert.match(r.stderr || '', /in-flight drain marker/, `must still surface a notice on stderr; stderr=${r.stderr}`);
+  } finally { h.cleanup(); }
+});
+
+test('DRAIN MARKER: stale marker -> blocks as before, and the stale marker is cleared', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 3);
+    const staleStart = Date.now() - (20 * 60 * 1000); // 20 min ago, default TTL is 10 min
+    drainMarkerLib.markDrainStart(h.home, OWN_ID, { now: staleStart, sessionId: 'drain-sess-1' });
+    const p = drainMarkerLib.drainMarkerPathFor(OWN_ID, h.home);
+    assert.ok(fs.existsSync(p), 'marker file must exist before the run');
+    const r = run(h.home, stopPayload('drain-sess-1', true));
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a stale marker must never suppress a real block');
+    assert.ok(!fs.existsSync(p), 'the stale marker must be cleared by the gate');
+  } finally { h.cleanup(); }
+});
+
+test('DRAIN MARKER: marker recorded for a DIFFERENT session -> blocks (never applies to another session)', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 3);
+    drainMarkerLib.markDrainStart(h.home, OWN_ID, { now: Date.now(), sessionId: 'some-other-session', pid: -1 });
+    const r = run(h.home, stopPayload('drain-sess-1', true)); // different session_id, and pid never matches -1
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a marker for a different session must not silence this session\'s block');
+  } finally { h.cleanup(); }
+});
+
+test('DRAIN MARKER: no marker at all -> blocks exactly as before (no regression)', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 3);
+    const r = run(h.home, stopPayload('drain-sess-1', true));
+    assert.strictEqual(r.json && r.json.decision, 'block');
+  } finally { h.cleanup(); }
+});
+
+// MUTATION-CHECK TARGETS (documented for reproducibility, matching this
+// file's existing mutation-proof convention above):
+//   (i)  Delete the `!marker.stale` check in the gate's drain-marker
+//        consumer (treat every marker, stale or not, as live) -> KILLS the
+//        "stale marker -> blocks" test above (a stale marker would wrongly
+//        suppress the block).
+//   (ii) Delete the sessionMatch/pidMatch identity check (treat ANY marker
+//        for this OWN_ID as applying regardless of session/pid) -> KILLS the
+//        "different session -> blocks" test above (a foreign session's
+//        marker would wrongly suppress this session's block).

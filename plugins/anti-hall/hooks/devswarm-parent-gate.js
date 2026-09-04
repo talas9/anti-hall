@@ -1370,6 +1370,46 @@ function main() {
   const wakeLine = wakeReassertLine(process.env, false);
 
   const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown) + wakeLine;
+
+  // IN-FLIGHT DRAIN MARKER (defect 13dedc334eb6, P2): if the Primary has
+  // declared (via companion/lib/devswarm-drain-marker.js's markDrainStart —
+  // called by the `inbox read-primary`/`read` CLI verbs at entry) that it is
+  // ACTIVELY draining its own mailbox this turn, and that declaration is both
+  // FRESH (non-stale, TTL-bounded) and for THIS session/process, downgrade
+  // this pass from a hard block to a non-blocking stderr notice. This can
+  // NEVER silence a genuinely new/different neglect signature — the marker
+  // check happens only after every other axis above has already decided to
+  // block, and state was already persisted, so the cap/escalation bookkeeping
+  // is untouched; only THIS turn's stdout decision is downgraded. A stale
+  // marker (crashed/abandoned drain past its TTL) or one belonging to a
+  // DIFFERENT session/pid is ignored entirely and the block fires normally.
+  // LAZY + GUARDED (D27 idiom, matching every other lazy require in this
+  // file): a missing/corrupt module never crashes this Stop hook — it simply
+  // falls through to the normal block below.
+  let draining = false;
+  try {
+    const drainMarker = require('../companion/lib/devswarm-drain-marker.js');
+    if (own.id) {
+      const marker = drainMarker.readDrainMarker(home, own.id, { now: Date.now() });
+      if (marker && !marker.stale) {
+        const sid = payload && payload.session_id != null ? String(payload.session_id) : null;
+        const sessionMatch = sid !== null && marker.sessionId !== null && marker.sessionId === sid;
+        const pidMatch = Number.isFinite(marker.pid) && marker.pid === process.pid;
+        draining = sessionMatch || pidMatch;
+      } else if (marker && marker.stale) {
+        try { drainMarker.clearDrainMarker(home, own.id); } catch (_) {}
+      }
+    }
+  } catch (_) { draining = false; }
+
+  if (draining) {
+    try {
+      fs.writeSync(2, 'anti-hall: ' + reason.split('\n')[0]
+        + ' — not blocking (in-flight drain marker fresh for this session)\n');
+    } catch (_) {}
+    return;
+  }
+
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }
 

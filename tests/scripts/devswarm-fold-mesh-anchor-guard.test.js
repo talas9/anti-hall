@@ -278,7 +278,7 @@ function seedFieldFixture(opts) {
   const meshId = meshOf(W);
   const s = meshStore.openStore({ home, hash: repoKey, backend: 'journal' });
   try {
-    s.upsertRegistry({ id: meshId, worktreePath: wt, sessionId: 'unclaimed:' + meshId });
+    s.upsertRegistry({ id: meshId, worktreePath: wt, sessionId: opts.sessionId === undefined ? 'unclaimed:' + meshId : opts.sessionId(meshId) });
     for (const body of ['field-mail-1', 'field-mail-2', 'field-mail-3']) {
       const f = { from: 'sender-x', to: meshId, type: 'direct', message: body, timestamp: Date.now(), urgency: 'normal' };
       meshStore.appendMeshMessage(s, Object.assign({}, f, { hash: meshStore.meshMessageHash(f) }));
@@ -409,8 +409,8 @@ test('FIELD CASE 3 (unclaimed: sessionId, no descriptor, cursor 0): an UNATTENDE
 
 test('MUTATION-KILL (Wave 10): reverting the reader-evidence clause re-exposes FIELD CASE 2 (descriptor-less anchor drained)', () => {
   mutantKit.withMutant(
-    "        && (isLiveSessionId(d.sessionId) || !!readDescriptorFile(home, d.id) || hasReaderEvidence(d.id));\n",
-    "        && (isLiveSessionId(d.sessionId) || !!readDescriptorFile(home, d.id));\n",
+    "          isMeshAnchor = live || !!readDescriptorFile(home, d.id) || readerEvidence;\n",
+    "          isMeshAnchor = live || !!readDescriptorFile(home, d.id);\n",
     (mutatedCli) => {
       // BOTH evidence branches are killed, so neither can be silently dead.
       const store = seedFieldFixture({ tag: 'field-2-mutant', descriptor: false, cursor: 2 });
@@ -453,4 +453,175 @@ test('REASON: an anchor left by the guard is reported as mesh-anchor-attended, n
     assert.strictEqual(cli.archiveLeftReason(f.home, 'some-other-row', null, false), 'raced-re-register',
       'UNCHANGED: every non-anchor row keeps its existing reason');
   } finally { rm(f.W); rm(f.home); }
+});
+
+// =======================================================================
+// WAVE 11 — the two carry-outs the Wave 10 guard left open.
+//
+// (a) LIVENESS HALF USED A SHAPE TEST. `isLiveSessionId` only asks "is this
+//     string non-empty and not 'unclaimed:'" — so a PHANTOM anchor carrying a
+//     STALE non-null sessionId (a session that ended long ago, its id never
+//     cleared from the row) read ATTENDED forever and no sweep could ever
+//     retire it. The half now calls `isSiblingPartitionLive` — the SAME
+//     composed predicate `siblingAckGate` already uses in this file for the
+//     identical "is a reader really behind this partition" question.
+//
+// (b) THE ANCHOR BRANCH `continue`d BEFORE `isStaleCrossReference` RAN. An
+//     anchor whose sessionId IS another group member's registry id (the
+//     proven-stale shape) was therefore immortal too — and that forged
+//     sessionId is exactly what made the liveness half true. Liveness and
+//     descriptor are now withdrawn for a cross-referenced anchor; READER
+//     EVIDENCE is not, because it is the field P0 shape and cannot be forged
+//     by a sessionId (a cursor only moves because something actually read).
+//
+// CURSOR-ADJACENCY (asserted in every case below): a PROTECTED anchor's
+// cursor must never move, and the anchor's rows must never be forwarded away.
+// =======================================================================
+
+// A stale heartbeat is what makes isSiblingPartitionLive able to reach a
+// NOT-LIVE verdict: with no signal at all, isDormantActivity returns false
+// ("never dormant") and the predicate fails open to live. Written through the
+// production path shape (heartbeats/<id>.json {ts}) that liveness.heartbeatTs
+// reads, via the exported heartbeatPathFor — never a hand-spelled filename.
+const liveness = require('../../plugins/anti-hall/companion/lib/liveness.js');
+function writeStaleHeartbeat(home, id, ageMs) {
+  const p = liveness.heartbeatPathFor(id, home);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ id, ts: Date.now() - ageMs }));
+}
+const VERY_STALE_MS = 30 * 24 * 60 * 60 * 1000; // 30d — far past DEFAULT_ROSTER_IDLE_MS (6h)
+
+test('WAVE 11 (a): an anchor with a STALE non-null sessionId, no descriptor and no reader evidence is NOT attended — it retires instead of living forever', () => {
+  const f = seedFieldFixture({ tag: 'wave11-stale-sid', descriptor: false, cursor: 0, sessionId: () => 'session-that-ended-hours-ago' });
+  try {
+    writeStaleHeartbeat(f.home, f.meshId, VERY_STALE_MS);
+    assert.strictEqual(cli.isLiveSessionId('session-that-ended-hours-ago'), true,
+      'precondition (the whole point): the OLD shape-only predicate calls this sessionId LIVE — that is what made the phantom immortal');
+    assert.ok(!fs.existsSync(descriptorFileFor(f.home, f.meshId)), 'precondition: no descriptor');
+    const pre = readState(f.home, f.repoKey, f.meshId);
+    assert.strictEqual(pre.cursor, 0, 'precondition: no reader evidence (store cursor 0)');
+    assert.strictEqual(inboxCursor.readCursor(cursorFileFor(f.home, f.meshId)), 0, 'precondition: and no on-disk ack frontier');
+
+    const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+    let res, cursorAfter;
+    try {
+      res = cli.foldGroupIntoSurvivor(s, f.home, 'builder-uuid-twin-wave11a',
+        [{ id: f.meshId, worktreePath: f.wt, sessionId: 'session-that-ended-hours-ago', updatedAt: 1, writeSeq: 1 }], {});
+      cursorAfter = s.cursorValue(f.meshId);
+    } finally { s.close(); }
+
+    assert.ok(!(res.anchorLeft && res.anchorLeft.has(String(f.meshId))),
+      'THE FIX (a): a stale-sessionId phantom anchor with no descriptor and no reader evidence must NOT be claimed as attended — pre-fix isLiveSessionId made it permanently unretirable');
+    assert.strictEqual(cursorAfter, pre.count,
+      `and it folds like any other unattended placeholder — backlog forwarded, cursor over the forwarded prefix (got ${cursorAfter}, expected ${pre.count})`);
+  } finally { rm(f.W); rm(f.home); }
+});
+
+test('WAVE 11 (a) UNCHANGED: a stale non-null sessionId does NOT strip protection when reader evidence exists (cursor never moves)', () => {
+  const f = seedFieldFixture({ tag: 'wave11-stale-sid-reader', descriptor: false, cursor: 2, sessionId: () => 'session-that-ended-hours-ago' });
+  try {
+    writeStaleHeartbeat(f.home, f.meshId, VERY_STALE_MS);
+    const pre = readState(f.home, f.repoKey, f.meshId);
+    const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+    let res, cursorAfter, countAfter;
+    try {
+      res = cli.foldGroupIntoSurvivor(s, f.home, 'builder-uuid-twin-wave11a2',
+        [{ id: f.meshId, worktreePath: f.wt, sessionId: 'session-that-ended-hours-ago', updatedAt: 1, writeSeq: 1 }], {});
+      cursorAfter = s.cursorValue(f.meshId);
+      countAfter = s.messageCount(f.meshId);
+    } finally { s.close(); }
+    assert.ok(res.anchorLeft && res.anchorLeft.has(String(f.meshId)),
+      'the liveness NARROWING must not weaken the reader-evidence half — a real read frontier still protects the anchor');
+    assert.strictEqual(cursorAfter, 2, `CURSOR-ADJACENT: a protected anchor's cursor must not move (got ${cursorAfter})`);
+    assert.strictEqual(countAfter, pre.count, 'and none of its rows are forwarded away');
+  } finally { rm(f.W); rm(f.home); }
+});
+
+test('WAVE 11 (b): a CROSS-REFERENCED anchor (sessionId IS another group member\'s id) with NO reader evidence falls through to the stale-cross-reference path', () => {
+  const SURVIVOR = 'builder-uuid-twin-wave11b';
+  const f = seedFieldFixture({ tag: 'wave11-xref', descriptor: true, cursor: 0, sessionId: () => SURVIVOR });
+  try {
+    // A DESCRIPTOR is present on purpose: pre-fix it (and the forged
+    // sessionId) protected the row unconditionally. isStaleCrossReference
+    // already deems a descriptor insufficient for this shape at the ordinary
+    // fold branches — the anchor branch must not contradict that.
+    assert.ok(fs.existsSync(descriptorFileFor(f.home, f.meshId)), 'precondition: a descriptor exists');
+    const pre = readState(f.home, f.repoKey, f.meshId);
+    assert.strictEqual(pre.cursor, 0, 'precondition: but NO reader evidence');
+
+    const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+    let res;
+    try {
+      res = cli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+        [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
+    } finally { s.close(); }
+
+    assert.ok(!(res.anchorLeft && res.anchorLeft.has(String(f.meshId))),
+      'THE FIX (b): a cross-referenced anchor with no reader evidence must NOT be claimed by the anchor guard — pre-fix the branch `continue`d before isStaleCrossReference could ever judge it, making it immortal');
+  } finally { rm(f.W); rm(f.home); }
+});
+
+test('WAVE 11 (b) THE OTHER SIDE: a CROSS-REFERENCED anchor WITH reader evidence stays protected and its cursor never advances', () => {
+  const SURVIVOR = 'builder-uuid-twin-wave11b2';
+  const f = seedFieldFixture({ tag: 'wave11-xref-reader', descriptor: false, cursor: 2, sessionId: () => SURVIVOR });
+  try {
+    const pre = readState(f.home, f.repoKey, f.meshId);
+    const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+    let res, cursorAfter, countAfter;
+    try {
+      res = cli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+        [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
+      cursorAfter = s.cursorValue(f.meshId);
+      countAfter = s.messageCount(f.meshId);
+    } finally { s.close(); }
+
+    assert.ok(res.anchorLeft && res.anchorLeft.has(String(f.meshId)),
+      'the field P0 shape: reader evidence CANNOT be forged by a sessionId, so a cross-referenced anchor that something is actually draining keeps full protection');
+    assert.strictEqual(cursorAfter, 2, `CURSOR-ADJACENT: no cursor may advance for a protected anchor (got ${cursorAfter})`);
+    assert.strictEqual(countAfter, pre.count, 'and no rows are forwarded out from under the live reader');
+  } finally { rm(f.W); rm(f.home); }
+});
+
+test('MUTATION-KILL (Wave 11 a): restoring the shape-only isLiveSessionId liveness half re-makes the stale-sessionId phantom immortal', () => {
+  mutantKit.withMutant(
+    "          let live = false;\n          try {\n            live = isSiblingPartitionLive(\n              { id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId },\n              home, { now: opts && opts.now }\n            );\n          } catch (_) { live = true; } // undetermined -> fail toward attended (loss-free), matching isSiblingPartitionLive's own posture\n",
+    "          const live = isLiveSessionId(d.sessionId);\n",
+    (mutatedCli) => {
+      const f = seedFieldFixture({ tag: 'wave11a-mutant', descriptor: false, cursor: 0, sessionId: () => 'session-that-ended-hours-ago' });
+      try {
+        writeStaleHeartbeat(f.home, f.meshId, VERY_STALE_MS);
+        const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+        let res;
+        try {
+          res = mutatedCli.foldGroupIntoSurvivor(s, f.home, 'builder-uuid-twin-wave11a-mutant',
+            [{ id: f.meshId, worktreePath: f.wt, sessionId: 'session-that-ended-hours-ago', updatedAt: 1, writeSeq: 1 }], {});
+        } finally { s.close(); }
+        assert.ok(res.anchorLeft && res.anchorLeft.has(String(f.meshId)),
+          'RED (expected on the mutant): with the shape-only predicate back, the long-dead phantom is claimed ATTENDED and can never retire. If this fails, isSiblingPartitionLive is not what fixes (a).');
+      } finally { rm(f.W); rm(f.home); }
+    },
+    { prefix: 'anti-hall-fold-anchor-wave11a-mutant' }
+  );
+});
+
+test('MUTATION-KILL (Wave 11 b): protecting a cross-referenced anchor unconditionally re-creates the immortal row', () => {
+  mutantKit.withMutant(
+    "          isMeshAnchor = readerEvidence;\n",
+    "          isMeshAnchor = true;\n",
+    (mutatedCli) => {
+      const SURVIVOR = 'builder-uuid-twin-wave11b-mutant';
+      const f = seedFieldFixture({ tag: 'wave11b-mutant', descriptor: true, cursor: 0, sessionId: () => SURVIVOR });
+      try {
+        const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
+        let res;
+        try {
+          res = mutatedCli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+            [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
+        } finally { s.close(); }
+        assert.ok(res.anchorLeft && res.anchorLeft.has(String(f.meshId)),
+          'RED (expected on the mutant): an unconditionally-protected cross-referenced anchor is claimed attended with zero reader evidence. If this fails, the readerEvidence narrowing is not what fixes (b).');
+      } finally { rm(f.W); rm(f.home); }
+    },
+    { prefix: 'anti-hall-fold-anchor-wave11b-mutant' }
+  );
 });
