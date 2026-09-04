@@ -944,6 +944,25 @@ if (RECLAIM_INGEST_LOCK) {
   warnl(result.message + (result.file ? ' (' + result.file + ')' : ''));
 })();
 
+// --- 6k. orphaned MCP children under a live app-server broker (REPORT-ONLY,
+// CONDITIONAL) ----------------------------------------------------------------
+// See doctor-repair.js's checkOrphanedMcpUnderBroker for the full rationale
+// (defect bfa063ab8e3f: an app-server-style broker can leak MCP-server child
+// processes across threads without reaping them; those children are parented
+// to the LIVE broker, not PID 1, so a PPID==1 orphan reaper cannot see them by
+// construction). Delegated to that ONE helper (fully defensive + fail-open
+// there) so this call site can never crash doctor.js; stays SILENT (no
+// section at all) when the detection module or platform support is absent.
+// Report-only: never touches pass/fail, same posture as the section above —
+// pure `ps` enumeration, never kills/signals/writes anything.
+(function orphanedMcpUnderBrokerSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkOrphanedMcpUnderBroker({}); } catch (_) { result = null; }
+  if (!result) return;
+  head('orphaned MCP children under a live broker');
+  warnl(result.message);
+})();
+
 // --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')

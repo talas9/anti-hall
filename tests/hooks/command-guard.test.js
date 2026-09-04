@@ -829,3 +829,94 @@ test('DEVSWARM PARITY: `node scripts/devswarm.js inbox pull x` ALLOWED under act
   const r = runDevswarm('node scripts/devswarm.js inbox pull x');
   assert.strictEqual(r.status, 0, `stdout: ${r.stdout}`);
 });
+
+// ---------------------------------------------------------------------------
+// P2 fp dd88d2a72562 / b183a9f1bbd5: DATA is not a COMMAND.
+//
+// dd88d2a72562: a `devswarm.js send` whose MESSAGE BODY (carried in a heredoc,
+// the realistic shape for a multi-line mesh message: `... --message-file - <<
+// 'EOF' ... EOF`) contains a heavy verb as ordinary prose ("make sure to...")
+// was blocked, because command-guard's splitSegments had NO heredoc handling
+// (unlike graphify-guard.js's HEREDOC_RE fix): each heredoc BODY LINE is an
+// ordinary '\n'-delimited segment, and a body line that happens to START with
+// a HEAVY_VERB word ("make") gets effectiveVerb === 'make' and is
+// misclassified as an executed command instead of message text.
+//
+// b183a9f1bbd5: same family — a read-only `grep`/`sed`/`awk` invocation whose
+// SEARCH PATTERN argument contains heavy-looking text (data describing what
+// to search for) was scanned as if that text were command content.
+//
+// FIX: (1) command-guard's splitSegments now adopts graphify-guard.js's
+// HEREDOC_RE approach verbatim — the heredoc BODY is skipped entirely, never
+// re-split into segments/commands (only the opener line, e.g. `<<'EOF'`,
+// stays part of the invoking segment). (2) isHeavySegment now blanks the
+// first non-flag operand of a PATTERN_FIRST_VERBS command (grep/sed/awk)
+// before running HEAVY_PATTERNS against it, mirroring the existing
+// skipNextOperand discipline in detectProtectedFileRead.
+//
+// MUTATION LIST (apply each, prove RED, then revert -> GREEN):
+//   M1: revert the heredoc-skip in splitSegments (drop the `<<` handling
+//       block, restoring the pre-fix function) -> HEREDOC_BLOCK below must
+//       flip from allow (0) to block (2).
+//   M2: revert blankPatternArgument (make it a no-op passthrough, or remove
+//       its call in isHeavySegment) -> GREP_PATTERN_BLOCK below must flip
+//       from allow (0) to block (2).
+// Both mutations were applied by hand against the working tree, run, and
+// confirmed RED (see PR/report evidence); the current tree is the fixed
+// (GREEN) state.
+// ---------------------------------------------------------------------------
+
+test('P2 fp dd88d2a72562 FIX: devswarm.js send heredoc message BODY containing "make" is ALLOWED', () => {
+  const command =
+    "node scripts/devswarm.js send --to parent --message-file - <<'EOF'\n" +
+    'make sure to update the docs before merging\n' +
+    'EOF';
+  const r = runCoord(command);
+  assert.strictEqual(r.status, 0, `heredoc message body must not be parsed as a command; stdout: ${r.stdout}`);
+});
+
+test('P2 fp dd88d2a72562 NEGATIVE CONTROL: a REAL heavy command AFTER the heredoc terminator still BLOCKS', () => {
+  // Proves the heredoc-skip only skips the BODY up to its terminator line —
+  // it must not swallow subsequent real commands on later lines.
+  const command = "cat <<'EOF'\nsome message\nEOF\nnpm run build";
+  const r = runCoord(command);
+  assert.strictEqual(r.status, 2, `command after heredoc terminator must still block; stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block');
+});
+
+test('P2 fp dd88d2a72562 NEGATIVE CONTROL: heredoc whose OUTER/opener command is itself heavy stays BLOCKED', () => {
+  // Proves the heredoc fix does not exempt a genuinely heavy invoking command
+  // just because it happens to carry a heredoc tail.
+  const command = "node build.js <<'EOF'\nunrelated body text\nEOF";
+  const r = runCoord(command);
+  assert.strictEqual(r.status, 2, `heavy opener command must still block despite heredoc tail; stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block');
+});
+
+test('P2 fp b183a9f1bbd5 FIX: heavy-looking text inside a grep SEARCH PATTERN is ALLOWED', () => {
+  // Realistic read-only inspection shape (`git show <ref>:<path> | grep ...`):
+  // segment 2's PATTERN operand contains heavy-verb text ("npm run deploy")
+  // that must be read as DATA, not command text.
+  const command = 'git show HEAD:.github/workflows/ci.yml | grep npm run deploy';
+  const r = runCoord(command);
+  assert.strictEqual(r.status, 0, `grep pattern content must not be parsed as a command; stdout: ${r.stdout}`);
+});
+
+test('P2 fp b183a9f1bbd5 NEGATIVE CONTROL: a REAL heavy command chained after the grep still BLOCKS', () => {
+  // Proves blanking the grep pattern operand does not blind the guard to a
+  // genuinely heavy command elsewhere in the same command line.
+  const command = "grep -r 'npm run build' src/ && npm run build";
+  const r = runCoord(command);
+  assert.strictEqual(r.status, 2, `chained real heavy command must still block; stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block');
+});
+
+test('P2 fp b183a9f1bbd5 NEGATIVE CONTROL: grep verb itself unaffected when a HEAVY_VERB leads its OWN segment', () => {
+  // `make` as the actual command verb (not inside a search pattern) must
+  // still block — proves the pattern-blanking fix is scoped to grep/sed/awk
+  // pattern operands only, not a general HEAVY_VERBS softening.
+  const command = 'make deploy';
+  const r = runCoord(command);
+  assert.strictEqual(r.status, 2, `a real 'make' invocation must still block; stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block');
+});

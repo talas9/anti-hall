@@ -274,6 +274,60 @@ function readVerdict(id, home) {
   }
 }
 
+// archiveReadyCache: repoKey -> parsed summary.workspaces map | null. Memoized
+// per distinct repoKey for the life of this Stop-hook run — several family
+// members (or several descriptors in one project) can share one project's
+// summary file, and this is the SAME summaries/<repoKey>.json file
+// readOwnUnread already reads for the Primary's own row, just re-opened here
+// for an arbitrary member id.
+//
+// isArchiveReadyFor(id, repoKey, home) -> bool. DEFECT 0ace80dff415 (P1): once
+// the Primary has ruled a child done — via `devswarm.js gate <id> --set done
+// --set merged --set tests_passed` (a Primary-settable CLI verb; the required-
+// gate set defaults to done,merged,tests_passed — see devswarm-store.js's
+// DEFAULT_REQUIRED_GATES) — the store ALREADY derives `archive_ready: true`
+// into the per-project summary projection (deriveSummary). This IS the
+// "archive-approved ruling" the design note asked for: no new persisted
+// field, no forbidden-file touch, just PROJECTING a fact companion/lib/
+// devswarm-store.js already computed into the SAME file this hook already
+// reads elsewhere. A child the Primary has ruled done+merged+tests-passed is,
+// by construction, no longer a wedged/neglected escalation — the automatic
+// poke/escalate path exists to get a human to look at a STUCK child, and a
+// child the Primary already closed out is not stuck; it is simply waiting on
+// the app-side archive action, which is not this gate's concern.
+//
+// FAIL-CLOSED (never silently un-blocks a real wedge, mirrors hasFreshHeartbeat's
+// own "throws -> staleOrEscalated left as-is" posture at its call site): any
+// read/parse failure, an absent summary, or an id missing from the projection
+// all return false. `repoKey` must be the resolved key for THIS descriptor's
+// OWN worktree (dKey, not `selfKey`) so a foreign-but-locally-registered id is
+// never looked up under the Primary's own project summary.
+const archiveReadyCache = new Map();
+function isArchiveReadyFor(id, repoKey, home) {
+  if (!id || !repoKey) return false;
+  const cacheKey = String(repoKey);
+  let workspaces;
+  if (archiveReadyCache.has(cacheKey)) {
+    workspaces = archiveReadyCache.get(cacheKey);
+  } else {
+    workspaces = null;
+    try {
+      const p = path.join(devswarmRoot(home), 'summaries', cacheKey + '.json');
+      const raw = fs.readFileSync(p, 'utf8').trim();
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && parsed.workspaces && typeof parsed.workspaces === 'object') {
+          workspaces = parsed.workspaces;
+        }
+      }
+    } catch (_) { workspaces = null; }
+    archiveReadyCache.set(cacheKey, workspaces);
+  }
+  if (!workspaces) return false;
+  const entry = workspaces[String(id)];
+  return !!(entry && entry.archive_ready === true);
+}
+
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
 // looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
 // would report, WITHOUT spawning git (keeps this Stop hook's ~30s budget cheap).
@@ -959,6 +1013,13 @@ function main() {
     if (staleOrEscalated) {
       try { if (hasFreshHeartbeat(d.id, home)) staleOrEscalated = false; } catch (_) {}
     }
+    // DEFECT 0ace80dff415 (P1) — see isArchiveReadyFor's header. Suppress ONLY
+    // the liveness axis, same scoping discipline as the heartbeat check just
+    // above: a done-but-still-mailing child would be an odd shape, but if it
+    // ever happens realUnread/unreadUnknown are untouched and still gate.
+    if (staleOrEscalated) {
+      try { if (isArchiveReadyFor(d.id, dKey, home)) staleOrEscalated = false; } catch (_) {}
+    }
 
     // Pushed UNCONDITIONALLY (not gated on unreadUnknown/realUnread/
     // staleOrEscalated here) — the gate is applied ONCE per FAMILY after the
@@ -1028,8 +1089,23 @@ function main() {
     // THIS project is a normal local row — the ordinary remediation applies and
     // must not be weakened.
     let foreignProject = members.length > 0;
+    // worktreeGone (defect 45cf1659f54f, P2 re-scope): true when ANY member's
+    // worktreePath is CONFIRMED absent from disk via the existing, fail-closed
+    // `worktreeIsGone` check (ENOENT-only; a transient/other stat error never
+    // sets this — see that function's header). This does NOT change any
+    // blocking decision — a gone-worktree row's mail is still real and still
+    // drainable, from outside that worktree, via `inbox ack <id>
+    // --ack-as-owner` (verified end-to-end; a plain `inbox read <id>` does
+    // NOT clear it — see buildReason()'s worktreeGoneChildren comment for the
+    // full trace), so it must keep blocking exactly as before. This flag only
+    // drives an ADDITIONAL hint line in buildReason() telling the Primary the
+    // clearing command, since a gone worktree means the ordinary
+    // "peek-primary"/cd-in workflow is unrunnable and the block previously
+    // looked unclearable.
+    let worktreeGone = false;
     for (const m of members) {
       unionUnread += Number.isFinite(m.realUnread) ? m.realUnread : 0;
+      if (worktreeIsGone(m.worktreePath)) worktreeGone = true;
       if (m.unreadUnknown) {
         unreadUnknown = true;
         unknownMembers.push({
@@ -1079,6 +1155,7 @@ function main() {
     if (!survivorId) continue;
     const entry = { id: survivorId, unread: unionUnread, unknown: unreadUnknown, status };
     if (foreignProject) entry.foreignProject = true;
+    if (worktreeGone) entry.worktreeGone = true;
     if (urgencyMax != null) entry.urgencyMax = urgencyMax;
     if (unknownMembers.length) entry.unknownMembers = unknownMembers;
     blocking.push(entry);
@@ -1548,6 +1625,66 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
       '(their worktree no longer resolves), so `inbox peek-primary` will refuse them with ' +
       'project-context-mismatch. Read that backlog with `devswarm.js inbox read <id>` instead — ' +
       'it is read-only, works from any project, and shows the durable-inbox messages counted above. ';
+  }
+  // GONE-WORKTREE rows (defect 45cf1659f54f, P2 re-scope): naming a command
+  // that actually CLEARS the gate is the whole point of keeping these rows
+  // blocking — a gone worktree means the ordinary `peek-primary`/cd-in-and-
+  // check workflow is unrunnable, and without a working clearing verb the
+  // block looks stuck forever.
+  //
+  // `inbox read <id>` (the verb the FOREIGN-PROJECT branch below prescribes,
+  // and this branch's own FIRST-DRAFT wording) does NOT clear this: verified
+  // end-to-end (tests/hooks/devswarm-parent-gate.test.js, DEFECT 45cf1659f54f
+  // section) that `cmdInbox`'s `read` sub (scripts/devswarm.js ~line 5002)
+  // never writes cursorPath or the store cursor — it is read-only, by design
+  // (see that function's own comment: "count/read above are non-mutating").
+  // A prior incident this same week had a child told to run a non-mutating
+  // read to clear a gate that only an acking verb can clear, and it looped
+  // forever — do not repeat that shape here.
+  //
+  // Plain `inbox ack <id>` (no flag) is ALSO not enough for the field case
+  // that matters most (store-backed unread, e.g. a mesh-direct `send --to`
+  // message — the union axis a gone-worktree row's NDJSON-missing state
+  // structurally cannot corroborate on its own, see the un-clearable-axis
+  // comment above): the STORE-side cursor sync is gated on `owns` (this
+  // Primary's own caller identity === `id`), which is false for the Primary
+  // acking on a CHILD's behalf — so it silently no-ops (returns ok:true,
+  // cursor unchanged) with NO signal that nothing happened. `--ack-as-owner`
+  // is the codebase's own sanctioned override for exactly this shape
+  // (scripts/devswarm.js ~line 5096: "a legitimate cross-workspace ack (e.g.
+  // a supervisor clearing a dead workspace's backlog on its behalf)") and is
+  // what verified end-to-end to clear both channels.
+  //
+  // Scoped OUT of foreignProject rows: a family can be BOTH worktreeGone AND
+  // foreignProject (foreignProject's own derivation, ~line 768, requires
+  // `!freshKey`, which a gone worktree also produces) — for a GENUINE
+  // cross-project mismatch, `ack` refuses UNCONDITIONALLY regardless of
+  // `--ack-as-owner` (scripts/devswarm.js ~line 5040, checked before the
+  // ownership branch), so prescribing it there would recreate the exact
+  // same "remediation that could never succeed" shape this fix closes.
+  // WEAK-SIGNAL WARNING (P0 fix, this wave): `worktreeGone` is derived from
+  // `worktreeIsGone` (~line 243) — an lstat ENOENT at the RECORDED
+  // worktreePath. A workspace whose worktree was simply MOVED (not retired)
+  // reads exactly the same way, because the check never re-resolves the
+  // current location. `--ack-as-owner` (scripts/devswarm.js ~line 4087)
+  // bypasses the ownership guard outright and performs NO liveness check on
+  // its own target, so this hint must not hand it out as an unconditional
+  // one-liner — that would prescribe a destructive override on a signal that
+  // cannot distinguish "retired" from "moved". Inspect FIRST via the
+  // read-only verb, confirm the workspace is genuinely retired, THEN ack.
+  const worktreeGoneChildren = blocking.filter((b) => b.worktreeGone && !b.foreignProject).map((b) => b.id);
+  if (worktreeGoneChildren.length > 0) {
+    body +=
+      'NOTE — ' + worktreeGoneChildren.slice(0, 5).join('; ') +
+      (worktreeGoneChildren.length > 5 ? ' (and ' + (worktreeGoneChildren.length - 5) + ' more)' : '') +
+      ' ' + (worktreeGoneChildren.length === 1 ? 'has' : 'have') + ' a GONE worktree at its recorded path — this ' +
+      'cannot be cleared by cd-ing in. WARNING: a MOVED (not retired) worktree reads exactly the same way — this ' +
+      'is a path-existence check only, not proof the workspace is dead — and `--ack-as-owner` bypasses ownership ' +
+      'with no liveness check of its own, so do not apply it on this signal alone. FIRST inspect with ' +
+      '`devswarm.js inbox read <id>` (read-only, works from any project/cwd, and will NOT clear this block either ' +
+      'way) to see what is actually pending. Only once you have CONFIRMED the workspace is genuinely retired ' +
+      '(not just relocated), clear it with `devswarm.js inbox ack <id> --ack-as-owner` — the sanctioned ' +
+      'cross-workspace-ack override for a confirmed-dead workspace\'s backlog. ';
   }
   if (anyChildUnread) {
     // NON-DESTRUCTIVE remediation (root cause b fix — live incident): the

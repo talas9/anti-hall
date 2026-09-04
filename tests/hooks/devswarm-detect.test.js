@@ -7,9 +7,12 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const path = require('node:path');
 
-const { detect, isDevswarmActive } = require(path.join(
+const { detect, isDevswarmActive, hasOnDiskDevswarmState } = require(path.join(
   __dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'lib', 'devswarm-detect.js',
 ));
+const { makeHome } = require('../helpers/fixtures.js');
+const store = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const fs = require('node:fs');
 
 test('dormant: DEVSWARM_REPO_ID unset (auto) -> false', () => {
   assert.strictEqual(isDevswarmActive({}), false);
@@ -47,4 +50,42 @@ test('mode is case-insensitive and trimmed', () => {
 test('fail-open: a throwing env-like object -> false (never throws out)', () => {
   const hostile = new Proxy({}, { get() { throw new Error('boom'); } });
   assert.strictEqual(isDevswarmActive(hostile), false);
+});
+
+// hasOnDiskDevswarmState — secondary fix (088494cc3d3b latent path): the
+// env-based fast path (isDevswarmActive) alone stays false forever for a
+// Primary that never got DEVSWARM_REPO_ID injected into its process; this is
+// the on-disk-evidence fallback (mirrors devswarm-wake-watch.js's
+// isDevswarmActiveGate tier (d)).
+test('hasOnDiskDevswarmState: true when summaries/<repoKey>.json exists for that repoKey', () => {
+  const h = makeHome();
+  try {
+    const repoKey = 'some-repo-abc123';
+    const p = store.summaryPathForHash(h.home, repoKey);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ workspaces: {} }));
+    assert.strictEqual(hasOnDiskDevswarmState(h.home, repoKey), true);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('hasOnDiskDevswarmState: false when no summary file exists for that repoKey (must not arm on a bare repo)', () => {
+  const h = makeHome();
+  try {
+    assert.strictEqual(hasOnDiskDevswarmState(h.home, 'never-seen-repo-key'), false);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('hasOnDiskDevswarmState: fail-open false on a missing/empty repoKey or home', () => {
+  const h = makeHome();
+  try {
+    assert.strictEqual(hasOnDiskDevswarmState(h.home, null), false);
+    assert.strictEqual(hasOnDiskDevswarmState(h.home, ''), false);
+    assert.strictEqual(hasOnDiskDevswarmState(null, 'x'), false);
+  } finally {
+    h.cleanup();
+  }
 });

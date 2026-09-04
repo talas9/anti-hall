@@ -212,9 +212,10 @@ Modes:
 
 `/reload-plugins` is a built-in, user-typed command that reloads plugins, skills, hooks,
 and agents in-session (documented in discover-plugins.md). Hooks are re-executed from
-disk per event, and the statusline dispatcher reads from the stable marketplace path on
-every render — so **hook and statusline changes are live without any reload**.
-`/reload-plugins` is what refreshes the **skill list** and the **version label**.
+disk per event (so in-place edits take effect on the next event), but the entry point's
+`__dirname` is bound at session start to the versioned cache dir, so a NEW plugin version
+installed to a new cache dir remains invisible until `/reload-plugins` or a restart.
+`/reload-plugins` is what refreshes the **skill list**, **version label**, and **cache-bound paths**.
 
 **Honest edge:** on some harness builds `/reload-plugins` may not pick up a brand-new
 version dir until a restart. If after `/reload-plugins` the new version is not reflected,

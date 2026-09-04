@@ -6,6 +6,118 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.89.0 (2026-09-04)
+
+- **Fix (P0): the parent-gate reply tracker silently dropped credited
+  replies.** `devswarm-parent-reply-tracker.js` parsed a Bash tool's ENTIRE
+  stdout as one JSON value; a compound command (heredoc + `grep -c` + a
+  `devswarm.js send`) printed a `0` line before the send's JSON, the parse
+  threw, and the reply vanished with no log — defeating the 0.88.0
+  identity-family fix regardless of cause. `parseSendResponse` now scans
+  stdout line-by-line and keeps the LAST line that parses to a JSON object
+  and is itself send-shaped, tolerating a trailing JSON line from a chained
+  command; a total parse failure now writes one bounded NDJSON diagnostic
+  (`event: 'reply-parse-drop'`) to `~/.devswarm/parent-inbox.log`, gated
+  behind the arming check so unarmed sessions log nothing.
+  `hooks/lib/devswarm-detect.js` gained `hasOnDiskDevswarmState()` as a
+  second arming path alongside the env-var gate.
+- **Fix (P0): `foldOne` could fold a live Primary's own mesh row as a fold
+  *candidate*, eating its mail every child turn.** `devswarm.js`'s
+  `foldGroupIntoSurvivor` protected the anchor only when it was the FOLD
+  CALLER; a co-located child's self-register
+  (`hooks/devswarm-child-turn.js` → `retireWorktreeDuplicates`) could still
+  fold the anchor in as a candidate and advance its cursor. The guard now
+  protects only an ATTENDED anchor (a live session id, or an on-disk
+  descriptor) rather than blocking on bare identity, so unattended archive
+  fixtures still retire correctly while a live anchor is protected —
+  restoring both the field regression fix and all 14 previously-failing
+  `devswarm-archive-group.test.js` cases.
+  "Attended" is decided by three independent signals: a live session id, an
+  on-disk descriptor, or READER EVIDENCE (store cursor > 0, or a primary
+  cursor file exists) — the last one added after a field report showed a
+  live Primary row carrying a synthetic `unclaimed:` session id, so its
+  only protection had been the descriptor, which `archive` deletes without a
+  liveness check. Rows the guard leaves are now reported as
+  `mesh-anchor-attended` by the archive/fold sweeps instead of the misleading
+  `raced-re-register`. Regression tests use the exact field row shape.
+- **Change (owner-mandated): parent↔workspace `SendMessage` must go through
+  the mesh, not `ListAgents`.** New `hooks/devswarm-comms-guard.js` on
+  `PreToolUse`/`SendMessage` resolves a target's cwd via
+  `~/.claude/sessions/<pid>.json` and blocks any target whose cwd sits under
+  a DevSwarm workspace root, closing a path where a workspace-backing
+  session was addressable directly as a peer. Allows `main`, agentId-form
+  targets, and any unresolved name (fails open); a name-match allow
+  backstop was removed as a loophole once regression-tested. Active only
+  while DevSwarm is detected as running.
+- **Fix: three guard false positives.** `command-guard.js` had no heredoc
+  awareness, so heredoc body lines starting with a heavy verb (e.g. "make
+  sure…") were matched as commands; it also matched heavy patterns against
+  grep/sed/awk *search-pattern* operands instead of only the command shape.
+  `edit-guard.js` had no exemption for the harness-assigned per-session
+  scratchpad and, separately, compared paths without resolving `/tmp` vs
+  `/private/tmp` on macOS, so the harness's own scratchpad path could fail
+  closed.
+- **Fix: union-read's never-read sibling cap could pin a non-ackable
+  partition to its oldest 200 messages forever.** The cap gated on the
+  partition's own cursor being zero, which never advances for a partition
+  the caller cannot ack. It now gates on backlog size instead, keeps the
+  newest capped rows for a non-ackable partition, hard-refuses any ack
+  against a capped read, and surfaces a `neverReadCapHint` pointing at
+  `inbox messages <pid>`.
+- **Fix: the twin-aware sibling ack gate stranded a caller's own twin's
+  cursor**, causing perpetual re-delivery of messages already folded into
+  the caller's own reads. The SELF-twin branch now advances the twin's
+  cursor using the same ack-target arithmetic as the caller's own ack.
+- **Fix: an escalated verdict could not be cleared for a DONE child**, and
+  the supervisor reported a fresh spawn as "idle 0m" before its first
+  heartbeat. `devswarm-parent-gate.js` now reads `archive_ready` off the
+  derived summary; `devswarm-supervisor.js` gives a 2-minute grace on
+  descriptor mtime and excludes already-done children from the idle check.
+- **Fix: `defect-store.js` could lose a record on write overflow** instead
+  of failing closed; overflow now spills as a distinct `t:'overflow'` line
+  that every reader filters on explicitly.
+- **Fix (doctor §6k): flag MCP server children orphaned under a live
+  broker.** The existing PPID==1 reaper cannot see children reparented
+  under a still-running app-server broker rather than PID 1 — correct
+  conservatism, but it leaves a real leak invisible. Doctor gained a
+  read-only, warn-only check (`checkOrphanedMcpUnderBroker`) that never
+  gates pass/fail and stays silent when `ps` is unavailable. Not anti-hall's
+  own leak; reported so it can be tracked upstream.
+- **Fix: the gone-worktree gate hint recommended a destructive override on
+  a weak signal.** `devswarm-parent-gate.js`'s hint suggested
+  `inbox ack --ack-as-owner` whenever a worktree read as gone via a bare
+  ENOENT stat — a MOVED worktree reads identically to a retired one, and
+  `--ack-as-owner` has no liveness check on its target. The hint now says
+  to inspect with `inbox read <id>` first and warns explicitly that a moved
+  worktree can read as gone before recommending the override.
+- **Fix: the reply tracker could pick a trailing non-send JSON line** (e.g.
+  a chained `inbox count`) over the actual send response; it now requires
+  the send's own shape. The arming-gate check was also reordered ahead of
+  parse/diagnostic logging so an unarmed session never writes a drop-log
+  line for stdout it wasn't tracking.
+- **Perf: `canonicalMeshId` is now memoized per fold pass** instead of
+  spawning `git` once per fold candidate.
+- **Docs:** added `docs/KB-claude-code-hooks.md` (hook event reference,
+  including the measured 10k-char injection cap and `FileChanged`
+  behavior).
+- **Field report:** the P0 reply-tracker and P0 fold-anchor fixes above
+  were both driven by an external field report of live mail loss in a
+  DevSwarm-coordinated session; both are reproduced locally and covered by
+  regression tests in this release.
+
+**Known / deferred to v0.90.0:**
+- The comms guard's liveness predicate uses `isLiveSessionId` rather than
+  `isSiblingPartitionLive`; these can diverge for a partition that is live
+  but not the calling session's direct sibling.
+- `isStaleCrossReference`'s bypass for anchor rows needs a narrower
+  definition than "any anchor."
+- Phantom-rescue can self-block under specific same-worktree spawn timing.
+- No in-flight drain marker exists between "message accepted" and
+  "message durably persisted," leaving a narrow window unaddressed.
+- `cmdSpawn` can leave a row registered-but-never-launched past its normal
+  cleanup path in one ordering; the 6-hour dead-classification deadline
+  (shipped in 0.88.0) bounds but does not eliminate this.
+
 ## 0.88.0 (2026-09-03)
 
 - **Fix: `inbox ack` and `read-primary` sibling acks could each independently

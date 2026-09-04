@@ -25,11 +25,23 @@ function makeHome() {
 }
 function descriptorsDir(home) { return path.join(home, '.anti-hall', 'devswarm', 'workspaces'); }
 // A complete, valid descriptor unless overridden.
+//
+// mtime backdated 1 HOUR (DEFECT 17685a91b783 fix): sweepOnce now applies a
+// post-spawn grace period (default 2min, keyed off the descriptor FILE's own
+// mtime) before acting on a `stale` verdict — see
+// companion/devswarm-supervisor.js's withinPostSpawnGrace. None of the tests
+// in this file are ABOUT freshness (that is covered exclusively by
+// devswarm-supervisor-neglect-grace.test.js), so every fixture here is
+// backdated well past the default grace window to preserve this file's
+// original "pokeOrEscalate fires immediately for a stale verdict" intent.
 function writeDescriptor(home, d, fileName) {
   const dir = descriptorsDir(home);
   fs.mkdirSync(dir, { recursive: true });
   const full = Object.assign({ inboxPath: '/i', cursorPath: '/c', sessionId: UUID }, d);
-  fs.writeFileSync(path.join(dir, (fileName || d.id) + '.json'), JSON.stringify(full));
+  const p = path.join(dir, (fileName || d.id) + '.json');
+  fs.writeFileSync(p, JSON.stringify(full));
+  const old = (Date.now() - 60 * 60 * 1000) / 1000;
+  fs.utimesSync(p, old, old);
 }
 
 test('supervisorEnabled: off / hard-kill disable; otherwise enabled', () => {

@@ -22,6 +22,9 @@ const { testHookRaw, postToolUseBashPayload } = require('../helpers/spawn-hook.j
 const { makeHome } = require('../helpers/fixtures.js');
 const { readReplyState } = require('../../plugins/anti-hall/companion/lib/devswarm-reply-state.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const store = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const HOOK = 'devswarm-parent-reply-tracker.js';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' }; // active + Primary (no SOURCE_BRANCH)
@@ -323,6 +326,262 @@ test('never emits a blocking decision field under any circumstance', () => {
       assert.strictEqual(r.status, 0);
       assert.ok(!r.stdout.includes('"decision"'), `stdout must never contain "decision": ${r.stdout}`);
     }
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// FIELD DEFECT FIX (088494cc3d3b, revised root cause, confirmed via field
+// reproduction). The ORIGINAL code did `JSON.parse(text.trim())` on the
+// WHOLE stdout string, which only succeeds when stdout is NOTHING but the
+// send response's one JSON line. In the field, every uncredited send was
+// part of a COMPOUND Bash command (heredoc write + `grep -c` sanity check +
+// the actual `devswarm.js send --message-file` call), so stdout looked like
+// `0\n{"ok":true,...}` — a leading unrelated line before the real JSON —
+// and the whole-string parse threw, silently dropping the reply forever.
+//
+// MUTATION LIST (each mutant proven RED against these tests, then GREEN
+// against the real fix — see the pasted transcript in the fix's PR/report):
+//   M1: revert parseSendResponse to `JSON.parse(text.trim())` (the original
+//       whole-string parse) -> kills "compound stdout" / "trailing junk" /
+//       "CRLF" / "two JSON lines" tests below (all RED).
+//   M2: make parseSendResponse keep the FIRST matching JSON line instead of
+//       the LAST -> kills "two JSON lines where only the last is a send"
+//       (RED: would record the wrong/earlier object's fields, or none).
+//   M3: delete the `logReplyParseDrop` call on parse failure -> kills
+//       "diagnostic: malformed stdout logs exactly once" (RED: log file
+//       absent/empty).
+//   M4: revert `if (!envActive && !hasOnDiskDevswarmState(home, repoKey))
+//       return;` to `if (!envActive) return;` (drop the on-disk-evidence
+//       fallback entirely) -> kills "ON-DISK FALLBACK: ... still records
+//       when the repo HAS DevSwarm state on disk" (RED: nothing recorded).
+//
+// (An earlier draft of this list included a 4th stdout-parsing mutant —
+// dropping the blank-line `continue` in parseSendResponse's scan loop. That
+// mutant was verified NOT to kill any test: `JSON.parse('')` already throws
+// and is caught by the existing try/catch, so skipping blank lines is a
+// micro-optimization, not load-bearing for correctness. Replaced with M4
+// above, which IS verified to kill a real test.)
+// ---------------------------------------------------------------------------
+
+test('FIELD FIX: compound Bash stdout (grep sanity-check line before the send JSON) still records a reply', () => {
+  const h = makeHome();
+  try {
+    const stdout = '0\n' + sendResponse();
+    const payload = postToolUseBashPayload(
+      "cat > f <<'EOF'\nhi\nEOF\ngrep -c '[`$]' f; node scripts/devswarm.js send --to child-1 --question --message-file f",
+      { stdout, sessionId: 'sess-compound' }
+    );
+    const r = run(h.home, payload);
+    assert.strictEqual(r.status, 0);
+    const state = readReplyState(REPO_KEY, h.home);
+    assert.ok(state['child-1'], 'a compound command whose stdout has a leading non-JSON line must still record the reply');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FIELD FIX: trailing junk after the send JSON still records a reply', () => {
+  const h = makeHome();
+  try {
+    const stdout = sendResponse() + '\nsome trailing junk that is not JSON';
+    const payload = postToolUseBashPayload('node scripts/devswarm.js send --to child-1 --question --message "hi"', {
+      stdout, sessionId: 'sess-trailing',
+    });
+    const r = run(h.home, payload);
+    assert.strictEqual(r.status, 0);
+    const state = readReplyState(REPO_KEY, h.home);
+    assert.ok(state['child-1'], 'trailing non-JSON output after the real send line must not defeat the parse');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FIELD FIX: two JSON lines where only the LAST is a genuine send are recorded using the last one', () => {
+  const h = makeHome();
+  try {
+    const firstLine = JSON.stringify({ ok: true, action: 'other-thing', note: 'not a send' });
+    const stdout = firstLine + '\n' + sendResponse({ toId: 'child-2' });
+    const payload = postToolUseBashPayload('node scripts/devswarm.js send --to child-2 --question --message "hi"', {
+      stdout, sessionId: 'sess-two-json',
+    });
+    const r = run(h.home, payload);
+    assert.strictEqual(r.status, 0);
+    const state = readReplyState(REPO_KEY, h.home);
+    assert.ok(state['child-2'], 'the LAST JSON line (the real send) must be the one credited');
+    assert.ok(!state['other-thing'], 'the first, non-send JSON line must never itself be treated as a reply target');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('WAVE 9 P1 FIX: a send followed by an unrelated JSON line (e.g. `send && inbox count`) still records the reply using the send-shaped line, not the last JSON line', () => {
+  const h = makeHome();
+  try {
+    // The exact field shape: one Bash call chains `devswarm.js send --to X`
+    // then `devswarm.js inbox count X` — stdout carries the send's JSON line
+    // FIRST, then the count's `{"action":"count",...}` JSON line LAST. The
+    // old "last JSON-object line wins" rule picked the count line (no toId/
+    // sent/needsReply fields), silently dropping the reply.
+    const countLine = JSON.stringify({ ok: true, action: 'count', id: 'child-3', unread: 0 });
+    const stdout = sendResponse({ toId: 'child-3' }) + '\n' + countLine;
+    const payload = postToolUseBashPayload(
+      'node scripts/devswarm.js send --to child-3 --question --message "hi" && node scripts/devswarm.js inbox count child-3',
+      { stdout, sessionId: 'sess-send-then-count' }
+    );
+    const r = run(h.home, payload);
+    assert.strictEqual(r.status, 0);
+    const state = readReplyState(REPO_KEY, h.home);
+    assert.ok(state['child-3'], 'the send-shaped line must be credited even though a later, unrelated JSON line (inbox count) follows it');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('FIELD FIX: CRLF line endings in stdout still record a reply', () => {
+  const h = makeHome();
+  try {
+    const stdout = '0\r\n' + sendResponse() + '\r\n';
+    const payload = postToolUseBashPayload('node scripts/devswarm.js send --to child-1 --question --message "hi"', {
+      stdout, sessionId: 'sess-crlf',
+    });
+    const r = run(h.home, payload);
+    assert.strictEqual(r.status, 0);
+    const state = readReplyState(REPO_KEY, h.home);
+    assert.ok(state['child-1'], 'CRLF-delimited stdout must still parse and record the reply');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('NEGATIVE CONTROL: stdout with NO send JSON anywhere in it never records a reply', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUseBashPayload('node scripts/devswarm.js send --to child-1 --message "hi"', {
+      stdout: 'just some plain text output, no braces at all\nanother line',
+      sessionId: 'sess-no-json-anywhere',
+    });
+    const r = run(h.home, payload);
+    assert.strictEqual(r.status, 0);
+    const state = readReplyState(REPO_KEY, h.home);
+    assert.deepStrictEqual(state, {}, 'stdout with no JSON object anywhere must never credit a reply');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('DIAGNOSTIC: a send-shaped command whose stdout has no parseable JSON logs the drop exactly once to parent-inbox.log', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUseBashPayload('node scripts/devswarm.js send --to child-1 --message "hi"', {
+      stdout: 'this is not JSON at all {{{',
+      sessionId: 'sess-diagnostic',
+    });
+    const r = run(h.home, payload);
+    assert.strictEqual(r.status, 0);
+
+    const logPath = path.join(h.home, '.devswarm', 'parent-inbox.log');
+    const raw = fs.readFileSync(logPath, 'utf8');
+    const lines = raw.trim().split('\n').filter(Boolean);
+    const dropLines = lines.filter((l) => {
+      try { return JSON.parse(l).event === 'reply-parse-drop'; } catch (_) { return false; }
+    });
+    assert.strictEqual(dropLines.length, 1, 'exactly one reply-parse-drop diagnostic line must be written');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// SECONDARY FIX (088494cc3d3b, latent path): the on-disk-evidence fallback.
+// Nothing in this plugin sets DEVSWARM_REPO_ID for a Primary's own process —
+// it is a per-SESSION var set externally by the DevSwarm spawn path — so a
+// Primary launched any other way never gets it and the env-based fast path
+// alone stays false forever. Fallback: this repo already has DevSwarm state
+// on disk for its own repoKey (summaries/<repoKey>.json).
+// ---------------------------------------------------------------------------
+
+test('ON-DISK FALLBACK: a reply from a process with NO DEVSWARM_REPO_ID and no supervisor override still records when the repo HAS DevSwarm state on disk', () => {
+  const h = makeHome();
+  try {
+    const p = store.summaryPathForHash(h.home, REPO_KEY);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ workspaces: {} }));
+
+    const payload = postToolUseBashPayload('node scripts/devswarm.js send --to child-1 --question --message "hi"', {
+      stdout: sendResponse(), sessionId: 'sess-ondisk-fallback',
+    });
+    const r = run(h.home, payload, {}); // no DEVSWARM_REPO_ID, no ANTIHALL_DEVSWARM_SUPERVISOR
+    assert.strictEqual(r.status, 0);
+    const state = readReplyState(REPO_KEY, h.home);
+    assert.ok(state['child-1'], 'on-disk DevSwarm state must be enough to arm reply recording even with no active env var');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ON-DISK FALLBACK negative control: a child workspace still never records, even when on-disk DevSwarm state exists', () => {
+  const h = makeHome();
+  try {
+    const p = store.summaryPathForHash(h.home, REPO_KEY);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ workspaces: {} }));
+
+    const payload = postToolUseBashPayload('node scripts/devswarm.js send --to child-1 --question --message "hi"', {
+      stdout: sendResponse(), sessionId: 'sess-ondisk-child',
+    });
+    // DEVSWARM_SOURCE_BRANCH set, no DEVSWARM_REPO_ID: isChildWorkspace must
+    // win regardless of the on-disk evidence tier.
+    const r = run(h.home, payload, { DEVSWARM_SOURCE_BRANCH: 'some-branch' });
+    assert.strictEqual(r.status, 0);
+    const state = readReplyState(REPO_KEY, h.home);
+    assert.deepStrictEqual(state, {}, 'a child workspace must never write the parent reply state, on-disk evidence notwithstanding');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('WAVE 9 EASY: an UNARMED session (no active env, no on-disk DevSwarm state) with malformed send-shaped stdout must NOT write a reply-parse-drop diagnostic line', () => {
+  // logReplyParseDrop moved to AFTER the arming gate (envActive ||
+  // hasOnDiskDevswarmState) — previously it ran unconditionally on any Bash
+  // call that merely looked like a devswarm send, even for a stranger in a
+  // repo/session with zero DevSwarm activity, polluting parent-inbox.log for
+  // sessions that were never armed in the first place.
+  const h = makeHome();
+  try {
+    const payload = postToolUseBashPayload('node scripts/devswarm.js send --to child-1 --message "hi"', {
+      stdout: 'this is not JSON at all {{{',
+      sessionId: 'sess-unarmed-diagnostic',
+    });
+    const r = run(h.home, payload, {}); // no env, and makeHome() has NO summaries file at all -> unarmed
+    assert.strictEqual(r.status, 0);
+
+    const logPath = path.join(h.home, '.devswarm', 'parent-inbox.log');
+    let dropLines = [];
+    if (fs.existsSync(logPath)) {
+      const raw = fs.readFileSync(logPath, 'utf8');
+      const lines = raw.trim().split('\n').filter(Boolean);
+      dropLines = lines.filter((l) => {
+        try { return JSON.parse(l).event === 'reply-parse-drop'; } catch (_) { return false; }
+      });
+    }
+    assert.strictEqual(dropLines.length, 0, 'an unarmed session must never write a reply-parse-drop diagnostic line');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('ON-DISK FALLBACK negative control: a repo with NO DevSwarm state on disk and no active env still does not record (covered above by "ignores a non-DevSwarm session", restated for this fix)', () => {
+  const h = makeHome();
+  try {
+    const payload = postToolUseBashPayload('node scripts/devswarm.js send --to child-1 --message "hi"', {
+      stdout: sendResponse(), sessionId: 'sess-ondisk-none',
+    });
+    const r = run(h.home, payload, {}); // no env, and makeHome() has NO summaries file at all
+    assert.strictEqual(r.status, 0);
+    const state = readReplyState(REPO_KEY, h.home);
+    assert.deepStrictEqual(state, {}, 'zero DevSwarm history on disk and no active env must never arm the fallback');
   } finally {
     h.cleanup();
   }

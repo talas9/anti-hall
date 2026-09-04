@@ -151,13 +151,26 @@ const ARCHIVE_AGE_MS = 30 * 24 * 60 * 60 * 1000; // 30 days since lastSeen
 // defect being fixed here.
 const FIELD_CAPS = { sym: 200, repro: 1200, claimed: 600, observed: 600, note: 1200 };
 
-// truncationNotice(originalLength) -> the marker appended INSIDE a truncated
-// narrative value. Deliberately based on the ORIGINAL length (a fixed input)
-// rather than the dropped count (which would depend on the marker's own
-// length — circular), so the final value's length is computable in one pass.
-// ASCII only: clampField strips control chars and this must survive intact.
-function truncationNotice(originalLength) {
-  return ` [truncated from ${originalLength} chars]`;
+// truncationNotice(originalLength, continued) -> the marker appended INSIDE
+// a truncated narrative value. Deliberately based on the ORIGINAL length (a
+// fixed input) rather than the dropped count (which would depend on the
+// marker's own length — circular), so the final value's length is computable
+// in one pass. ASCII only: clampField strips control chars and this must
+// survive intact.
+//
+// `continued` (defect 1aec2bf3d5df, item 1): when true, a lossless
+// continuation of the cut tail was spilled into this same defect file as
+// 'overflow' lines (see spillOverflow() below) — the marker says so, so a
+// reader with no access to the original call still knows the rest is not
+// gone, just elsewhere in the record. The suffix REMAINS byte-for-byte
+// `[truncated from N chars]` — existing tests/readers match on that literal
+// suffix via a trailing regex, so the pointer text is prepended, never
+// appended, and the closing bracket is never touched.
+function truncationNotice(originalLength, continued) {
+  const pointer = continued
+    ? ' (rest continued in this record\'s overflow lines - see `defect show`)'
+    : '';
+  return `${pointer} [truncated from ${originalLength} chars]`;
 }
 
 function ensureDir(dir) {
@@ -191,6 +204,12 @@ function clampField(value, maxLen) {
 // value's meaning, and `sym` additionally feeds fingerprint(), so appending to
 // it would change the fingerprint of every already-filed over-long defect and
 // split it into a new file. Those fields are still named in `truncated`.
+// `overflow` (defect 1aec2bf3d5df): the exact tail cut from a MARKED field,
+// returned alongside the clamped value so the caller can spill it into
+// continuation lines instead of dropping it. Only ever set when marked is
+// true — identifier-ish fields (mark !== true) still lose their tail with no
+// recovery path, unchanged from before (widening THOSE would corrupt
+// meaning, e.g. `sym` feeds fingerprint()).
 function clampFieldInfo(value, maxLen, opts) {
   let s = typeof value === 'string' ? value : (value == null ? '' : String(value));
   s = s.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); // ANSI CSI sequences
@@ -198,28 +217,38 @@ function clampFieldInfo(value, maxLen, opts) {
   s = s.trim();
   const originalLength = s.length;
   if (typeof maxLen !== 'number' || originalLength <= maxLen) {
-    return { value: s, truncated: false, originalLength, marked: false };
+    return { value: s, truncated: false, originalLength, marked: false, overflow: undefined };
   }
   if (!opts || opts.mark !== true) {
-    return { value: s.slice(0, maxLen), truncated: true, originalLength, marked: false };
+    return { value: s.slice(0, maxLen), truncated: true, originalLength, marked: false, overflow: undefined };
   }
-  const notice = truncationNotice(originalLength);
+  const notice = truncationNotice(originalLength, true);
   const keep = maxLen - notice.length;
   // A cap too small to hold the marker falls back to a plain slice — the
   // `truncated` map still tells the caller. Never emit a value over the cap.
   if (keep <= 0) {
-    return { value: s.slice(0, maxLen), truncated: true, originalLength, marked: false };
+    return { value: s.slice(0, maxLen), truncated: true, originalLength, marked: false, overflow: undefined };
   }
-  return { value: s.slice(0, keep) + notice, truncated: true, originalLength, marked: true };
+  return {
+    value: s.slice(0, keep) + notice, truncated: true, originalLength, marked: true,
+    overflow: s.slice(keep),
+  };
 }
 
-// truncationCollector() -> { take(name, value, maxLen, mark), map() }.
-// Clamps a field, records any truncation under `name`, and returns the
-// clamped value. map() returns the accumulated { field: { cap,
+// truncationCollector() -> { take(name, value, maxLen, mark), map(),
+// overflows() }. Clamps a field, records any truncation under `name`, and
+// returns the clamped value. map() returns the accumulated { field: { cap,
 // originalLength, marked } } map, or undefined when nothing was cut (so a
-// clean write's result stays exactly as it was before this fix).
+// clean write's result stays exactly as it was before this fix) — this is
+// the map printed back to the caller/CLI, so it deliberately never carries
+// the raw overflow TEXT (that would defeat the point of capping the printed
+// result). overflows() separately returns [{ field, text }] for every
+// marked+truncated field whose cut tail is non-empty — internal-only, used
+// by report()/rule() to spill that tail into continuation ('overflow')
+// lines in the same defect file (see spillOverflow()).
 function truncationCollector() {
   const cut = {};
+  const spill = [];
   let any = false;
   return {
     take(name, value, maxLen, mark) {
@@ -227,10 +256,12 @@ function truncationCollector() {
       if (r.truncated) {
         any = true;
         cut[name] = { cap: maxLen, originalLength: r.originalLength, marked: r.marked };
+        if (r.marked && r.overflow) spill.push({ field: name, text: r.overflow });
       }
       return r.value;
     },
     map() { return any ? cut : undefined; },
+    overflows() { return spill; },
   };
 }
 
@@ -458,6 +489,117 @@ function appendLine(file, lineStr, opts) {
   return { outcome: create ? 'recorded' : 'occurrence-appended' };
 }
 
+// OVERFLOW_CHUNK_BYTES: conservative per-chunk byte budget for a spilled
+// overflow line's `text` value, well under MAX_LINE_BYTES (4096) to leave
+// room for the rest of the JSON envelope (t/at/forType/seq/field/part/of
+// keys + quoting) plus worst-case 3-byte-per-char UTF-8 expansion.
+const OVERFLOW_CHUNK_BYTES = 3200;
+
+// chunkByBytes(text, maxBytes) -> array of substrings of `text`, each
+// encoding to <= maxBytes UTF-8 bytes, split only at code-point boundaries
+// (never inside a surrogate pair or multi-byte sequence) and concatenating
+// back to `text` exactly. Binary-searches the split point per chunk — cheap
+// at the sizes involved here (defect files are bounded to MAX_FILE_BYTES).
+function chunkByBytes(text, maxBytes) {
+  if (text.length === 0) return [];
+  const chunks = [];
+  let i = 0;
+  while (i < text.length) {
+    let lo = i + 1;
+    let hi = text.length;
+    let best = i + 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (Buffer.byteLength(text.slice(i, mid), 'utf8') <= maxBytes) {
+        best = mid;
+        lo = mid + 1;
+      } else {
+        hi = mid - 1;
+      }
+    }
+    chunks.push(text.slice(i, best));
+    i = best;
+  }
+  return chunks;
+}
+
+// spillOverflow(file, forType, seq, overflows, atIso) -> array of per-field
+// { field, chunks, outcome } summaries. Appends one or more `t: 'overflow'`
+// lines per overflowed field to `file` (which must already exist — this is
+// only ever called AFTER the primary report/ruling line it continues has
+// been verified written). Each field's lost tail is chunked via
+// chunkByBytes() and written as `{ t:'overflow', at, forType, seq, field,
+// part, of, text }` lines, in order, part=0..of-1. Bounded by the SAME
+// MAX_FILE_BYTES backstop every other write in this file uses — if the file
+// fills mid-spill, the remaining chunks are refused (outcome 'defect-full')
+// rather than silently dropped; the caller sees this in the returned
+// summary, so a spill that could not fully land is still visible, not
+// silent (though the tail from an unwritten chunk is then genuinely lost —
+// the same bounded-store tradeoff every other cap in this file already
+// makes; the marker + partial continuation is a strict improvement over
+// today's total silent loss). `outcome` per chunk mirrors appendLine()'s
+// vocabulary plus 'defect-full'/'too-large' for the size backstops.
+function spillOverflow(file, forType, seq, overflows, atIso) {
+  const summaries = [];
+  for (const { field, text } of overflows) {
+    const chunks = chunkByBytes(text, OVERFLOW_CHUNK_BYTES);
+    const of = chunks.length;
+    let outcome = 'recorded';
+    for (let part = 0; part < of; part++) {
+      const lineObj = { t: 'overflow', at: atIso, forType, seq, field, part, of, text: chunks[part] };
+      const lineStr = JSON.stringify(lineObj);
+      if (Buffer.byteLength(lineStr, 'utf8') > MAX_LINE_BYTES) {
+        outcome = 'too-large';
+        break;
+      }
+      let size = 0;
+      try { size = fs.statSync(file).size; } catch (_) { size = 0; }
+      if (size + Buffer.byteLength(lineStr + '\n', 'utf8') > MAX_FILE_BYTES) {
+        outcome = 'defect-full';
+        break;
+      }
+      const res = appendLine(file, lineStr, { create: false });
+      if (res.outcome !== 'occurrence-appended') {
+        outcome = res.outcome;
+        break;
+      }
+    }
+    summaries.push({ field, chunks: of, outcome });
+  }
+  return summaries;
+}
+
+// overflowChunksFor(parsedLines, forType, seq, field) -> ordered array of
+// the raw `text` chunks previously spilled for one truncated field, or []
+// if none exist. Pure read over already-parsed lines — no disk access.
+function overflowChunksFor(parsedLines, forType, seq, field) {
+  return parsedLines
+    .filter((o) => o.t === 'overflow' && o.forType === forType && o.seq === seq && o.field === field)
+    .sort((a, b) => a.part - b.part)
+    .map((o) => o.text);
+}
+
+// reconstructField(clampedValue, chunks) -> the full original string, or
+// null if the marker/chunks don't reassemble to the length the marker
+// itself claims (fail closed rather than return a silently-wrong string).
+// Deliberately re-derives the split point from the persisted marker text
+// alone (parsing `[truncated from N chars]` back out) rather than from any
+// separately-stored length field — the marker is the one thing every
+// (old or new) reader already has, and truncationNotice() is a pure
+// function of (originalLength, continued=true), so the notice string is
+// fully reproducible from N. Returns `clampedValue` unchanged (verbatim)
+// when it was never truncated at all.
+function reconstructField(clampedValue, chunks) {
+  const m = /\[truncated from (\d+) chars\]$/.exec(String(clampedValue || ''));
+  if (!m) return clampedValue;
+  const originalLength = parseInt(m[1], 10);
+  const notice = truncationNotice(originalLength, true);
+  if (!clampedValue.endsWith(notice)) return null;
+  const prefix = clampedValue.slice(0, clampedValue.length - notice.length);
+  const full = prefix + chunks.join('');
+  return full.length === originalLength ? full : null;
+}
+
 // report(input) -> { outcome, fp }. outcome is one of: 'recorded',
 // 'occurrence-appended', 'invalid-class', 'invalid-severity',
 // 'registry-full', 'occurrence-capped', 'defect-full', 'too-large',
@@ -506,10 +648,24 @@ function report(input) {
   const file = fpFile(fp, home);
   const exists = fs.existsSync(file);
 
+  // spillIfWritten(res, seq) -> res, plus an `overflow` summary array
+  // attached IFF the primary line verifiably landed AND some marked field
+  // (repro/claimed/observed) had a non-empty cut tail. `seq` is this
+  // report's 0-based position among report lines in the file (0 for the
+  // first-ever report; the prior reportCount thereafter) — the same key
+  // overflowChunksFor()/reconstructField() use to find these lines back.
+  const spillIfWritten = (res, seq) => {
+    if (res.outcome !== 'recorded' && res.outcome !== 'occurrence-appended') return res;
+    const overflows = tr.overflows();
+    if (overflows.length === 0) return res;
+    const summary = spillOverflow(file, 'report', seq, overflows, lineObj.at);
+    return Object.assign({}, res, { overflow: summary });
+  };
+
   if (!exists) {
     if (countOpenFiles(home) >= MAX_OPEN_FILES) return withTrunc({ outcome: 'registry-full', fp });
     const res = appendLine(file, lineStr, { create: true });
-    return withTrunc(Object.assign({ fp }, res));
+    return withTrunc(Object.assign({ fp }, spillIfWritten(res, 0)));
   }
 
   const parsed = parseLines(readRawLines(file));
@@ -534,7 +690,7 @@ function report(input) {
   }
 
   const res = appendLine(file, lineStr, { create: false });
-  return withTrunc(Object.assign({ fp }, res));
+  return withTrunc(Object.assign({ fp }, spillIfWritten(res, reportCount)));
 }
 
 // rule(fp, input) -> { outcome, fp }. outcome: 'ruled', 'not-found',
@@ -573,9 +729,19 @@ function rule(fp, input) {
     return withTrunc({ outcome: 'defect-full', fp });
   }
 
+  // rulingSeq: this ruling's 0-based position among ruling lines already in
+  // the file — the same key overflowChunksFor()/reconstructField() use to
+  // find a spilled `note` tail back for THIS ruling specifically (a defect
+  // can accumulate multiple rulings over time, each with its own note).
+  const rulingSeq = parseLines(readRawLines(file)).filter((p) => p.t === 'ruling').length;
+
   const res = appendLine(file, lineStr, { create: false });
   const outcome = res.outcome === 'occurrence-appended' ? 'ruled' : res.outcome;
-  return withTrunc({ outcome, fp });
+  if (outcome !== 'ruled') return withTrunc({ outcome, fp });
+  const overflows = tr.overflows();
+  if (overflows.length === 0) return withTrunc({ outcome, fp });
+  const summary = spillOverflow(file, 'ruling', rulingSeq, overflows, lineObj.at);
+  return withTrunc({ outcome, fp, overflow: summary });
 }
 
 function yyyymm(ms) {
@@ -705,4 +871,5 @@ module.exports = {
   readRawLines, parseLines, deriveState,
   countOpenFiles, countArchiveFiles, readLastRawLine,
   appendLine, report, rule, archiveSweep, listDefects, showDefect, yyyymm,
+  OVERFLOW_CHUNK_BYTES, chunkByBytes, spillOverflow, overflowChunksFor, reconstructField,
 };

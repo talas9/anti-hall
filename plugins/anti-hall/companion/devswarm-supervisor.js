@@ -109,6 +109,118 @@ function workspacesDir(home) {
   return path.join(devswarmRoot(home), 'workspaces');
 }
 
+// ----- DEFECT 17685a91b783 (P1): post-spawn grace + done/archive-ready exclusion -----
+// The automatic sweep was observed forcing a parent-store escalation notice
+// ("child <id> idle 0m — reassign or archive") for a workspace whose descriptor
+// had just been (re)registered, AND for a workspace the Primary had already
+// ruled done. Two INDEPENDENT, additive suppressions, both applied ONLY to
+// whether this sweep ACTS on a `stale` verdict (pokeOrEscalate + the
+// mesh-urgency forced notify) — never to the verdict itself (writeVerdict still
+// persists exactly what computeLiveness/liveness.js computed; this file does
+// not own or alter that logic, see the DO-NOT-TOUCH list this fix is scoped
+// under). Both fail CLOSED toward the pre-fix behavior (escalate) on any
+// read/resolution failure — an unreadable signal must never silently suppress a
+// genuine neglect notice; the NEGATIVE CONTROL in the paired test proves a
+// genuinely idle-past-grace, non-done child is still poked/escalated normally.
+
+// DEFAULT_POST_SPAWN_GRACE_MS (2 minutes) — the minimum runway a descriptor
+// gets after its most recent (re)registration before this sweep will act on a
+// stale verdict for it. Deliberately GENEROUS relative to a single sweep tick
+// (launchd/systemd/cron intervals in this codebase are commonly 60-300s) but
+// short relative to DEFAULT_IDLE_MS (15min) and DEFAULT_NEVER_LAUNCHED_MS (6h)
+// so it can never mask real neglect for more than a couple of minutes — it
+// exists purely to cover the register-to-first-turn gap (spawn scheduling,
+// worktree creation, model cold-start), not to re-litigate the idle thresholds
+// computeLiveness already owns.
+const DEFAULT_POST_SPAWN_GRACE_MS = 2 * 60 * 1000;
+
+// resolvePostSpawnGraceMs(env) -> ms, via the SAME parseEnvNum helper every
+// other threshold in this file already uses. 0 is a valid override (grace
+// disabled outright); clamped to [0, 1800] seconds so a typo can never turn
+// this into an unbounded suppression.
+function resolvePostSpawnGraceMs(env) {
+  const sec = parseEnvNum(env || process.env, 'ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC',
+    DEFAULT_POST_SPAWN_GRACE_MS / 1000, { min: 0, max: 1800 });
+  return sec * 1000;
+}
+
+// descriptorFilePath(home, id) — the SAME path convention scripts/devswarm.js's
+// own descriptorPath() uses (workspacesDir(home)/<id>.json); kept as a local
+// copy (this file's own established idiom — see collapsedDescriptorFamilies'
+// header on why cross-module coupling is avoided here) rather than importing
+// the forbidden scripts/devswarm.js for one path join.
+function descriptorFilePath(home, id) {
+  return path.join(workspacesDir(home), String(id) + '.json');
+}
+
+// withinPostSpawnGrace(id, home, now, graceMs, fsi) -> bool. Uses the
+// descriptor FILE's own mtime as the "most recent (re)registration" signal —
+// register/ensure/re-home all rewrite this file via an atomic tmp+rename
+// (scripts/devswarm.js writeDescriptorAtomic), so its mtime tracks the most
+// recent registration event, not merely the workspace's original creation.
+// FAIL-CLOSED (toward escalating, never toward suppressing): a disabled grace
+// (graceMs <= 0), an unreadable/absent descriptor file, or a NEGATIVE age
+// (the file's mtime is in the FUTURE relative to `now` — clock skew, or a
+// forged mtime) all return false, i.e. "not in grace, evaluate normally".
+// SKEW_TOLERANCE_MS — a small allowance for the mtime the fs clock reports
+// reading marginally AHEAD of `now` (observed a few ms, immediately after a
+// synchronous writeFileSync on this very machine — fs timestamp resolution and
+// Date.now()'s clock source are not guaranteed to agree to sub-millisecond
+// precision). Without this, a descriptor written microseconds ago could read
+// as a NEGATIVE age and fail the grace check for the wrong reason (treated as
+// "future/forged", the failure mode the null-return branch below exists for)
+// on the exact case this feature is meant to cover. Only a skew LARGER than
+// this (a genuinely forged or clock-skewed far-future mtime) still fails
+// closed toward "not in grace" — see the fail-closed branch below.
+const SKEW_TOLERANCE_MS = 5000;
+
+function withinPostSpawnGrace(id, home, now, graceMs, fsi) {
+  if (!(graceMs > 0)) return false;
+  const F = fsi || fs;
+  let ts = null;
+  try {
+    const st = F.statSync(descriptorFilePath(home, id));
+    ts = Number.isFinite(st.mtimeMs) ? st.mtimeMs : null;
+  } catch (_) { ts = null; }
+  if (ts === null) return false;
+  const age = now - ts;
+  if (age < 0) return age >= -SKEW_TOLERANCE_MS; // benign clock jitter -> effectively age 0, in grace
+  return age < graceMs;
+}
+
+// isArchiveReadyForSupervisor(id, worktreePath, home, deps) -> bool. Shares
+// Defect A's derivation (hooks/devswarm-parent-gate.js's isArchiveReadyFor):
+// once the Primary has ruled a child done+merged+tests_passed (the default
+// required-gate set; `devswarm.js gate <id> --set ...`), the store already
+// derives `archive_ready: true` into the per-project summary projection
+// (companion/lib/devswarm-store.js deriveSummary) — the SAME summaries/
+// <repoKey>.json file the gate reads. Kept as an independent local copy in
+// THIS file rather than a cross-require of hooks/devswarm-parent-gate.js (that
+// file is a Stop-hook script with side-effecting top-level code — `main()` is
+// invoked unconditionally at require time — so requiring it from here would
+// run a Stop hook's body as a side effect of loading the supervisor; the two
+// copies read the exact same on-disk fact and must be kept in sync by hand).
+// FAIL-CLOSED: any resolution/read/parse failure, or an id absent from the
+// projection, returns false — never silently suppresses a real neglect notice.
+function isArchiveReadyForSupervisor(id, worktreePath, home, deps) {
+  const d = deps || {};
+  try {
+    const resolveRepoKey = d.repoKeyForWorktree || require('./lib/devswarm-repokey.js').repoKeyForWorktree;
+    const repoKey = resolveRepoKey(worktreePath);
+    if (!repoKey) return false;
+    const F = d.fs || fs;
+    const p = path.join(devswarmRoot(home), 'summaries', String(repoKey) + '.json');
+    const raw = F.readFileSync(p, 'utf8').trim();
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || !parsed.workspaces || typeof parsed.workspaces !== 'object') return false;
+    const entry = parsed.workspaces[String(id)];
+    return !!(entry && entry.archive_ready === true);
+  } catch (_) {
+    return false;
+  }
+}
+
 // ----- mesh-urgency signal (v0.58 "mesh-only messaging" — additive Tier 0 wake) -----
 // URGENT_TIERS — only these two deriveSummary urgencyMax values qualify as an
 // urgent unread signal (deriveSummary's URGENCY_RANK: low=0, normal=1, high=2,
@@ -300,32 +412,48 @@ function sweepOnce(opts) {
 
       let poke = null;
       if (verdict.status === 'stale') {
-        poke = (deps.pokeOrEscalate || pokeOrEscalate)(d, verdict, {
-          home, now: o.now, nudgeMaxAttempts: o.nudgeMaxAttempts, nudgeCooldownMs: o.nudgeCooldownMs,
-        }, deps.io);
+        // DEFECT 17685a91b783 — see the suppression helpers' header above.
+        // Evaluated ONCE per descriptor per tick, cheapest check first
+        // (grace is a single fs.statSync; archive-ready needs a repoKey
+        // resolution + a summary read, so it is skipped once grace already
+        // suppresses).
+        const nowTs = Number.isFinite(o.now) ? o.now : Date.now();
+        const graceMs = Number.isFinite(o.postSpawnGraceMs) ? o.postSpawnGraceMs : resolvePostSpawnGraceMs(env);
+        const graced = (deps.withinPostSpawnGrace || withinPostSpawnGrace)(d.id, home, nowTs, graceMs, F);
+        const done = !graced && (deps.isArchiveReadyForSupervisor || isArchiveReadyForSupervisor)(d.id, d.worktreePath, home, deps);
+        if (graced || done) {
+          poke = { action: 'suppressed', reason: graced ? 'post-spawn-grace' : 'archive-ready' };
+        } else {
+          poke = (deps.pokeOrEscalate || pokeOrEscalate)(d, verdict, {
+            home, now: o.now, nudgeMaxAttempts: o.nudgeMaxAttempts, nudgeCooldownMs: o.nudgeCooldownMs,
+          }, deps.io);
 
-        // Mesh-urgency escalation (v0.58 "mesh-only messaging", additive Tier 0
-        // wake): an urgent/high unread in the project's mesh-store summary forces
-        // a parent-store escalate notice NOW, independent of the poke budget/
-        // cadence above (a stale-but-just-nudged workspace with a genuinely
-        // urgent unread must not wait out the nudge window) — same
-        // notifyParentEscalation channel pokeOrEscalate itself uses, so the
-        // store-level hash dedupe (`escalate:<id>:<staleSince>`) keeps this
-        // idempotent even when the base poke above already escalated on its own.
-        // NEVER resolves a pid, NEVER kills. Low/normal urgency (or no mesh
-        // signal at all) -> no forced escalate; rely on the agent's next turn.
-        const urgency = (deps.readMeshUrgency || readMeshUrgency)(d, home, deps);
-        if (isUrgentMesh(urgency)) {
-          // Thread the SAME injected fs (F, already used above for
-          // readDescriptors/writeVerdict/computeLiveness) through to
-          // notifyParentEscalation's opts — matching how the neighbouring
-          // pokeOrEscalate call site passes `fsi: F` into its own internal
-          // notifyParentEscalation call (lib/recovery.js). Without this, a
-          // test/sandbox that injects fs here still leaks the forced-escalate
-          // path to the real filesystem.
-          (deps.notifyParentEscalation || notifyParentEscalation)(d, verdict, {
-            home, now: o.now, env, fsi: F,
-          }, deps.openParentStore);
+          // Mesh-urgency escalation (v0.58 "mesh-only messaging", additive Tier 0
+          // wake): an urgent/high unread in the project's mesh-store summary forces
+          // a parent-store escalate notice NOW, independent of the poke budget/
+          // cadence above (a stale-but-just-nudged workspace with a genuinely
+          // urgent unread must not wait out the nudge window) — same
+          // notifyParentEscalation channel pokeOrEscalate itself uses, so the
+          // store-level hash dedupe (`escalate:<id>:<staleSince>`) keeps this
+          // idempotent even when the base poke above already escalated on its own.
+          // NEVER resolves a pid, NEVER kills. Low/normal urgency (or no mesh
+          // signal at all) -> no forced escalate; rely on the agent's next turn.
+          // Gated by the SAME graced/done suppression as the base poke above —
+          // a just-spawned or already-done workspace must not be force-escalated
+          // via this side door either.
+          const urgency = (deps.readMeshUrgency || readMeshUrgency)(d, home, deps);
+          if (isUrgentMesh(urgency)) {
+            // Thread the SAME injected fs (F, already used above for
+            // readDescriptors/writeVerdict/computeLiveness) through to
+            // notifyParentEscalation's opts — matching how the neighbouring
+            // pokeOrEscalate call site passes `fsi: F` into its own internal
+            // notifyParentEscalation call (lib/recovery.js). Without this, a
+            // test/sandbox that injects fs here still leaks the forced-escalate
+            // path to the real filesystem.
+            (deps.notifyParentEscalation || notifyParentEscalation)(d, verdict, {
+              home, now: o.now, env, fsi: F,
+            }, deps.openParentStore);
+          }
         }
       }
       results.push({ id: d.id, verdict, poke });
@@ -623,6 +751,9 @@ module.exports = {
   reconcileSweepIfDue, reconcileSweepEnabled, resolveReconcileCooldownMs, distinctRepoKeys,
   reconcileSweepStatePath, readReconcileSweepState, writeReconcileSweepState,
   DEFAULT_RECONCILE_SWEEP_COOLDOWN_MS, MAX_RECONCILE_PROJECTS_PER_TICK,
+  // DEFECT 17685a91b783
+  DEFAULT_POST_SPAWN_GRACE_MS, resolvePostSpawnGraceMs, descriptorFilePath,
+  withinPostSpawnGrace, isArchiveReadyForSupervisor,
 };
 
 if (require.main === module) main();

@@ -2136,6 +2136,178 @@ test('FAIL-CLOSED TO BLOCK: worktreePath that EXISTS as a dangling symlink is NO
 });
 
 // ---------------------------------------------------------------------------
+// DEFECT 45cf1659f54f (P2, re-scoped) — a gone-worktree row correctly STILL
+// blocks (its mail is real and drainable from outside that worktree), but the
+// block text previously gave no hint that this row cannot be cleared by
+// cd-ing into a worktree that no longer exists, so it looked unclearable.
+//
+// END-TO-END VERIFICATION (coordinator-requested, post-hoc on a real incident
+// shape): a FIRST DRAFT of this fix's hint prescribed `inbox read <id>` as
+// the clearing command, on the assumption that "read-only, works from any
+// project" implied it also cleared the gate. Proven FALSE by running the
+// REAL CLI end-to-end (scripts/devswarm.js `read` sub, ~line 5002, never
+// writes cursorPath or any store cursor — verified by inspecting its own
+// return path, then confirmed live): `inbox read <id>` leaves the block
+// standing. Plain `inbox ack <id>` (no flag) ALSO does not clear STORE-backed
+// unread (the field-representative case for a gone-worktree row, since its
+// NDJSON channel is typically ENOENT) — the store-side cursor sync is gated
+// on `owns` (scripts/devswarm.js ~line 5103), which is false when the
+// PRIMARY acks on a CHILD's behalf, so it silently no-ops (`ok:true`, cursor
+// unchanged, no error). Only `inbox ack <id> --ack-as-owner` (the codebase's
+// own sanctioned cross-workspace-ack override, scripts/devswarm.js ~line
+// 5096) verified to clear it. `runCliVerb` below spawns the ACTUAL CLI as a
+// child process, HOME-isolated to this fixture, from a cwd OUTSIDE the gone
+// worktree — the exact "Primary runs this from its own repo, not from a
+// worktree that no longer exists" shape.
+//
+// These tests pin: (1) the hint fires ONLY for a confirmed-gone,
+// non-foreign-project worktree, alongside the unread block that must still
+// fire unchanged; (2) a LIVE worktree with the identical unread backlog gets
+// the ordinary block with NO hint; (3) END-TO-END — the exact prescribed
+// verb, run against the real CLI, is what makes the gate stop blocking, and
+// the verb the hint used to (wrongly) prescribe does NOT.
+//
+// Mutation to apply for RED: remove the `worktreeGoneChildren` block (and its
+// `if (worktreeGoneChildren.length > 0) { ... }` body) from buildReason() in
+// plugins/anti-hall/hooks/devswarm-parent-gate.js — the GONE test below fails
+// (no `--ack-as-owner` hint in the reason) while the LIVE test still passes.
+// ---------------------------------------------------------------------------
+
+// runCliVerb(home, args) — spawn the REAL devswarm.js CLI (not the hook), HOME
+// pointed at the fixture, cwd at THIS repo's own real checkout (a real git
+// context, resolving to a REAL project key) — NEVER the gone/foreign
+// worktree, which does not exist. Mirrors how a live Primary actually issues
+// these commands: from its own repo, never cd'd into a dead child's worktree.
+const DEVSWARM_CLI = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'scripts', 'devswarm.js');
+function runCliVerb(home, args) {
+  const r = cp.spawnSync(process.execPath, [DEVSWARM_CLI, ...args], {
+    env: { PATH: process.env.PATH, HOME: home },
+    cwd: REPO_CWD,
+    encoding: 'utf8',
+  });
+  let json = null;
+  try { json = JSON.parse(r.stdout); } catch (_) {}
+  return { status: r.status, stdout: r.stdout, stderr: r.stderr, json };
+}
+
+test('DEFECT 45cf1659f54f: worktree GONE + STORE-backed unread -> STILL blocks, names --ack-as-owner, and `inbox read` provably does NOT clear it while the prescribed verb DOES (end-to-end)', () => {
+  const h = makeHome();
+  try {
+    const goneWt = path.join(h.home, 'never-created-wt-45cf1659');
+    assert.strictEqual(fs.existsSync(goneWt), false, 'precondition: worktree must not exist');
+    const id = 'gone-hint-ws';
+    // Store-backed unread (mesh-direct `send --to`), NOT NDJSON — the
+    // field-representative shape for a gone-worktree row (its NDJSON channel
+    // is normally ENOENT; see the "gone-with-store" fixture above this
+    // section, same pattern). repoKey matches THIS repo's own REPO_KEY (a
+    // real cross-project mismatch is the SEPARATE foreignProject scenario
+    // covered by the "companion" test below).
+    seedWorkspace(h.home, id, { worktreePath: goneWt, repoKey: REPO_KEY }); // inbox absent (ENOENT)
+    const s = meshStore.openStore({ home: h.home, workspaceId: id, hash: REPO_KEY });
+    try { meshStore.appendMeshMessage(s, { from: 'some-child', to: id, type: 'direct', message: 'store row', timestamp: Date.now(), hash: 'test-45cf1659-store-1' }); } finally { s.close(); }
+
+    const payload = stopPayload();
+    const before = run(h.home, payload);
+    assert.strictEqual(before.status, 0);
+    assert.strictEqual(before.json && before.json.decision, 'block', 'a gone-worktree row with real store-backed unread must still block');
+    assert.match(before.json.reason, new RegExp(id));
+    assert.match(before.json.reason, /GONE worktree/i, 'must name the gone-worktree condition');
+    assert.match(before.json.reason, /inbox ack <id> --ack-as-owner/, 'must give the verb that actually clears it');
+    assert.doesNotMatch(before.json.reason, /Drain it with `devswarm\.js inbox read <id>`/, 'must not repeat the disproven non-clearing verb as the clearing instruction');
+
+    // Prove `inbox read <id>` does NOT clear it (the disproven first-draft verb).
+    const readR = runCliVerb(h.home, ['inbox', 'read', id]);
+    assert.strictEqual(readR.json && readR.json.ok, true, 'read must succeed (it is read-only, not refused)');
+    const afterRead = run(h.home, payload);
+    assert.strictEqual(afterRead.json && afterRead.json.decision, 'block', '`inbox read <id>` must NOT clear a store-backed gone-worktree block (proves the read-only verb is insufficient)');
+
+    // Prove the EXACT prescribed verb DOES clear it.
+    const ackR = runCliVerb(h.home, ['inbox', 'ack', id, '--ack-as-owner']);
+    assert.strictEqual(ackR.json && ackR.json.ok, true, '--ack-as-owner must succeed for a same-project row');
+    const afterAck = run(h.home, payload);
+    assert.notStrictEqual(afterAck.json && afterAck.json.decision, 'block', 'the EXACT prescribed verb must actually clear the gate end-to-end');
+  } finally { h.cleanup(); }
+});
+
+test('DEFECT 45cf1659f54f companion: LIVE worktree + unread -> STILL blocks WITHOUT the gone-worktree hint', () => {
+  const h = makeHome();
+  try {
+    const liveWt = path.join(h.home, 'live-wt-45cf1659');
+    fs.mkdirSync(liveWt, { recursive: true });
+    seedWorkspace(h.home, 'live-hint-ws', { worktreePath: liveWt, messages: ['a', 'b'], cursor: 0 }); // 2 unread
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a live-worktree row with real unread must still block');
+    assert.match(r.json.reason, /live-hint-ws/);
+    assert.match(r.json.reason, /2 unread/);
+    assert.doesNotMatch(r.json.reason, /GONE worktree/i, 'a live worktree must never be told it is gone');
+    assert.doesNotMatch(r.json.reason, /inbox ack <id> --ack-as-owner/, 'the gone-worktree hint must not fire for a live row');
+  } finally { h.cleanup(); }
+});
+
+test('DEFECT 45cf1659f54f scope guard: worktree GONE + FOREIGN-project (both flags true) -> the --ack-as-owner hint must NOT fire (ack is refused unconditionally for a real cross-project mismatch)', () => {
+  const h = makeHome();
+  try {
+    // Both `worktreeIsGone` AND `foreignProject` true for the SAME family:
+    // foreignProject's own derivation (~line 768) requires `!freshKey`, which
+    // a gone worktree also produces. Confirmed end-to-end that `inbox ack
+    // <id> --ack-as-owner` is refused OUTRIGHT for a genuine cross-project
+    // mismatch (scripts/devswarm.js ~line 5040, checked BEFORE the ownership
+    // branch, unconditional on --ack-as-owner) — prescribing it here would
+    // recreate the exact "remediation that could never succeed" shape this
+    // fix closes. Per the un-clearable-axis + foreignProject-store-exclusion
+    // rules, this exact shape (gone + foreign + NDJSON ENOENT) does not even
+    // reach `blocking` today — this test pins that INVARIANT (not merely the
+    // wording) so a future change that starts surfacing it cannot silently
+    // reintroduce the unclearable hint without this guard catching it.
+    const goneWt = path.join(h.home, 'never-created-wt-45cf1659-foreign');
+    const foreignKey = 'other-project-fakekey-45cf1659';
+    seedWorkspace(h.home, 'gone-foreign-ws', { worktreePath: goneWt, repoKey: foreignKey });
+    const s = meshStore.openStore({ home: h.home, workspaceId: 'gone-foreign-ws', hash: foreignKey });
+    try { meshStore.appendMeshMessage(s, { from: 'some-child', to: 'gone-foreign-ws', type: 'direct', message: 'foreign store row', timestamp: Date.now(), hash: 'test-45cf1659-foreign-1' }); } finally { s.close(); }
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    if (r.json && r.json.decision === 'block') {
+      assert.doesNotMatch(r.json.reason, /inbox ack <id> --ack-as-owner/,
+        'a gone+foreign row must never be told to run a verb that will be refused');
+    }
+  } finally { h.cleanup(); }
+});
+
+test('WAVE 9 P0: gone-worktree hint prescribes `inbox read` FIRST, warns a MOVED worktree also reads as gone, and does not recommend --ack-as-owner unconditionally', () => {
+  const h = makeHome();
+  try {
+    const goneWt = path.join(h.home, 'never-created-wt-wave9-p0');
+    const id = 'gone-hint-ws-wave9';
+    seedWorkspace(h.home, id, { worktreePath: goneWt, repoKey: REPO_KEY });
+    const s = meshStore.openStore({ home: h.home, workspaceId: id, hash: REPO_KEY });
+    try { meshStore.appendMeshMessage(s, { from: 'some-child', to: id, type: 'direct', message: 'store row', timestamp: Date.now(), hash: 'test-wave9-p0-store-1' }); } finally { s.close(); }
+
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    const reason = r.json.reason;
+
+    // Must still name the condition and the clearing verb (existing invariant).
+    assert.match(reason, /GONE worktree/i);
+    assert.match(reason, /inbox ack <id> --ack-as-owner/);
+
+    // NEW: must prescribe inspecting with `inbox read <id>` FIRST.
+    assert.match(reason, /inbox read <id>/, 'must name inbox read as the first inspection step');
+    const readIdx = reason.indexOf('inbox read <id>');
+    const ackIdx = reason.indexOf('inbox ack <id> --ack-as-owner');
+    assert.ok(readIdx >= 0 && ackIdx >= 0 && readIdx < ackIdx, '`inbox read <id>` must appear BEFORE `inbox ack <id> --ack-as-owner` in the reason text');
+
+    // NEW: must explicitly warn that a MOVED worktree also reads as gone.
+    assert.match(reason, /MOVED/, 'must warn that a moved (not retired) worktree reads the same as a gone one');
+
+    // NEW: --ack-as-owner must be conditioned on confirmation, not handed out
+    // unconditionally — the surrounding text must gate it on "CONFIRM"/"confirmed".
+    assert.match(reason, /CONFIRM/, 'the ack-as-owner instruction must be conditioned on confirming the workspace is genuinely retired');
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
 // WORKTREE-GONE AUTHORITY (adversarial-review round). `worktreeIsGone` is the
 // ONLY signal that can SUPPRESS the missing-inbox block, so every answer it
 // gives that is not a positively-proven ENOENT on an ABSOLUTE path is a live

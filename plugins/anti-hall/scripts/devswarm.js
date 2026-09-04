@@ -249,14 +249,15 @@ function isLiveSessionId(sessionId) {
   return !s.startsWith(SYNTHETIC_SESSION_PREFIX);
 }
 
-// siblingAckGate(storeHandle, partId, home, now) -> bool (true == LIVE, skip
-// the ack). Fix Wave 7 Item 1 + Item 2: the ONE mesh-sibling cursor-write gate,
-// used by BOTH `cmdInboxMessages`'s read-primary/peek-primary ack loop AND
-// `inbox ack`'s own separate sibling-store-cursor loop — Wave 6 gated only the
-// former (`hasFreshHeartbeat(part.id, home, {now})` inline), leaving `inbox
-// ack` (and `--ack-as-owner`) free to drive a live sibling's cursor forward
-// and consume its backlog undelivered (reproduced, P0). Factoring this into
-// ONE function callable from both sites is what makes a future THIRD surface
+// siblingAckGate(storeHandle, callerId, partId, home, now) -> bool (true ==
+// LIVE or SELF, skip the ack). Fix Wave 7 Item 1 + Item 2: the ONE
+// mesh-sibling cursor-write gate, used by BOTH `cmdInboxMessages`'s
+// read-primary/peek-primary ack loop AND `inbox ack`'s own separate
+// sibling-store-cursor loop — Wave 6 gated only the former
+// (`hasFreshHeartbeat(part.id, home, {now})` inline), leaving `inbox ack`
+// (and `--ack-as-owner`) free to drive a live sibling's cursor forward and
+// consume its backlog undelivered (reproduced, P0). Factoring this into ONE
+// function callable from both sites is what makes a future THIRD surface
 // structurally unable to add itself ungated (call this, or diverge visibly in
 // review — there is no longer an inline copy to half-port).
 //
@@ -269,14 +270,78 @@ function isLiveSessionId(sessionId) {
 // for the same reason `isSiblingPartitionLive` itself fails open: a spurious
 // skip only risks a harmless re-delivery, a spurious ack risks permanently
 // losing a live sibling's own unread backlog.
-function siblingAckGate(storeHandle, partId, home, now) {
+//
+// IDENTITY-FAMILY EXTENSION (confirmed gap, root-cause trace): the checks
+// above evaluate `partId`'s OWN row/heartbeat only — a UUID twin row of the
+// SAME agent (crossLinkedIdentity: one row's sessionId IS the other row's
+// id — devswarm-identity-family.js) never heartbeats under its own id (only
+// its `primary-<hash>` twin does), so it read as NOT live and was drained +
+// acked by the sibling loops during the CALLER's own read even when the
+// caller and the twin are the SAME agent. Two additional checks, reusing
+// devswarm-identity-family.js's crossLinkedIdentity/identityFamilyTwins
+// (never a second family notion):
+//   (1) SELF: if `partId`'s row is a cross-linked twin of the CALLER's own
+//       row, this is not a "sibling" at all — it is the caller's own other
+//       identity. WAVE 9 CORRECTION (P1): this branch used to `return true`
+//       (skip the ack) on the theory that "the caller's own read/ack path
+//       (cursorPath / s.setCursor for callerId) already governs it". That
+//       theory is FALSE and caused PERPETUAL RE-DELIVERY. The own-store ack
+//       writes exactly two cursors, BOTH keyed on the caller's own id
+//       (`inboxCursor.ackTo(cursorPath, ownTarget)` and `s.setCursor(id,
+//       acked)`); the twin partition's own cursor pair
+//       (`primaryCursorPath(home, twinId)` / `s.setCursor(twinId, …)`) is
+//       touched by nothing on this read. Meanwhile the twin's rows ARE folded
+//       into `messages` and delivered on EVERY call (the sibling partitions
+//       are built before this gate; the gate governs the cursor WRITE only) —
+//       so the same rows came back forever and the twin's cursor never moved.
+//       A SELF twin is therefore NOT protected here: it returns false so the
+//       caller's sibling loop acks it with the SAME ack-target arithmetic
+//       every other partition uses (`part.cursor + physicalConsumed`, derived
+//       from rows ACTUALLY delivered — loss-free by that same construction,
+//       so nothing withheld by a cap can ever be skipped over). This is safe
+//       precisely BECAUSE it is SELF: crossLinkedIdentity proves the twin is
+//       the caller's own identity, so there is no other reader whose frontier
+//       could be swept. Foreign siblings (live, or twin-of-live below) keep
+//       their full protection — the gate is not widened for anyone else.
+//   (2) TWIN-OF-LIVE: if `partId` itself reads as not-live, but ANY other
+//       registry row is a cross-linked twin of `partId` AND that twin reads
+//       as live, then `partId` is live (its twin identity is the one
+//       actually heartbeating) — return true (skip).
+// Any resolution failure (require/registry-read throwing) falls through to
+// the pre-existing bare liveness check, never a hard failure — this
+// extension can only make the gate MORE conservative (skip more), never
+// less (it never turns an existing "live" result into "not live").
+function siblingAckGate(storeHandle, callerId, partId, home, now) {
+  let idFam = null;
+  try { idFam = require('../companion/lib/devswarm-identity-family.js'); } catch (_) { idFam = null; }
+  let registry = [];
+  try { registry = storeHandle.listRegistry() || []; } catch (_) { registry = []; }
+  const row = registry.find((r) => r && String(r.id) === String(partId));
+  if (!row) return true; // vanished from the registry read -> undetermined -> fail toward live
+  if (idFam && callerId != null) {
+    try {
+      const callerRow = registry.find((r) => r && String(r.id) === String(callerId));
+      if (callerRow && idFam.crossLinkedIdentity(callerRow, row)) return false; // SELF — the caller IS this partition's owner, so IT acks it (Wave 9: returning true here stranded the twin's cursor at its pre-read value and re-delivered the same rows forever)
+    } catch (_) { /* fall through to the plain liveness check below */ }
+  }
+  let live;
   try {
-    const row = (storeHandle.listRegistry() || []).find((r) => r && String(r.id) === String(partId));
-    if (!row) return true; // vanished from the registry read -> undetermined -> fail toward live
-    return isSiblingPartitionLive({ id: partId, worktreePath: row.worktreePath, sessionId: row.sessionId }, home, { now });
+    live = isSiblingPartitionLive({ id: partId, worktreePath: row.worktreePath, sessionId: row.sessionId }, home, { now });
   } catch (_) {
     return true; // undetermined -> fail toward live, never ack
   }
+  if (live) return true;
+  if (idFam) {
+    try {
+      const twins = idFam.identityFamilyTwins(row, registry.filter((r) => r && String(r.id) !== String(partId)));
+      for (const t of twins) {
+        let twinLive = false;
+        try { twinLive = isSiblingPartitionLive({ id: t.id, worktreePath: t.worktreePath, sessionId: t.sessionId }, home, { now }); } catch (_) { twinLive = false; }
+        if (twinLive) return true; // partId's own twin identity is live -> partId is live too
+      }
+    } catch (_) { /* fall through — partId's own (not-live) verdict stands */ }
+  }
+  return false;
 }
 
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
@@ -1713,9 +1778,133 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
   // the lock window. `left` itself stays a plain id array — existing callers
   // (foldMeshDuplicates) read it that way and are unaffected.
   const leftRows = new Map();
+  // `anchorLeft` — the subset of `left` that survived specifically because the
+  // mesh-anchor guard below refused to fold an ATTENDED canonical anchor. Kept
+  // as its own Set (not a flag mutated onto the caller's row object, which is a
+  // shared listRegistry() snapshot) so archiveLeftReason can report the TRUTH
+  // ('mesh-anchor-attended') instead of the generic 'raced-re-register' an
+  // anchor with no descriptor file would otherwise be labelled with. Every
+  // non-anchor row's reason is unchanged.
+  const anchorLeft = new Set();
+  // canonicalMeshId spawns `git rev-parse --show-toplevel` (resolveCallerWorktree)
+  // and was called once per CANDIDATE by the anchor guard below — a fold over a
+  // 40-row same-worktree group paid 40 identical git spawns for one answer.
+  // Memoized per worktreePath for the LIFETIME OF THIS ONE PASS only (never
+  // module-scoped): a fold is a single synchronous sweep, so the resolution
+  // cannot change underneath it, and a later pass still re-resolves from
+  // scratch. Behaviour-preserving, including the fail-open: a THROW is cached
+  // as the same `null` the catch below already treats as "cannot prove anchor".
+  const meshIdCache = new Map();
+  const meshIdFor = (wt) => {
+    const key = String(wt);
+    if (meshIdCache.has(key)) return meshIdCache.get(key);
+    let v = null;
+    try { v = canonicalMeshId(wt); } catch (_) { v = null; }
+    meshIdCache.set(key, v);
+    return v;
+  };
   let forwarded = 0;
   for (const d of candidates) {
     if (!d || d.id == null || String(d.id) === String(survivorId)) continue;
+    // MESH-IDENTITY-ANCHOR GUARD (Item 1 P0 fix — downstream-Primary mail
+    // loss, field evidence: `primary-<hash>` cursor advancing on wake-watch
+    // turns with NO `read-primary` in between, while the swept rows PROVABLY
+    // still exist in that exact row's own set). A candidate whose id IS the
+    // canonical meshId for its own worktree (canonicalMeshId(d.worktreePath)
+    // === d.id) is the STABLE, well-known addressing anchor every
+    // read-primary/inbox-count/resolveMeshTarget/send caller resolves to —
+    // never whichever id happened to win survivorship in THIS one fold pass.
+    // retireWorktreeDuplicates already refuses to fold FROM a meshId-keyed
+    // self-register (`if (String(keepDesc.id) === String(keepMesh)) return
+    // null;`, above in this file) — but that guard only protects the meshId
+    // row when it is the CALLER (the survivor). It left the mirror case wide
+    // open: a co-located BUILDER-ID self-register (a distinct caller sharing
+    // the SAME worktree, or foldMeshDuplicates' own pickSurvivor picking a
+    // builder-id row over the meshId one) walks the meshId row in here as an
+    // ORDINARY candidate, and foldOne's unconditional cursor-advance (the
+    // contiguous-forwarded-prefix write below, `B1(b)`) sweeps its read
+    // frontier past messages that get re-addressed to a survivor id nothing
+    // standard ever reads under — real, undelivered mail silently marked
+    // "read" on the only partition anyone queries.
+    //
+    // FIX: never even attempt to fold a meshId-canonical candidate that is
+    // still ATTENDED — skip both the forward loop and the cursor advance
+    // entirely (loss-free direction per this fix's own mandate: when in
+    // doubt, do not fold, do not advance), reporting it exactly like any
+    // other protected LEFT row.
+    //
+    // ATTENDED, not merely meshId-shaped (NARROWING — the first cut of this
+    // guard keyed on identity ALONE and was too broad). The loss it prevents
+    // is "a reader is still draining this exact partition and its frontier
+    // gets swept out from under it". That reader only exists when the anchor
+    // row is LIVE — a live registry sessionId (isLiveSessionId: non-empty and
+    // not the synthetic prefix), or an on-disk descriptor for the id (a
+    // session whose registry sessionId is blank/synthetic but which still
+    // addresses itself under the anchor). An UNATTENDED anchor row — the
+    // store-only `primary-<hash>` spawn phantom with sessionId null and no
+    // descriptor — has no reader at all, and collapsing it is precisely what
+    // the EXPLICIT retire paths exist to do: cmdArchive /
+    // retireArchivedWorktreeGroup, healOrphanPartitions' phantom rescue,
+    // foldArchivedRegistryRows, and the foldMeshDuplicates sweep. Their
+    // forward-then-tombstone is loss-free (the unread is re-addressed to the
+    // survivor first, and the original rows are never deleted), so blanket-
+    // blocking them stranded phantom rows projecting active forever. This
+    // narrowing is also CONSISTENT with the archive contract those paths
+    // already honour independently (a row with its own LIVE descriptor is
+    // never tombstoned, only surfaced) — it extends that same "leave the
+    // live one alone" rule to the anchor's CURSOR, which the descriptor gate
+    // by itself does not cover (it runs after foldOne has already forwarded
+    // and advanced).
+    //
+    // Fail-open: any error resolving canonicalMeshId (git spawn failure,
+    // unresolvable/vanished worktree path) means "cannot prove this is the
+    // canonical anchor" -> falls through to the pre-existing behaviour
+    // unaffected (never a false protection from a fail-open path). The
+    // liveness half fails the OTHER way on error — an unreadable descriptor
+    // area is not proof of absence, but isLiveSessionId is a pure string
+    // test and readDescriptorFile is already fail-soft (returns null), so a
+    // null there simply means "no positive evidence of a reader".
+    //
+    // READER EVIDENCE (Wave 10 — the FIELD shape the two signals above miss).
+    // In the real incident store the live Primary's own anchor row carries
+    // sessionId `unclaimed:primary-<hash>`, which isLiveSessionId REJECTS by
+    // design (SYNTHETIC_SESSION_PREFIX, :245-250 — the auto-ensure/self-register
+    // mint is deliberately not "live"). So in the field the guard held on the
+    // DESCRIPTOR half ALONE — and descriptor-only protection is fragile,
+    // because archive paths legitimately delete a live descriptor
+    // (workspaces/<id>.json) while the session behind it keeps reading. A
+    // third, INDEPENDENT positive signal closes that: proof that something has
+    // ACTUALLY DRAINED this partition — a store cursor > 0 (s.cursorValue),
+    // or an on-disk read-path ack file at primaryCursorPath(home,id)
+    // (cursors/<id>.json, the file `read-primary` acks through). Either one
+    // means a reader exists (or existed and holds a frontier), and sweeping
+    // that frontier forward is exactly the loss this guard exists to prevent.
+    //
+    // Deliberately NOT blanket: cursor 0 with no cursor file is the
+    // UNATTENDED spawn-phantom shape the explicit retire paths (cmdArchive /
+    // retireArchivedWorktreeGroup / foldArchivedRegistryRows / phantom
+    // rescue) must still collapse — those rows never read anything, so they
+    // produce no reader evidence and keep retiring unchanged.
+    //
+    // Fail-soft on BOTH halves: a store handle without cursorValue (the unit
+    // fixtures' fake stores), a throwing cursorValue, or an unreadable cursors/
+    // directory yields NO evidence — never a throw, never a false protection.
+    const hasReaderEvidence = (id) => {
+      try {
+        if (s && typeof s.cursorValue === 'function') {
+          const v = s.cursorValue(id);
+          if (Number.isFinite(v) && v > 0) return true;
+        }
+      } catch (_) { /* no evidence from the store */ }
+      try { if (inboxCursor.readCursor(primaryCursorPath(home, id)) > 0) return true; } catch (_) { /* no evidence on disk */ }
+      return false;
+    };
+    let isMeshAnchor = false;
+    try {
+      isMeshAnchor = !!(d.worktreePath && String(d.id) === String(meshIdFor(d.worktreePath)))
+        && (isLiveSessionId(d.sessionId) || !!readDescriptorFile(home, d.id) || hasReaderEvidence(d.id));
+    } catch (_) { isMeshAnchor = false; }
+    if (isMeshAnchor) { left.push(d.id); leftRows.set(String(d.id), d); anchorLeft.add(String(d.id)); continue; }
     if (dryRun) {
       // read-only classification: a store-only row WOULD be tombstoned; a
       // descriptor-backed one WOULD be left (never collapsed) — UNLESS its
@@ -1882,7 +2071,7 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
     }
     retired.push(d.id);
   }
-  return { retired, left, forwardFailed, forwarded, skipped, leftRows };
+  return { retired, left, forwardFailed, forwarded, skipped, leftRows, anchorLeft };
 }
 
 // pickArchiveForwardSurvivor(s, home, archivedId, rows) — WHERE the archive folds
@@ -1973,7 +2162,15 @@ function pickArchiveForwardSurvivor(s, home, archivedId, rows) {
 // (descriptor AND live session; other tests assert on it) and the dead case is named
 // explicitly instead of borrowing the word "live". `row` is the registry snapshot, may
 // be missing -> then only the descriptor is knowable.
-function archiveLeftReason(home, id, row) {
+// `isAnchor` (Wave 10) — true when foldGroupIntoSurvivor's mesh-anchor guard is
+// what kept this row (r.anchorLeft). That row was never even OFFERED to the
+// tombstone, so 'raced-re-register' (which asserts a conditional delete was
+// refused) is a FALSE report for it — and it is the reason an anchor protected
+// only by reader evidence (no descriptor file) would otherwise get. Checked
+// FIRST because it is the most specific fact available; every other row's
+// reason is computed exactly as before.
+function archiveLeftReason(home, id, row, isAnchor) {
+  if (isAnchor) return 'mesh-anchor-attended';
   if (!readDescriptorFile(home, id)) return 'raced-re-register';
   if (row && isLiveSessionId(row.sessionId)) return 'live-descriptor';
   if (!row) return 'live-descriptor'; // no snapshot to judge liveness with; descriptor is all we know
@@ -2103,7 +2300,7 @@ function retireArchivedWorktreeGroup(s, home, archivedId, worktreePath) {
       // `rowOf` snapshot: a row whose liveness changed inside the lock window
       // must not get a reason derived from stale pre-lock state. Fail open to
       // the pre-lock snapshot only if leftRows has nothing for this id.
-      out.left.push({ id: String(x), reason: archiveLeftReason(home, x, (r.leftRows && r.leftRows.get(String(x))) || rowOf.get(String(x))) });
+      out.left.push({ id: String(x), reason: archiveLeftReason(home, x, (r.leftRows && r.leftRows.get(String(x))) || rowOf.get(String(x)), !!(r.anchorLeft && r.anchorLeft.has(String(x)))) });
     }
     for (const x of r.forwardFailed) out.left.push({ id: String(x), reason: 'forward-failed' });
     // Candidates we deliberately skipped (their own lock was held, or the in-lock
@@ -2992,7 +3189,7 @@ function foldArchivedRegistryRows(home, ctx0) {
             const c = foldGroupIntoSurvivor(s, home, survivorId, foldCandidates, { dryRun: true });
             for (const x of c.retired) { out.retired.push(String(x) + '@' + bucket); out.pending++; }
             if (survivorIsOther) out.left.push({ id: survivorId, bucket, reason: 'live-descriptor' });
-            for (const x of c.left) out.left.push({ id: String(x), bucket, reason: archiveLeftReason(home, x, rowOf.get(String(x))) });
+            for (const x of c.left) out.left.push({ id: String(x), bucket, reason: archiveLeftReason(home, x, rowOf.get(String(x)), !!(c.anchorLeft && c.anchorLeft.has(String(x)))) });
             if (ownRow) { out.retired.push(a.id + '@' + bucket); out.pending++; }
             continue;
           }
@@ -3037,7 +3234,7 @@ function foldArchivedRegistryRows(home, ctx0) {
             // Key off g.leftRows (the in-lock re-read the pass actually classified),
             // not the pre-lock rowOf snapshot — same reasoning as
             // retireArchivedWorktreeGroup. Fail open to rowOf if leftRows has nothing.
-            out.left.push({ id: String(x), bucket, reason: archiveLeftReason(home, x, (g.leftRows && g.leftRows.get(String(x))) || rowOf.get(String(x))) });
+            out.left.push({ id: String(x), bucket, reason: archiveLeftReason(home, x, (g.leftRows && g.leftRows.get(String(x))) || rowOf.get(String(x)), !!(g.anchorLeft && g.anchorLeft.has(String(x)))) });
           }
           for (const x of g.forwardFailed) out.left.push({ id: String(x), bucket, reason: 'forward-failed' });
           for (const x of g.skipped) out.left.push({ id: String(x.id), bucket, reason: x.reason });
@@ -3867,6 +4064,41 @@ function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
 // this default) rather than silently disabling the cap.
 const DEFAULT_INBOX_READ_LIMIT = 2000;
 
+// NEVER_READ_SIBLING_CAP (confirmed field defect, root-cause trace): a sibling
+// partition this caller has NEVER read/acked before (pCursor === 0 — genuinely
+// untouched, not just "caught up to 0") has its ENTIRE history pulled by the
+// mesh-sibling union read below (`sinceCursor: 0`), then merged and ts-sorted
+// with every other source. A field case with three never-read `primary-*`
+// siblings returned 753 messages (1.7MB) in ONE `read-primary` call — under
+// DEFAULT_INBOX_READ_LIMIT (2000), so the existing merged-total cap never
+// engaged; the dump was real, not a truncation artifact.
+//
+// DECISION: cap a never-read sibling's OWN contribution to a bounded PREFIX
+// (this constant) BEFORE it ever reaches the merge/ts-sort/general-cap
+// pipeline below — reusing that SAME pipeline's structural-prefix invariant
+// (a "prefix" cap can never advance a cursor past a withheld row, because the
+// ack-target math derives its target from `part.deliveredCount`/the rows
+// actually present in `part.messages`, never from `part.total`) rather than
+// inventing a second cap mechanism. Rejected alternative: requiring an
+// explicit flag to pull a never-read sibling's history at all — that would
+// silently degrade every existing caller's `read-primary`/`peek-primary`
+// behavior (today's default IS "show me everything unread"); a bounded-tail
+// default that stays loss-free (never acks past what it withheld) preserves
+// today's contract for the common case (a sibling with a normal-sized
+// backlog) while bounding the pathological one (a sibling that has
+// accumulated years of history because nothing ever read it).
+// A PREFIX (earliest-first, natural listMessages order), never a "most
+// recent N" tail: only a structural prefix can be safely combined with the
+// existing "ack target = rows actually delivered" invariant everywhere else
+// in this file — capping to the newest N would require skipping over
+// untouched middle rows, which this file's ack math cannot express without
+// risking exactly the message-loss shape Fix Wave 2/3 already fixed.
+// Deliberately smaller than DEFAULT_INBOX_READ_LIMIT: this guards the
+// FIRST-EVER read of one sibling, not the caller's overall per-call budget
+// (multiple never-read siblings can still each contribute up to this many
+// rows; the general cap above still bounds the combined total).
+const NEVER_READ_SIBLING_CAP = 200;
+
 function cmdInboxMessages(id, flags, ctx, opts) {
   const home = ctx.home;
   const doAck = !!((opts && opts.ack) || flags.ack);
@@ -3936,6 +4168,18 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   // disagreed (F2's own root cause). Declared here, populated in the sibling
   // merge loop below via the same shared fold.
   let meshGapWithheldCount = 0;
+  // meshNeverReadWithheldCount (NEVER_READ_SIBLING_CAP) — see that constant's
+  // own header comment. Distinct from meshGapWithheldCount: a gap-withheld
+  // row sits AFTER a non-forwardable row in an ALREADY-partially-read
+  // sibling's window; a never-read-withheld row is withheld purely because
+  // this is the sibling's FIRST-EVER union read and it exceeded the bounded
+  // prefix, independent of forwardability.
+  let meshNeverReadWithheldCount = 0;
+  // Which sibling partition ids the cap actually withheld from, so the report
+  // below can name the exact `inbox messages <id>` command that reads the rest
+  // (Wave 9 (c): a bare count told a caller something was held back but not how
+  // to reach it — and on a non-ackable partition "just call again" is wrong).
+  const meshNeverReadCappedIds = [];
   // P1b: set ONLY when registry/group enumeration itself THREW (could not
   // determine whether siblings exist) — distinct from "resolved cleanly, no
   // siblings found" (meshUnionActive stays false, silently — that's fine).
@@ -4068,9 +4312,62 @@ function cmdInboxMessages(id, flags, ctx, opts) {
         const pCursorPath = primaryCursorPath(home, pid);
         const pCursor = inboxCursor.readCursor(pCursorPath);
         const pTotal = s.messageCount(pid);
-        const pMessages = s.listMessages(pid, { sinceCursor: unreadOnly ? pCursor : 0 })
+        let pTailCapped = false;
+        let pMessages = s.listMessages(pid, { sinceCursor: unreadOnly ? pCursor : 0 })
           .map((r, i) => Object.assign({ partitionId: pid }, r, { __srcId: 'sibling:' + pid, __srcIdx: i }));
-        meshSiblingPartitions.push({ id: pid, cursorPath: pCursorPath, cursor: pCursor, total: pTotal, messages: pMessages });
+        // NEVER_READ_SIBLING_CAP (see constant's header) — cap a sibling's own
+        // contribution so a huge backlog cannot dump unboundedly into one call.
+        //
+        // WAVE 9 (two corrections to the original `pCursor === 0` form):
+        //
+        // (1) GATE ON BACKLOG SIZE, NOT FIRST-READ. `pCursor === 0` was a proxy
+        //     for "this whole history just came out of sinceCursor:0", but the
+        //     hazard is the SIZE of what this call is about to merge/ts-sort,
+        //     which has nothing to do with whether the partition was ever read.
+        //     A partition read once and then left to accumulate was completely
+        //     unbounded on call #2 (measured: 350 rows delivered where the cap
+        //     is 200). The size test alone (`pMessages.length > CAP`) covers
+        //     both, and it is strictly more conservative — every case the old
+        //     gate caught, this catches too.
+        //
+        // (2) A PARTITION THIS CALL CANNOT ACK GETS THE NEWEST ROWS, NOT A
+        //     FROZEN PREFIX. The constant's header justifies the earliest-first
+        //     PREFIX by the invariant "the withheld tail is reachable on the
+        //     NEXT call, because this call acks only what it delivered". That
+        //     invariant needs an ACK. A LIVE foreign sibling is never acked at
+        //     all (siblingAckGate, Fix Wave 6/7) and a non-ack read (`doAck`
+        //     false) acks nothing either — so `pCursor` stays put, the cap
+        //     re-fires identically every call, and the caller is handed the
+        //     SAME oldest CAP rows forever while everything past them is
+        //     permanently invisible to `read-primary`. For those partitions the
+        //     cap keeps the NEWEST rows instead (`slice(-CAP)`): the newest mail
+        //     is what a live peer's reader actually needs, and the header's own
+        //     objection to a tail ("skipping over untouched middle rows, which
+        //     this file's ack math cannot express") does not apply precisely
+        //     BECAUSE no cursor is written for such a partition — `tailCapped`
+        //     is carried on the part and the ack loop hard-refuses it, so the
+        //     tail can never be combined with an ack even if liveness flipped
+        //     between here and there. Nothing is lost either way: the store rows
+        //     are untouched and every withheld row stays readable directly, which
+        //     is what `neverReadCapHint` (emitted below) names.
+        const pAckable = doAck && !siblingAckGate(s, id, pid, home, ctx.now);
+        if (unreadOnly && pMessages.length > NEVER_READ_SIBLING_CAP) {
+          meshNeverReadWithheldCount += pMessages.length - NEVER_READ_SIBLING_CAP;
+          meshNeverReadCappedIds.push(pid);
+          if (pAckable) {
+            pMessages = pMessages.slice(0, NEVER_READ_SIBLING_CAP); // structural PREFIX — the ack advances exactly this far
+          } else {
+            pTailCapped = true;
+            // Re-index the kept tail into a contiguous 0..n-1 __srcIdx space:
+            // the general cap step below reasons in "prefix by __srcIdx", so a
+            // kept window must present itself as one. Safe only because this
+            // partition is never acked (see above) — the indices no longer map
+            // to physical offsets, and nothing downstream may use them to move
+            // a cursor.
+            pMessages = pMessages.slice(-NEVER_READ_SIBLING_CAP).map((r, i) => Object.assign({}, r, { __srcIdx: i }));
+          }
+        }
+        meshSiblingPartitions.push({ id: pid, cursorPath: pCursorPath, cursor: pCursor, total: pTotal, messages: pMessages, tailCapped: pTailCapped });
         meshAddedTotal += pTotal;
       }
     }
@@ -4306,6 +4603,15 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       // reconcile's own per-target `results[].error` convention (cmdReconcile,
       // ~line 6061).
       for (const part of meshSiblingPartitions) {
+        // TAIL-CAP HARD REFUSAL (Wave 9 (c)): this partition was capped to its
+        // NEWEST rows because the read decided it could not be acked. Its
+        // delivered rows are therefore NOT a structural prefix of its unread
+        // sequence, and `part.cursor + physicalConsumed` would mark rows read
+        // that were never delivered. Refuse the ack outright — never re-derive
+        // the decision here. (Belt-and-braces: the gate below reaches the same
+        // verdict from the same inputs; this makes the two structurally
+        // incapable of disagreeing if liveness flipped in between.)
+        if (part.tailCapped) { liveSiblingsSkipped.push(part.id); continue; }
         // LIVE-SIBLING GATE (Fix Wave 7 Item 2): skip the cursor write (never
         // the delivery — `part` is already in `messages`) unless we have
         // POSITIVE evidence the partition's owner is dead, not merely absent
@@ -4316,7 +4622,7 @@ function cmdInboxMessages(id, flags, ctx, opts) {
         // composition (fresh heartbeat OR a real session with no positively-
         // stale activity -> live). Shared with `inbox ack`'s own sibling loop
         // via `siblingAckGate` so the two verbs cannot diverge.
-        if (siblingAckGate(s, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }
+        if (siblingAckGate(s, id, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }
         const fullDeliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length; // fold's own full, pre-cap count — never mutated below
         let deliveredCount = fullDeliveredCount;
         // defect 8d0a66cfc563: subtract whatever the cap withheld from THIS
@@ -4477,6 +4783,25 @@ function cmdInboxMessages(id, flags, ctx, opts) {
   if (meshGapWithheldCount > 0) {
     out.meshGapWithheld = true;
     out.meshGapWithheldCount = meshGapWithheldCount;
+  }
+  // NEVER_READ_SIBLING_CAP report: same honesty posture as meshGapWithheld —
+  // never silently truncate. A never-read-withheld row is not lost (its
+  // partition's cursor was never advanced past it — see the cap site's own
+  // comment); it becomes reachable on the caller's NEXT call to this same id
+  // (pCursor is still 0 for anything withheld here, since nothing was acked
+  // past it), or by reading that sibling id directly right now.
+  if (meshNeverReadWithheldCount > 0) {
+    out.meshNeverReadCapped = true;
+    out.meshNeverReadWithheldCount = meshNeverReadWithheldCount;
+    out.meshNeverReadCapLimit = NEVER_READ_SIBLING_CAP;
+    // neverReadCapHint (Wave 9 (c)): name the command that reads what was held
+    // back. "Call again" is only true for a partition this caller ACKS; for a
+    // live peer's partition (never acked) the direct read is the ONLY way to
+    // see the rest, so the hint always points at it.
+    const capNames = Array.from(new Set(meshNeverReadCappedIds.map(String)));
+    out.neverReadCapHint = 'withheld ' + meshNeverReadWithheldCount + ' row(s) from '
+      + capNames.length + ' sibling partition(s) (cap ' + NEVER_READ_SIBLING_CAP + '); read them directly with: '
+      + capNames.map((pid) => 'inbox messages ' + pid).join(' ; ');
   }
   // UNBOUNDED-READ CAP report (defect 8d0a66cfc563): never silently truncate.
   // `count`/`messages` above already reflect only what was actually
@@ -5046,7 +5371,7 @@ function cmdInbox(sub, id, flags, ctx) {
               // used to have none at all, which is exactly what let a live
               // sibling sharing this worktree get its cursor driven forward
               // and its backlog consumed undelivered by a plain `inbox ack`.
-              if (siblingAckGate(storeHandle, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }
+              if (siblingAckGate(storeHandle, id, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }
               // Fix Wave 3 G1/G2 (P0/P1): `part.physicalConsumed` (set
               // above alongside `part.deliveredCount` — see the cap-step
               // comment ~line 4682) is the PHYSICAL row count to advance
@@ -8596,7 +8921,7 @@ if (require.main === module) {
 module.exports = {
   run, parseArgs, one, many, csvList,
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
-  retireWorktreeDuplicates,
+  retireWorktreeDuplicates, isLiveSessionId, archiveLeftReason,
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
   foldMeshDuplicatesAllStores,
   healOrphanPartitions, healOrphanPartitionsAllStores,
@@ -8612,4 +8937,5 @@ module.exports = {
   cmdWorkspacesList, cmdGate, cmdReconcile, cmdRegister,
   cmdLogs, cmdInboxMessages, parseSinceDuration,
   descriptorFreshRepoKey, descriptorStructuralRepoKey,
+  siblingAckGate, cmdInbox,
 };

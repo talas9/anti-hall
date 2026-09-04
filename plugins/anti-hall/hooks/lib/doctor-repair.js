@@ -44,6 +44,7 @@ const REAPER_INSTALLER     = path.join(PLUGIN_ROOT, 'companion', 'install-reaper
 const STATUSLINE_INSTALLER = path.join(PLUGIN_ROOT, 'statusline', 'install-statusline.js');
 const CODEX_INSTALLER      = path.join(PLUGIN_ROOT, 'codex', 'install-codex.js');
 const MIGRATE_STATE        = path.join(PLUGIN_ROOT, 'scripts', 'migrate-state.js');
+const MCP_REAPER_MOD       = path.join(PLUGIN_ROOT, 'companion', 'mcp-reaper.js');
 const DEVSWARM_SCRIPT      = path.join(PLUGIN_ROOT, 'scripts', 'devswarm.js');
 const DEVSWARM_STORE       = path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-store.js');
 
@@ -1660,6 +1661,106 @@ function checkMemguardReaperRisk(opts) {
   return { atRisk: true, message: lines.join('\n'), file: (detection && detection.file) || null };
 }
 
+// ---------------------------------------------------------------------------
+// checkOrphanedMcpUnderBroker(opts) -> {atRisk, count, brokerCount, message} | null.
+// REPORT-ONLY, defect bfa063ab8e3f: an app-server-style broker (any long-lived
+// process that fans a request out into MCP-server children — the pattern is
+// generic to that class of tool, not any one plugin) can leak MCP child
+// processes across threads/sessions without reaping them on thread end. Those
+// children are parented to the LIVE broker, not PID 1, so they are INVISIBLE
+// by construction to a PPID==1 orphan reaper (this project's own mcp-reaper.js
+// included — see its header) — that reaper's conservatism is correct, not a
+// bug, so this check exists purely to surface what it structurally cannot see.
+//
+// Detection is by PROCESS SHAPE only, never a named plugin: reuse this
+// project's own mcp-reaper.js signature matcher (matchesMcp/parsePs — pure,
+// zero side effects to require()) to find MCP-signature processes, group them
+// by live parent PID, and flag any parent with an abnormally large MCP child
+// count. A parent absent from the snapshot (race) or itself PID-1-parented is
+// skipped — same conservative "unsure -> skip" posture as mcp-reaper.
+//
+// THRESHOLD = 30. Reasoning: a single MCP client's mcp_servers config
+// typically enumerates on the order of 5-15 servers; a couple of concurrent
+// threads/sessions reusing one broker can plausibly multiply that into the
+// several-dozen range under entirely normal operation. 30 sits comfortably
+// above that normal band (roughly 2x a busy single-broker session) while
+// remaining far below the 119-child leak this check exists to catch, so it
+// will not fire on ordinary multi-thread use but will fire well before a leak
+// reaches defect-report scale.
+//
+// Fully defensive: any missing platform support, absent `ps`, unparseable
+// output, or thrown error yields null (silent). NEVER kills, signals, or
+// writes anything — read-only `ps` enumeration only. Never gates doctor's
+// pass/fail (callers only ever warnl() the message, exactly like
+// checkMemguardReaperRisk above).
+function checkOrphanedMcpUnderBroker(opts) {
+  const o = opts || {};
+  try {
+    if (process.platform !== 'darwin' && process.platform !== 'linux') return null;
+
+    let mcpReaper;
+    try { mcpReaper = require(o.mcpReaperModPath || MCP_REAPER_MOD); } catch (_) { return null; }
+    if (typeof mcpReaper.parsePs !== 'function' || typeof mcpReaper.matchesMcp !== 'function') return null;
+
+    let stdout;
+    if (typeof o.psExec === 'function') {
+      let r;
+      try { r = o.psExec(); } catch (_) { return null; }
+      if (!r || r.error || r.status !== 0 || r.signal) return null;
+      stdout = r.stdout;
+    } else {
+      let r;
+      try {
+        r = cp.spawnSync('ps', ['-axo', 'pid=,ppid=,command='], {
+          encoding: 'utf8',
+          maxBuffer: 32 * 1024 * 1024,
+        });
+      } catch (_) { return null; }
+      if (!r || r.error || r.status !== 0 || r.signal) return null;
+      stdout = r.stdout;
+    }
+
+    let procs;
+    try { procs = mcpReaper.parsePs(stdout); } catch (_) { return null; }
+    if (!Array.isArray(procs) || !procs.length) return null;
+
+    const byPid = new Map();
+    for (const p of procs) byPid.set(p.pid, p);
+
+    const countByParent = new Map();
+    for (const p of procs) {
+      let isMcp = false;
+      try { isMcp = mcpReaper.matchesMcp(p.cmd); } catch (_) { isMcp = false; }
+      if (!isMcp) continue;
+      if (!p.ppid || p.ppid === 1) continue; // PID-1 orphans are the OTHER reaper's job
+      const parent = byPid.get(p.ppid);
+      if (!parent) continue; // snapshot race: unsure -> skip (conservative, like mcp-reaper)
+      countByParent.set(p.ppid, (countByParent.get(p.ppid) || 0) + 1);
+    }
+
+    const THRESHOLD = 30;
+    const offenders = Array.from(countByParent.entries())
+      .filter(([, n]) => n >= THRESHOLD)
+      .sort((a, b) => b[1] - a[1]);
+    if (!offenders.length) return null;
+
+    const total = offenders.reduce((sum, [, n]) => sum + n, 0);
+    const CAP = 5;
+    const shown = offenders.slice(0, CAP).map(([pid, n]) => `pid ${pid} (${n} children)`);
+    const more = offenders.length > CAP ? `, +${offenders.length - CAP} more broker(s)` : '';
+    const message =
+      `(warn) ${total} MCP-signature child process(es) found parented to ${offenders.length} ` +
+      `live broker process(es): ${shown.join(', ')}${more}. These children have a LIVE parent ` +
+      `(not PID 1), so a PPID==1 orphan reaper cannot see them by construction — this is upstream ` +
+      `broker behavior, not anything for anti-hall or a local reaper to reap. If unexpected, restart ` +
+      `the broker process to reclaim its children, and report the leak to whatever spawns it.`;
+
+    return { atRisk: true, count: total, brokerCount: offenders.length, message };
+  } catch (_) {
+    return null;
+  }
+}
+
 module.exports = {
   readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
   // Codex "is it wired" precise per-event detection (exported for direct unit
@@ -1671,6 +1772,8 @@ module.exports = {
   reclaimIngestLocks, sweepOrphanedIngestLockFiles, reclaimCurrentProjectLock,
   // v0.65.0 memguard-reaper risk surfacing (report-only, defensive):
   checkMemguardReaperRisk,
+  // broker-parented MCP-orphan-leak surfacing (report-only, defensive; defect bfa063ab8e3f):
+  checkOrphanedMcpUnderBroker,
   // v0.66 — "alive but ingesting nothing" (monitor-outcome) detection:
   monitorFaultFor, monitorFaultReason,
   MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS,

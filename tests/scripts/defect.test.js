@@ -1292,3 +1292,104 @@ test('P1-C guard: a genuinely CLOSED (fixed) defect still archives normally — 
     assert.ok(fs.existsSync(entry.dest));
   } finally { rm(home); }
 });
+
+// ============================================================================
+// 23. defect 1aec2bf3d5df (P2): a repro over the 1200-char cap must not lose
+//     its tail — the cap stays, but the cut tail is spilled into 'overflow'
+//     continuation lines in the SAME defect file, losslessly reconstructable.
+// ============================================================================
+
+test('report() with a 3000-char repro round-trips losslessly via field + overflow continuation', () => {
+  const home = tmpHome();
+  try {
+    const original = Array.from({ length: 3000 }, (_, i) => String.fromCharCode(65 + (i % 26))).join('');
+    assert.equal(original.length, 3000);
+    const r = store.report(Object.assign(baseReportInput(), { home, sym: 'overflow spill test', repro: original }));
+    assert.equal(r.outcome, 'recorded', 'truncation must NEVER fail the write');
+    assert.ok(r.truncated && r.truncated.repro, 'repro named as truncated');
+    assert.equal(r.truncated.repro.originalLength, 3000);
+    assert.ok(r.overflow, 'result carries an overflow summary');
+    const reproOverflow = r.overflow.find((o) => o.field === 'repro');
+    assert.ok(reproOverflow, 'repro overflow summary present');
+    assert.equal(reproOverflow.outcome, 'recorded', 'the overflow chunk(s) landed');
+
+    const shown = store.showDefect(r.fp, home);
+    const reportLine = shown.lines.find((l) => l.t === 'report');
+    // The capped field is still bounded and still carries the loud marker —
+    // this is DESIGNED behaviour (v0.84.0) and must not regress.
+    assert.ok(reportLine.repro.length <= store.FIELD_CAPS.repro, 'capped field still bounded');
+    assert.match(reportLine.repro, /\[truncated from \d+ chars\]$/, 'still carries the loud marker');
+
+    // Nothing is lost: the marker + spilled overflow lines reconstruct the
+    // ORIGINAL 3000-char repro byte-for-byte.
+    const chunks = store.overflowChunksFor(shown.lines, 'report', 0, 'repro');
+    assert.ok(chunks.length >= 1, 'at least one overflow chunk was persisted');
+    const full = store.reconstructField(reportLine.repro, chunks);
+    assert.equal(full, original, 'the full original repro is losslessly recoverable');
+
+    // The overflow lines are ordinary NDJSON lines in the SAME file — no
+    // second file, no index, no separate store.
+    const rawLines = store.readRawLines(store.fpFile(r.fp, home));
+    assert.ok(rawLines.length >= 2, 'overflow lines live in the same defect file');
+    const overflowLines = shown.lines.filter((l) => l.t === 'overflow');
+    assert.ok(overflowLines.length >= 1);
+    for (const o of overflowLines) {
+      assert.equal(o.forType, 'report');
+      assert.equal(o.seq, 0);
+      assert.equal(o.field, 'repro');
+    }
+    // Overflow lines are NOT counted as report occurrences (must not eat
+    // into MAX_REPORT_LINES / the occurrence cap).
+    const state = store.deriveState(shown.lines);
+    assert.equal(state.reportCount, 1, 'overflow lines do not count as report occurrences');
+  } finally { rm(home); }
+});
+
+test('report() with a 2968-char repro (today\'s second real filing) also round-trips losslessly', () => {
+  const home = tmpHome();
+  try {
+    const original = 'x'.repeat(2968);
+    const r = store.report(Object.assign(baseReportInput(), { home, sym: 'overflow spill test 2968', repro: original }));
+    assert.equal(r.outcome, 'recorded');
+    const shown = store.showDefect(r.fp, home);
+    const reportLine = shown.lines.find((l) => l.t === 'report');
+    const chunks = store.overflowChunksFor(shown.lines, 'report', 0, 'repro');
+    const full = store.reconstructField(reportLine.repro, chunks);
+    assert.equal(full, original, 'a 2968-char repro (the exact size of today\'s second filing) is losslessly recoverable');
+  } finally { rm(home); }
+});
+
+test('rule() with an over-cap note also spills losslessly via overflow continuation, keyed to its own rulingSeq', () => {
+  const home = tmpHome();
+  try {
+    const filed = store.report(Object.assign(baseReportInput(), { home, sym: 'overflow spill note test' }));
+    const longNote = 'N'.repeat(store.FIELD_CAPS.note + 1800);
+    const ruled = store.rule(filed.fp, { home, status: 'partial', note: longNote });
+    assert.equal(ruled.outcome, 'ruled');
+    assert.ok(ruled.overflow, 'ruling result carries an overflow summary');
+
+    const shown = store.showDefect(filed.fp, home);
+    const ruling = shown.lines.find((l) => l.t === 'ruling');
+    const chunks = store.overflowChunksFor(shown.lines, 'ruling', 0, 'note');
+    const full = store.reconstructField(ruling.note, chunks);
+    assert.equal(full, longNote, 'the full original ruling note is losslessly recoverable');
+  } finally { rm(home); }
+});
+
+test('an existing under-cap record (no truncation) is byte-identical: no overflow lines, no marker, unchanged shape', () => {
+  const home = tmpHome();
+  try {
+    const r = store.report(Object.assign(baseReportInput(), { home, sym: 'no truncation no overflow test' }));
+    assert.equal(r.outcome, 'recorded');
+    assert.equal(r.truncated, undefined, 'nothing was cut');
+    assert.equal(r.overflow, undefined, 'no overflow summary when nothing was cut');
+
+    const rawLines = store.readRawLines(store.fpFile(r.fp, home));
+    assert.equal(rawLines.length, 1, 'exactly one line — no overflow line appended');
+    const line = JSON.parse(rawLines[0]);
+    assert.deepEqual(Object.keys(line).sort(), [
+      'at', 'claimed', 'class', 'observed', 'proj', 'repro', 'sev', 'sid', 'sym', 't', 'v',
+    ], 'field set is exactly what it was before this fix — no new keys added to an untruncated record');
+    assert.equal(line.repro, 'repro steps', 'value is byte-identical, no marker');
+  } finally { rm(home); }
+});

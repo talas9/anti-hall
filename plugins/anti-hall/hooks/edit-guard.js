@@ -335,6 +335,117 @@ function isHandoverDoc(filePath) {
   return HANDOVER_DOC_RE.test(base);
 }
 
+// OWN-SESSION SCRATCHPAD EXEMPTION (P2 fp 385aa8beb602): the harness itself
+// tells every agent (coordinator included) to use its OWN session-local
+// scratchpad directory for temp files — a fixed, harness-controlled layout of
+// `/tmp/claude-<uid>/<sanitized-cwd>/<session-id>/scratchpad/**`, where
+// <sanitized-cwd> is the session's cwd with every '/' replaced by '-' (e.g.
+// cwd '/Users/x/proj' -> '-Users-x-proj') and <session-id> is the exact
+// harness-assigned session_id for THIS run. Blocking writes there forced a
+// pointless subagent detour on the one path whose entire purpose is
+// disposable scratch I/O.
+//
+// SCOPING (why this cannot become a general escape hatch):
+//   - Computed DETERMINISTICALLY from THIS payload's own `cwd` + `session_id`
+//     (harness-set fields, same trust class as permission_mode — see
+//     isPlanMode) and this PROCESS's own real uid (process.getuid(), not
+//     anything from the payload/env). It is never a name-glob or directory
+//     prefix an attacker/model could redirect by choosing a path that merely
+//     LOOKS like a scratchpad — the path must resolve inside the literal,
+//     computed directory for the CURRENT session, nothing broader (not
+//     '/tmp/**', not 'scratchpad/**' anywhere, not another session's or
+//     another user's scratchpad).
+//   - "Reaching another session's scratchpad" is not a privilege escalation
+//     here: a session already has an unrestricted Write tool over its own
+//     process's reachable filesystem outside this guard's purview (this guard
+//     only gates the DELEGATION posture, not filesystem permissions), and
+//     another session's scratchpad is an ordinary, non-privileged temp path —
+//     so narrowing to "this session's own" is a hygiene/precision property
+//     (never grant more than the reported fp needs), not a security boundary.
+//   - Still requires allowlistIsHonest() below (no symlink/hardlink redirect
+//     out of the scratchpad tree to a real source file).
+//   - Windows has no '/tmp' convention and Windows support is dropped
+//     (min Node 22, ubuntu/macos CI only) — inert (returns null) there, which
+//     fails CLOSED (falls through to the normal block), never open.
+function ownScratchpadDir(payload) {
+  try {
+    if (process.platform === 'win32') return null;
+    const cwd = payload && payload.cwd;
+    const sessionId = payload && payload.session_id;
+    if (typeof cwd !== 'string' || !cwd || !path.isAbsolute(cwd)) return null;
+    if (typeof sessionId !== 'string' || !/^[A-Za-z0-9._-]+$/.test(sessionId)) return null;
+    let uid = null;
+    try { uid = typeof process.getuid === 'function' ? process.getuid() : null; } catch (_) { uid = null; }
+    if (uid === null || uid === undefined || Number.isNaN(uid)) return null;
+    const sanitizedCwd = cwd.replace(/\//g, '-');
+    return path.join('/tmp', 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
+  } catch (_) {
+    return null; // fail CLOSED: no exemption on any unexpected error
+  }
+}
+
+// realpathOrSelf(p) -> fs.realpathSync(p) when it resolves, else `p`
+// unchanged. Fail-safe, not fail-open: a path that does not exist yet (a
+// scratchpad file the model is about to CREATE, or a scratchpad dir the
+// harness has not materialized yet) must still compare correctly against its
+// nearest existing ancestor's real path, so this walks up to the first
+// existing ancestor, realpaths THAT, and reattaches the remaining (still
+// un-resolved) suffix — never silently drops the exemption just because the
+// leaf does not exist yet, and never THROWS/blocks on a missing path either.
+function realpathOrSelf(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch (_) {
+    // Walk up to the nearest existing ancestor.
+    let cur = p;
+    const suffix = [];
+    for (;;) {
+      const parent = path.dirname(cur);
+      if (parent === cur) return p; // hit filesystem root without finding anything real
+      suffix.unshift(path.basename(cur));
+      cur = parent;
+      try {
+        const real = fs.realpathSync(cur);
+        return path.join(real, ...suffix);
+      } catch (_) {
+        // keep walking up
+      }
+    }
+  }
+}
+
+// isOwnScratchpadPath(filePath, payload) -> true when filePath resolves
+// strictly INSIDE this session's own computed scratchpad directory (never
+// equal to it, and never merely a path that happens to CONTAIN the word
+// "scratchpad").
+//
+// REALPATH BOTH SIDES (P2 fix): `ownScratchpadDir` hard-codes '/tmp', but on
+// macOS '/tmp' is itself a symlink to '/private/tmp' — the harness's own
+// reported scratchpad path (and any payload cwd derived under it) is
+// typically already the REAL '/private/tmp/...' form. Comparing the raw
+// '/tmp/...'-prefixed computed dir against a raw '/private/tmp/...' abs path
+// via plain string-prefix `path.relative` fails CLOSED (never matches) even
+// though both name the identical directory — the exemption silently never
+// fires on macOS. Realpathing both sides (fail-safe via realpathOrSelf, never
+// throwing on a not-yet-created path) makes the comparison symlink-invariant
+// on both directions, cross-platform (a no-op wherever there is no such
+// symlink, e.g. Linux CI).
+function isOwnScratchpadPath(filePath, payload) {
+  if (!filePath) return false;
+  const dir = ownScratchpadDir(payload);
+  if (!dir) return false;
+  try {
+    const base = (payload && payload.cwd) || process.cwd();
+    const abs = path.resolve(String(base), String(filePath));
+    const realDir = realpathOrSelf(dir);
+    const realAbs = realpathOrSelf(abs);
+    const rel = path.relative(realDir, realAbs);
+    return !!rel && !rel.startsWith('..') && !path.isAbsolute(rel);
+  } catch (_) {
+    return false;
+  }
+}
+
 // isWithinCwd(filePath, cwd) -> true when filePath resolves to somewhere UNDER
 // cwd (no '../' escape, not an absolute path outside cwd). See constraint (4)
 // above for why this exists. Mirrors the `inside` check already used inside
@@ -399,6 +510,13 @@ function main() {
   // An allowlist match is honored ONLY when the path is honest (not a symlink /
   // reparse point, and not reached through one) — see allowlistIsHonest().
   if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) process.exit(0);
+
+  // OWN-SESSION SCRATCHPAD EXEMPTION — see isOwnScratchpadPath()/
+  // ownScratchpadDir() above for the full rationale and anti-bypass scoping
+  // (session-id + cwd + real uid computed path only, honesty-checked).
+  if (isOwnScratchpadPath(filePath, payload) && allowlistIsHonest(filePath, cwd)) {
+    process.exit(0);
+  }
 
   // COORDINATOR HANDOVER / COMPACT-PREP DOC EXCLUSION — see isHandoverDoc()
   // above for the exclusion's rationale and its four anti-bypass constraints

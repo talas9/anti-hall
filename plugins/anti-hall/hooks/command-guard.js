@@ -495,6 +495,22 @@ function buildDevswarmReason(kind, env) {
     '0 there does NOT mean there are no pending messages when a durable inbox is in use.';
 }
 
+// Heredoc opener regex: <<[-]WORD, <<'WORD', <<"WORD", <<WORD. Captures the
+// dash (tab-stripping mode) and the terminator word (quoted or bare). MIRRORS
+// graphify-guard.js's HEREDOC_RE/splitSegments (P1-a fix) byte-for-byte — that
+// fix was never propagated here, which is the confirmed root cause of P2 fp
+// dd88d2a72562/b183a9f1bbd5: without heredoc awareness, a heredoc BODY's own
+// newlines are ordinary segment-split points (see the `\n` case below), so a
+// message body written as `devswarm.js send ... <<'EOF' ... EOF` gets each
+// body LINE parsed as its own command segment. A body line that happens to
+// START with a heavy word ("make progress on X") then has effectiveVerb ===
+// 'make' (a HEAVY_VERB) and is misclassified as an executed command, not
+// prose. Adopting graphify-guard's approach: keep the heredoc OPENER text
+// (e.g. `<<'EOF'`) in the invoking segment so that command's own verb is
+// still classified normally, but SKIP the heredoc BODY entirely — it is
+// DATA, never re-parsed as segments/commands.
+const HEREDOC_RE = /^<<(-)?\s*("([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/;
+
 // Split a full command line into logical segments on the shell operators
 // ; && || | (and newlines), honoring single/double quotes so an operator inside
 // a quoted string does not create a spurious segment. Mirrors git-guard.js's
@@ -529,6 +545,38 @@ function splitSegments(cmd) {
     // Line continuation: backslash-newline joins lines.
     if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) {
       cur += ' '; i += (c2 === '\r') ? 3 : 2; continue;
+    }
+
+    // Heredoc: consume the opener on the current segment, then skip the BODY
+    // (up to and including the terminator line) without emitting it as
+    // segments. See HEREDOC_RE comment above.
+    if (c === '<' && c2 === '<') {
+      const m = HEREDOC_RE.exec(cmd.slice(i));
+      const word = m ? (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5])) : '';
+      if (m && word) {
+        const dashStrip = !!m[1];
+        cur += m[0];
+        i += m[0].length;
+        // Consume the rest of the opener line verbatim (e.g. trailing
+        // redirections) up to the newline that starts the heredoc body.
+        let lineEnd = cmd.indexOf('\n', i);
+        if (lineEnd === -1) lineEnd = n;
+        cur += cmd.slice(i, lineEnd);
+        i = lineEnd;
+        if (i < n && cmd[i] === '\n') i++;
+        // Skip body lines until the terminator line (tab-stripped if `<<-`).
+        while (i < n) {
+          const nextNl = cmd.indexOf('\n', i);
+          const lineRaw = nextNl === -1 ? cmd.slice(i) : cmd.slice(i, nextNl);
+          const line = dashStrip ? lineRaw.replace(/^\t+/, '') : lineRaw;
+          i += (nextNl === -1 ? (cmd.length - i) : (nextNl - i + 1));
+          if (line === word) break;
+          if (nextNl === -1) break; // unterminated heredoc: consumed to EOF
+        }
+        // The heredoc construct closes the current logical command/segment.
+        flush();
+        continue;
+      }
     }
 
     if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
@@ -642,6 +690,38 @@ function neutralizeQuotedContents(segment) {
   return out;
 }
 
+// blankPatternArgument(text, verb): for a grep/sed/awk (PATTERN_FIRST_VERBS)
+// segment, its FIRST non-flag operand is a search PATTERN/script — DATA, not
+// a command — so blank it (replace with spaces, preserving length/offsets)
+// before running HEAVY_PATTERNS against the text. Fixes P2 fp b183a9f1bbd5:
+// `git show <ref>:<path> | grep deploy` was misread as an executed "deploy"
+// command because the pattern argument's own text was scanned like command
+// text. Mirrors detectProtectedFileRead's skipNextOperand discipline (best-
+// effort: does not special-case a SEPARATED flag value, e.g. `-A 5`, where
+// the numeric operand would itself be (wrongly) treated as the pattern and
+// blanked instead — same accepted limitation as the existing skipNextOperand
+// logic above, not a new gap). Only ever narrows what is blanked (i.e. only
+// ever ALLOWS more), never widens a block.
+function blankPatternArgument(text, verb) {
+  if (!verb || !PATTERN_FIRST_VERBS.has(verb)) return text;
+  const tokenRe = /\S+/g;
+  let m;
+  let foundVerb = false;
+  while ((m = tokenRe.exec(text))) {
+    const tok = m[0];
+    if (!foundVerb) {
+      if (basename(tok).toLowerCase() === verb) foundVerb = true;
+      continue;
+    }
+    if (tok.startsWith('-')) continue; // flag: skip, keep scanning for the pattern
+    // First non-flag operand after the verb is the PATTERN/script -> blank it.
+    const start = m.index;
+    const end = start + tok.length;
+    return text.slice(0, start) + ' '.repeat(tok.length) + text.slice(end);
+  }
+  return text;
+}
+
 // Evaluate one segment: heavy if (its effective verb is a HEAVY_VERB) OR (it
 // matches a HEAVY_PATTERN), AND it is NOT itself a LIGHT_EXCEPTION. Light
 // exceptions are checked PER SEGMENT so `git status && npm run build` blocks on
@@ -656,7 +736,12 @@ function isHeavySegment(segment) {
   // command whose only heavy-looking text is inside a quoted DATA arg
   // (`echo "npm run build"`, `printf 'go test ./...'`) is NOT flagged. Real
   // unquoted heavy commands survive neutralization and still match.
-  const forPatterns = neutralizeQuotedContents(segment);
+  let forPatterns = neutralizeQuotedContents(segment);
+  // Also blank the search-PATTERN operand of grep/sed/awk (PATTERN_FIRST_VERBS)
+  // — a heavy word appearing inside a search pattern, quoted OR unquoted
+  // (`grep deploy file`, `grep -n 'npm run build' f`), is DATA describing what
+  // to search for, not a command to run. See blankPatternArgument().
+  forPatterns = blankPatternArgument(forPatterns, verb);
   for (const re of HEAVY_PATTERNS) {
     if (re.test(forPatterns)) return true;
   }

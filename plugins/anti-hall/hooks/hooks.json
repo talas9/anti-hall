@@ -386,6 +386,16 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/devswarm-comms-guard.js\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [

@@ -788,3 +788,160 @@ test('SKIP HINT: block message names the documented override in all three branch
   r = runCoord(editPayload('Edit', { filePath: 'src/app.js' }), PRIMARY_ENV);
   assert.ok(/skip edit-guard/.test(r.json.reason), `primary reason: ${r.json.reason}`);
 });
+
+// ---------------------------------------------------------------------------
+// P2 fp 385aa8beb602: edit-guard blocked a Write to the agent's OWN session
+// scratchpad directory (`/tmp/claude-<uid>/<sanitized-cwd>/<session-id>/
+// scratchpad/**`) — the exact location the harness tells every agent to use
+// for temp files, forcing a pointless subagent detour for the one path that
+// exists purely for disposable scratch I/O.
+//
+// FIX: edit-guard now computes this session's OWN scratchpad directory
+// deterministically from the payload's own `cwd` + `session_id` (harness-set
+// fields) and this process's real uid, and exempts writes strictly INSIDE it
+// (still subject to the existing symlink/hardlink honesty check). Scoped
+// narrowly: a DIFFERENT session_id, a path merely containing the word
+// "scratchpad", or a bare '/tmp/**' path must all still BLOCK.
+//
+// MUTATION LIST (apply each, prove RED, then revert -> GREEN):
+//   M1: make isOwnScratchpadPath always `return false;` (or remove its call
+//       in main()) -> OWN_SCRATCHPAD_ALLOW below must flip from allow (0) to
+//       block (2).
+// Both applied by hand against the working tree, run, and confirmed RED (see
+// PR/report evidence); the current tree is the fixed (GREEN) state.
+// ---------------------------------------------------------------------------
+
+// computeOwnScratchpadPath(cwd, sessionId, relFile) -> the exact path
+// edit-guard's ownScratchpadDir() computes, for building test fixtures without
+// duplicating the hook's internal formula by hand at each call site.
+function computeOwnScratchpadPath(cwd, sessionId, relFile) {
+  const uid = process.getuid();
+  const sanitizedCwd = cwd.replace(/\//g, '-');
+  return path.join('/tmp', 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad', relFile);
+}
+
+test('P2 fp 385aa8beb602 FIX: Write to the session\'s OWN scratchpad dir is ALLOWED', () => {
+  if (process.platform === 'win32') return; // scratchpad convention is posix-only ('/tmp'); see hook comment
+  const p = makeProject(); // acts as session cwd
+  try {
+    const sessionId = 'sess-385aa8beb602';
+    const scratchFile = computeOwnScratchpadPath(p.dir, sessionId, 'msg-body.txt');
+    const h = makeHome();
+    try {
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: scratchFile, content: 'x' },
+        session_id: sessionId,
+        cwd: p.dir,
+      };
+      const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+      assert.strictEqual(r.status, 0, `own-session scratchpad write must be allowed; stdout: ${r.stdout}`);
+    } finally {
+      h.cleanup();
+      try { fs.rmSync(path.dirname(scratchFile), { recursive: true, force: true }); } catch (_) {}
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('WAVE 9 P2 FIX: harness-shaped payload whose scratchpad path is reported via its REALPATH (e.g. macOS /private/tmp when /tmp is a symlink) is still ALLOWED', () => {
+  // Regression for: ownScratchpadDir() hard-codes the literal '/tmp' prefix,
+  // and the old isOwnScratchpadPath() compared raw path.resolve() output with
+  // no realpath on either side. On a platform where '/tmp' is itself a
+  // symlink (macOS: '/tmp' -> '/private/tmp'), a harness that reports the
+  // file_path in its RESOLVED form (exactly what this repo's own scratchpad
+  // env variable looks like: '/private/tmp/claude-<uid>/...') would never
+  // string-match the guard's literal '/tmp/...'-prefixed computed dir, so the
+  // exemption failed CLOSED (blocked) on macOS even for a legitimate
+  // in-scratchpad write. Deliberately does NOT reuse the guard's own
+  // realpath/compare helpers to build the expectation (that would be
+  // circular) — it creates a REAL directory on disk at the guard's literal
+  // '/tmp'-prefixed formula, resolves it with a plain fs.realpathSync (a
+  // Node built-in, independent of the guard's code), and asserts the LITERAL
+  // outcome (status 0 / allow) for a payload built from that resolved path.
+  if (process.platform === 'win32') return; // scratchpad convention is posix-only; see hook comment
+  const p = makeProject();
+  try {
+    const sessionId = 'sess-wave9-p2-realpath';
+    const uid = process.getuid();
+    const sanitizedCwd = p.dir.replace(/\//g, '-');
+    const literalDir = path.join('/tmp', 'claude-' + uid, sanitizedCwd, sessionId, 'scratchpad');
+    fs.mkdirSync(literalDir, { recursive: true });
+    try {
+      // Resolve the directory we just created to its real, symlink-free form
+      // via a plain Node builtin (not the guard's own helper) — this is what
+      // a harness reporting an already-resolved cwd/path would hand the hook.
+      const realDir = fs.realpathSync(literalDir);
+      const scratchFile = path.join(realDir, 'msg-body.txt');
+      const payload = {
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: scratchFile, content: 'x' },
+        session_id: sessionId,
+        cwd: p.dir,
+      };
+      const h = makeHome();
+      try {
+        const r = testHook(HOOK, payload, { home: h.home, env: COORD });
+        assert.strictEqual(r.status, 0, `realpath-reported scratchpad write must be allowed; stdout: ${r.stdout}`);
+      } finally {
+        h.cleanup();
+      }
+    } finally {
+      try { fs.rmSync(literalDir, { recursive: true, force: true }); } catch (_) {}
+    }
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('P2 fp 385aa8beb602 NEGATIVE CONTROL: a DIFFERENT session\'s scratchpad dir still BLOCKS', () => {
+  // Scoped narrowly to THIS session's own session_id — reaching for another
+  // session's scratchpad path (even a plausible-looking one) must not be
+  // silently allow-listed by a broad 'scratchpad' name match.
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const scratchFile = computeOwnScratchpadPath(p.dir, 'OTHER-SESSION-ID', 'msg-body.txt');
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: scratchFile, content: 'x' },
+      session_id: 'THIS-SESSION-ID',
+      cwd: p.dir,
+    });
+    assert.strictEqual(r.status, 2, `a different session's scratchpad must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    p.cleanup();
+  }
+});
+
+test('P2 fp 385aa8beb602 NEGATIVE CONTROL: an ordinary source file under a "scratchpad"-named dir still BLOCKS', () => {
+  // A path merely CONTAINING the word "scratchpad" (not the computed,
+  // session-specific harness path) must not be exempted — proves this is not
+  // a general name-glob escape hatch.
+  const r = runCoord(editPayload('Write', { filePath: 'scratchpad/app.js' }));
+  assert.strictEqual(r.status, 2, `lookalike "scratchpad" path must still block; stdout: ${r.stdout}`);
+  assert.ok(r.json && r.json.decision === 'block');
+});
+
+test('P2 fp 385aa8beb602 NEGATIVE CONTROL: a bare /tmp/** path (not the computed scratchpad dir) still BLOCKS', () => {
+  if (process.platform === 'win32') return;
+  const p = makeProject();
+  try {
+    const r = runCoord({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: '/tmp/some-other-file.js', content: 'x' },
+      session_id: 'sess-x',
+      cwd: p.dir,
+    });
+    assert.strictEqual(r.status, 2, `an unrelated /tmp path must still block; stdout: ${r.stdout}`);
+    assert.ok(r.json && r.json.decision === 'block');
+  } finally {
+    p.cleanup();
+  }
+});
