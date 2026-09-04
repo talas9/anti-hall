@@ -57,7 +57,42 @@ function makeGitRepo() {
 // identity-family collapse this file also tests below correctly folds a
 // REPO_CWD-worktreePath descriptor into the Primary's own row, since by the
 // codebase's own definition it then IS the same worktree/identity).
+// GIT_AVAILABLE — checked ONCE at module load (a cheap `git --version` spawn,
+// never throws even if the `git` binary is entirely missing from PATH:
+// spawnSync surfaces that as `result.error`, not a thrown exception). Every
+// caller of `makeLinkedWorktree()` in this file already requires a real git
+// checkout for REPO_CWD/REPO_HASH/REPO_KEY (computed at module load, above)
+// to mean anything, so a missing `git` binary already makes this whole file
+// non-functional — this flag exists so `makeLinkedWorktree()` itself can fail
+// FAST and LEGIBLY (a named, catchable condition) instead of a raw ENOENT
+// spawn error the caller cannot distinguish from a real worktree-add failure.
+const GIT_AVAILABLE = (() => {
+  try {
+    const r = cp.spawnSync('git', ['--version']);
+    return !r.error && r.status === 0;
+  } catch (_) { return false; }
+})();
+
+// makeLinkedWorktree() -> a REAL `git worktree add` linked worktree of THIS
+// repo: SAME git-common-dir (repoKey) as REPO_CWD, but a DISTINCT toplevel
+// path (-> a DIFFERENT identity-family key / canonicalMeshId than REPO_CWD /
+// OWN_ID). Mirrors this repo's own real DevSwarm topology — a genuine child
+// runs from its OWN linked worktree (`.claude/worktrees/<id>`), never from
+// the Primary's own cwd. Fixtures that need "a real different workspace,
+// same repoKey" use this instead of `worktreePath: REPO_CWD` (that was an
+// unrealistic same-worktree collision with the Primary's own identity — the
+// identity-family collapse this file also tests below correctly folds a
+// REPO_CWD-worktreePath descriptor into the Primary's own row, since by the
+// codebase's own definition it then IS the same worktree/identity).
+//
+// If `git` is unavailable, throws a distinguishable `GitUnavailableError` so
+// a caller wrapping this in `test(name, (t) => { ... })` can `t.skip(...)`
+// instead of failing outright — every OTHER helper in this file (REPO_HASH,
+// REPO_KEY, makeGitRepo) already hard-requires git, so this is a courtesy for
+// this ONE helper's callers, not a claim the rest of the file works without it.
+class GitUnavailableError extends Error {}
 function makeLinkedWorktree() {
+  if (!GIT_AVAILABLE) throw new GitUnavailableError('git is not available on PATH');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-wt-'));
   fs.rmdirSync(dir); // `git worktree add` requires the target not already exist
   const branch = 'parent-gate-idfam-' + path.basename(dir);
@@ -66,8 +101,24 @@ function makeLinkedWorktree() {
   return {
     dir,
     cleanup() {
+      // LEAK ROOT CAUSE (owner-reported: 3 stray `parent-gate-idfam-wt-*`
+      // worktrees + their branches survived a full test run): `git worktree
+      // remove --force` can fail (e.g. transient `.git/worktrees/<x>/locked`
+      // contention with another test file's own worktree churn on this SAME
+      // repo, or the directory already being gone) — the OLD code then still
+      // unconditionally `fs.rmSync`'d the directory off disk regardless,
+      // which leaves git's own worktree-admin bookkeeping pointing at a now
+      // -missing path (a "prunable" phantom entry `git worktree list` still
+      // reports), AND makes the follow-up `git branch -D` fail too (git still
+      // considers that branch checked out in the vanished worktree, refusing
+      // deletion) — so BOTH the worktree admin entry and the branch survived
+      // even though the directory itself was already gone. `git worktree
+      // prune` (added here, run unconditionally AFTER the manual rmSync,
+      // BEFORE the branch delete) clears exactly that phantom admin entry,
+      // which is what lets the subsequent `branch -D` actually succeed.
       try { cp.spawnSync('git', ['worktree', 'remove', '--force', dir], { cwd: REPO_CWD }); } catch (_) {}
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+      try { cp.spawnSync('git', ['worktree', 'prune'], { cwd: REPO_CWD }); } catch (_) {}
       try { cp.spawnSync('git', ['branch', '-D', branch], { cwd: REPO_CWD }); } catch (_) {}
     },
   };
@@ -114,7 +165,7 @@ function seedWorkspace(home, id, opts = {}) {
   const descriptor = {
     id,
     worktreePath: opts.worktreePath !== undefined ? opts.worktreePath : path.join(home, 'wt', id),
-    sessionId: 'child-' + id,
+    sessionId: opts.sessionId !== undefined ? opts.sessionId : 'child-' + id,
     inboxPath,
     cursorPath,
   };
@@ -1788,6 +1839,75 @@ test('IDENTITY-FAMILY: sig stability — the SAME collapsed state across repeate
     assert.strictEqual(r3.json && r3.json.decision, 'block', 'escalation pass #3 must still block');
     assert.match(r3.json.reason, /DEVSWARM ESCALATION/, 'the collapsed set signature must be STABLE run-to-run to ever reach escalation');
   } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
+});
+
+// ---------------------------------------------------------------------------
+// DEFECT 773e3e0c7e59 (P1) — same-worktree UUID TWIN of the Primary's OWN
+// identity, registered under a DIFFERENT id and a worktreePath that does NOT
+// collapse via canonicalMeshId (the ordinary case above, `worktreePath:
+// REPO_CWD`, already collapses correctly). Before this fix, `collapseFamilies`
+// only groups by resolved worktree — a twin descriptor whose worktree
+// resolves to a DIFFERENT (or unresolvable) key survived as its OWN family
+// and was reported as a neglected CHILD workspace. The unambiguous,
+// worktree-independent same-identity signal is `crossLinkedIdentity`
+// (devswarm-identity-family.js): the twin's `sessionId` IS the Primary's own
+// `own.id`. These tests prove the fold: reported under the Primary's own
+// "(you)" branch, no generic/URGENT child alert, and the block is KEPT with a
+// drain hint naming the actual twin id.
+// ---------------------------------------------------------------------------
+
+test('TWIN FOLD 773e3e0c7e59: same-worktree UUID twin cross-linked by sessionId (worktree does NOT resolve to own\'s meshId) -> reported under the OWN branch, not a child', () => {
+  const h = makeHome();
+  try {
+    const twinWt = path.join(h.home, 'twin-wt'); // deliberately NOT REPO_CWD -> canonicalMeshId gives a DIFFERENT key
+    fs.mkdirSync(twinWt, { recursive: true });
+    // sessionId: OWN_ID is the cross-link — `crossLinkedIdentity(selfRow, twin)`
+    // is true because twin.sessionId === own.id (see devswarm-identity-family.js).
+    seedWorkspace(h.home, 'twin-uuid-1', { messages: ['a', 'b'], cursor: 0, worktreePath: twinWt, sessionId: OWN_ID });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block', 'the twin\'s mail is real — the block must be KEPT');
+    assert.match(r.json.reason, new RegExp(OWN_ID + ' \\(you\\)'), 'must be reported under the Primary\'s OWN branch, not a separate row');
+    assert.doesNotMatch(r.json.reason, /twin-uuid-1 \(/, 'must NOT appear as its own labeled blocking row (that is the child-alert shape)');
+    assert.doesNotMatch(r.json.reason, /INSPECT the unread backlog via `devswarm\.js inbox peek-primary/, 'must not be classified as a generic/URGENT child alert');
+    assert.match(r.json.reason, /YOU \(the Primary\) have 2 unread/, 'the twin\'s unread is unioned into the Primary\'s OWN unread count');
+    // Drain hint: the actual twin id must still be named (never silently
+    // absorbed with no trace), with the read-only verb — never read-primary,
+    // which only ever advances the CALLER's own id's cursor (ownId's, not the
+    // twin's separate descriptor).
+    assert.match(r.json.reason, /twin-uuid-1/, 'the twin id must be named in the drain hint');
+    assert.match(r.json.reason, /inbox read <id>/, 'must name the read-only per-id verb for draining the twin');
+  } finally { h.cleanup(); }
+});
+
+test('TWIN FOLD 773e3e0c7e59: cross-linked via sessionId even when the worktree resolves to a REAL, DIFFERENT meshId (git worktree)', () => {
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    seedWorkspace(h.home, 'twin-uuid-2', { messages: ['x'], cursor: 0, worktreePath: wt.dir, sessionId: OWN_ID });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, new RegExp(OWN_ID + ' \\(you\\)'), 'must fold into the OWN family even though the worktree genuinely resolves to a different meshId');
+    assert.doesNotMatch(r.json.reason, /twin-uuid-2 \(/, 'must not appear as a separate child row');
+    assert.match(r.json.reason, /twin-uuid-2/, 'the twin id is still named in the drain hint');
+  } finally { h.cleanup(); wt.cleanup(); }
+});
+
+test('TWIN FOLD 773e3e0c7e59 (control): a GENUINE child at a different worktree with NO cross-link -> unchanged child alert', () => {
+  const h = makeHome();
+  const wt = makeLinkedWorktree();
+  try {
+    // No `sessionId` override here -> defaults to 'child-real-child-1', which
+    // does NOT cross-link to OWN_ID either direction -> must remain a
+    // perfectly ordinary, separately-reported child row.
+    seedWorkspace(h.home, 'real-child-1', { messages: ['a', 'b'], cursor: 0, worktreePath: wt.dir });
+    const r = run(h.home, stopPayload());
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /real-child-1 \(2 unread\)/, 'a genuine child must still be reported as its own row');
+    assert.match(r.json.reason, /INSPECT the unread backlog via `devswarm\.js inbox peek-primary/, 'a genuine child alert must be unaffected by the twin-fold');
+  } finally { h.cleanup(); wt.cleanup(); }
 });
 
 // ---------------------------------------------------------------------------

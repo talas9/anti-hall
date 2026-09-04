@@ -1029,6 +1029,14 @@ function main() {
     rawEntries.push({
       id: String(d.id),
       worktreePath: d.worktreePath,
+      // sessionId (defect 773e3e0c7e59, P1): carried through from the raw
+      // descriptor so the identity-family merge below can run
+      // `crossLinkedIdentity` against the Primary's own synthetic self-row —
+      // without it, a same-worktree UUID twin registered under a different id
+      // could never be detected as cross-linked here, since this was the ONLY
+      // shape rawEntries pushed for a descriptor (own's synthetic self-row has
+      // no sessionId of its own; the LINK lives on the twin descriptor side).
+      sessionId: d.sessionId != null ? String(d.sessionId) : null,
       realUnread,
       unreadUnknown,
       unreadReason,
@@ -1063,6 +1071,52 @@ function main() {
       return k;
     };
     families = identityFamily.collapseFamilies(rawEntries, { resolve: resolveMeshId });
+
+    // DEFECT 773e3e0c7e59 (P1): collapseFamilies groups strictly by resolved
+    // worktree (canonicalMeshId) or falls back to an id-only key when the
+    // worktree cannot be resolved/matched to the self row's — so the
+    // Primary's OWN identity family (a same-worktree UUID twin descriptor
+    // registered under a DIFFERENT id than `own.id`, e.g. because its
+    // worktreePath is relative/missing/resolves differently) can survive as
+    // its OWN separate family instead of collapsing with the self row. That
+    // separate family's survivor id then differs from `own.id`, so the
+    // label/branch logic below (buildReason) reports it as a neglected CHILD
+    // workspace (URGENT child alert) instead of the Primary's own mailbox.
+    // `crossLinkedIdentity` (identity-family.js) is the STRONGER, unambiguous
+    // same-identity predicate already used for the mutating archive path (one
+    // row's sessionId IS the other row's id) — reused here, read-only, to
+    // fold any family containing a member cross-linked to the self row into
+    // the self row's own family. The block itself is KEPT (the twin's mail is
+    // still real and the Primary must still drain it — see the ownEntry
+    // branch in buildReason); only the reported branch and the URGENT/child
+    // tier change. `mergedTwinIds` records the folded-in member ids (all
+    // members of the merged twin family EXCEPT the self row itself) so
+    // buildReason can still name the actual twin id(s) in its drain hint
+    // instead of silently absorbing them into `own.id`'s count with no trace.
+    const selfEntry = own.id ? rawEntries.find((e) => e.id === own.id) : null;
+    if (selfEntry) {
+      const selfFamilyIdx = families.findIndex((f) => f.members.indexOf(selfEntry) !== -1);
+      if (selfFamilyIdx !== -1) {
+        const selfFamily = families[selfFamilyIdx];
+        const keptFamilies = [selfFamily];
+        for (let i = 0; i < families.length; i++) {
+          if (i === selfFamilyIdx) continue;
+          const fam = families[i];
+          const isTwinFamily = fam.members.some((m) => identityFamily.crossLinkedIdentity(selfEntry, m));
+          if (!isTwinFamily) { keptFamilies.push(fam); continue; }
+          if (!Array.isArray(selfFamily.mergedTwinIds)) selfFamily.mergedTwinIds = [];
+          for (const m of fam.members) {
+            if (selfFamily.members.indexOf(m) === -1) selfFamily.members.push(m);
+            if (m !== selfEntry) selfFamily.mergedTwinIds.push(String(m.id));
+          }
+        }
+        // Force the merged family's survivor back to the self row so it is
+        // still reported under `own.id` (the "(you)" branch), regardless of
+        // whichever member collapseFamilies' own sort would otherwise pick.
+        selfFamily.survivor = selfEntry;
+        families = keptFamilies;
+      }
+    }
   } catch (_) {
     // Fall back to one family per rawEntry (== today's uncollapsed behavior).
     families = rawEntries.map((e) => ({ key: 'id:' + e.id, members: [e], survivor: e }));
@@ -1158,6 +1212,7 @@ function main() {
     if (worktreeGone) entry.worktreeGone = true;
     if (urgencyMax != null) entry.urgencyMax = urgencyMax;
     if (unknownMembers.length) entry.unknownMembers = unknownMembers;
+    if (Array.isArray(fam.mergedTwinIds) && fam.mergedTwinIds.length) entry.mergedTwinIds = fam.mergedTwinIds;
     blocking.push(entry);
   }
 
@@ -1678,6 +1733,24 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
       (urgent ? 'URGENT — ' : '') +
       'YOU (the Primary) have ' + ownEntry.unread + ' unread parent/peer message(s) — ' +
       'STOP and read them FIRST via `devswarm.js inbox read-primary ' + ownId + '`. ';
+  }
+  // SAME-WORKTREE TWIN FOLD (defect 773e3e0c7e59, P1): `ownEntry.unread` above
+  // is a UNION that can include a same-worktree UUID twin descriptor folded in
+  // by the identity-family merge (devswarm-parent-gate.js, `mergedTwinIds`) —
+  // it is registered under a DIFFERENT id than `ownId`, so `inbox read-primary
+  // <ownId>` (the verb just prescribed) will NOT drain it: read-primary only
+  // ever advances the caller's OWN id's cursor. Name the actual twin id(s) and
+  // the read-only verb that inspects them (`inbox read <id>`, the same
+  // non-mutating verb already prescribed for foreign-project/gone-worktree
+  // rows above) so the count above is not silently unaccountable.
+  if (ownEntry && Array.isArray(ownEntry.mergedTwinIds) && ownEntry.mergedTwinIds.length > 0) {
+    const twinIds = ownEntry.mergedTwinIds;
+    body +=
+      'NOTE — the unread count above includes ' + twinIds.length + ' same-worktree twin descriptor' +
+      (twinIds.length === 1 ? '' : 's') + ' registered under a different id (' +
+      twinIds.slice(0, 5).join('; ') + (twinIds.length > 5 ? ' and ' + (twinIds.length - 5) + ' more' : '') +
+      ') — this is the SAME identity as this Primary under a duplicate registration, not a separate child. ' +
+      'Inspect/drain each via `devswarm.js inbox read <id>` (read-only, safe from any worktree). ';
   }
   // FOREIGN-PROJECT rows (defect e586afdaa968, P1): these are workspaces whose
   // registered project is NOT this session's (their worktree is gone, so only
