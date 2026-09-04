@@ -31,12 +31,21 @@
 // additionally deletes a stale marker file on read so it does not linger.
 //
 // IDENTITY MATCH: a marker is only "fresh for THIS session" when its
-// recorded sessionId or pid matches the caller's own — a stale marker left by
-// a DIFFERENT session (e.g. a prior Primary session that never cleaned up)
+// recorded sessionId matches the caller's own — a stale marker left by a
+// DIFFERENT session (e.g. a prior Primary session that never cleaned up)
 // must never silence a gate it does not actually correspond to. That
 // comparison is the CALLER's job (devswarm-parent-gate.js); this module only
 // exposes the raw marker plus a `stale` boolean so the caller can apply its
 // own identity + freshness policy without this module guessing at it.
+//
+// `pid` (R11 Reviewer item 2 + Critic iv, 2026-09): recorded for DIAGNOSTICS
+// ONLY — it is deliberately NOT part of the caller's identity-match decision.
+// The writer (a `devswarm.js inbox read-primary` CLI invocation) and the
+// reader (this Stop hook, a separate process) are always different OS
+// processes, so a marker's `pid` never legitimately equals the gate's own
+// `process.pid`; worse, OS pid reuse inside this file's 10-minute TTL window
+// means a stale marker's recorded pid can coincide with a later, unrelated
+// process purely by chance. sessionId is the sole match the caller applies.
 //
 // Pure Node built-ins, cross-platform. Fail-soft on every fs error: a write
 // failure never crashes the caller (worst case, the gate is not silenced this
@@ -174,6 +183,22 @@ function clearStaleDrainMarker(home, id, opts) {
   return clearDrainMarker(home, id, opts);
 }
 
+// matchesSession(marker, sessionId) -> boolean. THE SOLE identity-match rule a
+// caller (devswarm-parent-gate.js) applies to decide whether a fresh (non-
+// stale) marker belongs to the CURRENT session — sessionId only, never `pid`
+// (R11 Reviewer item 2 + Critic iv, 2026-09: the writer and reader are always
+// different OS processes, and pid reuse inside the TTL window can coincide by
+// chance, so pid must never participate in the match; it stays on the marker
+// for diagnostics only). BOTH sides must be non-empty strings — an
+// empty-string or null/undefined sessionId on EITHER side can never match
+// anything (an absent/blank session id is not an identity, on either side).
+function matchesSession(marker, sessionId) {
+  if (!marker) return false;
+  const sid = sessionId != null ? String(sessionId) : '';
+  const markerSid = marker.sessionId != null ? String(marker.sessionId) : '';
+  return sid !== '' && markerSid !== '' && sid === markerSid;
+}
+
 module.exports = {
   DEFAULT_TTL_MS,
   ttlMs,
@@ -182,4 +207,5 @@ module.exports = {
   readDrainMarker,
   clearDrainMarker,
   clearStaleDrainMarker,
+  matchesSession,
 };

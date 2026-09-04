@@ -1313,6 +1313,72 @@ function main() {
   let nextQEscalated = effectiveQEscalated;
   let qEscalateTimes = null;
 
+  // IN-FLIGHT DRAIN MARKER (defect 13dedc334eb6, P2 — R11 Auditor A2 fix,
+  // 2026-09): MOVED HERE, evaluated BEFORE any of the cap/escalation
+  // arithmetic below and BEFORE the state persist. The pre-fix ordering
+  // computed nextBlocks/nextEscalated (including bumping the per-signature
+  // counter and, on the exhaustion pass, setting escalated:true) and
+  // PERSISTED that incremented/escalated state UNCONDITIONALLY, only
+  // consulting the drain marker afterward to decide whether the STDOUT
+  // decision itself should be downgraded to a stderr notice. That meant a
+  // drain turn — which is never real neglect, the Primary is already
+  // actively reading its own mailbox — still burned budget from the cap and
+  // could flip `escalated` to true while only ever emitting a stderr
+  // notice; the very next Stop pass would then read `effectiveEscalated ===
+  // true` and go silent forever (line "if (effectiveEscalated) return;"
+  // below), even though no hard block had ever actually been surfaced to the
+  // model. A downgraded turn must count for NOTHING against either the
+  // plain-backlog cap or the question-set ceiling: it persists the SAME
+  // `effectiveBlocks`/`effectiveEscalated` (and `effectiveQBlocks`/
+  // `effectiveQEscalated`) it read in, unchanged, then emits the notice and
+  // returns — never reaching the increment logic below at all.
+  //
+  // IDENTITY MATCH (R11 Reviewer item 2 + Critic iv): sessionId is now the
+  // SOLE match. `pid` is no longer compared here — the Stop hook (this
+  // process) and the CLI verb that calls markDrainStart (a separate `devswarm.js
+  // inbox read-primary` child process) are DIFFERENT OS processes by
+  // construction, so a marker's `pid` never legitimately equals
+  // `process.pid` in the first place; worse, OS pid reuse inside the
+  // marker's 10-minute TTL window means a stale marker's recorded pid can
+  // coincide with an unrelated LATER process's pid purely by chance,
+  // wrongly downgrading a real block. `pid` is still recorded in the marker
+  // file (devswarm-drain-marker.js) and still returned by readDrainMarker,
+  // but purely for human diagnostics now — never consulted for the gating
+  // decision. BOTH sides of the sessionId comparison must be non-empty
+  // strings: an empty-string session_id (or an empty-string marker.sessionId)
+  // is treated the same as absent/null and can never match anything.
+  let draining = false;
+  try {
+    const drainMarker = require('../companion/lib/devswarm-drain-marker.js');
+    if (own.id) {
+      const marker = drainMarker.readDrainMarker(home, own.id, { now: Date.now() });
+      if (marker && !marker.stale) {
+        draining = drainMarker.matchesSession(marker, payload && payload.session_id);
+      } else if (marker && marker.stale) {
+        try { drainMarker.clearDrainMarker(home, own.id); } catch (_) {}
+      }
+    }
+  } catch (_) { draining = false; }
+
+  if (draining) {
+    // Persist UNCHANGED cap/escalation state — this turn consumes no budget
+    // and can never itself trip escalation on either axis.
+    try {
+      fs.mkdirSync(path.dirname(stateFile), { recursive: true });
+      fs.writeFileSync(stateFile, JSON.stringify({
+        sig, blocks: effectiveBlocks, escalated: effectiveEscalated,
+        qSig, qBlocks: effectiveQBlocks, qEscalated: effectiveQEscalated,
+        intents: nextIntents, intentAcks: effectiveIntentAcks,
+      }), 'utf8');
+    } catch (_) { /* fail-open: best-effort persist, notice still fires this pass */ }
+    try {
+      const reason = buildReason(blocking, own.id, unanswered, null, truncated, null, hasIntent, !!own.unknown);
+      fs.writeSync(2, 'anti-hall: ' + reason.split('\n')[0]
+        + ' — not blocking (in-flight drain marker fresh for this session)\n');
+    } catch (_) {}
+    return;
+  }
+
   if (!bypassCap) {
     if (effectiveEscalated) return; // already escalated once — go quiet
     nextBlocks = effectiveBlocks + 1;
@@ -1371,44 +1437,9 @@ function main() {
 
   const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown) + wakeLine;
 
-  // IN-FLIGHT DRAIN MARKER (defect 13dedc334eb6, P2): if the Primary has
-  // declared (via companion/lib/devswarm-drain-marker.js's markDrainStart —
-  // called by the `inbox read-primary`/`read` CLI verbs at entry) that it is
-  // ACTIVELY draining its own mailbox this turn, and that declaration is both
-  // FRESH (non-stale, TTL-bounded) and for THIS session/process, downgrade
-  // this pass from a hard block to a non-blocking stderr notice. This can
-  // NEVER silence a genuinely new/different neglect signature — the marker
-  // check happens only after every other axis above has already decided to
-  // block, and state was already persisted, so the cap/escalation bookkeeping
-  // is untouched; only THIS turn's stdout decision is downgraded. A stale
-  // marker (crashed/abandoned drain past its TTL) or one belonging to a
-  // DIFFERENT session/pid is ignored entirely and the block fires normally.
-  // LAZY + GUARDED (D27 idiom, matching every other lazy require in this
-  // file): a missing/corrupt module never crashes this Stop hook — it simply
-  // falls through to the normal block below.
-  let draining = false;
-  try {
-    const drainMarker = require('../companion/lib/devswarm-drain-marker.js');
-    if (own.id) {
-      const marker = drainMarker.readDrainMarker(home, own.id, { now: Date.now() });
-      if (marker && !marker.stale) {
-        const sid = payload && payload.session_id != null ? String(payload.session_id) : null;
-        const sessionMatch = sid !== null && marker.sessionId !== null && marker.sessionId === sid;
-        const pidMatch = Number.isFinite(marker.pid) && marker.pid === process.pid;
-        draining = sessionMatch || pidMatch;
-      } else if (marker && marker.stale) {
-        try { drainMarker.clearDrainMarker(home, own.id); } catch (_) {}
-      }
-    }
-  } catch (_) { draining = false; }
-
-  if (draining) {
-    try {
-      fs.writeSync(2, 'anti-hall: ' + reason.split('\n')[0]
-        + ' — not blocking (in-flight drain marker fresh for this session)\n');
-    } catch (_) {}
-    return;
-  }
+  // IN-FLIGHT DRAIN MARKER: evaluated ABOVE now (before this persist), not
+  // here — see the "R11 Auditor A2 fix" comment at that earlier call site for
+  // why the ordering moved.
 
   try { fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n'); } catch (_) {}
 }

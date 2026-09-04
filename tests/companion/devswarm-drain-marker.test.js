@@ -162,3 +162,51 @@ test('drainMarkerPathFor lands under <home>/.anti-hall/devswarm/drain/<id>.json'
   assert.strictEqual(p, path.join(h.home, '.anti-hall', 'devswarm', 'drain', ID + '.json'));
   h.cleanup();
 });
+
+// ---------------------------------------------------------------------------
+// matchesSession (R11 Reviewer item 2 + Critic iv, 2026-09): the SOLE
+// identity-match rule devswarm-parent-gate.js applies to a fresh drain
+// marker — sessionId only. `pid` must NEVER participate: the writer (a
+// `devswarm.js inbox read-primary` CLI process) and the reader (this Stop
+// hook, a separate process) are always different OS processes, and pid
+// reuse inside the marker's TTL window can make an unrelated later process's
+// pid coincide with a stale marker's recorded pid purely by chance.
+// ---------------------------------------------------------------------------
+
+test('matchesSession: same sessionId -> true, regardless of pid', () => {
+  assert.strictEqual(drainMarker.matchesSession({ sessionId: 'sess-1', pid: 42 }, 'sess-1'), true);
+});
+
+test('matchesSession: pid EQUALS the caller\'s own process.pid but sessionId differs -> false (pid must never match on its own)', () => {
+  // Proves pid is structurally excluded from the match: even the caller's
+  // OWN real process.pid recorded on the marker cannot substitute for a
+  // matching sessionId.
+  assert.strictEqual(drainMarker.matchesSession({ sessionId: 'some-other-session', pid: process.pid }, 'sess-1'), false);
+});
+
+test('matchesSession: different sessionId -> false', () => {
+  assert.strictEqual(drainMarker.matchesSession({ sessionId: 'sess-a' }, 'sess-b'), false);
+});
+
+test('matchesSession: empty-string sessionId on the marker side -> false, even against an empty-string caller sessionId', () => {
+  assert.strictEqual(drainMarker.matchesSession({ sessionId: '' }, ''), false);
+});
+
+test('matchesSession: null/missing sessionId on either side -> false', () => {
+  assert.strictEqual(drainMarker.matchesSession({ sessionId: null }, 'sess-1'), false);
+  assert.strictEqual(drainMarker.matchesSession({ sessionId: 'sess-1' }, null), false);
+  assert.strictEqual(drainMarker.matchesSession({ sessionId: 'sess-1' }, undefined), false);
+  assert.strictEqual(drainMarker.matchesSession({}, 'sess-1'), false);
+});
+
+test('matchesSession: null marker -> false', () => {
+  assert.strictEqual(drainMarker.matchesSession(null, 'sess-1'), false);
+});
+
+// MUTATION-CHECK (documented for reproducibility): restoring the OLD
+// `sessionMatch || pidMatch` OR-with-pid logic (e.g. `return sid === markerSid
+// || (Number.isFinite(marker.pid) && marker.pid === <caller pid>)`) would KILL
+// the "pid equals caller's own process.pid but sessionId differs" test above
+// (it would flip from false to true) — confirmed by re-deriving that branch
+// inline and re-running this file: RED, then reverted to matchesSession()
+// and confirmed GREEN again.

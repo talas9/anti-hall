@@ -1761,6 +1761,96 @@ function checkOrphanedMcpUnderBroker(opts) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// sweepStaleDrainMarkers({home, mode, io}) -> array of result rows.
+//
+// R11 Auditor Q5 (P1): devswarm-parent-gate.js's Stop-hook consumer only ever
+// clears a stale in-flight drain marker (companion/lib/devswarm-drain-marker.js)
+// for `own.id` — the CALLING Primary's own worktree-derived id — because it
+// observes a marker only as a side effect of gating ITS OWN unread on ITS OWN
+// Stop pass. A marker written under any OTHER id (e.g. a Primary whose
+// worktree later moved/was removed, or one that crashed before its NEXT own
+// Stop pass ever ran to notice its own stale marker) has nothing else that
+// ever visits ~/.anti-hall/devswarm/drain/ to clean it up — it lingers
+// forever once its 10-minute TTL has passed. This sweep enumerates every
+// marker file in that directory directly and applies devswarm-drain-marker.js's
+// OWN staleness test (readDrainMarker's TTL, via clearStaleDrainMarker) —
+// never reimplementing the TTL/staleness logic here, same "one derivation,
+// never three" discipline as every other repair in this file.
+//
+// mode 'check' (default): READ-ONLY. Lists every marker with {id, ageMs,
+// stale} — never deletes anything, mirroring listIngestLockFiles's dry-run
+// preview posture above.
+// mode 'repair': deletes ONLY markers devswarm-drain-marker.js itself calls
+// stale (via clearStaleDrainMarker — the SAME primitive the gate's own Stop-hook
+// consumer uses to clear a stale marker it happens to observe). A FRESH marker
+// is NEVER removed under any circumstance — this must never race a legitimately
+// in-flight drain and delete out from under it. A missing drain/ directory
+// (ENOENT) is a routine no-op (nothing has ever drained yet for this HOME),
+// never a failure.
+function sweepStaleDrainMarkers(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const mode = o.mode === 'repair' ? 'repair' : 'check';
+  const io = o.io || {};
+  const F = io.fs || fs;
+  const now = Number.isFinite(io.now) ? io.now : Date.now();
+
+  let drainMarker;
+  try {
+    drainMarker = require(path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-drain-marker.js'));
+  } catch (e) {
+    return [{ id: null, ageMs: null, stale: null, status: 'failed', msg: 'devswarm-drain-marker.js could not be loaded: ' + errMsg(e) }];
+  }
+  if (typeof drainMarker.readDrainMarker !== 'function' || typeof drainMarker.clearStaleDrainMarker !== 'function') {
+    return [{ id: null, ageMs: null, stale: null, status: 'failed', msg: 'devswarm-drain-marker.js does not export readDrainMarker/clearStaleDrainMarker in this build — cannot safely sweep, nothing touched' }];
+  }
+
+  const dir = path.join(devswarmRootFor(home), 'drain');
+  let names = [];
+  try {
+    names = F.readdirSync(dir);
+  } catch (e) {
+    if (e && e.code === 'ENOENT') return []; // routine no-op: nothing has ever drained yet
+    return [{ id: null, ageMs: null, stale: null, status: 'failed', msg: 'could not list ' + dir + ': ' + errMsg(e) }];
+  }
+
+  const results = [];
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const id = name.slice(0, -'.json'.length);
+
+    let marker;
+    try {
+      marker = drainMarker.readDrainMarker(home, id, { now });
+    } catch (e) {
+      results.push({ id, ageMs: null, stale: null, status: 'failed', msg: 'unsafe or unreadable marker id ' + JSON.stringify(id) + ': ' + errMsg(e) });
+      continue;
+    }
+    if (!marker) continue; // unreadable/malformed -> readDrainMarker's own fail-soft "no marker"; nothing to report or sweep
+    const ageMs = now - marker.startedAt;
+
+    if (mode === 'check') {
+      results.push({ id, ageMs, stale: marker.stale });
+      continue;
+    }
+
+    // repair mode: NEVER touch a fresh marker.
+    if (!marker.stale) {
+      results.push({ id, ageMs, stale: false, status: 'skipped', msg: 'marker ' + id + ' is fresh — left untouched' });
+      continue;
+    }
+    let cleared = false;
+    try { cleared = drainMarker.clearStaleDrainMarker(home, id, { now }); } catch (_) { cleared = false; }
+    results.push({
+      id, ageMs, stale: true,
+      status: cleared ? 'fixed' : 'failed',
+      msg: cleared ? ('removed stale drain marker ' + id + ' (age ' + ageMs + 'ms)') : ('failed to remove stale drain marker ' + id),
+    });
+  }
+  return results;
+}
+
 module.exports = {
   readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
   // Codex "is it wired" precise per-event detection (exported for direct unit
@@ -1779,4 +1869,7 @@ module.exports = {
   MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS,
   // stale-running (pacing-fix delivery gap) detection:
   staleRunningCheck, compareSemverLite,
+  // R11 Auditor Q5 — sweep drain markers left under OTHER ids that the gate's
+  // own Stop-hook consumer never visits:
+  sweepStaleDrainMarkers,
 };

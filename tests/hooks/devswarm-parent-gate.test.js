@@ -2815,7 +2815,83 @@ test('DRAIN MARKER: no marker at all -> blocks exactly as before (no regression)
 //        consumer (treat every marker, stale or not, as live) -> KILLS the
 //        "stale marker -> blocks" test above (a stale marker would wrongly
 //        suppress the block).
-//   (ii) Delete the sessionMatch/pidMatch identity check (treat ANY marker
-//        for this OWN_ID as applying regardless of session/pid) -> KILLS the
+//   (ii) Delete the sessionMatch identity check (treat ANY marker for this
+//        OWN_ID as applying regardless of session) -> KILLS the
 //        "different session -> blocks" test above (a foreign session's
 //        marker would wrongly suppress this session's block).
+
+// ---------------------------------------------------------------------------
+// R11 AUDITOR A2 FIX (2026-09): the drain-marker downgrade check used to run
+// AFTER the per-signature cap counter/escalation flag were already persisted
+// — a drain turn burned cap budget and could set sticky `escalated:true`
+// while only ever emitting a stderr notice, so the NEXT pass (no marker) read
+// `effectiveEscalated===true` and stayed silent forever, having never
+// actually surfaced a real block. Fixed by evaluating the marker BEFORE the
+// persist and, on a downgraded turn, persisting the UNCHANGED effective
+// values (no increment, no escalation).
+// ---------------------------------------------------------------------------
+
+test('DRAIN MARKER PERSIST ORDERING: a downgraded (notice-only) turn leaves blocks/escalated UNCHANGED in the gate state', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 3);
+    drainMarkerLib.markDrainStart(h.home, OWN_ID, { now: Date.now(), sessionId: 'drain-sess-1' });
+    const r = run(h.home, stopPayload('drain-sess-1', true));
+    assert.strictEqual(r.stdout, '', 'must not emit a stdout block on a downgraded turn');
+    const state = readGateState(h.home, 'drain-sess-1');
+    assert.strictEqual(state.blocks, 0, 'a downgraded turn must not increment the per-signature block counter');
+    assert.strictEqual(state.escalated, false, 'a downgraded turn must never set escalated');
+  } finally { h.cleanup(); }
+});
+
+test('DRAIN MARKER PERSIST ORDERING: the turn immediately AFTER N drain-downgraded turns blocks normally with the correct (un-inflated) count', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 3);
+    drainMarkerLib.markDrainStart(h.home, OWN_ID, { now: Date.now(), sessionId: 'drain-sess-1' });
+    // Several consecutive downgraded turns while the marker stays fresh.
+    for (let i = 0; i < 5; i++) {
+      const r = run(h.home, stopPayload('drain-sess-1', true));
+      assert.strictEqual(r.stdout, '', `downgraded turn #${i} must not emit a stdout block`);
+    }
+    const stateAfterDrain = readGateState(h.home, 'drain-sess-1');
+    assert.strictEqual(stateAfterDrain.blocks, 0, 'none of the drain-downgraded turns may have counted toward the cap');
+    assert.strictEqual(stateAfterDrain.escalated, false);
+
+    // Marker clears (drain finished) — the very next pass is the FIRST real
+    // block for this signature and must read blocks:1, not blocks:6.
+    drainMarkerLib.clearDrainMarker(h.home, OWN_ID);
+    const r2 = run(h.home, stopPayload('drain-sess-1', true));
+    assert.strictEqual(r2.json && r2.json.decision, 'block', 'must block for real once the marker is gone');
+    const stateAfterBlock = readGateState(h.home, 'drain-sess-1');
+    assert.strictEqual(stateAfterBlock.blocks, 1, 'the first real block must read as block #1, not inflated by prior downgraded turns');
+    assert.strictEqual(stateAfterBlock.escalated, false);
+  } finally { h.cleanup(); }
+});
+
+test('DRAIN MARKER PERSIST ORDERING: N consecutive drain-downgraded turns never escalate, even well past the cap', () => {
+  const h = makeHome();
+  try {
+    writeOwnSummary(h.home, 3);
+    drainMarkerLib.markDrainStart(h.home, OWN_ID, { now: Date.now(), sessionId: 'drain-sess-1' });
+    // DEFAULT_CAP is 3 (clamped 2..5); run well past it while draining stays fresh.
+    for (let i = 0; i < 10; i++) {
+      const r = run(h.home, stopPayload('drain-sess-1', true));
+      assert.strictEqual(r.stdout, '', `downgraded turn #${i} must not emit a stdout block`);
+      assert.match(r.stderr || '', /in-flight drain marker/, `downgraded turn #${i} must still surface a stderr notice`);
+    }
+    const state = readGateState(h.home, 'drain-sess-1');
+    assert.strictEqual(state.blocks, 0, 'escalation-worthy repetition must never accrue while every pass is downgraded');
+    assert.strictEqual(state.escalated, false, 'must never escalate purely from repeated downgraded turns');
+  } finally { h.cleanup(); }
+});
+
+// MUTATION-CHECK (documented for reproducibility): restoring the PRE-FIX
+// ordering (persist nextBlocks/nextEscalated BEFORE consulting the drain
+// marker, only downgrading the stdout decision afterward) would KILL all
+// three tests above — `state.blocks` would climb past 0 on the first test,
+// and the third test's 10 downgraded turns would drive `blocks` past the
+// default cap of 3 and flip `escalated` to `true`. Verified live: reverting
+// this file's persist-then-check ordering and re-running this test file
+// reproduced exactly that failure (RED), then reverting back to the
+// check-before-persist ordering restored GREEN.
