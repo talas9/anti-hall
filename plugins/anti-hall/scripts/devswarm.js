@@ -808,7 +808,11 @@ function writeSiblingSeenCursor(home, callerId, siblingId, value) {
 // (rather than inlined against a cached in-memory value) so it is directly
 // unit-testable, and so the read-primary call site can gate it on a FRESHLY
 // read `watermarkValue` (see readSiblingSeenCursor at that call site) instead
-// of an in-memory value captured earlier in the same read. A non-finite
+// of an in-memory value captured earlier in the same read. The fresh re-read
+// narrows the TOCTOU window to just read→unlink, it does not eliminate it:
+// there is no file locking here, so a writer that extends the watermark in
+// that gap loses that extension when the unlink fires, and the next acking
+// read simply recreates the file from the writer's own state. A non-finite
 // input on either side degrades to 0 — no watermark on record (missing/
 // unreadable file) trivially satisfies "covered".
 function siblingWatermarkCovered(ackTarget, watermarkValue) {
