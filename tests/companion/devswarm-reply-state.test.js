@@ -758,11 +758,17 @@ test('unansweredQuestions: fails open toward unanswered on malformed input, neve
 // --- partitionUnanswered (R17 item 3: retired-sender questions) ------------
 // MUTATION CHECK: drop the `knownIds.has(...)` check (treat every question as
 // `blocking`) -> "a question from a sender with NO row anywhere is informational" fails.
+//
+// `{ archivedKnown: true }` below models a FRESH summary (post R18-critic-fix
+// computeSummary always stamps `archivedRegistryRows`, even as `[]`) so these
+// pre-existing cases still exercise the known/unknown-id partition itself.
+// The archived-registry-specific cases (further down) cover `archivedKnown`
+// itself.
 test('partitionUnanswered: a sender present in descriptors OR registryRows stays blocking', () => {
   const unanswered = [{ from: 'child-a', ts: 1, seq: 1 }, { from: 'child-b', ts: 2, seq: 2 }];
   const descriptors = [{ id: 'child-a', worktreePath: '/w/a' }];
   const registryRows = [{ id: 'child-b', worktreePath: '/w/b' }];
-  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows);
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows, { archivedKnown: true });
   assert.deepEqual(blocking.map((q) => q.seq), [1, 2]);
   assert.deepEqual(informational, []);
 });
@@ -771,22 +777,22 @@ test('partitionUnanswered: a sender with NO row anywhere (retired) is informatio
   const unanswered = [{ from: 'child-live', ts: 1, seq: 1 }, { from: 'ghost-sender', ts: 2, seq: 2 }];
   const descriptors = [{ id: 'child-live', worktreePath: '/w/a' }];
   const registryRows = [{ id: 'child-live', worktreePath: '/w/a' }];
-  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows);
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows, { archivedKnown: true });
   assert.deepEqual(blocking.map((q) => q.seq), [1]);
   assert.deepEqual(informational.map((q) => q.seq), [2]);
 });
 
 test('partitionUnanswered: an EMPTY registry (both descriptors and registryRows absent) never manufactures informational entries', () => {
   const unanswered = [{ from: 'someone', ts: 1, seq: 1 }];
-  assert.deepEqual(M.partitionUnanswered(unanswered, [], []).blocking.map((q) => q.seq), [1],
+  assert.deepEqual(M.partitionUnanswered(unanswered, [], [], { archivedKnown: true }).blocking.map((q) => q.seq), [1],
     'an unreadable/empty registry must never be mistaken for proof of retirement');
-  assert.deepEqual(M.partitionUnanswered(unanswered, [], []).informational, []);
+  assert.deepEqual(M.partitionUnanswered(unanswered, [], [], { archivedKnown: true }).informational, []);
 });
 
 test('partitionUnanswered: a malformed question (no `from`) always stays blocking, unchanged', () => {
   const unanswered = [{ ts: 1, seq: 1 }, null, { from: 'known', ts: 2, seq: 2 }];
   const descriptors = [{ id: 'known', worktreePath: '/w' }];
-  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, []);
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, [], { archivedKnown: true });
   assert.equal(blocking.length, 3);
   assert.deepEqual(informational, []);
 });
@@ -795,5 +801,52 @@ test('partitionUnanswered: fails toward blocking on malformed input, never throw
   assert.doesNotThrow(() => M.partitionUnanswered(null, null, null));
   assert.deepEqual(M.partitionUnanswered(null, null, null), { blocking: [], informational: [] });
   const unanswered = [{ from: 'x', ts: 1, seq: 1 }];
-  assert.deepEqual(M.partitionUnanswered(unanswered, 'not-an-array', 'not-an-array').blocking.map((q) => q.seq), [1]);
+  assert.deepEqual(M.partitionUnanswered(unanswered, 'not-an-array', 'not-an-array', { archivedKnown: true }).blocking.map((q) => q.seq), [1]);
+});
+
+// --- partitionUnanswered `archivedKnown` (R18 critic fix) ------------------
+// Root cause: `registryRows` used to be ACTIVE-only (Object.keys(summary.
+// workspaces), which structurally excludes an archived-but-still-live child —
+// see devswarm-store.js's computeSummary/archivedIds). A question from such a
+// sender matched no row anywhere in the OLD id spaces and was wrongly
+// downgraded to informational, even though `send --to <that id>` can still
+// resolve it and the sender can still ask again — a real, repliable question
+// silently stopped being nagged about.
+//
+// MUTATION CHECK: drop the `archivedKnown` gate (always run the known/unknown
+// partition) -> the legacy-summary case below wrongly goes informational.
+test('partitionUnanswered: an archived-but-live sender (row only in the archived half) stays blocking, once archivedKnown', () => {
+  const unanswered = [{ from: 'childA-uuid-1234', ts: 1, seq: 1 }];
+  // Neither `descriptors` (no active workspace file) nor the ACTIVE half of
+  // `registryRows` carries this id — only the ARCHIVED half does, exactly
+  // like a real archived-but-live child's registry row.
+  const descriptors = [];
+  const registryRows = [{ id: 'childA-uuid-1234', worktreePath: '/w/archived' }]; // caller already folded the archived half in
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows, { archivedKnown: true });
+  assert.deepEqual(blocking.map((q) => q.seq), [1], 'archived-but-live sender must still block — resolveSendTarget can still reach it');
+  assert.deepEqual(informational, []);
+});
+
+test('partitionUnanswered: legacy summary (archivedKnown omitted/false) fails open toward BLOCKING for an unmatched sender, never informational', () => {
+  const unanswered = [{ from: 'childA-uuid-1234', ts: 1, seq: 1 }, { from: 'ghost-sender', ts: 2, seq: 2 }];
+  const descriptors = [];
+  const registryRows = [{ id: 'some-other-live-child', worktreePath: '/w/live' }];
+  // No `opts` at all (mirrors a caller reading a summary written before this
+  // fix, which never emitted `archivedRegistryRows` — the caller cannot tell
+  // "no archived rows" apart from "archived half never computed").
+  const noOpts = M.partitionUnanswered(unanswered, descriptors, registryRows);
+  assert.deepEqual(noOpts.blocking.map((q) => q.seq), [1, 2], 'downgrading is the RISKY direction — stay blocking when the archived half is unverifiable');
+  assert.deepEqual(noOpts.informational, []);
+  // Explicit `archivedKnown: false` is identical.
+  const explicitFalse = M.partitionUnanswered(unanswered, descriptors, registryRows, { archivedKnown: false });
+  assert.deepEqual(explicitFalse.blocking.map((q) => q.seq), [1, 2]);
+  assert.deepEqual(explicitFalse.informational, []);
+});
+
+test('partitionUnanswered: id comparison is trimmed (registry ids are canonical; a stray-whitespace `from` still matches)', () => {
+  const unanswered = [{ from: '  child-a  ', ts: 1, seq: 1 }];
+  const descriptors = [{ id: 'child-a', worktreePath: '/w/a' }];
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, [], { archivedKnown: true });
+  assert.deepEqual(blocking.map((q) => q.seq), [1]);
+  assert.deepEqual(informational, []);
 });

@@ -1830,11 +1830,35 @@ function computeSummary(store, opts) {
     registry.map((d) => String(d.id)).filter((id) => !archivedIds.has(id))
   );
 
+  // archivedRegistryRows (R18 critic fix) — the archived HALF of `registry`,
+  // projected verbatim alongside `workspaces` (additive summary field, no
+  // migration; every reader that doesn't know it yet just ignores it). A
+  // registry row for a child that is archived-but-still-live (archived/<id>.json
+  // present, session still running) is EXCLUDED from `workspaces` by design
+  // (see archivedIds's own header) but that exclusion made it invisible to
+  // hooks/devswarm-parent-gate.js's and hooks/devswarm-parent-inbox.js's
+  // `registryRows` projection too, since both build it from
+  // `Object.keys(summary.workspaces)` alone — the ONLY id space those hooks
+  // ever saw. partitionUnanswered (companion/lib/devswarm-reply-state.js) then
+  // treated a question from such a sender as coming from a fully RETIRED
+  // sender (no row anywhere) and marked it informational, even though
+  // `resolveSendTarget` in scripts/devswarm.js CAN still resolve `--to
+  // <that id>` and the sender can still ask again — a real, repliable
+  // question silently stopped being nagged about. Projecting these rows too
+  // (same {id, worktreePath, sessionId} shape as the active ones) lets the
+  // hooks fold them into `registryRows` and keeps "unrepliable" defined
+  // exactly the way `send --to` resolves it: known-anywhere (active OR
+  // archived) stays blocking; only a `from` in neither space is genuinely
+  // retired.
+  const archivedRegistryRows = [];
   const workspaces = {};
   for (const d of registry) {
     if (!isSafeId(d.id)) continue; // never project an unsafe id
     if (d.id === BROADCAST_PARTITION_ID) continue; // defense-in-depth: the shared broadcast partition is NEVER a real workspace (isSafeId already excludes '*', kept explicit)
-    if (archivedIds.has(String(d.id))) continue; // archived -> never projected ACTIVE
+    if (archivedIds.has(String(d.id))) {
+      archivedRegistryRows.push({ id: d.id, worktreePath: d.worktreePath || null, sessionId: d.sessionId || null });
+      continue; // archived -> never projected ACTIVE
+    }
     const total = store.messageCount(d.id);
     const cursor = store.cursorValue(d.id);
     // UNREAD UNIFICATION (defect 8f2aec40e2ff, P1). `total - cursor` counts ONLY
@@ -2226,6 +2250,12 @@ function computeSummary(store, opts) {
   // produces a byte-identical summary for existing readers. Surface-only: never
   // auto-forwarded / auto-deleted. (No persisted cooldown state — any surfacing
   // de-dup is a trivial render-time cap in Phase D, not a state machine here.)
+  // Additive: presence of this key (even as []) tells readers the archived
+  // half of the registry was actually computed by THIS run — see
+  // partitionUnanswered's `archivedKnown` contract in devswarm-reply-state.js.
+  // A summary written by pre-fix code omits the key entirely, which those
+  // readers must tell apart from "computed and genuinely empty".
+  summary.archivedRegistryRows = archivedRegistryRows;
   if (orphans.length) summary.orphans = orphans;
   // QUIET diagnostic field (never rendered as a per-turn warning): the orphans that
   // are provably unreadable-forever. Same {id, messageCount, unread} shape as

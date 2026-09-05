@@ -1317,6 +1317,7 @@ function main() {
     // have no descriptor file, so the descriptor-only family map could never see
     // them. Free: same parsed object, no extra read.
     let registryRows = [];
+    let archivedKnown = false;
     try {
       const ws = (summary && summary.workspaces) || {};
       // `sessionId` rides along so recipientFamilyIds can see this workspace's
@@ -1327,7 +1328,19 @@ function main() {
         worktreePath: (ws[wid] && ws[wid].worktreePath) || null,
         sessionId: (ws[wid] && ws[wid].sessionId) || null,
       }));
-    } catch (_) { registryRows = []; }
+      // archivedRegistryRows (R18 critic fix) — fold the archived half of the
+      // registry in too, so partitionUnanswered never mistakes an
+      // archived-but-still-live sender for fully retired. See its own header
+      // (companion/lib/devswarm-reply-state.js) and devswarm-parent-gate.js's
+      // matching fold for the full rationale.
+      archivedKnown = Array.isArray(summary && summary.archivedRegistryRows);
+      if (archivedKnown) {
+        for (const r of summary.archivedRegistryRows) {
+          if (!r || r.id == null) continue;
+          registryRows.push({ id: r.id, worktreePath: r.worktreePath || null, sessionId: r.sessionId || null });
+        }
+      }
+    } catch (_) { registryRows = []; archivedKnown = false; }
     ownUnanswered = replyStateMod.familyAwareUnanswered({
       pendingQuestions: ownPendingQuestions, replyState, descriptors, resolveMeshId, registryRows,
       // The recipient of these questions — its own row and its twins can never
@@ -1344,7 +1357,7 @@ function main() {
     // question-set escalation ceiling). Split it out: it renders once, below,
     // as an INFORMATIONAL line — never counted in `ownUnanswered.length` (the
     // blocking figure buildOwnUnreadSegment nags on) again.
-    const partitioned = replyStateMod.partitionUnanswered(ownUnanswered, descriptors, registryRows);
+    const partitioned = replyStateMod.partitionUnanswered(ownUnanswered, descriptors, registryRows, { archivedKnown });
     ownUnanswered = partitioned.blocking;
     ownUnansweredInformational = partitioned.informational;
   } catch (_) {

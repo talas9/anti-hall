@@ -127,6 +127,15 @@ function writeSharedSummary(home, workspacesRaw, extra) {
   // pre-Phase-A shape (needed for the byte-identical-when-clean assertion).
   if (extra && extra.orphans !== undefined) obj.orphans = extra.orphans;
   if (extra && extra.staleRegistryPartitions !== undefined) obj.staleRegistryPartitions = extra.staleRegistryPartitions;
+  // archivedRegistryRows (R18 critic fix): a REAL computeSummary always
+  // stamps this field (even as `[]`) so readers can tell "computed, none
+  // archived" apart from a legacy summary that predates the field entirely —
+  // see partitionUnanswered's `archivedKnown` contract. This fixture models a
+  // FRESH summary by default; `extra.omitArchivedField` opts a test OUT to
+  // model the legacy/stale case on purpose.
+  if (!(extra && extra.omitArchivedField)) {
+    obj.archivedRegistryRows = (extra && extra.archivedRegistryRows) || [];
+  }
   fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify(obj));
 }
 function writeVerdict(home, id, verdict) {
@@ -1711,6 +1720,64 @@ test('RETIRED SENDER: named informationally alongside a live sender\'s question,
     assert.match(own, /1 of these is an unanswered QUESTION/, 'the blocking figure must count ONLY the live sender, not the retired one');
     assert.match(own, /INFORMATIONAL/i);
     assert.ok(own.includes('ghost-sender'));
+  } finally { h.cleanup(); }
+});
+
+// R18 critic fix: an ARCHIVED-BUT-LIVE sender (archived/<id>.json exists but
+// the child's session is still running) must stay in the BLOCKING figure —
+// `resolveSendTarget` can still resolve `--to <that id>` — never downgraded
+// to informational the way a genuinely retired sender (no row anywhere) is.
+// Model it via `archivedRegistryRows` (what a real computeSummary now
+// projects for such a row) with the sender OMITTED from `workspaces` (same
+// exclusion a real archived-but-live row gets from the ACTIVE projection).
+//
+// MUTATION CHECK: revert this hook's registryRows fold to workspaces-only
+// (drop the archivedRegistryRows merge) -> this test fails (goes
+// informational instead of blocking, "N remain UNANSWERED" undercounts).
+test('ARCHIVED-BUT-LIVE SENDER: a question from a sender archived but still live stays in the blocking figure (R18 critic fix)', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 1, unread: 0, directUnread: 0,
+        pendingQuestions: [{ from: 'childA-uuid-1234', ts: askTs, seq: 1 }],
+      },
+      // 'childA-uuid-1234' deliberately absent from `workspaces` — an
+      // archived-but-live row is structurally excluded from the ACTIVE
+      // projection (see devswarm-store.js's computeSummary/archivedIds).
+    }, {
+      archivedRegistryRows: [{ id: 'childA-uuid-1234', worktreePath: path.join(h.home, 'wt', 'childA'), sessionId: 'sess-childA' }],
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    assert.match(own, /DECIDE/, `archived-but-live sender must still nag DECIDE; own=${own}`);
+    assert.ok(own.includes('childA-uuid-1234'));
+    assert.doesNotMatch(own, /INFORMATIONAL/i, 'must never be downgraded to informational while still resolvable via send --to');
+  } finally { h.cleanup(); }
+});
+
+// Legacy-summary fallback: a summary that omits `archivedRegistryRows`
+// entirely (pre-R18-fix shape) must fail open TOWARD blocking, since the
+// reader cannot tell "genuinely retired" apart from "archived-but-live, just
+// not folded in on this stale summary".
+test('LEGACY SUMMARY (no archivedRegistryRows field): an unmatched sender stays in the blocking figure, not informational (fail-open)', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 1, unread: 0, directUnread: 0,
+        pendingQuestions: [{ from: 'ghost-sender', ts: askTs, seq: 1 }],
+      },
+    }, { omitArchivedField: true });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    assert.match(own, /DECIDE/, `a legacy summary must fail open toward blocking, never silently informational; own=${own}`);
+    assert.ok(own.includes('ghost-sender'));
+    assert.doesNotMatch(own, /INFORMATIONAL/i);
   } finally { h.cleanup(); }
 });
 

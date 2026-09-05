@@ -166,7 +166,20 @@ function writeOwnSummary(home, unread, urgencyMax, pendingQuestions, pendingQues
       }
     }
   }
-  fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify({ workspaces }));
+  // archivedRegistryRows (R18 critic fix): a REAL computeSummary always
+  // stamps this field (even as `[]`) — see its own header in
+  // companion/lib/devswarm-store.js. This fixture models a FRESH summary by
+  // default so `archivedKnown` is true and the pre-existing retired-sender
+  // partition (a sender excluded from BOTH id spaces) still tests what it
+  // always tested. `opts.archivedRegistryRows` lets a test seed an
+  // archived-but-still-live sender explicitly; `opts.omitArchivedField` opts
+  // a test OUT entirely to model a legacy/stale summary that predates this
+  // field.
+  const summary = { workspaces };
+  if (!(opts && opts.omitArchivedField)) {
+    summary.archivedRegistryRows = (opts && opts.archivedRegistryRows) || [];
+  }
+  fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify(summary));
 }
 
 // Seed a workspace: descriptor + optional inbox/cursor + optional verdict, all
@@ -1347,6 +1360,56 @@ test('RETIRED SENDER: a live-sender-only question still blocks unchanged (regres
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.match(r.json.reason, /UNANSWERED QUESTION/);
     assert.match(r.json.reason, /child-1/);
+    assert.doesNotMatch(r.json.reason, /INFORMATIONAL/i);
+  } finally { h.cleanup(); }
+});
+
+// R18 critic fix: an ARCHIVED-BUT-LIVE sender (archived/<id>.json exists, but
+// the child's session is still running so it can still be sent to) must stay
+// BLOCKING, never informational — `resolveSendTarget` (scripts/devswarm.js)
+// can still resolve `--to <that id>`, so the question is structurally
+// repliable, unlike a truly retired sender (no row anywhere). Model it by
+// excluding the sender from the ACTIVE registry (`excludeFromRegistry`,
+// same as a truly-retired sender would be) but ALSO seeding it into
+// `archivedRegistryRows` — exactly what a real computeSummary now projects
+// for an archived-but-live child.
+//
+// MUTATION CHECK: revert readOwnUnread's registryRows to workspaces-only
+// (drop the archivedRegistryRows fold) -> this test fails (goes quiet /
+// informational instead of blocking).
+test('ARCHIVED-BUT-LIVE SENDER: a question from a sender archived but still live stays BLOCKING, never informational (R18 critic fix)', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    writeOwnSummary(h.home, 0, undefined, [{ from: 'childA-uuid-1234', ts, seq: 1 }], undefined, {
+      excludeFromRegistry: ['childA-uuid-1234'],
+      archivedRegistryRows: [{ id: 'childA-uuid-1234', worktreePath: path.join(h.home, 'wt', 'childA'), sessionId: 'sess-childA' }],
+    });
+    const r = run(h.home, stopPayload('archived-but-live-sess', true));
+    assert.strictEqual(r.json && r.json.decision, 'block', 'archived-but-live sender must still block — resolveSendTarget can still reach it');
+    assert.match(r.json.reason, /UNANSWERED QUESTION/);
+    assert.match(r.json.reason, /childA-uuid-1234/);
+    assert.doesNotMatch(r.json.reason, /INFORMATIONAL/i, 'must never be downgraded to informational while still resolvable via send --to');
+  } finally { h.cleanup(); }
+});
+
+// Legacy-summary fallback: a summary that omits `archivedRegistryRows`
+// entirely (pre-R18-fix shape) must fail open TOWARD blocking for an
+// otherwise-unmatched sender, since the reader cannot tell "genuinely
+// retired" apart from "archived-but-live, just not folded in on this stale
+// summary".
+test('LEGACY SUMMARY (no archivedRegistryRows field): an unmatched sender stays BLOCKING, not informational (fail-open)', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    writeOwnSummary(h.home, 0, undefined, [{ from: 'ghost-sender', ts, seq: 1 }], undefined, {
+      excludeFromRegistry: ['ghost-sender'],
+      omitArchivedField: true,
+    });
+    const r = run(h.home, stopPayload('legacy-summary-sess', true));
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a legacy summary must fail open toward blocking, never silently informational');
+    assert.match(r.json.reason, /UNANSWERED QUESTION/);
+    assert.match(r.json.reason, /ghost-sender/);
     assert.doesNotMatch(r.json.reason, /INFORMATIONAL/i);
   } finally { h.cleanup(); }
 });

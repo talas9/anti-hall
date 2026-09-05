@@ -483,13 +483,26 @@ function readOwnUnread(home, cwd, repoKey) {
       worktreePath: (summary.workspaces[wid] && summary.workspaces[wid].worktreePath) || null,
       sessionId: (summary.workspaces[wid] && summary.workspaces[wid].sessionId) || null,
     }));
-    return { unread, id, urgencyMax, unknown: false, pendingQuestions, pendingQuestionsTruncated, registryRows };
+    // archivedRegistryRows (R18 critic fix) — fold the archived half of the
+    // registry in too, so a sender that is archived-but-still-live is never
+    // mistaken for fully retired by partitionUnanswered. `archivedKnown`
+    // records whether THIS summary actually carries the field at all (even
+    // as `[]`) so partitionUnanswered can fail open toward blocking for a
+    // legacy summary that predates this field — see its own header.
+    const archivedKnown = Array.isArray(summary.archivedRegistryRows);
+    if (archivedKnown) {
+      for (const r of summary.archivedRegistryRows) {
+        if (!r || r.id == null) continue;
+        registryRows.push({ id: r.id, worktreePath: r.worktreePath || null, sessionId: r.sessionId || null });
+      }
+    }
+    return { unread, id, urgencyMax, unknown: false, pendingQuestions, pendingQuestionsTruncated, registryRows, archivedKnown };
   } catch (_) {
     // Any unanticipated failure past the ENOENT-tolerant read above means a
     // summary WAS reachable enough to attempt reading/parsing and something
     // still went wrong — the C3 anomaly class. Fail toward unknown (surfaced),
     // never toward a silent healthy-looking 0.
-    return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [], pendingQuestionsTruncated: null, registryRows: [] };
+    return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [], pendingQuestionsTruncated: null, registryRows: [], archivedKnown: false };
   }
 }
 
@@ -613,7 +626,7 @@ function main() {
   let unansweredInformational = [];
   try {
     const replyStateLib2 = require('../companion/lib/devswarm-reply-state.js');
-    const partitioned = replyStateLib2.partitionUnanswered(unanswered, descriptors, own.registryRows || []);
+    const partitioned = replyStateLib2.partitionUnanswered(unanswered, descriptors, own.registryRows || [], { archivedKnown: !!own.archivedKnown });
     unanswered = partitioned.blocking;
     unansweredInformational = partitioned.informational;
   } catch (_) { unansweredInformational = []; }

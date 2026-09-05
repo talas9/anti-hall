@@ -44,7 +44,12 @@ function walk(dir, base) {
 // Updated for item 6 (age/trend surfacing): computeSummary now additively emits
 // `oldestDirectUnreadTs` right after `directUnread` — the golden fixture's sole
 // unread row carries `timestamp: 1000`, so that is the expected value here.
-const GOLDEN = '{"generatedAt":1234567890,"requiredGates":["done","merged","tests_passed"],"workspaces":{"a":{"id":"a","worktreePath":"<HOME>/wt-a","sessionId":"sess-a","inboxPath":"/inbox/a","cursorPath":"/cursor/a","nudgeCommand":null,"total":1,"cursor":0,"unread":1,"directUnread":1,"oldestDirectUnreadTs":1000,"broadcastUnread":0,"urgencyMax":"normal","broadcastUrgencyMax":null,"working_on":null,"gates":{},"archive_ready":false,"archive_requested":false,"pendingQuestions":[]}},"recent":[]}';
+// Updated for the R18 critic fix: computeSummary now UNCONDITIONALLY emits
+// `archivedRegistryRows` (even as `[]`) so readers can tell "computed, no
+// archived rows this pass" apart from "pre-fix summary, field never computed
+// at all" — see partitionUnanswered's `archivedKnown` contract in
+// companion/lib/devswarm-reply-state.js for why that distinction matters.
+const GOLDEN = '{"generatedAt":1234567890,"requiredGates":["done","merged","tests_passed"],"workspaces":{"a":{"id":"a","worktreePath":"<HOME>/wt-a","sessionId":"sess-a","inboxPath":"/inbox/a","cursorPath":"/cursor/a","nudgeCommand":null,"total":1,"cursor":0,"unread":1,"directUnread":1,"oldestDirectUnreadTs":1000,"broadcastUnread":0,"urgencyMax":"normal","broadcastUrgencyMax":null,"working_on":null,"gates":{},"archive_ready":false,"archive_requested":false,"pendingQuestions":[]}},"recent":[],"archivedRegistryRows":[]}';
 
 // normalizeHomeForGolden(raw, home) -> `raw` with every occurrence of `home`
 // collapsed to `<HOME>`, comparable cross-platform against the forward-slash

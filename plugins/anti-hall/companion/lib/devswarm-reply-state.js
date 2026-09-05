@@ -394,21 +394,54 @@ function familyAwareUnanswered(opts) {
 // retired purely because the registry itself could not be read this pass —
 // that is a read failure, not evidence of retirement — so in that case
 // EVERYTHING stays `blocking` and `informational` is always `[]`.
-function partitionUnanswered(unanswered, descriptors, registryRows) {
+//
+// `opts.archivedKnown` (R18 critic fix) — "unrepliable" must be defined
+// EXACTLY the way `send --to` resolves a target: known anywhere, active OR
+// archived. `descriptors` and `registryRows` were historically both
+// ACTIVE-only (registryRows was `Object.keys(summary.workspaces)`, and
+// `summary.workspaces` structurally excludes archived-but-live rows — see
+// devswarm-store.js's computeSummary/archivedIds). That made an archived
+// child whose session is still running look "retired" here even though
+// `resolveSendTarget` could still resolve `--to <that id>` and the sender
+// could still ask again — a real, repliable question silently downgraded to
+// informational and stopped counting toward "N UNANSWERED".
+//
+// The fix is for CALLERS to fold the archived half of the registry into
+// `registryRows` too (devswarm-store.js now projects it as the additive
+// `summary.archivedRegistryRows` field). But a summary written by PRE-FIX
+// code has no such field at all, so a caller reading one cannot tell "the
+// archived half was checked and is genuinely empty" apart from "the archived
+// half was never computed, so this row-set might be missing live senders".
+// `archivedKnown` disambiguates that: pass `true` only when the caller
+// actually read an `archivedRegistryRows`-bearing summary (i.e. folded it in,
+// even if it was `[]`); leave it `false`/omitted for a legacy summary. When
+// `false`, this stays maximally fail-open: EVERY unanswered question stays
+// `blocking` (same posture as the empty-registry branch above) rather than
+// risk silently clearing one whose sender might really be archived-but-live.
+// Once `archivedKnown` is true, the normal known/unknown-id partition below
+// runs exactly as before.
+function partitionUnanswered(unanswered, descriptors, registryRows, opts) {
   const list = Array.isArray(unanswered) ? unanswered : [];
   const descriptorRows = Array.isArray(descriptors) ? descriptors : [];
   const regRows = Array.isArray(registryRows) ? registryRows : [];
   if (!descriptorRows.length && !regRows.length) {
     return { blocking: list.slice(), informational: [] };
   }
+  const archivedKnown = !!(opts && opts.archivedKnown);
+  if (!archivedKnown) {
+    // Legacy/stale summary: the archived half of the registry was never
+    // computed this pass, so a sender absent from `regRows` might really be
+    // archived-but-live rather than retired. Fail open TOWARD nagging.
+    return { blocking: list.slice(), informational: [] };
+  }
   const knownIds = new Set();
-  for (const r of descriptorRows) { if (r && r.id != null) knownIds.add(String(r.id)); }
-  for (const r of regRows) { if (r && r.id != null) knownIds.add(String(r.id)); }
+  for (const r of descriptorRows) { if (r && r.id != null) knownIds.add(String(r.id).trim()); }
+  for (const r of regRows) { if (r && r.id != null) knownIds.add(String(r.id).trim()); }
   const blocking = [];
   const informational = [];
   for (const q of list) {
     if (!q || q.from == null) { blocking.push(q); continue; } // malformed -> keep, unchanged
-    if (knownIds.has(String(q.from))) blocking.push(q);
+    if (knownIds.has(String(q.from).trim())) blocking.push(q);
     else informational.push(q);
   }
   return { blocking, informational };
