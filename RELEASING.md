@@ -14,7 +14,7 @@ Every behavioral or shipped-content change bumps the version and follows this ch
 4. - [ ] Verify: `node --test` (all pass) and `node plugins/anti-hall/hooks/doctor.js --check` (anti-hall ACTIVE). Never claim done without these THIS change.
 5. - [ ] Commit (NO AI-credit / Co-Authored-By trailer — git-guard blocks them).
 6. - [ ] `git push origin main`.
-7. - [ ] TAG (manual, by agent): `git tag v<version>` then `git push origin v<version>`. Optionally create a GitHub Release from the tag with that version's CHANGELOG section.
+7. - [ ] Wait for the main-branch CI run at the pushed sha to go green before tagging. TAG (manual, by agent) only after that: `git tag v<version>` then `git push origin v<version>`. Optionally create a GitHub Release from the tag with that version's CHANGELOG section.
 8. - [ ] Propagate to the live marketplace dir only (`~/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/`); do NOT overwrite version-pinned `cache/.../<ver>/` snapshots.
 9. - [ ] Consider publish venues (see below) for notable releases.
 

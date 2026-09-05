@@ -6,6 +6,13 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.94.1 (2026-09-05)
+
+- **Fixed: reconcile budget tests no longer race the wall clock** —
+  `cmdReconcile` samples an injectable clock (`ctx.reconcileNow`). v0.94.0's
+  tag exists but was never published because both CI runs failed on that
+  flaky test; v0.94.1 is the first published build of the 0.94 line.
+
 ## 0.94.0 (2026-09-05)
 
 - **Fix: deterministic sender attribution for pending questions
