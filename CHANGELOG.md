@@ -6,6 +6,43 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.96.0 (2026-09-05)
+
+- **Fixed: routing sites select targets by heartbeat-aware liveness, not a
+  bare non-empty session id (`f56dcc08f048`, routing half).**
+  `resolveMeshTarget` and `pickSurvivor` now require a row to actually be
+  alive (heartbeat-checked) before treating its session id as a valid
+  target; `rehomeMiskeyedRow` is intentionally unchanged.
+- **Fixed: `callerOwnsRow` grants ownership of a lone same-worktree row
+  only when it is unclaimed.** A same-worktree row already claimed by
+  another session is no longer silently treated as owned by the caller.
+- **Fixed: watermark write and read+unlink now serialize under one lock**,
+  closing a race where a concurrent read and write could interleave.
+- **Added: `send`/`heartbeat` results carry additive `identity:{id,kind}`**
+  so callers can tell which kind of identity answered without guessing
+  from shape.
+- **Fixed: post-update sweeps honour deadlines mid-sweep**
+  (`foldMeshDuplicates`, `healOrphanPartitions`); fold-archived stages now
+  get per-pair deadlines with resume markers, and
+  `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS` (default 90s) caps the whole
+  devswarm stage sequence, deferring entire stages when the budget runs
+  out (`e7307778b614`).
+- **Fixed: reconcile requires a resolvable git root before per-row work**,
+  counted against the same budget; submodule/broken paths are now skipped
+  and reported as `skippedNotGitRoot` (`6ef55fd42cc9`).
+- **Fixed: `inbox ack` checks ownership before either cursor namespace
+  moves** and refuses a resolvable ownership mismatch; `read`'s refusal
+  message now names the verb and points to `peek` (`66c7c4e9973e`).
+- **Fixed: `diagnose` adds `archivedInApp`** and reports app-archived rows
+  as not live (`07e01aee4f1f`); app-archive matching now requires
+  `repositoryId` agreement and normalizes paths before comparison.
+- **Docs:** KB §36 ownership line added.
+- **Known:** the three deferred post-update stages (fold-all-stores,
+  heal-orphan-partitions, fold-archived-rows) are not yet re-run by the
+  supervisor when a budget defers them — they only run on the next update
+  (tracked as a follow-up); `ack` from an unresolvable caller still fails
+  open; leaked fixture stores remain report-only (see KB §38).
+
 ## 0.95.0 (2026-09-05)
 
 - **Fixed: `diagnose` resolves a row's sessionId through the descriptor when
