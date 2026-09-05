@@ -6,6 +6,49 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.92.0 (2026-09-05)
+
+- **Feature: session-sourced row liveness.** anti-hall now classifies a
+  DevSwarm row as `active`, `idle-alive`, or `dormant` instead of a single
+  stale/alive split. An interactive Primary sitting at its prompt with a live
+  harness session pid now reads `idle-alive` — it is never called dormant and
+  never escalated (prompted by a field report; `699a236129c5`).
+- **Fix: ghost same-path registry rows now age out.** A row with a null
+  session id and no descriptor, heartbeat, cursor, or ack, older than 72
+  hours (tunable via `ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H`), now retires
+  through the existing forward-then-tombstone fold — but only when exactly
+  one non-ghost survivor exists for that path (`76891c157288`).
+- **Fix: archived rows never alert.** A row archived through anti-hall's own
+  archive verb now carries an `archived` label and is excluded from the
+  stale/escalated/dormant axis entirely. Limit: an archive performed only in
+  the DevSwarm app writes no marker anti-hall can see yet, so that path is
+  not detected (planned: a supervisor-cached hivecontrol archived list).
+- **Fix: broadcast ownership recognizes identity families.** `heartbeat
+  --summary` now accepts same-worktree or cross-linked identity-family rows
+  as owned instead of dropping them; a genuine mismatch still keeps
+  `dropped`/`dropReason` (`ecd7ad60e4cc`).
+- **Hardening (Round 15):** same worktree alone no longer grants broadcast
+  ownership — an identity link (cross-linked rows, the caller's real session
+  id on the target, or a true placeholder) is required; `archived` never
+  hides a `not-draining` backlog in the per-turn table; the watermark is
+  deleted only when the ack covers its freshly re-read value; the supervisor
+  sweep honors idle-alive; a reused pid (started after the session file) no
+  longer reads alive.
+- **Fix: live-to-dead sibling handoff no longer re-delivers the covered
+  backlog.** The watermark is now read unconditionally, the ack is anchored
+  on the delivery frontier (not an unconditional read), and the watermark
+  file is retired once a covering ack lands — closing the one-time
+  re-delivery gap on that transition.
+- **Hardening: watermark filenames.** Ids containing `.seen-` are now
+  refused outright; the filename parser is an exact inverse of the writer;
+  doctor's sweep is existence-based instead of pattern-guessing.
+- **Deferred:** app-side archive detection (see limit above); a
+  migrate-skipped-legacy-line double-count (P2, tracked not fixed); the
+  tail-cap hard refusal is now unreachable in practice and kept only as
+  defense in depth; `callerOwnsRow` clause 3 can promote a lone foreign
+  `unclaimed:` row in the caller's worktree (capped by the promotion
+  idempotence guard).
+
 ## 0.91.0 (2026-09-05)
 
 - **Fix (P0): recurring sibling re-delivery.** `inbox read` (primary) and
