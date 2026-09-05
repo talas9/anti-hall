@@ -134,7 +134,8 @@ const { stateFileFor } = require('../companion/lib/devswarm-gate-state.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
-const { livenessPathFor, devswarmRoot, hasFreshHeartbeat } = require('../companion/lib/liveness.js');
+const { livenessPathFor, devswarmRoot, hasFreshHeartbeat, isSessionAliveRow } = require('../companion/lib/liveness.js');
+const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
 // POKE_PREFIX text check (companion/lib/devswarm-noise.js isNoiseText) —
 // applied HERE to descriptor durable-inbox NDJSON rows' `.message` (a shape
 // with no mtype/sender/recipient at all — see that module's header for why
@@ -1020,6 +1021,32 @@ function main() {
     if (staleOrEscalated) {
       try { if (isArchiveReadyFor(d.id, dKey, home)) staleOrEscalated = false; } catch (_) {}
     }
+    // DEFECT 699a236129c5 (P1) — SESSION-SOURCED LIVENESS. Same scoping
+    // discipline as the two suppressors above: a row whose sessionId maps to a
+    // RUNNING harness process (companion/lib/liveness.js sessionPidAlive — a
+    // live pid, not a timestamp) is `idle (alive)`, not gone. Every axis the
+    // stale/escalated verdict is built from is an ACTIVITY timestamp, and all
+    // of them go quiet for an interactive Primary sitting at its prompt; past
+    // the window that read as dead and escalated a session the operator was
+    // looking straight at. Liveness axis ONLY — realUnread/unreadUnknown are
+    // untouched, so a live-but-idle workspace with REAL unread still gates
+    // (that is coordination neglect, a separate axis). Fail-soft: no session
+    // file, a dead pid, or an unreadable sessions dir leaves the verdict as-is.
+    let idleAlive = false;
+    if (d.sessionId) {
+      try { idleAlive = isSessionAliveRow({ sessionId: d.sessionId }, home); } catch (_) { idleAlive = false; }
+    }
+    if (staleOrEscalated && idleAlive) staleOrEscalated = false;
+    // FIELD (archived rows still alerting): a workspace the owner already
+    // ARCHIVED is done and put away — it must never render as escalated /
+    // not-draining. Liveness axis ONLY, same as every suppressor above; the row
+    // is still LISTED (under `archived`), never hidden. `isArchivedWorkspace`
+    // is fail-closed and strict (archived record present AND active descriptor
+    // gone AND the archived record names THIS worktree) — see that module's
+    // header for why archived/<id>.json alone is not proof.
+    let archived = false;
+    try { archived = isArchivedWorkspace(home, d.id, d.worktreePath); } catch (_) { archived = false; }
+    if (archived) staleOrEscalated = false;
 
     // Pushed UNCONDITIONALLY (not gated on unreadUnknown/realUnread/
     // staleOrEscalated here) — the gate is applied ONCE per FAMILY after the
@@ -1043,6 +1070,12 @@ function main() {
       unreadReasonPath,
       unreadReasonErrno,
       staleOrEscalated,
+      // idleAlive / archived: REPORT-ONLY provenance for the two new
+      // suppressors above, so a reader can tell "not alerting because the
+      // session is provably running" and "not alerting because it is archived"
+      // apart from "never had a stale verdict at all".
+      idleAlive,
+      archived,
       status: staleOrEscalated ? status : '',
       verdictPending,
       urgencyMax: null,

@@ -70,6 +70,7 @@ const {
   DEFAULT_COOLDOWN_MS,
 } = require('../companion/lib/liveness.js');
 const livenessLib = require('../companion/lib/liveness.js');
+const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
 // worktreeHash: the SAME per-worktree identity install-devswarm-ingest.js baked
 // into the daemon's unit (and devswarm-ingest.js keys its heartbeat file by).
 // ingestHeartbeatPath: the per-worktree daemon LIVENESS file (rewritten every
@@ -359,9 +360,19 @@ function finishingRate(summary, id, heartbeat) {
 // about the same axis; with the default windows (30 min dormant vs 6 h idle) `idle`
 // is consequently reached only when ANTIHALL_DEVSWARM_DORMANT_MS is configured
 // WIDER than ANTIHALL_DEVSWARM_IDLE_MS, which is why that branch is kept.
-function displayStatus(archiveReady, status, activityTs, now, dormant, notDraining) {
-  if (status === 'escalated') return { label: 'escalated', rank: 0 };
-  if (status === 'stale' || status === 'nudged') return { label: 'stale', rank: 1 };
+// `idleAlive` (defect 699a236129c5, optional — omitted by every pre-existing
+// caller and defaulting to false, so their behaviour is byte-identical): the
+// row's sessionId maps to a RUNNING harness process. It SUPPRESSES the three
+// gone-looking labels that are built purely from activity timestamps
+// (escalated/stale/dormant) — a process that is provably running is not gone,
+// it is sitting at its prompt — and surfaces as its own `idle (alive)` label so
+// the distinction is visible rather than silently folded into `idle`.
+// notDraining and archive-ready are NOT suppressed: those are the COORDINATION
+// axis (a real backlog aging on a live workspace is exactly what should still
+// be reported) and the completion axis, neither of which claims the row is dead.
+function displayStatus(archiveReady, status, activityTs, now, dormant, notDraining, idleAlive) {
+  if (status === 'escalated' && !idleAlive) return { label: 'escalated', rank: 0 };
+  if ((status === 'stale' || status === 'nudged') && !idleAlive) return { label: 'stale', rank: 1 };
   // not-draining (liveness.js unionPendingFor's `notDraining`, item 3): a live/
   // alive workspace whose union-unread backlog has sat past NOT_DRAINING_AGE_MS
   // regardless of activity — distinct from `stale`/`escalated` (those are
@@ -370,6 +381,7 @@ function displayStatus(archiveReady, status, activityTs, now, dormant, notDraini
   // stale/escalated since it names a real, aging neglect signal.
   if (notDraining) return { label: 'not-draining', rank: 1.5 };
   if (archiveReady) return { label: 'archive-ready', rank: 2 };
+  if (idleAlive) return { label: 'idle (alive)', rank: 3 };
   if (dormant) {
     return { label: 'dormant', rank: 5 };
   }
@@ -1092,6 +1104,7 @@ function main() {
       // failure, so this can only ever widen liveness, never narrow it.
       let activityTs = freshness.lastActivityTs(verdict, heartbeat);
       let dormant = false;
+      let idleAlive = false;
       try {
         const richer = livenessLib.readActivityTs(
           row, home,
@@ -1107,12 +1120,24 @@ function main() {
         // per-turn table and the roster can never classify the same row
         // differently. Picks the tight or wide window per-row based on
         // whether the transcript term actually resolved for it (P1 fix).
-        dormant = livenessLib.isDormantRow(
+        // rowLivenessState adds the SESSION-SOURCED axis (defect 699a236129c5)
+        // on top of the identical timestamp rule: a row whose sessionId maps to
+        // a RUNNING harness process is `idle-alive`, surfaced with its own label
+        // instead of being mislabelled `dormant` and nagged about.
+        const state = livenessLib.rowLivenessState(
           row, home,
           { now, lastOutboundTs: verdict && verdict.lastOutboundTs, heartbeatTs: heartbeatTsOpt }
         );
+        dormant = state === 'dormant';
+        idleAlive = state === 'idle-alive';
       } catch (_) {}
-      const ds = displayStatus(archiveReady, status, activityTs, now, dormant, !!(verdict && verdict.notDraining));
+      // FIELD: an ARCHIVED workspace is done and put away — it is still listed,
+      // but never as escalated/stale/not-draining (see devswarm-archived.js).
+      let archivedRow = false;
+      try { archivedRow = isArchivedWorkspace(home, id, entry.worktreePath); } catch (_) { archivedRow = false; }
+      const ds = archivedRow
+        ? { label: 'archived', rank: 6 }
+        : displayStatus(archiveReady, status, activityTs, now, dormant, !!(verdict && verdict.notDraining), idleAlive);
       rows.push({
         id,
         label: ds.label,

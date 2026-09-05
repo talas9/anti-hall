@@ -407,7 +407,8 @@ test('G1 mutation check: reverting the ack target to plain deliveredCount reprod
       + '            : (consumedThrough && Number.isFinite(consumedThrough[deliveredCount - 1])\n'
       + '              ? consumedThrough[deliveredCount - 1]\n'
       + '              : deliveredCount));\n'
-      + '        const ackTarget = part.cursor + physicalConsumed;';
+      + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
+      + '        const ackTarget = ackAnchor + physicalConsumed;';
     assert.ok(fs.readFileSync(copy.devswarmPath, 'utf8').includes(oldStr), 'G1 fix block not found verbatim in cmdInboxMessages ack loop (under the null-preserving-maps mutant)');
     const buggyStr = 'const ackTarget = part.cursor + deliveredCount;';
     // Compose a SECOND mutation onto the SAME scratch copy (rather than
@@ -584,10 +585,12 @@ test('G3 mutation check (variant 1): subtracting a flat "1" from deliveredCount 
     + '            : (consumedThrough && Number.isFinite(consumedThrough[deliveredCount - 1])\n'
     + '              ? consumedThrough[deliveredCount - 1]\n'
     + '              : deliveredCount));\n'
-    + '        const ackTarget = part.cursor + physicalConsumed;';
+    + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
+    + '        const ackTarget = ackAnchor + physicalConsumed;';
   assert.ok(fs.readFileSync(DEVSWARM_PATH, 'utf8').includes(oldStr), 'G1/G3 fix block not found verbatim');
   const buggyStr = 'const physicalConsumed = deliveredCount - (meshGapWithheldCount > 0 ? 1 : 0);\n'
-    + '        const ackTarget = part.cursor + physicalConsumed;';
+    + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
+    + '        const ackTarget = ackAnchor + physicalConsumed;';
   withMutant(oldStr, buggyStr, (mutatedCli) => {
     const home = tmpHome();
     const repo = makeGitRepo('g3-mutant1');
@@ -638,7 +641,8 @@ test('G3 mutation check (variant 3): reverting the ack target to plain delivered
     + '            : (consumedThrough && Number.isFinite(consumedThrough[deliveredCount - 1])\n'
     + '              ? consumedThrough[deliveredCount - 1]\n'
     + '              : deliveredCount));\n'
-    + '        const ackTarget = part.cursor + physicalConsumed;';
+    + '        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;\n'
+    + '        const ackTarget = ackAnchor + physicalConsumed;';
   assert.ok(fs.readFileSync(DEVSWARM_PATH, 'utf8').includes(oldStr), 'G1/G3 fix block not found verbatim');
   const buggyStr = 'const ackTarget = part.cursor + deliveredCount;';
   withMutant(oldStr, buggyStr, (mutatedCli) => {

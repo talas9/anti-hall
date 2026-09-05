@@ -162,10 +162,11 @@ const store = require('../companion/lib/devswarm-store.js');
 const livenessSelect = require('../companion/lib/devswarm-liveness-select.js');
 const inboxCursor = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
+const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
 const {
   isSafeId, devswarmRoot, livenessPathFor,
   writeVerdict, hasFreshHeartbeat, heartbeatTs, worktreeActivityMtime, unreadBacklog, DEFAULT_IDLE_MS,
-  isDormantRow, unionPendingFor, isSiblingPartitionLive,
+  isDormantRow, unionPendingFor, isSiblingPartitionLive, rowLivenessState,
   // heartbeatPathFor — the `unclaimed:` forward migration's ONLY independent
   // source of a row's real session id (cmdHeartbeat records `--session`).
   heartbeatPathFor,
@@ -484,6 +485,61 @@ function ownershipRefusalCause(callerKind, ownEntry) {
   return 'ownership-mismatch';
 }
 
+// broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd) -> bool. The
+// IDENTITY-FAMILY leg of cmdHeartbeat's meshBroadcast ownership check (defect
+// ecd7ad60e4cc). True when `id` names a row that belongs to the SAME workspace
+// identity the caller does — never on raw-id equality alone (that is the caller's
+// own first two legs) and never on anything a caller can forge.
+//
+// TWO POSITIVE SIGNALS, both grounded in the same evidence the surrounding code
+// already trusts for this question:
+//   (a) SAME WORKTREE. The target row's canonicalMeshId equals the meshId of the
+//       caller's OWN cwd-resolved worktree, or of the caller's own registry row.
+//       This is not a widening of trust: `callerIdentity` ALREADY derives the
+//       caller's identity from exactly this ground truth (inst.primaryWorkspaceId
+//       of the resolved worktree) and deliberately refuses to let a declared env
+//       id override it. A process standing in a worktree owns that worktree's
+//       rows; which of several co-registered rows pickFreshestLive happened to
+//       rank first this call is an implementation detail, not an ownership fact.
+//   (b) CROSS-LINKED IDENTITY. companion/lib/devswarm-identity-family.js's
+//       `crossLinkedIdentity` — one row's sessionId IS the other row's id, the
+//       strongest unambiguous link, and the SAME predicate `callerOwnsRow`
+//       already uses for the `unclaimed:` promotion's ownership gate.
+//
+// FAIL-CLOSED in full: any throw, an unresolvable worktree, or a target id with
+// no registry row returns false, leaving the refusal exactly as it is today.
+// A caller with NO worktree ground truth (cwd resolves to nothing) gets no
+// credit from (a) — its cwd-derived key cannot match a real row's.
+function broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd) {
+  try {
+    const target = String(id);
+    const rows = s.listRegistry() || [];
+    const targetRow = rows.find((r) => r && String(r.id) === target) || null;
+    if (!targetRow || !targetRow.worktreePath) return false;
+    let tKey = null;
+    try { tKey = canonicalMeshId(targetRow.worktreePath); } catch (_) { tKey = null; }
+    if (!tKey) return false;
+    // (a1) the caller's own cwd-resolved worktree
+    const rawCwd = cwd || process.cwd();
+    const wt = resolveCallerWorktree(rawCwd);
+    if (wt) {
+      try { if (canonicalMeshId(wt) === tKey) return true; } catch (_) {}
+    }
+    // (a2) the caller's own registry row's worktree
+    if (ownEntry && ownEntry.worktreePath) {
+      try { if (canonicalMeshId(ownEntry.worktreePath) === tKey) return true; } catch (_) {}
+    }
+    // (b) cross-linked identity between the caller's row and the target row
+    if (ownEntry) {
+      try {
+        const idFam = require('../companion/lib/devswarm-identity-family.js');
+        if (idFam.crossLinkedIdentity(ownEntry, targetRow)) return true;
+      } catch (_) {}
+    }
+    return false;
+  } catch (_) { return false; }
+}
+
 // BENIGN_MESH_BROADCAST_REASONS — meshBroadcast failure `reason` values that
 // must NEVER escalate cmdHeartbeat's top-level `ok` (see its use at the end
 // of cmdHeartbeat). Both are DELIBERATE, tested exceptions:
@@ -660,9 +716,54 @@ function siblingBaseCursor(storeHandle, home, pid) {
 // so the twin's own reader still sees 100% of its mail. It is consulted ONLY
 // for a non-ackable sibling (an ackable one advances its real cursor as before).
 // Both ids are isSafeId-checked so the filename can never escape cursors/.
+//
+// R14 F3 (P3) — THE NAME MUST BE UNAMBIGUOUSLY PARSEABLE. isSafeId permits `.`
+// and `-`, so an id literally containing the `.seen-` separator would make
+// `<caller>.seen-<sibling>.json` ambiguous: `a.seen-b.seen-c.json` could be
+// (a, b.seen-c) or (a.seen-b, c). Nothing WRITES such a name today, but a
+// hygiene sweep that DELETES files has to parse them, and a mis-parse there
+// deletes the wrong caller's watermark. Rather than re-encode every id (a
+// persisted-shape change requiring a forward migration for every existing
+// file), refuse the one token that creates the ambiguity: an id containing
+// `.seen-` gets NO watermark. That is fail-soft in the safe direction — such a
+// caller/sibling pair simply falls back to the pre-watermark behaviour — and it
+// makes "split on the first `.seen-`" an exact inverse for every name this
+// function can ever produce.
+const SIBLING_SEEN_SEP = '.seen-';
+function watermarkSafeId(id) {
+  return isSafeId(id) && !String(id).includes(SIBLING_SEEN_SEP);
+}
 function siblingSeenCursorPath(home, callerId, siblingId) {
-  if (!isSafeId(callerId) || !isSafeId(siblingId)) return null;
-  return path.join(devswarmRoot(home), 'cursors', String(callerId) + '.seen-' + String(siblingId) + '.json');
+  if (!watermarkSafeId(callerId) || !watermarkSafeId(siblingId)) return null;
+  return path.join(devswarmRoot(home), 'cursors', String(callerId) + SIBLING_SEEN_SEP + String(siblingId) + '.json');
+}
+// parseSiblingSeenCursorName(filename) -> { callerId, siblingId } | null.
+// The exact inverse of siblingSeenCursorPath's naming, and the ONE parser any
+// sweep may use. Returns null for a name this module could not have written —
+// including a legacy/hand-made name whose remainder still contains the
+// separator (genuinely ambiguous), which a sweep must therefore SKIP rather
+// than guess at and delete.
+function parseSiblingSeenCursorName(filename) {
+  const n = typeof filename === 'string' ? filename : '';
+  if (!/\.json$/.test(n)) return null;
+  const base = n.slice(0, -'.json'.length);
+  const i = base.indexOf(SIBLING_SEEN_SEP);
+  if (i <= 0) return null;
+  const callerId = base.slice(0, i);
+  const siblingId = base.slice(i + SIBLING_SEEN_SEP.length);
+  if (!watermarkSafeId(callerId) || !watermarkSafeId(siblingId)) return null;
+  return { callerId, siblingId };
+}
+// removeSiblingSeenCursor(home, callerId, siblingId) -> bool. Deletes the
+// watermark FILE once the sibling's own durable cursors cover its rows (see the
+// read-primary ack path). Never a message delete — a watermark is a per-caller
+// read position, and its absence degrades to "re-read from the real cursor",
+// which is exactly the pre-watermark behaviour. Fail-soft: a missing file or an
+// unlink error returns false and changes nothing.
+function removeSiblingSeenCursor(home, callerId, siblingId) {
+  const p = siblingSeenCursorPath(home, callerId, siblingId);
+  if (!p) return false;
+  try { fs.unlinkSync(p); return true; } catch (_) { return false; }
 }
 function readSiblingSeenCursor(home, callerId, siblingId) {
   const p = siblingSeenCursorPath(home, callerId, siblingId);
@@ -3007,6 +3108,69 @@ function rekeySubdirRegistryRows(s, home, dryRun) {
 //     only collapses same-worktree DUPLICATE registrations.
 //   - `ctx.dryRun` classifies without writing (doctor detect()).
 // Returns { ok, retired[], forwarded, folded, [left[]], [forwardFailed[]] }.
+// GHOST-ROW AGEING (defect 76891c157288, P2).
+//
+// A "ghost" is a registry row that has NEVER been attended and has not been
+// touched in a long time. Every leg is a POSITIVE absence-of-attendance proof
+// read off disk, and ALL of them must hold — this is deliberately much stricter
+// than foldGroupIntoSurvivor's own unattended test, because unlike that test
+// this one runs on a group where NO row looks live and so has no live sibling
+// to cross-check against:
+//   1. sessionId is null/empty. NOT `unclaimed:<id>` — that is the live
+//      Primary's own self-register mint (the FIELD shape this must never touch).
+//   2. no workspaces/<id>.json descriptor.
+//   3. no heartbeats/<id>.json — nothing has ever reported as this id.
+//   4. store cursor 0 AND no cursors/<id>.json read-path ack file: nothing has
+//      ever DRAINED this partition (the unforgeable reader-evidence signal
+//      foldGroupIntoSurvivor's anchor guard already relies on).
+//   5. `updatedAt` older than the age bar. Legs 1-4 can all be true of a row
+//      registered SECONDS ago by a spawn that has not launched yet, so the age
+//      bar is what separates "never attended" from "not attended YET".
+//
+// A row whose updatedAt is missing/non-finite is NOT aged out (unknown age is
+// not old age). Every read is fail-soft, and every failure resolves to "not a
+// ghost" — this function can only ever REFUSE to nominate a row.
+const GHOST_ROW_MAX_AGE_H_DEFAULT = 72;
+function ghostRowMaxAgeMs(env) {
+  const raw = env && env.ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H;
+  const n = raw != null && String(raw).trim() !== '' ? Number(raw) : NaN;
+  const hours = Number.isFinite(n) && n > 0 ? n : GHOST_ROW_MAX_AGE_H_DEFAULT;
+  return hours * 60 * 60 * 1000;
+}
+function ghostRegistryRows(s, home, rows, ctx) {
+  const c = ctx || {};
+  const now = Number.isFinite(c.now) ? c.now : Date.now();
+  const maxAgeMs = ghostRowMaxAgeMs(c.env || process.env);
+  const out = [];
+  for (const d of rows || []) {
+    try {
+      if (!d || d.id == null) continue;
+      const rid = String(d.id);
+      if (!isSafeId(rid)) continue;
+      // (1) sessionId genuinely absent — never an `unclaimed:` mint
+      const sid = d.sessionId != null ? String(d.sessionId) : '';
+      if (sid !== '') continue;
+      // (2) no descriptor
+      if (readDescriptorFile(home, rid)) continue;
+      // (3) no heartbeat ever
+      let beat = false;
+      try { beat = fs.existsSync(heartbeatPathFor(rid, home)); } catch (_) { beat = true; } // unreadable -> assume attended
+      if (beat) continue;
+      // (4) no reader evidence in EITHER cursor namespace
+      let drained = true;
+      try { drained = siblingBaseCursor(s, home, rid) > 0; } catch (_) { drained = true; }
+      if (drained) continue;
+      try { if (fs.existsSync(primaryCursorPath(home, rid))) continue; } catch (_) { continue; }
+      // (5) aged past the bar; unknown age is never old age
+      const upd = Number(d.updatedAt);
+      if (!Number.isFinite(upd) || upd <= 0) continue;
+      if ((now - upd) < maxAgeMs) continue;
+      out.push(d);
+    } catch (_) { /* fail-soft: not a ghost */ }
+  }
+  return out;
+}
+
 function foldMeshDuplicates(home, ctx) {
   const c = ctx || {};
   const dryRun = !!c.dryRun;
@@ -3082,6 +3246,43 @@ function foldMeshDuplicates(home, ctx) {
           // at all (no forward, no tombstone) and surface it for operator
           // attention instead — never silently pick by registry order.
           if (!livenessSelect.hasLiveCandidate(rows)) {
+            // DEFECT 76891c157288 (P2) — GHOST-ROW AGEING. This refusal is the
+            // ROOT CAUSE of the field shape: a `sessionId: null` row sharing the
+            // live Primary's worktreePath sits in a group whose ONLY other
+            // member is the Primary's own anchor row, and that anchor carries
+            // `unclaimed:primary-<hash>`, which isLiveSessionId rejects BY
+            // DESIGN (SYNTHETIC_SESSION_PREFIX). So the group has zero "live"
+            // rows, this branch refuses it wholesale, and the ghost is immortal
+            // — projecting active in every roster and diagnose forever.
+            //
+            // The refusal itself is right for its own hazard (id-sort survivor
+            // selection moving mail into a row nobody reads). It is only wrong
+            // for a group where survivorship is NOT a judgement call, so that is
+            // the ONLY case carved out here:
+            //   * every ghost is provably unattended AND AGED (ghostRegistryRows
+            //     — sessionId null/empty, no descriptor, no heartbeat, cursor 0
+            //     in BOTH namespaces, no read-path ack file, and untouched for
+            //     longer than ANTIHALL_DEVSWARM_GHOST_ROW_MAX_AGE_H, default
+            //     72 h), and
+            //   * exactly ONE non-ghost row remains, so the survivor is forced
+            //     by the group's own shape and no ranking is involved.
+            // The retirement itself runs through the EXISTING fold path
+            // (foldGroupIntoSurvivor's unattended branch): forward-then-tombstone,
+            // CAS-guarded, no new deletion primitive and no message ever dropped.
+            // Attended anchors are untouched — the FIELD shape (`unclaimed:` +
+            // cursor > 0 + descriptor) fails ghostRegistryRows on three separate
+            // legs, and foldGroupIntoSurvivor's own anchor guard refuses it again.
+            const ghosts = ghostRegistryRows(s, home, rows, c);
+            const nonGhosts = rows.filter((d) => !ghosts.some((x) => String(x.id) === String(d.id)));
+            if (ghosts.length > 0 && nonGhosts.length === 1) {
+              const r = foldGroupIntoSurvivor(s, home, nonGhosts[0].id, ghosts, { dryRun });
+              forwarded += r.forwarded;
+              for (const x of r.retired) retired.push(x);
+              for (const x of r.left) left.push(x);
+              for (const x of r.forwardFailed) forwardFailed.push(x);
+              if (r.retired.length || r.left.length || r.forwardFailed.length) folded++;
+              continue;
+            }
             needsAttention.push({ meshId: g.meshId, ids: rows.map((d) => d.id) });
             continue;
           }
@@ -4540,7 +4741,22 @@ function cmdHeartbeat(id, flags, ctx) {
           const callerInfo = callerIdentityDetailed(ctx.env, cwd);
           const caller = callerInfo.identity;
           const ownEntry = resolveMeshTarget(s, caller, home);
-          const owns = caller === id || (ownEntry && ownEntry.id === id);
+          // DEFECT ecd7ad60e4cc (P1) — IDENTITY-FAMILY MEMBERSHIP, NOT RAW-ID
+          // EQUALITY. `resolveMeshTarget` returns exactly ONE row: whichever of
+          // the caller's same-worktree rows pickFreshestLive ranks highest. A
+          // child registered TWICE for one worktree (the builder-id UUID row +
+          // the slug row — the documented pair in companion/lib/
+          // devswarm-identity-family.js's header) therefore fails this check
+          // whenever the winner is not the id being heartbeated: the field
+          // report is `callerIdentity <builder-id> does not own <slug>`, with
+          // DIRECT sends from the same child working fine (cmdSend resolves the
+          // whole mesh group, not one row). The consequence is silent: the
+          // refusal is BENIGN, so exit code 0 and ok:true, and the child's
+          // working_on summary never reaches the mesh — the parent then reads
+          // the child as going stale while it is heartbeating every turn.
+          const owns = caller === id
+            || (ownEntry && ownEntry.id === id)
+            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd);
           if (!owns) {
             // A7: name WHICH leg failed instead of one generic message for
             // an unresolvable identity, an unregistered caller, AND a genuine
@@ -5287,7 +5503,20 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // identically on every read, forever. This caller-scoped watermark
         // records how far THIS caller has been shown of THAT sibling, leaving
         // the sibling's own cursors untouched (its own reader still sees 100%).
-        const pSeen = pAckable ? 0 : readSiblingSeenCursor(home, id, pid);
+        // R14 F1 (P2) — THE WATERMARK IS CONSULTED UNCONDITIONALLY, INCLUDING
+        // FOR AN ACKABLE SIBLING. `pAckable ? 0 : ...` was correct for the two
+        // STEADY states (a permanently-live twin is never ackable and rides the
+        // watermark; a never-live sibling has no watermark to read) but wrong at
+        // the LIVE->DEAD TRANSITION, which is the common case: while the twin
+        // lived this caller drained it to watermark W with the twin's own cursor
+        // left at 0; the moment the twin dies siblingAckGate starts permitting
+        // acks, pAckable flips true, the watermark is discarded, and the window
+        // re-opens at cursor 0 — re-delivering the ENTIRE already-consumed
+        // backlog once. Reading it always is strictly safe: the watermark only
+        // ever records rows THIS caller was already shown, so max() with the
+        // real cursor can never skip an undelivered row, and for a sibling with
+        // no watermark file readSiblingSeenCursor returns 0 (a no-op max).
+        const pSeen = readSiblingSeenCursor(home, id, pid);
         const pSince = Math.max(pCursor, pSeen);
         const pTotal = s.messageCount(pid);
         let pTailCapped = false;
@@ -5684,6 +5913,20 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // (max of the two cursor namespaces, and — for a non-ackable sibling —
         // of this caller's watermark). `part.cursor` is retained for the ack
         // path so an ackable partition's real cursor math is unchanged.
+        // R14 F1 (P2), SECOND HALF (`ackAnchor`, at the end of this block) — the
+        // ack target is anchored on `part.sinceCursor`, WHERE THIS WINDOW
+        // ACTUALLY STARTED READING, not on `part.cursor`. `physicalConsumed`
+        // counts rows from the FRONT OF THE WINDOW (listMessages was called with
+        // `sinceCursor: pSince`), so adding it to `part.cursor` is only correct
+        // when the two are equal. They diverge exactly at the live->dead
+        // transition the watermark half fixes: the window starts at the
+        // watermark W while the sibling's own cursor is still 0, so
+        // `part.cursor + n` acks n instead of W + n — leaving the
+        // watermark-skipped rows permanently unacked and re-delivered on the
+        // next read. The two halves MUST ship together: the watermark half alone
+        // re-opens this under-ack. For every other partition
+        // `sinceCursor === cursor` by construction (pSince = max(pCursor, 0)),
+        // so this is a no-op there.
         const consumedThrough = Array.isArray(part.consumedThrough) ? part.consumedThrough : null;
         const physicalConsumed = (deliveredCount >= fullDeliveredCount && Number.isFinite(part.consumedCount))
           ? part.consumedCount
@@ -5692,7 +5935,8 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
             : (consumedThrough && Number.isFinite(consumedThrough[deliveredCount - 1])
               ? consumedThrough[deliveredCount - 1]
               : deliveredCount));
-        const ackTarget = part.cursor + physicalConsumed;
+        const ackAnchor = Number.isFinite(part.sinceCursor) ? Math.max(part.cursor, part.sinceCursor) : part.cursor;
+        const ackTarget = ackAnchor + physicalConsumed;
         if (notAckable) {
           const seenTarget = (Number.isFinite(part.sinceCursor) ? part.sinceCursor : part.cursor) + physicalConsumed;
           if (seenTarget > 0 && !writeSiblingSeenCursor(home, id, part.id, seenTarget)) {
@@ -5703,6 +5947,16 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         try {
           inboxCursor.ackTo(part.cursorPath, ackTarget);
           s.setCursor(part.id, ackTarget);
+          // R14 F1, THIRD HALF — retire the watermark once its rows are covered
+          // by the sibling's OWN durable cursors. The watermark exists only to
+          // stand in for a cursor that could not be advanced; keeping it after a
+          // real ack leaves a stale file that outlives the sibling (R14 F3's
+          // hygiene problem) and a second, redundant floor on every later read.
+          // Deleted only AFTER both real cursor writes succeeded, and only when
+          // the ack actually covers it — a partial ack keeps the watermark.
+          if (ackTarget >= (Number.isFinite(part.sinceCursor) ? part.sinceCursor : 0)) {
+            removeSiblingSeenCursor(home, id, part.id);
+          }
         } catch (e) {
           cursorWriteFailures.push({ partitionId: part.id, channel: 'sibling-store-cursor', error: String((e && e.message) || e) });
         }
@@ -8744,22 +8998,32 @@ function rosterHints(home, id, worktreePath, now, sessionId) {
   if (worktreePath && !fs.existsSync(worktreePath)) hints.push('worktree-gone');
   const idleDays = rosterIdleDays(home, id, now);
   if (idleDays !== null) hints.push('idle ' + idleDays + 'd');
-  // `dormant` — isDormantRow (companion/lib/liveness.js), THE ONE read-side
-  // dormancy rule, shared with devswarm-parent-inbox.js's per-turn injection
-  // so the roster and the UserPromptSubmit table can never disagree about
-  // which rows are still transacting. It picks the tight dormant window when
-  // this row's transcript term resolves, or the wide idle window when it
-  // doesn't (the common case) — see isDormantRow's own doc for why. Annotation
-  // ONLY: the row is still listed in full. Fail-open — no signal at all means
-  // UNKNOWN, which is never dormant.
+  // FIELD (archived rows still alerting): an ARCHIVED workspace is done and put
+  // away — it is still listed, but it is labelled `archived` and never carries
+  // the dormant/idle-alive liveness annotation (see companion/lib/
+  // devswarm-archived.js for why archived/<id>.json alone is not the test).
+  let archived = false;
+  try { archived = isArchivedWorkspace(home, id, worktreePath); } catch (_) { archived = false; }
+  if (archived) { hints.push('archived'); return hints; }
+  // `dormant` / `idle (alive)` — rowLivenessState (companion/lib/liveness.js),
+  // THE ONE read-side dormancy rule, shared with devswarm-parent-inbox.js's
+  // per-turn injection so the roster and the UserPromptSubmit table can never
+  // disagree about which rows are still transacting. It picks the tight dormant
+  // window when this row's transcript term resolves, or the wide idle window
+  // when it doesn't (the common case) — see isDormantRow's own doc for why —
+  // and then applies the SESSION-SOURCED axis (defect 699a236129c5): a row whose
+  // sessionId maps to a RUNNING harness process is `idle (alive)`, surfaced
+  // distinctly instead of being mislabelled dormant. Annotation ONLY: the row is
+  // still listed in full. Fail-open — no signal at all means UNKNOWN, which is
+  // never dormant.
   try {
-    if (isDormantRow(
+    const state = rowLivenessState(
       { id, worktreePath, sessionId: sessionId || null },
       home,
       { now, lastOutboundTs: rosterLastOutboundTs(home, id) }
-    )) {
-      hints.push('dormant');
-    }
+    );
+    if (state === 'dormant') hints.push('dormant');
+    else if (state === 'idle-alive') hints.push('idle (alive)');
   } catch (_) {}
   return hints;
 }
@@ -10799,6 +11063,8 @@ module.exports = {
   realSessionIdFrom, promoteUnclaimedSession, maybePromoteUnclaimed, callerOwnsRow,
   // v0.90.1 P0 cursor-namespace hotfix (exported for direct unit testing):
   siblingBaseCursor, siblingSeenCursorPath, readSiblingSeenCursor, writeSiblingSeenCursor,
+  removeSiblingSeenCursor, parseSiblingSeenCursorName, watermarkSafeId,
+  broadcastFamilyOwns, ghostRegistryRows, GHOST_ROW_MAX_AGE_H_DEFAULT,
   reconcileOrphanCursor,
   promoteUnclaimedRegistrySessions,
   // defect 64861a623503 — forwarded-copy identity + the fold's dedup seeding:

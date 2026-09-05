@@ -1634,6 +1634,7 @@ function runRepairs(opts) {
       ['promote-unclaimed', () => promoteUnclaimedSessions({ home, mode: sweepMode, cwd, env })],
       ['sweep-reaped-logs', () => sweepReapedLogs({ home, mode: sweepMode, env, io: o.io })],
       ['sweep-send-receipts', () => sweepSendReceipts({ home, mode: sweepMode, env, io: o.io })],
+      ['sweep-sibling-watermarks', () => sweepOrphanedSiblingWatermarks({ home, mode: sweepMode, env, io: o.io })],
     ];
     for (const [id, fn] of sweeps) {
       let rows;
@@ -2066,6 +2067,107 @@ function sweepSendReceipts(opts) {
   });
 }
 
+// sweepOrphanedSiblingWatermarks({home, mode, io}) — R14 F3 (P3) hygiene for
+// the LIVE-SIBLING WATERMARK files (`cursors/<callerId>.seen-<siblingId>.json`,
+// scripts/devswarm.js).
+//
+// WHY THIS IS NOT AN AGE SWEEP: a watermark is a READ POSITION, not a log line.
+// An old one is not stale — it is exactly as load-bearing on day 90 as on day 1
+// (dropping it re-delivers that sibling's whole backlog to its caller). The one
+// thing that genuinely retires a watermark is its SUBJECT ceasing to exist, so
+// the test is existence, not age: the sibling id has NO registry row in ANY of
+// this machine's stores AND NO messages in any partition under that id. Both
+// legs must be empty; either one present means someone can still read it.
+//
+// Watermarks whose file name this module cannot unambiguously parse are SKIPPED
+// (parseSiblingSeenCursorName returns null) — guessing a caller/sibling split
+// and then deleting on the guess is exactly the mis-parse the name tightening
+// exists to prevent.
+//
+// FAIL-SOFT AND FAIL-CLOSED: any error enumerating stores leaves `known` as a
+// SUPERSET-unknown and the sweep reports itself as skipped rather than deleting
+// on incomplete evidence — an unreadable store must never look like an absent
+// sibling.
+function sweepOrphanedSiblingWatermarks(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const mode = o.mode === 'repair' ? 'repair' : 'check';
+  const F = (o.io && o.io.fs) || fs;
+  const results = [];
+
+  let cli = null;
+  try { cli = require(path.join(PLUGIN_ROOT, 'scripts', 'devswarm.js')); } catch (_) { cli = null; }
+  if (!cli || typeof cli.parseSiblingSeenCursorName !== 'function') {
+    return [{ file: 'cursors', status: 'skipped', msg: 'watermark name parser unavailable — nothing swept' }];
+  }
+
+  const dir = path.join(devswarmRootFor(home), 'cursors');
+  let names = [];
+  try { names = F.readdirSync(dir); } catch (e) {
+    if (e && e.code === 'ENOENT') return results; // routine: no cursors dir yet
+    return [{ file: dir, status: 'failed', msg: 'could not list ' + dir + ': ' + errMsg(e) }];
+  }
+  const candidates = [];
+  for (const name of names) {
+    const parsed = cli.parseSiblingSeenCursorName(name);
+    if (!parsed) continue;
+    candidates.push({ name, full: path.join(dir, name), siblingId: parsed.siblingId, callerId: parsed.callerId });
+  }
+  if (candidates.length === 0) return results;
+
+  // Build the "still reachable" id set across EVERY store on this machine.
+  const known = new Set();
+  let enumerationComplete = true;
+  let storeMod = null;
+  try { storeMod = require(DEVSWARM_STORE); } catch (_) { storeMod = null; enumerationComplete = false; }
+  let hashes = [];
+  if (storeMod) {
+    try { hashes = storeMod.listStoreHashes(home) || []; } catch (_) { enumerationComplete = false; }
+  }
+  let registryRowsSeen = 0;
+  for (const hash of hashes) {
+    let s = null;
+    // `env` MUST be forwarded: the backend is chosen from it
+    // (devswarm-store.js selectBackend), and opening a journal-backed store
+    // under the sqlite default yields an EMPTY registry — which this sweep
+    // would otherwise read as "every sibling is gone" and act on. Observed
+    // live while building this sweep, not hypothesized.
+    try { s = storeMod.openStore({ home, hash, env: o.env }); } catch (_) { enumerationComplete = false; continue; }
+    try {
+      for (const row of s.listRegistry() || []) { if (row && row.id != null) { known.add(String(row.id)); registryRowsSeen++; } }
+      for (const c of candidates) {
+        if (known.has(c.siblingId)) continue;
+        try { if (s.messageCount(c.siblingId) > 0) known.add(c.siblingId); } catch (_) { enumerationComplete = false; }
+      }
+    } catch (_) { enumerationComplete = false; } finally { try { s.close(); } catch (_) {} }
+  }
+  // A TOTALLY EMPTY registry across every store, while watermark files exist,
+  // is far more likely a read failure (wrong backend, unreadable store) than a
+  // machine on which every workspace genuinely vanished. Decline rather than
+  // delete on that reading — the second half of the same fail-closed posture.
+  if (registryRowsSeen === 0) {
+    return [{ file: dir, status: 'skipped', msg: 'no registry rows readable in any store — watermark sweep declined (never deletes on an empty read)' }];
+  }
+  if (!enumerationComplete) {
+    return [{ file: dir, status: 'skipped', msg: 'store enumeration incomplete — watermark sweep declined (never deletes on partial evidence)' }];
+  }
+
+  for (const c of candidates) {
+    if (known.has(c.siblingId)) continue;
+    if (mode === 'check') {
+      results.push({ file: c.full, status: 'pending', msg: c.full + ' names sibling ' + c.siblingId + ', which has no registry row and no partition' });
+      continue;
+    }
+    try {
+      F.unlinkSync(c.full);
+      results.push({ file: c.full, status: 'fixed', msg: 'removed orphaned watermark ' + c.name + ' (sibling ' + c.siblingId + ' no longer exists)' });
+    } catch (e) {
+      results.push({ file: c.full, status: 'failed', msg: 'could not remove ' + c.full + ': ' + errMsg(e) });
+    }
+  }
+  return results;
+}
+
 module.exports = {
   readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
   // Codex "is it wired" precise per-event detection (exported for direct unit
@@ -2091,5 +2193,7 @@ module.exports = {
   promoteUnclaimedSessions,
   // R12 hygiene — bounded retention for the two append-only diagnostic dirs:
   sweepAgedFiles, sweepReapedLogs, sweepSendReceipts,
+  // R14 F3 — existence-based (never age-based) hygiene for sibling watermarks:
+  sweepOrphanedSiblingWatermarks,
   REAPED_RETENTION_DAYS_DEFAULT, SEND_RECEIPT_RETENTION_DAYS_DEFAULT,
 };

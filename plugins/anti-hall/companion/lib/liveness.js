@@ -347,6 +347,124 @@ function readActivityTs(row, home, opts) {
   return { ts: best > 0 ? best : null, sawTranscript };
 }
 
+// ---------------------------------------------------------------------------
+// SESSION-SOURCED LIVENESS AXIS (defect 699a236129c5, P1) — `idle (alive)`.
+//
+// ROOT CAUSE: every axis isDormantRow composes (heartbeat mtime, transcript
+// mtime, lastOutboundTs, descriptor registration ts) is an ACTIVITY timestamp.
+// All four go quiet for an interactive session that is simply SITTING AT ITS
+// PROMPT with nothing to do — which is the normal resting state of a Primary
+// between turns, not death. Past the window (30 min tight / 6 h wide) such a
+// session reads `dormant`, gets nagged in the injected roster, and can be
+// escalated — while the operator is looking straight at it.
+//
+// THE DISCRIMINATOR IS NOT A TIMESTAMP. The Claude Code harness writes
+// `<home>/.claude/sessions/<pid>.json` for each running session, carrying
+// { pid, sessionId, cwd, status, ... }. MEASURED on this machine: a session
+// file 95 minutes old (mtime is therefore USELESS as a freshness signal —
+// deliberately not read here) still named a pid that `process.kill(pid, 0)`
+// confirmed alive. So the file supplies the sessionId->pid MAPPING and the
+// LIVE PID is the proof. That is a genuinely different axis: it answers "is
+// the process running" rather than "did it do something recently".
+//
+// SCOPE — this NEVER widens dormancy, only narrows it. A row with a live pid
+// is `idle-alive` (not dormant); a row whose session file names a DEAD pid, or
+// that has no session file at all, keeps today's timestamp rule verbatim.
+// FAIL-SOFT in full: an absent/unreadable sessions dir, an unparseable file, a
+// non-numeric pid, or a throwing kill() all yield `null` (no opinion) and the
+// caller behaves exactly as it does today.
+
+const DEFAULT_SESSIONS_DIRNAME = '.claude';
+
+// sessionsDirFor(home) -> <home>/.claude/sessions. `home` is the SAME home the
+// rest of this module takes (the anti-hall root's parent), so a test can point
+// the whole axis at a scratch dir by passing its own home — no env override and
+// no process-global state.
+function sessionsDirFor(home) {
+  return path.join(home || os.homedir(), DEFAULT_SESSIONS_DIRNAME, 'sessions');
+}
+
+// pidIsAlive(pid, kill) -> bool. `process.kill(pid, 0)` sends no signal; it
+// only probes existence+permission. ESRCH (no such process) is the ONE answer
+// that means dead. EPERM means the process EXISTS but is owned by another user
+// — still alive, so it must NOT be read as dead. Any other throw is treated as
+// "no opinion" by the caller via the null it returns.
+function pidIsAlive(pid, kill) {
+  const k = typeof kill === 'function' ? kill : process.kill.bind(process);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try { k(pid, 0); return true; } catch (e) {
+    if (e && e.code === 'ESRCH') return false;
+    if (e && e.code === 'EPERM') return true;
+    return null;
+  }
+}
+
+// sessionPidAlive(sessionId, home, opts) -> true | false | null
+//   true  = a harness session file maps this sessionId to a LIVE pid
+//   false = a session file names this sessionId but its pid is dead
+//   null  = no session file for it / dir absent / unreadable — NO OPINION,
+//           the caller keeps today's timestamp-only rule.
+// opts: { fs, kill } (both injectable for tests).
+function sessionPidAlive(sessionId, home, opts) {
+  const o = opts || {};
+  const F = o.fs || fs;
+  const sid = sessionId != null ? String(sessionId) : '';
+  if (!sid) return null;
+  const dir = sessionsDirFor(home);
+  let names = [];
+  try { names = F.readdirSync(dir); } catch (_) { return null; }
+  let verdict = null;
+  for (const n of names) {
+    if (!/\.json$/.test(n)) continue; // the sibling `<pid>.<hash>.key` files are not session records
+    let rec = null;
+    try { rec = JSON.parse(F.readFileSync(path.join(dir, n), 'utf8')); } catch (_) { continue; }
+    if (!rec || typeof rec !== 'object') continue;
+    if (rec.sessionId == null || String(rec.sessionId) !== sid) continue;
+    const alive = pidIsAlive(Number(rec.pid), o.kill);
+    if (alive === true) return true; // one live pid is proof; stop looking
+    if (alive === false) verdict = false; // remember death, but a later file may still prove life
+  }
+  return verdict;
+}
+
+// isSessionAliveRow(row, home, opts) -> bool. True ONLY on positive proof that
+// this row's sessionId belongs to a running harness process.
+function isSessionAliveRow(row, home, opts) {
+  try { return sessionPidAlive(row && row.sessionId, home, opts) === true; } catch (_) { return false; }
+}
+
+// rowLivenessState(row, home, opts) -> 'active' | 'idle-alive' | 'dormant'.
+// The DISTINCT surfacing the roster/injection need: `idle-alive` is a row the
+// timestamp rule would have called dormant but whose session process is
+// provably running. Callers that only need the boolean keep using isDormantRow
+// (which is now defined in terms of this, so the two can never disagree).
+function rowLivenessState(row, home, opts) {
+  if (!isDormantByActivity(row, home, opts)) return 'active';
+  return isSessionAliveRow(row, home, opts) ? 'idle-alive' : 'dormant';
+}
+
+// isDormantByActivity — the PRE-EXISTING timestamp-only rule, extracted
+// verbatim so both isDormantRow and rowLivenessState read the identical
+// computation instead of one of them re-deriving it.
+function isDormantByActivity(row, home, opts) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const env = o.env || process.env;
+  const readOpts = {};
+  if (o.fs) readOpts.fs = o.fs;
+  if (Number.isFinite(o.lastOutboundTs)) readOpts.lastOutboundTs = o.lastOutboundTs;
+  if (Number.isFinite(o.heartbeatTs)) readOpts.heartbeatTs = o.heartbeatTs;
+  let ts = null;
+  let sawTranscript = false;
+  try {
+    const r = readActivityTs(row, home, readOpts);
+    ts = r && Number.isFinite(r.ts) ? r.ts : null;
+    sawTranscript = !!(r && r.sawTranscript);
+  } catch (_) { ts = null; sawTranscript = false; }
+  const thresholdMs = sawTranscript ? dormantThresholdMs(env) : idleThresholdMs(env);
+  return isDormantActivity(ts, now, env, { thresholdMs });
+}
+
 // isDormantRow(row, home, opts) -> bool. THE ONE read-side dormancy rule —
 // composes readActivityTs + isDormantActivity so the hook's per-turn table and
 // scripts/devswarm.js's rosterHints can never drift apart on the same row.
@@ -365,26 +483,19 @@ function readActivityTs(row, home, opts) {
 //     turn as dead.
 // Fail-open in both directions: no signal at all -> never dormant (isDormantActivity's own guarantee).
 //
-// opts: { now, env, fs, lastOutboundTs, heartbeatTs } — all forwarded to
-// readActivityTs / isDormantActivity as appropriate. `now` defaults to
-// Date.now(); `env` defaults to process.env.
+// SESSION-SOURCED OVERRIDE (defect 699a236129c5): a row whose sessionId maps to
+// a RUNNING harness process is `idle (alive)`, never dormant — see the
+// sessionPidAlive block above for why a live pid, not a timestamp, is the right
+// discriminator for an interactive session sitting at its prompt. One-directional:
+// it can only ever clear dormancy, never assert it, and with no session evidence
+// (the common case) this line contributes nothing at all.
+//
+// opts: { now, env, fs, kill, lastOutboundTs, heartbeatTs } — all forwarded to
+// readActivityTs / isDormantActivity / sessionPidAlive as appropriate. `now`
+// defaults to Date.now(); `env` defaults to process.env.
 function isDormantRow(row, home, opts) {
-  const o = opts || {};
-  const now = Number.isFinite(o.now) ? o.now : Date.now();
-  const env = o.env || process.env;
-  const readOpts = {};
-  if (o.fs) readOpts.fs = o.fs;
-  if (Number.isFinite(o.lastOutboundTs)) readOpts.lastOutboundTs = o.lastOutboundTs;
-  if (Number.isFinite(o.heartbeatTs)) readOpts.heartbeatTs = o.heartbeatTs;
-  let ts = null;
-  let sawTranscript = false;
-  try {
-    const r = readActivityTs(row, home, readOpts);
-    ts = r && Number.isFinite(r.ts) ? r.ts : null;
-    sawTranscript = !!(r && r.sawTranscript);
-  } catch (_) { ts = null; sawTranscript = false; }
-  const thresholdMs = sawTranscript ? dormantThresholdMs(env) : idleThresholdMs(env);
-  return isDormantActivity(ts, now, env, { thresholdMs });
+  if (!isDormantByActivity(row, home, opts)) return false;
+  return !isSessionAliveRow(row, home, opts);
 }
 
 // hasFreshHeartbeat(id, home, opts) -> bool. True iff a heartbeat for `id` was
@@ -811,4 +922,7 @@ module.exports = {
   transcriptMtime, worktreeActivityMtime, unreadBacklog, unionPendingFor, resolveSelfId, computeLiveness, writeVerdict,
   heartbeatTs, hasFreshHeartbeat, isFreshBeat, dormantThresholdMs, isDormantActivity,
   idleThresholdMs, readActivityTs, isDormantRow, isSiblingPartitionLive,
+  // session-sourced liveness axis (defect 699a236129c5)
+  sessionsDirFor, pidIsAlive, sessionPidAlive, isSessionAliveRow, rowLivenessState,
+  isDormantByActivity,
 };
