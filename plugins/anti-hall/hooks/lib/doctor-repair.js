@@ -1896,6 +1896,67 @@ function checkLeakedTestFixtureStores(opts) {
 }
 
 // ---------------------------------------------------------------------------
+// checkEscalatedWhileAlive(opts) -> {atRisk, count, examples, message} | null.
+// D12 (v0.96.1) false-positive escalation — a liveness file can carry
+// `status: 'escalated'` for a row whose session pid is PROVABLY alive right
+// now (the supervisor's stale-vs-dormant threshold mismatch this release
+// fixes at the call site). liveness.js's computeLiveness now self-heals this
+// on the row's NEXT supervisor pass (clears `escalated` when isSessionAliveRow
+// is true, logged to recovery.log with reason `session-alive`) — so between
+// "escalated written" and "next supervisor pass" a human reading doctor's
+// output should be told it will self-heal, not just that it is escalated.
+//
+// DETECT-AND-REPORT ONLY: this never writes, clears, or kills anything —
+// mirrors checkMemguardReaperRisk/checkOrphanedMcpUnderBroker/
+// checkLeakedTestFixtureStores' pure-diagnostic posture above. Fully
+// defensive: a missing supervisor/liveness module, an unreadable descriptor
+// list, or a malformed/missing liveness file for any one row is skipped
+// (never thrown) — same fail-open posture as every other check in this file.
+function checkEscalatedWhileAlive(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const F = o.fs || fs;
+  try {
+    let readDescriptors;
+    let liveness;
+    try {
+      ({ readDescriptors } = require(path.join(PLUGIN_ROOT, 'companion', 'devswarm-supervisor.js')));
+      liveness = require(path.join(PLUGIN_ROOT, 'companion', 'lib', 'liveness.js'));
+    } catch (_) { return null; }
+    if (typeof readDescriptors !== 'function'
+      || typeof (liveness && liveness.isSessionAliveRow) !== 'function'
+      || typeof (liveness && liveness.livenessPathFor) !== 'function') return null;
+
+    let descs = [];
+    try { descs = readDescriptors(home) || []; } catch (_) { return null; }
+    if (!Array.isArray(descs) || !descs.length) return null;
+
+    const examples = [];
+    for (const d of descs) {
+      if (!d || d.id == null) continue;
+      let verdict = null;
+      try { verdict = JSON.parse(F.readFileSync(liveness.livenessPathFor(d.id, home), 'utf8')); } catch (_) { continue; }
+      if (!verdict || verdict.status !== 'escalated') continue;
+      let alive = false;
+      try { alive = liveness.isSessionAliveRow(d, home, { fs: F }); } catch (_) { alive = false; }
+      if (!alive) continue;
+      examples.push(String(d.id));
+    }
+    if (!examples.length) return null;
+
+    const CAP = 5;
+    const shown = examples.slice(0, CAP);
+    const more = examples.length > CAP ? `, +${examples.length - CAP} more` : '';
+    const message =
+      `(warn) ${examples.length} workspace(s) escalated while session alive (self-heals next ` +
+      `supervisor pass): ${shown.join(', ')}${more}.`;
+    return { atRisk: true, count: examples.length, examples, message };
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // sweepStaleDrainMarkers({home, mode, io}) -> array of result rows.
 //
 // R11 Auditor Q5 (P1): devswarm-parent-gate.js's Stop-hook consumer only ever
@@ -2264,6 +2325,8 @@ module.exports = {
   checkOrphanedMcpUnderBroker,
   // Wave D9 — leaked test-fixture store detection (report-only, NO deletion path; defect f3c1bc827d89):
   checkLeakedTestFixtureStores,
+  // D12 — escalated-while-session-alive detection (report-only, self-heals via liveness.js):
+  checkEscalatedWhileAlive,
   // v0.66 — "alive but ingesting nothing" (monitor-outcome) detection:
   monitorFaultFor, monitorFaultReason,
   MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS,

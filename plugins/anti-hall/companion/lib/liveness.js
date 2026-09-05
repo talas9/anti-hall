@@ -888,11 +888,38 @@ function computeLiveness(opts) {
 
   // P2-13 TERMINAL short-circuit: `escalated` is sticky — return it unchanged,
   // never re-stat, so the sweep stops re-targeting a workspace a human must handle.
+  //
+  // D12 (false-positive escalation self-heal) — a row can reach `escalated`
+  // while its session was actually alive the whole time (the supervisor's
+  // rowLivenessState/isSessionAliveRow gap this fixes at the call site). Give
+  // stuck rows a mechanical way out: if isSessionAliveRow proves the session
+  // pid is running RIGHT NOW, clear the terminal state and fall through to a
+  // normal recompute below instead of returning early — one-directional, a
+  // live pid can only clear `escalated`, never assert it. A dead/unknown
+  // sessionId (the common case) takes the pre-existing sticky short-circuit
+  // unchanged, no re-stat, no behavior change.
   if (prev && prev.status === 'escalated') {
-    return {
-      status: 'escalated', lastOutboundTs: priorOutbound, staleSince: priorStaleSince,
-      nudgeAttempts, nudgedAt, pending: false, notDraining: false, oldestUnreadAgeMs: null,
-    };
+    const aliveNow = (() => { try { return isSessionAliveRow(descriptor, home, { fs: fsi, now, kill: opts.kill, ps: opts.ps }); } catch (_) { return false; } })();
+    if (aliveNow) {
+      try {
+        const p = path.join(devswarmRoot(home), 'recovery.log');
+        fsi.mkdirSync(path.dirname(p), { recursive: true });
+        fsi.appendFileSync(p, JSON.stringify({ ts: now, id: descriptor.id, action: 'cleared', reason: 'session-alive' }) + '\n');
+      } catch (_) {}
+      // fall through — normal recompute below decides the fresh verdict.
+    } else {
+      // Sticky short-circuit: no measured pending/notDraining/oldestUnreadAgeMs
+      // was taken on this tick (that's the point — no re-stat), so carry
+      // `prev`'s last-known values through rather than hardcoding false/null
+      // false claims. `undefined` (prev never had the field) is dropped by
+      // JSON.stringify on the next writeVerdict, i.e. additive/absent.
+      return {
+        status: 'escalated', lastOutboundTs: priorOutbound, staleSince: priorStaleSince,
+        nudgeAttempts, nudgedAt,
+        pending: prev.pending, notDraining: prev.notDraining,
+        oldestUnreadAgeMs: (prev.oldestUnreadAgeMs != null ? prev.oldestUnreadAgeMs : null),
+      };
+    }
   }
 
   const projectDir = projectDirFor(descriptor.worktreePath, home);

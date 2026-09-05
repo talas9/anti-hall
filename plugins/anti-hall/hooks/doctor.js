@@ -981,6 +981,23 @@ if (RECLAIM_INGEST_LOCK) {
   warnl(result.message);
 })();
 
+// --- 6m. escalated-while-session-alive (REPORT-ONLY, CONDITIONAL) -----------
+// See doctor-repair.js's checkEscalatedWhileAlive for the full rationale
+// (D12 v0.96.1: a liveness file can say `escalated` for a row whose session
+// pid is provably alive right now — liveness.js's computeLiveness now
+// self-heals this on the row's NEXT supervisor pass). Delegated to that ONE
+// helper (fully defensive + fail-open there) so this call site can never
+// crash doctor.js; stays SILENT (no section at all) when nothing is flagged.
+// Report-only: never writes/clears/kills anything, same posture as the three
+// sections above.
+(function escalatedWhileAliveSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkEscalatedWhileAlive({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('escalated while session alive');
+  warnl(result.message);
+})();
+
 // --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')

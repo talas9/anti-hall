@@ -102,6 +102,80 @@ test('item 5: idle-alive is skipped once grace/archive-ready already suppressed 
   } finally { cleanup(); }
 });
 
+// D12 (v0.96.1, false-positive escalation) — rowLivenessState's dormancy gate
+// is 30 min (DEFAULT_DORMANT_MS) while the stale gate above is 15 min
+// (DEFAULT_IDLE_MS): a row idle 15-30 min with a transcript is 'active' by
+// that state machine (never 'idle-alive'), so sessionPidAlive was never
+// consulted and a live-but-idle session could be escalated outright. Fix:
+// isSessionAliveRow is now consulted DIRECTLY as a second, one-directional
+// suppressor alongside rowLivenessState.
+test('D12 item 1: rowLivenessState says active (15-30min gap) but isSessionAliveRow proves a live pid -> still suppressed', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'd12a', worktreePath: '/wt/d12a' }); // no nudgeCommand
+    let pokeCalls = 0;
+    let sawRow = null;
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: staleVerdict,
+        writeVerdict: () => {},
+        isArchiveReadyForSupervisor: () => false,
+        rowLivenessState: () => 'active', // the 15-30min gap: NOT idle-alive
+        isSessionAliveRow: (row) => { sawRow = row; return true; }, // but a live pid IS proven
+        pokeOrEscalate: () => { pokeCalls++; return { action: 'escalate' }; },
+      },
+    });
+    assert.strictEqual(pokeCalls, 0, 'a proven-live session pid must suppress the poke/escalate call entirely');
+    assert.strictEqual(res[0].poke.action, 'suppressed');
+    assert.strictEqual(res[0].poke.reason, 'idle-alive');
+    assert.ok(sawRow, 'isSessionAliveRow must actually be consulted');
+    assert.strictEqual(sawRow.id, 'd12a');
+  } finally { cleanup(); }
+});
+
+test('D12 item 1: rowLivenessState active AND isSessionAliveRow false (dead pid) -> still escalates (no regression)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'd12c', worktreePath: '/wt/d12c' }); // no nudgeCommand
+    let pokeCalls = 0;
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: staleVerdict,
+        writeVerdict: () => {},
+        isArchiveReadyForSupervisor: () => false,
+        rowLivenessState: () => 'active',
+        isSessionAliveRow: () => false, // dead pid, or no session evidence at all
+        pokeOrEscalate: () => { pokeCalls++; return { action: 'escalate', reason: 'poke-exhausted' }; },
+      },
+    });
+    assert.strictEqual(pokeCalls, 1, 'a dead/unproven pid must still be poked/escalated exactly as before');
+    assert.strictEqual(res[0].poke.action, 'escalate');
+  } finally { cleanup(); }
+});
+
+test('D12 item 1: isSessionAliveRow is skipped once grace/archive-ready already suppressed (cheapest-first)', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeDescriptor(home, { id: 'd12g', worktreePath: '/wt/d12g' });
+    let isSessionAliveCalls = 0;
+    const res = M.sweepOnce({
+      home,
+      deps: {
+        computeLiveness: staleVerdict,
+        writeVerdict: () => {},
+        isArchiveReadyForSupervisor: () => true, // "done" suppresses first
+        rowLivenessState: () => 'active',
+        isSessionAliveRow: () => { isSessionAliveCalls++; return true; },
+        pokeOrEscalate: () => ({ action: 'escalate' }),
+      },
+    });
+    assert.strictEqual(isSessionAliveCalls, 0, 'isSessionAliveRow must not be called once archive-ready already suppressed');
+    assert.strictEqual(res[0].poke.reason, 'archive-ready');
+  } finally { cleanup(); }
+});
+
 test('MUTATION: removing the idleAlive suppression restores poking an idle-alive row', () => {
   const SUPERVISOR = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'devswarm-supervisor.js');
   const src = fs.readFileSync(SUPERVISOR, 'utf8');
@@ -134,6 +208,53 @@ test('MUTATION: removing the idleAlive suppression restores poking an idle-alive
       assert.strictEqual(pokeCalls, 1,
         'MUTANT must reproduce the field bug — an idle-alive row poked/escalated again');
       assert.strictEqual(res[0].poke.action, 'nudged');
+    } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
+  } finally { try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch (_) {} }
+});
+
+// D12 RED-PROOF (item 1): a scratch copy with the isSessionAliveRow OR-clause
+// reverted reproduces the exact pre-fix field bug — a row idle 15-30 min
+// (rowLivenessState -> 'active', never consulted past that) with a live pid
+// and no nudgeCommand gets escalated on the first stale tick. This is the
+// mechanism confirmed on the reporting machine for the false-positive
+// escalation of a Primary anchor. Un-reverted (the CURRENT source, exercised
+// by the 'D12 item 1' tests above), the same fixture is suppressed instead.
+test('D12 RED-PROOF: pre-fix source (isSessionAliveRow clause reverted) escalates a live-pid row idle 15-30min', () => {
+  const SUPERVISOR = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'devswarm-supervisor.js');
+  const src = fs.readFileSync(SUPERVISOR, 'utf8');
+  const target = "const idleAlive = !graced && !done\n          && (\n            (deps.rowLivenessState || rowLivenessState)(rowForLiveness, home, { now: nowTs }) === 'idle-alive'\n            || (deps.isSessionAliveRow || isSessionAliveRow)(rowForLiveness, home, { now: nowTs })\n          );";
+  assert.ok(src.includes(target), 'D12 mutant target string not found verbatim — supervisor.js shape changed');
+  const preFix = "const idleAlive = !graced && !done\n          && (deps.rowLivenessState || rowLivenessState)(rowForLiveness, home, { now: nowTs }) === 'idle-alive';";
+  const scratchDir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-supervisor-d12-mutant-'));
+  const scratchFile = path.join(scratchDir, 'devswarm-supervisor.js');
+  try {
+    fs.writeFileSync(scratchFile, src.replace(target, preFix));
+    fs.symlinkSync(path.join(SUPERVISOR, '..', 'lib'), path.join(scratchDir, 'lib'), 'dir');
+    delete require.cache[require.resolve(scratchFile)];
+    const mutated = require(scratchFile);
+    delete require.cache[require.resolve(scratchFile)];
+
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-sweep-d12mutant-'));
+    try {
+      writeDescriptor(home, { id: 'd12red', worktreePath: '/wt/d12red' }); // no nudgeCommand
+      let pokeCalls = 0;
+      let sawSessionAlive = false;
+      const res = mutated.sweepOnce({
+        home,
+        deps: {
+          computeLiveness: staleVerdict,
+          writeVerdict: () => {},
+          isArchiveReadyForSupervisor: () => false,
+          rowLivenessState: () => 'active', // the 15-30min gap, never 'idle-alive'
+          isSessionAliveRow: () => { sawSessionAlive = true; return true; }, // proven-live pid
+          pokeOrEscalate: () => { pokeCalls++; return { action: 'escalate', reason: 'poke-exhausted' }; },
+        },
+      });
+      assert.strictEqual(pokeCalls, 1,
+        'RED-PROOF: pre-fix source must reproduce the false-positive escalation of a live-pid row');
+      assert.strictEqual(res[0].poke.action, 'escalate');
+      assert.strictEqual(sawSessionAlive, false,
+        'pre-fix source never consults isSessionAliveRow at all — confirms the exact confirmed root cause');
     } finally { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} }
   } finally { try { fs.rmSync(scratchDir, { recursive: true, force: true }); } catch (_) {} }
 });

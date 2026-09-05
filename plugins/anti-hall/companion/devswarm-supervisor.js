@@ -35,7 +35,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const {
-  devswarmRoot, computeLiveness, writeVerdict, isSafeId, rowLivenessState,
+  devswarmRoot, computeLiveness, writeVerdict, isSafeId, rowLivenessState, isSessionAliveRow,
   DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS,
 } = require('./lib/liveness.js');
 const { pokeOrEscalate, notifyParentEscalation, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
@@ -437,10 +437,22 @@ function sweepOnce(opts) {
         // confirmed via `rowLivenessState` was still a RUNNING harness process.
         // Evaluated only once graced/done have already failed to suppress
         // (cheapest-first, same ordering discipline as those two checks).
+        // D12 (defect: false-positive escalation) — rowLivenessState's
+        // dormancy gate is 30 min (DEFAULT_DORMANT_MS) while the stale gate
+        // above is 15 min (DEFAULT_IDLE_MS): a row idle 15-30 min with a
+        // transcript is 'active' by that state machine, so sessionPidAlive
+        // was never consulted and a live-but-idle session could be escalated
+        // outright on the first stale tick. Fix: consult isSessionAliveRow
+        // DIRECTLY as a second, ONE-DIRECTIONAL suppressor alongside the
+        // existing rowLivenessState check — a live session pid can only
+        // SUPPRESS a poke/escalate, never assert one (rows with no real
+        // sessionId fall through isSessionAliveRow -> false, unchanged).
+        const rowForLiveness = { id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId };
         const idleAlive = !graced && !done
-          && (deps.rowLivenessState || rowLivenessState)(
-            { id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId }, home, { now: nowTs }
-          ) === 'idle-alive';
+          && (
+            (deps.rowLivenessState || rowLivenessState)(rowForLiveness, home, { now: nowTs }) === 'idle-alive'
+            || (deps.isSessionAliveRow || isSessionAliveRow)(rowForLiveness, home, { now: nowTs })
+          );
         if (graced || done || idleAlive) {
           poke = { action: 'suppressed', reason: graced ? 'post-spawn-grace' : (done ? 'archive-ready' : 'idle-alive') };
         } else {
