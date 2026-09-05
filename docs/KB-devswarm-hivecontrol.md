@@ -2325,6 +2325,72 @@ under the old check, when the workspace behind it was in fact live.
   readdir order. Sizing is a cheap (stat-only, single-digit ms for hundreds of stores),
   fail-open proxy: a size-read error scores 0 and never throws or reorders on partial failure.
 
+**v0.96.0 (D11) additions, recorded here rather than as new sections:**
+
+- Routing splits further under this same isLiveSessionId/rows[].live divide (defect
+  f56dcc08f048): `resolveMeshTarget`/`pickSurvivor`'s target-selection gate is now
+  `isRoutingLiveRowStrict` (`devswarm.js` ~:299-324) — a bare, no-descriptor-fallback
+  `isSiblingPartitionLive` call, the SAME heartbeat-freshness + harness-session-dormancy
+  predicate `siblingAckGate` and the fold's own mesh-anchor check already use — replacing the
+  bare `isLiveSessionId` shape test those two call sites used before, so a real-but-dormant
+  sessionId can no longer outrank a genuinely live sibling for a `send`/fold target.
+  `groupRegistryByMeshId`'s REPORTING-only `liveRows` counter (~:326-353) uses the
+  fallback-inclusive `isRoutingLiveRow` instead — `isSiblingPartitionLive` OR a matching
+  descriptor file exists, so a just-registered row with no heartbeat yet is not miscounted as
+  dead. `rehomeMiskeyedRow`, `retireWorktreeDuplicates`, and `foldGroupIntoSurvivor` are
+  DELIBERATELY untouched and still gate on bare `isLiveSessionId` alone — see
+  `rehomeMiskeyedRow`'s own D11-A scope-note doc comment (`devswarm.js` ~:1870) for why: an
+  IDENTITY-match question (is this row the same entity a descriptor describes), not a
+  drain/routing decision, so gating it on current liveness would refuse a legitimate heal for a
+  merely-idle workspace.
+- `callerOwnsRow`'s clause 3 ("sole registered row on the caller's own resolved worktree",
+  `devswarm.js` ~:5158-5206) now additionally requires that sole row be UNCLAIMED (empty or
+  `unclaimed:`-prefixed sessionId) before granting ownership. Previously ANY lone same-worktree
+  row satisfied clause 3, including a genuinely different CLAIMED session sharing the caller's
+  worktree — letting an unrelated caller stamp its own sessionId over a foreign, already-owned
+  row.
+- The sibling-watermark write (`writeSiblingSeenCursor`, the read-primary not-ackable branch)
+  and its read-then-conditional-unlink (`readSiblingSeenCursor`/`removeSiblingSeenCursor`) now
+  serialize under one per-`(callerId,siblingId)` lock (`withWatermarkLock`, `devswarm.js`
+  ~:892-919, reusing `withIdLock`) — closing a TOCTOU window where a concurrent write for the
+  SAME pair landing in the read→unlink gap was silently discarded when the unlink fired.
+  Fail-open on contention/unsafe ids: runs unlocked rather than dropping the operation, matching
+  `withIdLock`'s own posture.
+- `send` and `heartbeat` results, plus every ownership-refusal shape (`inbox ack`, read-primary,
+  heartbeat broadcast), now carry an additive `identity: {id, kind}` alongside the existing bare
+  identity string (`callerIdentityDetailed`, `devswarm.js` ~:516-533) — `kind` is `resolved`
+  (cwd matched a real git worktree, independently-verifiable ground truth), `declared` (no
+  worktree ground truth, but a `DEVSWARM_BUILDER_ID` env value was trusted), or `unresolvable`
+  (raw-cwd-hash fallback — no verifiable ground truth at all).
+- `diagnose` rows carry an additive `archivedInApp` field (D11-C, `devswarm.js` ~:10260-10293)
+  and force `live:false` whenever it is true, even against a fresh heartbeat — the app-side
+  absence signal (§37) now overrides the display-only liveness computation for this one case.
+- `reconcile`'s pre-spawn skip gained a fifth benign-skip reason, `skippedNotGitRoot` (D11-C,
+  defect 6ef55fd42cc9): a worktree that exists on disk but fails
+  `git rev-parse --show-toplevel` is skipped before ever reaching the spawned child, same
+  zero-budget-cost posture as the pre-existing missing-worktree skip. As of v0.96.0 (D11-C2),
+  the git-root probe itself is now bounded by `reconcile`'s own wall-clock budget — checked
+  BEFORE the probe runs, not only before the resulting spawn — so N broken worktrees can no
+  longer each burn a full probe timeout unaccounted-for before the first row is deferred.
+- `update.js` now applies ONE overall wall-clock budget (`ANTIHALL_UPDATE_POSTPULL_BUDGET_MS`,
+  default 90000ms; 0 = unlimited) across every post-pull DevSwarm stage combined (reconcile
+  through heal-registry-rows), checked before each stage starts (`postPullBudgetMs`,
+  `update.js` ~:469-494). A stage that would start past the deadline is deferred WHOLE and
+  reported as `deferred:true`, picked up on the next `update`/`doctor` call rather than lost —
+  every deferred stage is independently idempotent/resumable (fold/heal/fold-archived-rows
+  persist their own resume markers; one-time-per-version stages simply re-attempt). Honestly
+  scoped gap: the periodic supervisor sweep (`companion/devswarm-supervisor.js`) re-runs only
+  `reconcile` and single-project fold on its own cooldown — it does NOT periodically re-run
+  `heal-orphan-partitions`, `fold-all-stores`, or `fold-archived-rows`; those rely solely on the
+  next explicit `update`/`doctor` invocation to pick up a deferred pass.
+- `inbox ack` now refuses the whole verb on a POSITIVE, resolvable ownership mismatch (the
+  caller's own cwd/env resolves to a REAL, different registered row) rather than the previous
+  half-ack (NDJSON drained, store cursor silently skipped, `ok:true`) — `--ack-as-owner` still
+  overrides. Deliberately NOT extended to an unresolvable-caller-identity or a caller with no
+  registered row of its own: those callers still fail open (ack proceeds) exactly as before,
+  since neither shape is a cross-workspace hazard, only the ordinary "ran `inbox ack` from a
+  bare shell with no matching worktree" case.
+
 ---
 
 Section §26 facts were verified 2026-08-23 from source at the versions on disk in this repo
@@ -2946,6 +3012,15 @@ nothing. `writeActiveCache` additionally refuses to persist a snapshot below 50%
 previous count for a repo (`ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT`, 0 disables) — a truncated or
 partial `list all` response can't silently mass-archive a repo's live rows; the previous
 snapshot is kept and the refusal logged once.
+
+**v0.96.0 (D11-B):** the id/worktreePath match above is keyed by repoKey, but the underlying
+`list all` answer that fills a bucket is GLOBAL — it takes no repo filter — so one bucket can
+legitimately hold records spanning multiple physical repos, and a bare id (or worktreePath, in a
+moved/rehomed setup) can collide across two UNRELATED repos sharing it. The match now ALSO
+requires `repositoryId` agreement when both the cached record and the caller supply one; a
+same-id record belonging to a DIFFERENT repositoryId no longer counts as proof the row is live.
+Fails toward never-suppress when either side lacks a repositoryId — the pre-existing
+id/worktreePath match alone still holds unchanged in that case.
 
 This is a **liveness-axis signal only**. It answers "does hivecontrol still know about this
 workspace", nothing about whether it has real work pending — an app-archived-but-still-live

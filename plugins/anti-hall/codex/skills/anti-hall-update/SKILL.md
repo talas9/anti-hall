@@ -109,6 +109,21 @@ a resume marker and drained FIRST on the next sweep. Separately, `update.js`'s s
 <stage> start` / `done <ms>ms` line to **stderr** around each post-update stage so a slow
 stage is visible while it runs; `ANTIHALL_UPDATE_QUIET=1` suppresses these lines.
 
+**Overall post-pull budget (v0.96.0, D11-C, defect e7307778b614 — `postPullBudgetMs`):** a
+single wall-clock budget (`ANTIHALL_UPDATE_POSTPULL_BUDGET_MS`, default 90000ms; `0` =
+unlimited) now bounds every DevSwarm post-pull stage COMBINED — reconcile, fold,
+fold-all-stores, heal-orphan-partitions, fold-archived-rows, and heal-registry-rows — checked
+BEFORE each stage starts (never mid-stage). A stage that would start past the deadline is
+deferred WHOLE, reported as `deferred: true` on its stage result, and picked up on the NEXT
+`update`/`doctor` call rather than lost: every one of these stages is independently
+idempotent/resumable (fold/heal/fold-archived-rows persist their own resume markers; the
+one-time-per-version stages simply re-attempt next call). Honest scope note: the periodic
+supervisor sweep (`companion/devswarm-supervisor.js`) also re-runs `reconcile` and
+single-project fold on its own cooldown, so deferring THOSE two has a real periodic backstop —
+but it does NOT periodically re-run `heal-orphan-partitions`, `fold-all-stores`, or
+`fold-archived-rows`; those rely solely on the next explicit `update`/`doctor` invocation to
+pick a deferred pass back up.
+
 After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
 
 ```bash

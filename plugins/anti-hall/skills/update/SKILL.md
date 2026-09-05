@@ -108,6 +108,20 @@ its own purposes).
      source (a heartbeat's own recorded `sessionId`) proves one — see
      `docs/KB-devswarm-hivecontrol.md` §40 for the sourcing rules this is a forward
      migration of.
+   - **Overall post-pull budget (v0.96.0, D11-C, defect e7307778b614 — `postPullBudgetMs`):**
+     a single wall-clock budget (`ANTIHALL_UPDATE_POSTPULL_BUDGET_MS`, default 90000ms;
+     `0` = unlimited) now bounds every DevSwarm post-pull stage COMBINED — reconcile, fold,
+     fold-all-stores, heal-orphan-partitions, fold-archived-rows, and heal-registry-rows —
+     checked BEFORE each stage starts (never mid-stage). A stage that would start past the
+     deadline is deferred WHOLE, reported as `deferred: true` on its stage result, and picked
+     up on the NEXT `update`/`doctor` call rather than lost: every one of these stages is
+     independently idempotent/resumable (fold/heal/fold-archived-rows persist their own
+     resume markers; the one-time-per-version stages simply re-attempt next call). Honest
+     scope note: the periodic supervisor sweep (`companion/devswarm-supervisor.js`) also
+     re-runs `reconcile` and single-project fold on its own cooldown, so deferring THOSE two
+     has a real periodic backstop — but it does NOT periodically re-run
+     `heal-orphan-partitions`, `fold-all-stores`, or `fold-archived-rows`; those rely solely
+     on the next explicit `update`/`doctor` invocation to pick a deferred pass back up.
 6. Extract the `CHANGELOG.md` sections strictly between installed (exclusive) and new
    (inclusive) and print them.
 7. Emit a JSON status line + a human summary:

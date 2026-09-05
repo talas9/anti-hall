@@ -742,6 +742,25 @@ registry write failure during promotion is now reported as `promotion.registryWr
 on `inbox pull`/`read-primary`/`inbox messages` JSON output (plus a stderr line) instead of
 being swallowed silently — the next read repairs the registry from the descriptor.
 
+**v0.96.0 heartbeat-aware routing, ack ownership, post-pull budget.** `send`/fold target
+selection (`resolveMeshTarget`/`pickSurvivor`) now uses a strict, heartbeat-aware liveness
+gate instead of a bare sessionId shape test, so a real-but-dormant session no longer
+outranks a genuinely live sibling; the fold/rehome paths are deliberately left on the older
+predicate (an identity-match question, not a routing decision). `callerOwnsRow`'s
+"sole row on this worktree" ownership proof now also requires that row be unclaimed, closing
+a gap where a lone claimed foreign row could have its sessionId stamped over. `send` and
+`heartbeat` results, and every ownership refusal, carry an additive `identity: {id, kind}`.
+`inbox ack` refuses the whole verb (instead of half-acking) on a resolvable ownership
+mismatch; an unresolvable-caller-identity or unregistered-caller shape still fails open.
+`diagnose` rows carry an additive `archivedInApp` field, forcing `live:false` even against a
+fresh heartbeat; the app-side archive-cache match now also requires `repositoryId` agreement
+when both sides carry one, since its cache bucket can legitimately span more than one repo.
+`reconcile` skips a worktree whose git root cannot resolve (`skippedNotGitRoot`) and now
+checks its own wall-clock budget before that git-root probe, not just before the resulting
+spawn. `update.js` applies one overall wall-clock budget
+(`ANTIHALL_UPDATE_POSTPULL_BUDGET_MS`, default 90s) across every post-pull DevSwarm stage,
+deferring whole stages (never partially run) past the deadline.
+
 ---
 
 ## Requirements
