@@ -834,7 +834,10 @@ test('inbox read-primary: a caller CANNOT ack a DIFFERENT workspace\'s registere
     );
     assert.equal(r.code, 2);
     assert.equal(r.result.ok, false);
-    assert.match(r.result.error, /ack refused/);
+    // D11-C: "read-primary refused (...)" naming the verb + pointing at
+    // peek-primary, not a bare "ack refused".
+    assert.match(r.result.error, /^read-primary refused \(/);
+    assert.match(r.result.error, /peek-primary/);
     assert.equal(r.result.callerIdentity, derivedId(childWtA));
   } finally {
     rm(home);

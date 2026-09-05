@@ -1553,7 +1553,12 @@ test('inbox messages --ack: caller acks a DIFFERENT id -> refused (ok:false, exi
       ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
     assert.equal(r.code, 2);
     assert.equal(r.result.ok, false);
-    assert.match(r.result.error, /ack refused/);
+    // D11-C: wording now names the verb ("read-primary refused (...)" — this
+    // function's own action-label convention treats plain `messages --ack`
+    // the same as `read-primary`) and points at peek-primary as the
+    // non-mutating alternative, rather than a bare "ack refused".
+    assert.match(r.result.error, /refused \(/);
+    assert.match(r.result.error, /peek-primary/);
     assert.equal(r.result.callerIdentity, 'primary-x');
     // no cursor file was ever written for the target — the ack never happened
     assert.equal(fs.existsSync(cli.primaryCursorPath(home, 'primary-y')), false);
@@ -1568,7 +1573,10 @@ test('inbox read-primary <otherId>: same ack-ownership refusal as --ack', () => 
       ctx(home, { env: { DEVSWARM_BUILDER_ID: 'primary-x' }, cwd: fakeCwd(home) }));
     assert.equal(r.code, 2);
     assert.equal(r.result.ok, false);
-    assert.match(r.result.error, /ack refused/);
+    // D11-C: "read-primary refused (...)" naming the verb + pointing at
+    // peek-primary, not a bare "ack refused".
+    assert.match(r.result.error, /^read-primary refused \(/);
+    assert.match(r.result.error, /peek-primary primary-y/);
     assert.equal(fs.existsSync(cli.primaryCursorPath(home, 'primary-y')), false);
   } finally { rm(home); }
 });

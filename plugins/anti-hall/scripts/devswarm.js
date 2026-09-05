@@ -3393,6 +3393,8 @@ function foldMeshDuplicates(home, ctx) {
     let folded = 0; // canonical groups that had ≥1 duplicate acted on
     let meshIdCollisions = 0; // meshId buckets spanning ≥2 DISTINCT canonical worktrees
     let rekeyed = 0; // P1b: subdir rows re-keyed to their canonical toplevel worktreePath
+    let budgetExhausted = false; // D11-C: ctx.deadline cut this pass off before every group ran
+    let skippedGroups = 0; // count of mesh-id groups deferred to the next pass by the deadline
     try {
       // P1b FIRST: re-key any subdir-registered row to its toplevel worktreePath so
       // resolveMeshTarget (send) and the fold agree on ONE identity — including a LONE
@@ -3401,7 +3403,28 @@ function foldMeshDuplicates(home, ctx) {
       // sees canonical paths (grouping is by canonicalMeshId either way — unaffected).
       rekeyed = rekeySubdirRegistryRows(s, home, dryRun);
       const byMesh = groupRegistryByMeshId(s.listRegistry(), home);
-      for (const g of byMesh.values()) {
+      const meshGroups = Array.from(byMesh.values());
+      for (let gi = 0; gi < meshGroups.length; gi++) {
+        const g = meshGroups[gi];
+        // BUDGET (D11-C, field-measured: this loop previously ran to full
+        // completion regardless of an optional ctx.deadline — set by
+        // update.js's throttled sweep; unset for direct/CLI calls, so those
+        // see NO behavior change here — unlike healOrphanPartitions'
+        // no-descriptor bucket a few functions down, which already honored
+        // one). Stop BEFORE starting the NEXT mesh-id group once the deadline
+        // has passed — the SAME "stop before an item, never mid-item"
+        // contract update.js's own runThrottledSweep enforces. The FIRST
+        // group always runs regardless of budget (forward-progress
+        // guarantee), matching runThrottledSweep's `i > 0` guard. Groups
+        // deferred this way are NOT lost — the next call re-derives the
+        // registry fresh from disk and re-groups everything, so a deferred
+        // group is simply re-evaluated (and, if still needed, folded) next
+        // pass; no tombstone, no persisted skip-list.
+        if (gi > 0 && Number.isFinite(c.deadline) && Date.now() >= c.deadline) {
+          budgetExhausted = true;
+          skippedGroups = meshGroups.length - gi;
+          break;
+        }
         if (g.rows.length < 2) continue; // fast skip: a lone row cannot have a duplicate
         // COLLISION GUARD (P0): a canonicalMeshId bucket is keyed by an 8-hex sha256
         // slice, which can (astronomically) collide two DISTINCT worktrees onto ONE
@@ -3502,6 +3525,7 @@ function foldMeshDuplicates(home, ctx) {
     if (meshIdCollisions) out.meshIdCollisions = meshIdCollisions;
     if (rekeyed) out.rekeyed = rekeyed;
     if (needsAttention.length) out.needsAttention = needsAttention;
+    if (budgetExhausted) { out.budgetExhausted = true; out.skipped = skippedGroups; }
     return out;
   } catch (e) {
     // A5(b): fail-open means "never THROW into update/doctor" — it does NOT
@@ -3733,7 +3757,25 @@ function healOrphanPartitions(home, ctx) {
         resolvedById.set(id, resolved);
         if (resolved.descriptor) withDescriptorIds.push(id); else noDescriptorIds.push(id);
       }
-      for (const id of withDescriptorIds) {
+      for (let wi = 0; wi < withDescriptorIds.length; wi++) {
+        const id = withDescriptorIds[wi];
+        // BUDGET (D11-C, field-measured: this bucket is the REAL work —
+        // adopt/forward — and previously ran to full completion regardless of
+        // ctx.deadline, which the no-descriptor bucket below already honored.
+        // 45.8s measured against a 20s budget). Stop BEFORE starting the NEXT
+        // id once the deadline has passed — same "stop before an item, never
+        // mid-item" contract update.js's own runThrottledSweep enforces. The
+        // FIRST id always runs regardless of budget (forward-progress
+        // guarantee). Deferred ids are counted in `skipped`, NOT `unhealable`
+        // — they were never classified this pass; the next pass re-derives
+        // every orphan fresh from disk (no tombstone, so a reappearing
+        // descriptor is still adopted next time).
+        if (wi > 0 && Number.isFinite(c.deadline) && Date.now() >= c.deadline) {
+          const deferred = withDescriptorIds.length - wi;
+          out.skipped += deferred;
+          out.detail.push({ action: 'deadline-skip', reason: 'with-descriptor bucket deferred to next pass', count: deferred });
+          break;
+        }
         try {
           // FIX A: try the LIVE descriptor first, then fall back to the ARCHIVED
           // one — readDescriptorFile alone (workspaces/<id>.json only) made the
@@ -4037,14 +4079,46 @@ function healOrphanPartitionsAllStores(home, ctx) {
 //   - FAIL-OPEN, HONESTLY: never throws into update/doctor, but a run that RAISED
 //     reports ok:false with the error rather than a clean no-op.
 // `ctx0.dryRun` classifies without writing and takes no lock (doctor's detect()).
+// foldArchivedFamilyResumePath(home) -> ~/.anti-hall/devswarm/fold-archived-family-resume.json
+// (D11-C). Same additive/fail-open/overwritten-each-pass style as
+// foldArchivedResumePath, but a flat id list — this pass has no per-bucket
+// axis (one descriptor directory walk, not a per-store sweep).
+function foldArchivedFamilyResumePath(home) {
+  return path.join(home, '.anti-hall', 'devswarm', 'fold-archived-family-resume.json');
+}
+function readFoldArchivedFamilyResume(home) {
+  try {
+    const raw = fs.readFileSync(foldArchivedFamilyResumePath(home), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && Array.isArray(parsed.ids)) return parsed.ids.filter((x) => typeof x === 'string');
+  } catch (_) { /* fail-open: no resume marker */ }
+  return [];
+}
+function writeFoldArchivedFamilyResume(home, ids) {
+  try {
+    const p = foldArchivedFamilyResumePath(home);
+    if (!ids || ids.length === 0) {
+      try { fs.unlinkSync(p); } catch (_) { /* already absent — fine */ }
+      return;
+    }
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ ids, ts: Date.now() }));
+  } catch (_) { /* fail-open: resume marker is best-effort */ }
+}
+
 function foldArchivedFamilyDescriptors(home, ctx0) {
   const dryRun = !!(ctx0 && ctx0.dryRun);
+  const ctx = ctx0 || {};
   const out = { ok: true, action: 'fold-archived-family-descriptors', dryRun, scanned: 0, pending: 0, retired: [], left: [], errors: 0 };
   try {
     const ad = checkedArchivedDir(home);
     if (!ad.ok || !ad.exists) return out;
     let names = [];
     try { names = fs.readdirSync(ad.path); } catch (_) { names = []; }
+    // Pre-filter to genuine candidates FIRST (D11-C): the deadline below gates
+    // real work items, not every directory entry — mirrors healOrphanPartitions'
+    // own up-front resolve-then-gate shape.
+    const candidates = [];
     for (const n of names) {
       if (!/\.json$/.test(n)) continue;
       const aid = n.slice(0, -5);
@@ -4058,6 +4132,32 @@ function foldArchivedFamilyDescriptors(home, ctx0) {
         if (st && !st.error && st.exists) desc = st.descriptor;
       } catch (_) { desc = null; }
       if (!desc || String(desc.id) !== String(aid)) continue;
+      candidates.push({ aid, desc });
+    }
+    // BUDGET + RESUME (D11-C): rotation mirrors cmdReconcile's own
+    // readReconcileResume/writeReconcileResume (Wave D9) — whatever a pass
+    // left un-swept is prioritized FIRST next time. Fail-open on a
+    // corrupt/missing marker (empty resume == full fresh scan, unchanged).
+    const resumeIds = readFoldArchivedFamilyResume(home).filter((id) => candidates.some((c) => c.aid === id));
+    const resumeSet = new Set(resumeIds);
+    const byId = new Map(candidates.map((c) => [c.aid, c]));
+    const order = resumeIds.concat(candidates.map((c) => c.aid).filter((id) => !resumeSet.has(id)));
+    let budgetExhausted = false;
+    for (let oi = 0; oi < order.length; oi++) {
+      const aid = order[oi];
+      const c = byId.get(aid);
+      if (!c) continue;
+      // Stop BEFORE starting the next candidate once ctx.deadline has passed
+      // — same "stop before an item, never mid-item" contract this file's
+      // other throttled passes enforce. The FIRST candidate always runs
+      // regardless of budget (forward-progress guarantee).
+      if (oi > 0 && Number.isFinite(ctx.deadline) && Date.now() >= ctx.deadline) {
+        budgetExhausted = true;
+        writeFoldArchivedFamilyResume(home, order.slice(oi));
+        out.budgetExhausted = true;
+        out.skipped = order.length - oi;
+        break;
+      }
       out.scanned++;
       let r;
       // requireWorktreeGone (P0-3): `desc` here is a TOMBSTONE — a historical
@@ -4068,11 +4168,12 @@ function foldArchivedFamilyDescriptors(home, ctx0) {
       // anything else is left ACTIVE and reported in `left`. (cmdArchive's own
       // path does NOT set this: there the link is read from the LIVE descriptor
       // the operator is archiving right now, which IS contemporaneous authority.)
-      try { r = retireIdentityFamilyDescriptors(home, aid, desc, { dryRun, requireWorktreeGone: true }); }
+      try { r = retireIdentityFamilyDescriptors(home, aid, c.desc, { dryRun, requireWorktreeGone: true }); }
       catch (_) { out.errors++; continue; }
       for (const x of r.retired) out.retired.push(String(x));
       for (const x of r.left) out.left.push(x);
     }
+    if (!budgetExhausted) writeFoldArchivedFamilyResume(home, []);
     out.pending = out.retired.length;
     return out;
   } catch (e) {
@@ -4080,6 +4181,48 @@ function foldArchivedFamilyDescriptors(home, ctx0) {
     out.error = String((e && e.message) || e);
     return out;
   }
+}
+
+// foldArchivedResumePath(home) -> ~/.anti-hall/devswarm/fold-archived-resume.json
+// (D11-C, defect e7307778b614). Same style as reconcileResumePath: additive,
+// fail-open, overwritten each pass.
+function foldArchivedResumePath(home) {
+  return path.join(home, '.anti-hall', 'devswarm', 'fold-archived-resume.json');
+}
+
+// readFoldArchivedResume(home) -> { [bucket]: string[] } — archived ids left
+// un-swept per store bucket by a prior budget-exhausted pass, or {} on any
+// absence/corruption (fail-open: a bad marker never blocks or crashes the
+// fold, it just means every bucket does a full fresh scan this pass).
+function readFoldArchivedResume(home) {
+  try {
+    const raw = fs.readFileSync(foldArchivedResumePath(home), 'utf8');
+    const parsed = JSON.parse(raw);
+    const out = {};
+    if (parsed && typeof parsed === 'object' && parsed.buckets && typeof parsed.buckets === 'object') {
+      for (const k of Object.keys(parsed.buckets)) {
+        if (Array.isArray(parsed.buckets[k])) out[k] = parsed.buckets[k].filter((x) => typeof x === 'string');
+      }
+    }
+    return out;
+  } catch (_) { return {}; }
+}
+
+// writeFoldArchivedResume(home, bucketsMap) -> void. Overwrites the marker
+// with whatever is STILL deferred per bucket this pass, or removes it once
+// nothing is deferred anywhere (a fully-drained pass never leaves a stale
+// marker behind). Fail-open: a write failure never affects the fold's result.
+function writeFoldArchivedResume(home, bucketsMap) {
+  try {
+    const p = foldArchivedResumePath(home);
+    const hasAny = bucketsMap && Object.keys(bucketsMap).some((k) => Array.isArray(bucketsMap[k]) && bucketsMap[k].length);
+    if (!hasAny) {
+      try { fs.unlinkSync(p); } catch (_) { /* already absent — fine */ }
+      return;
+    }
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ buckets: bucketsMap, ts: Date.now() }));
+  } catch (_) { /* fail-open: resume marker is best-effort */ }
 }
 
 function foldArchivedRegistryRows(home, ctx0) {
@@ -4111,21 +4254,84 @@ function foldArchivedRegistryRows(home, ctx0) {
       out.scanned++;
     }
     if (!archived.length) return out;
+    const archivedById = new Map(archived.map((a) => [a.id, a]));
+    const allArchivedIds = archived.map((a) => a.id);
 
     // 2) Sweep EVERY per-project store bucket (both bucket forms — see header).
     let hashes = [];
     try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
-    for (const bucket of hashes) {
+
+    // BUDGET + RESUME (D11-C, defect e7307778b614): this sweep is O(archived
+    // ids × store buckets) and previously had NO ctx.deadline of its own — a
+    // machine with enough archived workspaces / stores never finished inside
+    // update.js's post-pull run (field-measured: still running when the whole
+    // run was killed at a 300s ceiling). Resume rotation mirrors cmdReconcile's
+    // own readReconcileResume/writeReconcileResume pattern (Wave D9), scoped
+    // per store bucket (this file's stand-in for repoKey — every bucket IS one
+    // project's store): whatever a bucket left un-swept this pass is
+    // prioritized FIRST for that SAME bucket next pass. Fail-open on a
+    // corrupt/missing marker (empty resume == full fresh scan per bucket,
+    // byte-identical to pre-fix behavior).
+    const resumeByBucket = readFoldArchivedResume(home);
+    const remainingByBucket = {};
+    let budgetExhausted = false;
+    let pairsChecked = 0; // global count across every bucket — backs the "first pair always runs" guarantee
+
+    // idsForBucket(bucket) -> resumed ids first (rotation), then every other
+    // archived id in scan order. A deferred id no longer in `archived` (the
+    // workspace was un-archived, or its own row already retired by a prior
+    // pass) is simply dropped — nothing left to fold for it.
+    const idsForBucket = (bucket) => {
+      const resumeIds = (resumeByBucket[bucket] || []).filter((id) => archivedById.has(id));
+      const resumeSet = new Set(resumeIds);
+      return resumeIds.concat(allArchivedIds.filter((id) => !resumeSet.has(id)));
+    };
+
+    for (let hi = 0; hi < hashes.length; hi++) {
+      const bucket = hashes[hi];
+      if (budgetExhausted) {
+        // Budget already spent by an earlier bucket this pass — defer this
+        // bucket's WHOLE id list without ever opening its store.
+        remainingByBucket[bucket] = idsForBucket(bucket);
+        continue;
+      }
       let s = null;
       try { s = store.openStore({ home, hash: bucket, backend: ctx.backend, env: ctx.env }); }
       catch (_) { out.errors++; continue; } // unreadable store: SKIPPED, never wiped
       try {
-        for (const a of archived) {
-          let rows = [];
-          try { rows = s.listRegistry() || []; } catch (_) { out.errors++; continue; }
-          const ownRow = rows.find((d) => d && d.id != null && String(d.id) === a.id) || null;
+        // Hoisted OUT of the per-id loop (perf fix, defect e7307778b614): the
+        // pre-fix loop re-read s.listRegistry() once per (bucket, archived id)
+        // PAIR — O(archived × stores) redundant full-registry reads against a
+        // store that can hold thousands of rows. Read once per bucket here;
+        // refreshed only after an actual registry WRITE to this bucket this
+        // pass (`rowsDirty` below) — rare relative to the per-id check volume,
+        // the only thing that can move this cache stale.
+        let rows = [];
+        try { rows = s.listRegistry() || []; } catch (_) { out.errors++; rows = []; }
+        let rowsDirty = false;
+        const ids = idsForBucket(bucket);
+        for (let ii = 0; ii < ids.length; ii++) {
+          const aid = ids[ii];
+          const a = archivedById.get(aid);
+          if (!a) continue;
+          // Stop BEFORE starting the next pair once ctx.deadline has passed —
+          // same "stop before an item, never mid-item" contract
+          // update.js's own runThrottledSweep enforces. The very FIRST pair
+          // across the WHOLE sweep always runs regardless of budget
+          // (forward-progress guarantee); every pair after that is gated.
+          if (pairsChecked > 0 && Number.isFinite(ctx.deadline) && Date.now() >= ctx.deadline) {
+            budgetExhausted = true;
+            remainingByBucket[bucket] = ids.slice(ii);
+            break;
+          }
+          pairsChecked++;
+          if (rowsDirty && !dryRun) {
+            try { rows = s.listRegistry() || []; } catch (_) { out.errors++; }
+            rowsDirty = false;
+          }
+          const ownRow = rows.find((d) => d && d.id != null && String(d.id) === aid) || null;
           const sameWorktree = a.real
-            ? rows.filter((d) => d && d.id != null && String(d.id) !== a.id && d.worktreePath
+            ? rows.filter((d) => d && d.id != null && String(d.id) !== aid && d.worktreePath
                 && canonicalWorktreeRealPath(d.worktreePath) === a.real)
             : [];
           if (!ownRow && !sameWorktree.length) continue; // nothing of this archived id lives here
@@ -4134,9 +4340,9 @@ function foldArchivedRegistryRows(home, ctx0) {
           // archived id's own row is tombstoned a few lines below, so forwarding into
           // it while a LIVE sibling still holds this worktree would bury a real
           // unanswered direct in a partition nothing drains.
-          const survivorId = pickArchiveForwardSurvivor(s, home, a.id, sameWorktree);
+          const survivorId = pickArchiveForwardSurvivor(s, home, aid, sameWorktree);
           const foldCandidates = sameWorktree.filter((d) => d && String(d.id) !== survivorId);
-          const survivorIsOther = survivorId !== String(a.id);
+          const survivorIsOther = survivorId !== String(aid);
           // Snapshot rows by id so a LEFT row's reported reason can name the real
           // reason (live vs descriptor-backed-but-session-dead) — see archiveLeftReason.
           const rowOf = new Map(sameWorktree.map((d) => [String(d.id), d]));
@@ -4148,10 +4354,10 @@ function foldArchivedRegistryRows(home, ctx0) {
             for (const x of c.retired) { out.retired.push(String(x) + '@' + bucket); out.pending++; }
             if (survivorIsOther) out.left.push({ id: survivorId, bucket, reason: 'live-descriptor' });
             for (const x of c.left) out.left.push({ id: String(x), bucket, reason: archiveLeftReason(home, x, rowOf.get(String(x)), !!(c.anchorLeft && c.anchorLeft.has(String(x)))) });
-            if (ownRow) { out.retired.push(a.id + '@' + bucket); out.pending++; }
+            if (ownRow) { out.retired.push(aid + '@' + bucket); out.pending++; }
             continue;
           }
-          const r = withIdLock(a.id, home, () => {
+          const r = withIdLock(aid, home, () => {
             // Forward-before-tombstone for the siblings, THEN retire the archived
             // id's own surviving row. Order matters: the siblings' unread must land
             // in this partition while it is still the survivor.
@@ -4179,7 +4385,7 @@ function foldArchivedRegistryRows(home, ctx0) {
           });
           if (r && r.lockBusy) {
             // Surfaced, never silently dropped — idempotent, so the next run retries.
-            out.left.push({ id: a.id, bucket, reason: 'lock-busy' });
+            out.left.push({ id: aid, bucket, reason: 'lock-busy' });
             continue;
           }
           const g = r.g;
@@ -4196,8 +4402,9 @@ function foldArchivedRegistryRows(home, ctx0) {
           }
           for (const x of g.forwardFailed) out.left.push({ id: String(x), bucket, reason: 'forward-failed' });
           for (const x of g.skipped) out.left.push({ id: String(x.id), bucket, reason: x.reason });
-          if (r.ownRetired) out.retired.push(a.id + '@' + bucket);
-          else if (ownRow) out.left.push({ id: a.id, bucket, reason: 'raced-re-register' });
+          if (r.ownRetired) out.retired.push(aid + '@' + bucket);
+          else if (ownRow) out.left.push({ id: aid, bucket, reason: 'raced-re-register' });
+          if (g.retired.length || g.forwarded || r.ownRetired) rowsDirty = true;
           // Refresh the projection whenever anything actually changed — a forward
           // with no tombstone still delivers real messages that must be visible to
           // every summary.json reader (the same gap retireWorktreeDuplicates closes).
@@ -4206,6 +4413,11 @@ function foldArchivedRegistryRows(home, ctx0) {
           }
         }
       } finally { try { s.close(); } catch (_) {} }
+    }
+    writeFoldArchivedResume(home, remainingByBucket);
+    if (budgetExhausted) {
+      out.budgetExhausted = true;
+      out.skipped = Object.keys(remainingByBucket).reduce((n, k) => n + remainingByBucket[k].length, 0);
     }
     if (!dryRun) out.pending = out.retired.length;
     out.ok = out.errors === 0;
@@ -5890,11 +6102,21 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // A7: name WHICH leg failed (same classification as the heartbeat
         // --summary refusal above).
         const cause = ownershipRefusalCause(callerKind, ownEntry);
+        // D11-C (defect 66c7c4e9973e): name the VERB, not a generic "ack" —
+        // this refusal fires for `read-primary` (and plain `inbox messages
+        // --ack`) alike, both of which DRAIN `id`'s NDJSON cursor same as
+        // `inbox ack`'s own refusal does; a caller reading "ack refused" here
+        // had no verb to look up and no non-mutating alternative named. Point
+        // at `peek-primary` — the actual non-mutating view of the same rows —
+        // using the SAME action-label convention this function's own output
+        // already uses (`(opts && opts.action) || (doAck ? 'read-primary' :
+        // 'messages')`, ~line 6621) so the two never drift apart.
+        const verbLabel = (opts && opts.action) || (doAck ? 'read-primary' : 'messages');
         return {
           ok: false,
           reason: cause,
-          error: 'ack refused (' + cause + '): caller ' + JSON.stringify(caller) + ' does not own workspace '
-            + JSON.stringify(id) + ' (pass --ack-as-owner to override)',
+          error: verbLabel + ' refused (' + cause + '): it drains ' + JSON.stringify(id)
+            + '; use `inbox peek-primary ' + id + '` for a non-mutating view, or --ack-as-owner to override',
           id,
           callerIdentity: caller,
           // D11-A (d35d2d4b241e): ADDITIVE — surface callerIdentityDetailed's
@@ -7230,6 +7452,70 @@ function cmdInbox(sub, id, flags, ctx) {
           'run this from within that project\'s worktree to ack it (`inbox read ' + id + '` is read-only and works from anywhere)'));
     }
     if (!cursorPath) { if (storeHandle) storeHandle.close(); return { ok: false, error: 'no cursorPath for workspace ' + JSON.stringify(id) }; }
+    // ---- OWNERSHIP GATE, HOISTED (defect 66c7c4e9973e, P0) ----
+    // Previously this check ran only around the STORE-side cursor write inside
+    // the ack-all branch below, AFTER the NDJSON `ackTo` call had already
+    // durably advanced the descriptor's own cursor unconditionally — a
+    // non-owned `inbox ack <id>` therefore half-acked: the NDJSON channel was
+    // silently drained (the caller's real owner never sees those rows again)
+    // while the store-side counters were quietly left untouched, and the top-
+    // level result still read `ok:true` with no signal anything was refused —
+    // the two channels then permanently disagree ("counts never converge").
+    // Resolve ownership ONCE, before EITHER channel is touched (the `--to N`
+    // path included — it wrote the NDJSON cursor just as unconditionally),
+    // and refuse the WHOLE verb — same shape as read-primary's own ownership
+    // refusal (ok:false/reason/error/callerIdentity/identity:{id,kind}) — so a
+    // caller sees exactly why nothing moved. `--ack-as-owner` still overrides,
+    // identically to every other ack-family ownership gate in this file.
+    // Narrow to `storeHandle` truthy (same precondition read-primary's own
+    // gate requires to resolve ownership via resolveMeshTarget): a store the
+    // resolver could not open for a reason OTHER than a positive cross-project
+    // mismatch (already refused above) keeps the pre-existing fail-open ack —
+    // this file's established posture for a genuinely unavailable store.
+    //
+    // SCOPED to a POSITIVE, resolvable mismatch — `ownEntry` truthy, i.e. the
+    // caller's OWN cwd/env resolves to a REAL, different registered row
+    // (ownershipRefusalCause's `ownership-mismatch`, the exact ack-asymmetry
+    // shape defect 66c7c4e9973e reproduced: a registered sibling acking
+    // another sibling's row). Deliberately NOT extended to
+    // `unresolvable-caller-identity`/`caller-not-registered` (`ownEntry`
+    // null — the caller's identity resolves to nothing registered at all):
+    // that is the ordinary "operator ran `inbox ack <id>` from a bare shell/
+    // script with no matching worktree or DEVSWARM_BUILDER_ID" shape, not a
+    // cross-workspace hazard, and refusing it there would newly block a
+    // caller this file has always let ack (read-primary's OWN pre-existing
+    // gate is stricter — it refuses on all three causes — but read-primary
+    // is a distinct, already-established contract this fix does not touch).
+    const ackAsOwner = !!flags['ack-as-owner'];
+    // `ackOwns` carries the resolution down to the store-side write below
+    // (unchanged posture: that write stays gated on genuine ownership, exactly
+    // as before this fix — only the REFUSAL above is scoped to a positive
+    // mismatch; an unresolvable/unregistered caller still gets a
+    // best-effort-skipped store write, never a hard failure) — computed ONCE
+    // here rather than a second resolveMeshTarget call.
+    let ackOwns = true;
+    if (storeHandle && !ackAsOwner) {
+      const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
+      const caller = callerInfo.identity;
+      const ownEntry = resolveMeshTarget(storeHandle, caller, home);
+      const owns = caller === id || (ownEntry && ownEntry.id === id);
+      ackOwns = owns;
+      if (!owns && ownEntry) {
+        const cause = ownershipRefusalCause(callerInfo.kind, ownEntry);
+        storeHandle.close();
+        return {
+          ok: false,
+          action: 'ack',
+          reason: cause,
+          error: 'inbox ack refused (' + cause + '): caller ' + JSON.stringify(caller)
+            + ' does not own workspace ' + JSON.stringify(id)
+            + ' (pass --ack-as-owner to override, or use `inbox read ' + id + '` to view without acking)',
+          id,
+          callerIdentity: caller,
+          identity: { id: caller, kind: callerInfo.kind },
+        };
+      }
+    }
     const toRaw = one(flags, 'to');
     let cursor;
     // P1a fix (defect c35a7ca3056b): populated only if the store-side cursor
@@ -7281,15 +7567,14 @@ function cmdInbox(sub, id, flags, ctx) {
       // — the NDJSON ack above already durably succeeded regardless.
       if (storeHandle) {
         try {
-          const ackAsOwner = !!flags['ack-as-owner'];
-          let owns = true;
-          if (!ackAsOwner) {
-            const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
-            const caller = callerInfo.identity;
-            const ownEntry = resolveMeshTarget(storeHandle, caller, home);
-            owns = caller === id || (ownEntry && ownEntry.id === id);
-          }
-          if (owns) {
+          // Ownership already resolved ONCE by the HOISTED gate above (defect
+          // 66c7c4e9973e, `ackOwns`) — reuse it rather than a second
+          // resolveMeshTarget call. A refusal there already returned the
+          // whole verb early for a POSITIVE mismatch; `ackOwns` can still be
+          // false here for the narrower unresolvable/unregistered-caller
+          // case, which (unchanged from before this fix) just skips this
+          // store-side write silently rather than hard-failing.
+          if (ackOwns) {
             // Fix Wave 7 Item 3 (P0 message-loss): `storeHandle.messageCount(id)`
             // used to RECOUNT the LIVE store table at ack time — the same
             // message-loss shape Fix Wave 5 Item 2 already fixed on the NDJSON
@@ -9947,30 +10232,65 @@ function computeDiagnosis(s, ctx) {
     && String(v) !== String(id)
     && !String(v).startsWith(SYNTHETIC_SESSION_PREFIX)
   );
+  // App-side archived-set cache (D11-C, defect 07e01aee4f1f): read ONCE per
+  // diagnose call — the SAME supervisor-written cache rosterHints reads via
+  // `opts.cache` — rather than once per row, mirroring cmdRoster's own
+  // single up-front read (~line 9761). Fail-open to null on any error; a null
+  // cache just means `archivedCacheLib.isAppArchived` degrades to "not
+  // app-archived" for every row (its own documented fail-open contract).
+  let appArchivedCache = null;
+  try { appArchivedCache = archivedCacheLib.readActiveCache({ home: c.home, env: c.env, now: c.now }); } catch (_) { appArchivedCache = null; }
   const rows = registry.filter((d) => d && d.id != null).map((d) => {
     const w = workspaces[d.id] || {};
     const registrySid = d.sessionId || null;
-    let descriptorSid = null;
-    try {
-      const desc = readDescriptorFile(c.home, d.id);
-      descriptorSid = desc && desc.sessionId != null ? String(desc.sessionId) : null;
-    } catch (_) { descriptorSid = null; }
+    let desc = null;
+    try { desc = readDescriptorFile(c.home, d.id); } catch (_) { desc = null; }
+    const descriptorSid = desc && desc.sessionId != null ? String(desc.sessionId) : null;
     let sid = registrySid;
     if (!isRealSid(registrySid, d.id) && isRealSid(descriptorSid, d.id)) sid = descriptorSid;
+    // ARCHIVED-STILL-LIVE FIX (D11-C, defect 07e01aee4f1f): an app-archived
+    // workspace's registry row can still carry a fresh heartbeat/live
+    // sessionId (foldArchivedRowsPostUpdate hasn't retired it yet, or a
+    // safety gate left it in place), and diagnose reported `live:true` for a
+    // row the operator had already put away. Mirror rosterHints' own archived
+    // test EXACTLY (local anti-hall archive marker first, then the app-side
+    // supervisor-cached archived-set check via a repoKey resolved from the
+    // SAME descriptor already read above for this row — descriptorRegisteredRepoKey,
+    // same primitive rosterHints' caller uses) so diagnose and the roster can
+    // never disagree about which rows are archived. Additive `archivedInApp`
+    // alongside the existing `live` field; deliberately NOT gated on
+    // sessionPidAlive/hasFreshHeartbeat — a fresh heartbeat is orthogonal to
+    // "was this put away", so it must never suppress the archived label.
+    let archivedInApp = false;
+    try { archivedInApp = isArchivedWorkspace(c.home, d.id, d.worktreePath); } catch (_) { archivedInApp = false; }
+    if (!archivedInApp) {
+      try {
+        const registeredRepoKey = descriptorRegisteredRepoKey(desc, d.id);
+        if (registeredRepoKey) {
+          archivedInApp = archivedCacheLib.isAppArchived({
+            home: c.home, repoKey: registeredRepoKey, id: d.id, worktreePath: d.worktreePath,
+            env: c.env, cache: appArchivedCache, now: c.now,
+          });
+        }
+      } catch (_) { archivedInApp = false; }
+    }
     let live = false;
-    try {
-      if (hasFreshHeartbeat(d.id, c.home, { now: c.now })) {
-        live = true;
-      } else if (isLiveSessionId(sid)) {
-        live = !isDormantRow({ id: d.id, worktreePath: d.worktreePath, sessionId: sid }, c.home, { now: c.now });
-      }
-    } catch (_) { live = isLiveSessionId(sid); }
+    if (!archivedInApp) {
+      try {
+        if (hasFreshHeartbeat(d.id, c.home, { now: c.now })) {
+          live = true;
+        } else if (isLiveSessionId(sid)) {
+          live = !isDormantRow({ id: d.id, worktreePath: d.worktreePath, sessionId: sid }, c.home, { now: c.now });
+        }
+      } catch (_) { live = isLiveSessionId(sid); }
+    }
     const row = {
       id: d.id,
       worktreePath: d.worktreePath || null,
       sessionId: sid,
       live,
       unread: Number.isFinite(w.unread) ? w.unread : 0,
+      archivedInApp,
     };
     if (descriptorSid != null && descriptorSid !== registrySid) row.descriptorSessionId = descriptorSid;
     return row;
@@ -10404,6 +10724,7 @@ function cmdReconcile(flags, ctx) {
   const clockNow = resolveReconcileClock(ctx);
   const startedAt = clockNow();
   let skippedMissingWorktree = 0;
+  let skippedNotGitRoot = 0;
   let processed = 0;
   const deferredIds = [];
   const results = [];
@@ -10412,6 +10733,7 @@ function cmdReconcile(flags, ctx) {
     // comment above): costs zero budget, unlike letting spawnFn discover it
     // via its own internal existsSync check after a budget slot is already
     // spent deciding to spawn.
+    let spawnTarget = d;
     if (usingDefaultSpawn) {
       let exists = true;
       try { exists = fs.existsSync(d.worktreePath); } catch (_) { exists = true; }
@@ -10426,6 +10748,41 @@ function cmdReconcile(flags, ctx) {
         });
         continue;
       }
+      // GIT-ROOT CHECK (D11-C, defect 6ef55fd42cc9): a worktree path can exist
+      // on disk (the existsSync check above passes) yet not be a usable git
+      // root — a submodule worktree whose gitdir link has gone stale, or any
+      // other directory whose git metadata moved/broke since registration.
+      // Spawning `inbox pull` with THAT cwd reaches hivecontrol, which fails
+      // "Repository not found. Make sure to pass the git root path." — a
+      // reconcile-sweep hang the caller (update.js) has no budget defense
+      // against, since the failure happens INSIDE the spawned child, not in
+      // this pre-spawn check. Require git itself to resolve a real toplevel
+      // from this path BEFORE spawning, and spawn with THAT resolved root
+      // (never the raw registry path) — reuses devswarm-repokey.js's own
+      // bounded, injectable git spawn (`defaultRun`, the SAME
+      // ANTIHALL_REPOKEY_GIT_TIMEOUT_MS-bounded primitive gitCommonDir already
+      // uses) rather than a second implementation. Costs zero reconcile
+      // budget either way (same posture as the missing-worktree skip above).
+      let gitRoot = null;
+      try {
+        const gr = repokey.defaultRun({ args: ['-C', d.worktreePath, 'rev-parse', '--show-toplevel'], cwd: d.worktreePath });
+        if (gr && gr.ok) {
+          const raw = String(gr.raw || '').trim();
+          if (raw) gitRoot = raw;
+        }
+      } catch (_) { gitRoot = null; }
+      if (!gitRoot) {
+        skippedNotGitRoot++;
+        results.push({
+          id: d.id, worktreePath: d.worktreePath, ok: false, imported: 0, duplicate: 0,
+          nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false,
+          worktreeMissing: false, notGitRoot: true,
+          archivedDuplicate: hasArchivedCounterpart(home, d.id),
+          error: 'worktree is not a resolvable git root (git rev-parse --show-toplevel failed): ' + d.worktreePath,
+        });
+        continue;
+      }
+      if (gitRoot !== d.worktreePath) spawnTarget = Object.assign({}, d, { worktreePath: gitRoot });
     }
     // Budget check: only once we're about to actually spawn a child. A budget
     // of 0 means unlimited (never defers).
@@ -10434,7 +10791,7 @@ function cmdReconcile(flags, ctx) {
       continue;
     }
     processed++;
-    const r = spawnFn(d, ctx);
+    const r = spawnFn(spawnTarget, ctx);
     let parsed = null;
     if (r && !r.error && typeof r.stdout === 'string') {
       try { parsed = JSON.parse(r.stdout); } catch (_) { parsed = null; }
@@ -10520,7 +10877,11 @@ function cmdReconcile(flags, ctx) {
   // set only by the pre-spawn existsSync check above, never by parsing an
   // error string, so it cannot be spoofed by a subprocess's stdout the way an
   // allow-listed regex could be.
-  const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true || r.worktreeMissing === true);
+  // notGitRoot:true (D11-C) is a FIFTH recognized benign skip — same posture
+  // as worktreeMissing: set only by the pre-spawn git-root check above, never
+  // by parsing a subprocess error string, so it cannot be spoofed and never
+  // fails the aggregate the way a genuine spawn/parse failure does.
+  const allRowsOkOrBenign = results.every((r) => r.ok === true || r.locked === true || r.hivecontrolMissing === true || r.worktreeMissing === true || r.notGitRoot === true);
 
   // Task #6 name backfill (off the hot path — reconcile is a gated/manual
   // sweep, NEVER the every-turn hook, so a `hivecontrol` spawn here is fine).
@@ -10558,7 +10919,7 @@ function cmdReconcile(flags, ctx) {
   const out = {
     ok: allRowsOkOrBenign, action: 'reconcile', repoKey,
     count: results.length, imported, lost, rejected, results,
-    budgetMs, processed, skippedMissingWorktree, deferred: deferredIds.length,
+    budgetMs, processed, skippedMissingWorktree, skippedNotGitRoot, deferred: deferredIds.length,
     elapsedMs: clockNow() - startedAt,
   };
   if (healed) out.healed = healed;

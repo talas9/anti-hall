@@ -466,6 +466,34 @@ function sweepBudgetMs(env) {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SWEEP_BUDGET_MS;
 }
 
+// DEFAULT_POSTPULL_BUDGET_MS / postPullBudgetMs(env) (D11-C, defect
+// e7307778b614): an OVERALL wall-clock ceiling across every DevSwarm
+// post-pull sweep stage combined (reconcile through heal-registry-rows) —
+// distinct from each stage's OWN per-stage budget (sweepBudgetMs/
+// resolveReconcileBudgetMs above), which bounds how long ONE stage spends but
+// not how many stages a single update run pays for in total. Field-measured:
+// reconcile (62s, within its own 60s-ish budget already) + fold-all-stores
+// (17.6s) + heal-orphan-partitions (45.8s, itself already over its 20s
+// per-stage budget — a SEPARATE defect, fixed alongside this one) + a
+// fold-archived-rows pass that never finished at all summed past a 300s kill
+// ceiling. This budget is checked BEFORE each stage starts (never mid-stage);
+// once exhausted, every remaining stage is deferred whole — reported as
+// `deferred: true` rather than silently skipped, and NOT run at all this
+// pass. Every deferred stage is either itself idempotent/resumable (fold/
+// heal/fold-archived-rows all persist their own resume markers) or re-derives
+// fresh from disk on the next `update` invocation, so deferring it costs
+// nothing but time — see runUpdate's own call site for which stages carry a
+// periodic safety net (companion/devswarm-supervisor.js's cooldown-gated
+// sweep) versus which rely SOLELY on the next update/doctor run.
+// ANTIHALL_UPDATE_POSTPULL_BUDGET_MS-overridable; 0 = unlimited (opt-out,
+// mirrors ANTIHALL_RECONCILE_BUDGET_MS's own 0-means-unlimited convention).
+const DEFAULT_POSTPULL_BUDGET_MS = 90000;
+function postPullBudgetMs(env) {
+  const raw = (env || process.env || {}).ANTIHALL_UPDATE_POSTPULL_BUDGET_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_POSTPULL_BUDGET_MS;
+}
+
 /**
  * sweepYield(ms) -> blocks the event loop for `ms` via Atomics.wait — a real
  * sleep, never a spin/busy-wait. Fails open (no-op) on a runtime without
@@ -1150,7 +1178,24 @@ function foldArchivedRowsPostUpdate(opts) {
     if (typeof devswarm.foldArchivedRegistryRows !== 'function') {
       return { attempted: false, detail: 'fold-archived-rows skipped: this devswarm.js build has no foldArchivedRegistryRows' };
     }
-    const r = devswarm.foldArchivedRegistryRows(home, { cwd, env }) || {};
+    // BUDGET (D11-C, defect e7307778b614): this migration is O(archived ids ×
+    // store buckets) and previously ran with NO deadline of its own — the
+    // stage that field evidence showed never finishing before update.js's own
+    // run was killed at a 300s ceiling. `o.deadline` (an absolute ms
+    // timestamp) is threaded through from runUpdate's overall post-pull
+    // budget when provided; falling back to a fresh
+    // now+sweepBudgetMs(env) window keeps a direct/test call (no caller-
+    // supplied deadline) behaved exactly as every other throttled sweep in
+    // this file. Both devswarm.js-side migrations persist their OWN resume
+    // marker (fold-archived-resume.json / fold-archived-family-resume.json),
+    // so a deferred pass is picked back up automatically next call — nothing
+    // here needs its own resume state.
+    const nowFn = o.now || Date.now;
+    const ownDefaultDeadline = nowFn() + sweepBudgetMs(env);
+    const deadline = Number.isFinite(o.deadline)
+      ? o.deadline
+      : (Number.isFinite(o.postPullDeadline) ? Math.min(ownDefaultDeadline, o.postPullDeadline) : ownDefaultDeadline);
+    const r = devswarm.foldArchivedRegistryRows(home, { cwd, env, deadline }) || {};
     // Descriptor half of the SAME defect (see devswarm.js
     // foldArchivedFamilyDescriptors): an archived workspace's cross-linked twin
     // DESCRIPTOR stayed live in `workspaces/` and kept the parent gate nagging
@@ -1174,7 +1219,7 @@ function foldArchivedRowsPostUpdate(opts) {
     let famOk = true;
     if (typeof devswarm.foldArchivedFamilyDescriptors === 'function') {
       try {
-        const fr = devswarm.foldArchivedFamilyDescriptors(home, { cwd, env }) || {};
+        const fr = devswarm.foldArchivedFamilyDescriptors(home, { cwd, env, deadline }) || {};
         famRetired = Array.isArray(fr.retired) ? fr.retired.length : 0;
         famLeft = Array.isArray(fr.left) ? fr.left.length : 0;
         famErrors = fr.errors || 0;
@@ -1188,6 +1233,8 @@ function foldArchivedRowsPostUpdate(opts) {
     }
     const retired = Array.isArray(r.retired) ? r.retired.length : 0;
     const left = Array.isArray(r.left) ? r.left.length : 0;
+    const budgetExhausted = !!(r.budgetExhausted);
+    const skipped = (r.skipped || 0);
     return {
       attempted: true,
       retired,
@@ -1198,6 +1245,8 @@ function foldArchivedRowsPostUpdate(opts) {
       familyDescriptorsLeft: famLeft,
       familyDescriptorsErrors: famErrors,
       familyDescriptorsOk: famOk,
+      budgetExhausted,
+      skipped,
       detail: 'fold-archived-rows: retired ' + retired + ' registry row(s) of archived workspace(s)'
         + (famRetired ? ' + ' + famRetired + ' orphaned twin descriptor(s)' : '')
         + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
@@ -1205,7 +1254,8 @@ function foldArchivedRowsPostUpdate(opts) {
         + (famLeft ? ' — ' + famLeft + ' twin descriptor(s) left in place (safety-gated)' : '')
         + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : '')
         + (famErrors ? ' (' + famErrors + ' twin-descriptor error(s), fail-open)' : '')
-        + (famOk ? '' : ' (twin-descriptor pass did NOT complete cleanly)'),
+        + (famOk ? '' : ' (twin-descriptor pass did NOT complete cleanly)')
+        + (budgetExhausted ? ' (budget hit — ' + skipped + ' pending next run)' : ''),
     };
   } catch (e) {
     return { attempted: false, detail: 'fold-archived-rows raised: ' + (e && e.message ? e.message : String(e)) };
@@ -1563,12 +1613,25 @@ function foldAllStoresPostUpdate(opts) {
     }
 
     let retired = 0, forwarded = 0, folded = 0, errors = 0;
+    // Per-repoKey deadline for devswarm.foldMeshDuplicates' own mesh-id group
+    // loop (D11-C, defect e7307778b614: that loop previously had NO budget of
+    // its own and could run to full completion regardless of THIS sweep's
+    // own budget). SAME lazy-computed-on-first-worker-call pattern
+    // healOrphanPartitionsPostUpdate already uses below, so it lines up with
+    // the SAME clock runThrottledSweep uses to decide when to stop.
+    const nowFn = o.now || Date.now;
+    let deadline = null;
     const sweep = runThrottledSweep({
       items: sel.items,
       budgetMs: sweepBudgetMs(env),
       worker: (repoKey) => {
+        // Capped by the OVERALL post-pull budget (D11-C) when the caller
+        // supplies one (runUpdate's postPullDeadline) — never lets THIS
+        // stage's own fresh sweepBudgetMs window outlive the whole run's
+        // ceiling.
+        if (deadline === null) deadline = Number.isFinite(o.postPullDeadline) ? Math.min(nowFn() + sweepBudgetMs(env), o.postPullDeadline) : nowFn() + sweepBudgetMs(env);
         let r = null;
-        try { r = devswarm.foldMeshDuplicates(home, { cwd, env, repoKey }); }
+        try { r = devswarm.foldMeshDuplicates(home, { cwd, env, repoKey, deadline }); }
         catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
         if (!r || r.ok === false) { errors++; return r; }
         retired += Array.isArray(r.retired) ? r.retired.length : 0;
@@ -1685,7 +1748,11 @@ function healOrphanPartitionsPostUpdate(opts) {
       items: sel.items,
       budgetMs: sweepBudgetMs(env),
       worker: (repoKey) => {
-        if (deadline === null) deadline = nowFn() + sweepBudgetMs(env);
+        // Capped by the OVERALL post-pull budget (D11-C) when the caller
+        // supplies one (runUpdate's postPullDeadline) — never lets THIS
+        // stage's own fresh sweepBudgetMs window outlive the whole run's
+        // ceiling.
+        if (deadline === null) deadline = Number.isFinite(o.postPullDeadline) ? Math.min(nowFn() + sweepBudgetMs(env), o.postPullDeadline) : nowFn() + sweepBudgetMs(env);
         let r = null;
         try { r = devswarm.healOrphanPartitions(home, { cwd, env, repoKey, deadline }); }
         catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
@@ -2178,37 +2245,72 @@ function runUpdate(opts) {
     }
   } catch (_) { sharedStoreHashes = null; }
 
+  // OVERALL POST-PULL BUDGET (D11-C, defect e7307778b614): see
+  // postPullBudgetMs's own header comment for the full rationale — a ceiling
+  // across every DevSwarm post-pull stage COMBINED (reconcile through
+  // heal-registry-rows), checked BEFORE each one starts, never mid-stage. A
+  // stage whose start would exceed the deadline is deferred WHOLE (never
+  // partially run) and reported as `deferred:true` — it picks back up on the
+  // next `update`/`doctor` run rather than being lost, because every one of
+  // these stages is independently idempotent/resumable (fold/heal/
+  // fold-archived-rows persist their own resume markers; the one-time-per-
+  // version stages simply re-attempt next call).
+  //
+  // DEFERRAL SAFETY NET, HONESTLY SCOPED: companion/devswarm-supervisor.js
+  // ALSO runs a periodic, cooldown-gated sweep — but only `reconcile` and
+  // single-project `foldMeshDuplicates` (its own reconcileSweepIfDue). It
+  // does NOT periodically run heal-orphan-partitions, fold-all-stores (the
+  // cross-store sweep), or fold-archived-rows/fold-archived-family-
+  // descriptors — those rely SOLELY on the next `update`/`doctor` invocation
+  // to pick a deferred pass back up. Deferring `reconcile`/`fold` therefore
+  // has a real periodic backstop; deferring the other stages does not — they
+  // simply wait, safely (fail-open, no-delete), for the next explicit run.
+  const postPullNowFn = opts.now || Date.now;
+  const postPullBudget = postPullBudgetMs(env);
+  const postPullDeadline = postPullBudget > 0 ? postPullNowFn() + postPullBudget : Infinity;
+  function deferPostPullStage(name) {
+    return {
+      attempted: false, deferred: true,
+      detail: name + ': deferred — overall post-pull budget (' + postPullBudget + 'ms) exhausted before'
+        + ' this stage started; it runs on the NEXT update/doctor pass (idempotent/resumable, nothing lost)',
+    };
+  }
+  function runPostPullStage(name, fn) {
+    if (postPullNowFn() >= postPullDeadline) return deferPostPullStage(name);
+    return stageProgress(env, name, fn);
+  }
+
   // Reconcile: DevSwarm-session-only post-update step (drains stranded per-
   // worktree native hivecontrol queues into the shared store). Unlike
   // ingestHeal above, this runs on EVERY update regardless of cache.synced —
   // stranded messages are unrelated to whether the plugin itself changed
   // version this run. Fully fail-open — never affects `stop` or the update's
   // own success/failure (see reconcilePostUpdate's doc comment).
-  const reconcile = stageProgress(env, 'reconcile', () => reconcilePostUpdate({
+  const reconcile = runPostPullStage('reconcile', () => reconcilePostUpdate({
     paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
     reconcileBudgetMs: opts.reconcileBudgetMs,
   }));
   // #70: fold prior mesh forms (phantom/dual/subdir-split) into canonical
   // survivors — after reconcile drains, so stranded messages exist to forward.
   // Same gate + fail-open posture; never affects `stop` or the update's success.
-  const fold = stageProgress(env, 'fold', () => foldMeshPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm }));
+  const fold = runPostPullStage('fold', () => foldMeshPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm }));
   // Spec item 5c: fold EVERY store this machine has opened, not only the cwd
   // project's — see foldAllStoresPostUpdate's doc comment. Same gate + fail-
   // open posture; never affects the update's success. Throttled + resumable +
   // one-time-per-version (spec items 1-3): shares this run's enumeration and
   // is stamped complete for `latest` once fully drained.
-  const foldAllStores = stageProgress(env, 'fold-all-stores', () => foldAllStoresPostUpdate({
+  const foldAllStores = runPostPullStage('fold-all-stores', () => foldAllStoresPostUpdate({
     paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
-    hashes: sharedStoreHashes, version: latest,
+    hashes: sharedStoreHashes, version: latest, postPullDeadline,
   }));
   // Self-heal a partition with real messages but no registry row — after fold
   // (duplicates collapse to one canonical survivor first, so an adopted orphan
   // forwards into an already-canonical group) and before foldArchivedRows. Same
   // gate + fail-open posture; never affects the update's success. Throttled +
   // resumable + one-time-per-version, sharing this run's enumeration.
-  const healOrphanPartitions = stageProgress(env, 'heal-orphan-partitions', () => healOrphanPartitionsPostUpdate({
+  const healOrphanPartitions = runPostPullStage('heal-orphan-partitions', () => healOrphanPartitionsPostUpdate({
     paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
-    hashes: sharedStoreHashes, version: latest,
+    hashes: sharedStoreHashes, version: latest, postPullDeadline,
   }));
   // Archived-still-active migration: retire every registry row still held by a
   // GENUINELY archived workspace. Deliberately AFTER `fold` — fold first collapses
@@ -2216,29 +2318,31 @@ function runUpdate(opts) {
   // has a single row per archived workspace to retire rather than approaching the
   // same rows from the other direction. Both are idempotent, so the ordering is a
   // work-reduction, not a correctness requirement. Same gate + fail-open posture.
-  const foldArchivedRows = stageProgress(env, 'fold-archived-rows', () => foldArchivedRowsPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm }));
+  const foldArchivedRows = runPostPullStage('fold-archived-rows', () => foldArchivedRowsPostUpdate({
+    paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, postPullDeadline,
+  }));
   // P1-8: backfill the new `ownerKey` descriptor field + heal prior hash-bucket
   // split-brain. Same gate + fail-open posture; never affects the update's
   // success. Run-once-per-version stamped (spec item 3) — its own descriptor
   // walk (not the shared store-hash enumeration) is skipped entirely once a
   // pass for `latest` has already completed.
   // carry-out (e): forward-migrate persisted `unclaimed:<id>` session ids.
-  const promoteUnclaimed = stageProgress(env, 'promote-unclaimed', () => promoteUnclaimedPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm }));
-  const ownerKeyMigrate = stageProgress(env, 'owner-key-migrate', () => ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
+  const promoteUnclaimed = runPostPullStage('promote-unclaimed', () => promoteUnclaimedPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm }));
+  const ownerKeyMigrate = runPostPullStage('owner-key-migrate', () => ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // Task #4: normalize parent-gate reply-state files to the append-only shape.
   // Pure per-user-file fold+rewrite; same gate + fail-open posture; never
   // affects the update's own success.
-  const replyStateMigrate = stageProgress(env, 'reply-state-migrate', () => replyStateMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
+  const replyStateMigrate = runPostPullStage('reply-state-migrate', () => replyStateMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
   // devswarm-parent-gate.js stated-intent shape: normalize every gate-loop-
   // state file to carry intents/intentAcks. Same gate + fail-open posture;
   // never affects the update's own success.
-  const gateIntentsMigrate = stageProgress(env, 'gate-intents-migrate', () => gateIntentsMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
+  const gateIntentsMigrate = runPostPullStage('gate-intents-migrate', () => gateIntentsMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
   // Claim 3 self-heal: sweep every per-project store registry for a mis-keyed/
   // stale row via devswarm.js's healRegistry. Same gate + fail-open posture;
   // never affects the update's success. Throttled + resumable + one-time-per-
   // version (spec items 1-3): shares this run's enumeration and is stamped
   // complete for `latest` once fully drained.
-  const healRegistryRows = stageProgress(env, 'heal-registry-rows', () => healRegistryPostUpdate({
+  const healRegistryRows = runPostPullStage('heal-registry-rows', () => healRegistryPostUpdate({
     paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
     hashes: sharedStoreHashes, version: latest,
   }));
@@ -2418,6 +2522,7 @@ module.exports = {
   remotePluginVersion,
   GIT_EXEC_TIMEOUT_MS,
   sweepBudgetMs,
+  postPullBudgetMs,
   sweepYield,
   runThrottledSweep,
   orderStoreHashesBySize,

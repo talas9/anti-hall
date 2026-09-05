@@ -2918,6 +2918,14 @@ non-forwardable row rather than at the end of a contiguous forwarded prefix.
 Do both a slug row (e.g. `fix-the-thing-a1b2c3d4`) and a UUID row: they resolve through
 different id paths, and the fold pairs them, so a result on one is not a result on the other.
 
+**Ownership, as of 0.96.0 (D11-C):** `inbox ack <id>` must be run from the worktree that
+OWNS `id` (or with `--ack-as-owner`) — a caller whose own cwd/env resolves to a REAL,
+DIFFERENT registered row now refuses the whole verb (neither the NDJSON nor the store
+cursor moves), where it previously half-acked (NDJSON drained, store side silently
+skipped, `ok:true`). `read-primary` DRAINS `id`'s cursor exactly like `inbox ack` and is
+refused the same way on a genuine mismatch; `peek-primary` is the non-mutating view of
+the same rows and is never refused on ownership grounds.
+
 ## §37 — App-side archive detection: the active-cache, and `archivedRegistryRows`
 
 hivecontrol 2.5.1's `workspace list all` (measured on the maintainer machine) returns
