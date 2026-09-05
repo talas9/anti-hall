@@ -91,7 +91,7 @@ function rowsFor(n, from) {
 }
 const bodies = (r) => r.result.messages.filter((m) => m.body && m.body.startsWith('row-')).map((m) => m.body);
 
-test('(c) a LIVE (non-ackable) sibling is capped to its NEWEST rows, not frozen on the oldest 200 forever', () => {
+test('(c) an ACKING read of a LIVE (non-ackable) sibling is capped to a PREFIX and CONVERGES via the caller-scoped watermark', () => {
   const home = tmpHome();
   const repo = makeGitRepo('nonackable');
   try {
@@ -107,16 +107,58 @@ test('(c) a LIVE (non-ackable) sibling is capped to its NEWEST rows, not frozen 
     assert.equal(got1.length, 200, 'still bounded to NEVER_READ_SIBLING_CAP');
     assert.equal(cursorOf(home, repo, 'live-sib'), 0, 'LOSS-FREE: a live sibling\'s cursor is never advanced by this caller');
 
-    // THE FIX: the newest rows are the ones delivered — the oldest 50 are the
-    // withheld end. Pre-fix this delivered row-0..row-199 and, because the
-    // cursor can never advance, row-200..row-249 were unreachable FOREVER.
-    assert.ok(got1.includes('row-249'), 'THE FIX: the NEWEST row on a non-ackable partition must be delivered; pre-fix it was permanently invisible to read-primary');
-    assert.ok(!got1.includes('row-0'), 'and the oldest rows are the withheld end on a partition whose cursor can never advance');
+    // v0.90.1 P0 HOTFIX — THIS ASSERTION IS DELIBERATELY INVERTED FROM WAVE 9.
+    //
+    // Wave 9 gave a non-ackable partition the NEWEST rows (`slice(-CAP)`)
+    // because "no cursor is written for such a partition", so an
+    // earliest-first prefix would hand back the same oldest 200 forever while
+    // everything past them stayed invisible. That premise is gone: an ACKING
+    // read now records a CALLER-SCOPED watermark for a live sibling (never the
+    // sibling's own cursor), so this call does have somewhere safe to record
+    // progress. With a watermark, the prefix is both valid AND necessary — the
+    // tail form would freeze on the newest 200 instead, since the watermark
+    // could never legally move past rows it skipped.
+    //
+    // Neither end is starved any more: the drain CONVERGES (asserted below).
+    assert.ok(got1.includes('row-0'), 'an ACKING read takes the structural PREFIX, because the caller-scoped watermark advances positionally');
+    assert.ok(!got1.includes('row-249'), 'and the NEWEST rows are this call\'s withheld end — reachable on the very next read');
+
+    // CONVERGENCE — the property the tail form could never provide.
+    const r2 = cli.run(['inbox', 'read-primary', 'caller-x', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    const got2 = bodies(r2);
+    assert.equal(got2.length, 50, 'the NEXT read delivers exactly the remaining 50, never the same 200 again');
+    assert.ok(got2.includes('row-249'));
+    assert.equal(cursorOf(home, repo, 'live-sib'), 0, 'and the live sibling\'s OWN cursor is STILL untouched');
+    const r3 = cli.run(['inbox', 'read-primary', 'caller-x', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    assert.equal(bodies(r3).length, 0, 'THE P0 FIX: the drain converges instead of re-delivering forever');
 
     assert.equal(r1.result.meshNeverReadCapped, true, 'the cap is reported');
     assert.equal(r1.result.meshNeverReadWithheldCount, 50, '250 - 200 = 50 withheld');
     assert.ok(typeof r1.result.neverReadCapHint === 'string' && r1.result.neverReadCapHint.includes('inbox messages live-sib'),
       'THE FIX: the hint must name the exact command that reads the withheld rows: ' + JSON.stringify(r1.result.neverReadCapHint));
+  } finally { rm(home); rm(repo); }
+});
+
+test('(c) a NON-ACKING peek of a live sibling still gets the NEWEST rows (it writes no watermark, so it can never advance)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('peektail');
+  try {
+    register(home, repo, 'caller-p');
+    markLive(home, 'caller-p');
+    register(home, repo, 'live-sib-p');
+    markLive(home, 'live-sib-p');
+    seedPartition(home, repo, 'live-sib-p', rowsFor(250));
+
+    // `peek-primary` is non-mutating by contract: no cursor, no watermark. With
+    // nothing to advance, Wave 9's original argument still holds exactly —
+    // an earliest-first prefix would show the same oldest 200 forever, so the
+    // newest rows are the right ones to show.
+    const r = cli.run(['inbox', 'peek-primary', 'caller-p'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    const got = bodies(r);
+    assert.equal(got.length, 200, 'still bounded');
+    assert.ok(got.includes('row-249') && !got.includes('row-0'), 'the tail form is retained for a read that can advance nothing');
+    assert.equal(cursorOf(home, repo, 'live-sib-p'), 0, 'a peek advances nothing at all');
   } finally { rm(home); rm(repo); }
 });
 
@@ -231,8 +273,13 @@ test('(c) an ackable partition still gets a PREFIX (the ack arithmetic depends o
 
 const mutantKit = require('./lib/devswarm-mutant-kit.js');
 
-const FORCE_TAIL_CAP_OLD = '        const pAckable = doAck && !siblingAckGate(s, id, pid, home, ctx.now);\n';
-const FORCE_TAIL_CAP_NEW = '        const pAckable = false; // WAVE 10 TEST SEAM: force the tail-cap branch while the ack-time gate still says ACKABLE\n';
+// v0.90.1 P0 hotfix: the tail branch is now selected by `pPrefixCapped`
+// (pAckable OR doAck) — an ACKING read of a live sibling takes the PREFIX
+// branch because it has a caller-scoped watermark to advance. So the seam
+// moved here; the DISAGREEMENT it manufactures (tail-capped at cap time,
+// ackable at ack time) is exactly the same.
+const FORCE_TAIL_CAP_OLD = '          const pPrefixCapped = pAckable || doAck;\n';
+const FORCE_TAIL_CAP_NEW = '          const pPrefixCapped = false; // WAVE 10 TEST SEAM: force the tail-cap branch while the ack-time gate still says ACKABLE\n';
 const HARD_REFUSE_LINE = '        if (part.tailCapped) { liveSiblingsSkipped.push(part.id); continue; }\n';
 
 function runDisagreementFixture(mutatedCli, tag) {

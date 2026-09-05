@@ -738,12 +738,19 @@ test('Wave 6 RED/GREEN: a LIVE sibling\'s cursor is unchanged after a foreign ca
 // verbatim by `inbox ack`'s own sibling loop too — see that function's own
 // header for why. Updated here to match; the mutation intent (delete the
 // gate / invert its sense) is unchanged.
-const LIVE_GATE_OLD = "        if (siblingAckGate(s, id, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }\n";
+// v0.90.1 P0 hotfix: the gate no longer `continue`s straight out of the loop —
+// a non-ackable sibling now falls through to write a CALLER-SCOPED watermark
+// (never the sibling's own cursor), which is what stops its backlog being
+// re-delivered on every read forever. The gate's own decision is unchanged, so
+// the mutation intent below (delete it / invert its sense) is unchanged too;
+// only the source fingerprint moved.
+const LIVE_GATE_OLD = "        const notAckable = siblingAckGate(s, id, part.id, home, ctx.now);\n        if (notAckable) liveSiblingsSkipped.push(part.id);\n";
 
 test('Wave 6 mutation check (variant 1): deleting the live-sibling gate reproduces the cross-partition clobber', () => {
   const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
   assert.ok(liveBefore.includes(LIVE_GATE_OLD), 'Wave 6 gate block not found verbatim in the sibling-ack loop');
-  withMutant(LIVE_GATE_OLD, '', (mutatedCli) => {
+  // "Delete the gate" == the sibling is always treated as ackable.
+  withMutant(LIVE_GATE_OLD, '        const notAckable = false;\n', (mutatedCli) => {
     const home = tmpHome();
     const repo = makeGitRepo('w6-mutant1');
     try {
@@ -762,7 +769,7 @@ test('Wave 6 mutation check (variant 1): deleting the live-sibling gate reproduc
 test('Wave 6 mutation check (variant 2): inverting the gate\'s sense protects live siblings\' cursors from ANY ack while wrongly clobbering them too (flipped condition)', () => {
   const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
   assert.ok(liveBefore.includes(LIVE_GATE_OLD), 'Wave 6 gate block not found verbatim in the sibling-ack loop');
-  const invertedGate = "        if (!siblingAckGate(s, id, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }\n";
+  const invertedGate = "        const notAckable = !siblingAckGate(s, id, part.id, home, ctx.now);\n        if (notAckable) liveSiblingsSkipped.push(part.id);\n";
   withMutant(LIVE_GATE_OLD, invertedGate, (mutatedCli) => {
     const home = tmpHome();
     const repo = makeGitRepo('w6-mutant2');

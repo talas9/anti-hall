@@ -424,13 +424,33 @@ test('MUTATION-KILL (Wave 10): reverting the reader-evidence clause re-exposes F
 
       const file = seedFieldFixture({ tag: 'field-2b-mutant', descriptor: false, cursor: 0, cursorFile: 2 });
       try {
-        const before = readState(file.home, file.repoKey, file.meshId).count;
+        const pre = readState(file.home, file.repoKey, file.meshId);
+        assert.strictEqual(pre.registered, true, 'precondition: the anchor row exists before the fold');
         mutatedCli.retireWorktreeDuplicates(file.home,
           { id: 'builder-uuid-twin-field-2b-mutant', worktreePath: file.wt, sessionId: 'twin-session' },
           ctx(file.home, { cwd: file.wt }));
         const post = readState(file.home, file.repoKey, file.meshId);
-        assert.ok(post.cursor > 0 || post.count !== before,
-          'RED (expected on the mutant): with only an on-disk ack frontier the anchor is folded too. If this fails, the cursor-FILE half of the clause is dead code and FIELD CASE 2b is vacuous.');
+        // v0.90.1 R13 item 11 — WHY THIS OBSERVABLE MOVED.
+        //
+        // This used to assert `post.cursor > 0 || post.count !== before`. Both
+        // of those now stay put even on the mutant, because foldOne's forward
+        // window starts at max(store cursor, cursors/<id>.json) and refuses to
+        // sweep past an on-disk ack frontier — so the FILE cursor is itself a
+        // second, independent protection for exactly these rows. That is a
+        // strictly better outcome, not a weaker test: it makes the old
+        // observable dead rather than the clause dead.
+        //
+        // What the reader-evidence clause alone still decides, measured on this
+        // exact fixture: with it, the anchor is LEFT (registered true, survivor
+        // partition empty); without it, the anchor is COLLAPSED — its registry
+        // row tombstoned and its still-unforwarded row copied away.
+        assert.strictEqual(post.registered, false,
+          'RED (expected on the mutant): with only an on-disk ack frontier the anchor is tombstoned. If this fails, the cursor-FILE half of the clause is dead code and FIELD CASE 2b is vacuous.');
+        const sv = meshStore.openStore({ home: file.home, hash: file.repoKey, backend: 'journal' });
+        try {
+          assert.ok(sv.messageCount('builder-uuid-twin-field-2b-mutant') > 0,
+            'RED (expected on the mutant): the anchor\'s remaining mail is forwarded away into the survivor');
+        } finally { sv.close(); }
       } finally { rm(file.W); rm(file.home); }
     },
     { prefix: 'anti-hall-fold-anchor-reader-evidence-mutant' }

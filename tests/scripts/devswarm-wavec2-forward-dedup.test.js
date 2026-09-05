@@ -148,7 +148,15 @@ test('item 5: an UNCONSUMED original\'s forward is still DELIVERED — the fix s
     'and it is the one the reader has never seen — nothing is lost');
 });
 
-test('item 5: no cursor advances past a LOGICALLY suppressed row (the weak key never moves a cursor)', () => {
+// ROUND 13 R1 RULING — FLIPPED. This test previously asserted that a weak-key
+// match leaves `consumedCount` at 0. That was the DEFECT, not the guarantee: a
+// non-consumed match also sets `gapSeen`, so the ack target stops before the row
+// AND everything behind it is withheld — the next read rebuilds the identical
+// window and wedges on the same row forever, with no read/ack sequence able to
+// make progress. That is G1's operator-unrecoverable wedge, reintroduced for
+// weak-key matches. The ruling: CONSUME (like an exact-hash duplicate) so the
+// window advances, and emit an NDJSON diagnostic so the trade is observable.
+test('item 5 (R13 R1): a LOGICALLY suppressed row is CONSUMED so the window can advance', () => {
   // An exact RESEND — not an archived forward, so it shares neither hash nor
   // origHash with the copy the reader already handled. Only the weak
   // (from, ts, stripped-body) key can catch it.
@@ -159,10 +167,29 @@ test('item 5: no cursor advances past a LOGICALLY suppressed row (the weak key n
   };
   const logicalSeed = new Set([cli.logicalDeliveryKey(row)]);
   const folded = cli.foldSiblingGapRows([row], new Set(), logicalSeed);
-  assert.equal(folded.deliveredCount, 0, 'the resend is suppressed from delivery');
-  assert.equal(folded.logicalSuppressedCount, 1, 'and is reported as such, never silently dropped');
-  assert.equal(folded.consumedCount, 0,
-    'CRITICAL: consumedCount stays 0, so every ack target derived from it stops BEFORE this row — the cursor can never pass a weak-key match');
+  assert.equal(folded.deliveredCount, 0, 'the resend is still suppressed from delivery');
+  assert.equal(folded.logicalSuppressedCount, 1, 'and is still reported as such, never silently dropped');
+  assert.equal(folded.consumedCount, 1,
+    'THE FIX: the row is CONSUMED, so the ack target passes it and the next read starts past it');
+});
+
+test('item 5 (R13 R1): a suppressed row no longer poisons the rows behind it', () => {
+  const dup = {
+    ts: 8000, hash: 'mesh:dup', body: 'duplicate text',
+    sender: 'peer-a', recipient: 'primary-1', mtype: 'direct', urgency: 'normal',
+    isHeartbeat: false, needsReply: false, origHash: null,
+  };
+  const fresh = {
+    ts: 8001, hash: 'mesh:fresh', body: 'brand new text',
+    sender: 'peer-a', recipient: 'primary-1', mtype: 'direct', urgency: 'normal',
+    isHeartbeat: false, needsReply: false, origHash: null,
+  };
+  const logicalSeed = new Set([cli.logicalDeliveryKey(dup)]);
+  const folded = cli.foldSiblingGapRows([dup, fresh], new Set(), logicalSeed);
+  assert.equal(folded.deliveredCount, 1, 'the row BEHIND the suppressed one is delivered, not withheld');
+  assert.equal(folded.deliveredRows[0].hash, 'mesh:fresh');
+  assert.equal(folded.gapWithheldCount, 0, 'a consumed row ends nothing — no gap is declared');
+  assert.equal(folded.consumedCount, 2, 'both physical rows are consumed, so the cursor clears the whole window');
 });
 
 test('item 5: logical suppression never fires without a seed set (existing 2-arg callers are unaffected)', () => {

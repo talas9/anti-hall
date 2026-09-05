@@ -612,6 +612,69 @@ function descriptorPath(home, id) { return path.join(workspacesDir(home), id + '
 // hold the message trail itself). A bare integer = consumed message count.
 function primaryCursorPath(home, id) { return path.join(devswarmRoot(home), 'cursors', id + '.json'); }
 
+// ---------------------------------------------------------------------------
+// P0 HOTFIX (v0.90.1) — CURSOR NAMESPACES FOR A MESH SIBLING PARTITION
+//
+// A partition carries TWO store-side read positions that both mean "how far
+// this partition has been consumed", written by DIFFERENT code paths:
+//   (A) `cursors/<id>.json`  — the read-path ack file (inboxCursor / this
+//       file's primaryCursorPath), written by `read-primary`'s ack loop.
+//   (B) the store's own cursor row (s.cursorValue/s.setCursor), written by
+//       `inbox count`'s reader, by foldOne's post-forward advance, and by
+//       `reap-orphans`' post-archive advance.
+//
+// FIELD DEFECT: `read-primary` sized a sibling's window from (A) alone while
+// `inbox count` sized it from (B) alone. After a fold or a reap advanced (B)
+// to 606 with (A) still 0, `count` reported 0 unread while `read-primary`
+// re-delivered all 606 rows on EVERY read, forever (measured: count 1 vs read
+// 201 on the same storeSeq). Two surfaces disagreeing about how far a
+// partition has been read is the whole defect.
+//
+// FIX: BOTH surfaces size from `Math.max(A, B)`. MAX is LOSS-FREE here — it is
+// not the generic "max is unsafe, min is safe" case reconcileOrphanCursor
+// documents, because the only writers that can push (B) ahead of (A) are
+// foldOne and cmdReapOrphans, and each advances it ONLY AFTER the rows behind
+// it were forwarded into a survivor partition (foldOne) or archived to disk
+// (cmdReapOrphans). Rows below max(A,B) are therefore provably reachable
+// somewhere else; skipping them here loses nothing. Those two writers now also
+// write (A) in lockstep (see their call sites), so new divergence cannot open.
+function siblingBaseCursor(storeHandle, home, pid) {
+  let jsonCursor = 0, storeCursor = 0;
+  try { jsonCursor = inboxCursor.readCursor(primaryCursorPath(home, pid)); } catch (_) { jsonCursor = 0; }
+  try { storeCursor = storeHandle.cursorValue(pid); } catch (_) { storeCursor = 0; }
+  return Math.max(jsonCursor, storeCursor);
+}
+
+// ---------------------------------------------------------------------------
+// LIVE-SIBLING WATERMARK (P0 hotfix, v0.90.1) — `cursors/<callerId>.seen-<siblingId>.json`
+//
+// A sibling partition owned by a LIVE twin is NOT ackable: `siblingAckGate`
+// refuses (correctly — the twin's own reader owns that cursor, and advancing it
+// from here would eat the twin's mail). But `read-primary` still DELIVERS that
+// sibling's unread rows to the caller, and with no cursor written anywhere the
+// window is identical on the next read: the SAME rows are re-delivered on every
+// single read, forever. That is the recurring re-delivery this hotfix closes.
+//
+// This watermark is CALLER-SCOPED: it records how far THIS caller has been
+// shown of THAT sibling. It NEVER touches the sibling's own cursor namespaces,
+// so the twin's own reader still sees 100% of its mail. It is consulted ONLY
+// for a non-ackable sibling (an ackable one advances its real cursor as before).
+// Both ids are isSafeId-checked so the filename can never escape cursors/.
+function siblingSeenCursorPath(home, callerId, siblingId) {
+  if (!isSafeId(callerId) || !isSafeId(siblingId)) return null;
+  return path.join(devswarmRoot(home), 'cursors', String(callerId) + '.seen-' + String(siblingId) + '.json');
+}
+function readSiblingSeenCursor(home, callerId, siblingId) {
+  const p = siblingSeenCursorPath(home, callerId, siblingId);
+  if (!p) return 0;
+  try { return inboxCursor.readCursor(p); } catch (_) { return 0; }
+}
+function writeSiblingSeenCursor(home, callerId, siblingId, value) {
+  const p = siblingSeenCursorPath(home, callerId, siblingId);
+  if (!p || !Number.isFinite(value) || value <= 0) return false;
+  try { inboxCursor.ackTo(p, value); return true; } catch (_) { return false; }
+}
+
 // ----- G2 crash-safe archive: recovery-intent markers -----
 // A durable per-id marker written BEFORE cmdArchive tombstones a registry row and
 // cleared only after the archive fully completes OR the registry row is verifiably
@@ -1832,14 +1895,33 @@ function isForwardable(msg) {
 //       is proof of identity.
 //
 //   (b) `seenLogical` (optional Set) adds the WEAKER (from, ts, stripped-body)
-//       key for the exact-resend shape that shares no hash at all. A match here
-//       is SUPPRESSION ONLY: the row is neither delivered nor consumed, and it
-//       poisons the rest of this window exactly like a gap row, so no cursor can
-//       advance past it and the row stays reachable forever by reading its
-//       partition directly. This deliberately trades a possible repeated
-//       suppression (a genuinely-new row colliding on the weak key would keep
-//       being withheld) for zero risk of losing one — the governing
-//       "at-least-once beats at-most-once" rule for this whole fold.
+//       key for the exact-resend shape that shares no hash at all.
+//
+//       ROUND 13 R1 RULING — a weak-key match now CONSUMES (it did not).
+//       The original form suppressed WITHOUT consuming: the row was neither
+//       delivered nor counted toward `consumedCount`, AND it set `gapSeen`.
+//       That POISONS THE WINDOW permanently — the ack target derived from
+//       `consumedCount` stops BEFORE the row, so the very next read starts on
+//       the same suppressed row again, sets `gapSeen` again, and withholds
+//       everything behind it forever. The "reachable by reading its partition
+//       directly" escape hatch does not save the window: the partition's own
+//       cursor can never move past it either. That is the same operator-
+//       unrecoverable wedge G1 fixed for corrupted rows, reintroduced for
+//       weak-key matches.
+//
+//       A weak-key match is now treated like the exact-hash duplicate above:
+//       NOT delivered (the caller already has a logically identical row from
+//       this same fold) but CONSUMED, so the cursor passes it and the window
+//       makes progress. `gapSeen` is NOT set — a consumed row ends nothing.
+//       The residual risk this accepts is the mirror of the old one: a
+//       genuinely-new row that collides on the weak key is skipped rather than
+//       withheld. `logicalDeliveryKey` is (from, ts-to-the-millisecond,
+//       stripped body) — a collision means the same sender emitted a
+//       byte-identical body in the same millisecond, which is a resend, not a
+//       distinct message. Each suppression emits ONE NDJSON diagnostic line
+//       ({reason:'logical-dup', from, ts}) so the trade is observable in the
+//       field rather than silent. `logicalSuppressedCount` is unchanged in
+//       meaning and still reported.
 function foldSiblingGapRows(rows, seenHashes, seenLogical) {
   const deliveredRows = [];
   const consumedThrough = [];
@@ -1862,15 +1944,23 @@ function foldSiblingGapRows(rows, seenHashes, seenLogical) {
       continue;
     }
     if (wasGapSeen) { gapWithheldCount++; continue; } // ambiguous suffix — withheld (never lost, cursor never touches it)
-    // (b) WEAK logical suppression — see this function's header. NOT consumed:
-    // `consumedCount` is deliberately not incremented, so every ack target
-    // derived from it stops BEFORE this row.
+    // (b) WEAK logical suppression — see this function's header (ROUND 13 R1).
+    // CONSUMED, exactly like the exact-hash duplicate above: not delivered, but
+    // the cursor may pass it, and `gapSeen` is NOT set. The old
+    // suppress-without-consume form wedged the window on the same row forever.
     let logicalKey = null;
     if (seenLogical) {
       logicalKey = logicalDeliveryKey(row);
       if (logicalKey && seenLogical.has(logicalKey)) {
-        gapSeen = true;
+        consumedCount++;
         logicalSuppressedCount++;
+        try {
+          if (alog && typeof alog.logEvent === 'function') {
+            alog.logEvent('devswarm-cli', 'sibling-fold-logical-dup', 'info',
+              'suppressed a logically-duplicate sibling row (weak key match)',
+              { reason: 'logical-dup', from: row.from != null ? String(row.from) : null, ts: Number.isFinite(row.ts) ? row.ts : null });
+          }
+        } catch (_) { /* diagnostics never affect the fold */ }
         continue;
       }
     }
@@ -2320,12 +2410,55 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
       // (defect 0a668d81c0c6).
       let advanceTo = 0;
       let sawGap = false;
+      // ---------------------------------------------------------------------
+      // R13 item 11 (P0-adjacent, UNATTENDED) — DO NOT RE-FORWARD ROWS THE
+      // SURVIVOR'S READER HAS ALREADY CONSUMED THROUGH THE SIBLING UNION.
+      //
+      // ROOT CAUSE (reproduced, not inferred): `since` below is the candidate's
+      // OWN STORE CURSOR only. A LIVE twin's ack gate is closed by design
+      // (siblingAckGate), so `read-primary` delivers that twin's rows to the
+      // survivor's reader while deliberately leaving the twin's own cursors at
+      // 0 — progress is recorded ONLY in the caller-scoped watermark (item 10).
+      // The fold cannot see that watermark, so it restarts at 0 and forwards
+      // the entire already-consumed backlog into the survivor as FRESH copies,
+      // which the survivor's very next read then delivers a second time.
+      // Measured on the repro shape (both rows live, survivor anchor-shaped):
+      // watermark 20, fold forwarded 20, survivor total 1 -> 21, next
+      // read-primary delivered 20 duplicates. This runs UNATTENDED — the
+      // supervisor's periodic sweep (companion/devswarm-supervisor.js:658) and
+      // `/anti-hall:update` (skills/update/scripts/update.js:1026) both call
+      // THIS SAME `foldMeshDuplicates`, so neither needs (or has) its own path.
+      //
+      // FIX: forward only rows ABOVE `forwardFrom` = max of the three places
+      // "this row has been consumed" can be recorded — the candidate's own two
+      // cursor namespaces (item 7's MAX) and the SURVIVOR's watermark for this
+      // candidate (item 10). Every row at or below it is already in the
+      // survivor's reader's hands; copying it there is pure duplication.
+      //
+      // AND THE SKIP MUST NOT ADVANCE THE CANDIDATE'S OWN CURSOR (`sawGap`).
+      // The B1(b) advance below is only sound because a forwarded row "safely
+      // exists elsewhere" — in the survivor's partition. A SKIPPED row does
+      // NOT: it was delivered to the survivor's READER but never copied into
+      // the survivor's partition. Advancing the candidate's cursor past it
+      // would hide it from the candidate's OWN reader, which is real mail loss.
+      // Skipped rows sit at the FRONT of the window, so this simply means the
+      // cursor does not move on a pass that only skipped — exactly right.
+      let forwardFrom = 0;
+      try {
+        forwardFrom = Math.max(
+          siblingBaseCursor(s, home, row.id),            // max(store cursor, cursors/<id>.json)
+          readSiblingSeenCursor(home, survivorId, row.id) // the survivor's own watermark for this candidate
+        );
+      } catch (_) { forwardFrom = 0; } // fail-open: forward everything, the pre-fix behaviour
       try {
         since = s.cursorValue(row.id);
         advanceTo = since;
         let pos = since;
         for (const m of s.listMessages(row.id, { sinceCursor: since })) {
           pos += 1;
+          // ALREADY DELIVERED to the survivor's reader (see forwardFrom above):
+          // never copy it again, and never let the cursor advance past it.
+          if (pos <= forwardFrom) { sawGap = true; continue; }
           if (!isForwardable(m)) { sawGap = true; continue; } // #67: forward only a real actionable direct — skips broadcast/heartbeat AND stale native poke/hash-mirror rows (mtype/sender null); also stops the cursor advance below, since this row's mail has no other home
           // FORWARD: same ONE shared MESH_ROW_COPY_FIELDS table as the verbatim
           // re-home site (see meshRowCopy). The overrides re-address the copy to the
@@ -2336,6 +2469,21 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
           // is `isHeartbeat` (a heartbeat is never forwardable).
           const fields = meshRowCopy(m, 'message', {
             to: survivorId, type: 'direct', urgency: m.urgency || 'normal',
+            // R13 item 11 (second half) — STAMP origHash, exactly as the
+            // archived-forward site already does (forwardArchivedOrphanUnread,
+            // ~:1370). The forward RE-ADDRESSES the row, so the copy's own hash
+            // necessarily differs from the original's and no reader can match
+            // it against a message it already consumed. C2's exact
+            // cross-partition dedup (`foldSiblingGapRows`, via
+            // `forwardedOrigHashOf`) is keyed on origHash — measured on the
+            // repro, fold forwards carried it on 0 of 20 rows, so that dedup
+            // could not fire for them at all. `m.origHash || m.hash`: a chain
+            // of forwards keeps pointing at the ROOT original, never at the
+            // intermediate copy. This is the belt to forwardFrom's braces —
+            // forwardFrom stops the copy being made, origHash stops any copy
+            // that IS made (an older build's, a different survivor's) from
+            // being delivered twice.
+            origHash: (m.origHash != null ? m.origHash : m.hash) || null,
           });
           const hash = store.meshMessageHash(fields);
           const r = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
@@ -2369,8 +2517,19 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
       // frontier. `since`/`advanceTo` are computed from the SAME listMessages
       // read used for forwarding, so a message that arrives concurrently
       // mid-fold is simply left unread for the next pass, never swallowed.
+      //
+      // P0 LOCKSTEP (v0.90.1): advance the READ-PATH ack file
+      // (`cursors/<id>.json`) to the SAME value. These are two namespaces for
+      // one fact ("how far this partition is consumed"), and advancing only the
+      // store side is exactly what let `inbox count` (store-sized) report 0
+      // while `read-primary` (json-sized) re-delivered the whole already-
+      // forwarded backlog on every read. `ackTo` is monotonic, so this can only
+      // ever raise the file toward the store value, never rewind it.
       try {
-        if (advanceTo > since) s.setCursor(row.id, advanceTo);
+        if (advanceTo > since) {
+          s.setCursor(row.id, advanceTo);
+          try { inboxCursor.ackTo(primaryCursorPath(home, row.id), advanceTo); } catch (_) { /* fail-soft: reconcile re-converges the pair */ }
+        }
       } catch (_) { /* best-effort bookkeeping; never blocks the fold itself */ }
       // `row` here is whatever foldOne was called with — the in-lock re-read `cur`
       // when locked, the pre-lock candidate `d` when not — so a caller keying its
@@ -3016,6 +3175,26 @@ function foldMeshDuplicatesAllStores(home, ctx) {
 // STRICTLY ABOVE the computed min — an already-min namespace is left untouched, so
 // the common case (all three already agree) performs zero writes. dryRun classifies
 // without writing (`changed` reports whether a write WOULD occur).
+// P0 CORRECTION (v0.90.1) — THE DESCRIPTOR'S NDJSON CURSOR IS NOT IN THIS SET.
+//
+// The header above treats all three as "the same fact in three namespaces".
+// Two of them are: `cursors/<id>.json` and the store cursor both count STORE
+// ROWS for partition `id`. The third does not — `desc.cursorPath` counts LINES
+// of the descriptor's durable NDJSON inbox, an entirely different sequence
+// (populated only by `inbox pull` draining the native queue). Folding it into
+// one MIN meant a converged partition (json 606 / store 606) with an untouched
+// NDJSON channel (0 lines consumed, because it has no lines) computed min 0 and
+// REWOUND both store-side cursors to 0 — after which `read-primary` re-delivered
+// all 606 rows. That is the confirmed mechanism behind the field report
+// (scratchpad repro p0/repro2.js: deregister the twin, run healOrphanPartitions,
+// watch 606/606 collapse to 0/0).
+//
+// The two STORE-SIDE namespaces are still reconciled against each other (they
+// genuinely must agree, and MIN is still the safe direction there). The NDJSON
+// cursor is reconciled only against ITSELF — i.e. left alone; it has no peer in
+// this function. A file cursor of 0 alongside non-zero store-side cursors is
+// therefore no longer evidence of anything, and the explicit guard below refuses
+// to rewind on that shape even if a future change reintroduces the coupling.
 function reconcileOrphanCursor(home, s, id, desc, dryRun) {
   let jsonCursor = 0, fileCursor = 0, storeCursor = 0;
   try { jsonCursor = inboxCursor.readCursor(primaryCursorPath(home, id)); } catch (_) { jsonCursor = 0; }
@@ -3023,14 +3202,21 @@ function reconcileOrphanCursor(home, s, id, desc, dryRun) {
     try { fileCursor = inboxCursor.readCursor(desc.cursorPath); } catch (_) { fileCursor = 0; }
   }
   try { storeCursor = s.cursorValue(id); } catch (_) { storeCursor = 0; }
-  const min = Math.min(jsonCursor, fileCursor, storeCursor);
+  // MIN over the STORE-SIDE pair only — never the NDJSON line cursor.
+  const min = Math.min(jsonCursor, storeCursor);
+  // Belt-and-braces: an untouched NDJSON channel must never drag a converged
+  // store-side pair back to zero (the exact field regression above). Scoped to
+  // `min === 0` on purpose — a genuine store-side disagreement at a NON-zero
+  // min (e.g. json 100 vs store 606) is still a real reconcile and still runs.
+  if (fileCursor === 0 && (jsonCursor > 0 || storeCursor > 0) && min === 0) {
+    return { changed: false, min: 0, skipped: 'ndjson-cursor-not-a-store-cursor' };
+  }
   let changed = false;
   // C2 fix: ackTo() is monotonic by default (guards against unlocked-drain
   // races elsewhere) — this reconciliation is the ONE proven legitimate
   // exception (MIN-only by design, may need to lower a namespace stuck above
   // the others), so it opts in explicitly to keep its pre-fix behavior.
   if (jsonCursor > min) { if (!dryRun) { try { inboxCursor.ackTo(primaryCursorPath(home, id), min, undefined, undefined, { allowRewind: true }); } catch (_) {} } changed = true; }
-  if (desc && desc.cursorPath && fileCursor > min) { if (!dryRun) { try { inboxCursor.ackTo(desc.cursorPath, min, undefined, undefined, { allowRewind: true }); } catch (_) {} } changed = true; }
   if (storeCursor > min) { if (!dryRun) { try { s.setCursor(id, min); } catch (_) {} } changed = true; }
   return { changed, min };
 }
@@ -4115,13 +4301,74 @@ function promoteUnclaimedSession(home, id, sessionId, ctx) {
   return out;
 }
 
+// callerOwnsRow(home, id, ctx) -> boolean. Is `id` the CALLER's OWN row?
+//
+// ROUND 13 P0 (field): `maybePromoteUnclaimed` is called on the id being READ
+// (cmdInboxMessagesInner + cmdInboxPull), and `realSessionIdFrom` sources the
+// session from the CALLER's own `--session`/`CLAUDE_CODE_SESSION_ID`. So a
+// Primary running `inbox read <twinId>` stamped ITS OWN live session uuid onto
+// the TWIN's descriptor. The twin then read as LIVE (liveness.js isLiveSid),
+// `siblingAckGate` refused to ack it, and its rows were re-delivered to the
+// Primary on every single read, forever — the recurring sibling re-delivery
+// this hotfix closes. Promotion is only ever legitimate for a row the caller
+// can actually SPEAK FOR; a read target is not that by construction.
+//
+// THREE accepted proofs of ownership, in order of strength:
+//   1. `id` IS the caller's canonical identity (callerIdentity — cwd-derived
+//      ground truth, spoof-proof; a Primary reading its own `primary-<hash>`
+//      row).
+//   2. `id` is in the caller's IDENTITY FAMILY (crossLinkedIdentity: one row's
+//      sessionId IS the other row's id — the builder-id/slug pair that is the
+//      SAME agent registered twice). Deliberately NOT true for the twin shape
+//      this defect is about: two `unclaimed:` rows on one worktree carry no
+//      cross-link at all.
+//   3. `id` is the SOLE registered row for the caller's resolved worktree — a
+//      child pulling its own builder-id row from its own worktree, whose id is
+//      NOT the worktree meshId `callerIdentity` returns. Restricted to the
+//      UNIQUE case on purpose: the moment a worktree carries two rows (exactly
+//      the twin shape), this proof is unavailable and nothing is promoted.
+// Anything else -> NOT the caller's row -> no promotion. Fail-CLOSED: any
+// throw/unreadable descriptor set answers false (a missed promotion is a
+// retryable no-op; a wrong one strands a partition's mail).
+function callerOwnsRow(home, id, ctx) {
+  try {
+    const target = String(id);
+    const caller = callerIdentity(ctx && ctx.env, ctx && ctx.cwd);
+    if (caller && String(caller) === target) return true;
+    let descs = [];
+    try { descs = readDescriptors(home) || []; } catch (_) { return false; }
+    const targetRow = descs.find((d) => d && String(d.id) === target) || null;
+    if (!targetRow) return false;
+    const callerRow = caller ? (descs.find((d) => d && String(d.id) === String(caller)) || null) : null;
+    let idFam = null;
+    try { idFam = require('../companion/lib/devswarm-identity-family.js'); } catch (_) { idFam = null; }
+    if (callerRow && idFam && idFam.crossLinkedIdentity(callerRow, targetRow)) return true;
+    // (3) sole row for the caller's own worktree.
+    const rawCwd = (ctx && ctx.cwd) || process.cwd();
+    const wt = resolveCallerWorktree(rawCwd) || rawCwd;
+    if (!wt || !targetRow.worktreePath) return false;
+    const wtKey = canonicalMeshId(wt);
+    if (!wtKey || wtKey !== canonicalMeshId(targetRow.worktreePath)) return false;
+    let sameWorktreeRows = 0;
+    for (const d of descs) {
+      if (!d || !d.worktreePath) continue;
+      if (canonicalMeshId(d.worktreePath) === wtKey) sameWorktreeRows++;
+    }
+    return sameWorktreeRows === 1;
+  } catch (_) { return false; }
+}
+
 // maybePromoteUnclaimed(home, id, flags, ctx) — the ONE call shape every
 // read/pull/register path uses, so none of them re-derives "is this a real
 // session id" for itself. Fail-soft in full.
+//
+// OWNERSHIP-GATED (Round 13 P0): see callerOwnsRow above — the caller's session
+// id may only ever be stamped onto the caller's OWN row.
 function maybePromoteUnclaimed(home, id, flags, ctx) {
   try {
     const sid = realSessionIdFrom(flags, ctx, id);
     if (!sid) return { promoted: false, from: null, to: null };
+    if (!callerOwnsRow(home, id, ctx)) return { promoted: false, from: null, to: null, reason: 'not-own-row' };
     return promoteUnclaimedSession(home, id, sid, ctx);
   } catch (_) { return { promoted: false, from: null, to: null }; }
 }
@@ -5026,10 +5273,25 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
       for (const pid of meshPartitionIds) {
         if (pid === String(id)) continue; // `id`'s own slice is already `total`/`messages` above
         const pCursorPath = primaryCursorPath(home, pid);
-        const pCursor = inboxCursor.readCursor(pCursorPath);
+        // P0 (v0.90.1): size from MAX(cursors/<pid>.json, store cursor) — the
+        // two namespaces diverge whenever foldOne/reap-orphans advanced only the
+        // store side, and reading the JSON one alone re-delivered the whole
+        // already-folded backlog on every call. See siblingBaseCursor.
+        const pCursor = siblingBaseCursor(s, home, pid);
+        // Ackability decided BEFORE the window is sized (it was computed after,
+        // below) — it now selects the cursor namespace this window is measured
+        // against, not just how the cap slices.
+        const pAckable = doAck && !siblingAckGate(s, id, pid, home, ctx.now);
+        // LIVE-SIBLING WATERMARK (P0): a sibling this caller may not ack
+        // advances NO cursor at all, so its unread backlog was re-delivered
+        // identically on every read, forever. This caller-scoped watermark
+        // records how far THIS caller has been shown of THAT sibling, leaving
+        // the sibling's own cursors untouched (its own reader still sees 100%).
+        const pSeen = pAckable ? 0 : readSiblingSeenCursor(home, id, pid);
+        const pSince = Math.max(pCursor, pSeen);
         const pTotal = s.messageCount(pid);
         let pTailCapped = false;
-        let pMessages = s.listMessages(pid, { sinceCursor: unreadOnly ? pCursor : 0 })
+        let pMessages = s.listMessages(pid, { sinceCursor: unreadOnly ? pSince : 0 })
           .map((r, i) => Object.assign({ partitionId: pid }, r, { __srcId: 'sibling:' + pid, __srcIdx: i }));
         // NEVER_READ_SIBLING_CAP (see constant's header) — cap a sibling's own
         // contribution so a huge backlog cannot dump unboundedly into one call.
@@ -5066,12 +5328,26 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         //     between here and there. Nothing is lost either way: the store rows
         //     are untouched and every withheld row stays readable directly, which
         //     is what `neverReadCapHint` (emitted below) names.
-        const pAckable = doAck && !siblingAckGate(s, id, pid, home, ctx.now);
+        //
+        // P0 (v0.90.1) AMENDMENT TO (2): the tail form's whole justification —
+        // "no cursor is written for such a partition" — no longer holds for an
+        // ACKING read. A non-ackable sibling now advances the CALLER-SCOPED
+        // watermark instead (see pSeen above), so this call DOES have somewhere
+        // safe to record progress and the prefix form is both valid and
+        // necessary: the tail form would hand back the same newest CAP rows
+        // forever while the watermark could never legally move past them.
+        // The tail form is kept EXACTLY as-is for a NON-acking read (`peek`),
+        // which writes no watermark and therefore still has no way to advance.
         if (unreadOnly && pMessages.length > NEVER_READ_SIBLING_CAP) {
           meshNeverReadWithheldCount += pMessages.length - NEVER_READ_SIBLING_CAP;
           meshNeverReadCappedIds.push(pid);
-          if (pAckable) {
-            pMessages = pMessages.slice(0, NEVER_READ_SIBLING_CAP); // structural PREFIX — the ack advances exactly this far
+          // pPrefixCapped: this call has SOMEWHERE to record progress for this
+          // partition — a real cursor (pAckable) or, for a live sibling on an
+          // acking read, the caller-scoped watermark (doAck). Either way the
+          // cap must be a structural PREFIX, because both advance positionally.
+          const pPrefixCapped = pAckable || doAck;
+          if (pPrefixCapped) {
+            pMessages = pMessages.slice(0, NEVER_READ_SIBLING_CAP); // structural PREFIX — the ack (or watermark) advances exactly this far
           } else {
             pTailCapped = true;
             // Re-index the kept tail into a contiguous 0..n-1 __srcIdx space:
@@ -5083,7 +5359,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
             pMessages = pMessages.slice(-NEVER_READ_SIBLING_CAP).map((r, i) => Object.assign({}, r, { __srcIdx: i }));
           }
         }
-        meshSiblingPartitions.push({ id: pid, cursorPath: pCursorPath, cursor: pCursor, total: pTotal, messages: pMessages, tailCapped: pTailCapped });
+        meshSiblingPartitions.push({ id: pid, cursorPath: pCursorPath, cursor: pCursor, sinceCursor: pSince, ackable: pAckable, total: pTotal, messages: pMessages, tailCapped: pTailCapped });
         meshAddedTotal += pTotal;
       }
     }
@@ -5159,7 +5435,21 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
       try { ownStoreCursor = union ? union.storeCursor : s.cursorValue(id); } catch (_) { ownStoreCursor = 0; }
       const seed = consumedDedupSeed(s, id, ownStoreCursor, CONSUMED_HASH_SEED_CAP);
       const seenHashes = seed.hashes;
-      for (const m of messages) { if (m && m.hash) seenHashes.add(m.hash); }
+      // R13 item 11: seed the ORIGINAL's identity too, not just the copy's own
+      // re-addressed hash — `consumedDedupSeed` above already does exactly this
+      // for consumed history (`forwardedOrigHashOf`), and this loop was the one
+      // place the pair diverged. It matters because a fold copy sitting in the
+      // caller's OWN partition and the ORIGINAL still sitting in the sibling's
+      // partition are the SAME logical message, delivered in the SAME call:
+      // measured on the repro, 5 new rows came back as 10 (5 own copies + 5
+      // sibling originals). Seeding only `m.hash` could never match them,
+      // because the forward re-addresses the row and therefore re-hashes it.
+      for (const m of messages) {
+        if (!m) continue;
+        if (m.hash) seenHashes.add(m.hash);
+        const oh = forwardedOrigHashOf(m);
+        if (oh) seenHashes.add(oh);
+      }
       const seenLogical = seed.logical;
       const dedupedSiblingRows = [];
       // HARD INVARIANT (structural, not conventional): each sibling's actual
@@ -5338,6 +5628,8 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // the decision here. (Belt-and-braces: the gate below reaches the same
         // verdict from the same inputs; this makes the two structurally
         // incapable of disagreeing if liveness flipped in between.)
+        // (A tail-capped part is also watermark-ineligible for the SAME reason
+        // — its delivered rows are not a prefix — so this stays a hard skip.)
         if (part.tailCapped) { liveSiblingsSkipped.push(part.id); continue; }
         // LIVE-SIBLING GATE (Fix Wave 7 Item 2): skip the cursor write (never
         // the delivery — `part` is already in `messages`) unless we have
@@ -5349,7 +5641,17 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // composition (fresh heartbeat OR a real session with no positively-
         // stale activity -> live). Shared with `inbox ack`'s own sibling loop
         // via `siblingAckGate` so the two verbs cannot diverge.
-        if (siblingAckGate(s, id, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }
+        //
+        // P0 (v0.90.1): a skipped sibling is no longer a DEAD END. Its rows
+        // were still delivered to this caller, and with nothing recorded
+        // anywhere they were re-delivered on every subsequent read forever.
+        // The partition's own cursors stay untouched (the gate's whole point),
+        // but this caller records how far IT has been shown, in its own
+        // caller-scoped watermark file. Computed from the SAME physical
+        // `part.sinceCursor + physicalConsumed` arithmetic the real ack below
+        // uses — never a second derivation.
+        const notAckable = siblingAckGate(s, id, part.id, home, ctx.now);
+        if (notAckable) liveSiblingsSkipped.push(part.id);
         const fullDeliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length; // fold's own full, pre-cap count — never mutated below
         let deliveredCount = fullDeliveredCount;
         // defect 8d0a66cfc563: subtract whatever the cap withheld from THIS
@@ -5378,6 +5680,10 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // delivered AND nothing capped, e.g. a `[hole]`-only window), and
         // that case still needs `part.consumedCount` (1, the hole itself),
         // not a hard 0.
+        // `part.sinceCursor` is where THIS window actually started reading
+        // (max of the two cursor namespaces, and — for a non-ackable sibling —
+        // of this caller's watermark). `part.cursor` is retained for the ack
+        // path so an ackable partition's real cursor math is unchanged.
         const consumedThrough = Array.isArray(part.consumedThrough) ? part.consumedThrough : null;
         const physicalConsumed = (deliveredCount >= fullDeliveredCount && Number.isFinite(part.consumedCount))
           ? part.consumedCount
@@ -5387,6 +5693,13 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
               ? consumedThrough[deliveredCount - 1]
               : deliveredCount));
         const ackTarget = part.cursor + physicalConsumed;
+        if (notAckable) {
+          const seenTarget = (Number.isFinite(part.sinceCursor) ? part.sinceCursor : part.cursor) + physicalConsumed;
+          if (seenTarget > 0 && !writeSiblingSeenCursor(home, id, part.id, seenTarget)) {
+            cursorWriteFailures.push({ partitionId: part.id, channel: 'sibling-seen-watermark', error: 'could not write caller-scoped seen watermark' });
+          }
+          continue; // the sibling's OWN cursors are never touched for a live twin
+        }
         try {
           inboxCursor.ackTo(part.cursorPath, ackTarget);
           s.setCursor(part.id, ackTarget);
@@ -5773,7 +6086,22 @@ function cmdInbox(sub, id, flags, ctx) {
         for (const pid of meshPartitionIds) {
           if (pid === String(id)) continue; // `id`'s own slice is already in `union`/`storeOnlyUnreadRows` above
           try {
-            const pCursor = storeHandle.cursorValue(pid);
+            // P0 (v0.90.1): this used the STORE cursor alone while
+            // `read-primary` used `cursors/<pid>.json` alone — the two
+            // namespaces diverge (foldOne / reap-orphans advance only the
+            // store side), so `count` reported 0 unread while `read-primary`
+            // re-delivered the whole backlog. Both now size from MAX of the
+            // two, plus this caller's live-sibling watermark when the sibling
+            // is not ackable — the SAME inputs read-primary uses, so the two
+            // surfaces can no longer report different amounts of outstanding
+            // mail. Read-only: `count` never writes any of them.
+            const pBase = siblingBaseCursor(storeHandle, home, pid);
+            let pCursor = pBase;
+            try {
+              if (siblingAckGate(storeHandle, id, pid, home, ctx.now)) {
+                pCursor = Math.max(pBase, readSiblingSeenCursor(home, id, pid));
+              }
+            } catch (_) { pCursor = pBase; }
             const pTotal = storeHandle.messageCount(pid);
             const pMessages = storeHandle.listMessages(pid, { sinceCursor: pCursor })
               .map((r) => Object.assign({ partitionId: pid }, r));
@@ -5892,7 +6220,15 @@ function cmdInbox(sub, id, flags, ctx) {
       // sibling fold (see consumedDedupSeed); the two surfaces must not diverge.
       const seed = consumedDedupSeed(storeHandle, id, storeCursorVal, CONSUMED_HASH_SEED_CAP);
       const seenHashes = seed.hashes;
-      for (const r of storeOnlyUnreadRows) { if (r && r.hash) seenHashes.add(r.hash); }
+      // R13 item 11: the ORIGINAL's identity too — same reason and same
+      // primitive as cmdInboxMessages' own seeding loop (see its comment). The
+      // two surfaces must not diverge.
+      for (const r of storeOnlyUnreadRows) {
+        if (!r) continue;
+        if (r.hash) seenHashes.add(r.hash);
+        const oh = forwardedOrigHashOf(r);
+        if (oh) seenHashes.add(oh);
+      }
       const seenLogical = seed.logical;
       for (const part of meshSiblingPartitions) {
         const folded = foldSiblingGapRows(part.messages, seenHashes, seenLogical);
@@ -8155,10 +8491,19 @@ function cmdSend(flags, ctx) {
       // FAIL-SOFT AND OUT OF BAND: wrapped whole, and its result is never read
       // — `out` is returned unchanged whether the receipt landed or not. A
       // receipt is a diagnostic, never part of delivery.
+      //
+      // P1 (Round 13): the receipt carries its PROJECT. Without it the reader
+      // (devswarm-parent-reply-tracker.js) credited EVERY receipt in the home
+      // directory to whatever repoKey the CURRENT payload resolved to — a send
+      // in project A silently cleared a pending question in project B, because
+      // receipts are home-scoped while reply-state is per-project. `cwd` is
+      // recorded alongside it purely as a human-readable provenance field.
       writeSendReceipt(home, {
         ts: now, from, to: out.to, toId: out.toId, type, urgency,
         hash, bytes: out.bytes, ok: out.ok, sent: out.sent,
         needsReply: questionFlag, verified,
+        repoKey: repoKey != null ? String(repoKey) : null,
+        cwd: cwd != null ? String(cwd) : null,
       });
       if (verifyError !== null) out.verifyError = verifyError;
       if (!verified && verifyError === null) {
@@ -9756,6 +10101,11 @@ function cmdReapOrphans(flags, ctx) {
           continue; // REFUSE to retire
         }
         s.setCursor(pid, total);
+        // P0 LOCKSTEP (v0.90.1): keep the read-path ack file in step with the
+        // store cursor — see foldOne's own lockstep note. Without it this
+        // partition's archived rows stayed "unread" to `read-primary` (which
+        // sizes from the json namespace) forever after a reap.
+        try { inboxCursor.ackTo(primaryCursorPath(home, pid), total); } catch (_) { /* fail-soft: reconcile re-converges the pair */ }
         reaped.push({ partitionId: pid, unread: unreadRows.length, archivePath, cursorAdvancedTo: total });
       } catch (e) {
         failed.push({ partitionId: pid, reason: 'error', error: String((e && e.message) || e) });
@@ -10446,7 +10796,10 @@ module.exports = {
   inboxWindowRejection, parseInboxSince,
   // carry-out (e) — `unclaimed:<id>` promotion + its forward migration
   // (called by skills/update/scripts/update.js AND hooks/lib/doctor-repair.js):
-  realSessionIdFrom, promoteUnclaimedSession, maybePromoteUnclaimed,
+  realSessionIdFrom, promoteUnclaimedSession, maybePromoteUnclaimed, callerOwnsRow,
+  // v0.90.1 P0 cursor-namespace hotfix (exported for direct unit testing):
+  siblingBaseCursor, siblingSeenCursorPath, readSiblingSeenCursor, writeSiblingSeenCursor,
+  reconcileOrphanCursor,
   promoteUnclaimedRegistrySessions,
   // defect 64861a623503 — forwarded-copy identity + the fold's dedup seeding:
   foldSiblingGapRows, forwardedOrigHashOf, logicalDeliveryKey,

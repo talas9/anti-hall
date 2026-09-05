@@ -219,3 +219,76 @@ test('the stdout path still works when there is no receipt at all (the fallback 
       'a CLI build that predates receipts must still credit replies exactly as before');
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// ROUND 13 P1 — PER-PROJECT SCOPING + A TIMESTAMP LOWER BOUND
+//
+// Receipts live in ONE home-scoped directory shared by every project on the
+// machine; reply-state is PER PROJECT. Pre-fix the tracker credited EVERY
+// receipt in that directory to whatever repoKey the CURRENT payload resolved
+// to — so a send in project A silently cleared a pending question in project B.
+// cmdSend now stamps `repoKey` on the receipt and this check enforces it.
+// ---------------------------------------------------------------------------
+
+test('R13 P1: a receipt from ANOTHER project is NOT credited to this project', () => {
+  const h = makeHome();
+  try {
+    writeReceipt(h.home, goodReceipt({ hash: 'mesh:foreign', repoKey: 'some-other-project-key' }));
+    const payload = postToolUseBashPayload(SEND_COMMAND, { stdout: UNPARSEABLE_STDOUT, sessionId: 'sess-foreign' });
+    assert.strictEqual(run(h.home, payload).status, 0);
+    assert.ok(!readReplyState(REPO_KEY, h.home)['child-1'],
+      'THE FIX: a send in project A must never clear a pending question in project B');
+  } finally { h.cleanup(); }
+});
+
+test('R13 P1: a receipt carrying THIS project\'s repoKey is credited (proves the previous test failed on scoping)', () => {
+  const h = makeHome();
+  try {
+    writeReceipt(h.home, goodReceipt({ hash: 'mesh:mine', repoKey: REPO_KEY }));
+    const payload = postToolUseBashPayload(SEND_COMMAND, { stdout: UNPARSEABLE_STDOUT, sessionId: 'sess-mine' });
+    assert.strictEqual(run(h.home, payload).status, 0);
+    assert.ok(readReplyState(REPO_KEY, h.home)['child-1'], 'a matching repoKey still credits normally');
+  } finally { h.cleanup(); }
+});
+
+test('R13 P1: a LEGACY receipt with no repoKey at all is still credited (no post-upgrade starvation)', () => {
+  const h = makeHome();
+  try {
+    // goodReceipt() carries no repoKey — exactly the pre-v0.90.1 shape.
+    writeReceipt(h.home, goodReceipt({ hash: 'mesh:legacy' }));
+    assert.strictEqual(run(h.home, postToolUseBashPayload(SEND_COMMAND, { stdout: UNPARSEABLE_STDOUT })).status, 0);
+    assert.ok(readReplyState(REPO_KEY, h.home)['child-1'],
+      'refusing legacy receipts would disable the whole receipt path for the 7-day retention window after an upgrade');
+  } finally { h.cleanup(); }
+});
+
+test('R13 P1: a receipt whose mtime is FAR in the future (a unit mismatch) is refused', () => {
+  const h = makeHome();
+  try {
+    // `payload.timestamp` is read as MILLISECONDS (matching limit-conserve.js's
+    // own `parsed.timestamp` vs Date.now() comparison). If a caller ever fed a
+    // SECONDS value, every receipt would look ~55 years in the future and the
+    // upper-bound-only window would have credited all of them. The lower bound
+    // is what catches that; ordinary sub-minute clock skew is still tolerated.
+    const future = Date.now() + 10 * 60 * 1000; // 10 minutes ahead: far past the 60s skew tolerance
+    const file = writeReceipt(h.home, goodReceipt({ hash: 'mesh:future' }));
+    const t = new Date(future);
+    fs.utimesSync(file, t, t);
+    assert.strictEqual(run(h.home, postToolUseBashPayload(SEND_COMMAND, { stdout: UNPARSEABLE_STDOUT })).status, 0);
+    assert.ok(!readReplyState(REPO_KEY, h.home)['child-1'],
+      'THE FIX: a receipt with a negative age beyond the skew tolerance is not evidence about this turn');
+  } finally { h.cleanup(); }
+});
+
+test('R13 P1: ordinary sub-minute clock skew is still tolerated', () => {
+  const h = makeHome();
+  try {
+    const slightlyAhead = Date.now() + 5 * 1000;
+    const file = writeReceipt(h.home, goodReceipt({ hash: 'mesh:skew' }));
+    const t = new Date(slightlyAhead);
+    fs.utimesSync(file, t, t);
+    assert.strictEqual(run(h.home, postToolUseBashPayload(SEND_COMMAND, { stdout: UNPARSEABLE_STDOUT })).status, 0);
+    assert.ok(readReplyState(REPO_KEY, h.home)['child-1'],
+      'a 5-second skew is filesystem/clock noise, not a unit mismatch — it must still credit');
+  } finally { h.cleanup(); }
+});

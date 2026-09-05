@@ -150,6 +150,9 @@ function sendReceiptsDir(home) {
 // harmless regardless: recordReply is monotonic (max of existing and new ts),
 // so a second credit for the same reply is a no-op.
 const RECEIPT_WINDOW_MS_DEFAULT = 5 * 60 * 1000;
+// Tolerated clock skew for a receipt whose mtime is ahead of `now` (see the
+// lower-bound check in creditRepliesFromReceipts).
+const CLOCK_SKEW_TOLERANCE_MS = 60 * 1000;
 function receiptWindowMs(env) {
   const raw = (env || process.env).ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS;
   const n = parseInt(raw, 10);
@@ -172,13 +175,28 @@ function receiptDayKeys(now) {
 //   itself a question (a `--question` send is a NEW question, never an answer —
 //   crediting it would clear the other side's pending question without anyone
 //   having answered it, which is the exact starvation this feature prevents).
-function receiptCreditsReply(r) {
+//
+// PROJECT SCOPING (P1, Round 13). `repoKey` was added to the receipt by
+// devswarm.js's cmdSend for this check. Receipts live in ONE home-scoped
+// directory shared by EVERY project on the machine, while reply-state is
+// per-project — so without this a send in project A credited (and cleared) a
+// pending question in project B whose Stop hook happened to fire next. A
+// receipt whose repoKey does not match the CALLER's repoKey is not evidence
+// about the caller's project and is ignored.
+//
+// LEGACY RECEIPTS (written before this field existed) carry no repoKey at all.
+// They are ACCEPTED, deliberately: refusing them would silently disable the
+// receipt path for the whole retention window after an upgrade, reintroducing
+// the starvation receipts exist to prevent. The window is 7 days
+// (SEND_RECEIPT_RETENTION_DAYS_DEFAULT), after which none remain.
+function receiptCreditsReply(r, repoKey) {
   if (!r || typeof r !== 'object') return false;
   if (r.ok !== true) return false;
   if (r.type !== 'direct') return false;
   if (typeof r.toId !== 'string' || !r.toId) return false;
   if (r.sent === false) return false;
   if (r.needsReply === true) return false;
+  if (r.repoKey != null && String(r.repoKey) !== String(repoKey)) return false;
   return true;
 }
 
@@ -197,9 +215,21 @@ function creditRepliesFromReceipts(home, repoKey, now, env) {
       const full = path.join(dir, name);
       try {
         const st = fs.statSync(full);
-        if ((now - st.mtimeMs) > windowMs) continue; // outside this turn's window
+        const ageMs = now - st.mtimeMs;
+        if (ageMs > windowMs) continue; // outside this turn's window
+        // LOWER BOUND (P1, Round 13): a NEGATIVE age means the receipt's mtime
+        // is in the future relative to `now`. Small negatives are ordinary
+        // clock skew / filesystem timestamp granularity and are tolerated
+        // (CLOCK_SKEW_TOLERANCE_MS); a large one means `now` and the mtime are
+        // not on the same clock or not in the same UNIT — the case worth
+        // refusing rather than silently crediting everything ever written.
+        // (`payload.timestamp` is read as MILLISECONDS here, matching
+        // hooks/limit-conserve.js's own `parsed.timestamp` comparison against
+        // Date.now(); a seconds-valued field would make every receipt look
+        // ~55 years in the future and this bound is what catches that.)
+        if (ageMs < -CLOCK_SKEW_TOLERANCE_MS) continue;
         const r = JSON.parse(fs.readFileSync(full, 'utf8'));
-        if (!receiptCreditsReply(r)) continue;
+        if (!receiptCreditsReply(r, repoKey)) continue;
         const ts = Number.isFinite(r.ts) ? r.ts : st.mtimeMs;
         recordReply(repoKey, home, r.toId, ts);
         credited++;

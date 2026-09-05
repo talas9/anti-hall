@@ -1658,6 +1658,32 @@ function archivedOnlyIds(home, F) {
 //
 // Returns null when the union cannot be computed at all; the caller then keeps
 // its store-only count.
+// ndjsonHasUnread(d, F) -> boolean. The CHEAP pre-test that decides whether the
+// full union is worth paying for at all (PERF, Round 13 item 5).
+//
+// COST PROBLEM: unionUnread materialises this partition's ENTIRE store history
+// TWICE (`listMessages(id)` for the total dedup, `listMessages(id,{sinceCursor})`
+// for the unread dedup) — bodies included. computeSummary runs it once PER
+// REGISTRY ROW on EVERY projection; on a machine with 60 rows that is 120 full
+// history reads per projection.
+//
+// THE UNION IS PROVABLY REDUNDANT WHENEVER THE NDJSON SIDE HAS NO UNREAD LINES.
+// With zero unread NDJSON lines, `unreadNdjsonHashes` is empty, so nothing is
+// filtered out of the store's unread rows and `unread` reduces EXACTLY to
+// `storeUnreadRows.length` — the `total - cursor` value computeSummary already
+// has. (`total` differs, but computeSummary reads only `.unread`.) So: read the
+// NDJSON cursor + line count (one small file, no store reads) and skip the whole
+// union when the tail is empty. An absent/empty inbox, or a cursor already at
+// the line count, both land here — the overwhelmingly common shape.
+function ndjsonHasUnread(d, F) {
+  if (!d || (!d.inboxPath && !d.cursorPath)) return false;
+  try {
+    const { readUnread } = require('./devswarm-inbox-cursor.js');
+    const u = readUnread(d.inboxPath || null, d.cursorPath || null, F);
+    return !!(u && Array.isArray(u.lines) && u.lines.length > 0);
+  } catch (_) { return true; } // fail-open: unknown -> pay for the union rather than under-report
+}
+
 function unionUnreadFor(d, store, F) {
   if (!d) return null;
   let unreadMod;
@@ -1790,7 +1816,10 @@ function computeSummary(store, opts) {
     // store's own unread rows). That is the overwhelmingly common shape, so the
     // extra read is paid only by rows that genuinely have two sides to merge.
     let unread = Math.max(0, total - cursor);
-    if (d.inboxPath || d.cursorPath) {
+    // PERF BOUND (Round 13 item 5): pay for the union ONLY when the NDJSON side
+    // actually has unread lines to merge — see ndjsonHasUnread's header for why
+    // an empty tail makes the union provably equal to `total - cursor`.
+    if ((d.inboxPath || d.cursorPath) && ndjsonHasUnread(d, F)) {
       try {
         const u = unionUnreadFor(d, store, F);
         if (u && Number.isFinite(u.unread)) unread = Math.max(0, u.unread);

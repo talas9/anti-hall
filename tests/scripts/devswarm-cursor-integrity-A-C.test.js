@@ -366,9 +366,24 @@ test('(C) mutation check: removing the SELF cross-link check restores the twin\'
       const r = mutatedCli.run(['inbox', 'read-primary', 'caller-primary-cm', '--ack-as-owner'], ctx(home, { cwd: repo }));
       assert.ok(r.result.messages.some((m) => m.body === 'twin-own-row'), 'sanity: the twin\'s row is delivered on the mutant too');
       const after = readCursorFile(home, repo, 'twin-uuid-cm');
-      assert.equal(after, 0, 'BUGGY (SELF check removed): the caller\'s own UUID twin is never acked — its cursor stays 0 and the row re-delivers forever');
+      assert.equal(after, 0, 'BUGGY (SELF check removed): the caller\'s own UUID twin is never acked — its own cursor stays stranded at 0');
+      assert.ok((r.result.liveSiblingsSkipped || []).includes('twin-uuid-cm'),
+        'BUGGY (SELF check removed): the caller\'s OWN twin is misclassified as a foreign live sibling and its ack is refused');
+
+      // v0.90.1 P0 HOTFIX — WHY THE OLD SECOND ASSERTION WAS RETIRED.
+      //
+      // This used to assert "and it comes back again on the very next read".
+      // That symptom is now prevented INDEPENDENTLY: a sibling whose ack is
+      // refused gets a CALLER-SCOPED watermark, so the caller stops being
+      // re-served rows it has already seen even when the ack gate wrongly
+      // refuses. Defence in depth — the SELF branch is still the fix (without
+      // it the twin's OWN cursor is stranded, above), but the re-delivery
+      // symptom is no longer the way to observe its absence.
       const r2 = mutatedCli.run(['inbox', 'read-primary', 'caller-primary-cm', '--ack-as-owner'], ctx(home, { cwd: repo }));
-      assert.ok(r2.result.messages.some((m) => m.body === 'twin-own-row'), 'BUGGY: and it comes back again on the very next read');
+      assert.ok(!r2.result.messages.some((m) => m.body === 'twin-own-row'),
+        'the P0 watermark stops the re-delivery even on this mutant — the stranded cursor above is what still exposes the missing SELF branch');
+      assert.equal(readCursorFile(home, repo, 'twin-uuid-cm'), 0,
+        'and the twin\'s own cursor is STILL stranded: its own reader would re-read everything it already handled');
     } finally { rm(home); rm(repo); }
   });
 });

@@ -1608,6 +1608,58 @@ function runRepairs(opts) {
     push('install-divergence', 'none', 'skipped', 'install-integrity check raised: ' + errMsg(e));
   }
 
+  // --- R13 item 2: WIRE THE FOUR STANDALONE SWEEPS ------------------------
+  //
+  // sweepStaleDrainMarkers, promoteUnclaimedSessions, sweepReapedLogs and
+  // sweepSendReceipts were written, exported and unit-tested — but NOTHING
+  // called them. `doctor --repair` is the only surface that ever visits those
+  // directories, so a stale drain marker silenced the parent gate forever, an
+  // `unclaimed:` row stayed unclaimed forever, and the two append-only
+  // diagnostic dirs grew without bound. Exported-but-unwired is not shipped.
+  //
+  // Each is AUTO-SAFE by its own contract (no daemon/scheduler side effect;
+  // NO-DELETE except the two explicit retention sweeps, which delete only files
+  // strictly older than their configured window and never touch a fresh one),
+  // so they are NOT behind `gateOpen` — same posture as the migrationFix block
+  // at the top of this function.
+  //
+  // MODE MAPPING IS THE WHOLE CONTRACT: `dryRun` -> mode 'check' (READ-ONLY,
+  // reports only), otherwise mode 'repair' (applies). Every one of the four
+  // honours that distinction internally; this passes it through and never
+  // re-decides.
+  {
+    const sweepMode = dryRun ? 'check' : 'repair';
+    const sweeps = [
+      ['sweep-drain-markers', () => sweepStaleDrainMarkers({ home, mode: sweepMode, io: o.io })],
+      ['promote-unclaimed', () => promoteUnclaimedSessions({ home, mode: sweepMode, cwd, env })],
+      ['sweep-reaped-logs', () => sweepReapedLogs({ home, mode: sweepMode, env, io: o.io })],
+      ['sweep-send-receipts', () => sweepSendReceipts({ home, mode: sweepMode, env, io: o.io })],
+    ];
+    for (const [id, fn] of sweeps) {
+      let rows;
+      try { rows = fn(); } catch (e) {
+        push(id, 'none', 'failed', id + ' raised: ' + errMsg(e));
+        continue;
+      }
+      const list = Array.isArray(rows) ? rows : [];
+      const failed = list.filter((r) => r && r.status === 'failed');
+      const acted = list.filter((r) => r && (r.status === 'fixed' || r.status === 'promoted'));
+      if (failed.length) {
+        push(id, sweepMode === 'repair' ? id : 'none', 'failed',
+          failed.length + ' of ' + list.length + ' item(s) failed: ' + failed.map((r) => r.msg).filter(Boolean).join('; '));
+        continue;
+      }
+      if (sweepMode === 'check') {
+        push(id, 'none', 'skipped', list.length
+          ? (list.length + ' item(s) pending (dry run — nothing touched)')
+          : 'nothing pending');
+        continue;
+      }
+      push(id, acted.length ? id : 'none', acted.length ? 'fixed' : 'skipped',
+        acted.length ? (acted.length + ' item(s) handled') : 'nothing to do');
+    }
+  }
+
   return results;
 
   // ---- local: generic AUTO-SAFE migration fix ----------------------------
