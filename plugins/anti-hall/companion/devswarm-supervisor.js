@@ -607,19 +607,57 @@ function writeReconcileSweepState(home, F, state) {
 // is skipped, never thrown — this signal only exists to discover WHICH
 // projects are active; the real reconcile call re-derives its own repoKey
 // from cwd independently regardless of what we pass in here.
+//
+// D12 item 5 (v0.96.1) — EXPLICIT BELT-AND-SUSPENDERS HARDENING, NOT A FIX
+// for defect 3e000e49fe1b. That defect's stated mechanism (a stale worktree
+// winning the representative slot over a live one for the same repoKey) was
+// investigated and REFUTED: `resolve()` (the git-root probe in
+// lib/devswarm-repokey.js) already requires the candidate path to exist —
+// spawnSync ENOENTs on a missing cwd, so a deleted worktree's own resolve()
+// call already fails and is skipped by the pre-existing `if (!key ...)
+// continue` below, before it could ever reach `seen`. The real cause of that
+// defect's field symptom (that one repoKey's hivecontrol-active.json entry
+// never populating) is still open and is being traced separately via a
+// read-only repro; this change does not close it.
+//
+// What THIS does: consults `deps.fs` (default real `fs`) via `existsSync`
+// EXPLICITLY and independently of whatever `repoKeyForWorktree` happens to do
+// internally, so the "prefer a live path" guarantee no longer rides on that
+// resolver's incidental existence requirement — a defensive decoupling, kept
+// because it is cheap and strictly does not weaken today's behavior, not
+// because it was proven to fix a live incident.
+//
+// TWO-PASS, each descriptor visited exactly once (no redundant git spawns):
+// PASS 1 restricts to worktreePaths that currently EXIST — first-resolving
+// wins per repoKey, same semantics as before, just existence-gated. PASS 2 is
+// the FALLBACK for a repoKey with no existing candidate at all — the
+// pre-existing fail-open contract still applies (first descriptor wins), a
+// stale representative there is no worse than today's behavior.
 function distinctRepoKeys(descriptors, deps) {
   const d = deps || {};
+  const F = d.fs || fs;
   const resolve = d.repoKeyForWorktree || function (wt) {
     try { return require('./lib/devswarm-repokey.js').repoKeyForWorktree(wt); } catch (_) { return null; }
   };
+  const exists = (wt) => { try { return F.existsSync(wt); } catch (_) { return false; } };
+  const list = descriptors || [];
   const seen = new Map();
-  for (const desc of (descriptors || [])) {
-    if (!desc || !desc.worktreePath) continue;
+
+  for (const desc of list) {
+    if (!desc || !desc.worktreePath || !exists(desc.worktreePath)) continue;
     let key = null;
     try { key = resolve(desc.worktreePath); } catch (_) { key = null; }
     if (!key || seen.has(key)) continue;
     seen.set(key, desc.worktreePath);
   }
+  for (const desc of list) {
+    if (!desc || !desc.worktreePath || exists(desc.worktreePath)) continue; // already handled above
+    let key = null;
+    try { key = resolve(desc.worktreePath); } catch (_) { key = null; }
+    if (!key || seen.has(key)) continue;
+    seen.set(key, desc.worktreePath);
+  }
+
   const out = [];
   for (const [repoKey, worktreePath] of seen) out.push({ repoKey, worktreePath });
   return out;

@@ -131,6 +131,64 @@ test('distinctRepoKeys: fail-open — a descriptor with no worktreePath, or an u
   assert.deepStrictEqual(out, [{ repoKey: 'ok-key', worktreePath: '/wt/ok' }]);
 });
 
+// D12 item 5 (v0.96.1) — EXPLICIT BELT-AND-SUSPENDERS HARDENING, NOT the fix
+// for defect 3e000e49fe1b. That defect's stated mechanism (a stale worktree
+// winning the representative slot over a live one for the SAME repoKey) was
+// investigated and REFUTED: the pre-existing git-root probe (resolve()) in
+// distinctRepoKeys already requires the candidate path to exist — a deleted
+// worktree's own resolve() call already fails and is skipped by the
+// pre-existing fail-open, before it could ever reach `seen`. The real cause
+// of that defect's field symptom is still open, traced separately. These
+// tests cover `fs.existsSync` (injectable via deps.fs) now being consulted
+// EXPLICITLY, decoupled from whatever the injected/real repoKeyForWorktree
+// happens to do internally — cheap, and strictly does not weaken today's
+// behavior, kept as hardening rather than as a proven incident fix.
+test('distinctRepoKeys: a stale worktreePath (fs.existsSync false) never wins over a live one sharing the same repoKey', () => {
+  const descriptors = [
+    { id: 'stale', worktreePath: '/wt/proj/stale' },
+    { id: 'live', worktreePath: '/wt/proj/live' },
+  ];
+  const existing = new Set(['/wt/proj/live']);
+  const out = M.distinctRepoKeys(descriptors, {
+    repoKeyForWorktree: () => 'proj-key', // both worktrees belong to the SAME repo
+    fs: { existsSync: (p) => existing.has(p) },
+  });
+  assert.deepStrictEqual(out, [{ repoKey: 'proj-key', worktreePath: '/wt/proj/live' }],
+    'the LIVE worktreePath must be chosen, never the stale one, regardless of iteration order');
+});
+
+test('distinctRepoKeys: a stale-then-live pair in the OPPOSITE order still prefers the live one (order-independent)', () => {
+  const descriptors = [
+    { id: 'live', worktreePath: '/wt/proj/live' },
+    { id: 'stale', worktreePath: '/wt/proj/stale' },
+  ];
+  const existing = new Set(['/wt/proj/live']);
+  const out = M.distinctRepoKeys(descriptors, {
+    repoKeyForWorktree: () => 'proj-key',
+    fs: { existsSync: (p) => existing.has(p) },
+  });
+  assert.deepStrictEqual(out, [{ repoKey: 'proj-key', worktreePath: '/wt/proj/live' }]);
+});
+
+test('distinctRepoKeys: every descriptor stale for a repoKey -> falls back to the FIRST worktreePath, never throws (existing fail-open contract)', () => {
+  const descriptors = [
+    { id: 'stale1', worktreePath: '/wt/proj/stale1' },
+    { id: 'stale2', worktreePath: '/wt/proj/stale2' },
+  ];
+  const out = M.distinctRepoKeys(descriptors, {
+    repoKeyForWorktree: () => 'proj-key',
+    fs: { existsSync: () => false },
+  });
+  assert.deepStrictEqual(out, [{ repoKey: 'proj-key', worktreePath: '/wt/proj/stale1' }]);
+});
+
+test('distinctRepoKeys: no deps.fs override -> defaults to the real fs.existsSync (never throws on a missing module/opts)', () => {
+  const descriptors = [{ id: 'x', worktreePath: '/definitely/not/a/real/path/xyz' }];
+  const out = M.distinctRepoKeys(descriptors, { repoKeyForWorktree: () => 'k' });
+  assert.deepStrictEqual(out, [{ repoKey: 'k', worktreePath: '/definitely/not/a/real/path/xyz' }],
+    'fail-open fallback still applies when the real fs says the path does not exist');
+});
+
 // ---------------------------------------------------------------------------
 // reconcileSweepIfDue — gating (disabled / no-descriptors / no-resolvable / cooldown)
 // ---------------------------------------------------------------------------
