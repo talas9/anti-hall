@@ -735,13 +735,17 @@ test('meshRowCopy: one canonical field table drives BOTH copy shapes (needsReply
   assert.deepStrictEqual(verbatim, {
     sender: 'from-id', recipient: 'to-id', body: 'hello', ts: 1234, mtype: 'direct',
     urgency: 'high', needsReply: true, hash: 'mesh:abc', isHeartbeat: false, workspaceId: 'w1',
+    // origHash (defect 64861a623503) — part of the canonical table, so it is
+    // carried on BOTH shapes. `undefined` here because this fixture row is not
+    // itself a forwarded copy; a forward of it supplies the value via overrides.
+    origHash: undefined,
   }, 'the verbatim shape carries every field, hash and heartbeat flag included');
 
   // Forward (foldGroupIntoSurvivor -> store.appendMeshMessage).
   const forward = cli.meshRowCopy(row, 'message', { to: 'survivor', type: 'direct', urgency: row.urgency || 'normal' });
   assert.deepStrictEqual(forward, {
     from: 'from-id', to: 'survivor', message: 'hello', timestamp: 1234,
-    type: 'direct', urgency: 'high', needsReply: true,
+    type: 'direct', urgency: 'high', needsReply: true, origHash: undefined,
   }, 'the forward shape re-addresses the row; hash is recomputed by the caller and a heartbeat can never reach here');
 
   // The table is the SINGLE source of truth: every canonical field appears in the

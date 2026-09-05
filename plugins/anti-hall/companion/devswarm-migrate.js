@@ -124,11 +124,14 @@ function acquireMigrateLock(home, io) {
 // distinct rows, while a re-run maps each physical line to the SAME hash and is
 // therefore OR-IGNOREd (idempotent). Append-only inbox => existing line indices
 // never shift, so only newly-appended lines import on a re-run.
-function legacyLineHash(id, index, line) {
-  return 'legacy:' + crypto.createHash('sha256')
-    .update(String(id) + '\x00' + String(index) + '\x00' + String(line))
-    .digest('hex');
-}
+//
+// ONE DEFINITION (defect 8f2aec40e2ff): the body now lives in
+// companion/lib/devswarm-unread.js, because the loss-free UNION primitive there
+// must recompute this EXACT hash to recognise a migrated store row as the same
+// physical message as its legacy NDJSON line. Two copies would drift and the
+// dedup would silently stop matching, so this delegates rather than duplicates.
+// Kept exported here for every existing caller and test.
+const legacyLineHash = require('./lib/devswarm-unread.js').legacyLineHash;
 
 // readInbox(inboxPath, F) -> { readable, lines }. Distinguishes a genuinely
 // READABLE inbox (possibly empty) from a MISSING path or a read ERROR — a

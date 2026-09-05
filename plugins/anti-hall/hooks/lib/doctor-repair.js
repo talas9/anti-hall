@@ -1851,6 +1851,169 @@ function sweepStaleDrainMarkers(opts) {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// promoteUnclaimedSessions({home, mode, cwd, env}) -> array of result rows.
+//
+// The DOCTOR half of the `unclaimed:<id>` forward migration (carry-out (e)); the
+// UPDATE half is skills/update/scripts/update.js's promoteUnclaimedPostUpdate.
+// Both delegate to the SAME devswarm.js primitive
+// (promoteUnclaimedRegistrySessions) so the two paths can never disagree about
+// what is safe to promote — this file adds no decision logic of its own.
+//
+// mode 'check' (default): READ-ONLY — reports which rows still carry the
+// synthetic marker and whether a real session id is discoverable for them.
+// mode 'repair': performs the promotion. NO-DELETE in every mode: the only
+// change ever made is replacing one field's value on a row that has an
+// independently-known real session id; a row without one is left exactly as it
+// is. Idempotent and fail-open — a build without the primitive, or a throw,
+// reports a row and touches nothing.
+function promoteUnclaimedSessions(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const mode = o.mode === 'repair' ? 'repair' : 'check';
+
+  let devswarm;
+  try {
+    devswarm = require(path.join(PLUGIN_ROOT, 'scripts', 'devswarm.js'));
+  } catch (e) {
+    return [{ id: null, status: 'failed', msg: 'devswarm.js could not be loaded: ' + errMsg(e) }];
+  }
+  if (typeof devswarm.promoteUnclaimedRegistrySessions !== 'function') {
+    return [{ id: null, status: 'failed', msg: 'devswarm.js does not export promoteUnclaimedRegistrySessions in this build — nothing touched' }];
+  }
+
+  if (mode === 'check') {
+    // A pure listing: readDescriptors + the marker test, with NO write. The
+    // primitive itself always writes when it can, so check mode must not call
+    // it — it re-derives only the (trivial) marker predicate here.
+    let readDescriptors;
+    try {
+      ({ readDescriptors } = require(path.join(PLUGIN_ROOT, 'companion', 'devswarm-supervisor.js')));
+    } catch (e) {
+      return [{ id: null, status: 'failed', msg: 'devswarm-supervisor.js could not be loaded: ' + errMsg(e) }];
+    }
+    let descs = [];
+    try { descs = readDescriptors(home) || []; } catch (e) { return [{ id: null, status: 'failed', msg: 'could not read descriptors: ' + errMsg(e) }]; }
+    const rows = [];
+    for (const d of descs) {
+      if (!d || d.id == null) continue;
+      if (String(d.sessionId) !== 'unclaimed:' + String(d.id)) continue;
+      rows.push({ id: String(d.id), status: 'pending', msg: 'workspace ' + String(d.id) + ' still carries the synthetic unclaimed: session marker' });
+    }
+    return rows;
+  }
+
+  let r;
+  try { r = devswarm.promoteUnclaimedRegistrySessions(home, { cwd: o.cwd, env: o.env }) || {}; }
+  catch (e) { return [{ id: null, status: 'failed', msg: 'promote sweep raised: ' + errMsg(e) }]; }
+  const rows = [];
+  for (const p of (r.promoted || [])) {
+    rows.push({ id: String(p.id), status: 'fixed', msg: 'promoted ' + String(p.id) + ' from the unclaimed: marker to its real session id' });
+  }
+  for (const l of (r.left || [])) {
+    rows.push({ id: String(l.id), status: 'skipped', msg: 'left ' + String(l.id) + ' as is (' + String(l.reason) + ') — never guessed, never deleted' });
+  }
+  return rows;
+}
+
+// ---------------------------------------------------------------------------
+// RETENTION SWEEPS (R12 hygiene). Two append-only directories under the
+// devswarm root grow without bound because nothing has ever deleted from them:
+//   reaped/*.ndjson      — `reap-orphans` audit trails
+//   send-receipts/<day>/ — cmdSend delivery receipts (v0.90.0)
+// Both are pure diagnostics: nothing reads a reaped log after the run that
+// wrote it, and a receipt is only consulted by the reply tracker within the
+// same turn. sweepAgedFiles is the ONE implementation both use.
+//
+// mode 'check' LISTS candidates and deletes nothing. mode 'repair' deletes ONLY
+// files whose mtime is older than the retention window — the window is read
+// from the caller-supplied env var name so each sweep keeps its own tunable,
+// and an unparseable/absent value falls back to the default (a typo must never
+// widen a deletion window). A missing directory is a routine no-op.
+function retentionDays(env, varName, fallbackDays) {
+  const raw = (env || process.env)[varName];
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallbackDays;
+}
+
+function sweepAgedFiles(opts) {
+  const o = opts || {};
+  const mode = o.mode === 'repair' ? 'repair' : 'check';
+  const F = (o.io && o.io.fs) || fs;
+  const now = Number.isFinite(o.io && o.io.now) ? o.io.now : Date.now();
+  const maxAgeMs = o.days * 24 * 60 * 60 * 1000;
+  const results = [];
+
+  const walk = (dir, depth) => {
+    let names = [];
+    try { names = F.readdirSync(dir); } catch (e) {
+      if (e && e.code === 'ENOENT') return; // routine: nothing has ever been written here
+      results.push({ file: dir, status: 'failed', msg: 'could not list ' + dir + ': ' + errMsg(e) });
+      return;
+    }
+    for (const name of names) {
+      const full = path.join(dir, name);
+      let st;
+      try { st = F.statSync(full); } catch (_) { continue; } // vanished mid-sweep: nothing to do
+      if (st.isDirectory()) {
+        // One level of date-partitioning (send-receipts/<YYYY-MM-DD>/) is the
+        // only nesting either directory has; bounded so a symlink loop or an
+        // unexpected deep tree can never make this walk unbounded.
+        if (depth < 1) walk(full, depth + 1);
+        continue;
+      }
+      if (o.suffix && !name.endsWith(o.suffix)) continue;
+      const ageMs = now - st.mtimeMs;
+      if (ageMs <= maxAgeMs) continue; // inside the retention window — NEVER touched
+      if (mode === 'check') {
+        results.push({ file: full, ageMs, status: 'pending', msg: full + ' is older than ' + o.days + ' day(s)' });
+        continue;
+      }
+      try {
+        F.unlinkSync(full);
+        results.push({ file: full, ageMs, status: 'fixed', msg: 'removed ' + full + ' (age ' + Math.round(ageMs / 86400000) + 'd)' });
+      } catch (e) {
+        results.push({ file: full, ageMs, status: 'failed', msg: 'could not remove ' + full + ': ' + errMsg(e) });
+      }
+    }
+  };
+  walk(o.dir, 0);
+  return results;
+}
+
+const REAPED_RETENTION_DAYS_DEFAULT = 30;
+const SEND_RECEIPT_RETENTION_DAYS_DEFAULT = 7;
+
+// sweepReapedLogs({home, mode, env, io}) — retention sweep for
+// <devswarmRoot>/reaped/*.ndjson. Window: ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS
+// (default 30 days).
+function sweepReapedLogs(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  return sweepAgedFiles({
+    dir: path.join(devswarmRootFor(home), 'reaped'),
+    suffix: '.ndjson',
+    days: retentionDays(o.env, 'ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS', REAPED_RETENTION_DAYS_DEFAULT),
+    mode: o.mode, io: o.io,
+  });
+}
+
+// sweepSendReceipts({home, mode, env, io}) — retention sweep for
+// <devswarmRoot>/send-receipts/<YYYY-MM-DD>/*.json. Window:
+// ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS (default 7 days) — short
+// because a receipt's only reader (devswarm-parent-reply-tracker.js) consults
+// it within the same turn it was written.
+function sweepSendReceipts(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  return sweepAgedFiles({
+    dir: path.join(devswarmRootFor(home), 'send-receipts'),
+    suffix: '.json',
+    days: retentionDays(o.env, 'ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS', SEND_RECEIPT_RETENTION_DAYS_DEFAULT),
+    mode: o.mode, io: o.io,
+  });
+}
+
 module.exports = {
   readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
   // Codex "is it wired" precise per-event detection (exported for direct unit
@@ -1872,4 +2035,9 @@ module.exports = {
   // R11 Auditor Q5 — sweep drain markers left under OTHER ids that the gate's
   // own Stop-hook consumer never visits:
   sweepStaleDrainMarkers,
+  // carry-out (e) — doctor half of the `unclaimed:<id>` forward migration:
+  promoteUnclaimedSessions,
+  // R12 hygiene — bounded retention for the two append-only diagnostic dirs:
+  sweepAgedFiles, sweepReapedLogs, sweepSendReceipts,
+  REAPED_RETENTION_DAYS_DEFAULT, SEND_RECEIPT_RETENTION_DAYS_DEFAULT,
 };

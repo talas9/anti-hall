@@ -229,6 +229,12 @@ function ensureMessagesMeshColumns(db) {
     ['sender', 'TEXT'], ['recipient', 'TEXT'], ['mtype', 'TEXT'],
     ['urgency', 'TEXT'], ['is_heartbeat', 'INTEGER'], ['seq', 'INTEGER'],
     ['needs_reply', 'INTEGER'],
+    // orig_hash (defect 64861a623503, v0.90.0) — the ORIGINAL row's content
+    // hash carried onto a FORWARDED copy. Nullable and purely additive: a
+    // legacy row (and every non-forwarded row) reads back null, and NOTHING
+    // requires it (the forwarded-copy dedup reconstructs it from the row's own
+    // fields when absent — see scripts/devswarm.js forwardedOrigHashOf).
+    ['orig_hash', 'TEXT'],
   ];
   for (const [name, type] of need) {
     if (!cols.includes(name)) {
@@ -324,11 +330,18 @@ function appendMeshMessage(store, fields) {
   const hash = f.hash != null ? String(f.hash) : null;
   const isHeartbeat = !!f.isHeartbeat;
   const needsReply = !!f.needsReply;
+  // origHash (defect 64861a623503) — set ONLY by a forward site, which passes
+  // the ORIGINAL row's hash so a reader that already consumed that original can
+  // recognise the re-addressed copy as the same logical message. Deliberately
+  // NOT part of meshMessageHash: including it would change the hash of every
+  // forwarded row relative to prior builds and break the OR-IGNORE idempotence
+  // a re-run of any fold/forward depends on.
+  const origHash = f.origHash != null ? String(f.origHash) : null;
   const workspaceId = type === 'direct' ? to : BROADCAST_PARTITION_ID;
   const recipient = type === 'direct' ? to : null;
   return store.appendMeshRow({
     workspaceId, ts, hash, body: message,
-    sender: from, recipient, mtype: type, urgency, isHeartbeat, needsReply,
+    sender: from, recipient, mtype: type, urgency, isHeartbeat, needsReply, origHash,
   });
 }
 
@@ -414,6 +427,10 @@ function openSqlite(home, workspaceId, opts) {
     + ' urgency TEXT,'
     + ' is_heartbeat INTEGER,'
     + ' needs_reply INTEGER,'
+    // orig_hash (defect 64861a623503) — see ensureMessagesMeshColumns. NULLABLE,
+    // never part of UNIQUE(hash): a forwarded copy keeps its OWN re-addressed
+    // hash as its identity and merely REMEMBERS the original's.
+    + ' orig_hash TEXT,'
     + ' seq INTEGER,'
     + ' UNIQUE(hash)'
     + ');'
@@ -522,13 +539,14 @@ function openSqlite(home, workspaceId, opts) {
       const urgency = m && m.urgency != null ? String(m.urgency) : null;
       const isHeartbeat = m && m.isHeartbeat ? 1 : 0;
       const needsReply = m && m.needsReply ? 1 : 0;
+      const origHash = m && m.origHash != null ? String(m.origHash) : null;
       const stmt = db.prepare(
         'INSERT ' + (hash !== null ? 'OR IGNORE ' : '')
-        + 'INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, seq)'
-        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));'
+        + 'INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, seq)'
+        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));'
       );
       const r = retrySqliteBusy(() =>
-        stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat, needsReply)
+        stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat, needsReply, origHash)
       );
       if (r.changes <= 0) return { inserted: false, seq: null }; // dedupe hit (OR IGNORE)
       const got = db.prepare('SELECT seq FROM messages WHERE id = ?;').get(Number(r.lastInsertRowid));
@@ -728,7 +746,7 @@ function openSqlite(home, workspaceId, opts) {
       const o = opts || {};
       const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
       const rows = db.prepare(
-        'SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, seq'
+        'SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, seq'
         + ' FROM messages WHERE workspace_id = ? ORDER BY id ASC;'
       ).all(String(id));
       const out = [];
@@ -747,6 +765,7 @@ function openSqlite(home, workspaceId, opts) {
           urgency: rows[i].urgency != null ? String(rows[i].urgency) : null,
           isHeartbeat: rows[i].is_heartbeat === 1 || rows[i].is_heartbeat === 1n,
           needsReply: rows[i].needs_reply === 1 || rows[i].needs_reply === 1n,
+          origHash: rows[i].orig_hash != null ? String(rows[i].orig_hash) : null,
           storeSeq: physicalSeq,
         });
       }
@@ -1100,6 +1119,8 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
           urgency: m && m.urgency != null ? String(m.urgency) : null,
           isHeartbeat: !!(m && m.isHeartbeat),
           needsReply: !!(m && m.needsReply),
+          // orig_hash parity with the sqlite backend (defect 64861a623503).
+          origHash: m && m.origHash != null ? String(m.origHash) : null,
           seq,
         });
         return { inserted: true, seq };
@@ -1310,6 +1331,7 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
           urgency: kept[i].urgency != null ? String(kept[i].urgency) : null,
           isHeartbeat: !!kept[i].isHeartbeat,
           needsReply: !!kept[i].needsReply,
+          origHash: kept[i].origHash != null ? String(kept[i].origHash) : null,
           storeSeq: physicalSeq,
         });
       }
@@ -1624,6 +1646,32 @@ function archivedOnlyIds(home, F) {
   return out;
 }
 
+// unionUnreadFor(d, store, F) — the ONE bridge from a registry descriptor to
+// the shared loss-free union primitive (defect 8f2aec40e2ff).
+//
+// LAZY + GUARDED require, deliberately NOT a top-level one: devswarm-unread.js
+// requires THIS module back (openStoreForUnread), so a top-level require here
+// would create a load cycle whose resolution order is a latent hazard. The lazy
+// form also keeps the fail-open contract total — a missing/broken module in a
+// partial package degrades to the pre-fix store-only count instead of throwing
+// out of a projection every read path depends on.
+//
+// Returns null when the union cannot be computed at all; the caller then keeps
+// its store-only count.
+function unionUnreadFor(d, store, F) {
+  if (!d) return null;
+  let unreadMod;
+  try { unreadMod = require('./devswarm-unread.js'); } catch (_) { return null; }
+  if (!unreadMod || typeof unreadMod.unionUnread !== 'function') return null;
+  return unreadMod.unionUnread({
+    inboxPath: d.inboxPath || null,
+    cursorPath: d.cursorPath || null,
+    id: d.id,
+    storeHandle: store,
+    fsi: F,
+  });
+}
+
 function summaryHashFor(store, o) {
   return (o && o.workspaceId != null)
     ? hashFromWorkspaceId(o.workspaceId)
@@ -1715,7 +1763,39 @@ function computeSummary(store, opts) {
     if (archivedIds.has(String(d.id))) continue; // archived -> never projected ACTIVE
     const total = store.messageCount(d.id);
     const cursor = store.cursorValue(d.id);
-    const unread = Math.max(0, total - cursor);
+    // UNREAD UNIFICATION (defect 8f2aec40e2ff, P1). `total - cursor` counts ONLY
+    // the store side. The parent Stop gate, liveness.js and the `inbox count`
+    // CLI all count the LOSS-FREE UNION (durable-NDJSON unread ∪ store-only
+    // unread, deduped by content hash) via companion/lib/devswarm-unread.js —
+    // so for the SAME row, minutes apart, a `roster` sweep reading this
+    // projection reported 15 while the gate reported 8. Two enforcing surfaces
+    // disagreeing about how much mail is outstanding is the whole defect.
+    //
+    // This now calls the SAME shared primitive (never a second implementation).
+    // `store` is passed as the caller-opened `storeHandle` unionUnread already
+    // expects; the function never opens or closes one. Fail-open by contract:
+    // unionUnread never throws, and with no inboxPath/cursorPath on the
+    // descriptor its NDJSON side reads as empty, leaving the union count equal
+    // to the store-only count — byte-identical to the pre-fix value for every
+    // NDJSON-less row.
+    //
+    // COST: unionUnread reads the descriptor's NDJSON and materialises this
+    // partition's FULL store history (it needs the total to dedupe against).
+    // computeSummary runs once PER REGISTRY ROW on EVERY projection, so that is
+    // a real cost on a long-lived project — the same cost class the
+    // listNeedsReply note below describes. It is therefore SKIPPED entirely for
+    // a row with no durable NDJSON path, where the union is PROVABLY equal to
+    // the store-only count already computed above (an absent inbox contributes
+    // zero lines and zero dedup hashes, so the union reduces to exactly the
+    // store's own unread rows). That is the overwhelmingly common shape, so the
+    // extra read is paid only by rows that genuinely have two sides to merge.
+    let unread = Math.max(0, total - cursor);
+    if (d.inboxPath || d.cursorPath) {
+      try {
+        const u = unionUnreadFor(d, store, F);
+        if (u && Number.isFinite(u.unread)) unread = Math.max(0, u.unread);
+      } catch (_) { /* fail-open: keep the store-only count rather than fail a projection */ }
+    }
     const gates = store.currentGates(d.id);
     const archive_ready = requiredGates.length > 0 && requiredGates.every((g) => gates[g] === true);
 

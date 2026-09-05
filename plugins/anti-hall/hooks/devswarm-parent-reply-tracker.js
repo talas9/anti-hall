@@ -119,6 +119,96 @@ function logReplyParseDrop(home, meta) {
   } catch (_) {}
 }
 
+// ---------------------------------------------------------------------------
+// SEND RECEIPTS (v0.90.0) — the RECEIPT-FIRST reply source.
+//
+// ROOT CAUSE this closes: every reply this hook has ever credited came from
+// PARSING the Bash call's stdout. That makes crediting a reply contingent on the
+// SHAPE OF THE SHELL COMMAND rather than on the send having happened — a send
+// whose stdout is redirected, swallowed by a wrapper, or interleaved past what
+// the line scanner recognises credits NOTHING, and the sender's question then
+// stays "unanswered" forever with no signal anywhere. scripts/devswarm.js's
+// cmdSend now writes a receipt file at the moment it appends the row, so the
+// send's own on-disk evidence is consulted FIRST and stdout parsing survives
+// only as the fallback for a build whose CLI predates receipts.
+//
+// PATH: ~/.anti-hall/devswarm/send-receipts/<YYYY-MM-DD>/<hash>.json — the
+// anti-hall root (liveness.js's devswarmRoot), NOT the legacy ~/.devswarm used
+// by parentInboxLogPath above. The two are deliberately different directories.
+function antiHallDevswarmRoot(home) {
+  return path.join(home, '.anti-hall', 'devswarm');
+}
+function sendReceiptsDir(home) {
+  return path.join(antiHallDevswarmRoot(home), 'send-receipts');
+}
+
+// RECEIPT_WINDOW_MS — how far back a receipt's mtime may be and still be
+// credited on THIS PostToolUse pass. A PostToolUse fires immediately after the
+// tool call that wrote the receipt, so seconds would do; the default is
+// deliberately slack enough to absorb a slow send without ever reaching back to
+// an unrelated earlier turn. Re-crediting a receipt inside the window is
+// harmless regardless: recordReply is monotonic (max of existing and new ts),
+// so a second credit for the same reply is a no-op.
+const RECEIPT_WINDOW_MS_DEFAULT = 5 * 60 * 1000;
+function receiptWindowMs(env) {
+  const raw = (env || process.env).ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : RECEIPT_WINDOW_MS_DEFAULT;
+}
+
+// receiptDayKeys(now) -> the UTC day directories a receipt inside the window
+// could live in: today and yesterday. Two, never a full listing, so the scan
+// stays O(one or two small directories) no matter how long the retention window
+// keeps older days around.
+function receiptDayKeys(now) {
+  const day = 24 * 60 * 60 * 1000;
+  return [new Date(now).toISOString().slice(0, 10), new Date(now - day).toISOString().slice(0, 10)];
+}
+
+// receiptCreditsReply(r) -> boolean. The SAME acceptance rules the stdout path
+// applies to a parsed send response, restated over the receipt's fields so the
+// two sources can never credit different things:
+//   ok:true, action is a DIRECT send, a real toId, actually inserted, and NOT
+//   itself a question (a `--question` send is a NEW question, never an answer —
+//   crediting it would clear the other side's pending question without anyone
+//   having answered it, which is the exact starvation this feature prevents).
+function receiptCreditsReply(r) {
+  if (!r || typeof r !== 'object') return false;
+  if (r.ok !== true) return false;
+  if (r.type !== 'direct') return false;
+  if (typeof r.toId !== 'string' || !r.toId) return false;
+  if (r.sent === false) return false;
+  if (r.needsReply === true) return false;
+  return true;
+}
+
+// creditRepliesFromReceipts(home, repoKey, now, env) -> number credited.
+// NEVER throws: an unreadable/absent receipt directory means zero credits and
+// the stdout fallback runs exactly as before.
+function creditRepliesFromReceipts(home, repoKey, now, env) {
+  let credited = 0;
+  const windowMs = receiptWindowMs(env);
+  for (const day of receiptDayKeys(now)) {
+    const dir = path.join(sendReceiptsDir(home), day);
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (_) { continue; } // absent day: routine
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const full = path.join(dir, name);
+      try {
+        const st = fs.statSync(full);
+        if ((now - st.mtimeMs) > windowMs) continue; // outside this turn's window
+        const r = JSON.parse(fs.readFileSync(full, 'utf8'));
+        if (!receiptCreditsReply(r)) continue;
+        const ts = Number.isFinite(r.ts) ? r.ts : st.mtimeMs;
+        recordReply(repoKey, home, r.toId, ts);
+        credited++;
+      } catch (_) { /* one bad receipt never stops the sweep */ }
+    }
+  }
+  return credited;
+}
+
 // findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs
 // walk-up looking for a `.git` entry — the same root `git rev-parse
 // --show-toplevel` would report, WITHOUT spawning git. Mirrors
@@ -300,7 +390,10 @@ function main() {
 
   const home = os.homedir();
   const text = extractResponseText(payload.tool_response);
-  if (typeof text !== 'string' || !text.trim()) return;
+  // NOTE: the empty-stdout early return that used to live here has moved BELOW
+  // the receipt sweep. A send whose stdout is empty (redirected/swallowed) is
+  // precisely the case receipts exist to cover, so bailing on it up here would
+  // have made the new path unreachable for the shape it was built for.
 
   // repoKey (not session_id — see the PER-PROJECT SCOPING header comment):
   // resolved from the payload's `cwd`, the SAME common field every other hook
@@ -352,6 +445,20 @@ function main() {
   // `grep -c` sanity-check line, previously defeated a whole-string parse
   // and silently dropped the reply). Reached only past the arming gate above
   // (WAVE 9 P2 fix), so an unarmed session never gets here at all.
+  // RECEIPT-FIRST (v0.90.0). Consult the send's OWN on-disk evidence before
+  // touching stdout. When a receipt in this turn's window credits a reply, the
+  // stdout path is skipped entirely — it could only ever re-derive the same
+  // fact from a less reliable source, and recordReply is monotonic so a double
+  // credit would be a no-op anyway. Zero credits (no receipts, an older CLI, an
+  // unreadable directory) falls through to the pre-existing parse, unchanged.
+  const nowTs = Number.isFinite(payload.timestamp) ? payload.timestamp : Date.now();
+  let receiptCredits = 0;
+  try { receiptCredits = creditRepliesFromReceipts(home, repoKey, nowTs, process.env); } catch (_) { receiptCredits = 0; }
+  if (receiptCredits > 0) return;
+
+  // Fallback path only from here on — it needs parseable stdout.
+  if (typeof text !== 'string' || !text.trim()) return;
+
   const resp = parseSendResponse(text);
   if (!resp) {
     // A command that plausibly WAS a devswarm send produced stdout with no

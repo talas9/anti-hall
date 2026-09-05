@@ -166,6 +166,9 @@ const {
   isSafeId, devswarmRoot, livenessPathFor,
   writeVerdict, hasFreshHeartbeat, heartbeatTs, worktreeActivityMtime, unreadBacklog, DEFAULT_IDLE_MS,
   isDormantRow, unionPendingFor, isSiblingPartitionLive,
+  // heartbeatPathFor — the `unclaimed:` forward migration's ONLY independent
+  // source of a row's real session id (cmdHeartbeat records `--session`).
+  heartbeatPathFor,
 } = require('../companion/lib/liveness.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
@@ -910,11 +913,19 @@ function forceCrossProjectOverride(flags, id) {
 // in every normal environment. Uses alog.logDir() (not a hand-rolled
 // os.homedir() join) so it honours the same ANTI_HALL_LOG_DIR override every
 // other log in this plugin does, and tests never touch the real home.
-function logAuthorityOverride(entry) {
+// `home` (R12 hygiene (b)): the CALLER's home, i.e. `ctx.home`. Without it this
+// wrote into the REAL `os.homedir()` even when the CLI was invoked against an
+// isolated home — so a test run (or any caller pointed at a scratch home) left
+// audit lines in the operator's actual log directory, and the lines an isolated
+// home was supposed to collect were nowhere its own reader would look. The
+// explicit ANTI_HALL_LOG_DIR override still wins over both (that is its whole
+// purpose); `home` only replaces the os.homedir() default.
+function logAuthorityOverride(entry, home) {
   try {
-    const dir = (alog && typeof alog.logDir === 'function')
-      ? alog.logDir()
-      : path.join(os.homedir(), '.anti-hall', 'logs');
+    const envOverride = process.env.ANTI_HALL_LOG_DIR;
+    const dir = envOverride
+      ? envOverride
+      : path.join(home || os.homedir(), '.anti-hall', 'logs');
     fs.mkdirSync(dir, { recursive: true });
     fs.appendFileSync(path.join(dir, AUTHORITY_OVERRIDE_LOG_FILE), JSON.stringify(entry) + '\n');
   } catch (_) { /* best-effort audit: never fails the authorised operation */ }
@@ -927,8 +938,22 @@ function forceCrossProjectHint(id, provided, value) {
       + 'the override must name the EXACT id being archived: `--force-cross-project ' + String(id) + '`';
   }
   return ' — if this cross-project archive is intentional, re-run with `--force-cross-project '
-    + String(id) + '` (the flag must name this exact id; the override is logged)';
+    + String(id) + '` (the flag must name this exact id; the override is logged). '
+    + FORCE_CROSS_PROJECT_ORPHAN_WARNING;
 }
+
+// FORCE_CROSS_PROJECT_ORPHAN_WARNING (R12 hygiene (c)) — the consequence the
+// hatch never stated. This archive runs from OUTSIDE the workspace's own
+// project, so the registry row it removes is removed from the CURRENT project's
+// view: any unread still sitting in that workspace's partition IN ITS OWN
+// PROJECT'S STORE is left with no live registry row there, i.e. an orphan
+// partition (summary `orphans[]`). Nothing is deleted and nothing is lost — the
+// messages stay reachable — but the operator has to know to drain or heal it
+// from inside that project, because no sweep run from here can do it for them.
+const FORCE_CROSS_PROJECT_ORPHAN_WARNING =
+  'NOTE: archiving across projects removes the row from THIS project only — if that workspace '
+  + 'still has unread messages, its partition becomes an ORPHAN in its own project (nothing is '
+  + 'deleted; drain or heal it from inside that project).';
 
 function descriptorPhysicalOwnerKey(desc) {
   if (desc && typeof desc.ownerKey === 'string' && desc.ownerKey) return desc.ownerKey;
@@ -1071,6 +1096,14 @@ const MESH_ROW_COPY_FIELDS = [
   { row: 'mtype', msg: 'type' },
   { row: 'urgency', msg: 'urgency' },
   { row: 'needsReply', msg: 'needsReply' },
+  // origHash (defect 64861a623503) — carried on BOTH shapes. A verbatim re-home
+  // must preserve it like every other stored field; a FORWARD of an already-
+  // forwarded row must keep pointing at the ROOT original (never at the
+  // intermediate copy), which is exactly what copying the source row's own
+  // origHash through achieves. A forward of a NON-forwarded row has nothing to
+  // copy here (null) and the forward site supplies `origHash: m.hash` via
+  // `overrides`, which is applied last.
+  { row: 'origHash', msg: 'origHash' },
   { row: 'hash', msg: null },
   { row: 'isHeartbeat', msg: null },
 ];
@@ -1115,6 +1148,122 @@ function archiveForwardMaxAgeMs(env) {
 // (MESH_ROW_COPY_FIELDS/meshRowCopy) every other forward site in this file uses —
 // no parallel format invented.
 function archivedForwardProvenancePrefix(id) { return '[forwarded from archived ' + id + '] '; }
+// The READ half of archivedForwardProvenancePrefix — the ONE regex that
+// recognises (and can strip) that envelope, so the prefix format is written in
+// exactly one place and parsed in exactly one place.
+const ARCHIVED_FORWARD_PREFIX_RE = /^\[forwarded from archived ([^\]]+)\] /;
+
+// stripArchivedForwardPrefix(body) -> { archivedId, body }. `archivedId` is null
+// (and `body` returned verbatim) for a row that is not an archived forward.
+function stripArchivedForwardPrefix(body) {
+  if (typeof body !== 'string') return { archivedId: null, body: '' };
+  const m = ARCHIVED_FORWARD_PREFIX_RE.exec(body);
+  if (!m) return { archivedId: null, body };
+  return { archivedId: m[1], body: body.slice(m[0].length) };
+}
+
+// forwardedOrigHashOf(row) -> the ORIGINAL row's hash for a forwarded copy, or
+// null (defect 64861a623503).
+//
+// Two tiers, in order:
+//   1. `row.origHash` — stamped at forward time by forwardArchivedOrphanUnread
+//      from this build on. Authoritative; no reconstruction needed.
+//   2. RECONSTRUCTION for a row forwarded by an OLDER build (no origHash
+//      column value): every field the original's hash was computed over is
+//      still recoverable from the forwarded row itself, because the forward
+//      envelope changes exactly two of them and both are invertible —
+//      `to` (the new survivor) is replaced by the archived id the provenance
+//      prefix names, and `message` gains that prefix, which is stripped back
+//      off. `from`/`timestamp`/`urgency`/`needsReply` are carried VERBATIM by
+//      MESH_ROW_COPY_FIELDS, and `type` is always 'direct' (isForwardable
+//      admits nothing else). So meshMessageHash over those recovered fields
+//      reproduces the original's hash byte-for-byte — no store lookup, no
+//      persisted backfill, and therefore no migration needed for the ~438
+//      archived forwards already sitting in a field Primary's partitions.
+//
+// Fail-soft: any unexpected shape returns null (no dedup signal), never throws.
+function forwardedOrigHashOf(row) {
+  if (!row || typeof row !== 'object') return null;
+  if (row.origHash != null && String(row.origHash) !== '') return String(row.origHash);
+  const parsed = stripArchivedForwardPrefix(row.body);
+  if (!parsed.archivedId) return null;
+  try {
+    return store.meshMessageHash({
+      from: row.sender,
+      to: parsed.archivedId,
+      type: 'direct',
+      urgency: row.urgency,
+      message: parsed.body,
+      timestamp: row.ts,
+      needsReply: row.needsReply,
+    });
+  } catch (_) { return null; }
+}
+
+// logicalDeliveryKey(row) -> a SECONDARY, weaker identity: (from, ts,
+// prefix-stripped body). The exact-hash tier above is the primary and only
+// cursor-affecting one; this key exists solely to suppress the OTHER shape the
+// field report measured — 75 EXACT RESENDS that are not archived forwards at
+// all and therefore share neither `hash` nor `origHash` with the copy the
+// reader already handled.
+//
+// DELIVERY-TIME SUPPRESSION ONLY. This key is deliberately weaker than a hash
+// (two genuinely distinct messages sent by the same sender at the same
+// millisecond with identical text would collide), so a match must NEVER advance
+// a cursor past the row — see foldSiblingGapRows, where a logically-suppressed
+// row is withheld exactly like a gap row: not delivered, and NOT consumed, so
+// the row stays permanently reachable by reading its partition directly.
+function logicalDeliveryKey(row) {
+  if (!row || typeof row !== 'object') return null;
+  const from = row.sender != null ? String(row.sender) : '';
+  const ts = row.ts != null ? String(row.ts) : '';
+  const body = stripArchivedForwardPrefix(row.body).body;
+  if (from === '' && ts === '' && body === '') return null;
+  return from + ' ' + ts + ' ' + body;
+}
+
+// CONSUMED_HASH_SEED_CAP — how many of the caller's OWN already-consumed rows
+// (the newest ones, immediately below its cursor) are scanned to seed the dedup
+// sets. Bounded because a long-lived Primary's partition is append-only and
+// never pruned: seeding from the FULL history would make every read O(history).
+// 2000 is far past any plausible in-flight forward wave (the field incident's
+// was 608 rows) while staying a trivially cheap slice of an already-materialised
+// listMessages array.
+const CONSUMED_HASH_SEED_CAP = 2000;
+
+// consumedDedupSeed(s, id, cursor, cap) -> { hashes:Set, logical:Set }.
+//
+// ROOT CAUSE this closes (defect 64861a623503): `seenHashes` used to be seeded
+// ONLY from the caller's CURRENT UNREAD rows, so a forwarded copy could only
+// ever be matched against a message still sitting unread. The field case is the
+// opposite one — the Primary had ALREADY CONSUMED all 438 originals, so there
+// was nothing left in `unread` to match against and every forward was delivered
+// as new. Seeding from CONSUMED history (rows below the cursor) is what makes
+// "I have already handled this" expressible at all.
+//
+// Cheapest available consumed-hash source: the caller's OWN partition rows below
+// its own cursor, from the SAME `listMessages` read path everything else uses,
+// bounded to the newest `cap` of them. No new index, no new persisted state.
+// Fail-soft: an unreadable store yields empty sets (dedup simply does not fire).
+function consumedDedupSeed(s, id, cursor, cap) {
+  const out = { hashes: new Set(), logical: new Set() };
+  const c = Number.isFinite(cursor) && cursor > 0 ? Math.floor(cursor) : 0;
+  if (c <= 0) return out;
+  const limit = Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : CONSUMED_HASH_SEED_CAP;
+  let rows = [];
+  try { rows = s.listMessages(id) || []; } catch (_) { return out; }
+  const end = Math.min(c, rows.length);
+  for (let i = Math.max(0, end - limit); i < end; i++) {
+    const row = rows[i];
+    if (!row) continue;
+    if (row.hash) out.hashes.add(String(row.hash));
+    const oh = forwardedOrigHashOf(row);
+    if (oh) out.hashes.add(oh);
+    const lk = logicalDeliveryKey(row);
+    if (lk) out.logical.add(lk);
+  }
+  return out;
+}
 
 // forwardArchivedOrphanUnread(s, id, survivorId, opts) — forward-only (NEVER
 // adopts/upserts a registry row for `id`) copy of an archived orphan's unread
@@ -1147,6 +1296,15 @@ function forwardArchivedOrphanUnread(s, id, survivorId, opts) {
     const fields = meshRowCopy(m, 'message', {
       to: survivorId, type: 'direct', urgency: m.urgency || 'normal',
       message: archivedForwardProvenancePrefix(id) + (m.body != null ? m.body : ''),
+      // EXACT CROSS-PARTITION DEDUP (defect 64861a623503). The forward
+      // RE-ADDRESSES the row, so its own hash necessarily differs from the
+      // original's and no reader could ever match the copy against a message it
+      // already consumed — the field failure that re-delivered 438 archived
+      // forwards to a Primary that had handled every one of them. Stamp the
+      // ORIGINAL's identity onto the copy so `foldSiblingGapRows` can suppress
+      // it. `m.origHash || m.hash`: a chain of forwards keeps pointing at the
+      // ROOT original, never at the intermediate copy.
+      origHash: (m.origHash != null ? m.origHash : m.hash) || null,
     });
     const hash = store.meshMessageHash(fields);
     const r = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
@@ -1661,12 +1819,34 @@ function isForwardable(msg) {
 // `gapWithheldCount` are computed IDENTICALLY to before this fix — this is a
 // strictly additive change, byte-compatible with every existing caller that
 // only reads those three fields.
-function foldSiblingGapRows(rows, seenHashes) {
+// EXACT CROSS-PARTITION DEDUP (defect 64861a623503, additive to everything
+// above). Two changes, and a THIRD parameter that is optional so every existing
+// caller and test keeps byte-identical behaviour:
+//
+//   (a) `seenHashes` is now matched against a row's `origHash` as well as its
+//       own `hash` — a forwarded copy carries the ORIGINAL's hash there (or has
+//       it reconstructed, see forwardedOrigHashOf), so a copy of an original the
+//       caller ALREADY CONSUMED is recognised as the exact same logical message.
+//       It is treated exactly like the pre-existing exact-hash duplicate: not
+//       delivered, but CONSUMED (the cursor may pass it), because a hash match
+//       is proof of identity.
+//
+//   (b) `seenLogical` (optional Set) adds the WEAKER (from, ts, stripped-body)
+//       key for the exact-resend shape that shares no hash at all. A match here
+//       is SUPPRESSION ONLY: the row is neither delivered nor consumed, and it
+//       poisons the rest of this window exactly like a gap row, so no cursor can
+//       advance past it and the row stays reachable forever by reading its
+//       partition directly. This deliberately trades a possible repeated
+//       suppression (a genuinely-new row colliding on the weak key would keep
+//       being withheld) for zero risk of losing one — the governing
+//       "at-least-once beats at-most-once" rule for this whole fold.
+function foldSiblingGapRows(rows, seenHashes, seenLogical) {
   const deliveredRows = [];
   const consumedThrough = [];
   let gapSeen = false;
   let gapWithheldCount = 0;
   let consumedCount = 0;
+  let logicalSuppressedCount = 0;
   for (const row of rows) {
     const wasGapSeen = gapSeen; // gapSeen state at the START of this row, before any mutation below
     if (!row) { // F5: corrupted row skipped, still poisons subsequent rows
@@ -1674,18 +1854,40 @@ function foldSiblingGapRows(rows, seenHashes) {
       if (!wasGapSeen) consumedCount++; // G1: unrecoverable either way — consume it so the ack cursor can pass it forever
       continue;
     }
-    if (row.hash && seenHashes.has(row.hash)) { // exact-hash duplicate — never counted as withheld
+    const origHash = forwardedOrigHashOf(row);
+    // exact-hash duplicate (own hash OR the original's, for a forwarded copy) —
+    // never counted as withheld
+    if ((row.hash && seenHashes.has(row.hash)) || (origHash && seenHashes.has(origHash))) {
       if (!wasGapSeen) consumedCount++; // G2: a physical row was resolved here even though nothing was delivered
       continue;
     }
     if (wasGapSeen) { gapWithheldCount++; continue; } // ambiguous suffix — withheld (never lost, cursor never touches it)
+    // (b) WEAK logical suppression — see this function's header. NOT consumed:
+    // `consumedCount` is deliberately not incremented, so every ack target
+    // derived from it stops BEFORE this row.
+    let logicalKey = null;
+    if (seenLogical) {
+      logicalKey = logicalDeliveryKey(row);
+      if (logicalKey && seenLogical.has(logicalKey)) {
+        gapSeen = true;
+        logicalSuppressedCount++;
+        continue;
+      }
+    }
     if (!isForwardable(row)) gapSeen = true; // non-forwardable: delivered now, ends this window's deliverable prefix
     if (row.hash) seenHashes.add(row.hash);
+    // Register the ORIGINAL's identity too, so a later row in THIS same fold
+    // that IS that original (or another copy of it) is suppressed symmetrically.
+    if (origHash) seenHashes.add(origHash);
+    if (seenLogical && logicalKey) seenLogical.add(logicalKey);
     consumedCount++;
     deliveredRows.push(row);
     consumedThrough.push(consumedCount);
   }
-  return { deliveredRows, deliveredCount: deliveredRows.length, gapWithheldCount, consumedCount, consumedThrough };
+  return {
+    deliveredRows, deliveredCount: deliveredRows.length, gapWithheldCount,
+    consumedCount, consumedThrough, logicalSuppressedCount,
+  };
 }
 
 // retireWorktreeDuplicates(home, keepDesc, ctx) — DELIVERY-CONVERGENCE reconcile
@@ -3847,6 +4049,123 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   });
 }
 
+// ===========================================================================
+// `unclaimed:<id>` PROMOTION (carry-out (e), v0.90.0)
+//
+// ROOT CAUSE: cmdInboxPull's auto-ensure stamps `sessionId = 'unclaimed:' + id`
+// when neither --session nor DEVSWARM_BUILDER_ID names a real session (its own
+// A6 comment explains why minting the id itself was worse). That marker is
+// correct AT STAMP TIME, but nothing ever took it back off: once a REAL session
+// started reading/pulling/registering for that row, the row still read as
+// `unclaimed:` — and isLiveSessionId REJECTS that prefix unconditionally, so
+// every liveness-driven mesh primitive (resolveMeshTarget's routing, the reap /
+// reconcile / retire safety gates, the supervisor's drainability check) kept
+// treating a row a live session was actively draining as NOT live. A `send`
+// could be routed away from it, and a sweep could class it as abandoned.
+//
+// realSessionIdFrom(flags, ctx, id) -> a REAL session id, or null.
+// Three things are explicitly NOT real session ids and each returns null:
+//   - the row's OWN id (the tautological ingest/descriptor fallback),
+//   - anything still carrying SYNTHETIC_SESSION_PREFIX,
+//   - an absent/blank value.
+// `--session` wins over the env because an explicit flag is the caller stating
+// its identity; CLAUDE_CODE_SESSION_ID is the ambient Claude Code session.
+function realSessionIdFrom(flags, ctx, id) {
+  const raw = (flags ? one(flags, 'session') : undefined)
+    || (ctx && ctx.env && ctx.env.CLAUDE_CODE_SESSION_ID)
+    || null;
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s) return null;
+  if (s === String(id)) return null;
+  if (s.startsWith(SYNTHETIC_SESSION_PREFIX)) return null;
+  return s;
+}
+
+// promoteUnclaimedSession(home, id, sessionId, ctx) -> { promoted, from, to }.
+//
+// WRITE-THROUGH (descriptor AND registry, so the two can never diverge),
+// IDEMPOTENT (a row whose sessionId is anything OTHER than the exact
+// `unclaimed:<id>` marker — already promoted, or never unclaimed — is left
+// untouched and reports promoted:false), and NO-DELETE (it only ever replaces
+// one field's value; nothing is removed). Never throws: a failed descriptor or
+// registry write degrades to "not promoted this call", which the NEXT read/pull
+// retries, rather than failing the operation the caller actually asked for.
+function promoteUnclaimedSession(home, id, sessionId, ctx) {
+  const out = { promoted: false, from: null, to: null };
+  if (!sessionId || !isSafeId(id)) return out;
+  const marker = SYNTHETIC_SESSION_PREFIX + String(id);
+  let desc = null;
+  try { desc = readDescriptorFile(home, id); } catch (_) { desc = null; }
+  if (!desc || String(desc.sessionId) !== marker) return out; // idempotent no-op
+  const next = Object.assign({}, desc, { sessionId: String(sessionId) });
+  try { writeDescriptorAtomic(home, id, next); } catch (_) { return out; }
+  // allowPathChange: the worktreePath is IDENTICAL (copied verbatim from the
+  // descriptor we just read) — the flag only stops the F2 id-collision guard
+  // from treating an unchanged path as a mismatch on a re-registered row.
+  try { upsertStoreRegistry(home, next, ctx, { allowPathChange: true }); } catch (_) { /* descriptor already promoted; registry retries next call */ }
+  out.promoted = true;
+  out.from = marker;
+  out.to = String(sessionId);
+  try {
+    alog.logEvent('devswarm-cli', 'unclaimed-session-promoted', 'info',
+      'workspace ' + String(id) + ' promoted from ' + marker + ' to a real session id',
+      { id: String(id), to: String(sessionId) });
+  } catch (_) { /* logging never affects the promotion */ }
+  return out;
+}
+
+// maybePromoteUnclaimed(home, id, flags, ctx) — the ONE call shape every
+// read/pull/register path uses, so none of them re-derives "is this a real
+// session id" for itself. Fail-soft in full.
+function maybePromoteUnclaimed(home, id, flags, ctx) {
+  try {
+    const sid = realSessionIdFrom(flags, ctx, id);
+    if (!sid) return { promoted: false, from: null, to: null };
+    return promoteUnclaimedSession(home, id, sid, ctx);
+  } catch (_) { return { promoted: false, from: null, to: null }; }
+}
+
+// ---------------------------------------------------------------------------
+// FORWARD MIGRATION (persisted-shape rule): rows ALREADY stamped `unclaimed:`
+// by an older build never get a promoting call if nothing reads them again.
+// promoteUnclaimedRegistrySessions sweeps every descriptor and promotes only
+// those with an INDEPENDENT, POSITIVE source of the real session id — today
+// that is a heartbeat file whose own `sessionId` is a real one (cmdHeartbeat
+// records `--session` verbatim). A row with no such source is LEFT EXACTLY AS
+// IS (never deleted, never guessed at). Idempotent, fail-open, safe to run
+// repeatedly; called from BOTH the update path and doctor-repair.
+function promoteUnclaimedRegistrySessions(home, opts) {
+  const o = opts || {};
+  const ctx = { home, cwd: o.cwd || process.cwd(), env: o.env || process.env, backend: o.backend };
+  const out = { ok: true, scanned: 0, promoted: [], left: [], errors: 0 };
+  let descs = [];
+  try { descs = readDescriptors(home) || []; } catch (_) { out.ok = false; out.errors++; return out; }
+  for (const d of descs) {
+    if (!d || !isSafeId(d.id)) continue;
+    const marker = SYNTHETIC_SESSION_PREFIX + String(d.id);
+    if (String(d.sessionId) !== marker) continue; // not unclaimed (or already promoted)
+    out.scanned++;
+    let beatSession = null;
+    try {
+      const beatPath = heartbeatPathFor(d.id, home); // liveness.js signature is (id, home)
+      const beat = JSON.parse(fs.readFileSync(beatPath, 'utf8'));
+      const raw = beat && beat.sessionId != null ? String(beat.sessionId).trim() : '';
+      if (raw && raw !== String(d.id) && !raw.startsWith(SYNTHETIC_SESSION_PREFIX)) beatSession = raw;
+    } catch (_) { beatSession = null; }
+    if (!beatSession) {
+      out.left.push({ id: String(d.id), reason: 'no-known-session' });
+      continue;
+    }
+    let r;
+    try { r = promoteUnclaimedSession(home, d.id, beatSession, ctx); }
+    catch (_) { out.errors++; out.ok = false; continue; }
+    if (r && r.promoted) out.promoted.push({ id: String(d.id), to: r.to });
+    else out.left.push({ id: String(d.id), reason: 'write-failed' });
+  }
+  return out;
+}
+
 function cmdHeartbeat(id, flags, ctx) {
   const home = ctx.home;
   const dir = heartbeatsDir(home);
@@ -4076,6 +4395,11 @@ function cmdInboxPull(id, flags, ctx) {
   // pull before it reads or mutates the inbox.
   const ensured = cmdRegister(id, ensureFlags, ctx, { requireNew: true });
   if (!ensured.ok) return Object.assign({}, ensured, { action: 'pull', id });
+  // carry-out (e): `requireNew` leaves an EXISTING descriptor untouched, so a
+  // row stamped `unclaimed:` by an earlier session-less pull would stay that way
+  // forever even once a real session started pulling it. Promote AFTER the
+  // ensure (so a freshly-created descriptor is already correct and this no-ops).
+  const promotedPull = maybePromoteUnclaimed(home, id, flags, ctx);
   // ctx.io is undefined in production (real hivecontrol spawn); tests inject
   // { run } so the CLI path is exercised without touching a real binary — same
   // injection posture as ctx.backend / ctx.now / ctx.env already use. `cwd`
@@ -4093,6 +4417,9 @@ function cmdInboxPull(id, flags, ctx) {
     // before the reconciler ever sees it.
     lost: res.lost || 0,
   };
+  // ADDITIVE, present only when it actually happened (so an unchanged pull's
+  // output stays byte-identical for existing parsers).
+  if (promotedPull && promotedPull.promoted) out.sessionPromoted = promotedPull.to;
   if (res.error) out.error = res.error;
   return out;
 }
@@ -4408,6 +4735,24 @@ function cmdInboxMessages(id, flags, ctx, opts) {
       if (d && d.sessionId != null && String(d.sessionId) !== '') sessionId = String(d.sessionId);
     } catch (_) { /* no identity available -> marker still written, pid-only */ }
   }
+  // R12 Critic P1 — NEVER INHERIT A NON-SESSION IDENTITY. The descriptor
+  // fallback above reads whatever `sessionId` the registry/descriptor holds,
+  // and two shapes there are NOT session ids at all:
+  //   1. the TAUTOLOGICAL ingest fallback `sessionId === id` (a descriptor
+  //      auto-seeded from the row's own id), and
+  //   2. the SYNTHETIC `unclaimed:<id>` marker cmdInboxPull stamps when no real
+  //      session claimed the row (see cmdInboxPull's A6 comment).
+  // Writing either into the drain marker is worse than writing nothing: the
+  // gate's consumer compares `marker.sessionId` against the Stop payload's real
+  // session uuid, so a non-session value can never match — but it DOES make the
+  // marker claim an identity it does not have, which any future consumer that
+  // treats a non-null sessionId as "a known session is draining" would read as
+  // authoritative. `null` is the honest value ("a drain is in flight; whose is
+  // unknown"), and the marker still carries `pid` as its second identity leg.
+  if (sessionId != null && (String(sessionId) === String(id)
+    || String(sessionId).startsWith(SYNTHETIC_SESSION_PREFIX))) {
+    sessionId = null;
+  }
   try {
     // `count` is 0 = NOT YET KNOWN at entry, which is the honest value here:
     // the number of rows this drain will deliver is only established by the
@@ -4428,6 +4773,11 @@ function cmdInboxMessages(id, flags, ctx, opts) {
 
 function cmdInboxMessagesInner(id, flags, ctx, opts) {
   const home = ctx.home;
+  // carry-out (e): a REAL session reading this row's mailbox is proof the row
+  // is claimed — take the `unclaimed:` marker off before anything below decides
+  // liveness from it. Idempotent, fail-soft, and a pure no-op for every row that
+  // is not carrying the marker.
+  maybePromoteUnclaimed(home, id, flags, ctx);
   const doAck = inboxReadDoesAck(flags, opts);
   // forceUnread (spec item 5b / D): lets `peek-primary` request the SAME
   // unread-only view as `read-primary` (opts.ack:true implies it) WITHOUT
@@ -4799,7 +5149,18 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     // treated as a match) against a theoretical sha256 collision; it cannot
     // fire in practice given the constraint above.
     if (meshSiblingPartitions.length) {
-      const seenHashes = new Set(messages.filter((m) => m && m.hash).map((m) => m.hash));
+      // defect 64861a623503: seed from CONSUMED history too, not just from the
+      // rows still unread in this window — a forwarded copy of a message the
+      // caller already handled has nothing left in `messages` to match against.
+      // `union` is null whenever the union read itself failed (see its own
+      // fail-open catch above), so the cursor is read from the store directly
+      // as the fallback — never dereferenced off a possibly-null union.
+      let ownStoreCursor = 0;
+      try { ownStoreCursor = union ? union.storeCursor : s.cursorValue(id); } catch (_) { ownStoreCursor = 0; }
+      const seed = consumedDedupSeed(s, id, ownStoreCursor, CONSUMED_HASH_SEED_CAP);
+      const seenHashes = seed.hashes;
+      for (const m of messages) { if (m && m.hash) seenHashes.add(m.hash); }
+      const seenLogical = seed.logical;
       const dedupedSiblingRows = [];
       // HARD INVARIANT (structural, not conventional): each sibling's actual
       // delivered count is recorded on `part.deliveredCount` here, and the
@@ -4819,7 +5180,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
       // `part.total`), which is what the ack loop below (and the
       // `withheldBySource` cap-subtraction it also applies) depends on.
       for (const part of meshSiblingPartitions) {
-        const folded = foldSiblingGapRows(part.messages, seenHashes);
+        const folded = foldSiblingGapRows(part.messages, seenHashes, seenLogical);
         meshGapWithheldCount += folded.gapWithheldCount;
         for (const row of folded.deliveredRows) {
           dedupedSiblingRows.push(row);
@@ -5527,9 +5888,14 @@ function cmdInbox(sub, id, flags, ctx) {
     // own comment.
     let meshGapWithheldCount = 0;
     if (meshSiblingPartitions.length) {
-      const seenHashes = new Set(storeOnlyUnreadRows.filter((r) => r && r.hash).map((r) => r.hash));
+      // defect 64861a623503 — same consumed-history seeding as cmdInboxMessages'
+      // sibling fold (see consumedDedupSeed); the two surfaces must not diverge.
+      const seed = consumedDedupSeed(storeHandle, id, storeCursorVal, CONSUMED_HASH_SEED_CAP);
+      const seenHashes = seed.hashes;
+      for (const r of storeOnlyUnreadRows) { if (r && r.hash) seenHashes.add(r.hash); }
+      const seenLogical = seed.logical;
       for (const part of meshSiblingPartitions) {
-        const folded = foldSiblingGapRows(part.messages, seenHashes);
+        const folded = foldSiblingGapRows(part.messages, seenHashes, seenLogical);
         part.deliveredRows = folded.deliveredRows;
         part.deliveredCount = folded.deliveredCount;
         // G1/G2 fix: see foldSiblingGapRows's own header comment (~line
@@ -5700,6 +6066,29 @@ function cmdInbox(sub, id, flags, ctx) {
           truncatedHint: 'not all unread messages were returned (' + inboxTruncatedCount + ' withheld) — '
             + 'the read cursor was NOT advanced past withheld messages, so re-reading (optionally with a '
             + 'higher --limit than ' + inboxCapLimit + ') returns them',
+        } : {}),
+        // NON-ADVANCE HONESTY (defect 56ba248504d0, item 7). `read` is the
+        // READ-ONLY half of this verb family — it deliberately advances NO
+        // cursor (that is `ack`'s job, and it is what lets `read` stay safe to
+        // run from ANY project; see the ack path's own project-mismatch refusal
+        // below, which tells callers exactly that). But the output never SAID
+        // so, and that silence is what the field report is actually made of: an
+        // operator ran `inbox read <twinId>` ten times, watched `unreadNdjson`
+        // sit at 401 every time, and reasonably concluded the rows were
+        // unreachable. They were not — `inbox ack <twinId>` drains them (proven
+        // by test) — but nothing on this surface pointed at that command.
+        //
+        // So state it, on the one surface the operator is already looking at,
+        // and name the EXACT command. Present only when there is genuinely
+        // something outstanding, so a fully-drained read's shape is unchanged.
+        ...(outUnreadTotal > 0 ? {
+          cursorAdvanced: false,
+          ackHint: '`inbox read` is READ-ONLY and advanced no cursor — these '
+            + outUnreadTotal + ' unread row(s) (' + unreadNdjsonCount + ' durable-NDJSON, '
+            + unreadStoreCount + ' store) stay unread until `devswarm.js inbox ack ' + id
+            + '` consumes them. NOTE: a Primary\'s own `inbox read-primary` folds ONLY its OWN '
+            + 'descriptor\'s NDJSON channel, so another row\'s (e.g. a same-worktree twin\'s) '
+            + 'durable inbox is only ever drained by acking THAT id explicitly.',
         } : {}),
         // compat aliases (see comment above) — do not treat as primary:
         count: outUnreadTotal, cursor: union.cursor, storeCursor: storeCursorVal,
@@ -6352,7 +6741,7 @@ function cmdArchive(id, ctx, opts) {
             id: String(id),
             cwdProject: currentRepoKey || null,
             targetProject: registeredRepoKeyForArchive,
-          });
+          }, home);
         } else {
           const refusal = Object.assign(
             { action: 'archive', descriptorArchived: false },
@@ -6618,6 +7007,13 @@ function cmdArchive(id, ctx, opts) {
   if (familyRetire) {
     if (familyRetire.retired.length) archived.retiredFamilyDescriptors = familyRetire.retired;
     if (familyRetire.left.length) archived.leftFamilyDescriptors = familyRetire.left;
+  }
+  // R12 hygiene (c): a cross-project archive taken via the explicit hatch must
+  // STATE its consequence, not just record it in a log nobody reads. Present
+  // only on the override path, so an ordinary archive's shape is unchanged.
+  if (crossProjectOverride) {
+    archived.forceCrossProject = true;
+    archived.warning = FORCE_CROSS_PROJECT_ORPHAN_WARNING;
   }
   return archived;
   });
@@ -7744,6 +8140,26 @@ function cmdSend(flags, ctx) {
         // above/below rather than a silent `ok:true`.
         verified,
       };
+      // SEND RECEIPT (v0.90.0). An on-disk record that this send happened,
+      // written by the SENDER at the moment of the append.
+      //
+      // WHY: devswarm-parent-reply-tracker.js (PostToolUse/Bash) can only learn
+      // that the Primary replied by PARSING the send's stdout — which means a
+      // send whose stdout it cannot parse (a compound command's interleaved
+      // output, a redirect, a wrapper that swallows stdout, a send issued from
+      // anywhere other than a Bash tool call) silently never counts as a reply,
+      // and the sender's question stays "unanswered" forever. A receipt is
+      // written by the send ITSELF, so the tracker no longer depends on the
+      // shape of the surrounding shell command.
+      //
+      // FAIL-SOFT AND OUT OF BAND: wrapped whole, and its result is never read
+      // — `out` is returned unchanged whether the receipt landed or not. A
+      // receipt is a diagnostic, never part of delivery.
+      writeSendReceipt(home, {
+        ts: now, from, to: out.to, toId: out.toId, type, urgency,
+        hash, bytes: out.bytes, ok: out.ok, sent: out.sent,
+        needsReply: questionFlag, verified,
+      });
       if (verifyError !== null) out.verifyError = verifyError;
       if (!verified && verifyError === null) {
         out.reason = 'send-not-verified';
@@ -7780,6 +8196,48 @@ function cmdSend(flags, ctx) {
     }
     return doAppend();
   } finally { s.close(); }
+}
+
+// ===========================================================================
+// SEND RECEIPTS (v0.90.0) — <devswarmRoot>/send-receipts/<YYYY-MM-DD>/<hash>.json
+//
+// One small JSON file per send, date-partitioned so a reader can scan just
+// today's directory and a retention sweep can drop whole days (doctor-repair's
+// sweepSendReceipts, 7-day default). The file NAME is the send's content hash,
+// which makes the write idempotent: a retried identical send overwrites its own
+// receipt rather than accumulating duplicates.
+function sendReceiptsDir(home) { return path.join(devswarmRoot(home), 'send-receipts'); }
+
+// receiptDayKey(ts) -> 'YYYY-MM-DD' in UTC. UTC, not local time, so a reader
+// scanning "today" agrees with the writer regardless of the two processes'
+// timezones (and so a DST shift can never make a day directory ambiguous).
+function receiptDayKey(ts) {
+  const d = new Date(Number.isFinite(ts) ? ts : Date.now());
+  return d.toISOString().slice(0, 10);
+}
+
+// receiptFileName(hash) — the hash with every character outside [A-Za-z0-9_-]
+// replaced, so a hash namespace prefix (`mesh:`, `native:`, `legacy:`) can never
+// produce a path separator or a reserved character.
+function receiptFileName(hash) {
+  return String(hash == null ? 'nohash' : hash).replace(/[^A-Za-z0-9_-]/g, '_') + '.json';
+}
+
+// writeSendReceipt(home, entry) -> string|null (the path written, or null).
+// NEVER THROWS: every step is inside one guard, and the return value is
+// deliberately ignorable — the caller (cmdSend) must be unaffected either way.
+// Atomic (tmp + rename) so a reader can never observe a half-written receipt.
+function writeSendReceipt(home, entry) {
+  try {
+    const ts = Number.isFinite(entry && entry.ts) ? entry.ts : Date.now();
+    const dir = path.join(sendReceiptsDir(home), receiptDayKey(ts));
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, receiptFileName(entry && entry.hash));
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(Object.assign({}, entry, { ts })) + '\n');
+    fs.renameSync(tmp, file);
+    return file;
+  } catch (_) { return null; }
 }
 
 // LIST_CHILDREN_TIMEOUT_MS — bounded timeout for roster's read-only native
@@ -9986,4 +10444,14 @@ module.exports = {
   cmdReapOrphans, cmdReconcileRegistry, collectOrphanCandidates, reapedDir,
   forceCrossProjectOverride,
   inboxWindowRejection, parseInboxSince,
+  // carry-out (e) — `unclaimed:<id>` promotion + its forward migration
+  // (called by skills/update/scripts/update.js AND hooks/lib/doctor-repair.js):
+  realSessionIdFrom, promoteUnclaimedSession, maybePromoteUnclaimed,
+  promoteUnclaimedRegistrySessions,
+  // defect 64861a623503 — forwarded-copy identity + the fold's dedup seeding:
+  foldSiblingGapRows, forwardedOrigHashOf, logicalDeliveryKey,
+  stripArchivedForwardPrefix, consumedDedupSeed, CONSUMED_HASH_SEED_CAP,
+  forwardArchivedOrphanUnread, archivedForwardProvenancePrefix,
+  // v0.90.0 send receipts (writer; the reader is hooks/devswarm-parent-reply-tracker.js):
+  writeSendReceipt, sendReceiptsDir, receiptDayKey, receiptFileName,
 };

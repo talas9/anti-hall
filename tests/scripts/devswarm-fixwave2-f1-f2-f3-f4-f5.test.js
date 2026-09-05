@@ -216,7 +216,10 @@ test('F1 RED/GREEN: `inbox ack` never advances a sibling cursor past a gap-withh
 
 test('F1 mutation check: the OLD Wave-1 non-suffix fold DOES lose F1row permanently (proves the RED half is real, not narrated)', () => {
   const oldSrc = fs.readFileSync(DEVSWARM_PATH, 'utf8');
-  const start = oldSrc.indexOf('function foldSiblingGapRows(rows, seenHashes) {');
+  // Signature gained the optional `seenLogical` set in v0.90.0 (defect
+  // 64861a623503); the mutant below deliberately keeps the 2-arg form, which
+  // JS accepts unchanged from the 3-arg call sites.
+  const start = oldSrc.indexOf('function foldSiblingGapRows(rows, seenHashes, seenLogical) {');
   assert.ok(start >= 0, 'foldSiblingGapRows not found');
   const end = oldSrc.indexOf('\n}\n', start) + 3;
   const currentFn = oldSrc.slice(start, end);
@@ -370,7 +373,7 @@ test('F3 RED/GREEN: `peek-primary` applies the SAME gap withholding as `inbox co
 
 test('F3 mutation check: reverting cmdInboxMessages to hash-dedup-only reproduces the surface divergence', () => {
   const oldStr = 'for (const part of meshSiblingPartitions) {\n'
-    + '        const folded = foldSiblingGapRows(part.messages, seenHashes);\n'
+    + '        const folded = foldSiblingGapRows(part.messages, seenHashes, seenLogical);\n'
     + '        meshGapWithheldCount += folded.gapWithheldCount;\n'
     + '        for (const row of folded.deliveredRows) {\n'
     + '          dedupedSiblingRows.push(row);\n'

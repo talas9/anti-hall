@@ -1066,6 +1066,61 @@ function foldMeshPostUpdate(opts) {
  * success. NO-DELETE (message rows are forwarded, never deleted) and idempotent (a
  * re-run finds no row left for any archived id).
  */
+/**
+ * promoteUnclaimedPostUpdate({ paths, env, cwd, home, devswarm }) →
+ *   { attempted, promoted, left, errors, detail }
+ *
+ * FORWARD MIGRATION for the persisted `unclaimed:<id>` sessionId shape (carry-out
+ * (e), v0.90.0). `inbox pull` stamps that synthetic marker when no real session
+ * claimed the row; from this build on, any read/pull by a real session promotes it
+ * in place — but rows stamped by an OLDER build only get promoted if something
+ * happens to read them again, and a row nothing reads is exactly the one whose
+ * false "not live" reading does the damage (a `send` routed elsewhere, a sweep
+ * classing it abandoned).
+ *
+ * This sweep promotes ONLY rows with an INDEPENDENT, POSITIVE source of the real
+ * session id (a heartbeat file recording one). Everything else is LEFT EXACTLY AS
+ * IT IS — never deleted, never guessed. Idempotent (a re-run finds no marker left
+ * on any promoted row), fail-open, and gated on the same DevSwarm-session check as
+ * every other post-update step; it never affects the update's own success.
+ */
+function promoteUnclaimedPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'promote-unclaimed skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — promote-unclaimed skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.promoteUnclaimedRegistrySessions !== 'function') {
+      return { attempted: false, detail: 'promote-unclaimed skipped: this devswarm.js build has no promoteUnclaimedRegistrySessions' };
+    }
+    const r = devswarm.promoteUnclaimedRegistrySessions(home, { cwd, env }) || {};
+    const promoted = Array.isArray(r.promoted) ? r.promoted.length : 0;
+    const left = Array.isArray(r.left) ? r.left.length : 0;
+    return {
+      attempted: true,
+      promoted,
+      left,
+      errors: r.errors || 0,
+      ok: r.ok !== false,
+      detail: 'promote-unclaimed: promoted ' + promoted + ' unclaimed workspace session id(s)'
+        + (left ? ' — ' + left + ' left as is (no known session)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, errors: 1, ok: false, detail: 'promote-unclaimed failed (non-fatal): ' + String((e && e.message) || e) };
+  }
+}
+
 function foldArchivedRowsPostUpdate(opts) {
   const o = opts || {};
   const env = o.env || process.env;
@@ -2137,6 +2192,8 @@ function runUpdate(opts) {
   // success. Run-once-per-version stamped (spec item 3) — its own descriptor
   // walk (not the shared store-hash enumeration) is skipped entirely once a
   // pass for `latest` has already completed.
+  // carry-out (e): forward-migrate persisted `unclaimed:<id>` session ids.
+  const promoteUnclaimed = promoteUnclaimedPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
   const ownerKeyMigrate = ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest });
   // Task #4: normalize parent-gate reply-state files to the append-only shape.
   // Pure per-user-file fold+rewrite; same gate + fail-open posture; never
@@ -2177,6 +2234,7 @@ function runUpdate(opts) {
         foldAllStores,
         healOrphanPartitions,
         foldArchivedRows,
+        promoteUnclaimed,
         ownerKeyMigrate,
         replyStateMigrate,
         gateIntentsMigrate,
@@ -2212,6 +2270,7 @@ function runUpdate(opts) {
       foldAllStores,
       healOrphanPartitions,
       foldArchivedRows,
+      promoteUnclaimed,
       ownerKeyMigrate,
       replyStateMigrate,
       gateIntentsMigrate,
@@ -2346,6 +2405,7 @@ module.exports = {
   foldAllStoresPostUpdate,
   healOrphanPartitionsPostUpdate,
   foldArchivedRowsPostUpdate,
+  promoteUnclaimedPostUpdate,
   ownerKeyMigratePostUpdate,
   healRegistryPostUpdate,
   wakeMonitorPostUpdate,

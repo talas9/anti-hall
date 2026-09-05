@@ -201,7 +201,11 @@ test('RED (mutation V3, killed): dropping the hole branch\'s !wasGapSeen guard m
 // to the hole-branch case already proven RED/GREEN above.
 test('sanity: the dedup branch (devswarm.js:1496) guards consumedCount the same way — same mechanism as the hole branch under test', () => {
   const src = fs.readFileSync(DEVSWARM_PATH, 'utf8');
-  const dedupGuard = "if (row.hash && seenHashes.has(row.hash)) { // exact-hash duplicate — never counted as withheld\n"
+  // The condition widened in v0.90.0 (defect 64861a623503) to ALSO match a
+  // forwarded copy's `origHash`; the GUARD this test exists to pin — the
+  // `!wasGapSeen`-conditioned consumedCount++ — is unchanged, and is what is
+  // asserted here.
+  const dedupGuard = "if ((row.hash && seenHashes.has(row.hash)) || (origHash && seenHashes.has(origHash))) {\n"
     + "      if (!wasGapSeen) consumedCount++; // G2: a physical row was resolved here even though nothing was delivered\n"
     + "      continue;\n"
     + "    }";
