@@ -927,6 +927,7 @@ through it):
 | `ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS` | `2` (clamped 1–20) | Poke attempts allowed before Layer 3 escalation. |
 | `ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC` | `180` (min 1) | How long a poke stays "in effect" (held at `nudged`) before falling through to a fresh recompute. |
 | `ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC` | `120` (min 0) | Minimum gap between successive pokes. |
+| `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` | `20000` (ms, not seconds) | v0.96.1: per-pass budget for the supervisor's deferred post-update sweep — one of `fold-all-stores` / `heal-orphan-partitions` / `fold-archived-rows` is run per pass, rotating via a persisted cursor at `~/.anti-hall/devswarm/deferred-sweep-state.json`, only when that stage's own resume marker shows real pending work. The supervisor's JSON output line carries this as `deferredSweep: {stage, ran, ...}`. |
 
 **On-demand CLI** (`devswarm-recover.js` resolves these itself, decoupled from the
 sweep's env — the automatic path no longer carries them at all since it never kills):

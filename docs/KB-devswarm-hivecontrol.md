@@ -2378,11 +2378,17 @@ under the old check, when the workspace behind it was in fact live.
   `update.js` ~:469-494). A stage that would start past the deadline is deferred WHOLE and
   reported as `deferred:true`, picked up on the next `update`/`doctor` call rather than lost —
   every deferred stage is independently idempotent/resumable (fold/heal/fold-archived-rows
-  persist their own resume markers; one-time-per-version stages simply re-attempt). Honestly
-  scoped gap: the periodic supervisor sweep (`companion/devswarm-supervisor.js`) re-runs only
-  `reconcile` and single-project fold on its own cooldown — it does NOT periodically re-run
-  `heal-orphan-partitions`, `fold-all-stores`, or `fold-archived-rows`; those rely solely on the
-  next explicit `update`/`doctor` invocation to pick up a deferred pass.
+  persist their own resume markers; one-time-per-version stages simply re-attempt). As of
+  v0.96.1, the periodic supervisor sweep (`companion/devswarm-supervisor.js`) closes this gap:
+  alongside its own `reconcile`/single-project-fold cooldown, `deferredSweepIfDue` peeks each
+  stage's own persisted marker (`hasDeferredWork`) and, when one shows real pending work, runs
+  ONE of `fold-all-stores` / `heal-orphan-partitions` / `fold-archived-rows` per supervisor pass
+  — rotating forward across a persisted cursor (`<home>/.anti-hall/devswarm/deferred-sweep-
+  state.json`) regardless of outcome, so a no-op tick still advances to the next stage. Each
+  run is capped by `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` (default 20000ms), threaded into the
+  same `ANTIHALL_UPDATE_SWEEP_BUDGET_MS` knob `update.js`'s own sweeps read. The supervisor's
+  JSON line now carries an additive `deferredSweep: {stage, ran, ...}` field reporting which
+  stage was checked/run each pass.
 - `inbox ack` now refuses the whole verb on a POSITIVE, resolvable ownership mismatch (the
   caller's own cwd/env resolves to a REAL, different registered row) rather than the previous
   half-ack (NDJSON drained, store cursor silently skipped, `ok:true`) — `--ack-as-owner` still

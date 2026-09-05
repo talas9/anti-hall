@@ -117,12 +117,12 @@ BEFORE each stage starts (never mid-stage). A stage that would start past the de
 deferred WHOLE, reported as `deferred: true` on its stage result, and picked up on the NEXT
 `update`/`doctor` call rather than lost: every one of these stages is independently
 idempotent/resumable (fold/heal/fold-archived-rows persist their own resume markers; the
-one-time-per-version stages simply re-attempt next call). Honest scope note: the periodic
-supervisor sweep (`companion/devswarm-supervisor.js`) also re-runs `reconcile` and
-single-project fold on its own cooldown, so deferring THOSE two has a real periodic backstop —
-but it does NOT periodically re-run `heal-orphan-partitions`, `fold-all-stores`, or
-`fold-archived-rows`; those rely solely on the next explicit `update`/`doctor` invocation to
-pick a deferred pass back up.
+one-time-per-version stages simply re-attempt next call). As of v0.96.1, the periodic
+supervisor sweep (`companion/devswarm-supervisor.js`) also picks up `fold-all-stores`,
+`heal-orphan-partitions`, and `fold-archived-rows` — one deferred stage per supervisor pass,
+within `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` (default 20000ms) — so a machine that always
+exhausts the post-pull budget is no longer stuck waiting on the next explicit `update`/`doctor`
+call to make progress on those stages.
 
 After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
 
