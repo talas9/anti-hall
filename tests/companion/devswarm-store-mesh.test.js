@@ -634,29 +634,24 @@ for (const B of backends) {
 
 }
 
-// Small fix #3 (Round 2 review): resolveSenderRegistryId's same-updatedAt
-// tie-break must match scripts/devswarm.js's resolveMeshTarget/meshCursorValue
-// EXACTLY — a non-finite cursor read on ONE side must never veto a decisive
-// comparison against a genuinely finite cursor on the other side (the prior
-// mirror required BOTH sides finite before comparing at all, silently
-// defaulting to "keep the first-seen row" whenever either side's cursor read
-// was unreadable/non-finite, even when the other side was perfectly
-// decisive). Exercised directly through computeSummary (a pure function of
-// its `store` argument, per its own header) with a hand-built store double so
-// two registry rows can be forced to an EXACT updatedAt tie and a controlled
-// non-finite cursor read — not reliably reproducible through the timing of
-// real upsertRegistry() calls.
-test('resolveSenderRegistryId tie-break (via computeSummary): a finite cursor on one side beats a non-finite cursor on the other, even though BOTH being finite is no longer required', () => {
+// Small fix #3 (Round 2 review) ORIGINALLY asserted a cursor-based tie-break
+// here (a finite cursor on one side beating a non-finite cursor on the
+// other). D8 (v0.94.0) REPLACED resolveSenderRegistryId's final leg with
+// devswarm-attribution.js's pickAttributionRow, which is deliberately
+// liveness/cursor-FREE (see devswarm-store.js's resolveSenderRegistryId
+// header): present-tense signals like cursor/updatedAt/heartbeat made
+// pendingQuestions[].from flip between computeSummary passes whenever a
+// sender's worktree-derived meshId mapped to N>1 sibling rows whose
+// liveness signals moved independently. The cursor field on `rowA`/`rowB`
+// below is now IGNORED by attribution entirely; this test is repurposed to
+// prove that — both rows tie on field-shape (real, non-`unclaimed:`
+// sessionId) and on the branch-slug id check (neither id is prefixed with
+// the worktree basename), so the FINAL, always-available tiebreak (ascending
+// lexical id) decides, deterministically, regardless of which cursor is
+// finite.
+test('resolveSenderRegistryId tie-break (via computeSummary): attribution ignores cursor liveness signals; ascending lexical id decides deterministically', () => {
   const senderWorktree = '/wt/fake-tie-sender';
   const senderMeshId = inst.primaryWorkspaceId(senderWorktree);
-  // rowA is encountered FIRST (becomes the initial bestLive) and its cursor
-  // read is deliberately non-finite (simulating an unreadable cursor). rowB
-  // is encountered SECOND, ties rowA's updatedAt exactly, and has a
-  // genuinely finite, positive cursor value — under the FIXED coercion
-  // (non-finite -> -1, compared unconditionally) rowB must win (3 > -1).
-  // Under the OLD buggy code (`Number.isFinite(curVal) && Number.isFinite(bestVal)`)
-  // the comparison would be skipped entirely (bestVal=NaN is not finite) and
-  // rowA — the row with the WORSE, unreadable cursor — would wrongly survive.
   const registry = [
     { id: 'rowA', worktreePath: senderWorktree, sessionId: 'sess-live-a', updatedAt: 5000 },
     { id: 'rowB', worktreePath: senderWorktree, sessionId: 'sess-live-b', updatedAt: 5000 },
@@ -665,6 +660,11 @@ test('resolveSenderRegistryId tie-break (via computeSummary): a finite cursor on
   const messagesByWorkspace = {
     'child-x': [{ mtype: 'direct', needsReply: true, sender: senderMeshId, ts: 100, storeSeq: 1, body: 'q?' }],
   };
+  // rowB carries the "better" (finite, positive) cursor value; rowA's is
+  // unreadable (NaN). Under the OLD leg-C (pickFreshestLive) that decided the
+  // tie in rowB's favor. Attribution no longer reads cursors at all, so the
+  // outcome must be unaffected by which side's cursor is finite — proven by
+  // running the SAME fixture with the values swapped below.
   const cursorValues = { rowA: NaN, rowB: 3, 'child-x': 0 };
   const fakeStore = {
     listMessages(id) {
@@ -680,9 +680,20 @@ test('resolveSenderRegistryId tie-break (via computeSummary): a finite cursor on
   try {
     const sum = store.computeSummary(fakeStore, { home });
     assert.equal(sum.workspaces['child-x'].pendingQuestions.length, 1);
-    assert.equal(sum.workspaces['child-x'].pendingQuestions[0].from, 'rowB',
-      'the row with the FINITE, decisive cursor must win the tie-break, even though the other side is non-finite');
+    assert.equal(sum.workspaces['child-x'].pendingQuestions[0].from, 'rowA',
+      'neither cursor/liveness signal decides; ascending lexical id (rowA < rowB) is the deterministic tiebreak');
   } finally { rm(home); }
+
+  // Swap which side has the finite cursor — the winner must NOT change, since
+  // attribution never reads cursorValue at all.
+  const cursorValuesSwapped = { rowA: 3, rowB: NaN, 'child-x': 0 };
+  const fakeStoreSwapped = Object.assign({}, fakeStore, { cursorValue(id) { return cursorValuesSwapped[id]; } });
+  const home2 = tmpHome();
+  try {
+    const sum2 = store.computeSummary(fakeStoreSwapped, { home: home2 });
+    assert.equal(sum2.workspaces['child-x'].pendingQuestions[0].from, 'rowA',
+      'swapping the cursor values must not change the winner (cursor is not a signal attribution reads)');
+  } finally { rm(home2); }
 });
 
 // ---- broadcastCursorValue / setBroadcastCursor (direct handle API) --------

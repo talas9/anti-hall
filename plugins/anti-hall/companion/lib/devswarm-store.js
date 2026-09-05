@@ -40,7 +40,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
-const livenessSelect = require('./devswarm-liveness-select.js');
+const attribution = require('./devswarm-attribution.js');
 // identity grouping — pure, no fs/store/git (see its PURITY CONTRACT). Used by
 // resolveSenderRegistryId to keep a question's `from` out of the RECIPIENT's own
 // identity family; the SAME module/definition backs the clear side in
@@ -1498,10 +1498,18 @@ function maxUrgencyOf(rows) {
 // family (devswarm-identity-family.js's recipientFamilyIds — the SAME definition
 // devswarm-reply-state.js's familyAwareUnanswered uses on the clear side, so the
 // two surfaces cannot disagree) is therefore removed from the candidate pool
-// BEFORE any freshest-live ranking, and within what remains the sender's OWN
+// BEFORE any final-leg ranking, and within what remains the sender's OWN
 // identity wins outright: an exact id match on the stored sender first, then a
-// row cross-linked to it, and only then the shared freshest-live ranking (which
-// is what keeps the P0-B builder-id case above working).
+// row cross-linked to it, and only then a DETERMINISTIC (liveness-free) pick
+// over what's left (devswarm-attribution.js's pickAttributionRow — see D8,
+// v0.94.0: the old final leg here delegated to pickFreshestLive, whose ranking
+// reads present-tense mutable signals (updatedAt, cursor, heartbeat), so when
+// N>1 sibling rows shared one worktree-derived sender meshId, `from` flipped
+// between computeSummary passes as those signals moved independently on each
+// row. Attribution must depend only on the row SET, never on which row is
+// live right now — liveness-based routing/selection (resolveMeshTarget,
+// pickSurvivor, the orphan policy) is UNCHANGED and still uses
+// pickFreshestLive).
 // When the exclusion empties the pool the stored sender id is returned VERBATIM
 // rather than re-attributed — showing the question under its raw origin is
 // honest, whereas naming the recipient is the phantom itself. That is NOT the
@@ -1512,11 +1520,9 @@ function resolveSenderRegistryId(store, registry, meshId, home, recipientId) {
   if (!meshId) return null;
   if (!ingestIdentity || typeof ingestIdentity.primaryWorkspaceId !== 'function') return null;
   // Match candidates by worktree-derived meshId (store-specific — needs
-  // ingestIdentity), then delegate the SAME evidence-based freshest-LIVE
-  // ranking scripts/devswarm.js's resolveMeshTarget/pickSurvivor use (see
-  // devswarm-liveness-select.js's header for the ranking rules and the field
-  // defect this closes — three independent copies of this loop previously
-  // disagreeing on which duplicate row wins).
+  // ingestIdentity), then rank what's left with devswarm-attribution.js's
+  // deterministic (liveness-free) pickAttributionRow — see D8 above for why
+  // this leg must not read present-tense liveness signals.
   const candidates = [];
   for (const d of registry) {
     if (!d || !d.worktreePath) continue;
@@ -1547,7 +1553,7 @@ function resolveSenderRegistryId(store, registry, meshId, home, recipientId) {
     try { return identityFamily.crossLinkedIdentity({ id: sender }, d); } catch (_) { return false; }
   });
 
-  const row = livenessSelect.pickFreshestLive(linked.length ? linked : eligible, { storeHandle: store, home });
+  const row = attribution.pickAttributionRow(linked.length ? linked : eligible);
   return row ? row.id : sender;
 }
 
