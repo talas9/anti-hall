@@ -185,4 +185,53 @@ function identityFamilyTwins(target, candidates) {
   return out;
 }
 
-module.exports = { familyKeyOf, collapseFamilies, crossLinkedIdentity, identityFamilyTwins };
+// ---------------------------------------------------------------------------
+// ATTRIBUTION-SIDE grouping (defect f3b8f326bfc3, P2 — "1 UNANSWERED question
+// from <a row that never sent anything>").
+//
+// THE MECHANISM. A question row's `sender` is the sender's WORKTREE-DERIVED
+// meshId (scripts/devswarm.js's callerIdentity), so every row registered on one
+// worktree — the Primary's own anchor row, its builder-id/uuid twin, AND any
+// sub-agent registered on the same path — shares ONE sender value. Attribution
+// (devswarm-store.js's resolveSenderRegistryId) then re-resolved that value to
+// the FRESHEST LIVE row on that worktree, which is routinely the RECIPIENT's own
+// row: the gate then rendered a question as coming from the very workspace being
+// asked. The clear side (devswarm-reply-state.js's familyAwareUnanswered) had the
+// mirror-image bug — it grouped STRICTLY by worktree, so a reply the recipient
+// recorded against ITSELF (or against its own uuid twin) cleared a question a
+// third party had asked.
+//
+// THE CONTRACT both sides now share: a question is attributed within the
+// SENDER's identity family, and the RECIPIENT's own row and everything
+// cross-linked to it are NEVER eligible — not as the rendered `from`, and not as
+// a reply record that can clear the question. `recipientFamilyIds` is the ONE
+// definition of "the recipient's own identity", so the two surfaces cannot drift.
+//
+// recipientFamilyIds(recipientId, rows) -> Set<string> of ids that are the
+// recipient itself or cross-linked to it (crossLinkedIdentity — the strongest
+// unambiguous link, one row's sessionId IS the other row's id). An absent/empty
+// recipientId yields an EMPTY set, so every existing caller that does not supply
+// one keeps its exact pre-fix behavior. Pure: no fs, no store, mutates nothing.
+function recipientFamilyIds(recipientId, rows) {
+  const out = new Set();
+  if (recipientId == null || String(recipientId) === '') return out;
+  const rid = String(recipientId);
+  out.add(rid);
+  const list = Array.isArray(rows) ? rows : [];
+  // The recipient's OWN row supplies its sessionId, which is what makes the
+  // `twin.sessionId === recipient.id` leg detectable in both directions. When
+  // the recipient has no row in `rows` at all, the bare {id} shape still
+  // catches every row whose sessionId points AT the recipient.
+  let self = null;
+  for (const r of list) {
+    if (r && r.id != null && String(r.id) === rid) { self = r; break; }
+  }
+  const target = self || { id: rid };
+  for (const c of list) {
+    if (!c || c.id == null) continue;
+    if (crossLinkedIdentity(target, c)) out.add(String(c.id));
+  }
+  return out;
+}
+
+module.exports = { familyKeyOf, collapseFamilies, crossLinkedIdentity, identityFamilyTwins, recipientFamilyIds };

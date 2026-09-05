@@ -41,6 +41,11 @@ const path = require('path');
 const crypto = require('crypto');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
 const livenessSelect = require('./devswarm-liveness-select.js');
+// identity grouping — pure, no fs/store/git (see its PURITY CONTRACT). Used by
+// resolveSenderRegistryId to keep a question's `from` out of the RECIPIENT's own
+// identity family; the SAME module/definition backs the clear side in
+// companion/lib/devswarm-reply-state.js's familyAwareUnanswered.
+const identityFamily = require('./devswarm-identity-family.js');
 // archived-stranded classifier (A2 split). This module require is CHEAP and
 // side-effect free; the heavy scripts/devswarm.js require it needs is LAZY, paid
 // only when a store actually has an unread orphan candidate. See its header.
@@ -1482,7 +1487,28 @@ function maxUrgencyOf(rows) {
 // the CALLER decides how to treat null (see computeSummary's pendingQuestions
 // build below: a STRUCTURALLY unresolvable sender is now DROPPED, not kept
 // under its raw value — the permanent-deadlock fix, Round 2 review).
-function resolveSenderRegistryId(store, registry, meshId, home) {
+//
+// ATTRIBUTION CONTRACT (defect f3b8f326bfc3, P2 — added `recipientId`). Because
+// `meshId` is worktree-derived, EVERY row on one worktree shares it: the
+// recipient's own anchor row, its uuid/builder-id twin, and any sub-agent
+// registered on the same path. Handing that whole set to pickFreshestLive
+// routinely picked the RECIPIENT'S OWN ROW, so the gate rendered "1 UNANSWERED
+// question from <the workspace being asked>" (or from a dormant sub-agent twin
+// that never sent anything) — the field symptom. The recipient's own identity
+// family (devswarm-identity-family.js's recipientFamilyIds — the SAME definition
+// devswarm-reply-state.js's familyAwareUnanswered uses on the clear side, so the
+// two surfaces cannot disagree) is therefore removed from the candidate pool
+// BEFORE any freshest-live ranking, and within what remains the sender's OWN
+// identity wins outright: an exact id match on the stored sender first, then a
+// row cross-linked to it, and only then the shared freshest-live ranking (which
+// is what keeps the P0-B builder-id case above working).
+// When the exclusion empties the pool the stored sender id is returned VERBATIM
+// rather than re-attributed — showing the question under its raw origin is
+// honest, whereas naming the recipient is the phantom itself. That is NOT the
+// permanent-deadlock case the paragraph above describes: `null` (drop) is still
+// returned for a sender that matches NO registry row at all, which is the
+// structurally-unaddressable identity that fix was about.
+function resolveSenderRegistryId(store, registry, meshId, home, recipientId) {
   if (!meshId) return null;
   if (!ingestIdentity || typeof ingestIdentity.primaryWorkspaceId !== 'function') return null;
   // Match candidates by worktree-derived meshId (store-specific — needs
@@ -1499,8 +1525,30 @@ function resolveSenderRegistryId(store, registry, meshId, home) {
     if (derived == null || String(derived) !== String(meshId)) continue;
     candidates.push(d);
   }
-  const row = livenessSelect.pickFreshestLive(candidates, { storeHandle: store, home });
-  return row ? row.id : null;
+  // NO candidate at all -> the structurally-unresolvable sender the
+  // permanent-deadlock fix drops (unchanged).
+  if (!candidates.length) return null;
+
+  const sender = String(meshId);
+  let excluded = null;
+  try { excluded = identityFamily.recipientFamilyIds(recipientId, registry); } catch (_) { excluded = null; }
+  const eligible = excluded && excluded.size
+    ? candidates.filter((d) => d && d.id != null && !excluded.has(String(d.id)))
+    : candidates;
+  // Every row on the sender's worktree IS the recipient (or its twin): keep the
+  // stored sender id rather than attributing the question to its own recipient.
+  if (!eligible.length) return sender;
+
+  // The sender's OWN identity, strongest link first.
+  for (const d of eligible) {
+    if (d && d.id != null && String(d.id) === sender) return d.id;
+  }
+  const linked = eligible.filter((d) => {
+    try { return identityFamily.crossLinkedIdentity({ id: sender }, d); } catch (_) { return false; }
+  });
+
+  const row = livenessSelect.pickFreshestLive(linked.length ? linked : eligible, { storeHandle: store, home });
+  return row ? row.id : sender;
 }
 
 // deriveSummary(store, opts) -> summary object (also written to this project's
@@ -1914,7 +1962,11 @@ function computeSummary(store, opts) {
         // means "no live registry row matched", full stop), so this row is
         // DROPPED from the projection entirely rather than kept under a
         // dead-end identity. `null` marks a row to drop; filtered out below.
-        const resolvedFrom = resolveSenderRegistryId(store, registry, r.sender, home);
+        // `d.id` — THIS workspace, the question's RECIPIENT — is passed so
+        // attribution can never land on the recipient's own row or a row
+        // cross-linked to it (defect f3b8f326bfc3; see the ATTRIBUTION CONTRACT
+        // in resolveSenderRegistryId's header).
+        const resolvedFrom = resolveSenderRegistryId(store, registry, r.sender, home, d.id);
         if (resolvedFrom == null) return null;
         return { from: resolvedFrom, ts: r.ts, seq: r.storeSeq };
       })

@@ -323,6 +323,20 @@ function familyAwareUnanswered(opts) {
   try {
     const identityFamily = require('./devswarm-identity-family.js');
     const families = identityFamily.collapseFamilies(descriptors, { resolve: o.resolveMeshId });
+    // `selfId` (defect f3b8f326bfc3, P2) — the READER's OWN registry id, i.e.
+    // the RECIPIENT of every question in `pendingQuestions`. collapseFamilies
+    // groups strictly by resolved WORKTREE, which is right for finding a
+    // sibling row a reply legitimately landed on, but a recipient and the
+    // agents it talks to routinely share ONE worktree (the Primary's anchor row,
+    // its uuid twin, and any sub-agent on the same path). Without this exclusion
+    // a reply the recipient recorded against ITSELF — or against its own twin —
+    // silently cleared a question a THIRD party asked. The excluded set is
+    // computed by the SAME recipientFamilyIds the attribution side
+    // (devswarm-store.js's resolveSenderRegistryId) uses to choose `from`, so
+    // "whose question is this" and "whose reply can clear it" are one rule.
+    // An absent selfId yields an EMPTY set: every pre-existing caller keeps its
+    // exact prior behavior.
+    const excluded = identityFamily.recipientFamilyIds(o.selfId, descriptors);
     const familyByMemberId = new Map();
     for (const fam of families) {
       for (const m of (fam && fam.members) || []) {
@@ -337,6 +351,7 @@ function familyAwareUnanswered(opts) {
       for (const m of (fam.members || [])) {
         const mid = m && m.id != null ? String(m.id) : null;
         if (!mid) continue;
+        if (excluded.has(mid)) continue; // the recipient's own row/twin can never answer a question addressed TO it
         const entry = state[mid];
         const lastReplyTs = entry && Number.isFinite(entry.lastReplyTs) ? entry.lastReplyTs : 0;
         if (qTs <= lastReplyTs) return false; // answered via a family sibling's reply record

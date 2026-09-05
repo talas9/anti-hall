@@ -1283,10 +1283,21 @@ function main() {
     let registryRows = [];
     try {
       const ws = (summary && summary.workspaces) || {};
-      registryRows = Object.keys(ws).map((wid) => ({ id: wid, worktreePath: (ws[wid] && ws[wid].worktreePath) || null }));
+      // `sessionId` rides along so recipientFamilyIds can see this workspace's
+      // own uuid/builder-id twin (the `twin.sessionId === anchor.id` cross-link)
+      // — defect f3b8f326bfc3, same projection the Stop gate makes.
+      registryRows = Object.keys(ws).map((wid) => ({
+        id: wid,
+        worktreePath: (ws[wid] && ws[wid].worktreePath) || null,
+        sessionId: (ws[wid] && ws[wid].sessionId) || null,
+      }));
     } catch (_) { registryRows = []; }
     ownUnanswered = replyStateMod.familyAwareUnanswered({
       pendingQuestions: ownPendingQuestions, replyState, descriptors, resolveMeshId, registryRows,
+      // The recipient of these questions — its own row and its twins can never
+      // answer them (defect f3b8f326bfc3). The Stop gate passes the same thing,
+      // so the two surfaces stay one rule.
+      selfId: primaryId || null,
     });
   } catch (_) {
     ownUnanswered = ownPendingQuestions.slice();

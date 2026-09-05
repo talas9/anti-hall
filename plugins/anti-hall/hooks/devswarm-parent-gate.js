@@ -474,9 +474,14 @@ function readOwnUnread(home, cwd, repoKey) {
     // registry row `send --to` resolved, and many of those rows (builder-id
     // aliases in particular) have no descriptor file for the family map to find.
     // Free here: it is the same parsed object, no extra read.
+    // `sessionId` rides along (defect f3b8f326bfc3): recipientFamilyIds needs it
+    // to see the `twin.sessionId === anchor.id` cross-link that identifies this
+    // workspace's OWN uuid/builder-id twin, whose reply records must never clear
+    // a question a third party asked. Same parsed object, still no extra read.
     const registryRows = Object.keys(summary.workspaces).map((wid) => ({
       id: wid,
       worktreePath: (summary.workspaces[wid] && summary.workspaces[wid].worktreePath) || null,
+      sessionId: (summary.workspaces[wid] && summary.workspaces[wid].sessionId) || null,
     }));
     return { unread, id, urgencyMax, unknown: false, pendingQuestions, pendingQuestionsTruncated, registryRows };
   } catch (_) {
@@ -583,6 +588,11 @@ function main() {
       // The second id space a reply can be recorded under — see the lib's own
       // header (defect f3b8f326bfc3).
       registryRows: own.registryRows || [],
+      // This workspace IS the recipient of every one of these questions, so its
+      // own row and any row cross-linked to it are excluded from the family that
+      // can clear them (defect f3b8f326bfc3 — a reply recorded against itself or
+      // its own uuid twin used to clear a third party's question).
+      selfId: own.id || null,
     });
   } catch (_) {
     // The lib itself is fail-open-toward-unanswered; mirror that here too —

@@ -2917,3 +2917,14 @@ non-forwardable row rather than at the end of a contiguous forwarded prefix.
 
 Do both a slug row (e.g. `fix-the-thing-a1b2c3d4`) and a UUID row: they resolve through
 different id paths, and the fold pairs them, so a result on one is not a result on the other.
+
+## Question attribution contract (defect f3b8f326bfc3)
+
+A question row's `sender` is the sender's worktree-derived meshId, so every row on one
+worktree (an anchor row, its uuid twin, a sub-agent on the same path) shares one value.
+Attribution therefore resolves within the SENDER's identity family only, and the recipient's
+own row plus everything cross-linked to it (`recipientFamilyIds`) is excluded on BOTH sides:
+it can never be the rendered `from`, and its reply records can never clear the question. If
+that exclusion leaves nothing live, the stored sender id is kept verbatim — the question stays
+listed under its raw origin rather than being re-attributed to its own recipient. A sender
+matching no registry row at all is still dropped (the permanent-deadlock rule, unchanged).
