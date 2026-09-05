@@ -9796,7 +9796,8 @@ function fetchNativeChildren(ctx) {
 // repos-root and grace conjuncts that make absence safe live with it.
 
 // fetchActiveWorkspaceRecords(ctx) ->
-//   { ok:true, records:[{id, worktreePath}], count } | { ok:false, reason, rawKeys? }
+//   { ok:true, records:[{id, worktreePath, repositoryId, label, branch}], count }
+//   | { ok:false, reason, rawKeys?, error?, status?, signal?, stderr? }
 // ONE bounded, read-only `hivecontrol workspace list all` spawn (the same verb,
 // timeout and injectable io.run posture as fetchTrustedRepositoryId /
 // cmdReconcileRegistry). Never throws. Called ONLY from the supervisor's
@@ -9809,6 +9810,25 @@ function fetchNativeChildren(ctx) {
 // indistinguishable here from an error the CLI reported as an empty body. So a
 // zero-record list reports `hivecontrol-empty-list` and the caller writes
 // nothing, which suppresses nothing.
+//
+// repositoryId (D12b item 1): this call parses the SAME `workspace list all`
+// output parseChildrenList already knows carries a `repositoryId` field (see
+// that function's own header) — it was simply never threaded through THIS
+// parser, so every cached record downstream had repositoryId:null and the
+// archive-cache's conjunct-3 repositoryId guard (companion/lib/
+// devswarm-archived-cache.js isAppArchived) could never fire. Now passed
+// through verbatim (null when the field is absent/non-string — older
+// hivecontrol, fail-open unchanged). `label`/`branch` are threaded through too
+// (cheap: same record, parseChildrenList already extracts both) for provenance
+// only; no current reader depends on them.
+//
+// FAILURE DIAGNOSTICS (D12b item 3): a failed probe now carries `error`
+// (message/code), `status`, `signal`, and the first 200 chars of `stderr` (NOT
+// stdout — `raw`/stdout can be large and is not the diagnostic signal here)
+// whenever the underlying `run()` result (companion/lib/devswarm-pull.js's
+// defaultRun shape) supplies them, so a real field failure (a fast non-zero
+// exit, not just a timeout) is distinguishable after the fact instead of
+// collapsing to a bare 'hivecontrol-unavailable' reason with no detail.
 function fetchActiveWorkspaceRecords(ctx) {
   const c = ctx || {};
   const run = (c.io && c.io.run) || pull.defaultRun;
@@ -9818,7 +9838,15 @@ function fetchActiveWorkspaceRecords(ctx) {
   } catch (e) {
     return { ok: false, reason: 'hivecontrol-unavailable', error: String((e && e.message) || e) };
   }
-  if (!res || !res.ok) return { ok: false, reason: 'hivecontrol-unavailable', error: String((res && res.error) || 'no output') };
+  if (!res || !res.ok) {
+    return {
+      ok: false, reason: 'hivecontrol-unavailable',
+      error: String((res && res.error) || 'no output'),
+      status: (res && Number.isFinite(res.status)) ? res.status : null,
+      signal: (res && res.signal) ? String(res.signal) : null,
+      stderr: (res && typeof res.stderr === 'string') ? res.stderr.slice(0, 200) : null,
+    };
+  }
   let parsed;
   try { parsed = JSON.parse(res.raw); } catch (_) { return { ok: false, reason: 'hivecontrol-shape-unrecognized', rawKeys: [] }; }
   // The measured shape is a FLAT ARRAY. `{children:[...]}` is accepted too, the
@@ -9834,6 +9862,9 @@ function fetchActiveWorkspaceRecords(ctx) {
     records.push({
       id: String(e.id),
       worktreePath: typeof e.worktreePath === 'string' && e.worktreePath ? e.worktreePath : null,
+      repositoryId: (typeof e.repositoryId === 'string' && e.repositoryId) ? e.repositoryId : null,
+      label: (typeof e.label === 'string' && e.label) ? e.label : null,
+      branch: (typeof e.branch === 'string' && e.branch) ? e.branch : null,
     });
   }
   if (!records.length) return { ok: false, reason: 'hivecontrol-empty-list', records: 0 };

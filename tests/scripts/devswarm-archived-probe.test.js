@@ -50,8 +50,8 @@ test('the MEASURED shape parses into {id, worktreePath} records', () => {
   assert.strictEqual(r.ok, true);
   assert.strictEqual(r.count, 2);
   assert.deepStrictEqual(r.records, [
-    { id: 'a', worktreePath: '/Users/x/.devswarm/repos/1/aa/one' },
-    { id: 'b', worktreePath: '/Users/x/.devswarm/repos/1/bb/two' },
+    { id: 'a', worktreePath: '/Users/x/.devswarm/repos/1/aa/one', repositoryId: 'repo-uuid', label: 'Some workspace', branch: 'fix/a' },
+    { id: 'b', worktreePath: '/Users/x/.devswarm/repos/1/bb/two', repositoryId: 'repo-uuid', label: 'Some workspace', branch: 'fix/b' },
   ]);
 });
 
@@ -64,7 +64,7 @@ test('a {children:[...]} envelope is accepted, and a record with no id is droppe
 test('a record with NO worktreePath still yields an id-only record', () => {
   const r = cli.fetchActiveWorkspaceRecords(CTX(fakeRun([{ id: 'a' }])));
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(r.records, [{ id: 'a', worktreePath: null }]);
+  assert.deepStrictEqual(r.records, [{ id: 'a', worktreePath: null, repositoryId: null, label: null, branch: null }]);
 });
 
 test('M1 — an EMPTY list is refused, never reported as a usable snapshot', () => {
@@ -149,5 +149,158 @@ test('a newer sweep REPLACES the previous snapshot (a re-opened workspace reappe
     });
     const c = cacheLib.readActiveCache({ home: h.home, env: {}, now: SWEEP_NOW + 1000 });
     assert.deepStrictEqual(c.byRepoKey['repo-a'].map((r) => r.id), ['ws1', 'ws2']);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// D12b (v0.96.2) — three MEASURED field facts, closed together:
+//   (A) `hivecontrol workspace list all` is GLOBAL — the SAME full record set
+//       regardless of which repo's cwd the probe ran from — yet the pre-fix
+//       sweep wrote that raw global answer verbatim into EVERY probed repoKey's
+//       bucket, so repo X's cache held repo Y's records too.
+//   (B) fetchActiveWorkspaceRecords dropped `repositoryId` even though the SAME
+//       raw record parseChildrenList already extracts it from carries the
+//       field — every cached record had repositoryId:null, so the D11-B
+//       conjunct-3 repositoryId guard (companion/lib/devswarm-archived-cache.js
+//       isAppArchived) could never fire.
+//   (C) activeProbeFailure dropped error/status/signal/stderr, collapsing a
+//       real field failure (a fast non-zero exit, not a timeout) to a bare
+//       reason string with no diagnosable detail.
+// ---------------------------------------------------------------------------
+
+test('D12b(a): repositoryId (and label/branch) are threaded through onto every normalized record, not dropped', () => {
+  const r = cli.fetchActiveWorkspaceRecords(CTX(fakeRun([REC('a', '/w/a')])));
+  assert.strictEqual(r.records[0].repositoryId, 'repo-uuid');
+  assert.strictEqual(r.records[0].label, 'Some workspace');
+  assert.strictEqual(r.records[0].branch, 'fix/a');
+});
+
+test('D12b(b): the GLOBAL hivecontrol answer is SCOPED per repoKey — repo X\'s subset excludes repo Y\'s records; absence-from-global still archives an X row correctly', () => {
+  const h = makeHome();
+  try {
+    const wtA = '/Users/x/.devswarm/repos/1/aa/one'; // repo A's live workspace
+    const wtB = '/Users/x/.devswarm/repos/2/bb/two'; // repo B's live workspace — a DIFFERENT repo
+    const repoKeyMap = { [wtA]: 'repoA-key', [wtB]: 'repoB-key' };
+    // ONE global answer, IDENTICAL regardless of which target's worktreePath
+    // probed it — the measured field fact this fix must survive.
+    const globalList = [
+      { id: 'a1', worktreePath: wtA, repositoryId: 'repoA-uuid' },
+      { id: 'b1', worktreePath: wtB, repositoryId: 'repoB-uuid' },
+    ];
+    supervisor.reconcileSweepIfDue({
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW,
+      deps: {
+        readDescriptors: () => [
+          { id: 'a1', worktreePath: wtA, sessionId: 's1' },
+          { id: 'b1', worktreePath: wtB, sessionId: 's2' },
+        ],
+        repoKeyForWorktree: (wt) => repoKeyMap[wt] || null,
+        readReconcileSweepState: () => ({ lastRunAt: 0 }),
+        writeReconcileSweepState: () => {},
+        runReconcile: () => ({ ok: true }),
+        runFold: () => ({ ok: true }),
+        runActiveList: () => ({ ok: true, records: globalList, count: 2 }),
+      },
+    });
+    const c = cacheLib.readActiveCache({ home: h.home, env: {}, now: SWEEP_NOW });
+    assert.deepStrictEqual(c.byRepoKey['repoA-key'].map((r) => r.id), ['a1'],
+      'repo A\'s subset must contain ONLY its own record, never repo B\'s');
+    assert.deepStrictEqual(c.byRepoKey['repoB-key'].map((r) => r.id), ['b1'],
+      'repo B\'s subset must contain ONLY its own record, never repo A\'s');
+
+    // a1 is present (correctly scoped under repoA-key) -> NOT archived.
+    assert.strictEqual(cacheLib.isAppArchived({
+      home: h.home, repoKey: 'repoA-key', id: 'a1', worktreePath: wtA,
+      env: {}, now: SWEEP_NOW, firstSeenMs: SWEEP_NOW - 20 * 60 * 1000, cache: c,
+    }), false, 'a1 is present in the (correctly scoped) global answer and must read as live');
+
+    // a2 is registered under repo A but is genuinely ABSENT from the global
+    // list entirely -> the absence rule must still fire for its own repo.
+    assert.strictEqual(cacheLib.isAppArchived({
+      home: h.home, repoKey: 'repoA-key', id: 'a2',
+      worktreePath: '/Users/x/.devswarm/repos/1/aa/gone',
+      env: {}, now: SWEEP_NOW, firstSeenMs: SWEEP_NOW - 20 * 60 * 1000, cache: c,
+    }), true, 'a workspace genuinely absent from the global list must still archive for its own repo');
+  } finally { h.cleanup(); }
+});
+
+test('D12b(c): the partial-list floor compares the PER-REPO subset against that repo\'s own previous count, never the global record count', () => {
+  const h = makeHome();
+  try {
+    const wtA = '/Users/x/.devswarm/repos/1/aa/one';
+    const repoKeyMap = { [wtA]: 'repoA-key' };
+    const baseDeps = {
+      readDescriptors: () => [{ id: 'a0', worktreePath: wtA, sessionId: 's1' }],
+      repoKeyForWorktree: (wt) => repoKeyMap[wt] || null,
+      readReconcileSweepState: () => ({ lastRunAt: 0 }),
+      writeReconcileSweepState: () => {},
+      runReconcile: () => ({ ok: true }),
+      runFold: () => ({ ok: true }),
+    };
+    // First sweep: repo A genuinely has 4 live records.
+    const firstGlobal = [0, 1, 2, 3].map((i) => ({ id: 'a' + i, worktreePath: wtA, repositoryId: 'repoA-uuid' }));
+    supervisor.reconcileSweepIfDue({
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on', ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT: '50' }, now: SWEEP_NOW,
+      deps: Object.assign({}, baseDeps, { runActiveList: () => ({ ok: true, records: firstGlobal, count: 4 }) }),
+    });
+    const before = cacheLib.readActiveCache({ home: h.home, env: {}, now: SWEEP_NOW });
+    assert.strictEqual(before.byRepoKey['repoA-key'].length, 4);
+
+    // Second sweep: the GLOBAL answer now ALSO carries 50 unrelated foreign
+    // (repo Z) records — repo A's OWN count crashed to just 1. A floor keyed
+    // off the global count would see "51, up from 4" and never suspect a
+    // truncation; the per-repo floor must still catch repo A's own crash.
+    repoKeyMap['/repoZ/wt'] = 'repoZ-key';
+    const secondGlobal = [{ id: 'a0', worktreePath: wtA, repositoryId: 'repoA-uuid' }]
+      .concat(Array.from({ length: 50 }, (_, i) => ({ id: 'z' + i, worktreePath: '/repoZ/wt', repositoryId: 'repoZ-uuid' })));
+    supervisor.reconcileSweepIfDue({
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on', ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT: '50' }, now: SWEEP_NOW + 1000,
+      deps: Object.assign({}, baseDeps, { runActiveList: () => ({ ok: true, records: secondGlobal, count: 51 }) }),
+    });
+    const after = cacheLib.readActiveCache({ home: h.home, env: {}, now: SWEEP_NOW + 1000 });
+    assert.strictEqual(after.byRepoKey['repoA-key'].length, 4,
+      'the floor guard must refuse repo A\'s 1-record subset (below 50% of its own previous 4) and KEEP the previous snapshot for repo A, even though the global answer itself grew');
+  } finally { h.cleanup(); }
+});
+
+test('D12b(d): a failed probe (a fast non-zero exit, not a timeout) carries error/status/signal/stderr through fetchActiveWorkspaceRecords AND the supervisor\'s activeProbeFailure record — never just a bare reason string', () => {
+  const stderrText = 'DevSwarm workspace repository unavailable\n'.repeat(10);
+  const runFail = () => ({ ok: false, error: 'hivecontrol exited 3', status: 3, signal: null, stderr: stderrText, raw: '' });
+
+  const r = cli.fetchActiveWorkspaceRecords(CTX(runFail));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.error, 'hivecontrol exited 3');
+  assert.strictEqual(r.status, 3);
+  assert.strictEqual(r.signal, null);
+  assert.strictEqual(r.stderr, stderrText.slice(0, 200));
+
+  const h = makeHome();
+  try {
+    const res = supervisor.reconcileSweepIfDue({
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW,
+      deps: sweepDeps({ runActiveList: runFail }),
+    });
+    assert.strictEqual(res.ran, true);
+    assert.ok(res.activeProbe.failure, 'a failed probe must surface a failure record');
+    assert.strictEqual(res.activeProbe.failure.error, 'hivecontrol exited 3');
+    assert.strictEqual(res.activeProbe.failure.status, 3);
+    assert.strictEqual(res.activeProbe.failure.signal, null);
+    assert.strictEqual(res.activeProbe.failure.stderr, stderrText.slice(0, 200));
+  } finally { h.cleanup(); }
+});
+
+test('D12b(d): a signal-killed probe carries `signal` (not just a null status) through to activeProbeFailure', () => {
+  const h = makeHome();
+  try {
+    const res = supervisor.reconcileSweepIfDue({
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW,
+      deps: sweepDeps({
+        runActiveList: () => cli.fetchActiveWorkspaceRecords(CTX(() => ({
+          ok: false, error: 'hivecontrol killed by signal SIGTERM', status: null, signal: 'SIGTERM', stderr: '', raw: '',
+        }))),
+      }),
+    });
+    assert.strictEqual(res.activeProbe.failure.signal, 'SIGTERM');
+    assert.strictEqual(res.activeProbe.failure.status, null);
   } finally { h.cleanup(); }
 });

@@ -3028,6 +3028,23 @@ same-id record belonging to a DIFFERENT repositoryId no longer counts as proof t
 Fails toward never-suppress when either side lacks a repositoryId — the pre-existing
 id/worktreePath match alone still holds unchanged in that case.
 
+**v0.96.2 (D12b):** two facts confirmed the D11-B repositoryId guard above had never actually
+fired in the field. First, `fetchActiveWorkspaceRecords` (`scripts/devswarm.js`) parsed the SAME
+`list all` output `parseChildrenList` already knew carried `repositoryId`, but dropped the field
+on its own separate pass — every cached record's `repositoryId` was `null`, so the guard's "both
+sides carry one" precondition could never hold. Now threaded through (plus `label`/`branch`, for
+provenance). Second, since `list all` is GLOBAL (confirmed: the identical full record set from
+every repo's cwd), the pre-fix sweep (`reconcileSweepIfDue`) wrote that raw global answer verbatim
+into EVERY probed repo's bucket — repo X's cache held repo Y's records too, and the 50% partial-
+list floor compared against an inflated, cross-repo count. The sweep now resolves each record's
+OWN repoKey from its OWN worktreePath (the same resolver `distinctRepoKeys` uses, memoized per
+tick) and keeps, per target repoKey, only the records that resolve to it; a record whose
+worktreePath is unattributable is dropped from every bucket rather than defaulted into one. The
+floor and the repositoryId guard now both operate on a genuinely per-repo subset. Separately,
+`activeProbeFailure` (and `fetchActiveWorkspaceRecords`'s own failure return) now carries
+`error`, `status`, `signal`, and the first 200 chars of `stderr` (stdout excluded) instead of a
+bare reason string, so a fast non-zero-exit field failure is diagnosable after the fact.
+
 This is a **liveness-axis signal only**. It answers "does hivecontrol still know about this
 workspace", nothing about whether it has real work pending — an app-archived-but-still-live
 sender (still emitting heartbeats, still holding real unread) must keep gating, which is what

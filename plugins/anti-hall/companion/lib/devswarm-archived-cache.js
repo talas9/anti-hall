@@ -30,6 +30,26 @@
 // adding a scheduler, and NO reader ever spawns hivecontrol itself (every reader
 // here is on an every-turn hot path).
 //
+// GLOBAL-LIST SEMANTICS (D12b, measured field fact): `hivecontrol workspace
+// list all` is NOT scoped to the calling process's cwd — it returns the SAME
+// full record set (every repo hivecontrol knows about) regardless of which
+// repo's worktree the probe ran from. reconcileSweepIfDue therefore does NOT
+// write that raw global answer verbatim into a repoKey's bucket (an earlier
+// version did, and every bucket ended up holding every OTHER repo's records
+// too, defeating both this file's own conjunct-3 repositoryId guard and the
+// partial-list floor below). Before writeActiveCache is ever called, the
+// sweep resolves each record's OWN repoKey from its OWN worktreePath (the same
+// repoKeyForWorktree resolver distinctRepoKeys uses) and keeps, per target
+// repoKey, ONLY the records that resolve to THAT key — a record whose
+// worktreePath is unattributable (deleted worktree, non-git path) is dropped
+// from every bucket, never guessed into one. So by the time `byRepoKey[k]`
+// reaches this file, it is already a REPO-SCOPED subset of the global answer,
+// not the raw global list — which is also why the partial-list floor a few
+// functions down (comparing `recs.length` against THIS SAME key's own
+// previous on-disk count) is meaningful under global-list semantics: both
+// sides of that comparison are already scoped to one repo, never the global
+// record count.
+//
 // KEYED BY repoKey, NOT repositoryId, deliberately: repoKey is the partition key
 // EVERY reader already holds and passes (the gate's resolved `dKey`, the roster's
 // `repoKey`, the sweep target's `t.repoKey`), whereas the app's `repositoryId`

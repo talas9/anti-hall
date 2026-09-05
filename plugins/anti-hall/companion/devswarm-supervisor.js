@@ -743,6 +743,34 @@ function reconcileSweepIfDue(opts) {
       return devswarmCli.fetchActiveWorkspaceRecords({ home, env, cwd: worktreePath });
     };
 
+    // scopeRecordToRepoKey(rec) -> repoKey|null (D12b item 2). `hivecontrol
+    // workspace list all` is a GLOBAL, unfiltered read — measured to return
+    // the IDENTICAL record set regardless of which repo's cwd the probe ran
+    // from. Naively assigning that whole answer to `activeByRepoKey[t.repoKey]`
+    // (the pre-fix code) stuffed EVERY repo's active records into EVERY
+    // probed repo's bucket, so a row in repo X could be "proven live" by a
+    // same-id/worktreePath record that actually belongs to repo Y. Resolve
+    // each record's OWN repoKey from its OWN worktreePath via the exact same
+    // resolver distinctRepoKeys above already uses (fail-open null on a
+    // missing/deleted/non-git worktreePath — such a record is unattributable
+    // and is excluded from every bucket, never guessed into one). Memoized by
+    // worktreePath since the global list — and therefore this resolution — is
+    // identical across every target in this same sweep tick; resolving each
+    // distinct worktreePath's repoKey once here, rather than once per target,
+    // avoids a redundant git spawn per (target x record) pair.
+    const resolveRepoKeyCached = deps.repoKeyForWorktree || function (wt) {
+      try { return require('./lib/devswarm-repokey.js').repoKeyForWorktree(wt); } catch (_) { return null; }
+    };
+    const recordRepoKeyCache = new Map();
+    function scopeRecordToRepoKey(rec) {
+      if (!rec || !rec.worktreePath) return null;
+      if (recordRepoKeyCache.has(rec.worktreePath)) return recordRepoKeyCache.get(rec.worktreePath);
+      let key = null;
+      try { key = resolveRepoKeyCached(rec.worktreePath); } catch (_) { key = null; }
+      recordRepoKeyCache.set(rec.worktreePath, key);
+      return key;
+    }
+
     const results = [];
     let anyLost = false;
     const activeByRepoKey = {};
@@ -781,9 +809,32 @@ function reconcileSweepIfDue(opts) {
         active = { ok: false, reason: 'probe-threw', error: String(e && e.message || e) };
       }
       if (active && active.ok && Array.isArray(active.records) && active.records.length) {
-        activeByRepoKey[t.repoKey] = active.records;
+        // D12b item 2: SCOPE the (possibly global) answer to records this
+        // repoKey's own worktree(s) actually own — see scopeRecordToRepoKey
+        // above. A record whose worktreePath cannot be attributed to ANY
+        // repoKey (deleted worktree, non-git path) is excluded here rather
+        // than assigned to this bucket by default.
+        const scoped = active.records.filter((r) => scopeRecordToRepoKey(r) === t.repoKey);
+        if (scoped.length) activeByRepoKey[t.repoKey] = scoped;
+        // A non-empty global answer that scopes down to ZERO records for
+        // THIS repoKey is not treated as a probe failure (the probe itself
+        // succeeded) — it simply contributes nothing for this project this
+        // tick, same fail-open posture as any other empty-for-this-key case
+        // (writeActiveCache already refuses an empty per-key write).
       } else if (active && !active.ok && !activeProbeFailure) {
-        activeProbeFailure = { repoKey: t.repoKey, reason: active.reason || 'unknown', rawKeys: active.rawKeys || [] };
+        // D12b item 3: carry the real diagnostic fields fetchActiveWorkspaceRecords
+        // now supplies on failure — error (message/code), status, signal, and the
+        // first 200 chars of stderr (stdout/`raw` deliberately excluded) — so a
+        // real field failure (a fast non-zero exit, not a timeout) is
+        // distinguishable after the fact instead of collapsing to a bare reason
+        // string with no detail.
+        activeProbeFailure = {
+          repoKey: t.repoKey, reason: active.reason || 'unknown', rawKeys: active.rawKeys || [],
+          error: active.error != null ? String(active.error) : null,
+          status: Number.isFinite(active.status) ? active.status : null,
+          signal: active.signal ? String(active.signal) : null,
+          stderr: typeof active.stderr === 'string' ? active.stderr.slice(0, 200) : null,
+        };
       }
       results.push({ repoKey: t.repoKey, worktreePath: t.worktreePath, result, fold, active });
     }
