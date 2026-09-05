@@ -40,6 +40,10 @@ const {
 } = require('./lib/liveness.js');
 const { pokeOrEscalate, notifyParentEscalation, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
 const alog = require('./lib/anti-hall-log.js'); // leaf module (fs/os/path only) — safe at top level, no cycle risk
+// devswarm-archived-cache: leaf-ish (fs/path + liveness.js, which this file
+// already loads). It lazy-requires THIS module for the sweep interval, so the
+// cycle is never observed at load time — see its sweepIntervalMs().
+const archivedCache = require('./lib/devswarm-archived-cache.js');
 // devswarm-repokey.js / devswarm-store.js are required LAZILY (inside
 // readMeshUrgency, not at module top level). Only the devswarm-repokey.js
 // lazy-require is load-bearing: repokey is NOT otherwise loaded anywhere in
@@ -674,8 +678,24 @@ function reconcileSweepIfDue(opts) {
       return devswarmCli.foldMeshDuplicates(home, { repoKey, env });
     };
 
+    // runArchivedList(worktreePath) — APP-SIDE ARCHIVE PROBE (field: the owner
+    // archived children in the DevSwarm app; nothing on anti-hall's side ever
+    // learned, so those rows kept rendering as escalated/not-draining). ONE
+    // bounded, read-only `hivecontrol workspace list all` per target, riding
+    // INSIDE this same cooldown-gated, sweep-locked pass — no new scheduler, no
+    // new lock, and NO reader ever spawns hivecontrol (see
+    // companion/lib/devswarm-archived-cache.js's header). LAZY require for the
+    // same circular-require reason as runReconcile/runFold above.
+    const runArchivedList = deps.runArchivedList || function (worktreePath) {
+      const devswarmCli = require('../scripts/devswarm.js');
+      return devswarmCli.fetchArchivedWorkspaceIds({ home, env, cwd: worktreePath });
+    };
+
     const results = [];
     let anyLost = false;
+    const archivedByRepoKey = {};
+    let archivedField = null;
+    let noArchivedField = null;
     for (const t of targets) {
       let result = null;
       try {
@@ -690,7 +710,41 @@ function reconcileSweepIfDue(opts) {
       } catch (e) {
         fold = { ok: false, error: String(e && e.message || e) };
       }
-      results.push({ repoKey: t.repoKey, worktreePath: t.worktreePath, result, fold });
+      // Best-effort, per target. A probe failure NEVER contributes an entry —
+      // "no data for this project" means no suppression, the fail-open
+      // direction. `no-archived-field` is remembered so it can be logged ONCE
+      // per sweep (not once per project) instead of writing a guessed mapping.
+      let archived = null;
+      try {
+        archived = runArchivedList(t.worktreePath);
+      } catch (e) {
+        archived = { ok: false, reason: 'probe-threw', error: String(e && e.message || e) };
+      }
+      if (archived && archived.ok && Array.isArray(archived.ids)) {
+        archivedByRepoKey[t.repoKey] = archived.ids;
+        if (archived.field && !archivedField) archivedField = archived.field;
+      } else if (archived && archived.reason === 'no-archived-field' && !noArchivedField) {
+        noArchivedField = archived;
+      }
+      results.push({ repoKey: t.repoKey, worktreePath: t.worktreePath, result, fold, archived });
+    }
+
+    // Write the cache only when at least one target actually reported. An empty
+    // write would stamp a FRESH fetchedAt over a file with nothing in it, which
+    // is harmless but pointless; skipping it also means a sweep where every
+    // probe failed leaves the previous (soon-to-expire) snapshot to age out on
+    // its own rather than being replaced by an empty one.
+    if (Object.keys(archivedByRepoKey).length) {
+      try {
+        (deps.writeArchivedCache || archivedCache.writeArchivedCache)({ home, byRepoKey: archivedByRepoKey, now, fsi: F });
+      } catch (_) { /* cache write must never break the sweep */ }
+    }
+    if (noArchivedField) {
+      try {
+        alog.logEvent('devswarm-supervisor', 'archived-probe', 'info',
+          'hivecontrol workspace records carry none of the pinned archived fields — app-side archive detection is OFF (nothing written, no mapping guessed)',
+          { rawKeys: noArchivedField.rawKeys || [] });
+      } catch (_) { /* logging must never break the sweep */ }
     }
 
     // OBSERVE, DON'T ASSERT: log exactly what the (real, already-executed)
@@ -704,7 +758,12 @@ function reconcileSweepIfDue(opts) {
         { results: results.map((r) => ({ repoKey: r.repoKey, ok: !!(r.result && r.result.ok), imported: (r.result && r.result.imported) || 0, lost: (r.result && r.result.lost) || 0 })) });
     } catch (_) { /* logging must never break the sweep */ }
 
-    return { ran: true, projects: targets.length, skipped: projects.length - targets.length, results };
+    return { ran: true, projects: targets.length, skipped: projects.length - targets.length, results,
+      // archivedField: WHICH pinned hivecontrol field this machine actually
+      // carries (null = none seen / no probe succeeded). Report-only, but the
+      // one datum that lets a future pass confirm the shape from a real install
+      // instead of re-deriving the candidate list.
+      archivedField };
   } catch (e) {
     return { ran: false, error: String(e && e.message || e) };
   }

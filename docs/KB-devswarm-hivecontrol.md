@@ -2876,3 +2876,44 @@ pass no flags and therefore can never take this hatch.
 Sections §33-§35 were verified 2026-09-05 from source at the versions on disk in this repo
 checkout (anti-hall's own code, not vendor behavior — re-grep the cited function/symbol names
 rather than trusting line numbers verbatim after either file changes further).
+
+## §36 — Re-testing `0a668d81c0c6` in the field (cursor vs total, slug row and UUID row)
+
+The fold-cursor defect is about a read cursor being advanced past mail nobody consumed, so the
+field re-test is simply: read the cursor and the total before and after a read, on **both** id
+shapes (a slug row and a UUID row), and see whether the cursor ever lands past what was
+actually handed over.
+
+Run this per row id, from inside the project's worktree, on **0.92.0**:
+
+```sh
+devswarm inbox messages <rowId>      # BEFORE: note `cursor`, `total`, `unreadCount`
+devswarm inbox count    <rowId>      # BEFORE: note `cursorStore`, `cursorNdjson`, `total`
+devswarm inbox read     <rowId>      # hand over the unread rows
+devswarm inbox messages <rowId>      # AFTER: `cursor` vs `total`
+devswarm inbox count    <rowId>      # AFTER: `cursorStore` vs `total`
+```
+
+Two corrections to the shape this re-test is usually written in, both verified against the
+code and by running the verbs on a scratch home (never a live one):
+
+- **There is no `--to` on these verbs.** `--to` belongs to `send --to <id>` (an addressee) and
+  to `inbox ack --to <N>` (an explicit cursor value). `inbox messages`/`read`/`count` take the
+  row id as a bare positional. `--json` is accepted but pointless: every verb except
+  `healthcheck`/`diagnose` already prints raw JSON.
+- **`inbox read` does not advance any cursor** — it is a non-mutating hand-over. `inbox ack`
+  is the verb that moves the store cursor. Observed on a scratch home with 2 store rows:
+  after `read`, `cursorStore` stayed `0` and `unreadStore` stayed `2`; after `ack`,
+  `cursorStore` became `2` and `unreadStore` `0`. So a re-test that reads and then expects the
+  cursor to have moved will always look "broken" for the wrong reason — insert the `ack`, or
+  compare across it.
+
+Field names to record (they differ per verb): `inbox messages` reports `cursor`, `total`,
+`unreadCount`; `inbox count` reports `cursorNdjson` + `cursorStore` separately, plus
+`unreadNdjson`/`unreadStore`/`unreadTotal` and `total` (`unread`/`storeCursor`/`storeUnread`
+are compat aliases — do not report those). **The defect signature is `cursorStore` > the
+number of rows actually forwarded/handed over**, i.e. the cursor sitting past a
+non-forwardable row rather than at the end of a contiguous forwarded prefix.
+
+Do both a slug row (e.g. `fix-the-thing-a1b2c3d4`) and a UUID row: they resolve through
+different id paths, and the fold pairs them, so a result on one is not a result on the other.

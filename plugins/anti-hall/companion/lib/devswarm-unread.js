@@ -93,21 +93,102 @@ function ndjsonHashesFromLines(lines, id, startIndex) {
 // the SAME ones countMessages/unreadBacklog/devswarm-migrate all apply, so the
 // index a line hashes under here is the index it was migrated under.
 function ndjsonAllHashes(inboxPath, fsi, id) {
+  return ndjsonHashesFromLines(ndjsonAllLines(inboxPath, fsi), id, 0);
+}
+
+// ndjsonAllLines(inboxPath, fsi) -> the durable NDJSON's non-empty lines, in
+// order, UNTRIMMED. THE single definition of that filter for this module (both
+// ndjsonAllHashes above and unionUnread's body tier read through it).
+// The UNTRIMMED line is what devswarm-migrate.js's readInbox keeps (it filters
+// on `l.trim() !== ''` but stores `l`), and therefore both what legacyLineHash
+// was computed over and what the migration stored as a row BODY. Trimming here
+// would silently stop matching every line with trailing whitespace.
+// Fail-soft: absent/unreadable -> [].
+function ndjsonAllLines(inboxPath, fsi) {
   const F = fsi || fs;
   let raw;
-  try { raw = String(F.readFileSync(inboxPath, 'utf8')); } catch (_) { return new Set(); }
-  const set = new Set();
-  let i = 0;
-  for (const line of raw.split('\n')) {
-    if (line.trim() === '') continue;
-    // The UNTRIMMED line is what devswarm-migrate.js's readInbox keeps (it
-    // filters on `l.trim() !== ''` but stores `l`), and therefore what
-    // legacyLineHash was computed over. Hashing the trimmed form here would
-    // silently stop matching every line with trailing whitespace.
-    for (const h of hashesForLine(id, i, line)) set.add(h);
-    i++;
+  try { raw = String(F.readFileSync(inboxPath, 'utf8')); } catch (_) { return []; }
+  return raw.split('\n').filter((line) => line.trim() !== '');
+}
+
+// ---- CROSS-PATH BODY IDENTITY (R13 Auditor P2) ---------------------------
+// bodyOfMessage / bodyMultisetOfRows / consumeBody live HERE (the leaf module)
+// and companion/devswarm-migrate.js imports them, exactly as it already does
+// for legacyLineHash — one definition, never two.
+//
+// WHY THE UNION NEEDS THEM: migrateOne (devswarm-migrate.js:~264) SKIPS any
+// NDJSON line whose body is already covered by the store's cross-path body
+// multiset (`if (!pendingIdx.has(i)) continue;`). That line therefore lives in
+// the store under a `native:`/`global-migrate:` hash, not a `legacy:` one — so
+// neither of the hash tiers above can match it, and the SAME physical message
+// is counted once on the NDJSON side and once on the store side. The union
+// closes that with a THIRD tier: an NDJSON line with no `_h` whose legacy hash
+// is absent from the store falls back to the very body-multiset match the
+// migration used to decide the line was already covered. Same function, same
+// normalization — if the two ever disagreed, the double count would return.
+function bodyOfMessage(m) {
+  return m && m.body != null ? String(m.body) : '';
+}
+
+// bodyMultisetOfRows(rows) -> Map<body, count>. The multiset (not a Set): two
+// genuinely distinct messages that merely share a body must stay two, so
+// coverage is drawn down one occurrence at a time (see consumeBody).
+function bodyMultisetOfRows(rows) {
+  const counts = new Map();
+  for (const m of (rows || [])) {
+    const b = bodyOfMessage(m);
+    counts.set(b, (counts.get(b) || 0) + 1);
   }
-  return set;
+  return counts;
+}
+
+// consumeBody(counts, body) -> bool. True (and decrements the pool) iff the
+// multiset still holds an unconsumed copy of `body`.
+function consumeBody(counts, body) {
+  const n = counts.get(body) || 0;
+  if (n <= 0) return false;
+  counts.set(body, n - 1);
+  return true;
+}
+
+// bodyCoveredRows(rows, lines, hashesOfLine) -> Set of INDICES into `rows` that
+// one of `lines` covers by BODY under the migration's own identity. Only lines
+// that (a) carry no `_h` and (b) whose derived hashes are all absent from the
+// store's hash set are eligible — a line already matched on a hash tier has
+// already collapsed its twin, and a line WITH an `_h` was written by the native
+// pull path (which stores its row under that same `_h`), never by the migration
+// skip this closes. `rows` is restricted by the caller to rows not already
+// hash-matched, so no row is ever double-consumed.
+function bodyCoveredRows(rows, lines, storeHashes, id, startIndex) {
+  const covered = new Set();
+  if (!rows || !rows.length || !lines || !lines.length) return covered;
+  // Index the candidate rows by body so the draw-down is O(n) rather than O(n^2).
+  const byBody = new Map();
+  for (let r = 0; r < rows.length; r++) {
+    const b = bodyOfMessage(rows[r]);
+    if (!byBody.has(b)) byBody.set(b, []);
+    byBody.get(b).push(r);
+  }
+  const counts = bodyMultisetOfRows(rows);
+  const base = Number.isFinite(startIndex) && startIndex > 0 ? Math.floor(startIndex) : 0;
+  let i = 0;
+  for (const line of lines) {
+    const idx = base + i;
+    i++;
+    let hasEmbedded = false;
+    try {
+      const o = JSON.parse(line);
+      hasEmbedded = !!(o && typeof o === 'object' && o._h != null);
+    } catch (_) { hasEmbedded = false; }
+    if (hasEmbedded) continue; // native-drained line: its store twin carries the SAME _h
+    if (id != null && storeHashes && storeHashes.has(legacyLineHash(id, idx, line))) continue; // already hash-matched
+    // The store row's body is the WHOLE physical line (migrateOne appends
+    // `body: lines[i]`), so the line itself is the lookup key.
+    if (!consumeBody(counts, String(line))) continue;
+    const pool = byBody.get(String(line));
+    if (pool && pool.length) covered.add(pool.shift());
+  }
+  return covered;
 }
 
 // rowTs(row) -> finite ms | null. Best-effort timestamp extraction shared by
@@ -171,17 +252,31 @@ function unionUnread(opts) {
       // `id` is threaded into BOTH hash derivations so the legacy-line tier
       // (see hashesForLine) can fire; without it only `_h` is matched, which is
       // exactly the pre-fix double-count.
-      const allNdjsonHashes = ndjsonAllHashes(o.inboxPath, o.fsi, id);
+      const allNdjsonLines = ndjsonAllLines(o.inboxPath, o.fsi);
+      const allNdjsonHashes = ndjsonHashesFromLines(allNdjsonLines, id, 0);
       // ABSOLUTE indices for the unread tail: legacyLineHash is index-sensitive
       // and `u.lines` is the tail slice, so its first line's real position is
       // (total - tail length), never 0. Deriving it from the two lengths (rather
       // than trusting the cursor) stays correct even for a cursor clamped or
       // written past the end.
-      const unreadNdjsonHashes = ndjsonHashesFromLines(u.lines, id, Math.max(0, u.total - u.lines.length));
+      const unreadStartIndex = Math.max(0, u.total - u.lines.length);
+      const unreadNdjsonHashes = ndjsonHashesFromLines(u.lines, id, unreadStartIndex);
       const storeAllRows = storeHandle.listMessages(id);
-      storeOnlyTotalCount = storeAllRows.filter((r) => !r.hash || !allNdjsonHashes.has(r.hash)).length;
+      // Every hash the store actually holds — the eligibility test for the body
+      // tier below ("this line's legacy hash is ABSENT from the store", i.e. the
+      // migration skipped importing it as its own row).
+      const storeHashes = new Set(storeAllRows.map((r) => r && r.hash).filter((h) => h != null));
+      // TIER 1 (unchanged): rows whose hash no NDJSON line reproduces.
+      const totalUncovered = storeAllRows.filter((r) => !r.hash || !allNdjsonHashes.has(r.hash));
+      // TIER 2 (R13 Auditor P2): of those, the ones a migration-SKIPPED NDJSON
+      // line covers by body — the same physical message under a `native:`/
+      // `global-migrate:` hash the legacy tier structurally cannot match.
+      const totalBodyCovered = bodyCoveredRows(totalUncovered, allNdjsonLines, storeHashes, id, 0);
+      storeOnlyTotalCount = totalUncovered.length - totalBodyCovered.size;
       const storeUnreadRows = storeHandle.listMessages(id, { sinceCursor: storeCursorVal });
-      storeOnlyUnreadRows = storeUnreadRows.filter((r) => !r.hash || !unreadNdjsonHashes.has(r.hash));
+      const unreadUncovered = storeUnreadRows.filter((r) => !r.hash || !unreadNdjsonHashes.has(r.hash));
+      const unreadBodyCovered = bodyCoveredRows(unreadUncovered, u.lines, storeHashes, id, unreadStartIndex);
+      storeOnlyUnreadRows = unreadUncovered.filter((_r, i) => !unreadBodyCovered.has(i));
     }
   } catch (_) { /* fail-open: NDJSON-only reporting, matches pre-fix CLI behavior */ }
 
@@ -237,6 +332,11 @@ module.exports = {
   hashesForLine,
   ndjsonHashesFromLines,
   ndjsonAllHashes,
+  ndjsonAllLines,
+  bodyOfMessage,
+  bodyMultisetOfRows,
+  consumeBody,
+  bodyCoveredRows,
   oldestUnreadAgeMs,
   unionUnread,
   openStoreForUnread,

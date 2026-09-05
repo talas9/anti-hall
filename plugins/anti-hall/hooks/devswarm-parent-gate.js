@@ -136,6 +136,10 @@ const { readUnreadMessages } = require('../companion/lib/devswarm-inbox-cursor.j
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const { livenessPathFor, devswarmRoot, hasFreshHeartbeat, isSessionAliveRow } = require('../companion/lib/liveness.js');
 const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
+// APP-SIDE archive detection (field: the owner archived children in the DevSwarm
+// app, which never writes anti-hall's own archived/<id>.json). READ-ONLY, from a
+// cache the supervisor writes — never a hivecontrol spawn on this hot path.
+const { readArchivedCache, isAppArchived } = require('../companion/lib/devswarm-archived-cache.js');
 // POKE_PREFIX text check (companion/lib/devswarm-noise.js isNoiseText) —
 // applied HERE to descriptor durable-inbox NDJSON rows' `.message` (a shape
 // with no mtype/sender/recipient at all — see that module's header for why
@@ -712,6 +716,19 @@ function main() {
   // open: keep a descriptor when EITHER side is unresolvable (nothing that
   // showed before this fix can vanish); exclude it ONLY when BOTH resolve AND
   // differ.
+  // appArchivedCache() — the supervisor-written app-side archive snapshot, read
+  // ONCE per hook invocation (ONE small fs read for N descriptors) and reused
+  // for every row. Freshness is applied inside readArchivedCache: a stale/
+  // missing/malformed file yields an EMPTY map, so this can only ever suppress
+  // on evidence that is currently valid.
+  let appArchivedCacheMemo;
+  function appArchivedCache() {
+    if (appArchivedCacheMemo === undefined) {
+      try { appArchivedCacheMemo = readArchivedCache({ home, env: process.env }); }
+      catch (_) { appArchivedCacheMemo = null; }
+    }
+    return appArchivedCacheMemo;
+  }
   const repoKeyCache = new Map(); // worktreePath -> repoKey | null
   repoKeyCache.set(cwd, selfKey); // seed with the already-resolved key for `cwd`
   function repoKeyOfWorktree(wt) {
@@ -1054,6 +1071,19 @@ function main() {
     let archived = false;
     try { archived = isArchivedWorkspace(home, d.id, d.worktreePath); } catch (_) { archived = false; }
     if (archived) staleOrEscalated = false;
+    // FIELD (owner archived children in the DevSwarm APP): the app never calls
+    // anti-hall's `archive` verb, so `archived/<id>.json` is never written and
+    // the check above stays false forever — those rows kept escalating. The
+    // supervisor's reconcile sweep caches the app's own view; this reads that
+    // cache ONLY (never a hivecontrol spawn on this every-turn Stop path) and
+    // believes it ONLY while it is FRESH (a stale cache suppresses nothing —
+    // see devswarm-archived-cache.js). Liveness axis ONLY, same scoping as every
+    // suppressor above: realUnread/unreadUnknown are untouched, so an
+    // app-archived row with REAL unread still gates.
+    let appArchived = false;
+    try { appArchived = isAppArchived({ home, repoKey: dKey, id: d.id, env: process.env, cache: appArchivedCache() }); }
+    catch (_) { appArchived = false; }
+    if (appArchived) staleOrEscalated = false;
 
     // Pushed UNCONDITIONALLY (not gated on unreadUnknown/realUnread/
     // staleOrEscalated here) — the gate is applied ONCE per FAMILY after the
@@ -1083,6 +1113,10 @@ function main() {
       // apart from "never had a stale verdict at all".
       idleAlive,
       archived,
+      // appArchived: REPORT-ONLY provenance, same purpose as `archived` above —
+      // "not alerting because the DevSwarm app itself says this workspace is
+      // archived (per a FRESH supervisor-written cache)".
+      appArchived,
       status: staleOrEscalated ? status : '',
       verdictPending,
       urgencyMax: null,

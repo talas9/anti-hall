@@ -132,6 +132,11 @@ function acquireMigrateLock(home, io) {
 // dedup would silently stop matching, so this delegates rather than duplicates.
 // Kept exported here for every existing caller and test.
 const legacyLineHash = require('./lib/devswarm-unread.js').legacyLineHash;
+// Same ONE-DEFINITION rule for the CROSS-PATH BODY identity (R13 Auditor P2):
+// devswarm-unread.js's union now runs the SAME body-multiset draw-down this
+// migration uses to decide a line is already covered, so the two must be the
+// same functions. They live there (the leaf module) and are imported here.
+const { bodyMultisetOfRows, consumeBody } = require('./lib/devswarm-unread.js');
 
 // readInbox(inboxPath, F) -> { readable, lines }. Distinguishes a genuinely
 // READABLE inbox (possibly empty) from a MISSING path or a read ERROR — a
@@ -176,27 +181,15 @@ function readInboxLines(inboxPath, F) {
 // which used to test raw legacyLineHash presence and could never see a line that
 // THIS cross-path dedupe intentionally skipped inserting.
 function bodyMultisetFor(s, id) {
-  const counts = new Map();
   try {
-    for (const m of s.listMessages(id)) {
-      const b = m && m.body != null ? String(m.body) : '';
-      counts.set(b, (counts.get(b) || 0) + 1);
-    }
+    return bodyMultisetOfRows(s.listMessages(id));
   } catch (_) { /* fail-open: an unreadable store yields no cross-path dedup, never a throw */ }
-  return counts;
+  return new Map();
 }
 
-// consumeBody(counts, body) -> bool. True (and decrements the pool) iff the
-// multiset still holds an unconsumed copy of `body` — this occurrence is
-// ALREADY covered by a row some path put in the store. False (pool exhausted,
-// or never had this body) means this occurrence is NOT yet covered and must be
-// imported as its own row.
-function consumeBody(counts, body) {
-  const n = counts.get(body) || 0;
-  if (n <= 0) return false;
-  counts.set(body, n - 1);
-  return true;
-}
+// consumeBody (imported above from devswarm-unread.js) draws that pool down one
+// occurrence at a time: true means this occurrence is ALREADY covered by a row
+// some path put in the store; false means it must import as its own row.
 
 // pendingLegacyLines(s, id, lines) -> number[] indices of `lines` NOT YET
 // covered by store `s` for workspace `id`, under the exact identity migrateOne

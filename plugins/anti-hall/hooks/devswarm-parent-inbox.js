@@ -71,6 +71,9 @@ const {
 } = require('../companion/lib/liveness.js');
 const livenessLib = require('../companion/lib/liveness.js');
 const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
+// APP-SIDE archive detection — READ-ONLY, from the supervisor-written cache
+// (never a hivecontrol spawn on this every-turn path). See that module's header.
+const { readArchivedCache, isAppArchived } = require('../companion/lib/devswarm-archived-cache.js');
 // worktreeHash: the SAME per-worktree identity install-devswarm-ingest.js baked
 // into the daemon's unit (and devswarm-ingest.js keys its heartbeat file by).
 // ingestHeartbeatPath: the per-worktree daemon LIVENESS file (rewritten every
@@ -921,6 +924,19 @@ function main() {
   let repoKey = null;
   try { repoKey = (repokeyMod && gitTop) ? repokeyMod.repoKeyForWorktree(gitTop) : null; } catch (_) { repoKey = null; }
 
+  // appArchivedCache() — the supervisor-written app-side archive snapshot, read
+  // ONCE per invocation and reused for every table row. Freshness is enforced
+  // inside readArchivedCache (stale/missing/malformed -> empty), so this can
+  // only ever suppress on currently-valid evidence.
+  let appArchivedCacheMemo;
+  function appArchivedCache() {
+    if (appArchivedCacheMemo === undefined) {
+      try { appArchivedCacheMemo = readArchivedCache({ home, env: process.env }); }
+      catch (_) { appArchivedCacheMemo = null; }
+    }
+    return appArchivedCacheMemo;
+  }
+
   // H4 fallback (daemon-down parent-inbox freeze): readSummary() below only
   // reads the store's MATERIALIZED cache (summaries/<repoKey>.json). That cache
   // is normally kept fresh by the ingest daemon's own deriveSummary call after
@@ -1144,6 +1160,17 @@ function main() {
       // label in displayStatus's own rank order.
       let archivedRow = false;
       try { archivedRow = isArchivedWorkspace(home, id, entry.worktreePath); } catch (_) { archivedRow = false; }
+      // APP-SIDE archive (field): the owner archived the child in the DevSwarm
+      // app, which never writes anti-hall's own archived/<id>.json — so the
+      // check above stays false and the row kept rendering escalated. Same
+      // liveness-axis-ONLY scoping: `not-draining` still wins below, exactly as
+      // it does for a locally-archived row. Read from the supervisor-written
+      // cache (ONE fs read, memoized for the whole table) and ONLY while that
+      // cache is FRESH — a stale snapshot suppresses nothing.
+      if (!archivedRow) {
+        try { archivedRow = isAppArchived({ home, repoKey, id, env: process.env, cache: appArchivedCache() }); }
+        catch (_) { /* fail-open: leave archivedRow false */ }
+      }
       const notDrainingFlag = !!(verdict && verdict.notDraining);
       const ds = archivedRow
         ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 })
