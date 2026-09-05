@@ -173,6 +173,9 @@ const {
   // heartbeatPathFor — the `unclaimed:` forward migration's ONLY independent
   // source of a row's real session id (cmdHeartbeat records `--session`).
   heartbeatPathFor,
+  // sessionsDirFor — the harness's own `<home>/.claude/sessions/<pid>.json`
+  // directory (defect 54a6539e2d69's parent-pid-chain fallback derivation).
+  sessionsDirFor,
 } = require('../companion/lib/liveness.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
@@ -4498,6 +4501,86 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
 // treating a row a live session was actively draining as NOT live. A `send`
 // could be routed away from it, and a sweep could class it as abandoned.
 //
+// defaultPpidOf(pid) -> parent pid, or null. Real implementation for
+// deriveCallerSessionIdFromProcessTree below: `ps -o ppid= -p <pid>` via
+// execFileSync (argv form — no shell interpolation), bounded by a short
+// timeout so a hung/missing `ps` can never block the caller. Fail-soft:
+// anything but a clean positive-integer parent pid yields null.
+function defaultPpidOf(pid) {
+  try {
+    const cp = require('child_process');
+    const out = cp.execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000 });
+    const n = parseInt(String(out).trim(), 10);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  } catch (_) { return null; }
+}
+
+const MAX_PPID_HOPS = 6;
+
+// deriveCallerSessionIdFromProcessTree(ctx, opts) -> string | null.
+//
+// FALLBACK for realSessionIdFrom (defect 54a6539e2d69): --session and
+// CLAUDE_CODE_SESSION_ID are the only two sources realSessionIdFrom reads, but
+// MEASURED on this machine: CLAUDE_CODE_SESSION_ID is set in a DevSwarm-
+// launched session's own Bash shell, and ABSENT in a plain (non-DevSwarm)
+// Claude Code session's Bash shell. So a caller running an ordinary session
+// had NO path to a real session id at all — `unclaimed:` promotion could
+// never fire for it, regardless of how long the session ran.
+//
+// The Claude Code harness itself writes `<home>/.claude/sessions/<pid>.json`
+// ({pid, sessionId, cwd, status, ...} — liveness.js's sessionsDirFor/
+// sessionPidAlive already read this exact directory for a different purpose)
+// for each running session. This walks the CALLER's OWN parent-pid chain
+// (this process's pid, then its parent, grandparent, ... up to
+// MAX_PPID_HOPS) looking for the first hop whose pid has a session file, and
+// additionally REQUIRES that file's own `cwd` to resolve (canonical realpath,
+// via the SAME canonicalWorktreeRealPath every fold/routing primitive in this
+// file uses) inside the caller's own resolved worktree before trusting it —
+// otherwise an unrelated ancestor process (a login shell, a sibling terminal
+// tab, an unrelated wrapper) could be misattributed as this call's identity.
+// A session file present with a NON-matching cwd is skipped (not fatal) and
+// the walk continues up the chain, in case a closer/farther ancestor is the
+// right one; the walk fails CLOSED (returns null) once the chain is
+// exhausted or capped — a missed derivation is a retryable no-op on the next
+// call, a wrong one would stamp a stranger's session id onto this row.
+//
+// `opts.ppidOf` (default: defaultPpidOf) and `opts.fs`/`opts.pid` are
+// injectable so tests can supply a synthetic process chain and a fake
+// sessions dir without spawning real processes or touching the real
+// `~/.claude/sessions`.
+function deriveCallerSessionIdFromProcessTree(ctx, opts) {
+  const o = opts || {};
+  const home = ctx && ctx.home;
+  if (!home) return null;
+  const F = o.fs || fs;
+  const ppidOf = typeof o.ppidOf === 'function' ? o.ppidOf : defaultPpidOf;
+  const rawCwd = (ctx && ctx.cwd) || process.cwd();
+  const callerWt = canonicalWorktreeRealPath(rawCwd) || rawCwd;
+  if (!callerWt) return null;
+  let sessDir;
+  try { sessDir = sessionsDirFor(home); } catch (_) { return null; }
+  let pid = Number.isInteger(o.pid) && o.pid > 0 ? o.pid : process.pid;
+  const seen = new Set();
+  for (let hop = 0; hop <= MAX_PPID_HOPS; hop++) {
+    if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) break;
+    seen.add(pid);
+    let rec = null;
+    try { rec = JSON.parse(F.readFileSync(path.join(sessDir, String(pid) + '.json'), 'utf8')); } catch (_) { rec = null; }
+    if (rec && typeof rec === 'object' && rec.sessionId != null && rec.cwd) {
+      const sid = String(rec.sessionId).trim();
+      if (sid && !sid.startsWith(SYNTHETIC_SESSION_PREFIX)) {
+        const recWt = canonicalWorktreeRealPath(String(rec.cwd)) || String(rec.cwd);
+        if (recWt && recWt === callerWt) return sid;
+      }
+    }
+    let next = null;
+    try { next = ppidOf(pid); } catch (_) { next = null; }
+    if (!Number.isInteger(next) || next <= 1) break;
+    pid = next;
+  }
+  return null;
+}
+
 // realSessionIdFrom(flags, ctx, id) -> a REAL session id, or null.
 // Three things are explicitly NOT real session ids and each returns null:
 //   - the row's OWN id (the tautological ingest/descriptor fallback),
@@ -4505,16 +4588,43 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
 //   - an absent/blank value.
 // `--session` wins over the env because an explicit flag is the caller stating
 // its identity; CLAUDE_CODE_SESSION_ID is the ambient Claude Code session.
+// FALLBACK (defect 54a6539e2d69): when NEITHER of those two names anything,
+// derive the caller's real session id from the harness's own session files
+// via deriveCallerSessionIdFromProcessTree — see that function's header for
+// why (CLAUDE_CODE_SESSION_ID is absent in a plain, non-DevSwarm session) and
+// its safety gate (cwd-verified parent-pid walk, fails closed). `ctx.env` is
+// passed through so a test can supply `ctx.sessionDeriveOpts` to inject a
+// synthetic process chain / sessions dir without touching real processes.
 function realSessionIdFrom(flags, ctx, id) {
   const raw = (flags ? one(flags, 'session') : undefined)
     || (ctx && ctx.env && ctx.env.CLAUDE_CODE_SESSION_ID)
     || null;
-  if (raw == null) return null;
-  const s = String(raw).trim();
-  if (!s) return null;
-  if (s === String(id)) return null;
-  if (s.startsWith(SYNTHETIC_SESSION_PREFIX)) return null;
-  return s;
+  if (raw != null) {
+    const s = String(raw).trim();
+    if (s && s !== String(id) && !s.startsWith(SYNTHETIC_SESSION_PREFIX)) return s;
+    return null;
+  }
+  try {
+    const derived = deriveCallerSessionIdFromProcessTree(ctx, ctx && ctx.sessionDeriveOpts);
+    if (derived && derived !== String(id)) return derived;
+  } catch (_) { /* fail-closed: no promotion from a throwing derivation */ }
+  return null;
+}
+
+// currentRegistrySessionId(home, id, ctx) -> string | null. The CURRENT
+// registry-side sessionId for `id`, read fresh (never the descriptor's own
+// copy) — used by promoteUnclaimedSession's divergence repair below, which
+// must compare descriptor vs registry independently rather than assuming
+// they already agree. Fail-soft null on any throw/missing row.
+function currentRegistrySessionId(home, id, ctx) {
+  try {
+    const ownerKey = storeOwnerKeyFor(id, ctx);
+    const s = store.openStore({ home, workspaceId: id, hash: ownerKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
+    try {
+      const row = s.listRegistry().find((r) => r && String(r.id) === String(id));
+      return row && row.sessionId != null ? String(row.sessionId) : null;
+    } finally { s.close(); }
+  } catch (_) { return null; }
 }
 
 // promoteUnclaimedSession(home, id, sessionId, ctx) -> { promoted, from, to }.
@@ -4526,13 +4636,62 @@ function realSessionIdFrom(flags, ctx, id) {
 // one field's value; nothing is removed). Never throws: a failed descriptor or
 // registry write degrades to "not promoted this call", which the NEXT read/pull
 // retries, rather than failing the operation the caller actually asked for.
+//
+// DIVERGENCE REPAIR (defect 54a6539e2d69, added alongside the classic
+// promotion path above): the classic path's `String(desc.sessionId) !==
+// marker -> no-op` guard means that once the DESCRIPTOR moves off the
+// marker, nothing ever calls this again with the descriptor still `unclaimed:`
+// — so a REGISTRY write that failed on that earlier call (write-through's own
+// registry step is wrapped in a swallowing try/catch, "registry retries next
+// call" — but nothing ever retries it once the descriptor no longer matches
+// the guard) left the registry stuck on the marker FOREVER, even though the
+// descriptor already held the real identity (this is exactly the shape
+// computeDiagnosis's descriptor/registry resolution, defect 2c4ae6576fab, was
+// built to paper over on the READ side — this closes it on the WRITE side so
+// the two stop diverging in the first place). The reverse (registry ahead of
+// the descriptor) is repaired symmetrically. Both repair branches are
+// ADDITIVE and IDEMPOTENT: they only ever copy one side's EXISTING real value
+// onto the other, never invent a third value, and report `promoted:false`
+// (this call performed a resync, not a NEW promotion) — reached only via
+// maybePromoteUnclaimed's pre-existing callerOwnsRow gate, or the admin
+// forward-migration sweep (promoteUnclaimedRegistrySessions) that already
+// scopes itself to the current home's own descriptors.
 function promoteUnclaimedSession(home, id, sessionId, ctx) {
   const out = { promoted: false, from: null, to: null };
   if (!sessionId || !isSafeId(id)) return out;
   const marker = SYNTHETIC_SESSION_PREFIX + String(id);
   let desc = null;
   try { desc = readDescriptorFile(home, id); } catch (_) { desc = null; }
-  if (!desc || String(desc.sessionId) !== marker) return out; // idempotent no-op
+  if (!desc) return out;
+  const descSid = desc.sessionId != null ? String(desc.sessionId) : null;
+  const registrySid = currentRegistrySessionId(home, id, ctx);
+
+  if (descSid !== marker) {
+    // Descriptor already promoted (by this or an earlier call — possibly to
+    // a DIFFERENT real value than this call's `sessionId`; an already-real
+    // descriptor is authoritative and is never overwritten here). Repair the
+    // registry to match it ONLY if the registry is still stuck on the
+    // marker for this SAME id.
+    if (descSid && registrySid === marker) {
+      const resynced = Object.assign({}, desc, { sessionId: descSid });
+      try { upsertStoreRegistry(home, resynced, ctx, { allowPathChange: true }); } catch (_) { /* retried next call */ }
+    }
+    return out; // classic promotion is a no-op: descriptor is not currently unclaimed
+  }
+
+  if (registrySid && registrySid !== marker) {
+    // Reverse divergence: the registry already holds a real value while the
+    // descriptor still carries the marker. Sync the descriptor to the
+    // registry's EXISTING real value (never this call's `sessionId` — the
+    // registry's value is the one every routing/fold primitive already
+    // treats as this row's identity).
+    const resynced = Object.assign({}, desc, { sessionId: registrySid });
+    try { writeDescriptorAtomic(home, id, resynced); } catch (_) { /* retried next call */ }
+    return out; // no NEW promotion happened; this only resynced the descriptor
+  }
+
+  // Classic path: descriptor AND registry both still carry the marker ->
+  // genuinely promote both, write-through.
   const next = Object.assign({}, desc, { sessionId: String(sessionId) });
   try { writeDescriptorAtomic(home, id, next); } catch (_) { return out; }
   // allowPathChange: the worktreePath is IDENTICAL (copied verbatim from the
@@ -9452,9 +9611,42 @@ function computeDiagnosis(s, ctx) {
   // either direction. try/catch keeps this fail-open against any throw from a
   // malformed row, falling back to the OLD bare-sessionId signal so a bug in
   // the liveness read path can never make computeDiagnosis itself throw.
+  // DESCRIPTOR/REGISTRY DIVERGENCE FIX (defect 2c4ae6576fab): promoteUnclaimedSession
+  // writes the descriptor FIRST, then the registry (~:4529-4541) — the registry
+  // write is wrapped in a swallowing try/catch ("descriptor already promoted;
+  // registry retries next call"), so a registry write that fails (or is simply
+  // never retried, e.g. no later read of that id) leaves the registry's
+  // sessionId stuck at the `unclaimed:<id>` marker even after the descriptor has
+  // genuinely been promoted to a real session id. `rows` used to read ONLY the
+  // registry row (s.listRegistry()), so a row in exactly this state displayed the
+  // STALE marker and `live:false` even though workspaces/<id>.json already held
+  // the true identity — VERIFIED reproducible: seed a descriptor with a real
+  // sessionId and a registry row for the SAME id still carrying the `unclaimed:`
+  // marker; pre-fix diagnose printed the marker and live:false for it. Resolve
+  // through the descriptor whenever the registry's own sessionId is absent or
+  // still synthetic AND the descriptor holds a genuine (non-empty, non-
+  // tautological, non-`unclaimed:`) id — the same definition of "real" used by
+  // realSessionIdFrom (~:4508). The reverse shape (registry already ahead of the
+  // descriptor) already read correctly, since the registry was read directly;
+  // that path is unchanged — this only widens what `sid` can resolve to. When the
+  // descriptor and registry disagree, `descriptorSessionId` carries the raw
+  // descriptor value alongside the resolved `sessionId`, rather than silently
+  // dropping the stale value on the floor.
+  const isRealSid = (v, id) => (
+    v != null && String(v).trim() !== ''
+    && String(v) !== String(id)
+    && !String(v).startsWith(SYNTHETIC_SESSION_PREFIX)
+  );
   const rows = registry.filter((d) => d && d.id != null).map((d) => {
     const w = workspaces[d.id] || {};
-    const sid = d.sessionId || null;
+    const registrySid = d.sessionId || null;
+    let descriptorSid = null;
+    try {
+      const desc = readDescriptorFile(c.home, d.id);
+      descriptorSid = desc && desc.sessionId != null ? String(desc.sessionId) : null;
+    } catch (_) { descriptorSid = null; }
+    let sid = registrySid;
+    if (!isRealSid(registrySid, d.id) && isRealSid(descriptorSid, d.id)) sid = descriptorSid;
     let live = false;
     try {
       if (hasFreshHeartbeat(d.id, c.home, { now: c.now })) {
@@ -9463,13 +9655,15 @@ function computeDiagnosis(s, ctx) {
         live = !isDormantRow({ id: d.id, worktreePath: d.worktreePath, sessionId: sid }, c.home, { now: c.now });
       }
     } catch (_) { live = isLiveSessionId(sid); }
-    return {
+    const row = {
       id: d.id,
       worktreePath: d.worktreePath || null,
-      sessionId: d.sessionId || null,
+      sessionId: sid,
       live,
       unread: Number.isFinite(w.unread) ? w.unread : 0,
     };
+    if (descriptorSid != null && descriptorSid !== registrySid) row.descriptorSessionId = descriptorSid;
+    return row;
   });
   const phantoms = rows.filter((r) => !r.live).length;
   let unreadTotal = 0;
@@ -11378,6 +11572,9 @@ module.exports = {
   // carry-out (e) — `unclaimed:<id>` promotion + its forward migration
   // (called by skills/update/scripts/update.js AND hooks/lib/doctor-repair.js):
   realSessionIdFrom, promoteUnclaimedSession, maybePromoteUnclaimed, callerOwnsRow,
+  // defect 54a6539e2d69 — the no-`--session`/no-env parent-pid-chain fallback
+  // (exported for direct unit testing with an injected ppidOf/pid/fs):
+  deriveCallerSessionIdFromProcessTree, currentRegistrySessionId,
   // v0.90.1 P0 cursor-namespace hotfix (exported for direct unit testing):
   siblingBaseCursor, siblingSeenCursorPath, readSiblingSeenCursor, writeSiblingSeenCursor,
   removeSiblingSeenCursor, parseSiblingSeenCursorName, watermarkSafeId,
