@@ -2918,6 +2918,38 @@ non-forwardable row rather than at the end of a contiguous forwarded prefix.
 Do both a slug row (e.g. `fix-the-thing-a1b2c3d4`) and a UUID row: they resolve through
 different id paths, and the fold pairs them, so a result on one is not a result on the other.
 
+## §37 — App-side archive detection: the active-cache, and `archivedRegistryRows`
+
+hivecontrol 2.5.1's `workspace list all` (measured on the maintainer machine) returns
+`{id, branch, sourceBranch, repositoryId, label, aiAgent, worktreePath, createdAt}` per row —
+**no archive field at all**. Closing a workspace in the DevSwarm app writes nothing anti-hall
+can see directly, so archive status can only be inferred by a row's **absence** from that list,
+never read off it.
+
+The supervisor sweep writes `hivecontrol-active.json` (under the DevSwarm repos root) whenever
+a `list all` call succeeds, capturing every id and worktree path currently reported live. A
+registry row is treated as app-archived only when **all** of: it is absent from that cache by
+both id AND worktree path (path-normalized — resolved + realpath fail-soft, trailing
+separators stripped, so a differently-printed live path is never misread as archived); it is
+older than the cache snapshot by a 10-minute grace (avoids a race against a just-created
+workspace hivecontrol hasn't listed yet); and the cache itself is still fresh — within 2x the
+reconcile cooldown of when it was written, else stale/malformed and the rule suppresses
+nothing. `writeActiveCache` additionally refuses to persist a snapshot below 50% of the
+previous count for a repo (`ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT`, 0 disables) — a truncated or
+partial `list all` response can't silently mass-archive a repo's live rows; the previous
+snapshot is kept and the refusal logged once.
+
+This is a **liveness-axis signal only**. It answers "does hivecontrol still know about this
+workspace", nothing about whether it has real work pending — an app-archived-but-still-live
+sender (still emitting heartbeats, still holding real unread) must keep gating, which is what
+`archivedRegistryRows` is for: `computeSummary` (`companion/lib/devswarm-store.js`) projects it
+as an always-present array (additive field) alongside the existing `registryRows`, and
+`partitionUnanswered` takes an `opts.archivedKnown` flag — omitted or `false` (a legacy summary
+predating this field) **fails open to blocking**, never silently permissive. A question is
+informational-only (never counted as blocking, never auto-cleared) exactly when its sender
+matches neither an active nor an archived registry row and carries no descriptor; an
+archived-but-live sender still has a registry row, so it still blocks.
+
 ## Question attribution contract (defect f3b8f326bfc3)
 
 A question row's `sender` is the sender's worktree-derived meshId, so every row on one

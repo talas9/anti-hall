@@ -162,6 +162,16 @@ Two v0.56.0 additions:
   `devswarm-child-turn.js`, now registered for both agents — no manual scan needed on Codex
   either.)
 
+**(v0.93.0) App-side archive vs. informational-vs-blocking.** hivecontrol's `workspace list all`
+carries no archive field, so the supervisor sweep now detects an app-archive-in-the-DevSwarm-app
+by a registry row's ABSENCE from its cached active set (id + worktree path, freshness-bounded,
+10-minute grace). That is a LIVENESS signal only: an app-archived-but-still-live sender (still
+heartbeating, still holding real unread) still gates — the gate folds the store's
+`archivedRegistryRows` into its known-registry set and fails open to blocking when that field is
+absent (a legacy summary). A blocking question is downgraded to **informational-only** (never
+counted as blocking, never auto-cleared) ONLY when its sender matches no registry row of any
+kind — active or archived — and has no descriptor either; anything less still blocks.
+
 ## Blocking questions — CHILD asks, PARENT answers (never child → human)
 
 A gap the mesh above doesn't close by itself: nothing so far tells a CHILD what to DO

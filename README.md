@@ -702,6 +702,20 @@ kills). The ingest daemon is unchanged; no MCP server was built (CLI-over-MCP st
 rationale). Full reference: `docs/KB-devswarm-hivecontrol.md` §8.7's "v0.58 mesh-only
 messaging" note.
 
+**v0.93.0 app-side archive detection + attribution fixes.** hivecontrol 2.5.1's
+`workspace list all` carries no archive field, so the supervisor sweep now caches the
+active set (`hivecontrol-active.json`) whenever a list call succeeds; a registry row
+absent from that cache by both id and worktree path, and stale by a 10-minute grace,
+reads as app-archived while the cache stays fresh — liveness axis only, a genuine
+unread question still gates. `computeSummary` additionally projects
+`archivedRegistryRows`, so archived-but-still-live senders keep blocking (a question is
+informational only when its sender has no registry row of any kind, active or
+archived, and no descriptor). Pending-question sender attribution now excludes the
+recipient's own identity family before ranking candidates, closing a bug where a reply
+from the recipient itself (or a cross-linked twin) could wrongly clear someone else's
+question. **Contract change:** `pendingQuestions[].from` is now the true sender's
+identity-family id instead of the freshest live row on the worktree.
+
 ---
 
 ## Requirements
