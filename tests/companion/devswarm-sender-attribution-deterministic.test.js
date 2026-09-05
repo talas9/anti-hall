@@ -190,3 +190,49 @@ test('(d) pickAttributionRow is fail-open: empty/absent/malformed input never th
   assert.equal(attribution.pickAttributionRow(undefined), null);
   assert.doesNotThrow(() => attribution.pickAttributionRow([null, {}, 'nope', undefined]));
 });
+
+// -----------------------------------------------------------------------
+// (f) D8b: trailing path separators on worktreePath must not change C2's
+//     branch-slug match — '/wt/x/' and '/wt/x' must rank the slug row
+//     identically.
+// -----------------------------------------------------------------------
+test('(f) trailing-slash worktreePath ranks the branch-slug row identically to the no-slash variant', () => {
+  const slugRow = { id: 'feat-x-a55f20ef', worktreePath: '/repo/.claude/worktrees/feat-x', sessionId: 'sess-real-a' };
+  const subRow = { id: 'sub-agent-3c64bf63170689c1', worktreePath: '/repo/.claude/worktrees/feat-x', sessionId: 'sess-real-b' };
+
+  const noSlash = attribution.pickAttributionRow([slugRow, subRow]);
+  assert.equal(noSlash.id, 'feat-x-a55f20ef', 'no-slash worktreePath: branch-slug row wins via C2');
+
+  const slugRowTrailingSlash = { ...slugRow, worktreePath: slugRow.worktreePath + '/' };
+  const subRowTrailingSlash = { ...subRow, worktreePath: subRow.worktreePath + '/' };
+  const withSlash = attribution.pickAttributionRow([slugRowTrailingSlash, subRowTrailingSlash]);
+  assert.equal(withSlash.id, 'feat-x-a55f20ef', 'trailing-slash worktreePath: same branch-slug row still wins via C2');
+
+  const slugRowTrailingBackslash = { ...slugRow, worktreePath: slugRow.worktreePath + '\\' };
+  const subRowTrailingBackslash = { ...subRow, worktreePath: subRow.worktreePath + '\\' };
+  const withBackslash = attribution.pickAttributionRow([slugRowTrailingBackslash, subRowTrailingBackslash]);
+  assert.equal(withBackslash.id, 'feat-x-a55f20ef', 'trailing-backslash worktreePath: same branch-slug row still wins via C2');
+});
+
+// -----------------------------------------------------------------------
+// (g) D8b: when a sub-agent id ALSO happens to start with the worktree's
+//     branch-slug prefix, both rows tie on C2 (pure string-prefix rule, no
+//     row-provenance check per the header note). The pick must still be
+//     deterministic — stable across every shuffle of the input array —
+//     even though which row "should" be considered canonical is undefined.
+// -----------------------------------------------------------------------
+test('(g) a sub-agent id that also starts with the slug prefix ties on C2; the winner is stable across shuffles', () => {
+  const worktreePath = '/repo/.claude/worktrees/feat-x';
+  const rowA = { id: 'feat-x-a55f20ef', worktreePath, sessionId: 'sess-real-a' };
+  // Deliberately also prefixed by `feat-x-` — ties C1 (both real sessionIds)
+  // and C2 (both id-prefix-match), so only the D tiebreak (ascending lexical
+  // id) can decide.
+  const rowB = { id: 'feat-x-sub-99', worktreePath, sessionId: 'sess-real-b' };
+
+  const orderings = [[rowA, rowB], [rowB, rowA]];
+  const winners = orderings.map((rows) => attribution.pickAttributionRow(rows).id);
+
+  assert.ok(winners.every((w) => w === winners[0]), 'winner must be stable regardless of input order: ' + JSON.stringify(winners));
+  // Observed outcome: ascending lexical id ('feat-x-a55f20ef' < 'feat-x-sub-99').
+  assert.equal(winners[0], 'feat-x-a55f20ef', 'documented observed winner under the D (lexical id) tiebreak');
+});

@@ -23,6 +23,14 @@
 //        reused from devswarm-liveness-select.js — no fs/liveness read).
 //   C2 — a row whose id starts with `basename(worktreePath) + '-'` (the
 //        branch-slug row) beats a sub-agent row on the same worktree.
+//        Trailing path separators ('/' or '\') on worktreePath are stripped
+//        before basename() so a value like '/wt/x/' ranks identically to
+//        '/wt/x'. This is a pure string-prefix rule on the row id with NO
+//        row-provenance check (it does not verify the row actually
+//        originated from that worktree) — acceptable because every row in
+//        the candidate pool is already a valid `send --to` target (the
+//        caller only ever passes rows resolved for the same meshId), and
+//        attribution clearing here is family-wide, not row-specific.
 //   D  — ascending lexical id, the final, always-available tiebreak (same
 //        convention as pickDeterministicFallback in
 //        devswarm-liveness-select.js).
@@ -40,7 +48,10 @@ function hasRealSessionId(row) {
 function branchSlugMatch(row) {
   if (!row || !row.worktreePath || row.id == null) return false;
   let base = null;
-  try { base = path.basename(String(row.worktreePath)); } catch (_) { base = null; }
+  try {
+    const trimmed = String(row.worktreePath).replace(/[/\\]+$/, '');
+    base = path.basename(trimmed);
+  } catch (_) { base = null; }
   if (!base) return false;
   return String(row.id).startsWith(base + '-');
 }
