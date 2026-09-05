@@ -6,6 +6,31 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.95.0 (2026-09-05)
+
+- **Fixed: `diagnose` resolves a row's sessionId through the descriptor when
+  the registry is stale (`2c4ae6576fab`).** When the registry row is absent
+  or still carries the `unclaimed:` marker, `diagnose` falls back to the
+  descriptor's session id and reports `descriptorSessionId` on disagreement,
+  so a stale registry no longer silently misattributes a row.
+- **Fixed: `unclaimed:` promotion derives the caller's session id from the
+  harness process tree (`54a6539e2d69`).** Promotion first tries `--session`,
+  then the `CLAUDE_CODE_SESSION_ID` env var, and — only for rows still
+  carrying the `unclaimed:` marker — walks the parent-pid chain to find the
+  harness session file, verified with a cwd-in-worktree realpath check and a
+  pid-liveness/pid-reuse guard. The fallback fails closed: a stale or reused
+  pid rejects promotion rather than guessing a session id.
+- **Fixed: descriptor/registry marker divergence is repaired both ways** for
+  the caller's own row once a session id is confirmed by either path above.
+- **Fixed: registry write failures during promotion are surfaced, not
+  swallowed.** Inbox pull/read output now reports
+  `promotion.registryWriteError` plus one stderr line on a failed write, and
+  the promotion is retried on the next read instead of being lost silently.
+- **Docs:** KB §40 added; hooks KB documents the env-var launch-path
+  fallback; SKILL docs updated to match.
+- **Known:** leaked fixture stores remain report-only (see KB §38 for manual
+  cleanup); remaining open defects are tracked in the defect channel.
+
 ## 0.94.1 (2026-09-05)
 
 - **Fixed: reconcile budget tests no longer race the wall clock** —
