@@ -6,6 +6,41 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.94.0 (2026-09-05)
+
+- **Fix: deterministic sender attribution for pending questions
+  (`f3b8f326bfc3`).** `companion/lib/devswarm-attribution.js` now picks a
+  stable `pendingQuestions[].from` id across repeated summary passes instead
+  of drifting with liveness churn: it prefers a real live-session row, then
+  the row matching the worktree's branch slug, then falls back to the
+  lexically smallest candidate id. Slug matching tolerates a trailing
+  separator on either side, so `wave9-A` and `wave9-A-` resolve to the same
+  attribution.
+- **Fix: unbounded reconcile could run indefinitely on a large repo set
+  (`f3c1bc827d89`).** Reconcile now defaults to a 60-second wall-clock
+  budget (`ANTIHALL_RECONCILE_BUDGET_MS`, `0` = unlimited); rows whose
+  worktree is already missing are skipped before a subagent is spawned.
+  Rows deferred by the budget are saved to `reconcile-resume.json` and are
+  processed first on the next run. Output gains additive fields only —
+  no existing field changes shape or meaning.
+- **Improvement: `update.js` reports per-stage progress on stderr** so a
+  long update doesn't look hung; `ANTIHALL_UPDATE_QUIET=1` silences it.
+  stdout output is unchanged, so scripts parsing it are unaffected.
+- **Fix: `repoKey` git spawn had no timeout** and could hang on an
+  unresponsive filesystem/remote; it now times out after 10 seconds.
+- **Feature: doctor §6l reports leaked test-fixture DevSwarm stores**
+  (report-only — no automatic cleanup). Surfaces fixture directories left
+  behind by prior test runs so they can be cleaned up manually.
+- **Tests:** four tests fixed to isolate `HOME` so they no longer read or
+  write the real user store; a new hygiene lint flags tests that spread or
+  `Object.assign` a bare `process.env` into a child env instead of isolating
+  it.
+- **Docs:** KB §38/§39 added; `RELEASING.md` step 4 now also runs
+  `doctor.js --check` as part of the release gate.
+- **Known:** leaked fixture stores are currently report-only (see KB §38 for
+  manual cleanup); `2c4ae6576fab` and `54a6539e2d69` remain open, targeted
+  for 0.95.0.
+
 ## 0.93.0 (2026-09-05)
 
 - **Feature: app-side archive detection by absence, not by a field.**
