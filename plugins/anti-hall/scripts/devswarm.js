@@ -249,20 +249,29 @@ function withIdLock(id, home, fn, opts) {
 }
 
 // SYNTHETIC_SESSION_PREFIX / isLiveSessionId (A6, v0.66 review): a registry
-// row's `sessionId` is the liveness signal every mesh-addressing/fold
-// primitive in this file reads for ROUTING/FOLD decisions (resolveMeshTarget,
-// pickSurvivor, groupRegistryByMeshId, rehomeMiskeyedRow's identity
-// confirmation) — those all still read "non-empty, non-synthetic sessionId"
-// as their liveness signal, UNCHANGED, and this predicate remains their
-// single source of truth (see the fail-closed audit at computeDiagnosis's
-// `rows[].live`, which does NOT feed any of these — it is a heartbeat-aware
-// DISPLAY-ONLY derivation for `diagnose`/`healthcheck`, wired to
-// companion/lib/liveness.js instead of this bare string test, because a
-// non-empty sessionId alone is NOT proof a session is still running: closing
-// a workspace never deletes its registry row, so a once-real sessionId is
-// trusted forever unless something ages it out). cmdInboxPull's auto-ensure/
-// self-register path used to MINT a
-// sessionId from `id` itself when neither `--session` nor
+// row's `sessionId` used to be the ONLY liveness signal every mesh-addressing/
+// fold primitive in this file read for ROUTING/FOLD decisions (resolveMeshTarget,
+// pickSurvivor, groupRegistryByMeshId's liveRows) — a bare "non-empty,
+// non-synthetic sessionId" shape test, with no heartbeat/dormancy correlation.
+// D11-A (f56dcc08f048) MOVED those three onto isRoutingLiveRow (below —
+// composes companion/lib/liveness.js's isSiblingPartitionLive, the SAME
+// heartbeat-freshness + harness-session-dormancy predicate siblingAckGate
+// (:367) and the fold's own mesh-anchor check (~:2520) already use, plus a
+// descriptor-existence fallback for a just-registered row with no heartbeat
+// yet), so a real-but-long-dead sessionId (e.g. a crashed sibling whose
+// registry row was never cleaned up) can no longer be routed/folded to as
+// "live" the way computeDiagnosis's `rows[].live` display field already
+// stopped trusting it. rehomeMiskeyedRow's identity confirmation is a
+// DIFFERENT question (same-entity confirmation, not a drain/routing
+// decision) and deliberately keeps the bare isLiveSessionId shape test — see
+// that function's own comment for why. This predicate (isLiveSessionId)
+// remains the raw shape test other non-routing call sites in this file still
+// use directly (pickArchiveForwardSurvivor, archiveLeftReason, etc — out of
+// scope for this migration). Historical note: a non-empty sessionId alone was
+// never proof a session was still running — closing a workspace never
+// deletes its registry row, so a once-real sessionId was trusted forever
+// unless something aged it out. cmdInboxPull's auto-ensure/self-register path
+// used to MINT a sessionId from `id` itself when neither `--session` nor
 // DEVSWARM_BUILDER_ID was supplied, so a reconcile-spawned phantom (a bare
 // registry seed with no live session behind it at all) became permanently
 // "live" the instant it was auto-ensured — `resolveMeshTarget` could then
@@ -285,6 +294,62 @@ function isLiveSessionId(sessionId) {
   const s = String(sessionId);
   if (s === '') return false;
   return !s.startsWith(SYNTHETIC_SESSION_PREFIX);
+}
+
+// isRoutingLiveRowStrict(row, home, opts) -> bool. D11-A (f56dcc08f048): the
+// STRICT liveness gate for a TARGET-SELECTION decision — resolveMeshTarget/
+// pickSurvivor's pickFreshestLive candidate filter — where the question is
+// "will THIS row actually drain what gets routed to it". A bare
+// isSiblingPartitionLive call (companion/lib/liveness.js — the SAME
+// heartbeat-freshness + harness-session-dormancy predicate siblingAckGate
+// (:367 in this file) and the fold's own mesh-anchor check (~:2520) already
+// use), with NO descriptor-existence fallback: CONFIRMED regression (see
+// tests/scripts/devswarm-fold-forwarded-derive.test.js) that adding one here
+// lets a store-only, sessionId:null row with a merely-lingering descriptor
+// file outrank a GENUINELY live sibling purely on `updatedAt` recency inside
+// pickFreshestLive's ranking — the exact "descriptor proves only that a
+// workspace once existed, never that anything will drain it" hazard
+// pickArchiveForwardSurvivor's own header already documents (STRICT vs
+// CONSERVATIVE, ~:2794): a descriptor-existence fallback is the right,
+// conservative answer for "should this row be protected from tombstoning"
+// (isRoutingLiveRow below, for groupRegistryByMeshId's REPORTING-only
+// liveRows counter) and the wrong, unsafe answer for "which row should be
+// treated as authoritative" (this function, for actual send/fold routing).
+// Fail-open: any throw -> not live (undetermined never wins a selection).
+function isRoutingLiveRowStrict(row, home, opts) {
+  if (!row || row.id == null) return false;
+  try {
+    return !!isSiblingPartitionLive({ id: row.id, worktreePath: row.worktreePath, sessionId: row.sessionId }, home, opts);
+  } catch (_) { return false; }
+}
+
+// isRoutingLiveRow(row, home, opts) -> bool. D11-A (f56dcc08f048): the shared
+// liveness gate for groupRegistryByMeshId's `liveRows` — a REPORTING-only
+// counter (computeDiagnosis's meshTargets kind/split/deadSplit; it does not
+// itself pick a fold/send target — see isRoutingLiveRowStrict above for that,
+// STRICTER, decision) — replacing the bare isLiveSessionId(sessionId) shape
+// test that counter used to read directly (see the header above, now
+// updated). Composes isSiblingPartitionLive with a descriptor-existence
+// fallback, mirroring the fold's own `live || readDescriptorFile(...) ||
+// readerEvidence` composition (~:2525): a row that has JUST been `register`ed
+// (a synthetic `unclaimed:` sessionId, no heartbeat file written yet) reads
+// NOT live from isSiblingPartitionLive alone (its register-only-phantom
+// branch) even though it is not actually dead — its descriptor
+// (workspaces/<id>.json, written by register before/alongside the registry
+// upsert) already exists, which is the same "something observable exists"
+// signal the fold falls back to. `readerEvidence` (the fold's cursor-based
+// third term) is intentionally NOT reproduced here — it needs an open store
+// handle + cursor read the fold already holds at its call site that this
+// counter does not carry the same way; descriptor existence is the evidence
+// it can uniformly check instead.
+// Fail-open: any throw from either half leaves the row NOT live only when
+// BOTH checks fail; never disqualifies on a partial failure.
+function isRoutingLiveRow(row, home, opts) {
+  if (!row || row.id == null) return false;
+  try {
+    if (isSiblingPartitionLive({ id: row.id, worktreePath: row.worktreePath, sessionId: row.sessionId }, home, opts)) return true;
+  } catch (_) { /* fall through to descriptor fallback */ }
+  try { return !!readDescriptorFile(home, row.id); } catch (_) { return false; }
 }
 
 // siblingAckGate(storeHandle, callerId, partId, home, now) -> bool (true ==
@@ -809,6 +874,48 @@ function writeSiblingSeenCursor(home, callerId, siblingId, value) {
   const p = siblingSeenCursorPath(home, callerId, siblingId);
   if (!p || !Number.isFinite(value) || value <= 0) return false;
   try { inboxCursor.ackTo(p, value); return true; } catch (_) { return false; }
+}
+// watermarkLockKey(callerId, siblingId) -> string | null. D11-A (TOCTOU fix):
+// the per-id lock key for THIS (callerId, siblingId) watermark file — reuses
+// the file's OWN basename convention (siblingSeenCursorPath minus `.json`),
+// which is already watermarkSafeId-gated on both halves (isSafeId-safe, no
+// `.seen-` substring ambiguity), so it needs no separate validation and can
+// never collide with an unrelated single-id lock (every other withIdLock
+// caller in this file locks a bare workspace id, which never contains
+// `.seen-`). Returns null when either id is not watermarkSafeId (mirrors
+// siblingSeenCursorPath's own null-on-unsafe-id contract) — callers fall back
+// to running unlocked, same as the pre-fix behavior for that edge case.
+function watermarkLockKey(callerId, siblingId) {
+  if (!watermarkSafeId(callerId) || !watermarkSafeId(siblingId)) return null;
+  return String(callerId) + SIBLING_SEEN_SEP + String(siblingId);
+}
+// withWatermarkLock(callerId, siblingId, home, fn) -> fn()'s return value.
+// D11-A (TOCTOU fix, ~:6394): the sibling-watermark read (readSiblingSeenCursor)
+// -> conditional unlink (removeSiblingSeenCursor) at the read-primary ack path
+// used to run with NO file locking at all — a concurrent writeSiblingSeenCursor
+// call for the SAME (callerId, siblingId) pair (e.g. two overlapping
+// `inbox read-primary` invocations by the same caller reading the same
+// non-ackable sibling) could land its write in the gap between the read and
+// the unlink, and that extension would be silently discarded when the unlink
+// fired (documented, pre-fix, at readSiblingSeenCursor's TOCTOU header
+// comment). Serializing BOTH the write site (the notAckable branch) and the
+// read+conditional-unlink site under the SAME per-(callerId,siblingId) lock
+// closes the window: whichever caller wins the lock completes its full
+// read-modify-write (or write) atomically w.r.t. the other. FAIL-OPEN,
+// matching withIdLock's own posture: a lock-busy result (contended, budget
+// exhausted) runs `fn` UNLOCKED rather than silently dropping the operation —
+// a watermark is best-effort re-delivery bookkeeping (its own header: "its
+// absence degrades to re-read from the real cursor, which is exactly the
+// pre-watermark behaviour"), so losing this one race under contention is
+// strictly safer than refusing the read/write outright. An unresolvable lock
+// key (unsafe ids) also runs unlocked — same edge case
+// siblingSeenCursorPath/writeSiblingSeenCursor already degrade to a no-op for.
+function withWatermarkLock(callerId, siblingId, home, fn) {
+  const key = watermarkLockKey(callerId, siblingId);
+  if (!key) return fn();
+  const r = withIdLock(key, home, fn);
+  if (r && typeof r === 'object' && r.lockBusy) return fn(); // contended -> fail-open, run unlocked rather than drop
+  return r;
 }
 // siblingWatermarkCovered(ackTarget, watermarkValue) -> bool. The REAL
 // invariant the R14 F1 THIRD HALF watermark retirement needs (R15 P3 fix):
@@ -1759,6 +1866,22 @@ function rehomeMiskeyedRow(home, id, storeRepoKey, ctx) {
       // and steal/misroute the row's real content. Anything short of a
       // confirmed positive match — either side null/empty, or a straight
       // mismatch — refuses (fail-open, no-op) rather than move/overwrite.
+      //
+      // D11-A SCOPE NOTE: isLiveSessionId here is DELIBERATELY the bare shape
+      // test, NOT migrated to isRoutingLiveRow/isSiblingPartitionLive like
+      // resolveMeshTarget/pickSurvivor/groupRegistryByMeshId's liveRows (see
+      // the header above SYNTHETIC_SESSION_PREFIX). Two independent reasons:
+      // (1) this is an IDENTITY-MATCH question (is curRow the SAME entity
+      // desc describes), not a drain/routing decision — a session that is
+      // real but has since gone dormant is still the SAME entity, and gating
+      // this comparison on current liveness would refuse a legitimate heal
+      // for a merely-idle (not dead) workspace. (2) the descriptor-existence
+      // fallback isRoutingLiveRow needs for a just-registered row is
+      // structurally meaningless here: `desc` was ITSELF obtained via
+      // readDescriptorFile a few lines above, so that fallback would read
+      // true unconditionally and silently defeat the whole confirmedMatch
+      // gate — exactly the foreign-descriptor-takeover this guard exists to
+      // refuse.
       let curRow = null;
       try {
         const cs = store.openStore({ home, hash: storeRepoKey, backend: ctx && ctx.backend, env: ctx && ctx.env });
@@ -3037,11 +3160,20 @@ function canonicalMeshId(worktreePath) {
   return inst.primaryWorkspaceId(top);
 }
 
-// groupRegistryByMeshId(registry) -> Map<meshId, {meshId, ids[], rows[], liveRows}>.
+// groupRegistryByMeshId(registry, home) -> Map<meshId, {meshId, ids[], rows[], liveRows}>.
 // The ONE grouping implementation shared by cmdDiagnose (split detection) AND
 // foldMeshDuplicates (canonical fold) — grouping key is canonicalMeshId so both
 // see subdir-splits folded onto their toplevel identically.
-function groupRegistryByMeshId(registry) {
+// D11-A: `liveRows` is now computed via isRoutingLiveRow (heartbeat-freshness +
+// harness-session-dormancy, see that function's header) instead of the bare
+// isLiveSessionId(sessionId) shape test — a real-but-long-dead sessionId (a
+// crashed sibling whose registry row was never cleaned up) no longer counts
+// toward `liveRows`, so meshTargets' kind/split/deadSplit classification
+// (computeDiagnosis, below) reflects who is ACTUALLY draining a partition, not
+// merely who once registered one. `home` is optional (omitting it only
+// disables the heartbeat-credit half; the descriptor-existence fallback and
+// shape checks still run) — every existing caller already has `home` in scope.
+function groupRegistryByMeshId(registry, home) {
   const byMesh = new Map();
   for (const d of registry) {
     if (!d || !d.worktreePath) continue;
@@ -3051,7 +3183,7 @@ function groupRegistryByMeshId(registry) {
     if (!g) { g = { meshId, ids: [], rows: [], liveRows: 0 }; byMesh.set(meshId, g); }
     g.ids.push(d.id);
     g.rows.push(d);
-    if (isLiveSessionId(d.sessionId)) g.liveRows++;
+    if (isRoutingLiveRow(d, home)) g.liveRows++;
   }
   return byMesh;
 }
@@ -3062,9 +3194,17 @@ function groupRegistryByMeshId(registry) {
 // generalized to a canonical group's OWN rows (which include subdir-split rows
 // resolveMeshTarget's plain-hash match would miss). The survivor is the partition a
 // live session actually drains. `home` is optional (enables the heartbeat-credit
-// signal only).
+// signal only). D11-A: the LIVE-candidate gate pickFreshestLive applies is now
+// isRoutingLiveRowStrict (via opts.isLive), not the bare isLiveSessionId shape
+// test — see that function's header for why (a real-but-dormant sessionId no
+// longer wins a `send`/fold target over a genuinely live sibling; the STRICT,
+// no-descriptor-fallback variant, not isRoutingLiveRow, is used here — a
+// dead store-only row's lingering descriptor must never win a survivor pick).
 function pickSurvivor(s, group, home) {
-  return livenessSelect.pickFreshestLive(group.rows, { storeHandle: s, home });
+  return livenessSelect.pickFreshestLive(group.rows, {
+    storeHandle: s, home,
+    isLive: (row) => isRoutingLiveRowStrict(row, home),
+  });
 }
 
 // rekeySubdirRegistryRows(s, dryRun) — P1b: reconcile the two identity views so a
@@ -3260,7 +3400,7 @@ function foldMeshDuplicates(home, ctx) {
       // update (same id/partition), so the fresh listRegistry the fold reads next just
       // sees canonical paths (grouping is by canonicalMeshId either way — unaffected).
       rekeyed = rekeySubdirRegistryRows(s, home, dryRun);
-      const byMesh = groupRegistryByMeshId(s.listRegistry());
+      const byMesh = groupRegistryByMeshId(s.listRegistry(), home);
       for (const g of byMesh.values()) {
         if (g.rows.length < 2) continue; // fast skip: a lone row cannot have a duplicate
         // COLLISION GUARD (P0): a canonicalMeshId bucket is keyed by an 8-hex sha256
@@ -3609,7 +3749,7 @@ function healOrphanPartitions(home, ctx) {
             continue; // ABSOLUTE: no write of any kind for an id with no descriptor
           }
           const familyKey = desc.worktreePath ? canonicalMeshId(desc.worktreePath) : null;
-          const byMesh = groupRegistryByMeshId(s.listRegistry());
+          const byMesh = groupRegistryByMeshId(s.listRegistry(), home);
           const group = familyKey ? byMesh.get(familyKey) : null;
           const archived = hasArchivedCounterpart(home, id);
           // CROSS-STORE GUARD (reuses descriptorFreshRepoKey — the SAME identity
@@ -4835,7 +4975,23 @@ function callerOwnsRow(home, id, ctx) {
       if (!d || !d.worktreePath) continue;
       if (canonicalMeshId(d.worktreePath) === wtKey) sameWorktreeRows++;
     }
-    return sameWorktreeRows === 1;
+    if (sameWorktreeRows !== 1) return false;
+    // D11-A (P0 fix): clause 3 used to return true here unconditionally — "the
+    // caller is the sole row on this worktree" — with NO check that the sole
+    // row it just matched (`targetRow`, `target != caller`, already excluded
+    // above by clauses 1/2) is actually the caller's OWN unclaimed placeholder.
+    // A lone CLAIMED foreign row sharing the caller's worktree (a genuinely
+    // different, already-registered session on the same checkout) satisfied
+    // "sole row for this worktree" just as well as a real unclaimed
+    // placeholder does, letting a caller stamp its own sessionId onto a
+    // FOREIGN row it does not own — exactly the ownership violation this gate
+    // exists to refuse (see OWNERSHIP-GATED at maybePromoteUnclaimed above).
+    // Restrict clause 3 to the case it was actually meant for: the sole row is
+    // unclaimed (empty or `unclaimed:`-prefixed sessionId), never a claimed one.
+    const targetSid = targetRow.sessionId;
+    const targetUnclaimed = targetSid == null || String(targetSid) === ''
+      || String(targetSid).startsWith(SYNTHETIC_SESSION_PREFIX);
+    return targetUnclaimed;
   } catch (_) { return false; }
 }
 
@@ -5082,6 +5238,10 @@ function cmdHeartbeat(id, flags, ctx) {
                 + ' does not own workspace ' + JSON.stringify(id)
                 + ' — the summary was DROPPED (not broadcast); the base heartbeat still succeeded',
               callerIdentity: caller,
+              // D11-A (d35d2d4b241e): ADDITIVE — surface callerIdentityDetailed's
+              // `kind` (resolved/declared/unresolvable) alongside the existing
+              // `callerIdentity` string, never replacing it.
+              identity: { id: caller, kind: callerInfo.kind },
             };
           } else {
             const fields = { from: id, to: null, type: 'broadcast', message: String(summaryText), timestamp: now, urgency };
@@ -5106,7 +5266,19 @@ function cmdHeartbeat(id, flags, ctx) {
   // base heartbeat reporting `ok:true`, unchanged.
   const hardMeshFailure = !!(meshBroadcast && meshBroadcast.ok === false
     && !BENIGN_MESH_BROADCAST_REASONS.has(meshBroadcast.reason));
-  return { ok: !hardMeshFailure, action: 'heartbeat', id, heartbeat: beat, meshBroadcast };
+  // D11-A (d35d2d4b241e): ADDITIVE — surface callerIdentityDetailed's `kind`
+  // (resolved/declared/unresolvable) on the SUCCESS result too, not only the
+  // ownership-refusal path above (which already carries it). Computed fresh
+  // here (callerIdentityDetailed is a pure cwd/env resolution, no fs writes)
+  // rather than threading the summary-branch's own `callerInfo` out of its
+  // narrower scope — this never fires when --summary is absent, so a
+  // second, cheap call keeps this additive without restructuring that path.
+  let identity = null;
+  try {
+    const d = callerIdentityDetailed(ctx.env, ctx.cwd || process.cwd());
+    identity = { id: d.identity, kind: d.kind };
+  } catch (_) { identity = null; }
+  return { ok: !hardMeshFailure, action: 'heartbeat', id, heartbeat: beat, meshBroadcast, identity };
 }
 
 // cmdInboxPull(id, flags, ctx) — child-side reception drain. AUTO-ENSURES the
@@ -5725,6 +5897,10 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
             + JSON.stringify(id) + ' (pass --ack-as-owner to override)',
           id,
           callerIdentity: caller,
+          // D11-A (d35d2d4b241e): ADDITIVE — surface callerIdentityDetailed's
+          // `kind` (resolved/declared/unresolvable) alongside the existing
+          // `callerIdentity` string, never replacing it.
+          identity: { id: caller, kind: callerKind },
         };
       }
     }
@@ -6248,7 +6424,10 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         const ackTarget = ackAnchor + physicalConsumed;
         if (notAckable) {
           const seenTarget = (Number.isFinite(part.sinceCursor) ? part.sinceCursor : part.cursor) + physicalConsumed;
-          if (seenTarget > 0 && !writeSiblingSeenCursor(home, id, part.id, seenTarget)) {
+          // D11-A (TOCTOU fix): serialize against the read+conditional-unlink
+          // below under the SAME per-(callerId,siblingId) lock — see
+          // withWatermarkLock's header.
+          if (seenTarget > 0 && !withWatermarkLock(id, part.id, home, () => writeSiblingSeenCursor(home, id, part.id, seenTarget))) {
             cursorWriteFailures.push({ partitionId: part.id, channel: 'sibling-seen-watermark', error: 'could not write caller-scoped seen watermark' });
           }
           continue; // the sibling's OWN cursors are never touched for a live twin
@@ -6277,10 +6456,22 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
           // `siblingWatermarkCovered` — pulled into its own predicate so the
           // comparison is directly unit-testable, not only reachable through a
           // full CLI race no single-process test can reproduce.
-          const freshWatermark = readSiblingSeenCursor(home, id, part.id);
-          if (siblingWatermarkCovered(ackTarget, freshWatermark)) {
-            removeSiblingSeenCursor(home, id, part.id);
-          }
+          //
+          // D11-A (TOCTOU fix): the read (readSiblingSeenCursor) -> conditional
+          // unlink (removeSiblingSeenCursor) below used to run completely
+          // unlocked — a concurrent writeSiblingSeenCursor for this SAME
+          // (callerId, siblingId) pair (the notAckable branch above, from a
+          // second overlapping invocation) could land its write in the gap
+          // and lose that extension when the unlink fired. Both this
+          // read+unlink AND that write now serialize under the SAME
+          // per-(callerId,siblingId) lock (withWatermarkLock) — whichever
+          // caller wins the lock completes atomically w.r.t. the other.
+          withWatermarkLock(id, part.id, home, () => {
+            const freshWatermark = readSiblingSeenCursor(home, id, part.id);
+            if (siblingWatermarkCovered(ackTarget, freshWatermark)) {
+              removeSiblingSeenCursor(home, id, part.id);
+            }
+          });
         } catch (e) {
           cursorWriteFailures.push({ partitionId: part.id, channel: 'sibling-store-cursor', error: String((e && e.message) || e) });
         }
@@ -8668,8 +8859,20 @@ function resolveMeshTarget(storeHandle, meshId, home) {
   // by an unrelated `heartbeat` caller — see that module's header for the field
   // evidence). `home` is optional (enables the heartbeat-credit signal only; every
   // other signal works without it).
+  //
+  // D11-A (f56dcc08f048): the LIVE-candidate gate pickFreshestLive applies is now
+  // isRoutingLiveRowStrict (via opts.isLive), not the bare isLiveSessionId shape
+  // test — see that function's header (the STRICT, no-descriptor-fallback
+  // variant: a dead store-only row's lingering descriptor must never win a
+  // `send` target). devswarm-store.js's resolveSenderRegistryId does NOT pass
+  // opts.isLive, so it keeps pickFreshestLive's own default (bare
+  // isLiveSessionId) unchanged — this migration is scoped to send/fold routing
+  // only, per the header comment above SYNTHETIC_SESSION_PREFIX.
   const candidates = meshCandidateRows(storeHandle, meshId);
-  return livenessSelect.pickFreshestLive(candidates, { storeHandle, home });
+  return livenessSelect.pickFreshestLive(candidates, {
+    storeHandle, home,
+    isLive: (row) => isRoutingLiveRowStrict(row, home),
+  });
 }
 
 // resolveMeshPartitionIds(storeHandle, id, worktreePath) ->
@@ -8810,7 +9013,13 @@ function cmdSend(flags, ctx) {
   // env. An explicit --from flag is accepted ONLY as a redundant declaration
   // that must MATCH the derived identity; a mismatching one is spoofing and is
   // rejected outright (D18 guard).
-  const from = callerIdentity(ctx.env, cwd);
+  // D11-A (d35d2d4b241e): callerIdentityDetailed gives the SAME resolution as
+  // callerIdentity (identical resolveCallerWorktree -> DEVSWARM_BUILDER_ID ->
+  // raw-cwd-hash fallback order) plus the `kind` this send's success/refusal
+  // JSON now surfaces additively — computed once here instead of calling
+  // callerIdentity separately.
+  const fromDetailed = callerIdentityDetailed(ctx.env, cwd);
+  const from = fromDetailed.identity;
   const fromFlag = one(flags, 'from');
   if (fromFlag !== undefined && fromFlag !== from) {
     return {
@@ -9029,6 +9238,9 @@ function cmdSend(flags, ctx) {
         // never flips ok:false (fail-open on the check itself, per spec).
         ok: verified || verifyError !== null,
         action: 'send', from,
+        // D11-A (d35d2d4b241e): ADDITIVE — surface callerIdentityDetailed's
+        // `kind` (resolved/declared/unresolvable) alongside `from`.
+        identity: { id: from, kind: fromDetailed.kind },
         to: type === 'direct' ? (toPrimaryFlag ? primaryMeshId : toFlag) : null, type, urgency,
         sent: !!res.inserted, seq: res.seq,
         // FIX 3 (TRACED, purely additive): echo the integrity data already computed
@@ -9624,7 +9836,7 @@ function computeDiagnosis(s, ctx) {
   const c = ctx || {};
   const sum = store.computeSummary(s, { home: c.home, env: c.env, now: c.now });
   const registry = s.listRegistry();
-  const byMesh = groupRegistryByMeshId(registry);
+  const byMesh = groupRegistryByMeshId(registry, c.home);
   const meshTargets = [];
   const splits = [];
   const deadSplits = [];
@@ -11677,6 +11889,8 @@ module.exports = {
   siblingBaseCursor, siblingSeenCursorPath, readSiblingSeenCursor, writeSiblingSeenCursor,
   removeSiblingSeenCursor, parseSiblingSeenCursorName, watermarkSafeId,
   siblingWatermarkCovered,
+  // D11-A (TOCTOU fix) — exported for direct unit testing:
+  watermarkLockKey, withWatermarkLock,
   broadcastFamilyOwns, ghostRegistryRows, GHOST_ROW_MAX_AGE_H_DEFAULT,
   reconcileOrphanCursor,
   promoteUnclaimedRegistrySessions,
@@ -11686,4 +11900,6 @@ module.exports = {
   forwardArchivedOrphanUnread, archivedForwardProvenancePrefix,
   // v0.90.0 send receipts (writer; the reader is hooks/devswarm-parent-reply-tracker.js):
   writeSendReceipt, sendReceiptsDir, receiptDayKey, receiptFileName,
+  // D11-A (f56dcc08f048) — exported for direct unit testing:
+  pickSurvivor, isRoutingLiveRow, isRoutingLiveRowStrict,
 };

@@ -153,6 +153,14 @@ function pickFreshestLive(candidates, opts) {
   const storeHandle = o.storeHandle || null;
   const home = o.home || null;
   const io = o.io || null;
+  // opts.isLive(row) -> bool — INJECTABLE liveness gate (D11-A, scripts/devswarm.js's
+  // isRoutingLiveRow), so resolveMeshTarget/pickSurvivor can route/fold on a
+  // heartbeat-aware, harness-session-dormancy-aware predicate instead of the bare
+  // isLiveSessionId shape test, WITHOUT changing behavior for any OTHER caller of
+  // this shared selector (e.g. devswarm-store.js's resolveSenderRegistryId, which
+  // never passes this option). Defaults to wrapping isLiveSessionId(d.sessionId) —
+  // byte-identical to the pre-D11-A behavior when omitted.
+  const isLive = typeof o.isLive === 'function' ? o.isLive : (d) => isLiveSessionId(d && d.sessionId);
   const list = candidates || [];
 
   const groupIds = new Set();
@@ -172,7 +180,7 @@ function pickFreshestLive(candidates, opts) {
   let anyGenuineDrainEvidence = false;
   if (storeHandle) {
     for (const d of list) {
-      if (!d || !isLiveSessionId(d.sessionId)) continue;
+      if (!d || !isLive(d)) continue;
       const ce = cursorEvidence(storeHandle, d.id);
       if (ce.exists === true || ce.value > 0) { anyGenuineDrainEvidence = true; break; }
     }
@@ -185,7 +193,7 @@ function pickFreshestLive(candidates, opts) {
   for (const d of list) {
     if (!d) continue;
     if (firstMatch === null) firstMatch = d;
-    if (!isLiveSessionId(d.sessionId)) continue;
+    if (!isLive(d)) continue;
 
     // (a) SESSION-REFERENCE INTEGRITY — alias iff sessionId equals ANOTHER
     // row's id in this same group (a row whose sessionId happens to equal its

@@ -17,13 +17,19 @@
 // rescue. With no/stale heartbeat, `unclaimed:` still reads not-live
 // (the phantom-row case).
 //
-// SAFETY: this is a DISPLAY-ONLY derivation. Every fold/retire/tombstone
-// primitive (resolveMeshTarget, pickSurvivor, groupRegistryByMeshId's
-// liveRows, rehomeMiskeyedRow) reads isLiveSessionId(sessionId) DIRECTLY —
-// untouched by this change — so nothing that used to require 2 live rows (or
-// exclude a dead group from folding) becomes newly permissive. Tested below
-// via meshTargets.liveRows/kind/split staying byte-identical to the pre-fix
-// sessionId-only signal even when rows[].live disagrees.
+// SAFETY (as of D10, THIS WAVE): at the time this file was written, `live`
+// above was a DISPLAY-ONLY derivation — resolveMeshTarget/pickSurvivor/
+// groupRegistryByMeshId's liveRows read isLiveSessionId(sessionId) DIRECTLY,
+// untouched by the D10 fix. D11-A (f56dcc08f048) DELIBERATELY changes that:
+// groupRegistryByMeshId's liveRows now routes through the SAME heartbeat/
+// dormancy-aware predicate (isRoutingLiveRow, composing
+// companion/lib/liveness.js's isSiblingPartitionLive) `rows[].live` already
+// used — a real-but-crashed sibling's sessionId no longer counts as a live
+// mesh member for fold/routing purposes, closing the exact hole this file's
+// SAFETY tests below used to pin as "must never change" (see each test's
+// updated comment for its new expected values). rehomeMiskeyedRow's identity
+// confirmation is UNCHANGED (a different, non-routing question — see that
+// function's own comment).
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -160,16 +166,19 @@ for (const B of backends) {
     } finally { rm(main); rm(home); }
   });
 
-  // (4) REGRESSION: no fold/retire/tombstone-gating signal becomes newly
-  // permissive. groupRegistryByMeshId's `liveRows` (which meshTargets.kind/
-  // split/deadSplit and every fold primitive in scripts/devswarm.js key off)
-  // reads isLiveSessionId(sessionId) DIRECTLY, untouched by this change — so a
-  // 2-row group where ONE row's `rows[].live` newly flips to false (stale
-  // heartbeat) must STILL be counted as `liveRows: 2` / `kind: 'live'` /
-  // `split: true` for routing/fold purposes, exactly as before. This is the
-  // safety gate: a display-only staleness read must never newly enable a fold
-  // that used to be refused (or vice versa).
-  test(`[${B.name}] SAFETY: a stale-heartbeat row still counts toward group liveRows/kind/split (fold signal unchanged)`, () => {
+  // (4) D11-A (f56dcc08f048): groupRegistryByMeshId's `liveRows` (which
+  // meshTargets.kind/split/deadSplit and every fold primitive in
+  // scripts/devswarm.js key off) now routes through isRoutingLiveRow — the
+  // SAME heartbeat/dormancy-aware predicate `rows[].live` (D10) uses — instead
+  // of the bare isLiveSessionId(sessionId) shape test. A 2-row group where one
+  // row's sessionId is real but its heartbeat has gone stale (no descriptor,
+  // no live harness session behind it — the crashed-sibling shape) now counts
+  // as `liveRows: 1` / `kind: 'mixed'`, not `liveRows: 2` / `kind: 'live'`:
+  // the fold-facing signal is DELIBERATELY no longer decoupled from
+  // heartbeat/dormancy, because the old decoupling is exactly what let a dead
+  // sibling win `send`/fold-survivor selection over a genuinely live one (see
+  // tests/scripts/devswarm-d11a-routing-liveness.test.js).
+  test(`[${B.name}] D11-A: a stale-heartbeat, real-sessionId row no longer counts toward group liveRows/kind (fold signal now heartbeat-aware)`, () => {
     const home = tmpHome();
     const main = makeGitRepo('safety-' + B.name);
     try {
@@ -190,17 +199,16 @@ for (const B of backends) {
       assert.strictEqual(rowFresh.live, true, 'fresh-heartbeat row reads live');
       assert.strictEqual(rowStale.live, false, 'stale-heartbeat row reads not-live (display only)');
 
-      // Fold/routing signal is UNCHANGED: both rows still count as live for
-      // group classification (isLiveSessionId(sessionId) only — no heartbeat
-      // read), so the group is still `liveRows: 2` / `kind: 'live'` /
-      // `split: true`, exactly as the pre-fix sessionId-only rule reported.
+      // Fold/routing signal is NOW heartbeat/dormancy-aware, mirroring
+      // rows[].live: the stale-heartbeat, no-descriptor row no longer counts
+      // as a live mesh member.
       const mt = d.result.meshTargets.find((m) => m.meshId === mainMesh);
       assert.ok(mt, 'meshTargets entry present');
-      assert.strictEqual(mt.liveRows, 2, 'fold-facing liveRows is unaffected by the display-only staleness read');
-      assert.strictEqual(mt.kind, 'live', 'fold-facing kind is unaffected — still the benign 2-live-tabs shape');
-      assert.strictEqual(mt.split, true, 'fold-facing split flag is unaffected');
-      assert.strictEqual(mt.deadSplit, false, 'this must NOT newly read as a dangerous deadSplit');
-      assert.ok(!d.result.deadSplits.includes(mainMesh), 'deadSplits stays empty — no newly-permissive fold surface');
+      assert.strictEqual(mt.liveRows, 1, 'fold-facing liveRows now excludes the stale-heartbeat, no-descriptor row');
+      assert.strictEqual(mt.kind, 'mixed', 'fold-facing kind now reflects the true 1-live/1-dead shape');
+      assert.strictEqual(mt.split, false, 'fold-facing split (2+ live) no longer flags this group');
+      assert.strictEqual(mt.deadSplit, false, 'not a fully-dead split either — one row IS genuinely live');
+      assert.strictEqual(mt.mixedSplit, true, 'this is now surfaced as a mixed split (1 live, 1 dead)');
     } finally { rm(main); rm(home); }
   });
 
@@ -248,11 +256,13 @@ for (const B of backends) {
     } finally { rm(main); rm(home); }
   });
 
-  // (7) SAFETY, both new shapes: fold-facing liveRows/kind/split must stay
-  // driven by isLiveSessionId(sessionId) ONLY (never by rows[].live or
-  // heartbeat), mirroring test (4) above but for the null and unclaimed:
-  // sessionId shapes exercised in (5)/(6).
-  test(`[${B.name}] SAFETY: null-sessionId and unclaimed: rows with fresh heartbeats do not change fold-facing liveRows/kind/split`, () => {
+  // (7) D11-A: fold-facing liveRows/kind/split now RESCUE a fresh heartbeat
+  // exactly like rows[].live does, mirroring test (4) above but for the null
+  // and unclaimed: sessionId shapes exercised in (5)/(6) — a fresh heartbeat
+  // is checked FIRST in isSiblingPartitionLive/isRoutingLiveRow, before the
+  // sessionId shape is even examined, so it rescues these shapes the same way
+  // it rescues a real-but-stale one.
+  test(`[${B.name}] D11-A: null-sessionId and unclaimed: rows with fresh heartbeats DO now count toward fold-facing liveRows/kind`, () => {
     const home = tmpHome();
     const main = makeGitRepo('safety2-' + B.name);
     try {
@@ -273,16 +283,19 @@ for (const B of backends) {
       assert.strictEqual(rowNull.live, true, 'null sessionId rescued by fresh heartbeat (display-only)');
       assert.strictEqual(rowUnclaimed.live, true, 'unclaimed: also rescued by fresh heartbeat (display-only)');
 
-      // Fold/routing signal is UNCHANGED: neither a null sessionId nor an
-      // unclaimed: sessionId is ever isLiveSessionId()-true, so this group
-      // still reads liveRows:0 / kind:'dead' — exactly as the pre-fix
-      // sessionId-only rule would have reported, regardless of heartbeats.
+      // Fold/routing signal is NOW aligned with rows[].live: a fresh heartbeat
+      // is definitive proof-of-life for isRoutingLiveRow too (the same fast
+      // path isSiblingPartitionLive uses, checked before sessionId shape), so
+      // this group is now liveRows:2 / kind:'live' — genuinely-running
+      // processes must be routable/foldable as live regardless of sessionId
+      // shape, matching the display field's own rescue.
       const mt = d.result.meshTargets.find((m) => m.meshId === mainMesh);
       assert.ok(mt, 'meshTargets entry present');
-      assert.strictEqual(mt.liveRows, 0, 'fold-facing liveRows ignores heartbeat entirely for these sessionId shapes');
-      assert.strictEqual(mt.kind, 'dead', 'fold-facing kind is unaffected by the display-only heartbeat rescue');
-      assert.strictEqual(mt.deadSplit, true, 'fold-facing deadSplit is unaffected');
-      assert.ok(d.result.deadSplits.includes(mainMesh), 'deadSplits still flags this group — no newly-permissive fold surface from the display-only fix');
+      assert.strictEqual(mt.liveRows, 2, 'fold-facing liveRows now rescues a fresh heartbeat regardless of sessionId shape');
+      assert.strictEqual(mt.kind, 'live', 'fold-facing kind now reflects both rows being genuinely alive');
+      assert.strictEqual(mt.split, true, 'fold-facing split now flags this 2-live group');
+      assert.strictEqual(mt.deadSplit, false, 'no longer a dead split — both rows are heartbeat-proven alive');
+      assert.ok(!d.result.deadSplits.includes(mainMesh), 'deadSplits no longer flags this group');
     } finally { rm(main); rm(home); }
   });
 }
