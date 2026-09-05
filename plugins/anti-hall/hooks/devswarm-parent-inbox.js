@@ -1132,12 +1132,22 @@ function main() {
         idleAlive = state === 'idle-alive';
       } catch (_) {}
       // FIELD: an ARCHIVED workspace is done and put away — it is still listed,
-      // but never as escalated/stale/not-draining (see devswarm-archived.js).
+      // but never as escalated/stale/dormant (see devswarm-archived.js). R15 P2
+      // FIX: this used to also blanket-suppress `not-draining` — an archived row
+      // with a REAL aging unread backlog silently lost that signal, exactly the
+      // coordination-neglect axis `not-draining` exists to name (it is a
+      // separate axis from the liveness one archiving legitimately suppresses;
+      // see displayStatus's own header comment on that distinction). `archived`
+      // now suppresses ONLY the liveness axis (escalated/stale/dormant), same
+      // shape as `idleAlive` above — `not-draining` (rank 1.5) still wins over
+      // it when present, exactly as it already wins over every other liveness
+      // label in displayStatus's own rank order.
       let archivedRow = false;
       try { archivedRow = isArchivedWorkspace(home, id, entry.worktreePath); } catch (_) { archivedRow = false; }
+      const notDrainingFlag = !!(verdict && verdict.notDraining);
       const ds = archivedRow
-        ? { label: 'archived', rank: 6 }
-        : displayStatus(archiveReady, status, activityTs, now, dormant, !!(verdict && verdict.notDraining), idleAlive);
+        ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 })
+        : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);
       rows.push({
         id,
         label: ds.label,

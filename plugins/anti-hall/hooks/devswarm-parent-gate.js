@@ -1041,9 +1041,16 @@ function main() {
     // ARCHIVED is done and put away — it must never render as escalated /
     // not-draining. Liveness axis ONLY, same as every suppressor above; the row
     // is still LISTED (under `archived`), never hidden. `isArchivedWorkspace`
-    // is fail-closed and strict (archived record present AND active descriptor
-    // gone AND the archived record names THIS worktree) — see that module's
-    // header for why archived/<id>.json alone is not proof.
+    // is fail-closed and strict (archived record present AND the archived
+    // record's OWN worktreePath names THIS worktree) — it does NOT require the
+    // active descriptor to be gone (that stricter condition is
+    // `isArchivedOnlyWorkspace`'s, a different predicate for a different,
+    // mutating caller — see devswarm-archived.js's header, which is explicit
+    // that requiring the active descriptor gone here would make this check
+    // unreachable, since this caller classifies rows FROM readDescriptors,
+    // which by construction only yields ids whose active descriptor still
+    // exists). See that module's header for why archived/<id>.json alone
+    // (without the worktreePath match) is not proof either.
     let archived = false;
     try { archived = isArchivedWorkspace(home, d.id, d.worktreePath); } catch (_) { archived = false; }
     if (archived) staleOrEscalated = false;

@@ -485,32 +485,43 @@ function ownershipRefusalCause(callerKind, ownEntry) {
   return 'ownership-mismatch';
 }
 
-// broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd) -> bool. The
-// IDENTITY-FAMILY leg of cmdHeartbeat's meshBroadcast ownership check (defect
+// broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId,
+// hadPriorHeartbeat) -> bool.
+// The IDENTITY-FAMILY leg of cmdHeartbeat's meshBroadcast ownership check (defect
 // ecd7ad60e4cc). True when `id` names a row that belongs to the SAME workspace
 // identity the caller does — never on raw-id equality alone (that is the caller's
 // own first two legs) and never on anything a caller can forge.
 //
-// TWO POSITIVE SIGNALS, both grounded in the same evidence the surrounding code
-// already trusts for this question:
-//   (a) SAME WORKTREE. The target row's canonicalMeshId equals the meshId of the
-//       caller's OWN cwd-resolved worktree, or of the caller's own registry row.
-//       This is not a widening of trust: `callerIdentity` ALREADY derives the
-//       caller's identity from exactly this ground truth (inst.primaryWorkspaceId
-//       of the resolved worktree) and deliberately refuses to let a declared env
-//       id override it. A process standing in a worktree owns that worktree's
-//       rows; which of several co-registered rows pickFreshestLive happened to
-//       rank first this call is an implementation detail, not an ownership fact.
-//   (b) CROSS-LINKED IDENTITY. companion/lib/devswarm-identity-family.js's
-//       `crossLinkedIdentity` — one row's sessionId IS the other row's id, the
-//       strongest unambiguous link, and the SAME predicate `callerOwnsRow`
-//       already uses for the `unclaimed:` promotion's ownership gate.
+// R15 P2 FIX (field-reproduced): SAME WORKTREE ALONE used to be sufficient (leg
+// (a) below), which let ANY caller sharing the target's worktree broadcast as it
+// — two unrelated live sessions co-registered in one worktree (the ordinary
+// multi-tab/multi-agent case, not a spoof) could impersonate each other
+// (Critic repro: `heartbeat <victim-id> --summary` from an unrelated same-
+// worktree caller returned ok:true). Same-worktree is still REQUIRED for leg
+// (a) — a process outside the target's worktree gets no credit from it at all
+// — but is no longer SUFFICIENT: an identity link is now also required, one of:
+//   (a1) crossLinkedIdentity(ownEntry, targetRow) — the strongest unambiguous
+//        link: one row's sessionId IS the other row's id (the builder-id-UUID
+//        + slug-row pair, devswarm-identity-family.js's documented shape).
+//        Checked FIRST and unconditionally (not gated on same-worktree) — a
+//        legitimately cross-linked twin is owned regardless of worktree.
+//   (a2) the target row's OWN sessionId equals the CALLER's real session id —
+//        the session value THIS call itself was invoked under (cmdHeartbeat's
+//        own `--session`, the same field a legitimate registration stamps).
+//        Direct proof the target row was registered under the exact session
+//        now presenting the broadcast, with no cross-link chain needed.
+//   (a3) the target row is a PLACEHOLDER — no descriptor file AND no
+//        heartbeat file of its own PRE-EXISTING before this very call
+//        (`hadPriorHeartbeat`, captured by the caller BEFORE this call's own
+//        base-heartbeat write — that write always happens, so checking
+//        current existence here would always read true for the one id this
+//        call is ever asked about). Nothing to spoof: a placeholder is not a
+//        live, claimed workspace with any real state a forged broadcast
+//        could compromise (the `unclaimed:` anchor-row shape).
 //
 // FAIL-CLOSED in full: any throw, an unresolvable worktree, or a target id with
 // no registry row returns false, leaving the refusal exactly as it is today.
-// A caller with NO worktree ground truth (cwd resolves to nothing) gets no
-// credit from (a) — its cwd-derived key cannot match a real row's.
-function broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd) {
+function broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat) {
   try {
     const target = String(id);
     const rows = s.listRegistry() || [];
@@ -519,23 +530,38 @@ function broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd) {
     let tKey = null;
     try { tKey = canonicalMeshId(targetRow.worktreePath); } catch (_) { tKey = null; }
     if (!tKey) return false;
-    // (a1) the caller's own cwd-resolved worktree
-    const rawCwd = cwd || process.cwd();
-    const wt = resolveCallerWorktree(rawCwd);
-    if (wt) {
-      try { if (canonicalMeshId(wt) === tKey) return true; } catch (_) {}
-    }
-    // (a2) the caller's own registry row's worktree
-    if (ownEntry && ownEntry.worktreePath) {
-      try { if (canonicalMeshId(ownEntry.worktreePath) === tKey) return true; } catch (_) {}
-    }
-    // (b) cross-linked identity between the caller's row and the target row
+    // (a1) cross-linked identity between the caller's row and the target row —
+    // unconditional, not gated on same-worktree.
     if (ownEntry) {
       try {
         const idFam = require('../companion/lib/devswarm-identity-family.js');
         if (idFam.crossLinkedIdentity(ownEntry, targetRow)) return true;
       } catch (_) {}
     }
+    // Same-worktree precondition for the remaining legs (a2)/(a3) — the
+    // caller's own cwd-resolved worktree, or the caller's own registry row's
+    // worktree.
+    let sameWorktree = false;
+    const rawCwd = cwd || process.cwd();
+    const wt = resolveCallerWorktree(rawCwd);
+    if (wt) {
+      try { if (canonicalMeshId(wt) === tKey) sameWorktree = true; } catch (_) {}
+    }
+    if (!sameWorktree && ownEntry && ownEntry.worktreePath) {
+      try { if (canonicalMeshId(ownEntry.worktreePath) === tKey) sameWorktree = true; } catch (_) {}
+    }
+    if (!sameWorktree) return false;
+    // (a2) the target row's own sessionId matches the caller's real session id
+    if (callerSessionId != null && targetRow.sessionId != null
+      && String(targetRow.sessionId) === String(callerSessionId)) {
+      return true;
+    }
+    // (a3) the target row is a placeholder: no descriptor, no PRE-EXISTING
+    // heartbeat of its own (see hadPriorHeartbeat's header note above)
+    try {
+      const hasDescriptor = !!readDescriptorFile(home, target);
+      if (!hasDescriptor && !hadPriorHeartbeat) return true;
+    } catch (_) {}
     return false;
   } catch (_) { return false; }
 }
@@ -774,6 +800,21 @@ function writeSiblingSeenCursor(home, callerId, siblingId, value) {
   const p = siblingSeenCursorPath(home, callerId, siblingId);
   if (!p || !Number.isFinite(value) || value <= 0) return false;
   try { inboxCursor.ackTo(p, value); return true; } catch (_) { return false; }
+}
+// siblingWatermarkCovered(ackTarget, watermarkValue) -> bool. The REAL
+// invariant the R14 F1 THIRD HALF watermark retirement needs (R15 P3 fix):
+// true iff advancing the sibling's own durable cursor to `ackTarget` covers
+// every row the watermark recorded. Extracted into its own pure predicate
+// (rather than inlined against a cached in-memory value) so it is directly
+// unit-testable, and so the read-primary call site can gate it on a FRESHLY
+// read `watermarkValue` (see readSiblingSeenCursor at that call site) instead
+// of an in-memory value captured earlier in the same read. A non-finite
+// input on either side degrades to 0 — no watermark on record (missing/
+// unreadable file) trivially satisfies "covered".
+function siblingWatermarkCovered(ackTarget, watermarkValue) {
+  const target = Number.isFinite(ackTarget) ? ackTarget : 0;
+  const w = Number.isFinite(watermarkValue) ? watermarkValue : 0;
+  return target >= w;
 }
 
 // ----- G2 crash-safe archive: recovery-intent markers -----
@@ -4618,6 +4659,13 @@ function cmdHeartbeat(id, flags, ctx) {
   const home = ctx.home;
   const dir = heartbeatsDir(home);
   fs.mkdirSync(dir, { recursive: true });
+  // R15 P2 (broadcastFamilyOwns leg a3, "placeholder row" test): captured
+  // BEFORE this call's own base-heartbeat write below stamps `id`'s
+  // heartbeats/<id>.json — that write always happens (the base heartbeat
+  // "always succeeds" contract), so reading existence AFTER it would always
+  // read true for the very id this call is about, poisoning the placeholder
+  // check for exactly the only id it is ever asked about.
+  const hadPriorHeartbeat = fs.existsSync(heartbeatPathFor(id, home));
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
   const progressRaw = one(flags, 'progress');
   let progress = null;
@@ -4754,9 +4802,15 @@ function cmdHeartbeat(id, flags, ctx) {
           // refusal is BENIGN, so exit code 0 and ok:true, and the child's
           // working_on summary never reaches the mesh — the parent then reads
           // the child as going stale while it is heartbeating every turn.
+          // realSessionIdFrom (Round 13 P0's established "caller's real session
+          // id" helper — already trusted by callerOwnsRow/maybePromoteUnclaimed
+          // for exactly this question) rather than the raw `beat.sessionId`
+          // flag value: it filters out a self-referential id and a synthetic
+          // `unclaimed:`-prefixed value, neither of which is a real session.
+          const callerSessionId = realSessionIdFrom(flags, ctx, id);
           const owns = caller === id
             || (ownEntry && ownEntry.id === id)
-            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd);
+            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat);
           if (!owns) {
             // A7: name WHICH leg failed instead of one generic message for
             // an unresolvable identity, an unregistered caller, AND a genuine
@@ -5954,7 +6008,22 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
           // hygiene problem) and a second, redundant floor on every later read.
           // Deleted only AFTER both real cursor writes succeeded, and only when
           // the ack actually covers it — a partial ack keeps the watermark.
-          if (ackTarget >= (Number.isFinite(part.sinceCursor) ? part.sinceCursor : 0)) {
+          //
+          // R15 P3 FIX: the prior guard compared `ackTarget` against
+          // `part.sinceCursor` — but `ackTarget = max(part.cursor,
+          // part.sinceCursor) + physicalConsumed`, which is ALGEBRAICALLY >=
+          // `part.sinceCursor` for any `physicalConsumed >= 0`. The comparison
+          // was a tautology: always true, so the watermark was deleted
+          // unconditionally on every successful ack, never actually gated on
+          // "did this ack cover it". Re-read the RAW persisted watermark value
+          // from disk (not the in-memory `part.sinceCursor` captured earlier in
+          // this same read, which cannot reflect a concurrent writer bumping
+          // the file in between) and test the real invariant via
+          // `siblingWatermarkCovered` — pulled into its own predicate so the
+          // comparison is directly unit-testable, not only reachable through a
+          // full CLI race no single-process test can reproduce.
+          const freshWatermark = readSiblingSeenCursor(home, id, part.id);
+          if (siblingWatermarkCovered(ackTarget, freshWatermark)) {
             removeSiblingSeenCursor(home, id, part.id);
           }
         } catch (e) {
@@ -11064,6 +11133,7 @@ module.exports = {
   // v0.90.1 P0 cursor-namespace hotfix (exported for direct unit testing):
   siblingBaseCursor, siblingSeenCursorPath, readSiblingSeenCursor, writeSiblingSeenCursor,
   removeSiblingSeenCursor, parseSiblingSeenCursorName, watermarkSafeId,
+  siblingWatermarkCovered,
   broadcastFamilyOwns, ghostRegistryRows, GHOST_ROW_MAX_AGE_H_DEFAULT,
   reconcileOrphanCursor,
   promoteUnclaimedRegistrySessions,

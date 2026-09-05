@@ -35,7 +35,7 @@ const os = require('os');
 const fs = require('fs');
 const path = require('path');
 const {
-  devswarmRoot, computeLiveness, writeVerdict, isSafeId,
+  devswarmRoot, computeLiveness, writeVerdict, isSafeId, rowLivenessState,
   DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS,
 } = require('./lib/liveness.js');
 const { pokeOrEscalate, notifyParentEscalation, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
@@ -421,8 +421,24 @@ function sweepOnce(opts) {
         const graceMs = Number.isFinite(o.postSpawnGraceMs) ? o.postSpawnGraceMs : resolvePostSpawnGraceMs(env);
         const graced = (deps.withinPostSpawnGrace || withinPostSpawnGrace)(d.id, home, nowTs, graceMs, F);
         const done = !graced && (deps.isArchiveReadyForSupervisor || isArchiveReadyForSupervisor)(d.id, d.worktreePath, home, deps);
-        if (graced || done) {
-          poke = { action: 'suppressed', reason: graced ? 'post-spawn-grace' : 'archive-ready' };
+        // R15 P3 FIX — SESSION-SOURCED LIVENESS (defect 699a236129c5) at the
+        // SUPERVISOR too, not just the read-side gate/table. `computeLiveness`
+        // above derives `stale` from ACTIVITY TIMESTAMPS alone (transcript/
+        // worktree mtime), the exact axis that goes quiet for an interactive
+        // session sitting at its prompt or a long autonomous turn — the same
+        // gap devswarm-parent-gate.js's/devswarm-parent-inbox.js's own
+        // `idleAlive` suppressors already close on the READ side. Without this,
+        // the supervisor kept poking/escalating (writing verdicts, invoking
+        // escalateCommand, notifying the parent store) a session it could have
+        // confirmed via `rowLivenessState` was still a RUNNING harness process.
+        // Evaluated only once graced/done have already failed to suppress
+        // (cheapest-first, same ordering discipline as those two checks).
+        const idleAlive = !graced && !done
+          && (deps.rowLivenessState || rowLivenessState)(
+            { id: d.id, worktreePath: d.worktreePath, sessionId: d.sessionId }, home, { now: nowTs }
+          ) === 'idle-alive';
+        if (graced || done || idleAlive) {
+          poke = { action: 'suppressed', reason: graced ? 'post-spawn-grace' : (done ? 'archive-ready' : 'idle-alive') };
         } else {
           poke = (deps.pokeOrEscalate || pokeOrEscalate)(d, verdict, {
             home, now: o.now, nudgeMaxAttempts: o.nudgeMaxAttempts, nudgeCooldownMs: o.nudgeCooldownMs,

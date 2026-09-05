@@ -373,6 +373,25 @@ function readActivityTs(row, home, opts) {
 // FAIL-SOFT in full: an absent/unreadable sessions dir, an unparseable file, a
 // non-numeric pid, or a throwing kill() all yield `null` (no opinion) and the
 // caller behaves exactly as it does today.
+//
+// R15 P3 — PID-REUSE GUARD. The paragraph above documents mtime as USELESS
+// for FRESHNESS (a 95-minute-old session file can still name a live pid) —
+// that finding is unchanged and this fix does not read mtime for freshness.
+// It closes a DIFFERENT gap: `process.kill(pid, 0)` proves SOME process holds
+// that pid right now, never that it is the SAME process the session file
+// named. OS pids are recycled; a long-dead session's pid can be handed to a
+// brand-new, unrelated process by the time this check runs, and the old
+// verdict would read it as still alive. `pidIsAlive`'s optional third
+// argument lets a caller supply `sinceMs` (the session file's own mtime — the
+// only independently-observable "when was this recorded" signal available,
+// same file freshness explicitly disclaimed above but repurposed here for
+// ORDERING, not recency) plus an injectable `ps`; when the live pid's own
+// start time resolves to AFTER `sinceMs`, this is provably a different
+// process wearing the old pid, not the one the session file recorded — NOT
+// alive for that session. Fail-soft in full: no `sinceMs` supplied, `ps`
+// unavailable/unparseable, or any other failure leaves today's behavior
+// exactly as it is (alive) — this can only ever NARROW a positive verdict,
+// never invent a new one.
 
 const DEFAULT_SESSIONS_DIRNAME = '.claude';
 
@@ -384,15 +403,53 @@ function sessionsDirFor(home) {
   return path.join(home || os.homedir(), DEFAULT_SESSIONS_DIRNAME, 'sessions');
 }
 
-// pidIsAlive(pid, kill) -> bool. `process.kill(pid, 0)` sends no signal; it
-// only probes existence+permission. ESRCH (no such process) is the ONE answer
-// that means dead. EPERM means the process EXISTS but is owned by another user
-// — still alive, so it must NOT be read as dead. Any other throw is treated as
-// "no opinion" by the caller via the null it returns.
-function pidIsAlive(pid, kill) {
+// processStartMs(pid, ps) -> ms | null. The target process's own start time,
+// via `ps -o lstart= -p <pid>` (BSD/macOS + GNU coreutils' ps both support
+// `-o lstart=`; a platform whose `ps` does not is simply unparseable and
+// yields null, same as any other failure). `ps` is injectable (a function
+// `(pid) -> string|null`, the raw `lstart` output) for tests; the real
+// runner shells out via `child_process.spawnSync`, never a shell string
+// interpolation of `pid` (spawnSync's argv form — no injection surface even
+// though `pid` is already validated as a positive integer by the only
+// caller). Fail-soft in full: any missing binary, non-zero exit, or
+// unparseable/empty output returns null (no opinion).
+function processStartMs(pid, ps) {
+  try {
+    let out = null;
+    if (typeof ps === 'function') {
+      out = ps(pid);
+    } else {
+      const cp = require('child_process');
+      const res = cp.spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' });
+      if (res && !res.error && res.status === 0) out = res.stdout;
+    }
+    if (!out || typeof out !== 'string') return null;
+    const t = Date.parse(out.trim());
+    return Number.isFinite(t) ? t : null;
+  } catch (_) { return null; }
+}
+
+// pidIsAlive(pid, kill, opts) -> bool. `process.kill(pid, 0)` sends no
+// signal; it only probes existence+permission. ESRCH (no such process) is the
+// ONE answer that means dead. EPERM means the process EXISTS but is owned by
+// another user — still alive, so it must NOT be read as dead. Any other throw
+// is treated as "no opinion" by the caller via the null it returns.
+//
+// `opts.sinceMs` + `opts.ps` (both optional): the pid-reuse guard above — see
+// this function's header comment. Applied ONLY on the `true` (alive) path; a
+// dead/EPERM/no-opinion verdict is unaffected.
+function pidIsAlive(pid, kill, opts) {
   const k = typeof kill === 'function' ? kill : process.kill.bind(process);
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  try { k(pid, 0); return true; } catch (e) {
+  try {
+    k(pid, 0);
+    const o = opts || {};
+    if (Number.isFinite(o.sinceMs)) {
+      const startMs = processStartMs(pid, o.ps);
+      if (Number.isFinite(startMs) && startMs > o.sinceMs) return false; // reused pid: a NEWER process, not the one recorded
+    }
+    return true;
+  } catch (e) {
     if (e && e.code === 'ESRCH') return false;
     if (e && e.code === 'EPERM') return true;
     return null;
@@ -416,11 +473,21 @@ function sessionPidAlive(sessionId, home, opts) {
   let verdict = null;
   for (const n of names) {
     if (!/\.json$/.test(n)) continue; // the sibling `<pid>.<hash>.key` files are not session records
+    const filePath = path.join(dir, n);
     let rec = null;
-    try { rec = JSON.parse(F.readFileSync(path.join(dir, n), 'utf8')); } catch (_) { continue; }
+    try { rec = JSON.parse(F.readFileSync(filePath, 'utf8')); } catch (_) { continue; }
     if (!rec || typeof rec !== 'object') continue;
     if (rec.sessionId == null || String(rec.sessionId) !== sid) continue;
-    const alive = pidIsAlive(Number(rec.pid), o.kill);
+    // PID-REUSE GUARD (R15 P3, see pidIsAlive's header): the session file's
+    // own mtime is the reference `sinceMs` — the file was written no later
+    // than the session it records started, so a live pid whose OWN start
+    // time resolves to strictly AFTER this file's mtime cannot be that
+    // session's process. Fail-soft: an unstattable file (F.statSync throws)
+    // omits `sinceMs` entirely, leaving pidIsAlive's pre-existing behavior.
+    let sinceMs = null;
+    try { const st = F.statSync(filePath); sinceMs = Number.isFinite(st.mtimeMs) ? st.mtimeMs : null; } catch (_) { sinceMs = null; }
+    const pidOpts = Number.isFinite(sinceMs) ? { sinceMs, ps: o.ps } : undefined;
+    const alive = pidIsAlive(Number(rec.pid), o.kill, pidOpts);
     if (alive === true) return true; // one live pid is proof; stop looking
     if (alive === false) verdict = false; // remember death, but a later file may still prove life
   }
@@ -923,6 +990,6 @@ module.exports = {
   heartbeatTs, hasFreshHeartbeat, isFreshBeat, dormantThresholdMs, isDormantActivity,
   idleThresholdMs, readActivityTs, isDormantRow, isSiblingPartitionLive,
   // session-sourced liveness axis (defect 699a236129c5)
-  sessionsDirFor, pidIsAlive, sessionPidAlive, isSessionAliveRow, rowLivenessState,
+  sessionsDirFor, pidIsAlive, processStartMs, sessionPidAlive, isSessionAliveRow, rowLivenessState,
   isDormantByActivity,
 };

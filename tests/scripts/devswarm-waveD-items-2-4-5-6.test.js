@@ -405,7 +405,7 @@ test('item 4: an UNRELATED caller is still refused, with dropped/dropReason inta
 
 test('MUTATION (item 4): removing the identity-family leg restores the field refusal', () => {
   waveDMutate(
-    "            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd);",
+    "            || broadcastFamilyOwns(s, caller, id, home, ownEntry, cwd, callerSessionId, hadPriorHeartbeat);",
     '            || false;',
     (mutated) => {
       const home = tmpHome();
