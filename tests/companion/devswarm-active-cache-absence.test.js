@@ -164,3 +164,67 @@ test('the grace is tunable via ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS', () => {
   // A junk value falls back to the default rather than disabling the conjunct.
   assert.strictEqual(cacheLib.resolveArchivedGraceMs({ ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS: 'soon' }), cacheLib.DEFAULT_ARCHIVED_GRACE_MS);
 });
+
+// ---------------------------------------------------------------------------
+// R17 item 1 (Critic, reproduced): conjunct 3 used to compare worktreePath by
+// EXACT STRING. A trailing separator, or (macOS: /tmp -> /private/tmp) a
+// symlinked-prefix divergence between the row's own path and hivecontrol's
+// reported path made a genuinely LIVE workspace fail every comparison and
+// read as app-archived.
+//
+// MUTATION CHECK M5: drop normalizeWorktreePath (compare raw strings again)
+// -> both tests below fail (the trailing-slash and symlink cases both start
+// reading as archived).
+// ---------------------------------------------------------------------------
+
+test('M5 — a trailing separator on either side of the comparison is not a mismatch', () => {
+  const h = mkhome();
+  try {
+    // ws-twin has a DIFFERENT id from the cached record — ONLY the worktreePath
+    // match (not the id-match short-circuit) can prove this row is live, so
+    // this genuinely exercises the path comparison, not the id one.
+    seedDescriptor(h.home, 'ws-twin', OLD);
+    // The cached record (as hivecontrol reported it) carries a trailing slash;
+    // the row's own worktreePath does not.
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT + '/' }]);
+    assert.strictEqual(archived(h.home, 'ws-twin', APP_WT), false,
+      'a trailing separator alone must never make a live row read as archived');
+  } finally { h.cleanup(); }
+});
+
+test('M5 — a real symlinked-prefix divergence (macOS /tmp vs /private/tmp shape) is not a mismatch', () => {
+  const h = mkhome();
+  try {
+    // Build a REAL symlink so this is not circular: `alias` resolves to `real`
+    // via fs.realpathSync exactly the way macOS resolves /tmp -> /private/tmp.
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'symlink-wt-'));
+    const real = path.join(base, 'real', '.devswarm', 'repos', '1', 'abc', 'feat');
+    fs.mkdirSync(real, { recursive: true });
+    const aliasParent = path.join(base, 'alias-parent');
+    fs.mkdirSync(aliasParent, { recursive: true });
+    const aliasRoot = path.join(aliasParent, 'real');
+    fs.symlinkSync(path.join(base, 'real'), aliasRoot, 'dir');
+    const aliasWt = path.join(aliasRoot, '.devswarm', 'repos', '1', 'abc', 'feat');
+
+    // ws-twin (a DIFFERENT id from the cached 'ws-live' record) so ONLY the
+    // worktreePath comparison — never the id short-circuit — can prove liveness.
+    seedDescriptor(h.home, 'ws-twin', OLD);
+    // hivecontrol reports the REAL path; anti-hall's own descriptor row was
+    // registered against the symlinked ALIAS path (or vice versa) — either
+    // direction must resolve to the same canonical form.
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: real }]);
+    assert.strictEqual(archived(h.home, 'ws-twin', aliasWt), false,
+      'a symlinked-prefix divergence of the SAME real directory must never read as archived');
+    try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {}
+  } finally { h.cleanup(); }
+});
+
+test('a genuinely DIFFERENT path (not just a trailing-slash/symlink divergence) still reads as archived', () => {
+  const h = mkhome();
+  try {
+    seedDescriptor(h.home, 'ws-gone', OLD);
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: '/Users/x/.devswarm/repos/1/def456/other' }]);
+    assert.strictEqual(archived(h.home, 'ws-gone', APP_WT), true,
+      'normalization must never manufacture a match between two genuinely different paths');
+  } finally { h.cleanup(); }
+});

@@ -754,3 +754,46 @@ test('unansweredQuestions: fails open toward unanswered on malformed input, neve
   assert.doesNotThrow(() => M.unansweredQuestions(weirdEntries, {}));
   assert.equal(M.unansweredQuestions(weirdEntries, {}).length, weirdEntries.length, 'every malformed entry must be kept as unanswered too');
 });
+
+// --- partitionUnanswered (R17 item 3: retired-sender questions) ------------
+// MUTATION CHECK: drop the `knownIds.has(...)` check (treat every question as
+// `blocking`) -> "a question from a sender with NO row anywhere is informational" fails.
+test('partitionUnanswered: a sender present in descriptors OR registryRows stays blocking', () => {
+  const unanswered = [{ from: 'child-a', ts: 1, seq: 1 }, { from: 'child-b', ts: 2, seq: 2 }];
+  const descriptors = [{ id: 'child-a', worktreePath: '/w/a' }];
+  const registryRows = [{ id: 'child-b', worktreePath: '/w/b' }];
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows);
+  assert.deepEqual(blocking.map((q) => q.seq), [1, 2]);
+  assert.deepEqual(informational, []);
+});
+
+test('partitionUnanswered: a sender with NO row anywhere (retired) is informational, never blocking', () => {
+  const unanswered = [{ from: 'child-live', ts: 1, seq: 1 }, { from: 'ghost-sender', ts: 2, seq: 2 }];
+  const descriptors = [{ id: 'child-live', worktreePath: '/w/a' }];
+  const registryRows = [{ id: 'child-live', worktreePath: '/w/a' }];
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, registryRows);
+  assert.deepEqual(blocking.map((q) => q.seq), [1]);
+  assert.deepEqual(informational.map((q) => q.seq), [2]);
+});
+
+test('partitionUnanswered: an EMPTY registry (both descriptors and registryRows absent) never manufactures informational entries', () => {
+  const unanswered = [{ from: 'someone', ts: 1, seq: 1 }];
+  assert.deepEqual(M.partitionUnanswered(unanswered, [], []).blocking.map((q) => q.seq), [1],
+    'an unreadable/empty registry must never be mistaken for proof of retirement');
+  assert.deepEqual(M.partitionUnanswered(unanswered, [], []).informational, []);
+});
+
+test('partitionUnanswered: a malformed question (no `from`) always stays blocking, unchanged', () => {
+  const unanswered = [{ ts: 1, seq: 1 }, null, { from: 'known', ts: 2, seq: 2 }];
+  const descriptors = [{ id: 'known', worktreePath: '/w' }];
+  const { blocking, informational } = M.partitionUnanswered(unanswered, descriptors, []);
+  assert.equal(blocking.length, 3);
+  assert.deepEqual(informational, []);
+});
+
+test('partitionUnanswered: fails toward blocking on malformed input, never throws', () => {
+  assert.doesNotThrow(() => M.partitionUnanswered(null, null, null));
+  assert.deepEqual(M.partitionUnanswered(null, null, null), { blocking: [], informational: [] });
+  const unanswered = [{ from: 'x', ts: 1, seq: 1 }];
+  assert.deepEqual(M.partitionUnanswered(unanswered, 'not-an-array', 'not-an-array').blocking.map((q) => q.seq), [1]);
+});

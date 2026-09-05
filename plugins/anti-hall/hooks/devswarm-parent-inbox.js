@@ -724,8 +724,29 @@ function buildUrgentUnreadSegment(list, home) {
 // unanswered is non-empty — this branch supplies wording for the
 // unread-already-drained-to-0 case, since the normal "STOP and read your
 // unread message(s)" phrasing would be nonsensical with nothing unread.
-function buildOwnUnreadSegment(count, id, urgencyMax, unanswered) {
+// buildInformationalNote(informational) -> string (R17 item 3). Names each
+// retired-sender question ONCE (deduped by sender id), suffixed onto whatever
+// body this function already built. Never itself a reason this segment
+// exists — the call site only invokes this function at all when count > 0 OR
+// unansweredList.length > 0 OR informationalList.length > 0, so an
+// informational-only pending question still gets a segment, just with the
+// "already read" wording below and no unread/decide+reply nag.
+function buildInformationalNote(informational) {
+  const informationalList = Array.isArray(informational) ? informational : [];
+  if (!informationalList.length) return '';
+  const ids = Array.from(new Set(informationalList.map(
+    (q) => (q && q.from != null) ? String(q.from) : 'unknown sender'
+  )));
+  return (
+    ' (INFORMATIONAL — question from retired sender ' + ids.join(', ') + ' — no repliable '
+    + 'target; inspect with `node ' + CLI + ' inbox messages <id>`, ack with `node ' + CLI
+    + ' inbox ack <id>` after reading. Not counted in the unanswered count above.)'
+  );
+}
+
+function buildOwnUnreadSegment(count, id, urgencyMax, unanswered, informational) {
   const unansweredList = Array.isArray(unanswered) ? unanswered : [];
+  const informationalList = Array.isArray(informational) ? informational : [];
   const prefix = isHighUrgency(urgencyMax) ? 'DEVSWARM OWN INBOX — URGENT PRIORITY: ' : 'DEVSWARM OWN INBOX — PRIORITY: ';
 
   if (count > 0) {
@@ -767,7 +788,7 @@ function buildOwnUnreadSegment(count, id, urgencyMax, unanswered) {
         + '(use the asker\'s id above as <id>).'
       );
     }
-    return body;
+    return body + buildInformationalNote(informationalList);
   }
 
   // count === 0 but unansweredList.length > 0 (the only other case the call
@@ -775,17 +796,28 @@ function buildOwnUnreadSegment(count, id, urgencyMax, unanswered) {
   // still holds a genuinely unanswered question. There is nothing left to
   // "read", so this wording skips the read-primary instruction entirely and
   // goes straight to the decide+reply nag.
-  const askers = unansweredList.slice(0, MAX_LISTED).map(
-    (q) => (q && q.from != null) ? String(q.from) : '?'
-  );
-  const extra = unansweredList.length > MAX_LISTED
-    ? ' +' + (unansweredList.length - MAX_LISTED) + ' more' : '';
+  if (unansweredList.length > 0) {
+    const askers = unansweredList.slice(0, MAX_LISTED).map(
+      (q) => (q && q.from != null) ? String(q.from) : '?'
+    );
+    const extra = unansweredList.length > MAX_LISTED
+      ? ' +' + (unansweredList.length - MAX_LISTED) + ' more' : '';
+    return (
+      prefix + 'you have already read your parent/peer messages, but '
+      + unansweredList.length + ' remain UNANSWERED — from ' + askers.join(', ') + extra
+      + '. READING IS NOT SUFFICIENT: you must DECIDE from context and REPLY, not merely '
+      + 'read/ack, via `node ' + CLI + ' send --to <id> --message-file <path>` (use the '
+      + 'asker\'s id above as <id>).'
+    ) + buildInformationalNote(informationalList);
+  }
+
+  // count === 0, unansweredList EMPTY, but informationalList.length > 0 (R17
+  // item 3): the ONLY thing pending is a retired-sender question. Nothing to
+  // read, nothing genuinely unanswered to decide+reply on — just the
+  // informational note.
   return (
-    prefix + 'you have already read your parent/peer messages, but '
-    + unansweredList.length + ' remain UNANSWERED — from ' + askers.join(', ') + extra
-    + '. READING IS NOT SUFFICIENT: you must DECIDE from context and REPLY, not merely '
-    + 'read/ack, via `node ' + CLI + ' send --to <id> --message-file <path>` (use the '
-    + 'asker\'s id above as <id>).'
+    prefix + 'you have already read your parent/peer messages.'
+    + buildInformationalNote(informationalList)
   );
 }
 
@@ -1248,6 +1280,10 @@ function main() {
   // this feature); a require()/read failure falls back to treating every
   // pendingQuestions entry as still-unanswered.
   let ownUnanswered = [];
+  // ownUnansweredInformational (R17 item 3) — retired-sender questions, split
+  // out of ownUnanswered below. Never counted toward the blocking figure;
+  // rendered once, informationally, by buildOwnUnreadSegment.
+  let ownUnansweredInformational = [];
   try {
     const replyStateMod = require('../companion/lib/devswarm-reply-state.js');
     const replyState = replyStateMod.readReplyState(repoKey, home);
@@ -1299,6 +1335,18 @@ function main() {
       // so the two surfaces stay one rule.
       selfId: primaryId || null,
     });
+    // RETIRED-SENDER PARTITION (R17 item 3): a question whose `from` matches
+    // NO row anywhere (descriptors nor registryRows, live or dead) has no
+    // repliable target — `send --to` has nothing to resolve, and no reply
+    // could ever clear it via familyAwareUnanswered above either. This used
+    // to keep naming such a question in "N remain UNANSWERED" every turn
+    // forever (no ceiling on this per-turn notice, unlike the Stop gate's
+    // question-set escalation ceiling). Split it out: it renders once, below,
+    // as an INFORMATIONAL line — never counted in `ownUnanswered.length` (the
+    // blocking figure buildOwnUnreadSegment nags on) again.
+    const partitioned = replyStateMod.partitionUnanswered(ownUnanswered, descriptors, registryRows);
+    ownUnanswered = partitioned.blocking;
+    ownUnansweredInformational = partitioned.informational;
   } catch (_) {
     ownUnanswered = ownPendingQuestions.slice();
   }
@@ -1418,8 +1466,8 @@ function main() {
   // read-and-acked backlog (ownUnread === 0) can still hold a genuinely
   // unanswered question, and that state must keep surfacing every turn just
   // as much as a plain unread backlog does.
-  if ((ownUnread > 0 || ownUnanswered.length > 0) && primaryId) {
-    segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax, ownUnanswered));
+  if ((ownUnread > 0 || ownUnanswered.length > 0 || ownUnansweredInformational.length > 0) && primaryId) {
+    segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax, ownUnanswered, ownUnansweredInformational));
   }
 
   // v0.57 mesh (D4, Phase 8 step 2): tier the child-unread attention list by

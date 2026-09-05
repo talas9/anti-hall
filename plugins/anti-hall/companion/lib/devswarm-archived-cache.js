@@ -76,6 +76,10 @@
 const fs = require('fs');
 const path = require('path');
 const { devswarmRoot } = require('./liveness.js');
+// alog — leaf module (fs/os/path only), safe at top level, no cycle risk (same
+// posture as companion/devswarm-supervisor.js's own top-level alog require).
+// Used only for the R17 item 2 partial-list-guard log line below.
+const alog = require('./anti-hall-log.js');
 
 const CACHE_BASENAME = 'hivecontrol-active.json';
 
@@ -108,6 +112,38 @@ const archivedCachePath = cachePath;
 function isUnderDevswarmReposRoot(p) {
   if (typeof p !== 'string' || !p) return false;
   return DEVSWARM_REPOS_ROOT_RE.test(p);
+}
+
+// normalizeWorktreePath(p, fsi) -> string | null. R17 item 1 (Critic,
+// reproduced): conjunct 3's match used to compare `worktreePath` by EXACT
+// STRING. hivecontrol's own record for a workspace can carry a path that is
+// LOGICALLY the same directory but not byte-identical to the anti-hall row's
+// worktreePath — a trailing separator, or (macOS-specific: `/tmp` is itself a
+// symlink to `/private/tmp`) a `/private`-prefixed vs unprefixed form of the
+// same real path. Either divergence made a genuinely LIVE workspace fail
+// every comparison in isAppArchived's conjunct 3, so absence-by-omission
+// misclassified it as app-archived.
+//
+// Fix: normalize BOTH sides the SAME way before comparing — `path.resolve`
+// (handles trailing separators/`.`/`..` segments) then
+// `fs.realpathSync` to collapse a symlinked prefix (macOS `/tmp` ->
+// `/private/tmp`) to its canonical form, falling back to the resolved string
+// when the path does not exist on THIS machine (a row for a workspace whose
+// worktree was since deleted must still compare, not silently stop matching —
+// fail-open toward NOT losing a real match, never toward inventing one: this
+// can only make two paths that were already logically the same START
+// comparing equal, never make two DIFFERENT real paths collide, since
+// realpath is injective over existing paths). Applied identically at WRITE
+// time (writeActiveCache, so the cache stores normalized paths) and at READ
+// time (every row's worktreePath, right before the conjunct-3 comparison) —
+// symmetric normalization is what makes the comparison meaningful; normalizing
+// only one side would just move the divergence rather than close it.
+function normalizeWorktreePath(p, fsi) {
+  if (typeof p !== 'string' || !p) return null;
+  const F = fsi || fs;
+  let resolved;
+  try { resolved = path.resolve(p); } catch (_) { return p; }
+  try { return F.realpathSync(resolved); } catch (_) { return resolved; }
 }
 
 // sweepIntervalMs(env) -> the reconcile sweep's OWN cooldown, resolved from the
@@ -147,17 +183,66 @@ function resolveArchivedGraceMs(env) {
   return positiveIntEnv(env, 'ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS') || DEFAULT_ARCHIVED_GRACE_MS;
 }
 
-// normalizeRecords(v) -> [{id, worktreePath}]. Only entries carrying a non-empty
-// string id survive; worktreePath is optional (null when absent) because an
-// id-only match is still conclusive evidence of liveness.
-function normalizeRecords(v) {
+// DEFAULT_ACTIVE_FLOOR_PCT — R17 item 2's partial-list guard (writeActiveCache
+// below). 50: a hivecontrol answer for a repoKey that comes back at less than
+// half its own previous snapshot's record count is treated as suspect (a
+// truncated/partial list), not as "half the workspaces got archived at once".
+const DEFAULT_ACTIVE_FLOOR_PCT = 50;
+
+// resolveActiveFloorPct(env) -> 0-N (percent). Overridable with
+// ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT (non-negative integer; 0 disables the
+// floor entirely, i.e. always trust the new snapshot).
+function resolveActiveFloorPct(env) {
+  const e = env || process.env;
+  const raw = e.ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT;
+  if (typeof raw === 'string' && /^\d+$/.test(raw.trim())) {
+    const n = parseInt(raw.trim(), 10);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return DEFAULT_ACTIVE_FLOOR_PCT;
+}
+
+// readRawByRepoKeyForFloor(home, fsi) -> byRepoKey object read straight off
+// disk, IGNORING freshness — this is a same-writer sanity comparison across
+// consecutive sweeps (has this project's record count suddenly crashed?),
+// never a suppression-eligibility check, so a STALE previous snapshot is
+// still a valid basis for comparison here (unlike readActiveCache's `fresh`
+// gate, which exists for a completely different reason — bounding how long
+// an absence-inference may be trusted). Never throws; unreadable/malformed
+// -> {} (no previous data -> the floor check above always accepts, the
+// fail-open direction).
+function readRawByRepoKeyForFloor(home, fsi) {
+  const F = fsi || fs;
+  try {
+    const parsed = JSON.parse(String(F.readFileSync(cachePath(home), 'utf8')));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const raw = parsed.byRepoKey;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+    const out = {};
+    for (const k of Object.keys(raw)) {
+      const recs = normalizeRecords(raw[k], F);
+      if (recs && recs.length) out[k] = recs;
+    }
+    return out;
+  } catch (_) { return {}; }
+}
+
+// normalizeRecords(v, fsi) -> [{id, worktreePath}]. Only entries carrying a
+// non-empty string id survive; worktreePath is optional (null when absent)
+// because an id-only match is still conclusive evidence of liveness.
+// `worktreePath`, when present, is run through normalizeWorktreePath (R17
+// item 1) so every record this module ever stores or hands to a comparison
+// is ALREADY in canonical form — the comparison in isAppArchived below only
+// has to normalize the ROW's own path to match this same convention.
+function normalizeRecords(v, fsi) {
   if (!Array.isArray(v)) return null;
   const out = [];
   for (const r of v) {
     if (!r || typeof r !== 'object') continue;
     const id = r.id != null ? String(r.id) : '';
     if (!id) continue;
-    const wt = typeof r.worktreePath === 'string' && r.worktreePath ? r.worktreePath : null;
+    const rawWt = typeof r.worktreePath === 'string' && r.worktreePath ? r.worktreePath : null;
+    const wt = rawWt ? normalizeWorktreePath(rawWt, fsi) : null;
     out.push({ id, worktreePath: wt });
   }
   return out;
@@ -193,7 +278,7 @@ function readActiveCache(opts) {
   let recordCount = 0;
   if (fresh && raw && typeof raw === 'object' && !Array.isArray(raw)) {
     for (const k of Object.keys(raw)) {
-      const recs = normalizeRecords(raw[k]);
+      const recs = normalizeRecords(raw[k], F);
       if (recs === null) continue; // malformed entry: ignored, never guessed at
       // An entry that normalizes to ZERO usable records is NOT evidence that
       // every row in that project is archived — it is evidence of a malformed
@@ -251,12 +336,16 @@ function isAppArchived(opts) {
     if (!cache || !cache.fresh) return false;
     const recs = activeRecordsFor(Object.assign({}, o, { cache }));
     if (!recs.length) return false; // no snapshot for this project -> no evidence
-    // Conjunct 3.
+    // Conjunct 3. `wt` is normalized the SAME way normalizeRecords already
+    // normalized every cached record's worktreePath (R17 item 1) — a
+    // trailing-separator or macOS `/private`-prefix divergence between this
+    // row's raw path and hivecontrol's own reported path must never itself
+    // cause a live workspace to fail this match.
     const id = String(o.id);
-    const wt = String(o.worktreePath);
+    const wt = normalizeWorktreePath(o.worktreePath, o.fsi);
     for (const r of recs) {
       if (r.id === id) return false;
-      if (r.worktreePath && r.worktreePath === wt) return false;
+      if (wt && r.worktreePath && r.worktreePath === wt) return false;
     }
     // Conjunct 4.
     const firstSeen = Number.isFinite(o.firstSeenMs)
@@ -290,12 +379,44 @@ function writeActiveCache(opts) {
   const F = o.fsi || fs;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const file = cachePath(o.home);
+  // PARTIAL-LIST GUARD (R17 item 2, P2 Auditor): admission into
+  // reconcileSweepIfDue's activeByRepoKey today is `records.length >= 1` —
+  // ANY non-empty hivecontrol answer is trusted whole. But `workspace list
+  // all` is a single unauthenticated read of another process's live state;
+  // a partial/truncated answer (paging cut short, a slow/interrupted list
+  // call) can come back non-empty yet missing most of what a moment ago was
+  // there — and under absence semantics EVERY omitted row silently archives.
+  // Read the PREVIOUS on-disk snapshot's per-repoKey record count (ignoring
+  // its own freshness — this is a same-writer sanity check across sweeps,
+  // not a suppression-eligibility check) and refuse to overwrite a repoKey
+  // whose new count falls below `floorPct`% of its own previous count,
+  // keeping the previous entry for that key instead. `floorPct` is
+  // ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT (default 50; 0 disables the floor
+  // entirely). A repoKey with NO previous entry (first snapshot ever, or a
+  // project newly added to this sweep) has nothing to fall below, so it is
+  // always accepted unconditionally.
+  const floorPct = resolveActiveFloorPct(o.env);
+  const prevByRepoKey = readRawByRepoKeyForFloor(o.home, F);
   const byRepoKey = {};
   let recordCount = 0;
   const src = o.byRepoKey || {};
   for (const k of Object.keys(src)) {
-    const recs = normalizeRecords(src[k]);
+    let recs = normalizeRecords(src[k], F);
     if (!recs || !recs.length) continue;
+    const prevRecs = prevByRepoKey[k];
+    if (floorPct > 0 && prevRecs && prevRecs.length) {
+      const floor = (prevRecs.length * floorPct) / 100;
+      if (recs.length < floor) {
+        try {
+          alog.logEvent('devswarm-archived-cache', 'partial-list-guard', 'warn',
+            'hivecontrol workspace list returned ' + recs.length + ' record(s) for ' + k
+            + ', below the ' + floorPct + '% floor of the previous snapshot\'s ' + prevRecs.length
+            + ' — refusing this write, keeping the previous snapshot for this project',
+            { repoKey: k, newCount: recs.length, prevCount: prevRecs.length, floorPct });
+        } catch (_) {}
+        recs = prevRecs; // keep the previous entry for THIS key, unchanged
+      }
+    }
     byRepoKey[k] = recs;
     recordCount += recs.length;
   }
@@ -311,9 +432,12 @@ function writeActiveCache(opts) {
 
 module.exports = {
   CACHE_BASENAME, FALLBACK_SWEEP_INTERVAL_MS, DEFAULT_ARCHIVED_GRACE_MS,
-  DEVSWARM_REPOS_ROOT_RE, isUnderDevswarmReposRoot,
+  DEFAULT_ACTIVE_FLOOR_PCT,
+  DEVSWARM_REPOS_ROOT_RE, isUnderDevswarmReposRoot, normalizeWorktreePath,
   cachePath, archivedCachePath,
-  resolveArchivedCacheMaxAgeMs, resolveArchivedGraceMs,
+  resolveArchivedCacheMaxAgeMs, resolveArchivedGraceMs, resolveActiveFloorPct,
   readActiveCache, readArchivedCache,
   rowFirstSeenMs, activeRecordsFor, isAppArchived, writeActiveCache,
+  // exported for direct unit coverage of the partial-list guard's read side.
+  readRawByRepoKeyForFloor,
 };

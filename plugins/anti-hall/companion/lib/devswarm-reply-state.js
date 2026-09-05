@@ -363,6 +363,57 @@ function familyAwareUnanswered(opts) {
   }
 }
 
+// partitionUnanswered(unanswered, descriptors, registryRows) ->
+//   { blocking: [...], informational: [...] }
+//
+// R17 item 3 (retired-sender question): familyAwareUnanswered above answers
+// "did a family sibling reply to this?" — it says nothing about whether the
+// asker still EXISTS anywhere. A pendingQuestion whose `from` matches NO row
+// at all, in EITHER id space (descriptor files nor the store registry, live
+// or dead), names a sender that has been fully retired: there is no
+// `workspaces/<id>.json`, no registry row, nothing `send --to <id>` could
+// ever resolve and nothing `familyAwareUnanswered` could ever clear via a
+// sibling reply either — it is structurally unrepliable, forever, by
+// construction. Both the Stop gate (hooks/devswarm-parent-gate.js) and the
+// every-turn notice (hooks/devswarm-parent-inbox.js) used to keep naming such
+// a question in their BLOCKING figure on every single turn with no ceiling
+// (the gate's question-set escalation ceiling only bounds the notice-adjacent
+// hard-block path, not the plain per-turn notice) — this splits it out so
+// callers can render it INFORMATIONAL instead: named once, but never counted
+// toward "N UNANSWERED" and never itself forcing a block.
+//
+// `descriptors` + `registryRows` together are the FULL known-id universe (same
+// two id spaces familyAwareUnanswered already merges, see its own header for
+// why both are needed) — a `from` found in EITHER is a real, known row (even
+// if currently dead/archived/stale), so it stays `blocking`. Only a `from`
+// absent from BOTH is `informational`.
+//
+// FAIL-OPEN (never manufacture a false "retired"): a malformed question (no
+// `from`) always stays `blocking`, unchanged. An EMPTY registry (both
+// `descriptors` and `registryRows` absent/empty) would make every sender look
+// retired purely because the registry itself could not be read this pass —
+// that is a read failure, not evidence of retirement — so in that case
+// EVERYTHING stays `blocking` and `informational` is always `[]`.
+function partitionUnanswered(unanswered, descriptors, registryRows) {
+  const list = Array.isArray(unanswered) ? unanswered : [];
+  const descriptorRows = Array.isArray(descriptors) ? descriptors : [];
+  const regRows = Array.isArray(registryRows) ? registryRows : [];
+  if (!descriptorRows.length && !regRows.length) {
+    return { blocking: list.slice(), informational: [] };
+  }
+  const knownIds = new Set();
+  for (const r of descriptorRows) { if (r && r.id != null) knownIds.add(String(r.id)); }
+  for (const r of regRows) { if (r && r.id != null) knownIds.add(String(r.id)); }
+  const blocking = [];
+  const informational = [];
+  for (const q of list) {
+    if (!q || q.from == null) { blocking.push(q); continue; } // malformed -> keep, unchanged
+    if (knownIds.has(String(q.from))) blocking.push(q);
+    else informational.push(q);
+  }
+  return { blocking, informational };
+}
+
 // --- forward migration (persisted-shape discipline) -------------------------
 // migrateReplyState(home, { dryRun }) — normalizes every existing reply-state
 // file under ~/.anti-hall/devswarm/parent-gate/*-replies.json from the LEGACY
@@ -527,6 +578,7 @@ module.exports = {
   recordReply,
   unansweredQuestions,
   familyAwareUnanswered,
+  partitionUnanswered,
   migrateReplyState,
   // exported for direct unit coverage of the fold/dedup + append-record
   // discriminator logic (not part of the consumer-facing contract).

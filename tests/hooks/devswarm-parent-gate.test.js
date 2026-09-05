@@ -141,14 +141,32 @@ function stopPayload(sessionId, withCwd, explicitCwd) {
 // computeSummary stamps it on the workspace entry ONLY when its backstop cap
 // actually bit; this param lets a test seed that exact shape directly rather
 // than seeding 200+ senders through the real store.
-function writeOwnSummary(home, unread, urgencyMax, pendingQuestions, pendingQuestionsTruncated) {
+// `opts.excludeFromRegistry` (R17 item 3 fixture support): a REAL
+// computeSummary's summary.workspaces carries one entry per known registry
+// row (readOwnUnread's own registryRows comment) — every pendingQuestions[].from
+// was, by construction, resolved against SOME live registry row at ingest time
+// (devswarm-store.js's resolveSenderRegistryId). This helper auto-seeds a
+// minimal `{}` row for each distinct asker so the fixture models "still a
+// known sender" by default, matching every pre-existing caller's implicit
+// assumption. A test that specifically wants to model a RETIRED sender (no
+// row anywhere) lists that id in `opts.excludeFromRegistry` to opt out.
+function writeOwnSummary(home, unread, urgencyMax, pendingQuestions, pendingQuestionsTruncated, opts) {
   const dir = path.join(home, '.anti-hall', 'devswarm', 'summaries');
   fs.mkdirSync(dir, { recursive: true });
   const entry = { unread };
   if (urgencyMax !== undefined) entry.urgencyMax = urgencyMax;
   if (pendingQuestions !== undefined) entry.pendingQuestions = pendingQuestions;
   if (pendingQuestionsTruncated !== undefined) entry.pendingQuestionsTruncated = pendingQuestionsTruncated;
-  fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify({ workspaces: { [OWN_ID]: entry } }));
+  const workspaces = { [OWN_ID]: entry };
+  const excluded = new Set((opts && opts.excludeFromRegistry) || []);
+  if (Array.isArray(pendingQuestions)) {
+    for (const q of pendingQuestions) {
+      if (q && q.from != null && q.from !== OWN_ID && !excluded.has(String(q.from))) {
+        workspaces[String(q.from)] = {};
+      }
+    }
+  }
+  fs.writeFileSync(path.join(dir, REPO_KEY + '.json'), JSON.stringify({ workspaces }));
 }
 
 // Seed a workspace: descriptor + optional inbox/cursor + optional verdict, all
@@ -1281,6 +1299,55 @@ test('UNANSWERED QUESTION CLEARED: once a reply is recorded for that asker, the 
     const after = run(h.home, p);
     assert.strictEqual(after.status, 0);
     assert.strictEqual(after.stdout, '', `question answered + no other blocking reason -> must go quiet; got: ${after.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+// R17 item 3: a pendingQuestion whose `from` matches NO row anywhere (no
+// descriptor file, no registry row — writeOwnSummary here only ever projects
+// OWN_ID itself, and no seedWorkspace call adds any other row) is structurally
+// unrepliable. It must never itself force the gate to block.
+test('RETIRED SENDER: an unanswered question from a sender with no row anywhere never blocks on its own (R17 item 3)', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    // unread:0 isolates this to ONLY the question axis.
+    writeOwnSummary(h.home, 0, undefined, [{ from: 'ghost-sender', ts, seq: 1 }], undefined, { excludeFromRegistry: ['ghost-sender'] });
+    const r = run(h.home, stopPayload('retired-sender-sess', true));
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `a retired-sender-only question must never force a block; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('RETIRED SENDER: named in the reason text once a block fires for another real reason, but does not itself count', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    // A live-sender question keeps blocking; the informational one rides
+    // along, named but never itself the reason it blocks.
+    writeOwnSummary(h.home, 1, undefined, [
+      { from: 'child-1', ts, seq: 1 },
+      { from: 'ghost-sender', ts, seq: 2 },
+    ], undefined, { excludeFromRegistry: ['ghost-sender'] });
+    const r = run(h.home, stopPayload('retired-sender-mixed-sess', true));
+    assert.strictEqual(r.json && r.json.decision, 'block', 'the live-sender question must still block');
+    assert.match(r.json.reason, /UNANSWERED QUESTION/);
+    assert.match(r.json.reason, /child-1/, 'the live sender must still be named in the blocking figure');
+    assert.match(r.json.reason, /INFORMATIONAL/i, 'the retired sender must still be named, informationally');
+    assert.match(r.json.reason, /ghost-sender/);
+    assert.match(r.json.reason, /retired sender/i);
+  } finally { h.cleanup(); }
+});
+
+test('RETIRED SENDER: a live-sender-only question still blocks unchanged (regression control)', () => {
+  const h = makeHome();
+  try {
+    const ts = Date.now() - 5 * 60000;
+    writeOwnSummary(h.home, 0, undefined, [{ from: 'child-1', ts, seq: 1 }]);
+    const r = run(h.home, stopPayload('live-sender-control-sess', true));
+    assert.strictEqual(r.json && r.json.decision, 'block');
+    assert.match(r.json.reason, /UNANSWERED QUESTION/);
+    assert.match(r.json.reason, /child-1/);
+    assert.doesNotMatch(r.json.reason, /INFORMATIONAL/i);
   } finally { h.cleanup(); }
 });
 

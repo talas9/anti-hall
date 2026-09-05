@@ -600,6 +600,24 @@ function main() {
     unanswered = Array.isArray(own.pendingQuestions) ? own.pendingQuestions.slice() : [];
   }
 
+  // RETIRED-SENDER PARTITION (R17 item 3): split `unanswered` into a question
+  // with a real, known asker (`unanswered`, reassigned below) and one whose
+  // `from` matches NO row anywhere (`unansweredInformational`) — structurally
+  // unrepliable, so it must never itself force a block or consume the
+  // question-set escalation ceiling below. It MAY still be named in the
+  // reason text once a block is already firing for some other real reason
+  // (buildReason takes it as an extra param). Fail-open: any error here
+  // leaves `unanswered` exactly as familyAwareUnanswered/the catch above
+  // already produced it and `unansweredInformational` empty — never less
+  // blocking than before this fix.
+  let unansweredInformational = [];
+  try {
+    const replyStateLib2 = require('../companion/lib/devswarm-reply-state.js');
+    const partitioned = replyStateLib2.partitionUnanswered(unanswered, descriptors, own.registryRows || []);
+    unanswered = partitioned.blocking;
+    unansweredInformational = partitioned.informational;
+  } catch (_) { unansweredInformational = []; }
+
   // TRUNCATED pendingQuestions (P2 fix — see readOwnUnread's header). This is
   // a THIRD, independent blocking axis alongside unread/unanswered: even a
   // CORRECTLY-computed `unanswered` above is unanswered over an INCOMPLETE
@@ -1483,7 +1501,7 @@ function main() {
       }), 'utf8');
     } catch (_) { /* fail-open: best-effort persist, notice still fires this pass */ }
     try {
-      const reason = buildReason(blocking, own.id, unanswered, null, truncated, null, hasIntent, !!own.unknown);
+      const reason = buildReason(blocking, own.id, unanswered, null, truncated, null, hasIntent, !!own.unknown, unansweredInformational);
       fs.writeSync(2, 'anti-hall: ' + reason.split('\n')[0]
         + ' — not blocking (in-flight drain marker fresh for this session)\n');
     } catch (_) {}
@@ -1546,7 +1564,7 @@ function main() {
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
   const wakeLine = wakeReassertLine(process.env, false);
 
-  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown) + wakeLine;
+  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational) + wakeLine;
 
   // IN-FLIGHT DRAIN MARKER: evaluated ABOVE now (before this persist), not
   // here — see the "R11 Auditor A2 fix" comment at that earlier call site for
@@ -1682,7 +1700,26 @@ function unknownMemberLabel(b) {
   return shown.join('; ') + more;
 }
 
-function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, ownSelfUnknown) {
+// buildInformationalSegment(informational) -> string. R17 item 3: names each
+// retired-sender question ONCE (deduped by sender id — the same sender can
+// legitimately appear on multiple pendingQuestions rows), never contributing
+// to any blocking count. Rendered only when a block is already firing for
+// some other real reason (see buildReason below); this text alone never
+// causes a block to fire.
+function buildInformationalSegment(informational) {
+  if (!Array.isArray(informational) || !informational.length) return '';
+  const ids = Array.from(new Set(informational.map(
+    (q) => (q && q.from != null) ? String(q.from) : 'unknown sender'
+  )));
+  return (
+    'INFORMATIONAL — question from retired sender ' + ids.join(', ') + ' — no repliable ' +
+    'target; inspect with `inbox messages <id>`, ack with `inbox ack <id>` after reading ' +
+    '(use the sender id above as <id>). This is NOT counted in the unanswered figures above ' +
+    'and never blocks on its own. '
+  );
+}
+
+function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, ownSelfUnknown, unansweredInformational) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
@@ -1729,6 +1766,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
   if (Array.isArray(unanswered) && unanswered.length > 0) {
     body += buildUnansweredSegment(unanswered);
   }
+  body += buildInformationalSegment(unansweredInformational);
 
   if (escalateTimes) {
     // Standalone escalation wording (requirement D) — deliberately NOT the

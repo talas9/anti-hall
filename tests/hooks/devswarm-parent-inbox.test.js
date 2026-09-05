@@ -1451,6 +1451,12 @@ test('OWN UNREAD DECIDE+REPLY (§4.5): unanswered pendingQuestion on own entry -
         total: 1, cursor: 0, unread: 1, directUnread: 1,
         pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
       },
+      // R17 item 3 fixture note: `null` registers 'child-a' as a KNOWN
+      // registry-row key (Object.keys(ws) picks it up) without adding a
+      // visible table row (the rows-building loop skips a non-object entry) —
+      // this models "still a known sender", not a retired one. See the
+      // RETIRED SENDER tests below for the opposite fixture.
+      'child-a': null,
     });
     // No reply-state file at all — nothing has ever been recorded for this
     // session, the same shape post-compaction leaves behind (this hook's own
@@ -1513,6 +1519,7 @@ test('BUG 1a FIX: a reply recorded under one session_id clears the decide+reply 
         total: 1, cursor: 0, unread: 1, directUnread: 1,
         pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
       },
+      'child-a': null, // R17 item 3: known registry row, see fixture note above
     });
     const payloadSessionA = { hook_event_name: 'UserPromptSubmit', session_id: 'session-A-original', prompt: 'hi', cwd: REPO_CWD };
     const payloadSessionB = { hook_event_name: 'UserPromptSubmit', session_id: 'session-B-totally-unrelated', prompt: 'hi', cwd: REPO_CWD };
@@ -1548,6 +1555,7 @@ test('OWN UNREAD DECIDE+REPLY REGRESSION GUARD: read-and-acked (unread=0) but a 
         total: 1, cursor: 1, unread: 0, directUnread: 0,
         pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
       },
+      'child-a': null, // R17 item 3: known registry row, see fixture note above
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
@@ -1587,9 +1595,14 @@ test('OWN UNREAD DECIDE+REPLY: multiple unanswered askers are all named, capped 
   try {
     const askTs = Date.now() - 60000;
     const pendingQuestions = [];
-    for (let i = 0; i < 8; i++) pendingQuestions.push({ from: 'child-' + i, ts: askTs, seq: i });
+    const knownSenders = {};
+    for (let i = 0; i < 8; i++) {
+      pendingQuestions.push({ from: 'child-' + i, ts: askTs, seq: i });
+      knownSenders['child-' + i] = null; // R17 item 3: known registry row, see fixture note above
+    }
     writeSharedSummary(h.home, {
       [OWN_ID]: { total: 8, cursor: 0, unread: 8, directUnread: 8, pendingQuestions },
+      ...knownSenders,
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     const own = ownSegment(ctx(r));
@@ -1608,6 +1621,7 @@ test('OWN UNREAD DECIDE+REPLY FAIL-OPEN: a corrupt reply-state file does not thr
         total: 1, cursor: 0, unread: 1, directUnread: 1,
         pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
       },
+      'child-a': null, // R17 item 3: known registry row, see fixture note above
     });
     // Malformed reply-state file for THIS project's repoKey — must fail open
     // toward "unanswered" (the lib's own contract), never crash the hook,
@@ -1639,6 +1653,64 @@ test('OWN UNREAD DECIDE+REPLY FAIL-OPEN: malformed pendingQuestions entries (mis
     assert.strictEqual(r.status, 0, 'hook must never throw on a malformed pendingQuestions shape');
     const own = ownSegment(ctx(r));
     assert.match(own, /DECIDE/, `malformed pendingQuestions entries must still fail open toward decide/reply; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+// R17 item 3: a pendingQuestion whose `from` matches NO row anywhere (no
+// registry-row key in this project's shared summary, no descriptor file) is
+// structurally unrepliable — `send --to` has nothing to resolve. This used to
+// keep naming it in "N remain UNANSWERED" every single turn forever (no
+// ceiling on this per-turn notice, unlike the Stop gate's question-set
+// escalation ceiling). It must render as INFORMATIONAL instead: named once,
+// never counted in the blocking figure.
+test('RETIRED SENDER: an unanswered question from a sender with no row anywhere is informational, not counted, never blocks the DECIDE wording alone (R17 item 3)', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    // unread: 0 isolates this to ONLY the question axis; no 'ghost-sender' key
+    // anywhere in `workspaces` -> genuinely retired, per this fixture's own
+    // convention (a `null`-valued key models "still known", omitting it models
+    // "retired" — see the fixture note earlier in this file).
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 1, unread: 0, directUnread: 0,
+        pendingQuestions: [{ from: 'ghost-sender', ts: askTs, seq: 1 }],
+      },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    assert.ok(own, `an informational-only pending question must still surface a segment; ctx=${ctx(r)}`);
+    assert.ok(!/DECIDE/.test(own), 'a retired-sender-only question must never trigger the decide+reply nag');
+    assert.match(own, /INFORMATIONAL/i);
+    assert.match(own, /retired sender/i);
+    assert.ok(own.includes('ghost-sender'), `must still name the retired sender; own=${own}`);
+  } finally { h.cleanup(); }
+});
+
+test('RETIRED SENDER: named informationally alongside a live sender\'s question, which still blocks with DECIDE wording (R17 item 3)', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 0, unread: 1, directUnread: 1,
+        pendingQuestions: [
+          { from: 'child-a', ts: askTs, seq: 1 },
+          { from: 'ghost-sender', ts: askTs, seq: 2 },
+        ],
+      },
+      'child-a': null, // known registry row -> stays in the blocking figure
+      // 'ghost-sender' deliberately omitted -> retired, informational only
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    assert.match(own, /DECIDE/, `child-a's live question must still nag DECIDE; own=${own}`);
+    assert.ok(own.includes('child-a'));
+    assert.match(own, /1 of these is an unanswered QUESTION/, 'the blocking figure must count ONLY the live sender, not the retired one');
+    assert.match(own, /INFORMATIONAL/i);
+    assert.ok(own.includes('ghost-sender'));
   } finally { h.cleanup(); }
 });
 
@@ -1680,6 +1752,8 @@ test('OWN UNREAD DECIDE+REPLY WORDING: unansweredList.length > count -> no false
           { from: 'child-c', ts: askTs, seq: 3 },
         ],
       },
+      // R17 item 3: known registry rows, see fixture note above.
+      'child-a': null, 'child-b': null, 'child-c': null,
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
@@ -1701,6 +1775,7 @@ test('OWN UNREAD DECIDE+REPLY WORDING: unansweredList.length === 1 -> correct si
         total: 2, cursor: 0, unread: 2, directUnread: 2,
         pendingQuestions: [{ from: 'child-a', ts: askTs, seq: 1 }],
       },
+      'child-a': null, // R17 item 3: known registry row, see fixture note above
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);
@@ -1722,6 +1797,8 @@ test('OWN UNREAD DECIDE+REPLY WORDING: 1 < unansweredList.length <= count -> cor
           { from: 'child-b', ts: askTs, seq: 2 },
         ],
       },
+      // R17 item 3: known registry rows, see fixture note above.
+      'child-a': null, 'child-b': null,
     });
     const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
     assert.strictEqual(r.status, 0);

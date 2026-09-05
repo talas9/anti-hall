@@ -151,6 +151,74 @@ test('the freshness bound defaults to 2x the sweep interval and is env-tunable',
     2 * sup.resolveReconcileCooldownMs({}));
 });
 
+// ---------------------------------------------------------------------------
+// R17 item 2 (P2 Auditor): a partial/truncated hivecontrol answer is trusted
+// WHOLE today (admission is `records.length >= 1`), so a repoKey that comes
+// back with far fewer records than last time silently archives every row
+// this pass omitted. writeActiveCache now refuses to overwrite a repoKey
+// whose new count falls below `floorPct`% of its OWN previous snapshot's
+// count for that key, keeping the previous entry instead.
+//
+// MUTATION CHECK M6: drop the floor check entirely (always accept `src`
+// as-is) -> "16 -> 3 is refused" fails (it would accept the partial write).
+// ---------------------------------------------------------------------------
+
+function ids(n, prefix) {
+  const out = [];
+  for (let i = 0; i < n; i++) out.push({ id: (prefix || 'ws') + i, worktreePath: '/w/' + i });
+  return out;
+}
+
+test('M6 — a repoKey crashing to below the floor is refused; the previous snapshot is kept', () => {
+  const h = mkhome();
+  try {
+    cacheLib.writeActiveCache({ home: h.home, now: NOW, byRepoKey: { 'repo-a': ids(16) } });
+    const before = read(h.home, NOW);
+    assert.strictEqual(before.byRepoKey['repo-a'].length, 16);
+
+    // 16 -> 3 is an 81% drop, well below the 50% default floor.
+    const w = cacheLib.writeActiveCache({ home: h.home, now: NOW + 1000, byRepoKey: { 'repo-a': ids(3) } });
+    assert.strictEqual(w, cacheLib.cachePath(h.home), 'the write itself still succeeds (the previous entry is kept, not a hard failure)');
+    const after = read(h.home, NOW + 1000);
+    assert.strictEqual(after.byRepoKey['repo-a'].length, 16, '16 -> 3 must be refused; the previous 16 are kept');
+    assert.deepStrictEqual(after.byRepoKey['repo-a'].map((r) => r.id), ids(16).map((r) => r.id));
+  } finally { h.cleanup(); }
+});
+
+test('a repoKey NOT falling below the floor is accepted normally (16 -> 10)', () => {
+  const h = mkhome();
+  try {
+    cacheLib.writeActiveCache({ home: h.home, now: NOW, byRepoKey: { 'repo-a': ids(16) } });
+    cacheLib.writeActiveCache({ home: h.home, now: NOW + 1000, byRepoKey: { 'repo-a': ids(10) } });
+    const after = read(h.home, NOW + 1000);
+    assert.strictEqual(after.byRepoKey['repo-a'].length, 10, '16 -> 10 (62.5%) is above the 50% floor and must be accepted');
+  } finally { h.cleanup(); }
+});
+
+test('a repoKey with NO previous snapshot is always accepted (first snapshot ever)', () => {
+  const h = mkhome();
+  try {
+    const w = cacheLib.writeActiveCache({ home: h.home, now: NOW, byRepoKey: { 'repo-a': ids(1) } });
+    assert.strictEqual(w, cacheLib.cachePath(h.home));
+    assert.strictEqual(read(h.home, NOW).byRepoKey['repo-a'].length, 1);
+  } finally { h.cleanup(); }
+});
+
+test('the floor is env-tunable and 0 disables it entirely', () => {
+  const h = mkhome();
+  try {
+    cacheLib.writeActiveCache({ home: h.home, now: NOW, byRepoKey: { 'repo-a': ids(16) } });
+    cacheLib.writeActiveCache({ home: h.home, now: NOW + 1000, byRepoKey: { 'repo-a': ids(3) }, env: { ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT: '0' } });
+    assert.strictEqual(read(h.home, NOW + 1000).byRepoKey['repo-a'].length, 3, 'floor disabled -> the new (smaller) snapshot is trusted as-is');
+  } finally { h.cleanup(); }
+});
+
+test('resolveActiveFloorPct defaults to 50 and is env-tunable', () => {
+  assert.strictEqual(cacheLib.resolveActiveFloorPct({}), cacheLib.DEFAULT_ACTIVE_FLOOR_PCT);
+  assert.strictEqual(cacheLib.resolveActiveFloorPct({ ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT: '80' }), 80);
+  assert.strictEqual(cacheLib.resolveActiveFloorPct({ ANTIHALL_DEVSWARM_ACTIVE_FLOOR_PCT: 'nope' }), cacheLib.DEFAULT_ACTIVE_FLOOR_PCT);
+});
+
 test('the cache file lives under devswarmRoot and is named for what it holds', () => {
   const h = mkhome();
   try {
