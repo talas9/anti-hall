@@ -6,6 +6,58 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.91.0 (2026-09-05)
+
+- **Fix (P0): recurring sibling re-delivery.** `inbox read` (primary) and
+  `inbox count` now size a sibling's delivery window from the max of its JSON
+  ack file and its store cursor, instead of trusting either alone; fold and
+  `reap-orphans` write both cursor namespaces in lockstep so the two never
+  drift apart again. `reconcileOrphanCursor` no longer folds the NDJSON line
+  cursor into the store-row minimum and never rewinds from an untrusted zero.
+  A new caller-scoped seen-watermark stops perpetual re-delivery from a live
+  (non-ackable) sibling without touching that sibling's own cursors.
+  Fold-forward now skips rows the survivor's reader already consumed and
+  stamps `origHash` on the forwarded copy, closing the same hole in the
+  supervisor's periodic fold, `update.js`, and doctor-repair. A non-ackable
+  sibling on an acking read now takes the structural (contiguous) prefix
+  instead of an arbitrary cursor.
+- **Feature: exact dedup of forwarded copies.** An additive, nullable
+  `orig_hash` column identifies a forwarded row's original message; legacy
+  rows without the column are reconstructed for comparison. Weak-key
+  duplicates are consumed (not left to re-accumulate) with a log line
+  (`64861a623503`).
+- **Fix: unread-count unification.** `computeSummary` now uses the shared
+  loss-free union instead of a second counting path; legacy-line hashing is
+  unified, fixing a double-count of legacy lines (`8f2aec40e2ff`).
+- **Feature: `unclaimed:` session-id promotion.** A row still tagged
+  `unclaimed:<id>` is promoted to the real session id on read/pull, but only
+  ever for the caller's own row, never the row being read. Ships with a
+  forward migration in both `update.js` and doctor-repair (idempotent,
+  fail-open, no-delete).
+- **Feature: send receipts.** `cmdSend` writes a `repoKey`-scoped receipt for
+  each send; the reply tracker credits from a matching receipt before falling
+  back to stdout parsing.
+- **Clarified: `inbox read` is read-only by design.** It now reports
+  `cursorAdvanced: false` plus an `ackHint` naming the exact `inbox ack <id>`
+  command when something is outstanding; a plain read never advanced a
+  cursor (`56ba248504d0`).
+- **Feature: doctor repair mode** now runs the drain-marker, reaped-log,
+  receipt, and `unclaimed:` promotion sweeps in one pass. The
+  authority-override log honors the configured home, and a cross-project
+  override now warns about the orphan it leaves behind.
+- **Fix:** `computeSummary` skips the union entirely when the NDJSON tail has
+  no unread, avoiding needless work on the common case.
+
+Deferred to v0.92.0: a session-sourced liveness axis (`699a236129c5`), ghost
+same-path row ageing (`76891c157288`), archived-workspace rows must not
+alert, heartbeat broadcast ownership by identity family (`ecd7ad60e4cc`), and
+migrate-skipped legacy lines still double-counted (P2).
+
+**Operator note:** after updating, the first read-primary pass may deliver a
+sibling backlog once as cursors reconcile — this is expected, not a
+regression. Use `inbox messages <id> --tail N` to inspect a channel without
+moving any cursor.
+
 ## 0.90.0 (2026-09-05)
 
 - **Feature: `inbox messages` gains `--since <index|date>` and `--tail N`** as a
