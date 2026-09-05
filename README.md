@@ -730,6 +730,17 @@ spawn now times out at 10s instead of hanging (this was the actual root cause of
 update hang traced to a stray test-fixture worktree). `doctor --check` reports (never
 deletes) leaked test-fixture stores, and a new hygiene test lints for the leak pattern.
 
+**v0.95.0 diagnose descriptor fallback + unclaimed: promotion sources.** `diagnose`
+resolves `sessionId` through the descriptor when the registry is stale, and reports a
+`descriptorSessionId` field on disagreement instead of surfacing the stale registry value
+as if it were current. `unclaimed:` promotion derives the caller's real session id from
+`--session`, the `CLAUDE_CODE_SESSION_ID` env var, or — only for a row still carrying the
+marker or lacking a sessionId — the harness's own session file found by walking the
+caller's parent-pid chain, gated by a cwd-in-worktree check and a pid-reuse/staleness
+liveness guard. Descriptor/registry divergence is repaired in both directions, and a
+registry write failure during promotion is now surfaced (`registryWriteError`) instead of
+swallowed silently.
+
 ---
 
 ## Requirements

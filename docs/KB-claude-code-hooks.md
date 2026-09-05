@@ -360,6 +360,12 @@ if Claude Code cannot statically determine what a command expands to.
   managed-policy hook configs for the same event all run; there is no override semantics,
   only accumulation. `disableAllHooks: true` is the only way to suppress a level, and
   cannot disable managed-policy hooks unless set at the managed-policy level itself.
+- **MEASURED: `CLAUDE_CODE_SESSION_ID` presence depends on the launch path, not on hooks
+  configuration** — it is set in a DevSwarm-launched session's own Bash shell environment,
+  and absent in a plain (non-DevSwarm) Claude Code session's Bash shell. A hook or CLI
+  script that reads this var as its only source of "the caller's real session id" has no
+  path to one at all in an ordinary session (anti-hall's `devswarm.js` `unclaimed:`
+  promotion hit exactly this — see `docs/KB-devswarm-hivecontrol.md` §40).
 
 ---
 

@@ -3028,3 +3028,45 @@ flipping which was "freshest" across two consecutive summary computations, so th
 pending question rendered `from` as first one sibling, then the other, on unchanged stored
 data. `pickAttributionRow` resolves both passes to the same row (the branch-slug row, via C2)
 regardless of which sibling most recently heartbeat.
+
+## §40 — `unclaimed:` promotion sources and `diagnose` fields (v0.95.0)
+
+`realSessionIdFrom(flags, ctx, id)` sources a caller's real session id from, in order:
+
+1. `--session` (the flag).
+2. `CLAUDE_CODE_SESSION_ID` (the env var — set in a DevSwarm-launched session's own Bash
+   shell, absent in a plain non-DevSwarm session's shell; see the measured fact recorded in
+   `docs/KB-claude-code-hooks.md`).
+3. Only when NEITHER above resolves anything AND the target row is a MARKER row (its
+   descriptor or registry `sessionId` still reads `unclaimed:<id>`, or is missing
+   entirely) — the harness's own `<home>/.claude/sessions/<pid>.json` session file, found
+   by walking the caller's parent-pid chain (`deriveCallerSessionIdFromProcessTree`).
+
+**The safety gate (`rowStillNeedsSessionDerivation`):** leg 3's process-tree walk spawns a
+real `ps` per hop via `defaultPpidOf`. Gating it to marker rows only means an
+already-promoted row (real `sessionId` on BOTH the descriptor and the registry) never pays
+that cost on a read/pull — its result could only ever be discarded anyway. The gate fails
+OPEN on a read error (missing descriptor, unreadable registry): the pre-existing behavior
+always ran the walk, so a gate error just costs one extra `ps` call, never a blocked
+promotion.
+
+**Why fail-closed everywhere else:** the walk itself still requires the found session
+file's `cwd` to resolve inside the caller's own worktree (unrelated ancestor processes are
+never trusted), and now additionally requires the pid it names to pass the SAME pid-reuse /
+start-time staleness guard `companion/lib/liveness.js`'s `sessionPidAlive` already applies
+elsewhere (`pidIsAlive` with the file's own mtime as `sinceMs`) — a session file naming a
+pid that has since been reused by an unrelated process, or is simply dead, is not trusted.
+A missed promotion is a retryable no-op on the next call; a wrong one would stamp a
+stranger's session id onto this row.
+
+`promoteUnclaimedSession`'s classic promotion path (both descriptor and registry still
+carrying the marker) now surfaces a registry-write failure as an additive
+`registryWriteError` string field on its return value (plus one stderr line), instead of
+swallowing it silently — the descriptor promotion and `promoted:true` are unaffected,
+since the descriptor write already succeeded by the time the registry write is attempted.
+
+**`descriptorSessionId` (diagnose):** `computeDiagnosis` resolves a row's reported
+`sessionId` through the descriptor when the registry copy is stale, and on disagreement
+between the two also reports the descriptor's own value under `descriptorSessionId` —
+so a caller can tell "the registry hasn't caught up yet" apart from "these two sources
+genuinely disagree" without opening the store directly.

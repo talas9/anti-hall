@@ -189,6 +189,19 @@ indefinitely (defect f3c1bc827d89). A row whose worktree no longer exists on dis
 before it costs any budget; whatever is still deferred when the budget runs out is written to
 a resume marker and drained FIRST on the next sweep.
 
+**(v0.95.0) `diagnose`'s `descriptorSessionId`, and `unclaimed:` promotion sources.**
+`diagnose` now resolves a row's `sessionId` through the descriptor when the registry copy is
+stale, and reports the descriptor's own value under `descriptorSessionId` when the two
+disagree. Separately, `unclaimed:` promotion (the marker a row's `sessionId` carries until a
+real session id is known) now sources that real id from, in order: `--session`, then
+`CLAUDE_CODE_SESSION_ID`, then — ONLY for a row still carrying the marker or lacking a
+sessionId — the harness's own session file found by walking the caller's parent-pid chain
+(gated by a cwd-in-worktree check AND a pid-reuse/staleness liveness guard, so an already-
+promoted row never pays that walk's cost and a stale/reused pid is never trusted).
+Descriptor/registry divergence is repaired in both directions, and a registry write failure
+during promotion now surfaces as `registryWriteError` rather than being swallowed. Full
+record: `docs/KB-devswarm-hivecontrol.md` §40.
+
 ## Blocking questions — CHILD asks, PARENT answers (never child → human)
 
 A gap the mesh above doesn't close by itself: nothing so far tells a CHILD what to DO

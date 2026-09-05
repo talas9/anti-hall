@@ -102,6 +102,12 @@ its own purposes).
      internal error are both reported and NEVER fatal to the update. The manual verb
      (`node scripts/devswarm.js reconcile`) stays available for an on-demand sweep
      outside an update.
+   - **Promote unclaimed sessions (auto, fail-open — `promoteUnclaimedPostUpdate`,
+     v0.90.0):** every update run also sweeps every descriptor for the `unclaimed:`
+     forward migration, promoting a row to its real session id wherever an independent
+     source (a heartbeat's own recorded `sessionId`) proves one — see
+     `docs/KB-devswarm-hivecontrol.md` §40 for the sourcing rules this is a forward
+     migration of.
 6. Extract the `CHANGELOG.md` sections strictly between installed (exclusive) and new
    (inclusive) and print them.
 7. Emit a JSON status line + a human summary:

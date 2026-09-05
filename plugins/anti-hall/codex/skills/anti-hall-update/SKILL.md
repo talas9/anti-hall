@@ -93,6 +93,12 @@ Gate-closed or an internal error are both reported and NEVER fatal to the update
 manual verb (`node scripts/devswarm.js reconcile`) stays available for an on-demand sweep
 outside an update.
 
+**Promote unclaimed sessions (auto, fail-open — `promoteUnclaimedPostUpdate`, v0.90.0):**
+every update run also sweeps every descriptor for the `unclaimed:` forward migration,
+promoting a row to its real session id wherever an independent source (a heartbeat's own
+recorded `sessionId`) proves one — see `docs/KB-devswarm-hivecontrol.md` §40 for the
+sourcing rules this is a forward migration of.
+
 **(v0.94.0) Bounded reconcile.** `reconcile` now applies a total wall-clock budget across all
 its per-row drains — `ANTIHALL_RECONCILE_BUDGET_MS` (default `60000`; `0` = unlimited) or
 `--budget-ms` on a direct CLI call — so a large stranded backlog can no longer hang `update`
