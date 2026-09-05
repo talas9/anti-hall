@@ -109,9 +109,19 @@ const archivedCachePath = cachePath;
 
 // isUnderDevswarmReposRoot(p) -> bool. Conjunct 2. A non-string / empty path is
 // NOT under the root (fail-open: never app-archived).
+//
+// D11-B: normalize `p` (normalizeWorktreePath — path.resolve then
+// fs.realpathSync, falling back to the resolved string) BEFORE the regex
+// test, the SAME normalization conjunct 3's comparison already applies to
+// every worktreePath on both sides (R17 item 1). Un-normalized, a trailing
+// separator or a `.`/`..` segment on the RAW caller-supplied path can survive
+// into the regex test itself, and this function is the first gate every row
+// passes through — normalizing here means a caller never has to pre-normalize
+// its own input just to be recognized as under the root.
 function isUnderDevswarmReposRoot(p) {
   if (typeof p !== 'string' || !p) return false;
-  return DEVSWARM_REPOS_ROOT_RE.test(p);
+  const normalized = normalizeWorktreePath(p);
+  return DEVSWARM_REPOS_ROOT_RE.test(typeof normalized === 'string' && normalized ? normalized : p);
 }
 
 // normalizeWorktreePath(p, fsi) -> string | null. R17 item 1 (Critic,
@@ -243,7 +253,15 @@ function normalizeRecords(v, fsi) {
     if (!id) continue;
     const rawWt = typeof r.worktreePath === 'string' && r.worktreePath ? r.worktreePath : null;
     const wt = rawWt ? normalizeWorktreePath(rawWt, fsi) : null;
-    out.push({ id, worktreePath: wt });
+    // repositoryId (D11-B, cross-repo id/path collision guard): passed through
+    // verbatim when the raw record carries one (hivecontrol's `workspace list
+    // all` DOES emit this field — see the module header — it is simply not
+    // yet threaded through every producer of this shape). null when absent, so
+    // isAppArchived's conjunct-3 guard can tell "no repositoryId available"
+    // (fail toward the existing id/worktreePath-only match) apart from "these
+    // two repositoryIds genuinely differ".
+    const repositoryId = typeof r.repositoryId === 'string' && r.repositoryId ? r.repositoryId : null;
+    out.push({ id, worktreePath: wt, repositoryId });
   }
   return out;
 }
@@ -320,9 +338,14 @@ function activeRecordsFor(opts) {
   return Array.isArray(recs) ? recs : [];
 }
 
-// isAppArchived({home, repoKey, id, worktreePath, env, now, fsi, cache, firstSeenMs})
+// isAppArchived({home, repoKey, id, worktreePath, env, now, fsi, cache, firstSeenMs, repositoryId})
 //   -> bool. The four-conjunct absence rule at the top of this file. Every
-// unknown answers NO. Never throws.
+// unknown answers NO. Never throws. `repositoryId` (D11-B, optional) is this
+// row's own ground-truth repo identity (e.g. devswarm.js's
+// fetchTrustedRepositoryId); when supplied AND a candidate cached record also
+// carries one, the two must agree before an id/worktreePath match counts as
+// evidence of liveness — see conjunct 3 below for why (a bucket keyed by
+// repoKey can still hold records spanning every repo hivecontrol knows about).
 function isAppArchived(opts) {
   const o = opts || {};
   try {
@@ -343,9 +366,29 @@ function isAppArchived(opts) {
     // cause a live workspace to fail this match.
     const id = String(o.id);
     const wt = normalizeWorktreePath(o.worktreePath, o.fsi);
+    // rowRepositoryId (D11-B): this row's OWN repositoryId, when the caller
+    // has one to offer. `byRepoKey` is keyed by repoKey, NOT repositoryId (see
+    // module header) precisely because the underlying `hivecontrol workspace
+    // list all` answer feeding a bucket is GLOBAL/unscoped — it takes no repo
+    // filter, so every repo's live records can end up in ONE bucket. A bare id
+    // (or, in a moved/rehomed setup, even a worktreePath) can therefore
+    // collide across two UNRELATED repos' rows.
+    const rowRepositoryId = (typeof o.repositoryId === 'string' && o.repositoryId) ? o.repositoryId : null;
     for (const r of recs) {
-      if (r.id === id) return false;
-      if (wt && r.worktreePath && r.worktreePath === wt) return false;
+      const idMatch = r.id === id;
+      const wtMatch = !!(wt && r.worktreePath && r.worktreePath === wt);
+      if (!idMatch && !wtMatch) continue;
+      // REPOSITORY-ID GUARD: when BOTH sides carry a repositoryId, it must
+      // ALSO agree before this counts as evidence the row is live — a
+      // same-id/same-path record belonging to a DIFFERENT repositoryId proves
+      // nothing about THIS row and must not short-circuit the loop. Fail
+      // toward NEVER-suppress when either side lacks a repositoryId (older
+      // hivecontrol, an un-migrated cache entry, or a caller that has not
+      // threaded one through yet): the id/worktreePath match alone still
+      // counts exactly as before — this guard can only turn an existing match
+      // into "insufficient evidence", never invent a NEW suppression.
+      if (r.repositoryId && rowRepositoryId && r.repositoryId !== rowRepositoryId) continue;
+      return false;
     }
     // Conjunct 4.
     const firstSeen = Number.isFinite(o.firstSeenMs)

@@ -93,7 +93,7 @@ test('M3 — malformed files and malformed records are dropped, never guessed at
     writeRaw(h.home, { fetchedAt: NOW, byRepoKey: { 'repo-a': 'nope', 'repo-b': [{ worktreePath: '/w' }, 5, null, { id: 'ok' }] } });
     const c = read(h.home);
     assert.strictEqual(c.byRepoKey['repo-a'], undefined);
-    assert.deepStrictEqual(c.byRepoKey['repo-b'], [{ id: 'ok', worktreePath: null }]);
+    assert.deepStrictEqual(c.byRepoKey['repo-b'], [{ id: 'ok', worktreePath: null, repositoryId: null }]);
   } finally { h.cleanup(); }
 });
 

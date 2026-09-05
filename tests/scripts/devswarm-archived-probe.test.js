@@ -111,7 +111,7 @@ test('a SUCCESSFUL probe writes the active set under the sweep target repoKey', 
     assert.strictEqual(r.ran, true);
     const c = cacheLib.readActiveCache({ home: h.home, env: {}, now: SWEEP_NOW });
     assert.strictEqual(c.fresh, true);
-    assert.deepStrictEqual(c.byRepoKey, { 'repo-a': [{ id: 'ws1', worktreePath: '/w/a' }] });
+    assert.deepStrictEqual(c.byRepoKey, { 'repo-a': [{ id: 'ws1', worktreePath: '/w/a', repositoryId: null }] });
     assert.strictEqual(c.recordCount, 1);
   } finally { h.cleanup(); }
 });

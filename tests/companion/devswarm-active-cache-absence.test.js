@@ -64,10 +64,10 @@ function seedCache(home, records, fetchedAt) {
   });
 }
 
-function archived(home, id, worktreePath, now) {
+function archived(home, id, worktreePath, now, repositoryId) {
   return cacheLib.isAppArchived({
     home, repoKey: 'repo-a', id, worktreePath, env: ENV,
-    now: Number.isFinite(now) ? now : NOW,
+    now: Number.isFinite(now) ? now : NOW, repositoryId,
   });
 }
 
@@ -227,4 +227,76 @@ test('a genuinely DIFFERENT path (not just a trailing-slash/symlink divergence) 
     assert.strictEqual(archived(h.home, 'ws-gone', APP_WT), true,
       'normalization must never manufacture a match between two genuinely different paths');
   } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// D11-B — conjunct 3's bucket is keyed by repoKey but the underlying
+// `hivecontrol workspace list all` answer that fills it is GLOBAL and takes no
+// repo filter (see the module header), so ONE bucket can legitimately hold
+// records spanning multiple physical repos. A bare id (or a worktreePath, in
+// a moved/rehomed setup) can then collide across two UNRELATED repos' rows,
+// and the id/worktreePath-only match falsely reads a genuinely-archived row
+// in repo A as still-live because a same-id record from repo B happens to sit
+// in the same bucket.
+//
+// MUTATION CHECK M7: drop the repositoryId guard entirely (match on
+// id/worktreePath alone, as before D11-B) -> "same id, two repos" fails (the
+// cross-repo record would wrongly prove liveness).
+// ---------------------------------------------------------------------------
+
+test('M7 — same id, two repositoryIds in one bucket: only the matching repositoryId suppresses (fails the "found evidence" check for the wrong repo)', () => {
+  const h = mkhome();
+  try {
+    // ws-shared is registered (and genuinely archived) in repo-a, whose real
+    // repositoryId is 'repo-id-A'. A DIFFERENT repo's live workspace happens
+    // to reuse the SAME literal id 'ws-shared' (ids are per-app, not
+    // guaranteed globally unique) and both land in this ONE bucket because
+    // `workspace list all` is unscoped.
+    seedDescriptor(h.home, 'ws-shared', OLD);
+    seedCache(h.home, [{ id: 'ws-shared', worktreePath: APP_WT, repositoryId: 'repo-id-B' }]);
+    assert.strictEqual(
+      archived(h.home, 'ws-shared', APP_WT, NOW, 'repo-id-A'),
+      true,
+      'a same-id record belonging to a DIFFERENT repositoryId must not prove this row is live'
+    );
+    // The SAME cached record, now correctly attributed to repo-id-A, DOES
+    // prove liveness — proving the guard only WITHHOLDS a wrong-repo match,
+    // it never blocks a genuinely correct one.
+    seedCache(h.home, [{ id: 'ws-shared', worktreePath: APP_WT, repositoryId: 'repo-id-A' }]);
+    assert.strictEqual(archived(h.home, 'ws-shared', APP_WT, NOW, 'repo-id-A'), false);
+  } finally { h.cleanup(); }
+});
+
+test('D11-B — when either side lacks a repositoryId, the id/worktreePath match alone still suppresses nothing (fail toward never-suppress)', () => {
+  const h = mkhome();
+  try {
+    // Cached record carries no repositoryId (older hivecontrol / un-migrated
+    // cache); the row's own caller also passes none.
+    seedDescriptor(h.home, 'ws-live', OLD);
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT }]);
+    assert.strictEqual(archived(h.home, 'ws-live', APP_WT), false);
+    // Only the CACHED side carries a repositoryId; the caller supplies none —
+    // still not enough information to disagree, so the existing match holds.
+    seedCache(h.home, [{ id: 'ws-live', worktreePath: APP_WT, repositoryId: 'repo-id-A' }]);
+    assert.strictEqual(archived(h.home, 'ws-live', APP_WT), false);
+    // Only the CALLER carries a repositoryId; the cached record has none.
+    assert.strictEqual(archived(h.home, 'ws-live', APP_WT, NOW, 'repo-id-A'), false);
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// D11-B — isUnderDevswarmReposRoot now normalizes its input the same way
+// conjunct 3 already normalizes every worktreePath (R17 item 1), so a
+// trailing separator on the raw caller-supplied path is still recognized.
+//
+// MUTATION CHECK M8: drop the normalizeWorktreePath call in
+// isUnderDevswarmReposRoot (test the raw path again) -> this test alone does
+// not turn red (the regex already tolerates a trailing separator via
+// substring match), but the symmetry with conjunct 3's own normalization is
+// what this guards; see the module-level comment on the function itself.
+// ---------------------------------------------------------------------------
+
+test('D11-B — isUnderDevswarmReposRoot recognizes a path with a trailing separator', () => {
+  assert.strictEqual(cacheLib.isUnderDevswarmReposRoot(APP_WT + '/'), true);
+  assert.strictEqual(cacheLib.isUnderDevswarmReposRoot(APP_WT + '/./'), true);
 });
