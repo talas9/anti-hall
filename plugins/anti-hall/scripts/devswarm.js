@@ -9793,6 +9793,23 @@ function writeReconcileResume(home, repoKey, ids) {
 // env `ANTIHALL_RECONCILE_BUDGET_MS` overrides; 0 = unlimited (opt-out).
 const DEFAULT_RECONCILE_BUDGET_MS = 60000;
 
+// resolveReconcileClock(ctx) -> () => ms. An injectable clock for cmdReconcile's
+// OWN wall-clock budget accounting only — deliberately a SEPARATE ctx field
+// from `ctx.now` (used elsewhere in this file, e.g. names.writeName's
+// timestamp arg a few hundred lines down in this same function, as a single
+// STATIC snapshot number via `Number.isFinite(ctx.now) ? ctx.now : Date.now()`).
+// That static-snapshot convention doesn't fit here: the budget loop below
+// samples "now" repeatedly across an unbounded number of spawnFn calls, and a
+// test double needs to advance a FAKE clock between those samples (so "a
+// budget that allows exactly 2 children" is exact by construction, not a race
+// against real elapsed wall-clock time on a contended CI runner). Naming this
+// `ctx.reconcileNow` (a function) rather than reusing `ctx.now` (a number)
+// avoids colliding with that other convention in the same ctx object. Default
+// (no injection) is plain `Date.now`, so real behavior is unchanged.
+function resolveReconcileClock(ctx) {
+  return (ctx && typeof ctx.reconcileNow === 'function') ? ctx.reconcileNow : Date.now;
+}
+
 function resolveReconcileBudgetMs(flags, ctx) {
   // update.js (or any caller) may pass its own budget straight through via
   // ctx.reconcileBudgetMs — the cleanest carrier for a value that is never a
@@ -9880,7 +9897,8 @@ function cmdReconcile(flags, ctx) {
   const spawnFn = (ctx.io && ctx.io.spawnReconcile) || defaultSpawnReconcile;
   const usingDefaultSpawn = spawnFn === defaultSpawnReconcile;
   const budgetMs = resolveReconcileBudgetMs(flags, ctx);
-  const startedAt = Date.now();
+  const clockNow = resolveReconcileClock(ctx);
+  const startedAt = clockNow();
   let skippedMissingWorktree = 0;
   let processed = 0;
   const deferredIds = [];
@@ -9907,7 +9925,7 @@ function cmdReconcile(flags, ctx) {
     }
     // Budget check: only once we're about to actually spawn a child. A budget
     // of 0 means unlimited (never defers).
-    if (budgetMs > 0 && (Date.now() - startedAt) >= budgetMs) {
+    if (budgetMs > 0 && (clockNow() - startedAt) >= budgetMs) {
       deferredIds.push(d.id);
       continue;
     }
@@ -10037,7 +10055,7 @@ function cmdReconcile(flags, ctx) {
     ok: allRowsOkOrBenign, action: 'reconcile', repoKey,
     count: results.length, imported, lost, rejected, results,
     budgetMs, processed, skippedMissingWorktree, deferred: deferredIds.length,
-    elapsedMs: Date.now() - startedAt,
+    elapsedMs: clockNow() - startedAt,
   };
   if (healed) out.healed = healed;
   if (namesBackfilled) out.namesBackfilled = namesBackfilled;

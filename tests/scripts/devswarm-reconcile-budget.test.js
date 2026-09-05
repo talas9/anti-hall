@@ -45,13 +45,17 @@ function seedRegistry(home, repoKey, desc) {
 function resumePath(home) {
   return path.join(home, '.anti-hall', 'devswarm', 'reconcile-resume.json');
 }
-// Deterministic synchronous busy-wait (no real spawn/timer) — same idiom as
-// mcp-reaper.js's own sleepSync (Atomics.wait on a throwaway SharedArrayBuffer)
-// so the injected `spawnReconcile` test double can make the total wall-clock
-// budget check actually trip after a controlled number of calls.
-function sleepSync(ms) {
-  const sab = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(sab, 0, 0, ms);
+// Deterministic fake clock — cmdReconcile accepts an injectable `ctx.reconcileNow`
+// clock function (see devswarm.js resolveReconcileClock) used for BOTH the
+// budget's start stamp and every per-iteration elapsed check, plus the
+// reported `elapsedMs`. makeFakeClock() returns a `now()` reader and an
+// `advance(ms)` mutator; driving `advance` from inside an injected
+// `spawnReconcile` test double makes "a budget that allows exactly N
+// children" exact BY CONSTRUCTION — no real sleep, no wall-clock race against
+// a contended CI runner (root cause of the prior flake).
+function makeFakeClock(startMs) {
+  let t = startMs || 0;
+  return { now: () => t, advance: (ms) => { t += ms; } };
 }
 
 test('cmdReconcile: a budget that allows exactly 2 children defers the remaining 3, writes a resume marker, and the next run drains the deferred ids FIRST', () => {
@@ -64,19 +68,21 @@ test('cmdReconcile: a budget that allows exactly 2 children defers the remaining
       seedRegistry(home, repoKey, { id, worktreePath: '/wt/' + id, sessionId: 's' });
     }
     const calls1 = [];
+    const clock1 = makeFakeClock();
     const io = {
       spawnReconcile: (d) => {
         calls1.push(d.id);
-        sleepSync(30); // ~30ms per call — with a 50ms budget, 2 calls (~60ms) exhausts it
+        clock1.advance(30); // exact 30ms/call — with a 50ms budget, exactly 2 calls (60ms) trips it
         return { status: 0, stdout: JSON.stringify({ ok: true, imported: 0 }), error: null };
       },
     };
-    const r1 = cli.run(['reconcile'], ctx(home, { cwd: repo, io, reconcileBudgetMs: 50 }));
+    const r1 = cli.run(['reconcile'], ctx(home, { cwd: repo, io, reconcileBudgetMs: 50, reconcileNow: clock1.now }));
     assert.strictEqual(r1.result.budgetMs, 50);
     assert.strictEqual(r1.result.processed, 2, 'exactly 2 children must have been spawned before the budget tripped: ' + JSON.stringify(r1.result));
     assert.strictEqual(r1.result.deferred, 3);
     assert.strictEqual(calls1.length, 2);
     assert.strictEqual(r1.result.results.length, 2, 'a deferred row must NOT appear in this run\'s results — it was never attempted');
+    assert.strictEqual(r1.result.elapsedMs, 60, 'elapsedMs must be computed off the injected clock (2 calls x 30ms), not real wall-clock time');
 
     const resumeRaw = JSON.parse(fs.readFileSync(resumePath(home), 'utf8'));
     assert.strictEqual(resumeRaw.repoKey, repoKey);
@@ -95,7 +101,8 @@ test('cmdReconcile: a budget that allows exactly 2 children defers the remaining
         return { status: 0, stdout: JSON.stringify({ ok: true, imported: 0 }), error: null };
       },
     };
-    const r2 = cli.run(['reconcile'], ctx(home, { cwd: repo, io: io2, reconcileBudgetMs: 0 }));
+    const clock2 = makeFakeClock();
+    const r2 = cli.run(['reconcile'], ctx(home, { cwd: repo, io: io2, reconcileBudgetMs: 0, reconcileNow: clock2.now }));
     assert.strictEqual(r2.result.deferred, 0, 'an unlimited (0) budget must never defer anything');
     assert.strictEqual(calls2.length, 5);
     assert.deepStrictEqual(calls2.slice(0, 3), deferredIdsRun1, 'the previously-deferred ids must be processed FIRST, in their deferred order (rotation)');
@@ -112,13 +119,14 @@ test('cmdReconcile: budget 0 (unlimited) never defers, regardless of elapsed tim
   try {
     const repoKey = repokey.repoKeyForWorktree(repo);
     seedRegistry(home, repoKey, { id: 'only', worktreePath: '/wt/only', sessionId: 's' });
+    const clock = makeFakeClock();
     const io = {
       spawnReconcile: (d) => {
-        sleepSync(20);
+        clock.advance(20);
         return { status: 0, stdout: JSON.stringify({ ok: true, imported: 0 }), error: null };
       },
     };
-    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io, reconcileBudgetMs: 0 }));
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io, reconcileBudgetMs: 0, reconcileNow: clock.now }));
     assert.strictEqual(r.result.deferred, 0);
     assert.strictEqual(r.result.processed, 1);
     assert.strictEqual(fs.existsSync(resumePath(home)), false);
@@ -174,9 +182,10 @@ test('cmdReconcile: elapsedMs is a real, non-negative number in the output', () 
   try {
     const repoKey = repokey.repoKeyForWorktree(repo);
     seedRegistry(home, repoKey, { id: 'only', worktreePath: '/wt/only', sessionId: 's' });
-    const io = { spawnReconcile: () => ({ status: 0, stdout: JSON.stringify({ ok: true, imported: 0 }), error: null }) };
-    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io }));
+    const clock = makeFakeClock();
+    const io = { spawnReconcile: () => { clock.advance(7); return { status: 0, stdout: JSON.stringify({ ok: true, imported: 0 }), error: null }; } };
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, io, reconcileNow: clock.now }));
     assert.strictEqual(typeof r.result.elapsedMs, 'number');
-    assert.ok(r.result.elapsedMs >= 0);
+    assert.strictEqual(r.result.elapsedMs, 7, 'elapsedMs must reflect the injected clock deterministically');
   } finally { rm(home); rm(repo); }
 });
