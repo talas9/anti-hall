@@ -9743,6 +9743,75 @@ function defaultSpawnReconcile(d, ctx) {
   }
 }
 
+// reconcileResumePath(home) -> path to the additive, fail-open, overwritten-
+// each-run resume marker (Wave D9). Single home-scoped file (not per-repoKey):
+// reconcile is a manual/update-driven sweep, never concurrent with itself for
+// the same project, and the marker's own `repoKey` field guards a later run
+// for a DIFFERENT project from ever reusing a foreign deferred-id list.
+function reconcileResumePath(home) {
+  return path.join(home, '.anti-hall', 'devswarm', 'reconcile-resume.json');
+}
+
+// readReconcileResume(home, repoKey) -> string[] deferred ids from the last
+// run that hit its budget for THIS SAME repoKey, or [] on any absence/parse
+// failure/repoKey mismatch (fail-open: a corrupt/foreign marker never blocks
+// or crashes reconcile — it just means nothing is prioritized this run).
+function readReconcileResume(home, repoKey) {
+  try {
+    const raw = fs.readFileSync(reconcileResumePath(home), 'utf8');
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.repoKey === repoKey && Array.isArray(parsed.ids)) {
+      return parsed.ids.filter((x) => typeof x === 'string');
+    }
+  } catch (_) { /* fail-open: no resume marker */ }
+  return [];
+}
+
+// writeReconcileResume(home, repoKey, ids) -> void. Overwrites the marker with
+// the current run's still-deferred ids (or removes it once nothing is left
+// deferred, so a fully-drained sweep doesn't leave a stale marker around).
+// Fail-open: a write failure never affects reconcile's own result.
+function writeReconcileResume(home, repoKey, ids) {
+  try {
+    const p = reconcileResumePath(home);
+    if (!ids || ids.length === 0) {
+      try { fs.unlinkSync(p); } catch (_) { /* already absent — fine */ }
+      return;
+    }
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({ repoKey, ids, ts: Date.now() }));
+  } catch (_) { /* fail-open: resume marker is best-effort */ }
+}
+
+// DEFAULT_RECONCILE_BUDGET_MS — Wave D9 root cause (defect f3c1bc827d89):
+// cmdReconcile previously spawned one serial 30s-timeout child PER registry
+// row with no total budget/cap, so a project with dozens of stale rows made
+// `update.js` (which awaits reconcile synchronously, ~update.js:2160) hang for
+// minutes with zero progress output. A total wall-clock budget bounds a single
+// sweep's worst case; anything left over is deferred to the NEXT sweep via the
+// resume marker above rather than ever blocking the caller indefinitely.
+// env `ANTIHALL_RECONCILE_BUDGET_MS` overrides; 0 = unlimited (opt-out).
+const DEFAULT_RECONCILE_BUDGET_MS = 60000;
+
+function resolveReconcileBudgetMs(flags, ctx) {
+  // update.js (or any caller) may pass its own budget straight through via
+  // ctx.reconcileBudgetMs — the cleanest carrier for a value that is never a
+  // user-typed CLI flag on THAT call site (update.js invokes `devswarm.run(['reconcile'], ctx)`
+  // directly, not via a shell argv). The CLI's own `--budget-ms` flag is for a
+  // human/script invoking `devswarm.js reconcile` directly.
+  const candidates = [
+    ctx && ctx.reconcileBudgetMs,
+    one(flags, 'budget-ms'),
+    ctx && ctx.env && ctx.env.ANTIHALL_RECONCILE_BUDGET_MS,
+  ];
+  for (const c of candidates) {
+    if (c === undefined || c === null) continue;
+    const n = Number(c);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  return DEFAULT_RECONCILE_BUDGET_MS;
+}
+
 // cmdReconcile(flags, ctx) — PLAN.md "reconcile": drain EVERY worktree
 // registered in THIS project's shared store once. Each `inbox pull` MUST run
 // with that worktree as its OWN process cwd (never in-process) — inbox pull's
@@ -9754,6 +9823,17 @@ function defaultSpawnReconcile(d, ctx) {
 // a reconcile sweep against a live child concurrently pulling its own inbox —
 // surfaced here as `locked:true` on that descriptor's result, never silently
 // dropped from the count.
+//
+// Wave D9 additions (budget + resume, root-caused via defect f3c1bc827d89):
+// a total wall-clock budget bounds how long one sweep can spend spawning
+// per-row children; whatever is left when the budget runs out is deferred to
+// `reconcile-resume.json` and prioritized FIRST on the next run (rotation).
+// A row whose worktreePath no longer exists on disk is skipped BEFORE it ever
+// reaches spawnFn (not just inside defaultSpawnReconcile's own existsSync
+// check) so it costs zero budget — but ONLY when spawnFn is the real
+// defaultSpawnReconcile: an injected `ctx.io.spawnReconcile` test double is a
+// real spawn stand-in and is deliberately never subject to this fs check
+// (same posture defaultSpawnReconcile's own doc comment already documents).
 function cmdReconcile(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
@@ -9780,10 +9860,58 @@ function cmdReconcile(flags, ctx) {
   let descriptors;
   try { descriptors = s.listRegistry(); } finally { s.close(); }
 
-  const targets = descriptors.filter((d) => d && d.worktreePath && isSafeId(d.id));
+  let targets = descriptors.filter((d) => d && d.worktreePath && isSafeId(d.id));
+
+  // Resume rotation: prioritize ids deferred by a PRIOR budget-exhausted run
+  // (for this same repoKey) so a persistently-large backlog eventually drains
+  // in FIFO order across runs rather than the same early rows starving the
+  // tail forever. Fail-open (readReconcileResume already tolerates absence).
+  const resumeIds = readReconcileResume(home, repoKey);
+  if (resumeIds.length > 0) {
+    const byId = new Map(targets.map((d) => [d.id, d]));
+    const prioritized = [];
+    for (const id of resumeIds) {
+      const d = byId.get(id);
+      if (d) { prioritized.push(d); byId.delete(id); }
+    }
+    targets = prioritized.concat(Array.from(byId.values()));
+  }
+
   const spawnFn = (ctx.io && ctx.io.spawnReconcile) || defaultSpawnReconcile;
+  const usingDefaultSpawn = spawnFn === defaultSpawnReconcile;
+  const budgetMs = resolveReconcileBudgetMs(flags, ctx);
+  const startedAt = Date.now();
+  let skippedMissingWorktree = 0;
+  let processed = 0;
+  const deferredIds = [];
   const results = [];
   for (const d of targets) {
+    // Pre-spawn missing-worktree skip (defaultSpawnReconcile only — see doc
+    // comment above): costs zero budget, unlike letting spawnFn discover it
+    // via its own internal existsSync check after a budget slot is already
+    // spent deciding to spawn.
+    if (usingDefaultSpawn) {
+      let exists = true;
+      try { exists = fs.existsSync(d.worktreePath); } catch (_) { exists = true; }
+      if (!exists) {
+        skippedMissingWorktree++;
+        results.push({
+          id: d.id, worktreePath: d.worktreePath, ok: false, imported: 0, duplicate: 0,
+          nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false,
+          worktreeMissing: true,
+          archivedDuplicate: hasArchivedCounterpart(home, d.id),
+          error: 'worktree not found on disk: ' + d.worktreePath,
+        });
+        continue;
+      }
+    }
+    // Budget check: only once we're about to actually spawn a child. A budget
+    // of 0 means unlimited (never defers).
+    if (budgetMs > 0 && (Date.now() - startedAt) >= budgetMs) {
+      deferredIds.push(d.id);
+      continue;
+    }
+    processed++;
     const r = spawnFn(d, ctx);
     let parsed = null;
     if (r && !r.error && typeof r.stdout === 'string') {
@@ -9899,9 +10027,17 @@ function cmdReconcile(flags, ctx) {
     }
   } catch (_) { /* fail-open: reconcile proceeds without name backfill */ }
 
+  // Wave D9: persist whatever is still deferred so the NEXT sweep (for this
+  // same repoKey) prioritizes it first (rotation) — writeReconcileResume
+  // itself removes the marker entirely when deferredIds is empty, so a fully-
+  // drained sweep never leaves a stale file behind.
+  writeReconcileResume(home, repoKey, deferredIds);
+
   const out = {
     ok: allRowsOkOrBenign, action: 'reconcile', repoKey,
     count: results.length, imported, lost, rejected, results,
+    budgetMs, processed, skippedMissingWorktree, deferred: deferredIds.length,
+    elapsedMs: Date.now() - startedAt,
   };
   if (healed) out.healed = healed;
   if (namesBackfilled) out.namesBackfilled = namesBackfilled;

@@ -64,6 +64,18 @@ const { spawnSync } = require('child_process');
 
 const MAX_NAME_LEN = 40;
 
+// GIT_SPAWN_TIMEOUT_MS — Wave D9: bounds defaultRun's git spawn so a `git`
+// stuck on a stale/unmounted worktree (or a fixture dir a test suite pollutes
+// the real registry with — the exact SkyCrew defect f3c1bc827d89 root cause)
+// can never hang this call forever. `ANTIHALL_REPOKEY_GIT_TIMEOUT_MS` is a
+// TEST-ONLY override (never documented/relied on in production) so a test can
+// prove the kill-on-timeout behavior against a deliberately-hanging fake `git`
+// without waiting out the real 10s production default.
+const GIT_SPAWN_TIMEOUT_MS = (() => {
+  const n = Number(process.env.ANTIHALL_REPOKEY_GIT_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : 10000;
+})();
+
 // sanitizeRepoName(name) -> a launchd-label / systemd-unit / cron-marker /
 // filesystem-safe slug: lowercase, non `[a-z0-9-]` runs collapsed to a single
 // `-`, capped at 40 chars. The leading/trailing `-` strip runs AFTER the
@@ -90,7 +102,14 @@ function defaultRun(spec) {
   const o = spec || {};
   const args = Array.isArray(o.args) ? o.args : [];
   try {
-    const r = spawnSync('git', args, { encoding: 'utf8', cwd: o.cwd });
+    // Wave D9: a `git` subprocess stuck on a stale/unmounted worktree (or a
+    // fixture dir a test suite pollutes the real registry with — the exact
+    // SkyCrew defect f3c1bc827d89 root cause) must never hang this call
+    // forever. `timeout` makes spawnSync kill it and set `r.error`/a null
+    // `r.status`, which the existing failure check below already treats
+    // identically to any other non-zero-exit git failure — no separate
+    // timeout branch needed.
+    const r = spawnSync('git', args, { encoding: 'utf8', cwd: o.cwd, timeout: GIT_SPAWN_TIMEOUT_MS });
     if (r.error || r.status !== 0) return { ok: false, raw: '' };
     return { ok: true, raw: String(r.stdout || '') };
   } catch (_) {
@@ -255,4 +274,4 @@ function registeredRepoKey(desc, id, opts) {
   return persisted;
 }
 
-module.exports = { sanitizeRepoName, gitCommonDir, repoKeyForWorktree, winCanonicalizeCommonDir, registeredRepoKey };
+module.exports = { sanitizeRepoName, gitCommonDir, repoKeyForWorktree, winCanonicalizeCommonDir, registeredRepoKey, defaultRun, GIT_SPAWN_TIMEOUT_MS };

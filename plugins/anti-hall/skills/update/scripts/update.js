@@ -941,7 +941,16 @@ function reconcilePostUpdate(opts) {
       return { attempted: false, detail: 'not a DevSwarm session — reconcile skipped (gate closed)' };
     }
     const devswarm = o.devswarm || require(devswarmPath);
-    const { result } = devswarm.run(['reconcile'], { cwd, env, home });
+    // Wave D9: forward THIS caller's own reconcile budget (test-injectable via
+    // `o.reconcileBudgetMs`) straight through to devswarm.js's cmdReconcile —
+    // `ctx.reconcileBudgetMs` is the carrier (update.js never invokes reconcile
+    // via a shell argv, so a `--budget-ms` CLI flag would have no natural call
+    // site here). Omitted entirely when the caller didn't set one, so
+    // cmdReconcile's own default (or `ANTIHALL_RECONCILE_BUDGET_MS` in `env`)
+    // still applies unchanged — this is a pass-through, not a second default.
+    const reconcileCtx = { cwd, env, home };
+    if (o.reconcileBudgetMs !== undefined) reconcileCtx.reconcileBudgetMs = o.reconcileBudgetMs;
+    const { result } = devswarm.run(['reconcile'], reconcileCtx);
     if (!result || !result.ok) {
       // P1 fix: a reconcile that LOST messages (real shortfall — distinct
       // from a benign `locked` contention skip) must surface the loss count
@@ -2051,9 +2060,27 @@ const UNKNOWN_INSTALLED_ACTION =
  * Full update. `stop` is set (with a message) when a destructive git
  * precondition forbids continuing (dirty tree / non-fast-forward).
  */
+// stageProgress(env, name, fn) -> fn()'s return value. Wave D9: emits one
+// STDERR line before and after each post-update stage (`[update] <stage>
+// start` / `done <ms>`) so a slow stage (e.g. reconcile draining dozens of
+// stale worktrees) is visible while it runs instead of update.js printing
+// nothing until EVERY stage returns (main()'s final JSON/status line on
+// STDOUT is unchanged — no hook/test parses this session's stderr).
+// ANTIHALL_UPDATE_QUIET=1 suppresses it (e.g. for a script that captures
+// stderr for its own purposes).
+function stageProgress(env, name, fn) {
+  const quiet = !!(env && env.ANTIHALL_UPDATE_QUIET === '1');
+  if (!quiet) { try { fs.writeSync(2, '[update] ' + name + ' start\n'); } catch (_) { /* best-effort */ } }
+  const t0 = Date.now();
+  const result = fn();
+  if (!quiet) { try { fs.writeSync(2, '[update] ' + name + ' done ' + (Date.now() - t0) + 'ms\n'); } catch (_) { /* best-effort */ } }
+  return result;
+}
+
 function runUpdate(opts) {
   const { paths, exec, fsImpl } = opts;
   const e = exec || defaultExec;
+  const env = opts.env || process.env;
   const installed = resolveInstalledVersion(paths);
 
   // Git availability + cleanliness.
@@ -2157,67 +2184,70 @@ function runUpdate(opts) {
   // stranded messages are unrelated to whether the plugin itself changed
   // version this run. Fully fail-open — never affects `stop` or the update's
   // own success/failure (see reconcilePostUpdate's doc comment).
-  const reconcile = reconcilePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  const reconcile = stageProgress(env, 'reconcile', () => reconcilePostUpdate({
+    paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
+    reconcileBudgetMs: opts.reconcileBudgetMs,
+  }));
   // #70: fold prior mesh forms (phantom/dual/subdir-split) into canonical
   // survivors — after reconcile drains, so stranded messages exist to forward.
   // Same gate + fail-open posture; never affects `stop` or the update's success.
-  const fold = foldMeshPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  const fold = stageProgress(env, 'fold', () => foldMeshPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm }));
   // Spec item 5c: fold EVERY store this machine has opened, not only the cwd
   // project's — see foldAllStoresPostUpdate's doc comment. Same gate + fail-
   // open posture; never affects the update's success. Throttled + resumable +
   // one-time-per-version (spec items 1-3): shares this run's enumeration and
   // is stamped complete for `latest` once fully drained.
-  const foldAllStores = foldAllStoresPostUpdate({
+  const foldAllStores = stageProgress(env, 'fold-all-stores', () => foldAllStoresPostUpdate({
     paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
     hashes: sharedStoreHashes, version: latest,
-  });
+  }));
   // Self-heal a partition with real messages but no registry row — after fold
   // (duplicates collapse to one canonical survivor first, so an adopted orphan
   // forwards into an already-canonical group) and before foldArchivedRows. Same
   // gate + fail-open posture; never affects the update's success. Throttled +
   // resumable + one-time-per-version, sharing this run's enumeration.
-  const healOrphanPartitions = healOrphanPartitionsPostUpdate({
+  const healOrphanPartitions = stageProgress(env, 'heal-orphan-partitions', () => healOrphanPartitionsPostUpdate({
     paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
     hashes: sharedStoreHashes, version: latest,
-  });
+  }));
   // Archived-still-active migration: retire every registry row still held by a
   // GENUINELY archived workspace. Deliberately AFTER `fold` — fold first collapses
   // each worktree's duplicates into one canonical survivor, so this pass typically
   // has a single row per archived workspace to retire rather than approaching the
   // same rows from the other direction. Both are idempotent, so the ordering is a
   // work-reduction, not a correctness requirement. Same gate + fail-open posture.
-  const foldArchivedRows = foldArchivedRowsPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
+  const foldArchivedRows = stageProgress(env, 'fold-archived-rows', () => foldArchivedRowsPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm }));
   // P1-8: backfill the new `ownerKey` descriptor field + heal prior hash-bucket
   // split-brain. Same gate + fail-open posture; never affects the update's
   // success. Run-once-per-version stamped (spec item 3) — its own descriptor
   // walk (not the shared store-hash enumeration) is skipped entirely once a
   // pass for `latest` has already completed.
   // carry-out (e): forward-migrate persisted `unclaimed:<id>` session ids.
-  const promoteUnclaimed = promoteUnclaimedPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm });
-  const ownerKeyMigrate = ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest });
+  const promoteUnclaimed = stageProgress(env, 'promote-unclaimed', () => promoteUnclaimedPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm }));
+  const ownerKeyMigrate = stageProgress(env, 'owner-key-migrate', () => ownerKeyMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // Task #4: normalize parent-gate reply-state files to the append-only shape.
   // Pure per-user-file fold+rewrite; same gate + fail-open posture; never
   // affects the update's own success.
-  const replyStateMigrate = replyStateMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home });
+  const replyStateMigrate = stageProgress(env, 'reply-state-migrate', () => replyStateMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
   // devswarm-parent-gate.js stated-intent shape: normalize every gate-loop-
   // state file to carry intents/intentAcks. Same gate + fail-open posture;
   // never affects the update's own success.
-  const gateIntentsMigrate = gateIntentsMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home });
+  const gateIntentsMigrate = stageProgress(env, 'gate-intents-migrate', () => gateIntentsMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
   // Claim 3 self-heal: sweep every per-project store registry for a mis-keyed/
   // stale row via devswarm.js's healRegistry. Same gate + fail-open posture;
   // never affects the update's success. Throttled + resumable + one-time-per-
   // version (spec items 1-3): shares this run's enumeration and is stamped
   // complete for `latest` once fully drained.
-  const healRegistryRows = healRegistryPostUpdate({
+  const healRegistryRows = stageProgress(env, 'heal-registry-rows', () => healRegistryPostUpdate({
     paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm,
     hashes: sharedStoreHashes, version: latest,
-  });
+  }));
   // Monitor-based idle-wake companion: report shipped/live state + the exact
   // manual arm command. update.js is a plain Node process — it CANNOT call
   // the agent-only `Monitor` tool, so this only verifies/reports, never
   // claims to have armed anything. Same gate + fail-open posture; never
   // affects the update's success.
-  const wakeMonitor = wakeMonitorPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home });
+  const wakeMonitor = stageProgress(env, 'wake-monitor', () => wakeMonitorPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
 
   // Unknown installed version → NEVER 'already up to date'; no delta computable
   // (a null `from` would dump the entire changelog, so suppress it).

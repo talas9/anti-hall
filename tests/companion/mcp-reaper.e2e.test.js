@@ -21,12 +21,25 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
 const MOD = path.join(
   __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'mcp-reaper.js'
 );
+
+// Wave D9 hygiene fix: mcp-reaper.js's main() unconditionally mkdir+appends its
+// own bookkeeping log at `os.homedir()/.anti-hall/mcp-reaper.log` (independent
+// of MCP_REAP_DRYRUN, which only gates the kill action, not this logging) — so
+// every runReaper() call below used to write into the developer's REAL
+// ~/.anti-hall on every test run. A single per-process tmp HOME, threaded into
+// every spawned reaper's env, keeps that bookkeeping confined to a throwaway
+// dir without touching the reaper's actual subject (real `ps` output / real
+// signals), which never depends on HOME.
+const FIXTURE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-mcp-reaper-e2e-'));
+process.on('exit', () => { try { fs.rmSync(FIXTURE_HOME, { recursive: true, force: true }); } catch (_e) { /* best-effort */ } });
 
 // Unique, deterministic marker (no Math.random/Date.now): pid + incrementing int.
 let MARKER_SEQ = 0;
@@ -60,7 +73,7 @@ function ppidOf(pid) {
 function runReaper(env) {
   return spawnSync(process.execPath, [MOD], {
     encoding: 'utf8',
-    env: { ...process.env, ...env },
+    env: { ...process.env, HOME: FIXTURE_HOME, USERPROFILE: FIXTURE_HOME, ...env },
     timeout: 12000,
   });
 }

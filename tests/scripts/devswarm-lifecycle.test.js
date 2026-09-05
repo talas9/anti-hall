@@ -276,9 +276,14 @@ test('reconcile spawns a REAL subprocess per worktree (default path, no injectio
     // load` a KeepAlive LaunchAgent whose WorkingDirectory is `repo` — a tmp
     // dir the finally block deletes, leaving launchd crash-looping it forever.
     // The flag no-ops the installer without weakening the plumbing assertions.
+    // HOME/USERPROFILE override (Wave D9 hygiene fix): without this, a real
+    // subprocess spawned deep in this chain (e.g. `install-devswarm-ingest.js`'s
+    // self-heal spawn, or anti-hall-log.js's os.homedir()-based logger) resolves
+    // its home via the REAL process HOME rather than this test's tmp `home` —
+    // leaking log/registry writes into the developer's actual ~/.anti-hall.
     const r = cli.run(['reconcile'], ctx(home, {
       cwd: repo,
-      env: { ...process.env, ANTIHALL_INGEST_DRY_RUN: '1' },
+      env: { ...process.env, ANTIHALL_INGEST_DRY_RUN: '1', HOME: home, USERPROFILE: home },
     }));
     assert.equal(r.result.ok, true, 'a hivecontrol-absent target is a benign skip, not a reconcile failure — ' + JSON.stringify(r.result));
     assert.equal(r.result.count, 1);

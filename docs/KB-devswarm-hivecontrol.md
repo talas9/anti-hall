@@ -2960,3 +2960,29 @@ it can never be the rendered `from`, and its reply records can never clear the q
 that exclusion leaves nothing live, the stored sender id is kept verbatim — the question stays
 listed under its raw origin rather than being re-attributed to its own recipient. A sender
 matching no registry row at all is still dropped (the permanent-deadlock rule, unchanged).
+
+## §38 — Leaked test-fixture stores (defect f3c1bc827d89)
+
+A test suite that spawns a real subprocess with `env: { ...process.env }` and no `HOME`/
+`USERPROFILE` override leaks that subprocess's filesystem writes into the developer's REAL
+`~/.anti-hall` instead of the test's own isolated tmp fixture home. Confirmed on the maintainer
+machine as 88 fixture `store/<repoKey>/` directories under the real home, each holding exactly
+one registry row whose `worktreePath` pointed at a since-deleted tmp dir. `tests/hygiene/
+no-real-home-spawn.test.js` now lints every `tests/**/*.test.js` file for this exact pattern
+(a `spawn`/`spawnSync`/`execFile(Sync)`/`fork` env spreading `process.env` with no HOME
+override) so new instances fail CI instead of silently leaking.
+
+`doctor --check` additionally runs `checkLeakedTestFixtureStores` (`hooks/lib/doctor-repair.js`)
+as a report-only pass: it enumerates every per-project store under the home, and flags one
+whose registry holds **exactly one row** (a real project accumulates many; a fixture seeds
+exactly the one it needed) with a `worktreePath` textually under a known tmp-dir prefix
+(`os.tmpdir()`, `/private/var/folders/`, `/var/folders/`, or `/tmp/`) that **no longer exists on
+disk** (the leaking test's own cleanup already removed it — a live tmp-rooted project is never
+flagged). The warning line reports a count and up to 5 examples.
+
+**No deletion path exists for this anywhere** — not in `doctor --check`, not in `doctor --fix`,
+per this project's hard no-automated-deletion rule. If `doctor` reports leaked fixture stores,
+the OWNER decides whether to clean them up, after inspecting the listed examples: back up first
+if unsure, then remove only the specific flagged `store/<repoKey>/` directories, e.g.
+`rm -rf ~/.anti-hall/devswarm/store/<repoKey>` for each hash `doctor` printed — never a blanket
+sweep of the whole `store/` directory, which would also remove real, live projects' data.

@@ -963,6 +963,24 @@ if (RECLAIM_INGEST_LOCK) {
   warnl(result.message);
 })();
 
+// --- 6l. leaked test-fixture stores (REPORT-ONLY, CONDITIONAL, check mode
+// included) --------------------------------------------------------------------
+// See doctor-repair.js's checkLeakedTestFixtureStores for the full rationale
+// (defect f3c1bc827d89: a test suite spawning a real subprocess with
+// `env: {...process.env}` and no HOME override leaks a fixture registry row
+// into the real ~/.anti-hall/devswarm/store/). Delegated to that ONE helper
+// (fully defensive + fail-open there) so this call site can never crash
+// doctor.js; stays SILENT (no section at all) when nothing is flagged.
+// Report-only: NO deletion path here, in repair mode, or anywhere else for
+// this — never touches pass/fail, same posture as the two sections above.
+(function leakedTestFixtureStoresSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkLeakedTestFixtureStores({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('leaked test-fixture stores');
+  warnl(result.message);
+})();
+
 // --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')

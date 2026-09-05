@@ -355,10 +355,16 @@ test('REAL WIRING: an unmocked reconcile call against a real registered descript
     // LaunchAgent pointed at `repo` — a tmp dir this test's finally block then
     // deletes, leaving launchd crash-looping the dead job forever. The flag
     // makes that installer a no-op; the spawn plumbing under test is unchanged.
+    // HOME/USERPROFILE override (Wave D9 hygiene fix, matches the pattern at
+    // this file's own main()-as-entry-script tests below): without it, a real
+    // subprocess spawned deep in this chain (install-devswarm-ingest.js's
+    // self-heal spawn, or anti-hall-log.js's os.homedir()-based logger)
+    // resolves its home via the REAL process HOME instead of this fixture's
+    // `home`, leaking log/registry writes into the developer's real ~/.anti-hall.
     const res = M.reconcileSweepIfDue({
       home,
       cooldownMs: 0,
-      env: { ...process.env, ANTIHALL_INGEST_DRY_RUN: '1' },
+      env: { ...process.env, ANTIHALL_INGEST_DRY_RUN: '1', HOME: home, USERPROFILE: home },
     }); // no deps injected at all
     assert.strictEqual(res.ran, true);
     assert.strictEqual(res.results.length, 1);
@@ -403,10 +409,12 @@ test('REAL LOCK REUSE: the reconcile sweep observes the SAME per-id O_EXCL pull 
       // Same env posture as the WIRING test above — full process.env copy plus
       // ANTIHALL_INGEST_DRY_RUN=1 so the grandchild installer cannot register a
       // real launchd job against this tmp fixture. See that test's note.
+      // HOME/USERPROFILE override — same Wave D9 hygiene fix as the WIRING
+      // test above.
       const res = M.reconcileSweepIfDue({
         home,
         cooldownMs: 0,
-        env: { ...process.env, ANTIHALL_INGEST_DRY_RUN: '1' },
+        env: { ...process.env, ANTIHALL_INGEST_DRY_RUN: '1', HOME: home, USERPROFILE: home },
       }); // fully real, no deps injected
       assert.strictEqual(res.ran, true);
       const r = res.results[0].result;

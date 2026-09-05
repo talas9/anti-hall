@@ -2897,3 +2897,67 @@ test('defaultExec (git step): the reduced timeout does not change the fail-open 
   assert.strictEqual(st.ok, false);
   assert.ok(st.reason, 'still reports a reason (fail-open), unaffected by the timeout reduction');
 });
+
+// ---------------------------------------------------------------------------
+// Wave D9: per-stage STDERR progress lines (root cause: update.js printed
+// nothing until EVERY post-update stage returned, so a slow reconcile sweep
+// looked hung with zero output — see reconcileBudgetMs/cmdReconcile tests in
+// tests/scripts/devswarm-reconcile-budget.test.js for the underlying fix).
+// `fs.writeSync` is monkey-patched for the duration of each test (the SAME
+// `fs` module singleton update.js itself requires — Node's require cache
+// guarantees identity) to capture fd===2 writes without spawning a real
+// subprocess; STDOUT (fd 1, the final JSON/status contract) is left
+// completely alone and unasserted here, matching the "stdout contract
+// unchanged" requirement.
+// ---------------------------------------------------------------------------
+function captureFd2(fn) {
+  const real = fs.writeSync;
+  const lines = [];
+  fs.writeSync = function (fd, data, ...rest) {
+    if (fd === 2) { lines.push(String(data)); return Buffer.byteLength(String(data)); }
+    return real.call(fs, fd, data, ...rest);
+  };
+  try {
+    fn();
+  } finally {
+    fs.writeSync = real;
+  }
+  return lines;
+}
+
+test('runUpdate: emits [update] <stage> start/done STDERR lines for every post-update stage by default', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const lines = captureFd2(() => {
+      const { stop } = U.runUpdate({ paths: p, exec, env: {} });
+      assert.strictEqual(stop, false);
+    });
+    assert.ok(lines.some((l) => l === '[update] reconcile start\n'), 'must emit a start line for the reconcile stage:\n' + lines.join(''));
+    assert.ok(lines.some((l) => /^\[update\] reconcile done \d+ms\n$/.test(l)), 'must emit a done line with an elapsed-ms suffix:\n' + lines.join(''));
+    assert.ok(lines.some((l) => l === '[update] fold start\n'), 'must also cover a later stage (fold), not just the first one:\n' + lines.join(''));
+    assert.ok(lines.some((l) => l === '[update] wake-monitor start\n'), 'must reach the LAST stage too:\n' + lines.join(''));
+  } finally { t.cleanup(); }
+});
+
+test('runUpdate: ANTIHALL_UPDATE_QUIET=1 suppresses every [update] stage STDERR line', () => {
+  const t = makeTree();
+  try {
+    writePluginJson(t.marketplaceDir, '0.33.0');
+    writeChangelog(t.marketplaceDir, SAMPLE_CHANGELOG);
+    writeInstalled(t.root, '0.32.1');
+    const p = pathsFor(t);
+    fs.mkdirSync(p.cacheRoot, { recursive: true });
+    const exec = execStub({ status: '', pull: 'Updating...\n' });
+    const lines = captureFd2(() => {
+      const { stop } = U.runUpdate({ paths: p, exec, env: { ANTIHALL_UPDATE_QUIET: '1' } });
+      assert.strictEqual(stop, false);
+    });
+    assert.deepStrictEqual(lines, [], 'ANTIHALL_UPDATE_QUIET=1 must suppress every stage line:\n' + lines.join(''));
+  } finally { t.cleanup(); }
+});

@@ -1815,6 +1815,87 @@ function checkOrphanedMcpUnderBroker(opts) {
 }
 
 // ---------------------------------------------------------------------------
+// checkLeakedTestFixtureStores(opts) -> {atRisk, count, examples, message} | null.
+// Wave D9, defect f3c1bc827d89: a test suite that spawns a real subprocess
+// with `env: {...process.env}` and NO HOME/USERPROFILE override (see
+// tests/hygiene/no-real-home-spawn.test.js for the general lint that now
+// catches this at the source) leaks a fixture registry row into the
+// DEVELOPER'S REAL `~/.anti-hall/devswarm/store/<repoKey>/` — confirmed on
+// this machine as 88 such per-project store dirs, each holding exactly one row
+// whose `worktreePath` pointed at a tmp dir the test long since deleted.
+//
+// DETECT-AND-REPORT ONLY, check mode included — per this project's hard rule
+// (CLAUDE.md), NO automated deletion path exists here or anywhere else for
+// this: a store dir flagged here is never touched, repaired, or removed by
+// this function or by doctor's --fix pass. It only counts + samples so a human
+// can decide (see docs/KB-devswarm-hivecontrol.md §38 for the manual cleanup
+// command an OWNER can run after inspecting the listed examples).
+//
+// A store dir qualifies as a likely leaked test fixture when its registry has
+// EXACTLY ONE row (a real project's store accumulates many rows over time;
+// a fixture seeds exactly the one row the test needed) whose `worktreePath`
+// is textually under a known tmp-dir prefix (os.tmpdir(), or the macOS-
+// specific `/private/var/folders/`/`/var/folders/` real path a mkdtemp'd dir
+// often canonicalizes to, or a bare `/tmp/`) AND no longer exists on disk
+// (the test's own cleanup already removed it — a live worktree under a tmp
+// prefix, e.g. a deliberately tmp-rooted real project, is NOT flagged).
+//
+// Fully defensive: any missing store module, unreadable store root, or a
+// per-store read/open error is skipped (never thrown) — same fail-open
+// posture as every other check in this file. `storeModPath`/`home` are
+// injectable for tests only.
+function checkLeakedTestFixtureStores(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  let storeMod;
+  try { storeMod = require(o.storeModPath || DEVSWARM_STORE); } catch (_) { return null; }
+  if (typeof storeMod.listStoreHashes !== 'function' || typeof storeMod.openStore !== 'function') return null;
+
+  let hashes = [];
+  try { hashes = storeMod.listStoreHashes(home) || []; } catch (_) { return null; }
+  if (!hashes.length) return null;
+
+  const tmpDir = os.tmpdir();
+  function looksLikeTmpFixturePath(p) {
+    if (typeof p !== 'string' || !p) return false;
+    return p.startsWith(tmpDir)
+      || p.startsWith('/private/var/folders/')
+      || p.startsWith('/var/folders/')
+      || p.startsWith('/tmp/');
+  }
+
+  const examples = [];
+  let count = 0;
+  for (const hash of hashes) {
+    let registry = null;
+    let s = null;
+    try {
+      s = storeMod.openStore({ home, hash, backend: o.backend, env: o.env });
+      registry = s.listRegistry();
+    } catch (_) { registry = null; } finally {
+      if (s) { try { s.close(); } catch (_) { /* best-effort */ } }
+    }
+    if (!Array.isArray(registry) || registry.length !== 1) continue;
+    const row = registry[0];
+    const wt = row && row.worktreePath;
+    if (!looksLikeTmpFixturePath(wt)) continue;
+    let exists = true;
+    try { exists = fs.existsSync(wt); } catch (_) { exists = true; }
+    if (exists) continue; // a genuinely live tmp-rooted project — not a leak
+    count++;
+    if (examples.length < 5) examples.push({ hash, worktreePath: wt });
+  }
+  if (count === 0) return null;
+
+  const shown = examples.map((e) => `${e.hash} -> ${e.worktreePath}`).join(', ');
+  const more = count > examples.length ? `, +${count - examples.length} more` : '';
+  const message =
+    `(warn) leaked test-fixture stores: ${count} (repair does not delete; see docs). ` +
+    `Examples: ${shown}${more}.`;
+  return { atRisk: true, count, examples, message };
+}
+
+// ---------------------------------------------------------------------------
 // sweepStaleDrainMarkers({home, mode, io}) -> array of result rows.
 //
 // R11 Auditor Q5 (P1): devswarm-parent-gate.js's Stop-hook consumer only ever
@@ -2181,6 +2262,8 @@ module.exports = {
   checkMemguardReaperRisk,
   // broker-parented MCP-orphan-leak surfacing (report-only, defensive; defect bfa063ab8e3f):
   checkOrphanedMcpUnderBroker,
+  // Wave D9 — leaked test-fixture store detection (report-only, NO deletion path; defect f3c1bc827d89):
+  checkLeakedTestFixtureStores,
   // v0.66 — "alive but ingesting nothing" (monitor-outcome) detection:
   monitorFaultFor, monitorFaultReason,
   MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS,
