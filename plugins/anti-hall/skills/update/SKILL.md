@@ -34,6 +34,13 @@ Pure Node ≥ 22 built-ins, cross-platform (Windows included), fail-open
 the only filesystem mutation is copying the clone's `plugins/anti-hall/` into a **new**
 `cache/.../<newver>/` dir (it never deletes or overwrites another version dir).
 
+**(v0.94.0)** The stdout contract (the JSON status line + human summary) is unchanged, but
+`update.js` now also prints a `[update] <stage> start` / `done <ms>ms` line to **stderr**
+around each post-update stage (reconcile, fold, migrations, ...) so a slow stage is visible
+while it runs instead of the script staying silent until every stage returns. Set
+`ANTIHALL_UPDATE_QUIET=1` to suppress these lines (e.g. for a caller that captures stderr for
+its own purposes).
+
 1. Resolve paths (`ANTIHALL_MARKETPLACE_DIR` overrides the clone path for tests).
 2. Read the INSTALLED version: `installed_plugins.json` → newest cache dir → clone
    `plugin.json` (first that resolves wins).

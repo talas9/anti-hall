@@ -716,6 +716,20 @@ from the recipient itself (or a cross-linked twin) could wrongly clear someone e
 question. **Contract change:** `pendingQuestions[].from` is now the true sender's
 identity-family id instead of the freshest live row on the worktree.
 
+**v0.94.0 deterministic attribution + bounded reconcile.** When a worktree's meshId maps to
+more than one sibling registry row, `pendingQuestions[].from` is now picked by a new pure,
+liveness-free function of row values (`devswarm-attribution.js`'s `pickAttributionRow`:
+real-sessionId row wins, then the branch-slug row, then ascending lexical id) instead of the
+freshest-live picker used elsewhere — closing a bug where the same stored message could
+report a different sender across summary passes. `reconcile` now bounds itself to a total
+wall-clock budget (60s default, `ANTIHALL_RECONCILE_BUDGET_MS`, `0` = unlimited), skips a
+row whose worktree is already gone before spawning, and defers whatever is left when the
+budget runs out to a resume marker drained first next run. `update.js` prints per-stage
+progress on stderr (`ANTIHALL_UPDATE_QUIET=1` silences it); its `devswarm-repokey.js` git
+spawn now times out at 10s instead of hanging (this was the actual root cause of a real
+update hang traced to a stray test-fixture worktree). `doctor --check` reports (never
+deletes) leaked test-fixture stores, and a new hygiene test lints for the leak pattern.
+
 ---
 
 ## Requirements

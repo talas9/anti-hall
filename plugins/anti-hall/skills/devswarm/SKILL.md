@@ -167,6 +167,23 @@ absent (a legacy summary). A blocking question is downgraded to **informational-
 counted as blocking, never auto-cleared) ONLY when its sender matches no registry row of any
 kind — active or archived — and has no descriptor either; anything less still blocks.
 
+**(v0.94.0) Deterministic sender attribution.** `pendingQuestions[].from` is now resolved by
+`companion/lib/devswarm-attribution.js`'s `pickAttributionRow`, a pure function of row VALUES
+— never of which sibling row is "live right now" — when a worktree's meshId maps to more than
+one registry row (a branch-slug row and a sub-agent row on the same path, say). It prefers a
+row with a real (non-`unclaimed:`) `sessionId`, then the row whose `id` starts with
+`basename(worktreePath) + '-'` (the branch-slug row), then ascending lexical `id` as the final
+tiebreak — closing a bug (f3b8f326bfc3) where the old liveness-based picker could report a
+different sender for the SAME stored message across passes. Full rule and field case:
+`docs/KB-devswarm-hivecontrol.md` §39.
+
+**(v0.94.0) Bounded reconcile.** `reconcile` now applies a total wall-clock budget across all
+its per-row drains — `ANTIHALL_RECONCILE_BUDGET_MS` (default `60000`; `0` = unlimited) or
+`--budget-ms` on a direct CLI call — so a large stranded backlog can no longer hang `update`
+indefinitely (defect f3c1bc827d89). A row whose worktree no longer exists on disk is skipped
+before it costs any budget; whatever is still deferred when the budget runs out is written to
+a resume marker and drained FIRST on the next sweep.
+
 ## Blocking questions — CHILD asks, PARENT answers (never child → human)
 
 A gap the mesh above doesn't close by itself: nothing so far tells a CHILD what to DO
@@ -960,7 +977,11 @@ supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supe
   tier ABOVE subagent/Explore/Workflow and carries the choice rule. Outside DevSwarm (and in
   a child workspace) its Workflow-tool + subagent fan-out is unchanged.
 - **doctor** — surfaces the liveness supervisor's per-workspace health as one more
-  section, silent when DevSwarm isn't in play.
+  section, silent when DevSwarm isn't in play. **(v0.94.0)** `doctor --check` also runs a
+  report-only §6l pass that flags a per-project store whose registry holds exactly one row
+  pointed at a since-deleted tmp-dir path — the shape a test-suite subprocess leaks when it
+  spawns with a full `process.env` copy and no HOME override (defect f3c1bc827d89). Never
+  deletes anything; the owner decides on cleanup after reviewing the printed examples.
 - **update** — autonomously installs/refreshes the automatic supervisor AND (as of
   0.54.1) the ingest daemon when running inside an active DevSwarm session (see the
   activation checklist above).

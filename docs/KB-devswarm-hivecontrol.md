@@ -2986,3 +2986,45 @@ the OWNER decides whether to clean them up, after inspecting the listed examples
 if unsure, then remove only the specific flagged `store/<repoKey>/` directories, e.g.
 `rm -rf ~/.anti-hall/devswarm/store/<repoKey>` for each hash `doctor` printed — never a blanket
 sweep of the whole `store/` directory, which would also remove real, live projects' data.
+
+## §39 — Sender attribution
+
+`pendingQuestions[].from` is resolved by `devswarm-store.js`'s `resolveSenderRegistryId`.
+Its final leg (leg C, when a worktree's meshId maps to more than one sibling registry
+row — e.g. a branch-slug row and a sub-agent row on the same worktree) used to delegate to
+`devswarm-liveness-select.js`'s `pickFreshestLive`. That picker ranks on PRESENT-TENSE
+signals (`updatedAt`, cursor drain, heartbeat freshness) — signals that flip across
+successive `computeSummary` passes as the sibling rows heartbeat/drain independently, so the
+SAME stored message could report a different `from` on consecutive reads (defect
+f3b8f326bfc3: a phantom "unanswered question" traced to exactly this flip, not to a stale
+`needs_reply` row).
+
+`companion/lib/devswarm-attribution.js`'s `pickAttributionRow(rows)` replaces that leg with a
+picker that is a pure function of row VALUES, never of "which row is live right now":
+
+1. **A real `sessionId` wins.** A row whose `sessionId` is a non-empty, non-`unclaimed:`
+   string (`isLiveSessionId`'s field-shape check, reused from the liveness module — no
+   fs/liveness read) beats one that is not.
+2. **C2 — the branch-slug row wins the remaining tie.** A row whose `id` starts with
+   `basename(worktreePath) + '-'` beats a sub-agent row on the same worktree. Trailing path
+   separators (`/` or `\`) on `worktreePath` are stripped before `basename()`, so
+   `/wt/x/` and `/wt/x` rank identically. This is a pure string-prefix rule on the row `id`
+   with NO row-provenance check — it does not verify the row actually originated from that
+   worktree — which is acceptable because every candidate row is already a valid `send --to`
+   target for the same meshId, and attribution clears the whole family, not one row.
+3. **D — ascending lexical `id`** is the final, always-available tiebreak (same convention
+   `pickDeterministicFallback` uses elsewhere).
+
+Liveness is deliberately excluded from all three legs: shuffling the candidate rows can never
+change the winner, and the SAME stored message always attributes to the SAME sender across
+passes. Routing/fold call sites — `resolveMeshTarget`, `pickSurvivor`, the orphan policy in
+`scripts/devswarm.js` — are untouched and keep using `pickFreshestLive`; attribution and
+routing are different questions (who sent this vs. which partition is currently live) and
+must not share a picker.
+
+**Field case that motivated this:** two sibling rows registered on one worktree — one from
+`register-primary` (branch-slug `id`), one from a sub-agent's `ensure` — with `updatedAt`
+flipping which was "freshest" across two consecutive summary computations, so the same
+pending question rendered `from` as first one sibling, then the other, on unchanged stored
+data. `pickAttributionRow` resolves both passes to the same row (the branch-slug row, via C2)
+regardless of which sibling most recently heartbeat.

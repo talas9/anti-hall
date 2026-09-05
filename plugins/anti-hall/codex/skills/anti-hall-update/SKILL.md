@@ -93,6 +93,16 @@ Gate-closed or an internal error are both reported and NEVER fatal to the update
 manual verb (`node scripts/devswarm.js reconcile`) stays available for an on-demand sweep
 outside an update.
 
+**(v0.94.0) Bounded reconcile.** `reconcile` now applies a total wall-clock budget across all
+its per-row drains — `ANTIHALL_RECONCILE_BUDGET_MS` (default `60000`; `0` = unlimited) or
+`--budget-ms` on a direct CLI call — so a large stranded backlog can no longer hang `update`
+indefinitely (defect f3c1bc827d89). A row whose worktree no longer exists on disk is skipped
+before it costs any budget; whatever is still deferred when the budget runs out is written to
+a resume marker and drained FIRST on the next sweep. Separately, `update.js`'s stdout contract
+(the JSON status line + human summary) is unchanged, but it now also prints a `[update]
+<stage> start` / `done <ms>ms` line to **stderr** around each post-update stage so a slow
+stage is visible while it runs; `ANTIHALL_UPDATE_QUIET=1` suppresses these lines.
+
 After a successful update, also run the capability scan to find what's missing on this machine vs what this build ships:
 
 ```bash

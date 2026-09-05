@@ -11,7 +11,7 @@ Every behavioral or shipped-content change bumps the version and follows this ch
    - [ ] `plugins/anti-hall/README.md` — features table, Stop-hook count, escape hatch, etc.
    - [ ] `llms.txt` — hooks list, skills, disciplines, docs list.
    - [ ] relevant `docs/*.md` (and `docs/KB.md` topic map).
-4. - [ ] Verify: `node --test` (all pass) and `node plugins/anti-hall/hooks/doctor.js` (anti-hall ACTIVE). Never claim done without these THIS change.
+4. - [ ] Verify: `node --test` (all pass) and `node plugins/anti-hall/hooks/doctor.js --check` (anti-hall ACTIVE). Never claim done without these THIS change.
 5. - [ ] Commit (NO AI-credit / Co-Authored-By trailer — git-guard blocks them).
 6. - [ ] `git push origin main`.
 7. - [ ] TAG (manual, by agent): `git tag v<version>` then `git push origin v<version>`. Optionally create a GitHub Release from the tag with that version's CHANGELOG section.
