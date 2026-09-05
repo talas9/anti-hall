@@ -678,24 +678,25 @@ function reconcileSweepIfDue(opts) {
       return devswarmCli.foldMeshDuplicates(home, { repoKey, env });
     };
 
-    // runArchivedList(worktreePath) — APP-SIDE ARCHIVE PROBE (field: the owner
-    // archived children in the DevSwarm app; nothing on anti-hall's side ever
-    // learned, so those rows kept rendering as escalated/not-draining). ONE
-    // bounded, read-only `hivecontrol workspace list all` per target, riding
+    // runActiveList(worktreePath) — APP-SIDE ARCHIVE PROBE, BY ABSENCE (field:
+    // the owner archived children in the DevSwarm app; nothing on anti-hall's
+    // side ever learned, so those rows kept rendering as escalated/not-draining).
+    // ONE bounded, read-only `hivecontrol workspace list all` per target, riding
     // INSIDE this same cooldown-gated, sweep-locked pass — no new scheduler, no
     // new lock, and NO reader ever spawns hivecontrol (see
-    // companion/lib/devswarm-archived-cache.js's header). LAZY require for the
-    // same circular-require reason as runReconcile/runFold above.
-    const runArchivedList = deps.runArchivedList || function (worktreePath) {
+    // companion/lib/devswarm-archived-cache.js's header). It caches the ACTIVE
+    // set; "archived" is derived from absence at READ time under that lib's four
+    // conjuncts. LAZY require for the same circular-require reason as
+    // runReconcile/runFold above.
+    const runActiveList = deps.runActiveList || function (worktreePath) {
       const devswarmCli = require('../scripts/devswarm.js');
-      return devswarmCli.fetchArchivedWorkspaceIds({ home, env, cwd: worktreePath });
+      return devswarmCli.fetchActiveWorkspaceRecords({ home, env, cwd: worktreePath });
     };
 
     const results = [];
     let anyLost = false;
-    const archivedByRepoKey = {};
-    let archivedField = null;
-    let noArchivedField = null;
+    const activeByRepoKey = {};
+    let activeProbeFailure = null;
     for (const t of targets) {
       let result = null;
       try {
@@ -712,38 +713,46 @@ function reconcileSweepIfDue(opts) {
       }
       // Best-effort, per target. A probe failure NEVER contributes an entry —
       // "no data for this project" means no suppression, the fail-open
-      // direction. `no-archived-field` is remembered so it can be logged ONCE
-      // per sweep (not once per project) instead of writing a guessed mapping.
-      let archived = null;
+      // direction. THE THREE ADMISSION CONDITIONS, all required: the call
+      // exited ok, it parsed as an array, and it carried AT LEAST ONE record.
+      // The last one matters under absence semantics in a way it did not under
+      // the old flag design: a zero-record answer (an empty array, or a CLI
+      // error such as "Repository not found" surfaced as an empty body) would
+      // otherwise be cached as "this project has no live workspaces" and
+      // archive EVERY row in it. fetchActiveWorkspaceRecords reports that case
+      // as `hivecontrol-empty-list` rather than ok, so it is refused here, and
+      // writeActiveCache refuses it a second time independently.
+      // The first failure is remembered so it can be logged ONCE per sweep
+      // (not once per project).
+      let active = null;
       try {
-        archived = runArchivedList(t.worktreePath);
+        active = runActiveList(t.worktreePath);
       } catch (e) {
-        archived = { ok: false, reason: 'probe-threw', error: String(e && e.message || e) };
+        active = { ok: false, reason: 'probe-threw', error: String(e && e.message || e) };
       }
-      if (archived && archived.ok && Array.isArray(archived.ids)) {
-        archivedByRepoKey[t.repoKey] = archived.ids;
-        if (archived.field && !archivedField) archivedField = archived.field;
-      } else if (archived && archived.reason === 'no-archived-field' && !noArchivedField) {
-        noArchivedField = archived;
+      if (active && active.ok && Array.isArray(active.records) && active.records.length) {
+        activeByRepoKey[t.repoKey] = active.records;
+      } else if (active && !active.ok && !activeProbeFailure) {
+        activeProbeFailure = { repoKey: t.repoKey, reason: active.reason || 'unknown', rawKeys: active.rawKeys || [] };
       }
-      results.push({ repoKey: t.repoKey, worktreePath: t.worktreePath, result, fold, archived });
+      results.push({ repoKey: t.repoKey, worktreePath: t.worktreePath, result, fold, active });
     }
 
-    // Write the cache only when at least one target actually reported. An empty
-    // write would stamp a FRESH fetchedAt over a file with nothing in it, which
-    // is harmless but pointless; skipping it also means a sweep where every
-    // probe failed leaves the previous (soon-to-expire) snapshot to age out on
-    // its own rather than being replaced by an empty one.
-    if (Object.keys(archivedByRepoKey).length) {
+    // Write the cache only when at least one target actually reported records.
+    // Under absence semantics an empty write is NOT harmless — it would stamp a
+    // FRESH fetchedAt on a snapshot asserting that nothing is live. Skipping it
+    // leaves the previous (soon-to-expire) snapshot to age out on its own, which
+    // ends in "no suppression", the fail-open direction.
+    if (Object.keys(activeByRepoKey).length) {
       try {
-        (deps.writeArchivedCache || archivedCache.writeArchivedCache)({ home, byRepoKey: archivedByRepoKey, now, fsi: F });
+        (deps.writeActiveCache || archivedCache.writeActiveCache)({ home, byRepoKey: activeByRepoKey, now, fsi: F });
       } catch (_) { /* cache write must never break the sweep */ }
     }
-    if (noArchivedField) {
+    if (activeProbeFailure) {
       try {
-        alog.logEvent('devswarm-supervisor', 'archived-probe', 'info',
-          'hivecontrol workspace records carry none of the pinned archived fields — app-side archive detection is OFF (nothing written, no mapping guessed)',
-          { rawKeys: noArchivedField.rawKeys || [] });
+        alog.logEvent('devswarm-supervisor', 'active-probe', 'info',
+          'hivecontrol workspace list returned no usable records — app-side archive detection is OFF this cycle (nothing written, nothing suppressed)',
+          activeProbeFailure);
       } catch (_) { /* logging must never break the sweep */ }
     }
 
@@ -759,11 +768,15 @@ function reconcileSweepIfDue(opts) {
     } catch (_) { /* logging must never break the sweep */ }
 
     return { ran: true, projects: targets.length, skipped: projects.length - targets.length, results,
-      // archivedField: WHICH pinned hivecontrol field this machine actually
-      // carries (null = none seen / no probe succeeded). Report-only, but the
-      // one datum that lets a future pass confirm the shape from a real install
-      // instead of re-deriving the candidate list.
-      archivedField };
+      // activeProbe: report-only provenance for the app-side archive probe —
+      // which projects contributed an active snapshot this tick, and the FIRST
+      // failure reason if any probe came back unusable. There is no field to
+      // report any more (archive is derived from absence, not a flag), so this
+      // replaces the old `archivedField`.
+      activeProbe: {
+        repoKeys: Object.keys(activeByRepoKey),
+        failure: activeProbeFailure,
+      } };
   } catch (e) {
     return { ran: false, error: String(e && e.message || e) };
   }

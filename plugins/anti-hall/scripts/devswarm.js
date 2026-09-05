@@ -164,7 +164,7 @@ const inboxCursor = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
 // APP-SIDE archive cache (read side; the WRITE side is the supervisor sweep,
-// fed by fetchArchivedWorkspaceIds below). Leaf module — no cycle.
+// fed by fetchActiveWorkspaceRecords below). Leaf module — no cycle.
 const archivedCacheLib = require('../companion/lib/devswarm-archived-cache.js');
 const {
   isSafeId, devswarmRoot, livenessPathFor,
@@ -9024,49 +9024,38 @@ function fetchNativeChildren(ctx) {
   }
 }
 
-// ===== APP-SIDE ARCHIVE PROBE (field: owner archived children in the app) ===
+// ===== APP-SIDE ARCHIVE PROBE, BY ABSENCE (owner archived children in the app)
 // `hivecontrol workspace list all` is the app's OWN view of which workspaces it
 // still considers live. anti-hall never read it, so a workspace the owner
 // archived IN THE APP kept rendering as escalated/stale here (nothing writes
 // anti-hall's own `archived/<id>.json` in that flow — see
 // companion/lib/devswarm-archived-cache.js's header).
 //
-// SHAPE PINNING, same discipline as cmdReconcileRegistry above: the archived
-// field is NOT pinned in docs/KB-devswarm-hivecontrol.md, so this probe does not
-// guess. It looks for ONE of a small, provenance-documented candidate set as an
-// OWN key on the returned records, and if NONE of them is present it returns
-// `no-archived-field` (with the keys actually seen) so the caller can write
-// nothing and log once, rather than inventing a mapping.
-//
-// Candidate provenance (in probe order):
-//   `archived` / `isArchived` — hivecontrol's own archive vocabulary, the shape
-//       a boolean flag would take on these records.
-//   `status` === 'archived' — the exact enum `hivecontrol workspace search
-//       --status <active|archived|any>` uses (KB §"search (hidden)").
-//   `isHidden` / `isActive` — the app's OWN SQLite columns for this fact,
-//       live-verified in KB §20: `isActive` is "perfectly anti-correlated with
-//       isHidden" and means EXACTLY "not archived" (82 rows isActive=0/
-//       isHidden=1 = archived). §20 falsified these as a LIVENESS signal, which
-//       is a different axis; it explicitly affirmed their archived meaning.
-const HIVECONTROL_ARCHIVED_FIELDS = ['archived', 'isArchived', 'status', 'isHidden', 'isActive'];
+// NO FIELD TO PIN — THIS IS A MEMBERSHIP QUERY. An earlier revision probed for an
+// `archived`/`isArchived`/`status`/`isHidden`/`isActive` field on the records.
+// MEASURED against the installed CLI (hivecontrol 2.5.1), every record carries
+// EXACTLY {id, branch, sourceBranch, repositoryId, label, aiAgent, worktreePath,
+// createdAt} and the subcommand accepts no filter flags, so that probe could
+// never write an entry. What the list expresses is membership: an archived
+// workspace stops being listed. This function therefore returns the ACTIVE set
+// verbatim and the ABSENCE rule lives in the cache lib, where the freshness,
+// repos-root and grace conjuncts that make absence safe live with it.
 
-// archivedFlagFor(rec, field) -> true | false. Reads ONE pinned field. An
-// absent/unusable value reads FALSE (not archived) — the fail-open direction:
-// a row we cannot classify is never suppressed.
-function archivedFlagFor(rec, field) {
-  const v = rec ? rec[field] : undefined;
-  if (field === 'status') return typeof v === 'string' && v.trim().toLowerCase() === 'archived';
-  if (field === 'isActive') return v === false || v === 0; // inverted: not-active == archived
-  return v === true || v === 1;
-}
-
-// fetchArchivedWorkspaceIds(ctx) ->
-//   { ok:true, field, ids:[...], records } | { ok:false, reason, rawKeys? }
+// fetchActiveWorkspaceRecords(ctx) ->
+//   { ok:true, records:[{id, worktreePath}], count } | { ok:false, reason, rawKeys? }
 // ONE bounded, read-only `hivecontrol workspace list all` spawn (the same verb,
 // timeout and injectable io.run posture as fetchTrustedRepositoryId /
 // cmdReconcileRegistry). Never throws. Called ONLY from the supervisor's
 // cooldown-gated reconcile sweep — never from a hook or any every-turn path.
-function fetchArchivedWorkspaceIds(ctx) {
+//
+// AN EMPTY LIST IS NOT `ok`. Under the field-flag design an empty array was a
+// legitimate "nothing archived" answer. Under absence semantics it would assert
+// "this project has NO live workspaces", i.e. that every registry row is
+// archived — the exact over-suppression this feature must never produce, and
+// indistinguishable here from an error the CLI reported as an empty body. So a
+// zero-record list reports `hivecontrol-empty-list` and the caller writes
+// nothing, which suppresses nothing.
+function fetchActiveWorkspaceRecords(ctx) {
   const c = ctx || {};
   const run = (c.io && c.io.run) || pull.defaultRun;
   let res;
@@ -9078,21 +9067,23 @@ function fetchArchivedWorkspaceIds(ctx) {
   if (!res || !res.ok) return { ok: false, reason: 'hivecontrol-unavailable', error: String((res && res.error) || 'no output') };
   let parsed;
   try { parsed = JSON.parse(res.raw); } catch (_) { return { ok: false, reason: 'hivecontrol-shape-unrecognized', rawKeys: [] }; }
+  // The measured shape is a FLAT ARRAY. `{children:[...]}` is accepted too, the
+  // same tolerance cmdReconcileRegistry already applies to this CLI's output.
   const rawList = Array.isArray(parsed) ? parsed : (parsed && Array.isArray(parsed.children) ? parsed.children : null);
   if (!rawList) {
     return { ok: false, reason: 'hivecontrol-shape-unrecognized',
       rawKeys: (parsed && typeof parsed === 'object') ? Object.keys(parsed) : [] };
   }
-  const records = rawList.filter((e) => e && typeof e === 'object' && e.id);
-  // An EMPTY list is a legitimate answer (no workspaces) — and carries no
-  // archived field to detect, so it reports `ok` with an empty id set rather
-  // than a shape failure, exactly as cmdReconcileRegistry treats the same case.
-  if (!records.length) return { ok: true, field: null, ids: [], records: 0 };
-  const seenKeys = new Set(records.flatMap((e) => Object.keys(e)));
-  const field = HIVECONTROL_ARCHIVED_FIELDS.find((f) => seenKeys.has(f)) || null;
-  if (!field) return { ok: false, reason: 'no-archived-field', rawKeys: Array.from(seenKeys), records: records.length };
-  const ids = records.filter((e) => archivedFlagFor(e, field)).map((e) => String(e.id));
-  return { ok: true, field, ids, records: records.length };
+  const records = [];
+  for (const e of rawList) {
+    if (!e || typeof e !== 'object' || e.id == null || String(e.id) === '') continue;
+    records.push({
+      id: String(e.id),
+      worktreePath: typeof e.worktreePath === 'string' && e.worktreePath ? e.worktreePath : null,
+    });
+  }
+  if (!records.length) return { ok: false, reason: 'hivecontrol-empty-list', records: 0 };
+  return { ok: true, records, count: records.length };
 }
 
 // cmdRoster(flags, ctx) — ALLOW-listed projection read of THIS project's
@@ -9157,13 +9148,17 @@ function rosterHints(home, id, worktreePath, now, sessionId, opts) {
   try { archived = isArchivedWorkspace(home, id, worktreePath); } catch (_) { archived = false; }
   // APP-SIDE archive (field): the owner archived the workspace in the DevSwarm
   // app, which never writes anti-hall's own archived/<id>.json. Read-only, from
-  // the supervisor-written cache and only while that cache is FRESH — a stale
-  // snapshot adds nothing. Same liveness-axis-only effect as the local check:
-  // the row is still listed in full, it just stops carrying dormant/idle-alive.
+  // the supervisor-written ACTIVE-set cache, and app-archived only when all four
+  // of that lib's absence conjuncts hold (fresh cache, worktree under the
+  // DevSwarm repos root, absent from the active set by BOTH id and worktreePath,
+  // and older than the snapshot by the grace). `worktreePath` is passed because
+  // conjuncts 2 and 3 are both defined on it. Same liveness-axis-only effect as
+  // the local check: the row is still listed in full, it just stops carrying
+  // dormant/idle-alive.
   if (!archived && opts && opts.repoKey) {
     try {
       archived = archivedCacheLib.isAppArchived({
-        home, repoKey: opts.repoKey, id, env: opts.env, cache: opts.cache,
+        home, repoKey: opts.repoKey, id, worktreePath, env: opts.env, cache: opts.cache, now,
       });
     } catch (_) { archived = false; }
   }
@@ -9242,10 +9237,10 @@ function cmdRoster(flags, ctx) {
   try { sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now }); }
   finally { s.close(); }
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
-  // ONE read of the app-side archive cache for the whole roster (freshness is
-  // applied inside readArchivedCache — stale/missing/malformed yields nothing).
+  // ONE read of the app-side ACTIVE-set cache for the whole roster (freshness is
+  // applied inside readActiveCache — stale/missing/malformed yields nothing).
   let appArchivedCache = null;
-  try { appArchivedCache = archivedCacheLib.readArchivedCache({ home, env: ctx.env, now }); } catch (_) { appArchivedCache = null; }
+  try { appArchivedCache = archivedCacheLib.readActiveCache({ home, env: ctx.env, now }); } catch (_) { appArchivedCache = null; }
   const workspaces = Object.values(sum.workspaces || {}).map((w) => {
     // DEMOTE (archived-still-active fix): a store-sourced row whose workspace is
     // genuinely archived is labeled source:'archived' + hinted, instead of being
@@ -11201,7 +11196,7 @@ module.exports = {
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   retireWorktreeDuplicates, isLiveSessionId, archiveLeftReason,
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
-  fetchArchivedWorkspaceIds, archivedFlagFor, HIVECONTROL_ARCHIVED_FIELDS,
+  fetchActiveWorkspaceRecords,
   foldMeshDuplicatesAllStores,
   healOrphanPartitions, healOrphanPartitionsAllStores,
   retireArchivedWorktreeGroup, foldArchivedRegistryRows, foldArchivedFamilyDescriptors,

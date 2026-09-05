@@ -248,6 +248,106 @@ function unansweredQuestions(pendingQuestions, replyState) {
   });
 }
 
+// familyAwareUnanswered({ pendingQuestions, replyState, descriptors, resolveMeshId })
+//   -> subset of pendingQuestions still genuinely unanswered.
+//
+// unansweredQuestions above compares `replyState[q.from]` by EXACT string. That
+// is not enough on its own (defect 427dbff95f28, P1 field report): a
+// pendingQuestion's `from` is the sender's resolved REGISTRY-ROW id —
+// devswarm-store.js's resolveSenderRegistryId picks whichever row is "freshest
+// LIVE" among every row sharing that sender's worktree-derived meshId — while a
+// reply's recorded key is whichever row scripts/devswarm.js's resolveSendTarget
+// ACTUALLY resolved `--to` to (an exact registry-id match wins there regardless
+// of liveness). These are two INDEPENDENTLY computed identities for the same
+// logical agent (a child can be known by a UUID row, a slug row AND a
+// primary-<8hex> builder id — see devswarm-identity-family.js's header) and they
+// legitimately diverge, so the reply lands under a DIFFERENT row than the
+// question's `from` and the raw string compare never sees it.
+//
+// WHY IT LIVES HERE (defect f3b8f326bfc3): this cross-check shipped INLINE in
+// devswarm-parent-gate.js only. hooks/devswarm-parent-inbox.js computes the
+// per-turn "N remain UNANSWERED" notice from the SAME pendingQuestions and the
+// SAME reply-state file but called the raw comparison — so after a reply that
+// landed on a family sibling, the Stop gate correctly stopped blocking while the
+// every-turn notice kept naming the question forever (reproduced end-to-end
+// against both hooks with identical on-disk state). One definition, both
+// callers, so the two surfaces can never disagree about "answered" again.
+//
+// DIRECTION OF EFFECT: this can ONLY remove a FALSE POSITIVE (a real reply the
+// raw compare missed because it landed on a sibling row of the SAME worktree),
+// never manufacture a false negative. collapseFamilies groups STRICTLY by
+// resolved worktree, so two different children can never share a family; an
+// unknown/unresolvable `from`, an empty descriptor set, a throwing resolver or a
+// missing module all return the raw set UNCHANGED. A non-finite q.ts ("always
+// newer" per devswarm-store.js's pendingQuestionEffTs) can never satisfy
+// `qTs <= lastReplyTs` against any finite recorded ts, so a malformed-ts question
+// stays permanently blocking, exactly as before.
+//
+// `resolveMeshId(worktreePath) -> meshId|null` is INJECTED (both callers pass a
+// memoized scripts/devswarm.js `canonicalMeshId`) so this module keeps its
+// pure-fs, no-heavy-require posture. Never throws.
+// `registryRows` (optional) — THE SECOND ID SPACE (defect f3b8f326bfc3, P2).
+//
+// The family map used to be built from `descriptors` ALONE, i.e. the files under
+// `<devswarmRoot>/workspaces/`. But a reply's recorded key is whichever row
+// scripts/devswarm.js's resolveSendTarget matched, and that resolves over the
+// STORE REGISTRY (`storeHandle.listRegistry()`) — a strictly larger, different
+// set. MEASURED on a live machine: 40 descriptor files vs 183 distinct registry
+// ids, 146 of which (`primary-<8hex>` builder-id aliases among them) have NO
+// descriptor file at all. A reply recorded under one of those 146 could never be
+// found here, so the question it answered stayed "unanswered" permanently — the
+// phantom this defect reports. Passing the registry rows in (both callers
+// already hold them, projected in the summary they just parsed) closes that gap
+// with no extra I/O.
+//
+// Rows are merged by id with the descriptor winning, and both shapes only need
+// {id, worktreePath} for collapseFamilies to group them. Direction of effect is
+// unchanged: strictly MORE reply records become visible to an existing family,
+// so this can only clear a false positive, never manufacture one.
+function familyAwareUnanswered(opts) {
+  const o = opts || {};
+  const raw = unansweredQuestions(o.pendingQuestions || [], o.replyState);
+  const descriptorRows = Array.isArray(o.descriptors) ? o.descriptors : [];
+  const registryRows = Array.isArray(o.registryRows) ? o.registryRows : [];
+  const seenIds = new Set();
+  const descriptors = [];
+  for (const r of descriptorRows.concat(registryRows)) {
+    if (!r || r.id == null) continue;
+    const id = String(r.id);
+    if (seenIds.has(id)) continue; // descriptor wins: it is enumerated first
+    seenIds.add(id);
+    descriptors.push(r);
+  }
+  if (!raw.length || !descriptors.length) return raw;
+  const state = o.replyState && typeof o.replyState === 'object' && !Array.isArray(o.replyState) ? o.replyState : {};
+  try {
+    const identityFamily = require('./devswarm-identity-family.js');
+    const families = identityFamily.collapseFamilies(descriptors, { resolve: o.resolveMeshId });
+    const familyByMemberId = new Map();
+    for (const fam of families) {
+      for (const m of (fam && fam.members) || []) {
+        if (m && m.id != null) familyByMemberId.set(String(m.id), fam);
+      }
+    }
+    return raw.filter((q) => {
+      if (!q || q.from == null) return true; // malformed -> keep (fail-open, unchanged)
+      const fam = familyByMemberId.get(String(q.from));
+      if (!fam) return true; // no known family for this sender -> unchanged
+      const qTs = Number.isFinite(q.ts) ? q.ts : Infinity;
+      for (const m of (fam.members || [])) {
+        const mid = m && m.id != null ? String(m.id) : null;
+        if (!mid) continue;
+        const entry = state[mid];
+        const lastReplyTs = entry && Number.isFinite(entry.lastReplyTs) ? entry.lastReplyTs : 0;
+        if (qTs <= lastReplyTs) return false; // answered via a family sibling's reply record
+      }
+      return true; // no family member's reply covers this question -> still unanswered
+    });
+  } catch (_) {
+    return raw; // fail-open: the cross-check is strictly additive, never a replacement
+  }
+}
+
 // --- forward migration (persisted-shape discipline) -------------------------
 // migrateReplyState(home, { dryRun }) — normalizes every existing reply-state
 // file under ~/.anti-hall/devswarm/parent-gate/*-replies.json from the LEGACY
@@ -411,6 +511,7 @@ module.exports = {
   readReplyState,
   recordReply,
   unansweredQuestions,
+  familyAwareUnanswered,
   migrateReplyState,
   // exported for direct unit coverage of the fold/dedup + append-record
   // discriminator logic (not part of the consumer-facing contract).

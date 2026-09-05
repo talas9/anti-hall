@@ -73,7 +73,7 @@ const livenessLib = require('../companion/lib/liveness.js');
 const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
 // APP-SIDE archive detection — READ-ONLY, from the supervisor-written cache
 // (never a hivecontrol spawn on this every-turn path). See that module's header.
-const { readArchivedCache, isAppArchived } = require('../companion/lib/devswarm-archived-cache.js');
+const { readActiveCache, isAppArchived } = require('../companion/lib/devswarm-archived-cache.js');
 // worktreeHash: the SAME per-worktree identity install-devswarm-ingest.js baked
 // into the daemon's unit (and devswarm-ingest.js keys its heartbeat file by).
 // ingestHeartbeatPath: the per-worktree daemon LIVENESS file (rewritten every
@@ -924,14 +924,14 @@ function main() {
   let repoKey = null;
   try { repoKey = (repokeyMod && gitTop) ? repokeyMod.repoKeyForWorktree(gitTop) : null; } catch (_) { repoKey = null; }
 
-  // appArchivedCache() — the supervisor-written app-side archive snapshot, read
-  // ONCE per invocation and reused for every table row. Freshness is enforced
-  // inside readArchivedCache (stale/missing/malformed -> empty), so this can
-  // only ever suppress on currently-valid evidence.
+  // appArchivedCache() — the supervisor-written ACTIVE-set snapshot, read ONCE
+  // per invocation and reused for every table row. Freshness is enforced inside
+  // readActiveCache (stale/missing/malformed -> empty), so absence can only ever
+  // suppress on currently-valid evidence.
   let appArchivedCacheMemo;
   function appArchivedCache() {
     if (appArchivedCacheMemo === undefined) {
-      try { appArchivedCacheMemo = readArchivedCache({ home, env: process.env }); }
+      try { appArchivedCacheMemo = readActiveCache({ home, env: process.env, now }); }
       catch (_) { appArchivedCacheMemo = null; }
     }
     return appArchivedCacheMemo;
@@ -1164,12 +1164,18 @@ function main() {
       // app, which never writes anti-hall's own archived/<id>.json — so the
       // check above stays false and the row kept rendering escalated. Same
       // liveness-axis-ONLY scoping: `not-draining` still wins below, exactly as
-      // it does for a locally-archived row. Read from the supervisor-written
-      // cache (ONE fs read, memoized for the whole table) and ONLY while that
-      // cache is FRESH — a stale snapshot suppresses nothing.
+      // it does for a locally-archived row. Derived by ABSENCE from the
+      // supervisor-written ACTIVE-set cache (ONE fs read, memoized for the whole
+      // table), under all four of that lib's conjuncts — fresh cache, worktree
+      // under the DevSwarm repos root, absent by BOTH id and worktreePath, and
+      // older than the snapshot by the grace. `worktreePath` is passed because
+      // two of those conjuncts are defined on it.
       if (!archivedRow) {
-        try { archivedRow = isAppArchived({ home, repoKey, id, env: process.env, cache: appArchivedCache() }); }
-        catch (_) { /* fail-open: leave archivedRow false */ }
+        try {
+          archivedRow = isAppArchived({
+            home, repoKey, id, worktreePath: entry.worktreePath, env: process.env, now, cache: appArchivedCache(),
+          });
+        } catch (_) { /* fail-open: leave archivedRow false */ }
       }
       const notDrainingFlag = !!(verdict && verdict.notDraining);
       const ds = archivedRow
@@ -1245,7 +1251,43 @@ function main() {
   try {
     const replyStateMod = require('../companion/lib/devswarm-reply-state.js');
     const replyState = replyStateMod.readReplyState(repoKey, home);
-    ownUnanswered = replyStateMod.unansweredQuestions(ownPendingQuestions, replyState);
+    // IDENTITY-FAMILY CROSS-CHECK (defect f3b8f326bfc3): this notice used to
+    // call the RAW comparison while hooks/devswarm-parent-gate.js ran the
+    // family-aware one over the very same pendingQuestions and the very same
+    // reply-state file. A reply whose `--to` resolved to a sibling registry row
+    // of the SAME worktree therefore stopped the Stop gate blocking while THIS
+    // every-turn notice kept reporting the question as unanswered forever —
+    // reproduced end-to-end against both hooks with identical on-disk state.
+    // Both surfaces now share ONE definition (see familyAwareUnanswered's header
+    // for why the two id-spaces diverge, and for its fail-open contract: an
+    // unknown sender, an empty descriptor set or any error returns the raw set
+    // unchanged, so this can only ever drop a false positive).
+    let descriptors = [];
+    // LAZY require (this hook fires on EVERY UserPromptSubmit; the descriptor
+    // read is only needed when there IS a question to cross-check).
+    try { descriptors = require('../companion/devswarm-supervisor.js').readDescriptors(home) || []; }
+    catch (_) { descriptors = []; }
+    const meshIdCache = new Map();
+    const resolveMeshId = (wt) => {
+      if (meshIdCache.has(wt)) return meshIdCache.get(wt);
+      let k = null;
+      try { k = require('../scripts/devswarm.js').canonicalMeshId(wt); } catch (_) { k = null; }
+      meshIdCache.set(wt, k);
+      return k;
+    };
+    // registryRows — the STORE REGISTRY id space, projected verbatim into the
+    // summary already parsed above (defect f3b8f326bfc3). A reply is recorded
+    // under whichever registry row `send --to` resolved, and many of those rows
+    // have no descriptor file, so the descriptor-only family map could never see
+    // them. Free: same parsed object, no extra read.
+    let registryRows = [];
+    try {
+      const ws = (summary && summary.workspaces) || {};
+      registryRows = Object.keys(ws).map((wid) => ({ id: wid, worktreePath: (ws[wid] && ws[wid].worktreePath) || null }));
+    } catch (_) { registryRows = []; }
+    ownUnanswered = replyStateMod.familyAwareUnanswered({
+      pendingQuestions: ownPendingQuestions, replyState, descriptors, resolveMeshId, registryRows,
+    });
   } catch (_) {
     ownUnanswered = ownPendingQuestions.slice();
   }

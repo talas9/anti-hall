@@ -139,7 +139,7 @@ const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js')
 // APP-SIDE archive detection (field: the owner archived children in the DevSwarm
 // app, which never writes anti-hall's own archived/<id>.json). READ-ONLY, from a
 // cache the supervisor writes — never a hivecontrol spawn on this hot path.
-const { readArchivedCache, isAppArchived } = require('../companion/lib/devswarm-archived-cache.js');
+const { readActiveCache, isAppArchived } = require('../companion/lib/devswarm-archived-cache.js');
 // POKE_PREFIX text check (companion/lib/devswarm-noise.js isNoiseText) —
 // applied HERE to descriptor durable-inbox NDJSON rows' `.message` (a shape
 // with no mtype/sender/recipient at all — see that module's header for why
@@ -468,13 +468,23 @@ function readOwnUnread(home, cwd, repoKey) {
     // re-derives store state, it only projects it); an unexpected shape still
     // degrades safely since main() only checks truthiness, never reads into it.
     const pendingQuestionsTruncated = entry && entry.pendingQuestionsTruncated ? entry.pendingQuestionsTruncated : null;
-    return { unread, id, urgencyMax, unknown: false, pendingQuestions, pendingQuestionsTruncated };
+    // registryRows — the STORE REGISTRY's id space, projected verbatim into the
+    // summary this function just parsed (defect f3b8f326bfc3). The unanswered-
+    // question cross-check needs it because a reply is recorded under whichever
+    // registry row `send --to` resolved, and many of those rows (builder-id
+    // aliases in particular) have no descriptor file for the family map to find.
+    // Free here: it is the same parsed object, no extra read.
+    const registryRows = Object.keys(summary.workspaces).map((wid) => ({
+      id: wid,
+      worktreePath: (summary.workspaces[wid] && summary.workspaces[wid].worktreePath) || null,
+    }));
+    return { unread, id, urgencyMax, unknown: false, pendingQuestions, pendingQuestionsTruncated, registryRows };
   } catch (_) {
     // Any unanticipated failure past the ENOENT-tolerant read above means a
     // summary WAS reachable enough to attempt reading/parsing and something
     // still went wrong — the C3 anomaly class. Fail toward unknown (surfaced),
     // never toward a silent healthy-looking 0.
-    return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [], pendingQuestionsTruncated: null };
+    return { unread: 0, id, urgencyMax: null, unknown: true, pendingQuestions: [], pendingQuestionsTruncated: null, registryRows: [] };
   }
 }
 
@@ -544,85 +554,36 @@ function main() {
   try {
     const replyStateLib = require('../companion/lib/devswarm-reply-state.js');
     const replyState = replyStateLib.readReplyState(selfKey, home);
-    const rawUnanswered = replyStateLib.unansweredQuestions(own.pendingQuestions || [], replyState);
+    // IDENTITY-FAMILY CROSS-CHECK — see familyAwareUnanswered's own header in
+    // companion/lib/devswarm-reply-state.js for the full rationale. It used to
+    // live INLINE right here; it moved into the shared lib (defect
+    // f3b8f326bfc3) because hooks/devswarm-parent-inbox.js's every-turn
+    // "N remain UNANSWERED" notice reads the SAME pendingQuestions and the SAME
+    // reply-state file yet called the raw comparison, so a reply that landed on
+    // a family sibling stopped this gate blocking while that notice kept naming
+    // the question forever. Behaviour here is unchanged (same filter, same
+    // fail-open); the ONLY change is that both surfaces now share one definition.
+    const meshIdCache = new Map();
+    const resolveMeshId = (wt) => {
+      if (meshIdCache.has(wt)) return meshIdCache.get(wt);
+      let k = null;
+      try { k = require('../scripts/devswarm.js').canonicalMeshId(wt); } catch (_) { k = null; }
+      meshIdCache.set(wt, k);
+      return k;
+    };
 
-    // IDENTITY-FAMILY CROSS-CHECK (defect 427dbff95f28, P1 field report): a
-    // pendingQuestion's `from` is the sender's resolved REGISTRY-ROW id —
-    // devswarm-store.js's resolveSenderRegistryId picks whichever row is
-    // "freshest LIVE" among every row sharing that sender's worktree-derived
-    // meshId. A reply's recorded key, by contrast, is whichever row
-    // scripts/devswarm.js's resolveSendTarget ACTUALLY resolved `--to` to —
-    // an EXACT registry-id match (e.g. a plain `send --to <uuid-row>`) wins
-    // there regardless of liveness. These are two INDEPENDENTLY computed
-    // identities for the very same logical agent (a child can be known by a
-    // UUID row, a slug row, AND a primary-<8hex> builder id — see
-    // devswarm-identity-family.js's own header), and they can legitimately
-    // diverge: the reply then lands under a DIFFERENT row than the question's
-    // `from`, and unansweredQuestions()'s raw string compare never sees it —
-    // reproduced via companion/lib/devswarm-store.js + devswarm-reply-state.js
-    // directly (field defect repro, 2026-08-31).
-    //
-    // Before trusting a rawUnanswered entry, re-check every OTHER member of
-    // q.from's identity family — grouped by resolved worktree via
-    // devswarm-identity-family.js's collapseFamilies, the SAME grouping this
-    // file already uses below (families/rawEntries) to reduce the blocking
-    // set — for a reply recorded at-or-after this question's effective ts.
-    // Any family member's reply counts as answering the question; this can
-    // ONLY ever remove a FALSE POSITIVE (a real reply the raw string compare
-    // missed because it landed on a sibling row of the SAME worktree), never
-    // manufacture a FALSE NEGATIVE: collapseFamilies groups strictly by
-    // canonicalMeshId(worktreePath), so two DIFFERENT children (different
-    // worktrees) can never share a family, and a genuinely unresolvable/
-    // unknown `from` or a family with no later reply anywhere is returned
-    // completely UNCHANGED (kept unanswered). A non-finite q.ts (unparsable —
-    // "always newer" per devswarm-store.js's pendingQuestionEffTs) can never
-    // satisfy `qTs <= lastReplyTs` against any finite recorded reply ts, so a
-    // permanently-blocking malformed-ts question stays permanently blocking,
-    // exactly as before. Fail-open toward the ORIGINAL rawUnanswered set on
-    // any surprise (missing module, throwing resolver, empty descriptors) —
-    // this cross-check is strictly additive, never a replacement for the
-    // underlying unansweredQuestions() computation.
-    if (rawUnanswered.length > 0 && descriptors.length > 0) {
-      let crossChecked = null;
-      try {
-        const identityFamily = require('../companion/lib/devswarm-identity-family.js');
-        const devswarmCli = require('../scripts/devswarm.js');
-        const meshIdCache = new Map();
-        const resolveMeshId = (wt) => {
-          if (meshIdCache.has(wt)) return meshIdCache.get(wt);
-          let k = null;
-          try { k = devswarmCli.canonicalMeshId(wt); } catch (_) { k = null; }
-          meshIdCache.set(wt, k);
-          return k;
-        };
-        const crossFamilies = identityFamily.collapseFamilies(descriptors, { resolve: resolveMeshId });
-        const familyByMemberId = new Map();
-        for (const fam of crossFamilies) {
-          for (const m of (fam && fam.members) || []) {
-            if (m && m.id != null) familyByMemberId.set(String(m.id), fam);
-          }
-        }
-        crossChecked = rawUnanswered.filter((q) => {
-          if (!q || q.from == null) return true; // malformed -> keep (fail-open, unchanged)
-          const fam = familyByMemberId.get(String(q.from));
-          if (!fam) return true; // no known family for this sender -> unchanged
-          const qTs = Number.isFinite(q.ts) ? q.ts : Infinity;
-          for (const m of (fam.members || [])) {
-            const mid = m && m.id != null ? String(m.id) : null;
-            if (!mid) continue;
-            const entry = replyState[mid];
-            const lastReplyTs = entry && Number.isFinite(entry.lastReplyTs) ? entry.lastReplyTs : 0;
-            if (qTs <= lastReplyTs) return false; // answered via a family sibling's reply record
-          }
-          return true; // no family member's reply covers this question -> still unanswered
-        });
-      } catch (_) {
-        crossChecked = null; // fail-open: fall through to rawUnanswered below
-      }
-      unanswered = crossChecked || rawUnanswered;
-    } else {
-      unanswered = rawUnanswered;
-    }
+    // The cross-check itself (defect 427dbff95f28) now lives in the shared lib
+    // so this gate and the every-turn notice can never disagree — see
+    // familyAwareUnanswered's header for the identity-divergence it closes and
+    // for its fail-open contract. `descriptors` is this hook's already-read
+    // descriptor set; `resolveMeshId` is the memoized canonicalMeshId above.
+    unanswered = replyStateLib.familyAwareUnanswered({
+      pendingQuestions: own.pendingQuestions || [],
+      replyState, descriptors, resolveMeshId,
+      // The second id space a reply can be recorded under — see the lib's own
+      // header (defect f3b8f326bfc3).
+      registryRows: own.registryRows || [],
+    });
   } catch (_) {
     // The lib itself is fail-open-toward-unanswered; mirror that here too —
     // an unreadable reply-state module must never silently clear a question.
@@ -718,13 +679,17 @@ function main() {
   // differ.
   // appArchivedCache() — the supervisor-written app-side archive snapshot, read
   // ONCE per hook invocation (ONE small fs read for N descriptors) and reused
-  // for every row. Freshness is applied inside readArchivedCache: a stale/
+  // for every row. Freshness is applied inside readActiveCache: a stale/
   // missing/malformed file yields an EMPTY map, so this can only ever suppress
   // on evidence that is currently valid.
+  // ONE clock reading for the whole app-archive classification, so the cache's
+  // freshness test and every row's grace test are evaluated against the same
+  // instant rather than drifting across N Date.now() calls.
+  const appArchiveNow = Date.now();
   let appArchivedCacheMemo;
   function appArchivedCache() {
     if (appArchivedCacheMemo === undefined) {
-      try { appArchivedCacheMemo = readArchivedCache({ home, env: process.env }); }
+      try { appArchivedCacheMemo = readActiveCache({ home, env: process.env, now: appArchiveNow }); }
       catch (_) { appArchivedCacheMemo = null; }
     }
     return appArchivedCacheMemo;
@@ -1081,7 +1046,14 @@ function main() {
     // suppressor above: realUnread/unreadUnknown are untouched, so an
     // app-archived row with REAL unread still gates.
     let appArchived = false;
-    try { appArchived = isAppArchived({ home, repoKey: dKey, id: d.id, env: process.env, cache: appArchivedCache() }); }
+    // `worktreePath` is REQUIRED by the absence rule: two of its four conjuncts
+    // (under the DevSwarm repos root; absent from the active set by path as well
+    // as by id) are defined on it. Omitting it makes every row un-archivable.
+    try {
+      appArchived = isAppArchived({
+        home, repoKey: dKey, id: d.id, worktreePath: d.worktreePath, env: process.env, now: appArchiveNow, cache: appArchivedCache(),
+      });
+    }
     catch (_) { appArchived = false; }
     if (appArchived) staleOrEscalated = false;
 

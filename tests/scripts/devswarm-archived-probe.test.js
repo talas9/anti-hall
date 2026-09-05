@@ -1,110 +1,96 @@
 'use strict';
-// scripts/devswarm.js fetchArchivedWorkspaceIds + companion/devswarm-supervisor.js
-// reconcileSweepIfDue's app-side archive probe.
+// scripts/devswarm.js fetchActiveWorkspaceRecords + companion/devswarm-supervisor.js
+// reconcileSweepIfDue's cache write — the APP-SIDE ARCHIVE PROBE, BY ABSENCE.
 //
-// FIELD ROOT CAUSE: the owner archived children in the DevSwarm app; nothing on
-// anti-hall's side read the app's own view, so those rows kept rendering as
-// escalated/not-draining. The supervisor's already-running, cooldown-gated
-// reconcile sweep now also caches `hivecontrol workspace list all`'s archived
-// set per repoKey; readers consult that cache (never a spawn of their own).
+// ROOT CAUSE (measured on hivecontrol 2.5.1): `hivecontrol workspace list all`
+// returns a flat JSON array whose records carry EXACTLY {id, branch,
+// sourceBranch, repositoryId, label, aiAgent, worktreePath, createdAt}, and the
+// subcommand accepts no filter flags. The earlier revision of this probe pinned
+// an archive FIELD (`archived`/`isArchived`/`status`/`isHidden`/`isActive`),
+// found none on any record, and therefore wrote nothing on every run — the
+// feature was inert in the field. Archive is expressed by MEMBERSHIP instead, so
+// the probe now caches the ACTIVE set verbatim and absence is evaluated at read
+// time (companion/lib/devswarm-archived-cache.js).
 //
-// SHAPE PINNING, not guessing: the archived field is NOT pinned in
-// docs/KB-devswarm-hivecontrol.md, so the probe accepts only a small,
-// provenance-documented candidate set and reports `no-archived-field` (with the
-// keys it actually saw) when none is present — writing NOTHING rather than
-// inventing a mapping.
+// NO REAL hivecontrol IS EVER SPAWNED: `io.run` / `deps.runActiveList` are
+// injected throughout.
 //
-// The real hivecontrol binary is NEVER spawned here: `io.run` / `deps` are
-// injected in every test.
-//
-// MUTATION LIST (proven RED against this file):
-//   M1: make fetchArchivedWorkspaceIds default `field` to 'archived' when none
-//       is present -> kills "NO archived field -> no-archived-field, nothing written".
-//   M2: have the sweep write the cache even when the probe failed
-//       -> kills "a FAILED probe contributes no entry".
+// MUTATION CHECKS (each must turn a named test RED):
+//   M1: let fetchActiveWorkspaceRecords report an empty list as ok
+//       -> "an EMPTY list is refused" fails.
+//   M2: drop the supervisor's `active.records.length` admission check
+//       -> "a failed/empty probe writes NOTHING" fails.
 
-const { test } = require('node:test');
+const test = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
-const path = require('node:path');
-const os = require('node:os');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
 const supervisor = require('../../plugins/anti-hall/companion/devswarm-supervisor.js');
 const cacheLib = require('../../plugins/anti-hall/companion/lib/devswarm-archived-cache.js');
 
-function makeHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'archived-probe-'));
-  return { home, cleanup() { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} } };
-}
-
-// fakeRun(records|raw) -> an io.run stub. NEVER spawns the real hivecontrol.
-function fakeRun(payload) {
-  return function (_call) {
-    if (typeof payload === 'string') return { ok: true, raw: payload };
-    if (payload === null) return { ok: false, error: 'boom' };
-    return { ok: true, raw: JSON.stringify(payload) };
-  };
-}
-
-const CTX = (run) => ({ home: '/nope', env: {}, cwd: os.tmpdir(), io: { run } });
-
-test('PINNED SHAPES: each candidate archived field is read, and only it', () => {
-  const cases = [
-    { field: 'archived', records: [{ id: 'a', archived: true }, { id: 'b', archived: false }] },
-    { field: 'isArchived', records: [{ id: 'a', isArchived: true }, { id: 'b', isArchived: false }] },
-    { field: 'status', records: [{ id: 'a', status: 'archived' }, { id: 'b', status: 'active' }] },
-    { field: 'isHidden', records: [{ id: 'a', isHidden: 1 }, { id: 'b', isHidden: 0 }] },
-    // isActive is INVERTED: KB §20 live-verified it means exactly "not archived".
-    { field: 'isActive', records: [{ id: 'a', isActive: 0 }, { id: 'b', isActive: 1 }] },
-  ];
-  for (const c of cases) {
-    const r = cli.fetchArchivedWorkspaceIds(CTX(fakeRun(c.records)));
-    assert.strictEqual(r.ok, true, c.field);
-    assert.strictEqual(r.field, c.field);
-    assert.deepStrictEqual(r.ids, ['a'], c.field + ': only the archived record is listed');
-  }
+// The measured record shape, verbatim — including the fields the probe ignores,
+// so a future narrowing of the parser is caught here.
+const REC = (id, wt) => ({
+  id, branch: 'fix/' + id, sourceBranch: 'main', repositoryId: 'repo-uuid',
+  label: 'Some workspace', aiAgent: 'claude', worktreePath: wt,
+  createdAt: '2026-08-03T16:47:55.303Z',
 });
 
-test('a {children:[...]} wrapper is accepted, same as a bare array', () => {
-  const r = cli.fetchArchivedWorkspaceIds(CTX(fakeRun({ children: [{ id: 'a', archived: true }] })));
-  assert.deepStrictEqual(r.ids, ['a']);
-});
+const fakeRun = (payload) => () => ({ ok: true, raw: typeof payload === 'string' ? payload : JSON.stringify(payload) });
+const CTX = (run) => ({ io: { run }, env: {}, cwd: '/tmp' });
 
-test('NO archived field -> no-archived-field, with the keys actually seen', () => {
-  const r = cli.fetchArchivedWorkspaceIds(CTX(fakeRun([{ id: 'a', branch: 'x', path: '/p' }])));
-  assert.strictEqual(r.ok, false);
-  assert.strictEqual(r.reason, 'no-archived-field');
-  assert.deepStrictEqual(r.rawKeys.sort(), ['branch', 'id', 'path']);
-});
-
-test('EMPTY list is a valid answer (no workspaces), not a shape failure', () => {
-  const r = cli.fetchArchivedWorkspaceIds(CTX(fakeRun([])));
+test('the MEASURED shape parses into {id, worktreePath} records', () => {
+  const r = cli.fetchActiveWorkspaceRecords(CTX(fakeRun([
+    REC('a', '/Users/x/.devswarm/repos/1/aa/one'),
+    REC('b', '/Users/x/.devswarm/repos/1/bb/two'),
+  ])));
   assert.strictEqual(r.ok, true);
-  assert.deepStrictEqual(r.ids, []);
-  assert.strictEqual(r.field, null);
+  assert.strictEqual(r.count, 2);
+  assert.deepStrictEqual(r.records, [
+    { id: 'a', worktreePath: '/Users/x/.devswarm/repos/1/aa/one' },
+    { id: 'b', worktreePath: '/Users/x/.devswarm/repos/1/bb/two' },
+  ]);
 });
 
-test('unparseable / non-list output, and a failed spawn, fail SOFT', () => {
-  assert.strictEqual(cli.fetchArchivedWorkspaceIds(CTX(fakeRun('<html>'))).reason, 'hivecontrol-shape-unrecognized');
-  assert.strictEqual(cli.fetchArchivedWorkspaceIds(CTX(fakeRun({ nope: 1 }))).reason, 'hivecontrol-shape-unrecognized');
-  assert.strictEqual(cli.fetchArchivedWorkspaceIds(CTX(fakeRun(null))).reason, 'hivecontrol-unavailable');
-  const thrower = () => { throw new Error('spawn exploded'); };
-  assert.strictEqual(cli.fetchArchivedWorkspaceIds(CTX(thrower)).reason, 'hivecontrol-unavailable');
+test('a {children:[...]} envelope is accepted, and a record with no id is dropped', () => {
+  const r = cli.fetchActiveWorkspaceRecords(CTX(fakeRun({ children: [REC('a', '/w/a'), { branch: 'x' }] })));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.records.map((x) => x.id), ['a']);
 });
 
-test('records without an id are ignored', () => {
-  const r = cli.fetchArchivedWorkspaceIds(CTX(fakeRun([{ archived: true }, { id: 'a', archived: true }])));
-  assert.deepStrictEqual(r.ids, ['a']);
+test('a record with NO worktreePath still yields an id-only record', () => {
+  const r = cli.fetchActiveWorkspaceRecords(CTX(fakeRun([{ id: 'a' }])));
+  assert.strictEqual(r.ok, true);
+  assert.deepStrictEqual(r.records, [{ id: 'a', worktreePath: null }]);
 });
 
-// ---------------------------------------------------------------------------
-// SUPERVISOR SWEEP — writes the cache, never spawns anything real here.
-// ---------------------------------------------------------------------------
+test('M1 — an EMPTY list is refused, never reported as a usable snapshot', () => {
+  // Under absence semantics this is the dangerous case: cached, it would assert
+  // that EVERY registry row in the project is archived.
+  const r = cli.fetchActiveWorkspaceRecords(CTX(fakeRun([])));
+  assert.strictEqual(r.ok, false);
+  assert.strictEqual(r.reason, 'hivecontrol-empty-list');
+});
 
-function sweepDeps(home, extra) {
+test('unusable output fails closed with a reason, never throws', () => {
+  assert.strictEqual(cli.fetchActiveWorkspaceRecords(CTX(fakeRun('<html>'))).reason, 'hivecontrol-shape-unrecognized');
+  assert.strictEqual(cli.fetchActiveWorkspaceRecords(CTX(fakeRun({ nope: 1 }))).reason, 'hivecontrol-shape-unrecognized');
+  assert.strictEqual(cli.fetchActiveWorkspaceRecords(CTX(() => null)).reason, 'hivecontrol-unavailable');
+  assert.strictEqual(cli.fetchActiveWorkspaceRecords(CTX(() => ({ ok: false, error: 'Repository not found' }))).reason, 'hivecontrol-unavailable');
+  assert.strictEqual(cli.fetchActiveWorkspaceRecords(CTX(() => { throw new Error('boom'); })).reason, 'hivecontrol-unavailable');
+});
+
+// --- supervisor sweep: what actually reaches disk -------------------------
+const { makeHome } = require('../helpers/fixtures.js');
+
+// Drive reconcileSweepIfDue with EVERY heavy dep injected — no reconcile, no
+// fold, no hivecontrol, no git.
+function sweepDeps(extra) {
   return Object.assign({
-    readDescriptors: () => [{ id: 'ws1', worktreePath: '/wt/a', sessionId: 's1' }],
+    readDescriptors: () => [{ id: 'ws1', worktreePath: '/Users/x/.devswarm/repos/1/aa/one', sessionId: 's1' }],
     repoKeyForWorktree: () => 'repo-a',
     readReconcileSweepState: () => ({ lastRunAt: 0 }),
     writeReconcileSweepState: () => {},
@@ -113,55 +99,55 @@ function sweepDeps(home, extra) {
   }, extra || {});
 }
 
-test('SWEEP writes the app-archived cache from the probe, keyed by repoKey', () => {
+const SWEEP_NOW = 1_800_000_000_000;
+
+test('a SUCCESSFUL probe writes the active set under the sweep target repoKey', () => {
   const h = makeHome();
   try {
-    const now = 1_800_000_000_000;
     const r = supervisor.reconcileSweepIfDue({
-      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now,
-      deps: sweepDeps(h.home, { runArchivedList: () => ({ ok: true, field: 'archived', ids: ['ws1'] }) }),
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW,
+      deps: sweepDeps({ runActiveList: () => ({ ok: true, records: [{ id: 'ws1', worktreePath: '/w/a' }], count: 1 }) }),
     });
     assert.strictEqual(r.ran, true);
-    assert.strictEqual(r.archivedField, 'archived');
-    const c = cacheLib.readArchivedCache({ home: h.home, env: {}, now });
+    const c = cacheLib.readActiveCache({ home: h.home, env: {}, now: SWEEP_NOW });
     assert.strictEqual(c.fresh, true);
-    assert.deepStrictEqual(c.byRepoKey, { 'repo-a': ['ws1'] });
+    assert.deepStrictEqual(c.byRepoKey, { 'repo-a': [{ id: 'ws1', worktreePath: '/w/a' }] });
+    assert.strictEqual(c.recordCount, 1);
   } finally { h.cleanup(); }
 });
 
-test('a FAILED probe contributes no entry, and no-archived-field writes NOTHING', () => {
+test('M2 — a failed or empty probe writes NOTHING (nothing suppressed)', () => {
   for (const probe of [
-    () => ({ ok: false, reason: 'no-archived-field', rawKeys: ['id', 'branch'] }),
+    () => ({ ok: false, reason: 'hivecontrol-empty-list' }),
     () => ({ ok: false, reason: 'hivecontrol-unavailable' }),
+    () => ({ ok: true, records: [], count: 0 }), // belt AND braces: ok-but-empty is still refused
     () => { throw new Error('probe exploded'); },
   ]) {
     const h = makeHome();
     try {
-      const now = 1_800_000_000_000;
       const r = supervisor.reconcileSweepIfDue({
-        home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now,
-        deps: sweepDeps(h.home, { runArchivedList: probe }),
+        home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW,
+        deps: sweepDeps({ runActiveList: probe }),
       });
       assert.strictEqual(r.ran, true, 'a probe failure must never break the sweep');
-      assert.strictEqual(fs.existsSync(cacheLib.archivedCachePath(h.home)), false,
-        'nothing may be written when no target reported an archived set');
+      assert.strictEqual(fs.existsSync(cacheLib.cachePath(h.home)), false,
+        'no cache file may be written from a probe that reported no records');
     } finally { h.cleanup(); }
   }
 });
 
-test('SWEEP: a newer run replaces the previous snapshot (re-opened id disappears)', () => {
+test('a newer sweep REPLACES the previous snapshot (a re-opened workspace reappears)', () => {
   const h = makeHome();
   try {
-    const now = 1_800_000_000_000;
     supervisor.reconcileSweepIfDue({
-      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now,
-      deps: sweepDeps(h.home, { runArchivedList: () => ({ ok: true, field: 'archived', ids: ['ws1', 'ws2'] }) }),
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW,
+      deps: sweepDeps({ runActiveList: () => ({ ok: true, records: [{ id: 'ws2', worktreePath: '/w/b' }], count: 1 }) }),
     });
     supervisor.reconcileSweepIfDue({
-      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: now + 1000,
-      deps: sweepDeps(h.home, { runArchivedList: () => ({ ok: true, field: 'archived', ids: ['ws2'] }) }),
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW + 1000,
+      deps: sweepDeps({ runActiveList: () => ({ ok: true, records: [{ id: 'ws1', worktreePath: '/w/a' }, { id: 'ws2', worktreePath: '/w/b' }], count: 2 }) }),
     });
-    const c = cacheLib.readArchivedCache({ home: h.home, env: {}, now: now + 1000 });
-    assert.deepStrictEqual(c.byRepoKey, { 'repo-a': ['ws2'] });
+    const c = cacheLib.readActiveCache({ home: h.home, env: {}, now: SWEEP_NOW + 1000 });
+    assert.deepStrictEqual(c.byRepoKey['repo-a'].map((r) => r.id), ['ws1', 'ws2']);
   } finally { h.cleanup(); }
 });
