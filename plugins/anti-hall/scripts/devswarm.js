@@ -10761,8 +10761,25 @@ function cmdReconcile(flags, ctx) {
       // (never the raw registry path) — reuses devswarm-repokey.js's own
       // bounded, injectable git spawn (`defaultRun`, the SAME
       // ANTIHALL_REPOKEY_GIT_TIMEOUT_MS-bounded primitive gitCommonDir already
-      // uses) rather than a second implementation. Costs zero reconcile
-      // budget either way (same posture as the missing-worktree skip above).
+      // uses) rather than a second implementation.
+      //
+      // BUDGET-BEFORE-PROBE (D11-C2, root cause for reconcile escaping its own
+      // budget): this probe is a real child-process spawn bounded only by
+      // ANTIHALL_REPOKEY_GIT_TIMEOUT_MS (up to ~10s per broken worktree), NOT
+      // by reconcileBudgetMs — the budget check below (right before spawnFn)
+      // ran AFTER this probe unconditionally executed for every remaining
+      // target, so N broken worktrees each burned up to their full probe
+      // timeout with none of that wall time counted as "budget spent" until
+      // the very end: a sweep with enough broken rows could blow well past
+      // budgetMs before the FIRST deferral ever triggered. Check the budget
+      // HERE, before paying for the probe, so a probe never runs once the
+      // deadline has already passed; the existing check after the probe (a
+      // few lines down) still catches the case where THIS row's own probe was
+      // what pushed elapsed time over budgetMs.
+      if (budgetMs > 0 && (clockNow() - startedAt) >= budgetMs) {
+        deferredIds.push(d.id);
+        continue;
+      }
       let gitRoot = null;
       try {
         const gr = repokey.defaultRun({ args: ['-C', d.worktreePath, 'rev-parse', '--show-toplevel'], cwd: d.worktreePath });

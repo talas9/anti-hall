@@ -176,6 +176,54 @@ test('cmdReconcile: a row whose worktreePath does not exist on disk is skipped B
   } finally { rm(home); rm(repo); }
 });
 
+test('cmdReconcile: D11-C2 — the git-root probe itself counts against the budget and never runs once the deadline has already passed', () => {
+  // Root cause: the git-root probe (repokey.defaultRun, a real bounded child
+  // spawn up to ~10s per broken worktree — see devswarm-reconcile-gitroot.test.js)
+  // ran UNCONDITIONALLY for every remaining target, with the budget check only
+  // sitting right before spawnFn — AFTER the probe already executed. So N
+  // broken worktrees each burned a full probe timeout while none of that wall
+  // time counted as "budget spent" until the very end: a sweep could blow well
+  // past budgetMs before the first deferral ever triggered. Monkey-patch
+  // repokey.defaultRun (the same injectable-by-property primitive it already
+  // exports) to simulate a 10s-per-call probe and always fail to resolve a
+  // git root, so every attempted row lands in skippedNotGitRoot (zero-cost,
+  // never reaching the real spawn) and only the probe's own advertised cost
+  // shows up in the fake clock.
+  const home = tmpHome();
+  const repo = makeGitRepo('probe-budget');
+  const dirs = ['r1', 'r2', 'r3', 'r4', 'r5'].map((tag) =>
+    fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-reconcile-probe-' + tag + '-')));
+  const origDefaultRun = repokey.defaultRun;
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const ids = ['a', 'b', 'c', 'd', 'e'];
+    ids.forEach((id, i) => seedRegistry(home, repoKey, { id, worktreePath: dirs[i], sessionId: 's' }));
+
+    const clock = makeFakeClock();
+    let probeCalls = 0;
+    repokey.defaultRun = () => {
+      probeCalls++;
+      clock.advance(10000); // each probe "takes" 10s, per the real GIT_SPAWN_TIMEOUT_MS ceiling
+      return { ok: false, raw: '' }; // unresolved git root -> row is skipped, never reaches spawnFn
+    };
+
+    // No io.spawnReconcile injected: usingDefaultSpawn stays true so the real
+    // pre-spawn git-root check (and the patched probe above) actually runs.
+    const r = cli.run(['reconcile'], ctx(home, { cwd: repo, reconcileBudgetMs: 25000, reconcileNow: clock.now }));
+
+    assert.strictEqual(probeCalls, 3,
+      'with a 25s budget and a 10s-per-call probe, at most 3 probes may run (30s) before the budget check ' +
+      'defers the rest WITHOUT paying for their probes; a budget check placed only before spawnFn (the pre-fix ' +
+      'shape) would let all 5 probes run — 50s of unbudgeted probe time — before the first deferral.');
+    assert.strictEqual(r.result.skippedNotGitRoot, 3);
+    assert.strictEqual(r.result.deferred, 2);
+    assert.strictEqual(r.result.processed, 0, 'no row may reach the real spawn in this scenario');
+  } finally {
+    repokey.defaultRun = origDefaultRun;
+    rm(home); rm(repo); dirs.forEach(rm);
+  }
+});
+
 test('cmdReconcile: elapsedMs is a real, non-negative number in the output', () => {
   const home = tmpHome();
   const repo = makeGitRepo('elapsed');
