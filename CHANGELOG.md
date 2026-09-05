@@ -6,6 +6,49 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.93.0 (2026-09-05)
+
+- **Feature: app-side archive detection by absence, not by a field.**
+  Measured on hivecontrol 2.5.1 (maintainer machine): `workspace list all`
+  exposes no archive field, so archive status can't be read directly. The supervisor
+  sweep now caches the active set (`hivecontrol-active.json`) whenever the
+  list call succeeds with at least one record; a registry row under the
+  DevSwarm repos root that is absent from that cache by both id and
+  worktree path, and older than the snapshot by a 10-minute grace, is
+  treated as app-archived while the cache stays fresh (within 2x the
+  reconcile cooldown). This is a liveness-axis signal only — a genuine
+  unread question still gates regardless of archive status.
+- **Fix: unanswered-question attribution never resolved to the recipient's
+  own identity family (`f3b8f326bfc3`).** The sender of a pending question
+  is now resolved with the recipient and its cross-linked twins excluded
+  first: the stored sender id wins, then a cross-linked row, then the
+  shared freshest-live ranking. With no live sender-family row left, the
+  raw sender id is kept rather than mis-attributed. A reply from the true
+  sender's identity family now clears the question; a reply from the
+  recipient itself or a twin does not. Forwarded copies keep `needsReply`
+  set, since the copy is the only carrier once the source row retires.
+  The per-turn notice and the Stop gate share the same identity-family-aware
+  clearing path, including store-registry rows that carry no descriptor.
+  **Contract change:** `pendingQuestions[].from` is now the true sender's
+  identity-family id (or the raw sender id when no live family row exists)
+  instead of the freshest live row on the worktree; consumers of
+  `summary.json` that keyed on the old value should expect different ids for
+  existing stores.
+- **Fix: union counts migrate covered legacy lines exactly once.** A new
+  body-multiset tier in the union path covers NDJSON lines with no `_h`
+  hash whose legacy hash is also absent, reusing the migration helpers
+  already shared with `devswarm-unread.js`.
+- **Docs:** KB re-test recipe added for `0a668d81c0c6`; the identity-family
+  attribution contract is now documented.
+- **Known:** a question from a retired sender whose identity family has no
+  live row is listed under the raw sender id and cannot be cleared by a
+  reply yet (under review). A watermark read-then-unlink residual window
+  remains. The tail-cap refusal stays in place as defense in depth. An
+  active-list snapshot smaller than half the previous one for a repo is
+  refused (partial-list guard); a question whose sender has no registry row
+  of any kind (removed) is informational and must be acked after inspection;
+  archived-but-live senders still block.
+
 ## 0.92.0 (2026-09-05)
 
 - **Feature: session-sourced row liveness.** anti-hall now classifies a
