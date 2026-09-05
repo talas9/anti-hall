@@ -113,6 +113,49 @@ for (const B of backends) {
     } finally { rm(main); rm(home); }
   });
 
+  // (2b) REUSED-BUT-ALIVE pid (distinct from the parent-chain suite's B1d,
+  // which covers a PROVABLY DEAD pid — `kill` throws ESRCH). Here `kill`
+  // succeeds (a live process genuinely holds the pid right now) but that
+  // process's OWN start time, per the injected `ps`, resolves to STRICTLY
+  // AFTER the session file's mtime — liveness.js's pidIsAlive treats that as
+  // "a newer process wearing a reused pid, not the one recorded" and returns
+  // false, so the chain must reject this session file exactly as it does a
+  // dead one: no promotion, row stays `unclaimed:`.
+  test(`[${B.name}] SAFETY: a parent-chain session file naming a REUSED (live-but-newer-than-recorded) pid never promotes`, () => {
+    const home = tmpHome();
+    const main = makeGitRepo('gate-reused-pid-' + B.name);
+    try {
+      const repoKey = repokey.repoKeyForWorktree(main);
+      const wt = topOf(main);
+      const id = meshOf(main);
+      writeDescriptor(home, id, { id, worktreePath: wt, sessionId: 'unclaimed:' + id });
+      seedB(home, repoKey, { id, worktreePath: wt, sessionId: 'unclaimed:' + id });
+      const sessDir = liveness.sessionsDirFor(home);
+      fs.mkdirSync(sessDir, { recursive: true });
+      fs.writeFileSync(path.join(sessDir, '9999.json'),
+        JSON.stringify({ pid: 9999, sessionId: 'reused-pid-session', cwd: wt, status: 'running' }));
+
+      const ctx = {
+        home, backend: B.backend, env: {}, cwd: main,
+        sessionDeriveOpts: {
+          pid: 9001,
+          ppidOf: (p) => (p === 9001 ? 9999 : null),
+          kill: () => {}, // no throw -> "some process holds this pid right now" (genuinely alive)
+          // The injected process's own start time is a date far in the
+          // future relative to the session file's mtime (just written above,
+          // i.e. now) -> provably AFTER sinceMs -> pidIsAlive returns false.
+          ps: () => 'Wed Jan  1 00:00:00 2099',
+        },
+      };
+      const sid = cli.realSessionIdFrom({}, ctx, id);
+      assert.strictEqual(sid, null, 'a reused pid (live, but newer than the recorded session) must never be trusted');
+
+      cli.run(['inbox', 'pull', id], ctx);
+      const desc = JSON.parse(fs.readFileSync(path.join(liveness.devswarmRoot(home), 'workspaces', id + '.json'), 'utf8'));
+      assert.strictEqual(desc.sessionId, 'unclaimed:' + id, 'row stays unclaimed: — no promotion from a reused pid');
+    } finally { rm(main); rm(home); }
+  });
+
   // (3) promoteUnclaimedSession surfaces a registry-write failure instead of
   // swallowing it, while the descriptor promotion (and out.promoted) still
   // succeed.

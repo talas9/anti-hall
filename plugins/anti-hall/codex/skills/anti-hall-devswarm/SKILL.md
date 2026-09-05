@@ -199,8 +199,10 @@ sessionId — the harness's own session file found by walking the caller's paren
 (gated by a cwd-in-worktree check AND a pid-reuse/staleness liveness guard, so an already-
 promoted row never pays that walk's cost and a stale/reused pid is never trusted).
 Descriptor/registry divergence is repaired in both directions, and a registry write failure
-during promotion now surfaces as `registryWriteError` rather than being swallowed. Full
-record: `docs/KB-devswarm-hivecontrol.md` §40.
+during promotion is now reported as `promotion.registryWriteError` on `inbox pull`/
+`read-primary`/`inbox messages` JSON output (plus a stderr line) instead of being
+swallowed — the descriptor promotion itself already succeeded, and the next read repairs
+the registry from the descriptor's existing value. Full record: `docs/KB-devswarm-hivecontrol.md` §40.
 
 ## Blocking questions — CHILD asks, PARENT answers (never child → human)
 

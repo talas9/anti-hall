@@ -738,8 +738,9 @@ as if it were current. `unclaimed:` promotion derives the caller's real session 
 marker or lacking a sessionId — the harness's own session file found by walking the
 caller's parent-pid chain, gated by a cwd-in-worktree check and a pid-reuse/staleness
 liveness guard. Descriptor/registry divergence is repaired in both directions, and a
-registry write failure during promotion is now surfaced (`registryWriteError`) instead of
-swallowed silently.
+registry write failure during promotion is now reported as `promotion.registryWriteError`
+on `inbox pull`/`read-primary`/`inbox messages` JSON output (plus a stderr line) instead of
+being swallowed silently — the next read repairs the registry from the descriptor.
 
 ---
 

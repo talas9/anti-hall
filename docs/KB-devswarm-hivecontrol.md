@@ -3061,9 +3061,18 @@ stranger's session id onto this row.
 
 `promoteUnclaimedSession`'s classic promotion path (both descriptor and registry still
 carrying the marker) now surfaces a registry-write failure as an additive
-`registryWriteError` string field on its return value (plus one stderr line), instead of
+`registryWriteError` string field on its OWN return value (plus one stderr line), instead of
 swallowing it silently — the descriptor promotion and `promoted:true` are unaffected,
 since the descriptor write already succeeded by the time the registry write is attempted.
+Every production caller that reads this — `cmdInboxPull` (`inbox pull`), `cmdInboxMessagesInner`
+(`inbox messages`/`read-primary`/`peek-primary`), and the forward-migration sweep
+(`promoteUnclaimedRegistrySessions`) — propagates it onward: `inbox pull`/`read-primary`/
+`inbox messages` attach an additive `promotion: { promoted, registryWriteError? }` object to
+their JSON output (present only when a promotion happened or the registry write actually
+failed this call), and the sweep's per-row `promoted[]` entry gets a `registryWriteError`
+field under the same condition. A registry write failure never blocks the call or the
+descriptor promotion; the next read/pull retries the registry write via the
+divergence-repair branches above.
 
 **`descriptorSessionId` (diagnose):** `computeDiagnosis` resolves a row's reported
 `sessionId` through the descriptor when the registry copy is stale, and on disagreement

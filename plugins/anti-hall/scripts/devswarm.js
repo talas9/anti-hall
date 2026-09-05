@@ -4888,8 +4888,15 @@ function promoteUnclaimedRegistrySessions(home, opts) {
     let r;
     try { r = promoteUnclaimedSession(home, d.id, beatSession, ctx); }
     catch (_) { out.errors++; out.ok = false; continue; }
-    if (r && r.promoted) out.promoted.push({ id: String(d.id), to: r.to });
-    else out.left.push({ id: String(d.id), reason: 'write-failed' });
+    if (r && r.promoted) {
+      const row = { id: String(d.id), to: r.to };
+      // R23 P2: surface a swallowed registry-write failure per-row, same
+      // additive shape as inbox pull/read's `promotion.registryWriteError` —
+      // descriptor promotion still succeeded (hence `promoted` here at all)
+      // but the registry side may still be stuck on the marker.
+      if (r.registryWriteError) row.registryWriteError = r.registryWriteError;
+      out.promoted.push(row);
+    } else out.left.push({ id: String(d.id), reason: 'write-failed' });
   }
   return out;
 }
@@ -5176,6 +5183,15 @@ function cmdInboxPull(id, flags, ctx) {
   // ADDITIVE, present only when it actually happened (so an unchanged pull's
   // output stays byte-identical for existing parsers).
   if (promotedPull && promotedPull.promoted) out.sessionPromoted = promotedPull.to;
+  // R23 P2: promoteUnclaimedSession's registryWriteError was previously
+  // dropped here — a failed registry write (descriptor promoted, registry
+  // still stuck on the `unclaimed:` marker) was invisible to every caller of
+  // `inbox pull`. Additive `promotion` object, present only when a promotion
+  // happened or a registry write actually failed this call.
+  if (promotedPull && (promotedPull.promoted || promotedPull.registryWriteError)) {
+    out.promotion = { promoted: !!promotedPull.promoted };
+    if (promotedPull.registryWriteError) out.promotion.registryWriteError = promotedPull.registryWriteError;
+  }
   if (res.error) out.error = res.error;
   return out;
 }
@@ -5533,7 +5549,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // is claimed — take the `unclaimed:` marker off before anything below decides
   // liveness from it. Idempotent, fail-soft, and a pure no-op for every row that
   // is not carrying the marker.
-  maybePromoteUnclaimed(home, id, flags, ctx);
+  const promotedInner = maybePromoteUnclaimed(home, id, flags, ctx);
   const doAck = inboxReadDoesAck(flags, opts);
   // forceUnread (spec item 5b / D): lets `peek-primary` request the SAME
   // unread-only view as `read-primary` (opts.ack:true implies it) WITHOUT
@@ -6420,6 +6436,15 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     count: messages.length,
     messages,
   };
+  // R23 P2: same promotion-visibility fix as cmdInboxPull — a failed
+  // registry write from maybePromoteUnclaimed (descriptor promoted, registry
+  // still `unclaimed:`) was previously discarded here entirely. Additive
+  // `promotion` object, present only when a promotion happened or the
+  // registry write actually failed this call.
+  if (promotedInner && (promotedInner.promoted || promotedInner.registryWriteError)) {
+    out.promotion = { promoted: !!promotedInner.promoted };
+    if (promotedInner.registryWriteError) out.promotion.registryWriteError = promotedInner.registryWriteError;
+  }
   if (union) {
     // Additive channel-scoped cursor visibility, naming convention matching
     // `inbox count`'s own cursorNdjson/cursorStore fields (a few hundred
