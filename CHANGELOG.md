@@ -6,6 +6,29 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.96.1 (2026-09-05)
+
+- **Fixed: the supervisor no longer escalates a row whose harness session is
+  alive** — the idle-alive suppressor now consults the session pid directly,
+  closing the 15-30 minute window where the dormancy gate (30 min) never
+  reached the pid check while the stale gate (15 min) fired first
+  (`90711586ecb1`). Rows already stuck in the terminal escalated state
+  self-heal on the next supervisor pass when the session pid is alive
+  (`recovery.log` reason `session-alive`); sticky escalated verdicts now
+  carry measured `pending`/`notDraining`/`oldestUnreadAgeMs` instead of
+  hardcoded `false`. `doctor` reports "escalated while session alive".
+- **Added: the supervisor re-runs deferred post-update stages one per
+  pass** — `fold-all-stores`, `heal-orphan-partitions`, and
+  `fold-archived-rows` are now driven by their resume markers, budgeted by
+  `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` (default 20s), with a rotation
+  cursor in `deferred-sweep-state.json`; the supervisor JSON line gains
+  `deferredSweep` (closes the 0.96.0 Known item).
+- **Docs:** KB §26 gap sentence corrected.
+- **Known:** app-side archive detection may still lack a cache entry for a
+  repo whose active probe fails (`3e000e49fe1b`, under investigation); ack
+  from an unresolvable caller still fails open; leaked fixture stores
+  remain report-only.
+
 ## 0.96.0 (2026-09-05)
 
 - **Fixed: routing sites select targets by heartbeat-aware liveness, not a
