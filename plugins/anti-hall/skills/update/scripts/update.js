@@ -2256,15 +2256,21 @@ function runUpdate(opts) {
   // fold-archived-rows persist their own resume markers; the one-time-per-
   // version stages simply re-attempt next call).
   //
-  // DEFERRAL SAFETY NET, HONESTLY SCOPED: companion/devswarm-supervisor.js
-  // ALSO runs a periodic, cooldown-gated sweep — but only `reconcile` and
-  // single-project `foldMeshDuplicates` (its own reconcileSweepIfDue). It
-  // does NOT periodically run heal-orphan-partitions, fold-all-stores (the
-  // cross-store sweep), or fold-archived-rows/fold-archived-family-
-  // descriptors — those rely SOLELY on the next `update`/`doctor` invocation
-  // to pick a deferred pass back up. Deferring `reconcile`/`fold` therefore
-  // has a real periodic backstop; deferring the other stages does not — they
-  // simply wait, safely (fail-open, no-delete), for the next explicit run.
+  // DEFERRAL SAFETY NET (task #40, v0.96.1 — closes the gap this comment
+  // used to describe): companion/devswarm-supervisor.js ALSO runs a periodic,
+  // cooldown-gated sweep — `reconcile` + single-project `foldMeshDuplicates`
+  // on every tick (its own reconcileSweepIfDue), PLUS a separate bounded
+  // per-pass slot (deferredSweepIfDue) that picks up AT MOST ONE of
+  // fold-all-stores / heal-orphan-partitions / fold-archived-rows per tick,
+  // rotating through the three, and ONLY when that stage's own persisted
+  // resume/sweep-state marker shows it actually deferred work here (a no-op
+  // tick otherwise). It calls these SAME stage functions
+  // (foldAllStoresPostUpdate/healOrphanPartitionsPostUpdate/
+  // foldArchivedRowsPostUpdate) directly — no separate implementation. So a
+  // deferral of any of these four stages now has a real periodic backstop;
+  // it is bounded (one stage, one small budget, per tick) rather than
+  // instant, but no longer relies SOLELY on the next explicit
+  // `update`/`doctor` invocation the way it did before this task.
   const postPullNowFn = opts.now || Date.now;
   const postPullBudget = postPullBudgetMs(env);
   const postPullDeadline = postPullBudget > 0 ? postPullNowFn() + postPullBudget : Infinity;

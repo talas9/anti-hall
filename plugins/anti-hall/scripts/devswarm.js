@@ -12280,4 +12280,10 @@ module.exports = {
   writeSendReceipt, sendReceiptsDir, receiptDayKey, receiptFileName,
   // D11-A (f56dcc08f048) — exported for direct unit testing:
   pickSurvivor, isRoutingLiveRow, isRoutingLiveRowStrict,
+  // task #40 (v0.96.1) — companion/devswarm-supervisor.js's deferred-sweep
+  // backstop peeks these SAME resume markers (read-only) to decide whether
+  // fold-archived-rows has pending work worth a slot, without duplicating
+  // the marker path/shape here:
+  foldArchivedResumePath, readFoldArchivedResume,
+  foldArchivedFamilyResumePath, readFoldArchivedFamilyResume,
 };

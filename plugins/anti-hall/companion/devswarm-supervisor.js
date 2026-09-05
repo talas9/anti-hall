@@ -797,6 +797,9 @@ function main() {
     // as the liveness sweep above — never a parallel/independent lock — so two
     // overlapping supervisor ticks can never both attempt it at once either.
     const reconcile = reconcileSweepIfDue({ home });
+    // Deferred post-update sweep backstop (task #40) — rides inside this SAME
+    // single-flight sweep-lock hold, one bounded stage-slot per pass.
+    const deferredSweep = deferredSweepIfDue({ home });
     // `sweepFamilies` (identity-family collapsed) rides ALONGSIDE the existing
     // `sweep` field (raw per-descriptor count, unchanged — still what
     // sweepOnce actually iterated/wrote verdicts for) rather than replacing
@@ -806,12 +809,204 @@ function main() {
     // worktreePath through sweepOnce's per-result shape.
     let sweepFamilies = results.length;
     try { sweepFamilies = collapsedDescriptorFamilies(readDescriptors(home)).length; } catch (_) { /* fail-open: keep raw count */ }
-    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile }) + '\n');
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep }) + '\n');
   } catch (_) {
     // absolute fail-safe: never throw out of the sweep
   } finally {
     try { if (release) release(); } catch (_) {}
     process.exit(0);
+  }
+}
+
+// ============================================================================
+// DEFERRED POST-UPDATE SWEEP BACKSTOP (task #40, v0.96.1) — see update.js's
+// postPullBudgetMs doc comment: `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS` (D11-C,
+// defect e7307778b614) caps every DevSwarm post-pull stage COMBINED, and a
+// machine that always exhausts it defers fold-all-stores/heal-orphan-
+// partitions/fold-archived-rows WHOLE on EVERY `update`/`doctor` run. Unlike
+// reconcile/fold (already covered above by reconcileSweepIfDue's own
+// cooldown-gated periodic re-run), nothing periodic ever picked those three
+// back up — they relied SOLELY on the next explicit update/doctor call,
+// which never comes on a machine whose backlog is large enough to always
+// blow the budget. This gives the already-installed periodic sweep a
+// bounded per-pass slot: at most ONE deferred stage per pass, rotating in a
+// fixed order, and ONLY when that stage's OWN resume/sweep-state marker
+// shows deferred work is genuinely pending — a no-op tick costs one cheap
+// marker read, never a store re-enumeration.
+//
+// NO NEW FOLD/HEAL LOGIC HERE: this reuses update.js's own stage functions
+// (foldAllStoresPostUpdate / healOrphanPartitionsPostUpdate /
+// foldArchivedRowsPostUpdate) verbatim — this section is a scheduling slot
+// around them, nothing more.
+//
+// GATE-OPEN OVERRIDE (deliberate): those update.js stage functions each gate
+// on `isDevswarmActive(env)` internally (hooks/lib/devswarm-detect.js) —
+// correct for the `update`/`doctor` call site they were written for (skip
+// entirely on a plain non-DevSwarm run), but a launchd/systemd/cron-invoked
+// supervisor process carries no per-session `DEVSWARM_REPO_ID` at all, so
+// `auto` mode would gate-closed EVERY call unconditionally, silently making
+// this whole feature a no-op in the real deployed daemon. This module already
+// independently proved DevSwarm is genuinely in use before ever reaching this
+// code (this pass only runs when `hasDeferredWork` finds a REAL persisted
+// marker a DevSwarm session created on disk), so `runDeferredStage` passes a
+// SCOPED COPY of env with `ANTIHALL_DEVSWARM_SUPERVISOR: 'on'` forced —
+// `isDevswarmActive`'s own documented unconditional-true override — to the
+// stage call only, never mutating the caller's real env.
+// ============================================================================
+
+const DEFERRED_SWEEP_STAGES = ['fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows'];
+const DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS = 20000; // 20s per-pass slot, mirrors update.js's own DEFAULT_SWEEP_BUDGET_MS
+const DEFERRED_SWEEP_STATE_FILE = 'deferred-sweep-state.json';
+
+function deferredSweepStatePath(home) {
+  return path.join(devswarmRoot(home), DEFERRED_SWEEP_STATE_FILE);
+}
+
+// readDeferredSweepState/writeDeferredSweepState — a small, independent state
+// file tracking only `{ nextStageIndex }` (the rotation cursor). Fail-open:
+// unreadable/corrupt/absent -> index 0 (start of rotation), never thrown.
+// Same atomic tmp+rename write discipline as reconcileSweepStatePath above.
+function readDeferredSweepState(home, F) {
+  const Fi = F || fs;
+  try {
+    const parsed = JSON.parse(Fi.readFileSync(deferredSweepStatePath(home), 'utf8'));
+    const idx = Number.isFinite(parsed && parsed.nextStageIndex) ? parsed.nextStageIndex : 0;
+    const n = DEFERRED_SWEEP_STAGES.length;
+    return { nextStageIndex: ((idx % n) + n) % n };
+  } catch (_) {
+    return { nextStageIndex: 0 };
+  }
+}
+function writeDeferredSweepState(home, F, state) {
+  const Fi = F || fs;
+  try {
+    const p = deferredSweepStatePath(home);
+    Fi.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + process.pid;
+    Fi.writeFileSync(tmp, JSON.stringify(state));
+    Fi.renameSync(tmp, p);
+  } catch (_) { /* fail-open: the rotation cursor is best-effort, never load-bearing for correctness */ }
+}
+
+// resolveSupervisorSweepBudgetMs(env) -> ms, ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS-
+// overridable. Deliberately an absolute-ms knob (like update.js's own
+// sweepBudgetMs/postPullBudgetMs), NOT a *_SEC var like this file's liveness
+// thresholds above — it feeds straight into update.js's own ms-based budget
+// plumbing (ANTIHALL_UPDATE_SWEEP_BUDGET_MS), so the units must line up
+// without a seconds<->ms conversion at the boundary.
+function resolveSupervisorSweepBudgetMs(env) {
+  const raw = (env || process.env || {}).ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS;
+}
+
+// hasDeferredWork(stage, home, deps) -> bool. Peeks the stage's OWN persisted
+// resume/sweep-state marker WITHOUT doing any of its work — a cheap read,
+// never a listStoreHashes/directory walk. Fail-open to false: an absent or
+// corrupt marker reads as "nothing pending", the same posture every marker
+// reader in this codebase already takes (readSweepState/readFoldArchivedResume
+// etc. are themselves fail-open; this only adds the "is it non-empty" check).
+function hasDeferredWork(stage, home, deps) {
+  const d = deps || {};
+  try {
+    if (stage === 'fold-all-stores' || stage === 'heal-orphan-partitions') {
+      const updateJs = d.updateJs || require('../skills/update/scripts/update.js');
+      const key = stage === 'fold-all-stores' ? 'foldAllStores' : 'healOrphanPartitions';
+      const state = updateJs.readSweepState(home);
+      const entry = state[key];
+      return !!(entry && entry.pendingVersion && Array.isArray(entry.pendingHashes) && entry.pendingHashes.length > 0);
+    }
+    if (stage === 'fold-archived-rows') {
+      const devswarmCli = d.devswarm || require('../scripts/devswarm.js');
+      const buckets = devswarmCli.readFoldArchivedResume(home) || {};
+      const anyBucketPending = Object.keys(buckets).some((k) => Array.isArray(buckets[k]) && buckets[k].length > 0);
+      const famIds = devswarmCli.readFoldArchivedFamilyResume(home) || [];
+      return anyBucketPending || (Array.isArray(famIds) && famIds.length > 0);
+    }
+  } catch (_) { /* fail-open: a marker read failure reads as nothing pending */ }
+  return false;
+}
+
+// runDeferredStage(stage, opts) -> the stage function's OWN result shape (see
+// update.js's foldAllStoresPostUpdate/healOrphanPartitionsPostUpdate/
+// foldArchivedRowsPostUpdate doc comments) — never re-implemented here.
+// opts: { home, env, budgetMs, cwd, now, deps: { updateJs, devswarm } }.
+function runDeferredStage(stage, opts) {
+  const o = opts || {};
+  const home = o.home;
+  const env = o.env || process.env;
+  const deps = o.deps || {};
+  const updateJs = deps.updateJs || require('../skills/update/scripts/update.js');
+  const budgetMs = Number.isFinite(o.budgetMs) ? o.budgetMs : resolveSupervisorSweepBudgetMs(env);
+  const nowFn = o.now || Date.now;
+  // Deliberately NOT updateJs.resolvePaths(env, home): that resolves a
+  // MARKETPLACE-clone-relative path under `home` (the update/doctor CLI's own
+  // installed-plugin layout), which has no relationship to where THIS
+  // supervisor process's own code actually lives — a launchd/systemd/cron
+  // `home` carries no marketplace clone at all. This module already lazily
+  // requires '../scripts/devswarm.js' relative to its OWN location elsewhere
+  // in this file (see hasDeferredWork above); pluginSrcDir here is that same
+  // real, currently-running plugin source directory (one level up from
+  // companion/), never a home-derived guess.
+  const paths = deps.paths || { pluginSrcDir: path.resolve(__dirname, '..') };
+  // Threads THIS pass's own budget into the SAME knob update.js's own sweeps
+  // already read (ANTIHALL_UPDATE_SWEEP_BUDGET_MS via sweepBudgetMs), and
+  // forces the isDevswarmActive gate open (see the section header above) —
+  // both scoped to THIS call only, never mutating the caller's real env.
+  const scopedEnv = Object.assign({}, env, {
+    ANTIHALL_UPDATE_SWEEP_BUDGET_MS: String(budgetMs),
+    ANTIHALL_DEVSWARM_SUPERVISOR: 'on',
+  });
+  const commonOpts = { paths, env: scopedEnv, cwd: o.cwd || process.cwd(), home, devswarm: deps.devswarm, now: nowFn };
+  if (stage === 'fold-all-stores' || stage === 'heal-orphan-partitions') {
+    // The pending VERSION comes off the stage's OWN sweep-state entry (never
+    // recomputed here) so sweepItemsFor's resume branch matches and picks up
+    // exactly the pendingHashes list a prior budget-exhausted pass left —
+    // never a fresh listStoreHashes() full re-enumeration.
+    const key = stage === 'fold-all-stores' ? 'foldAllStores' : 'healOrphanPartitions';
+    const state = updateJs.readSweepState(home);
+    const entry = state[key] || {};
+    const version = entry.pendingVersion || null;
+    const fn = stage === 'fold-all-stores' ? updateJs.foldAllStoresPostUpdate : updateJs.healOrphanPartitionsPostUpdate;
+    return fn(Object.assign({}, commonOpts, { version }));
+  }
+  if (stage === 'fold-archived-rows') {
+    // foldArchivedRowsPostUpdate self-resumes off its own fold-archived-
+    // resume.json / fold-archived-family-resume.json markers — no
+    // version/hashes plumbing needed from this caller.
+    return updateJs.foldArchivedRowsPostUpdate(commonOpts);
+  }
+  return { attempted: false, detail: stage + ': unknown deferred-sweep stage' };
+}
+
+// deferredSweepIfDue(opts) -> { stage, ran:false, reason } | { stage, ran:true,
+// budgetMs, result }. Never throws. Rotates ONE stage forward per call
+// REGARDLESS of outcome (persisted BEFORE running/peeking, same ordering
+// rationale as reconcileSweepIfDue's own persist-before-run above) — a
+// no-op tick still advances so the NEXT pass checks a DIFFERENT stage rather
+// than getting stuck re-peeking the same one forever.
+function deferredSweepIfDue(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const deps = o.deps || {};
+  const F = deps.fs || fs;
+  try {
+    if (!supervisorEnabled(env)) return { stage: null, ran: false, reason: 'disabled' };
+
+    const state = (deps.readDeferredSweepState || readDeferredSweepState)(home, F);
+    const stage = DEFERRED_SWEEP_STAGES[state.nextStageIndex];
+    const nextIndex = (state.nextStageIndex + 1) % DEFERRED_SWEEP_STAGES.length;
+    (deps.writeDeferredSweepState || writeDeferredSweepState)(home, F, { nextStageIndex: nextIndex });
+
+    const pending = (deps.hasDeferredWork || hasDeferredWork)(stage, home, deps);
+    if (!pending) return { stage, ran: false, reason: 'no-marker' };
+
+    const budgetMs = Number.isFinite(o.budgetMs) ? o.budgetMs : resolveSupervisorSweepBudgetMs(env);
+    const result = (deps.runDeferredStage || runDeferredStage)(stage, { home, env, budgetMs, now: o.now, deps });
+    return { stage, ran: true, budgetMs, result };
+  } catch (e) {
+    return { stage: null, ran: false, error: String(e && e.message || e) };
   }
 }
 
@@ -842,6 +1037,10 @@ module.exports = {
   // DEFECT 17685a91b783
   DEFAULT_POST_SPAWN_GRACE_MS, resolvePostSpawnGraceMs, descriptorFilePath,
   withinPostSpawnGrace, isArchiveReadyForSupervisor,
+  // task #40 (v0.96.1) — deferred post-update sweep backstop:
+  deferredSweepIfDue, hasDeferredWork, runDeferredStage,
+  deferredSweepStatePath, readDeferredSweepState, writeDeferredSweepState,
+  resolveSupervisorSweepBudgetMs, DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS, DEFERRED_SWEEP_STAGES,
 };
 
 if (require.main === module) main();
