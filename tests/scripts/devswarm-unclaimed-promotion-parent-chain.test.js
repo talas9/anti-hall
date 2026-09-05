@@ -108,6 +108,12 @@ for (const B of backends) {
         sessionDeriveOpts: {
           pid: 9001,
           ppidOf: (p) => (p === 9001 ? 9999 : null),
+          // R22 P2 pid-reuse/staleness guard: a no-throw `kill` simulates a
+          // LIVE pid (the file's own mtime becomes `sinceMs`, and a real
+          // process's start time cannot be checked here, so `ps` is left
+          // unmocked — pidIsAlive treats a missing start time as "no
+          // opinion" and trusts the recorded session id).
+          kill: () => {},
         },
       });
       const result = cli.run(['inbox', 'pull', id], ctx);
@@ -116,6 +122,37 @@ for (const B of backends) {
       const desc = readDescriptor(home, id);
       assert.strictEqual(desc.sessionId, 'real-session-from-parent-chain', 'descriptor promoted via the derived session id, with no --session/env present');
       assert.strictEqual(registrySid(home, repoKey, id), 'real-session-from-parent-chain', 'registry promoted in lockstep (write-through)');
+    } finally { rm(main); rm(home); }
+  });
+
+  // (B1d) SAFETY (R22 P2): the session file names a pid that is PROVABLY dead
+  // (kill throws ESRCH) -> the pid-reuse/staleness guard rejects it and the
+  // chain keeps walking; with nothing else in the chain, no promotion fires.
+  test(`[${B.name}] SAFETY: a parent-chain session file naming a DEAD pid never promotes (pid-reuse/staleness guard)`, () => {
+    const home = tmpHome();
+    const main = makeGitRepo('parentchain-deadpid-' + B.name);
+    try {
+      const repoKey = repokey.repoKeyForWorktree(main);
+      const wt = topOf(main);
+      const id = meshOf(main);
+      writeDescriptor(home, id, { id, worktreePath: wt, sessionId: 'unclaimed:' + id });
+      seedB(home, repoKey, { id, worktreePath: wt, sessionId: 'unclaimed:' + id });
+      writeSessionFile(home, 9999, { pid: 9999, sessionId: 'dead-pid-session', cwd: wt, status: 'running' });
+
+      const deadKill = () => { const e = new Error('no such process'); e.code = 'ESRCH'; throw e; };
+      const ctx = bctx(home, {
+        cwd: main,
+        sessionDeriveOpts: {
+          pid: 9001,
+          ppidOf: (p) => (p === 9001 ? 9999 : null),
+          kill: deadKill,
+        },
+      });
+      cli.run(['inbox', 'pull', id], ctx);
+
+      const desc = readDescriptor(home, id);
+      assert.strictEqual(desc.sessionId, 'unclaimed:' + id, 'a dead-pid session file must never be trusted; row stays unclaimed:');
+      assert.strictEqual(registrySid(home, repoKey, id), 'unclaimed:' + id, 'registry likewise untouched');
     } finally { rm(main); rm(home); }
   });
 

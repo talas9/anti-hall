@@ -175,7 +175,10 @@ const {
   heartbeatPathFor,
   // sessionsDirFor — the harness's own `<home>/.claude/sessions/<pid>.json`
   // directory (defect 54a6539e2d69's parent-pid-chain fallback derivation).
-  sessionsDirFor,
+  // pidIsAlive — the SAME pid-reuse/start-time staleness guard
+  // sessionPidAlive already applies, reused (not re-implemented) for the
+  // session file the parent-pid-chain walk finds (R22 P2).
+  sessionsDirFor, pidIsAlive,
 } = require('../companion/lib/liveness.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
@@ -4547,7 +4550,8 @@ const MAX_PPID_HOPS = 6;
 // `opts.ppidOf` (default: defaultPpidOf) and `opts.fs`/`opts.pid` are
 // injectable so tests can supply a synthetic process chain and a fake
 // sessions dir without spawning real processes or touching the real
-// `~/.claude/sessions`.
+// `~/.claude/sessions`. `opts.kill`/`opts.ps` are likewise injectable for the
+// pid-reuse/staleness guard (see the `pidIsAlive` call below).
 function deriveCallerSessionIdFromProcessTree(ctx, opts) {
   const o = opts || {};
   const home = ctx && ctx.home;
@@ -4570,7 +4574,31 @@ function deriveCallerSessionIdFromProcessTree(ctx, opts) {
       const sid = String(rec.sessionId).trim();
       if (sid && !sid.startsWith(SYNTHETIC_SESSION_PREFIX)) {
         const recWt = canonicalWorktreeRealPath(String(rec.cwd)) || String(rec.cwd);
-        if (recWt && recWt === callerWt) return sid;
+        if (recWt && recWt === callerWt) {
+          // PID-REUSE / STALENESS GUARD (R22 P2): a session FILE naming this
+          // pid is not proof the pid is still THAT session's process — the OS
+          // can hand the same pid to an unrelated later process once the
+          // original exits, and the stale file lingers if its owner never
+          // cleaned it up. Reuse liveness.js's OWN guard (pidIsAlive's
+          // `sinceMs` check, the same one sessionPidAlive already applies) via
+          // this recorded file's own mtime as the reference: a live pid whose
+          // OWN start time resolves to strictly AFTER this file was written
+          // cannot be the process that wrote it. Fail-soft on an unstattable
+          // file (sinceMs omitted, matching pidIsAlive's pre-existing
+          // behavior) and on a `null` (no-opinion) verdict — only a PROVEN
+          // dead/reused pid (`false`) is rejected; anything else falls back
+          // to trusting the recorded session id, exactly as before this
+          // guard existed.
+          const rf = path.join(sessDir, String(pid) + '.json');
+          let sinceMs = null;
+          try { const st = F.statSync(rf); sinceMs = Number.isFinite(st.mtimeMs) ? st.mtimeMs : null; } catch (_) { sinceMs = null; }
+          const recPid = Number.isInteger(rec.pid) && rec.pid > 0 ? rec.pid : pid;
+          const pidOpts = Number.isFinite(sinceMs) ? { sinceMs, ps: o.ps } : undefined;
+          const alive = pidIsAlive(recPid, o.kill, pidOpts);
+          if (alive !== false) return sid;
+          // dead/reused pid: this session file is stale — do not trust it,
+          // but keep walking the chain in case an ancestor hop is legitimate.
+        }
       }
     }
     let next = null;
@@ -4579,6 +4607,36 @@ function deriveCallerSessionIdFromProcessTree(ctx, opts) {
     pid = next;
   }
   return null;
+}
+
+// rowStillNeedsSessionDerivation(home, id, ctx) -> bool. GATE (R22 P2): the
+// process-tree fallback (deriveCallerSessionIdFromProcessTree) spawns a real
+// `ps` per hop of the caller's parent chain via defaultPpidOf. Before this
+// gate, realSessionIdFrom ran that walk on EVERY inbox read/pull lacking
+// --session/CLAUDE_CODE_SESSION_ID — including reads of a row ALREADY
+// promoted to a real session id, where the walk's result can only ever be
+// discarded (a fully-promoted descriptor's classic promotion path is already
+// a no-op). This checks the row's CURRENT sessionId on both sides
+// (descriptor AND registry, independently — the two can diverge, see
+// promoteUnclaimedSession's divergence-repair header) and returns true (the
+// walk should proceed) ONLY when at least one side still carries the exact
+// `unclaimed:<id>` marker or has no sessionId at all; a row already real on
+// BOTH sides returns false. Fail-OPEN on any read error (missing descriptor,
+// unreadable registry): the pre-existing behavior always ran the walk, so an
+// error here costs one unnecessary `ps` invocation rather than silently
+// blocking a legitimate promotion.
+function rowStillNeedsSessionDerivation(home, id, ctx) {
+  if (!home) return true;
+  try {
+    const marker = SYNTHETIC_SESSION_PREFIX + String(id);
+    let desc = null;
+    try { desc = readDescriptorFile(home, id); } catch (_) { desc = null; }
+    const descSid = desc && desc.sessionId != null ? String(desc.sessionId) : null;
+    if (!descSid || descSid === marker) return true;
+    const registrySid = currentRegistrySessionId(home, id, ctx);
+    if (!registrySid || registrySid === marker) return true;
+    return false;
+  } catch (_) { return true; }
 }
 
 // realSessionIdFrom(flags, ctx, id) -> a REAL session id, or null.
@@ -4604,6 +4662,7 @@ function realSessionIdFrom(flags, ctx, id) {
     if (s && s !== String(id) && !s.startsWith(SYNTHETIC_SESSION_PREFIX)) return s;
     return null;
   }
+  if (!rowStillNeedsSessionDerivation(ctx && ctx.home, id, ctx)) return null;
   try {
     const derived = deriveCallerSessionIdFromProcessTree(ctx, ctx && ctx.sessionDeriveOpts);
     if (derived && derived !== String(id)) return derived;
@@ -4697,7 +4756,21 @@ function promoteUnclaimedSession(home, id, sessionId, ctx) {
   // allowPathChange: the worktreePath is IDENTICAL (copied verbatim from the
   // descriptor we just read) — the flag only stops the F2 id-collision guard
   // from treating an unchanged path as a mismatch on a re-registered row.
-  try { upsertStoreRegistry(home, next, ctx, { allowPathChange: true }); } catch (_) { /* descriptor already promoted; registry retries next call */ }
+  try {
+    upsertStoreRegistry(home, next, ctx, { allowPathChange: true });
+  } catch (e) {
+    // R22 P2: descriptor already promoted; registry retries next call (the
+    // divergence-repair branches above cover that retry) — but a SWALLOWED
+    // failure here was previously invisible: nothing told the caller or an
+    // operator that the registry write failed AT ALL, only that the row
+    // stayed on `unclaimed:` for a call or two. Surface it: additive field on
+    // the return value (never fails the promotion itself — descriptor
+    // promotion already succeeded, so `out.promoted` stays true) plus one
+    // stderr line for anyone watching logs.
+    const msg = (e && e.message) ? String(e.message) : String(e);
+    out.registryWriteError = msg;
+    try { process.stderr.write('[devswarm] registry write failed for ' + String(id) + ': ' + msg + '\n'); } catch (_) { /* stderr write never affects the promotion */ }
+  }
   out.promoted = true;
   out.from = marker;
   out.to = String(sessionId);
