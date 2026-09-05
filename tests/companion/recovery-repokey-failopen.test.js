@@ -40,7 +40,10 @@ test('D27 fail-open: an UNLOADABLE devswarm-repokey.js -> requiring recovery.js 
       M.notifyParentEscalation(descriptor, verdict, { home: ${JSON.stringify(home)}, now: Date.now() }, undefined);
       process.stdout.write('OK');
     `;
-    const env = Object.assign({}, process.env, { NODE_OPTIONS: `--require "${BREAK_REPOKEY}"` });
+    const env = Object.assign({}, process.env, {
+      NODE_OPTIONS: `--require "${BREAK_REPOKEY}"`,
+      HOME: home, USERPROFILE: home,
+    });
     const res = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8', env, timeout: 10000 });
     assert.strictEqual(res.status, 0, `must exit 0 (require + call must not throw); stderr=${res.stderr}`);
     assert.ok(res.stdout.includes('OK'), `notifyParentEscalation must complete; stdout=${res.stdout} stderr=${res.stderr}`);
