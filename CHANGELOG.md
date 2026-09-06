@@ -6,6 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.97.1 (2026-09-06)
+
+- **Fixed: a store-unavailable inbox count no longer stops the drain loop or
+  skips the heartbeat** — `inbox count` / `inbox tick` report `known: false`
+  when the mesh store could not be read, but still carry a numeric
+  `unreadTotal` (often 0, the NDJSON side alone). The mailbox-wake stop
+  condition treated that as "nothing to do", so a Primary or child whose
+  store was briefly unreadable stopped draining and the child gate skipped the
+  heartbeat. The injected stop condition now also requires `known` is not
+  `false` (an absent field still counts as known, so older `count` shapes are
+  unaffected), `inbox tick` records `known` in the wake-tick marker, and the
+  child gate refuses to treat a `known: false` zero as a genuine no-op.
+  Reported by the SkyCrew fleet (c37ff1269685).
+
 ## 0.97.0 (2026-09-06)
 
 - **Fixed: a reused-id archived marker no longer marks a live row archived** —

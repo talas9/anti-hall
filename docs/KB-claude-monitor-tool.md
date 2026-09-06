@@ -473,8 +473,8 @@ redundant no-ops.
    `--child`) + count, PLUS three side effects — a `wake-tick/<id>.json`
    liveness marker, a cheap `heartbeats/<id>.json` ts refresh (never
    fabricates progress/phase/wip/blockers), and (see below) a measurement
-   append. The prompt still says: if the tick reports `unreadTotal: 0` and no
-   withheld gap, reply with exactly one line and stop — never spawn a
+   append. The prompt still says: if the tick reports `unreadTotal: 0`, no
+   withheld gap, and `known` is not `false`, reply with exactly one line and stop — never spawn a
    subagent for an empty mailbox. `devswarm-child-gate.js`'s Stop hook reads
    the fresh marker to skip its OWN forced-heartbeat block when the tick
    already proved liveness with nothing to do, closing the redundant
