@@ -306,3 +306,40 @@ test('doctor: DevSwarm-active session with no installed daemons -> runtime check
     try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
   }
 });
+
+// D13 (v0.97.0): cron-found-mail.jsonl (devswarm.js's cmdInboxTick, effect 3)
+// accumulates one line per mailbox-wake cron tick that found unread mail while
+// a Monitor watcher lock was already armed — doctor --check reports its line
+// count as one INFO line (never FAIL/WARN — any count, including 0, is healthy).
+test('doctor: DevSwarm-active session reports the cron-found-mail.jsonl line count as INFO', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const p = path.join(home, '.anti-hall', 'devswarm', 'cron-found-mail.jsonl');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, [
+      JSON.stringify({ ts: 1, id: 'w1', unreadTotal: 2 }),
+      JSON.stringify({ ts: 2, id: 'w2', unreadTotal: 1 }),
+      JSON.stringify({ ts: 3, id: 'w1', unreadTotal: 5 }),
+    ].join('\n') + '\n');
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /cron ticks that found mail while a watcher was armed: 3/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});
+
+test('doctor: DevSwarm-active session with NO cron-found-mail.jsonl reports the count as 0, never FAILs', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = makeFakeHome();
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-doctor-cwd-'));
+  try {
+    const r = runDoctor({ cwd, env: { HOME: home, USERPROFILE: home, ANTIHALL_DEVSWARM_SUPERVISOR: 'on', DEVSWARM_REPO_ID: 'repo-x' } });
+    assert.strictEqual(r.code, 0, r.out);
+    assert.match(r.out, /cron ticks that found mail while a watcher was armed: 0/);
+  } finally {
+    cleanup();
+    try { fs.rmSync(cwd, { recursive: true, force: true }); } catch (_) {}
+  }
+});

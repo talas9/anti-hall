@@ -46,6 +46,17 @@
 //                  bounded guard-safe pull — non-destructive `message-count` gate,
 //                  at-most-one bounded `read-messages` (never `monitor`), atomic
 //                  idempotent NDJSON append into the durable inbox + store parity.
+//   inbox tick <id> [--child]
+//                  D13 (v0.97.0): the mailbox-wake CRON's one-command drain — with
+//                  `--child` runs `inbox pull` first (same as the child branch
+//                  above), then reports the SAME shape `inbox count` does, PLUS
+//                  writes a wake-tick marker (wake-tick/<id>.json) devswarm-child-
+//                  gate.js reads to skip a redundant forced heartbeat, refreshes
+//                  heartbeats/<id>.json's ts (cheap liveness signal), and — only
+//                  when unread>0 AND a Monitor watcher lock exists for `id` —
+//                  appends one line to cron-found-mail.jsonl (capped, `doctor
+//                  --check` reports its count) so cron's residual value past
+//                  Monitor becomes measurable instead of assumed.
 //   workspaces list
 //                  derive + emit summary.json projection (unread, gates, archive_ready).
 //   gate <id> [--set CSV] [--clear CSV]
@@ -733,6 +744,12 @@ function checkedArchivedDir(home, { create = false, F } = {}) {
   return { ok: true, path: dir, exists: true };
 }
 function heartbeatsDir(home) { return path.join(devswarmRoot(home), 'heartbeats'); }
+// D13 (v0.97.0) — wake-tick marker + cron-found-mail measurement paths. See
+// cmdInboxTick's own header comment for what writes them and why.
+function wakeTickDir(home) { return path.join(devswarmRoot(home), 'wake-tick'); }
+function wakeTickPathFor(id, home) { return path.join(wakeTickDir(home), id + '.json'); }
+function cronFoundMailPath(home) { return path.join(devswarmRoot(home), 'cron-found-mail.jsonl'); }
+const CRON_FOUND_MAIL_CAP = 1000;
 // heartbeatCallersLogPath / appendHeartbeatCallerLog (spec item 1b, A1-INSTRUMENT):
 // field evidence showed a dead registry row's updatedAt refreshed every ~30-45s by
 // an unidentified caller invoking `heartbeat` WITHOUT --session (source:'cli-heartbeat',
@@ -6958,6 +6975,118 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   return out;
 }
 
+// cmdInboxTick(id, flags, ctx) -> the D13 (v0.97.0) "one command" mailbox-wake
+// verb. FIELD MEASUREMENT that motivated it: a child session's 5-minute cron
+// (pull + count, then a forced Stop-hook heartbeat EVERY tick) produced 1,225
+// polling lines / 2.29 MB — about half that session's real content — almost
+// entirely "mailbox empty" no-ops. `inbox tick` folds the cron prompt's own
+// pull(if `--child`)+count into ONE command AND leaves three cheap side
+// effects behind so the rest of the wake path can be smarter about a no-op:
+//   1. wake-tick marker (`<home>/.anti-hall/devswarm/wake-tick/<id>.json`,
+//      { ts, unreadTotal, meshGapWithheld }) — devswarm-child-gate.js's Stop
+//      hook reads this to skip its OWN forced-heartbeat block when the marker
+//      is fresh and proves "nothing to do" (see that file's
+//      tickMarkerFreshZero()) — the tick itself is a liveness signal, so a
+//      SEPARATE forced report is redundant overhead in exactly that case.
+//   2. heartbeat ts refresh (`heartbeats/<id>.json`) — cheap (bump ts/state_ts
+//      on the EXISTING file only; never fabricates progress/phase/wip/
+//      blockers, matching cmdHeartbeat's own authorship rule) so a supervisor
+//      sweep still sees fresh activity from a session that only ever ticks.
+//   3. cron-found-mail measurement (`cron-found-mail.jsonl`, capped at
+//      CRON_FOUND_MAIL_CAP lines, oldest rotated out) — ONLY when this tick
+//      found `unreadTotal > 0` AND a Monitor watcher lock file for this `id`
+//      already exists (armed): that combination is a directly-measurable
+//      "cron found something Monitor should have already delivered" event —
+//      accumulating a count here is what lets a future release decide
+//      whether cron is still pulling weight net of Monitor, instead of
+//      guessing. `doctor --check` reports the line count as one INFO line.
+// Fail-open throughout for effects 1-3 (marker/heartbeat/measurement writes
+// are instrumentation, never allowed to fail the tick's real count result);
+// the underlying `pull`/`count` calls keep their OWN existing error handling
+// unchanged (this function adds no new failure mode to either).
+function cmdInboxTick(id, flags, ctx) {
+  const home = ctx.home;
+  const isChildFlag = hasFlag(flags, 'child');
+  if (isChildFlag) {
+    // Same wrapping the 'pull' dispatch case already gives a bare `inbox pull`
+    // (self-heal runs BEFORE the native drain, D-O-D7) — never skip it just
+    // because this call is folded into `tick`. Best-effort: a pull failure
+    // must not prevent the count/marker/heartbeat steps below from running.
+    try { withSelfHeal(() => cmdInbox('pull', id, flags, ctx), ctx); } catch (_) { /* fail-open */ }
+  }
+  const counted = cmdInbox('count', id, flags, ctx);
+  const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+
+  // Effect 1: wake-tick marker.
+  try {
+    if (isSafeId(id)) {
+      const dir = wakeTickDir(home);
+      fs.mkdirSync(dir, { recursive: true });
+      const marker = {
+        ts: now,
+        unreadTotal: Number.isFinite(counted && counted.unreadTotal) ? counted.unreadTotal : null,
+        meshGapWithheld: !!(counted && counted.meshGapWithheld),
+      };
+      const p = wakeTickPathFor(id, home);
+      const tmp = p + '.' + process.pid + '.' + process.hrtime.bigint().toString(36) + '.tick.tmp';
+      fs.writeFileSync(tmp, JSON.stringify(marker));
+      fs.renameSync(tmp, p);
+    }
+  } catch (_) { /* fail-open: marker is instrumentation only */ }
+
+  // Effect 2: heartbeat ts refresh — bump ts/state_ts on the EXISTING file
+  // only (never fabricate the other fields; matches cmdHeartbeat's authorship
+  // rule). No existing heartbeat -> write a minimal, honestly-empty one, same
+  // shape cmdHeartbeat would for a --session-less caller (progress/phase null,
+  // wip/blockers empty, sessionId null) so a downstream reader never sees a
+  // malformed record.
+  try {
+    if (isSafeId(id)) {
+      const hbPath = heartbeatPathFor(id, home);
+      let beat = null;
+      try { beat = JSON.parse(fs.readFileSync(hbPath, 'utf8')); } catch (_) { beat = null; }
+      if (beat && typeof beat === 'object') {
+        beat.ts = now;
+        beat.state_ts = now;
+      } else {
+        beat = {
+          id, ts: now, state_ts: now, source: 'inbox-tick',
+          progress_pct: null, phase: null, wip: [], blockers: [], sessionId: null,
+        };
+      }
+      fs.mkdirSync(heartbeatsDir(home), { recursive: true });
+      const hbTmp = hbPath + '.' + process.pid + '.' + process.hrtime.bigint().toString(36) + '.tick.tmp';
+      fs.writeFileSync(hbTmp, JSON.stringify(beat));
+      fs.renameSync(hbTmp, hbPath);
+    }
+  } catch (_) { /* fail-open: heartbeat refresh is best-effort */ }
+
+  // Effect 3: cron-found-mail measurement — only when this tick genuinely
+  // found unread AND a Monitor watcher lock for this id already exists (the
+  // lock's mere presence is enough; it is NOT staleness-checked here — this
+  // is a coarse measurement counter, not a liveness gate, and a stale lock
+  // still means "a watcher was armed for this id at some point").
+  try {
+    const unreadTotal = counted && counted.unreadTotal;
+    if (isSafeId(id) && Number.isFinite(unreadTotal) && unreadTotal > 0) {
+      let lockPathFor = null;
+      try { ({ lockPathFor } = require('../companion/lib/devswarm-wake-watch.js')); } catch (_) { lockPathFor = null; }
+      const lockPath = lockPathFor ? lockPathFor(home, id) : null;
+      if (lockPath && fs.existsSync(lockPath)) {
+        const p = cronFoundMailPath(home);
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        let lines = [];
+        try { lines = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean); } catch (_) { lines = []; }
+        lines.push(JSON.stringify({ ts: now, id, unreadTotal }));
+        if (lines.length > CRON_FOUND_MAIL_CAP) lines = lines.slice(lines.length - CRON_FOUND_MAIL_CAP);
+        fs.writeFileSync(p, lines.join('\n') + '\n');
+      }
+    }
+  } catch (_) { /* fail-open: measurement only, never breaks the tick */ }
+
+  return Object.assign({}, counted, { action: 'tick' });
+}
+
 function cmdInbox(sub, id, flags, ctx) {
   const home = ctx.home;
   // --since/--tail belong to the NON-ACKING `inbox messages` verb only. Every
@@ -6971,6 +7100,7 @@ function cmdInbox(sub, id, flags, ctx) {
     const rej = inboxWindowRejection(flags, 'inbox ' + String(sub));
     if (rej) return rej;
   }
+  if (sub === 'tick') return cmdInboxTick(id, flags, ctx);
   if (sub === 'pull') return cmdInboxPull(id, flags, ctx);
   if (sub === 'messages') return cmdInboxMessages(id, flags, ctx);
   if (sub === 'read-primary') return cmdInboxMessages(id, flags, ctx, { ack: true });

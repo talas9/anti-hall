@@ -189,6 +189,19 @@ const MAX_BLOCKS = 2;
 // the cap holds and the loop terminates.
 const RESET_MS = 5 * 60 * 1000;
 
+// D13 (v0.97.0): a fresh, zero-unread mailbox-wake TICK marker (written by
+// `devswarm.js inbox tick <id>` — the cron prompt's own drain step, see
+// devswarm-wake.js's drainCmd useTick branch) is itself a liveness+no-op proof
+// — the cron fired, ran `inbox count` (and `inbox pull` first, for a child),
+// found nothing, and already bumped heartbeats/<id>.json's ts. Forcing a
+// SEPARATE heartbeat report on top of that is redundant overhead — exactly
+// what the D13 field measurement (1,225 polling lines / 2.29 MB, ~half a
+// session's real content, almost entirely "mailbox empty" no-ops) was about.
+// 120s window: generous enough to cover the tick's own subprocess latency,
+// tight enough that a marker from a PRIOR tick (this cron now fires every 30
+// min) can never be mistaken for "just happened" satisfaction of THIS Stop.
+const TICK_MARKER_FRESH_MS = 120 * 1000;
+
 function stateFileFor(sessionId) {
   const safe = String(sessionId).replace(/[^A-Za-z0-9_.-]/g, '_');
   // Own DISTINCT state file, namespaced under devswarm/ so it never collides with
@@ -323,6 +336,32 @@ function hasUnreadParentMessages(env, home) {
   return Number.isFinite(native) && native > 0;
 }
 
+// tickMarkerFreshZero(env, home, now) -> bool. D13: true iff `inbox tick`'s own
+// marker (devswarmRoot(home)/wake-tick/<id>.json — written by devswarm.js's
+// cmdInboxTick) is fresh (within TICK_MARKER_FRESH_MS) AND reported a genuine
+// no-op (`unreadTotal === 0` AND `meshGapWithheld` falsy — the SAME two-part
+// stop condition drainCmd's own prose uses, matching G1's Fix Wave 3 fix so
+// this can never treat a withheld-gap tick as satisfaction). Fail-open: ANY
+// error (missing/corrupt marker, unsafe id, unresolvable home) -> false —
+// never silently skips a heartbeat this gate would otherwise force.
+function tickMarkerFreshZero(env, home, now) {
+  try {
+    const id = env.DEVSWARM_BUILDER_ID;
+    if (typeof id !== 'string' || !isSafeId(id)) return false;
+    const p = path.join(devswarmRoot(home), 'wake-tick', id + '.json');
+    const raw = fs.readFileSync(p, 'utf8');
+    const marker = JSON.parse(raw);
+    if (!marker || typeof marker !== 'object') return false;
+    if (!Number.isFinite(marker.ts)) return false;
+    if ((now - marker.ts) > TICK_MARKER_FRESH_MS) return false;
+    if (marker.unreadTotal !== 0) return false;
+    if (marker.meshGapWithheld) return false;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function main() {
   // Read stdin (fd 0 — cross-platform; /dev/stdin is Windows-unsafe).
   let raw = '';
@@ -378,6 +417,19 @@ function main() {
   const cwd = (payload && typeof payload.cwd === 'string' && payload.cwd) ? payload.cwd : process.cwd();
   const episodeSince = Math.max(state.lastBlockAt, now - RESET_MS);
   if (alreadyReportedThisEpisode(process.env, os.homedir(), cwd, episodeSince)) {
+    const durable = readDurableUnread(process.env, os.homedir());
+    if (!(durable.known && durable.count > 0)) return;
+  }
+
+  // D13 (v0.97.0): a fresh, zero-unread `inbox tick` marker is ITSELF a
+  // liveness proof (the cron fired, drained, found nothing, and already
+  // refreshed heartbeats/<id>.json's ts) — forcing a SEPARATE heartbeat report
+  // on top is the exact overhead the D13 field measurement identified. Gated
+  // the SAME way alreadyReportedThisEpisode's satisfaction is above: never
+  // silences a KNOWN durable unread backlog (the cheap durable check only,
+  // never the STRICT native probe — a satisfied/ticked child never pays that
+  // spawn cost just to re-evaluate this).
+  if (tickMarkerFreshZero(process.env, os.homedir(), now)) {
     const durable = readDurableUnread(process.env, os.homedir());
     if (!(durable.known && durable.count > 0)) return;
   }

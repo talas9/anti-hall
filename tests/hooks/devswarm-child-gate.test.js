@@ -84,6 +84,18 @@ function writeHeartbeat(home, key, ts) {
   fs.writeFileSync(p, JSON.stringify({ ts, source: 'child-turn', branch: key }));
 }
 
+// D13 (v0.97.0) — the `inbox tick` marker devswarm.js's cmdInboxTick writes,
+// and tickMarkerFreshZero() reads (devswarm-child-gate.js). Mirrors that
+// function's own path derivation (devswarmRoot(home)/wake-tick/<id>.json).
+function wakeTickFile(home, id) {
+  return path.join(home, '.anti-hall', 'devswarm', 'wake-tick', id + '.json');
+}
+function writeWakeTick(home, id, marker) {
+  const p = wakeTickFile(home, id);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(marker));
+}
+
 test('BLOCK: child workspace + supervisor active -> Stop is blocked with heartbeat forced-ack', () => {
   const h = makeHome();
   try {
@@ -285,6 +297,70 @@ test('INBOUND CAP: durable unread pending does NOT bypass the shared MAX_BLOCKS 
     const r3 = testHook(HOOK, stopPayload(), { home: h.home, env });
     assert.strictEqual(r3.status, 0);
     assert.strictEqual(r3.stdout, '', 'third stop must yield even with unread pending — the cap is shared, never bypassed');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- D13 (v0.97.0): fresh zero `inbox tick` marker skips the forced heartbeat -----
+
+test('D13 TICK SKIP: fresh, zero-unread wake-tick marker -> Stop is NOT blocked (no forced heartbeat)', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: false });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, env });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout, '', `a fresh zero tick marker must silence the forced heartbeat; stdout=${r.stdout}`);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('D13 TICK STALE: a tick marker older than 120s does NOT satisfy — Stop still blocks', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now() - 121000, unreadTotal: 0, meshGapWithheld: false });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a stale marker must never satisfy the gate');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('D13 TICK NONZERO: a fresh marker with unreadTotal>0 does NOT satisfy — Stop still blocks', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 3, meshGapWithheld: false });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'unreadTotal>0 must never be treated as a no-op tick');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('D13 TICK GAP-WITHHELD: a fresh, zero-unread marker with meshGapWithheld:true does NOT satisfy — Stop still blocks', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: true });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a withheld gap must never be silenced by the tick shortcut (G1 parity)');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('D13 TICK vs DURABLE BACKLOG: a fresh zero tick marker never silences a KNOWN durable unread backlog', () => {
+  const h = makeHome();
+  try {
+    seedDurableUnread(h.home, 'b-1', ['from parent: rebase now'], 0);
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: false });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a positively-known durable backlog must still force the heartbeat');
   } finally {
     h.cleanup();
   }
@@ -543,7 +619,7 @@ test('WAKE RE-ASSERT: Claude child -> the forced-ack reason also carries the Cro
     const reason = r.json.reason;
     assert.ok(/MAILBOX WAKE/.test(reason), `reason must re-assert the wake directive; reason=${reason}`);
     assert.ok(/`CronCreate`/.test(reason), `must name the CronCreate tool; reason=${reason}`);
-    assert.ok(reason.includes('`*/5 * * * *`'), `must carry the default schedule; reason=${reason}`);
+    assert.ok(reason.includes('`*/30 * * * *`'), `must carry the default schedule; reason=${reason}`);
     for (const m of [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)]) {
       assert.ok(path.isAbsolute(m[1]), `emitted CLI path must be absolute: ${m[1]}`);
       assert.ok(fs.existsSync(m[1]), `emitted CLI path must exist: ${m[1]}`);

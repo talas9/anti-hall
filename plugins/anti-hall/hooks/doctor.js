@@ -676,6 +676,31 @@ function devswarmHookSelfTests() {
         else ok(r.message);
       }
     }
+
+    // D13 (v0.97.0) measurement: cron-found-mail.jsonl accumulates one line
+    // per mailbox-wake cron tick that found unread mail WHILE a Monitor
+    // watcher lock was already armed for that same id (devswarm.js's
+    // cmdInboxTick, effect 3) — a directly-measurable "cron caught something
+    // Monitor should have already delivered" event. Report-only (never
+    // FAIL/WARN — a healthy system can carry any count here, including 0),
+    // matching the reporter's own documented decision rule: empty after a
+    // week of normal use is the signal that this cron fallback is pulling no
+    // real weight beyond Monitor and becomes a release candidate for removal.
+    try {
+      const livenessModPath = path.join(libDir, 'liveness.js');
+      let devswarmRootFn = null;
+      if (fs.existsSync(livenessModPath)) {
+        try { ({ devswarmRoot: devswarmRootFn } = require(livenessModPath)); } catch (_) { devswarmRootFn = null; }
+      }
+      if (devswarmRootFn) {
+        const p = path.join(devswarmRootFn(os.homedir()), 'cron-found-mail.jsonl');
+        let lineCount = 0;
+        try { lineCount = fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).length; } catch (_) { lineCount = 0; }
+        infol('cron ticks that found mail while a watcher was armed: ' + lineCount +
+          ' (cron-found-mail.jsonl — empty after a week of normal use means this cron ' +
+          'fallback is removable; see docs/KB-claude-monitor-tool.md §7)');
+      }
+    } catch (_) { /* fail-open: measurement reporting must never break doctor */ }
   }
 })();
 

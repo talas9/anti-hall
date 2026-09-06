@@ -50,10 +50,21 @@
 // updated to pass it). The non-Claude branch NEVER sees this — Monitor is a
 // Claude-only tool.
 
-// WAKE_CRON_DEFAULT — 5 minutes. The interval is a real cost: 1-minute = 1,440
-// wake-turns/day/workspace, 5-minute = 288. ANTIHALL_DEVSWARM_WAKE_CRON is the one
+// WAKE_CRON_DEFAULT — 30 minutes (D13, v0.97.0; was 5 minutes through v0.96.x).
+// FIELD MEASUREMENT that drove the change: a child session's mailbox-wake loop
+// (5-min cron + `inbox count` + a forced heartbeat on every Stop) produced 1,225
+// polling lines / 2.29 MB — about HALF that session's real content — while
+// `Monitor` (armed alongside, §7/§9 of docs/KB-claude-monitor-tool.md) delivered
+// the actual wakes; the cron ticks were near-100% redundant no-ops. Monitor is
+// STILL the primary, low-latency wake path (per-message, ~1s) — this cron is,
+// and remains, the NON-NEGOTIABLE fallback for every context where Monitor is
+// absent (§9: Bedrock/Vertex/Foundry, DISABLE_TELEMETRY, non-interactive,
+// project-scope plugin installs) — see the NON-NEGOTIABLE header below; 30
+// minutes is simply a cheaper fallback cadence, not a demotion of cron's role.
+// The interval is a real cost: 1-minute = 1,440 wake-turns/day/workspace,
+// 5-minute (the old default) = 288, 30-minute = 48. ANTIHALL_DEVSWARM_WAKE_CRON is the one
 // knob for machines that want tighter latency and are willing to pay for it.
-const WAKE_CRON_DEFAULT = '*/5 * * * *';
+const WAKE_CRON_DEFAULT = '*/30 * * * *';
 
 // CRON_FIELD — the ONLY characters a cron field may contain. This is a PROMPT-
 // INJECTION boundary, not cosmetics: ANTIHALL_DEVSWARM_WAKE_CRON is untrusted
@@ -172,10 +183,38 @@ function isClaudeAgent(env) {
 //      `read-primary`'s own invariant. See tests/hooks/devswarm-wake.test.js:210-223
 //      and tests/hooks/devswarm-child-role.test.js:178-181 for the regression
 //      proof.
-function drainCmd(cli, isChild) {
+// D13 (v0.97.0) addendum: `useTick` (3rd param, default falsy) swaps the
+// leading `inbox count`/`inbox pull`+`inbox count` step for the single
+// `inbox tick <id>` verb (pull-if-child + count + a liveness marker write, in
+// ONE command — devswarm.js's cmdInboxTick). ONLY the two Claude-branch CRON
+// PROMPT embeds (wakeDirective's CronCreate prompt, wakeReassert's RE-CREATE
+// prompt) pass `true` — the cron tick is what the D13 field measurement (see
+// WAKE_CRON_DEFAULT's comment above) was actually about, and the marker it
+// writes is what lets devswarm-child-gate.js's Stop hook skip a redundant
+// forced heartbeat when the tick already proved liveness with nothing to do.
+// Every OTHER caller (turn-native non-Claude instruction text; the 2-arg
+// `drainCmd(cli, isChild)` calls this file's own C1/Wave-4 golden tests pin)
+// keeps the pre-D13 `inbox count` wording BYTE-IDENTICAL — omitting the 3rd
+// arg is exactly the pre-D13 call shape, so nothing here can silently regress
+// those tests.
+function drainCmd(cli, isChild, useTick) {
   const id = '<DEVSWARM_BUILDER_ID>';
-  const countCmd = '`node ' + cli + ' inbox count ' + id + '`';
   const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true`';
+  if (useTick) {
+    const tickCmd = '`node ' + cli + ' inbox tick ' + id + (isChild ? ' --child' : '') + '`';
+    const childNote = isChild
+      ? ' — this is the cursor-advancing verb, matching devswarm-child-turn.js\'s own ' +
+        'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
+        'withheld gap)'
+      : ')';
+    return 'run ' + tickCmd + ' (with `--child` it first imports anything waiting in your ' +
+      'native queue, then reports the SAME `unreadTotal`/`meshGapWithheld` fields `inbox count` ' +
+      'does, and writes a liveness marker + refreshes your heartbeat — one command instead of ' +
+      'pull+count); ' + stopCond + ', say so and stop — do NOT spawn a subagent; otherwise ' +
+      '(either `unreadTotal` is greater than 0, or `meshGapWithheld` is `true`), run `node ' + cli +
+      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large' + childNote;
+  }
+  const countCmd = '`node ' + cli + ' inbox count ' + id + '`';
   if (isChild) {
     return 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
       'anything waiting in your native queue) then ' + countCmd + '; ' + stopCond + ', ' +
@@ -207,13 +246,13 @@ function drainCmd(cli, isChild) {
 // parameter, so gating it would be theatre with no attacker it defends against.
 function monitorArmLine(watcher) {
   if (typeof watcher !== 'string' || !watcher) return '';
-  return ' ALSO arm the `Monitor` tool for LOW-LATENCY wake (Cron above still fires ' +
-    'independently — this is IN ADDITION, never instead): first check whether a mailbox-' +
-    'wake Monitor is already armed so you never arm a second one (double-arming causes ' +
-    'duplicate wakes; the watcher script also self-guards with a lock, but do not rely on ' +
-    'that alone). If none is armed, call `Monitor` with command `node ' + watcher + '`, ' +
-    '`persistent: true`, and a description like "devswarm mailbox wake watcher" — every ' +
-    'line it prints on stdout becomes a transcript event, waking this session even while ' +
+  return ' ALSO arm the `Monitor` tool as your PRIMARY wake path (Cron above is the 30-minute ' +
+    'FALLBACK — it still fires independently; Monitor is IN ADDITION, never instead): first ' +
+    'check whether a mailbox-wake Monitor is already armed so you never arm a second one ' +
+    '(double-arming causes duplicate wakes; the watcher script also self-guards with a lock, ' +
+    'but do not rely on that alone). If none is armed, call `Monitor` with command `node ' +
+    watcher + '`, `persistent: true`, and a description like "devswarm mailbox wake watcher" — ' +
+    'every line it prints on stdout becomes a transcript event, waking this session even while ' +
     'fully idle, with far lower latency than the cron tick above. A first line starting ' +
     '`[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume ' +
     'you do; the cron job above is still your only wake path.';
@@ -232,25 +271,33 @@ function wakeDirective(env, isChild, cli, watcher) {
   try {
     const agent = agentName(env);
     if (!agent) return ''; // unknown agent -> say nothing rather than guess
-    const drain = drainCmd(cli, isChild);
     if (agent !== 'claude') {
       // Never names the Claude idle-cron tool: an agent that does not have it must
       // not be handed the tool's name at all (a named tool is an invitation to call
       // a hallucinated one). It gets the honest instruction it CAN actually follow.
       // NEVER touch this branch for Monitor: Monitor is ALSO a Claude-only tool, so
       // it belongs strictly in the `claude` branch below, same as CronCreate.
+      // No `useTick` here (2-arg call): this text is a TURN-NATIVE instruction, not
+      // a cron prompt (Codex has no CronCreate) — pre-D13 wording, byte-identical.
+      const drain = drainCmd(cli, isChild);
       return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
         'primitive — once you go idle, nothing can wake you, so a message that lands after ' +
         'you stop waits for your next turn. Drain your mailbox at the START of every turn ' +
         'and again BEFORE you stop: ' + drain + '.';
     }
+    // useTick:true — this `drain` text becomes the BODY of the CronCreate prompt
+    // below (a cron tick, not a turn-native instruction), so it gets the D13
+    // `inbox tick` verb (pull-if-child + count + marker write, one command).
+    const drain = drainCmd(cli, isChild, true);
     return ' MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`; if your mailbox-' +
       'wake job is ABSENT — never created, or auto-expired (recurring tasks self-delete 7 days ' +
       'after creation) — call `CronCreate` with schedule `' + wakeCron(env) + '` and a prompt ' +
       'that runs ' + drain + ' and acts on anything unread. If the job is already listed, do ' +
       'nothing — never create a second one. Cron jobs fire while this session is IDLE (each ' +
-      'tick is a full turn) — this is the ONLY thing that will wake you to drain your mailbox ' +
-      'once you go idle; a message that lands after you stop is otherwise never seen.' +
+      'tick is a full turn) — this cron is now a 30-MINUTE FALLBACK cadence (cheaper than the ' +
+      'pre-D13 5-minute default), NEVER disarmed — it is the only thing that will wake you to ' +
+      'drain your mailbox once you go idle; a message that lands after you stop is otherwise ' +
+      'never seen.' +
       monitorArmLine(watcher);
   } catch (_) {
     return ''; // fail-open: a broken directive must never break SessionStart
@@ -273,10 +320,13 @@ function wakeDirective(env, isChild, cli, watcher) {
 function wakeReassert(env, cli, isChild, watcher) {
   try {
     const child = isChild === undefined ? true : !!isChild;
+    // useTick:true — same reasoning as wakeDirective's Claude branch above: this
+    // `drainCmd` output becomes the RE-CREATED CronCreate prompt's body, a cron
+    // tick, so it gets the D13 `inbox tick` verb, not turn-native `inbox count`.
     return ' MAILBOX WAKE — before you stop, VERIFY your self-wake cron job: call `CronList`. ' +
       'If your mailbox-wake job is GONE (never created, or auto-expired — recurring tasks ' +
       'self-delete 7 days after creation), RE-CREATE it now with `CronCreate`, schedule `' +
-      wakeCron(env) + '`, prompt runs ' + drainCmd(cli, child) + ' and acts on anything unread. ' +
+      wakeCron(env) + '`, prompt runs ' + drainCmd(cli, child, true) + ' and acts on anything unread. ' +
       'Cron jobs fire while this session is IDLE — without one, any message that arrives after ' +
       'you stop is never seen. If `CronList` already shows it, just say so and stop (this ' +
       'reminder is capped and stops on its own).' +

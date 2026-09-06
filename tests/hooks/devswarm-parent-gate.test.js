@@ -731,7 +731,7 @@ test('WAKE RE-ASSERT: Claude Primary -> the neglect block reason also carries th
     const reason = r.json.reason;
     assert.ok(/MAILBOX WAKE/.test(reason), `reason must re-assert the wake directive; reason=${reason}`);
     assert.ok(/`CronCreate`/.test(reason), `must name the CronCreate tool; reason=${reason}`);
-    assert.ok(reason.includes('`*/5 * * * *`'), `must carry the default schedule; reason=${reason}`);
+    assert.ok(reason.includes('`*/30 * * * *`'), `must carry the default schedule; reason=${reason}`);
     assert.ok(/inbox read-primary <DEVSWARM_BUILDER_ID>/.test(reason), `Primary must drain with read-primary, not the child pull+read verbs; reason=${reason}`);
     for (const m of [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)]) {
       assert.ok(path.isAbsolute(m[1]), `emitted CLI path must be absolute: ${m[1]}`);

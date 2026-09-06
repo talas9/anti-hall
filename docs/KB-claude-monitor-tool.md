@@ -40,7 +40,8 @@
   (events only, no full-turn overhead per occurrence), but less useful for one-time
   "wait for build to finish" waits.
 - **Application to anti-hall/DevSwarm (decided design):** DevSwarm's Primary orchestrator
-  wakes via a 5-minute cron job today (blind polling, token-hungry, expires after 7 days).
+  wakes via a 30-minute cron job today (D13, v0.97.0; was 5 minutes — blind polling,
+  token-hungry, expires after 7 days).
   The decision is **layered, not replacement**: Monitor becomes the primary low-latency
   wake path wherever it's available; cron is **retained permanently** as the fallback for
   every case where Monitor provably does not exist (Bedrock/Vertex/Foundry, telemetry
@@ -414,9 +415,13 @@ the double-arming risk already called out there.
 DevSwarm's Primary orchestrator currently wakes via a **CronCreate mailbox-read job**:
 
 ```javascript
-// Every 5 minutes, read the mailbox
+// D13 (v0.97.0): every 30 minutes (was every 5 minutes through v0.96.x — see
+// "D13: cadence + measurement" below). Illustrative form only — the real
+// shipped prompt runs `inbox tick <id> [--child]` first (folds pull-if-child +
+// count + a liveness marker into one command), THEN `inbox read-primary` only
+// when that tick actually found something (see devswarm-wake.js's drainCmd).
 CronCreate({
-  expression: '*/5 * * * *',
+  expression: '*/30 * * * *',
   prompt: 'node scripts/devswarm.js inbox read-primary <id>'
 })
 ```
@@ -444,9 +449,47 @@ consumes what it exists to detect breaks itself.
 > the ack to erase.
 
 **Costs:**
-- ❌ Blind polling: fires every 5 minutes **regardless of whether a message exists** (token waste).
+- ❌ Blind polling: fires every 30 minutes (D13, v0.97.0; was 5 minutes) **regardless of whether a message exists** — see "D13: cadence + measurement" below for the field data behind the change and the `inbox tick` verb that keeps an empty tick cheap.
 - ❌ Expires after 7 days (recurring jobs auto-expire; must be re-armed).
-- ❌ Latency: worst-case 5 minutes for a child to wake the Primary (children send a message, but if it arrives between cron fires, the Primary sleeps for up to 5 more minutes).
+- ❌ Latency: worst-case 30 minutes for a child to wake the Primary via cron ALONE (children send a message, but if it arrives between cron fires, the Primary sleeps for up to 30 more minutes) — Monitor (below) is what actually keeps this latency low in practice; cron is the fallback for when Monitor is absent.
+
+### D13: cadence + measurement (v0.97.0)
+
+**Field measurement.** A DevSwarm child session's mailbox-wake loop — the (then)
+5-minute cron running `inbox pull` + `inbox count`, plus a forced heartbeat on
+every Stop — produced **1,225 polling lines / 2.29 MB, roughly half that
+session's real content**, while `Monitor` (armed alongside, per the layered
+design below) delivered the actual wakes. The cron ticks were near-100%
+redundant no-ops.
+
+**What changed:**
+1. **Cadence: `*/5 * * * *` → `*/30 * * * *`** (`WAKE_CRON_DEFAULT` in
+   `hooks/lib/devswarm-wake.js`; `ANTIHALL_DEVSWARM_WAKE_CRON` override
+   unchanged). Monitor remains the PRIMARY wake path (per-message, ~1s
+   latency when live) — cron's role as the non-negotiable fallback (§9) is
+   unchanged; only its cadence got cheaper.
+2. **One-command tick, silent on a no-op.** `devswarm.js inbox tick <id>
+   [--child]` folds the cron prompt's own drain into ONE command: pull (if
+   `--child`) + count, PLUS three side effects — a `wake-tick/<id>.json`
+   liveness marker, a cheap `heartbeats/<id>.json` ts refresh (never
+   fabricates progress/phase/wip/blockers), and (see below) a measurement
+   append. The prompt still says: if the tick reports `unreadTotal: 0` and no
+   withheld gap, reply with exactly one line and stop — never spawn a
+   subagent for an empty mailbox. `devswarm-child-gate.js`'s Stop hook reads
+   the fresh marker to skip its OWN forced-heartbeat block when the tick
+   already proved liveness with nothing to do, closing the redundant
+   "tick, then a SEPARATE forced heartbeat" double-cost the field measurement
+   found.
+3. **`cron-found-mail.jsonl` measurement.** Every tick that finds
+   `unreadTotal > 0` WHILE a Monitor watcher lock file already exists for
+   that id appends one line (capped at 1000, oldest rotated out) — a direct,
+   measurable count of "cron caught something Monitor should have already
+   delivered." `node hooks/doctor.js --check` reports the line count as one
+   INFO line. **Decision rule:** if this file stays empty across a week of
+   normal use, cron is demonstrably pulling no weight beyond Monitor in that
+   environment and becomes a release candidate for removal (of the CADENCE,
+   never the fallback CONTRACT itself — see the NON-NEGOTIABLE rule below,
+   which this decision rule does not override).
 
 ### Decided design: layered, not a replacement
 
@@ -458,7 +501,7 @@ Monitor is simply absent — Bedrock, Vertex AI Agent Platform, Microsoft Foundr
 `DISABLE_TELEMETRY`/`CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, project-scope plugin
 installs, and non-interactive sessions. A DevSwarm Primary running in any of those
 contexts that only had Monitor would be a **silently deaf orchestrator** — worse than the
-blind 5-minute poll it would replace, because a poll at least eventually fires.
+blind poll it would replace, because a poll at least eventually fires.
 
 So: Monitor for low-latency wake wherever it's available, cron always present underneath
 it as the path that provably still works when Monitor doesn't.
@@ -706,7 +749,7 @@ keeping a cron fallback running unconditionally (§7).
 
 - **Sub-second when live** (native stdout event, no polling).
 - **Worst-case if Monitor is down and only cron is covering:** bounded by your cron
-  interval (e.g. every 5 minutes for the DevSwarm mailbox job, §7).
+  interval (e.g. every 30 minutes for the DevSwarm mailbox job as of D13/v0.97.0, §7).
 
 ---
 
