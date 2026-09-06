@@ -6,6 +6,25 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.97.0 (2026-09-06)
+
+- **Fixed: a reused-id archived marker no longer marks a live row archived** —
+  an archived marker left by a previous occupant of a reused workspace id (a
+  different session id than the live descriptor) was outranking the live
+  descriptor, so diagnose and the roster reported the row as archived
+  (`live:false`/`archivedInApp:true`) even though its session was live; this
+  affected a Primary's own anchor since 0.96.0 (reported on 0.96.1). Diagnose
+  and roster now follow the live descriptor, and `doctor` lists superseded
+  markers (report-only).
+- **Changed: mailbox-wake defaults tuned for lower idle cost** — the cron
+  fallback now fires every 30 minutes instead of every 5 (`Monitor` remains
+  the primary wake path; cron is never disarmed; `ANTIHALL_DEVSWARM_WAKE_CRON`
+  is unchanged for anyone who has already overridden it). Each cron tick now
+  runs a single `inbox tick` command that writes one wake-tick marker, so an
+  empty tick costs one command and one line with no forced heartbeat. `doctor`
+  now reports a cron-found-mail counter (ticks that found unread mail while a
+  watcher lock was live), making the fallback's actual value measurable.
+
 ## 0.96.2 (2026-09-05)
 
 - **Fixed: app-side archive detection is now repo-scoped** — hivecontrol's
