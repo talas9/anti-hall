@@ -998,6 +998,23 @@ if (RECLAIM_INGEST_LOCK) {
   warnl(result.message);
 })();
 
+// --- 6n. superseded archived markers (REPORT-ONLY, CONDITIONAL) -------------
+// See doctor-repair.js's checkSupersededArchivedMarkers for the full rationale
+// (P0 field, 0.96.1/0.96.2: an anchor row's reused id can carry a PRIOR
+// occupant's archived/<id>.json — isArchivedWorkspace now discriminates this
+// by sessionId, so the row itself is no longer misclassified; this surfaces
+// which markers that discriminator is quietly ignoring). Delegated to that ONE
+// helper (fully defensive + fail-open there) so this call site can never
+// crash doctor.js; stays SILENT (no section at all) when nothing is flagged.
+// Report-only: never writes/clears/deletes any archived/<id>.json.
+(function supersededArchivedMarkersSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkSupersededArchivedMarkers({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('superseded archived markers');
+  infol(result.message);
+})();
+
 // --- 7. Summary --------------------------------------------------------------
 const verdict = fail === 0
   ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')

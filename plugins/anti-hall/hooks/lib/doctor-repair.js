@@ -1956,6 +1956,66 @@ function checkEscalatedWhileAlive(opts) {
   }
 }
 
+// checkSupersededArchivedMarkers(opts) -> {atRisk, count, examples, message} | null.
+// P0 (field, 0.96.1/0.96.2) — a Primary's own ANCHOR row (worktree == repo
+// root, id REUSED after a prior workspace at that same root was archived and
+// put away) can still carry archived/<id>.json from that PRIOR occupant.
+// devswarm-archived.js's isArchivedWorkspace now discriminates this by
+// sessionId (archived marker's own sessionId vs. the live workspaces/<id>.json
+// descriptor's), so the live row itself is no longer misclassified — this is
+// the doctor-side VISIBILITY half: surface every id where that discriminator
+// actually fired, so an operator can see which reused ids carry a superseded
+// marker, without ever touching the marker file.
+//
+// DETECT-AND-REPORT ONLY, same posture as checkEscalatedWhileAlive above:
+// this never writes, clears, or deletes any archived/<id>.json — a superseded
+// marker is inert (isArchivedWorkspace already ignores it), so there is
+// nothing that NEEDS repairing, only something worth knowing about. Fully
+// fail-open: a missing devswarm-archived.js module, unreadable archived/ dir,
+// or a malformed record for any one id is skipped, never thrown.
+function checkSupersededArchivedMarkers(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const F = o.fs || fs;
+  try {
+    let archivedLib;
+    try { archivedLib = require(path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-archived.js')); } catch (_) { return null; }
+    if (typeof archivedLib.devswarmRoot !== 'function' || typeof archivedLib.realSid !== 'function'
+      || typeof archivedLib.readLiveSessionId !== 'function' || typeof archivedLib.isSafeId !== 'function') return null;
+
+    const root = archivedLib.devswarmRoot(home);
+    const archivedDir = path.join(root, 'archived');
+    let entries = [];
+    try { entries = F.readdirSync(archivedDir); } catch (_) { return null; }
+    if (!Array.isArray(entries) || !entries.length) return null;
+
+    const examples = [];
+    for (const name of entries) {
+      if (!name.endsWith('.json')) continue;
+      const id = name.slice(0, -'.json'.length);
+      if (!archivedLib.isSafeId(id)) continue;
+      let desc = null;
+      try { desc = JSON.parse(F.readFileSync(path.join(archivedDir, name), 'utf8')); } catch (_) { continue; }
+      if (!desc || typeof desc !== 'object') continue;
+      const markerSid = archivedLib.realSid(desc.sessionId);
+      if (!markerSid) continue;
+      const liveSid = archivedLib.readLiveSessionId(root, id, F);
+      if (liveSid && liveSid !== markerSid) examples.push(id);
+    }
+    if (!examples.length) return null;
+
+    const CAP = 5;
+    const shown = examples.slice(0, CAP);
+    const more = examples.length > CAP ? `, +${examples.length - CAP} more` : '';
+    const message =
+      `(info) ${examples.length} archived marker(s) superseded by a live descriptor with a different ` +
+      `session id (previous occupant of a reused id — inert, no action needed): ${shown.join(', ')}${more}.`;
+    return { atRisk: true, count: examples.length, examples, message };
+  } catch (_) {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // sweepStaleDrainMarkers({home, mode, io}) -> array of result rows.
 //
@@ -2327,6 +2387,8 @@ module.exports = {
   checkLeakedTestFixtureStores,
   // D12 — escalated-while-session-alive detection (report-only, self-heals via liveness.js):
   checkEscalatedWhileAlive,
+  // D12d — superseded archived-marker detection (report-only, inert once isArchivedWorkspace discriminates it):
+  checkSupersededArchivedMarkers,
   // v0.66 — "alive but ingesting nothing" (monitor-outcome) detection:
   monitorFaultFor, monitorFaultReason,
   MONITOR_FAILURE_FAIL_THRESHOLD, MONITOR_OK_STALE_MS,

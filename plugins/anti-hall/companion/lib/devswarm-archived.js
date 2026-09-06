@@ -68,11 +68,51 @@ function samePath(a, b, F) {
   return x === y;
 }
 
+// realSid(v) -> string | null. A "real" session id: present, non-empty,
+// distinguishable from a placeholder. Shared shape for both the archived
+// marker's own sessionId and the live descriptor's.
+function realSid(v) {
+  if (v == null) return null;
+  const s = String(v);
+  return s !== '' ? s : null;
+}
+
+// readLiveSessionId(root, sid, F) -> string | null. Reads
+// workspaces/<id>.json's sessionId, fail-open to null on any error (no
+// descriptor, unreadable, unparseable, absent field) — mirrors this module's
+// own fail-closed contract: a read failure here means "nothing to
+// contradict with", never a fabricated identity.
+function readLiveSessionId(root, sid, F) {
+  try {
+    const raw = F.readFileSync(path.join(root, 'workspaces', sid + '.json'), 'utf8');
+    const d = JSON.parse(raw);
+    if (d && typeof d === 'object') return realSid(d.sessionId);
+  } catch (_) { /* no live descriptor / unreadable — fail-open */ }
+  return null;
+}
+
 // isArchivedWorkspace(home, id, worktreePath, opts) -> bool.
 //   worktreePath is OPTIONAL. When given, the archived record's own
 //   worktreePath must match it (or the archived record must carry none) — this
-//   is what stops a REUSED id from inheriting a previous workspace's archive.
-// opts: { fs } (injectable for tests).
+//   is what stops a REUSED id from inheriting a previous workspace's archive
+//   ACROSS DIFFERENT WORKTREES.
+//
+//   SESSION-IDENTITY DISCRIMINATOR (P0 field fix): worktreePath alone cannot
+//   discriminate a REUSED id whose new occupant sits at the SAME worktree
+//   path — which is exactly the anchor-row shape, since a repo's anchor
+//   always sits at the repo root. When the archived record carries a real
+//   sessionId AND the live descriptor (or `opts.sessionId`, when the caller
+//   already has it cheaply) carries a real, DIFFERENT sessionId, the marker
+//   belongs to a PRIOR occupant of this id and is NOT this row's archive —
+//   returns false. Every other case (no marker sessionId, no live sessionId
+//   knowable, or matching sessionId) is unchanged from before this fix.
+// opts: { fs, sessionId, log } (all injectable/optional).
+//   opts.sessionId: the caller's already-known live sessionId, skipping this
+//     function's own workspaces/<id>.json read. When omitted, this function
+//     reads it itself (cheap: one small JSON file, same directory family
+//     this call already touches).
+//   opts.log(event, details): optional, called once when a marker is
+//     dismissed as superseded — never called for any other return path.
 function isArchivedWorkspace(home, id, worktreePath, opts) {
   const F = (opts && opts.fs) || fs;
   try {
@@ -85,11 +125,24 @@ function isArchivedWorkspace(home, id, worktreePath, opts) {
     let desc = null;
     try { desc = JSON.parse(raw); } catch (_) { return false; }
     if (!desc || typeof desc !== 'object') return false;
-    if (!worktreePath) return true; // caller has no path to disambiguate with
-    const archivedWt = typeof desc.worktreePath === 'string' && desc.worktreePath ? desc.worktreePath : null;
-    if (!archivedWt) return true; // archived record names no worktree — nothing to contradict
-    return samePath(archivedWt, worktreePath, F);
+
+    if (worktreePath) {
+      const archivedWt = typeof desc.worktreePath === 'string' && desc.worktreePath ? desc.worktreePath : null;
+      if (archivedWt && !samePath(archivedWt, worktreePath, F)) return false;
+    }
+
+    const markerSid = realSid(desc.sessionId);
+    if (markerSid) {
+      const liveSid = (opts && realSid(opts.sessionId)) || readLiveSessionId(root, sid, F);
+      if (liveSid && liveSid !== markerSid) {
+        if (opts && typeof opts.log === 'function') {
+          try { opts.log('archived-marker-superseded', { id: sid }); } catch (_) {}
+        }
+        return false;
+      }
+    }
+    return true;
   } catch (_) { return false; }
 }
 
-module.exports = { isArchivedWorkspace, devswarmRoot };
+module.exports = { isArchivedWorkspace, devswarmRoot, isSafeId, realSid, readLiveSessionId };

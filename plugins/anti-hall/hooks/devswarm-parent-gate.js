@@ -1075,7 +1075,7 @@ function main() {
     // exists). See that module's header for why archived/<id>.json alone
     // (without the worktreePath match) is not proof either.
     let archived = false;
-    try { archived = isArchivedWorkspace(home, d.id, d.worktreePath); } catch (_) { archived = false; }
+    try { archived = isArchivedWorkspace(home, d.id, d.worktreePath, { sessionId: d.sessionId || null }); } catch (_) { archived = false; }
     if (archived) staleOrEscalated = false;
     // FIELD (owner archived children in the DevSwarm APP): the app never calls
     // anti-hall's `archive` verb, so `archived/<id>.json` is never written and

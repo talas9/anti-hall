@@ -9930,7 +9930,13 @@ function rosterHints(home, id, worktreePath, now, sessionId, opts) {
   // the dormant/idle-alive liveness annotation (see companion/lib/
   // devswarm-archived.js for why archived/<id>.json alone is not the test).
   let archived = false;
-  try { archived = isArchivedWorkspace(home, id, worktreePath); } catch (_) { archived = false; }
+  try {
+    archived = isArchivedWorkspace(home, id, worktreePath, {
+      log(event, details) {
+        try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: id }, details || {})); } catch (_) {}
+      },
+    });
+  } catch (_) { archived = false; }
   // APP-SIDE archive (field): the owner archived the workspace in the DevSwarm
   // app, which never writes anti-hall's own archived/<id>.json. Read-only, from
   // the supervisor-written ACTIVE-set cache, and app-archived only when all four
@@ -10293,7 +10299,14 @@ function computeDiagnosis(s, ctx) {
     // sessionPidAlive/hasFreshHeartbeat — a fresh heartbeat is orthogonal to
     // "was this put away", so it must never suppress the archived label.
     let archivedInApp = false;
-    try { archivedInApp = isArchivedWorkspace(c.home, d.id, d.worktreePath); } catch (_) { archivedInApp = false; }
+    try {
+      archivedInApp = isArchivedWorkspace(c.home, d.id, d.worktreePath, {
+        sessionId: isRealSid(sid, d.id) ? sid : null,
+        log(event, details) {
+          try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: d.id }, details || {})); } catch (_) {}
+        },
+      });
+    } catch (_) { archivedInApp = false; }
     if (!archivedInApp) {
       try {
         const registeredRepoKey = descriptorRegisteredRepoKey(desc, d.id);
