@@ -89,7 +89,7 @@ test('D13: inbox tick reports the SAME shape as inbox count and adds action:"tic
   } finally { rm(home); rm(repo); }
 });
 
-test('D13: inbox tick writes wake-tick/<id>.json with {ts, unreadTotal, meshGapWithheld}', () => {
+test('D13: inbox tick writes wake-tick/<id>.json with {ts, unreadTotal, meshGapWithheld, known}', () => {
   const home = tmpHome();
   const repo = makeGitRepo('a');
   try {
@@ -100,7 +100,31 @@ test('D13: inbox tick writes wake-tick/<id>.json with {ts, unreadTotal, meshGapW
     assert.ok(Number.isFinite(marker.ts) && marker.ts >= before, `marker.ts must be a fresh timestamp; got ${JSON.stringify(marker)}`);
     assert.strictEqual(marker.unreadTotal, 0);
     assert.strictEqual(marker.meshGapWithheld, false);
+    assert.strictEqual(marker.known, true, `a readable store on a genuine zero must record known:true; got ${JSON.stringify(marker)}`);
   } finally { rm(home); rm(repo); }
+});
+
+// Wave F1 (P0): a store-unavailable tick (project-context-mismatch — same
+// repro shape as devswarm-cross-repo-partition.test.js's e586afdaa968) must
+// write known:false into the marker, NOT known:true, even though unreadTotal
+// reads 0 (the NDJSON-only component) — this is exactly the case
+// devswarm-child-gate.js's tickMarkerFreshZero() must refuse to treat as a
+// no-op (see that hook's own F1 KNOWN-GUARD tests).
+test('F1 KNOWN-GUARD: a store-unavailable tick (foreign cwd, project-context-mismatch) writes known:false, unreadTotal still numeric', () => {
+  const home = tmpHome();
+  const repoA = makeGitRepo('foreign-a');
+  const repoB = makeGitRepo('foreign-b');
+  try {
+    register(home, repoB, 'w-foreign');
+    const before = Date.now();
+    const ticked = cli.run(['inbox', 'tick', 'w-foreign'], ctx(home, { cwd: repoA })).result;
+    assert.strictEqual(ticked.ok, true);
+    assert.strictEqual(ticked.known, false, `sanity: inbox tick itself must report known:false from a foreign cwd; got ${JSON.stringify(ticked)}`);
+    assert.ok(Number.isFinite(ticked.unreadTotal), `unreadTotal must still be a number, not null, even when unknown; got ${JSON.stringify(ticked)}`);
+    const marker = JSON.parse(fs.readFileSync(markerFile(home, 'w-foreign'), 'utf8'));
+    assert.ok(Number.isFinite(marker.ts) && marker.ts >= before);
+    assert.strictEqual(marker.known, false, `the marker must record known:false so the child-gate never treats this as a satisfied no-op; got ${JSON.stringify(marker)}`);
+  } finally { rm(home); rm(repoA); rm(repoB); }
 });
 
 test('D13: inbox tick refreshes heartbeats/<id>.json ts/state_ts without fabricating other fields', () => {

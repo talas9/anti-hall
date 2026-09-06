@@ -7026,6 +7026,14 @@ function cmdInboxTick(id, flags, ctx) {
         ts: now,
         unreadTotal: Number.isFinite(counted && counted.unreadTotal) ? counted.unreadTotal : null,
         meshGapWithheld: !!(counted && counted.meshGapWithheld),
+        // Wave F1 (P0): record `known` alongside unreadTotal so
+        // devswarm-child-gate.js's tickMarkerFreshZero() can refuse to treat
+        // a store-unavailable tick (known:false, e.g. storeUnavailable) as a
+        // genuine no-op even when unreadTotal reads 0 (the NDJSON-only
+        // component). `counted.known` is already `union.known &&
+        // !storeUnavailable` (see cmdInbox 'count'/'read'), so this is a
+        // straight passthrough, not new logic.
+        known: !!(counted && counted.known),
       };
       const p = wakeTickPathFor(id, home);
       const tmp = p + '.' + process.pid + '.' + process.hrtime.bigint().toString(36) + '.tick.tmp';

@@ -308,7 +308,7 @@ test('D13 TICK SKIP: fresh, zero-unread wake-tick marker -> Stop is NOT blocked 
   const h = makeHome();
   try {
     const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
-    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: false });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: false, known: true });
     const r = testHook(HOOK, stopPayload(), { home: h.home, env });
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.stdout, '', `a fresh zero tick marker must silence the forced heartbeat; stdout=${r.stdout}`);
@@ -321,7 +321,7 @@ test('D13 TICK STALE: a tick marker older than 120s does NOT satisfy — Stop st
   const h = makeHome();
   try {
     const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
-    writeWakeTick(h.home, 'b-1', { ts: Date.now() - 121000, unreadTotal: 0, meshGapWithheld: false });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now() - 121000, unreadTotal: 0, meshGapWithheld: false, known: true });
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
     assert.strictEqual(r.json && r.json.decision, 'block', 'a stale marker must never satisfy the gate');
   } finally {
@@ -333,7 +333,7 @@ test('D13 TICK NONZERO: a fresh marker with unreadTotal>0 does NOT satisfy — S
   const h = makeHome();
   try {
     const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
-    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 3, meshGapWithheld: false });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 3, meshGapWithheld: false, known: true });
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
     assert.strictEqual(r.json && r.json.decision, 'block', 'unreadTotal>0 must never be treated as a no-op tick');
   } finally {
@@ -345,7 +345,7 @@ test('D13 TICK GAP-WITHHELD: a fresh, zero-unread marker with meshGapWithheld:tr
   const h = makeHome();
   try {
     const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
-    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: true });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: true, known: true });
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
     assert.strictEqual(r.json && r.json.decision, 'block', 'a withheld gap must never be silenced by the tick shortcut (G1 parity)');
   } finally {
@@ -358,9 +358,35 @@ test('D13 TICK vs DURABLE BACKLOG: a fresh zero tick marker never silences a KNO
   try {
     seedDurableUnread(h.home, 'b-1', ['from parent: rebase now'], 0);
     const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
-    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: false });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: false, known: true });
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
     assert.strictEqual(r.json && r.json.decision, 'block', 'a positively-known durable backlog must still force the heartbeat');
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ----- Wave F1 (P0): known-guard on the tick marker itself -----
+
+test('F1 KNOWN-GUARD: a fresh, zero-unread marker with known:false (store-unavailable count) does NOT satisfy — Stop still blocks', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: false, known: false });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a store-unavailable (known:false) tick must never be treated as a no-op — the heartbeat must still fire');
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('F1 KNOWN-GUARD: an old-shape marker with no `known` field at all does NOT satisfy — Stop still blocks (fail-open on the new field)', () => {
+  const h = makeHome();
+  try {
+    const env = Object.assign({}, CHILD_ENV, { DEVSWARM_BUILDER_ID: 'b-1' });
+    writeWakeTick(h.home, 'b-1', { ts: Date.now(), unreadTotal: 0, meshGapWithheld: false });
+    const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env });
+    assert.strictEqual(r.json && r.json.decision, 'block', 'a marker written before the `known` field existed must be treated as known-unknown, forcing the heartbeat rather than silently skipping it');
   } finally {
     h.cleanup();
   }

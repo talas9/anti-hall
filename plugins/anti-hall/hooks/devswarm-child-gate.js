@@ -339,11 +339,20 @@ function hasUnreadParentMessages(env, home) {
 // tickMarkerFreshZero(env, home, now) -> bool. D13: true iff `inbox tick`'s own
 // marker (devswarmRoot(home)/wake-tick/<id>.json — written by devswarm.js's
 // cmdInboxTick) is fresh (within TICK_MARKER_FRESH_MS) AND reported a genuine
-// no-op (`unreadTotal === 0` AND `meshGapWithheld` falsy — the SAME two-part
-// stop condition drainCmd's own prose uses, matching G1's Fix Wave 3 fix so
-// this can never treat a withheld-gap tick as satisfaction). Fail-open: ANY
-// error (missing/corrupt marker, unsafe id, unresolvable home) -> false —
-// never silently skips a heartbeat this gate would otherwise force.
+// no-op (`unreadTotal === 0` AND `meshGapWithheld` falsy AND `known === true`
+// — the SAME three-part stop condition drainCmd's own prose uses, matching
+// G1's Fix Wave 3 fix so this can never treat a withheld-gap tick as
+// satisfaction). Wave F1 (P0) added the `known` conjunct: a store-unavailable
+// tick reports `known: false` alongside a numeric (often 0) `unreadTotal` —
+// without this check that silently satisfied "fresh zero" and skipped the
+// forced heartbeat on a session with mail the store just couldn't be read
+// for. `known` MUST be strictly `true` (not merely truthy/absent) so a marker
+// written by pre-Wave-F1 code (no `known` field at all, i.e. `undefined`) is
+// treated as known-unknown -> NOT fresh-zero -> the heartbeat is still
+// forced; this keeps the fail-open direction (never silently skip on an old
+// marker shape) rather than fail-closed. Fail-open throughout: ANY error
+// (missing/corrupt marker, unsafe id, unresolvable home) -> false — never
+// silently skips a heartbeat this gate would otherwise force.
 function tickMarkerFreshZero(env, home, now) {
   try {
     const id = env.DEVSWARM_BUILDER_ID;
@@ -356,6 +365,7 @@ function tickMarkerFreshZero(env, home, now) {
     if ((now - marker.ts) > TICK_MARKER_FRESH_MS) return false;
     if (marker.unreadTotal !== 0) return false;
     if (marker.meshGapWithheld) return false;
+    if (marker.known !== true) return false;
     return true;
   } catch (_) {
     return false;

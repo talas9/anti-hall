@@ -71,20 +71,20 @@ for (const isChild of [true, false]) {
 // drainCmd's own logic cannot silently rewrite its own expectation.
 function nonClaudeGolden(agent, cli, isChild) {
   const id = '<DEVSWARM_BUILDER_ID>';
-  const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true`';
+  const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true` AND `known` is NOT `false`';
+  const otherwise = 'either `unreadTotal` is greater than 0, or `meshGapWithheld` is `true`, or `known` is `false`';
   const drain = isChild
     ? 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
       'anything waiting in your native queue) then `node ' + cli + ' inbox count ' + id +
-      '`; ' + stopCond + ', say so and stop — do NOT spawn a subagent; otherwise (either ' +
-      '`unreadTotal` is greater than 0, or `meshGapWithheld` is `true`), run `node ' + cli +
+      '`; ' + stopCond + ', say so and stop — do NOT spawn a subagent; otherwise (' +
+      otherwise + '), run `node ' + cli +
       ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large ' +
       '— this is the cursor-advancing verb, matching devswarm-child-turn.js\'s own ' +
       'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
       'withheld gap)'
     : 'first run `node ' + cli + ' inbox count ' + id + '`; ' + stopCond + ', say so ' +
-      'and stop — do NOT spawn a subagent; otherwise (either `unreadTotal` is greater than ' +
-      '0, or `meshGapWithheld` is `true`), run `node ' + cli + ' inbox read-primary ' + id +
-      '` (delegate to a subagent only if the payload is large)';
+      'and stop — do NOT spawn a subagent; otherwise (' + otherwise + '), run `node ' + cli +
+      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large)';
   return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
     'primitive — once you go idle, nothing can wake you, so a message that lands after ' +
     'you stop waits for your next turn. Drain your mailbox at the START of every turn ' +
@@ -102,6 +102,24 @@ for (const isChild of [true, false]) {
     assert.ok(!/Monitor/.test(withWatcher), `non-Claude branch must never name Monitor; out=${withWatcher}`);
     assert.ok(!/CronCreate/.test(withWatcher), `non-Claude branch must never name CronCreate; out=${withWatcher}`);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Wave F1 (P0): known-guard. `count`/`tick` can report `known: false` (store
+// unreadable) alongside a numeric `unreadTotal` (e.g. 0, the NDJSON-only
+// component) — the stop condition text must require `known` is not `false`
+// on top of the existing unreadTotal/meshGapWithheld checks, for every
+// isChild x useTick combination, so an agent following this instruction
+// never treats a store-unavailable count as "nothing to do".
+// ---------------------------------------------------------------------------
+for (const isChild of [true, false]) {
+  for (const useTick of [true, false]) {
+    test(`KNOWN-GUARD: drainCmd(isChild=${isChild}, useTick=${useTick}) requires known is NOT false to stop`, () => {
+      const out = drainCmd(CLI, isChild, useTick);
+      assert.ok(/`known` is NOT `false`/.test(out), `stop condition must gate on known; out=${out}`);
+      assert.ok(/`known` is `false`/.test(out), `otherwise-branch must name known:false as a reason to keep draining; out=${out}`);
+    });
+  }
 }
 
 test('GOLDEN: wakeReassert is Claude-only by construction — callers gate on isClaudeAgent, never called for non-Claude', () => {

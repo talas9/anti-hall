@@ -199,7 +199,17 @@ function isClaudeAgent(env) {
 // those tests.
 function drainCmd(cli, isChild, useTick) {
   const id = '<DEVSWARM_BUILDER_ID>';
-  const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true`';
+  // known-guard (Wave F1, P0): a store-unavailable `count`/`tick` reports
+  // `known: false` alongside a numeric `unreadTotal` (often 0 — the NDJSON
+  // side alone) — see devswarm.js cmdInbox 'count'/'read' (`known: union.known
+  // && !storeUnavailable`). Treating that as "nothing to do" silently stops
+  // the drain loop on a store the caller could not actually read. The stop
+  // condition now ALSO requires `known` is not `false` (absent/true both
+  // count as known, matching every existing caller that never emits `known`
+  // at all — e.g. an older `count` shape — so this is additive, never a
+  // regression on a caller that already worked).
+  const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true` AND `known` is NOT `false`';
+  const otherwise = 'either `unreadTotal` is greater than 0, or `meshGapWithheld` is `true`, or `known` is `false`';
   if (useTick) {
     const tickCmd = '`node ' + cli + ' inbox tick ' + id + (isChild ? ' --child' : '') + '`';
     const childNote = isChild
@@ -208,25 +218,24 @@ function drainCmd(cli, isChild, useTick) {
         'withheld gap)'
       : ')';
     return 'run ' + tickCmd + ' (with `--child` it first imports anything waiting in your ' +
-      'native queue, then reports the SAME `unreadTotal`/`meshGapWithheld` fields `inbox count` ' +
-      'does, and writes a liveness marker + refreshes your heartbeat — one command instead of ' +
-      'pull+count); ' + stopCond + ', say so and stop — do NOT spawn a subagent; otherwise ' +
-      '(either `unreadTotal` is greater than 0, or `meshGapWithheld` is `true`), run `node ' + cli +
+      'native queue, then reports the SAME `unreadTotal`/`meshGapWithheld`/`known` fields ' +
+      '`inbox count` does, and writes a liveness marker + refreshes your heartbeat — one ' +
+      'command instead of pull+count); ' + stopCond + ', say so and stop — do NOT spawn a ' +
+      'subagent; otherwise (' + otherwise + '), run `node ' + cli +
       ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large' + childNote;
   }
   const countCmd = '`node ' + cli + ' inbox count ' + id + '`';
   if (isChild) {
     return 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
       'anything waiting in your native queue) then ' + countCmd + '; ' + stopCond + ', ' +
-      'say so and stop — do NOT spawn a subagent; otherwise (either `unreadTotal` is greater ' +
-      'than 0, or `meshGapWithheld` is `true`), run `node ' + cli + ' inbox read-primary ' + id +
+      'say so and stop — do NOT spawn a subagent; otherwise (' + otherwise + '), run `node ' +
+      cli + ' inbox read-primary ' + id +
       '` (delegate to a subagent only if the payload is large — this is the cursor-advancing ' +
       'verb, matching devswarm-child-turn.js\'s own mesh-direct instruction; `inbox read` is a ' +
       'non-mutating peek and cannot clear the withheld gap)';
   }
   return 'first run ' + countCmd + '; ' + stopCond + ', say so and stop — do NOT spawn a ' +
-    'subagent; otherwise (either `unreadTotal` is greater than 0, or `meshGapWithheld` is ' +
-    '`true`), run `node ' + cli + ' inbox read-primary ' + id +
+    'subagent; otherwise (' + otherwise + '), run `node ' + cli + ' inbox read-primary ' + id +
     '` (delegate to a subagent only if the payload is large)';
 }
 
