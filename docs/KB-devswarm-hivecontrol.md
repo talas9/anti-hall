@@ -3045,6 +3045,15 @@ floor and the repositoryId guard now both operate on a genuinely per-repo subset
 `error`, `status`, `signal`, and the first 200 chars of `stderr` (stdout excluded) instead of a
 bare reason string, so a fast non-zero-exit field failure is diagnosable after the fact.
 
+**v0.96.2 (D12c, R29 P2):** the D12b unattributable-worktreePath drop was itself too blunt —
+past the archive grace period it let a genuinely-live sibling row (deleted/rehomed worktree
+path, same repo) read as app-archived; the sweep now folds such a record into its target
+repoKey's bucket when it shares a `repositoryId` with an already-directly-attributed sibling
+under the devswarm repos root (never across a foreign repositoryId, never reassigning a record
+already attributed elsewhere), logs every record still genuinely dropped once per tick
+(`active-scope-drop`, capped 20), and surfaces tick-wide `activeScope:{kept,dropped}` on
+`reconcileSweepIfDue`'s return.
+
 This is a **liveness-axis signal only**. It answers "does hivecontrol still know about this
 workspace", nothing about whether it has real work pending — an app-archived-but-still-live
 sender (still emitting heartbeats, still holding real unread) must keep gating, which is what

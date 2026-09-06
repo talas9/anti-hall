@@ -775,6 +775,19 @@ function reconcileSweepIfDue(opts) {
     let anyLost = false;
     const activeByRepoKey = {};
     let activeProbeFailure = null;
+    // activeScope counters (D12c, R29 P2) — tick-wide, not per-target: `kept`
+    // sums every record actually attributed to a bucket across all targets
+    // this tick (direct match + same-repositoryId sibling fallback below);
+    // `dropped` counts DISTINCT unattributable records (deduped by
+    // worktreePath, since the global hivecontrol answer is refetched — and,
+    // per field measurement, identical — once per target, so the same
+    // unattributable record would otherwise be counted once per target
+    // rather than once per tick). `droppedLoggedKeys` backs that dedupe AND
+    // caps the actual alog.logEvent calls at 20 for this tick; the `dropped`
+    // count itself is never capped, only the log volume is.
+    let activeScopeKept = 0;
+    let activeScopeDropped = 0;
+    const droppedLoggedKeys = new Set();
     for (const t of targets) {
       let result = null;
       try {
@@ -811,16 +824,57 @@ function reconcileSweepIfDue(opts) {
       if (active && active.ok && Array.isArray(active.records) && active.records.length) {
         // D12b item 2: SCOPE the (possibly global) answer to records this
         // repoKey's own worktree(s) actually own — see scopeRecordToRepoKey
-        // above. A record whose worktreePath cannot be attributed to ANY
-        // repoKey (deleted worktree, non-git path) is excluded here rather
-        // than assigned to this bucket by default.
-        const scoped = active.records.filter((r) => scopeRecordToRepoKey(r) === t.repoKey);
-        if (scoped.length) activeByRepoKey[t.repoKey] = scoped;
+        // above.
+        const direct = active.records.filter((r) => scopeRecordToRepoKey(r) === t.repoKey);
+        // D12c (R29 P2): a record whose OWN worktreePath cannot be attributed
+        // to ANY repoKey (deleted/rehomed worktree, symlink mismatch) used to
+        // be dropped unconditionally, even when hivecontrol still lists it
+        // live — past the archive grace period this let isAppArchived read a
+        // genuinely-live sibling row as app-archived. Safer default: fold such
+        // a record into THIS repoKey's bucket when it shares a repositoryId
+        // with a record that DID attribute here directly (same repositoryId
+        // under the devswarm repos root means "same repo, different/stale
+        // worktree path") — never across a FOREIGN repositoryId, and never
+        // for a record that resolves to a DIFFERENT repoKey (that one truly
+        // belongs elsewhere and is not reassigned).
+        const attributedRepositoryIds = new Set(
+          direct
+            .map((r) => (typeof r.repositoryId === 'string' && r.repositoryId) ? r.repositoryId : null)
+            .filter(Boolean)
+        );
+        const siblings = attributedRepositoryIds.size ? active.records.filter((r) => {
+          if (direct.indexOf(r) !== -1) return false; // already counted directly
+          if (scopeRecordToRepoKey(r) !== null) return false; // attributed elsewhere — never reassign
+          if (typeof r.repositoryId !== 'string' || !r.repositoryId) return false;
+          if (!attributedRepositoryIds.has(r.repositoryId)) return false;
+          return archivedCache.isUnderDevswarmReposRoot(r.worktreePath);
+        }) : [];
+        const scoped = direct.concat(siblings);
+        if (scoped.length) { activeByRepoKey[t.repoKey] = scoped; activeScopeKept += scoped.length; }
         // A non-empty global answer that scopes down to ZERO records for
         // THIS repoKey is not treated as a probe failure (the probe itself
         // succeeded) — it simply contributes nothing for this project this
         // tick, same fail-open posture as any other empty-for-this-key case
         // (writeActiveCache already refuses an empty per-key write).
+
+        // Genuinely dropped: unattributable AND no same-repositoryId sibling
+        // fallback applied. Logged once per DISTINCT worktreePath this tick
+        // (see droppedLoggedKeys above), capped at 20 alog.logEvent calls;
+        // the dropped count itself is never capped.
+        const stillDropped = active.records.filter((r) => scoped.indexOf(r) === -1 && scopeRecordToRepoKey(r) === null);
+        for (const r of stillDropped) {
+          const key = (r && r.worktreePath) ? String(r.worktreePath) : ('id:' + (r && r.id != null ? String(r.id) : 'unknown'));
+          if (droppedLoggedKeys.has(key)) continue;
+          droppedLoggedKeys.add(key);
+          activeScopeDropped++;
+          if (droppedLoggedKeys.size <= 20) {
+            try {
+              alog.logEvent('devswarm-supervisor', 'active-scope-drop', 'info',
+                'an active hivecontrol record could not be attributed to any repoKey (and no same-repositoryId sibling fallback applied) — dropped from this sweep',
+                { repoKeyTarget: t.repoKey, recordId: r && r.id != null ? String(r.id) : null, worktreePath: (r && r.worktreePath) || null, reason: 'unattributable-worktree' });
+            } catch (_) { /* logging must never break the sweep */ }
+          }
+        }
       } else if (active && !active.ok && !activeProbeFailure) {
         // D12b item 3: carry the real diagnostic fields fetchActiveWorkspaceRecords
         // now supplies on failure — error (message/code), status, signal, and the
@@ -877,7 +931,13 @@ function reconcileSweepIfDue(opts) {
       activeProbe: {
         repoKeys: Object.keys(activeByRepoKey),
         failure: activeProbeFailure,
-      } };
+      },
+      // activeScope (D12c, R29 P2): tick-wide kept/dropped counts from the
+      // scoping pass above — flows into main()'s sweep JSON line via the
+      // `reconcile` field (reconcile.activeScope) for after-the-fact
+      // diagnosis of how much of the global hivecontrol answer this sweep
+      // actually attributed vs. genuinely dropped.
+      activeScope: { kept: activeScopeKept, dropped: activeScopeDropped } };
   } catch (e) {
     return { ran: false, error: String(e && e.message || e) };
   }

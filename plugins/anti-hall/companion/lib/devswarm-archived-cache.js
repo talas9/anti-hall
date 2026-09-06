@@ -42,7 +42,13 @@
 // repoKeyForWorktree resolver distinctRepoKeys uses) and keeps, per target
 // repoKey, ONLY the records that resolve to THAT key — a record whose
 // worktreePath is unattributable (deleted worktree, non-git path) is dropped
-// from every bucket, never guessed into one. So by the time `byRepoKey[k]`
+// from every bucket, never guessed into one — UNLESS (D12c, R29 P2) it shares
+// a repositoryId with a sibling record that DID attribute directly to that
+// target repoKey and sits under the devswarm repos root, in which case it is
+// folded into that same bucket instead of being falsely read as archived past
+// the grace period; every record still genuinely unattributable is logged
+// once per tick (`active-scope-drop`, capped 20) and counted in the sweep's
+// `activeScope` return. So by the time `byRepoKey[k]`
 // reaches this file, it is already a REPO-SCOPED subset of the global answer,
 // not the raw global list — which is also why the partial-list floor a few
 // functions down (comparing `recs.length` against THIS SAME key's own

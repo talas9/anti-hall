@@ -304,3 +304,125 @@ test('D12b(d): a signal-killed probe carries `signal` (not just a null status) t
     assert.strictEqual(res.activeProbe.failure.status, null);
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// D12c (v0.96.2, R29 P2) — scopeRecordToRepoKey (devswarm-supervisor.js
+// ~:765-772) returned null for a record whose worktreePath fails
+// repoKeyForWorktree (deleted/rehomed worktree, symlink mismatch) even when
+// hivecontrol still lists it live under the SAME repositoryId as an
+// already-attributed sibling — the record was dropped from every bucket
+// SILENTLY, and past the archive grace period isAppArchived could then read
+// that genuinely-live sibling row as app-archived (a false archive; the 50%
+// floor only guards BULK drops, not a single unlucky one). Fix: (1) fold such
+// a record into the target repoKey's bucket instead of dropping it, gated on
+// same repositoryId as an already-direct-attributed sibling AND the path
+// being under the devswarm repos root; (2) log every record STILL dropped
+// (one structured `active-scope-drop` line per distinct worktreePath this
+// tick, capped at 20 log calls); (3) surface tick-wide kept/dropped counts as
+// `activeScope` on reconcileSweepIfDue's return (flows into main()'s sweep
+// JSON line via the `reconcile` field).
+// ---------------------------------------------------------------------------
+
+const alog = require('../../plugins/anti-hall/companion/lib/anti-hall-log.js');
+
+function withLogDir(fn) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-log-'));
+  const prev = process.env.ANTI_HALL_LOG_DIR;
+  process.env.ANTI_HALL_LOG_DIR = dir;
+  try { return fn(dir); } finally {
+    if (prev === undefined) delete process.env.ANTI_HALL_LOG_DIR; else process.env.ANTI_HALL_LOG_DIR = prev;
+    try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_) {}
+  }
+}
+
+test('D12c: an unattributable record sharing repositoryId with an already-attributed sibling is KEPT in that repoKey\'s bucket, not dropped', () => {
+  const h = makeHome();
+  try {
+    const wtA = '/Users/x/.devswarm/repos/1/aa/one'; // repo A's LIVE worktree — attributes directly
+    const wtAStale = '/Users/x/.devswarm/repos/1/aa/one-stale'; // repo A's OWN sibling row whose worktreePath no longer resolves (deleted/rehomed)
+    const repoKeyMap = { [wtA]: 'repoA-key' }; // wtAStale deliberately absent -> unattributable via worktreePath
+    const globalList = [
+      { id: 'a1', worktreePath: wtA, repositoryId: 'repoA-uuid' },
+      { id: 'a2', worktreePath: wtAStale, repositoryId: 'repoA-uuid' }, // same repositoryId as a1 -> sibling fallback
+    ];
+    const res = supervisor.reconcileSweepIfDue({
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW,
+      deps: {
+        readDescriptors: () => [{ id: 'a1', worktreePath: wtA, sessionId: 's1' }],
+        repoKeyForWorktree: (wt) => repoKeyMap[wt] || null,
+        readReconcileSweepState: () => ({ lastRunAt: 0 }),
+        writeReconcileSweepState: () => {},
+        runReconcile: () => ({ ok: true }),
+        runFold: () => ({ ok: true }),
+        runActiveList: () => ({ ok: true, records: globalList, count: 2 }),
+      },
+    });
+    const c = cacheLib.readActiveCache({ home: h.home, env: {}, now: SWEEP_NOW });
+    assert.deepStrictEqual(c.byRepoKey['repoA-key'].map((r) => r.id).sort(), ['a1', 'a2'],
+      'a2 (unattributable via worktreePath) must be folded in via the same-repositoryId sibling fallback, not dropped');
+    assert.strictEqual(res.activeScope.kept, 2);
+    assert.strictEqual(res.activeScope.dropped, 0);
+
+    // Confirm the practical consequence: a2 must NOT read as app-archived now
+    // that it is correctly kept in the live set.
+    assert.strictEqual(cacheLib.isAppArchived({
+      home: h.home, repoKey: 'repoA-key', id: 'a2', worktreePath: wtAStale,
+      env: {}, now: SWEEP_NOW, firstSeenMs: SWEEP_NOW - 20 * 60 * 1000, cache: c,
+    }), false, 'a2 is present in the (correctly scoped, sibling-kept) active set and must read as live');
+  } finally { h.cleanup(); }
+});
+
+test('D12c: an unattributable record with a FOREIGN repositoryId (no matching sibling) is dropped and logged once, never reassigned', () => {
+  const h = makeHome();
+  withLogDir(() => {
+    try {
+      const wtA = '/Users/x/.devswarm/repos/1/aa/one';
+      const wtForeignStale = '/Users/x/.devswarm/repos/9/zz/gone'; // unattributable, DIFFERENT repositoryId than any direct sibling
+      const repoKeyMap = { [wtA]: 'repoA-key' };
+      const globalList = [
+        { id: 'a1', worktreePath: wtA, repositoryId: 'repoA-uuid' },
+        { id: 'z1', worktreePath: wtForeignStale, repositoryId: 'repoZ-uuid' },
+      ];
+      const res = supervisor.reconcileSweepIfDue({
+        home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW,
+        deps: {
+          readDescriptors: () => [{ id: 'a1', worktreePath: wtA, sessionId: 's1' }],
+          repoKeyForWorktree: (wt) => repoKeyMap[wt] || null,
+          readReconcileSweepState: () => ({ lastRunAt: 0 }),
+          writeReconcileSweepState: () => {},
+          runReconcile: () => ({ ok: true }),
+          runFold: () => ({ ok: true }),
+          runActiveList: () => ({ ok: true, records: globalList, count: 2 }),
+        },
+      });
+      const c = cacheLib.readActiveCache({ home: h.home, env: {}, now: SWEEP_NOW });
+      assert.deepStrictEqual(c.byRepoKey['repoA-key'].map((r) => r.id), ['a1'],
+        'z1 (foreign repositoryId, no attributed sibling) must never be folded into repo A\'s bucket');
+      assert.strictEqual(res.activeScope.kept, 1);
+      assert.strictEqual(res.activeScope.dropped, 1);
+
+      const entries = alog.readRecent({ component: 'devswarm-supervisor' });
+      const drop = entries.find((e) => e.op === 'active-scope-drop');
+      assert.ok(drop, 'a dropped record must produce ONE active-scope-drop log line');
+      assert.strictEqual(drop.ctx.worktreePath, wtForeignStale);
+      assert.strictEqual(drop.ctx.recordId, 'z1');
+      assert.strictEqual(drop.ctx.repoKeyTarget, 'repoA-key');
+      assert.strictEqual(entries.filter((e) => e.op === 'active-scope-drop').length, 1,
+        'exactly one drop line for the one distinct dropped record this tick, never duplicated');
+    } finally { h.cleanup(); }
+  });
+});
+
+test('D12c: reconcileSweepIfDue\'s return carries activeScope{kept,dropped} — the shape main()\'s sweep JSON line surfaces via its `reconcile` field', () => {
+  const h = makeHome();
+  try {
+    const res = supervisor.reconcileSweepIfDue({
+      home: h.home, env: { ANTIHALL_DEVSWARM: 'on' }, now: SWEEP_NOW,
+      deps: sweepDeps({ runActiveList: () => ({ ok: true, records: [{ id: 'ws1', worktreePath: '/w/a' }], count: 1 }) }),
+    });
+    assert.deepStrictEqual(res.activeScope, { kept: 1, dropped: 0 });
+    // Sanity: this is exactly what would be JSON.stringify'd as reconcile.activeScope in main()'s line.
+    const line = JSON.stringify({ ts: new Date().toISOString(), sweep: 0, reconcile: res });
+    assert.ok(line.includes('"activeScope":{"kept":1,"dropped":0}'));
+  } finally { h.cleanup(); }
+});
