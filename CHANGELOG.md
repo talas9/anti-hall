@@ -6,6 +6,25 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.96.2 (2026-09-05)
+
+- **Fixed: app-side archive detection is now repo-scoped** — hivecontrol's
+  workspace listing is global, so the supervisor attributes each record to
+  its own repo via its worktree path (same-repository siblings whose
+  worktree cannot be resolved are kept, foreign or unattributable records
+  are dropped and logged as `active-scope-drop` with per-tick `activeScope`
+  counts) and stores only matching records per repo; records carry
+  `repositoryId`/`label`/`branch` so the cross-repo archive guard can fire;
+  probe and reconcile failures now log `error`/`status`/`signal`/`stderr`
+  (200 chars) (`3cb559cb48d5`).
+- Also from 0.96.1 but missing from its notes: defensive explicit
+  `existsSync` guard when choosing a repo's representative worktree
+  (`24a1ff3`).
+- **Known:** an archived-probe failure observed twice on one machine
+  remains unreproduced (now instrumented; `3e000e49fe1b`); ack from an
+  unresolvable caller still fails open; leaked fixture stores remain
+  report-only.
+
 ## 0.96.1 (2026-09-05)
 
 - **Fixed: the supervisor no longer escalates a row whose harness session is
