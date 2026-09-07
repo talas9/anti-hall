@@ -202,7 +202,7 @@ test('guard: single-partition workspace — count/read/messages unaffected by th
     const c = cli.run(['inbox', 'count', 'solo-only'], ctx(home, { cwd: repo }));
     assert.equal(c.result.ok, true, JSON.stringify(c.result));
     assert.equal(c.result.unreadTotal, 1);
-    assert.equal(c.result.meshGroupUnresolved, undefined, 'no mesh group -> no meshGroupUnresolved noise');
+    assert.equal(c.result.meshGroupUnresolved, false, 'no mesh group -> no meshGroupUnresolved noise');
 
     const rd = cli.run(['inbox', 'read', 'solo-only'], ctx(home, { cwd: repo }));
     assert.equal(rd.result.unreadTotal, 1);

@@ -97,6 +97,22 @@ test('scan-throttle: `graphify query ...` (a read) is never rewritten', () => {
   assert.strictEqual(r.stdout.trim(), '');
 });
 
+// A write flag wins regardless of subcommand position — matches
+// graphify-guard.js's classifyGraphifyArgs (`--update`/`--obsidian` win even
+// when `query` is the first non-flag token). scan-throttle.js must classify
+// this the same way so identical command strings get consistent throttle vs.
+// write-policy treatment.
+test('scan-throttle: `graphify query ... --update` (write flag wins) IS rewritten', () => {
+  const prefix = expectedFullPrefix();
+  if (!prefix) return;
+  const r = runAvailable('graphify query "x" --update');
+  assert.ok(r.json, 'expected JSON output for a rewrite');
+  assert.strictEqual(
+    r.json.hookSpecificOutput.updatedInput.command,
+    prefix + 'graphify query "x" --update'
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Idempotency (mutation-checked): only the EXACT, ANCHORED (startsWith) known
 // prefix at the very start of the trimmed command counts as "already

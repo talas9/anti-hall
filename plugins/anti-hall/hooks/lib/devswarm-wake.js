@@ -210,6 +210,24 @@ function drainCmd(cli, isChild, useTick) {
   // regression on a caller that already worked).
   const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true` AND `known` is NOT `false`';
   const otherwise = 'either `unreadTotal` is greater than 0, or `meshGapWithheld` is `true`, or `known` is `false`';
+  // fl-wave5 fix (item 4), broadened fl-wave6 (item 2, P1): the final
+  // `inbox read-primary` step this prose sends the agent to run can REFUSE
+  // with `ok:false` for ANY reason — not just the literal `store-unavailable`
+  // bucket. `resolveWorkspaceStoreForRead` (scripts/devswarm.js) also refuses
+  // with `project-context-mismatch`, `unregistered-workspace`, or an
+  // ownership-mismatch reason, each carrying its own `reason` (and,
+  // depending on the refusal, `storeUnavailableReason`/
+  // `storeUnavailableDetail`) — pre-fix, this clause only fired its terminal
+  // branch when `reason` was exactly `store-unavailable`, so every OTHER
+  // `ok:false` refusal fell through this prose with no guidance at all,
+  // leaving the agent free to loop (re-running the same doomed command) or
+  // spawn a subagent over a refusal no subagent can resolve. Terminal
+  // branch now fires on ANY `ok:false`: report the reason (and
+  // `storeUnavailableReason`/`storeUnavailableDetail` when present) in one
+  // line and stop.
+  const storeUnavailableClause = ' — if that reports `ok:false`, '
+    + 'report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) '
+    + 'in one line and stop (do not loop, do not spawn a subagent)';
   if (useTick) {
     const tickCmd = '`node ' + cli + ' inbox tick ' + id + (isChild ? ' --child' : '') + '`';
     const childNote = isChild
@@ -222,7 +240,7 @@ function drainCmd(cli, isChild, useTick) {
       '`inbox count` does, and writes a liveness marker + refreshes your heartbeat — one ' +
       'command instead of pull+count); ' + stopCond + ', say so and stop — do NOT spawn a ' +
       'subagent; otherwise (' + otherwise + '), run `node ' + cli +
-      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large' + childNote;
+      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large' + childNote + storeUnavailableClause;
   }
   const countCmd = '`node ' + cli + ' inbox count ' + id + '`';
   if (isChild) {
@@ -232,11 +250,11 @@ function drainCmd(cli, isChild, useTick) {
       cli + ' inbox read-primary ' + id +
       '` (delegate to a subagent only if the payload is large — this is the cursor-advancing ' +
       'verb, matching devswarm-child-turn.js\'s own mesh-direct instruction; `inbox read` is a ' +
-      'non-mutating peek and cannot clear the withheld gap)';
+      'non-mutating peek and cannot clear the withheld gap)' + storeUnavailableClause;
   }
   return 'first run ' + countCmd + '; ' + stopCond + ', say so and stop — do NOT spawn a ' +
     'subagent; otherwise (' + otherwise + '), run `node ' + cli + ' inbox read-primary ' + id +
-    '` (delegate to a subagent only if the payload is large)';
+    '` (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
 }
 
 // monitorArmLine(watcher) -> the Monitor-arm addition to the Claude-branch wake
@@ -314,32 +332,95 @@ function wakeDirective(env, isChild, cli, watcher) {
 }
 
 // wakeReassert(env, cli, isChild, watcher) -> the Stop-gate RE-VERIFY text
-// (leading space). Worded as a CronList re-verify, never a bare "create it": a
-// job created >7 days ago has since self-deleted (contract clause 3 above), so
-// the Stop gate is also the RENEWAL path — it costs nothing extra, and it is why
-// anti-hall needs no 7-day timer of its own. Claude-only by construction
-// (callers gate on isClaudeAgent) — a Codex workspace has no job to create, so
-// it is never nagged. `isChild` selects the role-correct drain verb (default
-// true = child pull->read, matching this function's original child-gate caller;
-// devswarm-parent-gate.js passes false for the Primary's read-primary verb).
-// `watcher`, when a non-empty string, is the ABSOLUTE path to the Monitor watch
-// script; adds the Monitor re-verify/arm line IN ADDITION to the cron re-verify
-// (never instead — see the NON-NEGOTIABLE header comment above). Absent/empty
-// `watcher` -> cron-only, byte-identical to pre-Monitor behavior.
+// (leading space), TRIMMED (C, hook-injection-byte-budget follow-up): the
+// pre-trim version re-stated the FULL CronCreate prompt body inline on every
+// Stop-gate firing — the same paragraph SessionStart's wakeDirective() already
+// delivered once, repeated verbatim on every forced-ack block for the life of
+// the session. Now a POINTER: name the two conditions CronList/Monitor must
+// satisfy, and if either is missing, send the agent back to re-run
+// `wake-directive <id>` (scripts/devswarm.js's on-demand reprint of the FULL
+// SessionStart text, cmdWakeDirective — see that function's own header) rather
+// than re-inline the whole prompt here. The contract is on the FIXED text
+// only — everything except the one embedded CLI path — capped at 360 chars
+// (fl-wave6 fix, item 5: raised from 320 — backslash escapes in the emitted
+// text count toward the measured length too, and the real fixed-text length
+// already peaked at 315/320, a 5-char headroom too thin to safely add or
+// reword any clause without tripping the cap; 360 restores real headroom
+// without trimming any existing wording)
+// (see tests/hooks/devswarm-wake.test.js's own length assertion, which
+// computes fixed length as output.length minus the literal cli length): the
+// path itself is caller-controlled (a real install path) and cannot be
+// bounded by this function, so a flat "total output <= N" cap either failed
+// to catch a real-world budget blowout (a short fixture path hid it) or was
+// unmeetable for a genuinely long install path through no fault of this
+// text. A Stop-gate reason competes with every other line in that same forced-ack block for the
+// hook-injection budget.
+//
+// Still worded as a VERIFY, never a bare "create it": a job created >7 days
+// ago has since self-deleted (contract clause 3 above), so the Stop gate is
+// also the RENEWAL path. Claude-only by construction (callers gate on
+// isClaudeAgent) — a Codex workspace has no job to create, so it is never
+// nagged. `isChild` selects the role-correct drain verb suffix (` --child`)
+// so the pointed-at `inbox tick` command matches what THIS caller would
+// actually need to run. `watcher`, when a non-empty string, is the ABSOLUTE
+// path to the Monitor watch script; adds the Monitor re-verify condition IN
+// ADDITION to the cron condition (never instead — see the NON-NEGOTIABLE
+// header comment above). Absent/empty `watcher` -> the Monitor clause is
+// omitted entirely (fail-open for a caller not yet passing it), matching
+// wakeDirective's own contract for an omitted watcher.
 function wakeReassert(env, cli, isChild, watcher) {
   try {
     const child = isChild === undefined ? true : !!isChild;
-    // useTick:true — same reasoning as wakeDirective's Claude branch above: this
-    // `drainCmd` output becomes the RE-CREATED CronCreate prompt's body, a cron
-    // tick, so it gets the D13 `inbox tick` verb, not turn-native `inbox count`.
-    return ' MAILBOX WAKE — before you stop, VERIFY your self-wake cron job: call `CronList`. ' +
-      'If your mailbox-wake job is GONE (never created, or auto-expired — recurring tasks ' +
-      'self-delete 7 days after creation), RE-CREATE it now with `CronCreate`, schedule `' +
-      wakeCron(env) + '`, prompt runs ' + drainCmd(cli, child, true) + ' and acts on anything unread. ' +
-      'Cron jobs fire while this session is IDLE — without one, any message that arrives after ' +
-      'you stop is never seen. If `CronList` already shows it, just say so and stop (this ' +
-      'reminder is capped and stops on its own).' +
-      monitorArmLine(watcher);
+    const id = '<DEVSWARM_BUILDER_ID>';
+    // fl-wave3 fix (item 3): `cli` — the ABSOLUTE plugin path, realistically
+    // 80-100+ chars once installed from the plugin cache (e.g.
+    // `/Users/x/.claude/plugins/cache/anti-hall/anti-hall/0.98.0/scripts/devswarm.js`)
+    // — used to be embedded 3 TIMES in this one short pointer (twice in the
+    // `node <cli> ...` commands below, once more via `tickCmd`'s own
+    // interpolation), blowing well past the 400-char contract this function
+    // is capped at (see the header comment above + tests/hooks/
+    // devswarm-wake.test.js's LENGTH CAP test) for any real install path,
+    // not just the short fixture paths this suite happened to use pre-fix.
+    // Emit it ONCE, up front, as a `CLI=` assignment the agent can literally
+    // run as a shell variable — every later reference is the short `"$CLI"`
+    // token instead of the long literal path.
+    //
+    // fl-wave4 fix (item 1): `watcher` (the WATCHER const both callers derive
+    // via __dirname — hooks/devswarm-parent-gate.js and
+    // hooks/devswarm-child-gate.js's own header comments) was STILL
+    // interpolated here VERBATIM, undoing the exact same budget fix the `cli`
+    // literal got above for any real (deeply-nested plugin-cache) install
+    // path. Both consts resolve from the SAME plugin root — CLI is
+    // `<root>/scripts/devswarm.js`, WATCHER is
+    // `<root>/companion/lib/devswarm-wake-watch.js` — so WATCHER's absolute
+    // path is always exactly `$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js`.
+    // Emitting that DERIVATION (relative to the already-emitted `$CLI`)
+    // instead of a second long literal keeps this pointer well under the
+    // 400-char cap regardless of `watcher`'s own literal length. `watcher`
+    // itself is used ONLY as a presence gate now (non-null/non-empty ->
+    // include the Monitor clause; falsy -> omit it entirely, unchanged
+    // fail-open contract for a caller not yet passing it).
+    const tickCmd = '`node "$CLI" inbox tick ' + id + (child ? ' --child' : '') + '`';
+    let w = '';
+    try {
+      if (watcher) {
+        w = '; `WATCH="$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js"`, `Monitor` on `node "$WATCH"` armed (never two)';
+      }
+    } catch (_) { w = ''; }
+    const cliStr = cli ? String(cli) : '<unset>';
+    // fl-wave5 fix (item 3): this pointer tells the agent to run `CLI=...`
+    // literally as a shell assignment (see the tickCmd/`$CLI` usage below) —
+    // but the pre-fix text wrapped the path in BACKTICKS (`CLI=\`<path>\``),
+    // which in an actual shell means COMMAND SUBSTITUTION, not a literal
+    // string. An agent that took the instruction literally would have
+    // EXECUTED the path as a command instead of assigning it. Double-quote
+    // it instead — the correct, directly-runnable shell assignment shape —
+    // with the path's own `"`/`\`/`` ` ``/`$` escaped so an unusual install
+    // path (spaces are already safe inside double quotes) can never break
+    // out of the quoting.
+    const cliQuoted = '"' + cliStr.replace(/(["\\$`])/g, '\\$1') + '"';
+    return ' MAILBOX WAKE CHECK (CLI=' + cliQuoted + '): CronList must show `' + wakeCron(env) + '` running '
+      + tickCmd + w + '. If missing, re-run `node "$CLI" wake-directive ' + id + '`.';
   } catch (_) {
     return '';
   }

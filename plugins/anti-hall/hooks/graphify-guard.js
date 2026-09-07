@@ -40,10 +40,14 @@
 //   silent no-op.
 //
 // LOOP SAFETY (per-session, per-project, RE-ARMING)
-//   Blocks once per (session, project-root, nudge window). After a block, a marker
+//   Advises once per (session, project-root, nudge window) — non-blocking,
+//   exit 0, hookSpecificOutput.additionalContext only (this code-nav path used
+//   to block via exit 2/decision:block; it is advisory-only as of 2026-08-23 —
+//   see the exit-2 write-ban carve-out in the Contract section below, and
+//   tests/hooks/graphify-guard.test.js). After an advisory, a marker
 //   under os.homedir()/.anti-hall is written and subsequent calls exit 0 (allow)
 //   until the marker EXPIRES, at which point the nudge re-arms and the next
-//   code-nav search blocks again. Expiry fires on whichever trigger passes first
+//   code-nav search advises again. Expiry fires on whichever trigger passes first
 //   (mirrors task-tracker.js's dual-trigger design; KB-claude-codex.md's §6.2
 //   adherence-cadence guidance: re-inject every 40-80K new tokens):
 //     - the transcript has grown by REARM_GROWTH_BYTES (~240KB, the 40-80K-token

@@ -22,10 +22,13 @@
 // `action` string and exit 0 (so the skill can relay it), unless a destructive
 // git precondition (dirty tree / non-fast-forward) demands a hard STOP.
 //
-// NO writes outside the marketplace clone dir and stdout. The only filesystem
-// mutation is fs.cpSync of the marketplace plugin dir into a NEW cache/<ver>/
-// dir (never deletes or overwrites a sibling version). Pure Node >= 18
-// built-ins; cross-platform incl. Windows (git step uses execFileSync, no shell).
+// Writes: the marketplace clone dir and stdout, PLUS two ~/.anti-hall/ paths this
+// module owns directly — update-sweep-state.json (writeSweepState, atomic tmp+
+// rename, fail-open) and, when healIngestDaemon repairs a stale ingest daemon,
+// its own state under ~/.anti-hall. The plugin-copy mutation itself is
+// fs.cpSync of the marketplace plugin dir into a NEW cache/<ver>/ dir (never
+// deletes or overwrites a sibling version). Pure Node >= 18 built-ins;
+// cross-platform incl. Windows (git step uses execFileSync, no shell).
 
 'use strict';
 
@@ -1342,16 +1345,20 @@ function ownerKeyMigratePostUpdate(opts) {
  *
  * Task #4 persisted-shape forward-migration: normalize every parent-gate
  * reply-state file (~/.anti-hall/devswarm/parent-gate/*-replies.json) from the
- * legacy single-merged-object shape to the new append-only JSONL shape,
- * losslessly. Pure per-user-file fold+rewrite via migrate-state.js's
- * migrateReplyState (which delegates to devswarm-reply-state.js) — no store
- * open, no daemon/scheduler side effect. Runs on EVERY update (not gated on
- * cache.synced — an existing reply-state file predates the new shape regardless
- * of whether the plugin changed version this run). Same DevSwarm-session-only
- * gate + fully fail-open posture as fold/reconcile/ownerKeyMigrate above; NEVER
- * throws, never affects the update's own success. Idempotent (an already-
- * append-only file is detected and skipped), NO-DELETE (the fold keeps every
- * sender's max lastReplyTs).
+ * legacy single-merged-object shape to the new append-only JSONL shape. Pure
+ * per-user-file fold+rewrite via migrate-state.js's migrateReplyState (which
+ * delegates to devswarm-reply-state.js) — no store open, no daemon/scheduler
+ * side effect. Runs on EVERY update (not gated on cache.synced — an existing
+ * reply-state file predates the new shape regardless of whether the plugin
+ * changed version this run). Same DevSwarm-session-only gate + fully
+ * fail-open posture as fold/reconcile/ownerKeyMigrate above; NEVER throws,
+ * never affects the update's own success. Idempotent (an already-append-only
+ * file is detected and skipped); NEAR-lossless with one documented, bounded
+ * residual — devswarm-reply-state.js's own header (see its foldAndRewrite)
+ * discloses that a live append landing in the tiny window AFTER this
+ * migration's re-read but BEFORE its atomic rename is dropped by that
+ * replace. That residual can only cause one redundant Stop-gate nag for the
+ * affected reply, never let an unanswered question slip through the gate.
  */
 function replyStateMigratePostUpdate(opts) {
   const o = opts || {};

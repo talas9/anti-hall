@@ -29,12 +29,14 @@ list hook support for `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
 `SubagentStart`, `SubagentStop`, and `Stop`, with `PreToolUse` matchers that can
 include `Bash`, `apply_patch`/`Edit`/`Write`, and MCP tools.
 
-This port currently hard-registers only the anti-hall hooks whose payload
-contracts are live-aligned and regression-tested for Codex:
+This port currently hard-registers the anti-hall hooks whose payload
+contracts are live-aligned and regression-tested for Codex, PLUS one
+documented exception (the `PostToolUse` pair below, registered but still
+UNVERIFIED against a real Codex payload):
 
 - `SessionStart`: full verify-first protocol, graphify session reminder, DevSwarm child-role communication override (`devswarm-child-role.js`), version alert, codex-availability probe, handover resume (`handover-resume.js`)
 - `UserPromptSubmit`: rotating verify-first nudge, task tracker, limit-conserve nudge, DevSwarm parent-inbox + child-turn per-turn reminders (`devswarm-parent-inbox.js`, `devswarm-child-turn.js`)
-- `PreToolUse`: shell command guards (`git-guard`, `command-guard`, `graphify-guard`, `merge-gate`) — `command-guard.js` is a single shared file, so its DevSwarm destructive-read redirect (0.53.0: blocks `hivecontrol workspace monitor` unconditionally, `read-messages` when durable-inbox evidence exists, own skip `devswarm-read-guard`) auto-applies to Codex sessions with no separate adapter
+- `PreToolUse`: shell command guards (`git-guard`, `command-guard`, `graphify-guard`, `merge-gate`) — `command-guard.js` is a single shared file, so its DevSwarm destructive-read redirect (0.53.0/Part B: blocks `hivecontrol workspace monitor` AND `read-messages` unconditionally whenever DevSwarm is active, no durable-inbox evidence required; own skip `devswarm-read-guard`) auto-applies to Codex sessions with no separate adapter
 - `PostToolUse`: DevSwarm parent-decide/reply gate reply-tracker (`devswarm-parent-reply-tracker.js`, matcher `Bash`) and, as of v0.73.0, the child-only inbox-drain reminder (`devswarm-child-drain.js`, matcher `Bash`) — **registered, but their Codex payload contract is UNVERIFIED**: both have only been checked against the Claude Agent SDK's documented `PostToolUse` payload shape, not against a real Codex runtime. Unlike the other hooks in this list, they do not yet meet this port's own "live-aligned and regression-tested for Codex" bar; treat both as best-effort until confirmed against an actual Codex `PostToolUse` payload.
 - `Stop`: task guards, graphify reminder, speculation guard/judge, DevSwarm parent-gate + child-gate forced-ack (`devswarm-parent-gate.js`, `devswarm-child-gate.js`)
 

@@ -351,8 +351,8 @@ test('P1-B negative control: a genuinely single-partition workspace never sets m
     const r = cli.run(['inbox', 'count', 'solo-p1b-ci'], ctx(home, { cwd: repo }));
     assert.equal(r.result.ok, true, JSON.stringify(r.result));
     assert.equal(r.result.unreadTotal, 1);
-    assert.equal(r.result.meshGroupUnresolved, undefined);
-    assert.equal(r.result.totalsPartial, undefined);
+    assert.equal(r.result.meshGroupUnresolved, false);
+    assert.equal(r.result.totalsPartial, false);
   } finally { rm(home); rm(repo); }
 });
 

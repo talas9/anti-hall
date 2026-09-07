@@ -186,6 +186,10 @@ function isGraphifyScanSegment(segment) {
   const baseVerb = rawVerb.replace(/^\//, '').replace(/^.*[\\/]/, '').toLowerCase();
   if (baseVerb !== 'graphify') return false;
   const args = tokens.slice(argsStart);
+  // A write flag wins regardless of subcommand position (matches
+  // graphify-guard.js's classifyGraphifyArgs): `graphify query --update` is a
+  // write even though `query` is the first non-flag token.
+  if (args.includes('--update') || args.includes('--obsidian')) return true;
   const firstNonFlag = args.find((a) => !a.startsWith('-'));
   if (!firstNonFlag) return false; // bare `graphify` / flags only -> uncertain, no match
   if (firstNonFlag === 'query') return false; // explicit read -> never throttled

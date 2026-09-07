@@ -224,10 +224,33 @@ const ERROR_TOLERANCE = 3;
 const ERROR_BACKOFF_MS = [60 * 1000, 5 * 60 * 1000, 30 * 60 * 1000];
 
 // A watcher lock is long-lived (the whole Monitor's persistent lifetime), not
-// a one-shot pull's — but acquireExclLock's steal rule never touches a
-// live-pid holder regardless of staleMs (see devswarm-pull.js), so this only
-// governs recovery from a genuinely crashed watcher that never released.
+// a one-shot pull's. acquireExclLock's default steal rule never touches a
+// live-pid holder regardless of staleMs (see devswarm-pull.js) — but THIS
+// watcher opts into `allowStaleLiveSteal` and re-stamps its own lock's `ts`
+// every poll tick (see `release.restamp()` below), so a healthy watcher's
+// lock never goes stale while a genuinely HUNG (frozen, not exited) watcher's
+// lock does, after this many ms of missed restamps (defect 8143ced316d3).
 const WATCH_LOCK_STALE_MS = 2 * 60 * 1000;
+
+// readInstalledPluginVersion() -> semver string | null. Mirrors
+// devswarm-ingest.js's own helper of the same name — best-effort read of THIS
+// watcher's installed plugin.json (resolved via __dirname so it always names
+// the build actually loaded into this process). Stamped into the lock file so
+// a refused watcher can report which build holds it. Fail-open to null.
+function readInstalledPluginVersion() {
+  try {
+    // F fix (P2): this file lives one level DEEPER than devswarm-ingest.js
+    // (companion/lib/ vs companion/) — a single '..' here resolved to
+    // companion/.claude-plugin/plugin.json, which does not exist (compare
+    // devswarm-ingest.js:1088's own `path.join(__dirname, '..',
+    // '.claude-plugin', 'plugin.json')`, correct FOR ITS OWN location one
+    // level up from companion/). Needs one more '..' to reach the real
+    // manifest at plugins/anti-hall/.claude-plugin/plugin.json.
+    const p = path.join(__dirname, '..', '..', '.claude-plugin', 'plugin.json');
+    const json = JSON.parse(fs.readFileSync(p, 'utf8'));
+    return (json && typeof json.version === 'string') ? json.version : null;
+  } catch (_) { return null; }
+}
 
 // ---------------------------------------------------------------------------
 // PURE CORE
@@ -285,6 +308,17 @@ const REFUSAL_REASONS = {
 // an id, an error message, or any other runtime-derived text.
 function formatRefusalLine(reason) {
   return '[wake-watch] REFUSED TO ARM: ' + reason;
+}
+
+// formatLockLostLine(reason) -> the ONE line emitted (to STDERR, never stdout
+// — this is diagnostic noise about THIS watcher's own lifecycle, not a wake
+// event) when a healthy-looking watcher discovers mid-loop that its lock was
+// stolen out from under it (F fix, defect 8143ced316d3's own restamp()
+// return value, previously ignored entirely at the call site). Same closed-
+// vocabulary discipline as formatRefusalLine: `reason` is a REFUSAL_REASONS
+// value, never runtime-derived text.
+function formatLockLostLine(reason) {
+  return '[wake-watch] LOCK LOST: ' + reason;
 }
 
 // formatWakeLine(snapshot, prevTotal, total, opts) -> string. The actionable
@@ -845,17 +879,28 @@ function main() {
   const watchedRole = identity.role;
 
   const lockPath = lockPathFor(home, id);
-  const release = pull.acquireExclLock(lockPath, {}, WATCH_LOCK_STALE_MS);
+  let refusalInfo = null;
+  const release = pull.acquireExclLock(lockPath, {
+    allowStaleLiveSteal: true,
+    version: readInstalledPluginVersion(),
+    onRefused(info) { refusalInfo = info; },
+  }, WATCH_LOCK_STALE_MS);
   if (!release) {
     // Double-arm refused. A second watcher declining is CORRECT, not an
     // error — exit 0. It still gets exactly one closed-vocabulary line on
     // stdout (formatRefusalLine) so the caller can distinguish "another
     // watcher already covers this" from "armed and quiet"; the detailed
-    // stderr line (with role/id) stays for humans/logs since only the fixed
-    // reason may go on stdout.
+    // stderr line (with role/id, and now the holder's pid/age/version per
+    // defect 8143ced316d3) stays for humans/logs since only the fixed reason
+    // may go on stdout.
     try {
+      const info = refusalInfo || {};
+      const ageStr = Number.isFinite(info.ageMs) ? Math.round(info.ageMs / 1000) + 's' : 'unknown';
+      const pidStr = info.pid == null ? 'unknown' : String(info.pid);
+      const versionStr = info.version || 'unknown';
       process.stderr.write('[wake-watch] another watcher already holds the lock for '
-        + watchedRole + ' ' + id + '; exiting quietly (not double-arming).\n');
+        + watchedRole + ' ' + id + ' (holder pid=' + pidStr + ' age=' + ageStr
+        + ' version=' + versionStr + '); exiting quietly (not double-arming).\n');
     } catch (_) {}
     try { emitLine(formatRefusalLine(REFUSAL_REASONS.LOCK_HELD)); } catch (_) {}
     process.exitCode = 0;
@@ -893,10 +938,23 @@ function main() {
   let savedTotal2 = st.lastTotal2;
 
   let cleaned = false;
-  function cleanup() {
+  // fl-wave3 fix (item 7): `skipSave` — set true ONLY by the lock-lost exit
+  // path below. `st` at that point is THIS process's own (now-stale) view of
+  // seen-state; the NEW holder that stole the lock has ALREADY been running
+  // its own tick loop and has its own, more current seen-state on disk. This
+  // process persisting ITS stale `st` here would silently overwrite the new
+  // holder's fresher state with an older one the instant this process exits
+  // — corrupting the state the SURVIVING watcher relies on for wake dedup.
+  // `release()` is untouched by this flag: it is already a safe no-op once
+  // the lock token on disk no longer matches this process's own (see the
+  // loop() comment above), so it can never unlink/steal the new holder's
+  // lock — only the seen-state WRITE needs gating here.
+  function cleanup(opts) {
     if (cleaned) return;
     cleaned = true;
-    try { saveSeenState(home, id, st, fs); } catch (_) {}
+    if (!(opts && opts.skipSave)) {
+      try { saveSeenState(home, id, st, fs); } catch (_) {}
+    }
     try { release(); } catch (_) {}
   }
   process.on('exit', cleanup);
@@ -904,6 +962,35 @@ function main() {
   process.on('SIGINT', () => { cleanup(); process.exit(0); });
 
   function loop() {
+    // Re-stamp the lock's `ts` every tick (defect 8143ced316d3) so a HEALTHY
+    // watcher's lock never reads as stale to another watcher's steal-check —
+    // only a genuinely hung watcher (stuck before reaching this line again)
+    // goes stale. F fix: restamp()'s own return value was previously
+    // discarded — `false` means the token on disk no longer matches this
+    // process's own (another watcher already stole the lock, e.g. after this
+    // one was hung past the stale window), and continuing to loop afterward
+    // means TWO watchers silently believe they hold the same lock. Re-check
+    // once (a single transient read race — e.g. catching the file mid-write
+    // by the very watcher that just stole it — must not be treated as a
+    // genuine loss) before concluding the lock is actually gone; only then
+    // print the LOCK_HELD line to STDERR and exit the loop CLEANLY — no kill
+    // of the new holder, no delete of anything (release() below is already a
+    // safe no-op once the token no longer matches, so cleanup() cannot ever
+    // unlink the new holder's lock file).
+    let restamped = false;
+    try { restamped = !!release.restamp(); } catch (_) { restamped = false; }
+    if (!restamped) {
+      try { restamped = !!release.restamp(); } catch (_) { restamped = false; }
+    }
+    if (!restamped) {
+      try { fs.writeSync(2, formatLockLostLine(REFUSAL_REASONS.LOCK_HELD) + '\n'); } catch (_) {}
+      // fl-wave3 fix (item 7): skip the seen-state write on a lock-lost exit
+      // — see cleanup()'s own header comment for why persisting this
+      // process's stale `st` here would corrupt the NEW lock holder's own,
+      // more current state.
+      cleanup({ skipSave: true });
+      return;
+    }
     let snapshot;
     try {
       snapshot = watchedRole === 'child'
@@ -943,6 +1030,7 @@ module.exports = {
   formatDualWakeLine,
   formatErrorLine,
   formatRefusalLine,
+  formatLockLostLine,
   REFUSAL_REASONS,
   ERROR_TOLERANCE,
   ERROR_BACKOFF_MS,
@@ -962,6 +1050,8 @@ module.exports = {
   lockPathFor,
   DEFAULT_POLL_MS,
   POLL_ENV_VAR,
+  readInstalledPluginVersion,
+  WATCH_LOCK_STALE_MS,
 };
 
 if (require.main === module) main();

@@ -119,6 +119,21 @@ function logReplyParseDrop(home, meta) {
   } catch (_) {}
 }
 
+// logAnswersHint(home, meta) — G fix (defect 93c41cc09ff6 revised): a
+// SEPARATE event from reply-parse-drop (the send parsed fine; it simply
+// wasn't credited because it didn't carry `--answers`, not because parsing
+// failed) so the two causes stay distinguishable in the log. Same
+// best-effort, never-throws idiom as logReplyParseDrop, writing to the SAME
+// bounded NDJSON file.
+function logAnswersHint(home, meta) {
+  try {
+    const p = parentInboxLogPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const line = JSON.stringify(Object.assign({ ts: Date.now(), event: 'reply-not-credited-missing-answers' }, meta || {}));
+    fs.appendFileSync(p, line + '\n');
+  } catch (_) {}
+}
+
 // ---------------------------------------------------------------------------
 // SEND RECEIPTS (v0.90.0) — the RECEIPT-FIRST reply source.
 //
@@ -281,6 +296,33 @@ function resolveRepoKey(cwd) {
     return repokeyMod.repoKeyForWorktree(top);
   } catch (_) {
     return null;
+  }
+}
+
+// recipientHasPendingQuestion(repoKey, home, toId) -> bool. Defect
+// 93c41cc09ff6 fix support: reads THIS project's already-derived summary
+// (companion/lib/devswarm-store.js's computeSummary/deriveSummary — the same
+// file devswarm-parent-gate.js's readOwnUnread reads) and checks whether
+// ANY workspace entry's `pendingQuestions` array names `toId` as an asker
+// (`{from: toId, ...}`). Read-only, fail-CLOSED (returns false — the
+// original, more cautious "do not credit" behavior) on any missing file,
+// parse error, or unexpected shape, so a broken/absent summary never widens
+// crediting beyond what was already safe pre-fix.
+function recipientHasPendingQuestion(repoKey, home, toId) {
+  try {
+    if (!repoKey || !home || !toId) return false;
+    const store = require('../companion/lib/devswarm-store.js');
+    const summary = store.readSummaryForHash(home, repoKey);
+    if (!summary || typeof summary !== 'object' || typeof summary.workspaces !== 'object' || !summary.workspaces) return false;
+    for (const key of Object.keys(summary.workspaces)) {
+      const entry = summary.workspaces[key];
+      const pq = entry && Array.isArray(entry.pendingQuestions) ? entry.pendingQuestions : null;
+      if (!pq) continue;
+      if (pq.some((q) => q && String(q.from) === String(toId))) return true;
+    }
+    return false;
+  } catch (_) {
+    return false;
   }
 }
 
@@ -517,7 +559,38 @@ function main() {
   // prevent, through the observation mechanism itself. cmdSend echoes
   // `needsReply` right next to `toId` (scripts/devswarm.js), so this is the
   // same trusted response shape already checked above.
-  if (resp.needsReply === true) return;
+  //
+  // FIX (defect 93c41cc09ff6, revised — G): the blanket skip above starved a
+  // real case — a genuine substantive reply that ALSO asks a follow-up
+  // (`send --to X "approved, did you also test Y?" --question`) was silently
+  // never credited, leaving X's ORIGINAL question UNANSWERED forever even
+  // though it had, in fact, just been answered. `needsReply` alone cannot
+  // distinguish that from "purely asks, answers nothing" — but neither can
+  // `recipientHasPendingQuestion` alone: it only proves the recipient has
+  // SOME pending question on file, not that THIS message answers it, which
+  // is a false-positive credit (verified: any --question send to a
+  // recipient who happens to have an unrelated older pending question got
+  // credited as the reply that clears it). Require the EXPLICIT correlation
+  // instead — `resp.answers === true`, cmdSend's `--answers` flag (G) — so a
+  // send is only ever credited-while-also-asking when the caller actually
+  // said "this is a reply". A `--question` send with no `--answers` keeps
+  // the ORIGINAL pre-93c41cc09ff6 behavior (not credited): logged once as a
+  // hint rather than silently dropped, so the gap is visible instead of
+  // invisible.
+  if (resp.needsReply === true && resp.answers !== true) {
+    if (recipientHasPendingQuestion(repoKey, home, resp.toId)) {
+      try {
+        logAnswersHint(home, {
+          cwd: typeof payload.cwd === 'string' ? payload.cwd : null,
+          toId: resp.toId,
+          hint: 'a --question send to ' + JSON.stringify(resp.toId) + ' was not credited as a reply because it '
+            + 'did not pass --answers — if this message actually answers ' + JSON.stringify(resp.toId) + '\'s '
+            + 'pending question, resend with --answers to credit it',
+        });
+      } catch (_) {}
+    }
+    return;
+  }
 
   // Prefer the payload's own timestamp if this PostToolUse event ever carries
   // one; otherwise Date.now(). recordReply is monotonic (max(existing, ts)),

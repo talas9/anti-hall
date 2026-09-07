@@ -240,6 +240,15 @@ function ensureMessagesMeshColumns(db) {
     // requires it (the forwarded-copy dedup reconstructs it from the row's own
     // fields when absent — see scripts/devswarm.js forwardedOrigHashOf).
     ['orig_hash', 'TEXT'],
+    // instance_nonce (defect d3d571495bf6, v0.98.0) — an ADDITIVE per-process
+    // instance discriminator stamped on outbound rows so two running
+    // processes that resolve the SAME session id (a `claude --resume` racing
+    // its own prior process) can be told apart on the mesh instead of both
+    // writing under one indistinguishable identity. Nullable and NEVER part
+    // of meshMessageHash/UNIQUE(hash) — a legacy row (and any row from a
+    // caller that could not derive one) simply reads back null; dedupe is
+    // completely unaffected. See devswarm.js's deriveInstanceNonce.
+    ['instance_nonce', 'TEXT'],
   ];
   for (const [name, type] of need) {
     if (!cols.includes(name)) {
@@ -342,11 +351,16 @@ function appendMeshMessage(store, fields) {
   // forwarded row relative to prior builds and break the OR-IGNORE idempotence
   // a re-run of any fold/forward depends on.
   const origHash = f.origHash != null ? String(f.origHash) : null;
+  // instanceNonce (defect d3d571495bf6) — see ensureMessagesMeshColumns above.
+  // ADDITIVE, forwarded verbatim; deliberately NOT part of meshMessageHash (the
+  // caller passes an explicit `hash` computed over the pre-existing field set
+  // only, so this can never change dedupe for any hash the caller supplies).
+  const instanceNonce = f.instanceNonce != null ? String(f.instanceNonce) : null;
   const workspaceId = type === 'direct' ? to : BROADCAST_PARTITION_ID;
   const recipient = type === 'direct' ? to : null;
   return store.appendMeshRow({
     workspaceId, ts, hash, body: message,
-    sender: from, recipient, mtype: type, urgency, isHeartbeat, needsReply, origHash,
+    sender: from, recipient, mtype: type, urgency, isHeartbeat, needsReply, origHash, instanceNonce,
   });
 }
 
@@ -402,8 +416,30 @@ function openSqlite(home, workspaceId, opts) {
   // (opts.busyTimeoutMs) so tests can drive contention deterministically.
   const busyTimeoutMs = Number.isFinite(o.busyTimeoutMs) ? o.busyTimeoutMs : 3000;
   const { DatabaseSync } = require('node:sqlite');
-  fs.mkdirSync(dir, { recursive: true });
-  const db = new DatabaseSync(path.join(dir, 'devswarm.db'));
+  // fl-wave4 fix (item 2, "silent zero on a broken store"): a chmod-000
+  // store dir or an unparseable/corrupt db header throws SYNCHRONOUSLY here
+  // (mkdirSync on an inaccessible dir, or DatabaseSync failing to read the
+  // sqlite file header) — that already propagated as a genuine exception
+  // pre-fix, but as a RAW node:fs/node:sqlite error with no consistent shape
+  // callers could key on. Wrap it into the SAME typed failure the journal
+  // backend's getReadError() surfaces (a `code`/`storeUnavailableReason`
+  // pair), so scripts/devswarm.js's resolveWorkspaceStoreForRead can map
+  // EITHER backend's genuine open failure to the identical
+  // reason:'store-unavailable' shape. ENOENT is not expected here (mkdirSync
+  // recursive creates every missing ancestor; only a genuine permission /
+  // filesystem-shape problem reaches this catch) but is passed through
+  // unwrapped defensively rather than silently miscategorized.
+  let db;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    db = new DatabaseSync(path.join(dir, 'devswarm.db'));
+  } catch (e) {
+    if (e && e.code === 'ENOENT') throw e;
+    const err = new Error('devswarm store unavailable (' + ((e && e.code) || 'EUNKNOWN') + ') opening ' + dir + ': ' + ((e && e.message) || e));
+    err.code = 'ESTOREUNAVAILABLE';
+    err.storeUnavailableReason = (e && e.code) || 'EUNKNOWN';
+    throw err;
+  }
   // busy_timeout MUST be the FIRST statement on this connection, BEFORE even the
   // journal_mode/foreign_keys pragmas and the CREATE TABLE IF NOT EXISTS calls
   // below — those can ALSO throw SQLITE_BUSY under contention (e.g. two processes
@@ -436,6 +472,7 @@ function openSqlite(home, workspaceId, opts) {
     // never part of UNIQUE(hash): a forwarded copy keeps its OWN re-addressed
     // hash as its identity and merely REMEMBERS the original's.
     + ' orig_hash TEXT,'
+    + ' instance_nonce TEXT,'
     + ' seq INTEGER,'
     + ' UNIQUE(hash)'
     + ');'
@@ -545,13 +582,14 @@ function openSqlite(home, workspaceId, opts) {
       const isHeartbeat = m && m.isHeartbeat ? 1 : 0;
       const needsReply = m && m.needsReply ? 1 : 0;
       const origHash = m && m.origHash != null ? String(m.origHash) : null;
+      const instanceNonce = m && m.instanceNonce != null ? String(m.instanceNonce) : null;
       const stmt = db.prepare(
         'INSERT ' + (hash !== null ? 'OR IGNORE ' : '')
-        + 'INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, seq)'
-        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));'
+        + 'INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq)'
+        + ' VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));'
       );
       const r = retrySqliteBusy(() =>
-        stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat, needsReply, origHash)
+        stmt.run(String(m.workspaceId), ts, hash, body, sender, recipient, mtype, urgency, isHeartbeat, needsReply, origHash, instanceNonce)
       );
       if (r.changes <= 0) return { inserted: false, seq: null }; // dedupe hit (OR IGNORE)
       const got = db.prepare('SELECT seq FROM messages WHERE id = ?;').get(Number(r.lastInsertRowid));
@@ -751,7 +789,7 @@ function openSqlite(home, workspaceId, opts) {
       const o = opts || {};
       const since = Number.isFinite(o.sinceCursor) && o.sinceCursor > 0 ? Math.floor(o.sinceCursor) : 0;
       const rows = db.prepare(
-        'SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, seq'
+        'SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq'
         + ' FROM messages WHERE workspace_id = ? ORDER BY id ASC;'
       ).all(String(id));
       const out = [];
@@ -771,6 +809,11 @@ function openSqlite(home, workspaceId, opts) {
           isHeartbeat: rows[i].is_heartbeat === 1 || rows[i].is_heartbeat === 1n,
           needsReply: rows[i].needs_reply === 1 || rows[i].needs_reply === 1n,
           origHash: rows[i].orig_hash != null ? String(rows[i].orig_hash) : null,
+          // instanceNonce (defect d3d571495bf6) — reader FAIL-OPEN: absent on
+          // any row written before this fix (or by a caller that could not
+          // derive one), reads back null exactly like a legacy origHash-less
+          // row, never a throw.
+          instanceNonce: rows[i].instance_nonce != null ? String(rows[i].instance_nonce) : null,
           storeSeq: physicalSeq,
         });
       }
@@ -842,6 +885,23 @@ function openSqlite(home, workspaceId, opts) {
       return out;
     },
     close() { try { db.close(); } catch (_) {} },
+    // getReadError() -> null, always. fl-wave4 fix (item 2): the sqlite
+    // backend has no deferred/lazy-open failure mode to report — a genuinely
+    // unreadable store (EACCES on the dir, an unparseable/corrupt db header)
+    // throws SYNCHRONOUSLY at open time (openSqlite below), before this
+    // handle object is ever constructed, so there is never a later read
+    // error to surface here. Present purely for call-site parity with the
+    // journal backend's getReadError() — a caller can call
+    // `storeHandle.getReadError && storeHandle.getReadError()` uniformly
+    // without a backend-specific branch.
+    getReadError() { return null; },
+    // getReadErrors() -> [], always. Parity with the journal backend's
+    // getReadErrors() (fl-wave7 addition, ~line 1534) for the same reason
+    // getReadError() exists above: the sqlite backend has no deferred read
+    // error to report (see that comment), so a caller that switched from
+    // the single-value getter to the plural one (e.g. to report every
+    // broken file) gets an empty array here rather than a missing method.
+    getReadErrors() { return []; },
   };
 }
 function rowToDescriptor(r) {
@@ -983,9 +1043,58 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     }
     throw lastErr;
   }
+  // fl-wave4 fix (item 2, "silent zero on a broken store"): readAll used to
+  // swallow EVERY fs error identically as "no rows yet" — ENOENT (genuinely
+  // no store written yet, the sanctioned fail-open case) is byte-for-byte
+  // indistinguishable at this call site from EACCES (a chmod-000 store dir),
+  // ENOTDIR/EISDIR (the journal dir replaced by a regular file, or vice
+  // versa), or any other genuine fs error — every one of them silently read
+  // back as an EMPTY store (0 registry rows, 0 messages), not as "this store
+  // exists but could not be read". A caller (`inbox count`/`read-primary`)
+  // then reported unreadTotal:0/known:true — a genuinely broken store looked
+  // exactly like an empty mailbox, with zero signal that anything was wrong.
+  // Fail-open is still correct for ENOENT (no store written yet); every OTHER
+  // error is recorded on `lastReadErrors` (keyed by file path — see fl-wave7
+  // fix below) — good enough for a caller that probes once right after open,
+  // the intended usage via getReadError()/getReadErrors() below) so a caller
+  // that cares can surface it as a typed failure instead of an
+  // indistinguishable empty read.
+  // Still returns `[]` at THIS call (never throws) — dozens of internal
+  // callers across this file depend on readAll never throwing; getReadError()
+  // is the deliberate, opt-in escalation point instead of an ambient throw.
+  //
+  // fl-wave7 fix (P1): `lastReadError` used to be ONE slot shared across
+  // every file this handle reads (registry.ndjson, messages.ndjson,
+  // cursors.ndjson, gates.ndjson, ...), cleared on ANY successful read —
+  // so a healthy read of messages.ndjson (which every count/read/messages
+  // call also performs) silently ERASED a genuine, still-unresolved EACCES
+  // recorded moments earlier for registry.ndjson. A caller that probed
+  // getReadError() right after (the documented, intended usage — see the
+  // no-descriptor probe in devswarm.js) saw null and reported the store as
+  // healthy even though registry.ndjson was still chmod-000. Fix: key the
+  // error by file path in a Map — a successful read of ONE file clears only
+  // THAT file's entry, never another file's still-live error.
+  const lastReadErrors = new Map();
   function readAll(file) {
     let raw;
-    try { raw = String(F.readFileSync(file, 'utf8')); } catch (_) { return []; }
+    try { raw = String(F.readFileSync(file, 'utf8')); }
+    catch (e) {
+      if (!e || e.code === 'ENOENT') return []; // no store yet — fail-open, unchanged
+      lastReadErrors.set(file, { code: (e && e.code) || 'EUNKNOWN', path: file });
+      return [];
+    }
+    // fl-wave6 fix (P2, item 3): a per-file error used to be "last one wins,
+    // forever" — set on a genuine fs error but NEVER cleared by a later
+    // successful read, so a store that recovered (e.g. a chmod-000 directory
+    // restored to readable) still reported getReadError() as if the error
+    // were ongoing. This raw read just succeeded (no exception), so this
+    // handle's most recent evidence about `file` is that it IS readable —
+    // clear ONLY this file's entry (fl-wave7: never another file's) so a
+    // caller probing getReadError() right after sees the store as healthy
+    // again once every file it touched is readable, matching the doc
+    // comment's own intent ("a caller that probes once right after open")
+    // rather than a permanently-latched failure flag.
+    lastReadErrors.delete(file);
     const out = [];
     for (const line of raw.split('\n')) {
       if (line.trim() === '') continue;
@@ -1126,6 +1235,8 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
           needsReply: !!(m && m.needsReply),
           // orig_hash parity with the sqlite backend (defect 64861a623503).
           origHash: m && m.origHash != null ? String(m.origHash) : null,
+          // instance_nonce parity with the sqlite backend (defect d3d571495bf6).
+          instanceNonce: m && m.instanceNonce != null ? String(m.instanceNonce) : null,
           seq,
         });
         return { inserted: true, seq };
@@ -1337,6 +1448,8 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
           isHeartbeat: !!kept[i].isHeartbeat,
           needsReply: !!kept[i].needsReply,
           origHash: kept[i].origHash != null ? String(kept[i].origHash) : null,
+          // instanceNonce (defect d3d571495bf6) — fail-open, same as origHash.
+          instanceNonce: kept[i].instanceNonce != null ? String(kept[i].instanceNonce) : null,
           storeSeq: physicalSeq,
         });
       }
@@ -1407,6 +1520,27 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
       return out;
     },
     close() { /* no handle to close */ },
+    // getReadError() -> { code, path } | null. fl-wave4 fix (item 2): the
+    // opt-in escalation point for readAll's recorded non-ENOENT fs error (see
+    // that function's own header). Callers that need to tell "genuinely
+    // empty" apart from "unreadable, silently reported as empty" probe this
+    // right after opening (a cheap getter, not a read) — see scripts/
+    // devswarm.js resolveWorkspaceStoreForRead. fl-wave7 fix (P1): returns
+    // the FIRST remaining per-file error (Map insertion order) now that
+    // errors are tracked per file rather than in one shared slot — a caller
+    // that only wants "is anything broken" can keep using this single-value
+    // getter unchanged; getReadErrors() below returns the full set.
+    getReadError() {
+      for (const err of lastReadErrors.values()) return err;
+      return null;
+    },
+    // getReadErrors() -> Array<{ code, path }>. fl-wave7 addition: every
+    // currently-live per-file read error this handle has recorded (not just
+    // the first), for a caller that wants to report ALL broken files at
+    // once rather than only the first one Map iteration happens to yield.
+    getReadErrors() {
+      return Array.from(lastReadErrors.values());
+    },
   };
 }
 

@@ -739,8 +739,14 @@ function buildInformationalNote(informational) {
   )));
   return (
     ' (INFORMATIONAL — question from retired sender ' + ids.join(', ') + ' — no repliable '
+    // fl-wave4 fix (item 3): a RETIRED sender has no live owner to ack as —
+    // `inbox ack <id>` alone fails ownership and never actually clears this.
+    // `--ack-as-owner` is the sanctioned cross-workspace-ack override for
+    // exactly this case (matches devswarm-parent-gate.js's own already-
+    // correct ~line 1937 remediation text, and its buildInformationalSegment
+    // sibling).
     + 'target; inspect with `node ' + CLI + ' inbox messages <id>`, ack with `node ' + CLI
-    + ' inbox ack <id>` after reading. Not counted in the unanswered count above.)'
+    + ' inbox ack <id> --ack-as-owner` after reading. Not counted in the unanswered count above.)'
   );
 }
 
@@ -1458,8 +1464,34 @@ function main() {
   } catch (_) {}
   try {
     if (summary && Array.isArray(summary.staleRegistryPartitions) && summary.staleRegistryPartitions.length) {
-      const seg = buildStaleRegistrySegment(summary.staleRegistryPartitions);
-      if (seg) segments.push(seg);
+      // FIX (defect a9ac2fc7e368): computeSummary's staleRegistryPartitions[]
+      // only excludes anti-hall's OWN internal archive tombstone
+      // (archivedOnlyIds — the `archived/<id>.json` anti-hall itself writes),
+      // never the owner archiving the SAME workspace in the DevSwarm app —
+      // that signal (isAppArchived, the absence-from-the-supervisor's
+      // ACTIVE-set snapshot) is already consulted a few hundred lines above
+      // for the live workspace table's own liveness label, but was never
+      // applied here, so this table kept naming an app-archived-era
+      // partition as "STALE WORKSPACE" forever. Each row here still carries
+      // its own `worktreePath` (unlike an orphan[] row, which has none —
+      // that surface needs its own, separate fix), so the same
+      // appArchivedCache()/isAppArchived() this file already uses applies
+      // directly. Fail-open: any isAppArchived error leaves the row exactly
+      // as before (still shown) — this can only ever SUPPRESS on positive
+      // evidence, never add a false suppression.
+      const cache = appArchivedCache();
+      const visible = summary.staleRegistryPartitions.filter((row) => {
+        if (!row || row.id == null) return true;
+        try {
+          return !isAppArchived({
+            home, repoKey, id: row.id, worktreePath: row.worktreePath, env: process.env, now, cache,
+          });
+        } catch (_) { return true; }
+      });
+      if (visible.length) {
+        const seg = buildStaleRegistrySegment(visible);
+        if (seg) segments.push(seg);
+      }
     }
   } catch (_) {}
 

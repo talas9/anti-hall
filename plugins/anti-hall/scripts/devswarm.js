@@ -180,6 +180,12 @@ const archivedCacheLib = require('../companion/lib/devswarm-archived-cache.js');
 const {
   isSafeId, devswarmRoot, livenessPathFor,
   writeVerdict, hasFreshHeartbeat, heartbeatTs, worktreeActivityMtime, unreadBacklog, DEFAULT_IDLE_MS,
+  // DEFAULT_HEARTBEAT_FRESH_MS — the SAME liveness window `hasFreshHeartbeat`
+  // uses, reused (not re-implemented) by rosterHints'/computeDiagnosis'
+  // instance-nonce-split scan below (defect d3d571495bf6, roster/diagnose
+  // consumers) so "recent enough to count as a live instance" means the same
+  // thing everywhere in this file.
+  DEFAULT_HEARTBEAT_FRESH_MS,
   isDormantRow, unionPendingFor, isSiblingPartitionLive, rowLivenessState,
   // heartbeatPathFor — the `unclaimed:` forward migration's ONLY independent
   // source of a row's real session id (cmdHeartbeat records `--session`).
@@ -190,6 +196,15 @@ const {
   // sessionPidAlive already applies, reused (not re-implemented) for the
   // session file the parent-pid-chain walk finds (R22 P2).
   sessionsDirFor, pidIsAlive,
+  // processStartMs — reused (not re-implemented) by deriveInstanceNonce below
+  // (defect d3d571495bf6) for its own-process fallback nonce.
+  processStartMs,
+  // isSessionAliveRow — POSITIVE pid-alive proof only (never satisfied by a
+  // fresh heartbeat alone, unlike isSiblingPartitionLive's branch 1). Reused
+  // by cmdRegisterPrimary's live-conflict refusal (defect 7d0a948031cd, C):
+  // that refusal must require actual proof the CONFLICTING session's harness
+  // process is running, not merely that ITS row heartbeated recently.
+  isSessionAliveRow,
 } = require('../companion/lib/liveness.js');
 const { readDescriptors } = require('../companion/devswarm-supervisor.js');
 const { pokeOrEscalate, acquireLock } = require('../companion/lib/recovery.js');
@@ -202,6 +217,13 @@ const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
 const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
 const names = require('../companion/lib/devswarm-names.js');
 const gitTruth = require('../companion/lib/devswarm-git-truth.js');
+// wakeLib/isChildWorkspace: `wake-directive <id>` (C, trimmed Stop-gate
+// reassert follow-up) reuses the SAME wakeDirective() text
+// hooks/devswarm-child-role.js emits at SessionStart and the SAME role
+// signal (DEVSWARM_SOURCE_BRANCH) hooks/lib/devswarm-role.js uses — never a
+// reimplementation, so the two can never drift.
+const wakeLib = require('../hooks/lib/devswarm-wake.js');
+const { isChildWorkspace } = require('../hooks/lib/devswarm-role.js');
 // Shared structured JSONL logger (C0). Console fallback so a missing/older
 // companion never breaks the CLI — logging is strictly additive and fail-open;
 // alog.logError NEVER throws into a caller and NEVER changes control flow.
@@ -307,6 +329,85 @@ function isLiveSessionId(sessionId) {
   return !s.startsWith(SYNTHETIC_SESSION_PREFIX);
 }
 
+// computeRowLive(row, home, opts) -> bool. THE ONE display-liveness predicate
+// shared by cmdDiagnose's `rows[].live` and rosterHints' phantom check (defect
+// 298b79969409): field-verified divergence — rosterHints' dormancy hint comes
+// from rowLivenessState (companion/lib/liveness.js), which NEVER checks
+// isLiveSessionId and returns 'active' (no hint at all) as soon as
+// isDormantByActivity is false, regardless of whether the row even has a real
+// sessionId. cmdDiagnose's `live` field, by contrast, requires
+// isLiveSessionId(sid) (unless there is a FRESH heartbeat) before it will ever
+// read true. Because hasFreshHeartbeat's freshness window is materially
+// TIGHTER than isDormantByActivity's dormant/idle window, a phantom row (no
+// real sessionId, heartbeat stale-by-freshness-standard but still within the
+// wider activity window) can read as roster-active (hints:[]) while
+// cmdDiagnose reports live:false for the identical row — exactly the field
+// report (twin row: roster hints [], diagnose live:false; a child trusted the
+// roster hint and stranded mail on it). Both surfaces now derive from this one
+// function. Fail-open: any throw -> not live (an unproven row never displays
+// as more alive than the evidence supports).
+function computeRowLive(row, home, opts) {
+  const o = opts || {};
+  try {
+    if (hasFreshHeartbeat(row && row.id, home, { now: o.now })) return true;
+  } catch (_) { /* fall through */ }
+  try {
+    if (isLiveSessionId(row && row.sessionId)) {
+      return !isDormantRow({ id: row.id, worktreePath: row.worktreePath, sessionId: row.sessionId }, home, { now: o.now });
+    }
+  } catch (_) { return false; }
+  return false;
+}
+
+// isArchivedForRouting(row, home) -> bool. Shared ARCHIVE GATE for BOTH routing
+// liveness predicates below (defect d386d8a610b7, field: 25 heartbeat daemons
+// found still running 1-5 days after their workspace was archived IN THE APP —
+// the app-side daemon launcher is external to anti-hall and this plugin cannot
+// stop it, so the fix has to be on the READ side). Neither isRoutingLiveRow nor
+// isRoutingLiveRowStrict previously checked archived state at all — both
+// composed straight from isSiblingPartitionLive's heartbeat-freshness signal,
+// so a stale ORPHANED daemon still beating for an archived row read as
+// genuinely live for REAL routing decisions (pickSurvivor/resolveMeshTarget
+// target selection, and groupRegistryByMeshId's split/kind classification that
+// `diagnose`/`reap-orphans` act on) — not just cosmetic display. Uses the SAME
+// archived predicate rosterHints/cmdDiagnose already share (local
+// isArchivedWorkspace() first — cheap, no I/O beyond one stat — then the
+// app-side archived-set cache via the row's own registered repoKey) so a row
+// can never be "archived" on one surface and "live enough to route to" on
+// another. Fail-open: any throw -> not archived (never wrongly suppress a row
+// this check cannot prove is archived).
+function isArchivedForRouting(row, home) {
+  if (!row || row.id == null) return false;
+  try {
+    // D fix: pass { sessionId, log } exactly like the two careful callers
+    // (hooks/devswarm-parent-gate.js:1078 and this file's own diagnose
+    // archived-check, ~:10909) so the v0.97.0 reused-id discriminator
+    // (7e1ae67) still fires on this ROUTING path. An empty opts object here
+    // silently disabled that discriminator: isArchivedWorkspace could not
+    // tell whether an archive marker on disk belonged to this row's CURRENT
+    // occupant or a PRIOR one that reused the same id, so a marker written
+    // for a long-gone prior occupant made a live, freshly-registered row
+    // read as archived (and therefore non-routable) here.
+    if (isArchivedWorkspace(home, row.id, row.worktreePath, {
+      sessionId: row.sessionId || null,
+      log(event, details) {
+        try { alog.logEvent('devswarm-cli', event, 'info', Object.assign({ row: row.id }, details || {})); } catch (_) {}
+      },
+    })) return true;
+  } catch (_) { /* fall through to the app-side check */ }
+  try {
+    let desc = null;
+    try { desc = readDescriptorFile(home, row.id); } catch (_) { desc = null; }
+    const registeredRepoKey = descriptorRegisteredRepoKey(desc, row.id);
+    if (registeredRepoKey) {
+      return !!archivedCacheLib.isAppArchived({
+        home, repoKey: registeredRepoKey, id: row.id, worktreePath: row.worktreePath,
+      });
+    }
+  } catch (_) { /* fail-open: not archived */ }
+  return false;
+}
+
 // isRoutingLiveRowStrict(row, home, opts) -> bool. D11-A (f56dcc08f048): the
 // STRICT liveness gate for a TARGET-SELECTION decision — resolveMeshTarget/
 // pickSurvivor's pickFreshestLive candidate filter — where the question is
@@ -329,6 +430,7 @@ function isLiveSessionId(sessionId) {
 // Fail-open: any throw -> not live (undetermined never wins a selection).
 function isRoutingLiveRowStrict(row, home, opts) {
   if (!row || row.id == null) return false;
+  if (isArchivedForRouting(row, home)) return false; // defect d386d8a610b7
   try {
     return !!isSiblingPartitionLive({ id: row.id, worktreePath: row.worktreePath, sessionId: row.sessionId }, home, opts);
   } catch (_) { return false; }
@@ -357,6 +459,7 @@ function isRoutingLiveRowStrict(row, home, opts) {
 // BOTH checks fail; never disqualifies on a partial failure.
 function isRoutingLiveRow(row, home, opts) {
   if (!row || row.id == null) return false;
+  if (isArchivedForRouting(row, home)) return false; // defect d386d8a610b7
   try {
     if (isSiblingPartitionLive({ id: row.id, worktreePath: row.worktreePath, sessionId: row.sessionId }, home, opts)) return true;
   } catch (_) { /* fall through to descriptor fallback */ }
@@ -522,7 +625,30 @@ function findGitToplevel(startDir) {
 // became unaddressable, failing closed as `unregistered-recipient`).
 function resolveCallerWorktree(cwd) {
   const c = cwd || process.cwd();
-  return inst.resolveWorktree(c) || findGitToplevel(c) || null;
+  const wt = inst.resolveWorktree(c) || findGitToplevel(c) || null;
+  if (!wt) return null;
+  // SUBMODULE FIX (P1, defect d56bfaac2da0): a cwd inside a git SUBMODULE
+  // resolves `wt` to the SUBMODULE's own toplevel here (both `resolveWorktree`
+  // and `findGitToplevel` stop at the nearest `.git`), silently keying
+  // identity/repoKey to the submodule instead of the superproject — the exact
+  // mis-keying `companion/lib/devswarm-repokey.js`'s `gitCommonDir` already
+  // guards against for repoKey derivation (its `.git/modules/` detection +
+  // `--show-superproject-working-tree` re-resolution). `resolveCallerWorktree`
+  // had no equivalent, so a caller invoked from inside a submodule registered/
+  // read against the submodule toplevel while a sibling invocation from the
+  // superproject root read/wrote the superproject key, flipping
+  // `registeredRepoKey` between the two and failing closed as
+  // `project-context-mismatch`. `--show-superproject-working-tree` is verified
+  // to report the superproject root from inside ANY submodule and EMPTY from a
+  // normal repo/the superproject itself, so this is safe to run unconditionally
+  // (fail-open: any spawn failure or empty/self-referential result just keeps
+  // the submodule-resolved `wt`, matching this function's pre-fix behavior).
+  try {
+    const superR = spawnSync('git', ['-C', wt, 'rev-parse', '--show-superproject-working-tree'], { encoding: 'utf8' });
+    const superWt = (!superR.error && superR.status === 0) ? String(superR.stdout || '').trim() : '';
+    if (superWt && superWt !== wt) return superWt;
+  } catch (_) { /* fall through, keep the submodule-resolved wt */ }
+  return wt;
 }
 // callerIdentityDetailed(env, cwd) -> { identity, kind }. Same resolution as
 // callerIdentity below, but ALSO names WHICH of the three legs produced the
@@ -785,6 +911,50 @@ function descriptorPath(home, id) { return path.join(workspacesDir(home), id + '
 // hold the message trail itself). A bare integer = consumed message count.
 function primaryCursorPath(home, id) { return path.join(devswarmRoot(home), 'cursors', id + '.json'); }
 
+// retiredRedirectPath(home, id) / writeRetiredRedirect / readRetiredRedirect
+// (defect 73303d4c098b) — a NEW, purely ADDITIVE side-channel recording "id X
+// was folded into survivor Y", so `send`/`read-primary` against a just-folded
+// twin id can follow ONE hop to the survivor instead of failing closed as
+// unregistered-recipient / unregistered-workspace. Deliberately NOT a field on
+// the registry row itself: foldGroupIntoSurvivor's tombstone (removeRegistryIf)
+// DELETES the row outright in both backends (sqlite DELETE, NDJSON reduces the
+// id out of listRegistry() entirely) — there is no row left to carry a field on
+// once the fold has run. A separate per-id file under devswarmRoot mirrors the
+// existing descriptorPath/primaryCursorPath convention exactly (same
+// `<devswarmRoot>/<subdir>/<id>.json` shape), so it needs no new store backend
+// support and no reduceRegistry/removeRegistryIf change in either backend.
+// Fail-open throughout: a missing/unreadable/corrupt file reads as "no
+// redirect" (readRetiredRedirect returns null), which is EXACTLY today's
+// pre-fix behavior for every existing installation and for a row that was
+// never folded — so this needs no forward-migration in update.js/doctor: it
+// adds a brand-new optional file, not a new shape on an EXISTING persisted
+// row, and every reader already treats its absence as the no-redirect case.
+function retiredRedirectDir(home) { return path.join(devswarmRoot(home), 'retired'); }
+function retiredRedirectPath(home, id) { return path.join(retiredRedirectDir(home), id + '.json'); }
+function writeRetiredRedirect(home, retiredId, survivorId) {
+  try {
+    const dir = retiredRedirectDir(home);
+    fs.mkdirSync(dir, { recursive: true });
+    const p = retiredRedirectPath(home, retiredId);
+    fs.writeFileSync(p, JSON.stringify({ retiredTo: String(survivorId), at: Date.now() }));
+  } catch (_) { /* best-effort: a missed tombstone write just means no redirect hint later; the fold itself already succeeded */ }
+}
+function readRetiredRedirect(home, id) {
+  try {
+    // H fix: `id` reaches this function from caller-controlled input (a send/
+    // read target) and is joined straight into a filesystem path below with
+    // no validation — an id like `../../etc/passwd` (or any traversal
+    // sequence) would previously be handed unchecked to fs.readFileSync via
+    // retiredRedirectPath's path.join. Same isSafeId guard every other
+    // id-keyed path helper in this file already applies before path.join.
+    if (!isSafeId(String(id))) return null;
+    const raw = fs.readFileSync(retiredRedirectPath(home, id), 'utf8');
+    const j = JSON.parse(raw);
+    if (j && j.retiredTo != null && String(j.retiredTo) !== '') return String(j.retiredTo);
+    return null;
+  } catch (_) { return null; } // fail-open: no file / bad JSON -> no redirect (pre-fix behavior)
+}
+
 // ---------------------------------------------------------------------------
 // P0 HOTFIX (v0.90.1) — CURSOR NAMESPACES FOR A MESH SIBLING PARTITION
 //
@@ -1004,6 +1174,21 @@ function registryRowPresent(home, id, ownerKey, ctx) {
 // Deliberately scoped to flags that only ever take a value, so this cannot swallow
 // the next token for a genuinely boolean flag (e.g. `--json`, `--ack`, `--stdin`).
 const VALUE_REQUIRED_FLAGS = new Set(['message', 'message-file']);
+// BOOLEAN_ONLY_FLAGS (H fix): the mirror-image problem — flags that are
+// ALWAYS bare booleans, never taking a value. Without this, parseArgs' own
+// generic "does the next token start with --" heuristic below swallows an
+// unrelated POSITIONAL token that happens to immediately follow one of
+// these as if it were the flag's own value (e.g. `register-primary --force
+// somepath` would read somepath as --force's value instead of leaving it as
+// a positional argv[++i] never sees again). Scoped to flags with a proven
+// swallow risk (register-primary's `--force` conflict override, cmdMeshRead's
+// `--peek`, `send`'s `--answers` reply-correlation marker — fl-wave3/item 8:
+// `send`'s own header comment already documents `--answers` as "a bare
+// boolean flag", but it was simply missing from this set, so `send --answers
+// somePositional --to X` would have silently swallowed `somePositional` as
+// --answers' own value instead of leaving it as a positional); extend as new
+// bare flags are added.
+const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers']);
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
 // Supports `--name value`, `--name=value`, repeatable (`--set a --set b`), and
 // bare boolean flags (`--json`). Values are collected as arrays so a caller can
@@ -1018,6 +1203,7 @@ function parseArgs(argv) {
       let val = null;
       const eq = name.indexOf('=');
       if (eq !== -1) { val = name.slice(eq + 1); name = name.slice(0, eq); }
+      else if (BOOLEAN_ONLY_FLAGS.has(name)) { val = true; }
       else if (VALUE_REQUIRED_FLAGS.has(name) && i + 1 < argv.length) { val = argv[++i]; }
       else if (i + 1 < argv.length && !String(argv[i + 1]).startsWith('--')) { val = argv[++i]; }
       else { val = true; } // bare boolean flag
@@ -1446,6 +1632,19 @@ const MESH_ROW_COPY_FIELDS = [
   // copy here (null) and the forward site supplies `origHash: m.hash` via
   // `overrides`, which is applied last.
   { row: 'origHash', msg: 'origHash' },
+  // instanceNonce (fl-wave3 fix, item 5): carried on BOTH shapes, same
+  // reasoning as origHash directly above — a verbatim re-home must preserve
+  // it like every other stored field (both backends persist it: sqlite's
+  // `instance_nonce` column, journal's `instanceNonce` field), and a FORWARD
+  // of an already-stamped row must keep its provenance rather than silently
+  // dropping it. Pre-fix this key was simply ABSENT from this table, so
+  // every meshRowCopy call (fold's verbatim move AND its forward) produced a
+  // copy with instanceNonce always null/undefined — the instanceNonce
+  // CONSUMERS (`inbox read-primary`/`messages`'s `instanceNonceShort`
+  // display field, `roster`'s instanceNonceCounts) then saw a folded/
+  // forwarded row's provenance vanish even though the ORIGINAL row (still on
+  // disk elsewhere, pre-fold) genuinely carried one.
+  { row: 'instanceNonce', msg: 'instanceNonce' },
   { row: 'hash', msg: null },
   { row: 'isHeartbeat', msg: null },
 ];
@@ -1463,6 +1662,18 @@ function meshRowCopy(m, shape, overrides) {
   for (const f of MESH_ROW_COPY_FIELDS) {
     const key = shape === 'message' ? f.msg : f.row;
     if (!key) continue; // deliberately absent from this shape (see the table's comment)
+    // fl-wave4 fix (item 4, Suite failure devswarm-archive-group.test.js:728):
+    // this used to unconditionally set `out[key] = src[f.row]` even when
+    // `src[f.row]` is `undefined` (a source row with no `instanceNonce`, the
+    // common/legacy case) — that EXPLICITLY creates an own property
+    // `instanceNonce: undefined` on the copy, which is NOT the same shape as
+    // a row that never had the key at all (Object.keys()/JSON.stringify's
+    // key-presence differ from an absent key even though both READ back as
+    // `undefined`). A verbatim/forward copy of an old, nonce-less row must
+    // stay byte-identical to the source's own key set — so a source value of
+    // `undefined` is simply never assigned here, matching what the source
+    // row itself looks like.
+    if (src[f.row] === undefined) continue;
     out[key] = src[f.row];
   }
   return Object.assign(out, overrides || {});
@@ -2850,6 +3061,16 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
       // stable phantom; writeSeq still advances).
       const removed = s.removeRegistryIf(row.id, { sessionId: row.sessionId, updatedAt: row.updatedAt, writeSeq: row.writeSeq });
       if (!removed) return { outcome: 'left' };
+      // 73303d4c098b fix: the row is gone from the registry now (see the
+      // header comment on writeRetiredRedirect above for why this cannot live
+      // on the row itself) — record the redirect BEFORE reporting 'retired' so
+      // a send/read-primary against this id, even one that races in right
+      // after this fold returns, finds the hint. Best-effort/fail-open: a
+      // failed write here never un-does the tombstone (the fold already
+      // succeeded, forwarding already happened) — it only means a later
+      // addressing attempt against the old id fails closed exactly as it did
+      // before this fix, never worse.
+      writeRetiredRedirect(home, row.id, survivorId);
       return { outcome: 'retired' };
     };
 
@@ -4544,7 +4765,23 @@ function selfHeal(ctx) {
 
     const F = (ctx.io && ctx.io.fs) || fs;
     if (!selfHealCooldownElapsed(home, repoKey, now, F)) {
-      return { daemonWarning: 'stale', daemonHealCooldown: true };
+      // retryAfterMs (defect 2e8653787945, P2): the remaining cooldown, so a
+      // caller told the daemon is stale/healing has a concrete "try again
+      // after" instead of guessing when to retry. Best-effort: an unreadable/
+      // missing cooldown file (already `true`'s error branch in
+      // `selfHealCooldownElapsed`) means this read can't happen either — fall
+      // back to `SELF_HEAL_COOLDOWN_MS` (the whole window) rather than
+      // omitting the field on a co-occurring read failure that isn't supposed
+      // to reach here anyway (an unreadable file makes `selfHealCooldownElapsed`
+      // return `true`, i.e. elapsed, so this branch is only reached with a
+      // readable file in practice).
+      let retryAfterMs = SELF_HEAL_COOLDOWN_MS;
+      try {
+        const st = JSON.parse(F.readFileSync(selfHealCooldownPath(home, repoKey), 'utf8'));
+        const last = st && Number.isFinite(st.lastAttemptAt) ? st.lastAttemptAt : null;
+        if (last !== null) retryAfterMs = Math.max(0, SELF_HEAL_COOLDOWN_MS - (now - last));
+      } catch (_) { /* keep the whole-window fallback above */ }
+      return { daemonWarning: 'stale', daemonHealCooldown: true, retryAfterMs };
     }
     markSelfHealAttempt(home, repoKey, now, F);
     const spawn = (ctx.io && ctx.io.spawnInstaller) || defaultSpawnInstaller;
@@ -4590,6 +4827,24 @@ function withSelfHeal(fn, ctx) {
     if (heal.daemonHealthy) r.daemonHealthy = true;
     if (heal.daemonHealAttempted) r.daemonHealAttempted = true;
     if (heal.daemonHealCooldown) r.daemonHealCooldown = true;
+    if (Number.isFinite(heal.retryAfterMs)) r.retryAfterMs = heal.retryAfterMs;
+    // ADDRESS-FAILURE ATTRIBUTION (defect 2e8653787945, P2): `send --to`/
+    // `--to-primary` resolve the recipient against THIS process's in-memory
+    // registry read, which can lag a real, just-completed registration until
+    // the (here-confirmed-stale) ingest daemon drains it — so
+    // `primary-unregistered`/`unregistered-recipient` can mean "genuinely no
+    // such recipient" OR "the registry this resolved against is stale",
+    // indistinguishable from the reason string alone (field-reported: retried
+    // unchanged, succeeded once the daemon healed). ADDITIVE ONLY — `reason`/
+    // `error` are left exactly as the address resolution produced them, never
+    // silently reattributed (a genuinely bad address alongside a coincidentally
+    // stale daemon must not be reported as merely a timing issue) — this only
+    // gives the caller a signal to retry after `retryAfterMs` instead of
+    // treating the refusal as final.
+    if (r.ok === false && heal.daemonWarning === 'stale'
+      && (r.reason === 'primary-unregistered' || r.reason === 'unregistered-recipient')) {
+      r.possiblyStaleRegistry = true;
+    }
   }
   return r;
 }
@@ -4976,6 +5231,164 @@ function deriveCallerSessionIdFromProcessTree(ctx, opts) {
     pid = next;
   }
   return null;
+}
+
+// deriveInstanceNonce(ctx, opts) -> string. A PER-PROCESS instance
+// discriminator stamped on OUTBOUND mesh rows (defect d3d571495bf6, P0): two
+// running processes that resolve the SAME session id — a `claude --resume`
+// racing its own still-alive prior process, or a fork — otherwise derive the
+// SAME callerIdentity and write indistinguishable rows, so the Primary acts
+// on fabricated provenance (rows authored by process B read as authored by
+// process A). Field-confirmed by the reporter: a nonce keyed on
+// CLAUDE_CODE_SESSION_ID / --session does NOT separate the two instances
+// (both processes carry the identical session id) — the discriminator MUST
+// be per-OS-process.
+//
+// Reuses deriveCallerSessionIdFromProcessTree's WALK verbatim (same ancestor
+// pid chain via ppidOf, same cwd-match requirement, same pid-reuse/staleness
+// guard via pidIsAlive) but returns the matched ancestor's OWN (pid,
+// startedAt) instead of its sessionId: the harness writes ONE
+// `<home>/.claude/sessions/<pid>.json` per running top-level process, so two
+// live `claude --resume` processes sharing one sessionId still have TWO
+// distinct session files (different pids, different startedAt) — a genuine,
+// stable-for-the-process-lifetime discriminator neither process can forge
+// onto the other (it is read from the harness's own pid-keyed file, not
+// supplied by the caller). Deliberately a SEPARATE function rather than a
+// refactor of deriveCallerSessionIdFromProcessTree's internals — that
+// function is on the existing ack-ownership/session-promotion path with its
+// own test coverage; duplicating the ~20-line walk keeps this purely
+// additive with zero behavior risk to it.
+//
+// Falls back to THIS devswarm.js process's OWN (pid, start time) — via
+// liveness.js's processStartMs, never re-spawning `ps` beyond what the walk
+// already does — when no ancestor session file resolves (a headless/
+// non-interactive invocation, CI, a test harness with no ~/.claude/sessions
+// entry, `ps` unavailable). Still a genuine per-OS-process value; simply not
+// tied to a specific interactive harness ancestor. NEVER null and never
+// throws to the caller — a nonce is always produced so every send/heartbeat
+// call site can unconditionally stamp one.
+// _instanceNonceCache — module-level memoization (d3d571495bf6 B1): every
+// PRODUCTION call site invokes `deriveInstanceNonce(ctx)` with NO second
+// argument, once per outbound row, sometimes several times within one CLI
+// invocation (send + a best-effort broadcast, etc) — each call was
+// independently re-walking the ancestor pid chain and re-spawning `ps`. A
+// single OS process's identity cannot change over its own lifetime, so this
+// is computed once per process and reused. Deliberately NOT applied when the
+// caller passes `opts` (every test in devswarm-fleet-d3d571495bf6.test.js
+// injects `{pid, ppidOf, kill}` to simulate two DIFFERENT processes within
+// one test run — caching across those would collapse two distinct simulated
+// identities into one and defeat the test's whole premise).
+let _instanceNonceCache = null;
+
+function deriveInstanceNonce(ctx, opts) {
+  const o = opts || {};
+  const useCache = !opts;
+  if (useCache && _instanceNonceCache !== null) return _instanceNonceCache;
+
+  // psCalls caps the walk (B3): a `ps` shell-out is the expensive part of
+  // this derivation (defaultPpidOf and processStartMs both spawn it). Wrap
+  // whatever `ps` source is in play (test-injected `o.ps` or the real
+  // spawnSync fallback processStartMs itself would otherwise use) so at MOST
+  // ONE such call happens per deriveInstanceNonce invocation, regardless of
+  // how many ancestor hops or fallback branches run. Once exhausted, callers
+  // downstream (pidIsAlive) get `null` — their existing "no opinion, assume
+  // alive" fail-soft posture, unchanged from before this cap existed.
+  let psCalls = 0;
+  const cappedPs = (pid) => {
+    if (psCalls >= 1) return null;
+    psCalls += 1;
+    if (typeof o.ps === 'function') return o.ps(pid);
+    try {
+      const cpMod = require('child_process');
+      const res = cpMod.spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' });
+      return (res && !res.error && res.status === 0) ? res.stdout : null;
+    } catch (_) { return null; }
+  };
+
+  let result = null;
+  try {
+    const home = ctx && ctx.home;
+    if (home) {
+      const F = o.fs || fs;
+      const ppidOf = typeof o.ppidOf === 'function' ? o.ppidOf : defaultPpidOf;
+      const rawCwd = (ctx && ctx.cwd) || process.cwd();
+      const callerWt = canonicalWorktreeRealPath(rawCwd) || rawCwd;
+      let sessDir = null;
+      try { sessDir = sessionsDirFor(home); } catch (_) { sessDir = null; }
+      if (sessDir && callerWt) {
+        let pid = Number.isInteger(o.pid) && o.pid > 0 ? o.pid : process.pid;
+        const seen = new Set();
+        for (let hop = 0; hop <= MAX_PPID_HOPS && !result; hop++) {
+          if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) break;
+          seen.add(pid);
+          let rec = null;
+          try { rec = JSON.parse(F.readFileSync(path.join(sessDir, String(pid) + '.json'), 'utf8')); } catch (_) { rec = null; }
+          if (rec && typeof rec === 'object' && rec.cwd && Number.isInteger(rec.pid) && rec.pid > 0) {
+            const recWt = canonicalWorktreeRealPath(String(rec.cwd)) || String(rec.cwd);
+            if (recWt && recWt === callerWt) {
+              const rf = path.join(sessDir, String(pid) + '.json');
+              let sinceMs = null;
+              try { const st = F.statSync(rf); sinceMs = Number.isFinite(st.mtimeMs) ? st.mtimeMs : null; } catch (_) { sinceMs = null; }
+              const pidOpts = Number.isFinite(sinceMs) ? { sinceMs, ps: cappedPs } : undefined;
+              const alive = pidIsAlive(rec.pid, o.kill, pidOpts);
+              if (alive !== false) {
+                const started = Number.isFinite(rec.startedAt) ? rec.startedAt : sinceMs;
+                result = 'anc:' + rec.pid + ':' + (Number.isFinite(started) ? started : 0);
+                break;
+              }
+              // dead/reused pid: keep walking, same posture as the sessionId walk.
+            }
+          }
+          let next = null;
+          try { next = ppidOf(pid); } catch (_) { next = null; }
+          if (!Number.isInteger(next) || next <= 1) break;
+          pid = next;
+        }
+      }
+    }
+  } catch (_) { /* fall through to the headless fallback below */ }
+
+  if (!result) {
+    // Headless fallback (B2): STABLE PER HARNESS PROCESS, not per one-shot
+    // CLI invocation. `self:<process.pid>` (the pre-fix fallback) is the
+    // WRONG shape here — `process.pid` is THIS devswarm.js CLI process's own
+    // pid, freshly forked on every single invocation, so two unrelated `send`
+    // calls a second apart from the same headless harness (no session file
+    // resolves — CI, a test runner, `ps` unavailable) would mint two
+    // DIFFERENT nonces for what is genuinely the SAME caller identity. The
+    // caller's PARENT process (the harness/shell that spawned this one-shot
+    // CLI) is the actual stable "instance": reuse the ancestor walk's own
+    // `ppidOf` to find it and key off ITS (pid, start time) instead of this
+    // process's own. Falls back to this process's own identity only when no
+    // parent can be resolved at all. Shares the SAME `cappedPs` budget as the
+    // ancestor walk above — never a second `ps` spawn on top of it.
+    const ppidOf = typeof o.ppidOf === 'function' ? o.ppidOf : defaultPpidOf;
+    const selfPid = Number.isInteger(o.pid) && o.pid > 0 ? o.pid : process.pid;
+    let parentPid = null;
+    try { parentPid = ppidOf(selfPid); } catch (_) { parentPid = null; }
+    const targetPid = Number.isInteger(parentPid) && parentPid > 1 ? parentPid : selfPid;
+    let startedAt = null;
+    try { startedAt = processStartMs(targetPid, cappedPs); } catch (_) { startedAt = null; }
+    result = 'self:' + targetPid + ':' + (Number.isFinite(startedAt) ? startedAt : 0);
+  }
+
+  if (useCache) _instanceNonceCache = result;
+  return result;
+}
+
+// shortInstanceNonce(nonce) -> the first 6 hex chars of sha1(nonce), or null.
+// Pure display helper for the instanceNonce CONSUMERS below (defect
+// d3d571495bf6, roster/diagnose/inbox-read consumers): the raw nonce string
+// (`anc:<pid>:<startedAt>` / `self:<pid>:<startedAt>`) is too long and too
+// literally process-identifying to print as-is, so every consumer renders
+// this short, stable digest instead. Deterministic (same nonce -> same
+// short id, always) and fail-open (a hashing throw or a non-nonce input
+// yields null, never a thrown error).
+function shortInstanceNonce(nonce) {
+  if (nonce == null || nonce === '') return null;
+  try {
+    return crypto.createHash('sha1').update(String(nonce)).digest('hex').slice(0, 6);
+  } catch (_) { return null; }
 }
 
 // rowStillNeedsSessionDerivation(home, id, ctx) -> bool. GATE (R22 P2): the
@@ -5475,7 +5888,7 @@ function cmdHeartbeat(id, flags, ctx) {
           } else {
             const fields = { from: id, to: null, type: 'broadcast', message: String(summaryText), timestamp: now, urgency };
             const hash = store.meshMessageHash(fields);
-            const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash, isHeartbeat: true }));
+            const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash, isHeartbeat: true, instanceNonce: deriveInstanceNonce(ctx) }));
             store.deriveSummary(s, { home, env: ctx.env, now });
             meshBroadcast = { ok: true, sent: !!res.inserted, seq: res.seq, repoKey };
           }
@@ -5636,6 +6049,177 @@ function cmdInboxPull(id, flags, ctx) {
 // `send --to` direct is STORE-ONLY and must be visible from `inbox read`/`count`
 // too, not just `inbox messages`/`read-primary`) opens `id`'s mesh partition the
 // SAME way instead of re-implementing (and potentially drifting from) this guard.
+// readSideMeta(ctx, home, storeHandle, id) -> { repoKey, storePath, cwd }.
+// Incident fix (defects 902d3c5e7531/1932b53a3ace, B1): every read-side JSON
+// (`inbox count`, `read-primary`, `peek-primary`, `messages`) must carry
+// enough context for an operator to tell WHICH physical store a read actually
+// hit — the field incident that motivated this was a child's `read-primary`
+// reporting count 0 while a message sat unreachable in a DIFFERENT repoKey
+// bucket than the one the caller assumed. Best-effort/fail-open throughout —
+// this is diagnostic metadata, never allowed to fail or alter a read.
+// `refusal` (fl-wave3 fix, P2 item 4): when the caller is reporting an OPEN
+// that was REFUSED (e.g. resolveWorkspaceStoreForRead's project-context-
+// mismatch/unregistered-workspace shapes), pass that refusal object here.
+// Pre-fix, `storePath` was always computed as if the open had succeeded —
+// falling back to `store.hashFromWorkspaceId(id)`/the CALLER's own repoKey —
+// so a refused read's diagnostic metadata pointed at a store this call never
+// actually opened (misleading: "here is the store path" for a store that was
+// never read). A refusal never opened ANY real store on this call's behalf,
+// so `storePath` is now `null` for one; `registeredRepoKey` (the actual
+// project the workspace IS registered under, when the refusal names one) is
+// surfaced instead so the diagnostic still tells the operator where the real
+// data lives.
+function readSideMeta(ctx, home, storeHandle, id, refusal) {
+  let repoKey = null;
+  try { repoKey = repoKeyForCwd(ctx) || null; } catch (_) { repoKey = null; }
+  const refused = !!(refusal && refusal.reason);
+  let storePath = null;
+  if (!refused) {
+    try {
+      const hash = (storeHandle && storeHandle.hash != null) ? storeHandle.hash
+        : (repoKey != null ? repoKey : store.hashFromWorkspaceId(id));
+      storePath = store.storeDirForHash(home, hash);
+    } catch (_) { storePath = null; }
+  }
+  let cwd = null;
+  try { cwd = (ctx && ctx.cwd) || process.cwd(); } catch (_) { cwd = null; }
+  const out = { repoKey, storePath, cwd };
+  if (refused && refusal.registeredRepoKey) out.registeredRepoKey = refusal.registeredRepoKey;
+  return out;
+}
+
+// readSideKnown(rawKnown, withheld) -> the SHARED "known" formula every
+// read-side verb must use (B1): `known` is false whenever the caller cannot
+// trust the totals reported — the store side was unopenable
+// (storeUnavailable), mesh-group enumeration failed (meshGroupUnresolved /
+// meshGroupError), or the read is already flagged partial (totalsPartial).
+// Pre-fix, `count`/`read`'s own `known` formula was `union.known &&
+// !storeUnavailable` alone — it never folded in meshGroupUnresolved, so a
+// mesh-enumeration failure (the exact field mechanism traced for
+// 902d3c5e7531) still reported `known:true` alongside an undercounted total.
+function readSideKnown(rawKnown, withheld) {
+  const w = withheld || {};
+  return !!rawKnown && !w.storeUnavailable && !w.meshGroupUnresolved && !w.meshGroupError && !w.totalsPartial;
+}
+
+// storeUnavailableOut(su, opts) -> { storeUnavailable, storeUnavailableReason, [storeUnavailableDetail] }
+// fl-wave5 fix (item 1, read-side shape unification): every read verb
+// (count/read/ack/read-primary/peek-primary/messages) must report
+// `storeUnavailable` as a BOOLEAN with a top-level `storeUnavailableReason`
+// (string|null) — count/read/ack used to embed the FULL detail object
+// (reason/error/registeredRepoKey/callerRepoKey/storeUnavailableReason)
+// directly AS `storeUnavailable` (via a `...(storeUnavailable ? {
+// storeUnavailable, unreadStoreUnknown:true } : {})` spread that overrode
+// the boolean set earlier in the same object literal), so a caller checking
+// `typeof result.storeUnavailable === 'boolean'` — true for every OTHER
+// read-side field on this shape — got an object instead on exactly the
+// failure path where it mattered most. `su` is either falsy, the literal
+// `true` (the early-refusal call sites, which have no richer detail to
+// carry), or the richer detail object count/read/ack/messages build
+// locally. `opts.detail:true` (count/read/ack only, per the shared
+// contract) keeps that full object available under the separate
+// `storeUnavailableDetail` key so no information is lost.
+// fl-wave5 addendum fix (item 7, R4 Reviewer): a `su` OBJECT can carry a
+// refusal reason that is NOT a genuine store error — `project-context-
+// mismatch` (the store was never even attempted; the caller's project just
+// doesn't match this id's registered one) and `unregistered-workspace` are
+// real, more-specific refusals, distinct from `store-unavailable`/
+// `store-open-failed` (the store genuinely could not be opened/read at
+// all). Folding EVERY truthy `su` object into `storeUnavailable:true`
+// (pre-fix) mislabeled a project-context-mismatch as a store outage. Only
+// the two genuinely-unreadable-store reasons set `storeUnavailable:true`;
+// every other object still reports `storeUnavailable:false` (matching the
+// early-refusal call sites' own `failReason === 'store-unavailable'` rule)
+// while its full detail — reason included — still lands under
+// `storeUnavailableDetail` so no information is lost. `known:false` is
+// unaffected: readSideKnown gates on the raw (truthy/falsy) `su` value
+// passed to it separately, not on this boolean.
+function isGenuineStoreUnavailableReason(reason) {
+  return reason === 'store-unavailable' || reason === 'store-open-failed';
+}
+function storeUnavailableOut(su, opts) {
+  if (!su) return { storeUnavailable: false, storeUnavailableReason: null };
+  if (su === true) return { storeUnavailable: true, storeUnavailableReason: null };
+  const genuine = isGenuineStoreUnavailableReason(su.reason);
+  const out = { storeUnavailable: genuine, storeUnavailableReason: genuine ? (su.storeUnavailableReason || null) : null };
+  if (opts && opts.detail) out.storeUnavailableDetail = su;
+  return out;
+}
+
+// resolveReadArgToId(ctx, home, arg) -> { id, resolvedFrom, ambiguous, candidates }.
+// B2 (defects 902d3c5e7531/1932b53a3ace, id-resolution parity): `send --to`
+// accepts a meshId (resolveMeshTarget) OR an exact registry-row id
+// (resolveSendTarget's shadow-guarded exact-id fallback) OR a one-hop
+// fold-retired redirect — but `inbox count`/`read-primary`/`peek-primary`/
+// `messages` opened the store keyed on `arg` LITERALLY, with none of that
+// resolution: a meshId `send --to` could deliver to was refused by every
+// read verb as unregistered. Mirrors resolveSendTarget's own priority (exact
+// id first — never shadowed by a distinct row's derived meshId — then mesh,
+// then one-hop redirect) by delegating to it directly (pure/read-only: it
+// only inspects storeHandle.listRegistry(), no side effects), so the two
+// surfaces can never independently drift on which id a given `arg` means.
+// Fail-open: any resolution error (bad repoKey, store-open failure) leaves
+// `id` at the literal `arg`, identical to the pre-fix behavior.
+//
+// fl-wave3 fix (item 6): this used to short-circuit to a plain `noOp` the
+// MOMENT any row's id exactly equalled `arg` (`hasExact`), NEVER reaching
+// resolveSendTarget at all in that case — but resolveSendTarget's OWN shadow
+// guard (the `idMatches.length === 1` branch, ~line 10256) exists precisely
+// to catch a genuine identity COLLISION even when an exact-id match exists:
+// `arg` also happens to be a DIFFERENT live row's derived meshId, in a
+// DIFFERENT worktree group. `send --to` correctly refuses that as
+// `ambiguous-target`; a read verb going through this pre-fix shortcut
+// silently used the exact-id row instead, with no warning — read and send
+// drifted on what the SAME `arg` addresses. Always delegate to
+// resolveSendTarget now (never short-circuit locally) so a genuine collision
+// is surfaced identically on both surfaces. Every non-colliding case
+// (exact-id-only, meshId-only, one-hop redirect, nothing at all) is
+// UNCHANGED — resolveSendTarget's own exact-id branch already returns that
+// exact row with `ambiguous:false` whenever there is no collision, which
+// this function still folds back into the same `noOp` shape as before.
+// fl-wave4 fix (item 0, Reviewer R3, defect 1932b53a3ace): an `arg` that
+// EXACTLY equals a registered row's id must NEVER resolve to a DIFFERENT
+// row on a READ, and must never be refused as ambiguous either — the
+// pre-fix version delegated to resolveSendTarget unconditionally, and
+// resolveSendTarget's OWN shadow guard (~line 10312, `idMatches.length===1`
+// branch) can legitimately refuse an exact-id arg as ambiguous when it also
+// collides with a DIFFERENT row's derived meshId — a deliberate `send`
+// behavior (a write must never silently guess which of two colliding
+// partitions the caller meant). A read has no such choice to make: `arg`
+// IS the caller's own partition key the moment a row's id matches it
+// exactly, full stop. Checking for that exact match FIRST (before ever
+// calling resolveSendTarget) means this can never inherit send's collision
+// refusal. Mesh-id / one-hop-redirect resolution (delegated to
+// resolveSendTarget, ambiguity refusal included) still applies to every
+// non-exact arg exactly as before.
+function resolveReadArgToId(ctx, home, arg) {
+  const id = String(arg);
+  const noOp = { id, resolvedFrom: null, ambiguous: false, candidates: null };
+  let repoKey = null;
+  try { repoKey = repoKeyForCwd(ctx); } catch (_) { repoKey = null; }
+  let s = null;
+  try {
+    s = store.openStore({ home, workspaceId: id, hash: repoKey || undefined, backend: ctx.backend, env: ctx.env });
+    let hasExact = false;
+    try {
+      for (const d of s.listRegistry()) {
+        if (d && d.id != null && String(d.id) === id) { hasExact = true; break; }
+      }
+    } catch (_) { hasExact = false; }
+    if (hasExact) return noOp;
+    const resolved = resolveSendTarget(s, id, home);
+    if (resolved.ambiguous) return { id, resolvedFrom: null, ambiguous: true, candidates: resolved.candidates };
+    if (resolved.target && String(resolved.target.id) !== id) {
+      return { id: String(resolved.target.id), resolvedFrom: id, ambiguous: false, candidates: null };
+    }
+    return noOp;
+  } catch (_) {
+    return noOp;
+  } finally {
+    if (s) { try { s.close(); } catch (_) {} }
+  }
+}
+
 function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
   // skipExistenceGuard (FIX 5 wiring): cmdInboxMessages' OWN ownership check
   // (doAck && !ackAsOwner, below) is a MORE specific, already-fail-closed guard
@@ -5702,7 +6286,33 @@ function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
   // ingest daemon natively drains INTO (D8/D21) — without this re-key, a reader
   // would open the legacy per-id bucket the daemon no longer writes to and
   // silently see nothing.
-  const s = store.openStore({ home, workspaceId: id, hash: callerRepoKeyForRead || undefined, backend: ctx.backend, env: ctx.env });
+  // fl-wave4 fix (item 2, "silent zero on a broken store"): store.openStore
+  // can now THROW a typed failure (devswarm-store.js's ESTOREUNAVAILABLE —
+  // the sqlite backend's mkdirSync/DatabaseSync open failing on a chmod-000
+  // dir or a corrupt db header). Map it to the SAME reason:'store-unavailable'
+  // shape the journal backend's deferred getReadError() probe below produces,
+  // carrying the underlying fs error code as storeUnavailableReason (e.g.
+  // 'EACCES') so a caller/emitKnownWarning can name the REAL cause instead of
+  // a generic, unactionable failure.
+  let s;
+  try {
+    s = store.openStore({ home, workspaceId: id, hash: callerRepoKeyForRead || undefined, backend: ctx.backend, env: ctx.env });
+  } catch (e) {
+    return {
+      ok: false, id,
+      reason: 'store-unavailable',
+      storeUnavailableReason: (e && e.storeUnavailableReason) || (e && e.code) || 'EUNKNOWN',
+      error: 'store for workspace ' + JSON.stringify(id) + ' could not be opened: ' + ((e && e.message) || e),
+    };
+  }
+  // getReadError() (journal backend only; sqlite always returns null — see
+  // that handle's own header comment): the store DID open, but a deferred
+  // read (below or already attempted by a caller reusing this handle) hit a
+  // genuine fs error other than ENOENT. Probed HERE, unconditionally
+  // (moved out of the `!descForRead` existence-guard branch below, which did
+  // not always run) — right after the reads this function itself performs a
+  // few lines down populate it. See the ready-error probe just before the
+  // `return { ok: true, store: s }` at the end of this function.
   // FIX 5 (TRACED, highest severity — P0): the only guard above is a cross-project
   // repoKey MISMATCH, gated on a descriptor existing at all. An `id` with NO
   // descriptor, NO registry row, AND NO messages skipped every guard and reached
@@ -5719,12 +6329,63 @@ function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
   // row (e.g. the `spawn` placeholder at ~line 5705) or a message-seeded-only
   // partition still passes; only a truly nonexistent id (0 signals of any kind)
   // is refused.
+  // fl-wave4 fix (item 2): `messageCount()` (never `listRegistry()`) is used
+  // as the UNCONDITIONAL read-error probe here — it reads a DIFFERENT file
+  // (messages.ndjson, not registry.ndjson) but hits the SAME broken store
+  // dir for the same EACCES/ENOTDIR class of failure, so it is an equally
+  // valid canary WITHOUT adding a new listRegistry() call to every open.
+  // That distinction matters: cmdInboxMessages' own mesh-group-enumeration
+  // logic further down this file (meshCandidateRows) makes its OWN
+  // listRegistry() calls against this SAME handle and at least one existing
+  // test (devswarm-mesh-union-review-fixes.test.js P1b) deliberately counts
+  // them to inject a simulated failure at a SPECIFIC call — inserting an
+  // extra listRegistry() call here would silently shift that numbering.
+  // `hasRegistryRow` below is therefore still computed ONLY inside the
+  // pre-existing `!descForRead && !skipExistenceGuard` guard, unchanged from
+  // before this fix (same call, same position, same count).
+  let hasMessages = false;
+  try { hasMessages = s.messageCount(id) > 0; } catch (_) { hasMessages = false; }
+  let readError = null;
+  try { readError = (s.getReadError && s.getReadError()) || null; } catch (_) { readError = null; }
+  if (readError) {
+    try { s.close(); } catch (_) {}
+    return {
+      ok: false, id,
+      reason: 'store-unavailable',
+      storeUnavailableReason: readError.code || 'EUNKNOWN',
+      error: 'store for workspace ' + JSON.stringify(id) + ' could not be read ('
+        + (readError.code || 'EUNKNOWN') + ' on ' + JSON.stringify(readError.path) + ')',
+    };
+  }
   if (!descForRead && !skipExistenceGuard) {
     let hasRegistryRow = false;
-    let hasMessages = false;
     try { hasRegistryRow = (s.listRegistry() || []).some((r) => r && String(r.id) === String(id)); } catch (_) { hasRegistryRow = false; }
-    try { hasMessages = s.messageCount(id) > 0; } catch (_) { hasMessages = false; }
     if (!hasRegistryRow && !hasMessages) {
+      // fl-wave8 fix (item 2, companion to the read-primary ownership fix
+      // above): the getReadError() probe a few lines up ran BEFORE this
+      // block's own listRegistry() call — at that point the handle had only
+      // ever read messages.ndjson (via messageCount() for hasMessages), so
+      // a registry.ndjson-SPECIFIC EACCES (the listRegistry() call just
+      // above swallows it to []; see its own header comment) was not yet
+      // recorded and this guard fell through to 'unregistered-workspace' for
+      // a GENUINELY UNREADABLE registry, not a genuinely absent one — the
+      // exact ghost-id-through-messages/read-primary/peek-primary case a
+      // registry-only unreadable store hits. Re-probe getReadError() HERE,
+      // now that listRegistry() has run and recorded any registry.ndjson
+      // error against this same handle, before concluding the id is
+      // unregistered.
+      let existenceReadError = null;
+      try { existenceReadError = (s.getReadError && s.getReadError()) || null; } catch (_) { existenceReadError = null; }
+      if (existenceReadError) {
+        try { s.close(); } catch (_) {}
+        return {
+          ok: false, id,
+          reason: 'store-unavailable',
+          storeUnavailableReason: existenceReadError.code || 'EUNKNOWN',
+          error: 'store for workspace ' + JSON.stringify(id) + ' could not be read ('
+            + (existenceReadError.code || 'EUNKNOWN') + ' on ' + JSON.stringify(existenceReadError.path) + ')',
+        };
+      }
       try { s.close(); } catch (_) {}
       return {
         ok: false, id,
@@ -5946,6 +6607,33 @@ function cmdInboxMessages(id, flags, ctx, opts) {
 
 function cmdInboxMessagesInner(id, flags, ctx, opts) {
   const home = ctx.home;
+  // 73303d4c098b fix: one-hop redirect through a fold-time retired tombstone
+  // (see writeRetiredRedirect's header comment near primaryCursorPath), the
+  // read-side mirror of resolveSendTarget's own redirect fix. ONLY applied
+  // when `id` genuinely has nothing live backing it any more (no descriptor,
+  // no registry row in the repoKey store this caller resolves to) — a
+  // redirect record existing is a HINT, never proof the id stayed dead; a
+  // caller that re-registered the same id later must see ITS OWN live row,
+  // never a stale redirect. Single hop only, same reasoning as the send-side
+  // fix: a twice-folded id fails closed exactly as before and `roster`
+  // reports the fresh id to retry with.
+  let redirectedFromId = null;
+  {
+    const redirectedTo = readRetiredRedirect(home, id);
+    if (redirectedTo && String(redirectedTo) !== String(id) && !readDescriptorFile(home, id)) {
+      let hasRegistryRow = false;
+      try {
+        const probeRepoKey = repoKeyForCwd(ctx);
+        const probeStore = store.openStore({ home, workspaceId: id, hash: probeRepoKey || undefined, backend: ctx.backend, env: ctx.env });
+        try { hasRegistryRow = (probeStore.listRegistry() || []).some((r) => r && String(r.id) === String(id)); }
+        finally { probeStore.close(); }
+      } catch (_) { hasRegistryRow = false; }
+      if (!hasRegistryRow) {
+        redirectedFromId = String(id);
+        id = String(redirectedTo);
+      }
+    }
+  }
   // carry-out (e): a REAL session reading this row's mailbox is proof the row
   // is claimed — take the `unclaimed:` marker off before anything below decides
   // liveness from it. Idempotent, fail-soft, and a pure no-op for every row that
@@ -6041,9 +6729,58 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   const wantsUnion = doAck || forceUnread;
   const desc = wantsUnion ? readDescriptorFile(home, id) : null;
   const openedForRead = resolveWorkspaceStoreForRead(id, ctx, home, { skipExistenceGuard: doAck && !ackAsOwner });
-  if (!openedForRead.ok) return openedForRead;
+  if (!openedForRead.ok) {
+    // B3 (defect 1932b53a3ace): a refusal from resolveWorkspaceStoreForRead
+    // (e.g. a sibling/twin registry row this caller does not own) used to
+    // return the bare `{ ok:false, id, reason, error, ... }` shape with none
+    // of the B1 read-side meta fields — a caller checking for
+    // repoKey/storePath/known alongside `reason` saw those come back
+    // `undefined` (indistinguishable from "every field null"). Merge in the
+    // same shared meta every other read-side verb reports, never overriding
+    // a `reason`/`error` this refusal already set.
+    //
+    // fl-wave3 fix: `storeUnavailable` used to be hardcoded `true` for EVERY
+    // refusal reason resolveWorkspaceStoreForRead can produce
+    // ('project-context-mismatch', 'unregistered-workspace') — but
+    // emitKnownWarning treats a truthy `storeUnavailable` as its OWN, highest-
+    // priority warning reason (`reasons.push('storeUnavailable' + ...)`),
+    // which SWALLOWS the real, more specific `result.reason` (that fallback
+    // only fires when `reasons` is still empty). An `unregistered-workspace`
+    // refusal — the id simply does not exist yet, nothing about the store
+    // being unreadable — then warned the operator with a generic
+    // "storeUnavailable" instead of the actual, more actionable reason.
+    // `storeUnavailable` is now true ONLY for the literal 'store-unavailable'
+    // reason (the shape this file's OTHER read-side merge, ~line 7885, can
+    // actually produce); every other refusal reason reports
+    // `storeUnavailable:false` and lets emitKnownWarning's own fallback name
+    // the real reason instead.
+    const failMeta = readSideMeta(ctx, home, null, id, openedForRead);
+    const failReason = openedForRead.reason || 'store-unavailable';
+    // fl-wave5 fix (item 1): `storeUnavailableReason` defaults to `null` here
+    // so it is ALWAYS present (string|null) on this shape, same as every
+    // other read verb — `openedForRead` (spread last) still overrides it
+    // with the real fs error code when the refusal reason IS
+    // 'store-unavailable' (resolveWorkspaceStoreForRead sets that field
+    // itself on both of its own store-unavailable branches).
+    return Object.assign(
+      {
+        repoKey: failMeta.repoKey, storePath: failMeta.storePath, cwd: failMeta.cwd,
+        meshPartitionIds: [String(id)], known: false, storeUnavailable: failReason === 'store-unavailable',
+        storeUnavailableReason: null,
+        meshGroupUnresolved: false, meshGroupError: null, totalsPartial: true,
+        reason: failReason,
+      },
+      openedForRead,
+    );
+  }
   const s = openedForRead.store;
   let total, messages, acked, union = null;
+  // B1: hoisted outside the try{} below (same reasoning as
+  // meshGroupUnresolved/meshGroupError just below) so `out`'s meshPartitionIds
+  // field, built AFTER the try/finally closes `s`, can see the resolved value
+  // instead of the shadowed `let meshPartitionIds` declared INSIDE that try
+  // block for the sibling-merge loop's own use.
+  let meshPartitionIds = [String(id)];
   // 8d0a66cfc563 cap bookkeeping — declared outside the try{} block below (it
   // is read again while building `out`, after the try/finally has closed `s`).
   let withheldBySource = null;
@@ -6114,11 +6851,60 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
       // stays fail-closed for real cross-workspace acks — preserving the v0.56
       // cross-workspace ack-hazard protection (bug #2) this guard exists for.
       const ownEntry = resolveMeshTarget(s, caller, home);
+      // fl-wave8 fix (item 1): resolveMeshTarget -> meshCandidateRows calls
+      // storeHandle.listRegistry(), which SWALLOWS a genuine registry.ndjson
+      // read failure (EACCES etc — see its own header) down to an empty []
+      // rather than throwing. When the store is unreadable this makes
+      // `ownEntry` come back null NOT because the caller genuinely has no
+      // registry row, but because the read itself failed — and the ownership
+      // check below then misreports that as `caller-not-registered`
+      // (ownershipRefusalCause's normal "caller resolved fine but is not
+      // registered" cause), a security-shaped refusal for what is actually a
+      // store outage. Probe getReadError() right after resolveMeshTarget()
+      // (the read it just performed is now reflected) and report the GENUINE
+      // failure instead, before any ownership reasoning runs.
+      let ackReadError = null;
+      try { ackReadError = (s.getReadError && s.getReadError()) || null; } catch (_) { ackReadError = null; }
+      if (ackReadError) {
+        const su = readSideMeta(ctx, home, s, id);
+        return {
+          ok: false,
+          reason: 'store-unavailable',
+          error: 'store for workspace ' + JSON.stringify(id) + ' could not be read ('
+            + (ackReadError.code || 'EUNKNOWN') + ' on ' + JSON.stringify(ackReadError.path) + ')',
+          id,
+          callerIdentity: caller,
+          identity: { id: caller, kind: callerKind },
+          repoKey: su.repoKey, storePath: su.storePath, cwd: su.cwd,
+          meshPartitionIds: [String(id)], known: false,
+          storeUnavailable: true, storeUnavailableReason: ackReadError.code || 'EUNKNOWN',
+          meshGroupUnresolved: false, meshGroupError: null, totalsPartial: true,
+        };
+      }
       const owns = caller === id || (ownEntry && ownEntry.id === id);
       if (!owns) {
         // A7: name WHICH leg failed (same classification as the heartbeat
         // --summary refusal above).
-        const cause = ownershipRefusalCause(callerKind, ownEntry);
+        let cause = ownershipRefusalCause(callerKind, ownEntry);
+        // fl-wave3 fix (item 9): ownershipRefusalCause only ever looks at the
+        // CALLER's own identity — it has no way to know `id` itself does not
+        // exist at all. FIX 5's existence guard (resolveWorkspaceStoreForRead,
+        // ~line 6220) is deliberately SKIPPED for this doAck path
+        // (`skipExistenceGuard: doAck && !ackAsOwner`) precisely so THIS
+        // richer ownership check can run instead — but that means a totally
+        // unregistered id (no descriptor, no registry row, no store history)
+        // fell all the way through to a caller-identity-shaped reason like
+        // 'unresolvable-caller-identity', while `peek-primary`/`count` on the
+        // SAME literal id correctly report 'unregistered-workspace'. Check
+        // existence HERE (the one place this path was skipped for) so
+        // `read-primary`/`inbox messages --ack` agree with every other read
+        // verb on the SAME id.
+        try {
+          const hasOwnDescriptor = !!readDescriptorFile(home, id);
+          const hasRegistryRow = (s.listRegistry() || []).some((r) => r && String(r.id) === String(id));
+          const hasMessages = s.messageCount(id) > 0;
+          if (!hasOwnDescriptor && !hasRegistryRow && !hasMessages) cause = 'unregistered-workspace';
+        } catch (_) { /* fail-open: keep the caller-identity-derived cause on any lookup error */ }
         // D11-C (defect 66c7c4e9973e): name the VERB, not a generic "ack" —
         // this refusal fires for `read-primary` (and plain `inbox messages
         // --ack`) alike, both of which DRAIN `id`'s NDJSON cursor same as
@@ -6129,6 +6915,13 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // already uses (`(opts && opts.action) || (doAck ? 'read-primary' :
         // 'messages')`, ~line 6621) so the two never drift apart.
         const verbLabel = (opts && opts.action) || (doAck ? 'read-primary' : 'messages');
+        // B3 (defect 1932b53a3ace): a same-worktree TWIN SIBLING row (caller
+        // owns a DIFFERENT registered row for this worktree, `ownEntry`
+        // truthy) refuses here with `ownership-mismatch` — a real, non-null
+        // `reason` string — but this refusal used to carry none of the B1
+        // read-side meta (repoKey/storePath/cwd/known/...), so a caller
+        // checking those alongside `reason` saw them come back `undefined`.
+        const refusalMeta = readSideMeta(ctx, home, s, id);
         return {
           ok: false,
           reason: cause,
@@ -6140,6 +6933,9 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
           // `kind` (resolved/declared/unresolvable) alongside the existing
           // `callerIdentity` string, never replacing it.
           identity: { id: caller, kind: callerKind },
+          repoKey: refusalMeta.repoKey, storePath: refusalMeta.storePath, cwd: refusalMeta.cwd,
+          meshPartitionIds: [String(id)], known: false, storeUnavailable: false, storeUnavailableReason: null,
+          meshGroupUnresolved: false, meshGroupError: null, totalsPartial: true,
         };
       }
     }
@@ -6170,7 +6966,11 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     // descriptor-channel union below stays scoped to wantsUnion. Fail-open:
     // any resolution error leaves meshPartitionIds at just [id] — identical
     // to the pre-fix single-partition read.
-    let meshPartitionIds = [String(id)];
+    // B1: reassigns the OUTER (function-scope) meshPartitionIds declared
+    // above the try{} — no `let` here, so `out`'s own meshPartitionIds field
+    // sees the resolved value instead of a shadowed copy that falls out of
+    // scope when this block ends.
+    meshPartitionIds = [String(id)];
     let meshUnionActive = false;
     {
       const selfRow = (s.listRegistry() || []).find((r) => r && String(r.id) === String(id));
@@ -6855,17 +7655,78 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     }
     windowWithheld = before - messages.length;
   }
+  // FORWARDED-ROW MARKER (defect e9e7c99ec924, P2): a forward preserves the
+  // ORIGINAL row's `ts` verbatim (MESH_ROW_COPY_FIELDS, ~line 1432) while
+  // `storeSeq` is freshly assigned at forward time — by design (the forward IS
+  // the original message, re-addressed; renumbering `ts` would misrepresent
+  // when it was actually sent). That design is silent to a reader: `read-
+  // primary`/`inbox messages` printed a forwarded row's out-of-order timestamp
+  // with nothing marking it as a forward, reading as corrupt ordering rather
+  // than the documented copy semantics. `forwardedOrigHashOf` is the SAME
+  // helper the dedup/gap-fold paths already use to detect a forward (handles
+  // both the `origHash`-stamped case and the legacy prefix-reconstruction
+  // case) — additive only: never renumbers `seq`/rewrites `ts`, never mutates
+  // the source row objects (a fresh shallow copy per message).
+  messages = Array.isArray(messages) ? messages.map((m) => {
+    const origHash = forwardedOrigHashOf(m);
+    let out2 = origHash ? Object.assign({}, m, { forwarded: true, origHash }) : m;
+    // instanceNonce CONSUMER (defect d3d571495bf6, `inbox read-primary`/`inbox
+    // messages`): a row without instanceNonce renders EXACTLY as before this
+    // fix — no new keys, byte-identical output. A row that DOES carry one gets
+    // two purely additive fields: `instanceNonceShort` (the shared short digest
+    // every consumer below uses, see shortInstanceNonce's own header) and
+    // `fromLine` — the human-readable rendering of the sender for a reader
+    // eyeballing this JSON, `<senderId>@<short>`, so two live processes both
+    // claiming the same sender id are visibly distinguishable per message
+    // instead of reading as one indistinguishable sender.
+    const short = out2 && out2.instanceNonce ? shortInstanceNonce(out2.instanceNonce) : null;
+    if (short) {
+      out2 = Object.assign({}, out2, {
+        instanceNonceShort: short,
+        fromLine: (out2.sender != null ? String(out2.sender) : '') + '@' + short,
+      });
+    }
+    return out2;
+  }) : messages;
+  // B1 (defects 902d3c5e7531/1932b53a3ace): repoKey/storePath/cwd + the
+  // withheld-state fields, same shared shape `inbox count`/`read` report —
+  // `messages`/`read-primary`/`peek-primary` used to omit all of these.
+  const msgMeta = readSideMeta(ctx, home, s, id);
+  // fl-wave4 fix (item 2): a store that WAS openable but hit a genuine
+  // read error somewhere along this call's own pipeline (meshCandidateRows'
+  // listRegistry(), the message-history reads above, etc — all against this
+  // SAME handle `s`) must not fold silently into `known:true` the way
+  // `storeUnavailable: false` (hardcoded, pre-fix) always did for this verb
+  // family. Probed HERE (a getter, not a new read) so this reports the SAME
+  // storeUnavailable/known shape `inbox count`/`read` already carry for the
+  // identical underlying condition.
+  let msgReadError = null;
+  try { msgReadError = (s.getReadError && s.getReadError()) || null; } catch (_) { msgReadError = null; }
+  const msgStoreUnavailable = msgReadError
+    ? { reason: 'store-unavailable', storeUnavailableReason: msgReadError.code || 'EUNKNOWN', error: null, registeredRepoKey: null, callerRepoKey: null }
+    : false;
   const out = {
     ok: true,
     action: (opts && opts.action) || (doAck ? 'read-primary' : 'messages'),
     id,
+    repoKey: msgMeta.repoKey, storePath: msgMeta.storePath, cwd: msgMeta.cwd,
+    meshPartitionIds,
     unreadOnly,
     unreadCount,
     cursor: acked !== undefined ? acked : cursor,
     total: outTotal,
     count: messages.length,
     messages,
+    known: readSideKnown(true, { storeUnavailable: msgStoreUnavailable, meshGroupUnresolved, meshGroupError }),
+    ...storeUnavailableOut(msgStoreUnavailable),
+    meshGroupUnresolved: !!meshGroupUnresolved,
+    meshGroupError: meshGroupError || null, totalsPartial: !!meshGroupUnresolved,
+    ...(msgStoreUnavailable ? { unreadStoreUnknown: true } : {}),
   };
+  // 73303d4c098b fix: surface the redirect so a caller addressing the OLD
+  // (now-folded) id sees it landed on the survivor instead of silently
+  // getting someone else's mailbox with no explanation.
+  if (redirectedFromId) { out.redirected = true; out.redirectedFrom = redirectedFromId; }
   // R23 P2: same promotion-visibility fix as cmdInboxPull — a failed
   // registry write from maybePromoteUnclaimed (descriptor promoted, registry
   // still `unclaimed:`) was previously discarded here entirely. Additive
@@ -7110,22 +7971,227 @@ function cmdInbox(sub, id, flags, ctx) {
   }
   if (sub === 'tick') return cmdInboxTick(id, flags, ctx);
   if (sub === 'pull') return cmdInboxPull(id, flags, ctx);
-  if (sub === 'messages') return cmdInboxMessages(id, flags, ctx);
-  if (sub === 'read-primary') return cmdInboxMessages(id, flags, ctx, { ack: true });
-  // peek-primary (spec item 5b / D): the non-mutating counterpart to
-  // read-primary — same unread-only view, NEVER acks/advances the cursor.
-  // Reuses the existing non-acking `messages` path internally (opts.ack
-  // false), forcing the same unread-scoped filter read-primary uses (opts.
-  // unread true) so a caller genuinely wanting "what would read-primary show
-  // me" without consuming it has a real, tested verb instead of overloading
-  // read-primary's semantics or trusting injected wording alone.
-  if (sub === 'peek-primary') return cmdInboxMessages(id, flags, ctx, { ack: false, unread: true, action: 'peek-primary' });
-  const desc = readDescriptorFile(home, id);
-  if (!desc || !desc.inboxPath) {
-    return { ok: false, error: 'no inboxPath for workspace ' + JSON.stringify(id) + ' (register it first)' };
+  // B2 (defects 902d3c5e7531/1932b53a3ace, id resolution parity): every read
+  // verb below must accept a meshId exactly as `send --to` does
+  // (resolveSendTarget/resolveMeshTarget). FALLBACK-ONLY by design (not a
+  // resolution attempted unconditionally up front): the ordinary case — `id`
+  // is already an exact registry-row id — must stay BYTE-IDENTICAL to
+  // pre-fix, including opening the store EXACTLY ONCE (a drain-marker
+  // instrumentation test asserts this: `inbox read-primary` on a plain,
+  // already-resolvable id calls `store.openStore` exactly once, and an
+  // eager resolveReadArgToId pre-check consumed that single call itself,
+  // silently breaking the marker-visibility assertion it exists to prove).
+  // Resolution is attempted ONLY after the ordinary path has already refused
+  // this literal `id` as unregistered — the exact case `send --to` could
+  // route but no read verb could reach.
+  let readArgResolvedFrom = null;
+  if (sub === 'messages' || sub === 'read-primary' || sub === 'peek-primary') {
+    const opts = sub === 'read-primary' ? { ack: true }
+      : sub === 'peek-primary' ? { ack: false, unread: true, action: 'peek-primary' }
+      : undefined;
+    // B2/1932b53a3ace (read-primary/peek-primary meshId parity, follow-up
+    // fix): `read-primary`'s doAck path opens its store with
+    // `skipExistenceGuard: true` (by design — its OWN ownership check is the
+    // more specific fail-closed gate) — so a literal meshId with NO
+    // descriptor/registry row of its own does not refuse as
+    // 'unregistered-workspace' the way `peek-primary`/`messages` do; it opens
+    // a brand-new, EMPTY fail-open partition keyed on that literal string and
+    // returns ok:true with zero messages, NEVER reaching the retry check
+    // below (r.ok is already true) even though the very same meshId, given
+    // to `peek-primary` moments earlier, correctly resolved to the real
+    // owning row. That silently diverges the two verbs the D11-C comment
+    // above documents as reading "the SAME rows" — `read-primary` reported an
+    // empty inbox while `peek-primary` on the identical id showed real mail.
+    //
+    // Fix: resolve BEFORE calling cmdInboxMessages whenever the literal `id`
+    // is not itself an exact registry row (readDescriptorFile is null) — the
+    // same precondition the count/read/ack branch below already uses. This
+    // preserves the "opens store exactly once" contract for the ORDINARY
+    // case (an id that already has its own descriptor skips resolution
+    // entirely, identical to before this fix); only a literal id with
+    // nothing of its own registered attempts resolution, and only once.
+    //
+    // DEFERS to the fold-time retired-redirect tombstone (73303d4c098b) when
+    // one exists for this exact `id`: cmdInboxMessagesInner has its OWN
+    // one-hop readRetiredRedirect resolution (a DIFFERENT mechanism —
+    // per-id tombstones written by foldGroupIntoSurvivor, not a meshId
+    // group) that sets `redirected`/`redirectedFrom` on its own output. A
+    // retired id's worktree usually STILL shares a meshId with the surviving
+    // row (the fold folds a same-worktree twin), so resolveReadArgToId would
+    // ALSO resolve it via the meshId pass — reaching the survivor through a
+    // DIFFERENT path and reporting `resolvedFrom` instead, silently dropping
+    // the `redirected`/`redirectedFrom` contract callers of a folded id rely
+    // on. Skipping this pre-check when a tombstone exists leaves that id on
+    // its original path (cmdInboxMessages -> its own internal redirect),
+    // unchanged from before this fix.
+    let resolvedFromArg = null;
+    let effectiveId = id;
+    if (!readDescriptorFile(home, id) && !readRetiredRedirect(home, id)) {
+      const resolvedArg = resolveReadArgToId(ctx, home, id);
+      if (resolvedArg.ambiguous) {
+        return {
+          ok: false, id, reason: 'ambiguous-target',
+          error: 'inbox ' + sub + ' ' + JSON.stringify(id) + ' is ambiguous between candidate rows '
+            + JSON.stringify(resolvedArg.candidates) + ' — address one by its exact registry id',
+          candidates: resolvedArg.candidates,
+        };
+      }
+      if (resolvedArg.resolvedFrom) { effectiveId = resolvedArg.id; resolvedFromArg = resolvedArg.resolvedFrom; }
+    }
+    let r = cmdInboxMessages(effectiveId, flags, ctx, opts);
+    // Legacy fallback, unchanged: an id that DID have its own descriptor (so
+    // the pre-check above skipped resolution and never touched
+    // resolvedFromArg) can still refuse as 'unregistered-workspace'/
+    // 'store-unavailable' inside cmdInboxMessages itself (e.g. a stale
+    // descriptor pointing at a store that no longer resolves) — retry via
+    // resolution exactly as before this fix.
+    if (!resolvedFromArg && (!r || (r.ok === false && (r.reason === 'unregistered-workspace' || r.reason === 'store-unavailable')))) {
+      const resolvedArg = resolveReadArgToId(ctx, home, id);
+      if (resolvedArg.ambiguous) {
+        return {
+          ok: false, id, reason: 'ambiguous-target',
+          error: 'inbox ' + sub + ' ' + JSON.stringify(id) + ' is ambiguous between candidate rows '
+            + JSON.stringify(resolvedArg.candidates) + ' — address one by its exact registry id',
+          candidates: resolvedArg.candidates,
+        };
+      }
+      if (resolvedArg.resolvedFrom) {
+        r = cmdInboxMessages(resolvedArg.id, flags, ctx, opts);
+        resolvedFromArg = resolvedArg.resolvedFrom;
+      }
+    }
+    if (r && r.ok && resolvedFromArg) r.resolvedFrom = resolvedFromArg;
+    return r;
   }
-  const inboxPath = desc.inboxPath;
-  const cursorPath = desc.cursorPath;
+  const desc = readDescriptorFile(home, id);
+  // fl-wave3/73303d4c098b (count/read/ack retired-redirect parity): mirror the
+  // `messages`/`read-primary`/`peek-primary` branch's `&& !readRetiredRedirect(home, id)`
+  // guard (~line 7739 above). A fold-retired id has NO descriptor of its own
+  // (foldOne only tombstones a candidate when readDescriptorFile is already
+  // null) but MAY still share a meshId with the survivor it was folded into —
+  // left unguarded, the generic resolveReadArgToId fallback below resolves it
+  // through the ordinary meshId pass, silently reporting `resolvedFrom` and,
+  // worse, handing count/read/ack the SURVIVOR's own descriptor keyed on
+  // nothing but a dead id string — an arbitrary/unregistered caller could then
+  // advance the survivor's real NDJSON cursor via `ack <retiredId>`. Resolve
+  // the tombstone directly instead (the same one-hop cmdInboxMessagesInner
+  // already applies at ~line 6418), requiring `id` to have no LIVE registry
+  // row of its own (a re-registered id must see its OWN row, never a stale
+  // redirect) — reporting `redirected`/`redirectedFrom`, never `resolvedFrom`,
+  // for this path.
+  let retiredRedirectFromId = null;
+  let effectiveDesc = desc;
+  if ((!desc || !desc.inboxPath) && readRetiredRedirect(home, id)) {
+    const redirectedTo = readRetiredRedirect(home, id);
+    let hasRegistryRow = false;
+    try {
+      const probeRepoKey = repoKeyForCwd(ctx);
+      const probeStore = store.openStore({ home, workspaceId: id, hash: probeRepoKey || undefined, backend: ctx.backend, env: ctx.env });
+      try { hasRegistryRow = (probeStore.listRegistry() || []).some((r) => r && String(r.id) === String(id)); }
+      finally { probeStore.close(); }
+    } catch (_) { hasRegistryRow = false; }
+    if (redirectedTo && String(redirectedTo) !== String(id) && !hasRegistryRow) {
+      const redirectedDesc = readDescriptorFile(home, redirectedTo);
+      if (redirectedDesc && redirectedDesc.inboxPath) {
+        retiredRedirectFromId = String(id);
+        id = String(redirectedTo);
+        effectiveDesc = redirectedDesc;
+      }
+    }
+  }
+  if (!effectiveDesc || !effectiveDesc.inboxPath) {
+    // B2 fallback: the literal `id` has no descriptor at all (the shape
+    // `count`/`read`/`ack` require) — try meshId/exact-id/redirect
+    // resolution (the same one `messages`/`read-primary`/`peek-primary` use
+    // above) before failing closed; a resolved id with its OWN descriptor
+    // then proceeds through the normal count/read/ack path below.
+    const resolvedArg = resolveReadArgToId(ctx, home, id);
+    if (resolvedArg.ambiguous) {
+      return {
+        ok: false, id, reason: 'ambiguous-target',
+        error: 'inbox ' + sub + ' ' + JSON.stringify(id) + ' is ambiguous between candidate rows '
+          + JSON.stringify(resolvedArg.candidates) + ' — address one by its exact registry id',
+        candidates: resolvedArg.candidates,
+      };
+    }
+    const resolvedDesc = resolvedArg.resolvedFrom ? readDescriptorFile(home, resolvedArg.id) : null;
+    if (!resolvedDesc || !resolvedDesc.inboxPath) {
+      // fl-wave3 fix (item 9): this used to return a bare `{ok:false, error}`
+      // — no `reason`, no B1 meta, no `known` — for the EXACT SAME "no live
+      // descriptor for this id" condition `peek-primary`/`messages` already
+      // report via FIX 5's existence guard (resolveWorkspaceStoreForRead,
+      // ~line 6220) with a real reason and full meta. Determine the SAME way
+      // FIX 5 does (registry row / message history) so `count`/`read`/`ack`
+      // agree with every other read verb on the SAME literal id: a genuinely
+      // unregistered id (no descriptor, no registry row, no store history)
+      // reports 'unregistered-workspace'; a registry-only row with no
+      // descriptor of its own (e.g. a `spawn` placeholder never given an
+      // --inbox path) is a real, distinct condition and gets its own honest
+      // reason rather than being mislabeled as either shape.
+      let failReason = 'unregistered-workspace';
+      let storeHandleForMeta = null;
+      let probeStoreUnavailableReason = null;
+      try {
+        const probeRepoKey = repoKeyForCwd(ctx);
+        storeHandleForMeta = store.openStore({ home, workspaceId: id, hash: probeRepoKey || undefined, backend: ctx.backend, env: ctx.env });
+        const hasRegistryRow = (storeHandleForMeta.listRegistry() || []).some((r) => r && String(r.id) === String(id));
+        const hasMessages = storeHandleForMeta.messageCount(id) > 0;
+        // fl-wave6 fix (P2, item 6): the JOURNAL backend's open is LAZY
+        // (openJournal creates nothing until an append) — a chmod-000
+        // journal dir does NOT throw here the way sqlite's EAGER open does;
+        // `listRegistry()`/`messageCount()` both fail-open through readAll()
+        // (see that function's own header comment) and silently returned
+        // `false`/`0`, so this probe kept the DEFAULT 'unregistered-
+        // workspace' reason — telling the operator to "register it first"
+        // on a store the probe genuinely could not read, the exact
+        // misleading outcome the catch block below already fixes for the
+        // sqlite (throw-on-open) case. `getReadError()` is the deferred
+        // escalation point readAll() populates on a genuine (non-ENOENT) fs
+        // error — probe it right after the reads above, same as
+        // resolveWorkspaceStoreForRead's own post-pipeline probe.
+        const readErr = storeHandleForMeta.getReadError && storeHandleForMeta.getReadError();
+        if (readErr) {
+          failReason = 'store-unavailable';
+          probeStoreUnavailableReason = readErr.code || 'EUNKNOWN';
+        } else if (hasRegistryRow || hasMessages) failReason = 'no-inbox-path';
+      } catch (e) {
+        // fl-wave5 fix (item 2): the probe open itself THROWING (EACCES/
+        // ENOTDIR/ESTOREUNAVAILABLE — a chmod-000 dir or a corrupt db header,
+        // the same class store.openStore's OTHER caller in this file,
+        // resolveWorkspaceStoreForRead, already maps to 'store-unavailable')
+        // is a genuinely different condition than "no descriptor, no
+        // registry row, no messages" — this catch used to swallow it
+        // silently and keep the default 'unregistered-workspace' reason,
+        // telling the operator to "register it first" when the real blocker
+        // is a store the probe could not even open. Neither branch's
+        // evidence (hasRegistryRow/hasMessages) was actually gathered, so
+        // report it honestly instead.
+        failReason = 'store-unavailable';
+        probeStoreUnavailableReason = (e && e.storeUnavailableReason) || (e && e.code) || 'EUNKNOWN';
+      }
+      const failMeta = readSideMeta(ctx, home, storeHandleForMeta, id);
+      if (storeHandleForMeta) { try { storeHandleForMeta.close(); } catch (_) {} }
+      return {
+        ok: false, id, reason: failReason,
+        error: failReason === 'unregistered-workspace'
+          ? ('workspace ' + JSON.stringify(id) + ' is not registered and has no messages '
+            + '(no descriptor, no registry row, no store history) — register it first (or check the id for a typo)')
+          : failReason === 'store-unavailable'
+          ? ('store for workspace ' + JSON.stringify(id) + ' could not be opened: ' + probeStoreUnavailableReason)
+          : ('no inboxPath for workspace ' + JSON.stringify(id) + ' (registered, but never given an --inbox path — register it first)'),
+        repoKey: failMeta.repoKey, storePath: failMeta.storePath, cwd: failMeta.cwd,
+        meshPartitionIds: [String(id)], known: false,
+        storeUnavailable: failReason === 'store-unavailable',
+        storeUnavailableReason: failReason === 'store-unavailable' ? probeStoreUnavailableReason : null,
+        meshGroupUnresolved: false, meshGroupError: null, totalsPartial: true,
+      };
+    }
+    readArgResolvedFrom = resolvedArg.resolvedFrom;
+    id = resolvedArg.id;
+  }
+  const finalDesc = readArgResolvedFrom ? readDescriptorFile(home, id) : effectiveDesc;
+  const inboxPath = finalDesc.inboxPath;
+  const cursorPath = finalDesc.cursorPath;
   if (sub === 'count' || sub === 'read' || sub === 'ack') {
     // P0 fix (parent->child direct messages silently undeliverable): `send --to`
     // (cmdSend/appendMeshMessage) is a STORE-ONLY write — it never touches this
@@ -7171,6 +8237,10 @@ function cmdInbox(sub, id, flags, ctx) {
           error: opened.error || null,
           registeredRepoKey: opened.registeredRepoKey || null,
           callerRepoKey: opened.callerRepoKey || null,
+          // fl-wave4 fix (item 2): the underlying fs error code (e.g. 'EACCES')
+          // when the reason is the generic 'store-unavailable' bucket — null
+          // for every other, more-specific refusal reason.
+          storeUnavailableReason: opened.storeUnavailableReason || null,
         };
       }
     } catch (e) {
@@ -7179,6 +8249,7 @@ function cmdInbox(sub, id, flags, ctx) {
         error: String((e && e.message) || e),
         registeredRepoKey: null,
         callerRepoKey: null,
+        storeUnavailableReason: null,
       };
     }
     const union = devswarmUnread.unionUnread({ inboxPath, cursorPath, id, storeHandle });
@@ -7476,6 +8547,37 @@ function cmdInbox(sub, id, flags, ctx) {
     // value `storeUnread` always was), plus cursorNdjson/cursorStore. `unread`/
     // `storeCursor`/`storeUnread` are kept as EXACT ALIASES for compatibility —
     // never the primary name going forward.
+    // fl-wave5 addendum fix (item 8, P1, R4 Reviewer): `resolveMeshPartitionIds`'s
+    // own `meshCandidateRows` -> `listRegistry()` call goes through the
+    // journal backend's `readAll()`, which FAIL-OPENS a genuine fs error
+    // (e.g. EACCES on `registry.ndjson`, chmod'd separately from a perfectly
+    // readable `messages.ndjson`) to an EMPTY array rather than throwing —
+    // so a registry-only read failure silently narrowed to "no siblings
+    // found" (`meshUnionActive` stays false, `meshGroupUnresolved` never
+    // set) instead of surfacing at all. `messages.ndjson` can be entirely
+    // readable here (this call's own `union`/`storeOnlyUnreadRows` above may
+    // be fully correct), so `storeHandle`'s deferred `getReadError()` is the
+    // only way to catch a registry-only failure — probed HERE, after every
+    // read this call has performed against `storeHandle` (the initial
+    // messages read AND the mesh-widening registry/sibling reads above), not
+    // just the initial open. Never overrides an ALREADY-set `storeUnavailable`
+    // (e.g. a project-context-mismatch refusal from the initial open) — this
+    // is additive, catching only the gap that refusal cannot see.
+    if (storeHandle && !storeUnavailable) {
+      let postPipelineReadError = null;
+      try { postPipelineReadError = (storeHandle.getReadError && storeHandle.getReadError()) || null; } catch (_) { postPipelineReadError = null; }
+      if (postPipelineReadError) {
+        storeUnavailable = {
+          reason: 'store-unavailable',
+          error: 'store for workspace ' + JSON.stringify(id) + ' could not be fully read ('
+            + (postPipelineReadError.code || 'EUNKNOWN') + ' on ' + JSON.stringify(postPipelineReadError.path) + ')',
+          registeredRepoKey: null, callerRepoKey: null,
+          storeUnavailableReason: postPipelineReadError.code || 'EUNKNOWN',
+        };
+        meshGroupUnresolved = true;
+        meshGroupError = 'post-pipeline read error: ' + (postPipelineReadError.code || 'EUNKNOWN') + ' on ' + String(postPipelineReadError.path);
+      }
+    }
     const unreadNdjsonCount = union.ndjsonUnreadLines.length;
     // unreadStoreCount/outTotal fold in meshAddedUnreadCount/meshAddedTotal
     // (the mesh-partition widening above) — 0/no-op whenever meshUnionActive
@@ -7487,13 +8589,22 @@ function cmdInbox(sub, id, flags, ctx) {
     const outUnreadTotal = union.unread + meshAddedUnreadCount;
     const outTotal = union.total + meshAddedTotal;
     if (sub === 'count') {
+      const countMeta = readSideMeta(ctx, home, storeHandle, id);
       if (storeHandle) storeHandle.close();
       return {
         ok: true, action: 'count', id,
+        ...(readArgResolvedFrom ? { resolvedFrom: readArgResolvedFrom } : {}),
+        ...(retiredRedirectFromId ? { redirected: true, redirectedFrom: retiredRedirectFromId } : {}),
+        repoKey: countMeta.repoKey, storePath: countMeta.storePath, cwd: countMeta.cwd,
+        meshPartitionIds,
         unreadTotal: outUnreadTotal, unreadNdjson: unreadNdjsonCount, unreadStore: unreadStoreCount,
         cursorNdjson: union.cursor, cursorStore: storeCursorVal,
-        total: outTotal, known: union.known && !storeUnavailable,
-        ...(storeUnavailable ? { storeUnavailable, unreadStoreUnknown: true } : {}),
+        total: outTotal,
+        known: readSideKnown(union.known, { storeUnavailable, meshGroupUnresolved, meshGroupError }),
+        ...storeUnavailableOut(storeUnavailable, { detail: true }),
+        meshGroupUnresolved: !!meshGroupUnresolved,
+        meshGroupError: meshGroupError || null, totalsPartial: !!meshGroupUnresolved,
+        ...(storeUnavailable ? { unreadStoreUnknown: true } : {}),
         ...(meshGroupUnresolved ? { meshGroupUnresolved: true, meshGroupError, totalsPartial: true } : {}),
         // Fix Wave 2 F2: `count` used to omit `meshGapWithheld`/
         // `meshGapWithheldCount` entirely (they went only to `read`/`ack`
@@ -7519,14 +8630,23 @@ function cmdInbox(sub, id, flags, ctx) {
       };
     }
     if (sub === 'read') {
+      const readMeta = readSideMeta(ctx, home, storeHandle, id);
       if (storeHandle) storeHandle.close();
       return {
         ok: true, action: 'read', id,
+        ...(readArgResolvedFrom ? { resolvedFrom: readArgResolvedFrom } : {}),
+        ...(retiredRedirectFromId ? { redirected: true, redirectedFrom: retiredRedirectFromId } : {}),
+        repoKey: readMeta.repoKey, storePath: readMeta.storePath, cwd: readMeta.cwd,
+        meshPartitionIds,
         lines: union.ndjsonUnreadLines, meshMessages: storeOnlyUnreadRows,
         unreadTotal: outUnreadTotal, unreadNdjson: unreadNdjsonCount, unreadStore: unreadStoreCount,
         cursorNdjson: union.cursor, cursorStore: storeCursorVal,
-        total: outTotal, known: union.known && !storeUnavailable,
-        ...(storeUnavailable ? { storeUnavailable, unreadStoreUnknown: true } : {}),
+        total: outTotal,
+        known: readSideKnown(union.known, { storeUnavailable, meshGroupUnresolved, meshGroupError }),
+        ...storeUnavailableOut(storeUnavailable, { detail: true }),
+        meshGroupUnresolved: !!meshGroupUnresolved,
+        meshGroupError: meshGroupError || null, totalsPartial: !!meshGroupUnresolved,
+        ...(storeUnavailable ? { unreadStoreUnknown: true } : {}),
         ...(meshGroupUnresolved ? { meshGroupUnresolved: true, meshGroupError, totalsPartial: true } : {}),
         // P1-A honesty report: a forwardable row sitting AFTER a
         // non-forwardable gap in a sibling's unread window was withheld
@@ -7569,6 +8689,43 @@ function cmdInbox(sub, id, flags, ctx) {
       };
     }
     // sub === 'ack'
+    // ---- RETIRED-REDIRECT OWNERSHIP GATE (fl-wave3/73303d4c098b) ----
+    // The ID-DERIVED AUTHORITY GATE just below deliberately stays fail-open
+    // for an ordinary unresolvable/unregistered caller acking its OWN literal
+    // id (this file's established posture — see the ackOwns comment further
+    // down). That posture does NOT extend to a retired-redirect: `id` here is
+    // no longer the literal id the caller addressed — `retiredRedirectFromId`
+    // holds the ORIGINAL (now-dead) id, and this branch is about to advance
+    // the SURVIVOR's real NDJSON cursor on behalf of a caller who merely
+    // typed the old id string. Verify the caller's OWN identity actually
+    // resolves to this survivor (or an --ack-as-owner override) BEFORE
+    // touching either cursor — an unrelated/unresolvable caller must never
+    // move the survivor's cursor just by naming a retired twin.
+    if (retiredRedirectFromId && !flags['ack-as-owner']) {
+      let ownsSurvivor = false;
+      try {
+        const probeRepoKey = repoKeyForCwd(ctx);
+        const probeStore = store.openStore({ home, workspaceId: id, hash: probeRepoKey || undefined, backend: ctx.backend, env: ctx.env });
+        try {
+          const callerInfo = callerIdentityDetailed(ctx.env, ctx.cwd);
+          const caller = callerInfo.identity;
+          const ownEntry = resolveMeshTarget(probeStore, caller, home);
+          ownsSurvivor = caller === id || !!(ownEntry && ownEntry.id === id);
+        } finally { probeStore.close(); }
+      } catch (_) { ownsSurvivor = false; }
+      if (!ownsSurvivor) {
+        if (storeHandle) storeHandle.close();
+        return {
+          ok: false, action: 'ack', id,
+          reason: 'retired-redirect-unresolvable-caller',
+          error: 'inbox ack ' + JSON.stringify(retiredRedirectFromId) + ' was redirected to survivor '
+            + JSON.stringify(id) + ' after a fold, but the caller could not be verified as that survivor '
+            + '— refusing so an unrelated/unresolvable caller cannot advance the survivor\'s NDJSON cursor '
+            + '(pass --ack-as-owner to override)',
+          redirected: true, redirectedFrom: retiredRedirectFromId,
+        };
+      }
+    }
     // ---- ID-DERIVED AUTHORITY GATE (defect e586afdaa968, P0) ----
     // `count`/`read` above are non-mutating and stay FAIL-OPEN on a refused
     // store side (the NDJSON channel is id-derived and partition-independent,
@@ -7807,7 +8964,27 @@ function cmdInbox(sub, id, flags, ctx) {
       }
     }
     if (storeHandle) storeHandle.close();
-    const ackOut = { ok: true, action: 'ack', id, cursor, total: inboxCursor.countMessages(inboxPath) };
+    // fl-wave5 fix (item 1): `ack` shares the SAME `storeUnavailable` local
+    // (computed once, above, for the whole count/read/ack block) but used to
+    // report none of it — a caller acking against an unavailable store saw
+    // `ok:true` with no signal the store side went unreported. Same boolean
+    // + top-level storeUnavailableReason + storeUnavailableDetail shape
+    // count/read now report for the identical underlying condition.
+    // fl-wave5 addendum fix (item 10, P2, R4 Reviewer): `ack` used to omit
+    // `known` entirely — the CHANGELOG already (correctly) documented
+    // `known:false` as part of this shape for `ack`, but the field was
+    // never actually emitted, so a caller/CLI checking `result.known` (and
+    // `emitKnownWarning`, which gates its whole WARNING line on
+    // `result.known === false`) never fired for a store-unavailable ack.
+    // Same formula count/read use.
+    const ackOut = {
+      ok: true, action: 'ack', id, cursor, total: inboxCursor.countMessages(inboxPath),
+      known: readSideKnown(union.known, { storeUnavailable, meshGroupUnresolved, meshGroupError }),
+      ...storeUnavailableOut(storeUnavailable, { detail: true }),
+    };
+    if (storeUnavailable) ackOut.unreadStoreUnknown = true;
+    if (readArgResolvedFrom) ackOut.resolvedFrom = readArgResolvedFrom;
+    if (retiredRedirectFromId) { ackOut.redirected = true; ackOut.redirectedFrom = retiredRedirectFromId; }
     if (ackCursorWriteFailures.length) {
       ackOut.cursorWriteFailures = ackCursorWriteFailures;
       ackOut.cursorPersisted = false;
@@ -7864,6 +9041,64 @@ function cmdRegisterPrimary(flags, ctx) {
     || id;
   const inbox = one(flags, 'inbox'); // optional legacy NDJSON source for `migrate`
   const cursor = one(flags, 'cursor') || primaryCursorPath(home, id);
+  // 7d0a948031cd fix — LIVE SIBLING PRIMARY GUARD. cmdRegister below is a plain
+  // upsert keyed on `id` (deterministic per worktree): a SECOND `register-primary`
+  // call for this SAME worktree from a DIFFERENT session silently overwrites the
+  // existing row's `sessionId` with its own — no warning here, none in `roster`
+  // either, even though `diagnose`'s split/mixedSplit counters (computeDiagnosis)
+  // already have the machinery to SCORE exactly this shape (2+ registry rows or
+  // ownership churn on one meshId), just never CONSULTED at the point the churn
+  // is created. anti-hall's own hard rule is ONE Primary per project (see
+  // docs/KB-devswarm-hivecontrol.md's `splits` entry, which documents 2+ LIVE
+  // rows on one meshId as the general "benign" case for independently-registered
+  // CHILD rows on the same worktree — a genuinely different question from THIS
+  // row silently changing hands). Refuse-by-default (fail closed, the loss-free
+  // direction — an overwritten sessionId is exactly the "Primary rows never
+  // resolve a transcript" hazard Task #10 fixed for the correct-registration
+  // case) unless the caller opts in with `--force`. isRoutingLiveRowStrict is
+  // the SAME liveness predicate foldGroupIntoSurvivor's own routing decisions
+  // already use (composes companion/lib/liveness.js's isSiblingPartitionLive) —
+  // reused here rather than re-deriving a second "is this row live" test.
+  // Fail-open: any error probing the existing row means "cannot prove a
+  // conflict" -> proceeds exactly as before this fix (never a false refusal
+  // from a store-open failure).
+  const forceFlag = !!(flags && flags.force && flags.force.length); // bare boolean flag: `one()` returns undefined for `true` values, so it cannot be used here
+  if (!forceFlag) {
+    let conflict = null;
+    try {
+      const repoKeyForCheck = repokey.repoKeyForWorktree(worktree);
+      const probeStore = store.openStore({ home, hash: repoKeyForCheck, backend: ctx.backend, env: ctx.env });
+      try {
+        const existing = (probeStore.listRegistry() || []).find((r) => r && String(r.id) === String(id)) || null;
+        // C fix (7d0a948031cd): isRoutingLiveRowStrict's underlying
+        // isSiblingPartitionLive treats a FRESH HEARTBEAT ALONE as live
+        // (branch 1 of its own header comment) — right for routing/ack
+        // decisions, wrong here: a refusal must require POSITIVE proof the
+        // conflicting SESSION's harness process is actually running, never
+        // just that its row heartbeated recently (a heartbeat can outlive
+        // the process that wrote it, e.g. a crashed session whose last
+        // heartbeat file is still fresh-enough by the clock). isSessionAliveRow
+        // is exactly that stricter predicate (true ONLY on a positive
+        // pid-alive check against the session's own harness file).
+        if (existing && existing.sessionId != null && String(existing.sessionId) !== ''
+            && String(existing.sessionId) !== String(session)
+            && isSessionAliveRow(existing, home)) {
+          conflict = existing;
+        }
+      } finally { probeStore.close(); }
+    } catch (_) { conflict = null; }
+    if (conflict) {
+      return {
+        ok: false,
+        reason: 'live-primary-conflict',
+        error: 'register-primary refused: worktree ' + JSON.stringify(worktree) + ' already has a LIVE Primary row '
+          + JSON.stringify(id) + ' registered under a different, currently-live session ('
+          + JSON.stringify(conflict.sessionId) + '). Registering now would silently overwrite that session\'s '
+          + 'ownership of this row (anti-hall: ONE Primary per project). Pass --force to register anyway.',
+        id, worktree, existingSessionId: conflict.sessionId,
+      };
+    }
+  }
   const ensureFlags = { worktree: [worktree], session: [session], cursor: [cursor] };
   if (inbox !== undefined) ensureFlags.inbox = [inbox];
   const r = cmdRegister(id, ensureFlags, ctx);
@@ -8951,7 +10186,7 @@ function cmdArchiveRequest(id, flags, ctx) {
     try {
       const fields = { from, to: id, type: 'direct', message, timestamp: now, urgency: 'high' };
       const hash = store.meshMessageHash(fields);
-      const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+      const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash, instanceNonce: deriveInstanceNonce(ctx) }));
       store.deriveSummary(s, { home, env: ctx.env, now });
       return {
         ok: true, action: 'archive-request', id, childId: id, posted: true,
@@ -9415,6 +10650,26 @@ function resolveSendTarget(storeHandle, arg, home) {
     return { target: null, ambiguous: true, candidates: idMatches.map((d) => d.id) };
   }
   if (byMesh) return { target: byMesh, ambiguous: false, candidates: null };
+  // 73303d4c098b fix: `arg` matched no live mesh id and no live registry row —
+  // before failing closed as unregistered-recipient, follow ONE hop through a
+  // fold-time retired-redirect (see writeRetiredRedirect's header comment). A
+  // single hop only (no loop): a survivor that was ITSELF later retired is not
+  // chased further here — that would need this same one-hop check re-run on
+  // the survivor id, and a caller getting `unregistered-recipient` on a
+  // twice-folded id can simply retry with the fresh id `roster` reports. The
+  // resolved survivor is looked up directly against the registry (not by
+  // recursing into resolveSendTarget), so this can never loop even on a
+  // corrupt/cyclic redirect file.
+  if (arg) {
+    const redirectedTo = readRetiredRedirect(home, arg);
+    if (redirectedTo) {
+      for (const d of storeHandle.listRegistry()) {
+        if (d && d.id != null && String(d.id) === String(redirectedTo)) {
+          return { target: d, ambiguous: false, candidates: null, redirected: true, redirectedFrom: String(arg) };
+        }
+      }
+    }
+  }
   return { target: null, ambiguous: false, candidates: null };
 }
 
@@ -9471,6 +10726,19 @@ function cmdSend(flags, ctx) {
   const questionFlag = hasFlag(flags, 'question');
   if (questionFlag && type === 'broadcast') {
     return { ok: false, error: 'send --question is only valid for a direct message (--to/--to-primary), not --broadcast' };
+  }
+  // --answers (G fix, defect 93c41cc09ff6 correlation): a bare boolean flag
+  // marking THIS send as a reply that answers a pending question from the
+  // recipient — the explicit correlation hooks/devswarm-parent-reply-
+  // tracker.js's recipientHasPendingQuestion lacked. Without it, that
+  // tracker credited ANY --question send as an answer whenever the
+  // recipient happened to have SOME pending question recorded (not
+  // necessarily THIS one, and not necessarily answered by THIS message at
+  // all) — a false-positive that could clear an unrelated question. Never
+  // valid on a broadcast (there is no single recipient's question to answer).
+  const answersFlag = hasFlag(flags, 'answers');
+  if (answersFlag && type === 'broadcast') {
+    return { ok: false, error: 'send --answers is only valid for a direct message (--to/--to-primary), not --broadcast' };
   }
 
   // FIX 4a (TRACED): argv is the ONLY way to pass a message body, forcing callers
@@ -9545,6 +10813,11 @@ function cmdSend(flags, ctx) {
   // per-id lock (held internally by maybeRehomeToCwdProject); only a genuinely
   // hash-bucket-stranded Primary re-homes.
   let rehomedSend = false;
+  // 73303d4c098b fix: set when resolveSendTarget followed a fold-time
+  // retired-redirect one hop to reach the actual target — surfaced on the
+  // send result below so a caller sees its `--to` was redirected rather than
+  // silently landing on a different id than the one it typed.
+  let sendRedirect = null;
   if (toPrimaryFlag) {
     try {
       const rh = maybeRehomeToCwdProject(home, primaryMeshId, ctx);
@@ -9607,6 +10880,7 @@ function cmdSend(flags, ctx) {
         // child's builder-id read surface, D26) actually reads.
         targetPartition = resolved.target.id;
         candidateMeshRow = resolved.target;
+        if (resolved.redirected) sendRedirect = { from: resolved.redirectedFrom, to: String(resolved.target.id) };
       }
     }
     // Candidate-set size for the resolved row's OWN canonical meshId group —
@@ -9628,7 +10902,7 @@ function cmdSend(flags, ctx) {
         needsReply: questionFlag,
       };
       const hash = store.meshMessageHash(fields);
-      const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+      const res = store.appendMeshMessage(s, Object.assign({}, fields, { hash, instanceNonce: deriveInstanceNonce(ctx) }));
       store.deriveSummary(s, { home, env: ctx.env, now });
       // READBACK VERIFICATION (defect 84c0b4385f68, REOPENED): better-sqlite3's
       // INSERT is synchronous, so the row physically exists on disk the instant
@@ -9666,6 +10940,11 @@ function cmdSend(flags, ctx) {
         identity: { id: from, kind: fromDetailed.kind },
         to: type === 'direct' ? (toPrimaryFlag ? primaryMeshId : toFlag) : null, type, urgency,
         sent: !!res.inserted, seq: res.seq,
+      };
+      // 73303d4c098b fix: additive-only fields, set ONLY when a redirect
+      // actually happened — every other send response is byte-identical.
+      if (sendRedirect) { out.redirected = true; out.redirectedFrom = sendRedirect.from; }
+      Object.assign(out, {
         // FIX 3 (TRACED, purely additive): echo the integrity data already computed
         // above so `ok:true` is verifiable without a read-back-and-tail-compare.
         // defect 0960924d28be: this was `String(message).length` — UTF-16 CODE
@@ -9684,6 +10963,11 @@ function cmdSend(flags, ctx) {
         hash,
         rehomedFromHashBucket: rehomedSend || undefined,
         needsReply: questionFlag,
+        // G fix: echo the explicit reply-correlation flag so
+        // devswarm-parent-reply-tracker.js can require it instead of
+        // inferring "this answers something" from the recipient merely
+        // having SOME pending question on file.
+        answers: answersFlag,
         toId: type === 'direct' ? targetPartition : null,
         // TRACED P0 DEFECT B (step 1): visibility into the candidate set this
         // send resolved from — >1 means the target meshId's group is
@@ -9697,7 +10981,7 @@ function cmdSend(flags, ctx) {
         // absent — a real delivery failure, surfaced via `ok:false` + `reason`
         // above/below rather than a silent `ok:true`.
         verified,
-      };
+      });
       // SEND RECEIPT (v0.90.0). An on-disk record that this send happened,
       // written by the SENDER at the moment of the append.
       //
@@ -10058,6 +11342,36 @@ function rosterIdleDays(home, id, now) {
 // the DevSwarm app's own archived list, cached by the supervisor. Omitted (or
 // without a repoKey) the check is simply skipped, which is the pre-existing
 // behavior — this can only ever ADD an `archived` hint, never remove one.
+// computeInstanceNonceCounts(rows, now, freshMs) -> Map<senderId, {instances, nonces}>.
+// instanceNonce CONSUMER (defect d3d571495bf6, item b), shared by `roster`
+// (instance-split hint) and `diagnose` (instanceSplits[]) so the two verbs can
+// never disagree about which rows are split. `rows` is the shared broadcast
+// partition's message list (heartbeats + broadcasts, `s.listMessages(store.
+// BROADCAST_PARTITION_ID)` — the SAME source computeSummary's own `working_on`
+// derivation scans by sender), never a second store open. Scoped to `now -
+// freshMs` (the SAME window `hasFreshHeartbeat` uses) so a long-dead second
+// instance from weeks ago does not keep flagging a row forever. Fail-open per
+// row: a row with a missing/non-finite `ts` or a null/empty `instanceNonce`
+// is silently skipped, never thrown on.
+function computeInstanceNonceCounts(rows, now, freshMs) {
+  const windowMs = Number.isFinite(freshMs) ? freshMs : DEFAULT_HEARTBEAT_FRESH_MS;
+  const bySender = new Map();
+  for (const r of (Array.isArray(rows) ? rows : [])) {
+    if (!r || r.sender == null || r.instanceNonce == null || r.instanceNonce === '') continue;
+    const ts = Number(r.ts);
+    if (!Number.isFinite(ts) || (now - ts) > windowMs) continue;
+    const key = String(r.sender);
+    let set = bySender.get(key);
+    if (!set) { set = new Set(); bySender.set(key, set); }
+    set.add(String(r.instanceNonce));
+  }
+  const out = new Map();
+  for (const [id, set] of bySender.entries()) {
+    out.set(id, { instances: set.size, nonces: Array.from(set) });
+  }
+  return out;
+}
+
 function rosterHints(home, id, worktreePath, now, sessionId, opts) {
   const hints = [];
   if (worktreePath && !fs.existsSync(worktreePath)) hints.push('worktree-gone');
@@ -10111,6 +11425,30 @@ function rosterHints(home, id, worktreePath, now, sessionId, opts) {
     );
     if (state === 'dormant') hints.push('dormant');
     else if (state === 'idle-alive') hints.push('idle (alive)');
+    // E fix: gate `phantom` on the row actually having a REGISTRY entry
+    // (opts.registryBacked). A raw `sessionId != null` check does NOT
+    // distinguish the two cases it needs to — VERIFIED: a genuine registry
+    // row with no session claim yet (this file's own devswarm-fleet-
+    // 298b79969409.test.js twin-row case) ALSO carries `sessionId: null` at
+    // this point (confirmed via computeSummary), the exact same shape native
+    // hivecontrol children pass. Native children (cmdRoster's fold at
+    // ~:10700) have no mesh descriptor/registry row AT ALL — for them "no
+    // real sessionId" is their permanent, structural shape, never evidence of
+    // deadness, so `phantom` must never fire for them; but a REAL registry
+    // row that never got claimed (the twin-row shape) is exactly the case
+    // this hint exists to catch, and it too has a null sessionId. The caller
+    // therefore states which case it is via `opts.registryBacked` instead of
+    // this function trying (and failing) to infer it from sessionId alone.
+    else if (opts && opts.registryBacked
+      && !computeRowLive({ id, worktreePath, sessionId: sessionId || null }, home, { now })) {
+      // PHANTOM GAP (defect 298b79969409): rowLivenessState found no dormancy
+      // signal at all (this row would otherwise carry NO hint, reading as
+      // active) — but the SAME predicate cmdDiagnose's `live` field uses says
+      // this row is not actually live (no real sessionId and no fresh
+      // heartbeat). Surface it so roster and diagnose can never silently
+      // disagree about the same row the way the field report showed.
+      hints.push('phantom');
+    }
   } catch (_) {}
   return hints;
 }
@@ -10155,6 +11493,44 @@ function isArchivedOnlyWorkspace(home, id) {
   } catch (_) { return false; }
 }
 
+// cmdWakeDirective(id, ctx) -> reprints the SAME SessionStart MAILBOX WAKE
+// directive text hooks/devswarm-child-role.js emits, on demand — the target
+// of the Stop-gate's trimmed reassert pointer ("re-run the SessionStart wake
+// directive"), which no longer carries the full instruction inline (C, hook
+// trim). `id` (required, validated) is substituted for the generic
+// `<DEVSWARM_BUILDER_ID>` placeholder wakeDirective() embeds in its drain
+// command, so the printed text is directly copy-runnable rather than a
+// template. Role (child vs Primary) comes from the SAME env signal
+// hooks/lib/devswarm-role.js uses (DEVSWARM_SOURCE_BRANCH) — never
+// re-derived from `id` itself, keeping this byte-parity with the actual
+// SessionStart hook for the CURRENT process's real role. CLI/WATCHER paths
+// resolve from THIS file's own on-disk location (`__filename`/`__dirname`),
+// matching devswarm-child-role.js's __dirname-based resolution rationale
+// (a workspace's cwd is its project worktree, never the plugin root).
+function cmdWakeDirective(id, ctx) {
+  if (!isSafeId(id)) return { ok: false, error: 'invalid or missing workspace id' };
+  const isChild = isChildWorkspace(ctx.env);
+  const cliPath = __filename;
+  const watcherPath = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
+  let text = '';
+  try {
+    text = wakeLib.wakeDirective(ctx.env, isChild, cliPath, watcherPath) || '';
+    // Substitute the generic placeholder with the CONCRETE id this verb was
+    // called with — a caller running `wake-directive <id>` already knows
+    // its own id, so the printed directive should be directly copy-runnable
+    // rather than echoing the template placeholder back at them.
+    text = text.split('<DEVSWARM_BUILDER_ID>').join(String(id));
+  } catch (_) { text = ''; }
+  return { ok: true, id: String(id), isChild, agent: agentNameSafe(ctx.env), directive: text.trim() };
+}
+// agentNameSafe(env) -> the SAME agent-name resolution wakeDirective() uses
+// internally (lib/devswarm-wake.js's own `agentName`), surfaced here purely
+// for cmdWakeDirective's reporting — never re-implemented, imported lazily
+// so a missing/older lib degrades to null instead of throwing.
+function agentNameSafe(env) {
+  try { return require('../hooks/lib/devswarm-wake.js').isClaudeAgent(env) ? 'claude' : null; } catch (_) { return null; }
+}
+
 function cmdRoster(flags, ctx) {
   const home = ctx.home;
   const cwd = ctx.cwd || process.cwd();
@@ -10162,10 +11538,27 @@ function cmdRoster(flags, ctx) {
   if (!repoKey) return { ok: false, reason: 'no-project' };
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   let sum;
+  let broadcastAllForInstances = [];
   // #62: a READ verb must not mutate — PURE computeSummary (no summary.json write).
-  try { sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now }); }
-  finally { s.close(); }
+  try {
+    sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now });
+    // instanceNonce CONSUMER (defect d3d571495bf6, item b): read the shared
+    // broadcast partition (heartbeats + broadcasts — the SAME rows
+    // computeSummary's own `working_on` derivation above already scans by
+    // sender) ONCE, while `s` is still open, so instance-split detection
+    // below never needs a second store open.
+    try { broadcastAllForInstances = typeof s.listMessages === 'function' ? s.listMessages(store.BROADCAST_PARTITION_ID) : []; }
+    catch (_) { broadcastAllForInstances = []; }
+  } finally { s.close(); }
   const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
+  // instanceNonceCounts: id -> {instances, nonces:[...]} — DISTINCT
+  // instanceNonce values stamped by that id's own outbound broadcast/heartbeat
+  // rows within the shared liveness freshness window (DEFAULT_HEARTBEAT_FRESH_MS,
+  // the SAME window `hasFreshHeartbeat` uses). >1 means two live OS processes
+  // are both sending mesh traffic under the SAME sessionId/row identity — the
+  // `claude --resume`-races-its-prior-process shape d3d571495bf6 fixed the
+  // provenance for; this is the roster-visible SYMPTOM detector for it.
+  const instanceNonceCounts = computeInstanceNonceCounts(broadcastAllForInstances, now, DEFAULT_HEARTBEAT_FRESH_MS);
   // ONE read of the app-side ACTIVE-set cache for the whole roster (freshness is
   // applied inside readActiveCache — stale/missing/malformed yields nothing).
   let appArchivedCache = null;
@@ -10177,9 +11570,15 @@ function cmdRoster(flags, ctx) {
     // or deleted — same no-delete posture as the archived/ scan below); only its
     // label changes, so an archived workspace can no longer read as active.
     const archivedOnly = isArchivedOnlyWorkspace(home, w.id);
-    const hints = rosterHints(home, w.id, w.worktreePath, now, w.sessionId, { repoKey, env: ctx.env, cache: appArchivedCache });
+    const hints = rosterHints(home, w.id, w.worktreePath, now, w.sessionId, { repoKey, env: ctx.env, cache: appArchivedCache, registryBacked: true });
     if (archivedOnly) hints.unshift('archived');
-    return {
+    // instance-split (defect d3d571495bf6, item b): additive ONLY when this
+    // row's own outbound rows carried at least one instanceNonce within the
+    // freshness window — a row with none reads BYTE-IDENTICAL to the pre-fix
+    // baseline (no `instances` key at all), never a fabricated `instances:0`.
+    const instInfo = instanceNonceCounts.get(String(w.id));
+    if (instInfo && instInfo.instances > 1) hints.push('instance-split');
+    const row = {
       id: w.id, working_on: w.working_on, directUnread: w.directUnread,
       broadcastUnread: w.broadcastUnread, urgencyMax: w.urgencyMax,
       worktreePath: w.worktreePath || null, source: archivedOnly ? 'archived' : 'store',
@@ -10190,6 +11589,8 @@ function cmdRoster(flags, ctx) {
       // cached (backfilled by cmdReconcile, or set at spawn time).
       wsName: names.readName(home, w.id),
     };
+    if (instInfo) row.instances = instInfo.instances;
+    return row;
   });
   // Dedup by CANONICAL identity (inst.primaryWorkspaceId, which realpath-
   // normalizes before hashing), not raw string equality — the same fix class
@@ -10205,7 +11606,7 @@ function cmdRoster(flags, ctx) {
       directUnread: null, broadcastUnread: null, urgencyMax: null,
       worktreePath: child.path || null, source: 'native',
       meshId: rosterMeshId(child.path || null),
-      hints: rosterHints(home, id, child.path || null, now, null, { repoKey, env: ctx.env, cache: appArchivedCache }), // native hivecontrol child has no mesh descriptor / sessionId
+      hints: rosterHints(home, id, child.path || null, now, null, { repoKey, env: ctx.env, cache: appArchivedCache, registryBacked: false }), // native hivecontrol child has no mesh descriptor / sessionId — never eligible for `phantom` (E fix)
       // wsName: hivecontrol's own `label`, straight from this native fold —
       // no fs cache lookup needed here, we already have the live value.
       wsName: child.label || null,
@@ -10238,7 +11639,7 @@ function cmdRoster(flags, ctx) {
             broadcastUnread: pw.broadcastUnread, urgencyMax: pw.urgencyMax,
             worktreePath: pw.worktreePath || null, source: 'store-fallback',
             meshId: rosterMeshId(pw.worktreePath),
-            hints: rosterHints(home, pw.id, pw.worktreePath, now, pw.sessionId, { repoKey: fallbackHash, env: ctx.env, cache: appArchivedCache }),
+            hints: rosterHints(home, pw.id, pw.worktreePath, now, pw.sessionId, { repoKey: fallbackHash, env: ctx.env, cache: appArchivedCache, registryBacked: true }),
             wsName: names.readName(home, pw.id),
           });
         }
@@ -10458,13 +11859,9 @@ function computeDiagnosis(s, ctx) {
     }
     let live = false;
     if (!archivedInApp) {
-      try {
-        if (hasFreshHeartbeat(d.id, c.home, { now: c.now })) {
-          live = true;
-        } else if (isLiveSessionId(sid)) {
-          live = !isDormantRow({ id: d.id, worktreePath: d.worktreePath, sessionId: sid }, c.home, { now: c.now });
-        }
-      } catch (_) { live = isLiveSessionId(sid); }
+      // computeRowLive (defect 298b79969409): the ONE display-liveness
+      // predicate shared with rosterHints' phantom check, below.
+      live = computeRowLive({ id: d.id, worktreePath: d.worktreePath, sessionId: sid }, c.home, { now: c.now });
     }
     const row = {
       id: d.id,
@@ -10483,11 +11880,34 @@ function computeDiagnosis(s, ctx) {
     const w = workspaces[id];
     if (w && Number.isFinite(w.directUnread)) unreadTotal += w.directUnread;
   }
+  // instanceSplits (defect d3d571495bf6, item c): rows sharing a mesh id whose
+  // divergence is only their instanceNonce (same underlying registry identity,
+  // 2+ live OS processes) — distinct from splits/deadSplits/mixedSplits above,
+  // which key on live REGISTRY rows, not process identity. Same broadcast-scan
+  // source and freshness window as `roster`'s instance-split hint
+  // (computeInstanceNonceCounts), computed here from the SAME open store `s`
+  // so no second store open is needed.
+  let broadcastAllForInstances = [];
+  try { broadcastAllForInstances = typeof s.listMessages === 'function' ? s.listMessages(store.BROADCAST_PARTITION_ID) : []; }
+  catch (_) { broadcastAllForInstances = []; }
+  const diagnosisNow = Number.isFinite(c.now) ? c.now : Date.now();
+  const instanceNonceCounts = computeInstanceNonceCounts(broadcastAllForInstances, diagnosisNow, DEFAULT_HEARTBEAT_FRESH_MS);
+  const instanceSplits = [];
+  for (const r of rows) {
+    const info = instanceNonceCounts.get(String(r.id));
+    if (info && info.instances > 1) {
+      instanceSplits.push({
+        id: r.id, sessionId: r.sessionId,
+        instances: info.instances,
+        nonces: info.nonces.map((n) => shortInstanceNonce(n)),
+      });
+    }
+  }
   return {
     sum, registry: rows, meshTargets, splits, deadSplits, mixedSplits,
     orphans: sum.orphans || [],
     staleRegistryPartitions: sum.staleRegistryPartitions || [],
-    phantoms, unreadTotal,
+    phantoms, unreadTotal, instanceSplits,
   };
 }
 
@@ -10680,16 +12100,63 @@ function cmdMeshRead(flags, ctx) {
     const ownEntry = resolveMeshTarget(s, from, home);
     const cursorKey = ownEntry ? ownEntry.id : from;
     const cursor = typeof s.broadcastCursorValue === 'function' ? s.broadcastCursorValue(cursorKey) : 0;
+    // d68c561e1649 fix — NON-DESTRUCTIVE PEEK. Pre-fix, this verb ALWAYS
+    // advanced the caller's broadcast cursor, so a seq at or below it could
+    // never be retrieved again — there was no way to re-inspect an
+    // already-consumed message. `--peek` reads without ever calling
+    // advanceBroadcastCursor; `--seq <n>` additionally lets the read baseline
+    // be an EXPLICIT historical seq instead of the caller's own cursor (a
+    // caller re-inspecting "everything after message #12", say), and always
+    // implies peek — re-inspecting history must never itself move the live
+    // cursor as a side effect of asking a different question. Both are purely
+    // additive: a call with NEITHER flag is byte-for-byte the pre-fix
+    // behavior (same baseline, same cursor advance, same return shape).
+    // H fix: `one()` maps a bare boolean flag value (`true`, parseArgs'
+    // fallback for a flag with no trailing value token) to `undefined` —
+    // which is INDISTINGUISHABLE, from this point on, from `--seq` never
+    // having been passed at all. That means a bare `--seq` (a malformed call
+    // — the caller plainly meant to scope the read but supplied no anchor)
+    // silently fell through to the DEFAULT, MUTATING path: `usedExplicitSeq`
+    // stayed false, `peek` stayed false, and the read ADVANCED the caller's
+    // broadcast cursor exactly as an ordinary `mesh read` would — the
+    // opposite of what a caller reaching for `--seq` was trying to do.
+    // `hasSeqFlag` reads the RAW flags array (before one()'s erasure) so this
+    // shape can be told apart from a genuine absence and refused explicitly.
+    const hasSeqFlag = !!(flags && Array.isArray(flags.seq) && flags.seq.length > 0);
+    const seqRaw = one(flags, 'seq');
+    let sinceSeq = cursor;
+    let usedExplicitSeq = false;
+    if (hasSeqFlag && seqRaw === undefined) {
+      return { ok: false, error: '--seq requires a value (got a bare flag, which would otherwise silently fall back to the default MUTATING read)', reason: 'bad-seq' };
+    }
+    if (seqRaw !== undefined) {
+      const n = Number(seqRaw);
+      if (!Number.isFinite(n) || n < 0) {
+        return { ok: false, error: '--seq must be a non-negative integer (got ' + JSON.stringify(String(seqRaw)) + ')', reason: 'bad-seq' };
+      }
+      sinceSeq = Math.floor(n);
+      usedExplicitSeq = true;
+    }
+    const peek = !!(flags && flags.peek && flags.peek.length) || usedExplicitSeq;
     const all = typeof s.listMessages === 'function' ? s.listMessages(store.BROADCAST_PARTITION_ID) : [];
     // Filtered on the PHYSICAL mesh `seq` (storeSeq), matching broadcast_cursors'
     // own semantics (deriveSummary's broadcastUnread, D22/D23) — NOT the
     // per-workspace positional `sinceCursor` listMessages() otherwise supports.
     const broadcasts = all
-      .filter((r) => !r.isHeartbeat && Number.isFinite(r.storeSeq) && r.storeSeq > cursor)
+      .filter((r) => !r.isHeartbeat && Number.isFinite(r.storeSeq) && r.storeSeq > sinceSeq)
       .map((r) => ({ from: r.sender, message: r.body, timestamp: r.ts, urgency: r.urgency, seq: r.storeSeq }));
-    const newCursor = typeof s.advanceBroadcastCursor === 'function' ? s.advanceBroadcastCursor(cursorKey) : cursor;
-    store.deriveSummary(s, { home, env: ctx.env, now });
-    return { ok: true, action: 'mesh-read', from, acked: true, newCursor, count: broadcasts.length, broadcasts };
+    const newCursor = peek
+      ? cursor
+      : (typeof s.advanceBroadcastCursor === 'function' ? s.advanceBroadcastCursor(cursorKey) : cursor);
+    // deriveSummary is a pure projection refresh (re-scans the bounded
+    // broadcast tail) — skipped on a peek so a non-mutating read has zero
+    // side effects, matching `peek-primary`'s own contract on the direct-
+    // message side.
+    if (!peek) store.deriveSummary(s, { home, env: ctx.env, now });
+    const out = { ok: true, action: 'mesh-read', from, acked: !peek, newCursor, count: broadcasts.length, broadcasts };
+    if (peek) out.peek = true;
+    if (usedExplicitSeq) out.since = sinceSeq;
+    return out;
   } finally { s.close(); }
 }
 
@@ -12036,7 +13503,7 @@ function cmdMergeVerb(rest, ctx) {
       try {
         const fields = { from, to: null, type: 'broadcast', message: summary, timestamp: now, urgency: merged ? 'normal' : 'high' };
         const hash = store.meshMessageHash(fields);
-        const bres = store.appendMeshMessage(s, Object.assign({}, fields, { hash }));
+        const bres = store.appendMeshMessage(s, Object.assign({}, fields, { hash, instanceNonce: deriveInstanceNonce(ctx) }));
         store.deriveSummary(s, { home: ctx.home, env: ctx.env, now });
         broadcast = { ok: true, sent: !!bres.inserted, seq: bres.seq };
       } finally { s.close(); }
@@ -12306,6 +13773,14 @@ function run(argv, ctx0) {
         const r = hasFlag(flags, 'ack') ? cmdMeshRead(flags, ctx) : cmdRoster(flags, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
+      case 'wake-directive': {
+        // C (Stop-gate reassert trim follow-up): on-demand reprint of the
+        // SessionStart MAILBOX WAKE directive, pure read, never touches the
+        // store. See cmdWakeDirective's own header for the full rationale.
+        const wid = positionals[1];
+        const r = cmdWakeDirective(wid, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
       case 'diagnose': {
         // READ-ONLY mesh-health projection (#62) — pure, never writes summary.json.
         const r = cmdDiagnose(flags, ctx);
@@ -12387,9 +13862,102 @@ function run(argv, ctx0) {
   }
 }
 
+// emitKnownWarning(argv, result) -> the WARNING string (or null if none
+// applies), and — as a side effect — writes it to stderr. B1 (defect
+// 902d3c5e7531): every read-side verb (`inbox count`/`read-primary`/
+// `peek-primary`/`messages`/`read`/`ack`) now carries a `known` field; a
+// caller running the plain CLI (not parsing JSON) had no visible signal that
+// `known:false` meant the reported totals could not be trusted. One stderr
+// line, naming the concrete reason (never a bare "known:false"), for every
+// `inbox` invocation whose result reports `known === false`. Exported
+// separately from main() so tests can assert the exact line without
+// spawning a subprocess or intercepting process.exit.
+function emitKnownWarning(argv, result) {
+  if (!argv || argv[0] !== 'inbox') return null;
+  if (!result || result.known !== false) return null;
+  const reasons = [];
+  // fl-wave6 fix (P1, item 1): the real reason must be named UNCONDITIONALLY
+  // — not gated on the `storeUnavailable` BOOLEAN. `storeUnavailableOut`
+  // (~line 8899) deliberately reports `storeUnavailable:false` for a
+  // NON-genuine refusal (e.g. `project-context-mismatch` —
+  // isGenuineStoreUnavailableReason is false for it) while still carrying
+  // the real reason under `storeUnavailableDetail.reason` (count/read/ack)
+  // or the top-level `result.reason` (read-primary/peek-primary/messages'
+  // own refusal shape). Pre-fix, gating this whole block on the boolean
+  // meant `count`/`read` on a project-context-mismatch (fail-open: `ok:true`,
+  // `storeUnavailable:false`, no top-level `result.reason` — only
+  // `storeUnavailableDetail.reason`) fell through every branch below and
+  // printed the bare, useless "known:false (unknown)" — the caller had NO
+  // idea a foreign-project cwd was the cause. `suKind`/`suReason` are now
+  // computed once, unconditionally, and named whenever known, regardless of
+  // whether `storeUnavailable` itself is true or false.
+  const suReason = result.storeUnavailableReason || null;
+  const suDetail = result.storeUnavailableDetail;
+  const suKind = (suDetail && suDetail.reason) || result.reason || null;
+  if (result.storeUnavailable) {
+    // fl-wave5 fix (item 1): `storeUnavailable` is now a BOOLEAN and
+    // `storeUnavailableReason` a top-level string|null on EVERY read verb
+    // (count/read/ack/read-primary/peek-primary/messages) — the dual-shape
+    // check this replaces (an OBJECT on some call sites, a bare boolean with
+    // the reason living only on `result` on others) is gone; both fields
+    // are always at the SAME place now. `storeUnavailableDetail` (count/
+    // read/ack only) still carries its own `.reason` for the more specific
+    // refusal kind (e.g. the literal 'store-unavailable' bucket vs. a
+    // richer refusal); fall back to `result.reason` when no detail object
+    // was reported for this call.
+    if (suKind === 'store-unavailable' && suReason) {
+      reasons.push('store-unavailable (' + suReason + ')');
+    } else if (!suKind && suReason) {
+      // fl-wave5 addendum fix (item 9, P2, R4 Reviewer): messages/
+      // peek-primary/read-primary carry no `storeUnavailableDetail` (no
+      // `.reason` to inspect) and — on a successful (`ok:true`) call — no
+      // top-level `result.reason` either, so `suKind` lands null even though
+      // a real fs error IS known. `storeUnavailable` is true here ONLY for a
+      // genuine store-unavailable condition (storeUnavailableOut's
+      // isGenuineStoreUnavailableReason gate), so a present
+      // `storeUnavailableReason` with no other kind signal unambiguously
+      // names THAT reason — print it instead of the bare, codeless
+      // "storeUnavailable".
+      reasons.push('store-unavailable (' + suReason + ')');
+    } else {
+      reasons.push('storeUnavailable' + (suKind ? (' (' + suKind + ')') : ''));
+    }
+  } else if (suKind) {
+    // fl-wave6 fix (P1, item 1): `storeUnavailable` is false but a specific,
+    // non-generic reason IS known (project-context-mismatch, unregistered-
+    // workspace, …) — name it directly. Never fall through to the generic
+    // 'unknown' bucket below just because this call's refusal happened not
+    // to be a genuine store-unavailable condition.
+    reasons.push(String(suKind));
+  } else if (suReason) {
+    reasons.push('store-unavailable (' + suReason + ')');
+  }
+  if (result.meshGroupUnresolved) reasons.push('meshGroupUnresolved' + (result.meshGroupError ? (': ' + result.meshGroupError) : ''));
+  if (result.totalsPartial && !result.meshGroupUnresolved) reasons.push('totalsPartial');
+  // fl-wave3 fix (item 2): a genuinely refusal-shaped `result.reason` (e.g.
+  // 'project-context-mismatch', 'unregistered-workspace') is more specific
+  // and more actionable than the generic bucket flags above — name it
+  // whenever present, not merely as a last-resort fallback for when NONE of
+  // the bucket flags fired. Pre-fix, a refusal that also carried
+  // `totalsPartial:true` (every B3-merge refusal does) had its real reason
+  // silently swallowed — the bucket flag fired first, so the `!reasons.length`
+  // fallback below never ran, and the WARNING said only "totalsPartial" with
+  // no hint of WHY.
+  if (result.reason && !reasons.some((r) => r.indexOf(String(result.reason)) !== -1)) {
+    reasons.push(String(result.reason));
+  }
+  if (!reasons.length) reasons.push('unknown');
+  const line = '[devswarm] WARNING: inbox ' + String(argv[1] || result.action || '')
+    + ' ' + JSON.stringify(String(result.id != null ? result.id : ''))
+    + ' reported known:false (' + reasons.join('; ') + ') — totals may be incomplete or stale';
+  try { process.stderr.write(line + '\n'); } catch (_) {}
+  return line;
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const { code, result } = run(argv);
+  emitKnownWarning(argv, result);
   // `healthcheck`/`diagnose` (no --json) print ONE compact human line; every
   // other verb — and either of these WITH --json — prints the raw JSON
   // object. `diagnose` gained a human-line mode alongside healthcheck (field
@@ -12411,6 +13979,7 @@ if (require.main === module) {
 
 module.exports = {
   run, parseArgs, one, many, csvList,
+  emitKnownWarning, resolveReadArgToId,
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   retireWorktreeDuplicates, isLiveSessionId, archiveLeftReason,
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
@@ -12445,6 +14014,16 @@ module.exports = {
   // defect 54a6539e2d69 — the no-`--session`/no-env parent-pid-chain fallback
   // (exported for direct unit testing with an injected ppidOf/pid/fs):
   deriveCallerSessionIdFromProcessTree, currentRegistrySessionId,
+  // defect d3d571495bf6 — the per-process instance nonce (exported for direct
+  // unit testing with an injected ppidOf/pid/fs, same pattern as above):
+  deriveInstanceNonce,
+  // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for
+  // direct unit testing, same pattern as deriveInstanceNonce above):
+  shortInstanceNonce, computeInstanceNonceCounts,
+  // H fix — exported for direct unit testing: readRetiredRedirect's isSafeId
+  // guard, writeRetiredRedirect (its counterpart), and cmdMeshRead's --seq
+  // bare-boolean guard.
+  readRetiredRedirect, writeRetiredRedirect, cmdMeshRead,
   // v0.90.1 P0 cursor-namespace hotfix (exported for direct unit testing):
   siblingBaseCursor, siblingSeenCursorPath, readSiblingSeenCursor, writeSiblingSeenCursor,
   removeSiblingSeenCursor, parseSiblingSeenCursorName, watermarkSafeId,
@@ -12461,11 +14040,15 @@ module.exports = {
   // v0.90.0 send receipts (writer; the reader is hooks/devswarm-parent-reply-tracker.js):
   writeSendReceipt, sendReceiptsDir, receiptDayKey, receiptFileName,
   // D11-A (f56dcc08f048) — exported for direct unit testing:
-  pickSurvivor, isRoutingLiveRow, isRoutingLiveRowStrict,
+  pickSurvivor, isRoutingLiveRow, isRoutingLiveRowStrict, isArchivedForRouting,
+  computeRowLive, rosterHints,
   // task #40 (v0.96.1) — companion/devswarm-supervisor.js's deferred-sweep
   // backstop peeks these SAME resume markers (read-only) to decide whether
   // fold-archived-rows has pending work worth a slot, without duplicating
   // the marker path/shape here:
   foldArchivedResumePath, readFoldArchivedResume,
   foldArchivedFamilyResumePath, readFoldArchivedFamilyResume,
+  // defect d56bfaac2da0 (submodule-cwd superproject re-resolution) — exported
+  // for direct unit testing, same convention as this file's other internals:
+  resolveCallerWorktree,
 };

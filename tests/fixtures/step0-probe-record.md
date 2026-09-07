@@ -105,7 +105,7 @@ repo).
   3. `diff` of the two (newline-normalized) — **exact match** (6421 vs 6422
      chars, the 1-char delta being only the file-write's trailing newline).
   4. Cross-checked the harness's own persisted transcript archive
-     (`~/.claude/projects/-Users-talas9-Projects-anti-hall/<parent-session>/subagents/*.jsonl`,
+     (`~/.claude/projects/<project-key>/<parent-session>/subagents/*.jsonl`,
      1680 files): 37 distinct REAL prior subagent transcripts (all dated
      2026-06-29 or later, i.e. after the hook shipped) contain this exact
      "VERIFY-FIRST + ROOT-CAUSE PROTOCOL" text, stored via the harness's own

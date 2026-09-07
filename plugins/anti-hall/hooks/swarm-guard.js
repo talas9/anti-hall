@@ -44,7 +44,7 @@ const MEM_FLOOR_RATIO = 0.04;  // block if availableMem/totalMem < 4%
 // Real available memory (reclaimable cache included), per-platform. os.freemem()
 // undercounts on macOS/Linux because it excludes reclaimable pages — see header.
 //
-// FAIL-CLOSED ON PARSE FAILURE (memory gate skipped, NOT blocked): returns a real
+// FAIL-OPEN ON PARSE FAILURE, BY DESIGN (memory gate skipped, NOT blocked): returns a real
 // available-byte count ONLY when it was SUCCESSFULLY read; otherwise returns null.
 // A null tells the caller to SKIP the memory gate entirely (treat memory as OK).
 // We must NOT fall back to os.freemem() on macOS/Linux: it excludes reclaimable

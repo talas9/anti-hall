@@ -53,6 +53,19 @@ for (const B of backends) {
     try { assert.equal(s.backend, B.backend); } finally { s.close(); rm(home); }
   });
 
+  // fl-wave8 fix (item 3): getReadErrors() must exist on BOTH backends with
+  // the SAME call-site contract (an array), not just getReadError() — a
+  // caller that wants every broken file (not only the first) previously had
+  // no parity guarantee on sqlite, which lacked the method entirely.
+  test(`[${B.name}] getReadErrors() exists and is empty for a healthy store`, () => {
+    const home = tmpHome();
+    const s = open(home);
+    try {
+      assert.equal(typeof s.getReadErrors, 'function');
+      assert.deepEqual(s.getReadErrors(), []);
+    } finally { s.close(); rm(home); }
+  });
+
   test(`[${B.name}] messages are append-only and idempotent by hash`, () => {
     const home = tmpHome();
     const s = open(home);
@@ -560,6 +573,120 @@ test('[journal] a genuine fs error opening the lock fails closed (ELOCKFS), neve
     } finally { s.close(); }
   } finally { rm(home); }
 });
+
+// ---------------------------------------------------------------------------
+// fl-wave6 fix (P2, item 3): `getReadError()` used to be "last one wins,
+// forever" — readAll recorded a genuine fs error but never cleared it on a
+// LATER successful read, so a store that recovered (e.g. a chmod-000
+// directory restored to readable) still reported an error on the SAME
+// handle as if it were still ongoing. Journal-only (the sqlite backend has
+// no readAll/lastReadError of its own — its failures are typed open-time
+// exceptions, not a latched read-error flag).
+// ---------------------------------------------------------------------------
+{
+  const isWindows = process.platform === 'win32';
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const canChmodTest = !isWindows && !isRoot;
+  function chmodChecked(p, mode) {
+    try { fs.chmodSync(p, mode); return true; } catch (_) { return false; }
+  }
+
+  (canChmodTest ? test : test.skip)('[journal] getReadError() clears on the NEXT successful read after a recovered (chmod-restored) store — same handle: healthy -> chmod 000 -> healthy', () => {
+    const home = tmpHome();
+    const s = store.openStore({ home, backend: 'journal' });
+    let registryFile = null;
+    try {
+      // Healthy: a normal write + read establishes the journal dir/files and
+      // proves getReadError() starts null.
+      s.upsertRegistry(descriptor('w1'));
+      assert.deepEqual(s.listRegistry().map((r) => r.id), ['w1']);
+      assert.strictEqual(s.getReadError(), null, 'a healthy read must report no error');
+
+      registryFile = path.join(store.journalDir(home), 'registry.ndjson');
+      assert.ok(fs.existsSync(registryFile), 'registry.ndjson must exist before this test locks it down');
+      assert.ok(chmodChecked(registryFile, 0o000), 'chmod 000 on registry.ndjson must succeed as a non-root, non-Windows test user');
+
+      // Broken: the SAME handle's next read of this file hits EACCES —
+      // getReadError() must now report it.
+      s.listRegistry();
+      const err = s.getReadError();
+      assert.ok(err && err.code, 'a genuinely unreadable file must set a read error: ' + JSON.stringify(err));
+
+      // Recovered: chmod restored, the SAME handle reads successfully again —
+      // getReadError() must clear, not keep reporting the stale error.
+      assert.ok(chmodChecked(registryFile, 0o644), 'restoring chmod 644 must succeed');
+      const rows = s.listRegistry();
+      assert.deepEqual(rows.map((r) => r.id), ['w1'], 'the recovered read must see the real row again');
+      assert.strictEqual(s.getReadError(), null, 'a recovered store on the SAME handle must clear the stale read error');
+    } finally {
+      if (registryFile) chmodChecked(registryFile, 0o644);
+      s.close(); rm(home);
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// fl-wave7 fix (P1): `lastReadError` used to be ONE shared slot, cleared on
+// ANY successful read — a healthy read of messages.ndjson erased a
+// still-live EACCES recorded moments earlier for registry.ndjson. Fixed to
+// be per-file (a Map keyed by file path). Journal-only (sqlite has no
+// readAll/getReadError of its own).
+// ---------------------------------------------------------------------------
+{
+  const isWindows = process.platform === 'win32';
+  const isRoot = typeof process.getuid === 'function' && process.getuid() === 0;
+  const canChmodTest = !isWindows && !isRoot;
+  function chmodChecked(p, mode) {
+    try { fs.chmodSync(p, mode); return true; } catch (_) { return false; }
+  }
+
+  (canChmodTest ? test : test.skip)('[journal] getReadError() is per-file: a healthy messages.ndjson read must not erase a still-live registry.ndjson EACCES', () => {
+    const home = tmpHome();
+    const s = store.openStore({ home, backend: 'journal' });
+    let registryFile = null;
+    try {
+      // Establish both files: a registry row AND a message, so both
+      // registry.ndjson and messages.ndjson exist and are readable.
+      s.upsertRegistry(descriptor('w1'));
+      s.appendMessage({ workspaceId: 'w1', body: 'm1' });
+      assert.strictEqual(s.getReadError(), null, 'a healthy store must report no error');
+
+      registryFile = path.join(store.journalDir(home), 'registry.ndjson');
+      assert.ok(fs.existsSync(registryFile), 'registry.ndjson must exist before this test locks it down');
+      assert.ok(chmodChecked(registryFile, 0o000), 'chmod 000 on registry.ndjson must succeed as a non-root, non-Windows test user');
+
+      // Break registry.ndjson: a read of it now records an EACCES.
+      s.listRegistry();
+      const errAfterRegistry = s.getReadError();
+      assert.ok(errAfterRegistry && errAfterRegistry.code, 'listRegistry must record a read error: ' + JSON.stringify(errAfterRegistry));
+
+      // A SUBSEQUENT, unrelated, SUCCESSFUL read of messages.ndjson (a
+      // DIFFERENT file) must NOT clear registry.ndjson's still-live error —
+      // this is the exact bug: a shared slot let this healthy read erase it.
+      const count = s.messageCount('w1');
+      assert.equal(count, 1, 'messages.ndjson itself must still read fine — only registry.ndjson is broken');
+      const errAfterMessages = s.getReadError();
+      assert.ok(errAfterMessages && errAfterMessages.code,
+        'a healthy read of a DIFFERENT file (messages.ndjson) must not erase registry.ndjson\'s still-live read error: ' + JSON.stringify(errAfterMessages));
+      assert.equal(errAfterMessages.path, registryFile, 'the surviving error must still name registry.ndjson');
+
+      // getReadErrors() must expose the full set (at least this one entry).
+      const all = s.getReadErrors();
+      assert.ok(Array.isArray(all), 'getReadErrors() must return an array');
+      assert.ok(all.some((e) => e.path === registryFile), 'getReadErrors() must include the registry.ndjson error');
+
+      // Recovery: restoring registry.ndjson and reading it again clears ONLY
+      // its own entry.
+      assert.ok(chmodChecked(registryFile, 0o644), 'restoring chmod 644 must succeed');
+      s.listRegistry();
+      assert.strictEqual(s.getReadError(), null, 'once registry.ndjson recovers, getReadError() must clear');
+      assert.deepEqual(s.getReadErrors(), [], 'getReadErrors() must be empty once every touched file is healthy again');
+    } finally {
+      if (registryFile) chmodChecked(registryFile, 0o644);
+      s.close(); rm(home);
+    }
+  });
+}
 
 if (store.sqliteAvailable()) {
   test('[sqlite] uses WAL journal mode', () => {

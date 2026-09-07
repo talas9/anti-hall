@@ -732,27 +732,46 @@ test('meshRowCopy: one canonical field table drives BOTH copy shapes (needsReply
   };
   // Verbatim (rehomeAcrossStores -> store.appendMeshRow).
   const verbatim = cli.meshRowCopy(row, 'row', { workspaceId: 'w1' });
+  // fl-wave4 fix (item 4, Suite failure devswarm-archive-group.test.js:728):
+  // meshRowCopy no longer emits a key at all when the SOURCE row's value is
+  // `undefined` (origHash/instanceNonce here — this fixture row is neither a
+  // forwarded copy nor nonce-stamped) — an old, pre-those-fields row's copy
+  // must stay BYTE-IDENTICAL to the source's own key set, not silently gain
+  // explicit `undefined`-valued keys the source never had.
   assert.deepStrictEqual(verbatim, {
     sender: 'from-id', recipient: 'to-id', body: 'hello', ts: 1234, mtype: 'direct',
     urgency: 'high', needsReply: true, hash: 'mesh:abc', isHeartbeat: false, workspaceId: 'w1',
-    // origHash (defect 64861a623503) — part of the canonical table, so it is
-    // carried on BOTH shapes. `undefined` here because this fixture row is not
-    // itself a forwarded copy; a forward of it supplies the value via overrides.
-    origHash: undefined,
-  }, 'the verbatim shape carries every field, hash and heartbeat flag included');
+  }, 'the verbatim shape carries every field the source itself carries, hash and heartbeat flag included, and NO explicit-undefined keys for fields the source lacks');
+  assert.ok(!Object.prototype.hasOwnProperty.call(verbatim, 'origHash'), 'origHash must be ABSENT, not present as undefined, when the source row has none');
+  assert.ok(!Object.prototype.hasOwnProperty.call(verbatim, 'instanceNonce'), 'instanceNonce must be ABSENT, not present as undefined, when the source row has none');
 
   // Forward (foldGroupIntoSurvivor -> store.appendMeshMessage).
   const forward = cli.meshRowCopy(row, 'message', { to: 'survivor', type: 'direct', urgency: row.urgency || 'normal' });
   assert.deepStrictEqual(forward, {
     from: 'from-id', to: 'survivor', message: 'hello', timestamp: 1234,
-    type: 'direct', urgency: 'high', needsReply: true, origHash: undefined,
+    type: 'direct', urgency: 'high', needsReply: true,
   }, 'the forward shape re-addresses the row; hash is recomputed by the caller and a heartbeat can never reach here');
+  assert.ok(!Object.prototype.hasOwnProperty.call(forward, 'origHash'), 'origHash must be ABSENT on the forward shape too');
+  assert.ok(!Object.prototype.hasOwnProperty.call(forward, 'instanceNonce'), 'instanceNonce must be ABSENT on the forward shape too');
 
-  // The table is the SINGLE source of truth: every canonical field appears in the
-  // verbatim shape, and any field marked forwardable appears in the forward shape.
+  // A source row that DOES carry an instanceNonce must have it copied through
+  // on BOTH shapes — the fix only skips a genuinely-undefined source value,
+  // never a real one.
+  const rowWithNonce = Object.assign({}, row, { instanceNonce: 'nonce-abc123', origHash: 'mesh:root' });
+  const verbatimNonce = cli.meshRowCopy(rowWithNonce, 'row', { workspaceId: 'w1' });
+  assert.strictEqual(verbatimNonce.instanceNonce, 'nonce-abc123', 'a real instanceNonce must be carried through on the verbatim shape');
+  assert.strictEqual(verbatimNonce.origHash, 'mesh:root', 'a real origHash must be carried through on the verbatim shape');
+  const forwardNonce = cli.meshRowCopy(rowWithNonce, 'message', { to: 'survivor', type: 'direct', urgency: 'high' });
+  assert.strictEqual(forwardNonce.instanceNonce, 'nonce-abc123', 'a real instanceNonce must be carried through on the forward shape');
+  assert.strictEqual(forwardNonce.origHash, 'mesh:root', 'a real origHash must be carried through on the forward shape');
+
+  // The table is the SINGLE source of truth: every canonical field with a
+  // REAL (non-undefined) source value appears in the verbatim shape, and any
+  // field marked forwardable appears in the forward shape.
   for (const f of cli.MESH_ROW_COPY_FIELDS) {
-    assert.ok(Object.prototype.hasOwnProperty.call(verbatim, f.row), 'verbatim shape carries ' + f.row);
-    if (f.msg) assert.ok(Object.prototype.hasOwnProperty.call(forward, f.msg), 'forward shape carries ' + f.msg);
+    if (rowWithNonce[f.row] === undefined) continue;
+    assert.ok(Object.prototype.hasOwnProperty.call(verbatimNonce, f.row), 'verbatim shape carries ' + f.row);
+    if (f.msg) assert.ok(Object.prototype.hasOwnProperty.call(forwardNonce, f.msg), 'forward shape carries ' + f.msg);
   }
 });
 

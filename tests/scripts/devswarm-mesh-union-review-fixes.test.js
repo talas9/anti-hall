@@ -244,7 +244,7 @@ test('P1b (negative control): a genuinely single-row Primary (no siblings, no er
     const rp = cli.run(['inbox', 'read-primary', 'solo-p1b', '--ack-as-owner'], ctx(home, { cwd: repo }));
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 1);
-    assert.equal(rp.result.meshGroupUnresolved, undefined, '"no siblings exist" must stay a silent, non-error fallback');
-    assert.equal(rp.result.totalsPartial, undefined);
+    assert.equal(rp.result.meshGroupUnresolved, false, '"no siblings exist" must stay a silent, non-error fallback');
+    assert.equal(rp.result.totalsPartial, false);
   } finally { rm(home); rm(repo); }
 });

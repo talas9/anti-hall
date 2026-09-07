@@ -79,27 +79,69 @@ function isAliveDefault(pid) {
 // pull (no heartbeat needed — a pull is short-lived). null => another pull holds the
 // lock; the caller MUST refuse (single-consumer invariant). STEAL RULE: a lock is
 // stolen ONLY when it is BOTH stale AND not held by a live process (dead or unknown
-// pid). A KNOWN-LIVE holder is NEVER stolen however old its timestamp looks.
+// pid). A KNOWN-LIVE holder is NEVER stolen however old its timestamp looks — UNLESS
+// the caller opts in via `io.allowStaleLiveSteal` (see below). Default behavior for
+// every existing caller (pullOnce's own one-shot drain lock) is UNCHANGED.
+//
+// io.allowStaleLiveSteal (default false, OPT-IN, defect 8143ced316d3): a one-shot
+// pull's lock must NEVER take this path — a live-but-slow pull mid-drain must never
+// be interrupted (that would split the destructive native queue). It exists ONLY for
+// a long-lived, PURE-READ holder (devswarm-wake-watch.js) that re-stamps its own
+// lock's `ts` every poll tick via the returned `release.restamp()` (see below) — a
+// HUNG (frozen, not exited) watcher stops calling restamp() and its lock goes stale
+// while its pid stays alive, which is exactly the gap this flag closes: a stale+live
+// holder becomes stealable ONLY when the caller has explicitly said "I am the kind of
+// holder that keeps its lock fresh while healthy." No automatic path here ever kills
+// or signals the old holder's process — it only reclaims the lock FILE so a new
+// watcher can arm; if the hung watcher wakes back up, its next restamp()/release()
+// call is a no-op once the token on disk no longer matches (both already guard on
+// `cur.token === token`).
+//
+// io.version (string, optional): stamped into the lock JSON as `version` so a
+// refused caller can report which plugin build holds the lock (see io.onRefused).
+//
+// io.onRefused(info) (optional): called with `{ pid, ageMs, version }` (any field
+// may be null if unknown/unparseable) immediately before a refusal (`return null`)
+// on an EEXIST path — lets a caller build a diagnostic line without changing this
+// function's `release() | null` return contract that every existing call site relies
+// on.
 function acquireExclLock(lockPath, io, staleMs) {
   const F = (io && io.fs) || fs;
   const isAlive = (io && io.isAlive) || isAliveDefault;
   const now = (io && io.now) || Date.now;
   const stale = Number.isFinite(staleMs) ? staleMs : PULL_LOCK_STALE_MS;
+  const allowStaleLiveSteal = !!(io && io.allowStaleLiveSteal);
+  const version = (io && typeof io.version === 'string') ? io.version : null;
   try { F.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch (_) {}
   for (let attempt = 0; attempt < 2; attempt++) {
     const ts = now();
     const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
     try {
       const fd = F.openSync(lockPath, 'wx');
-      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token })); } finally { F.closeSync(fd); }
-      return function release() {
+      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token, version })); } finally { F.closeSync(fd); }
+      const release = function release() {
         try { const cur = JSON.parse(F.readFileSync(lockPath, 'utf8')); if (cur && cur.token === token) F.unlinkSync(lockPath); } catch (_) {}
       };
+      // restamp() — re-write `ts` (and version) IN PLACE, same pid/token, so a
+      // healthy long-lived holder's lock never reads as stale to a steal-check
+      // even though the process itself never releases between ticks. A no-op
+      // (fails silently) once another holder owns the token — e.g. after this
+      // process's own lock was reclaimed while it was hung.
+      release.restamp = function restamp() {
+        try {
+          const cur = JSON.parse(F.readFileSync(lockPath, 'utf8'));
+          if (!cur || cur.token !== token) return false;
+          F.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: now(), token, version }));
+          return true;
+        } catch (_) { return false; }
+      };
+      return release;
     } catch (e) {
       if (!e || e.code !== 'EEXIST') return null;
       let holder = null;
       try { holder = JSON.parse(F.readFileSync(lockPath, 'utf8')); } catch (_) {}
       const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
+      const holderVersion = holder && typeof holder.version === 'string' ? holder.version : null;
       let holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
       if (holderTs === null) {
         // TORN-READ GUARD: a live holder is briefly a 0-byte file between openSync('wx')
@@ -111,7 +153,16 @@ function acquireExclLock(lockPath, io, staleMs) {
       }
       const alive = holderPid !== null && isAlive(holderPid);
       const isStale = holderTs === null || (now() - holderTs) > stale;
-      if (isStale && !alive) { try { F.unlinkSync(lockPath); } catch (_) {} continue; }
+      if (isStale && (!alive || allowStaleLiveSteal)) { try { F.unlinkSync(lockPath); } catch (_) {} continue; }
+      if (io && typeof io.onRefused === 'function') {
+        try {
+          io.onRefused({
+            pid: holderPid,
+            ageMs: holderTs === null ? null : Math.max(0, now() - holderTs),
+            version: holderVersion,
+          });
+        } catch (_) {}
+      }
       return null; // live holder, or a fresh lock -> refuse
     }
   }

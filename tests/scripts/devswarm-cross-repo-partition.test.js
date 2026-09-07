@@ -97,10 +97,17 @@ test('e586afdaa968: `inbox count` from a FOREIGN cwd reports the store side as U
     const foreign = cli.run(['inbox', 'count', 'child-foreign'], ctx(home, { cwd: repoA })).result;
     assert.equal(foreign.ok, true, 'count must stay fail-open, never a new hard failure');
     assert.equal(foreign.known, false, 'the store side is NOT readable from here — say so, do not report 0 as fact');
-    assert.ok(foreign.storeUnavailable, 'must name WHY the store side is unknown');
-    assert.equal(foreign.storeUnavailable.reason, 'project-context-mismatch');
+    // fl-wave5 addendum fix (item 7): a project-context-mismatch is NOT a
+    // genuine store error (the store was never even attempted) — the
+    // BOOLEAN `storeUnavailable` stays false for this reason (true is
+    // reserved for a real EACCES/ENOTDIR/ESTOREUNAVAILABLE/corrupt-store
+    // condition); the full refusal detail (reason/registeredRepoKey/
+    // callerRepoKey) still lands under `storeUnavailableDetail`, never lost.
+    assert.equal(foreign.storeUnavailable, false, 'project-context-mismatch is not a genuine store error');
+    assert.ok(foreign.storeUnavailableDetail, 'must still carry WHY the store side is unknown, under storeUnavailableDetail');
+    assert.equal(foreign.storeUnavailableDetail.reason, 'project-context-mismatch');
     assert.equal(
-      foreign.storeUnavailable.registeredRepoKey,
+      foreign.storeUnavailableDetail.registeredRepoKey,
       require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js').repoKeyForWorktree(repoB),
       'must name the workspace\'s OWN registered project key');
     assert.equal(foreign.unreadStoreUnknown, true);
@@ -181,7 +188,7 @@ test('e586afdaa968 (no regression): a read from the workspace\'s OWN project sti
     cli.run(['send', '--to', 'child-ok', '--message', 'hello'], ctx(home, { cwd: repoB }));
     const c = cli.run(['inbox', 'count', 'child-ok'], ctx(home, { cwd: repoB })).result;
     assert.equal(c.known, true);
-    assert.equal(c.storeUnavailable, undefined, 'no storeUnavailable when the store IS readable');
+    assert.equal(c.storeUnavailable, false, 'no storeUnavailable when the store IS readable');
     assert.equal(c.unreadStore, 1);
 
     // legacy no-project mode (non-git cwd, non-git worktree) keeps working.
@@ -189,7 +196,7 @@ test('e586afdaa968 (no regression): a read from the workspace\'s OWN project sti
     const l = cli.run(['inbox', 'count', 'legacy-ok'], ctx(home, { cwd: nonGit })).result;
     assert.equal(l.ok, true);
     assert.equal(l.known, true);
-    assert.equal(l.storeUnavailable, undefined);
+    assert.equal(l.storeUnavailable, false);
   } finally { rm(home); rm(repoB); rm(nonGit); }
 });
 
@@ -382,8 +389,13 @@ test('e586afdaa968: a MOVED repo gets an honest, named refusal — never a silen
     const c = cli.run(['inbox', 'count', 'child-moved'], ctx(home, { cwd: moved })).result;
     assert.equal(c.ok, true, 'count stays fail-open');
     assert.equal(c.known, false, 'must NOT claim 0 unread as fact for a partition it cannot open');
-    assert.equal(c.storeUnavailable.reason, 'project-context-mismatch');
-    assert.equal(c.storeUnavailable.registeredRepoKey, oldKey, 'must name the partition the mail is actually in');
-    assert.equal(c.storeUnavailable.callerRepoKey, newKey);
+    // fl-wave5 addendum fix (item 7): project-context-mismatch is not a
+    // genuine store error — see the sibling test above for the full
+    // rationale. `storeUnavailable` stays a boolean false; the refusal
+    // detail moves to `storeUnavailableDetail`.
+    assert.equal(c.storeUnavailable, false, 'project-context-mismatch is not a genuine store error');
+    assert.equal(c.storeUnavailableDetail.reason, 'project-context-mismatch');
+    assert.equal(c.storeUnavailableDetail.registeredRepoKey, oldKey, 'must name the partition the mail is actually in');
+    assert.equal(c.storeUnavailableDetail.callerRepoKey, newKey);
   } finally { rm(home); rm(proj); rm(moved); }
 });

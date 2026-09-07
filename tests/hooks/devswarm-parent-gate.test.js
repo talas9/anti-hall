@@ -722,7 +722,7 @@ test('#36 INCLUDE: a descriptor with a MATCHING repoId still gates', () => {
 const CLAUDE_PRIMARY_ENV = { DEVSWARM_AI_AGENT: 'claude' };
 const CODEX_PRIMARY_ENV = { DEVSWARM_AI_AGENT: 'codex' };
 
-test('WAKE RE-ASSERT: Claude Primary -> the neglect block reason also carries the CronCreate wake directive (read-primary drain)', () => {
+test('WAKE RE-ASSERT: Claude Primary -> the neglect block reason also carries the trimmed wake-directive pointer (read-primary drain)', () => {
   const h = makeHome();
   try {
     seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 }); // 2 unread
@@ -730,9 +730,12 @@ test('WAKE RE-ASSERT: Claude Primary -> the neglect block reason also carries th
     assert.strictEqual(r.json && r.json.decision, 'block');
     const reason = r.json.reason;
     assert.ok(/MAILBOX WAKE/.test(reason), `reason must re-assert the wake directive; reason=${reason}`);
-    assert.ok(/`CronCreate`/.test(reason), `must name the CronCreate tool; reason=${reason}`);
+    // C (hook-injection byte-budget trim): no longer re-states CronCreate
+    // inline — points at `wake-directive <id>` instead.
+    assert.ok(!/`CronCreate`/.test(reason), `trimmed reassert must NOT re-state CronCreate inline; reason=${reason}`);
+    assert.ok(/wake-directive/.test(reason), `must point at the wake-directive re-run; reason=${reason}`);
     assert.ok(reason.includes('`*/30 * * * *`'), `must carry the default schedule; reason=${reason}`);
-    assert.ok(/inbox read-primary <DEVSWARM_BUILDER_ID>/.test(reason), `Primary must drain with read-primary, not the child pull+read verbs; reason=${reason}`);
+    assert.ok(/inbox tick <DEVSWARM_BUILDER_ID>/.test(reason), `Primary must drain with the tick verb (no --child suffix); reason=${reason}`);
     for (const m of [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)]) {
       assert.ok(path.isAbsolute(m[1]), `emitted CLI path must be absolute: ${m[1]}`);
       assert.ok(fs.existsSync(m[1]), `emitted CLI path must exist: ${m[1]}`);
@@ -755,7 +758,7 @@ test('WAKE INTERVAL: ANTIHALL_DEVSWARM_WAKE_CRON is honored in the Primary re-as
 // same way CLI already is) and passes it to wakeReassert() — the Claude branch
 // must then arm `Monitor` with that exact path, alongside the CronCreate text
 // (never instead of it — cron is unconditional, see lib/devswarm-wake.js header).
-test('MONITOR: Claude Primary neglect-block reason arms Monitor with an ABSOLUTE watcher path, ALONGSIDE the cron directive', () => {
+test('MONITOR: Claude Primary neglect-block reason names Monitor ALONGSIDE the CronList condition (trimmed reassert)', () => {
   const h = makeHome();
   try {
     seedWorkspace(h.home, 'ws1', { messages: ['a', 'b', 'c'], cursor: 1 }); // 2 unread
@@ -763,11 +766,16 @@ test('MONITOR: Claude Primary neglect-block reason arms Monitor with an ABSOLUTE
     assert.strictEqual(r.json && r.json.decision, 'block');
     const reason = r.json.reason;
     assert.ok(/`Monitor`/.test(reason), `must arm Monitor; reason=${reason}`);
-    assert.ok(/`CronCreate`/.test(reason), `cron must still be present alongside Monitor; reason=${reason}`);
-    const m = reason.match(/node ([^`]*?devswarm-wake-watch\.js)/);
-    assert.ok(m, `must emit the watcher script path; reason=${reason}`);
-    assert.ok(path.isAbsolute(m[1]), `watcher path must be absolute: ${m[1]}`);
-    assert.ok(m[1].endsWith(path.join('companion', 'lib', 'devswarm-wake-watch.js')), `must resolve to companion/lib/devswarm-wake-watch.js: ${m[1]}`);
+    assert.ok(/CronList/.test(reason), `CronList condition must still be present alongside Monitor; reason=${reason}`);
+    // fl-wave4 fix (item 1): wakeReassert no longer embeds the literal
+    // watcher path a second time — it derives $WATCH from the already-
+    // emitted $CLI (same plugin root: CLI is <root>/scripts/devswarm.js,
+    // WATCHER is <root>/companion/lib/devswarm-wake-watch.js), so this test
+    // now checks for the DERIVATION rather than a literal watcher-path
+    // substring.
+    assert.ok(reason.includes('$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js'),
+      `must derive the watcher path from $CLI; reason=${reason}`);
+    assert.ok(/node "\$WATCH"/.test(reason), `must run the watcher via the derived $WATCH token; reason=${reason}`);
   } finally { h.cleanup(); }
 });
 
@@ -843,17 +851,20 @@ test('FAIL-OPEN: cap state unwritable -> exit 0, never blocks (the wake line rid
 });
 
 // 7-DAY EXPIRY (scheduled-tasks contract) — same wording contract as the child gate.
-test('WAKE RENEWAL: the Primary re-assertion instructs a CronList RE-VERIFY (re-create if expired), not merely a create', () => {
+// C (hook-injection byte-budget trim): the re-verify no longer spells out
+// "VERIFY"/"RE-CREATE"/"7 days" inline — it names the CronList CONDITION and,
+// on a miss, points at re-running `wake-directive <id>`, which reprints the
+// full SessionStart text (7-day expiry wording included) via cmdWakeDirective.
+test('WAKE RENEWAL: the Primary re-assertion names the CronList condition, then points at wake-directive on a miss', () => {
   const h = makeHome();
   try {
     seedWorkspace(h.home, 'ws1', { messages: ['a', 'b'], cursor: 0 });
     const r = run(h.home, stopPayload(), CLAUDE_PRIMARY_ENV);
     const reason = r.json.reason;
-    assert.ok(/`CronList`/.test(reason), `must instruct a CronList verify; reason=${reason}`);
-    assert.ok(/VERIFY|verify/.test(reason), `must be worded as a verify; reason=${reason}`);
-    assert.ok(/RE-CREATE|re-create/i.test(reason), `must instruct re-creation when gone; reason=${reason}`);
-    assert.ok(/expire/i.test(reason) && /7 days/.test(reason), `must state the 7-day auto-expiry; reason=${reason}`);
-    assert.ok(reason.indexOf('`CronList`') < reason.indexOf('`CronCreate`'), `CronList must come before CronCreate; reason=${reason}`);
+    assert.ok(/CronList/.test(reason), `must name CronList; reason=${reason}`);
+    assert.ok(/wake-directive/.test(reason), `must point at wake-directive on a miss; reason=${reason}`);
+    assert.ok(reason.indexOf('CronList') < reason.indexOf('wake-directive'),
+      `CronList condition must be stated before the wake-directive pointer; reason=${reason}`);
   } finally { h.cleanup(); }
 });
 
@@ -1348,6 +1359,11 @@ test('RETIRED SENDER: named in the reason text once a block fires for another re
     assert.match(r.json.reason, /INFORMATIONAL/i, 'the retired sender must still be named, informationally');
     assert.match(r.json.reason, /ghost-sender/);
     assert.match(r.json.reason, /retired sender/i);
+    // fl-wave4 fix (item 3): a retired sender has no live owner to ack as —
+    // the hint must point at `--ack-as-owner` (the sanctioned override),
+    // never the plain `inbox ack <id>` that fails ownership and never
+    // actually clears this.
+    assert.match(r.json.reason, /inbox ack <id> --ack-as-owner/, 'the retired-sender hint must use --ack-as-owner, matching the gone-worktree remediation text elsewhere in this file');
   } finally { h.cleanup(); }
 });
 

@@ -1726,7 +1726,12 @@ function buildInformationalSegment(informational) {
   )));
   return (
     'INFORMATIONAL — question from retired sender ' + ids.join(', ') + ' — no repliable ' +
-    'target; inspect with `inbox messages <id>`, ack with `inbox ack <id>` after reading ' +
+    // fl-wave4 fix (item 3): a RETIRED sender has no live owner to ack as —
+    // `inbox ack <id>` alone fails ownership and never actually clears this.
+    // `--ack-as-owner` is the sanctioned cross-workspace-ack override for
+    // exactly this case (matches the ~line 1937 remediation text elsewhere
+    // in this same file, which already used it).
+    'target; inspect with `inbox messages <id>`, ack with `inbox ack <id> --ack-as-owner` after reading ' +
     '(use the sender id above as <id>). This is NOT counted in the unanswered figures above ' +
     'and never blocks on its own. '
   );

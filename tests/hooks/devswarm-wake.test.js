@@ -18,8 +18,21 @@ const path = require('node:path');
 const WAKE = require('../../plugins/anti-hall/hooks/lib/devswarm-wake.js');
 const { wakeDirective, wakeReassert, WAKE_CRON_DEFAULT, drainCmd } = WAKE;
 
-const CLI = '/fake/plugin/root/scripts/devswarm.js';
-const WATCHER = '/fake/plugin/root/companion/lib/devswarm-wake-watch.js';
+// fl-wave3 fix (item 3): a bare 38-char fixture path let the pre-fix 3x-
+// embedded CLI path in wakeReassert stay under 400 chars by accident, hiding
+// the real-world budget blowout — a realistic installed plugin path is far
+// longer (~80-100 chars). Use a realistic-length fixture so the LENGTH CAP
+// tests below actually exercise the contract.
+const CLI = '/Users/someone/.claude/plugins/cache/anti-hall/anti-hall/0.98.0/scripts/devswarm.js';
+// fl-wave4 fix (item 1): WATCHER now derived from the SAME root as CLI
+// (matches real consumer usage — devswarm-parent-gate.js/devswarm-child-gate.js
+// both build WATCHER via __dirname alongside CLI: `<root>/scripts/devswarm.js`
+// and `<root>/companion/lib/devswarm-wake-watch.js`), and lengthened to a
+// realistic ~100-char fixture — a short fixture path let the pre-fix
+// verbatim-embedded watcher literal in wakeReassert stay under 400 chars by
+// accident, hiding the real budget blowout the same way the pre-item-1 CLI
+// fixture did (see the item-3 comment above).
+const WATCHER = path.join(path.dirname(path.dirname(CLI)), 'companion', 'lib', 'devswarm-wake-watch.js');
 
 // ---------------------------------------------------------------------------
 // REQUIRED REGRESSION MATRIX (owner-named): the cron half must be present in
@@ -50,11 +63,17 @@ for (const isChild of [true, false]) {
         assert.ok(out.includes('`' + cCase.expectedSchedule + '`'), `must carry schedule ${cCase.expectedSchedule}; out=${out}`);
       });
 
-      test(`MATRIX wakeReassert: ${roleLabel} x ${wCase.label} x ${cCase.label} -> cron half always present`, () => {
+      // C (hook-injection byte-budget trim): wakeReassert no longer re-states
+      // the full CronCreate prompt inline — it POINTS at `wake-directive <id>`
+      // (scripts/devswarm.js's on-demand reprint of the full SessionStart
+      // text) instead. So this half of the matrix checks for CronList + the
+      // schedule + the wake-directive pointer, never CronCreate itself.
+      test(`MATRIX wakeReassert: ${roleLabel} x ${wCase.label} x ${cCase.label} -> CronList + schedule + wake-directive pointer always present`, () => {
         const out = wakeReassert(cCase.env, CLI, isChild, wCase.watcher);
-        assert.ok(/`CronList`/.test(out), `must name CronList; out=${out}`);
-        assert.ok(/`CronCreate`/.test(out), `must name CronCreate; out=${out}`);
+        assert.ok(/CronList/.test(out), `must name CronList; out=${out}`);
+        assert.ok(!/`CronCreate`/.test(out), `trimmed reassert must NOT re-state CronCreate inline; out=${out}`);
         assert.ok(out.includes('`' + cCase.expectedSchedule + '`'), `must carry schedule ${cCase.expectedSchedule}; out=${out}`);
+        assert.ok(/wake-directive/.test(out), `must point at the wake-directive re-run; out=${out}`);
       });
     }
   }
@@ -73,6 +92,14 @@ function nonClaudeGolden(agent, cli, isChild) {
   const id = '<DEVSWARM_BUILDER_ID>';
   const stopCond = 'if `unreadTotal` is 0 AND `meshGapWithheld` is NOT `true` AND `known` is NOT `false`';
   const otherwise = 'either `unreadTotal` is greater than 0, or `meshGapWithheld` is `true`, or `known` is `false`';
+  // fl-wave5 fix (item 4), broadened fl-wave6 (item 2): drainCmd's terminal
+  // `inbox read-primary` step now names its own ANY-`ok:false`-refusal stop
+  // condition — kept here as literal golden text too (not a call-through),
+  // matching this file's own "independent of drainCmd itself" convention
+  // above.
+  const storeUnavailableClause = ' — if that reports `ok:false`, '
+    + 'report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) '
+    + 'in one line and stop (do not loop, do not spawn a subagent)';
   const drain = isChild
     ? 'first run `node ' + cli + ' inbox pull ' + id + '` (cheap, inline — imports ' +
       'anything waiting in your native queue) then `node ' + cli + ' inbox count ' + id +
@@ -81,10 +108,10 @@ function nonClaudeGolden(agent, cli, isChild) {
       ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large ' +
       '— this is the cursor-advancing verb, matching devswarm-child-turn.js\'s own ' +
       'mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the ' +
-      'withheld gap)'
+      'withheld gap)' + storeUnavailableClause
     : 'first run `node ' + cli + ' inbox count ' + id + '`; ' + stopCond + ', say so ' +
       'and stop — do NOT spawn a subagent; otherwise (' + otherwise + '), run `node ' + cli +
-      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large)';
+      ' inbox read-primary ' + id + '` (delegate to a subagent only if the payload is large)' + storeUnavailableClause;
   return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
     'primitive — once you go idle, nothing can wake you, so a message that lands after ' +
     'you stop waits for your next turn. Drain your mailbox at the START of every turn ' +
@@ -154,8 +181,33 @@ for (const isChild of [true, false]) {
     const withWatcher = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, isChild, WATCHER);
     const withoutWatcher = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, isChild, undefined);
     assert.ok(/`Monitor`/.test(withWatcher), `watcher present -> must arm Monitor; out=${withWatcher}`);
-    assert.ok(withWatcher.includes('node ' + WATCHER), `must emit the exact watcher path; out=${withWatcher}`);
+    // fl-wave4 fix (item 1): wakeReassert no longer embeds the literal
+    // `watcher` path a second time — it derives $WATCH from the already-
+    // emitted $CLI (same root, see the WATCHER fixture comment above), so
+    // this checks for the DERIVATION, not a literal watcher-path substring.
+    assert.ok(withWatcher.includes('$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js'),
+      `must derive the watcher path from $CLI rather than re-embed the literal path; out=${withWatcher}`);
+    assert.ok(!withWatcher.includes(WATCHER), `must NOT re-embed the long literal watcher path a second time (budget fix); out=${withWatcher}`);
     assert.ok(!/`Monitor`/.test(withoutWatcher), `watcher absent -> Monitor text must be ABSENT; out=${withoutWatcher}`);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// fl-wave4 fix (item 1): null-guard — neither a null/undefined `cli` NOR a
+// null/undefined `watcher` may ever leak a literal "undefined" string into
+// the output. `watcher` falsy already omits the Monitor clause entirely
+// (unchanged); `cli` falsy must render as an explicit placeholder, never the
+// string coercion of `undefined`/`null`.
+// ---------------------------------------------------------------------------
+for (const isChild of [true, false]) {
+  test(`NULL-GUARD: wakeReassert(isChild=${isChild}) never prints the literal string "undefined" for a null cli or watcher`, () => {
+    for (const cliVal of [null, undefined]) {
+      for (const watcherVal of [null, undefined]) {
+        const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, cliVal, isChild, watcherVal);
+        assert.ok(!/undefined/.test(out), `must never print the literal "undefined"; cli=${cliVal} watcher=${watcherVal} out=${out}`);
+        assert.ok(!/\bnull\b/.test(out), `must never print the literal "null"; cli=${cliVal} watcher=${watcherVal} out=${out}`);
+      }
+    }
   });
 }
 
@@ -242,4 +294,97 @@ test('P1 (Wave 4): drainCmd(cli, true) [child] names the cursor-advancing `inbox
 test('C1: unreadTotal field is the value gated on (matches `inbox count`s real JSON field name)', () => {
   assert.ok(drainCmd(CLI, false).includes('unreadTotal'));
   assert.ok(drainCmd(CLI, true).includes('unreadTotal'));
+});
+
+// ---------------------------------------------------------------------------
+// fl-wave5 fix (item 4), broadened fl-wave6 (item 2, P1): the terminal
+// `inbox read-primary` step drainCmd sends the agent to run can itself
+// refuse with `ok:false` for ANY reason — not just the literal
+// `store-unavailable` bucket (project-context-mismatch, unregistered-
+// workspace, an ownership-mismatch reason, … — every refusal
+// `resolveWorkspaceStoreForRead` can produce). Pre-fix (fl-wave5), drainCmd's
+// prose only named the terminal branch when `reason` was exactly
+// `store-unavailable`, leaving the agent free to loop or spawn a subagent
+// over every OTHER `ok:false` refusal. Present for EVERY isChild x useTick
+// combination — the terminal step is always the same `inbox read-primary`
+// verb regardless of which leading drain step ran.
+// ---------------------------------------------------------------------------
+for (const isChild of [true, false]) {
+  for (const useTick of [true, false]) {
+    test(`item4: drainCmd(isChild=${isChild}, useTick=${useTick}) names the ANY-ok:false terminal branch for its final inbox read-primary step`, () => {
+      const out = drainCmd(CLI, isChild, useTick);
+      assert.match(out, /`ok:false`/, `must name the ok:false outcome; out=${out}`);
+      assert.match(out, /`reason`/, `must tell the agent to report the reason; out=${out}`);
+      assert.match(out, /storeUnavailableReason/, `must tell the agent to report storeUnavailableReason; out=${out}`);
+      assert.match(out, /storeUnavailableDetail/, `must tell the agent to report storeUnavailableDetail; out=${out}`);
+      assert.doesNotMatch(out, /`reason`\s+`store-unavailable`/, `must NOT be scoped to the literal store-unavailable reason only; out=${out}`);
+      assert.match(out, /stop \(do not loop, do not spawn a subagent\)/, `must be an explicit stop — no loop, no spawn; out=${out}`);
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// C (hook-injection byte-budget trim): wakeReassert must stay a SHORT pointer
+// (name what CronList/Monitor must show, then send the agent to re-run
+// `wake-directive <id>` for the full text) — never balloon back into
+// re-stating the entire SessionStart prompt inline on every Stop-gate firing.
+// ---------------------------------------------------------------------------
+// fl-wave5 fix (item 3): the "<= 400 total" cap this replaces conflated the
+// FIXED pointer text with the caller-controlled embedded CLI path — a real
+// install path is not bounded by this function at all, so a flat total cap
+// either hid a real fixed-text blowout behind a short fixture (the pre-fix
+// state) or would be unmeetable for a long real path through no fault of
+// this text. The honest contract is on the FIXED text ONLY: total output
+// length minus the literal `cli` argument's own length (the path appears
+// in the output exactly once — proven by the separate "exactly ONCE" test
+// below) must stay <= 360 chars, at BOTH an 86-char and a 160-char cli
+// fixture, for child and Primary alike.
+// fl-wave6 fix (P2, item 5): raised from 320 to 360. Backslash escapes in
+// the emitted text (e.g. \`ok:false\`) count toward the MEASURED length the
+// same as any other character — the real fixed-text length already peaked
+// at 315 chars against the old 320 cap, only 5 chars of headroom. The raise
+// is NOT because this wave's own item 2 fix (widening drainCmd's
+// storeUnavailableClause wording) would have tripped it — wakeReassert
+// never calls drainCmd and carries no storeUnavailableClause at all, so
+// that fix could not have touched this text; the measured fixed length is
+// 315 chars both before and after item 2. The raise is headroom against
+// FUTURE backslash-escaped characters and wording changes to wakeReassert's
+// own text, given how thin 5 chars already was. The measurement method is
+// unchanged (output.length minus the literal cli length) — this only raises
+// the ceiling, and does not trim any existing wording.
+function cliOfLength(n) {
+  const suffix = '/devswarm.js';
+  const padLen = Math.max(0, n - suffix.length - 1);
+  return '/' + 'a'.repeat(padLen) + suffix;
+}
+const FIXED_TEXT_CAP = 360;
+for (const isChild of [true, false]) {
+  for (const wCase of WATCHER_CASES) {
+    for (const cliLen of [86, 160]) {
+      test(`FIXED TEXT LENGTH CAP: wakeReassert(isChild=${isChild}, ${wCase.label}, cli=${cliLen} chars) fixed text stays <= ${FIXED_TEXT_CAP} chars`, () => {
+        const fixtureCli = cliOfLength(cliLen);
+        assert.equal(fixtureCli.length, cliLen, 'test fixture setup sanity check');
+        const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, fixtureCli, isChild, wCase.watcher);
+        const fixedLen = out.length - fixtureCli.length;
+        assert.ok(fixedLen <= FIXED_TEXT_CAP,
+          `wakeReassert fixed text (excluding the embedded cli path) must stay <= ${FIXED_TEXT_CAP} chars, got ${fixedLen}; out=${out}`);
+      });
+    }
+  }
+}
+
+test('wakeReassert points at the on-demand wake-directive CLI verb for the full SessionStart text', () => {
+  const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, true, WATCHER);
+  // fl-wave3 fix (item 3): the CLI path is now emitted ONCE, up front, as a
+  // `CLI=` assignment — every later reference (including this wake-directive
+  // pointer) uses the short `"$CLI"` token instead of re-embedding the long
+  // literal path a second/third time.
+  // fl-wave5 fix (item 3): the assignment is now DOUBLE-quoted (`CLI="<path>"`,
+  // a directly shell-runnable literal-string assignment), not backtick-quoted
+  // (`CLI=\`<path>\``) — backticks in an actual shell mean COMMAND
+  // SUBSTITUTION, so the pre-fix text told the agent to run something that
+  // would EXECUTE the path as a command instead of assigning it.
+  assert.ok(out.includes('CLI="' + CLI + '"'), `must name the CLI path exactly once, up front, as a shell-quoted assignment; out=${out}`);
+  assert.ok(out.includes('node "$CLI" wake-directive'), `must point at the wake-directive verb via the $CLI token; out=${out}`);
+  assert.strictEqual(out.split(CLI).length - 1, 1, `the long CLI path must appear exactly ONCE in the output, not repeated; out=${out}`);
 });

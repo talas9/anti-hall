@@ -22,9 +22,12 @@ const ROOT  = path.resolve(__dirname, '..');     // plugin root
 const HOOKS = __dirname;                           // hooks/
 const QUIET = process.argv.includes('--quiet');
 // Repair mode. Plain `doctor` (and --fix/--repair/--dry-run) run the repair pass
-// after the diagnostics; --check is PURE read-only (today's behavior, the CI/test
-// path) and skips repair entirely. --dry-run prints what WOULD be fixed, writes
-// nothing. --fix/--repair are explicit aliases for the default auto-apply path.
+// after the diagnostics; --check skips repair entirely and is read-only except
+// for the self-tests below, which create/write/remove their OWN throwaway temp
+// dirs under os.tmpdir() (never touching the target repo or ~/.anti-hall) to
+// exercise guards like speculation-guard.js end-to-end. --dry-run prints what
+// WOULD be fixed, writes nothing. --fix/--repair are explicit aliases for the
+// default auto-apply path.
 const CHECK   = process.argv.includes('--check');
 const DRYRUN  = process.argv.includes('--dry-run');
 const DO_REPAIR = !CHECK; // default, --fix, --repair, --dry-run repair; --check does not
@@ -82,8 +85,8 @@ const ALLOWED = (r) => r.code === 0;
 // --- 1. Environment ----------------------------------------------------------
 head('Environment');
 const nodeMajor = parseInt((process.versions.node || '0').split('.')[0], 10);
-if (nodeMajor >= 18) ok(`Node ${process.version} (>= 18) — hooks can run`);
-else bad(`Node ${process.version} is < 18 — hooks may silently no-op. Install Node >= 18.`);
+if (nodeMajor >= 22) ok(`Node ${process.version} (>= 22) — hooks can run`);
+else bad(`Node ${process.version} is < 22 — plugin.json requires Node.js >= 22 on PATH; hooks may silently no-op. Install Node >= 22.`);
 ok(`Platform ${process.platform} / ${process.arch}`);
 let version = '(unknown)';
 try { version = require(path.join(ROOT, '.claude-plugin', 'plugin.json')).version; } catch (e) {}

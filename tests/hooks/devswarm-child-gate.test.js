@@ -637,14 +637,18 @@ test('MISMATCH: a DIRECT send (not broadcast/heartbeat) from this child does NOT
 
 const CLAUDE_CHILD_ENV = Object.assign({}, CHILD_ENV, { DEVSWARM_AI_AGENT: 'claude' });
 
-test('WAKE RE-ASSERT: Claude child -> the forced-ack reason also carries the CronCreate wake directive', () => {
+test('WAKE RE-ASSERT: Claude child -> the forced-ack reason also carries the trimmed wake-directive pointer', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
     assert.strictEqual(r.json && r.json.decision, 'block');
     const reason = r.json.reason;
     assert.ok(/MAILBOX WAKE/.test(reason), `reason must re-assert the wake directive; reason=${reason}`);
-    assert.ok(/`CronCreate`/.test(reason), `must name the CronCreate tool; reason=${reason}`);
+    // C (hook-injection byte-budget trim): the Stop-gate reassert no longer
+    // re-states CronCreate inline — it points at `wake-directive <id>`
+    // (scripts/devswarm.js's on-demand reprint of the FULL SessionStart text).
+    assert.ok(!/`CronCreate`/.test(reason), `trimmed reassert must NOT re-state CronCreate inline; reason=${reason}`);
+    assert.ok(/wake-directive/.test(reason), `must point at the wake-directive re-run; reason=${reason}`);
     assert.ok(reason.includes('`*/30 * * * *`'), `must carry the default schedule; reason=${reason}`);
     for (const m of [...reason.matchAll(/`node ([^`]*?devswarm\.js)\b/g)]) {
       assert.ok(path.isAbsolute(m[1]), `emitted CLI path must be absolute: ${m[1]}`);
@@ -671,18 +675,21 @@ test('WAKE INTERVAL: ANTIHALL_DEVSWARM_WAKE_CRON is honored in the Stop re-asser
 // same way CLI already is) and passes it to wakeReassert() — the Claude branch
 // must then arm `Monitor` with that exact path, alongside the CronCreate text
 // (never instead of it — cron is unconditional, see lib/devswarm-wake.js header).
-test('MONITOR: Claude child forced-ack reason arms Monitor with an ABSOLUTE watcher path, ALONGSIDE the cron directive', () => {
+test('MONITOR: Claude child forced-ack reason names Monitor ALONGSIDE the CronList condition (trimmed reassert)', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
     assert.strictEqual(r.json && r.json.decision, 'block');
     const reason = r.json.reason;
     assert.ok(/`Monitor`/.test(reason), `must arm Monitor; reason=${reason}`);
-    assert.ok(/`CronCreate`/.test(reason), `cron must still be present alongside Monitor; reason=${reason}`);
-    const m = reason.match(/node ([^`]*?devswarm-wake-watch\.js)/);
-    assert.ok(m, `must emit the watcher script path; reason=${reason}`);
-    assert.ok(path.isAbsolute(m[1]), `watcher path must be absolute: ${m[1]}`);
-    assert.ok(m[1].endsWith(path.join('companion', 'lib', 'devswarm-wake-watch.js')), `must resolve to companion/lib/devswarm-wake-watch.js: ${m[1]}`);
+    assert.ok(/CronList/.test(reason), `CronList condition must still be present alongside Monitor; reason=${reason}`);
+    // fl-wave4 fix (item 1): wakeReassert no longer embeds the literal
+    // watcher path a second time — it derives $WATCH from the already-
+    // emitted $CLI (same plugin root), so this test checks for the
+    // DERIVATION rather than a literal watcher-path substring.
+    assert.ok(reason.includes('$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js'),
+      `must derive the watcher path from $CLI; reason=${reason}`);
+    assert.ok(/node "\$WATCH"/.test(reason), `must run the watcher via the derived $WATCH token; reason=${reason}`);
   } finally {
     h.cleanup();
   }
@@ -753,17 +760,21 @@ test('KILL SWITCH: DISABLE_ANTIHALL_DEVSWARM=1 -> no block at all, even for a Cl
 // after creation, so a long-lived workspace silently loses its wake job. The Stop
 // re-assertion is therefore a CronList RE-VERIFY (re-create if gone) — that check IS
 // the renewal path, which is why anti-hall needs no 7-day timer or state of its own.
-test('WAKE RENEWAL: the Stop re-assertion instructs a CronList RE-VERIFY (re-create if expired), not merely a create', () => {
+//
+// C (hook-injection byte-budget trim): the re-verify no longer spells out
+// "VERIFY"/"RE-CREATE"/"7 days" inline — it names the CronList CONDITION
+// (schedule + tick command) and, on a miss, points the agent at re-running
+// `wake-directive <id>`, which reprints the FULL SessionStart text (7-day
+// expiry wording included) via scripts/devswarm.js's cmdWakeDirective.
+test('WAKE RENEWAL: the Stop re-assertion names the CronList condition, then points at wake-directive on a miss', () => {
   const h = makeHome();
   try {
     const r = testHook(HOOK, stopPayload(), { home: h.home, expectJson: true, env: CLAUDE_CHILD_ENV });
     const reason = r.json.reason;
-    assert.ok(/`CronList`/.test(reason), `must instruct a CronList verify; reason=${reason}`);
-    assert.ok(/VERIFY|verify/.test(reason), `must be worded as a verify; reason=${reason}`);
-    assert.ok(/RE-CREATE|re-create/i.test(reason), `must instruct re-creation when gone; reason=${reason}`);
-    assert.ok(/expire/i.test(reason) && /7 days/.test(reason), `must state the 7-day auto-expiry; reason=${reason}`);
-    assert.ok(reason.indexOf('`CronList`') < reason.indexOf('`CronCreate`'),
-      `CronList must come before CronCreate; reason=${reason}`);
+    assert.ok(/CronList/.test(reason), `must name CronList; reason=${reason}`);
+    assert.ok(/wake-directive/.test(reason), `must point at wake-directive on a miss; reason=${reason}`);
+    assert.ok(reason.indexOf('CronList') < reason.indexOf('wake-directive'),
+      `CronList condition must be stated before the wake-directive pointer; reason=${reason}`);
   } finally {
     h.cleanup();
   }

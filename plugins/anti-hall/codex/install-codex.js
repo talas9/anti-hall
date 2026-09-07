@@ -54,6 +54,14 @@ function group(matcher, files, timeout) {
 //   {decision:"block"} (Stop) contracts, and the payload fields they read
 //   (session_id/cwd/transcript_path), already match what verify-first-full.js/
 //   task-tracker.js/task-guard.js/tasklist-guard.js prove works on Codex today.
+//   ANTI-HALL-INTERNAL: devswarm-version.js, claude-cli-version.js, repo-
+//   self-drift.js, and defect-nudge.js (SessionStart) and devswarm-child-
+//   drain.js (PostToolUse) are likewise registered verbatim — same
+//   additionalContext/no-op contract, fail-open + FAIL-OPEN-AND-SILENT on any
+//   parse/probe failure per their own file headers, no Claude-only payload
+//   dependency — closing a parity gap vs codex/hooks/hooks.json (the shipped
+//   Codex template already registers all five; this manual installer had
+//   drifted behind it).
 //   The liveness SUPERVISOR (companion/devswarm-supervisor.js) remains
 //   Claude-only — unrelated to this hook set, it identity-binds to `claude
 //   --resume` processes specifically (codex/README.md).
@@ -65,7 +73,11 @@ const ANTI_HALL_HOOKS = {
     group(null, ['devswarm-child-role.js'], 10),
     group(null, ['version-alert.js'], 10),
     group(null, ['codex-availability.js'], 10),
+    group(null, ['devswarm-version.js'], 10),
+    group(null, ['claude-cli-version.js'], 10),
+    group(null, ['repo-self-drift.js'], 10),
     group(null, ['handover-resume.js'], 10),
+    group(null, ['defect-nudge.js'], 10),
   ],
   UserPromptSubmit: [
     group(null, ['verify-first.js'], 10),
@@ -91,6 +103,7 @@ const ANTI_HALL_HOOKS = {
   ],
   PostToolUse: [
     group('Bash', ['devswarm-parent-reply-tracker.js'], 10),
+    group('Bash', ['devswarm-child-drain.js'], 10),
   ],
 };
 

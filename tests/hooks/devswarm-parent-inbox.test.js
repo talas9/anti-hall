@@ -1694,6 +1694,9 @@ test('RETIRED SENDER: an unanswered question from a sender with no row anywhere 
     assert.match(own, /INFORMATIONAL/i);
     assert.match(own, /retired sender/i);
     assert.ok(own.includes('ghost-sender'), `must still name the retired sender; own=${own}`);
+    // fl-wave4 fix (item 3): a retired sender has no live owner to ack as —
+    // the hint must point at `--ack-as-owner` (the sanctioned override).
+    assert.match(own, /inbox ack <id> --ack-as-owner/, `the retired-sender hint must use --ack-as-owner; own=${own}`);
   } finally { h.cleanup(); }
 });
 
