@@ -6,6 +6,192 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.98.0 (2026-09-06)
+
+- **Changed: `inbox count`/`inbox read`'s `storeUnavailable` field is now a
+  BOOLEAN, not an object** — 0.97.1 and earlier returned `storeUnavailable`
+  as a richer OBJECT (`{reason, error, registeredRepoKey, callerRepoKey,
+  storeUnavailableReason}`) on `count`/`read`, while `read-primary`/
+  `peek-primary`/`messages`/`ack` already reported it as a bare boolean —
+  two different shapes for the same field name depending on which verb you
+  called. 0.98.0 unifies every read verb on the SAME shape: `storeUnavailable`
+  is always a boolean (`true` only for a genuinely unreadable store —
+  `store-unavailable`/`store-open-failed`; `false` for a more specific,
+  non-genuine refusal like `project-context-mismatch`), the underlying fs
+  error code is a sibling top-level `storeUnavailableReason` (string|null),
+  and the full former object — `reason`/`error`/`registeredRepoKey`/
+  `callerRepoKey`/`storeUnavailableReason` — is preserved verbatim under a
+  NEW `storeUnavailableDetail` key on `count`/`read`/`ack` (no information
+  lost, just relocated). No in-repo consumer (hook, skill, or script) read
+  the old object shape directly — this is a heads-up for any EXTERNAL JSON
+  consumer parsing `inbox count`/`inbox read` output that this field's type
+  changed.
+- **Fixed: a fold-time retired tombstone no longer strands a re-registered
+  id's mail** — a read of an id whose only descriptor is a retired-redirect
+  tombstone (73303d4c098b) now takes the one-hop redirect a caller with
+  nothing live behind `id` needs, the read-side mirror of the existing
+  send-side redirect fix; a caller with its own live row is never redirected.
+- **Fixed: `register-primary` refuses a `live-primary-conflict` instead of
+  silently double-registering** — registering as Primary over a provably-live
+  OTHER session for the same worktree now refuses with `live-primary-conflict`
+  naming the live session; `--force` overrides it explicitly (7d0a948031cd).
+- **Added: `mesh read --peek`/`--seq`** — a non-mutating peek at the shared
+  mesh broadcast log and per-message sequence numbers for precise resume
+  points (d68c561e1649).
+- **Fixed: repoKey keying inside a git submodule now resolves to the
+  superproject** — a caller invoked from inside a submodule used to key
+  identity/repoKey to the submodule instead of the superproject, flipping
+  `registeredRepoKey` between a submodule invocation and a superproject one
+  and failing closed as `project-context-mismatch` (d56bfaac2da0).
+- **Added: a `forwarded` flag** on a row relayed through a fold/redirect, so a
+  reader can tell a forwarded row from an original one (e9e7c99ec924).
+- **Added: `retryAfterMs` and `possiblyStaleRegistry`** on a transient
+  registry-read failure, so a caller can distinguish "retry shortly" from a
+  genuine refusal (2e8653787945).
+- **Added: per-process `instanceNonce`, roster `instances`/`instance-split`,
+  `diagnose instanceSplits`, and an `@short` sender tag on `read-primary`** —
+  two live processes of the SAME session id (a `claude --resume` racing its
+  own prior process, or a fork) no longer have their mesh rows/messages
+  silently attributed to each other; roster/diagnose now surface the split so
+  it is visible instead of silent (d3d571495bf6).
+- **Fixed: `wake-watch` now takes over a stale-live lock, restamps its own
+  liveness, and exits cleanly on a lost lock** — the REFUSED stderr line now
+  also names the CURRENT lock HOLDER's pid/age/version (not the refused
+  watcher's own), so an operator sees who actually holds the lock
+  (8143ced316d3).
+- **Added: a shared `computeRowLive` helper and a `phantom` hint** on a
+  registry row that looks live but carries no verifiable liveness evidence
+  (298b79969409).
+- **Fixed: `isArchivedForRouting` now keys on `sessionId`** so an archived
+  marker left by a PREVIOUS occupant of a reused id no longer shadows routing
+  decisions for the CURRENT live occupant of that same id (d386d8a610b7).
+- **Added: `send --answers`** — reply correlation so a direct reply to a
+  blocking question can be matched back to the question it answers
+  (93c41cc09ff6).
+- **Fixed: an app-archived partition no longer stays listed as a STALE
+  WORKSPACE in the parent-inbox notification** — `devswarm-parent-inbox.js`'s
+  `staleRegistryPartitions` table now also recognizes an app-level archive
+  marker (the owner archiving the workspace in the DevSwarm app), not only
+  anti-hall's own internal archive tombstone, before naming a row "STALE
+  WORKSPACE" (a9ac2fc7e368). Scoped to that one table — `diagnose`/roster's
+  separate `orphans[]` surface is NOT covered by this fix (see Known).
+- **Fixed: read-side `known`/withheld-state fields and `repoKey`/`storePath`
+  meta are now consistent across `count`/`read`/`messages`/`read-primary`/
+  `peek-primary`, and a meshId `send --to` can resolve is now accepted by
+  those same read verbs (`resolvedFrom`)** — `count`/`read` previously folded
+  `meshGroupUnresolved` inconsistently into `known`, and `messages`/
+  `read-primary`/`peek-primary` carried none of `repoKey`/`storePath`/`known`/
+  `meshPartitionIds` at all, so a caller checking those alongside a refusal's
+  `reason` saw `undefined`. A same-worktree twin-sibling row read now also
+  returns a real, non-null `reason` (`ownership-mismatch`) with the same B1
+  meta instead of a bare refusal. `read-primary`'s ownership-gated ack path
+  now resolves a bare meshId BEFORE opening its store (matching what
+  `peek-primary`/`count` already did), so the two verbs can no longer diverge
+  on the SAME meshId input (902d3c5e7531, 1932b53a3ace).
+- **Fixed: the Codex installer's `ANTI_HALL_HOOKS` now lists every hook
+  `codex/hooks/hooks.json` lists** — still a manually-maintained list (not
+  dynamically derived from `hooks.json`), but a new parity test now enforces
+  the two stay in sync so a drift can't ship silently again; also bumped the
+  doctor's minimum Node to >=22 to match CI, and the scan-throttle write path
+  now carries an explicit flag (GPT-6 audit findings AH01/AH03/AH07).
+- **Changed: the Stop-gate mailbox-wake reassert is now a short pointer, not
+  a re-stated prompt** — every Stop-gate firing used to re-inline the FULL
+  CronCreate prompt paragraph (the same text SessionStart already delivered
+  once); it now names the CronList/Monitor conditions in a MEASURED bound
+  (`wakeReassert`'s own fixed text — everything except the one embedded CLI
+  path — stays `<= 360 chars` by test, verified against both an 86-char and
+  a 160-char cli fixture, for child and Primary, so the contract holds
+  regardless of how long a real install path happens to be; raised from an
+  initial 320 — the measured fixed text peaked at 315 chars, only 5 chars of
+  headroom for future wording changes and backslash-escaped characters, not
+  because any widened clause had tripped it: `wakeReassert` carries no
+  drain/refusal clause at all, and the measured fixed length is 315 both
+  before and after this release's other wording changes)
+  and, on a miss,
+  points at the new `wake-directive <id>` CLI verb (an on-demand reprint of
+  the full SessionStart text) instead of repeating it inline on every block.
+  The watcher script path is derived from the already-emitted `$CLI`
+  (`WATCH="$(dirname "$CLI")/../companion/lib/devswarm-wake-watch.js"`)
+  rather than re-embedded as a second long literal, for the same budget
+  reason the CLI path itself is emitted once — and the `CLI=` assignment
+  itself is now double-quoted (`CLI="<path>"`), not backtick-quoted
+  (`CLI=\`<path>\``, which in an actual shell means command substitution
+  and would have executed the path as a command instead of assigning it).
+- **Changed: a read verb (`count`/`read`/`ack`/`messages`/`read-primary`/
+  `peek-primary`) now refuses a genuine id collision the SAME way `send`
+  already does — EXCEPT an EXACT registered-id match, which always wins as
+  a no-op and is never redirected or refused** — `resolveReadArgToId` used
+  to short-circuit to the exact-id row the MOMENT any row's id exactly
+  matched the literal arg, never even checking whether that same arg ALSO
+  collides with a different live row's derived meshId; `send --to` already
+  refused that shape as `ambiguous-target`, so a read verb on the SAME arg
+  silently used the shadowed row instead of refusing. A later pass made
+  read delegate to the same resolution `send` uses unconditionally — but
+  that reintroduced a DIFFERENT bug: a `register-primary` row and a
+  same-worktree "twin" derive the identical meshId (`canonicalMeshId` IS
+  `primaryWorkspaceId`), so an EXACT read of the Primary's own id could
+  silently land on the twin's partition instead (1932b53a3ace). The rule is
+  now: an exact registered-id match ALWAYS wins as a no-op on a read (never
+  redirected, never reported ambiguous). A non-exact arg resolves the same
+  way `send` resolves one — the freshest LIVE row among same-worktree twins
+  (`resolveMeshTarget`) — but can never hit `send`'s own `ambiguous-target`
+  refusal on this path: that refusal fires ONLY on an exact-id collision,
+  and resolveReadArgToId already resolves any exact match as the no-op
+  above before delegation ever runs.
+- **Fixed: a store that genuinely EXISTS but cannot be READ (`EACCES`,
+  `ENOTDIR`/`EISDIR`, a corrupt sqlite header) no longer reads back
+  indistinguishable from an empty/never-written store, for ANY id —
+  registered or not.** Every read verb
+  (`count`/`read`/`ack`/`messages`/`read-primary`/`peek-primary`) now
+  reports `storeUnavailable` as a boolean with the underlying error code in
+  the sibling `storeUnavailableReason` field (string|null), and
+  `known:false`; `emitKnownWarning`'s stderr line names `store-unavailable
+  (<code>)` instead of the tautological `storeUnavailable
+  (store-unavailable)`. A never-written store dir (`ENOENT`) stays fail-open,
+  unchanged (902d3c5e7531 extended). The two remaining gaps are now also
+  closed: an UNREGISTERED id (no descriptor) sharing a repo whose
+  `registry.ndjson` is unreadable while `messages.ndjson` stays readable now
+  reports `store-unavailable` via `messages`/`read-primary`/`peek-primary`
+  too, not just `count`/`read`/`ack` — `resolveWorkspaceStoreForRead`'s
+  existence guard now re-probes `getReadError()` AFTER its own
+  `listRegistry()` call, not just before it. And the `read-primary`/`inbox
+  messages --ack` ownership check, which resolves the caller's OWN registry
+  row via the same `listRegistry()`-backed `resolveMeshTarget`, no longer
+  misreports a caller that genuinely owns `id` as `caller-not-registered`
+  when that same registry read fails — it now reports `store-unavailable`
+  too. Scoped to the six READ VERBS above — `roster`, `diagnose`, and
+  `healthcheck` still read the registry fail-open (see Known).
+- **Fixed: the retired-sender INFORMATIONAL ack hint now says
+  `--ack-as-owner`** — the hint in both `devswarm-parent-gate.js` and
+  `devswarm-parent-inbox.js` told the Primary to run plain `inbox ack <id>`,
+  which fails ownership for a genuinely retired sender and never actually
+  clears the hint; both now match the sanctioned cross-workspace-ack
+  override already used elsewhere in `devswarm-parent-gate.js`.
+- **Fixed: `meshRowCopy` no longer stamps an explicit `undefined`-valued key
+  for a field the source row never had** — a verbatim/forward copy of an
+  old row (no `origHash`/`instanceNonce`) now stays byte-identical to the
+  source's own key set instead of gaining phantom `origHash: undefined`/
+  `instanceNonce: undefined` own-properties.
+- **Known:** per-row cursor shared across instances (8b211241bbe9), parent-
+  inbox hook latency under load (bf965e5729c5), Stop-gate escalation on dead
+  rows (9aaaf2c5e7b0), `diagnose`/roster's `orphans[]` surface still lacks
+  the app-archived-marker recognition `staleRegistryPartitions[]` gained this
+  release (a9ac2fc7e368 scope note above) — needs its own, separate fix;
+  a0b7dfba1803/b48016f88bc1/af2b580f1b7b/084dee6b6e20 still need field
+  captures before a fix — carried to the next release. Also carried: a
+  2-hop retired redirect refuses as `unregistered-workspace` naming the
+  second hop rather than a dedicated dead-end reason; `count`/`read`/`ack`
+  on an unregistered id still report a probe `storePath` instead of null;
+  the retired-redirect ack ownership gate checks only the freshest live row
+  on the survivor's worktree, so a legitimate caller on a twin-split worktree
+  may see `retired-redirect-unresolvable-caller` (fail-closed; use
+  `--ack-as-owner` as the hint says); `roster`/`diagnose`/`healthcheck` fail
+  open on an unreadable registry (`healthcheck` reports `ok:true` on
+  `EACCES`); when only `cursors.ndjson` is unreadable, `messages` reports
+  `known:true` while `peek-primary` reports `EACCES` and `inbox read`
+  returns the full backlog with `storeUnavailable:true` — the three verbs
+  disagree about one store.
+
 ## 0.97.1 (2026-09-06)
 
 - **Fixed: a store-unavailable inbox count no longer stops the drain loop or
