@@ -59,7 +59,11 @@ test('buildPlist: unresolved binary omits the hivecontrol PIN but keeps a node-r
   // `node` through PATH. Omitting the whole env here was half of the ENOENT storm.
   assert.match(none, /<key>PATH<\/key>\s*<string>\/opt\/nvm\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin<\/string>/);
   const bare = m.buildPlist({ label: 'com.x', exec: 'node', script: '/s', log: '/l', interval: 90 });
-  assert.ok(!/EnvironmentVariables/.test(bare), 'nothing absolute to bake -> no environment key at all (never an empty dict)');
+  // defect d1c57e67998f: HOME/USERPROFILE are unconditional (unlike PATH),
+  // so EnvironmentVariables is now ALWAYS present.
+  assert.match(bare, /<key>EnvironmentVariables<\/key>/, 'HOME/USERPROFILE are still baked with nothing absolute to resolve');
+  assert.match(bare, /<key>HOME<\/key>/);
+  assert.ok(!/<key>PATH<\/key>/.test(bare), 'PATH is still omitted when nothing absolute resolved');
   assert.equal((none.match(/<dict>/g) || []).length, (none.match(/<\/dict>/g) || []).length);
 });
 
@@ -83,7 +87,11 @@ test('buildService: unresolved binary omits the hivecontrol PIN but keeps a node
   const none = m.buildService({ exec: '/opt/nvm/bin/node', script: '/s' });
   assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(none), 'no resolution -> nothing pinned');
   assert.match(none, /^Environment="PATH=\/opt\/nvm\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin"$/m, 'but node stays resolvable (v0.86)');
-  assert.ok(!/Environment=/.test(m.buildService({ exec: 'node', script: '/s' })), 'nothing absolute -> no Environment= at all');
+  // defect d1c57e67998f: HOME/USERPROFILE are unconditional, so Environment=
+  // lines are now ALWAYS present even with nothing absolute to resolve.
+  const svcBare = m.buildService({ exec: 'node', script: '/s' });
+  assert.match(svcBare, /^Environment="HOME=/m);
+  assert.ok(!/^Environment="PATH=/m.test(svcBare), 'PATH is still omitted when nothing absolute resolved');
   assert.ok(none.includes('Type=oneshot'), 'the rest of the unit is unaffected');
 });
 
@@ -102,8 +110,11 @@ test('buildCronLine: unresolved binary omits the hivecontrol PIN but keeps a nod
   assert.ok(line.includes('PATH="/opt/nvm/bin:/usr/bin:/bin:/usr/sbin:/sbin"'),
     'cron\'s PATH is the narrowest of all — a version-manager node MUST be baked in');
   const bare = m.buildCronLine({ exec: 'node', script: '/s/devswarm-supervisor.js' });
-  assert.equal(bare, '* * * * * "node" "/s/devswarm-supervisor.js" >/dev/null 2>&1',
-    'nothing absolute to bake -> identical to the pre-v0.66 prefix-less shape');
+  // defect d1c57e67998f: HOME/USERPROFILE are unconditional, so a bare
+  // (nothing-absolute) cron line now still carries a HOME= env prefix — it is
+  // no longer byte-identical to the pre-v0.66 prefix-less shape.
+  assert.match(bare, /^\* \* \* \* \* HOME="[^"]*" USERPROFILE="[^"]*" "node" "\/s\/devswarm-supervisor\.js" >\/dev\/null 2>&1$/);
+  assert.ok(!bare.includes('PATH='), 'PATH is still omitted when nothing absolute resolved');
 });
 
 test('resolveHivecontrolPath: explicit env override short-circuits the shell probe (hermetic — no real shell spawned)', () => {

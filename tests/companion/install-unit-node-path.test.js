@@ -99,9 +99,12 @@ test('no duplicate PATH entries when the node dir already appears in the merged 
   assert.strictEqual(new Set(p).size, p.length, 'no entry appears twice');
 });
 
-test('unitEnvFor stays null only when NEITHER an absolute hivecontrol NOR an absolute exec is given', () => {
-  assert.strictEqual(ingest.unitEnvFor(null, null), null);
-  assert.strictEqual(ingest.unitEnvFor('hivecontrol', 'node'), null, 'relative paths are never baked');
+test('unitEnvFor never returns null any more — HOME/USERPROFILE are unconditional (defect d1c57e67998f)', () => {
+  const a = ingest.unitEnvFor(null, null);
+  assert.deepStrictEqual(a, { HOME: ingest.HOME, USERPROFILE: ingest.HOME });
+  assert.ok(!('PATH' in a), 'PATH is still omitted with neither hivecontrol nor exec resolved');
+  const b = ingest.unitEnvFor('hivecontrol', 'node');
+  assert.deepStrictEqual(b, { HOME: ingest.HOME, USERPROFILE: ingest.HOME }, 'relative paths are never baked, but HOME still is');
 });
 
 test('a hostile hivecontrol path is still never emitted, but PATH survives', () => {

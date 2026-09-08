@@ -404,6 +404,23 @@ function checkDaemonsRunning(home, opts) {
         }
       }
     }
+
+    // defect d1c57e67998f: a launchd/systemd unit installed BEFORE HOME/
+    // USERPROFILE were pinned into unitEnvFor's output resolves its store root
+    // via the SCHEDULER's own default HOME at runtime, not the installer's —
+    // under a non-default HOME (a test/experiment that forgot isolation, a
+    // review agent's temp-HOME run) that silently writes into the operator's
+    // REAL ~/.anti-hall store. REPORT-ONLY (no auto-repair: the fix is
+    // reinstalling the unit, not hand-patching env into a live plist/service).
+    // `hasHomeEnv` is `undefined` for a cron-sourced unit (not checked here —
+    // cron's env-prefix readback is a distinct code path); only flag a
+    // definite `false` from a real plist/service parse.
+    if (u.hasHomeEnv === false) {
+      results.push({
+        status: WARN,
+        message: 'ingest daemon (' + key + ', worktree ' + where + '): unit does not pin HOME (installed before defect d1c57e67998f\'s fix) — reinstall from that worktree to migrate: node companion/install-devswarm-ingest.js',
+      });
+    }
   }
   if (units.length === 0) {
     results.push({ status: INFO, message: 'ingest daemon: not installed' });

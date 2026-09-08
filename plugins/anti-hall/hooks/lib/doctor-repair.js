@@ -1184,6 +1184,16 @@ function runRepairs(opts) {
     };
   }, () => require(DEVSWARM_SCRIPT).foldArchivedRegistryRows(home, { cwd, env }));
 
+  // RE-RETIRE RESURRECTED ROWS is DELIBERATELY NOT wired here (R3 fix, defect
+  // df54edf54804): it used to run in this default AUTO-SAFE pass via
+  // migrationFix, but a bare `doctor` invocation — the exact command the
+  // anti-hall-activate skill runs — would then remove registry rows with NO
+  // operator intent, contrary to its own "human-initiated only" documentation.
+  // It is now EXPLICIT, OPT-IN ONLY: `doctor --repair-resurrected [--apply]`,
+  // same posture as --repair-ingest-orphans/--repair-test-stores below —
+  // see runResurrectedRepair/checkResurrectedRows further down this file, and
+  // doctor.js's own --repair-resurrected section (never folded into DO_REPAIR).
+
   // Archived-family DESCRIPTOR forward-migration — the descriptor-file half of the
   // same defect the pass above fixes for registry rows. cmdArchive used to tombstone
   // exactly ONE descriptor per archive, so a workspace registered under TWO ids (a
@@ -2060,6 +2070,95 @@ function runTestStoreRepair(opts) {
 }
 
 // ---------------------------------------------------------------------------
+// checkResurrectedRows(opts) -> {atRisk, candidates, unhealable, message} | null.
+// R3 fix (defect df54edf54804): the DETECT half of the resurrected-rows
+// hygiene pass — REPORT-ONLY, runs unconditionally (regular doctor output AND
+// `doctor --check`), never writes. Mirrors checkLeakedTestFixtureStores'
+// contract exactly. Named the REAL command below: `--repair-resurrected`.
+function checkResurrectedRows(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  let dw = null;
+  try { dw = require(o.devswarmModPath || DEVSWARM_SCRIPT); } catch (_) { return null; }
+  if (!dw || typeof dw.reRetireResurrectedRowsAllStores !== 'function') return null;
+  let r = null;
+  try { r = dw.reRetireResurrectedRowsAllStores(home, { cwd: o.cwd, env: o.env, dryRun: true }); }
+  catch (_) { r = null; }
+  if (!r) return null;
+  const candidates = r.candidates || 0;
+  const unhealable = r.unhealable || 0;
+  if (candidates === 0 && unhealable === 0) return null;
+  const message =
+    `(warn) resurrected registry rows: ${candidates} candidate(s)`
+    + (unhealable ? `, ${unhealable} needing manual review (no safe forward target)` : '')
+    + (candidates > 0 ? ' (run doctor --repair-resurrected to preview a repair plan).' : '.');
+  return { atRisk: candidates > 0, candidates, unhealable, message };
+}
+
+// runResurrectedRepair({home, cwd, env, dryRun, devswarmModPath}) ->
+//   [{id, category, status, msg}]   status ∈ 'fixed' | 'skipped' | 'failed'
+// R3 fix (defect df54edf54804): EXPLICIT, OPT-IN ONLY `doctor
+// --repair-resurrected [--apply]` — mirrors runIngestOrphanRepair/
+// runTestStoreRepair's shape exactly (default dry-run prints the plan and
+// removes nothing; --apply calls the real write path). Never invoked
+// implicitly by a plain `doctor`/`doctor --check`/`doctor --fix` run — only
+// checkResurrectedRows (above) runs unconditionally, and it never writes
+// either. Delegates BOTH the plan and the apply to devswarm.js's
+// reRetireResurrectedRowsAllStores — one code path, idempotent, fail-open
+// (see that function's own header for the candidacy/locking/unhealable
+// rules); it also journals each successful re-retirement itself
+// (alog.logEvent('devswarm-cli', 're-retire-resurrected', ...)) so this
+// wrapper adds no separate audit trail.
+function runResurrectedRepair(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const dryRun = !!o.dryRun;
+  const results = [];
+  const push = (id, status, msg) => results.push({ id, category: 'repair-resurrected', status, msg });
+
+  let dw = null;
+  try { dw = require(o.devswarmModPath || DEVSWARM_SCRIPT); } catch (_) {
+    push('repair-resurrected', 'failed', 'devswarm.js module not found — cannot safely repair, nothing touched');
+    return results;
+  }
+  if (typeof dw.reRetireResurrectedRowsAllStores !== 'function') {
+    push('repair-resurrected', 'failed', 'devswarm.js does not export reRetireResurrectedRowsAllStores in this build — cannot safely repair, nothing touched');
+    return results;
+  }
+
+  let r = null;
+  try { r = dw.reRetireResurrectedRowsAllStores(home, { cwd: o.cwd, env: o.env, dryRun }); }
+  catch (e) {
+    push('repair-resurrected', 'failed', 'reRetireResurrectedRowsAllStores raised: ' + errMsg(e));
+    return results;
+  }
+  const candidates = (r && r.candidates) || 0;
+  const reRetired = (r && r.reRetired) || 0;
+  const unhealable = (r && r.unhealable) || 0;
+  const errors = (r && r.errors) || 0;
+
+  if (candidates === 0) {
+    push('repair-resurrected', 'skipped', 'no resurrected registry rows found — nothing to repair'
+      + (unhealable ? ' (' + unhealable + ' row(s) need manual review, no safe forward target)' : ''));
+    return results;
+  }
+  if (dryRun) {
+    push('repair-resurrected', 'skipped', '[dry-run] would re-retire ' + candidates + ' resurrected registry row(s)'
+      + (unhealable ? '; ' + unhealable + ' additional row(s) need manual review (no safe forward target)' : ''));
+    return results;
+  }
+  if (errors > 0) {
+    push('repair-resurrected', 'failed', 're-retired ' + reRetired + '/' + candidates + ' resurrected row(s) — '
+      + errors + ' error(s) during apply (fail-open, see detail)');
+    return results;
+  }
+  push('repair-resurrected', 'fixed', 're-retired ' + reRetired + ' resurrected registry row(s)'
+    + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
+    + (unhealable ? '; ' + unhealable + ' additional row(s) left in place (manual review, no safe forward target)' : ''));
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // checkEscalatedWhileAlive(opts) -> {atRisk, count, examples, message} | null.
 // D12 (v0.96.1) false-positive escalation — a liveness file can carry
 // `status: 'escalated'` for a row whose session pid is PROVABLY alive right
@@ -2553,6 +2652,9 @@ module.exports = {
   checkLeakedTestFixtureStores,
   planLeakedTestFixtureStores,
   runTestStoreRepair,
+  // R3 — resurrected-registry-row detection + EXPLICIT opt-in repair (defect df54edf54804):
+  checkResurrectedRows,
+  runResurrectedRepair,
   // D12 — escalated-while-session-alive detection (report-only, self-heals via liveness.js):
   checkEscalatedWhileAlive,
   // D12d — superseded archived-marker detection (report-only, inert once isArchivedWorkspace discriminates it):

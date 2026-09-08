@@ -34,10 +34,22 @@ test('item 2: the archived branch now consults notDrainingFlag instead of an unc
 
 test('MUTATION: reverting the archived branch to an unconditional swap loses the not-draining backlog', () => {
   const buggy = src.replace(
-    "archivedRow\n        ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 })\n        : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);",
-    "archivedRow\n        ? { label: 'archived', rank: 6 }\n        : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);"
+    "archivedRow\n        ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 })\n        : archivedSuperseded\n          ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived-superseded (live child)', rank: 5.5 })\n          : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);",
+    "archivedRow\n        ? { label: 'archived', rank: 6 }\n        : archivedSuperseded\n          ? { label: 'archived-superseded (live child)', rank: 5.5 }\n          : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);"
   );
   assert.notStrictEqual(buggy, src, 'mutant target string not found verbatim in the live source');
   assert.ok(!/notDrainingFlag \? \{ label: 'not-draining'/.test(buggy),
     'the mutant must reproduce the old unconditional-swap bug (proves the string match above is load-bearing)');
+});
+
+// defect df54edf54804 hardening — an id whose archived/<id>.json marker exists
+// but was SUPERSEDED (a live child re-registered it with a different sessionId,
+// the shape 7e1ae67's supersede rule + this migration fix both key on) must be
+// labeled distinctly, not silently fall back into the ordinary displayStatus
+// liveness ladder as if it had never been archived at all.
+test('item 3 (defect df54edf54804): a superseded-archived row is labeled distinctly, still yielding to not-draining', () => {
+  assert.ok(
+    /archivedSuperseded\s*\n\s*\?\s*\(notDrainingFlag \? \{ label: 'not-draining', rank: 1\.5 \} : \{ label: 'archived-superseded \(live child\)', rank: 5\.5 \}\)/.test(src),
+    'a superseded-archived row with a real not-draining backlog must still render not-draining'
+  );
 });

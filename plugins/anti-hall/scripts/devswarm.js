@@ -174,6 +174,12 @@ const livenessSelect = require('../companion/lib/devswarm-liveness-select.js');
 const inboxCursor = require('../companion/lib/devswarm-inbox-cursor.js');
 const devswarmUnread = require('../companion/lib/devswarm-unread.js');
 const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
+// SHARED archive-resurrection gate (defect df54edf54804 item 4) — the same
+// bulk-reregistration decision companion/devswarm-migrate.js's one-time store
+// migration uses, reused here by healOrphanPartitions so a worktree-group
+// sibling the migration correctly refuses to resurrect is not silently
+// re-adopted by the doctor repair pass instead. See that module's header.
+const archiveGateLib = require('../companion/lib/devswarm-archive-gate.js');
 // APP-SIDE archive cache (read side; the WRITE side is the supervisor sweep,
 // fed by fetchActiveWorkspaceRecords below). Leaf module — no cycle.
 const archivedCacheLib = require('../companion/lib/devswarm-archived-cache.js');
@@ -3007,6 +3013,7 @@ function healRegistry(home, repoKey, ctx) {
     if (row.worktreePath) {
       let worktreeExists = true;
       try { worktreeExists = fs.existsSync(row.worktreePath); } catch (_) { worktreeExists = true; }
+      // deliberate: under-detect only (skip a report, never a removal decision) — bare marker check is fine here.
       if (!worktreeExists && hasArchivedCounterpart(home, String(row.id))) { out.skipped++; continue; }
     }
     out.checked++;
@@ -4749,6 +4756,9 @@ function healOrphanPartitions(home, ctx) {
     if (!storeExists) return out;
     const s = store.openStore({ home, hash: repoKey, backend: c.backend, env: c.env });
     let anyWrite = false;
+    // Built ONCE for this store's whole heal pass (defect df54edf54804 item 4
+    // parity fix) — see archivedGateFor below.
+    const archivedWorktreeIndex = archiveGateLib.buildArchivedWorktreeIndex(home, fs);
     try {
       // A store whose enumeration itself throws (corrupt/unreadable) is a whole-
       // store failure, not "no orphans" — counted in `errors` (fail-open per this
@@ -4832,7 +4842,21 @@ function healOrphanPartitions(home, ctx) {
           const familyKey = desc.worktreePath ? canonicalMeshId(desc.worktreePath) : null;
           const byMesh = groupRegistryByMeshId(s.listRegistry(), home);
           const group = familyKey ? byMesh.get(familyKey) : null;
-          const archived = hasArchivedCounterpart(home, id);
+          // SHARED GATE (defect df54edf54804 item 4 parity fix): a bare
+          // hasArchivedCounterpart(home, id) only ever catches a DIRECT
+          // archived/<id>.json marker for `id` itself — it misses a
+          // worktree-group SIBLING (retireArchivedWorktreeGroup tombstones a
+          // sibling's registry row but never gives it its own marker or
+          // touches its descriptor; see companion/lib/devswarm-archive-gate.js's
+          // header). This heal pass is a BULK re-registration path exactly
+          // like the store migration, so it shares that same module's
+          // decision instead of re-deriving a narrower one: `archived` stays
+          // true (never adopt, forward-only below) unless the gate found
+          // POSITIVE, current reuse proof.
+          const archiveGate = archiveGateLib.resolveArchiveGate(
+            home, id, desc, fs, { now: c.now, worktreeIndex: archivedWorktreeIndex }
+          );
+          const archived = !!(archiveGate.archived && !archiveGate.migrateAsLive);
           // CROSS-STORE GUARD (reuses descriptorFreshRepoKey — the SAME identity
           // check rehomeMiskeyedRow/healRegistry use): the descriptor's real
           // structural home may be a DIFFERENT store than the one currently being
@@ -5041,6 +5065,241 @@ function healOrphanPartitionsAllStores(home, ctx) {
   return {
     ok: true, scope: 'all-stores', stores: hashes.length, adopted, forwarded, unhealable,
     archivedDrained, archivedStale, skipped, errors, results,
+  };
+}
+
+// reRetireResurrectedRows(home, ctx) — item 6, defect df54edf54804 field
+// aftermath: SkyCrew's `roster --json` on 0.99.0 showed ~43 legacy-slug
+// registry rows the migration had resurrected (the four lost ids' twins plus
+// the control's twin) — the migration gate built above (companion/lib/
+// devswarm-archive-gate.js) PREVENTS this going forward, but a store already
+// holding rows from a BEFORE-the-fix migration run needs a forward-hygiene
+// pass to clean up the damage already done.
+//
+// NOT a duplicate of foldArchivedRegistryRows (below) — that migration
+// predates and is unrelated to df54edf54804; it exists for the OLD
+// single-id-tombstone cmdArchive bug (pre-9975d07) and its own header
+// documents a DELIBERATELY conservative safety gate: foldGroupIntoSurvivor
+// protects ANY candidate whose descriptor carries a self-consistent
+// sessionId, "descriptor-backed row whose session is DEAD... is NOT draining
+// anything" — i.e. it does NOT check actual current liveness at all, by
+// design, to never risk tombstoning a possibly-distinct live sibling. That is
+// exactly why it would NOT retire a resurrected row like T: T's own
+// workspaces/T.json descriptor commonly still exists (it is what the
+// migration read to resurrect the row in the first place), so
+// foldGroupIntoSurvivor's gate protects it unconditionally regardless of
+// whether T's session is actually alive.
+//
+// This pass is deliberately STRICTER and NARROWER: a row is a CANDIDATE only
+// when it has a PROVEN archive link — its own archived/<id>.json marker, or a
+// worktree-group match against a DIFFERENT id's marker (companion/lib/
+// devswarm-archive-gate.js's buildArchivedWorktreeIndex). A descriptor-less
+// row with NO archive link at all is NEVER a candidate here — that is
+// healOrphanPartitions' job (it already classifies an unread-without-a-
+// forward-target orphan as `unhealable` rather than guessing). R2 fix (P0,
+// live-run repro): the original version treated bare descriptor-ABSENCE as
+// sufficient on its own, so a plain register-only phantom (`unclaimed:`
+// sessionId, real unread mail, no archive link whatsoever) was removed with
+// its mail simply stranded — 0 forwarded, nowhere for it to go. Requiring an
+// archivedHit closes that: nothing is ever removed without first knowing
+// exactly which archived partition, if any, its mail belongs in.
+//
+// A candidate is NOT live by isSiblingPartitionLive (the SAME positive-
+// evidence predicate the migration gate uses — never a bare descriptor-
+// presence check).
+//
+// Two ways a candidate is classified `unhealable` (LEFT in place, reported,
+// never removed) instead of re-retired:
+//   - the resolved archivedHit IS the row's own id (the only marker at this
+//     worktree is this id itself) — there is no OTHER partition to forward
+//     into, and this shape belongs to the migration gate's direct-marker
+//     case, not this pass's worktree-group scope;
+//   - forwardArchivedOrphanUnread THROWS, or the row has unforwarded
+//     forwardable rows left over (neither delivered nor legitimately stale)
+//     after the attempt — a genuine forward failure, never silently dropped.
+//
+// R2 fix (P1): each candidate's classify+forward+remove runs under
+// withIdLock(id, home, ...) with the row RE-READ from a fresh listRegistry()
+// inside the lock (same discipline as healOrphanPartitions :4938,
+// retireArchivedWorktreeGroup's fold, foldGroupIntoSurvivor) — a row a
+// concurrent register/ensure re-touched in the window between this pass's
+// outer snapshot and its own turn is left untouched, never raced.
+//
+// Action per candidate: forward any unread DIRECTS into a same-worktree
+// archived id (forwardArchivedOrphanUnread — the SAME primitive
+// retireArchivedWorktreeGroup uses), then s.removeRegistry(id) — REGISTRY
+// ONLY, never a file. Journaled via alog.logEvent('devswarm-cli',
+// 're-retire-resurrected', ...) per row, matching every other consequential
+// event this file logs (see logVerbOutcome's `event, details` shape).
+// IDEMPOTENT (a re-retired row is gone from listRegistry, so a second pass
+// finds no candidate), FAIL-OPEN (never throws; a per-row error is counted,
+// never aborts the sweep), NO-DELETE-OF-FILES.
+// ctx.dryRun classifies only (doctor detect()/report mode) — no lock, no
+// write, no forward.
+function reRetireResurrectedRows(home, ctx) {
+  const c = ctx || {};
+  const dryRun = !!c.dryRun;
+  const now = Number.isFinite(c.now) ? c.now : Date.now();
+  const out = {
+    ok: true, scope: 'store', candidates: 0, reRetired: 0, forwarded: 0, skippedLive: 0, unhealable: 0, errors: 0, detail: [],
+  };
+  const repoKey = typeof c.repoKey === 'string' && c.repoKey ? c.repoKey : repoKeyForCwd(c);
+  out.repoKey = repoKey || null;
+  if (!repoKey) return out;
+  let storeExists = false;
+  try { storeExists = fs.existsSync(store.storeDirForHash(home, repoKey)); } catch (_) { storeExists = false; }
+  if (!storeExists) return out;
+  const s = store.openStore({ home, hash: repoKey, backend: c.backend, env: c.env });
+  try {
+    const archivedWorktreeIndex = archiveGateLib.buildArchivedWorktreeIndex(home, fs);
+    let registry = [];
+    try { registry = s.listRegistry() || []; }
+    catch (e) { out.ok = false; out.errors++; return out; }
+
+    for (const row of registry) {
+      if (!row || row.id == null) continue;
+      const id = String(row.id);
+      if (!isSafeId(id)) continue;
+
+      let desc = null;
+      try { desc = readDescriptorFile(home, id); } catch (_) { desc = null; }
+      const rowWt = (desc && desc.worktreePath) || row.worktreePath || null;
+      let archivedHit = null;
+      if (rowWt) {
+        const real = archiveGateLib.realWorktreePath(rowWt, fs);
+        const hits = real ? archivedWorktreeIndex.get(real) : null;
+        if (hits && hits.length) archivedHit = hits.find((h) => String(h.id) !== id) || hits[0];
+      }
+      // Criterion 1 (R2 P0 fix): a PROVEN archive link is REQUIRED to be a
+      // candidate at all — never bare descriptor-absence on its own.
+      if (!archivedHit) continue;
+
+      // Criterion 2: NOT live — positive-evidence check, never bare presence.
+      let live = false;
+      try {
+        live = isSiblingPartitionLive({ id, sessionId: row.sessionId, worktreePath: rowWt }, home, { now });
+      } catch (_) { live = false; }
+      if (live) { out.skippedLive++; out.detail.push({ id, action: 'skipped-live' }); continue; }
+
+      // "No forward target": the only marker at this worktree IS this id's
+      // own — not a group-sibling shape at all. Never guess; leave it,
+      // report it.
+      if (String(archivedHit.id) === id) {
+        out.unhealable++;
+        out.detail.push({ id, action: 'unhealable', reason: 'no-forward-target' });
+        continue;
+      }
+
+      out.candidates++;
+      if (dryRun) {
+        out.detail.push({ id, action: 'would-re-retire', forwardTo: archivedHit.id });
+        continue;
+      }
+
+      const targetId = archivedHit.id;
+      const lockRes = withIdLock(id, home, () => {
+        // RE-READ under the lock (R2 P1 fix): a concurrent register/ensure
+        // that re-touched this row in the window since the outer snapshot
+        // must never be raced. Any change to sessionId means someone else
+        // owns this row now — leave it, do nothing.
+        let freshRegistry = [];
+        try { freshRegistry = s.listRegistry() || []; } catch (_) { freshRegistry = []; }
+        const fresh = freshRegistry.find((r0) => r0 && String(r0.id) === id);
+        if (!fresh) return { outcome: 'vanished' }; // already gone — nothing to do
+        if (String(fresh.sessionId != null ? fresh.sessionId : '') !== String(row.sessionId != null ? row.sessionId : '')) {
+          return { outcome: 'raced' }; // re-touched since the snapshot — leave it
+        }
+        let unreadTotal = 0;
+        try {
+          const since = s.cursorValue(id) || 0;
+          unreadTotal = (s.listMessages(id, { sinceCursor: since }) || []).filter(isForwardable).length;
+        } catch (_) { unreadTotal = 0; }
+        let fwd = null;
+        try { fwd = forwardArchivedOrphanUnread(s, id, targetId, { now }); }
+        catch (_) { fwd = null; }
+        if (!fwd) return { outcome: 'forward-failed' };
+        const accounted = (fwd.forwarded || 0) + (fwd.stale || 0);
+        if (unreadTotal > 0 && accounted < unreadTotal) {
+          // Some forwardable unread mail was neither delivered nor
+          // legitimately classified stale — a genuine partial failure.
+          // Never remove a row with unaccounted-for mail.
+          return { outcome: 'forward-incomplete', forwarded: fwd.forwarded || 0 };
+        }
+        let removed = false;
+        try { s.removeRegistry(id); removed = true; } catch (_) { removed = false; }
+        if (!removed) return { outcome: 'remove-failed', forwarded: fwd.forwarded || 0 };
+        return { outcome: 'removed', forwarded: fwd.forwarded || 0 };
+      });
+
+      if (lockRes && lockRes.lockBusy) {
+        out.detail.push({ id, action: 'skipped', reason: 'lock-busy' });
+        continue;
+      }
+      const outcome = lockRes && lockRes.outcome;
+      if (outcome === 'vanished' || outcome === 'raced') {
+        out.detail.push({ id, action: 'skipped', reason: outcome });
+        continue;
+      }
+      if (outcome === 'forward-failed' || outcome === 'forward-incomplete') {
+        out.unhealable++;
+        out.detail.push({ id, action: 'unhealable', reason: outcome, forwardTo: targetId, forwarded: (lockRes && lockRes.forwarded) || 0 });
+        continue;
+      }
+      if (outcome === 'remove-failed') {
+        out.errors++;
+        out.detail.push({ id, action: 'error', reason: 'removeRegistry failed' });
+        continue;
+      }
+      // outcome === 'removed'
+      out.reRetired++;
+      out.forwarded += (lockRes && lockRes.forwarded) || 0;
+      try {
+        alog.logEvent('devswarm-cli', 're-retire-resurrected', 'info', {
+          row: id, forwardTo: targetId, forwarded: (lockRes && lockRes.forwarded) || 0,
+        });
+      } catch (_) {}
+      out.detail.push({ id, action: 're-retired', forwardedTo: targetId, forwarded: (lockRes && lockRes.forwarded) || 0 });
+    }
+    if (!dryRun && out.reRetired) {
+      try { store.deriveSummary(s, { home, env: c.env, now: c.now }); } catch (_) {}
+    }
+  } finally { s.close(); }
+  return out;
+}
+
+// reRetireResurrectedRowsAllStores(home, ctx) — same cross-store sweep shape
+// as healOrphanPartitionsAllStores/foldMeshDuplicatesAllStores: sweeps EVERY
+// store this machine has ever opened (store.listStoreHashes(home)), healing
+// each directly by its stored hash. Per-store errors are counted and never
+// abort the sweep.
+function reRetireResurrectedRowsAllStores(home, ctx) {
+  const c = ctx || {};
+  let hashes = [];
+  try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
+  let candidates = 0, reRetired = 0, forwarded = 0, skippedLive = 0, unhealable = 0, errors = 0;
+  const results = [];
+  for (const repoKey of hashes) {
+    let r = null;
+    try { r = reRetireResurrectedRows(home, Object.assign({}, c, { repoKey })); }
+    catch (e) { r = { ok: false, error: String(e && e.message || e), candidates: 0, reRetired: 0, forwarded: 0, skippedLive: 0, unhealable: 0, errors: 0, detail: [] }; }
+    if (!r) continue;
+    if (r.ok === false) { errors++; results.push({ repoKey, ok: false, error: r.error }); continue; }
+    candidates += r.candidates || 0;
+    reRetired += r.reRetired || 0;
+    forwarded += r.forwarded || 0;
+    skippedLive += r.skippedLive || 0;
+    unhealable += r.unhealable || 0;
+    errors += r.errors || 0;
+    if (r.candidates || r.reRetired || r.unhealable || r.errors) {
+      results.push({
+        repoKey, ok: true, candidates: r.candidates || 0, reRetired: r.reRetired || 0,
+        forwarded: r.forwarded || 0, skippedLive: r.skippedLive || 0, unhealable: r.unhealable || 0,
+        errors: r.errors || 0, detail: r.detail,
+      });
+    }
+  }
+  return {
+    ok: true, scope: 'all-stores', stores: hashes.length, candidates, reRetired, forwarded, skippedLive, unhealable, errors, results,
   };
 }
 
@@ -5767,6 +6026,7 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   // resolved --worktree. Refusing forever on a false match was the bug; the
   // resurrection guard itself (below) is still correct and stays.
   let archivedNote = null;
+  // deliberate: under-detect only (refuse a routine auto-ensure), never a removal decision — bare marker check is fine here.
   if (requireNew && !existing && hasArchivedCounterpart(home, id)) {
     const currentWorktree = one(flags, 'worktree');
     const info = archivedCounterpartInfo(home, id, currentWorktree);
@@ -10968,6 +11228,22 @@ function cmdArchive(id, ctx, opts) {
     manualStep: 'hivecontrol has no teardown command — REMOVE workspace ' + id +
       ' in the DevSwarm app (archive keeps disk contents; never delete without confirmation).',
   };
+  // LIVE-CHILD WARNING (defect df54edf54804 hardening): archiving unlinks the
+  // active descriptor + tombstones the registry, but it does NOT — and by
+  // design (7e1ae67) never should — stop a STILL-RUNNING child session from
+  // later re-creating workspaces/<id>.json via an explicit `register`/
+  // `register-primary` call (scripts/devswarm.js's cmdRegister resurrection
+  // guard, field defect a48db2e0ea08, only covers the `ensure` verb). A fresh
+  // heartbeat recorded for this id right now means exactly that: a live child
+  // is still attached and may re-register it. Warn loudly rather than
+  // silently letting the operator believe archiving is the end of the story;
+  // never refuse or alter the archive itself on this signal.
+  try {
+    if (hasFreshHeartbeat(id, home, { now: ctx.now })) {
+      archived.warning = 'child session still live for ' + id + ' (fresh heartbeat) — it may '
+        + 're-register and reappear; close its terminal or it will keep coming back';
+    }
+  } catch (_) { /* fail-open: never let the warning check block a completed archive */ }
   // Surface the whole-group retire ONLY when it did something — a plain archive
   // of a single-row worktree keeps its existing return shape byte-for-byte.
   // `leftDuplicates` is the honest half: a same-worktree row the safety gate
@@ -11615,6 +11891,7 @@ function rehomeStrandedProjectDescriptors(home, ctx) {
     // live target.
     let worktreeExists = true;
     try { worktreeExists = fs.existsSync(desc.worktreePath); } catch (_) { worktreeExists = true; }
+    // deliberate: under-detect only (skip a report, never a removal decision) — bare marker check is fine here.
     if (!worktreeExists && hasArchivedCounterpart(home, id)) continue;
     const storedOwnerKey = typeof desc.ownerKey === 'string' && desc.ownerKey ? desc.ownerKey : null;
     const hashKey = store.hashFromWorkspaceId(id);
@@ -13732,6 +14009,7 @@ function cmdReconcile(flags, ctx) {
           id: d.id, worktreePath: d.worktreePath, ok: false, imported: 0, duplicate: 0,
           nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false,
           worktreeMissing: true,
+          // deliberate: under-detect only (a report field), never a removal decision — bare marker check is fine here.
           archivedDuplicate: hasArchivedCounterpart(home, d.id),
           error: 'worktree not found on disk: ' + d.worktreePath,
         });
@@ -13783,6 +14061,7 @@ function cmdReconcile(flags, ctx) {
           id: d.id, worktreePath: d.worktreePath, ok: false, imported: 0, duplicate: 0,
           nativeCount: 0, lost: 0, locked: false, hivecontrolMissing: false,
           worktreeMissing: false, notGitRoot: true,
+          // deliberate: under-detect only (a report field), never a removal decision — bare marker check is fine here.
           archivedDuplicate: hasArchivedCounterpart(home, d.id),
           error: 'worktree is not a resolvable git root (git rev-parse --show-toplevel failed): ' + d.worktreePath,
         });
@@ -13852,6 +14131,7 @@ function cmdReconcile(flags, ctx) {
       // own contract (injected `ctx.io.spawnReconcile` test doubles are real
       // spawn stand-ins and are never subject to this fs check).
       worktreeMissing: !!(r && r.worktreeMissing),
+      // deliberate: under-detect only (a report field), never a removal decision — bare marker check is fine here.
       archivedDuplicate: !!(r && r.worktreeMissing && hasArchivedCounterpart(home, d.id)),
       error: (parsed && parsed.error)
         || (r && r.error ? String((r.error && r.error.message) || r.error) : null)
@@ -15350,6 +15630,7 @@ module.exports = {
   foldMeshDuplicatesAllStores,
   healOrphanPartitions, healOrphanPartitionsAllStores,
   retireArchivedWorktreeGroup, foldArchivedRegistryRows, foldArchivedFamilyDescriptors,
+  reRetireResurrectedRows, reRetireResurrectedRowsAllStores,
   retireIdentityFamilyDescriptors, meshRowCopy, MESH_ROW_COPY_FIELDS, cmdRoster,
   computeDiagnosis, healthcheckHumanLine, diagnoseHumanLine, hasArchivedCounterpart,
   resolveMeshTarget, resolveSendTarget,

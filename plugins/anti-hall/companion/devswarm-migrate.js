@@ -48,8 +48,20 @@ const { devswarmRoot, isSafeId } = require('./lib/liveness.js');
 const { readCursor } = require('./lib/devswarm-inbox-cursor.js');
 const { readDescriptors } = require('./devswarm-supervisor.js');
 const { repoKeyForWorktree } = require('./lib/devswarm-repokey.js');
+const archiveGateLib = require('./lib/devswarm-archive-gate.js');
 
 const MIGRATE_LOCK_STALE_MS = 5 * 60 * 1000;
+
+// migrationArchiveGate / archivedDescriptorPath / activeDescriptorPathFor /
+// buildArchivedWorktreeIndex — thin back-compat aliases onto the SHARED gate
+// (companion/lib/devswarm-archive-gate.js, defect df54edf54804 item 4): the
+// decision logic now lives there so scripts/devswarm.js's healOrphanPartitions
+// doctor repair can share it too (see that module's header for the full
+// mechanism and the liveness/mtime fixes). Kept under their original names
+// here so every existing call site and test in this file is unaffected.
+const migrationArchiveGate = archiveGateLib.resolveArchiveGate;
+const { archivedDescriptorPath, activeDescriptorPathFor, buildArchivedWorktreeIndex } = archiveGateLib;
+
 
 
 // raiseCursorBaseline(home, id, value) — defect 8b211241bbe9. Migrate's cursor
@@ -235,6 +247,28 @@ function pendingLegacyLines(s, id, lines) {
 // legacy cursor, so the just-imported backlog reads as already-seen.
 function migrateOne(s, descriptor, F, opts) {
   const id = descriptor.id;
+
+  // ARCHIVE RESURRECTION GATE (defect df54edf54804) — see this file's header
+  // comment on migrationArchiveGate for the full mechanism. opts.archiveGate
+  // is precomputed by migrateToStore (it needs `home`, which this function
+  // does not otherwise receive) via migrationArchiveGate(home, id, descriptor,
+  // F). archived && !migrateAsLive -> do NOT touch the registry OR import any
+  // messages for this id; report it as skipped instead of silently treating a
+  // resurrected descriptor as a normal live migration.
+  const gate = opts && opts.archiveGate;
+  if (gate && gate.archived && !gate.migrateAsLive) {
+    return {
+      id,
+      imported: 0,
+      legacyCount: null,
+      storeCount: s.messageCount(id),
+      cursor: null,
+      verified: true,
+      archivedSkipped: true,
+      archiveGateReason: gate.reason,
+    };
+  }
+
   // F-C (v0.61.2): capture upsertRegistry's own success signal instead of
   // assuming it applied. The F2 id-collision guard returns false (rather than
   // throwing) when an existing row for this id already maps to a DIFFERENT
@@ -318,6 +352,13 @@ function migrateOne(s, descriptor, F, opts) {
     report.error = 'registry upsert skipped for ' + JSON.stringify(id)
       + ': an existing row already maps to a different worktree_path (possible id collision or an unintended path change) — not overwritten';
   }
+  // gate && gate.migrateAsLive: the archive-resurrection gate positively proved
+  // this is a genuine LATER reuse of a previously-archived id (differing
+  // sessionId + newer descriptor + fresh heartbeat) — migrated normally above,
+  // but never silently: log it on the report.
+  if (gate && gate.archived && gate.migrateAsLive) {
+    report.archiveGateReason = gate.reason;
+  }
   return report;
 }
 
@@ -350,19 +391,35 @@ function migrateToStore(opts) {
 
     const descriptors = readDescriptors(home, F).filter((d) => d && isSafeId(d.id));
     let migrated = [];
+    // Built ONCE for the whole run (not per-descriptor) — migrationArchiveGate's
+    // worktree-group fallback needs it for every descriptor, and archived/ does
+    // not change mid-migration (this module never writes to it).
+    const archivedWorktreeIndex = buildArchivedWorktreeIndex(home, F);
     // PER-PROJECT: each descriptor migrates into ITS OWN physical store.
     for (const d of descriptors) {
       const s = store.openStore({ home, workspaceId: d.id, backend: o.backend, env: o.env, fsi: (o.io && o.io.storeFs) });
       try {
-        migrated.push(migrateOne(s, d, F, { markRead }));
-        // (re)derive this project's projection only after its import succeeds.
-        store.deriveSummary(s, { home, workspaceId: d.id, env: o.env, now: o.now });
+        // Precompute the archive-resurrection gate (defect df54edf54804) —
+        // migrateOne itself cannot see `home`, so the gate is resolved here
+        // and threaded through opts.archiveGate.
+        const archiveGate = migrationArchiveGate(home, d.id, d, F, { now: o.now, worktreeIndex: archivedWorktreeIndex });
+        const report = migrateOne(s, d, F, { markRead, archiveGate });
+        migrated.push(report);
+        // Skip deriving a projection for an id the gate refused to resurrect —
+        // nothing was written to this id's registry/messages, so there is
+        // nothing new to project; deriving one anyway risks synthesizing a
+        // phantom summary row for an id that should stay absent.
+        if (!report.archivedSkipped) {
+          // (re)derive this project's projection only after its import succeeds.
+          store.deriveSummary(s, { home, workspaceId: d.id, env: o.env, now: o.now });
+        }
       } catch (e) {
         migrated.push({ id: d && d.id, error: String(e && e.message || e) });
       } finally { s.close(); }
     }
 
     const verifiedAll = migrated.every((m) => m.error ? false : m.verified);
+    const archivedSkipped = migrated.filter((m) => m && m.archivedSkipped).length;
 
     // Phase 3 (v0.57 mesh, D13): fold today's hash-keyed per-project stores
     // into the shared repo-name-keyed layout. Wired AFTER both the global-
@@ -386,6 +443,7 @@ function migrateToStore(opts) {
       globalSplit,
       repoKeyMigration,
       verifiedAll,
+      archivedSkipped,
       markRead,
     };
   } finally {
@@ -803,4 +861,5 @@ module.exports = {
   migrateGlobalStoreToPerProject, legacyGlobalStoreExists, synthGlobalHash,
   bodyMultisetFor, consumeBody, pendingLegacyLines, resolveMarkRead,
   migrateHashStoresToRepoName, migrateHashStoresToRepoNameLocked, synthRepoKeyMigrateHash,
+  migrationArchiveGate, archivedDescriptorPath, activeDescriptorPathFor, buildArchivedWorktreeIndex,
 };

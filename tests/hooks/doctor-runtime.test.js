@@ -302,6 +302,88 @@ test('checkDaemonsRunning: script matches the current stable marketplace path ->
   } finally { cleanup(); }
 });
 
+// defect d1c57e67998f: a unit installed BEFORE unitEnvFor pinned HOME/
+// USERPROFILE has no HOME key at all — its live process would resolve its
+// store root via the SCHEDULER's own default HOME, not the installer's.
+// REPORT-ONLY: never auto-repairs (the fix is reinstalling, not hand-patching
+// a live plist/service).
+test('checkDaemonsRunning: unit with NO HOME key (pre-fix install) -> additional WARN naming reinstall', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const platform = process.platform;
+    const wt = path.join(home, 'wt-nohome');
+    fs.mkdirSync(wt, { recursive: true });
+    if (platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installIngest.labelForWorktree(wt);
+      // A hand-written PRE-FIX plist: WorkingDirectory only, no
+      // EnvironmentVariables key at all (the exact shape a pre-d1c57e67998f
+      // install shipped, even after the v0.66 PATH/HIVECONTROL fix).
+      fs.writeFileSync(path.join(dir, label + '.plist'), `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${label}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/n</string>
+    <string>/a.js</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${wt}</string>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+</dict>
+</plist>
+`);
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installIngest.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'), `[Unit]\nDescription=fixture\n\n[Service]\nType=simple\nWorkingDirectory=${wt}\nExecStart="/n" "/a.js"\nRestart=always\n\n[Install]\nWantedBy=default.target\n`);
+    }
+    const fakeSpawnSync = (cmd) => {
+      if (cmd === 'launchctl') return { status: 0, stdout: 'label = x\n"PID" = 1234;\n' };
+      if (cmd === 'systemctl') return { status: 0, stdout: 'active\n' };
+      return { status: 1, stdout: '' };
+    };
+    const r = D.checkDaemonsRunning(home, { platform, spawnSync: fakeSpawnSync });
+    assert.ok(r.results.some((x) => x.status === D.WARN && /does not pin HOME/.test(x.message) && /reinstall/.test(x.message)),
+      'must WARN naming reinstall as the fix:\n' + JSON.stringify(r.results));
+  } finally { cleanup(); }
+});
+
+test('checkDaemonsRunning: unit WITH HOME pinned (current install) -> no missing-HOME WARN', { skip: process.platform === 'win32' }, () => {
+  const { home, cleanup } = tmpHome();
+  try {
+    const platform = process.platform;
+    const wt = path.join(home, 'wt-withhome');
+    fs.mkdirSync(wt, { recursive: true });
+    if (platform === 'darwin') {
+      const dir = path.join(home, 'Library', 'LaunchAgents');
+      fs.mkdirSync(dir, { recursive: true });
+      const label = installIngest.labelForWorktree(wt);
+      fs.writeFileSync(path.join(dir, label + '.plist'), installIngest.buildPlist({ label, exec: '/n', script: '/a.js', log: '/l', workdir: wt }));
+    } else {
+      const dir = path.join(home, '.config', 'systemd', 'user');
+      fs.mkdirSync(dir, { recursive: true });
+      const unit = installIngest.unitForWorktree(wt);
+      fs.writeFileSync(path.join(dir, unit + '.service'), installIngest.buildService({ exec: '/n', script: '/a.js', workdir: wt }));
+    }
+    const fakeSpawnSync = (cmd) => {
+      if (cmd === 'launchctl') return { status: 0, stdout: 'label = x\n"PID" = 1234;\n' };
+      if (cmd === 'systemctl') return { status: 0, stdout: 'active\n' };
+      return { status: 1, stdout: '' };
+    };
+    const r = D.checkDaemonsRunning(home, { platform, spawnSync: fakeSpawnSync });
+    assert.ok(!r.results.some((x) => /does not pin HOME/.test(x.message)), 'no missing-HOME WARN expected — buildPlist/buildService now pin it unconditionally:\n' + JSON.stringify(r.results));
+  } finally { cleanup(); }
+});
+
 test('checkDaemonsRunning: no ANTIHALL_MARKETPLACE_DIR / no marketplace clone on this fixture home -> no drift WARN (nothing to compare against, fail-open)', { skip: process.platform === 'win32' }, () => {
   const { home, cleanup } = tmpHome();
   try {

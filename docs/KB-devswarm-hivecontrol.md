@@ -1560,6 +1560,148 @@ attributable from the journal. The separator is `#`, which `isSafeId` forbids, s
 filenames; the parser additionally requires a six-hex nonce. Both namespaces are swept. Shipped in BOTH `update.js` (one-time per
 version) and doctor (report-only unless repairing).
 
+### The migration must never resurrect an archived id (v0.99.1, defect df54edf54804)
+
+**The defect.** The store migration (`devswarm-migrate.js`'s `migrateToStore`/`migrateOne`) called
+`s.upsertRegistry(descriptor)` for every id it found an active `workspaces/<id>.json` descriptor
+for, unconditionally — never consulting `archived/<id>.json` or the registry tombstone `cmdArchive`
+had already appended. `removeRegistry` is NOT a permanent marker: the sqlite backend hard-DELETEs
+the row and the JSONL backend appends an unconditional `remove` op ("latest op per id wins" at
+read time), so a later `upsertRegistry` simply becomes the new latest write and revives the row.
+A field report (SkyCrew, 0.97.1 -> 0.99.0) had 4 archived workspaces come back
+`archivedInApp: false` and re-enter the parent-inbox table and parent gate after the update ran.
+
+**Why an active descriptor can still exist for an already-archived id.** `cmdArchive` tombstones
+the registry BEFORE unlinking the active descriptor as its LAST step, so a genuinely completed
+archive leaves no `workspaces/<id>.json` for the migration to find at all — the migration only
+ever touches ids `readDescriptors` (companion/devswarm-supervisor.js) enumerates, which by
+construction only sees ACTIVE descriptors. The real path in was: a still-running child terminal
+recreated `workspaces/<id>.json` for the archived id via the EXPLICIT `register`/`register-primary`
+verb. `cmdRegister`'s resurrection guard (field defect a48db2e0ea08) only covers the `ensure` verb
+(`requireNew:true` — the auto-ensure `inbox pull` runs every turn); the bare `register` verb and
+`register-primary` (`cmdRegisterPrimary`) are DELIBERATELY left unguarded — "an operator (or a
+child) that explicitly re-registers an archived id still revives it" is the existing, intentional
+escape hatch. The migration then trusted that recreated descriptor exactly as if it were a
+brand-new, never-archived workspace.
+
+**The fix.** `resolveArchiveGate(home, id, descriptor, F, opts)`
+(`companion/lib/devswarm-archive-gate.js` — the shared decision, see below) runs before every
+registry upsert in the migration loop and defaults to SKIP (never resurrect):
+
+- No `archived/<id>.json` marker at all, and no worktree-group hit (see below) -> not archived,
+  migrate normally.
+- A marker exists at a DIFFERENT worktree than the current descriptor -> a genuinely new
+  workspace reusing this id, migrate normally (not this marker's row).
+- A marker exists and its `sessionId` is absent, unresolvable, or MATCHES the descriptor's ->
+  this is the archived workspace's own leftover descriptor: skip the upsert, report
+  `archivedSkipped: true`, leave the registry row absent/tombstoned.
+- A marker exists with a DIFFERENT `sessionId` (the same shape 7e1ae67's read-side supersede rule
+  already handles) but there is no POSITIVE proof of a genuine later reuse — a demonstrably newer
+  descriptor file by mtime (`archived/<id>.json` is a hardlink of the id's OWN pre-archive
+  descriptor, so its mtime is whatever that descriptor's last write was BEFORE archiving, never
+  later) AND CURRENT liveness for the descriptor's own sessionId — skip, same as above.
+- Only when BOTH proofs hold does the migration proceed as a normal, logged, live migration
+  (`archiveGateReason: 'archived-marker-superseded-live-reuse'`).
+
+**Liveness proof, not a bare heartbeat check.** The reuse-proof above uses
+`isSiblingPartitionLive` (`companion/lib/liveness.js:637`), not `hasFreshHeartbeat` alone. A bare
+heartbeat check reproduces the EXACT root cause that predicate's own header documents and fixed
+elsewhere (Fix Wave 7 Item 2): a Primary never writes a heartbeat at all, `register` writes none,
+and a child mid-long-turn's heartbeat goes stale (15 min default) well before the session does —
+using it here would have SKIPPED (lost) a genuinely live reuse. `isSiblingPartitionLive` composes
+a fresh heartbeat OR a real (non-`unclaimed:`) sessionId that is not positively `isDormantRow`.
+
+**Worktree-group siblings.** `cmdArchive`'s `retireArchivedWorktreeGroup` tombstones the STORE
+REGISTRY row of every SIBLING id sharing the archived id's physical worktree, but never writes
+those siblings their own `archived/<id>.json` marker or touches their descriptor file — so the
+direct per-id marker check above cannot catch a sibling like this, and neither store backend
+leaves anything queryable to distinguish "tombstoned sibling" from "never registered" (sqlite
+hard-deletes the row with zero trace; the JSONL backend's `remove` op just makes the id absent
+from a `listRegistry()` read). The gate also matches a sibling's worktree path against every
+OTHER id's archived marker (`buildArchivedWorktreeIndex`, built once per run) and defaults to
+skipping it too, migrating it as live only on the SAME liveness proof above — but NEVER on mtime:
+a sibling's descriptor file is never touched by the archive of a different id, so its mtime has
+no relationship to that unrelated marker's and proves nothing either way (unlike the direct-marker
+case, where a literal re-registration always rewrites the SAME path via `writeDescriptorAtomic`'s
+tmp+rename, breaking the hardlink and giving the active file a fresh mtime).
+
+Corrupt/unreadable markers and unreadable mtimes all fail toward skip, never toward
+resurrection. `migrateToStore`'s report carries a top-level `archivedSkipped` count. Idempotent:
+re-running the migration on an id it already skipped skips it again (nothing was ever written).
+`migrateGlobalStoreToPerProject` and `migrateHashStoresToRepoNameLocked` (the older global-store
+and repo-key fold paths) were checked and are NOT independently vulnerable — both only ever
+propagate rows already present in a STORE's own registry (never scan `workspaces/` descriptor
+files directly), so an id the gate above kept out of the registry never reaches them either.
+
+**Doctor parity.** `scripts/devswarm.js`'s `healOrphanPartitions` (doctor's `heal-orphan-partitions`
+verb) is the SAME class of bulk re-registration path and used to consult only a bare
+`hasArchivedCounterpart` (marker-only) check before adopting an orphan's registry row — it would
+have silently re-adopted exactly the group siblings the migration above correctly refuses. It now
+calls the SAME `resolveArchiveGate`, so the two paths cannot disagree.
+
+**Residual, by design.** A live child re-registering an archived id via `register`/
+`register-primary` is unchanged — that escape hatch predates this fix and stays. Two things now
+make it visible instead of silent: `devswarm.js archive <id>` warns
+(`"child session still live... it may re-register"`) when the target still has a fresh heartbeat
+at archive time, and the per-turn parent-inbox table (`hooks/devswarm-parent-inbox.js`) labels a
+row whose archived marker exists but was superseded `archived-superseded (live child)` — rank 5.5,
+still yielding to `not-draining` (rank 1.5) exactly like the plain `archived` label — instead of
+silently falling back into the ordinary dormant/escalated liveness ladder as if the id had never
+been archived at all. That label now calls the same shared gate too (worktree-discriminated, not
+a bare marker `existsSync`), so a genuinely new, unrelated workspace reusing an old archived id at
+a different worktree is never mislabelled superseded.
+
+### Field aftermath — re-retiring rows an already-run buggy migration resurrected
+
+The gate above stops the store migration resurrecting rows GOING FORWARD; an install that already
+ran the pre-fix migration once (SkyCrew: ~43 legacy-slug rows across a whole retired
+worktree-group family) is left holding the damage regardless. `scripts/devswarm.js`'s
+`reRetireResurrectedRows`/`reRetireResurrectedRowsAllStores` forward any unread mail into a
+same-worktree archived id, then remove ONLY the resurrected registry row (never a file).
+
+**Candidacy is strict.** A row is a candidate only with a PROVEN archive link — its own
+`archived/<id>.json` marker, or a worktree-group match to a DIFFERENT id's marker. A
+descriptor-less row with no archive link at all is never a candidate here (that stays
+`healOrphanPartitions`' job); a live repro of the first version found it wrongly removing such a
+row with real unread mail simply stranded (0 forwarded) — closed by requiring the archive link
+unconditionally before ever touching a row. A candidate whose only "link" is its own marker (no
+other id at that worktree to forward into) or whose forward attempt fails / leaves mail
+unaccounted for is classified `unhealable`, left in place, and reported — never guessed at.
+
+**Concurrency-safe.** Each candidate's classify+forward+remove runs under `withIdLock(id, home,
+...)` with the row re-read fresh from `listRegistry()` inside the lock — the same discipline
+`healOrphanPartitions`, `retireArchivedWorktreeGroup`, and `foldGroupIntoSurvivor` use. A row a
+concurrent `register`/`ensure` re-touches in the window since the outer snapshot is left alone,
+never raced; a row whose lock is held by another operation is skipped and reported (`lock-busy`),
+never fought over.
+
+**Removal is human-initiated only — a REAL explicit flag, not the default repair pass (R3
+fix).** The pass was FIRST wired into doctor's default AUTO-SAFE repair (a `migrationFix` inside
+`runRepairs`), which meant a BARE `doctor` invocation — the exact command the
+`anti-hall:activate` skill runs — removed resurrected rows with NO operator intent, contradicting
+this section's own "human-initiated only" claim at the time. Fixed by REMOVING it from the
+default repair pass entirely and adding a new explicit, opt-in flag: `doctor --repair-resurrected
+[--apply]` (default no-`--apply` is a dry-run printing the plan; `--apply` executes it) — added to
+`DO_REPAIR`'s own exclusion list alongside `--repair-ingest-orphans`/`--repair-test-stores`, so it
+can never fire under a bare/`--fix`/`--repair`/`--dry-run` doctor run.
+`update.js`'s `reRetireResurrectedPostUpdate` is REPORT-ONLY — it detects on every update
+(one-time per-version stamped so the *report* prints once, same shape as
+`cursorHygienePostUpdate`) and tells the operator the candidate count plus the exact command to
+run (`doctor --repair-resurrected --apply`); it never calls the write path itself. A new
+unconditional DETECT section (`checkResurrectedRows`, "check mode included" — same shape as
+`checkLeakedTestFixtureStores`) surfaces the candidate count on every plain `doctor` run AND
+`doctor --check`, without writing anything.
+
+**Parity with the orphan-mesh warning.** `companion/lib/devswarm-orphan-policy.js` (the module
+that suppresses the parent-inbox "orphaned mesh" warning for a genuinely archived-and-stranded
+partition) documents its own NON-DRIFT contract: it must call the exact same "is this archived"
+decision `healOrphanPartitions` calls, never a re-implementation. It used to mirror a bare
+`hasArchivedCounterpart` marker check; now that `healOrphanPartitions` itself calls the shared
+`resolveArchiveGate`, this module switched too (verified against
+`tests/companion/devswarm-orphan-policy-equivalence.test.js` and its forwarded-drained sibling),
+so the warning-suppression logic and the doctor repair can never silently disagree about which
+ids are archived.
+
 ## 8.8 Full CLI reference — `scripts/devswarm.js`
 
 THE structured interface (CLI over MCP — owner preference; every subcommand below is a

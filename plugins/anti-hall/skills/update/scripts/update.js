@@ -1266,6 +1266,89 @@ function foldArchivedRowsPostUpdate(opts) {
 }
 
 /**
+ * reRetireResurrectedPostUpdate({ paths, env, cwd, home, devswarm, version }) →
+ *   { attempted, candidates, reRetired, forwarded, skippedLive, errors, detail }
+ *
+ * Item 6, defect df54edf54804 field aftermath (SkyCrew, 2026-09-08): the store
+ * migration's resurrection bug (fixed above via companion/lib/
+ * devswarm-archive-gate.js) left already-upgraded installs holding registry
+ * rows for a whole retired worktree-group family (~43 legacy-slug rows
+ * measured on one install). The gate prevents this going forward; this step
+ * restores pre-migration state on installs that already ran the buggy
+ * migration once — devswarm.js's reRetireResurrectedRowsAllStores forwards
+ * any unread mail into a same-worktree archived id, then removes ONLY the
+ * registry row (never a file), for any row that is (a) descriptor-less or
+ * worktree-group-matched to an archived marker AND (b) NOT live by
+ * isSiblingPartitionLive — see that function's own header for the full
+ * mechanism and why it is deliberately stricter than, and not a duplicate
+ * of, fold-archived-rows above.
+ *
+ * RESTORING pre-migration state is not a data-deletion risk in the sense the
+ * rest of this file reserves for gated/opt-in repairs, so — like
+ * cursor-hygiene below, which this shares its per-version-stamp shape with —
+ * it runs UNCONDITIONALLY on every update for a DevSwarm-active session
+ * (never gated behind doctor's separate `--repair` flag), stamped complete
+ * for `version` so a clean install never re-scans for nothing to do.
+ * IDEMPOTENT, FAIL-OPEN, NO-DELETE-OF-FILES.
+ */
+function reRetireResurrectedPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 're-retire-resurrected skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — re-retire-resurrected skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.reRetireResurrectedRowsAllStores !== 'function') {
+      return { attempted: false, detail: 're-retire-resurrected skipped: this devswarm.js build has no reRetireResurrectedRowsAllStores' };
+    }
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    if (version && sweepState.reRetireResurrected && sweepState.reRetireResurrected.completedVersion === version) {
+      return {
+        attempted: true, candidates: 0, unhealable: 0, errors: 0, skippedAlreadyDone: true,
+        detail: 're-retire-resurrected: report already shown for ' + version + ' — skipped (one-time per-version report)',
+      };
+    }
+    // REPORT-ONLY (owner decision, R2): removal is HUMAN-INITIATED only, via
+    // the existing doctor `--repair` flag — same posture as
+    // `--repair-ingest-orphans`/`--repair-test-stores`. update.js NEVER calls
+    // reRetireResurrectedRowsAllStores without dryRun:true; it only detects
+    // and tells the operator what to run. The per-version stamp still
+    // applies here so the report prints once per version, not every update.
+    const r = devswarm.reRetireResurrectedRowsAllStores(home, { cwd, env, dryRun: true }) || {};
+    const errCount = r.errors || 0;
+    if (version && !errCount) {
+      writeSweepState(home, Object.assign({}, sweepState, {
+        reRetireResurrected: { completedVersion: version, completedTs: Date.now() },
+      }));
+    }
+    const n = r.candidates || 0;
+    return {
+      attempted: true,
+      candidates: n, unhealable: r.unhealable || 0, errors: errCount,
+      detail: n > 0
+        ? ('re-retire-resurrected: ' + n + ' resurrected registry row(s) found — run `doctor --repair-resurrected --apply` to re-retire them'
+          + (r.unhealable ? '; ' + r.unhealable + ' additional row(s) need manual review (no safe forward target)' : '')
+          + (errCount ? ' (' + errCount + ' error(s) during detection, fail-open)' : ''))
+        : ('re-retire-resurrected: nothing to report'
+          + (r.unhealable ? ' — ' + r.unhealable + ' row(s) need manual review (no safe forward target)' : '')),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 're-retire-resurrected raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * ownerKeyMigratePostUpdate({ paths, env, cwd, home, devswarm }) →
  *   { attempted, scanned, backfilled, rehomed, errors, detail }
  *
@@ -2404,6 +2487,14 @@ function runUpdate(opts) {
   const foldArchivedRows = runPostPullStage('fold-archived-rows', () => foldArchivedRowsPostUpdate({
     paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, postPullDeadline,
   }));
+  // Item 6, defect df54edf54804 field aftermath: re-retire registry rows an
+  // ALREADY-RUN (pre-fix) migration resurrected — restoring pre-migration
+  // state, not deleting user data, so this runs unconditionally on every
+  // update (same one-time-per-version stamp posture as cursor-hygiene
+  // below), not gated behind doctor's separate repair flag.
+  const reRetireResurrected = runPostPullStage('re-retire-resurrected', () => reRetireResurrectedPostUpdate({
+    paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest,
+  }));
   // P1-8: backfill the new `ownerKey` descriptor field + heal prior hash-bucket
   // split-brain. Same gate + fail-open posture; never affects the update's
   // success. Run-once-per-version stamped (spec item 3) — its own descriptor
@@ -2454,6 +2545,7 @@ function runUpdate(opts) {
         foldAllStores,
         healOrphanPartitions,
         foldArchivedRows,
+        reRetireResurrected,
         promoteUnclaimed,
         ownerKeyMigrate,
         cursorHygiene,
@@ -2491,6 +2583,7 @@ function runUpdate(opts) {
       foldAllStores,
       healOrphanPartitions,
       foldArchivedRows,
+      reRetireResurrected,
       promoteUnclaimed,
       ownerKeyMigrate,
       cursorHygiene,
@@ -2631,6 +2724,7 @@ module.exports = {
   foldAllStoresPostUpdate,
   healOrphanPartitionsPostUpdate,
   foldArchivedRowsPostUpdate,
+  reRetireResurrectedPostUpdate,
   promoteUnclaimedPostUpdate,
   ownerKeyMigratePostUpdate,
   cursorHygienePostUpdate,

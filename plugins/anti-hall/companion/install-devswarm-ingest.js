@@ -127,7 +127,43 @@ const UNINSTALL = args.includes('--uninstall');
 // runs by hand to smoke-test) still needs the explicit flag/env.
 const EXPLICIT_DRYRUN = args.includes('--dry-run') || process.env.ANTIHALL_INGEST_DRY_RUN === '1';
 const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && !!process.env.NODE_TEST_CONTEXT;
-const DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD;
+// TMP-HOME GUARD (defect d1c57e67998f, P1, field-verified): NODE_TEST_CONTEXT_GUARD
+// above only catches a run that is ITSELF under `node --test` (or a child it
+// spawned) — it has NO signal for a non-test experiment run by hand or by an
+// agent under a scratch/temp HOME (the live case: a review agent's temp-HOME
+// experiment, label `...r3repo-bare-i7ycii-cc6261`, registered a REAL launchd
+// job whose daemon then wrote into the operator's REAL ~/.anti-hall store —
+// because HOME was never pinned into the unit's own env, see unitEnvFor above,
+// and NODE_TEST_CONTEXT was never set for that run at all). A resolved HOME
+// realpath-prefixed by os.tmpdir() is never a plausible REAL operator home, so
+// this closes the class NODE_TEST_CONTEXT structurally cannot see. Opt-out via
+// ANTIHALL_INGEST_ALLOW_TMP_HOME=1 for a deliberate manual smoke-test under a
+// scratch HOME that genuinely wants the real spawn path.
+function homeIsUnderTmpdir(home) {
+  try {
+    // os.tmpdir() alone misses real tmp roots it doesn't resolve to: on
+    // macOS it returns the per-user $TMPDIR (/var/folders/.../T/), NOT
+    // /tmp or /private/tmp — a HOME under either of those (e.g. a session
+    // scratchpad path) previously sailed past this guard entirely. Check
+    // os.tmpdir() plus the two well-known tmp roots, each realpath'd so a
+    // symlinked root (macOS: /tmp -> /private/tmp) still matches once.
+    const roots = [os.tmpdir(), '/tmp', '/private/tmp'];
+    const realRoots = new Set();
+    for (const r of roots) {
+      try { realRoots.add(fs.realpathSync(r)); } catch (_) { realRoots.add(r); }
+    }
+    let h = home;
+    try { h = fs.realpathSync(home); } catch (_) { /* home dir may not exist yet — compare raw */ }
+    for (const tmp of realRoots) {
+      const rel = path.relative(tmp, h);
+      if (rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel))) return true;
+    }
+    return false;
+  } catch (_) { return false; } // fail-open: never block a real install on an unrelated fs error
+}
+const ALLOW_TMP_HOME = process.env.ANTIHALL_INGEST_ALLOW_TMP_HOME === '1';
+const TMP_HOME_GUARD = !EXPLICIT_DRYRUN && !ALLOW_TMP_HOME && homeIsUnderTmpdir(HOME);
+const DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD || TMP_HOME_GUARD;
 
 function say(msg) { process.stdout.write(msg + '\n'); }
 
@@ -148,6 +184,25 @@ function noteNodeTestContextGuardTripped() {
       + ' or a child process spawned from it) — forcing dry-run to prevent a real launchd/systemd'
       + ' registration leak (defect ec33954162ef). Set ANTIHALL_INGEST_DRY_RUN=1 explicitly if this'
       + ' run genuinely needs the real, unmocked spawn path.\n'
+    );
+  } catch (_) {}
+}
+
+// noteTmpHomeGuardTripped() — the LOUD stderr notice for TMP_HOME_GUARD, same
+// once-per-process/only-on-an-actually-intercepted-call posture as
+// noteNodeTestContextGuardTripped above.
+let _tmpHomeGuardNoted = false;
+function noteTmpHomeGuardTripped() {
+  if (!TMP_HOME_GUARD || _tmpHomeGuardNoted) return;
+  _tmpHomeGuardNoted = true;
+  try {
+    process.stderr.write(
+      'anti-hall: install-devswarm-ingest.js resolved HOME (' + HOME + ') under the system temp'
+      + ' directory — forcing dry-run to prevent registering a REAL launchd/systemd daemon whose'
+      + ' live process would then write into your operator ~/.anti-hall store instead of this'
+      + ' scratch one (defect d1c57e67998f: a review agent temp-HOME experiment did exactly this'
+      + ' live). Set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if this run genuinely needs the'
+      + ' real, unmocked spawn path under a temp HOME.\n'
     );
   } catch (_) {}
 }
@@ -197,7 +252,7 @@ let _tmpCounter = 0;
 // atomic on POSIX, so an ENOSPC/interruption can never leave a partial/corrupt
 // unit. On any error the temp file is unlinked and the original is left intact.
 function planWrite(file, contents) {
-  if (DRYRUN) { noteNodeTestContextGuardTripped(); say(`[dry-run] would write ${file}`); return; }
+  if (DRYRUN) { noteNodeTestContextGuardTripped(); noteTmpHomeGuardTripped(); say(`[dry-run] would write ${file}`); return; }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${_tmpCounter++}.tmp`;
   try {
@@ -210,11 +265,11 @@ function planWrite(file, contents) {
   say(`wrote ${file}`);
 }
 function planRm(file) {
-  if (DRYRUN) { noteNodeTestContextGuardTripped(); say(`[dry-run] would remove ${file}`); return; }
+  if (DRYRUN) { noteNodeTestContextGuardTripped(); noteTmpHomeGuardTripped(); say(`[dry-run] would remove ${file}`); return; }
   try { fs.unlinkSync(file); say(`removed ${file}`); } catch (_e) { say(`(not present) ${file}`); }
 }
 function planRun(cmd, argv, opts) {
-  if (DRYRUN) { noteNodeTestContextGuardTripped(); say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`); return { status: 0, dry: true }; }
+  if (DRYRUN) { noteNodeTestContextGuardTripped(); noteTmpHomeGuardTripped(); say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`); return { status: 0, dry: true }; }
   const r = spawnSync(cmd, argv, { encoding: 'utf8', ...(opts || {}) });
   if (r.error) say(`(warn) ${cmd} failed: ${r.error.message}`);
   else say(`ran: ${cmd} ${argv.join(' ')} (exit ${r.status})`);
@@ -519,13 +574,30 @@ function unitEnvFor(hivecontrolPath, execPath) {
   const usable = (p) => !!p && path.isAbsolute(String(p)) && pathIsEmittable(String(p));
   const bin = usable(hivecontrolPath) ? String(hivecontrolPath) : null;
   const nodeDir = usable(execPath) ? path.dirname(String(execPath)) : null;
-  if (!bin && !nodeDir) return null;
+  const out = {};
+  // HOME/USERPROFILE (defect d1c57e67998f, P1, field-verified): a scheduler
+  // hands its unit ITS OWN default HOME, not the installer's — devswarm-ingest.js
+  // resolves its store root via `o.home || os.homedir()` with no `--home`
+  // ever passed on ProgramArguments/ExecStart, so an install that ran under a
+  // NON-DEFAULT HOME (a review agent's temp-HOME experiment; a test that forgot
+  // its own isolation) got a daemon that, once actually launched by launchd/
+  // systemd, silently wrote into the REAL ~/.anti-hall store instead of the
+  // one it was installed from. Pinning HOME here — a pure function of the
+  // module-level `HOME` this installer itself resolved (`os.homedir()` at
+  // require time) — makes the daemon's store root match the installer's,
+  // regardless of what HOME the scheduler itself later hands the process.
+  // USERPROFILE is paired with it for the SAME reason `os.homedir()` needs it
+  // on win32 elsewhere in this codebase (scripts/devswarm.js's own spawn env) —
+  // emitted unconditionally, independent of hivecontrol/exec resolving at all
+  // (unlike PATH/HIVECONTROL below, this fix does not depend on either).
+  out.HOME = HOME;
+  out.USERPROFILE = HOME;
+  if (!bin && !nodeDir) return out;
   const parts = [];
   const push = (p) => { if (p && parts.indexOf(p) === -1) parts.push(p); };
   if (bin) push(path.dirname(bin));
   push(nodeDir);
   for (const p of MINIMAL_UNIT_PATH.split(':')) push(p);
-  const out = {};
   out.PATH = parts.join(':');
   // Only pinned when the binary itself is emittable — a PATH that resolves node
   // is still worth emitting for a daemon whose hivecontrol could not be resolved.
@@ -1166,6 +1238,11 @@ function parsePlistUnit(xml) {
       if (m) out.scriptPath = unescapeXml(m[1]);
     }
   }
+  // hasHomeEnv (defect d1c57e67998f): does this ALREADY-INSTALLED plist pin
+  // HOME? An install from before this fix shipped will not — doctor surfaces
+  // that as an upgrade hint (reinstall), never auto-repairs it (the daemon
+  // must be re-registered, not hand-patched).
+  out.hasHomeEnv = /<key>HOME<\/key>/.test(xml);
   return out;
 }
 function parseServiceUnit(svc) {
@@ -1177,6 +1254,8 @@ function parseServiceUnit(svc) {
     const toks = ex[1].match(/"((?:[^"\\]|\\.)*)"/g) || [];
     if (toks.length >= 2) out.scriptPath = unSdQuote(toks[1]);
   }
+  // hasHomeEnv — systemd equivalent of the plist check above.
+  out.hasHomeEnv = /^Environment="HOME=/m.test(svc);
   return out;
 }
 function parseCronCommand(cmd) {
@@ -1238,6 +1317,7 @@ function listInstalledIngestUnits(opts) {
         units.push({
           label: name.slice(0, -('.plist'.length)), unit: null, hash, repoKey: repoKeyOut,
           workingDir: parsed.workingDir, scriptPath: parsed.scriptPath, source: 'launchd',
+          hasHomeEnv: parsed.hasHomeEnv,
         });
       }
       return units;
@@ -1263,6 +1343,7 @@ function listInstalledIngestUnits(opts) {
         units.push({
           label: null, unit: name.slice(0, -('.service'.length)), hash, repoKey: repoKeyOut,
           workingDir: parsed.workingDir, scriptPath: parsed.scriptPath, source: 'systemd',
+          hasHomeEnv: parsed.hasHomeEnv,
         });
       }
       // cron fallback: scan the crontab for managed markers (legacy `# UNIT`,
@@ -1835,6 +1916,13 @@ if (require.main === module) main();
 
 module.exports = {
   LABEL, UNIT, SCRIPT, LOG, RESTART_SEC, CRON_MARKER,
+  // HOME (defect d1c57e67998f): the installer's own resolved home (os.homedir()
+  // at require time) — the SAME value now pinned into every unit's
+  // HOME/USERPROFILE via unitEnvFor. Exported so tests can assert against it
+  // directly instead of re-deriving os.homedir() themselves.
+  HOME,
+  // d1c57e67998f — tmp-HOME refusal guard, exported for direct test coverage.
+  homeIsUnderTmpdir, TMP_HOME_GUARD, ALLOW_TMP_HOME,
   resolveStableScript,
   xmlEscape, shSingleQuote, sdQuote, pathIsEmittable, resolveWorktree,
   buildPlist, buildService, buildCronLine, buildCronEntry, mergeCrontab, removeCronEntry,

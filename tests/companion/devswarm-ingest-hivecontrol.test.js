@@ -494,8 +494,11 @@ test('unitEnvFor prepends the resolved bin dir to the scheduler PATH and pins th
     'the bin dir is PREPENDED to (never replaces) the scheduler default PATH');
   assert.equal(env.ANTIHALL_DEVSWARM_HIVECONTROL, '/opt/devswarm/cli/hivecontrol',
     'the explicit absolute binary is baked too — PATH alone fixes only one lookup');
-  assert.equal(installer.unitEnvFor(null), null);
-  assert.equal(installer.unitEnvFor('hivecontrol'), null, 'a relative name is never baked');
+  // defect d1c57e67998f: unitEnvFor never returns null any more — HOME/USERPROFILE
+  // are ALWAYS pinned (a daemon's store root must match the installer's HOME,
+  // regardless of whether hivecontrol/exec resolve at all).
+  assert.deepEqual(installer.unitEnvFor(null), { HOME: installer.HOME, USERPROFILE: installer.HOME });
+  assert.deepEqual(installer.unitEnvFor('hivecontrol'), { HOME: installer.HOME, USERPROFILE: installer.HOME }, 'a relative name is never baked, but HOME still is');
   // No duplicate entry when the bin dir is already part of the default PATH.
   assert.equal(installer.unitEnvFor('/usr/bin/hivecontrol').PATH, '/usr/bin:/bin:/usr/sbin:/sbin');
 });
@@ -516,7 +519,13 @@ test('buildPlist bakes EnvironmentVariables and is BYTE-STABLE across regenerati
   assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(none), 'no resolution -> nothing pinned');
   assert.match(none, /<key>PATH<\/key>\s*<string>\/opt\/nvm\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin<\/string>/);
   const bare = installer.buildPlist({ label: 'com.x', exec: 'node', script: '/s', log: '/l', workdir: '/w' });
-  assert.ok(!/EnvironmentVariables/.test(bare), 'nothing absolute -> no environment key (never an empty dict)');
+  // defect d1c57e67998f: EnvironmentVariables is now ALWAYS present (HOME/
+  // USERPROFILE are unconditional) even when nothing absolute resolves —
+  // only PATH/HIVECONTROL are omitted in that case.
+  assert.match(bare, /<key>EnvironmentVariables<\/key>/, 'HOME/USERPROFILE are still baked even with nothing absolute resolved');
+  assert.match(bare, /<key>HOME<\/key>\s*<string>[^<]+<\/string>/);
+  assert.match(bare, /<key>USERPROFILE<\/key>\s*<string>[^<]+<\/string>/);
+  assert.ok(!/<key>PATH<\/key>/.test(bare), 'PATH is still omitted when nothing absolute resolved');
   assert.equal((a.match(/<dict>/g) || []).length, (a.match(/<\/dict>/g) || []).length, 'plist stays well-formed');
   // A hostile path is refused rather than emitted (existing safety posture).
   const nasty = installer.buildPlist(Object.assign({}, args, { hivecontrol: '/opt/"evil"/hivecontrol' }));
@@ -534,7 +543,12 @@ test('buildService bakes Environment= lines (systemd equivalent) and is byte-sta
   const svcNone = installer.buildService({ exec: '/opt/nvm/bin/node', script: '/s' });
   assert.ok(!/ANTIHALL_DEVSWARM_HIVECONTROL/.test(svcNone), 'the pin is omitted when unresolved');
   assert.match(svcNone, /^Environment="PATH=\/opt\/nvm\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin"$/m, 'but node stays resolvable (v0.86)');
-  assert.ok(!/Environment=/.test(installer.buildService({ exec: 'node', script: '/s' })), 'nothing absolute -> omitted entirely');
+  // defect d1c57e67998f: Environment= lines are now ALWAYS present (HOME/
+  // USERPROFILE unconditional) even with nothing absolute resolved.
+  const svcBare = installer.buildService({ exec: 'node', script: '/s' });
+  assert.match(svcBare, /^Environment="HOME=/m);
+  assert.match(svcBare, /^Environment="USERPROFILE=/m);
+  assert.ok(!/^Environment="PATH=/m.test(svcBare), 'PATH is still omitted when nothing absolute resolved');
   // systemd expands % specifiers inside Environment= — they must be escaped.
   assert.match(installer.sdEnvValue('PATH=/a%b'), /%%/);
 });

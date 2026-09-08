@@ -44,7 +44,16 @@ const REPAIR_INGEST_ORPHANS = process.argv.includes('--repair-ingest-orphans');
 // above (scoped to run ONLY its own detect+plan/apply section below, never
 // folded into the default/--fix/--dry-run repair pass).
 const REPAIR_TEST_STORES = process.argv.includes('--repair-test-stores');
-const DO_REPAIR = !CHECK && !REPAIR_INGEST_ORPHANS && !REPAIR_TEST_STORES; // default, --fix, --repair, --dry-run repair; --check/--repair-ingest-orphans/--repair-test-stores do not
+// --repair-resurrected [--apply] (R3 fix, defect df54edf54804): EXPLICIT,
+// OPT-IN, human-invoked ONLY — same narrow posture as --repair-ingest-orphans/
+// --repair-test-stores above. This used to run inside the DEFAULT repair pass
+// (a migrationFix, AUTO-SAFE-classified), which meant a bare `doctor` — the
+// exact command the anti-hall-activate skill runs — removed resurrected
+// registry rows with NO operator intent, contrary to its own "human-
+// initiated only" documentation. Scoped to run ONLY its own detect+plan/apply
+// section below, never folded into the default/--fix/--dry-run repair pass.
+const REPAIR_RESURRECTED = process.argv.includes('--repair-resurrected');
+const DO_REPAIR = !CHECK && !REPAIR_INGEST_ORPHANS && !REPAIR_TEST_STORES && !REPAIR_RESURRECTED; // default, --fix, --repair, --dry-run repair; --check/--repair-ingest-orphans/--repair-test-stores/--repair-resurrected do not
 // --logs: opt-in section that reads + summarizes recent warn/error entries from the
 // CENTRAL anti-hall-log (companion/lib/anti-hall-log.js, C0) so a Primary orchestrator
 // can see a child project's failures from one place without tailing the raw JSONL
@@ -1129,6 +1138,55 @@ if (REPAIR_TEST_STORES) {
   for (const r of repaired) {
     const label = `[${r.id}] ${r.msg}`;
     if (r.status === 'fixed') ok('REMOVED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else infol('skipped ' + label);
+  }
+}
+
+// --- 6l2. resurrected registry rows (REPORT-ONLY, CONDITIONAL, check mode
+// included) -- R3 fix, defect df54edf54804 --------------------------------
+// See doctor-repair.js's checkResurrectedRows for the full rationale (the
+// store migration's resurrection bug — fixed via companion/lib/
+// devswarm-archive-gate.js — left already-upgraded installs holding
+// registry rows for a whole retired worktree-group family; SkyCrew measured
+// ~43 legacy-slug rows on one install). Delegated to that ONE helper (fully
+// defensive + fail-open there) so this call site can never crash doctor.js;
+// stays SILENT (no section at all) when nothing is flagged. Report-only: NO
+// removal path here, in repair mode, or anywhere else for this section —
+// never touches pass/fail, same posture as the leaked-test-fixture-stores
+// section above.
+(function resurrectedRowsSection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkResurrectedRows({ home: os.homedir() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('resurrected registry rows');
+  warnl(result.message);
+})();
+
+// --- 6l2-repair. --repair-resurrected [--apply] (EXPLICIT, OPT-IN ONLY; R3
+// fix, defect df54edf54804). Default (flag present, no --apply) is DRY-RUN:
+// prints the exact re-retirement plan, writes nothing. --apply executes it
+// via devswarm.js's reRetireResurrectedRowsAllStores (candidacy/locking/
+// unhealable rules live there — see its own header). Never invoked
+// implicitly by a plain `doctor` or `doctor --check` run — only the DETECT
+// section above (6l2) runs unconditionally. `failed` drives the exit code
+// exactly like --repair-ingest-orphans/--repair-test-stores above;
+// `fixed`/`skipped` do not.
+// ---------------------------------------------------------------------------
+if (REPAIR_RESURRECTED) {
+  head('Repair resurrected registry rows' + (INGEST_APPLY ? ' [--apply]' : ' (dry-run — no changes written)') + ' [explicit --repair-resurrected]');
+  let repaired = [];
+  try {
+    repaired = require('./lib/doctor-repair.js').runResurrectedRepair({
+      home: os.homedir(), cwd: process.cwd(), env: process.env, dryRun: !INGEST_APPLY,
+    });
+  } catch (e) {
+    bad('repair-resurrected pass raised (fail-open): ' + (e && e.message));
+  }
+  if (repaired.length === 0 && fail === 0) infol('nothing to repair');
+  for (const r of repaired) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('RE-RETIRED ' + label);
     else if (r.status === 'failed') bad('FAILED ' + label);
     else infol('skipped ' + label);
   }

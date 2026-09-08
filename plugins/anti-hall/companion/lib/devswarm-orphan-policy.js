@@ -16,11 +16,15 @@
 // unread can therefore NEVER drain, so the id can never leave the warning set.
 //
 // NON-DRIFT (the whole point of this module): the classification is NOT
-// re-implemented here. It CALLS scripts/devswarm.js's own exported helpers —
-// hasArchivedCounterpart / readDescriptorFile / archivedDir / canonicalMeshId /
-// groupRegistryByMeshId — i.e. the identical functions healOrphanPartitions'
-// archived branch calls, in the identical order. If heal's family/archived policy
-// changes, this changes with it because it is the SAME code. The one composition
+// re-implemented here. It CALLS the SAME "is this id archived" decision
+// healOrphanPartitions' archived branch calls — companion/lib/
+// devswarm-archive-gate.js's resolveArchiveGate (defect df54edf54804 R2
+// parity fix; a bare hasArchivedCounterpart marker check used to be mirrored
+// here, but heal itself moved off that check onto the shared gate, so this
+// module moved with it) — plus scripts/devswarm.js's own exported helpers
+// readDescriptorFile / archivedDir / canonicalMeshId / groupRegistryByMeshId,
+// in the identical order. If heal's family/archived policy changes, this
+// changes with it because it is the SAME code. The one composition
 // this file performs itself (live-descriptor-first, archived-descriptor-fallback)
 // mirrors devswarm.js's private `resolveOrphanDescriptor`, which is not exported;
 // tests/companion/devswarm-orphan-policy-equivalence.test.js drives BOTH this
@@ -49,6 +53,15 @@ const livenessSelect = require('./devswarm-liveness-select.js');
 // there) — requiring it directly here is not a re-implementation, it is the
 // identical shared helper. No cycle: devswarm-noise.js is pure/stateless.
 const { isForwardableRow } = require('./devswarm-noise.js');
+// R2 parity fix (defect df54edf54804): healOrphanPartitions (scripts/devswarm.js)
+// no longer decides "is this id archived" via a bare hasArchivedCounterpart marker
+// check — it now calls the SHARED gate (companion/lib/devswarm-archive-gate.js's
+// resolveArchiveGate), which also catches a worktree-group SIBLING (no marker of
+// its own) and requires POSITIVE liveness proof before ever treating a
+// differing-sessionId reuse as NOT archived. This module's whole "NON-DRIFT"
+// contract (see header) means it must call the SAME function, not the bare
+// marker check it used to mirror — a leaf module require, no cycle.
+const archiveGateLib = require('./devswarm-archive-gate.js');
 
 let devswarmMod = null;
 let devswarmTried = false;
@@ -95,6 +108,7 @@ function makeArchivedStrandedTest(home, registry) {
   let usable = false;
   let byMesh = null;
   const meshCache = new Map();
+  let archivedWorktreeIndex = null; // built once, shared across every id this closure classifies
 
   return function isArchivedStranded(id) {
     try {
@@ -102,7 +116,6 @@ function makeArchivedStrandedTest(home, registry) {
         loaded = true;
         M = loadDevswarm();
         usable = !!(M
-          && typeof M.hasArchivedCounterpart === 'function'
           && typeof M.readDescriptorFile === 'function'
           && typeof M.archivedDir === 'function'
           && typeof M.canonicalMeshId === 'function'
@@ -110,15 +123,24 @@ function makeArchivedStrandedTest(home, registry) {
       }
       if (!usable) return false; // fail-open: nothing excluded, today's behaviour
 
-      // 1. archived counterpart (heal: `const archived = hasArchivedCounterpart(home, id)`)
-      if (!M.hasArchivedCounterpart(home, id)) return false;
-
       // 2. descriptor must RESOLVE. heal bails to unhealable/no-descriptor BEFORE
       //    reaching its archived branch when it does not, and that is a DIFFERENT
       //    class (a descriptor can reappear and be adopted next pass) — so a
-      //    no-descriptor id deliberately stays a plain orphan here.
+      //    no-descriptor id deliberately stays a plain orphan here. Moved BEFORE
+      //    the archived check (R2 parity fix): the shared gate needs the
+      //    descriptor's worktreePath/sessionId to classify at all.
       const desc = resolveOrphanDescriptor(M, home, id);
       if (!desc) return false;
+
+      // 1. archived (heal, R2 parity fix: `archived = gate.archived && !gate.migrateAsLive`
+      //    from resolveArchiveGate — see this file's header on why the bare marker
+      //    check it used to mirror is gone).
+      if (archivedWorktreeIndex === null) archivedWorktreeIndex = archiveGateLib.buildArchivedWorktreeIndex(home, fs);
+      let gate = null;
+      try { gate = archiveGateLib.resolveArchiveGate(home, id, desc, fs, { worktreeIndex: archivedWorktreeIndex }); }
+      catch (_) { gate = null; }
+      const archived = !!(gate && gate.archived && !gate.migrateAsLive);
+      if (!archived) return false;
 
       // 3. identity family (heal: canonicalMeshId(desc.worktreePath) ->
       //    groupRegistryByMeshId(registry).get(key) -> `!group || !group.rows.length`)
@@ -187,6 +209,7 @@ function makeForwardedDrainedTest(home, registry, store, meshMessageHashFn) {
   let usable = false;
   let byMesh = null;
   const meshCache = new Map();
+  let archivedWorktreeIndex = null; // built once, shared across every id this closure classifies
   const survivorHashCache = new Map(); // survivorId -> Set<hash>, computed at most once per projection
 
   function survivorHashes(survivorId) {
@@ -206,7 +229,6 @@ function makeForwardedDrainedTest(home, registry, store, meshMessageHashFn) {
         loaded = true;
         M = loadDevswarm();
         usable = !!(M
-          && typeof M.hasArchivedCounterpart === 'function'
           && typeof M.readDescriptorFile === 'function'
           && typeof M.archivedDir === 'function'
           && typeof M.canonicalMeshId === 'function'
@@ -218,12 +240,17 @@ function makeForwardedDrainedTest(home, registry, store, meshMessageHashFn) {
       }
       if (!usable) return false; // fail-open: nothing excluded, today's behaviour
 
-      // 1. archived counterpart — same gate makeArchivedStrandedTest uses.
-      if (!M.hasArchivedCounterpart(home, id)) return false;
-
       // 2. descriptor must resolve (no-descriptor is a different, adoptable class).
+      // Moved before the archived check (R2 parity fix) — the shared gate needs it.
       const desc = resolveOrphanDescriptor(M, home, id);
       if (!desc || !desc.worktreePath) return false;
+
+      // 1. archived — same shared gate makeArchivedStrandedTest uses (R2 parity fix).
+      if (archivedWorktreeIndex === null) archivedWorktreeIndex = archiveGateLib.buildArchivedWorktreeIndex(home, fs);
+      let gate = null;
+      try { gate = archiveGateLib.resolveArchiveGate(home, id, desc, fs, { worktreeIndex: archivedWorktreeIndex }); }
+      catch (_) { gate = null; }
+      if (!(gate && gate.archived && !gate.migrateAsLive)) return false;
 
       // 3. identity family MUST have a live registry row — the opposite gate from
       //    makeArchivedStrandedTest (a no-family id belongs to archivedStranded,

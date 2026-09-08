@@ -6,6 +6,155 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.99.1 (2026-09-08)
+
+- **Fixed (P1): the store migration re-registered archived workspaces**
+  (defect df54edf54804). `migrateToStore`/`migrateOne` upserted the registry
+  row for every id found in `workspaces/` unconditionally, never consulting
+  `archived/<id>.json` or the registry tombstone `devswarm.js archive <id>`
+  had already appended — `removeRegistry` is not a permanent marker (the
+  sqlite backend hard-deletes the row, the JSONL backend appends an
+  unconditional `remove` op that a later upsert simply outraces), so migration
+  reviving the row was a genuine resurrection, not a no-op. A field report
+  (SkyCrew) had 4 workspaces archived on 0.97.1 come back `archivedInApp:
+  false` after the 0.99.0 update, re-entering the parent-inbox table and
+  parent gate. Root cause: a still-running child terminal can recreate
+  `workspaces/<id>.json` for an already-archived id via the explicit
+  `register`/`register-primary` verb (the auto-`ensure` path's resurrection
+  guard, field defect a48db2e0ea08, deliberately does not cover it), and
+  migration then blindly trusted that recreated descriptor. The migration now
+  defaults to NEVER resurrecting an archived id (`archivedSkipped` in its
+  report), and migrates a recreated descriptor as live only with positive
+  proof of a genuine later reuse: a differing sessionId from the archived
+  marker, a demonstrably newer descriptor file (by mtime — `archived/<id>.json`
+  is a hardlink of the id's OWN pre-archive descriptor, so its mtime is
+  whatever that descriptor's last write was BEFORE it was archived, never
+  later — archiving itself never rewrites it), and CURRENT liveness proof for
+  the descriptor's own sessionId. That proof is the shared
+  `isSiblingPartitionLive` predicate (`companion/lib/liveness.js`), not a bare
+  fresh-heartbeat check — a bare heartbeat check reproduces the exact root
+  cause that predicate's own header documents and replaced elsewhere: a
+  Primary never writes a heartbeat at all, `register` writes none, and a
+  child mid-long-turn's heartbeat goes stale well before the session does.
+  Every other uncertainty (a corrupt/unreadable marker, an unresolvable
+  mtime) fails toward skip, never toward resurrection, and the check is
+  fully idempotent across repeated migration runs.
+  Residual, by design (unchanged from 0.97.0/7e1ae67): a live child that
+  re-registers an archived id after its Primary archived it is still treated
+  as a legitimate re-registration by `register`/`register-primary` themselves
+  — `devswarm.js archive` now warns loudly when the target still has a fresh
+  heartbeat at archive time ("child session still live... it may re-register"),
+  and the per-turn parent-inbox table labels a superseded-but-not-confirmed-live
+  row `archived-superseded (live child)` instead of silently falling back into
+  the ordinary dormant/escalated ladder as if it had never been archived —
+  discriminated by worktree path (not a bare marker-file existsSync), so a
+  genuinely new, unrelated workspace that merely reuses an old archived id at
+  a DIFFERENT worktree is never mislabelled.
+  **Extended (worktree-group siblings):** `cmdArchive`'s
+  `retireArchivedWorktreeGroup` tombstones the STORE REGISTRY row of every
+  sibling id sharing the archived id's physical worktree, but never writes
+  those siblings their own `archived/<id>.json` marker or touches their
+  descriptor file — so the direct per-id marker check above could not catch a
+  sibling like this, and neither store backend leaves anything queryable to
+  distinguish "tombstoned sibling" from "never registered" (sqlite
+  hard-deletes the row with zero trace; the JSONL backend's `remove` op just
+  makes the id absent from a `listRegistry()` read). The gate now also
+  matches a sibling's worktree path against every OTHER id's archived marker
+  (indexed once per run) and defaults to skipping it too, migrating it as
+  live only on the SAME liveness proof — but never on mtime: a sibling's
+  descriptor file is never touched by the archive of a different id, so its
+  mtime has no relationship to that unrelated marker's and proves nothing
+  either way.
+  **Decision logic extracted** into a new shared module
+  (`companion/lib/devswarm-archive-gate.js`) and reused by
+  `scripts/devswarm.js`'s `healOrphanPartitions` doctor repair, which was the
+  SAME class of bug (a bulk re-registration path consulting only a bare
+  `hasArchivedCounterpart` marker check) and would otherwise silently
+  re-adopt a group sibling the migration correctly refuses.
+  **Field aftermath, forward hygiene:** an install that already ran the
+  pre-fix migration once is left holding the resurrected rows regardless (one
+  SkyCrew install measured ~43 legacy-slug rows across a whole retired
+  worktree-group family). `scripts/devswarm.js`'s new
+  `reRetireResurrectedRows`/`reRetireResurrectedRowsAllStores` forward any
+  unread mail into a same-worktree archived id, then remove ONLY the
+  resurrected registry row (never a file), for a row that has a PROVEN
+  archive link (its own marker, or a worktree-group match to a DIFFERENT
+  id's marker) AND is NOT live by `isSiblingPartitionLive` — deliberately
+  stricter than, and not a duplicate of, the pre-existing
+  `foldArchivedRegistryRows` migration (an older, unrelated fix whose own
+  safety gate protects any row with a self-consistent-sessionId descriptor
+  regardless of actual liveness, by design, so it does not — and was never
+  meant to — catch this shape). A row with NO archive link at all is NEVER a
+  candidate (that stays healOrphanPartitions' job — a live-run repro found
+  the first version wrongly removed such a row with its unread mail simply
+  stranded); a candidate whose only "archive link" is its own marker (no
+  other id at that worktree to forward into) or whose forward attempt fails
+  or leaves mail unaccounted for is classified `unhealable` and left in
+  place, reported, never guessed at. Each candidate's classify+forward+remove
+  runs under the SAME per-id lock (`withIdLock`) heal/fold/group-retire use,
+  with the row re-read fresh inside the lock, so a concurrent register/ensure
+  is never raced.
+  Decision logic is shared with `companion/lib/devswarm-orphan-policy.js`
+  (the parent-inbox "orphaned mesh" warning suppressor), which now calls the
+  SAME `resolveArchiveGate` heal calls instead of the bare marker check it
+  used to mirror — keeping its own documented NON-DRIFT contract intact
+  (verified against `tests/companion/devswarm-orphan-policy-equivalence.test.js`).
+  Removal is HUMAN-INITIATED ONLY, via a NEW explicit, opt-in doctor flag —
+  `doctor --repair-resurrected [--apply]` — same posture as
+  `--repair-ingest-orphans`/`--repair-test-stores`: default (no `--apply`) is
+  a dry-run that prints the plan and writes nothing, `--apply` executes it.
+  **R3 fix:** this pass was FIRST wired into doctor's default AUTO-SAFE repair
+  pass (`migrationFix`), which meant a BARE `doctor` invocation — the exact
+  command the anti-hall-activate skill runs — removed resurrected rows with
+  NO operator intent, contradicting its own "human-initiated only"
+  documentation. It has been REMOVED from the default repair pass entirely
+  and the new flag added to `DO_REPAIR`'s own exclusion list (alongside
+  `--repair-ingest-orphans`/`--repair-test-stores`), so the NEW
+  `--repair-resurrected` pass itself can never fire under a bare/`--fix`/
+  `--repair`/`--dry-run` doctor run — that scoping covers only this new pass,
+  not resurrected rows in general: the pre-existing `fold-archived-rows`
+  migration (`foldArchivedRegistryRows`, unchanged since before 0.99.1) still
+  runs automatically inside `DO_REPAIR` on a bare doctor invocation, and
+  retires any descriptor-less row whose worktree carries a matching archived
+  marker via its own forward-then-tombstone (unread mail forwarded first,
+  then the row removed) — it is the one automatic path that already existed
+  for this shape; `--repair-resurrected` is additive, for the stricter
+  liveness-proven shape `foldArchivedRegistryRows`'s own gate does not cover.
+  A new unconditional,
+  report-only DETECT section (`checkResurrectedRows`, "check mode included")
+  surfaces the candidate count and the exact `--repair-resurrected` command on
+  every plain `doctor` run AND `doctor --check`, without writing anything.
+  `update.js`'s `reRetireResurrectedPostUpdate` is REPORT-ONLY: it detects on
+  every update (one-time per-version stamped, same shape as
+  `cursorHygienePostUpdate` — the report itself prints once, not the removal)
+  and tells the operator the candidate count plus the exact command
+  (`doctor --repair-resurrected --apply`) to run; it never calls the write
+  path itself.
+- **Fixed (P1): the ingest daemon's launchd/systemd unit never pinned HOME, so
+  a daemon installed under a non-default HOME wrote into the real
+  `~/.anti-hall` store** (defect d1c57e67998f, field-verified — a review
+  agent's temp-HOME experiment, label `...r3repo-bare-i7ycii-cc6261`,
+  registered a real launchd job whose live process then wrote into the
+  operator's real store, because `devswarm-ingest.js` resolves its store root
+  via `os.homedir()` and the scheduler hands its unit the SCHEDULER's own
+  default HOME, not the installer's). `unitEnvFor` (`companion/
+  install-devswarm-ingest.js`) now unconditionally pins `HOME`/`USERPROFILE`
+  (the installer's own resolved `os.homedir()`) into every unit shape —
+  launchd's `EnvironmentVariables`, systemd's `Environment=`, and the cron
+  fallback's assignment prefix — even when hivecontrol/exec cannot be
+  resolved (previously PATH/HIVECONTROL alone gated whether ANY environment
+  was baked at all). The installer also now REFUSES (forces dry-run, prints a
+  loud stderr notice) when the resolved HOME is under `os.tmpdir()` OR under
+  `/tmp`/`/private/tmp` (checked explicitly — on macOS `os.tmpdir()` resolves
+  to the per-user `$TMPDIR` under `/var/folders/...`, not `/tmp`, so a HOME
+  planted directly under `/tmp`/`/private/tmp`, e.g. a session scratchpad
+  path, previously sailed past the guard entirely), unless
+  `ANTIHALL_INGEST_ALLOW_TMP_HOME=1` — closing the class the existing
+  `NODE_TEST_CONTEXT` guard cannot see (a non-`node --test` run, e.g. a
+  manual or agent experiment, under a scratch HOME). `doctor` now WARNs
+  (report-only, never auto-repairs) when an already-installed unit's
+  plist/service lacks a `HOME` key, naming reinstall as the fix.
+
 ## 0.99.0 (2026-09-08)
 
 - **Fixed (P0): one cursor per row id was shared by every process reading under

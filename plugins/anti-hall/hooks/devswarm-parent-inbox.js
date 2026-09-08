@@ -71,6 +71,11 @@ const {
 } = require('../companion/lib/liveness.js');
 const livenessLib = require('../companion/lib/liveness.js');
 const { isArchivedWorkspace } = require('../companion/lib/devswarm-archived.js');
+// SHARED archive-resurrection gate (defect df54edf54804, item 3) — the SAME
+// worktree-discriminated predicate companion/devswarm-migrate.js and
+// scripts/devswarm.js's healOrphanPartitions use, reused here so this view's
+// "superseded" label agrees with what they will actually do with the row.
+const archiveGateLib = require('../companion/lib/devswarm-archive-gate.js');
 // APP-SIDE archive detection — READ-ONLY, from the supervisor-written cache
 // (never a hivecontrol spawn on this every-turn path). See that module's header.
 const { readActiveCache, isAppArchived } = require('../companion/lib/devswarm-archived-cache.js');
@@ -1190,6 +1195,36 @@ function main() {
       // check instead of before it.
       let archivedRow = false;
       try { archivedRow = isArchivedWorkspace(home, id, entry.worktreePath); } catch (_) { archivedRow = false; }
+      // ARCHIVED-BUT-SUPERSEDED (defect df54edf54804 hardening): isArchivedWorkspace
+      // returning false does not always mean "never archived" — a marker can exist
+      // for THIS id but be superseded by a genuinely different (later) sessionId,
+      // the shape 7e1ae67 built the supersede rule for: a still-running child
+      // re-registered this id after its Primary archived it (cmdArchive's warning
+      // at the archive call site names this same scenario). Surfacing that row as
+      // plain `dormant`/`escalated` hides the fact that it WAS put away and came
+      // back on its own — label it distinctly so the operator can tell "never
+      // archived" apart from "archived, then a live child brought it back".
+      // WORKTREE-DISCRIMINATED (critic fix, item 3): a bare archived/<id>.json
+      // existsSync — with no worktree check — mislabels a genuinely NEW
+      // workspace that merely reuses an old, unrelated archived id at a
+      // DIFFERENT worktree as "superseded". Reuse the SAME shared gate
+      // migrate/doctor use (companion/lib/devswarm-archive-gate.js), which
+      // discriminates by worktreePath exactly like archivedCounterpartInfo
+      // (scripts/devswarm.js) does — `archived:true` only when the marker's
+      // worktree matches this row's, or a worktree-group sibling match holds.
+      // A gate hit that comes back `migrateAsLive:true` (positive, current
+      // reuse proof) is NOT superseded — it is treated as genuinely live/new
+      // and falls through to the normal displayStatus ladder below, same as
+      // a row with no marker at all.
+      let archivedSuperseded = false;
+      if (!archivedRow && isSafeId(id)) {
+        try {
+          const gate = archiveGateLib.resolveArchiveGate(
+            home, id, { worktreePath: entry.worktreePath, sessionId: entry.sessionId }, fs, { now }
+          );
+          archivedSuperseded = !!(gate && gate.archived && !gate.migrateAsLive);
+        } catch (_) { archivedSuperseded = false; }
+      }
       // APP-SIDE archive (field): the owner archived the child in the DevSwarm
       // app, which never writes anti-hall's own archived/<id>.json — so the
       // check above stays false and the row kept rendering escalated. Same
@@ -1273,7 +1308,9 @@ function main() {
       const notDrainingFlag = !!(verdict && verdict.notDraining);
       const ds = archivedRow
         ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 })
-        : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);
+        : archivedSuperseded
+          ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived-superseded (live child)', rank: 5.5 })
+          : displayStatus(archiveReady, status, activityTs, now, dormant, notDrainingFlag, idleAlive);
       rows.push({
         id,
         label: ds.label,
