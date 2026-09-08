@@ -296,6 +296,11 @@ function classify(home, id, now) {
 test('4 CHILD-TURN: a child turn WRITES a fresh turn-authored heartbeat + reminds to report to parent', () => {
   const home = H.makeHome();
   try {
+    // DEVSWARM_BUILDER_ID intentionally UNSET here (childEnv() does not set it)
+    // — this is the "placeholder" case: substituteId() has no real id to
+    // substitute, so the emitted reminder text keeps the literal placeholder.
+    // See the paired UUID-substitution case directly below for the "real id
+    // gets substituted" side of the same behavior.
     const r = testHook('devswarm-child-turn.js',
       { hook_event_name: 'UserPromptSubmit', session_id: 'child-sess', prompt: 'work' },
       { home, env: childEnv('feat-x'), expectJson: true });
@@ -315,17 +320,50 @@ test('4 CHILD-TURN: a child turn WRITES a fresh turn-authored heartbeat + remind
   } finally { H.rm(home); }
 });
 
+test('4 CHILD-TURN: DEVSWARM_BUILDER_ID set (real uuid) -> reminder text substitutes the real id, not the placeholder', () => {
+  const home = H.makeHome();
+  try {
+    const uuid = '3f9e2a10-4b7c-4d21-9a55-8e1f6c2b7a90';
+    const r = testHook('devswarm-child-turn.js',
+      { hook_event_name: 'UserPromptSubmit', session_id: 'child-sess', prompt: 'work' },
+      { home, env: { ...childEnv('feat-x'), DEVSWARM_BUILDER_ID: uuid }, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    assert.match(ctxOf(r), new RegExp('heartbeat ' + uuid + ' --summary'),
+      'child is reminded to report using its REAL id, not the placeholder');
+    assert.ok(!ctxOf(r).includes('<DEVSWARM_BUILDER_ID>'), 'the literal placeholder must not survive substitution');
+  } finally { H.rm(home); }
+});
+
 test('4 CHILD-GATE: a child stop is forced to emit a heartbeat / self-report (decision:block)', () => {
   const home = H.makeHome();
   try {
+    // devswarm-child-gate.js gates on isChildWorkspaceCorroborated(), which
+    // requires ON-DISK evidence in addition to DEVSWARM_SOURCE_BRANCH (defect
+    // a55d6b71a76f fix, root cause C — see plugins/anti-hall/hooks/lib/devswarm-role.js).
+    // A real child always carries DEVSWARM_BUILDER_ID and has a registered
+    // workspaces/<id>.json descriptor (written by cmdRegister/cmdHeartbeat's
+    // auto-ensure); model that here the same way
+    // tests/hooks/devswarm-child-gate.test.js's seedAllTestDescriptors does.
+    //
+    // DEVSWARM_BUILDER_ID is a REAL uuid here (Wave 3 P1: hooks/lib/devswarm-
+    // wake.js's resolvedId(env) substitution is now applied to this gate's own
+    // forced-block text too) so the assertion below can confirm the emitted
+    // reason names the REAL id, not the literal `<DEVSWARM_BUILDER_ID>`
+    // placeholder (see tests/hooks/devswarm-child-gate*.test.js for the
+    // paired "env unset -> placeholder" coverage of the same substitution).
+    const uuid = '9c4e7b21-6a3d-4f8e-b1c5-2d7a9f0e3b6c';
+    fs.mkdirSync(H.workspacesDir(home), { recursive: true });
+    fs.writeFileSync(H.descriptorPath(home, uuid), JSON.stringify({ id: uuid }));
     const r = testHookRaw('devswarm-child-gate.js',
       JSON.stringify({ hook_event_name: 'Stop', session_id: 'child-sess' }),
-      { home, env: childEnv('feat-x') });
+      { home, env: { ...childEnv('feat-x'), DEVSWARM_BUILDER_ID: uuid } });
     assert.strictEqual(r.status, 0);
     assert.ok(r.json && r.json.decision === 'block', `child gate must force a heartbeat; stdout=${r.stdout}`);
     // v0.58 mesh-only messaging: the forced-ack reason names the mesh CLI verb
     // (`heartbeat --summary`), never the blocked native `message-parent`.
-    assert.match(r.json.reason, /devswarm\.js heartbeat <DEVSWARM_BUILDER_ID> --summary/);
+    assert.match(r.json.reason, new RegExp('devswarm\\.js heartbeat ' + uuid + ' --summary'),
+      'reason names the REAL id, not the placeholder');
+    assert.ok(!r.json.reason.includes('<DEVSWARM_BUILDER_ID>'), 'the literal placeholder must not survive substitution');
     assert.ok(!/message-parent/.test(r.json.reason), 'must never emit the blocked native verb');
   } finally { H.rm(home); }
 });

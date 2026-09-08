@@ -242,8 +242,17 @@ test('Item 3 mutation check (buildUnreadSegment): reverting to the bare `inbox r
       });
       assert.strictEqual(r.status, 0);
       const c = ctxText(r);
-      assert.ok(c.includes('inbox read child-item3m'), `BUGGY (pre-fix): must reproduce the bare non-acking form; ctx=${c}`);
-      assert.ok(!c.includes('inbox read-primary child-item3m'), `BUGGY: must NOT accidentally carry the fixed form; ctx=${c}`);
+      // Scoped to the DEVSWARM CHILD INBOX — PRIORITY segment specifically:
+      // defect 735b179362e8's id-substitution fix means RECEIVE_NUDGE (a
+      // SEPARATE, always-present paragraph, unrelated to this mutation)
+      // now legitimately ALSO contains 'inbox read-primary child-item3m'
+      // once the real id is substituted — a whole-context substring check
+      // can no longer tell the two apart.
+      const priorityIdx = c.indexOf('DEVSWARM CHILD INBOX — PRIORITY');
+      assert.ok(priorityIdx !== -1, `PRIORITY segment must be present; ctx=${c}`);
+      const prioritySegment = c.slice(priorityIdx, priorityIdx + 400);
+      assert.ok(prioritySegment.includes('inbox read child-item3m'), `BUGGY (pre-fix): must reproduce the bare non-acking form; segment=${prioritySegment}`);
+      assert.ok(!prioritySegment.includes('inbox read-primary child-item3m'), `BUGGY: must NOT accidentally carry the fixed form; segment=${prioritySegment}`);
     } finally { rm(h); }
   } finally { discardHookCopy(copy); }
   assert.equal(fs.readFileSync(CHILD_TURN_HOOK_PATH, 'utf8'), liveBefore, 'live devswarm-child-turn.js must never be modified by a mutation test');
@@ -258,8 +267,13 @@ test('Item 3 RED/GREEN (unit): RECEIVE_NUDGE must prescribe read-primary, never 
     });
     assert.strictEqual(r.status, 0);
     const c = ctxText(r);
-    assert.ok(c.includes('inbox read-primary <DEVSWARM_BUILDER_ID>'), `THE FIX: RECEIVE_NUDGE must prescribe read-primary; ctx=${c}`);
-    assert.ok(!c.includes('inbox read <DEVSWARM_BUILDER_ID>'), `must never prescribe the unpaired non-acking form; ctx=${c}`);
+    // defect 735b179362e8 fix: RECEIVE_NUDGE now substitutes the REAL
+    // DEVSWARM_BUILDER_ID (env sets it here) in place of the literal
+    // placeholder — assert against the substituted id, and that the
+    // placeholder no longer leaks through unsubstituted.
+    assert.ok(c.includes('inbox read-primary child-nudge'), `THE FIX: RECEIVE_NUDGE must prescribe read-primary; ctx=${c}`);
+    assert.ok(!c.includes('inbox read child-nudge'), `must never prescribe the unpaired non-acking form; ctx=${c}`);
+    assert.ok(!c.includes('<DEVSWARM_BUILDER_ID>'), `real id was available and safe; placeholder must not leak through; ctx=${c}`);
   } finally { rm(h); }
 });
 
@@ -278,8 +292,12 @@ test('Item 3 mutation check (RECEIVE_NUDGE): reverting to the bare `inbox read <
       });
       assert.strictEqual(r.status, 0);
       const c = ctxText(r);
-      assert.ok(c.includes('inbox read <DEVSWARM_BUILDER_ID>'), `BUGGY (pre-fix): must reproduce the unpaired non-acking form; ctx=${c}`);
-      assert.ok(!c.includes('inbox read-primary <DEVSWARM_BUILDER_ID>'), `BUGGY: must NOT accidentally carry the fixed form; ctx=${c}`);
+      // defect 735b179362e8 fix: id substitution runs on whatever text
+      // RECEIVE_NUDGE holds (buggy or fixed) — the scratch copy still carries
+      // the real substituteId()/main() logic, so the placeholder is replaced
+      // here too. Assert against the substituted id, same as the GREEN test.
+      assert.ok(c.includes('inbox read child-nudgem'), `BUGGY (pre-fix): must reproduce the unpaired non-acking form; ctx=${c}`);
+      assert.ok(!c.includes('inbox read-primary child-nudgem'), `BUGGY: must NOT accidentally carry the fixed form; ctx=${c}`);
     } finally { rm(h); }
   } finally { discardHookCopy(copy); }
   assert.equal(fs.readFileSync(CHILD_TURN_HOOK_PATH, 'utf8'), liveBefore, 'live devswarm-child-turn.js must never be modified by a mutation test');

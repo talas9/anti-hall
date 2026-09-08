@@ -253,3 +253,106 @@ test('D13 MEASUREMENT: cron-found-mail.jsonl is capped at 1000 lines (oldest rot
     assert.strictEqual(last.id, 'w1', 'the NEW row must be the newest (last) line');
   } finally { rm(home); rm(repo); }
 });
+
+// ---------------------------------------------------------------------------
+// defect 735b179362e8 (B): a child that addresses `inbox tick`/`heartbeat`
+// with an id OTHER than its own real DEVSWARM_BUILDER_ID (e.g. it
+// substituted its meshId instead) is warned, not refused — fail-open, since
+// an operator MAY legitimately tick a sibling's id. Covers cmdInboxTick;
+// devswarm-cli-heartbeat.test.js style coverage for cmdHeartbeat mirrors the
+// same warnIdMismatch() helper (scripts/devswarm.js).
+function captureStderr(fn) {
+  const orig = process.stderr.write;
+  let out = '';
+  process.stderr.write = (chunk, ...rest) => { out += String(chunk); return orig.call(process.stderr, ...(rest.length ? [chunk, ...rest] : [chunk])); };
+  try { const result = fn(); return { result, stderr: out }; }
+  finally { process.stderr.write = orig; }
+}
+
+test('ID MISMATCH (735b179362e8): a CHILD ticking an id different from its own DEVSWARM_BUILDER_ID -> idMismatch:true + one stderr warning naming both ids, never refused', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('mismatch-tick');
+  try {
+    register(home, repo, 'wrong-mesh-id');
+    // Wave 3 addendum item 8: warnIdMismatch now gates on
+    // isChildWorkspaceCorroborated(env, home, cwd) — env.DEVSWARM_BUILDER_ID
+    // ('real-builder-id') must itself be a REGISTERED, on-disk-corroborated
+    // workspace for the warning to fire at all (an uncorroborated env var
+    // must never trigger it — see the PRIMARY-with-leaked-env-var test
+    // below). Register it too so this test still exercises the mismatch
+    // path, not the (now separately covered) no-corroboration no-op.
+    register(home, repo, 'real-builder-id');
+    const env = { DEVSWARM_SOURCE_BRANCH: 'feature/x', DEVSWARM_BUILDER_ID: 'real-builder-id' };
+    const { result, stderr } = captureStderr(() =>
+      cli.run(['inbox', 'tick', 'wrong-mesh-id'], ctx(home, { cwd: repo, env })).result);
+    assert.strictEqual(result.ok, true, 'must never refuse over an id mismatch (fail-open)');
+    assert.strictEqual(result.idMismatch, true);
+    assert.ok(stderr.includes('wrong-mesh-id'), `warning must name the argv id; stderr=${stderr}`);
+    assert.ok(stderr.includes('real-builder-id'), `warning must name the real DEVSWARM_BUILDER_ID; stderr=${stderr}`);
+  } finally { rm(home); rm(repo); }
+});
+
+test('ID MISMATCH (735b179362e8): a CHILD ticking its OWN DEVSWARM_BUILDER_ID -> idMismatch:false, no warning', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('match-tick');
+  try {
+    register(home, repo, 'real-builder-id');
+    const env = { DEVSWARM_SOURCE_BRANCH: 'feature/x', DEVSWARM_BUILDER_ID: 'real-builder-id' };
+    const { result, stderr } = captureStderr(() =>
+      cli.run(['inbox', 'tick', 'real-builder-id'], ctx(home, { cwd: repo, env })).result);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.idMismatch, false);
+    assert.strictEqual(stderr, '', `no warning expected when ids match; stderr=${stderr}`);
+  } finally { rm(home); rm(repo); }
+});
+
+test('ID MISMATCH (735b179362e8): the PRIMARY (not a child — DEVSWARM_SOURCE_BRANCH unset) never gets the warning even with DEVSWARM_BUILDER_ID mismatched', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('primary-tick');
+  try {
+    register(home, repo, 'some-workspace');
+    const env = { DEVSWARM_BUILDER_ID: 'unrelated-id' }; // no DEVSWARM_SOURCE_BRANCH -> Primary
+    const { result, stderr } = captureStderr(() =>
+      cli.run(['inbox', 'tick', 'some-workspace'], ctx(home, { cwd: repo, env })).result);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.idMismatch, false, 'the mismatch check is child-only');
+    assert.strictEqual(stderr, '');
+  } finally { rm(home); rm(repo); }
+});
+
+test('ID MISMATCH item 8 (P2): a Primary with a LEAKED/uncorroborated DEVSWARM_SOURCE_BRANCH is never told to switch ids, even with a mismatched DEVSWARM_BUILDER_ID', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('leaked-branch-tick');
+  try {
+    // Only 'some-workspace' is registered/corroborated — env.DEVSWARM_BUILDER_ID
+    // ('real-builder-id') has NO registered descriptor and cwd is not under the
+    // real DevSwarm worktree layout, so isChildWorkspaceCorroborated must be
+    // false even though DEVSWARM_SOURCE_BRANCH LOOKS like a child signal (a
+    // Primary that merely inherited a leaked/stale env var from a parent
+    // process). warnIdMismatch must stay silent — the bare, uncorroborated
+    // isChildWorkspace() check this used to gate on would have fired here.
+    register(home, repo, 'some-workspace');
+    const env = { DEVSWARM_SOURCE_BRANCH: 'feature/x', DEVSWARM_BUILDER_ID: 'real-builder-id' };
+    const { result, stderr } = captureStderr(() =>
+      cli.run(['inbox', 'tick', 'some-workspace'], ctx(home, { cwd: repo, env })).result);
+    assert.strictEqual(result.ok, true);
+    assert.strictEqual(result.idMismatch, false,
+      'an uncorroborated DEVSWARM_SOURCE_BRANCH must never trigger the id-mismatch warning');
+    assert.strictEqual(stderr, '', `no warning expected without on-disk corroboration; stderr=${stderr}`);
+  } finally { rm(home); rm(repo); }
+});
+
+test('ID MISMATCH (735b179362e8): cmdHeartbeat mirrors the same fail-open warn-not-refuse contract', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('mismatch-hb');
+  try {
+    // Item 8: corroborate env.DEVSWARM_BUILDER_ID first — see the tick test above.
+    register(home, repo, 'real-builder-id');
+    const env = { DEVSWARM_SOURCE_BRANCH: 'feature/x', DEVSWARM_BUILDER_ID: 'real-builder-id' };
+    const { result, stderr } = captureStderr(() =>
+      cli.run(['heartbeat', 'wrong-mesh-id'], ctx(home, { cwd: repo, env })).result);
+    assert.strictEqual(result.ok, true, 'must never refuse over an id mismatch (fail-open)');
+    assert.strictEqual(result.idMismatch, true);
+    assert.ok(stderr.includes('wrong-mesh-id') && stderr.includes('real-builder-id'), `warning must name both ids; stderr=${stderr}`);
+  } finally { rm(home); rm(repo); }
+});

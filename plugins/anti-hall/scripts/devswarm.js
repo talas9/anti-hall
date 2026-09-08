@@ -223,7 +223,50 @@ const gitTruth = require('../companion/lib/devswarm-git-truth.js');
 // signal (DEVSWARM_SOURCE_BRANCH) hooks/lib/devswarm-role.js uses — never a
 // reimplementation, so the two can never drift.
 const wakeLib = require('../hooks/lib/devswarm-wake.js');
-const { isChildWorkspace } = require('../hooks/lib/devswarm-role.js');
+const { isChildWorkspace, isChildWorkspaceCorroborated } = require('../hooks/lib/devswarm-role.js');
+
+// warnIdMismatch(id, ctx) -> boolean (idMismatch). defect 735b179362e8: a
+// child substituted its OWN meshId (or some other id) into the `<id>` slot
+// of a heartbeat/tick command instead of the real DEVSWARM_BUILDER_ID the
+// wake/turn instructions actually meant — silently addressing the wrong
+// mesh partition (the row is written/read under the wrong id, so the
+// intended recipient/observer never sees it). Fail-OPEN by design (never
+// refuse the call over this — a caller may have a legitimate reason to
+// heartbeat a DIFFERENT id, e.g. an operator managing a sibling): only when
+// this IS a CORROBORATED child workspace AND env.DEVSWARM_BUILDER_ID is
+// set/safe AND differs from the argv `id` does this print ONE stderr warning
+// naming both ids and return true, so the caller can fold `idMismatch:true`
+// into its JSON result for a downstream reader/log to notice, without ever
+// blocking the command itself.
+//
+// Wave 3 addendum item 8 (P2 fix): gated on `isChildWorkspaceCorroborated`
+// (hooks/lib/devswarm-role.js — the SAME on-disk-evidence-required signal
+// hooks/devswarm-child-gate.js and hooks/devswarm-parent-gate.js already
+// require before trusting DEVSWARM_SOURCE_BRANCH), not the bare, uncorroborated
+// `isChildWorkspace`. `isChildWorkspace` alone trusts DEVSWARM_SOURCE_BRANCH
+// with NO on-disk proof — a Primary session that merely inherited a leaked
+// DEVSWARM_SOURCE_BRANCH env var (e.g. from a parent shell) would get told
+// "you're addressing the wrong id, use env.DEVSWARM_BUILDER_ID instead" even
+// though it is not a child at all and that advice is nonsense for it.
+function warnIdMismatch(id, ctx) {
+  try {
+    const env = ctx && ctx.env;
+    const home = ctx && ctx.home;
+    const cwd = ctx && ctx.cwd;
+    if (!isChildWorkspaceCorroborated(env, home, cwd)) return false;
+    const envId = env && env.DEVSWARM_BUILDER_ID;
+    if (!isSafeId(envId)) return false;
+    if (!isSafeId(id)) return false;
+    if (String(id) === String(envId)) return false;
+    process.stderr.write('[devswarm] WARNING: addressing id ' + JSON.stringify(String(id))
+      + ' but this workspace\'s real DEVSWARM_BUILDER_ID is ' + JSON.stringify(String(envId))
+      + ' — addressing the meshId row counts the wrong partition; use ' + JSON.stringify(String(envId))
+      + ' unless you deliberately mean a different workspace\n');
+    return true;
+  } catch (_) {
+    return false; // fail-open: a broken check must never affect the call it warns about
+  }
+}
 // Shared structured JSONL logger (C0). Console fallback so a missing/older
 // companion never breaks the CLI — logging is strictly additive and fail-open;
 // alog.logError NEVER throws into a caller and NEVER changes control flow.
@@ -5452,6 +5495,70 @@ function realSessionIdFrom(flags, ctx, id) {
   return null;
 }
 
+// deriveAttemptRecordSessionId(ctx, id) -> string | null.
+//
+// Wave 3 addendum item 11 (P1 forgery fix): the summary-attempts row's
+// `sessionId` field used to be `callerSessionId` (== `realSessionIdFrom`),
+// which prefers the CALLER-SUPPLIED `--session` FLAG VALUE. Proven forgeable
+// (scratchpad/dl-gate/r2-reviewer/spoof-session.js): `heartbeat <victim-id>
+// --summary x --session <victim's own registered descriptor sessionId>`
+// writes an attempt record whose `sessionId` the victim's OWN gate then
+// accepts as authenticated (`ownSessionIds` membership), even though the
+// writer is a completely different, unrelated process — the exact forgery
+// the nonce field was supposed to close (a flag is just a string an attacker
+// chooses; it proves nothing about the WRITING process's real identity,
+// unlike deriveInstanceNonce/the process-tree walk below).
+//
+// This is a SEPARATE, narrower derivation than `realSessionIdFrom` — used
+// ONLY for the attempt record's `sessionId` field, never for
+// `callerSessionId`'s existing (already-audited) ownership-check call sites
+// — that deliberately skips the `--session` flag entirely and trusts only:
+//   1. `CLAUDE_CODE_SESSION_ID` (the harness's own ambient env for THIS
+//      process — not a value the caller chose via a CLI flag), corroborated
+//      by (2) below, or
+//   2. the SAME fail-closed process-tree walk `realSessionIdFrom`'s own
+//      fallback uses (deriveCallerSessionIdFromProcessTree — cwd-verified
+//      against the caller's own worktree, so it cannot be pointed at an
+//      unrelated ancestor).
+// Returns null (sessionId omitted, nonce-only authentication) when NEITHER
+// source resolves — never falls back to the flag.
+//
+// P1 FORGERY FIX (Wave R3 Auditor): `CLAUDE_CODE_SESSION_ID` is CALLER-SET
+// ambient env — not a value the harness cryptographically attests, just an
+// environment variable like any other, no different in trust level from the
+// already-rejected `--session` FLAG this function was written to exclude.
+// Proof: `CLAUDE_CODE_SESSION_ID=sess-VICTIM node scripts/devswarm.js
+// heartbeat w-victim --summary forged` wrote `sessionId: 'sess-VICTIM'` into
+// the attempt record UNCONDITIONALLY (the env branch returned immediately,
+// before ever calling the process-tree walk below) — and
+// `hooks/devswarm-child-gate.js`'s `sessionMatch` check (its own
+// `ownSessionIds.has(row.sessionId)`) then accepted that forged row as
+// self-authored for ANY workspace that happens to be registered under
+// `sess-VICTIM`. Fix: the env value is now trusted ONLY when the
+// cwd-verified process-tree walk (2) INDEPENDENTLY corroborates the SAME
+// value — the walk is unconditionally attempted first, and env is compared
+// against it rather than short-circuiting past it. When the walk resolves a
+// DIFFERENT (non-matching) session id, that fail-closed, non-forgeable value
+// is used instead of the uncorroborated env value (never the reverse). When
+// the walk resolves nothing at all, sessionId is omitted entirely — the
+// record still stands on `instanceNonce` alone, exactly as intended when
+// this field was first introduced.
+function deriveAttemptRecordSessionId(ctx, id) {
+  try {
+    let envCandidate = null;
+    const envSid = ctx && ctx.env && ctx.env.CLAUDE_CODE_SESSION_ID;
+    if (envSid != null) {
+      const s = String(envSid).trim();
+      if (s && s !== String(id) && !s.startsWith(SYNTHETIC_SESSION_PREFIX)) envCandidate = s;
+    }
+    const derived = deriveCallerSessionIdFromProcessTree(ctx, ctx && ctx.sessionDeriveOpts);
+    const derivedCandidate = (derived && derived !== String(id)) ? String(derived) : null;
+    if (envCandidate && derivedCandidate && envCandidate === derivedCandidate) return envCandidate;
+    if (derivedCandidate) return derivedCandidate;
+  } catch (_) { /* fail-closed: no forgeable fallback, sessionId stays omitted */ }
+  return null;
+}
+
 // currentRegistrySessionId(home, id, ctx) -> string | null. The CURRENT
 // registry-side sessionId for `id`, read fresh (never the descriptor's own
 // copy) — used by promoteUnclaimedSession's divergence repair below, which
@@ -5701,6 +5808,10 @@ function promoteUnclaimedRegistrySessions(home, opts) {
 
 function cmdHeartbeat(id, flags, ctx) {
   const home = ctx.home;
+  // defect 735b179362e8 (B): warn (never refuse) when a child heartbeats an
+  // id other than its own real DEVSWARM_BUILDER_ID — see warnIdMismatch's
+  // own header comment.
+  const idMismatch = warnIdMismatch(id, ctx);
   const dir = heartbeatsDir(home);
   fs.mkdirSync(dir, { recursive: true });
   // R15 P2 (broadcastFamilyOwns leg a3, "placeholder row" test): captured
@@ -5885,6 +5996,113 @@ function cmdHeartbeat(id, flags, ctx) {
               // `callerIdentity` string, never replacing it.
               identity: { id: caller, kind: callerInfo.kind },
             };
+            // defect a55d6b71a76f fix (root cause A): a benignly-DROPPED
+            // broadcast never reaches store recent[], so
+            // hooks/devswarm-child-gate.js's alreadyReportedThisEpisode()
+            // (which reads ONLY recent[]) can never see that this child DID
+            // attempt to report — the Stop gate then re-fires the SAME
+            // heartbeat command forever, even though the child followed the
+            // gate's own instruction every turn. Write a local, bounded
+            // attempt record the gate can read directly (no mesh write, no
+            // store dependency) so a dropped-but-attempted report still
+            // counts. Fail-open: never let telemetry break the heartbeat.
+            try {
+              // Wave 3 addendum item 7 (P2 race fix): PER-ID file, never a
+              // single shared per-repoKey file — the old shape was a plain
+              // read-modify-write-rename of ONE file, so two concurrent
+              // sibling writers (different ids, same repoKey) raced the
+              // rename and silently dropped whichever wrote second's row
+              // (proof: scratchpad/dl-gate/r2-critic/race.js). Splitting by
+              // writer id removes the cross-id race entirely; the reader
+              // (hooks/devswarm-child-gate.js's findRecentDropAttempt) scans
+              // every id's file under the repoKey directory, so this is a
+              // pure storage-layout change with no read-side behavior loss.
+              const attemptDir = path.join(devswarmRoot(home), 'summary-attempts', repoKey);
+              fs.mkdirSync(attemptDir, { recursive: true });
+              const attemptFile = path.join(attemptDir, id + '.ndjson');
+              // P0-1 fix (gate-fix Wave 2 round-1 review): the record was
+              // keyed by the TARGET id + project-wide repoKey with NO
+              // writer authentication — any sibling in the same worktree
+              // could satisfy another child's Stop gate by heartbeating
+              // `<victim-id> --summary ...` itself (the drop is benign/
+              // ok:true precisely because it's an ownership refusal, so a
+              // forger pays no cost). Stamp `instanceNonce` (this OS
+              // process's own per-process discriminator, same value the
+              // real broadcast path already stamps outbound rows with —
+              // see deriveInstanceNonce above) so the gate can require the
+              // record came from ITS OWN process/session family, not merely
+              // that SOME process in the worktree wrote a row naming the
+              // victim id.
+              //
+              // Wave 3 addendum item 11 (P1 forgery fix): `sessionId` is
+              // NEVER `callerSessionId` here (that prefers the caller-
+              // supplied `--session` FLAG value — attacker-chosen, proves
+              // nothing about the writing process) — see
+              // deriveAttemptRecordSessionId's own header for the proven
+              // forgery this closes. Omitted (null) when no trustworthy
+              // source resolves, which leaves the record nonce-only
+              // authenticated (still a valid acceptance path above).
+              const row = {
+                ts: now,
+                id,
+                reason: cause,
+                summary: String(summaryText).slice(0, 120),
+                instanceNonce: deriveInstanceNonce(ctx),
+                sessionId: deriveAttemptRecordSessionId(ctx, id),
+                // pid: diagnostic-only (never an authentication input — the
+                // gate's mismatch diagnostic, item 6, cites nonce/session
+                // prefixes, not this) — lets an operator correlate a
+                // recorded mismatch back to the exact writing process.
+                pid: process.pid,
+              };
+              // Item 7: append-only (fs.appendFileSync, O_APPEND) — no read-
+              // modify-write-rename of the whole file on THIS hot path, so
+              // two concurrent writers for the SAME id no longer clobber
+              // each other's row via THE APPEND ITSELF (each append lands
+              // independently; POSIX O_APPEND is atomic for a write this
+              // small). Trimming to the last 50 lines is decoupled from the
+              // append and only runs (tmp+rename) once the file has grown
+              // past 100 lines, so the common case pays exactly one syscall.
+              //
+              // KNOWN, BOUNDED RACE (Wave R3 Auditor P2 — corrects the
+              // over-broad claim above, which read as "no clobbering,
+              // period"): the trim block below IS its own read-modify-write
+              // — it reads a snapshot, then later renames a NEW file built
+              // from that snapshot over the original. A concurrent SAME-id
+              // append landing strictly BETWEEN the read and the rename is
+              // not part of the snapshot and is silently overwritten by the
+              // rename — genuinely dropped, not merely delayed. No locking
+              // is used to close this: same-id concurrent writers are rare
+              // (this file is per-writer-id already; only a highly unusual
+              // shape — e.g. two processes racing to write drop-attempts for
+              // the identical id at the identical moment the file happens to
+              // cross the 100-line trim threshold — hits the window), and
+              // the worst-case cost of a lost row is bounded and cheap: the
+              // gate simply does not see that ONE attempt as satisfying the
+              // episode and forces one extra (capped) Stop block, not a
+              // correctness or security failure.
+              fs.appendFileSync(attemptFile, JSON.stringify(row) + '\n');
+              try {
+                const lines = fs.readFileSync(attemptFile, 'utf8').split('\n').filter(Boolean);
+                if (lines.length > 100) {
+                  const trimmed = lines.slice(lines.length - 50).join('\n') + '\n';
+                  // P2 fix: atomic tmp+rename (same pattern as the per-id
+                  // heartbeat file above) — a reader must never observe a
+                  // half-written ndjson file. This closes PARTIAL-READ
+                  // corruption only; it does NOT close the read-then-rename
+                  // race described above (a concurrent same-id append in
+                  // that window is still lost, not merely torn).
+                  const attemptTmp = attemptFile + '.' + process.pid + '.' + process.hrtime.bigint().toString(36) + '.' + (heartbeatTmpCounter++) + '.tmp';
+                  try {
+                    fs.writeFileSync(attemptTmp, trimmed);
+                    fs.renameSync(attemptTmp, attemptFile);
+                  } catch (e) {
+                    try { fs.unlinkSync(attemptTmp); } catch (_) {}
+                    throw e;
+                  }
+                }
+              } catch (_) { /* fail-open: trim is best-effort — the append above already succeeded */ }
+            } catch (_) { /* fail-open: attempt record is best-effort */ }
           } else {
             const fields = { from: id, to: null, type: 'broadcast', message: String(summaryText), timestamp: now, urgency };
             const hash = store.meshMessageHash(fields);
@@ -5920,7 +6138,7 @@ function cmdHeartbeat(id, flags, ctx) {
     const d = callerIdentityDetailed(ctx.env, ctx.cwd || process.cwd());
     identity = { id: d.identity, kind: d.kind };
   } catch (_) { identity = null; }
-  return { ok: !hardMeshFailure, action: 'heartbeat', id, heartbeat: beat, meshBroadcast, identity };
+  return { ok: !hardMeshFailure, action: 'heartbeat', id, heartbeat: beat, meshBroadcast, identity, idMismatch };
 }
 
 // cmdInboxPull(id, flags, ctx) — child-side reception drain. AUTO-ENSURES the
@@ -7867,6 +8085,9 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
 // unchanged (this function adds no new failure mode to either).
 function cmdInboxTick(id, flags, ctx) {
   const home = ctx.home;
+  // defect 735b179362e8 (B): same fail-open id-mismatch warning as
+  // cmdHeartbeat — see warnIdMismatch's own header comment.
+  const idMismatch = warnIdMismatch(id, ctx);
   const isChildFlag = hasFlag(flags, 'child');
   if (isChildFlag) {
     // Same wrapping the 'pull' dispatch case already gives a bare `inbox pull`
@@ -7953,7 +8174,7 @@ function cmdInboxTick(id, flags, ctx) {
     }
   } catch (_) { /* fail-open: measurement only, never breaks the tick */ }
 
-  return Object.assign({}, counted, { action: 'tick' });
+  return Object.assign({}, counted, { action: 'tick', idMismatch });
 }
 
 function cmdInbox(sub, id, flags, ctx) {
@@ -11514,11 +11735,18 @@ function cmdWakeDirective(id, ctx) {
   const watcherPath = path.join(__dirname, '..', 'companion', 'lib', 'devswarm-wake-watch.js');
   let text = '';
   try {
-    text = wakeLib.wakeDirective(ctx.env, isChild, cliPath, watcherPath) || '';
-    // Substitute the generic placeholder with the CONCRETE id this verb was
-    // called with — a caller running `wake-directive <id>` already knows
-    // its own id, so the printed directive should be directly copy-runnable
-    // rather than echoing the template placeholder back at them.
+    // Wave 3 P2 fix: the argv `id` this verb was CALLED WITH is the ground
+    // truth for "which workspace is asking" — pass it as wakeDirective's
+    // explicit-id override so it wins over ctx.env.DEVSWARM_BUILDER_ID.
+    // Previously wakeDirective() resolved+embedded the ENV id internally
+    // BEFORE this function got a chance to substitute anything, so the
+    // trailing `.split('<DEVSWARM_BUILDER_ID>').join(id)` below was a no-op
+    // whenever an env id was present — the printed directive silently named
+    // the caller's OWN process env id instead of the id it explicitly asked
+    // for (env id A vs argv id B). The trailing split/join is kept as a
+    // fail-open backstop for the (should-be-unreachable) case a stale
+    // wakeLib still returns the literal placeholder.
+    text = wakeLib.wakeDirective(ctx.env, isChild, cliPath, watcherPath, String(id)) || '';
     text = text.split('<DEVSWARM_BUILDER_ID>').join(String(id));
   } catch (_) { text = ''; }
   return { ok: true, id: String(id), isChild, agent: agentNameSafe(ctx.env), directive: text.trim() };

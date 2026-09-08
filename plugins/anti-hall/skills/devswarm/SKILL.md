@@ -93,6 +93,15 @@ surfaces `ok:false` and writes no partial NDJSON. (2) It is pull-not-push: recep
 one child turn (no background child drainer — a child cannot host the blocking `monitor`
 daemon). Full detail: `docs/KB-devswarm-hivecontrol.md` (v0.54.2 note).
 
+**Subagents never own the mailbox (v0.98.1, defect f0958b13fe2b):** only the workspace
+main thread may run `inbox pull`/`ack`/`read`/`read-primary`/`tick`/`reap-orphans`,
+`heartbeat`, `inbox messages --ack`/`--ack-as-owner`, `mesh read` (without `--peek`/`--seq`),
+or `roster --ack` — a subagent that does advances the shared cursor and the main thread
+silently misses mail. `hooks/command-guard.js`'s `devswarm-subagent-mailbox-guard` blocks
+these verbs whenever the PreToolUse payload shows subagent context (skip via
+`ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1` or the `devswarm-subagent-mailbox-guard` skip name);
+see `docs/KB-devswarm-hivecontrol.md` §42.
+
 ## Always-listening reception (child, per turn)
 
 The child-side reception loop above is **continuous, not one-shot**: `hooks/devswarm-child-turn.js`

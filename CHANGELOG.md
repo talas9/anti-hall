@@ -6,6 +6,166 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.98.1 (2026-09-08)
+
+- **Fixed: `devswarm-child-gate.js`'s Stop hook re-fired every turn even
+  though the child had followed the gate's own instructed heartbeat**
+  (defect a55d6b71a76f). Three compounding root causes:
+  1. When `heartbeat --summary` was benignly refused (an unresolvable/
+     unregistered caller identity, or an ownership mismatch —
+     `BENIGN_MESH_BROADCAST_REASONS`), the broadcast never reached the
+     shared store's `recent[]` projection, so the gate's
+     `alreadyReportedThisEpisode()` (which reads only `recent[]`) could
+     never see that the child DID attempt to report — the same failing
+     heartbeat command was re-prescribed forever. `cmdHeartbeat` now appends
+     a local, bounded (last 50 lines, trimmed only once a file passes 100) row
+     to a PER-WRITER-ID attempt file —
+     `devswarm/summary-attempts/<repoKey>/<writerId>.ndjson`, never one file
+     shared by every writer for a repoKey (that shape was a read-modify-
+     write-rename race: two concurrent sibling writers could silently drop
+     each other's row) — stamped with the WRITING process's own
+     `instanceNonce` and a `sessionId` derived from the cwd-verified
+     process-tree walk, with `CLAUDE_CODE_SESSION_ID` accepted only when the
+     walk corroborates it (omitted otherwise), NEVER the caller-supplied
+     `--session` flag (a prior shape trusted the flag
+     directly and was provably forgeable: `heartbeat <victim-id> --summary x
+     --session <victim's own sessionId>` produced a record the victim's own
+     gate accepted). A record is accepted iff it is nonce-authenticated, or
+     matched to the workspace's registered session across its id forms (its
+     own `workspaces/<id>.json` descriptor, or — when that descriptor is
+     absent, e.g. a child heartbeating under its meshId while its env id is
+     a separately-unregistered UUID — a descriptor provably the SAME
+     identity on the SAME physical worktree: a uuid-prefix re-registration
+     of the env id, or one whose worktree resolves to the same canonical
+     meshId — never any same-worktree descriptor unconditionally), matched
+     **regardless of the record's own `id` field**; an unauthenticated
+     record does not satisfy. When a record for this exact id exists but
+     authenticates against neither check (e.g. a genuine record from a
+     PRIOR OS process — the nonce fallback changes on every restart), or
+     when the gate's own nonce cannot be derived at all, it now logs ONE
+     stderr diagnostic per session instead of silently re-blocking with no
+     trail. If a block still fires anyway (e.g. a known unread-inbox
+     backlog), the block text names the drop reason from a fixed whitelist
+     only (never the raw stored string, which is not trusted input) and its
+     remedy, instead of re-prescribing the exact command that just failed.
+     `warnIdMismatch` (the separate `heartbeat`/`inbox tick` id-mismatch
+     stderr warning) now gates on `isChildWorkspaceCorroborated`, not the
+     bare env-only `isChildWorkspace`, so a Primary with a leaked
+     `DEVSWARM_SOURCE_BRANCH` is never told to switch ids.
+  2. The per-window forced-ack cap (`MAX_BLOCKS=2`) fully reset every
+     `RESET_MS` (5 min), so it could re-arm indefinitely across a long
+     session. A new, never-reset `MAX_BLOCKS_PER_SESSION=6` lifetime bound
+     stops all further blocking for the rest of the session once reached
+     (logged once to stderr).
+  3. `isChildWorkspace()` trusted `DEVSWARM_SOURCE_BRANCH` alone, so a
+     Primary that inherited a leaked env var could be gated as a child. A
+     new `isChildWorkspaceCorroborated()` (`hooks/lib/devswarm-role.js`)
+     additionally requires on-disk evidence — a registered
+     `workspaces/<id>.json` descriptor, or cwd under the real DevSwarm
+     worktree layout (`~/.devswarm/repos/...`) — before `devswarm-child-
+     gate.js` treats a session as gate-eligible; no corroboration is a
+     silent no-op. Codex needs no separate fix — `devswarm-child-gate.js`
+     and `devswarm-role.js` are shared files, registered unmodified in
+     `codex/hooks/hooks.json`.
+
+- **Fixed: a child substituted the WRONG id (its own meshId) into
+  wake/heartbeat/tick instructions** (defect 735b179362e8) — every emitted
+  wake/tick/heartbeat/read-primary instruction (`hooks/lib/devswarm-wake.js`'s
+  `drainCmd`/`wakeDirective`/`wakeReassert`, and `hooks/devswarm-child-turn.js`'s
+  `REMINDER`/`RECEIVE_NUDGE`) previously embedded the literal
+  `<DEVSWARM_BUILDER_ID>` placeholder unconditionally, even though the real id
+  is available in `env` at every call site — a child then had nothing to
+  substitute and addressed the wrong mesh partition. Both files now substitute
+  the REAL `DEVSWARM_BUILDER_ID` (validated against the same safe-id charset
+  every other workspace id in this codebase is checked against) whenever it is
+  present; the placeholder is kept, byte-identical to before, when the env var
+  is absent or fails validation — never a bad/unsafe value is interpolated.
+  Additionally, `cmdInboxTick`/`cmdHeartbeat` (`scripts/devswarm.js`) now warn
+  (stderr, once per call, fail-open — never refuse) and set `idMismatch:true`
+  in their JSON result when a CHILD workspace addresses an id other than its
+  own real `DEVSWARM_BUILDER_ID`, naming both ids so the mismatch is visible
+  without blocking a caller that has a legitimate reason to address a
+  different id.
+
+- **Added: a subagent inside a DevSwarm child workspace can no longer touch
+  the shared mailbox** (defect f0958b13fe2b, field-measured by SkyCrew
+  2026-09-08 — 155 executions across 120 subagent transcripts in one
+  workspace ran `devswarm.js inbox pull/ack` directly, each advancing the
+  shared cursor and causing the workspace's own main thread to silently miss
+  mail; brief-level prohibitions alone were proven non-mitigating). Hardened
+  over three review rounds; the final blocked-verb set and mechanism:
+  1. `hooks/command-guard.js`'s new `devswarm-subagent-mailbox-guard` block
+     blocks any Bash invocation of `devswarm.js`'s `inbox pull|ack|read|
+     read-primary|tick`, top-level `heartbeat`, top-level `reap-orphans`
+     (writes cursors on reap), `inbox messages ... --ack`/`--ack-as-owner`
+     (the documented, cursor-advancing expansion of `read-primary` — NOT the
+     same as the safe non-acking `inbox messages`), `mesh read` without
+     `--peek`/`--seq` (advances the broadcast cursor by default),
+     `roster --ack` (an alias of `mesh read`, D23), and top-level
+     `register`/`archive` (both advance cursors through
+     `foldGroupIntoSurvivor` — a subagent never legitimately registers or
+     archives a workspace; the separate `register-primary` and
+     `archive-request`/`archive-ignore`/`archive-unignore`/`unarchive` verbs
+     are unaffected). Read-only verbs stay allowed: `inbox count`,
+     `inbox messages` (incl. `--tail`, without an ack flag),
+     `inbox peek-primary`, `mesh read --peek`/`--seq N`, plain `roster`,
+     `send`. Detection runs per shell segment with a flag-skip
+     pattern that consumes an optional VALUE after each flag (a valued flag
+     BEFORE the verb — `--session X inbox ack Y` — previously broke the
+     match entirely and bypassed the guard). Two overrides:
+     `~/.anti-hall/skip.json` under `devswarm-subagent-mailbox-guard`, or env
+     `ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1`.
+  2. `hooks/verify-first-subagent.js` appends one line to its SubagentStart
+     injection when `isChildWorkspace(env)` is true, telling the subagent
+     the main thread owns the mailbox and to report findings to its parent
+     instead.
+  3. **Root cause of the field incident, fixed directly:**
+     `hooks/devswarm-child-drain.js` (PostToolUse, matcher Bash, CHILD-ONLY)
+     was the hook actually TELLING subagents to drain the mailbox — it gated
+     only on `isDevswarmActive(env) && isChildWorkspace(env)`, both env-based
+     and therefore true for a subagent's own tool calls too (the child's env
+     is inherited), and its injected text literally read `Drain NOW via
+     \`inbox pull ... && inbox ack ...\``. This is the exact command the three
+     field-measured subagent runs executed. Now silently no-ops for subagent
+     context instead of injecting anything — a subagent already gets the
+     one-line rule from `verify-first-subagent.js` at spawn, and repeating it
+     on every Bash call would be exactly the per-call noise this hook's own
+     THROTTLE design exists to avoid. Swept every other PreToolUse/
+     PostToolUse-registered DevSwarm hook gated on child env alone for the
+     same hole: `devswarm-child-turn.js` (UserPromptSubmit) and
+     `devswarm-child-gate.js` (Stop) are NOT subagent-reachable at all
+     (neither event fires for a Task-tool subagent — `SubagentStop` is a
+     distinct, unregistered event); the two Primary-side hooks
+     (`devswarm-parent-gate.js`, `devswarm-parent-reply-tracker.js`) return
+     early for a child and are unaffected. `devswarm-child-drain.js` was the
+     only live hole.
+  4. **Payload-only subagent signal for both blocking gates above:** both (1)
+     and (3) now key off a new `isSubagentByPayload(payload)`
+     (`hooks/coordinator-detect.js`) — `agent_id`/`agent_type` in the hook
+     payload ONLY, no `CLAUDE_CODE_ENTRYPOINT=agent_tool` env fallback. The
+     general-purpose `isSubagent()` (used by command-guard's normal
+     coordinator-only gate, unchanged) legitimately uses that env fallback,
+     but a child workspace's env is inherited by its entire process tree —
+     using the same fallback for a BLOCKING gate could let a leaked
+     `agent_tool` value (from how the child session itself was originally
+     spawned) permanently misclassify that workspace's own main-thread cron
+     tick / Monitor wake as a subagent, blocking it from its own mailbox.
+  5. **Codex parity, precisely stated:** both guards are registered via
+     SHARED hook files in `codex/hooks/hooks.json` — no separate Codex code
+     path. Their DENY behavior, however, depends on the harness actually
+     supplying `agent_id`/`agent_type` in the hook payload; this has been
+     **verified on Claude Code only**. A grep of `plugins/anti-hall/codex`
+     for `agent_id`/`agent_type` returns 0 hits (`codex/README.md:48`
+     confirms no such payload-marker mapping exists there), so whether
+     Codex's harness populates these fields the same way is unverified — the
+     guards are registered either way (fail-open if the markers are absent,
+     same as any unmatched context), but blocking a Codex subagent
+     specifically has not been demonstrated.
+  6. **Known, harmless (deferred):** a Wave R3 review pass flagged echo
+     noise around this guard's deny path; triaged as known and harmless
+     rather than fixed in this round — see KB §42 for the note.
+  See `docs/KB-devswarm-hivecontrol.md` §42 for the full mechanism.
+
 ## 0.98.0 (2026-09-06)
 
 - **Changed: `inbox count`/`inbox read`'s `storeUnavailable` field is now a

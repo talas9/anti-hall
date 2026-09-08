@@ -57,7 +57,18 @@ const TEAMMATE_REPORTING_NOTE =
   'a bare turn-end silently loses it. NEVER end a turn waiting on a background task — its completion ' +
   'notification routes to the main session, not to you; run long commands foreground or poll the output file.';
 
-const SUBAGENT_TEXT = [...CORE_LINES, SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE].join('\n');
+// CHILD_WORKSPACE_MAILBOX_NOTE (defect f0958b13fe2b): a DevSwarm child
+// workspace's own env (DEVSWARM_SOURCE_BRANCH) is inherited by every subagent
+// it spawns, so isChildWorkspace(env) is true for this subagent's process
+// exactly when its parent session is a child workspace. One line, appended
+// only in that case — the Stop text this mirrors (devswarm-child-gate.js) is
+// already long, and this hook's own text is long too.
+const CHILD_WORKSPACE_MAILBOX_NOTE =
+  'You are a subagent inside a DevSwarm child workspace: do NOT run devswarm.js inbox ' +
+  'pull/ack/read/read-primary/tick or heartbeat — the workspace main thread owns the ' +
+  'mailbox; anything you learn goes back to your parent in your report.';
+
+const SUBAGENT_TEXT_BASE = [...CORE_LINES, SUBAGENT_DISCIPLINES, TEAMMATE_REPORTING_NOTE].join('\n');
 
 function main() {
   let raw = '';
@@ -85,10 +96,22 @@ function main() {
     event = 'SubagentStart';
   }
 
+  // Fail-open: any throw (env unreadable, module missing) -> not a child
+  // workspace -> base text only, never a crash.
+  let isChild = false;
+  try {
+    isChild = require('./lib/devswarm-role.js').isChildWorkspace(process.env);
+  } catch (_) {
+    isChild = false;
+  }
+  const subagentText = isChild
+    ? [SUBAGENT_TEXT_BASE, CHILD_WORKSPACE_MAILBOX_NOTE].join('\n')
+    : SUBAGENT_TEXT_BASE;
+
   const out = {
     hookSpecificOutput: {
       hookEventName: event,
-      additionalContext: SUBAGENT_TEXT,
+      additionalContext: subagentText,
     },
   };
 

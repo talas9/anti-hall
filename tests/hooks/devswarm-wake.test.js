@@ -388,3 +388,77 @@ test('wakeReassert points at the on-demand wake-directive CLI verb for the full 
   assert.ok(out.includes('node "$CLI" wake-directive'), `must point at the wake-directive verb via the $CLI token; out=${out}`);
   assert.strictEqual(out.split(CLI).length - 1, 1, `the long CLI path must appear exactly ONCE in the output, not repeated; out=${out}`);
 });
+
+// ---------------------------------------------------------------------------
+// defect 735b179362e8: drainCmd/wakeDirective/wakeReassert previously emitted
+// the LITERAL `<DEVSWARM_BUILDER_ID>` placeholder unconditionally, even
+// though the workspace's REAL id is available in `env` at every call site —
+// a child agent then had nothing to substitute and addressed the wrong id
+// (its own meshId) instead. resolvedId(env) now substitutes the real,
+// ID_FIELD-validated id when present, and falls back to the unchanged
+// placeholder otherwise (env absent, or an unsafe/malformed value).
+// ---------------------------------------------------------------------------
+const { resolvedId } = WAKE;
+
+test('resolvedId: env.DEVSWARM_BUILDER_ID set and safe -> the real id', () => {
+  assert.strictEqual(resolvedId({ DEVSWARM_BUILDER_ID: 'child-abc123' }), 'child-abc123');
+});
+
+test('resolvedId: env has no DEVSWARM_BUILDER_ID -> the literal placeholder', () => {
+  // Deliberately an explicit `{}`, never a bare `undefined` env — this test
+  // suite itself sometimes runs AS a DevSwarm child (this repo dogfoods its
+  // own plugin), in which case `undefined` would fall through to the REAL
+  // process.env.DEVSWARM_BUILDER_ID (same fallback convention wakeCron(env)
+  // above already uses) and make this assertion environment-dependent.
+  assert.strictEqual(resolvedId({}), '<DEVSWARM_BUILDER_ID>');
+  assert.strictEqual(resolvedId({ DEVSWARM_AI_AGENT: 'claude' }), '<DEVSWARM_BUILDER_ID>');
+});
+
+test('resolvedId: an UNSAFE id (path traversal / shell metacharacters / injection payload) -> the placeholder, never the raw value', () => {
+  for (const bad of ['../../etc/passwd', 'a`b`c', 'a$(rm -rf /)', 'a; DROP TABLE', 'a\nb', '']) {
+    assert.strictEqual(resolvedId({ DEVSWARM_BUILDER_ID: bad }), '<DEVSWARM_BUILDER_ID>', `must reject unsafe id: ${JSON.stringify(bad)}`);
+  }
+});
+
+test('drainCmd: 4th `id` param substitutes the real id; omitted -> unchanged placeholder (byte-identical to pre-fix callers)', () => {
+  const withId = drainCmd(CLI, true, false, 'child-abc123');
+  assert.ok(withId.includes('child-abc123'), `real id must appear in the drain command; out=${withId}`);
+  assert.ok(!withId.includes('<DEVSWARM_BUILDER_ID>'), `placeholder must not leak through once a real id is given; out=${withId}`);
+  const omitted = drainCmd(CLI, true);
+  assert.ok(omitted.includes('<DEVSWARM_BUILDER_ID>'), `omitting id must keep the pre-fix placeholder text; out=${omitted}`);
+});
+
+test('wakeDirective: DEVSWARM_BUILDER_ID set -> the real id is substituted into the emitted drain command (Claude cron branch)', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.ok(out.includes('inbox tick child-abc123 --child'), `must embed the real id in the tick command; out=${out}`);
+  assert.ok(!out.includes('<DEVSWARM_BUILDER_ID>'), `placeholder must not leak through; out=${out}`);
+});
+
+test('wakeDirective: DEVSWARM_BUILDER_ID unset -> the placeholder is preserved, byte-identical to pre-fix (Claude cron branch)', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'claude' }, true, CLI, '');
+  assert.ok(out.includes('inbox tick <DEVSWARM_BUILDER_ID> --child'), `must keep the placeholder when no real id is available; out=${out}`);
+});
+
+test('wakeDirective: DEVSWARM_BUILDER_ID set -> the real id is substituted (non-Claude turn-native branch)', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'codex', DEVSWARM_BUILDER_ID: 'child-abc123' }, true, CLI, '');
+  assert.ok(out.includes('child-abc123'), `must embed the real id; out=${out}`);
+  assert.ok(!out.includes('<DEVSWARM_BUILDER_ID>'), `placeholder must not leak through; out=${out}`);
+});
+
+test('wakeDirective: DEVSWARM_BUILDER_ID unset -> the placeholder is preserved (non-Claude turn-native branch)', () => {
+  const out = wakeDirective({ DEVSWARM_AI_AGENT: 'codex' }, true, CLI, '');
+  assert.ok(out.includes('<DEVSWARM_BUILDER_ID>'), `must keep the placeholder when no real id is available; out=${out}`);
+});
+
+test('wakeReassert: DEVSWARM_BUILDER_ID set -> the real id is substituted into the tick command and the wake-directive pointer', () => {
+  const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'child-abc123' }, CLI, true, '');
+  assert.ok(out.includes('inbox tick child-abc123 --child'), `must embed the real id in the tick command; out=${out}`);
+  assert.ok(out.includes('wake-directive child-abc123'), `must embed the real id in the wake-directive pointer; out=${out}`);
+  assert.ok(!out.includes('<DEVSWARM_BUILDER_ID>'), `placeholder must not leak through; out=${out}`);
+});
+
+test('wakeReassert: DEVSWARM_BUILDER_ID unset -> the placeholder is preserved, byte-identical to pre-fix', () => {
+  const out = wakeReassert({ DEVSWARM_AI_AGENT: 'claude' }, CLI, true, '');
+  assert.ok(out.includes('inbox tick <DEVSWARM_BUILDER_ID> --child'), `must keep the placeholder in the tick command; out=${out}`);
+  assert.ok(out.includes('wake-directive <DEVSWARM_BUILDER_ID>'), `must keep the placeholder in the wake-directive pointer; out=${out}`);
+});

@@ -148,6 +148,39 @@ test('SubagentStart -> teammate reporting note present (SendMessage-before-finis
 });
 
 // ---------------------------------------------------------------------------
+// Defect f0958b13fe2b: child-workspace subagent mailbox-ownership note.
+// Present ONLY when isChildWorkspace(env) (DEVSWARM_SOURCE_BRANCH non-empty,
+// inherited from the child's own env by every subagent it spawns); absent for
+// a Primary/root session's subagents.
+// ---------------------------------------------------------------------------
+
+test('SubagentStart -> child-workspace mailbox-ownership note present when DEVSWARM_SOURCE_BRANCH set', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, subagentPayload(), {
+      home: h.home,
+      env: { DEVSWARM_SOURCE_BRANCH: 'main' },
+      expectJson: true,
+    });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(c.includes('DevSwarm child workspace'), 'must name the child-workspace context');
+    assert.ok(c.includes('do NOT run devswarm.js inbox pull/ack/read/read-primary/tick or heartbeat'), 'must name the forbidden verbs');
+    assert.ok(c.includes('the workspace main thread owns the mailbox'), 'must state the ownership rule');
+  } finally { h.cleanup(); }
+});
+
+test('SubagentStart -> child-workspace mailbox-ownership note ABSENT when not a child workspace', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, subagentPayload(), { home: h.home, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(!c.includes('DevSwarm child workspace'), 'must be absent for a non-child-workspace session');
+  } finally { h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
 // Fail-open: malformed / empty stdin must never block.
 // ---------------------------------------------------------------------------
 

@@ -278,7 +278,12 @@ test('3 CHILD-GATE: STRICT=0 relies on the durable fs check ONLY — no unread t
     assert.strictEqual(r.json && r.json.decision, 'block', 'the outbound forced-ack still fires');
     // v0.58 mesh-only messaging: the forced-ack reason names the mesh CLI verb
     // (`heartbeat --summary`), never the blocked native `message-parent`.
-    assert.match(r.json.reason, /devswarm\.js heartbeat <DEVSWARM_BUILDER_ID> --summary/);
+    // v0.98.1 (a55d6b71a76f, wake/heartbeat id substitution): a real, safe id
+    // is available here (childId = 'child-gate-2'), so `resolvedIdSafe`
+    // substitutes it for the `<DEVSWARM_BUILDER_ID>` placeholder — this
+    // assertion previously named the pre-substitution placeholder literally,
+    // which stopped matching once the substitution fix shipped.
+    assert.match(r.json.reason, new RegExp('devswarm\\.js heartbeat ' + childId + ' --summary'));
     assert.ok(!/message-parent/.test(r.json.reason), 'must never emit the blocked native verb');
     assert.ok(!/inbox pull/.test(r.json.reason),
       'STRICT=0 + no durable unread -> the pure-fs check found nothing, no inbound instruction');

@@ -18,6 +18,13 @@ const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
 const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 const inst = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const liveness = require('../../plugins/anti-hall/companion/lib/liveness.js');
+
+function writeSessionFile(home, pid, rec) {
+  const dir = liveness.sessionsDirFor(home);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, String(pid) + '.json'), JSON.stringify(rec));
+}
 
 function tmpHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-send-'));
@@ -952,6 +959,167 @@ test('heartbeat --summary --urgency <invalid> FAILS the whole call (top-level ok
     assert.match(r.result.meshBroadcast.error, /--urgency must be one of/);
     assert.equal(r.code, 2, 'the CLI exit code must reflect the failure');
   } finally { rm(home); rm(repo); }
+});
+
+// ---- defect a55d6b71a76f fix (root cause A): local drop-attempt record ------
+//
+// A benignly-DROPPED heartbeat broadcast (caller-not-registered/unresolvable-
+// caller-identity/ownership-mismatch — BENIGN_MESH_BROADCAST_REASONS) never
+// reaches recent[], so hooks/devswarm-child-gate.js's alreadyReportedThisEpisode()
+// could never see the child DID attempt to report, re-prescribing the same
+// failing heartbeat forever. cmdHeartbeat now writes a bounded (last 50 lines)
+// local attempt record the gate can read directly instead.
+
+// Wave 3 addendum item 7: the writer (cmdHeartbeat) now appends to a
+// PER-WRITER-ID file under `summary-attempts/<repoKey>/<id>.ndjson` — never a
+// single file shared by every writer for a repoKey (that shape was a
+// read-modify-write-rename race between concurrent sibling writers, closed
+// by moving to per-id append-only files). `id` here is the writer/target id
+// the attempt record was written FOR (the `heartbeat <id> --summary ...`
+// positional), not the repoKey.
+function readAttemptLines(home, repoKey, id) {
+  const p = path.join(home, '.anti-hall', 'devswarm', 'summary-attempts', repoKey, id + '.ndjson');
+  return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+}
+
+test('heartbeat --summary: a benignly-dropped broadcast (caller-not-registered) writes a local attempt record with the drop reason', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('heartbeat-drop-attempt');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    // Deliberately register NOTHING — the caller resolves (real git identity)
+    // but has no registry row of its own, so ownershipRefusalCause reports
+    // 'caller-not-registered' and the broadcast is dropped (still ok:true).
+    const r = cli.run(['heartbeat', 'w-target', '--summary', 'status while unregistered'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true, 'the base heartbeat still succeeds on a benign drop');
+    assert.equal(r.result.meshBroadcast.ok, false);
+    assert.equal(r.result.meshBroadcast.dropped, true);
+    assert.equal(r.result.meshBroadcast.dropReason, 'caller-not-registered');
+
+    const lines = readAttemptLines(home, repoKey, 'w-target');
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].id, 'w-target');
+    assert.equal(lines[0].reason, 'caller-not-registered');
+    assert.equal(lines[0].summary, 'status while unregistered');
+    assert.ok(Number.isFinite(lines[0].ts));
+  } finally { rm(home); rm(repo); }
+});
+
+// Wave R3 Auditor P1 (forgery fix): CLAUDE_CODE_SESSION_ID is caller-set
+// ambient env — trusting it VERBATIM for the attempt record's `sessionId`
+// let any process set `CLAUDE_CODE_SESSION_ID=<a real, registered victim
+// sessionId>` and have that value written into the attempt record, which
+// hooks/devswarm-child-gate.js's sessionMatch check then accepted as
+// self-authored for the victim. Fixed: the env value is trusted ONLY when
+// the cwd-verified process-tree walk independently corroborates it.
+test('heartbeat --summary: a FORGED CLAUDE_CODE_SESSION_ID (no process-tree corroboration) is NOT written into the attempt record', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('heartbeat-forged-env-session');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    // No session file exists anywhere under home's sessions dir, so the
+    // process-tree walk (unconditionally attempted) resolves nothing —
+    // there is nothing for the forged env value to corroborate against.
+    const r = cli.run(
+      ['heartbeat', 'w-target', '--summary', 'forged via env'],
+      ctx(home, { cwd: repo, env: { CLAUDE_CODE_SESSION_ID: 'sess-VICTIM' } }),
+    );
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.meshBroadcast.dropped, true, 'still a benign drop (unregistered caller)');
+
+    const lines = readAttemptLines(home, repoKey, 'w-target');
+    assert.equal(lines.length, 1);
+    assert.strictEqual(lines[0].sessionId, null,
+      `forged env sessionId must NOT be written uncorroborated; got: ${JSON.stringify(lines[0].sessionId)}`);
+  } finally { rm(home); rm(repo); }
+});
+
+// Contrast case: when the SAME value the env carries is also independently
+// derivable from a real, cwd-matched, live session file up the process-tree
+// (the corroboration this fix requires), the sessionId IS written — the fix
+// narrows trust, it does not remove the env leg entirely.
+test('heartbeat --summary: CLAUDE_CODE_SESSION_ID corroborated by the process-tree walk IS written into the attempt record', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('heartbeat-corroborated-env-session');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    writeSessionFile(home, 9999, { pid: 9999, sessionId: 'sess-REAL', cwd: repo, status: 'running' });
+
+    const r = cli.run(
+      ['heartbeat', 'w-target', '--summary', 'legit via env+chain'],
+      ctx(home, {
+        cwd: repo,
+        env: { CLAUDE_CODE_SESSION_ID: 'sess-REAL' },
+        sessionDeriveOpts: {
+          pid: 9001,
+          ppidOf: (p) => (p === 9001 ? 9999 : null),
+          kill: () => {}, // no throw -> pidIsAlive has no opinion on staleness -> trusts the file
+        },
+      }),
+    );
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.meshBroadcast.dropped, true, 'still a benign drop (unregistered caller)');
+
+    const lines = readAttemptLines(home, repoKey, 'w-target');
+    assert.equal(lines.length, 1);
+    assert.strictEqual(lines[0].sessionId, 'sess-REAL',
+      `corroborated sessionId must be written; got: ${JSON.stringify(lines[0].sessionId)}`);
+  } finally { rm(home); rm(repo); }
+});
+
+// Wave 3 addendum item 7: appends are now append-only (fs.appendFileSync) —
+// no read-modify-write-rename, and no per-append trim — so the file is free
+// to grow PAST 50 lines; trimming (atomic tmp+rename, down to the last 50)
+// only runs once the file EXCEEDS 100 lines. This test now exercises BOTH
+// halves: no trim yet at 55 lines (below the 100 threshold — the common
+// case, decoupled from the hot append path), then a trim once past 100.
+test('heartbeat --summary: attempt record is NOT trimmed below the 100-line threshold, then bounded to the last 50 once it is exceeded', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('heartbeat-drop-attempt-bound');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    for (let i = 0; i < 55; i++) {
+      cli.run(['heartbeat', 'w-target', '--summary', 'status ' + i], ctx(home, { cwd: repo }));
+    }
+    const linesAt55 = readAttemptLines(home, repoKey, 'w-target');
+    assert.equal(linesAt55.length, 55, 'no trim below the 100-line threshold — all 55 attempts survive');
+
+    // Trim triggers as soon as a write makes the file EXCEED 100 lines — the
+    // 101st cumulative attempt (index 100, i.e. loop values 55..100 below).
+    // Stopping exactly there (rather than well past it) keeps the trimmed
+    // end-state deterministic: had this loop continued past 101, MORE
+    // untrimmed appends would accumulate again afterward (trim is a
+    // threshold crossing, not a continuously-enforced ceiling) — see this
+    // test's own header comment for why that is the intended, decoupled
+    // trade-off.
+    for (let i = 55; i <= 100; i++) {
+      cli.run(['heartbeat', 'w-target', '--summary', 'status ' + i], ctx(home, { cwd: repo }));
+    }
+    const lines = readAttemptLines(home, repoKey, 'w-target');
+    assert.equal(lines.length, 50, 'once past 100 lines, must be trimmed to the last 50 attempts');
+    assert.equal(lines[lines.length - 1].summary, 'status 100', 'the newest attempt must be kept');
+    assert.equal(lines[0].summary, 'status 51', 'the oldest attempts must have been dropped to stay at 50');
+  } finally { rm(home); rm(repo); }
+});
+
+test('heartbeat --summary: a HARD failure (bad --urgency) does NOT write an attempt record (not a benign drop)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('heartbeat-drop-attempt-hardfail');
+  try {
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    cli.run(['heartbeat', 'w-target', '--summary', 'x', '--urgency', 'bogus'], ctx(home, { cwd: repo }));
+    const p = path.join(home, '.anti-hall', 'devswarm', 'summary-attempts', repoKey, 'w-target.ndjson');
+    assert.equal(fs.existsSync(p), false, 'a hard caller mistake must never be recorded as a drop attempt');
+  } finally { rm(home); rm(repo); }
+});
+
+test('heartbeat --summary from a non-git cwd (no-project) does NOT write an attempt record (no repoKey to key it by)', () => {
+  const home = tmpHome();
+  try {
+    cli.run(['heartbeat', 'w-target', '--summary', 'x'], ctx(home, { cwd: fakeCwd(home) }));
+    const dir = path.join(home, '.anti-hall', 'devswarm', 'summary-attempts');
+    assert.equal(fs.existsSync(dir), false, 'no-project drop has no repoKey to record an attempt against');
+  } finally { rm(home); }
 });
 
 // ---- P0: heartbeat --summary sender spoofing (child-gate Stop-gate bypass) --

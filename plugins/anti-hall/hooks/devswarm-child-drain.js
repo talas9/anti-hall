@@ -116,6 +116,37 @@ function main() {
   // Defensive: never assume the hooks.json matcher was honored.
   if (payload && payload.tool_name !== undefined && payload.tool_name !== 'Bash') return;
 
+  // defect f0958b13fe2b: DEVSWARM_SOURCE_BRANCH/DEVSWARM_BUILDER_ID are
+  // inherited from the child by every subagent it spawns, so isChildWorkspace
+  // above is true for a subagent's own Bash calls too — this hook then told
+  // the SUBAGENT to "Drain NOW via `inbox pull ... && inbox ack ...`",
+  // exactly the command that advances the shared cursor out from under the
+  // workspace's own main thread. Field-measured: three child subagents ran
+  // that literal command (18:49:24Z/04:43:00Z/05:46:28Z). Only the workspace
+  // MAIN THREAD may receive this nudge — PostToolUse carries the same
+  // agent_id/agent_type markers PreToolUse does (see coordinator-detect.js).
+  // Uses isSubagentByPayload (PAYLOAD MARKERS ONLY, no CLAUDE_CODE_ENTRYPOINT
+  // env fallback — Wave R3 P2 fix): this hook's OWN gate above already reads
+  // DEVSWARM_SOURCE_BRANCH from env, so this env is inherited by the child
+  // workspace's entire process tree; falling back to the env-based
+  // isSubagent() here would let a leaked CLAUDE_CODE_ENTRYPOINT=agent_tool
+  // (from how the CHILD SESSION ITSELF was originally spawned) permanently
+  // silence this hook for that workspace's own main-thread cron tick /
+  // Monitor wake, defeating the mid-turn re-entry fix this hook exists to
+  // provide. Silent no-op for a subagent (not even a redirect line):
+  // command-guard.js's devswarm-subagent-mailbox-guard already blocks the
+  // drain command itself, and verify-first-subagent.js already tells a
+  // child-workspace subagent once, at spawn, that the main thread owns the
+  // mailbox — repeating that on every single Bash call here would be exactly
+  // the per-call noise this hook's own THROTTLE comment above says to avoid.
+  try {
+    const { isSubagentByPayload } = require('./coordinator-detect.js');
+    if (isSubagentByPayload(payload)) return;
+  } catch (_) {
+    // fail-open: if the subagent check itself throws, fall through to the
+    // pre-existing (main-thread-safe) behavior rather than crash.
+  }
+
   const id = env.DEVSWARM_BUILDER_ID;
   if (typeof id !== 'string' || !isSafeId(id)) return;
 

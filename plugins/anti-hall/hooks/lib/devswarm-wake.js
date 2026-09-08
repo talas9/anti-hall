@@ -115,7 +115,43 @@ function isClaudeAgent(env) {
   return agentName(env) === 'claude';
 }
 
-// drainCmd(cli, isChild) -> the mailbox-drain instruction text for this role.
+// ID_FIELD — same charset `companion/lib/liveness.js`'s `isSafeId` requires of
+// every DevSwarm workspace id (`^[A-Za-z0-9._-]+$`, no `..`). A PROMPT-
+// INJECTION boundary exactly like CRON_FIELD above: DEVSWARM_BUILDER_ID is
+// untrusted env input reflected VERBATIM into model-visible directive text
+// (inside backticks/shell-command spans) — an unvalidated value could close
+// a backtick span or smuggle shell metacharacters into an instruction the
+// agent is told to literally run.
+const ID_FIELD = /^[A-Za-z0-9._-]+$/;
+
+// resolvedId(env) -> the REAL DEVSWARM_BUILDER_ID when it is set and passes
+// ID_FIELD, else the literal placeholder `<DEVSWARM_BUILDER_ID>`.
+//
+// defect 735b179362e8 fix: every wake/tick/heartbeat instruction this module
+// emits previously embedded the LITERAL placeholder string unconditionally,
+// even though the workspace's REAL id is available in `env` at every call
+// site — a child agent then had nothing to substitute and used the wrong
+// value (its own meshId) instead, addressing the wrong mesh partition. Every
+// caller in this file already receives `env`; substitute the real id here so
+// the emitted command is directly runnable. Keeps the placeholder (never a
+// bad/unsafe value) when the env var is absent, empty, or fails ID_FIELD —
+// fail-open toward the SAME pre-fix text, never toward unsafe interpolation.
+function resolvedId(env) {
+  try {
+    const v = (env || process.env).DEVSWARM_BUILDER_ID;
+    if (typeof v === 'string' && ID_FIELD.test(v)) return v;
+  } catch (_) { /* fall through to the placeholder */ }
+  return '<DEVSWARM_BUILDER_ID>';
+}
+
+// drainCmd(cli, isChild, useTick, id) -> the mailbox-drain instruction text
+// for this role. `id` (new, optional 4th param — defect 735b179362e8) is the
+// value to embed in place of the literal placeholder; every PRODUCTION call
+// site passes `resolvedId(env)` (real id when safe/available, else the
+// unchanged placeholder). Omitting it (any existing/test call site that
+// still calls `drainCmd(cli, isChild)` or `drainCmd(cli, isChild, useTick)`)
+// keeps the exact pre-fix placeholder text, byte-identical — purely
+// additive, zero behavior change for a caller that does not pass it.
 //
 // C1 fix: the pre-fix text unconditionally told the agent to run the FULL
 // drain+read sequence on every wake turn — the model's own cron prompt then
@@ -197,8 +233,8 @@ function isClaudeAgent(env) {
 // keeps the pre-D13 `inbox count` wording BYTE-IDENTICAL — omitting the 3rd
 // arg is exactly the pre-D13 call shape, so nothing here can silently regress
 // those tests.
-function drainCmd(cli, isChild, useTick) {
-  const id = '<DEVSWARM_BUILDER_ID>';
+function drainCmd(cli, isChild, useTick, id) {
+  if (typeof id !== 'string' || !id) id = '<DEVSWARM_BUILDER_ID>';
   // known-guard (Wave F1, P0): a store-unavailable `count`/`tick` reports
   // `known: false` alongside a numeric `unreadTotal` (often 0 — the NDJSON
   // side alone) — see devswarm.js cmdInbox 'count'/'read' (`known: union.known
@@ -285,28 +321,50 @@ function monitorArmLine(watcher) {
     'you do; the cron job above is still your only wake path.';
 }
 
-// wakeDirective(env, isChild, cli, watcher) -> the SessionStart directive text
-// (leading space, appended to the COMMUNICATION OVERRIDE), or '' when the agent
-// is unknown. `cli` MUST be the ABSOLUTE path to scripts/devswarm.js — a
-// workspace's cwd is its PROJECT WORKTREE, never the plugin root, so a relative
-// path is unrunnable there. `watcher`, when a non-empty string, is the ABSOLUTE
-// path to the Monitor watch script; the Claude branch then emits the Monitor-arm
-// instruction IN ADDITION to the cron instruction (never instead — see the
-// NON-NEGOTIABLE header comment above). Absent/empty `watcher` -> cron-only,
-// byte-identical to pre-Monitor behavior.
-function wakeDirective(env, isChild, cli, watcher) {
+// wakeDirective(env, isChild, cli, watcher, explicitId) -> the SessionStart
+// directive text (leading space, appended to the COMMUNICATION OVERRIDE), or ''
+// when the agent is unknown. `cli` MUST be the ABSOLUTE path to
+// scripts/devswarm.js — a workspace's cwd is its PROJECT WORKTREE, never the
+// plugin root, so a relative path is unrunnable there. `watcher`, when a
+// non-empty string, is the ABSOLUTE path to the Monitor watch script; the Claude
+// branch then emits the Monitor-arm instruction IN ADDITION to the cron
+// instruction (never instead — see the NON-NEGOTIABLE header comment above).
+// Absent/empty `watcher` -> cron-only, byte-identical to pre-Monitor behavior.
+//
+// `explicitId` (new, optional 5th param — Wave 3 P2): when a CALLER already
+// knows the exact id it wants embedded (e.g. `devswarm.js wake-directive <id>`,
+// where the CLI argv id is the ground truth for "which workspace is asking"),
+// pass it here so it wins over `resolvedId(env)`. Without this, cmdWakeDirective
+// resolved `id` from env.DEVSWARM_BUILDER_ID FIRST (inside this function), then
+// tried to substitute the argv id AFTER the fact by string-replacing the
+// `<DEVSWARM_BUILDER_ID>` placeholder — but resolvedId(env) had already filled
+// that placeholder with the ENV id, so the argv id substitution was a no-op
+// whenever an env id was present and differed from argv (the exact
+// env-id-A/argv-id-B split this fix targets). Validated against the SAME
+// ID_FIELD charset as resolvedId(env)'s own output; an unsafe/absent
+// `explicitId` falls back to `resolvedId(env)` exactly as before.
+function wakeDirective(env, isChild, cli, watcher, explicitId) {
   try {
     const agent = agentName(env);
     if (!agent) return ''; // unknown agent -> say nothing rather than guess
+    // defect 735b179362e8 fix: resolve the workspace's REAL id (validated
+    // against ID_FIELD) once, up front, so every drainCmd call below embeds
+    // a directly-runnable command instead of the literal placeholder.
+    // Wave 3 P2: an explicit caller-supplied id (ID_FIELD-validated) wins
+    // over the env-derived id; see the header note above for why.
+    const id = (typeof explicitId === 'string' && ID_FIELD.test(explicitId))
+      ? explicitId
+      : resolvedId(env);
     if (agent !== 'claude') {
       // Never names the Claude idle-cron tool: an agent that does not have it must
       // not be handed the tool's name at all (a named tool is an invitation to call
       // a hallucinated one). It gets the honest instruction it CAN actually follow.
       // NEVER touch this branch for Monitor: Monitor is ALSO a Claude-only tool, so
       // it belongs strictly in the `claude` branch below, same as CronCreate.
-      // No `useTick` here (2-arg call): this text is a TURN-NATIVE instruction, not
-      // a cron prompt (Codex has no CronCreate) — pre-D13 wording, byte-identical.
-      const drain = drainCmd(cli, isChild);
+      // No `useTick` here (2-arg + id call): this text is a TURN-NATIVE
+      // instruction, not a cron prompt (Codex has no CronCreate) — pre-D13
+      // wording, byte-identical apart from the id substitution.
+      const drain = drainCmd(cli, isChild, false, id);
       return ' MAILBOX WAKE: this workspace runs `' + agent + '`, which has NO idle-wake ' +
         'primitive — once you go idle, nothing can wake you, so a message that lands after ' +
         'you stop waits for your next turn. Drain your mailbox at the START of every turn ' +
@@ -315,7 +373,7 @@ function wakeDirective(env, isChild, cli, watcher) {
     // useTick:true — this `drain` text becomes the BODY of the CronCreate prompt
     // below (a cron tick, not a turn-native instruction), so it gets the D13
     // `inbox tick` verb (pull-if-child + count + marker write, one command).
-    const drain = drainCmd(cli, isChild, true);
+    const drain = drainCmd(cli, isChild, true, id);
     return ' MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`; if your mailbox-' +
       'wake job is ABSENT — never created, or auto-expired (recurring tasks self-delete 7 days ' +
       'after creation) — call `CronCreate` with schedule `' + wakeCron(env) + '` and a prompt ' +
@@ -371,7 +429,8 @@ function wakeDirective(env, isChild, cli, watcher) {
 function wakeReassert(env, cli, isChild, watcher) {
   try {
     const child = isChild === undefined ? true : !!isChild;
-    const id = '<DEVSWARM_BUILDER_ID>';
+    // defect 735b179362e8 fix: real id (validated), not the literal placeholder.
+    const id = resolvedId(env);
     // fl-wave3 fix (item 3): `cli` — the ABSOLUTE plugin path, realistically
     // 80-100+ chars once installed from the plugin cache (e.g.
     // `/Users/x/.claude/plugins/cache/anti-hall/anti-hall/0.98.0/scripts/devswarm.js`)
@@ -426,4 +485,4 @@ function wakeReassert(env, cli, isChild, watcher) {
   }
 }
 
-module.exports = { WAKE_CRON_DEFAULT, wakeCron, isClaudeAgent, wakeDirective, wakeReassert, drainCmd };
+module.exports = { WAKE_CRON_DEFAULT, wakeCron, isClaudeAgent, wakeDirective, wakeReassert, drainCmd, resolvedId };

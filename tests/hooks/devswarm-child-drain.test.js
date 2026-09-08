@@ -26,6 +26,14 @@ function payload(env) {
   return p;
 }
 
+// SUBAGENT payload — agent_id present, same cmux-reliable discriminator
+// command-guard.js's coordinator-detect.js uses.
+function subagentPayload() {
+  const p = postToolUseBashPayload('git status', { agentId: 'sub-1' });
+  p.cwd = REPO_CWD;
+  return p;
+}
+
 function seedDescriptor(home, id, overrides) {
   const dsw = path.join(home, '.anti-hall', 'devswarm');
   const inboxPath = path.join(dsw, id + '.inbox.ndjson');
@@ -122,6 +130,36 @@ test('FAIL-OPEN: empty stdin -> exit 0, no crash', () => {
   const { testHookRaw } = require('../helpers/spawn-hook.js');
   const r = testHookRaw(HOOK, '', { env: CHILD_ENV });
   assert.strictEqual(r.status, 0);
+});
+
+// defect f0958b13fe2b addendum: this hook previously instructed WHOEVER made
+// the Bash call — including a subagent, which inherits the child's env — to
+// "Drain NOW via `inbox pull ... && inbox ack ...`". Field-measured: three
+// child subagents ran exactly that at 18:49:24Z/04:43:00Z/05:46:28Z,
+// advancing the shared cursor so the workspace's own main thread missed the
+// mail. A subagent must get NOTHING from this hook (command-guard.js's
+// devswarm-subagent-mailbox-guard already blocks the drain command itself if
+// a subagent tries it; this hook must not be the thing that told it to).
+test('SUBAGENT payload -> silent no-op even with a real store-only unread backlog', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
+    const r = testHook(HOOK, subagentPayload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.strictEqual(r.stdout.trim(), '', `SUBAGENT payload must produce zero output; got: ${r.stdout}`);
+  } finally { h.cleanup(); }
+});
+
+test('MAIN THREAD payload (no subagent markers) still injects the drain nudge, unaffected by the subagent gate', () => {
+  const h = makeHome();
+  try {
+    seedDescriptor(h.home, 'child-1');
+    seedStoreOnlyDirect(h.home, 'child-1', 'parent ruling: use approach B');
+    const r = testHook(HOOK, payload(), { home: h.home, env: CHILD_ENV });
+    assert.strictEqual(r.status, 0);
+    assert.ok(ctx(r).includes('DEVSWARM INBOX'), `main-thread injection must be unaffected; ctx=${ctx(r)}`);
+  } finally { h.cleanup(); }
 });
 
 test('NO-OP: DevSwarm not active at all -> silent no-op', () => {

@@ -126,6 +126,17 @@ Pull-not-push: reception latency = one turn (no background child drainer). The d
 the CLI itself runs identically either way. Full detail: `docs/KB-devswarm-hivecontrol.md`
 (v0.54.2 note).
 
+**Subagents never own the mailbox (v0.98.1, defect f0958b13fe2b):** only the workspace
+main thread may run `inbox pull`/`ack`/`read`/`read-primary`/`tick`/`reap-orphans`,
+`heartbeat`, `inbox messages --ack`/`--ack-as-owner`, `mesh read` (without `--peek`/`--seq`),
+or `roster --ack` — a subagent that does advances the shared cursor and the main thread
+silently misses mail. The guard is registered in the shared `command-guard.js` hook
+(`devswarm-subagent-mailbox-guard`), identically in `codex/hooks/hooks.json` — no separate
+Codex code path. Its deny behavior depends on the harness supplying subagent markers
+(`agent_id`/`agent_type`) in the hook payload, which has been verified on Claude Code only.
+Blocks whenever the PreToolUse payload shows subagent context (skip via `ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1` or
+the `devswarm-subagent-mailbox-guard` skip name); see `docs/KB-devswarm-hivecontrol.md` §42.
+
 ## Always-listening reception + archive flow (registered for both agents; CLI is agent-agnostic)
 
 Two v0.56.0 additions:

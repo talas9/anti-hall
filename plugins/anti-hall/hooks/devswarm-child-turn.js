@@ -197,6 +197,26 @@ const RECEIVE_NUDGE =
   'Then read AND ack them via `node ' + CLI + ' inbox read-primary ' +
   '<DEVSWARM_BUILDER_ID>`. Substitute your own DEVSWARM_BUILDER_ID for <...>.';
 
+// substituteId(text, id) -> text with the literal `<DEVSWARM_BUILDER_ID>`
+// placeholder replaced by the real workspace id, when `id` passes the SAME
+// `isSafeId` charset check every other id-shaped value in this file is
+// validated against before being trusted (this is untrusted env input
+// reflected into model-visible, directly-runnable command text — the same
+// prompt-injection boundary `hooks/lib/devswarm-wake.js`'s ID_FIELD guards).
+// Falls back to the UNCHANGED text (placeholder intact) when `id` is absent
+// or unsafe — never interpolates a bad value, never throws.
+//
+// defect 735b179362e8 fix: REMINDER/RECEIVE_NUDGE are built ONCE as module-
+// level constants (so every prior turn emitted the literal placeholder
+// string, unconditionally) — a child agent then had nothing to substitute
+// and addressed the wrong id (its own meshId) instead. Applied at
+// segment-assembly time in main(), where the real `env.DEVSWARM_BUILDER_ID`
+// is actually available.
+function substituteId(text, id) {
+  if (typeof id !== 'string' || !isSafeId(id)) return text;
+  return text.split('<DEVSWARM_BUILDER_ID>').join(id);
+}
+
 // heartbeatKey(builderId, branch) -> a safe single path segment for the heartbeat
 // filename. Keyed by the child's OWN DEVSWARM_BUILDER_ID whenever it is a safe id
 // — this is what devswarm-parent-inbox.js's readHeartbeat(home, d.id) looks up
@@ -900,7 +920,9 @@ function main() {
   // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
   const segments = [];
   if (staleBanner) segments.push(staleBanner);
-  segments.push(OVERRIDE_REASSERT, SELF_CONTINUE, REMINDER, RECEIVE_NUDGE);
+  segments.push(OVERRIDE_REASSERT, SELF_CONTINUE,
+    substituteId(REMINDER, env.DEVSWARM_BUILDER_ID),
+    substituteId(RECEIVE_NUDGE, env.DEVSWARM_BUILDER_ID));
   if (meshDirectSegment) segments.push(meshDirectSegment);
   const info = unreadInfo(env, home);
   let archiveSegmentPushed = false;

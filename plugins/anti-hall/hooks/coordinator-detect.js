@@ -25,6 +25,39 @@ function isSubagent(payload) {
   return false;
 }
 
+// isSubagentByPayload(payload) -> bool. PAYLOAD-ONLY subagent signal — no
+// CLAUDE_CODE_ENTRYPOINT env fallback (Wave R3 review, defect f0958b13fe2b).
+// Use this instead of isSubagent() for any gate whose FALSE-POSITIVE cost is
+// high (i.e. it BLOCKS rather than allows on a subagent match): a DevSwarm
+// child workspace's env is inherited by its ENTIRE process tree, including a
+// possibly-leaked CLAUDE_CODE_ENTRYPOINT=agent_tool if the child session was
+// itself originally spawned as a subagent — that leaked var would then
+// persist across every later process in the SAME session, including the
+// child's own MAIN-THREAD cron tick / Monitor wake, and isSubagent()'s env
+// fallback would misclassify those as a subagent forever, blocking a
+// workspace's own main thread from its own mailbox. The payload-only signal
+// (agent_id/agent_type) has no such leak: Claude Code injects it fresh, per
+// Task-tool call, only into that subagent's OWN payload — it is never
+// present on a main-thread turn's payload regardless of env history.
+//
+// KEY-PRESENCE, not truthiness (Wave R3 P2 hardening): checks `'agent_id' in
+// payload` / `'agent_type' in payload` rather than `payload.agent_id` — a
+// truthy check would treat `agent_id: ""` or `agent_id: 0` as "not a
+// subagent" (falsy), which is the WRONG direction for a signal this
+// conservative: the harness having stamped the KEY onto the payload at all
+// is itself the subagent marker; an unusual falsy-but-present value should
+// still count. `undefined`/`null` values are still excluded (the harness
+// omitting the key entirely and the harness setting it to null are treated
+// the same — neither is evidence of subagent context). Claude Code is not
+// observed to ever emit an empty/falsy `agent_id`/`agent_type` in practice —
+// this hardening covers a shape that has not been seen, not a fixed bug.
+function isSubagentByPayload(payload) {
+  if (!payload || typeof payload !== 'object') return false;
+  const idPresent = 'agent_id' in payload && payload.agent_id != null;
+  const typePresent = 'agent_type' in payload && payload.agent_type != null;
+  return idPresent || typePresent;
+}
+
 // Coordinator = NOT a subagent, running under a recognized interactive entrypoint.
 // Takes the parsed hook payload so it can use the payload's agent markers.
 function isCoordinator(payload) {
@@ -43,4 +76,4 @@ function isCoordinator(payload) {
   return false;
 }
 
-module.exports = { isSubagent, isCoordinator };
+module.exports = { isSubagent, isSubagentByPayload, isCoordinator };

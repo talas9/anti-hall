@@ -531,9 +531,26 @@ function devswarmHookSelfTests() {
     })();
 
     // 2. devswarm-child-gate (Stop, child): forces a self-report before idling.
+    //
+    // Wave 3 addendum item 14 fix: devswarm-child-gate.js gates on
+    // isChildWorkspaceCorroborated() (defect a55d6b71a76f root cause C — #3
+    // above), which requires ON-DISK evidence (a registered
+    // workspaces/<id>.json descriptor for env.DEVSWARM_BUILDER_ID) in
+    // addition to DEVSWARM_SOURCE_BRANCH. This self-test used to spawn the
+    // gate with CHILD_ENV(home) alone — no DEVSWARM_BUILDER_ID, no
+    // descriptor — so isChildWorkspaceCorroborated made the gate a silent
+    // no-op and doctor reported the gate as broken on every install,
+    // regardless of the actual code. Model a REAL child the same way #1's
+    // own descriptor fixture (writeWorkspace, defined above) already does
+    // for #4 below: register a descriptor for a synthetic builder id in this
+    // self-test's OWN isolated temp HOME (never the real home — `base` is an
+    // mkdtempSync fixture root) and pass that same id as DEVSWARM_BUILDER_ID.
     (function () {
       const home = path.join(base, 'child-gate'); fs.mkdirSync(home, { recursive: true });
-      const r = runHook('devswarm-child-gate.js', { hook_event_name: 'Stop', session_id: 'cg-' + Date.now() }, CHILD_ENV(home));
+      const builderId = 'cg-self-test-child';
+      writeWorkspace(home, builderId);
+      const env = Object.assign({}, CHILD_ENV(home), { DEVSWARM_BUILDER_ID: builderId });
+      const r = runHook('devswarm-child-gate.js', { hook_event_name: 'Stop', session_id: 'cg-' + Date.now() }, env);
       const blocked = /"decision"\s*:\s*"block"/.test(r.out);
       results.push({ ok: blocked, msg: blocked
         ? 'devswarm-child-gate forces a child to self-report to its parent before stopping'

@@ -1658,3 +1658,58 @@ test('P0-2 FAIL-OPEN: a lock held past the budget NEVER breaks the turn — the 
     assert.ok(String(additional).includes(REMINDER_PHRASE), 'and the turn output is unaffected');
   } finally { h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// defect 735b179362e8: REMINDER/RECEIVE_NUDGE previously embedded the LITERAL
+// `<DEVSWARM_BUILDER_ID>` placeholder unconditionally — a child agent then had
+// nothing to substitute and used the wrong id (its own meshId) instead. Both
+// segments now substitute the REAL env.DEVSWARM_BUILDER_ID (via
+// substituteId()) when it is present and passes the same isSafeId charset
+// check every other id in this file is validated against; the placeholder is
+// preserved, byte-identical to pre-fix, when the env var is absent/unsafe.
+// ---------------------------------------------------------------------------
+
+test('ID SUBSTITUTION (735b179362e8): env.DEVSWARM_BUILDER_ID set -> the real id replaces the placeholder in both REMINDER and RECEIVE_NUDGE', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: 'child-abc123' },
+    });
+    const c = ctx(r);
+    assert.ok(c.includes('heartbeat child-abc123 --summary'), `REMINDER must substitute the real id; ctx=${c}`);
+    assert.ok(c.includes('inbox pull child-abc123'), `RECEIVE_NUDGE must substitute the real id (pull step); ctx=${c}`);
+    assert.ok(c.includes('inbox read-primary child-abc123'), `RECEIVE_NUDGE must substitute the real id (read-primary step); ctx=${c}`);
+    assert.ok(!c.includes('<DEVSWARM_BUILDER_ID>'), `the placeholder must not leak through once a real safe id is available; ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('ID SUBSTITUTION (735b179362e8): env.DEVSWARM_BUILDER_ID absent -> the placeholder is preserved, byte-identical to pre-fix', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main' },
+    });
+    const c = ctx(r);
+    assert.ok(c.includes('heartbeat <DEVSWARM_BUILDER_ID> --summary'), `REMINDER must keep the placeholder with no real id available; ctx=${c}`);
+    assert.ok(c.includes('inbox pull <DEVSWARM_BUILDER_ID>'), `RECEIVE_NUDGE must keep the placeholder (pull step); ctx=${c}`);
+    assert.ok(c.includes('inbox read-primary <DEVSWARM_BUILDER_ID>'), `RECEIVE_NUDGE must keep the placeholder (read-primary step); ctx=${c}`);
+  } finally { h.cleanup(); }
+});
+
+test('ID SUBSTITUTION (735b179362e8): an UNSAFE DEVSWARM_BUILDER_ID (path traversal / shell metacharacters) never gets interpolated — placeholder preserved', () => {
+  const h = makeHome();
+  try {
+    const r = testHook(HOOK, promptPayload(), {
+      home: h.home,
+      expectJson: true,
+      env: { DEVSWARM_REPO_ID: 'repo-1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: '../../etc/passwd' },
+    });
+    const c = ctx(r);
+    assert.ok(!c.includes('../../etc/passwd'), `an unsafe id must never be interpolated into emitted text; ctx=${c}`);
+    assert.ok(c.includes('<DEVSWARM_BUILDER_ID>'), `must fall back to the placeholder on an unsafe id; ctx=${c}`);
+  } finally { h.cleanup(); }
+});

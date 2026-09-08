@@ -295,6 +295,171 @@ function detectHivectlMessageSend(command, depth) {
   return null;
 }
 
+// devswarm-subagent-mailbox-guard: defect f0958b13fe2b (P0, field-measured by
+// SkyCrew 2026-09-08). Inside a DevSwarm child workspace, the child's OWN
+// subagents ran `node .../scripts/devswarm.js inbox pull <id> && ... inbox
+// ack <id>` — 155 executions across 120 subagent transcripts in one
+// workspace. Each ack ADVANCES THE SHARED CURSOR, so the workspace's own MAIN
+// THREAD silently missed mail it never got to read. Brief-level prohibitions
+// ("subagents must not touch the mailbox") were proven NON-MITIGATING in the
+// field — only a mechanical guard closes it.
+//
+// Matches the devswarm.js CLI (any path prefix — dev clone, marketplace
+// cache, absolute path — with or without a `node` prefix; same anchored
+// `scripts[\\/]devswarm\.js` suffix EXEMPT_PATTERNS already uses above, so it
+// resolves identically) invoking a CURSOR-ADVANCING / MAILBOX-CONSUMING verb
+// (per scripts/devswarm.js's own cmdInbox ~line 8134-8180, cmdHeartbeat,
+// cmdMeshRead ~line 12332, and reap-orphans's cursor writes ~line 13396):
+//   inbox pull | inbox ack | inbox read | inbox read-primary | inbox tick
+//   heartbeat (top-level) | reap-orphans (top-level, writes cursors on reap)
+//   inbox messages ... --ack | --ack-as-owner (P0 Wave R3 fix: the DOCUMENTED
+//     expansion of read-primary — SKILL.md — DOES write the cursor via
+//     cmdInboxMessagesInner's doAck path, ~line 7521-7522; NOT the same as
+//     the safe, non-acking `inbox messages` this guard otherwise allows)
+//   mesh read (WITHOUT --peek/--seq — ~line 12332 advances the broadcast
+//     cursor by default; `--peek`/`--seq N` are the documented non-mutating
+//     forms and stay allowed)
+//   roster --ack (an ALIAS of `mesh read`, D23 — scripts/devswarm.js's own
+//     `case 'roster'` dispatches to cmdMeshRead when `--ack` is present;
+//     plain `roster` with no `--ack` is a pure read-only projection)
+//   register | archive (top-level; Wave R3 P2, R4 Critic: both advance
+//     cursors through foldGroupIntoSurvivor ~line 2654, invoked from
+//     retireWorktreeDuplicates ~2562 and retireArchivedWorktreeGroup ~3350 —
+//     a subagent never legitimately registers or archives a workspace, that
+//     is a main-thread/coordinator lifecycle action. `register-primary` and
+//     `archive-request`/`archive-ignore`/`archive-unignore`/`unarchive` are
+//     SEPARATE verbs, deliberately unaffected.)
+// Deliberately ALLOWS (verified against scripts/devswarm.js: does NOT advance
+// the durable cursor):
+//   inbox count, inbox messages (incl. --tail, WITHOUT --ack/--ack-as-owner —
+//   non-acking per cmdInbox's own `sub !== 'messages'` window-rejection
+//   guard), inbox peek-primary (opts `{ ack: false, unread: true }` at
+//   cmdInbox ~line 8165 — a non-mutating view by design, its own error text
+//   at ~line 7101 recommends it FOR this exact purpose), mesh read --peek /
+//   --seq N, plain roster (no --ack), send, register-primary,
+//   archive-request/archive-ignore/archive-unignore/unarchive,
+//   workspaces/gate/etc (unmatched by construction).
+//
+// NOTE: an earlier draft of this defect's brief also named a `drain` verb —
+// scripts/devswarm.js has NO such verb (confirmed: no `case 'drain'`
+// anywhere in the file); not matched here since it does not exist.
+//
+// Fires whenever the payload shows SUBAGENT context via PAYLOAD MARKERS ONLY
+// (isSubagentByPayload(payload) — coordinator-detect.js; Wave R3 P2 fix: the
+// general-purpose isSubagent()'s CLAUDE_CODE_ENTRYPOINT=agent_tool env
+// fallback is deliberately NOT used here — a DevSwarm child workspace's env
+// is inherited by its entire process tree, so a leaked agent_tool value from
+// how the CHILD SESSION ITSELF was originally spawned would otherwise
+// misclassify that workspace's own main-thread cron tick / Monitor wake as a
+// subagent forever, blocking it from its own mailbox), REGARDLESS of
+// DevSwarm-active/child-workspace status: an accidental subagent
+// mailbox-touch is wrong even outside a recognized child workspace (it may
+// be running against the PARENT's own registry). Modeled on
+// devswarm-read-guard/devswarm-send-guard above: its OWN skip name
+// (`devswarm-subagent-mailbox-guard`), independent of command-guard's own
+// skip/coordinator gate below, PLUS a dedicated env override
+// (`ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1`) for a deliberate one-off.
+// Fully fail-open: any throw -> fall through (never block on a guard bug).
+//
+// Codex parity: this guard is registered via the SHARED command-guard.js in
+// codex/hooks/hooks.json — no separate Codex code path. Its DENY behavior
+// depends on the harness actually supplying subagent markers (agent_id/
+// agent_type) in the hook payload; this has been VERIFIED ON CLAUDE CODE
+// ONLY. A grep of plugins/anti-hall/codex for agent_id/agent_type returns 0
+// hits (codex/README.md:48 confirms no such payload-marker mapping exists
+// there), so whether Codex's harness populates these fields the same way is
+// UNVERIFIED — the guard is registered either way (fail-open if the markers
+// are simply absent, same as any other unmatched context), but its blocking
+// behavior for Codex subagents specifically has not been demonstrated.
+//
+// FLAG_SKIP_SRC allows an optional non-flag VALUE after each flag (Wave R3
+// P2 fix, Reviewer 1: the prior `(?:-\S+\s+)*` skipped only bare flags, so a
+// valued flag BEFORE the verb — `--session X inbox ack Y` — broke the match
+// entirely at "X" and silently bypassed the guard; this consumes the
+// optional value too).
+const FLAG_SKIP_SRC = '(?:-\\S+(?:\\s+[^-\\s]\\S*)?\\s+)*';
+const DEVSWARM_JS_PREFIX_SRC = '(?:node\\s+)?(?:\\S*[\\\\/])?scripts[\\\\/]devswarm\\.js';
+
+// register/archive (Wave R3 P2, R4 Critic): both advance cursors through
+// foldGroupIntoSurvivor (scripts/devswarm.js ~2654, invoked from
+// retireWorktreeDuplicates ~2562 and retireArchivedWorktreeGroup ~3350) — a
+// subagent never legitimately registers or archives a workspace, that is a
+// main-thread/coordinator lifecycle action. Negative lookahead `(?!-)`
+// excludes the SEPARATE, allowed lifecycle verbs `register-primary` and
+// `archive-request`/`archive-ignore`/`archive-unignore`/`unarchive` (the
+// leading `\b` this alternation is embedded under already excludes
+// `unarchive`'s mid-word "archive" substring — no boundary exists between
+// "un" and "archive").
+const MAILBOX_VERB_ALT = '(?:inbox\\s+' + FLAG_SKIP_SRC
+  + '(?:pull|ack|read-primary|read|tick)\\b|heartbeat\\b|reap-orphans\\b|register(?!-)\\b|archive(?!-)\\b)';
+const DEVSWARM_JS_MAILBOX_RE = new RegExp(
+  '\\b' + DEVSWARM_JS_PREFIX_SRC + '\\s+' + FLAG_SKIP_SRC + MAILBOX_VERB_ALT,
+  'i'
+);
+
+// inbox messages + --ack/--ack-as-owner: TWO-PART detection (base-verb match
+// AND a flag scan across the whole segment) because the flag can legally
+// appear before OR after the target id / other flags.
+const DEVSWARM_JS_INBOX_MESSAGES_RE = new RegExp(
+  '\\b' + DEVSWARM_JS_PREFIX_SRC + '\\s+' + FLAG_SKIP_SRC + 'inbox\\s+' + FLAG_SKIP_SRC + 'messages\\b',
+  'i'
+);
+const ACK_FLAG_RE = /--ack-as-owner\b|--ack\b/i;
+
+// mesh read WITHOUT --peek/--seq. Two-part for the same reason as above.
+const DEVSWARM_JS_MESH_READ_RE = new RegExp(
+  '\\b' + DEVSWARM_JS_PREFIX_SRC + '\\s+' + FLAG_SKIP_SRC + 'mesh\\s+' + FLAG_SKIP_SRC + 'read\\b',
+  'i'
+);
+const MESH_READ_SAFE_FLAG_RE = /--peek\b|--seq\b/i;
+
+// roster --ack (mesh-read alias, D23). Two-part: base verb + flag scan.
+const DEVSWARM_JS_ROSTER_RE = new RegExp(
+  '\\b' + DEVSWARM_JS_PREFIX_SRC + '\\s+' + FLAG_SKIP_SRC + 'roster\\b',
+  'i'
+);
+const ROSTER_ACK_FLAG_RE = /--ack\b/i;
+
+function mailboxTouchInSegment(dequoted) {
+  if (DEVSWARM_JS_MAILBOX_RE.test(dequoted)) return true;
+  if (DEVSWARM_JS_INBOX_MESSAGES_RE.test(dequoted) && ACK_FLAG_RE.test(dequoted)) return true;
+  if (DEVSWARM_JS_MESH_READ_RE.test(dequoted) && !MESH_READ_SAFE_FLAG_RE.test(dequoted)) return true;
+  if (DEVSWARM_JS_ROSTER_RE.test(dequoted) && ROSTER_ACK_FLAG_RE.test(dequoted)) return true;
+  return false;
+}
+
+function detectSubagentMailboxTouch(command, depth) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const d = typeof depth === 'number' ? depth : 0;
+  for (const seg of splitSegments(command)) {
+    const dequoted = dequoteSegment(seg);
+    if (mailboxTouchInSegment(dequoted)) return true;
+    if (d < 3) {
+      const payload = extractShellCPayload(seg);
+      if (payload && detectSubagentMailboxTouch(payload, d + 1)) return true;
+      const evalPayload = extractEvalPayload(seg);
+      if (evalPayload && detectSubagentMailboxTouch(evalPayload, d + 1)) return true;
+    }
+  }
+  if (d < 3) {
+    for (const inner of extractSubstitutions(command)) {
+      if (detectSubagentMailboxTouch(inner, d + 1)) return true;
+    }
+  }
+  return false;
+}
+function buildSubagentMailboxReason() {
+  return 'DEVSWARM SUBAGENT MAILBOX GUARD: this Bash command invokes the DevSwarm mailbox ' +
+    '(inbox pull/ack/read/read-primary/tick, inbox messages --ack, mesh read, roster --ack, ' +
+    'reap-orphans, register, archive, or heartbeat) from SUBAGENT context. Only the workspace MAIN THREAD may own ' +
+    'the mailbox — a subagent that acks/reads it advances the shared cursor, so the main thread ' +
+    'silently misses mail (defect f0958b13fe2b). Do NOT delegate mailbox verbs to a subagent. ' +
+    'Report what you learned back to your parent instead; the main thread will drain the ' +
+    'mailbox itself. Read-only verbs (`inbox count`, `inbox peek-primary`, `mesh read --peek`, ' +
+    'plain `roster`) are unaffected. To disable this guard entirely, set ' +
+    'ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1.';
+}
+
 // buildDevswarmSendReason(kind) -> closed-vocabulary block reason (NEVER reflects
 // command/stdin text — injection hygiene). Redirects to the mesh CLI verbs from
 // PLAN.md's CLI VERB CONTRACT: `send --to-primary|--to <meshId>` to direct-
@@ -1022,6 +1187,27 @@ function main() {
     }
   } catch (_) {
     // fail-open: never block a turn on a devswarm-send-guard bug.
+  }
+
+  // devswarm-subagent-mailbox-guard (defect f0958b13fe2b): fires ONLY in
+  // SUBAGENT context, in ALL DevSwarm-active/child/coordinator combinations —
+  // its OWN skip name, independent of command-guard's own skip/coordinator
+  // gate below, PLUS the dedicated ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1 env
+  // override. Uses isSubagentByPayload (PAYLOAD MARKERS ONLY, no
+  // CLAUDE_CODE_ENTRYPOINT env fallback — see that function's own header for
+  // why the env fallback is unsafe HERE specifically). Fully fail-open: any
+  // throw -> fall through (never block).
+  try {
+    const { isSubagentByPayload } = require('./coordinator-detect.js');
+    if (isSubagentByPayload(payload)
+      && process.env.ANTIHALL_ALLOW_SUBAGENT_MAILBOX !== '1'
+      && !isSkipped('devswarm-subagent-mailbox-guard')
+      && detectSubagentMailboxTouch(command)) {
+      fs.writeSync(1, JSON.stringify({ decision: 'block', reason: buildSubagentMailboxReason() }) + '\n');
+      process.exit(2);
+    }
+  } catch (_) {
+    // fail-open: never block a turn on a devswarm-subagent-mailbox-guard bug.
   }
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).

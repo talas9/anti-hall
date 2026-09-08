@@ -59,3 +59,28 @@ test('wake-directive: missing/invalid id -> ok:false, never crashes', () => {
   const r2 = cli.run(['wake-directive', '../../etc/passwd'], ctx({ DEVSWARM_AI_AGENT: 'claude' })).result;
   assert.equal(r2.ok, false);
 });
+
+// Wave 3 P2 fix: the argv id (what this verb was explicitly CALLED WITH) must
+// win over ctx.env.DEVSWARM_BUILDER_ID (the caller's OWN process env, which can
+// legitimately differ — e.g. a Primary asking `wake-directive <some-other-
+// workspace-id>` to reprint a DIFFERENT workspace's directive, or a re-
+// registration where env still carries a stale/truncated id). Before this fix,
+// wakeDirective() resolved+embedded the ENV id internally before
+// cmdWakeDirective's own placeholder substitution ever ran, so env id A leaked
+// into the printed text instead of the requested argv id B.
+test('wake-directive <id>: env DEVSWARM_BUILDER_ID (A) differs from argv id (B) -> directive names B, never A', () => {
+  const r = cli.run(['wake-directive', 'id-B'],
+    ctx({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_BUILDER_ID: 'id-A' })).result;
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(r.directive.includes('id-B'), 'the argv id must be embedded');
+  assert.ok(!r.directive.includes('id-A'), 'the env id must NOT leak into the printed directive');
+});
+
+test('wake-directive <id>: env DEVSWARM_BUILDER_ID (A) differs from argv id (B), CHILD workspace -> directive names B, never A', () => {
+  const r = cli.run(['wake-directive', 'id-B'],
+    ctx({ DEVSWARM_AI_AGENT: 'claude', DEVSWARM_SOURCE_BRANCH: 'feature/x', DEVSWARM_BUILDER_ID: 'id-A' })).result;
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.isChild, true);
+  assert.ok(r.directive.includes('id-B'), 'the argv id must be embedded');
+  assert.ok(!r.directive.includes('id-A'), 'the env id must NOT leak into the printed directive');
+});
