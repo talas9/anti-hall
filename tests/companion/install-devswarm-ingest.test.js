@@ -562,3 +562,61 @@ test('validateArgs / usageText / KNOWN_FLAGS: pure-function coverage', () => {
   m.validateArgs(['--uninstall']);
   m.validateArgs(['--dry-run', '--uninstall']);
 });
+
+// ---------------------------------------------------------------------------
+// Critic R2: installCron/uninstallCron used to call spawnSync('crontab', ['-'],
+// ...) DIRECTLY, bypassing planRun — so neither --dry-run nor the
+// NODE_TEST_CONTEXT guard protected the crontab on Linux (only the plist/
+// service writes were guarded). Fixed to route through planRun. This module
+// was required in-process, so it inherited this test worker's own
+// NODE_TEST_CONTEXT env var and therefore its `DRYRUN` is already forced true
+// — proving these calls never reach the real `crontab -` spawn.
+// ---------------------------------------------------------------------------
+test('installCron under dry-run: records a planned "crontab -" run, spawns nothing', () => {
+  const origWrite = process.stdout.write;
+  let out = '';
+  process.stdout.write = (chunk) => { out += chunk; return true; };
+  try {
+    m.installCron('/tmp/anti-hall-fake-worktree-for-test', 'anti-hall-test-marker-installcron');
+  } finally {
+    process.stdout.write = origWrite;
+  }
+  assert.match(out, /\[dry-run\] would run: crontab -/, 'installCron must plan the crontab write via planRun, not spawn it directly');
+  assert.ok(!/^ran: crontab/m.test(out), 'must not actually invoke crontab');
+});
+
+test('uninstallCron under dry-run: never spawns a real "crontab -" run', () => {
+  // uninstallCron() is a no-op unless its marker is actually present in the
+  // (real, unmocked) crontab -l output, which this sandboxed test env does
+  // not have — so the deterministic, environment-independent assertion is
+  // "never a real spawn", proven regardless of whether it takes the no-op or
+  // the planned-write branch. readCrontab is exported and fail-open (always
+  // a string) so uninstallCron itself never throws reaching that branch.
+  assert.strictEqual(typeof m.readCrontab(), 'string', 'readCrontab is fail-open (always returns a string)');
+  const origWrite = process.stdout.write;
+  let out = '';
+  process.stdout.write = (chunk) => { out += chunk; return true; };
+  try {
+    m.uninstallCron('/tmp/anti-hall-fake-worktree-for-test', 'anti-hall-test-marker-uninstallcron');
+  } finally {
+    process.stdout.write = origWrite;
+  }
+  assert.ok(!/^ran: crontab/m.test(out), 'must not actually invoke crontab');
+});
+
+// Structural regression guard (source-level): install/uninstallCron's crontab
+// write must go through planRun (which itself owns the DRYRUN/NODE_TEST_CONTEXT
+// gate before ever touching spawnSync), never a bare spawnSync call — that bare
+// form is exactly the bypass this fix closes.
+test('regression: installCron/uninstallCron source calls planRun, not spawnSync, for the crontab write', () => {
+  const src = fs.readFileSync(MOD, 'utf8');
+  const installIdx = src.indexOf('function installCron');
+  const uninstallIdx = src.indexOf('function uninstallCron');
+  const linuxInstallIdx = src.indexOf('\nfunction linuxInstall(', uninstallIdx);
+  const installBody = src.slice(installIdx, uninstallIdx);
+  const uninstallBody = src.slice(uninstallIdx, linuxInstallIdx);
+  assert.match(installBody, /planRun\('crontab', \['-'\]/, 'installCron must route its crontab write through planRun');
+  assert.doesNotMatch(installBody, /spawnSync\('crontab'/, 'installCron must not call spawnSync directly');
+  assert.match(uninstallBody, /planRun\('crontab', \['-'\]/, 'uninstallCron must route its crontab write through planRun');
+  assert.doesNotMatch(uninstallBody, /spawnSync\('crontab'/, 'uninstallCron must not call spawnSync directly');
+});

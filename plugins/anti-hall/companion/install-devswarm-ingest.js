@@ -112,9 +112,45 @@ const UNINSTALL = args.includes('--uninstall');
 // still proves the full spawn plumbing without mutating the host's launchd.
 // Opt-in only — never set in production, and absent in CI (where the upstream
 // DEVSWARM_REPO_ID gate is closed anyway).
-const DRYRUN = args.includes('--dry-run') || process.env.ANTIHALL_INGEST_DRY_RUN === '1';
+//
+// STRUCTURAL TEST-CONTEXT GUARD (v0.98.3 fix-wave R2, closes the CLASS of
+// defect ec33954162ef, not just the one instance): a test that forgets to set
+// ANTIHALL_INGEST_DRY_RUN=1 — exactly the mistake that caused the original
+// leak — used to have NO safety net left; the real installer would run for
+// real. Node sets `NODE_TEST_CONTEXT` in every `node --test` worker process
+// (verified on this machine: present in the worker AND inherited by a
+// spawnSync'd child — the exact shape `defaultSpawnInstaller`/
+// `defaultSchedRunViaPlan` spawn through), so this file also forces dry-run
+// whenever that env var is present, with NO opt-out. This is a fallback, not
+// a replacement for explicit ANTIHALL_INGEST_DRY_RUN=1 — a test run OUTSIDE
+// `node --test` (e.g. a plain `node install-devswarm-ingest.js` a developer
+// runs by hand to smoke-test) still needs the explicit flag/env.
+const EXPLICIT_DRYRUN = args.includes('--dry-run') || process.env.ANTIHALL_INGEST_DRY_RUN === '1';
+const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && !!process.env.NODE_TEST_CONTEXT;
+const DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD;
 
 function say(msg) { process.stdout.write(msg + '\n'); }
+
+// noteNodeTestContextGuardTripped() — prints the ONE stderr notice for the
+// NODE_TEST_CONTEXT fallback, but only at the moment it actually intercepts a
+// real write/rm/run call (planWrite/planRm/planRun below), not at module
+// load. Requiring this module under `node --test` (61+ test files do) must
+// stay silent — the notice fires only when a real mutation was actually
+// prevented, and at most once per process even if multiple calls are
+// intercepted.
+let _nodeTestContextGuardNoted = false;
+function noteNodeTestContextGuardTripped() {
+  if (!NODE_TEST_CONTEXT_GUARD || _nodeTestContextGuardNoted) return;
+  _nodeTestContextGuardNoted = true;
+  try {
+    process.stderr.write(
+      'anti-hall: install-devswarm-ingest.js detected NODE_TEST_CONTEXT (running under `node --test`'
+      + ' or a child process spawned from it) — forcing dry-run to prevent a real launchd/systemd'
+      + ' registration leak (defect ec33954162ef). Set ANTIHALL_INGEST_DRY_RUN=1 explicitly if this'
+      + ' run genuinely needs the real, unmocked spawn path.\n'
+    );
+  } catch (_) {}
+}
 
 // ---------------------------------------------------------------------------
 // CLI arg validation (footgun fix): installing is a side-effecting action
@@ -161,7 +197,7 @@ let _tmpCounter = 0;
 // atomic on POSIX, so an ENOSPC/interruption can never leave a partial/corrupt
 // unit. On any error the temp file is unlinked and the original is left intact.
 function planWrite(file, contents) {
-  if (DRYRUN) { say(`[dry-run] would write ${file}`); return; }
+  if (DRYRUN) { noteNodeTestContextGuardTripped(); say(`[dry-run] would write ${file}`); return; }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.${_tmpCounter++}.tmp`;
   try {
@@ -174,11 +210,11 @@ function planWrite(file, contents) {
   say(`wrote ${file}`);
 }
 function planRm(file) {
-  if (DRYRUN) { say(`[dry-run] would remove ${file}`); return; }
+  if (DRYRUN) { noteNodeTestContextGuardTripped(); say(`[dry-run] would remove ${file}`); return; }
   try { fs.unlinkSync(file); say(`removed ${file}`); } catch (_e) { say(`(not present) ${file}`); }
 }
 function planRun(cmd, argv, opts) {
-  if (DRYRUN) { say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`); return { status: 0, dry: true }; }
+  if (DRYRUN) { noteNodeTestContextGuardTripped(); say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`); return { status: 0, dry: true }; }
   const r = spawnSync(cmd, argv, { encoding: 'utf8', ...(opts || {}) });
   if (r.error) say(`(warn) ${cmd} failed: ${r.error.message}`);
   else say(`ran: ${cmd} ${argv.join(' ')} (exit ${r.status})`);
@@ -1040,7 +1076,7 @@ function installCron(workdir, markerOverride) {
   const marker = markerOverride || cronMarkerForWorktree(workdir);
   const { next, changed } = mergeCrontab(readCrontab(), buildCronEntry({ workdir, marker }), marker);
   if (!changed) { say(`cron entry already present (marker ${marker}); crontab left as-is`); return; }
-  const r = spawnSync('crontab', ['-'], { input: next, encoding: 'utf8' });
+  const r = planRun('crontab', ['-'], { input: next, encoding: 'utf8' });
   if (r.error || r.status !== 0) {
     say('(warn) could not install cron entry via `crontab -`; add it manually (crontab -e):');
     say(`  ${marker}`);
@@ -1058,7 +1094,7 @@ function uninstallCron(workdir, markerOverride) {
   const marker = markerOverride || (workdir ? cronMarkerForWorktree(workdir) : CRON_MARKER);
   const { next, changed } = removeCronEntry(readCrontab(), marker);
   if (!changed) return;
-  const r = spawnSync('crontab', ['-'], { input: next, encoding: 'utf8' });
+  const r = planRun('crontab', ['-'], { input: next, encoding: 'utf8' });
   if (!r.error && r.status === 0) say(`removed cron fallback (managed marker ${marker})`);
 }
 
@@ -1260,6 +1296,296 @@ function listInstalledIngestUnits(opts) {
     }
   } catch (_) { return units; }
   return units; // win32 / unknown: no installed unit is readable
+}
+
+// v0.98 — launchd/systemd-list-based orphan detection (independent of git
+// worktree list, D9's blind spot for already-removed worktrees; defect
+// ec33954162ef). listInstalledIngestUnits above enumerates from the FILE
+// SYSTEM (plist/service/crontab present on disk); this enumerates from the
+// SCHEDULER'S OWN registration list (`launchctl list` / `systemctl --user
+// list-units`). A label can be loaded in the scheduler with NO matching file
+// on disk at all — confirmed live on this machine: a test fixture's tmp HOME
+// registered a real LaunchAgent, the HOME was deleted, the plist was never
+// written under the REAL home to begin with (module-level HOME, not the
+// fixture's), so `launchctl list` still shows it retrying forever (exit 78)
+// while listInstalledIngestUnits (which only reads from disk) can never see
+// it. D9's `git worktree list`-driven reap (reapLegacyUnitsForRepo) is
+// blind to this for the same reason: it enumerates FROM the worktree, and
+// the worktree is long gone.
+
+// defaultListLoadedLaunchd() -> [{label, pid, lastExit}] for every loaded
+// launchd label matching LABEL. `launchctl list`'s bare (no-label-arg) form
+// prints `PID\tStatus\tLabel` with a header row first; parsed defensively
+// (whitespace-split, length guard) — never assume fixed column widths.
+function defaultListLoadedLaunchd() {
+  let r;
+  try { r = spawnSync('launchctl', ['list'], { encoding: 'utf8' }); } catch (_) { return []; }
+  if (!r || r.error || r.status !== 0) return [];
+  return String(r.stdout || '').split('\n').slice(1)
+    .map((l) => l.trim().split(/\s+/))
+    .filter((f) => f.length >= 3 && f[2].startsWith(LABEL))
+    .map((f) => ({ label: f[2], pid: f[0] === '-' ? null : Number(f[0]), lastExit: f[1] }));
+}
+// defaultListLoadedSystemd() -> [{label:null, unit}] for every loaded
+// systemd --user unit matching UNIT. Cron has no "loaded" concept distinct
+// from the crontab itself — a crontab line IS the sole registration record,
+// so it needs no separate loaded-set probe (already covered by
+// listInstalledIngestUnits' own cron scan).
+function defaultListLoadedSystemd() {
+  let r;
+  try {
+    r = spawnSync('systemctl', ['--user', 'list-units', '--all', '--no-legend', '--plain'], { encoding: 'utf8' });
+  } catch (_) { return []; }
+  if (!r || r.error || r.status !== 0) return [];
+  return String(r.stdout || '').split('\n')
+    .map((l) => l.trim().split(/\s+/)[0])
+    .filter((u) => u && u.startsWith(UNIT) && u.endsWith('.service'))
+    .map((u) => ({ label: null, unit: u.slice(0, -'.service'.length) }));
+}
+// listLoadedIngestLabels(opts) -> [{label|null, unit?|null, pid?, lastExit?}].
+// opts.io.listLoaded (test injection) overrides the platform-specific default.
+// Fail-open: any thrown error or unrecognized platform (incl. win32) -> [].
+function listLoadedIngestLabels(opts) {
+  const o = opts || {};
+  const platform = o.platform || process.platform;
+  const list = (o.io && o.io.listLoaded)
+    || (platform === 'darwin' ? defaultListLoadedLaunchd
+      : platform === 'linux' ? defaultListLoadedSystemd
+        : () => []);
+  try { return list() || []; } catch (_) { return []; }
+}
+
+// ingestHealthMod() — lazy, fail-open require of companion/lib/ingest-health.js
+// (D27: this file is required top-level by hooks whose fail-open guarantee
+// does not cover a throwing top-level require — see the repokey guard above
+// for the same rationale).
+function ingestHealthModForOrphans() {
+  try { return require('./lib/ingest-health.js'); } catch (_) { return {}; }
+}
+
+// parseLoadedSuffix(name, prefix, sep) -> {hash, repoKey} | null (neither set
+// when the suffix matches neither disjoint regex — an unrecognized label we
+// must never touch). Reuses LEGACY_UNIT_HASH_RE / PROJECT_UNIT_KEY_RE
+// VERBATIM (D28, same disjoint-by-construction pair listInstalledIngestUnits
+// already classifies installed units with) so a loaded label is classified
+// identically to how an installed one is — never a second parser.
+function parseLoadedSuffix(name, prefix, sep) {
+  if (!name || !name.startsWith(prefix)) return null;
+  const rest = name.slice(prefix.length);
+  if (rest === '') return { hash: null, repoKey: null };
+  if (!rest.startsWith(sep)) return null;
+  const suffix = rest.slice(sep.length);
+  if (LEGACY_UNIT_HASH_RE.test(suffix)) return { hash: suffix, repoKey: null };
+  if (PROJECT_UNIT_KEY_RE.test(suffix)) return { hash: null, repoKey: suffix };
+  return null;
+}
+
+// unitLiveness(kind, key, opts) -> bool. Approximates "this project/worktree
+// has a live session" — never-unload guard rule 3. Deliberately an OR of the
+// two independent signals (fresh heartbeat OR a live-pid lock), NOT
+// daemonHealth()'s stricter AND-of-both 'healthy' status: a project that is
+// merely mid-startup (live lock, heartbeat not yet written) or whose lock was
+// just released but whose heartbeat is still fresh must both still block
+// eligibility — either signal alone is enough to prove "not orphaned".
+// Mirrors D25's fail-open convention throughout: a missing/unreadable/
+// malformed file reads as NOT-live for that one signal, never throws.
+function unitLiveness(kind, key, opts) {
+  const o = opts || {};
+  const home = o.home || HOME;
+  if (kind === 'repoKey' && key) {
+    const health = ingestHealthModForOrphans();
+    if (typeof health.daemonHealth !== 'function') return true; // can't confirm dead -> never touch
+    let h;
+    try { h = health.daemonHealth(home, key, o); } catch (_) { return true; }
+    return !!(h && (h.fresh || h.liveLock));
+  }
+  if (kind === 'hash' && key) {
+    const F = (o.io && o.io.fs) || fs;
+    const isAlive = (o.io && o.io.isAlive) || ((pid) => {
+      if (!Number.isFinite(pid) || pid <= 0) return false;
+      try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
+    });
+    // OR of TWO independent signals, matching the repoKey branch above (P1
+    // fix: a released lock with a still-fresh legacy heartbeat used to read
+    // as dead here — same devswarm-ingest.js ingestHeartbeatPath(home, hash)
+    // shape the daemon itself writes every sweep, heartbeats/ingest-<hash>.json).
+    let liveLock = false;
+    try {
+      const raw = F.readFileSync(path.join(devswarmRoot(home), 'locks', 'ingest-' + key + '.lock'), 'utf8');
+      const holder = JSON.parse(raw);
+      const pid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
+      liveLock = pid !== null && isAlive(pid);
+    } catch (_) { liveLock = false; } // missing/unreadable/malformed lock = NOT-live (D25 convention)
+    let freshHeartbeat = false;
+    try {
+      const now = Number.isFinite(o.now) ? o.now : Date.now();
+      const raw = F.readFileSync(path.join(devswarmRoot(home), 'heartbeats', 'ingest-' + key + '.json'), 'utf8');
+      const beat = JSON.parse(raw);
+      const ts = beat && Number.isFinite(beat.ts) ? beat.ts : null;
+      const staleMs = Number.isFinite(ingestHealthModForOrphans().HEARTBEAT_STALE_MS) ? ingestHealthModForOrphans().HEARTBEAT_STALE_MS : (3 * 60 * 1000);
+      freshHeartbeat = ts !== null && (now - ts) <= staleMs;
+    } catch (_) { freshHeartbeat = false; } // missing/unreadable/malformed = NOT-fresh (D25 convention)
+    return liveLock || freshHeartbeat;
+  }
+  return true; // unresolvable key -> can't confirm dead -> never touch
+}
+
+// classifyLoadedLabel(entry) -> one of 'healthy' | 'orphan-no-plist' |
+// 'orphan-path-gone' | 'unknown'. Pure — takes an already-resolved entry
+// {installed, pathExists, kind, live} and returns exactly the class table
+// documented in the design (duplicate-label-same-project is layered on top
+// by orphanReapPlan below, since it is a CROSS-entry property, not a
+// per-entry one). A label can be BOTH "no plist" and "path gone" at once
+// (sampled live) — orphan-no-plist wins (narrower: nothing to safely inspect
+// at all).
+function classifyLoadedLabel(entry) {
+  if (!entry.installed) return 'orphan-no-plist';
+  if (!entry.pathExists) return 'orphan-path-gone';
+  if (entry.kind === 'unknown') return 'unknown';
+  if (entry.live) return 'healthy';
+  // Plist present, path exists, but neither signal proves liveness (e.g. a
+  // daemon that has not yet written its first heartbeat/lock). Ambiguous —
+  // never assumed safe, never auto-unloaded; the EXISTING ingest-health
+  // reporting already surfaces this case elsewhere.
+  return 'unknown';
+}
+
+// orphanReapPlan(opts) -> [{label, unit, pid, scriptPath, workingDir,
+// plistPresent, pathExists, class, eligible}]. Composes
+// listLoadedIngestLabels + listInstalledIngestUnits + ingest-health.js's
+// daemonHealth exactly as designed. `eligible` is true ONLY for class
+// 'orphan-no-plist' AND no live heartbeat/lock for its repoKey/hash — i.e.
+// NO plist on disk AND NO resolvable path (an entry with either can never be
+// eligible; enforced by a final invariant check below). `orphan-path-gone`
+// and `duplicate-label-same-project` are ALWAYS report-only — a plist exists
+// on disk for both, so unloading them is the EXISTING reap machinery's job
+// (reapLegacyUnitsForRepo / stopLegacyUnitEntry), never this new
+// label-only bootout/stop path.
+function orphanReapPlan(opts) {
+  const o = opts || {};
+  const home = o.home || HOME;
+  const platform = o.platform || process.platform;
+  const loaded = listLoadedIngestLabels(o);
+  const installed = listInstalledIngestUnits(Object.assign({}, o, { home, platform }));
+  const entries = [];
+  for (const l of loaded) {
+    let parsed = null;
+    let matched = null;
+    let kind = 'unknown';
+    let key = null;
+    let unitName = null;
+    if (platform === 'darwin') {
+      parsed = parseLoadedSuffix(l.label, LABEL, '.');
+      matched = installed.find((u) => u.label === l.label) || null;
+      unitName = l.label;
+    } else if (platform === 'linux') {
+      parsed = parseLoadedSuffix(l.unit, UNIT, '-');
+      matched = installed.find((u) => u.unit === l.unit) || null;
+      unitName = l.unit;
+    }
+    if (parsed) {
+      if (parsed.hash) { kind = 'hash'; key = parsed.hash; }
+      else if (parsed.repoKey) { kind = 'repoKey'; key = parsed.repoKey; }
+      else { kind = 'legacy-base'; key = null; } // base label/unit, no suffix at all
+    }
+    const workingDir = matched ? matched.workingDir : null;
+    const scriptPath = matched ? matched.scriptPath : null;
+    let pathExists = false;
+    if (matched) {
+      try { pathExists = !!(workingDir && fs.existsSync(workingDir)); } catch (_) { pathExists = false; }
+    }
+    const live = parsed ? unitLiveness(kind, key, o) : true; // unrecognized suffix -> can't confirm dead
+    const cls = classifyLoadedLabel({ installed: matched, pathExists, kind: parsed ? kind : 'unknown', live });
+    entries.push({
+      label: l.label || null, unit: unitName && platform === 'linux' ? unitName : (l.unit || null),
+      pid: l.pid != null ? l.pid : null, scriptPath, workingDir,
+      plistPresent: !!matched, pathExists, kind, key, class: cls,
+      // SINGLE POINT OF ELIGIBILITY (P0 fix, defect ec33954162ef fix-wave R2):
+      // eligible for the NEW bootout/stop repair path ONLY for class
+      // 'orphan-no-plist' with no live heartbeat/lock. `orphan-path-gone`
+      // stays REPORT-ONLY here — a plist DOES exist for it, so it is the
+      // EXISTING reap machinery's job (reapLegacyUnitsForRepo /
+      // stopLegacyUnitEntry), never this new label-only unload. This is set
+      // exactly once and is NEVER reassigned by the duplicate-detection pass
+      // below (that pass only ever touches `class`).
+      eligible: cls === 'orphan-no-plist' && !live,
+    });
+  }
+  // Cross-entry duplicate detection: 2+ loaded entries whose repoKey resolves
+  // to the SAME project — only possible for the legacy hash form (a
+  // per-project label already IS 1:1 with repoKey by construction). This can
+  // only ever fire for an entry that HAS a plist to read a workingDir from
+  // (orphan-no-plist entries have no plist, so they never enter this pass,
+  // and eligibility was already fixed above regardless). REPORT-ONLY: a
+  // `duplicate-label-same-project` finding never sets `eligible` — even a
+  // provably-quiet duplicate is reported, never auto-unloaded by this path
+  // (P0 fix: the previous version marked BOTH members of a plist-present,
+  // worktree-present group eligible via this pass, which the apply loop
+  // — filtering on `eligible` alone — would have booted out for real).
+  if (repokey && typeof repokey.repoKeyForWorktree === 'function') {
+    const byRepoKey = new Map();
+    for (const e of entries) {
+      if (e.kind !== 'hash' || !e.workingDir || !e.pathExists) continue;
+      let rk = null;
+      try { rk = repokey.repoKeyForWorktree(e.workingDir); } catch (_) { rk = null; }
+      if (!rk) continue;
+      if (!byRepoKey.has(rk)) byRepoKey.set(rk, []);
+      byRepoKey.get(rk).push(e);
+    }
+    for (const [, group] of byRepoKey) {
+      if (group.length < 2) continue;
+      for (const e of group) {
+        e.class = 'duplicate-label-same-project';
+        e.eligible = false; // report-only, unconditionally — see comment above
+      }
+    }
+  }
+  // FINAL INVARIANT (P0 fix): any entry this function marks eligible MUST
+  // have no plist on disk and no resolvable path — anything else means a
+  // classification bug upstream could boot out a real, on-disk-registered
+  // unit. Fail CLOSED (empty plan, never a partially-trusted one) rather than
+  // ever returning a plan doctor-repair.js's apply loop might act on.
+  for (const e of entries) {
+    if (e.eligible && (e.plistPresent || e.pathExists)) {
+      try {
+        process.stderr.write(
+          'anti-hall: orphanReapPlan invariant violated — eligible entry ' + (e.label || e.unit || '(unknown)')
+          + ' has plistPresent=' + e.plistPresent + ' pathExists=' + e.pathExists
+          + ' (must both be false). Returning an EMPTY plan (fail-closed).\n'
+        );
+      } catch (_) {}
+      return [];
+    }
+  }
+  return entries;
+}
+
+// bootoutLoadedLabel(label, opts) -> {status, stdout, error}. macOS-only
+// unload for a label that has NO plist to unload with (orphan-no-plist has
+// nothing to `launchctl unload <path>` against) — `launchctl bootout
+// gui/$(id -u)/<label>` (10.11+, i.e. every currently-supported macOS; no
+// version probe needed) is the modern form that unloads by LABEL alone.
+// Never `kill -9` a PID directly (scheduler-mediated stop only, matching
+// every existing stop path in this file). Routed through opts.io.schedRun /
+// production defaultSchedRunViaPlan exactly like stopLegacyUnitEntry, so
+// `main() --dry-run` (or a mocked test) never issues a real spawn.
+function bootoutLoadedLabel(label, opts) {
+  const o = opts || {};
+  const run = (o.io && o.io.schedRun) || defaultSchedRunViaPlan;
+  const uid = (o.io && o.io.uid) || process.getuid;
+  let uidStr = '0';
+  try { uidStr = String(typeof uid === 'function' ? uid() : uid); } catch (_) { uidStr = '0'; }
+  return run({ cmd: 'launchctl', args: ['bootout', `gui/${uidStr}/${label}`] });
+}
+// stopLoadedUnit(unit, opts) -> {status, stdout, error}. Linux (systemd
+// --user) counterpart — `systemctl --user stop <unit>` only (never `disable`
+// here: there is no unit FILE to disable for an orphan-no-plist entry; the
+// existing `stopLegacyUnitEntry` already owns disable+rm for the case where a
+// unit file DOES exist alongside a dead process).
+function stopLoadedUnit(unit, opts) {
+  const o = opts || {};
+  const run = (o.io && o.io.schedRun) || defaultSchedRunViaPlan;
+  return run({ cmd: 'systemctl', args: ['--user', 'stop', `${unit}.service`] });
 }
 
 // ----- memory-guard / reaper detection (v0.65, DETECT-AND-REPORT ONLY) -----
@@ -1531,4 +1857,13 @@ module.exports = {
   KNOWN_HIVECONTROL_LOCATIONS, knownHivecontrolLocations, hivecontrolUnresolvedWarningLines,
   // CLI arg validation (footgun fix): --help/unknown-flag must never install.
   KNOWN_FLAGS, usageText, validateArgs,
+  // v0.98 — launchd/systemd-list-based orphan detection (independent of git
+  // worktree list, D9's blind spot for already-removed worktrees; ec33954162ef):
+  listLoadedIngestLabels, classifyLoadedLabel, orphanReapPlan,
+  bootoutLoadedLabel, stopLoadedUnit, parseLoadedSuffix, unitLiveness,
+  // v0.98.3 (Critic R2) — exported for direct test coverage that installCron/
+  // uninstallCron route their `crontab -` write through planRun (so --dry-run
+  // and the NODE_TEST_CONTEXT guard actually protect the crontab, not just
+  // the plist/service writes).
+  readCrontab, installCron, uninstallCron,
 };

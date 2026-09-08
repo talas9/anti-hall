@@ -3161,6 +3161,48 @@ if unsure, then remove only the specific flagged `store/<repoKey>/` directories,
 `rm -rf ~/.anti-hall/devswarm/store/<repoKey>` for each hash `doctor` printed — never a blanket
 sweep of the whole `store/` directory, which would also remove real, live projects' data.
 
+**Scope note (defect ec33954162ef, v0.98.3):** `no-real-home-spawn.test.js`'s lint only
+catches a TEST FILE directly spawning a subprocess with a `process.env`-spread `env` and no
+HOME override. It does NOT catch — and structurally cannot catch — a test that calls into
+PRODUCTION code (`selfHeal`/`withSelfHeal` in `scripts/devswarm.js`) with an incomplete
+`ctx.io` (missing `spawnInstaller`), which then spawns the real installer itself with a
+correctly-isolated `HOME` override. That HOME isolation protects file writes, but a
+launchd/systemd REGISTRATION isn't scoped by `$HOME` at all — it lands in the real user
+session regardless. See §44 for that distinct leak class and its fix.
+
+**Fix-wave R2 (same defect, v0.98.3): this closes the CLASS of leak, not just the one
+fixed instance.** The instance fix (an `io.spawnInstaller` mock on the one leaking test)
+only prevents THAT test from ever leaking again — it does nothing for a FUTURE test that
+makes the identical mistake. `install-devswarm-ingest.js` now also forces its own
+`DRYRUN` seam on whenever `process.env.NODE_TEST_CONTEXT` is present (Node sets this in
+every `node --test` worker process, and a `spawnSync`'d child inherits it by ordinary env
+inheritance — verified live on this machine with a probe test before relying on it: both
+the direct worker AND a spawned grandchild read it back non-empty). This is a genuine
+STRUCTURAL guard, not a test-authoring convention someone can forget: it fires regardless
+of which test forgot the explicit `ANTIHALL_INGEST_DRY_RUN=1`/`ctx.io.spawnInstaller`
+mock, anywhere in the `node --test` process tree, with no opt-out. It prints one stderr
+line naming the defect, but only at the moment `planWrite`/`planRm`/`planRun` actually
+intercepts a real write/rm/spawn call (not at module load) — so requiring this module
+under `node --test` (61+ test files do) stays silent, and the notice appears only when a
+real mutation was genuinely prevented. Proven with a test that
+spawns the REAL installer `main()` (the only way it ever runs — it is not exported)
+under an isolated HOME with NEITHER `--dry-run` NOR `ANTIHALL_INGEST_DRY_RUN` set,
+relying entirely on inherited `NODE_TEST_CONTEXT`, and asserts zero plist/service files
+written and an empty `listInstalledIngestUnits()` readback.
+
+**Critic R2 (same defect, v0.98.3): two installer paths still bypassed this guard.**
+`install-devswarm-ingest.js`'s `installCron`/`uninstallCron` called
+`spawnSync('crontab', ['-'], {input})` directly instead of through `planRun` — so on
+Linux (systemctl absent), neither `--dry-run` nor the `NODE_TEST_CONTEXT` guard actually
+protected the crontab; only the plist/service writes were covered. `install-reaper.js`
+had no `NODE_TEST_CONTEXT` guard at all (`DRYRUN` was `args.includes('--dry-run')` only).
+Both are now fixed: the crontab write is routed through `planRun`, and
+`install-reaper.js` carries the identical `EXPLICIT_DRYRUN || NODE_TEST_CONTEXT` guard
+and once-per-process stderr notice. The structural fix now spans every installer path
+that can register a real launchd/systemd/cron job: `install-devswarm-ingest.js`
+(plist/service writes AND the crontab fallback) and `install-reaper.js` (plist/service
+writes).
+
 ## §39 — Sender attribution
 
 `pendingQuestions[].from` is resolved by `devswarm-store.js`'s `resolveSenderRegistryId`.
@@ -3523,3 +3565,119 @@ matching `git-guard`'s own protection level.
 Codex README's "Parity Notes"), so this branch auto-applies to Codex
 sessions with no separate adapter — it is not gated on any DevSwarm env var
 at all.
+
+## §44 — Orphaned launchd/systemd ingest registrations (defect ec33954162ef, v0.98.3)
+
+**Root cause of the leak, named honestly:** a test file
+(`tests/scripts/devswarm-fleet-2e8653787945.test.js`) built a `selfHeal` ctx
+with no `ctx.io.spawnInstaller` mock. `selfHeal`'s stale-daemon branch then
+fell through to the REAL `defaultSpawnInstaller` (`scripts/devswarm.js`),
+which really spawned `install-devswarm-ingest.js` as a subprocess under a
+throwaway temp `HOME`. That subprocess registered a genuine `KeepAlive`
+LaunchAgent whose `WorkingDirectory`/log paths point into the temp HOME —
+teardown deletes the HOME, but nothing ever unloads the launchd
+registration, so it retries forever (`LastExitStatus` 78<<8, "program
+gone"). Confirmed live on the maintainer machine: 50+ loaded
+`com.anti-hall.devswarm-ingest.*` labels against 6 real on-disk plists. The
+test is fixed (an `io.spawnInstaller` mock, same pattern
+`tests/companion/ingest-health.test.js` already used); the belt-and-braces
+production side is `install-devswarm-ingest.js`'s own pre-existing
+`ANTIHALL_INGEST_DRY_RUN=1` env seam (see its top-of-file comment) — any
+caller that threads that env through a spawned installer subprocess gets a
+no-op write/run instead of a real registration, and `defaultSpawnInstaller`
+forwards a caller's env unchanged so it already propagates automatically.
+
+**Why `git worktree list`-driven reap (§33, D9) cannot catch this:** that
+path enumerates units to reap by walking the CURRENT repo's live worktrees
+outward. A label whose worktree — and its whole temp HOME — no longer
+exists anywhere has nothing left to enumerate FROM. The fix instead
+enumerates from the SCHEDULER'S OWN registration list
+(`launchctl list` on macOS, `systemctl --user list-units` on Linux) and
+cross-references it against what's actually on disk — the same direction
+`doctor`'s existing installed-unit readback (`listInstalledIngestUnits`)
+already reads FROM disk, just inverted.
+
+**New functions, `companion/install-devswarm-ingest.js`:**
+`listLoadedIngestLabels(opts)` (loaded-set enumeration; `opts.io.listLoaded`
+test seam), `classifyLoadedLabel(entry)` (pure per-entry classifier),
+`orphanReapPlan(opts)` (the full plan: enumerate + cross-reference +
+classify + apply the never-unload guards), `bootoutLoadedLabel(label, opts)`
+/ `stopLoadedUnit(unit, opts)` (the actual unload calls, `opts.io.schedRun`
+test seam — same injection discipline `stopLegacyUnitEntry` already uses).
+
+**Classes** (one loaded label -> exactly one class): `healthy` (plist
+present, path exists, a live heartbeat/lock proves it) · `orphan-no-plist`
+(loaded in the scheduler but NO matching plist/service file on disk at all —
+the confirmed dominant real-world case, 39/45 sampled) · `orphan-path-gone`
+(plist present, but its `WorkingDirectory`/repo path no longer exists) ·
+`duplicate-label-same-project` (2+ loaded legacy per-worktree-hash labels
+whose `WorkingDirectory` resolves to the SAME `repoKey` — only possible for
+the legacy hash form, since a per-project label already IS 1:1 with repoKey
+by construction) · `unknown` (plist present, path exists, but liveness is
+unprovable — e.g. no heartbeat/lock has been written yet; never assumed
+safe, never auto-unloaded).
+
+**Eligibility is exactly ONE class (fix-wave R2 correction — an earlier draft
+of this section wrongly suggested `orphan-path-gone` could also be
+eligible; caught in review before merge, see the P0 note below):**
+`orphan-no-plist` AND no live heartbeat/lock for that repoKey/hash. That is
+the ONLY combination this new bootout/stop path ever touches.
+`orphan-path-gone` and `duplicate-label-same-project` are ALWAYS
+report-only — `eligible` is `false` for both, unconditionally, regardless of
+liveness — because a plist/service file DOES exist on disk for both, and
+unloading a label with an on-disk unit file is the EXISTING reap machinery's
+job (`reapLegacyUnitsForRepo` / `stopLegacyUnitEntry`), never this one.
+`eligible` is assigned in exactly ONE place in `orphanReapPlan` (never
+reassigned by the duplicate-detection pass, which only ever touches
+`class`), and a final invariant check before the function returns fails
+CLOSED (empty plan, logged) if it ever finds an eligible entry with a plist
+present or a resolvable path — belt-and-braces against a future
+classification bug reaching the apply loop.
+
+**P0 caught in fix-wave R2 (never shipped to a release):** the first
+implementation's duplicate-detection cross-check unconditionally set
+`eligible` for BOTH members of a `duplicate-label-same-project` group based
+only on that group's OWN liveness check — but entries only ever enter that
+pass when a plist/service file already exists (workingDir is read FROM the
+plist), so it could mark a plist-present, worktree-present, genuinely-quiet
+legacy project's TWO redundant registrations both eligible. `doctor-repair.js`'s
+apply loop filters on `eligible` alone, so `--apply` would have booted out
+two real, on-disk-registered units. Caught by review against a live-fixture
+regression test (two quiet hash-labeled plists sharing one real git
+worktree) before any release shipped it.
+
+**`doctor` — DETECT (always-on, no flag):** every plain `doctor` run prints
+an "Orphaned launchd/systemd ingest registrations" table (label, pid, script
+path, plist present y/n, path exists y/n, class) for every loaded label not
+classified `healthy`. Silent (no section at all) when everything classifies
+`healthy` — matches the existing `reaperWarningLines` convention.
+
+**`doctor` — REPAIR (explicit, opt-in):** `doctor --repair-ingest-orphans`
+prints the exact unload plan and writes/unloads nothing (dry-run by
+default, mirroring `--reclaim-ingest-lock`'s own posture exactly).
+`doctor --repair-ingest-orphans --apply` executes it: macOS —
+`launchctl bootout gui/$(id -u)/<label>` (the modern 10.11+ form; an
+orphan-no-plist label has no plist path to `unload` with, so this is a NEW
+capability, not a reuse of the existing plist-based unload); Linux —
+`systemctl --user stop <unit>.service`. Never `kill -9` a PID directly
+(scheduler-mediated stop only, matching every existing stop path in this
+file) and never deletes any file (there is nothing to delete for
+`orphan-no-plist` by definition; `orphan-path-gone` file cleanup remains
+`reapLegacyUnitsForRepo`'s job). Idempotent by construction — a second run's
+`listLoadedIngestLabels` no longer reports an already-booted-out label, so
+the plan is naturally empty; no state-file bookkeeping needed.
+
+**Scoping fix (fix-wave R2, usability):** `--repair-ingest-orphans` used to
+ALSO trigger `doctor`'s full default auto-repair pass (`DO_REPAIR` was only
+gated on `--check`), so a plain `doctor --repair-ingest-orphans` ran every
+OTHER unrelated auto-repair too — slow and surprising for a flag meant to be
+narrow and explicit. `DO_REPAIR` is now also gated off when
+`--repair-ingest-orphans` is present, so the flag runs ONLY its own
+detect+plan/apply section, matching `--reclaim-ingest-lock`'s own scoped
+posture.
+
+**Codex parity:** `doctor.js` and `install-devswarm-ingest.js` are shared,
+unforked files — this feature applies to Codex sessions identically; the
+`--repair-ingest-orphans [--apply]` flag is documented in both
+`plugins/anti-hall/skills/devswarm/SKILL.md` and
+`plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`.

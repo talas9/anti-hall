@@ -26,14 +26,44 @@ const LOG = path.join(HOME, '.anti-hall', 'mcp-reaper.log');
 
 const args = process.argv.slice(2);
 const UNINSTALL = args.includes('--uninstall');
-const DRYRUN = args.includes('--dry-run');
+// STRUCTURAL TEST-CONTEXT GUARD (v0.98.3 fix-wave R2, same class as defect
+// ec33954162ef in install-devswarm-ingest.js): a test that forgets an explicit
+// --dry-run would otherwise register a REAL LaunchAgent/systemd unit against
+// whatever HOME the test set up. Node sets `NODE_TEST_CONTEXT` in every
+// `node --test` worker process (and it is inherited by spawned children), so
+// this file also forces dry-run whenever that env var is present, with no
+// opt-out. This is a fallback, not a replacement for explicit --dry-run — a
+// plain `node install-reaper.js` run by hand outside `node --test` still
+// needs the flag.
+const EXPLICIT_DRYRUN = args.includes('--dry-run');
+const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && !!process.env.NODE_TEST_CONTEXT;
+const DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD;
 
 function say(msg) {
   process.stdout.write(msg + '\n');
 }
 
+// noteNodeTestContextGuardTripped() — prints the ONE stderr notice for the
+// NODE_TEST_CONTEXT fallback, but only at the moment it actually intercepts a
+// real write/rm/run call, not at module load (requiring this file under
+// `node --test` must stay silent otherwise).
+let _nodeTestContextGuardNoted = false;
+function noteNodeTestContextGuardTripped() {
+  if (!NODE_TEST_CONTEXT_GUARD || _nodeTestContextGuardNoted) return;
+  _nodeTestContextGuardNoted = true;
+  try {
+    process.stderr.write(
+      'anti-hall: install-reaper.js detected NODE_TEST_CONTEXT (running under `node --test`'
+      + ' or a child process spawned from it) — forcing dry-run to prevent a real launchd/systemd'
+      + ' registration leak (defect ec33954162ef class). Pass --dry-run explicitly if this run'
+      + ' genuinely needs the real, unmocked spawn path.\n'
+    );
+  } catch (_) {}
+}
+
 function planWrite(file, contents) {
   if (DRYRUN) {
+    noteNodeTestContextGuardTripped();
     say(`[dry-run] would write ${file}`);
     return;
   }
@@ -44,6 +74,7 @@ function planWrite(file, contents) {
 
 function planRm(file) {
   if (DRYRUN) {
+    noteNodeTestContextGuardTripped();
     say(`[dry-run] would remove ${file}`);
     return;
   }
@@ -57,6 +88,7 @@ function planRm(file) {
 
 function planRun(cmd, argv, opts) {
   if (DRYRUN) {
+    noteNodeTestContextGuardTripped();
     say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`);
     return { status: 0, dry: true };
   }

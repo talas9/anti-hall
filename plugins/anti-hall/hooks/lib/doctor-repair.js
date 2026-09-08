@@ -511,6 +511,72 @@ function reclaimIngestLocks(opts) {
   return results;
 }
 
+// runIngestOrphanRepair({home, platform, dryRun, io}) ->
+//   [{id, category, status, msg}]   status ∈ 'fixed' | 'skipped' | 'failed'
+// v0.98 `doctor --repair-ingest-orphans [--apply]` (ec33954162ef): mirrors
+// reclaimIngestLocks' shape — sweep (install-devswarm-ingest.js's own
+// orphanReapPlan, never re-derived here) then apply (bootoutLoadedLabel /
+// stopLoadedUnit) over ELIGIBLE entries only. Default is dry-run (prints the
+// plan, calls nothing); `dryRun:false` actually unloads. EXPLICIT, OPT-IN
+// ONLY — never called from runRepairs()'s default/--fix/--dry-run pass, only
+// doctor.js's --repair-ingest-orphans flag calls it (matching
+// reclaimIngestLocks' own posture exactly).
+function runIngestOrphanRepair(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const platform = o.platform || process.platform;
+  const dryRun = !!o.dryRun;
+  const io = o.io;
+  const results = [];
+  const push = (id, category, status, msg) => results.push({ id, category, status, msg });
+
+  if (platform !== 'darwin' && platform !== 'linux') {
+    push('repair-ingest-orphans', 'repair-ingest-orphans', 'skipped', platform + ': no launchd/systemd orphan class on this platform — nothing to repair');
+    return results;
+  }
+
+  const installer = ingestConst();
+  if (typeof installer.orphanReapPlan !== 'function') {
+    push('repair-ingest-orphans', 'repair-ingest-orphans', 'failed', 'install-devswarm-ingest.js does not export orphanReapPlan in this build — cannot safely repair, nothing touched');
+    return results;
+  }
+
+  let plan = [];
+  try { plan = installer.orphanReapPlan({ home, platform, io }); } catch (e) {
+    push('repair-ingest-orphans', 'repair-ingest-orphans', 'failed', 'orphanReapPlan raised: ' + errMsg(e));
+    return results;
+  }
+
+  const eligible = plan.filter((e) => e.eligible);
+  if (eligible.length === 0) {
+    push('repair-ingest-orphans', 'repair-ingest-orphans', 'skipped', plan.length === 0 ? 'no loaded ingest label found — nothing to repair' : 'zero eligible orphans (' + plan.length + ' loaded label(s), none eligible) — nothing to repair');
+    return results;
+  }
+
+  for (const entry of eligible) {
+    const name = entry.label || entry.unit || '(unknown)';
+    const id = 'repair-ingest-orphan-' + name;
+    if (dryRun) {
+      const cmd = platform === 'darwin'
+        ? `launchctl bootout gui/$(id -u)/${entry.label}`
+        : `systemctl --user stop ${entry.unit}.service`;
+      push(id, 'repair-ingest-orphans', 'skipped', '[dry-run] would run: ' + cmd + ' (class ' + entry.class + ')');
+      continue;
+    }
+    let r = null;
+    try {
+      r = platform === 'darwin'
+        ? installer.bootoutLoadedLabel(entry.label, { io })
+        : installer.stopLoadedUnit(entry.unit, { io });
+    } catch (e) { r = { error: e }; }
+    const ok = !!(r && !r.error);
+    push(id, 'repair-ingest-orphans', ok ? 'fixed' : 'failed',
+      (ok ? 'unloaded ' : 'failed to unload ') + name + ' (class ' + entry.class + ')' + (r && r.error ? ' — ' + errMsg(r.error) : ''));
+  }
+
+  return results;
+}
+
 // Friendly (plugin-relative) command strings for the manual-command hints in
 // GATED reports — humans copy these, so keep them repo-relative not absolute.
 const CMD_INGEST     = 'node plugins/anti-hall/companion/install-devswarm-ingest.js';
@@ -2379,6 +2445,8 @@ module.exports = {
   reapOrphanedLegacyUnits, projectDaemonHealthy,
   // v0.65.0 `doctor --reclaim-ingest-lock` (explicit, opt-in):
   reclaimIngestLocks, sweepOrphanedIngestLockFiles, reclaimCurrentProjectLock,
+  // v0.98 `doctor --repair-ingest-orphans [--apply]` (explicit, opt-in; ec33954162ef):
+  runIngestOrphanRepair,
   // v0.65.0 memguard-reaper risk surfacing (report-only, defensive):
   checkMemguardReaperRisk,
   // broker-parented MCP-orphan-leak surfacing (report-only, defensive; defect bfa063ab8e3f):

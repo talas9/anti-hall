@@ -4756,6 +4756,18 @@ function markSelfHealAttempt(home, repoKey, now, F) {
 // resolveMainWorktree/repoKey derivation lands on the SAME project) with HOME
 // threaded — the same spawn shape as hooks/lib/doctor-repair.js's
 // spawnInstaller / skills/update/scripts/update.js's healIngestDaemon.
+//
+// Belt-and-braces guard (defect ec33954162ef): a test that builds a ctx
+// without `ctx.io.spawnInstaller` falls through to THIS function, which
+// would otherwise register a REAL LaunchAgent/systemd unit under a
+// short-lived temp HOME — that registration outlives the deleted HOME and
+// retries forever (exit 78, "program gone"). ANTIHALL_INGEST_DRY_RUN=1 is
+// install-devswarm-ingest.js's OWN documented dry-run seam (see its top-of-
+// file comment); when a caller's env already carries it (every test that
+// isolates HOME via tests/scripts/devswarm-lifecycle.test.js's / tests/
+// companion/devswarm-supervisor-reconcile-sweep.test.js's convention should),
+// forward it through unchanged so the spawned installer no-ops its writes
+// instead of registering a real unit.
 function defaultSpawnInstaller(worktree, home, env) {
   const installerPath = path.join(__dirname, '..', 'companion', 'install-devswarm-ingest.js');
   try {

@@ -186,3 +186,30 @@ test('exported constants: LABEL + UNIT are the agnostic anti-hall identifiers', 
   assert.strictEqual(m.LABEL, 'com.anti-hall.mcp-reaper');
   assert.strictEqual(m.UNIT, 'anti-hall-mcp-reaper');
 });
+
+// --------------------------------------------------------------------------
+// Critic R2 / defect ec33954162ef (structural class fix): install-reaper.js's
+// DRYRUN used to be `args.includes('--dry-run')` ONLY — a test spawning the
+// real installer under an isolated HOME with NO --dry-run flag would register
+// a genuine LaunchAgent/systemd unit. Node sets NODE_TEST_CONTEXT in every
+// `node --test` worker AND its spawned children, so install-reaper.js now
+// forces dry-run under that guard too (same structural fix already applied to
+// install-devswarm-ingest.js). This spawns the REAL installer with NO
+// --dry-run flag; safety depends entirely on the guard under test.
+// --------------------------------------------------------------------------
+test('NODE_TEST_CONTEXT guard: install with no --dry-run flag, run under node --test, writes no plist/unit and calls no launchctl/systemctl', () => {
+  const { status, stdout, stderr, tmpHome } = runInstall([]);
+  if (process.platform === 'win32') {
+    assert.strictEqual(status, 0);
+    return; // windows no-ops before any install path regardless of the guard
+  }
+  assert.strictEqual(status, 0, 'guarded dry-run install must still exit 0');
+  assert.match(stdout, /\[dry-run\] would (write|run|remove)/,
+    'NODE_TEST_CONTEXT must force the same dry-run plan output as --dry-run');
+  assert.ok(!/^wrote /m.test(stdout), 'must not actually write a plist/service under the guard');
+  assert.ok(!/^ran: /m.test(stdout), 'must not actually invoke launchctl/systemctl under the guard');
+  const wroteLaunchAgent = fs.existsSync(path.join(tmpHome, 'Library', 'LaunchAgents'));
+  const wroteSystemd = fs.existsSync(path.join(tmpHome, '.config', 'systemd'));
+  assert.ok(!wroteLaunchAgent && !wroteSystemd, 'NODE_TEST_CONTEXT guard must prevent any real scheduler file');
+  assert.match(stderr, /NODE_TEST_CONTEXT/, 'the once-per-process guard notice is printed to stderr');
+});

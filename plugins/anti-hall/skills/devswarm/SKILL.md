@@ -1038,6 +1038,19 @@ supervisor", "what DevSwarm addons does anti-hall have", "tune the liveness supe
   pointed at a since-deleted tmp-dir path — the shape a test-suite subprocess leaks when it
   spawns with a full `process.env` copy and no HOME override (defect f3c1bc827d89). Never
   deletes anything; the owner decides on cleanup after reviewing the printed examples.
+  **(v0.98.3, defect ec33954162ef)** A plain `doctor` run ALSO always prints an "Orphaned
+  launchd/systemd ingest registrations" table — a loaded `launchctl`/`systemctl --user`
+  label with no matching plist/service file on disk at all (e.g. a leaked test fixture's
+  temp-HOME registration that outlives the deleted HOME and retries forever), which
+  `git worktree list`-driven reap (§33) is structurally blind to. Silent when everything
+  is `healthy`. `doctor --reclaim-ingest-lock` never touches this — it's a lock-file
+  concern, not a scheduler-registration one; use `doctor --repair-ingest-orphans` (dry-run,
+  prints the unload plan) or `doctor --repair-ingest-orphans --apply` (actually unloads,
+  `launchctl bootout`/`systemctl --user stop`, never `kill -9`, never deletes a file) —
+  eligible ONLY for a label with no plist AND no live heartbeat/lock for its project
+  (`orphan-path-gone`/`duplicate-label-same-project` are always report-only — a plist
+  exists on disk for both). `--repair-ingest-orphans` runs ONLY this section, never
+  doctor's unrelated full auto-repair pass.
 - **update** — autonomously installs/refreshes the automatic supervisor AND (as of
   0.54.1) the ingest daemon when running inside an active DevSwarm session (see the
   activation checklist above).

@@ -30,7 +30,16 @@ const QUIET = process.argv.includes('--quiet');
 // default auto-apply path.
 const CHECK   = process.argv.includes('--check');
 const DRYRUN  = process.argv.includes('--dry-run');
-const DO_REPAIR = !CHECK; // default, --fix, --repair, --dry-run repair; --check does not
+// --repair-ingest-orphans [--apply] (v0.98, ec33954162ef): EXPLICIT, OPT-IN,
+// human-invoked ONLY — mirrors --reclaim-ingest-lock's posture exactly.
+// Declared here (ahead of DO_REPAIR) because DO_REPAIR itself is gated on it
+// (P2/usability fix, fix-wave R2): this flag used to ALSO run the full
+// default repair pass below it (DO_REPAIR was only gated on --check), so a
+// plain `doctor --repair-ingest-orphans` unexpectedly ran every OTHER
+// auto-repair too. Now scoped to run ONLY its own detect+plan/apply section,
+// matching --reclaim-ingest-lock's own narrow posture.
+const REPAIR_INGEST_ORPHANS = process.argv.includes('--repair-ingest-orphans');
+const DO_REPAIR = !CHECK && !REPAIR_INGEST_ORPHANS; // default, --fix, --repair, --dry-run repair; --check/--repair-ingest-orphans do not
 // --logs: opt-in section that reads + summarizes recent warn/error entries from the
 // CENTRAL anti-hall-log (companion/lib/anti-hall-log.js, C0) so a Primary orchestrator
 // can see a child project's failures from one place without tailing the raw JSONL
@@ -48,6 +57,12 @@ const LOGS = process.argv.includes('--logs');
 // actually reclaimed. Runs independently of --check/--fix/--dry-run; --dry-run
 // (if also passed) is still honored as a preview that writes nothing.
 const RECLAIM_INGEST_LOCK = process.argv.includes('--reclaim-ingest-lock');
+// REPAIR_INGEST_ORPHANS itself is declared earlier (ahead of DO_REPAIR,
+// which is gated on it — see that comment). The always-on DETECT section
+// below (6i-detect) runs on every plain `doctor` call regardless of this
+// flag and only ever REPORTS a table, never mutates; this flag additionally
+// prints the unload plan, and --apply on top of it actually executes it.
+const INGEST_APPLY = process.argv.includes('--apply');
 
 const C = process.stdout.isTTY
   ? { g:'\x1b[32m', r:'\x1b[31m', y:'\x1b[33m', d:'\x1b[2m', b:'\x1b[1m', c:'\x1b[36m', x:'\x1b[0m' }
@@ -967,6 +982,63 @@ if (RECLAIM_INGEST_LOCK) {
   for (const r of reclaimed) {
     const label = `[${r.id}] ${r.msg}`;
     if (r.status === 'fixed') ok('RECLAIMED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else infol('skipped ' + label);
+  }
+}
+
+// --- 6i-detect. Orphaned launchd/systemd ingest registrations (ALWAYS-ON
+// REPORT-ONLY, no flag needed — v0.98, ec33954162ef) --------------------------
+// install-devswarm-ingest.js's orphanReapPlan enumerates from the SCHEDULER'S
+// OWN registration list (launchctl list / systemctl --user list-units), not
+// from the file system — so this catches a loaded label with NO matching
+// plist/service file on disk at all (confirmed field case: a test fixture's
+// tmp HOME registered a real LaunchAgent, the HOME was deleted, and launchd
+// keeps retrying it forever — exit 78, "program gone"). D9's git-worktree-
+// list-driven reap is structurally blind to this (the worktree is gone, so
+// there is nothing left to enumerate FROM). NEVER mutates — prints a table,
+// silent (no section at all) when every loaded label classifies 'healthy'.
+(function detectIngestOrphansSection() {
+  let plan = [];
+  try {
+    const installer = require(path.join(__dirname, '..', 'companion', 'install-devswarm-ingest.js'));
+    if (typeof installer.orphanReapPlan === 'function') plan = installer.orphanReapPlan({ home: os.homedir() }) || [];
+  } catch (_) { plan = []; }
+  const flagged = plan.filter((e) => e.class !== 'healthy');
+  if (flagged.length === 0) return; // silent — matches reaperWarningLines' own convention
+  head('Orphaned launchd/systemd ingest registrations');
+  infol(`${flagged.length} loaded label(s) not classified 'healthy' (of ${plan.length} total). Run doctor --repair-ingest-orphans to preview a repair plan.`);
+  const DETECT_TABLE_CAP = 10; // P2: an unbounded table is noise on a machine with 50+ leaked labels
+  for (const e of flagged.slice(0, DETECT_TABLE_CAP)) {
+    const name = e.label || e.unit || '(unknown)';
+    warnl(`${name}  pid=${e.pid == null ? '-' : e.pid}  script=${e.scriptPath || '-'}  plist=${e.plistPresent ? 'y' : 'n'}  path=${e.pathExists ? 'y' : 'n'}  class=${e.class}`);
+  }
+  if (flagged.length > DETECT_TABLE_CAP) {
+    infol(`+${flagged.length - DETECT_TABLE_CAP} more (run doctor --repair-ingest-orphans for the full plan)`);
+  }
+})();
+
+// --- 6i-repair. --repair-ingest-orphans [--apply] (EXPLICIT, OPT-IN ONLY;
+// v0.98, ec33954162ef). Default (flag present, no --apply) is DRY-RUN: prints
+// the exact unload plan, writes/unloads nothing. --apply executes it. Never
+// invoked implicitly by a plain `doctor` or `doctor --check` run — only the
+// DETECT section above runs unconditionally. `failed` drives the exit code
+// exactly like --reclaim-ingest-lock above; `fixed`/`skipped` do not.
+// ---------------------------------------------------------------------------
+if (REPAIR_INGEST_ORPHANS) {
+  head('Repair ingest orphans' + (INGEST_APPLY ? ' [--apply]' : ' (dry-run — no changes written)') + ' [explicit --repair-ingest-orphans]');
+  let repaired = [];
+  try {
+    repaired = require('./lib/doctor-repair.js').runIngestOrphanRepair({
+      home: os.homedir(), dryRun: !INGEST_APPLY,
+    });
+  } catch (e) {
+    bad('repair-ingest-orphans pass raised (fail-open): ' + (e && e.message));
+  }
+  if (repaired.length === 0 && fail === 0) infol('nothing to repair');
+  for (const r of repaired) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('UNLOADED ' + label);
     else if (r.status === 'failed') bad('FAILED ' + label);
     else infol('skipped ' + label);
   }
