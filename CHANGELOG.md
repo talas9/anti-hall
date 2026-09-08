@@ -6,6 +6,82 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.98.3 (2026-09-08)
+
+- **Fixed: a test file leaked real LaunchAgent registrations onto the host
+  machine** (defect ec33954162ef). `tests/scripts/devswarm-fleet-2e8653787945.test.js`
+  built a `selfHeal` ctx with no `ctx.io.spawnInstaller` mock, so `selfHeal`'s
+  stale-daemon branch fell through to the REAL `defaultSpawnInstaller`
+  (`scripts/devswarm.js`), which spawned `install-devswarm-ingest.js` for
+  real under a throwaway temp `HOME`. That subprocess registered a genuine
+  `KeepAlive` LaunchAgent whose `WorkingDirectory` pointed into the temp
+  HOME; teardown deleted the HOME but never unloaded the registration, so
+  launchd retried it forever (exit 78, "program gone") — confirmed live on
+  the maintainer machine as 50+ loaded `com.anti-hall.devswarm-ingest.*`
+  labels against 6 real on-disk plists. Fixed with an `io.spawnInstaller`
+  mock (the same pattern `tests/companion/ingest-health.test.js` already
+  used) plus a belt-and-braces regression test proving
+  `install-devswarm-ingest.js`'s existing `ANTIHALL_INGEST_DRY_RUN=1` seam
+  makes even the REAL, unmocked spawn path a no-op.
+- **Added: a structural test-context guard closes the CLASS of the LaunchAgent
+  leak above, not just the one fixed instance** (same defect, fix-wave R2 item
+  7). `install-devswarm-ingest.js` now ALSO forces its own dry-run seam
+  whenever `process.env.NODE_TEST_CONTEXT` is present — Node sets this in
+  every `node --test` worker, and a `spawnSync`'d child inherits it by
+  ordinary env inheritance (verified live with a probe test before relying on
+  it). So a FUTURE test that makes the identical mistake (forgets
+  `ctx.io.spawnInstaller`/`ANTIHALL_INGEST_DRY_RUN=1`) is still safe, with no
+  opt-out and no per-test convention to remember. Prints one stderr line
+  naming the defect, but only at the moment a real write/rm/spawn call is
+  actually intercepted (not at module load) — so merely `require()`-ing this
+  module under `node --test` stays silent, and the notice appears only when
+  a real mutation was genuinely prevented. New regression test spawns the real
+  installer `main()` under an isolated HOME with neither `--dry-run` nor
+  `ANTIHALL_INGEST_DRY_RUN` set and asserts zero plist/service files written.
+- **Fixed: two installer paths still bypassed the structural test-context
+  guard above** (Critic R2, same defect class). `install-devswarm-ingest.js`'s
+  `installCron`/`uninstallCron` called `spawnSync('crontab', ['-'], {input})`
+  directly instead of through `planRun`, so on Linux neither `--dry-run` nor
+  the `NODE_TEST_CONTEXT` guard protected the crontab (only the plist/service
+  writes were covered) — now routed through `planRun`. `install-reaper.js`
+  had no `NODE_TEST_CONTEXT` guard at all (`DRYRUN` was
+  `args.includes('--dry-run')` only); it now applies the identical
+  `EXPLICIT_DRYRUN || NODE_TEST_CONTEXT` guard, with the same once-per-process
+  stderr notice, as `install-devswarm-ingest.js`. The structural fix now spans
+  every installer path that can register a real launchd/systemd/cron job:
+  `install-devswarm-ingest.js` (plist/service writes AND the crontab
+  fallback) and `install-reaper.js` (plist/service writes).
+- **Added: `doctor` detects and can repair orphaned launchd/systemd ingest
+  registrations** (same defect, ec33954162ef). A plain `doctor` run now
+  always prints an "Orphaned launchd/systemd ingest registrations" table —
+  enumerated from the SCHEDULER'S OWN registration list (`launchctl list` /
+  `systemctl --user list-units`), not from disk, so it catches a loaded
+  label with no matching plist/service file at all — exactly the class the
+  existing `git worktree list`-driven reap (D9) is structurally blind to
+  once the worktree is gone. Silent when everything classifies `healthy`.
+  `doctor --repair-ingest-orphans` previews the exact unload plan (dry-run
+  by default, and no longer also triggers doctor's unrelated full auto-repair
+  pass — fix-wave R2 usability fix); `doctor --repair-ingest-orphans --apply`
+  executes it (`launchctl bootout gui/$(id -u)/<label>` / `systemctl --user
+  stop <unit>.service` — never `kill -9`, never deletes a file). **Eligibility
+  is exactly ONE class: `orphan-no-plist` (no plist/service file on disk at
+  all) AND no live heartbeat/lock for that project/worktree.**
+  `orphan-path-gone` and `duplicate-label-same-project` are ALWAYS
+  report-only — a plist DOES exist on disk for both, so unloading either
+  remains the EXISTING `reapLegacyUnitsForRepo`/`stopLegacyUnitEntry` job,
+  never this new label-only path. (Fix-wave R2, same defect: the first pass
+  had a P0 — the duplicate-detection cross-check could mark BOTH members of a
+  plist-present, worktree-present group eligible, which would have booted
+  out real registrations; caught by review before merge, fixed with a single
+  point of eligibility assignment plus a fail-closed invariant check. Also
+  fixed: legacy per-worktree liveness now ORs a fresh heartbeat with the lock
+  check, matching the per-project branch.) New exports on
+  `install-devswarm-ingest.js`: `listLoadedIngestLabels`, `classifyLoadedLabel`,
+  `orphanReapPlan`, `bootoutLoadedLabel`, `stopLoadedUnit`; new
+  `doctor-repair.js` function `runIngestOrphanRepair`. Documented in
+  `docs/KB-devswarm-hivecontrol.md` §44 and both Claude/Codex DevSwarm
+  `SKILL.md` files.
+
 ## 0.98.2 (2026-09-08)
 
 - **Fixed: `roster`/`diagnose`/`healthcheck` failed open on an unreadable
