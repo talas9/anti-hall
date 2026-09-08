@@ -248,7 +248,14 @@ function unionUnread(opts) {
     if (o.storeHandle && o.id != null) {
       const storeHandle = o.storeHandle;
       const id = o.id;
-      storeCursorVal = storeHandle.cursorValue(id);
+      // PER-INSTANCE STORE BASE (defect 8b211241bbe9, R1 P0). `cursorValue(id)`
+      // is the SHARED cursor — a projection of the MIN across instances — so
+      // sizing the store side from it made the per-instance fix INERT on every
+      // workspace that has an inboxPath (i.e. every workspace `inbox count/read`
+      // serves): instance A's ack moved the shared value and instance B was
+      // handed nothing. The caller passes its own instance base instead; with
+      // none supplied the pre-fix shared value is used verbatim.
+      storeCursorVal = Number.isFinite(o.storeBaseCursor) ? o.storeBaseCursor : storeHandle.cursorValue(id);
       // `id` is threaded into BOTH hash derivations so the legacy-line tier
       // (see hashesForLine) can fire; without it only `_h` is matched, which is
       // exactly the pre-fix double-count.

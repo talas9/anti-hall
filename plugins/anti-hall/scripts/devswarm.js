@@ -571,7 +571,7 @@ function isRoutingLiveRow(row, home, opts) {
 // the pre-existing bare liveness check, never a hard failure — this
 // extension can only make the gate MORE conservative (skip more), never
 // less (it never turns an existing "live" result into "not live").
-function siblingAckGate(storeHandle, callerId, partId, home, now) {
+function siblingAckGate(storeHandle, callerId, partId, home, now, opts) {
   let idFam = null;
   try { idFam = require('../companion/lib/devswarm-identity-family.js'); } catch (_) { idFam = null; }
   let registry = [];
@@ -581,7 +581,28 @@ function siblingAckGate(storeHandle, callerId, partId, home, now) {
   if (idFam && callerId != null) {
     try {
       const callerRow = registry.find((r) => r && String(r.id) === String(callerId));
-      if (callerRow && idFam.crossLinkedIdentity(callerRow, row)) return false; // SELF — the caller IS this partition's owner, so IT acks it (Wave 9: returning true here stranded the twin's cursor at its pre-read value and re-delivered the same rows forever)
+      if (callerRow && idFam.crossLinkedIdentity(callerRow, row)) {
+        // WORKTREE-SCOPED SELF (defect 8b211241bbe9). `crossLinkedIdentity`
+        // compares ONLY ids and sessionIds — a pure ROW-level link with no
+        // process, instance, or LOCATION component. So a caller invoking with a
+        // child's meshId while standing in the PARENT's worktree passed this
+        // SELF test and acked the child's twin partition, consuming mail the
+        // child was never shown (field repro: uuid cursor found already at 31
+        // with no tick in the child's own turn).
+        //
+        // Genuine SELF also requires standing in the partition's OWN worktree.
+        // FAIL OPEN to the pre-fix SELF verdict when `worktreePath` is missing
+        // or unresolvable (a pre-migration or partial row behaves exactly as it
+        // does today), so this can only ever REFUSE a cross-worktree ack, never
+        // strand a legitimate self-ack. `--ack-as-owner` never reaches here: it
+        // is the sanctioned cross-workspace override and is gated before this.
+        const rowWt = row.worktreePath ? (canonicalWorktreeRealPath(String(row.worktreePath)) || String(row.worktreePath)) : null;
+        const callerCwd = (opts && opts.cwd) ? String(opts.cwd) : null;
+        const callerWt = callerCwd ? (canonicalWorktreeRealPath(callerCwd) || callerCwd) : null;
+        if (!rowWt || !callerWt) return false; // fail open — today's SELF verdict
+        if (rowWt === callerWt) return false;  // genuinely self: same worktree
+        return true;                            // cross-worktree caller: NOT self, never ack
+      }
     } catch (_) { /* fall through to the plain liveness check below */ }
   }
   let live;
@@ -1024,11 +1045,715 @@ function readRetiredRedirect(home, id) {
 // (cmdReapOrphans). Rows below max(A,B) are therefore provably reachable
 // somewhere else; skipping them here loses nothing. Those two writers now also
 // write (A) in lockstep (see their call sites), so new divergence cannot open.
-function siblingBaseCursor(storeHandle, home, pid) {
+function siblingBaseCursor(storeHandle, home, pid, shortNonce) {
+  // Per-instance base (defect 8b211241bbe9): once ANY instance file exists for
+  // `pid`, the window is sized from `max(floor, thisInstance)` where `floor` is
+  // the MIN across instances — never from the shared pair, which a foreign
+  // instance's sibling ack can push ahead of this reader. With no instance file
+  // (bootstrap, and every pre-0.99 installation) this is byte-identical to the
+  // pre-fix `max(cursors/<id>.json, store cursor)`.
+  // A DECLARED instance reads from its OWN position, floored by the loss-free
+  // baseline. Deliberately NOT floored by other instances' positions: a peer's
+  // ack must never move a declared reader forward — that is the defect.
+  //
+  // An instance with NO file yet is a NEWCOMER and starts at the instance FLOOR
+  // (the min across existing instance files, itself floored by the baseline),
+  // NOT at the baseline (defect 8b211241bbe9, R1 P0-2). Starting a newcomer at
+  // the baseline replayed the entire backlog to every fresh nonce. The floor is
+  // the loss-free choice for a newcomer: it receives exactly what the SLOWEST
+  // declared instance has not yet seen, so nothing any instance still needs is
+  // skipped and nothing the whole fleet consumed is duplicated.
+  //
+  // This is why instances DECLARE themselves at register/ensure (see
+  // seedInstanceCursor): a process that was present before the mail arrived
+  // holds a file at the then-current floor and therefore keeps its own view,
+  // while one that shows up afterwards inherits the fleet's progress.
+  const p = shortNonce ? instanceCursorPath(home, pid, shortNonce) : null;
+  let declared = false;
+  if (p) { try { declared = fs.existsSync(p); } catch (_) { declared = false; } }
+  if (!declared) return instanceFloor(storeHandle, home, pid);
+  const baseline = readInstanceBaseline(storeHandle, home, pid);
+  let own = 0;
+  try { own = inboxCursor.readCursor(p); } catch (_) { own = 0; }
+  return Math.max(baseline, own);
+}
+
+// ---------------------------------------------------------------------------
+// PER-INSTANCE CURSORS + CURSOR WRITE JOURNAL (defect 8b211241bbe9)
+//
+// THE DEFECT. `cursors/<id>.json` (and the store's cursor row) are keyed by row
+// id ALONE, so every process reading under that id shares ONE read position.
+// Whichever instance acks first consumes the mail for all of them: a second
+// instance's `read-primary` returns 0 while the cursor has already moved past
+// rows it was never shown. Twin rows (a meshId row and its uuid twin) make this
+// routine rather than exotic.
+//
+// THE MODEL. Each INSTANCE (one OS process identity, `deriveInstanceNonce`,
+// stable across every CLI invocation from one harness session) keeps its own
+// cursor file `cursors/<id>#inst-<short6>.json`. The read window for instance I
+// is `max(floor, instanceCursor(I))`, and:
+//
+//   floor(id) = min(cursor over every instance file for `id`)   [when any exist]
+//             = max(cursors/<id>.json, store cursor)            [bootstrap only]
+//
+// MIN, not max: the floor may never pass the LEAST-advanced instance, or that
+// instance is skipped past mail it was never shown. It is monotone because a new
+// instance file is created at the CURRENT base, so an arriving instance cannot
+// drag the min backwards. No liveness oracle is consulted anywhere — none is
+// available (`inbox tick` refreshes only the heartbeat FILE, so a quiet-but-live
+// reader ages out of any outbound-row liveness test).
+//
+// WHY THE LEGACY PAIR IS NOT IN THE MAX ONCE INSTANCE FILES EXIST. The legacy
+// pair is advanced both by provably loss-free writers (foldOne, reap-orphans:
+// rows are forwarded or archived FIRST) and by a foreign instance's sibling ack
+// (the defect). The two cannot be told apart from the value alone, and the
+// asymmetry is decisive: honoring a foreign ack LOSES mail, ignoring a fold only
+// RE-DELIVERS it. So the floor ignores the legacy pair — and foldOne/reap close
+// the re-delivery gap from the other side by raising EVERY instance cursor in
+// lockstep (`raiseAllInstanceCursors`), which is sound precisely because their
+// advance is loss-free by construction.
+// ---------------------------------------------------------------------------
+// CURSOR WRITE JOURNAL (defect 8b211241bbe9, task #6)
+//
+// Every cursor mutation is attributable: WHICH id/partition moved, from where to
+// where, how many rows were actually delivered to justify it, which process and
+// instance did it, under which verb, from which cwd, and which gate permitted
+// it. The field defect was diagnosed twice from symptoms alone because no writer
+// left a trace; `callerId !== partition` and `delivered:0` are the two signatures
+// that name a cursor eater the moment it recurs.
+//
+// Append-only NDJSON, one file per repoKey, capped with tail-preserving
+// rotation (the `heartbeat-callers.log` precedent). ALWAYS fail-open: an
+// instrumentation failure must never break a delivery or an ack.
+//
+// OUT OF SCOPE, deliberately, so a missing record is never misread as a gap:
+// broadcast_cursors writes (a separate defect filing), the migrate-time cursor
+// merge, and `.seen-` watermark writes (a per-caller read position, not a
+// partition cursor).
+const CURSOR_LOG_CAP = 2000;
+// diagnose surfacing bounds (design §3): scan at most this many newest records,
+// keep at most this many per id in the output.
+const CURSOR_LOG_DIAGNOSE_SCAN = 500;
+const CURSOR_WRITES_PER_ID = 20;
+function cursorLogPath(home, repoKey) {
+  const key = (typeof repoKey === 'string' && /^[A-Za-z0-9._-]+$/.test(repoKey)) ? repoKey : 'unknown';
+  return path.join(devswarmRoot(home), 'cursor-log', key + '.ndjson');
+}
+function logCursorWrite(home, rec) {
+  try {
+    if (!home || !rec) return false;
+    const p = cursorLogPath(home, rec.repoKey);
+    const line = JSON.stringify({
+      ts: Number.isFinite(rec.ts) ? rec.ts : Date.now(),
+      id: rec.id != null ? String(rec.id) : null,
+      partition: rec.partition != null ? String(rec.partition) : null,
+      callerId: rec.callerId != null ? String(rec.callerId) : null,
+      ns: rec.ns != null ? String(rec.ns) : null,
+      from: Number.isFinite(rec.from) ? rec.from : null,
+      to: Number.isFinite(rec.to) ? rec.to : null,
+      delivered: Number.isFinite(rec.delivered) ? rec.delivered : null,
+      pid: Number.isFinite(rec.pid) ? rec.pid : process.pid,
+      nonce: rec.nonce != null ? String(rec.nonce) : null,
+      gate: rec.gate != null ? String(rec.gate) : null,
+      verb: rec.verb != null ? String(rec.verb) : null,
+      cwd: rec.cwd != null ? String(rec.cwd) : null,
+      ok: rec.ok === false ? false : true,
+      err: rec.err != null ? String(rec.err) : undefined,
+    });
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, line + '\n');
+    // Tail-preserving rotation: keep the NEWEST CURSOR_LOG_CAP records. Checked
+    // cheaply (only once the file is plausibly over cap) so the common append
+    // stays a single syscall.
+    let lines = null;
+    try { lines = fs.readFileSync(p, 'utf8').split('\n').filter((l) => l.trim() !== ''); } catch (_) { lines = null; }
+    if (lines && lines.length > CURSOR_LOG_CAP) {
+      const keep = lines.slice(lines.length - CURSOR_LOG_CAP);
+      try { fs.writeFileSync(p + '.1', lines.slice(0, lines.length - CURSOR_LOG_CAP).join('\n') + '\n'); } catch (_) {}
+      fs.writeFileSync(p, keep.join('\n') + '\n');
+    }
+    return true;
+  } catch (_) { return false; } // fail-open: instrumentation never breaks an ack
+}
+// readCursorLog(home, repoKey, limit) -> newest-last records. Consumed by
+// doctor/diagnose to surface the last N advances per id.
+function readCursorLog(home, repoKey, limit) {
+  const out = [];
+  try {
+    const raw = fs.readFileSync(cursorLogPath(home, repoKey), 'utf8');
+    for (const line of raw.split('\n')) {
+      if (line.trim() === '') continue;
+      try { out.push(JSON.parse(line)); } catch (_) { /* skip a torn line */ }
+    }
+  } catch (_) { return out; }
+  const n = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : out.length;
+  return out.slice(Math.max(0, out.length - n));
+}
+
+// commitInstanceAck(storeHandle, home, id, shortNonce, target, meta) -> {
+//   instance, floor, sharedWritten }. THE ack primitive for the per-instance
+// model (defect 8b211241bbe9).
+//
+// 1. Advance THIS instance's own cursor to `target` (monotonic via ackTo).
+// 2. Recompute the floor as the MIN across every instance file for `id`.
+// 3. Write the SHARED pair to that MIN — never to `target`. In the
+//    single-instance case min === target, so this is byte-identical to the
+//    pre-fix behavior. With a lagging peer it is strictly conservative, which is
+//    what keeps every legacy consumer of the shared value (deriveSummary's
+//    unread projection, `workspaces list`, the gate) loss-free WITHOUT having to
+//    rewrite each of them onto a new base.
+// 4. Journal both writes with the delivered count that justified them.
+// The shared write is skipped when it would LOWER the pair (ackTo is monotonic
+// anyway; setCursor is not, so the guard is explicit).
+// gcInstanceCursors(storeHandle, home, opts) -> { scanned, deleted, evicted,
+//   kept, errors }. The hygiene pass for `cursors/<id>#inst-<short6>.json` and
+// `cursors/<id>#nd-<short6>.json`.
+//
+// TWO predicates, in order:
+//
+//  (1) FLOOR-PRESERVING DELETE. Remove a file only when removing it does not
+//      RAISE the floor — another instance file (or the baseline) already holds
+//      an equal-or-lower value. `value <= floor` is NOT the predicate: the floor
+//      IS the min, so that test selects exactly the file pinning it and would
+//      advance the floor past that instance, making GC a third cursor eater.
+//
+//  (2) BOUNDED STALENESS EVICTION. A file whose mtime is older than
+//      DEFAULT_INSTANCE_CURSOR_STALE_MS may go even when it pins the floor.
+//      Without it a dead instance pins the shared cursor forever and every
+//      consumer reading that value goes stale — a regression of its own. Safe by
+//      argument, not by proof: every other instance has already read past that
+//      position, so the mail reached all live readers. The bounded cost is a
+//      session resumed after the window missing what its peers consumed, and
+//      every eviction is journaled (`verb:'gc-evict'`) so that cost is always
+//      attributable after the fact.
+//
+// Idempotent, fail-open, NO-DELETE of anything unparseable (the `.seen-` sweep
+// rule: never guess at a name this code could not have written). Budget-capped.
+function gcInstanceCursors(storeHandle, home, opts) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const staleMs = Number.isFinite(o.staleMs) ? o.staleMs : DEFAULT_INSTANCE_CURSOR_STALE_MS;
+  const budget = Number.isFinite(o.budget) ? o.budget : 5000;
+  const dryRun = !!o.dryRun;
+  const out = { scanned: 0, deleted: 0, evicted: 0, kept: 0, errors: [] };
+  const dir = path.join(devswarmRoot(home), 'cursors');
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (_) { return out; } // fail-open: no cursors dir yet
+  // Group parseable instance files by id; anything else is left strictly alone.
+  // BOTH namespaces are swept (R2 Auditor item 2): `#inst-` (store rows) and
+  // `#nd-` (descriptor NDJSON lines). Missing the second left a dead instance
+  // pinning the descriptor cursor forever via projectNdDescriptorCursor — the
+  // exact hazard the eviction rule exists to bound. They are grouped
+  // SEPARATELY: the two count in different index spaces, so one namespace's
+  // values must never enter the other's floor arithmetic.
+  const byId = new Map();
+  for (const n of names) {
+    if (out.scanned >= budget) break;
+    const inst = parseInstCursorName(n);
+    const nd = inst ? null : parseNdCursorName(n);
+    const parsed = inst || nd;
+    if (!parsed) continue; // NOT ours -> never touched
+    const ns = inst ? 'inst' : 'nd';
+    out.scanned += 1;
+    const key = ns + '\u0000' + parsed.id;
+    if (!byId.has(key)) byId.set(key, []);
+    const p = path.join(dir, n);
+    let mtimeMs = 0, value = 0;
+    try { const st = fs.statSync(p); mtimeMs = Number.isFinite(st.mtimeMs) ? st.mtimeMs : 0; } catch (_) { mtimeMs = 0; }
+    try { value = inboxCursor.readCursor(p); } catch (_) { value = 0; }
+    byId.get(key).push({ shortNonce: parsed.shortNonce, value, mtimeMs, path: p, ns, id: parsed.id });
+  }
+  for (const [key, files] of byId) {
+    const ns = key.slice(0, key.indexOf('\u0000'));
+    const id = key.slice(key.indexOf('\u0000') + 1);
+    // dryRun MUST NOT WRITE (R1 Auditor item 15): readInstanceBaseline SEEDS
+    // `.base.json` when absent, so a "report-only" doctor pass was creating
+    // files. Read the baseline without the seeding side effect when dry.
+    let baseline = 0;
+    try {
+      if (ns === 'nd') {
+        // The NDJSON namespace has no baseline file of its own; its floor is
+        // simply the min across its instances.
+        baseline = 0;
+      } else if (dryRun) {
+        const bp = instanceBaselinePath(home, id);
+        let hasBase = false;
+        try { hasBase = !!bp && fs.existsSync(bp); } catch (_) { hasBase = false; }
+        baseline = hasBase ? inboxCursor.readCursor(bp) : legacySharedCursor(storeHandle, home, id);
+      } else {
+        baseline = readInstanceBaseline(storeHandle, home, id);
+      }
+    } catch (_) { baseline = 0; }
+    // Work on a mutable view so each decision sees the effect of the previous.
+    let remaining = files.slice();
+    for (const f of files) {
+      // CANDIDACY IS STALENESS, ALWAYS. An instance file IS that instance's
+      // read position: deleting a fresh one makes its owner re-read everything
+      // from the baseline. So a file is only ever a GC candidate once its mtime
+      // is past the window — and only THEN do the two predicates decide HOW it
+      // goes. (A first cut applied the floor-preserving test to fresh files too;
+      // a test proved that discards a live reader's position and, with two
+      // equal-min files, deletes both.)
+      const stale = (now - f.mtimeMs) > staleMs;
+      if (!stale) { out.kept += 1; continue; }
+      const others = remaining.filter((r) => r.path !== f.path);
+      const minOthers = others.length ? Math.min.apply(null, others.map((r) => r.value)) : null;
+      const floorNow = others.length ? Math.max(baseline, Math.min(f.value, minOthers)) : Math.max(baseline, f.value);
+      // With no other file left, the floor falls back to the baseline — which
+      // can only LOWER it (that instance would re-read, never skip), so that is
+      // a plain delete, not an eviction.
+      const floorAfter = others.length ? Math.max(baseline, minOthers) : baseline;
+      // (1) floor-preserving delete: another file (or the baseline) already
+      //     holds an equal-or-lower value, so removing this one cannot raise it.
+      // (2) bounded eviction: it PINS the floor, but it is past the window —
+      //     removing it advances the floor, which is the whole point, and the
+      //     movement is journaled so the bounded cost stays attributable.
+      const action = (floorAfter > floorNow) ? 'evict' : 'delete';
+      if (!dryRun) {
+        try { fs.unlinkSync(f.path); } catch (e) { out.errors.push({ id, shortNonce: f.shortNonce, error: String((e && e.message) || e) }); out.kept += 1; continue; }
+      }
+      remaining = others;
+      if (action === 'delete') out.deleted += 1;
+      else {
+        out.evicted += 1;
+        logCursorWrite(home, {
+          id, partition: id, ns, from: floorNow, to: floorAfter, delivered: null,
+          nonce: f.shortNonce, gate: 'gc-evict', verb: 'gc-evict', repoKey: o.repoKey || null,
+        });
+      }
+    }
+  }
+  return out;
+}
+
+
+// seedInstanceCursor(storeHandle, home, id, shortNonce) -> bool. DECLARE this
+// instance as a reader of `id` (defect 8b211241bbe9, R1). Creates
+// `cursors/<id>#inst-<short6>.json` at the CURRENT instance floor if it does not
+// already exist, and never moves an existing file.
+//
+// Why declaration matters: `siblingBaseCursor` starts an UNDECLARED newcomer at
+// the floor (so a fresh nonce cannot replay the whole backlog), while a DECLARED
+// instance keeps its own position (so a peer's ack cannot consume its mail).
+// Registration is where a process declares itself — `ensure` runs on every turn
+// via `inbox pull`, so two concurrent instances of one workspace both hold a
+// file from their first turn onward and neither can eat the other's mail.
+// Fail-soft throughout: a seed that cannot be written simply leaves that
+// instance undeclared, which is the pre-declaration behaviour.
+function seedInstanceCursor(storeHandle, home, id, shortNonce) {
+  try {
+    const p = instanceCursorPath(home, id, shortNonce);
+    if (!p) return false;
+    if (fs.existsSync(p)) return false; // never move an existing position
+    const floor = instanceFloor(storeHandle, home, id);
+    inboxCursor.ackTo(p, Number.isFinite(floor) ? floor : 0);
+    return true;
+  } catch (_) { return false; }
+}
+
+
+// ---------------------------------------------------------------------------
+// PER-INSTANCE NDJSON CURSOR (defect 8b211241bbe9, R1 Auditor item 11)
+//
+// The store side of the mailbox is per-instance (above), but the DESCRIPTOR's
+// own NDJSON cursor (`finalDesc.cursorPath`, what `inbox read/ack/count`
+// consume) is ONE file per workspace. Two instances of one workspace therefore
+// still shared it: instance A's `inbox ack` advanced it and instance B's
+// `inbox read` returned nothing. The design's claim that `inbox ack` is
+// "descriptor-scoped, no cross-instance hazard" was FALSE — proven by repro.
+//
+// Same model as the store side: each instance gets its own NDJSON cursor file,
+// and the DESCRIPTOR's cursor becomes a MIN-projection across instances (so
+// every existing consumer of it — unreadBacklog, the parent gate's clear path,
+// doctor's listener check — keeps reading a conservative, loss-free value).
+// `.nd-` is a distinct namespace from `.inst-` (store rows) because the two
+// count in DIFFERENT index spaces: NDJSON lines vs store row positions.
+function ndInstanceCursorPath(home, id, shortNonce) {
+  if (!instCursorSafeId(id) || !/^[0-9a-f]{6}$/.test(String(shortNonce || ''))) return null;
+  return path.join(devswarmRoot(home), 'cursors', String(id) + ND_CURSOR_SEP + String(shortNonce) + '.json');
+}
+function parseNdCursorName(filename) {
+  const n = typeof filename === 'string' ? filename : '';
+  if (!/\.json$/.test(n)) return null;
+  const base = n.slice(0, -'.json'.length);
+  const i = base.lastIndexOf(ND_CURSOR_SEP);
+  if (i <= 0) return null;
+  const id = base.slice(0, i);
+  const shortNonce = base.slice(i + ND_CURSOR_SEP.length);
+  if (!/^[0-9a-f]{6}$/.test(shortNonce)) return null;
+  if (!instCursorSafeId(id)) return null;
+  return { id, shortNonce };
+}
+function listNdInstanceCursors(home, id) {
+  const out = [];
+  if (!instCursorSafeId(id)) return out;
+  const dir = path.join(devswarmRoot(home), 'cursors');
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (_) { return out; }
+  for (const n of names) {
+    const parsed = parseNdCursorName(n);
+    if (!parsed || parsed.id !== String(id)) continue;
+    const fp = path.join(dir, n);
+    let value = 0;
+    try { value = inboxCursor.readCursor(fp); } catch (_) { value = 0; }
+    out.push({ shortNonce: parsed.shortNonce, value, path: fp });
+  }
+  return out;
+}
+// resolveNdCursorPath(home, id, shortNonce, descCursorPath) -> the path this
+// caller should read/ack against. Seeds a fresh instance file from the
+// DESCRIPTOR's current value (a declared instance keeps its own position; an
+// undeclared newcomer inherits the fleet's progress, exactly as on the store
+// side). Falls back to the descriptor path when no instance identity exists.
+function resolveNdCursorPath(home, id, shortNonce, descCursorPath) {
+  const p = shortNonce ? ndInstanceCursorPath(home, id, shortNonce) : null;
+  if (!p) return descCursorPath;
+  // NEVER stand in for a descriptor cursor that does not exist yet. An ABSENT
+  // descriptor cursor is a real health signal — `inbox count` reports
+  // `known:false` for it, and `ensure`'s precreate is what clears it. Creating
+  // an instance file here would mask that state and report a confident 0 for a
+  // workspace whose cursor was never provisioned.
+  let descExists = false;
+  try { descExists = !!descCursorPath && fs.existsSync(descCursorPath); } catch (_) { descExists = false; }
+  if (!descExists) return descCursorPath;
+  let exists = false;
+  try { exists = fs.existsSync(p); } catch (_) { exists = false; }
+  if (!exists) {
+    // Newcomer: start at the MIN across existing instances, floored by the
+    // descriptor's own value (which is itself that min, or the pre-0.99 value).
+    let seed = 0;
+    try { seed = inboxCursor.readCursor(descCursorPath); } catch (_) { seed = 0; }
+    const peers = listNdInstanceCursors(home, id);
+    if (peers.length) {
+      let min = null;
+      for (const f of peers) { if (min === null || f.value < min) min = f.value; }
+      if (min !== null && min > seed) seed = min;
+    }
+    try { inboxCursor.ackTo(p, seed); } catch (_) { return descCursorPath; }
+  }
+  return p;
+}
+// projectNdDescriptorCursor(home, id, descCursorPath, meta) — after an instance
+// acks its own NDJSON cursor, move the DESCRIPTOR's cursor to the MIN across
+// instances, never to this one reader's position. Monotonic: `ackTo` never
+// lowers it.
+function projectNdDescriptorCursor(home, id, descCursorPath, meta) {
+  try {
+    const peers = listNdInstanceCursors(home, id);
+    if (!peers.length || !descCursorPath) return null;
+    let min = null;
+    for (const f of peers) { if (min === null || f.value < min) min = f.value; }
+    if (min === null) return null;
+    let from = 0;
+    try { from = inboxCursor.readCursor(descCursorPath); } catch (_) { from = 0; }
+    if (min <= from) return from;
+    inboxCursor.ackTo(descCursorPath, min);
+    logCursorWrite(home, Object.assign({}, meta || {}, {
+      id, partition: id, ns: 'ndjson-desc', from, to: min, gate: 'min-floor',
+    }));
+    return min;
+  } catch (_) { return null; }
+}
+
+function commitInstanceAck(storeHandle, home, id, shortNonce, target, meta) {
+  const m = meta || {};
+  const out = { instance: null, floor: null, sharedWritten: false };
+  const instPath = shortNonce ? instanceCursorPath(home, id, shortNonce) : null;
+  let from = 0;
+  if (instPath) { try { from = inboxCursor.readCursor(instPath); } catch (_) { from = 0; } }
+
+  // ORDER MATTERS (P1a at-least-once contract). The prospective floor is the
+  // MIN across the OTHER instances and this instance's new target. The shared
+  // pair is attempted FIRST, and the instance cursor is persisted only if that
+  // succeeded — otherwise a shared-write failure (an unwritable cursor path)
+  // would leave this instance marked "consumed" while the durable pair still
+  // says otherwise, silently dropping the at-least-once redelivery the rest of
+  // this file guarantees. When another instance is further behind, the floor
+  // does not move at all, so a broken shared path cannot block this instance's
+  // own progress.
+  const baseline = readInstanceBaseline(storeHandle, home, id);
+  let prospective = Number.isFinite(target) ? target : baseline;
+  for (const f of listInstanceCursors(home, id)) {
+    if (f.shortNonce === shortNonce) continue;
+    if (f.value < prospective) prospective = f.value;
+  }
+  prospective = Math.max(baseline, prospective);
+  const sharedFrom = legacySharedCursor(storeHandle, home, id);
+  if (Number.isFinite(prospective) && prospective > sharedFrom) {
+    // A store-cursor write failure is REPORTED, never swallowed: delivery has
+    // already happened (fail-open is right — a redelivered message is the safe
+    // outcome), but `ok:true` with no signal that the ack did not persist is
+    // exactly the silent half-ack this file's P1a fix exists to prevent.
+    // ORDER: the cursor FILE first, then the store row. The file write is the
+    // one that can fail on an unwritable path, and the baseline now treats the
+    // shared pair as a floor — so writing the store row first would raise that
+    // floor even when the file write then failed, silently cancelling the
+    // at-least-once redelivery this ack is supposed to guarantee. Writing the
+    // fragile side first means a failure leaves BOTH namespaces untouched.
+    try { inboxCursor.ackTo(primaryCursorPath(home, id), prospective); } catch (e) { out.error = String((e && e.message) || e); }
+    if (!out.error) {
+      try { storeHandle.setCursor(id, prospective); } catch (e) { out.error = String((e && e.message) || e); }
+    }
+    out.sharedWritten = !out.error;
+    logCursorWrite(home, Object.assign({}, m, {
+      id, partition: id, ns: 'store', from: sharedFrom, to: prospective,
+      gate: m.gate || 'min-floor', ok: !out.error, err: out.error,
+    }));
+  }
+  if (instPath && !out.error) {
+    let to = from;
+    try { to = inboxCursor.ackTo(instPath, target); } catch (e) {
+      out.error = String((e && e.message) || e);
+      logCursorWrite(home, Object.assign({}, m, { id, partition: id, ns: 'inst', from, to: target, ok: false, err: out.error }));
+    }
+    out.instance = to;
+    if (to !== from && !out.error) logCursorWrite(home, Object.assign({}, m, { id, partition: id, ns: 'inst', from, to }));
+  }
+  out.floor = instanceFloor(storeHandle, home, id);
+  return out;
+}
+
+// SEPARATORS USE `#`, WHICH `isSafeId` FORBIDS (R2 Auditor item 13).
+//
+// A first cut used `.inst-` / `.nd-` / `.base` and defended the collision with a
+// validator. That was the wrong shape and it was PROVEN broken: `isSafeId`
+// permits dots, and `register`/`primaryCursorPath` gate on bare `isSafeId`, so a
+// workspace could legitimately be named `w.base` — whose legacy cursor file is
+// `cursors/w.base.json`, byte-identical to workspace `w`'s BASELINE path.
+// Acking that workspace's cursor to 42 made `w`'s baseline read 42, silently
+// skipping 42 rows of `w`'s mail.
+//
+// `isSafeId` is `/^[A-Za-z0-9._-]+$/`, so `#` cannot appear in ANY valid
+// workspace id. Using it as the namespace separator makes the collision
+// impossible BY CONSTRUCTION rather than by a validator that every future call
+// site has to remember to apply. (The pre-existing `.seen-` watermark keeps its
+// own documented id-refusal guard — that namespace ships already and is not
+// re-cut here.) These three files are new in this unreleased version, so there
+// is no on-disk form to migrate.
+const INST_CURSOR_SEP = '#inst-';
+const ND_CURSOR_SEP = '#nd-';
+const BASELINE_SUFFIX = '#base.json';
+// 7 days. The eviction cost case (below) is a session RESUMED after the window,
+// and 24h sits inside an ordinary Friday-to-Monday gap (60-72h); 7 days puts it
+// outside every routine resume pattern for a few retained bytes. Expressed
+// against liveness.js's DEFAULT_IDLE_MS (15 min) for provenance: 672 x that.
+const DEFAULT_INSTANCE_CURSOR_STALE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// `isSafeId` already excludes `#`, so an id can never contain INST/ND_CURSOR_SEP
+// or produce BASELINE_SUFFIX. The `.seen-` exclusion is kept because that
+// namespace uses a dot separator and predates this fix.
+function instCursorSafeId(id) {
+  const v = String(id);
+  return isSafeId(v) && !v.includes(SIBLING_SEEN_SEP) && !v.includes('#');
+}
+// RESERVED-TOKEN IDS (R2 Auditor item 13). Even with `#` separators making the
+// cursor namespaces collision-proof, an id carrying one of these tokens is a
+// trap: `.seen-` genuinely collides with the shipped watermark namespace, and
+// the rest read as this file's internal namespaces to any human or future
+// parser. Refused on a FRESH registration only — an install that already has
+// such a row keeps working, because breaking a live workspace is worse than the
+// ambiguity it names.
+// The literal '.seen-' rather than SIBLING_SEEN_SEP: that const is declared
+// further down this file, and a module-level array would evaluate it in its
+// temporal dead zone (proven: ReferenceError at load).
+const RESERVED_ID_TOKENS = ['#', '.seen-', '.inst-', '.nd-'];
+function reservedIdToken(id) {
+  const v = String(id == null ? '' : id);
+  for (const t of RESERVED_ID_TOKENS) { if (v.includes(t)) return t; }
+  if (v.endsWith('.base')) return '.base';
+  return null;
+}
+function instanceCursorPath(home, id, shortNonce) {
+  if (!instCursorSafeId(id) || !/^[0-9a-f]{6}$/.test(String(shortNonce || ''))) return null;
+  return path.join(devswarmRoot(home), 'cursors', String(id) + INST_CURSOR_SEP + String(shortNonce) + '.json');
+}
+// parseInstCursorName(filename) -> { id, shortNonce } | null. The exact inverse
+// of instanceCursorPath's naming and the ONE parser any sweep may use. The
+// `/^[0-9a-f]{6}$/` test on the nonce half is load-bearing: `shortInstanceNonce`
+// is a sha1 prefix, so a name failing it was NOT written by this code — without
+// the test, a workspace id that legitimately contains `.inst-` would parse as an
+// instance file and be swept. Splits on the LAST separator so an id containing
+// `.inst-` cannot shadow the real one.
+function parseInstCursorName(filename) {
+  const n = typeof filename === 'string' ? filename : '';
+  if (!/\.json$/.test(n)) return null;
+  const base = n.slice(0, -'.json'.length);
+  const i = base.lastIndexOf(INST_CURSOR_SEP);
+  if (i <= 0) return null;
+  const id = base.slice(0, i);
+  const shortNonce = base.slice(i + INST_CURSOR_SEP.length);
+  if (!/^[0-9a-f]{6}$/.test(shortNonce)) return null;
+  if (!instCursorSafeId(id)) return null;
+  return { id, shortNonce };
+}
+// listInstanceCursors(home, id) -> [{ shortNonce, value, mtimeMs, path, readable }].
+// Every instance file for `id`. Fail-soft: an unreadable dir/file is simply
+// absent from the directory scan. `readable` distinguishes a GENUINE value of
+// 0 (a fresh cursor that has never advanced) from a file that exists but is
+// unreadable/corrupt — `inboxCursor.readCursor` swallows a parse failure and
+// also reports 0 for that case (correct for its own normal callers), so a
+// bounded-min consumer that folds every returned `value` in blind would treat
+// a corrupt file identically to a legitimately-fresh one and clamp forever at
+// 0. The file itself is still returned, unmodified, so a doctor sweep can
+// report and repair it — only the min computation needs to skip it.
+function listInstanceCursors(home, id) {
+  const out = [];
+  if (!instCursorSafeId(id)) return out;
+  const dir = path.join(devswarmRoot(home), 'cursors');
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch (_) { return out; }
+  for (const n of names) {
+    const parsed = parseInstCursorName(n);
+    if (!parsed || parsed.id !== String(id)) continue;
+    const p = path.join(dir, n);
+    let mtimeMs = 0;
+    try { const st = fs.statSync(p); mtimeMs = Number.isFinite(st.mtimeMs) ? st.mtimeMs : 0; } catch (_) { mtimeMs = 0; }
+    let value = 0;
+    let readable = true;
+    try {
+      const raw = String(fs.readFileSync(p, 'utf8')).trim();
+      let c;
+      if (/^\d+$/.test(raw)) c = parseInt(raw, 10);
+      else c = Number(JSON.parse(raw).line);
+      if (Number.isFinite(c) && c >= 0) value = Math.floor(c);
+      else readable = false;
+    } catch (_) { readable = false; }
+    out.push({ shortNonce: parsed.shortNonce, value, mtimeMs, path: p, readable });
+  }
+  return out;
+}
+// legacySharedCursor(storeHandle, home, id) -> max(cursors/<id>.json, store row).
+// The pre-per-instance base, kept verbatim as the bootstrap value.
+function legacySharedCursor(storeHandle, home, id) {
   let jsonCursor = 0, storeCursor = 0;
-  try { jsonCursor = inboxCursor.readCursor(primaryCursorPath(home, pid)); } catch (_) { jsonCursor = 0; }
-  try { storeCursor = storeHandle.cursorValue(pid); } catch (_) { storeCursor = 0; }
+  try { jsonCursor = inboxCursor.readCursor(primaryCursorPath(home, id)); } catch (_) { jsonCursor = 0; }
+  try { storeCursor = storeHandle && typeof storeHandle.cursorValue === 'function' ? storeHandle.cursorValue(id) : 0; } catch (_) { storeCursor = 0; }
   return Math.max(jsonCursor, storeCursor);
+}
+// THE BASELINE (`cursors/<id>#base.json`) — the LOSS-FREE watermark.
+//
+// A first draft of this fix used "the MIN across instance files" as the starting
+// position for an instance that has none. A test proved that wrong: an instance
+// that has NEVER read would then start at a PEER's position and be handed
+// nothing, which is the original defect wearing a different hat. The min across
+// readers and the loss-free watermark are two different facts and need two
+// different files.
+//
+// Only writers whose advance is loss-free BY CONSTRUCTION move the baseline:
+// foldOne (rows already forwarded into the survivor), reap-orphans (rows already
+// archived and read-back-verified), and the one-time bootstrap seed below. A
+// plain read/ack NEVER touches it — that is precisely the write that ate mail.
+//
+// Bootstrap: the first time any instance touches `id`, the baseline is seeded
+// from the pre-fix shared value `max(cursors/<id>.json, store cursor)`. Every
+// pre-0.99 installation therefore resumes exactly where it left off, and no
+// already-consumed row is re-delivered on upgrade.
+// `.base` is refused alongside `.inst-`, `.nd-` and `.seen-` — NOT via the
+// `RESERVED_ID_TOKENS` set (an `includes()` scan), but via `reservedIdToken`'s
+// own `endsWith('.base')` check (~:1563), since `.base` is only reserved as a
+// SUFFIX, not anywhere in the id. Without it, workspace id `x.base` and the
+// baseline of workspace id `x` would BOTH map to `cursors/x.base.json`
+// (isSafeId permits dots), so one id's legacy cursor and another's baseline
+// would silently be the same file (R1 Auditor item 13).
+function instanceBaselinePath(home, id) {
+  if (!instCursorSafeId(id)) return null;
+  return path.join(devswarmRoot(home), 'cursors', String(id) + BASELINE_SUFFIX);
+}
+function readInstanceBaseline(storeHandle, home, id) {
+  const p = instanceBaselinePath(home, id);
+  if (!p) return legacySharedCursor(storeHandle, home, id);
+  let exists = false;
+  try { exists = fs.existsSync(p); } catch (_) { exists = false; }
+  // ONE-TIME SEED ONLY — the legacy shared pair is NOT a live floor.
+  //
+  // A previous cut re-adopted `legacySharedCursor` as a floor on EVERY call, on
+  // the reasoning that every writer of the shared pair is either min-projected
+  // or loss-free. That reasoning holds only WITHIN this version. Across a MIXED
+  // FLEET it is false and it LOSES MAIL: a 0.98.3 session's read-primary ack
+  // writes `s.setCursor(id, acked)` — its OWN position, no min-projection — so
+  // re-adopting that value raised every 0.99 instance's floor to whatever the
+  // older build had consumed. Proven live against the real cached 0.98.3 build:
+  // the old build received 3, and a DECLARED 0.99 instance then received 0.
+  //
+  // That is exactly the asymmetry documented at this module's head: honoring a
+  // foreign ack LOSES mail, ignoring a legitimate advance only RE-DELIVERS it.
+  // The writers whose advances ARE loss-free raise the baseline at their own
+  // call sites instead — foldOne, cmdReapOrphans, and the migrate-time cursor
+  // merge — so nothing that genuinely made rows unreachable is ignored.
+  if (exists) {
+    try { return inboxCursor.readCursor(p); } catch (_) { return 0; }
+  }
+  // First touch: seed ONCE from the pre-fix shared value (upgrade continuity).
+  const legacy = legacySharedCursor(storeHandle, home, id);
+  try { inboxCursor.ackTo(p, legacy); } catch (_) { /* fail-soft: re-seeded next call */ }
+  return legacy;
+}
+// raiseInstanceBaseline(home, id, value) -> bool. ONLY for loss-free advances.
+// raiseInstanceBaseline(home, id, value, opts) -> bool.
+//
+// UNBOUNDED by default, and that default is ONLY for foldOne and cmdReapOrphans:
+// each has already made every row below `value` reachable elsewhere (forwarded
+// into the survivor partition / archived to disk and read-back verified) before
+// it calls this, so moving every instance past those rows loses nothing.
+//
+// `opts.bounded` is for every OTHER caller. A raise that has NOT made the rows
+// reachable elsewhere must never pass the DECLARED FLOOR — the min across
+// existing `#inst-` files — or it silently consumes a live instance's mail. The
+// migrate-time cursor merge is exactly that case: its `mergedCursor` is
+// `max(dst.cursorValue, src.cursorValue)`, i.e. shared-pair values that an older
+// build's own-position ack can have written, and copying rows between backends
+// makes nothing reachable for a 0.99 instance. Proven live: a declared instance
+// sitting at 0 with an unbounded raise(3) received 0 rows instead of 3.
+//
+// With NO instance files the bound does not apply (nothing is declared, so
+// nothing can be skipped) and the raise proceeds as before.
+function raiseInstanceBaseline(home, id, value, opts) {
+  const p = instanceBaselinePath(home, id);
+  if (!p || !Number.isFinite(value) || value <= 0) return false;
+  let target = value;
+  if (opts && opts.bounded) {
+    // SKIP unreadable/corrupt files: they are not a legitimate declared
+    // floor, just a file that can't be trusted. Folding their `readCursor`
+    // default of 0 into the min would clamp `target` at 0 forever for this
+    // id (proven: a bounded raise never advances while a corrupt file sits
+    // in the mix). Treat them as absent for this computation only — they
+    // are still returned by listInstanceCursors, unmodified, for the doctor
+    // report.
+    const files = listInstanceCursors(home, id).filter((f) => f.readable !== false);
+    if (files.length) {
+      let min = null;
+      for (const f of files) { if (min === null || f.value < min) min = f.value; }
+      if (min !== null && min < target) target = min;
+    }
+  }
+  if (!Number.isFinite(target) || target <= 0) return false;
+  try { inboxCursor.ackTo(p, target); return true; } catch (_) { return false; }
+}
+// instanceFloor(storeHandle, home, id) -> the value the SHARED pair should show:
+// the MIN across instance files, never below the loss-free baseline. With no
+// instance file it is simply the baseline.
+function instanceFloor(storeHandle, home, id) {
+  const baseline = readInstanceBaseline(storeHandle, home, id);
+  const files = listInstanceCursors(home, id);
+  if (!files.length) return baseline;
+  let min = null;
+  for (const f of files) { if (min === null || f.value < min) min = f.value; }
+  return Math.max(baseline, min === null ? baseline : min);
+}
+// raiseAllInstanceCursors(home, id, value) -> count raised. Used ONLY by writers
+// whose advance is loss-free by construction (foldOne after forwarding, reap
+// after a verified archive): those rows are reachable elsewhere, so every
+// instance may safely be moved past them. `ackTo` is monotonic, so this can only
+// ever raise a file. NEVER call this from a plain read/ack path — that is the
+// defect this whole module exists to close.
+function raiseAllInstanceCursors(home, id, value) {
+  let n = 0;
+  if (!Number.isFinite(value) || value <= 0) return n;
+  for (const f of listInstanceCursors(home, id)) {
+    if (f.value >= value) continue;
+    try { inboxCursor.ackTo(f.path, value); n += 1; } catch (_) { /* fail-soft: bookkeeping */ }
+  }
+  return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -3078,6 +3803,18 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
         if (advanceTo > since) {
           s.setCursor(row.id, advanceTo);
           try { inboxCursor.ackTo(primaryCursorPath(home, row.id), advanceTo); } catch (_) { /* fail-soft: reconcile re-converges the pair */ }
+          // PER-INSTANCE LOCKSTEP (defect 8b211241bbe9): this advance is
+          // loss-free BY CONSTRUCTION — every row behind it was forwarded into
+          // the survivor partition before we got here — so every instance may
+          // safely be moved past it. Without this, instance windows (which
+          // deliberately ignore the shared pair) would re-deliver the whole
+          // already-forwarded backlog on each instance's next read.
+          try {
+            raiseInstanceBaseline(home, row.id, advanceTo);
+            const n = raiseAllInstanceCursors(home, row.id, advanceTo);
+            if (n) logCursorWrite(home, { id: row.id, partition: row.id, ns: 'inst', from: since, to: advanceTo, delivered: null, gate: 'lockstep', verb: 'fold', cwd: (opts && opts.cwd) || null, repoKey: (opts && opts.repoKey) || store.hashFromWorkspaceId(row.id) });
+          } catch (_) { /* fail-soft */ }
+          try { logCursorWrite(home, { id: row.id, partition: row.id, ns: 'store', from: since, to: advanceTo, delivered: null, gate: 'lockstep', verb: 'fold', cwd: (opts && opts.cwd) || null, repoKey: (opts && opts.repoKey) || store.hashFromWorkspaceId(row.id) }); } catch (_) {}
         }
       } catch (_) { /* best-effort bookkeeping; never blocks the fold itself */ }
       // `row` here is whatever foldOne was called with — the in-lock re-read `cur`
@@ -3912,12 +4649,33 @@ function reconcileOrphanCursor(home, s, id, desc, dryRun) {
     return { changed: false, min: 0, skipped: 'ndjson-cursor-not-a-store-cursor' };
   }
   let changed = false;
+  // Journal records land per repoKey; prefer the descriptor's real one so a
+  // rewind shows up in the same log as the acks it is reconciling.
+  let reconcileRepoKey = null;
+  try {
+    reconcileRepoKey = (desc && desc.worktreePath) ? repokey.repoKeyForWorktree(desc.worktreePath) : null;
+  } catch (_) { reconcileRepoKey = null; }
+  if (!reconcileRepoKey) { try { reconcileRepoKey = store.hashFromWorkspaceId(id); } catch (_) { reconcileRepoKey = null; } }
   // C2 fix: ackTo() is monotonic by default (guards against unlocked-drain
   // races elsewhere) — this reconciliation is the ONE proven legitimate
   // exception (MIN-only by design, may need to lower a namespace stuck above
   // the others), so it opts in explicitly to keep its pre-fix behavior.
-  if (jsonCursor > min) { if (!dryRun) { try { inboxCursor.ackTo(primaryCursorPath(home, id), min, undefined, undefined, { allowRewind: true }); } catch (_) {} } changed = true; }
-  if (storeCursor > min) { if (!dryRun) { try { s.setCursor(id, min); } catch (_) {} } changed = true; }
+  if (jsonCursor > min) {
+    if (!dryRun) {
+      try { inboxCursor.ackTo(primaryCursorPath(home, id), min, undefined, undefined, { allowRewind: true }); } catch (_) {}
+      // The design's ONE legal `from > to`: journal it explicitly so a rewind is
+      // never mistaken for a corrupt record (defect 8b211241bbe9, R1 P1).
+      logCursorWrite(home, { id, partition: id, ns: 'json', from: jsonCursor, to: min, delivered: null, gate: 'allowRewind', verb: 'reconcile', repoKey: reconcileRepoKey });
+    }
+    changed = true;
+  }
+  if (storeCursor > min) {
+    if (!dryRun) {
+      try { s.setCursor(id, min); } catch (_) {}
+      logCursorWrite(home, { id, partition: id, ns: 'store', from: storeCursor, to: min, delivered: null, gate: 'allowRewind', verb: 'reconcile', repoKey: reconcileRepoKey });
+    }
+    changed = true;
+  }
   return { changed, min };
 }
 
@@ -4966,6 +5724,26 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   const home = ctx.home;
   return withIdLock(id, home, () => {
   let existing = readDescriptorFile(home, id);
+  // RESERVED-TOKEN IDS (R2 Auditor item 13). Refuse a FRESH registration whose
+  // id carries a token this file's cursor namespaces use. `#` separators already
+  // make the new namespaces collision-proof, but `.seen-` genuinely collides
+  // with the shipped watermark namespace, and an id like `w.base` or
+  // `w.inst-abcdef` reads as another workspace's internal file to any human or
+  // future parser. Scoped to the CREATE path: an install that already has such a
+  // row keeps working, because breaking a live workspace is worse than the
+  // ambiguity the name carries.
+  if (!existing) {
+    const bad = reservedIdToken(id);
+    if (bad) {
+      return {
+        ok: false, id, reason: 'reserved-id-token',
+        error: 'refusing to register workspace id ' + JSON.stringify(String(id))
+          + ' — it contains the reserved token ' + JSON.stringify(bad)
+          + ', which anti-hall uses for its own cursor namespaces under cursors/. '
+          + 'Choose an id without it.',
+      };
+    }
+  }
   // ARCHIVE RESURRECTION FIX (field defect a48db2e0ea08): archiving unlinks the
   // active descriptor (see cmdArchive), so a routine `ensure` — the path
   // cmdInboxPull's auto-ensure runs on EVERY turn from a still-running child —
@@ -5162,6 +5940,25 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
   // duplicate's unread backlog first (no orphaned messages). No-op unless a
   // duplicate exists; gated to builder-id self-registers inside the helper.
   const retire = retireWorktreeDuplicates(home, desc, ctx);
+  // DECLARE this instance as a reader of `id` (defect 8b211241bbe9, R1). `ensure`
+  // routes through here on every turn, so each live process holds its own cursor
+  // file from its first turn and keeps its own view of the mailbox.
+  try {
+    let regNonce = null;
+    try { regNonce = shortInstanceNonce((ctx && ctx.instanceNonce) || deriveInstanceNonce(ctx)); } catch (_) { regNonce = null; }
+    if (regNonce) {
+      const rk = repoKeyForCwd(ctx);
+      const seedStore = store.openStore({ home, workspaceId: id, hash: rk || undefined, backend: ctx && ctx.backend, env: ctx && ctx.env });
+      try {
+        seedInstanceCursor(seedStore, home, id, regNonce);
+        // Declare the NDJSON side too (defect 8b211241bbe9, R1 item 11) — the
+        // descriptor's cursor is one file per workspace, so without this an
+        // instance that had not yet READ would inherit a peer's acked position
+        // the first time it looked.
+        if (desc && desc.cursorPath) resolveNdCursorPath(home, id, regNonce, desc.cursorPath);
+      } finally { seedStore.close(); }
+    }
+  } catch (_) { /* fail-soft: an undeclared instance simply reads from the floor */ }
   const out = { ok: true, action: existing ? 'updated' : 'registered', id, descriptor: desc };
   if (retire) { out.retiredDuplicates = retire.retired; out.forwardedMessages = retire.forwarded; if (retire.left) out.leftDuplicates = retire.left; if (retire.forwardFailed) out.forwardFailed = retire.forwardFailed; }
   if (archivedNote) out.archivedNote = archivedNote;
@@ -6945,8 +7742,25 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     const n = Number(limitRaw);
     if (Number.isFinite(n) && n > 0) inboxReadLimit = Math.max(1, Math.floor(n)); // F4: a fractional --limit (e.g. 0.5) must not floor to 0 and disable the cap
   }
+  // CALLER INSTANCE IDENTITY (defect 8b211241bbe9). `deriveInstanceNonce` never
+  // returns null and is memoized per process, so this is one cheap, stable value
+  // per invocation: the same harness session (main thread, a cron turn, a
+  // Monitor turn — all children of the same claude process) resolves the SAME
+  // nonce, while a genuinely separate process gets its own. Short form only —
+  // the raw nonce is process-identifying and never lands in a filename.
+  let callerInstanceShort = null;
+  // `ctx.instanceNonce` is an IN-PROCESS override only — nothing in `run()`'s
+  // argv/env parsing ever sets it, so it is not a spoofing surface; it exists
+  // because `deriveInstanceNonce` memoizes per process (deliberately), which
+  // would otherwise collapse two simulated instances in one test run into one.
+  try { callerInstanceShort = shortInstanceNonce((ctx && ctx.instanceNonce) || deriveInstanceNonce(ctx)); } catch (_) { callerInstanceShort = null; }
+  let callerRepoKeyForLog = null;
+  try { callerRepoKeyForLog = repoKeyForCwd(ctx); } catch (_) { callerRepoKeyForLog = null; }
   const cursorPath = primaryCursorPath(home, id);
-  const cursor = inboxCursor.readCursor(cursorPath);
+  // Pre-fix value here; re-based onto this instance's own position as soon as
+  // the store handle exists (see the PER-INSTANCE READ BASE note below). The
+  // early-return refusal branches between here and there only ever report it.
+  let cursor = inboxCursor.readCursor(cursorPath);
   // defect dca4d2e16926: `messages`/`read-primary`/`peek-primary` used to be
   // STORE-ONLY (s.messageCount/s.listMessages below), while `inbox count/read/
   // ack` already union the store partition with the NDJSON descriptor inbox
@@ -7004,6 +7818,14 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     );
   }
   const s = openedForRead.store;
+  // PER-INSTANCE READ BASE (defect 8b211241bbe9). Sizing this window from the
+  // id-keyed shared file alone is what let one instance's ack hide another
+  // instance's unread mail: whichever instance acked first moved the single
+  // shared cursor for every reader of that id. `siblingBaseCursor` returns
+  // `max(floor, thisInstance)` where `floor` is the MIN across instance files —
+  // and, with no instance file yet (bootstrap, and every pre-0.99 install),
+  // exactly the pre-fix `max(cursors/<id>.json, store cursor)`.
+  cursor = siblingBaseCursor(s, home, id, callerInstanceShort);
   let total, messages, acked, union = null;
   // B1: hoisted outside the try{} below (same reasoning as
   // meshGroupUnresolved/meshGroupError just below) so `out`'s meshPartitionIds
@@ -7247,11 +8069,11 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // two namespaces diverge whenever foldOne/reap-orphans advanced only the
         // store side, and reading the JSON one alone re-delivered the whole
         // already-folded backlog on every call. See siblingBaseCursor.
-        const pCursor = siblingBaseCursor(s, home, pid);
+        const pCursor = siblingBaseCursor(s, home, pid, callerInstanceShort);
         // Ackability decided BEFORE the window is sized (it was computed after,
         // below) — it now selects the cursor namespace this window is measured
         // against, not just how the cap slices.
-        const pAckable = doAck && !siblingAckGate(s, id, pid, home, ctx.now);
+        const pAckable = doAck && !siblingAckGate(s, id, pid, home, ctx.now, { cwd: ctx && ctx.cwd });
         // LIVE-SIBLING WATERMARK (P0): a sibling this caller may not ack
         // advances NO cursor at all, so its unread backlog was re-delivered
         // identically on every read, forever. This caller-scoped watermark
@@ -7354,7 +8176,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     // NDJSON side (union.storeOnlyUnreadRows already excludes it).
     if (wantsUnion && desc && desc.inboxPath) {
       try {
-        union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle: s });
+        union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle: s, storeBaseCursor: cursor });
       } catch (_) { union = null; } // fail-open: falls back to store-only reporting below
     }
     if (union) {
@@ -7576,8 +8398,44 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
       // See the P0 MESSAGE-LOSS fix comment above for why this replaces the
       // prior `total - ownWithheldCount` subtraction.
       const ownTarget = ownDeliveredMaxIndex !== null ? Math.max(cursor, ownDeliveredMaxIndex) : cursor;
-      acked = inboxCursor.ackTo(cursorPath, ownTarget); // absolute set to the last actually-delivered own row's raw position (no inbox clamp)
-      s.setCursor(id, acked); // keep deriveSummary's unread projection in sync with the ACK
+      // PER-INSTANCE ACK (defect 8b211241bbe9). The pre-fix pair here was
+      // `ackTo(cursorPath, ownTarget)` + `s.setCursor(id, acked)` — BOTH write
+      // the id-keyed shared namespace, and THAT is the defect: a second
+      // instance of the same id (a twin row, a resumed session) had its mail
+      // consumed by whichever instance acked first. `commitInstanceAck` records
+      // this instance's own position and moves the shared pair only to the MIN
+      // across instances, so a lagging peer is never skipped. With a single
+      // instance the min IS this instance's value, making the shared pair
+      // byte-identical to the pre-fix behavior.
+      // `delivered` MUST be the rows this call actually returned for `id`'s own
+      // partition. Gating on `wantsUnion || meshUnionActive` was wrong: `doAck`
+      // alone sets `wantsUnion`, but with no descriptor inbox the union never
+      // runs and NO row is ever tagged — so a store-only read that delivered 3
+      // rows journaled `delivered: 0`, a false positive of the exact signature
+      // this journal exists to make trustworthy (caught by test).
+      //
+      // Count by what a row IS, not by which flag was set: a sibling row always
+      // carries `__srcId: 'sibling:<id>'`, so `id`'s own rows are the ones
+      // tagged 'own' PLUS the untagged ones from the store-only path.
+      const ownDeliveredCount = messages.filter(
+        (r) => r && (r.__srcId === undefined || r.__srcId === 'own')
+      ).length;
+      const committed = commitInstanceAck(s, home, id, callerInstanceShort, ownTarget, {
+        callerId: id, delivered: ownDeliveredCount, nonce: callerInstanceShort,
+        gate: 'owner', verb: 'read-primary', cwd: (ctx && ctx.cwd) || null,
+        repoKey: callerRepoKeyForLog,
+      });
+      // A failed own-partition cursor write must be REPORTED, not swallowed
+      // (R1 Reviewer item 7). Redelivery already holds — commitInstanceAck
+      // leaves both namespaces untouched on failure — but returning `ok:true`
+      // with no signal that the ack did not persist is the silent half-ack this
+      // file's P1a fix exists to prevent. Same shape the sibling loop uses.
+      if (committed.error) {
+        cursorWriteFailures.push({ partitionId: id, channel: 'store-cursor', error: committed.error });
+      }
+      // `acked` is what THIS caller has now consumed — its own instance
+      // position when one exists, else the shared value it just wrote.
+      acked = Number.isFinite(committed.instance) ? committed.instance : Math.max(committed.floor || 0, ownTarget);
       // Per-partition cursors STAY per-partition: each sibling row is acked,
       // and ONLY the rows actually in `meshSiblingPartitions` (the group `id`
       // resolved to this call) — a partition outside the group, or one this
@@ -7633,7 +8491,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         // caller-scoped watermark file. Computed from the SAME physical
         // `part.sinceCursor + physicalConsumed` arithmetic the real ack below
         // uses — never a second derivation.
-        const notAckable = siblingAckGate(s, id, part.id, home, ctx.now);
+        const notAckable = siblingAckGate(s, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd });
         if (notAckable) liveSiblingsSkipped.push(part.id);
         const fullDeliveredCount = Number.isFinite(part.deliveredCount) ? part.deliveredCount : part.messages.length; // fold's own full, pre-cap count — never mutated below
         let deliveredCount = fullDeliveredCount;
@@ -7702,8 +8560,22 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
           continue; // the sibling's OWN cursors are never touched for a live twin
         }
         try {
-          inboxCursor.ackTo(part.cursorPath, ackTarget);
-          s.setCursor(part.id, ackTarget);
+          // PER-INSTANCE SIBLING ACK (defect 8b211241bbe9). Each sibling
+          // partition is acked for THIS instance; the shared pair follows the
+          // MIN across that partition's instances. Single-instance case is
+          // byte-identical to the pre-fix pair of writes.
+          const partCommit = commitInstanceAck(s, home, part.id, callerInstanceShort, ackTarget, {
+            callerId: id, delivered: Number.isFinite(part.deliveredCount) ? part.deliveredCount : null,
+            nonce: callerInstanceShort, gate: 'sibling', verb: 'read-primary',
+            cwd: (ctx && ctx.cwd) || null, repoKey: callerRepoKeyForLog,
+          });
+          if (partCommit.error) throw new Error(partCommit.error);
+          // (defect 8b211241bbe9, R1 P1: the `ackTo(part.cursorPath, ackTarget)`
+          // that used to sit here wrote the shared JSON cursor to THIS reader's
+          // target immediately after commitInstanceAck had written that same
+          // path to the min across instances — the two shared namespaces then
+          // disagreed, and the write left no journal record. commitInstanceAck
+          // owns that path now.)
           // R14 F1, THIRD HALF — retire the watermark once its rows are covered
           // by the sibling's OWN durable cursors. The watermark exists only to
           // stand in for a cursor that could not be advanced; keeping it after a
@@ -8190,6 +9062,21 @@ function cmdInboxTick(id, flags, ctx) {
 }
 
 function cmdInbox(sub, id, flags, ctx) {
+  // CALLER INSTANCE IDENTITY (defect 8b211241bbe9). `deriveInstanceNonce` never
+  // returns null and is memoized per process, so this is one cheap, stable value
+  // per invocation: the same harness session (main thread, a cron turn, a
+  // Monitor turn — all children of the same claude process) resolves the SAME
+  // nonce, while a genuinely separate process gets its own. Short form only —
+  // the raw nonce is process-identifying and never lands in a filename.
+  let callerInstanceShort = null;
+  // `ctx.instanceNonce` is an IN-PROCESS override only — nothing in `run()`'s
+  // argv/env parsing ever sets it, so it is not a spoofing surface; it exists
+  // because `deriveInstanceNonce` memoizes per process (deliberately), which
+  // would otherwise collapse two simulated instances in one test run into one.
+  try { callerInstanceShort = shortInstanceNonce((ctx && ctx.instanceNonce) || deriveInstanceNonce(ctx)); } catch (_) { callerInstanceShort = null; }
+  let callerRepoKeyForLog = null;
+  try { callerRepoKeyForLog = repoKeyForCwd(ctx); } catch (_) { callerRepoKeyForLog = null; }
+
   const home = ctx.home;
   // --since/--tail belong to the NON-ACKING `inbox messages` verb only. Every
   // other sub-verb here either acks a contiguous unread prefix (`read`, `ack`,
@@ -8326,6 +9213,58 @@ function cmdInbox(sub, id, flags, ctx) {
     if (redirectedTo && String(redirectedTo) !== String(id) && !hasRegistryRow) {
       const redirectedDesc = readDescriptorFile(home, redirectedTo);
       if (redirectedDesc && redirectedDesc.inboxPath) {
+        // REDIRECT-TO-LIVE GUARD (defect 8b211241bbe9 §2e, reinstated in R1).
+        //
+        // An earlier pass removed this on the reasoning that the `ownsSurvivor`
+        // check below already refuses the ack. THAT REASONING WAS WRONG: that
+        // check is gated `retiredRedirectFromId && !flags['ack-as-owner']`, so
+        // the override BYPASSES it — and the hazard is precisely an
+        // `--ack-as-owner` instruction. After a fold the retired id is absent
+        // from registry AND descriptors, the parent hook renders it as a retired
+        // sender with that very instruction, and the redirect below reassigns
+        // the target to the survivor, which can be a LIVE twin.
+        //
+        // The override's sanctioned purpose is a retired target with NO live
+        // owner. A redirect landing on a live owner is outside it: refuse the
+        // ACK (reads still redirect) and journal why.
+        // POSITIVE EVIDENCE ONLY — a FRESH HEARTBEAT, not `isSiblingPartitionLive`.
+        //
+        // That predicate deliberately fails TOWARD live (an undetermined verdict
+        // reads as live), which is right where the cost of guessing wrong is
+        // re-delivery. Here the cost is inverted: guessing "live" REFUSES the
+        // override, and the override's whole sanctioned purpose is a retired
+        // target with NO live owner. Using the fail-toward-live predicate
+        // refused a survivor with no heartbeat at all (caught by test), which
+        // would have broken the one path this override exists to serve.
+        // `hasFreshHeartbeat` is positive evidence: the survivor's own
+        // heartbeat file, written recently, keyed on its own id.
+        let survivorLive = false;
+        try {
+          survivorLive = hasFreshHeartbeat(String(redirectedTo), home);
+        } catch (_) { survivorLive = false; } // no evidence -> not live -> allow the override
+        // Scoped to the OVERRIDE path only. Without `--ack-as-owner` the
+        // pre-existing `ownsSurvivor` refusal below already blocks this and
+        // owns the established `retired-redirect-unresolvable-caller` reason;
+        // preempting it there would change a documented contract for no safety
+        // gain. The override is the one path that check does not cover.
+        if (survivorLive && sub === 'ack' && flags['ack-as-owner']) {
+          try {
+            logCursorWrite(home, {
+              id: String(redirectedTo), partition: String(redirectedTo), callerId: String(id),
+              ns: 'store', from: null, to: null, delivered: null, gate: 'redirect-to-live',
+              verb: 'inbox-ack', cwd: (ctx && ctx.cwd) || null, ok: false,
+              err: 'refused: retired id ' + String(id) + ' redirects to LIVE owner ' + String(redirectedTo),
+              repoKey: callerRepoKeyForLog,
+            });
+          } catch (_) { /* instrumentation only */ }
+          return {
+            ok: false, action: sub, id: String(id), reason: 'redirect-to-live-owner',
+            redirectedTo: String(redirectedTo),
+            error: 'refusing to ack retired id ' + JSON.stringify(String(id)) + ' — it redirects to '
+              + JSON.stringify(String(redirectedTo)) + ', whose owner is LIVE. Acking here would consume '
+              + 'that live agent\'s mail. Ack the survivor from its own session, or read without --ack.',
+          };
+        }
         retiredRedirectFromId = String(id);
         id = String(redirectedTo);
         effectiveDesc = redirectedDesc;
@@ -8424,7 +9363,14 @@ function cmdInbox(sub, id, flags, ctx) {
   }
   const finalDesc = readArgResolvedFrom ? readDescriptorFile(home, id) : effectiveDesc;
   const inboxPath = finalDesc.inboxPath;
-  const cursorPath = finalDesc.cursorPath;
+  // PER-INSTANCE NDJSON CURSOR (defect 8b211241bbe9, R1 item 11): read and ack
+  // against THIS instance's own cursor file, not the single descriptor cursor
+  // every instance of this workspace shared. The descriptor's cursor is kept as
+  // a min-projection below so every existing consumer of it stays loss-free.
+  const descCursorPath = finalDesc.cursorPath;
+  const cursorPath = descCursorPath
+    ? resolveNdCursorPath(home, id, callerInstanceShort, descCursorPath)
+    : descCursorPath;
   if (sub === 'count' || sub === 'read' || sub === 'ack') {
     // P0 fix (parent->child direct messages silently undeliverable): `send --to`
     // (cmdSend/appendMeshMessage) is a STORE-ONLY write — it never touches this
@@ -8485,7 +9431,11 @@ function cmdInbox(sub, id, flags, ctx) {
         storeUnavailableReason: null,
       };
     }
-    const union = devswarmUnread.unionUnread({ inboxPath, cursorPath, id, storeHandle });
+    // Per-instance store base (defect 8b211241bbe9, R1 P0) — `inbox count/read/
+    // ack` must size the store side from THIS instance's position, not the
+    // shared projection, or `count` disagrees with `read-primary` per instance.
+    const unionStoreBase = storeHandle ? siblingBaseCursor(storeHandle, home, id, callerInstanceShort) : undefined;
+    const union = devswarmUnread.unionUnread({ inboxPath, cursorPath, id, storeHandle, storeBaseCursor: unionStoreBase });
     const storeCursorVal = union.storeCursor;
     let storeOnlyUnreadRows = union.storeOnlyUnreadRows;
 
@@ -8537,10 +9487,10 @@ function cmdInbox(sub, id, flags, ctx) {
             // is not ackable — the SAME inputs read-primary uses, so the two
             // surfaces can no longer report different amounts of outstanding
             // mail. Read-only: `count` never writes any of them.
-            const pBase = siblingBaseCursor(storeHandle, home, pid);
+            const pBase = siblingBaseCursor(storeHandle, home, pid, callerInstanceShort);
             let pCursor = pBase;
             try {
-              if (siblingAckGate(storeHandle, id, pid, home, ctx.now)) {
+              if (siblingAckGate(storeHandle, id, pid, home, ctx.now, { cwd: ctx && ctx.cwd })) {
                 pCursor = Math.max(pBase, readSiblingSeenCursor(home, id, pid));
               }
             } catch (_) { pCursor = pBase; }
@@ -9064,6 +10014,7 @@ function cmdInbox(sub, id, flags, ctx) {
       // the store's own cursor, so ack-all (below) is the only path that also
       // clears the store side.
       cursor = inboxCursor.ackTo(cursorPath, n, undefined, inboxPath);
+      projectNdDescriptorCursor(home, id, descCursorPath, { callerId: id, nonce: callerInstanceShort, verb: 'inbox-ack-to', cwd: (ctx && ctx.cwd) || null, repoKey: callerRepoKeyForLog });
     } else {
       // Fix Wave 5 Item 2 (P0 message-loss): `advanceCursor()` used to RECOUNT
       // the LIVE inbox file tail at ack time (`countMessages(inboxPath)`
@@ -9082,6 +10033,7 @@ function cmdInbox(sub, id, flags, ctx) {
       // guard still protects against under-acking a previously-further-along
       // cursor.
       cursor = inboxCursor.ackTo(cursorPath, union.cursor + union.ndjsonUnreadLines.length, undefined, inboxPath); // ack-all (ndjson side) — over THIS call's read snapshot only
+      projectNdDescriptorCursor(home, id, descCursorPath, { callerId: id, nonce: callerInstanceShort, verb: 'inbox-ack-all', cwd: (ctx && ctx.cwd) || null, repoKey: callerRepoKeyForLog });
       // Store-side ack-all (P0 fix): advance the STORE's OWN cursor for `id` too,
       // so deriveSummary's persisted projection (what the parent-gate banner
       // reads) agrees with what this read path just reported as consumed —
@@ -9135,13 +10087,25 @@ function cmdInbox(sub, id, flags, ctx) {
               if (row && Number.isFinite(row.index) && (ownMaxIndex === null || row.index > ownMaxIndex)) ownMaxIndex = row.index;
             }
             const totalNow = ownMaxIndex !== null ? Math.max(storeCursorVal, ownMaxIndex) : storeCursorVal;
-            storeHandle.setCursor(id, totalNow);
+            // PER-INSTANCE ACK (defect 8b211241bbe9) — see commitInstanceAck.
+            // Replaces the bare shared write: the shared pair now follows the
+            // MIN across instances, never one reader's own position.
+            const ownCommit = commitInstanceAck(storeHandle, home, id, callerInstanceShort, totalNow, {
+              callerId: id, delivered: Number.isFinite(ownKeptCount) ? ownKeptCount : null, nonce: callerInstanceShort,
+              gate: 'owner', verb: 'inbox-ack', cwd: (ctx && ctx.cwd) || null, repoKey: callerRepoKeyForLog,
+            });
+            // Report, never swallow (R1 Reviewer item 7) — see the read-primary twin.
+            if (ownCommit.error) {
+              ackCursorWriteFailures.push({ partitionId: id, channel: 'store-cursor', error: ownCommit.error });
+            }
             // Keep the SEPARATE `inbox messages --ack`/`read-primary` ACK-cursor
             // FILE (primaryCursorPath, a DIFFERENT namespace than this
             // descriptor's own cursorPath) in lockstep too, so a workspace that
             // mixes `inbox ack` with `read-primary` never sees those two
             // read-verbs disagree about what is already consumed.
-            inboxCursor.ackTo(primaryCursorPath(home, id), totalNow);
+            // (defect 8b211241bbe9: the shared-pair write now lives inside
+            // commitInstanceAck above and is driven by the MIN across
+            // instances, never this one reader's `totalNow`.)
             // Mesh sibling ack (defect 27cd80902435): advance EACH sibling
             // partition's OWN store cursor too — "per-partition cursors stay
             // per-partition" (same invariant cmdInboxMessages's read-primary
@@ -9159,7 +10123,7 @@ function cmdInbox(sub, id, flags, ctx) {
               // used to have none at all, which is exactly what let a live
               // sibling sharing this worktree get its cursor driven forward
               // and its backlog consumed undelivered by a plain `inbox ack`.
-              if (siblingAckGate(storeHandle, id, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }
+              if (siblingAckGate(storeHandle, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd })) { liveSiblingsSkipped.push(part.id); continue; }
               // Fix Wave 3 G1/G2 (P0/P1): `part.physicalConsumed` (set
               // above alongside `part.deliveredCount` — see the cap-step
               // comment ~line 4682) is the PHYSICAL row count to advance
@@ -9171,8 +10135,14 @@ function cmdInbox(sub, id, flags, ctx) {
               const physicalConsumed = Number.isFinite(part.physicalConsumed) ? part.physicalConsumed : deliveredCount;
               const ackTarget = part.cursor + physicalConsumed;
               try {
-                storeHandle.setCursor(part.id, ackTarget);
-                inboxCursor.ackTo(primaryCursorPath(home, part.id), ackTarget);
+                // PER-INSTANCE SIBLING ACK (defect 8b211241bbe9) — see the
+                // read-primary loop's twin of this call.
+                const partCommit = commitInstanceAck(storeHandle, home, part.id, callerInstanceShort, ackTarget, {
+                  callerId: id, delivered: deliveredCount, nonce: callerInstanceShort,
+                  gate: 'sibling', verb: 'inbox-ack', cwd: (ctx && ctx.cwd) || null,
+                  repoKey: callerRepoKeyForLog,
+                });
+                if (partCommit.error) throw new Error(partCommit.error);
               } catch (e2) {
                 ackCursorWriteFailures.push({ partitionId: part.id, channel: 'sibling-store-cursor', error: String((e2 && e2.message) || e2) });
               }
@@ -12222,11 +13192,30 @@ function computeDiagnosis(s, ctx) {
       });
     }
   }
+  // cursorWrites (defect 8b211241bbe9) — the last few cursor advances PER ID,
+  // read from the append-only journal. This is the surfacing the design
+  // promised: the field defect was diagnosed twice from symptoms alone because
+  // no writer left a trace, so `diagnose` now shows who moved what. Bounded
+  // (CURSOR_WRITES_PER_ID newest per id) so a long-lived log cannot bloat the
+  // output, and fail-open — an unreadable journal simply yields {}.
+  const cursorWrites = {};
+  try {
+    const rk = (c.repoKey) || repoKeyForCwd(c) || null;
+    const recs = readCursorLog(c.home, rk, CURSOR_LOG_DIAGNOSE_SCAN);
+    for (const rec of recs) {
+      if (!rec || rec.id == null) continue;
+      const k = String(rec.id);
+      if (!cursorWrites[k]) cursorWrites[k] = [];
+      cursorWrites[k].push(rec);
+      if (cursorWrites[k].length > CURSOR_WRITES_PER_ID) cursorWrites[k].shift();
+    }
+  } catch (_) { /* fail-open: instrumentation, never a diagnose failure */ }
   return {
     sum, registry: rows, meshTargets, splits, deadSplits, mixedSplits,
     orphans: sum.orphans || [],
     staleRegistryPartitions: sum.staleRegistryPartitions || [],
     phantoms, unreadTotal, instanceSplits,
+    cursorWrites,
     storeUnavailable, storeUnavailableReason, storeUnavailableScope,
   };
 }
@@ -13568,6 +14557,14 @@ function cmdReapOrphans(flags, ctx) {
         // partition's archived rows stayed "unread" to `read-primary` (which
         // sizes from the json namespace) forever after a reap.
         try { inboxCursor.ackTo(primaryCursorPath(home, pid), total); } catch (_) { /* fail-soft: reconcile re-converges the pair */ }
+        // PER-INSTANCE LOCKSTEP (defect 8b211241bbe9): loss-free by
+        // construction — the rows were archived to disk AND read back verified
+        // above before this line — so every instance may be moved past them.
+        try {
+          raiseInstanceBaseline(home, pid, total);
+          const nInst = raiseAllInstanceCursors(home, pid, total);
+          logCursorWrite(home, { id: pid, partition: pid, ns: nInst ? 'inst' : 'store', from: cursor, to: total, delivered: null, gate: 'lockstep', verb: 'reap-orphans', cwd: (ctx && ctx.cwd) || null, repoKey: repoKeyForCwd(ctx) || store.hashFromWorkspaceId(pid) });
+        } catch (_) { /* fail-soft */ }
         reaped.push({ partitionId: pid, unread: unreadRows.length, archivePath, cursorAdvancedTo: total });
       } catch (e) {
         failed.push({ partitionId: pid, reason: 'error', error: String((e && e.message) || e) });
@@ -14365,6 +15362,15 @@ module.exports = {
   cmdLogs, cmdInboxMessages, parseSinceDuration,
   descriptorFreshRepoKey, descriptorStructuralRepoKey,
   siblingAckGate, cmdInbox,
+  // defect 8b211241bbe9 — per-instance cursors, the cursor write journal, and
+  // the hygiene pass (exported for doctor/update.js and for direct testing).
+  instanceCursorPath, parseInstCursorName, listInstanceCursors, instanceFloor,
+  instanceBaselinePath, readInstanceBaseline, raiseInstanceBaseline, raiseAllInstanceCursors,
+  commitInstanceAck, gcInstanceCursors, seedInstanceCursor, DEFAULT_INSTANCE_CURSOR_STALE_MS,
+  // reconcileOrphanCursor is the design's ONE legal `from > to` (MIN-only,
+  // allowRewind) — exported so its journal record can be asserted directly.
+  reconcileOrphanCursor,
+  cursorLogPath, logCursorWrite, readCursorLog, siblingBaseCursor, legacySharedCursor,
   // Exported for direct testing: cmdSpawn's own registry SEED (sessionId null)
   // runs before the poll and overwrites any row already present, so the
   // "child registered during the window" branch is unreachable from a

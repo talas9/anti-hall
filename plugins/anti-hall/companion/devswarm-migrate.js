@@ -51,6 +51,27 @@ const { repoKeyForWorktree } = require('./lib/devswarm-repokey.js');
 
 const MIGRATE_LOCK_STALE_MS = 5 * 60 * 1000;
 
+
+// raiseCursorBaseline(home, id, value) — defect 8b211241bbe9. Migrate's cursor
+// writes are the one remaining LOSS-FREE advance of the shared pair that does
+// not go through devswarm.js's own fold/reap paths. Per-instance read windows
+// deliberately ignore the shared pair (a foreign or older-build ack must never
+// move them), so a migrate advance has to raise the baseline EXPLICITLY here or
+// its rows would be re-delivered to every instance forever. Fail-soft and
+// best-effort: a missing/older devswarm.js simply means no baseline to raise.
+function raiseCursorBaseline(home, id, value) {
+  try {
+    if (!Number.isFinite(value) || value <= 0) return false;
+    const ds = require('../scripts/devswarm.js');
+    if (typeof ds.raiseInstanceBaseline !== 'function') return false;
+    // BOUNDED (see raiseInstanceBaseline's own header): migrate copies rows
+    // between backends and makes nothing reachable for a 0.99 instance, and the
+    // value it passes is a shared-pair number an older build's own-position ack
+    // can have written. Only fold/reap may raise past the declared floor.
+    return ds.raiseInstanceBaseline(home, id, value, { bounded: true });
+  } catch (_) { return false; }
+}
+
 function migrateLockPath(home) {
   return path.join(devswarmRoot(home), 'locks', 'migrate.lock');
 }
@@ -488,6 +509,7 @@ function migrateGlobalStoreToPerProject(opts) {
           const mergedCursor = Math.max(Number(dst.cursorValue(id)) || 0, Number(src.cursorValue(id)) || 0);
           const cursorToSet = markRead ? Math.max(mergedCursor, Number(dst.messageCount(id)) || 0) : mergedCursor;
           dst.setCursor(id, cursorToSet);
+          raiseCursorBaseline(home, id, cursorToSet);
           const gates = src.currentGates(id);
           for (const name of Object.keys(gates)) dst.setGate({ workspaceId: id, name, value: gates[name] });
           store.deriveSummary(dst, { home, workspaceId: id, env: o.env, now: o.now });
@@ -570,7 +592,9 @@ function migrateLegacyInbox(opts) {
       if (markRead) {
         const total = s.messageCount(workspaceId);
         const cur = Number(s.cursorValue(workspaceId)) || 0;
-        s.setCursor(workspaceId, Math.max(cur, total));
+        const marked = Math.max(cur, total);
+        s.setCursor(workspaceId, marked);
+        raiseCursorBaseline(home, workspaceId, marked);
       }
       store.deriveSummary(s, { home, workspaceId, env: o.env, now: o.now });
       // Read-back verify: every source-line hash is now present in the store.

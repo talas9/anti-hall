@@ -1340,6 +1340,76 @@ function ownerKeyMigratePostUpdate(opts) {
 }
 
 /**
+ * cursorHygienePostUpdate({ paths, env, cwd, home, devswarm, version }) →
+ *   { attempted, scanned, deleted, evicted, kept, errors, detail }
+ *
+ * defect 8b211241bbe9 — persisted-shape forward migration for per-instance
+ * cursors (`cursors/<id>#inst-<short6>.json`, `cursors/<id>#nd-<short6>.json`
+ * and `cursors/<id>#base.json`).
+ *
+ * Correctness needs NO migration: an absent instance file reads as the
+ * loss-free baseline, which is itself seeded from the pre-fix
+ * `max(cursors/<id>.json, store cursor)` on first touch, so every pre-0.99
+ * installation resumes exactly where it left off. What IS needed is bounded
+ * hygiene — without it a dead instance's file pins the shared floor forever and
+ * every consumer reading that value goes stale.
+ *
+ * IDEMPOTENT (running it twice leaves the tree identical), FAIL-OPEN (never
+ * throws into the update, a missing cursors/ dir is a no-op), NO-DELETE of
+ * anything this code could not have written (an unparseable name is skipped,
+ * never guessed at), and ALL PRIOR FORMS are readable (a bare integer and
+ * `{line:n}` are both handled by the inbox-cursor primitive). Same one-time
+ * per-version stamp + gate posture as ownerKeyMigratePostUpdate above.
+ */
+function cursorHygienePostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'cursor hygiene skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session — cursor hygiene skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.gcInstanceCursors !== 'function') {
+      return { attempted: false, detail: 'cursor hygiene skipped: this devswarm.js build has no gcInstanceCursors' };
+    }
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    if (version && sweepState.cursorHygiene && sweepState.cursorHygiene.completedVersion === version) {
+      return {
+        attempted: true, scanned: 0, deleted: 0, evicted: 0, kept: 0, errors: 0, skippedAlreadyDone: true,
+        detail: 'cursor hygiene: already completed for ' + version + ' — skipped (one-time per-version migration)',
+      };
+    }
+    const r = devswarm.gcInstanceCursors(null, home, { env, cwd }) || {};
+    const errCount = Array.isArray(r.errors) ? r.errors.length : (r.errors || 0);
+    if (version && !errCount) {
+      writeSweepState(home, Object.assign({}, sweepState, {
+        cursorHygiene: { completedVersion: version, completedTs: Date.now() },
+      }));
+    }
+    return {
+      attempted: true,
+      scanned: r.scanned || 0, deleted: r.deleted || 0, evicted: r.evicted || 0,
+      kept: r.kept || 0, errors: errCount,
+      detail: 'cursor hygiene: scanned ' + (r.scanned || 0) + ', removed ' + (r.deleted || 0)
+        + ', evicted ' + (r.evicted || 0) + ', kept ' + (r.kept || 0)
+        + (errCount ? ' (' + errCount + ' error(s), fail-open)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'cursor hygiene raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * replyStateMigratePostUpdate({ paths, env, cwd, home }) →
  *   { attempted, scanned, migrated, alreadyAppendOnly, errors, detail }
  *
@@ -2346,6 +2416,9 @@ function runUpdate(opts) {
   // Pure per-user-file fold+rewrite; same gate + fail-open posture; never
   // affects the update's own success.
   const replyStateMigrate = runPostPullStage('reply-state-migrate', () => replyStateMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
+  // defect 8b211241bbe9: bounded hygiene for per-instance cursor files. Same
+  // gate + fail-open posture; never affects the update's own success.
+  const cursorHygiene = runPostPullStage('cursor-hygiene', () => cursorHygienePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // devswarm-parent-gate.js stated-intent shape: normalize every gate-loop-
   // state file to carry intents/intentAcks. Same gate + fail-open posture;
   // never affects the update's own success.
@@ -2383,6 +2456,7 @@ function runUpdate(opts) {
         foldArchivedRows,
         promoteUnclaimed,
         ownerKeyMigrate,
+        cursorHygiene,
         replyStateMigrate,
         gateIntentsMigrate,
         healRegistryRows,
@@ -2419,6 +2493,7 @@ function runUpdate(opts) {
       foldArchivedRows,
       promoteUnclaimed,
       ownerKeyMigrate,
+      cursorHygiene,
       replyStateMigrate,
       gateIntentsMigrate,
       healRegistryRows,
@@ -2488,6 +2563,9 @@ function renderHuman(status, changelog) {
   if (status.foldArchivedRows && status.foldArchivedRows.attempted) {
     lines.push('  fold-archived-rows: ' + status.foldArchivedRows.detail);
   }
+  if (status.cursorHygiene && status.cursorHygiene.attempted) {
+    lines.push('  cursor-hygiene: ' + status.cursorHygiene.detail);
+  }
   if (status.replyStateMigrate && status.replyStateMigrate.attempted) {
     lines.push('  reply-state-migrate: ' + status.replyStateMigrate.detail);
   }
@@ -2555,6 +2633,7 @@ module.exports = {
   foldArchivedRowsPostUpdate,
   promoteUnclaimedPostUpdate,
   ownerKeyMigratePostUpdate,
+  cursorHygienePostUpdate,
   healRegistryPostUpdate,
   wakeMonitorPostUpdate,
   readLegacyHeartbeat,

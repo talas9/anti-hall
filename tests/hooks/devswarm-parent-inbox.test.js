@@ -1672,6 +1672,34 @@ test('OWN UNREAD DECIDE+REPLY FAIL-OPEN: malformed pendingQuestions entries (mis
 // ceiling on this per-turn notice, unlike the Stop gate's question-set
 // escalation ceiling). It must render as INFORMATIONAL instead: named once,
 // never counted in the blocking figure.
+test('RETIRED SENDER: a question with a NULL `from` never yields a runnable command with a bogus argument (defect 8b211241bbe9 R1)', () => {
+  const h = makeHome();
+  try {
+    const askTs = Date.now() - 60000;
+    // A malformed/legacy question row carrying no sender at all. It renders in
+    // PROSE as "unknown sender" — which is fine there, but must never be
+    // interpolated into a command: `inbox ack unknown sender --ack-as-owner` is
+    // not a command, it is two bogus arguments.
+    writeSharedSummary(h.home, {
+      [OWN_ID]: {
+        total: 1, cursor: 1, unread: 0, directUnread: 0,
+        pendingQuestions: [{ from: null, ts: askTs, seq: 1 }],
+      },
+    });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const own = ownSegment(ctx(r));
+    if (own && /INFORMATIONAL/i.test(own)) {
+      assert.ok(!/inbox ack unknown sender/.test(own),
+        `a null sender must never become a command argument; own=${own}`);
+      assert.ok(!/inbox messages unknown sender/.test(own),
+        `nor an inspect-command argument; own=${own}`);
+      assert.match(own, /no resolvable sender id, so no ack command is offered/,
+        `with no resolvable id the note must say so instead of offering a command; own=${own}`);
+    }
+  } finally { h.cleanup(); }
+});
+
 test('RETIRED SENDER: an unanswered question from a sender with no row anywhere is informational, not counted, never blocks the DECIDE wording alone (R17 item 3)', () => {
   const h = makeHome();
   try {
@@ -1696,7 +1724,14 @@ test('RETIRED SENDER: an unanswered question from a sender with no row anywhere 
     assert.ok(own.includes('ghost-sender'), `must still name the retired sender; own=${own}`);
     // fl-wave4 fix (item 3): a retired sender has no live owner to ack as —
     // the hint must point at `--ack-as-owner` (the sanctioned override).
-    assert.match(own, /inbox ack <id> --ack-as-owner/, `the retired-sender hint must use --ack-as-owner; own=${own}`);
+    // defect 8b211241bbe9 (§2e): the id is now INTERPOLATED rather than left as
+    // a literal `<id>` placeholder. The placeholder was substitutable from the
+    // surrounding prose, and `--ack-as-owner` is exempt from every ownership
+    // gate, so an agent filling it with a LIVE child id would consume that
+    // child's mail. Assert the exact retired id appears in the command itself.
+    assert.match(own, /inbox ack ghost-sender --ack-as-owner/, `the retired-sender hint must name the retired id in the ack command; own=${own}`);
+    assert.ok(!own.includes('inbox ack <id>'), `the hint must not carry a substitutable <id> placeholder; own=${own}`);
+    assert.match(own, /never a live child id/, `the hint must warn against acking a live child id; own=${own}`);
   } finally { h.cleanup(); }
 });
 

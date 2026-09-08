@@ -40,6 +40,34 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { devswarmRoot, isSafeId } = require('./liveness.js');
+
+// resolveHomeGuarded(o) -> the home dir to use for store I/O. Mirrors
+// `o.home || os.homedir()` in every caller below, but adds a STRUCTURAL
+// TEST-CONTEXT GUARD (defect be2c6c9e81a1, same class as ec33954162ef /
+// f3c1bc827d89): a test that forgets to pass an explicit `home` used to
+// silently fall through to the developer's REAL ~/.anti-hall and leak a
+// fixture registry row there. Node sets `NODE_TEST_CONTEXT` in every
+// `node --test` worker process AND inherits it into any spawnSync'd child
+// (same mechanism relied on by install-devswarm-ingest.js's own
+// NODE_TEST_CONTEXT_GUARD) — so under test, the real-home fallback is NEVER
+// legitimate: every test in this suite already passes `home` explicitly
+// (verified: grep across tests/ finds no bare `openStore({...})` lacking a
+// `home` key). Throw loudly instead of writing into the real machine home.
+// No opt-out: unlike the installer's dry-run swap, there is no safe silent
+// fallback for a store write — failing the leaky test is the correct outcome.
+function resolveHomeGuarded(o) {
+  if (o && o.home) return o.home;
+  const real = os.homedir();
+  if (process.env.NODE_TEST_CONTEXT) {
+    throw new Error(
+      'devswarm-store: refusing to fall back to the real home (' + real + ') while running under '
+      + '`node --test` (NODE_TEST_CONTEXT is set). This test never passed an explicit `home`, which '
+      + 'would leak a fixture store into the real ~/.anti-hall/devswarm/store/ (defect be2c6c9e81a1). '
+      + 'Pass { home: <tmp dir> } explicitly.'
+    );
+  }
+  return real;
+}
 const attribution = require('./devswarm-attribution.js');
 // identity grouping — pure, no fs/store/git (see its PURITY CONTRACT). Used by
 // resolveSenderRegistryId to keep a question's `from` out of the RECIPIENT's own
@@ -1576,7 +1604,7 @@ function deserializeCmd(raw) {
 //                 (journal only) tunes the messages-lock budget.
 function openStore(opts) {
   const o = opts || {};
-  const home = o.home || os.homedir();
+  const home = resolveHomeGuarded(o);
   const backend = selectBackend({ backend: o.backend, env: o.env });
   const meta = { dir: o.dir, hash: o.hash, busyTimeoutMs: o.busyTimeoutMs };
   return backend === 'sqlite'
@@ -1927,7 +1955,7 @@ function summaryHashFor(store, o) {
 // state). NEVER auto-forwarded / auto-deleted — surface only (owner no-delete rule).
 function computeSummary(store, opts) {
   const o = opts || {};
-  const home = o.home || os.homedir();
+  const home = resolveHomeGuarded(o);
   const F = o.fsi || fs;
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const requiredGates = Array.isArray(o.requiredGates) ? o.requiredGates : requiredGatesFrom(o.env);
@@ -2435,7 +2463,7 @@ function computeSummary(store, opts) {
 // handle's own hash wins (production's cmdSend does this).
 function deriveSummary(store, opts) {
   const o = opts || {};
-  const home = o.home || os.homedir();
+  const home = resolveHomeGuarded(o);
   const F = o.fsi || fs;
   const summary = computeSummary(store, o);
   const hash = summaryHashFor(store, o);

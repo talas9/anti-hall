@@ -651,7 +651,9 @@ write/derive side and derives a PER-PROJECT `summaries/<hash>.json` projection (
 atomically via tmp+rename, placed OUTSIDE `store/` so the read-guard ALLOWs it) that hooks
 read. Data model —
 `messages` (timestamped, append-only, idempotent by dedupe hash), `registry` (workspace
-descriptors), `cursors` (per-workspace consumed count), `gates` (per-workspace named boolean
+descriptors), `cursors` (per-workspace consumed count — see **Per-instance cursors** below;
+since v0.99.0 this shared value is a projection of the MIN across instances, not any one
+reader's position), `gates` (per-workspace named boolean
 **completion gates**, timestamped + append-only). It derives `archive_ready: true` when ALL
 required gates are satisfied for a still-present workspace; the required set is configurable
 (default `done,merged,tests_passed`, override via `ANTIHALL_DEVSWARM_REQUIRED_GATES`).
@@ -1477,6 +1479,86 @@ message, or that a parent actually replied before a child's stated deadline — 
 gap is honest and open, not silently assumed closed.
 
 ---
+
+
+### Per-instance cursors, the baseline, and the cursor write journal (v0.99.0, defect 8b211241bbe9)
+
+**The defect.** `cursors/<id>.json` and the store's cursor row are keyed by row id ALONE, so
+every process reading under that id shared ONE read position. Whichever instance acked first
+consumed the mail for all of them: a second instance's `read-primary` returned 0 while the
+cursor had already advanced past rows it was never shown. Twin rows (a meshId row and its uuid
+twin) make this routine rather than exotic.
+
+**The model.** Each INSTANCE — one OS process identity, `deriveInstanceNonce`, stable across
+every CLI invocation from one harness session, so a main-thread turn, a cron turn and a Monitor
+turn are all the SAME instance — keeps its own cursor:
+
+| File | Written by | Meaning |
+|---|---|---|
+| `cursors/<id>#inst-<short6>.json` | that instance's own read/ack | how far THIS instance has consumed |
+| `cursors/<id>#base.json` | fold, reap-orphans, and a one-time seed | the LOSS-FREE watermark: rows reachable elsewhere |
+| `cursors/<id>.json` + the store cursor row | raised on every ack | a running MAX of the min across instances (monotonic: `ackTo` never rewinds it) |
+| `cursors/<id>#nd-<short6>.json` | that instance's own `inbox read/ack` | how far THIS instance has consumed the descriptor's NDJSON inbox |
+
+A reader's window is `max(baseline, own instance cursor)`. Deliberately NOT floored by other
+instances' positions — a peer's ack must never move this reader forward, which is the defect.
+The shared pair is raised only as far as the MIN allows, so every legacy consumer of that value
+(the unread projection, `workspaces list`, the gate) stays loss-free without being rewritten onto
+a new base. It is a running MAX of that min, not a live projection of it: `ackTo` is monotonic, so
+the shared value never rewinds when a new, further-behind instance appears.
+
+**The NDJSON side is per-instance too.** The descriptor's own cursor (`cursorPath`, what
+`inbox read/ack/count` consume) is ONE file per workspace, so two instances shared it and
+instance A's `inbox ack` hid mail from instance B — the design's claim that `inbox ack` is
+"descriptor-scoped, no cross-instance hazard" was FALSE, proven by repro. Each instance now
+keeps `cursors/<id>#nd-<short6>.json`, and the descriptor's cursor becomes the same min-projection
+so `unreadBacklog`, the parent gate's clear path and doctor's listener check all keep reading a
+conservative value.
+
+**No liveness oracle is used, and none is available.** `inbox tick` refreshes only the heartbeat
+FILE, so a reader that ticks without broadcasting ages out of any outbound-row liveness test.
+Every rule here is decided from file state alone.
+
+**Why the baseline is a separate file.** The min across readers and the loss-free watermark are
+two different facts. An instance that has never read must start from the watermark, not from a
+peer's position — starting from the min is the original defect wearing a different hat.
+
+**Worktree-scoped SELF.** `siblingAckGate`'s SELF short-circuit compares only ids and sessionIds
+(`crossLinkedIdentity`), with no location component, so a caller standing in the parent's
+worktree while holding a child's meshId acked the child's twin partition. SELF now also requires
+the caller's cwd to resolve to the partition row's own worktree, failing OPEN when the row
+carries no worktree path. `--ack-as-owner` remains exempt.
+
+**The journal.** `cursor-log/<repoKey>.ndjson`, append-only, capped at 2000 records with
+tail-preserving rotation into `.1`. Each record carries `ts, id, partition, callerId, ns, from,
+to, delivered, pid, nonce, gate, verb, cwd, ok`. Two signatures name a cursor eater on sight:
+`callerId !== partition`, and an advance with `delivered:0`. Broadcast cursors, the migrate-time
+cursor merge, and `.seen-` watermark writes are deliberately NOT journaled — their absence is by
+design, not a gap. Read it with `readCursorLog(home, repoKey, n)`; `diagnose` surfaces the newest records per id as `cursorWrites` (bounded), and doctor reports the hygiene pass.
+
+**UPGRADING A LIVE FLEET (0.98.x -> 0.99.0).** Upgrade every session promptly. During a mixed
+window an OLD-version ack still writes the shared pair to its OWN position, with no
+min-projection. That is safe for a DECLARED 0.99 instance: it reads from its own cursor and the
+baseline never re-adopts the shared value, so it loses nothing (verified against the real shipped
+0.98.3 build — the old build received all 3 messages and a declared 0.99 instance then received
+all 3 too). The one exposed case is an UNDECLARED newcomer: an instance that first appears after
+the old build consumed mail starts at the floor and will not see those rows. Since `ensure` runs
+every turn via `inbox pull`, a session declares itself on its first turn — so keep the window
+short and let each session take a turn. For the same reason the migrate-time cursor merge raises
+the baseline only as far as the DECLARED floor: migrate copies rows between backends and makes
+nothing reachable for a 0.99 instance, so an unbounded raise there would consume a live
+instance's mail. Only fold and reap-orphans may raise past the floor, because they forward or
+archive the rows first.
+
+**Hygiene.** A stale instance file (mtime past `DEFAULT_INSTANCE_CURSOR_STALE_MS`, 7 days) is
+removed when doing so does not advance the floor past another instance, and EVICTED with a journaled
+`gc-evict` record when it does. In the SOLE-file case deletion drops that id back to its baseline,
+so the next read replays everything since the baseline — redelivery, never loss, and journaled. A FRESH file is never a candidate: it is a live reader's position. Without the
+eviction a dead instance would pin the shared cursor forever; with it, the bounded cost is a
+session resumed after 7 days missing what its peers consumed, and that cost is always
+attributable from the journal. The separator is `#`, which `isSafeId` forbids, so no workspace id can ever produce one of these
+filenames; the parser additionally requires a six-hex nonce. Both namespaces are swept. Shipped in BOTH `update.js` (one-time per
+version) and doctor (report-only unless repairing).
 
 ## 8.8 Full CLI reference — `scripts/devswarm.js`
 

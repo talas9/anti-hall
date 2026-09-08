@@ -47,7 +47,7 @@ test('checkLeakedTestFixtureStores: a store with a single row whose worktreePath
     assert.strictEqual(result.examples.length, 1);
     assert.strictEqual(result.examples[0].worktreePath, goneWorktree);
     assert.match(result.message, /leaked test-fixture stores: 1/);
-    assert.match(result.message, /repair does not delete/);
+    assert.match(result.message, /--repair-test-stores/, 'points at the explicit, opt-in repair flag (be2c6c9e81a1) — this DETECT path still never deletes anything itself');
   } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 

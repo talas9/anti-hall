@@ -39,7 +39,12 @@ const DRYRUN  = process.argv.includes('--dry-run');
 // auto-repair too. Now scoped to run ONLY its own detect+plan/apply section,
 // matching --reclaim-ingest-lock's own narrow posture.
 const REPAIR_INGEST_ORPHANS = process.argv.includes('--repair-ingest-orphans');
-const DO_REPAIR = !CHECK && !REPAIR_INGEST_ORPHANS; // default, --fix, --repair, --dry-run repair; --check/--repair-ingest-orphans do not
+// --repair-test-stores [--apply] (be2c6c9e81a1): EXPLICIT, OPT-IN, human-
+// invoked ONLY — same narrow posture as --repair-ingest-orphans immediately
+// above (scoped to run ONLY its own detect+plan/apply section below, never
+// folded into the default/--fix/--dry-run repair pass).
+const REPAIR_TEST_STORES = process.argv.includes('--repair-test-stores');
+const DO_REPAIR = !CHECK && !REPAIR_INGEST_ORPHANS && !REPAIR_TEST_STORES; // default, --fix, --repair, --dry-run repair; --check/--repair-ingest-orphans/--repair-test-stores do not
 // --logs: opt-in section that reads + summarizes recent warn/error entries from the
 // CENTRAL anti-hall-log (companion/lib/anti-hall-log.js, C0) so a Primary orchestrator
 // can see a child project's failures from one place without tailing the raw JSONL
@@ -637,7 +642,10 @@ function devswarmHookSelfTests() {
   let dsd = null, report = null;
   if (fs.existsSync(modPath)) {
     try { dsd = require(modPath); } catch (_) { dsd = null; } // fail-open: a broken check never breaks doctor
-    if (dsd) { try { report = dsd.runChecks({ home: os.homedir(), env: process.env }); } catch (_) { report = null; } }
+    if (dsd) { try { report = dsd.runChecks({ home: os.homedir(), env: process.env, repair: DO_REPAIR && !DRYRUN }); } catch (_) { report = null; } }  // `&& !DRYRUN` (defect 8b211241bbe9): DO_REPAIR stays TRUE under --dry-run
+  // (that flag selects a dry repair pass, it does not clear DO_REPAIR), so
+  // passing DO_REPAIR alone would let the cursor-hygiene pass DELETE files
+  // during a run the user asked to be a preview.
   }
   const active = !!(report && report.active);
 
@@ -1097,6 +1105,34 @@ if (REPAIR_INGEST_ORPHANS) {
   head('leaked test-fixture stores');
   warnl(result.message);
 })();
+
+// --- 6l-repair. --repair-test-stores [--apply] (EXPLICIT, OPT-IN ONLY;
+// be2c6c9e81a1). Default (flag present, no --apply) is DRY-RUN: prints the
+// exact removal plan, deletes nothing. --apply executes it, re-verifying
+// each entry's eligibility immediately before deleting (see
+// runTestStoreRepair's TOCTOU guard). Never invoked implicitly by a plain
+// `doctor` or `doctor --check` run — only the DETECT section above (6l) runs
+// unconditionally. `failed` drives the exit code exactly like
+// --repair-ingest-orphans above; `fixed`/`skipped` do not.
+// ---------------------------------------------------------------------------
+if (REPAIR_TEST_STORES) {
+  head('Repair test stores' + (INGEST_APPLY ? ' [--apply]' : ' (dry-run — no changes written)') + ' [explicit --repair-test-stores]');
+  let repaired = [];
+  try {
+    repaired = require('./lib/doctor-repair.js').runTestStoreRepair({
+      home: os.homedir(), dryRun: !INGEST_APPLY,
+    });
+  } catch (e) {
+    bad('repair-test-stores pass raised (fail-open): ' + (e && e.message));
+  }
+  if (repaired.length === 0 && fail === 0) infol('nothing to repair');
+  for (const r of repaired) {
+    const label = `[${r.id}] ${r.msg}`;
+    if (r.status === 'fixed') ok('REMOVED ' + label);
+    else if (r.status === 'failed') bad('FAILED ' + label);
+    else infol('skipped ' + label);
+  }
+}
 
 // --- 6m. escalated-while-session-alive (REPORT-ONLY, CONDITIONAL) -----------
 // See doctor-repair.js's checkEscalatedWhileAlive for the full rationale

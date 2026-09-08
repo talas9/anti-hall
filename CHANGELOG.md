@@ -6,6 +6,145 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.99.0 (2026-09-08)
+
+- **Fixed (P0): one cursor per row id was shared by every process reading under
+  that id, so whichever instance acked first consumed the mail for all of them**
+  (defect 8b211241bbe9). A second instance's `read-primary` returned 0 while the
+  cursor had already advanced past rows it was never shown; twin rows (a meshId
+  row and its uuid twin) made this routine rather than exotic. Each INSTANCE now
+  keeps its own cursor at `cursors/<id>#inst-<short6>.json`, keyed by the
+  existing per-process `instanceNonce`. A reader's window is
+  `max(baseline, own instance cursor)`, and the shared pair is raised only to
+  the MIN across instances (a running max of that min — `ackTo` is monotonic, so
+  it never rewinds) rather than to any one reader's position, so a lagging peer
+  is never skipped. No liveness oracle is consulted anywhere — none is available,
+  since `inbox tick` refreshes only the heartbeat file and a quiet-but-live
+  reader would age out of any outbound-row test.
+- **Added: a loss-free baseline** at `cursors/<id>#base.json`, moved ONLY by
+  writers whose advance is loss-free by construction (a fold, after rows are
+  forwarded into the survivor; reap-orphans, after a verified archive) and
+  seeded once from the pre-fix `max(cursors/<id>.json, store cursor)`. Every
+  pre-0.99 installation therefore resumes exactly where it left off, and an
+  instance that has never read starts from the baseline rather than from a
+  peer's position.
+- **Fixed: a cross-worktree caller could ack a cross-linked twin's partition.**
+  `siblingAckGate`'s SELF short-circuit compared only ids and sessionIds — no
+  location component — so a caller standing in the parent's worktree while
+  holding a child's meshId consumed that child's mail. SELF now additionally
+  requires the caller's cwd to resolve to the partition row's own worktree,
+  failing OPEN to the previous verdict when the row carries no worktree path.
+  `--ack-as-owner` is unaffected.
+- **Added: a cursor write journal** at `cursor-log/<repoKey>.ndjson` (append-only,
+  capped at 2000 records with tail-preserving rotation). Every partition-cursor
+  mutation records id, partition, callerId, namespace, from, to, delivered, pid,
+  instance nonce, gate, verb and cwd. `callerId !== partition` and an advance
+  with `delivered:0` are the two signatures that name a cursor eater the moment
+  it recurs — this defect was diagnosed twice from symptoms alone because no
+  writer left a trace. Broadcast cursors, the migrate-time cursor merge, and
+  `.seen-` watermark writes are deliberately OUT of scope.
+- **Fixed: the migrate-time baseline raise could consume a declared instance's
+  mail.** The raise added for the migrate cursor merge was unbounded, and the
+  value it passes is `max(dst.cursorValue, src.cursorValue)` — shared-pair
+  numbers an older build's own-position ack can have written. Migrate copies rows
+  between backends and makes nothing reachable for a 0.99 instance, so that raise
+  is not loss-free. Reproduced live: a declared instance sitting at 0 received 0
+  rows instead of 3. Every non-fold, non-reap raise is now BOUNDED by the
+  declared floor (the min across existing instance cursors); fold and reap keep
+  the unbounded raise because they forward or archive the rows first.
+- **Fixed: the retired-redirect override refused a survivor with no live owner.**
+  The guard used the fail-toward-live liveness predicate, so an undetermined
+  verdict read as live and refused the override — breaking the one path it
+  exists to serve. It now requires POSITIVE evidence (a fresh heartbeat for the
+  survivor) before refusing. Note the direction this cuts: `--ack-as-owner`
+  now acks a survivor whenever its heartbeat is stale or missing, so a live
+  twin mid-long-turn (the heartbeat only refreshes once per prompt) can lose
+  mail to an explicit human override. That is the intended behavior for a
+  stuck-child override — a human invoking it is asserting the survivor is not
+  actually consuming, and the override is not meant to defer to a heartbeat
+  that simply hasn't ticked yet.
+- **Fixed: the cursor journal reported `delivered: 0` on a store-only read.**
+  The count was gated on the union flag, which `--ack` sets even when no union
+  runs, so no row was ever tagged and a read that delivered rows recorded zero —
+  a false positive of the exact signature the journal exists to make
+  trustworthy. Own rows are now counted by what they are, not by which flag was
+  set.
+- **Added: doctor names pre-release cursor files in the old dot shape**
+  (`<id>.inst-<6hex>.json`, `<id>.base.json`) and never deletes them — such a
+  name can equally belong to a real workspace, so removing it could destroy a
+  live read position.
+- **Fixed: an older build in a mixed fleet could consume a 0.99 instance's mail.**
+  The baseline briefly re-adopted the shared cursor as a LIVE floor on every
+  read. That is safe only within this version: a 0.98.3 session's ack writes the
+  shared pair to its own position with no min-projection, so re-adopting it
+  raised every 0.99 instance's floor. Reproduced against the real cached 0.98.3
+  build — the old build received 3 messages and a declared 0.99 instance then
+  received 0. The baseline is now seeded ONCE (upgrade continuity) and never
+  re-adopts the shared value; the writers whose advances are genuinely loss-free
+  raise it at their own call sites instead, including the migrate-time cursor
+  merge in `companion/devswarm-migrate.js`.
+- **Fixed: a workspace id could collide with anti-hall's own cursor filenames.**
+  `isSafeId` permits dots, so a workspace legitimately named `w.base` had the
+  legacy cursor path `cursors/w.base.json` — byte-identical to workspace `w`'s
+  baseline path under the first cut of this feature. Acking that workspace's
+  cursor to N made `w`'s baseline read N and silently skipped N rows of `w`'s
+  mail (reproduced live). The three cursor namespaces introduced here now use
+  `#` as their separator (`<id>#base.json`, `<id>#inst-<6hex>.json`,
+  `<id>#nd-<6hex>.json`), and `#` is a character `isSafeId` forbids — so the
+  collision is impossible by construction rather than by a validator every
+  future call site must remember. A FRESH registration also refuses an id
+  carrying `#`, `.seen-`, `.inst-`, `.nd-` or a trailing `.base`; an install that
+  already holds such a row keeps working.
+- **Added: bounded hygiene for instance cursor files**, shipped in BOTH
+  `update.js` (one-time per version) and doctor (report-only unless repairing).
+  Both cursor namespaces are swept (`#inst-` for store rows and `#nd-` for the
+  descriptor's NDJSON lines, grouped separately because they count in different
+  index spaces); missing the second left a dead instance pinning the descriptor
+  cursor forever. Only a STALE file (mtime past
+  `DEFAULT_INSTANCE_CURSOR_STALE_MS`, 7 days) is
+  ever a candidate — a fresh file is a live reader's position. A stale file is
+  deleted when removing it does not advance the floor past another instance, and
+  otherwise evicted with a journaled `gc-evict` record. Note what deletion costs
+  in the SOLE-file case: with no other instance file left, that id falls back to
+  its baseline, so the next read replays everything since the baseline. That is
+  redelivery, never loss, and it is journaled. Names this code could not have
+  written are never touched: the parser requires a six-hex nonce.
+- **Added: `doctor --repair-test-stores [--apply]`** (defect be2c6c9e81a1). Doctor
+  already inventories store entries whose recorded repo path is under the system
+  temp dir and no longer exists; this adds the explicit, opt-in removal path for
+  exactly that subset. Dry-run by default (it prints the plan and deletes
+  nothing); `--apply` executes it, re-verifying each entry's eligibility
+  immediately before deleting. Never folded into a plain `doctor`, `--fix` or
+  `--dry-run` pass — same narrow, human-invoked posture as
+  `--repair-ingest-orphans`. Contributed alongside this release; the broader
+  task-#10 inventory work ships separately.
+- **Changed (behaviour): the devswarm store refuses to fall back to the real
+  home while running under `node --test`.** `openStore`, `computeSummary` and
+  `deriveSummary` previously resolved `o.home || os.homedir()`, so a test that
+  forgot to pass an explicit `home` silently wrote a fixture registry row into
+  the developer's own `~/.anti-hall/devswarm/store/`. Under `NODE_TEST_CONTEXT`
+  (set by `node --test` and inherited by spawned children) that fallback now
+  throws instead, naming the missing `home`. Outside a test run nothing changes.
+  This is a deliberate behaviour change: a leaky test now FAILS rather than
+  quietly polluting the machine.
+- **NOT fixed in this release, characterized only: report item 3** — a sibling
+  ack advancing past rows that were never delivered (`part.cursor +
+  physicalConsumed`, where `physicalConsumed` can exceed the delivered count for
+  hash-suppressed or unparseable rows). This is a SEPARATE mechanism from the
+  shared-cursor defect above and per-instance cursors do NOT fix it. The
+  behavioural fix (quarantine an undeliverable row before the cursor passes it)
+  needs the suppressed ROWS, and the code currently carries only a COUNT, so it
+  ships separately. This release pins the mechanism with characterization tests
+  and makes a recurrence mechanically detectable: every cursor record carries
+  `delivered`, so an advance with `delivered:0` is visible without re-derivation.
+- **Fixed: the retired-sender hint offered a substitutable `<id>` placeholder.**
+  `devswarm-parent-inbox.js` printed `inbox ack <id> --ack-as-owner` while naming
+  the retired sender only in the surrounding prose. Since `--ack-as-owner` is
+  exempt from every ownership gate, an agent filling that placeholder with a live
+  child's id would consume that child's mail. The exact retired id is now
+  interpolated into the command, with an explicit warning never to ack a live
+  child id.
+
 ## 0.98.3 (2026-09-08)
 
 - **Fixed: a test file leaked real LaunchAgent registrations onto the host

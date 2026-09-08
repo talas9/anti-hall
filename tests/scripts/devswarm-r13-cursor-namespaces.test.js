@@ -100,6 +100,15 @@ test('R13 item 7: store=N/json=0 -> count 0 AND read 0 (the store cursor is hono
     const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
     try { s.setCursor(T, 6); } finally { s.close(); }
     assert.equal(inboxCursor.readCursor(cli.primaryCursorPath(home, T)), 0, 'precondition: json namespace untouched');
+    // defect 8b211241bbe9: a per-instance read window deliberately IGNORES the
+    // shared pair (an older build's or a foreign instance's ack must never move
+    // it), so the loss-free writers — foldOne and reap-orphans — raise the
+    // per-instance BASELINE at their own call sites. This fixture advances the
+    // shared namespace directly instead of running a real fold, so it raises the
+    // baseline the same way those writers do; without it the precondition is a
+    // state the system can no longer produce.
+    cli.raiseInstanceBaseline(home, T, 6);
+
 
     const c = cli.run(['inbox', 'count', P], mkCtx(home, repo)).result;
     assert.equal(c.unreadTotal, 0, 'count sees the store cursor');
@@ -121,6 +130,15 @@ test('R13 item 7: store=0/json=N -> count 0 AND read 0 (symmetric — count hono
     seed(home, repoKey, T, 6, 'fwd-', 100000);
 
     inboxCursor.ackTo(cli.primaryCursorPath(home, T), 6);
+    // defect 8b211241bbe9: a per-instance read window deliberately IGNORES the
+    // shared pair (an older build's or a foreign instance's ack must never move
+    // it), so the loss-free writers — foldOne and reap-orphans — raise the
+    // per-instance BASELINE at their own call sites. This fixture advances the
+    // shared namespace directly instead of running a real fold, so it raises the
+    // baseline the same way those writers do; without it the precondition is a
+    // state the system can no longer produce.
+    cli.raiseInstanceBaseline(home, T, 6);
+
     const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
     try { assert.equal(s.cursorValue(T), 0, 'precondition: store namespace untouched'); } finally { s.close(); }
 

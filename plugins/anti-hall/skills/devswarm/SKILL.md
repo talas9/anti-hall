@@ -102,6 +102,25 @@ these verbs whenever the PreToolUse payload shows subagent context (skip via
 `ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1` or the `devswarm-subagent-mailbox-guard` skip name);
 see `docs/KB-devswarm-hivecontrol.md` §42.
 
+**Per-instance cursors (v0.99.0, defect 8b211241bbe9).** The read cursor is no longer one
+value per row id. Each INSTANCE — one OS process identity, stable across every CLI call from
+one harness session, so a main-thread turn, a cron turn and a Monitor turn are the SAME
+instance — keeps its own position at `cursors/<id>#inst-<short6>.json` (and
+`cursors/<id>#nd-<short6>.json` for the descriptor's NDJSON inbox). A reader's window is
+`max(baseline, own instance cursor)`, where `cursors/<id>#base.json` is a loss-free watermark
+moved only by a fold or a reap; the shared `cursors/<id>.json` is now a projection of the MIN
+across instances. Consequence for doctrine: two processes reading one id no longer eat each
+other's mail, and a `read-primary` returning 0 is trustworthy for THAT instance. Every cursor
+advance is journaled to `cursor-log/<repoKey>.ndjson` with its from/to, delivered count,
+caller, gate and verb.
+
+**Upgrading a live fleet (0.98.x -> 0.99.0).** Upgrade all sessions promptly. During the mixed
+window an old-version ack writes the shared pair to its own position; a DECLARED 0.99 instance
+keeps its own cursor and loses nothing. Only an UNDECLARED newcomer — one that first appears
+after the old build consumed mail — starts at the floor and can miss those rows, and `ensure`
+declares a session on its first turn. The migrate-time baseline raise is bounded by the declared
+floor for the same reason; only fold and reap may raise past it.
+
 ## command-guard's git-stash-guard (v0.98.2, defect b08b26566b92)
 
 Not DevSwarm-specific, but shipped in the same hook: `hooks/command-guard.js`'s

@@ -1891,11 +1891,14 @@ function checkOrphanedMcpUnderBroker(opts) {
 // whose `worktreePath` pointed at a tmp dir the test long since deleted.
 //
 // DETECT-AND-REPORT ONLY, check mode included — per this project's hard rule
-// (CLAUDE.md), NO automated deletion path exists here or anywhere else for
-// this: a store dir flagged here is never touched, repaired, or removed by
-// this function or by doctor's --fix pass. It only counts + samples so a human
-// can decide (see docs/KB-devswarm-hivecontrol.md §38 for the manual cleanup
-// command an OWNER can run after inspecting the listed examples).
+// (CLAUDE.md), this function and doctor's default/--fix/--dry-run pass NEVER
+// delete anything: a store dir flagged here is never touched, repaired, or
+// removed by this function or by doctor's --fix pass. It only counts +
+// samples so a human can decide. The ONLY deletion path for this class of
+// entry is the separate, EXPLICIT, opt-in `doctor --repair-test-stores
+// [--apply]` flag below (runTestStoreRepair, be2c6c9e81a1) — a human-invoked
+// command, never run implicitly by this or any other check/repair pass (see
+// docs/KB-devswarm-hivecontrol.md §38 for background).
 //
 // A store dir qualifies as a likely leaked test fixture when its registry has
 // EXACTLY ONE row (a real project's store accumulates many rows over time;
@@ -1910,16 +1913,24 @@ function checkOrphanedMcpUnderBroker(opts) {
 // per-store read/open error is skipped (never thrown) — same fail-open
 // posture as every other check in this file. `storeModPath`/`home` are
 // injectable for tests only.
-function checkLeakedTestFixtureStores(opts) {
+//
+// planLeakedTestFixtureStores(opts) -> [{hash, worktreePath}] (FULL list, no
+// cap) | []. The single source of truth for the leaked-fixture-store
+// CRITERION (exactly one registry row, worktreePath textually under a known
+// tmp prefix, and that path no longer exists on disk). checkLeakedTest
+// FixtureStores (report, capped to 5 examples) and runTestStoreRepair
+// (be2c6c9e81a1: EXPLICIT, OPT-IN `doctor --repair-test-stores [--apply]`)
+// both call this so the detect and repair criteria can never drift apart.
+function planLeakedTestFixtureStores(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   let storeMod;
-  try { storeMod = require(o.storeModPath || DEVSWARM_STORE); } catch (_) { return null; }
-  if (typeof storeMod.listStoreHashes !== 'function' || typeof storeMod.openStore !== 'function') return null;
+  try { storeMod = require(o.storeModPath || DEVSWARM_STORE); } catch (_) { return []; }
+  if (typeof storeMod.listStoreHashes !== 'function' || typeof storeMod.openStore !== 'function') return [];
 
   let hashes = [];
-  try { hashes = storeMod.listStoreHashes(home) || []; } catch (_) { return null; }
-  if (!hashes.length) return null;
+  try { hashes = storeMod.listStoreHashes(home) || []; } catch (_) { return []; }
+  if (!hashes.length) return [];
 
   const tmpDir = os.tmpdir();
   function looksLikeTmpFixturePath(p) {
@@ -1930,8 +1941,7 @@ function checkLeakedTestFixtureStores(opts) {
       || p.startsWith('/tmp/');
   }
 
-  const examples = [];
-  let count = 0;
+  const matches = [];
   for (const hash of hashes) {
     let registry = null;
     let s = null;
@@ -1948,17 +1958,105 @@ function checkLeakedTestFixtureStores(opts) {
     let exists = true;
     try { exists = fs.existsSync(wt); } catch (_) { exists = true; }
     if (exists) continue; // a genuinely live tmp-rooted project — not a leak
-    count++;
-    if (examples.length < 5) examples.push({ hash, worktreePath: wt });
+    matches.push({ hash, worktreePath: wt });
   }
-  if (count === 0) return null;
+  return matches;
+}
 
+function checkLeakedTestFixtureStores(opts) {
+  const matches = planLeakedTestFixtureStores(opts);
+  if (matches.length === 0) return null;
+
+  const examples = matches.slice(0, 5);
+  const count = matches.length;
   const shown = examples.map((e) => `${e.hash} -> ${e.worktreePath}`).join(', ');
   const more = count > examples.length ? `, +${count - examples.length} more` : '';
   const message =
-    `(warn) leaked test-fixture stores: ${count} (repair does not delete; see docs). ` +
+    `(warn) leaked test-fixture stores: ${count} (run doctor --repair-test-stores to preview a repair plan). ` +
     `Examples: ${shown}${more}.`;
   return { atRisk: true, count, examples, message };
+}
+
+// runTestStoreRepair({home, dryRun, storeModPath, backend, env, io}) ->
+//   [{id, category, status, msg}]   status ∈ 'fixed' | 'skipped' | 'failed'
+// be2c6c9e81a1: EXPLICIT, OPT-IN ONLY `doctor --repair-test-stores [--apply]`
+// — mirrors runIngestOrphanRepair's shape exactly (plan via
+// planLeakedTestFixtureStores, never re-derived; default dry-run prints the
+// plan and deletes nothing; --apply removes ONLY entries that still match the
+// exact same criterion at apply time). Never invoked implicitly by a plain
+// `doctor`/`doctor --check`/`doctor --fix` run — only the DETECT section
+// (checkLeakedTestFixtureStores, above) runs unconditionally, and it never
+// deletes anything either. Deletion here is scoped as tightly as the
+// detector: single-row registry, worktreePath under a known tmp prefix, path
+// gone from disk — a live tmp-rooted project (worktree still exists) can
+// never be a candidate, by construction, regardless of --apply. Each
+// successful delete is JOURNALED to the central anti-hall-log (component
+// 'doctor-repair', op 'repair-test-stores') so the action leaves a durable
+// audit trail even though nothing here keeps its own repair log file.
+function runTestStoreRepair(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const dryRun = !!o.dryRun;
+  const results = [];
+  const push = (id, category, status, msg) => results.push({ id, category, status, msg });
+
+  let storeMod;
+  try { storeMod = require(o.storeModPath || DEVSWARM_STORE); } catch (_) {
+    push('repair-test-stores', 'repair-test-stores', 'failed', 'devswarm-store module not found — cannot safely repair, nothing touched');
+    return results;
+  }
+  if (typeof storeMod.storeDirForHash !== 'function') {
+    push('repair-test-stores', 'repair-test-stores', 'failed', 'devswarm-store does not export storeDirForHash in this build — cannot safely repair, nothing touched');
+    return results;
+  }
+
+  const matches = planLeakedTestFixtureStores(o);
+  if (matches.length === 0) {
+    push('repair-test-stores', 'repair-test-stores', 'skipped', 'no leaked test-fixture stores found — nothing to repair');
+    return results;
+  }
+
+  let alog = null;
+  try { alog = require('./anti-hall-log.js'); } catch (_) { alog = null; }
+
+  for (const m of matches) {
+    const id = 'repair-test-store-' + m.hash;
+    if (dryRun) {
+      push(id, 'repair-test-stores', 'skipped', '[dry-run] would remove ' + storeMod.storeDirForHash(home, m.hash) + ' (worktreePath ' + m.worktreePath + ' no longer exists)');
+      continue;
+    }
+    const dir = storeMod.storeDirForHash(home, m.hash);
+    // Re-check the exact same criterion immediately before deleting (TOCTOU
+    // guard — a concurrent test run between plan and apply must never delete
+    // a store that has since become live): re-open and re-verify single-row +
+    // still-gone-from-disk before rmSync.
+    let stillEligible = false;
+    try {
+      const s = storeMod.openStore({ home, hash: m.hash, backend: o.backend, env: o.env });
+      let registry = null;
+      try { registry = s.listRegistry(); } finally { try { s.close(); } catch (_) { /* best-effort */ } }
+      if (Array.isArray(registry) && registry.length === 1 && registry[0] && registry[0].worktreePath === m.worktreePath) {
+        let exists = true;
+        try { exists = fs.existsSync(m.worktreePath); } catch (_) { exists = true; }
+        stillEligible = !exists;
+      }
+    } catch (_) { stillEligible = false; }
+    if (!stillEligible) {
+      push(id, 'repair-test-stores', 'skipped', 'no longer eligible at apply time (registry changed or worktree reappeared) — left untouched');
+      continue;
+    }
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+      push(id, 'repair-test-stores', 'fixed', 'removed ' + dir + ' (worktreePath ' + m.worktreePath + ' no longer exists)');
+      if (alog && typeof alog.logEvent === 'function') {
+        try { alog.logEvent('doctor-repair', 'repair-test-stores', 'info', 'removed leaked test-fixture store', { hash: m.hash, dir, worktreePath: m.worktreePath }); } catch (_) { /* journaling must never break repair */ }
+      }
+    } catch (e) {
+      push(id, 'repair-test-stores', 'failed', 'failed to remove ' + dir + ' — ' + errMsg(e));
+    }
+  }
+
+  return results;
 }
 
 // ---------------------------------------------------------------------------
@@ -2453,6 +2551,8 @@ module.exports = {
   checkOrphanedMcpUnderBroker,
   // Wave D9 — leaked test-fixture store detection (report-only, NO deletion path; defect f3c1bc827d89):
   checkLeakedTestFixtureStores,
+  planLeakedTestFixtureStores,
+  runTestStoreRepair,
   // D12 — escalated-while-session-alive detection (report-only, self-heals via liveness.js):
   checkEscalatedWhileAlive,
   // D12d — superseded archived-marker detection (report-only, inert once isArchivedWorkspace discriminates it):

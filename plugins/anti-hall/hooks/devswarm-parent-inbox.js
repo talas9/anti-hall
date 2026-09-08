@@ -748,9 +748,15 @@ function buildUrgentUnreadSegment(list, home) {
 function buildInformationalNote(informational) {
   const informationalList = Array.isArray(informational) ? informational : [];
   if (!informationalList.length) return '';
+  // A question with a null `from` renders as the literal 'unknown sender'. That
+  // string is fine in PROSE but must never reach the runnable command below —
+  // `inbox ack unknown sender --ack-as-owner` is not a command, it is two bogus
+  // arguments (defect 8b211241bbe9, R1 P2). Keep the prose list complete, and
+  // build the command only from ids that are real.
   const ids = Array.from(new Set(informationalList.map(
-    (q) => (q && q.from != null) ? String(q.from) : 'unknown sender'
+    (q) => (q && q.from != null && String(q.from).trim() !== '') ? String(q.from) : 'unknown sender'
   )));
+  const runnableIds = ids.filter((x) => x !== 'unknown sender');
   return (
     ' (INFORMATIONAL — question from retired sender ' + ids.join(', ') + ' — no repliable '
     // fl-wave4 fix (item 3): a RETIRED sender has no live owner to ack as —
@@ -759,8 +765,22 @@ function buildInformationalNote(informational) {
     // exactly this case (matches devswarm-parent-gate.js's own already-
     // correct ~line 1937 remediation text, and its buildInformationalSegment
     // sibling).
-    + 'target; inspect with `node ' + CLI + ' inbox messages <id>`, ack with `node ' + CLI
-    + ' inbox ack <id> --ack-as-owner` after reading. Not counted in the unanswered count above.)'
+    // defect 8b211241bbe9 (§2e): the command used to carry a LITERAL `<id>`
+    // placeholder while the prose named the retired sender(s) separately. An
+    // agent filling that placeholder from the surrounding text could substitute
+    // a LIVE child's id, and `--ack-as-owner` is exempt from every ownership
+    // gate — so the instruction itself became a mail-eating path. Interpolate
+    // the exact retired id (the first, when several are named) so there is
+    // nothing left to substitute.
+    + 'target'
+    + (runnableIds.length
+      ? ('; inspect with `node ' + CLI + ' inbox messages ' + runnableIds[0] + '`, ack with `node ' + CLI
+        + ' inbox ack ' + runnableIds[0] + ' --ack-as-owner` after reading. Ack ONLY the retired id named here — '
+        + 'never a live child id.')
+      // No resolvable id: name the situation, offer no command at all rather
+      // than one whose argument cannot be substituted correctly.
+      : ' and no resolvable sender id, so no ack command is offered here.')
+    + ' Not counted in the unanswered count above.)'
   );
 }
 

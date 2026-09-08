@@ -748,7 +748,7 @@ test('Wave 6 RED/GREEN: a LIVE sibling\'s cursor is unchanged after a foreign ca
 // re-delivered on every read forever. The gate's own decision is unchanged, so
 // the mutation intent below (delete it / invert its sense) is unchanged too;
 // only the source fingerprint moved.
-const LIVE_GATE_OLD = "        const notAckable = siblingAckGate(s, id, part.id, home, ctx.now);\n        if (notAckable) liveSiblingsSkipped.push(part.id);\n";
+const LIVE_GATE_OLD = "        const notAckable = siblingAckGate(s, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd });\n        if (notAckable) liveSiblingsSkipped.push(part.id);\n";
 
 test('Wave 6 mutation check (variant 1): deleting the live-sibling gate reproduces the cross-partition clobber', () => {
   const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');

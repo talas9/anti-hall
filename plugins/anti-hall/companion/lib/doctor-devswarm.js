@@ -572,6 +572,82 @@ function versionMismatchCheck(opts) {
   }
 }
 
+// legacyCursorShapeLeftovers(home) -> [names]. REPORT-ONLY (defect
+// 8b211241bbe9, R3 item 3). Earlier development builds of the per-instance
+// cursor feature used dot separators (`<id>.inst-<6hex>.json`,
+// `<id>.base.json`); the shipped form uses `#`, which no workspace id can
+// contain. A home that ran one of those builds still holds the old files. They
+// are inert — nothing reads them — but they are indistinguishable by eye from a
+// real workspace's own cursor, so doctor NAMES them and never deletes them: a
+// `<id>.base.json` may equally be the legacy cursor of a workspace genuinely
+// called `<id>.base`, and deleting that would destroy a live read position.
+function legacyCursorShapeLeftovers(home, F) {
+  const out = [];
+  try {
+    const dir = path.join(devswarmRoot(home), 'cursors');
+    const names = (F || fs).readdirSync(dir);
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      if (n.includes('#')) continue;                 // current shape
+      if (/\.seen-/.test(n)) continue;               // shipped watermark namespace
+      if (/\.inst-[0-9a-f]{6}\.json$/.test(n) || /\.base\.json$/.test(n)) out.push(n);
+    }
+  } catch (_) { return out; } // fail-open: unreadable dir -> nothing to report
+  out.sort();
+  return out;
+}
+// cursorHygieneCheck({ home, env, cwd, now, devswarmPath }) -> a doctor result.
+// defect 8b211241bbe9 — the DOCTOR half of the per-instance-cursor forward
+// migration (the persisted-shape rule requires the same idempotent, fail-open,
+// no-delete pass in BOTH update.js and doctor, so an installation that never
+// runs the updater still converges).
+//
+// REPORT-ONLY here: it runs the pass in dryRun mode and reports what WOULD be
+// removed. The repair path (doctor --repair) applies it for real. Nothing is
+// deleted by a plain `doctor` run.
+function cursorHygieneCheck(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  try {
+    const devswarmPath = o.devswarmPath
+      || path.join(__dirname, '..', '..', 'scripts', 'devswarm.js');
+    let devswarm = null;
+    try { devswarm = o.devswarm || require(devswarmPath); } catch (_) { devswarm = null; }
+    if (!devswarm || typeof devswarm.gcInstanceCursors !== 'function') {
+      return { status: PASS, message: 'per-instance cursor hygiene: not applicable (this build has no gcInstanceCursors)' };
+    }
+    const r = devswarm.gcInstanceCursors(null, home, {
+      env: o.env, cwd: o.cwd, now: o.now, dryRun: !o.repair,
+    }) || {};
+    const errCount = Array.isArray(r.errors) ? r.errors.length : (r.errors || 0);
+    const verb = o.repair ? 'removed' : 'would remove';
+    // Report-only: old-shape leftovers from a pre-release dev build.
+    const legacyShapes = legacyCursorShapeLeftovers(home, o.fsi);
+    const legacyNote = legacyShapes.length
+      ? ' — also found ' + legacyShapes.length + ' pre-release cursor file(s) in the old dot shape ('
+        + legacyShapes.slice(0, 3).join(', ') + (legacyShapes.length > 3 ? ', …' : '')
+        + '); these are inert and are NEVER deleted automatically, since such a name can equally belong to a real workspace'
+      : '';
+    if (errCount) {
+      return {
+        status: WARN,
+        message: 'per-instance cursor hygiene: ' + errCount + ' file(s) could not be swept (fail-open) — scanned '
+          + (r.scanned || 0) + ', ' + verb + ' ' + ((r.deleted || 0) + (r.evicted || 0)) + legacyNote,
+      };
+    }
+    // A large number of instance files for one id means many distinct process
+    // identities have read that partition and none have aged out yet — worth
+    // surfacing, since a file pinning the floor holds the shared cursor back.
+    return {
+      status: PASS,
+      message: 'per-instance cursor hygiene: scanned ' + (r.scanned || 0) + ', ' + verb + ' '
+        + (r.deleted || 0) + ' subsumed + ' + (r.evicted || 0) + ' stale, kept ' + (r.kept || 0) + legacyNote,
+    };
+  } catch (e) {
+    return { status: WARN, message: 'per-instance cursor hygiene unavailable: ' + (e && e.message) };
+  }
+}
+
 function runChecks(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
@@ -590,6 +666,13 @@ function runChecks(opts) {
     results.push(versionMismatchCheck({ home, fsi: F }));
   } catch (e) {
     results.push({ status: WARN, message: 'devswarm-version check unavailable: ' + (e && e.message) });
+  }
+  // defect 8b211241bbe9 — the doctor half of the per-instance-cursor forward
+  // migration. Report-only unless doctor is running in repair mode.
+  try {
+    results.push(cursorHygieneCheck({ home, env, cwd, now, repair: !!o.repair }));
+  } catch (e) {
+    results.push({ status: WARN, message: 'per-instance cursor hygiene unavailable: ' + (e && e.message) });
   }
 
   // Descriptor-store integrity (companion/lib/doctor-descriptors.js): a
@@ -636,6 +719,8 @@ module.exports = {
   wakeMonitorShipped, wakeMonitorSelfTest, wakeMonitorLiveCheck, wakeMonitorChecks,
   // version-mismatch (companion surface for hooks/devswarm-version.js) — exported for tests.
   versionMismatchCheck,
+  // per-instance cursor hygiene (defect 8b211241bbe9) — exported for tests.
+  cursorHygieneCheck, legacyCursorShapeLeftovers,
   // install-vs-source integrity (CHECK 1/CHECK 2) — exported individually for tests.
   installDivergenceCheck, monitorsJsonPresenceCheck, resolveMarketplaceDir, resolveInstallScope,
   collectShippedFiles,

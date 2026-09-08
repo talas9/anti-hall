@@ -159,7 +159,7 @@ test('Item 1 RED/GREEN: a plain `inbox ack <sibling>` must not clobber a DIFFERE
 });
 
 test('Item 1 mutation check: deleting `inbox ack`\'s sibling-loop gate reproduces the cross-partition clobber', () => {
-  const oldStr = "              if (siblingAckGate(storeHandle, id, part.id, home, ctx.now)) { liveSiblingsSkipped.push(part.id); continue; }\n";
+  const oldStr = "              if (siblingAckGate(storeHandle, id, part.id, home, ctx.now, { cwd: ctx && ctx.cwd })) { liveSiblingsSkipped.push(part.id); continue; }\n";
   const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
   assert.ok(liveBefore.includes(oldStr), 'inbox ack sibling-loop gate not found verbatim');
   withMutant(oldStr, '', (mutatedCli) => {
