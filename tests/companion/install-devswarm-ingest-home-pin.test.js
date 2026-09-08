@@ -73,13 +73,18 @@ test('(b) homeIsUnderTmpdir: true for a path under os.tmpdir(), false for an unr
 // previously sailed past this guard entirely — homeIsUnderTmpdir() now also
 // checks those two well-known roots explicitly.
 test('(b) homeIsUnderTmpdir: true for a /private/tmp/... HOME even when it is not under os.tmpdir()', () => {
-  if (process.platform === 'win32') return; // no /tmp semantics on win32
+  // /private/tmp only exists on macOS (it's /tmp's real, non-symlinked
+  // path there); Linux CI has no /private at all, so mkdtempSync against it
+  // is an ENOENT, not a guard failure — exercise the literal-path checks
+  // ('/tmp' exists on every platform this test runs on) everywhere, and
+  // only mkdtemp a real /private/tmp child on darwin.
+  assert.strictEqual(m.homeIsUnderTmpdir('/tmp'), true, '/tmp itself must trip the guard');
+  if (process.platform !== 'darwin') return; // /private/tmp is macOS-only
+  assert.strictEqual(m.homeIsUnderTmpdir('/private/tmp'), true, '/private/tmp itself must trip the guard');
   const underPrivateTmp = fs.mkdtempSync('/private/tmp/ah-tmphome-priv-');
   try {
     assert.strictEqual(m.homeIsUnderTmpdir(underPrivateTmp), true,
       'a HOME under /private/tmp must trip the guard even if distinct from os.tmpdir()');
-    assert.strictEqual(m.homeIsUnderTmpdir('/tmp'), true, '/tmp itself must trip the guard');
-    assert.strictEqual(m.homeIsUnderTmpdir('/private/tmp'), true, '/private/tmp itself must trip the guard');
   } finally { fs.rmSync(underPrivateTmp, { recursive: true, force: true }); }
 });
 
