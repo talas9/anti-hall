@@ -460,6 +460,163 @@ function buildSubagentMailboxReason() {
     'ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1.';
 }
 
+// git-stash-guard (defect b08b26566b92): mutating `git stash` detection —
+// mirrors detectSubagentMailboxTouch's own segment/shell-c/eval/substitution
+// recursion above so a wrapped invocation (`bash -c "git stash"`, `$(...)`,
+// a `&&`/`;`/`|` chain) is caught the same way that guard already is.
+// `git stash list`/`show`/`branch` are read-only or non-destructive-enough to
+// be OUT of this defect's stated scope and are never matched. A BARE
+// `git stash` (no subcommand) is git's own shorthand for `git stash push` —
+// treated identically.
+//
+// R2 Critic P1 fixes (3 bypasses in the original adjacency-regex version):
+//   1. `git stash -u|--include-untracked|-k|--keep-index|-m X|-p|-q|-a` are
+//      ALL flag-only forms of `push` per git-stash(1) — the old regex only
+//      captured the token immediately after `stash` and treated anything
+//      that wasn't a KNOWN subcommand word as "no match", so a flag-only
+//      invocation slipped through unclassified. Now: after the `stash` token,
+//      leading flags are walked (STASH_PUSH_ONLY_FLAGS) until either a real
+//      subcommand word is found or the tokens run out (-> push).
+//   2. `git -C <path> stash` / `git --git-dir=X stash` bypassed the old
+//      `\bgit\s+stash\b` adjacency regex (git's own global options sit
+//      between `git` and `stash`). Now: `git`'s token is located explicitly,
+//      then GIT_GLOBAL_OPTS_TAKE_VALUE/`--opt=value` are walked past to find
+//      the actual subcommand, mirroring the git-argv contract instead of
+//      assuming zero-distance adjacency.
+//   3. `grep -rn "git stash drop" docs/` and `git commit -m "...git stash
+//      pop..."` used to false-positive: `dequoteSegment` (which this used to
+//      run against) FLATTENS quote boundaries, so a quoted commit message
+//      containing the literal text "git stash pop" became indistinguishable
+//      from a real invocation. Fixed at the root: this now runs against the
+//      RAW segment via `effectiveVerb` (must resolve to `git`, so `grep ...`
+//      never even enters git-argv parsing) and `tokenizeQuoted` (which keeps
+//      a quoted phrase as ONE token, so a `-m "...git stash pop..."` value
+//      is never split back into bare `git`/`stash`/`pop` words).
+const GIT_GLOBAL_OPTS_TAKE_VALUE = new Set(['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path']);
+const STASH_PUSH_FLAG_VALUE = new Set(['-m', '--message']);
+function mutatingGitStashInSegment(seg) {
+  if (effectiveVerb(seg) !== 'git') return null;
+  const tokens = tokenizeQuoted(seg);
+  let idx = 0;
+  while (idx < tokens.length && basename(tokens[idx]).toLowerCase() !== 'git') idx++;
+  if (idx >= tokens.length) return null;
+  idx++; // skip the `git` token itself
+  // Walk git's own GLOBAL options (before the subcommand) — `-C <path>`,
+  // `--git-dir[=path]`, `-c <key>=<val>`, flag-only globals (`--no-pager`,
+  // `--bare`, ...). Any unrecognized `-`-prefixed token is consumed as a
+  // single (flag-only) token — a global option this file does not know about
+  // can only cause a FALSE NEGATIVE here (miss a stash call), never a false
+  // positive, which is the safe failure direction for a blocking guard.
+  while (idx < tokens.length) {
+    const tok = tokens[idx];
+    if (tok === '--') { idx++; break; }
+    if (!tok.startsWith('-')) break;
+    if (/^--[A-Za-z-]+=/.test(tok)) { idx++; continue; }
+    if (GIT_GLOBAL_OPTS_TAKE_VALUE.has(tok)) {
+      idx++;
+      if (idx < tokens.length) idx++;
+      continue;
+    }
+    idx++;
+  }
+  if (idx >= tokens.length || tokens[idx].toLowerCase() !== 'stash') return null;
+  idx++; // skip the `stash` token itself
+  // Walk `stash`'s own flags. A flag-only form (no subcommand word at all)
+  // is git's own `push` shorthand — see STASH_PUSH_FLAG_VALUE / the header
+  // comment's item 1.
+  while (idx < tokens.length) {
+    const tok = tokens[idx];
+    if (!tok.startsWith('-')) break;
+    if (/^--message=/.test(tok)) { idx++; continue; }
+    if (STASH_PUSH_FLAG_VALUE.has(tok)) {
+      idx++;
+      if (idx < tokens.length) idx++;
+      continue;
+    }
+    idx++;
+  }
+  if (idx >= tokens.length) return 'push';
+  const sub = tokens[idx].toLowerCase();
+  if (sub === 'list' || sub === 'show' || sub === 'branch') return null;
+  if (sub === 'push' || sub === 'pop' || sub === 'drop' || sub === 'clear' || sub === 'apply' || sub === 'save') {
+    return sub;
+  }
+  return null;
+}
+function detectMutatingGitStash(command, depth) {
+  if (typeof command !== 'string' || !command.trim()) return null;
+  const d = typeof depth === 'number' ? depth : 0;
+  for (const seg of splitSegments(command)) {
+    const hit = mutatingGitStashInSegment(seg);
+    if (hit) return hit;
+    if (d < 3) {
+      const shellCPayload = extractShellCPayload(seg);
+      if (shellCPayload) {
+        const r = detectMutatingGitStash(shellCPayload, d + 1);
+        if (r) return r;
+      }
+      const evalPayload = extractEvalPayload(seg);
+      if (evalPayload) {
+        const r = detectMutatingGitStash(evalPayload, d + 1);
+        if (r) return r;
+      }
+    }
+  }
+  if (d < 3) {
+    for (const inner of extractSubstitutions(command)) {
+      const r = detectMutatingGitStash(inner, d + 1);
+      if (r) return r;
+    }
+  }
+  return null;
+}
+// findGitToplevelForStashGuard(startDir) — a PURE fs walk-up (no git spawn),
+// same convention as hooks/devswarm-parent-inbox.js's own findGitToplevel.
+function findGitToplevelForStashGuard(startDir) {
+  try {
+    let dir = path.resolve(String(startDir || ''));
+    if (!dir) return null;
+    for (;;) {
+      try { fs.statSync(path.join(dir, '.git')); return dir; } catch (_) { /* keep walking up */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
+    }
+  } catch (_) {
+    return null;
+  }
+}
+// hasProtectedStashesMarker(cwd) -> bool. The repo opts INTO stash protection
+// by creating `.anti-hall/protected-stashes` at its git toplevel (any
+// content, existence-only check) — this marker (or the ANTIHALL_STASH_GUARD=1
+// env opt-in, see the call site) is how a repo/operator ARMS the guard; a
+// repo that has never heard of it stays fully unaffected (R2 Critic P1 —
+// "no unconditional default block in a public plugin").
+function hasProtectedStashesMarker(cwd) {
+  try {
+    const top = findGitToplevelForStashGuard(cwd || process.cwd());
+    if (!top) return false;
+    fs.statSync(path.join(top, '.anti-hall', 'protected-stashes'));
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+// buildGitStashReason(sub, subagent) -> closed-vocabulary block reason (NEVER
+// reflects command/stdin text). `sub` is drawn from a fixed, code-defined set
+// (see mutatingGitStashInSegment), never raw input.
+function buildGitStashReason(sub, subagent) {
+  const scope = subagent
+    ? 'SUBAGENT context (a worker must never touch the coordinator\'s working tree via stash)'
+    : 'this repo (this guard is armed — .anti-hall/protected-stashes exists or ANTIHALL_STASH_GUARD=1)';
+  return 'GIT STASH GUARD: `git stash ' + sub + '` is blocked in ' + scope + ' (defect b08b26566b92 — ' +
+    'a worker ran `git stash push` despite an explicit no-stash brief, stopped only by an ' +
+    '.git/index.lock race, not by any guard). Do NOT stash here. If you need to preserve ' +
+    'uncommitted work, commit it (even as a WIP commit) instead — never delegate a stash ' +
+    'to a subagent, and never stash over another agent\'s protected WIP. `git stash list` ' +
+    '(read-only) is unaffected.';
+}
+
 // buildDevswarmSendReason(kind) -> closed-vocabulary block reason (NEVER reflects
 // command/stdin text — injection hygiene). Redirects to the mesh CLI verbs from
 // PLAN.md's CLI VERB CONTRACT: `send --to-primary|--to <meshId>` to direct-
@@ -1208,6 +1365,44 @@ function main() {
     }
   } catch (_) {
     // fail-open: never block a turn on a devswarm-subagent-mailbox-guard bug.
+  }
+
+  // git-stash-guard (defect b08b26566b92): a mutating `git stash` (push/pop/
+  // drop/clear/apply/save, or bare `git stash` == push) is blocked — in
+  // BOTH subagent and coordinator context — ONLY when the guard is ARMED:
+  // this repo has opted into stash protection (.anti-hall/protected-stashes
+  // at the git toplevel — see hasProtectedStashesMarker's own header) OR the
+  // operator set ANTIHALL_STASH_GUARD=1. R2 Critic P1 (policy): the prior
+  // version blocked SUBAGENT context unconditionally with no opt-in at all —
+  // wrong for a PUBLIC plugin where most repos have never heard of this
+  // guard and never asked for it; this file's own convention elsewhere
+  // (devswarm-read-guard/devswarm-subagent-mailbox-guard fail-open by
+  // default, merge-gate/ship-it gated behind an explicit env opt-in) is that
+  // nothing blocks by default without a signal the operator (or the repo)
+  // actually chose. `git stash list` is never matched (already a
+  // LIGHT_EXCEPTIONS read-only allowance below too). Own skip name —
+  // `git-stash-guard` is in skip-guard.js's DESTRUCTIVE set, so a blanket
+  // "all" skip cannot silence it once armed (same protection level as
+  // git-guard). Fires BEFORE the coordinator-only heavy-command gate below
+  // (this is a data-safety guard, not a context-hygiene one — same
+  // rationale as devswarm-read-guard/devswarm-subagent-mailbox-guard
+  // above). Fully fail-open: any throw -> fall through (never block).
+  try {
+    if (!isSkipped('git-stash-guard')) {
+      const stashSub = detectMutatingGitStash(command);
+      if (stashSub) {
+        const cwd = (payload && payload.cwd) || '';
+        const armed = hasProtectedStashesMarker(cwd) || process.env.ANTIHALL_STASH_GUARD === '1';
+        if (armed) {
+          const { isSubagentByPayload } = require('./coordinator-detect.js');
+          const subagent = isSubagentByPayload(payload);
+          fs.writeSync(1, JSON.stringify({ decision: 'block', reason: buildGitStashReason(stashSub, subagent) }) + '\n');
+          process.exit(2);
+        }
+      }
+    }
+  } catch (_) {
+    // fail-open: never block a turn on a git-stash-guard bug.
   }
 
   // Escape hatch: honor an explicit, user-consented skip (~/.anti-hall/skip.json).

@@ -208,6 +208,20 @@ function archiveIgnorePath(home, id) {
 function archiveNudgePath(home, id) {
   return path.join(devswarmRoot(home), 'archive-nudges', String(id) + '.json');
 }
+// defect bf965e5729c5: a cross-turn disk cache of the per-id liveness reads
+// was tried here and REMOVED (R2 Critic P2-4/P2-5/P2-6): this hook fires on
+// UserPromptSubmit only, and real prompts are seconds-to-minutes apart, so a
+// 3s TTL missed in the normal case while adding a stat+read+mkdir+write+
+// rename to EVERY turn — a net cost, not a saving, for the common case. It
+// also had two correctness bugs (builtAt rewritten on every cache HIT, so a
+// first-turn heartbeat could replay indefinitely once the TTL window kept
+// re-arming itself; a shared `.tmp` write path across concurrent turns could
+// race). The archived-row heartbeat-stat skip below is kept — it is a real,
+// unconditional saving with no cache/staleness tradeoff. The field-reported
+// 1.07s/turn-under-load-avg-516 latency this defect describes was NOT
+// reproduced locally (see the defect's own ruling, `defect.js show
+// bf965e5729c5`); it remains open pending a local repro or field
+// instrumentation.
 
 // readSummary(home) -> parsed object | null. summary.json is the derived hook
 // read-surface (written atomically by the Phase 2 store). Tolerant of a missing,
@@ -1144,58 +1158,16 @@ function main() {
 
     // --- live-table row (every ACTIVE workspace, every turn) ---
     try {
-      const heartbeat = freshness.readHeartbeat(home, id);
-      // P2-b: pass the already-parsed heartbeat ts through to readActivityTs /
-      // isDormantRow below so neither re-reads heartbeats/<id>.json a second
-      // time this turn (freshness.readHeartbeat above already read it once).
-      const heartbeatTsOpt = heartbeat && Number.isFinite(heartbeat.ts) ? heartbeat.ts : undefined;
-      const row = { id, worktreePath: entry.worktreePath, sessionId: entry.sessionId };
-      // Compose the widest activity signal available (companion/lib/liveness.js
-      // readActivityTs): heartbeat OR live-session transcript mtime OR the
-      // supervisor verdict. The transcript term is what keeps a child mid-long-turn
-      // observably alive — heartbeats are turn-scoped and go quiet for the whole of
-      // a long autonomous turn. Falls back to the previous two-input signal on any
-      // failure, so this can only ever widen liveness, never narrow it.
-      let activityTs = freshness.lastActivityTs(verdict, heartbeat);
-      let dormant = false;
-      let idleAlive = false;
-      try {
-        const richer = livenessLib.readActivityTs(
-          row, home,
-          { lastOutboundTs: verdict && verdict.lastOutboundTs, heartbeatTs: heartbeatTsOpt }
-        );
-        if (richer && Number.isFinite(richer.ts) && (!Number.isFinite(activityTs) || richer.ts > activityTs)) {
-          activityTs = richer.ts;
-        }
-      } catch (_) {}
-      try {
-        // isDormantRow (companion/lib/liveness.js) — THE ONE read-side
-        // dormancy rule, shared with scripts/devswarm.js's rosterHints so the
-        // per-turn table and the roster can never classify the same row
-        // differently. Picks the tight or wide window per-row based on
-        // whether the transcript term actually resolved for it (P1 fix).
-        // rowLivenessState adds the SESSION-SOURCED axis (defect 699a236129c5)
-        // on top of the identical timestamp rule: a row whose sessionId maps to
-        // a RUNNING harness process is `idle-alive`, surfaced with its own label
-        // instead of being mislabelled `dormant` and nagged about.
-        const state = livenessLib.rowLivenessState(
-          row, home,
-          { now, lastOutboundTs: verdict && verdict.lastOutboundTs, heartbeatTs: heartbeatTsOpt }
-        );
-        dormant = state === 'dormant';
-        idleAlive = state === 'idle-alive';
-      } catch (_) {}
-      // FIELD: an ARCHIVED workspace is done and put away — it is still listed,
-      // but never as escalated/stale/dormant (see devswarm-archived.js). R15 P2
-      // FIX: this used to also blanket-suppress `not-draining` — an archived row
-      // with a REAL aging unread backlog silently lost that signal, exactly the
-      // coordination-neglect axis `not-draining` exists to name (it is a
-      // separate axis from the liveness one archiving legitimately suppresses;
-      // see displayStatus's own header comment on that distinction). `archived`
-      // now suppresses ONLY the liveness axis (escalated/stale/dormant), same
-      // shape as `idleAlive` above — `not-draining` (rank 1.5) still wins over
-      // it when present, exactly as it already wins over every other liveness
-      // label in displayStatus's own rank order.
+      // defect bf965e5729c5 (skip heartbeat stat for archived rows): the
+      // archived check is now resolved FIRST, before the heartbeat read and
+      // the richer readActivityTs/rowLivenessState calls below — for an
+      // archived row, `ds` (a few lines down) is built from the `archivedRow
+      // ? ... : displayStatus(...)` branch, which NEVER consults
+      // heartbeat/dormant/idleAlive at all, so reading/computing them for an
+      // archived row was pure waste on every turn. A non-archived row is
+      // unaffected — same reads, same order relative to each other, just
+      // after this (cheap, already-memoized-per-turn for the app-side half)
+      // check instead of before it.
       let archivedRow = false;
       try { archivedRow = isArchivedWorkspace(home, id, entry.worktreePath); } catch (_) { archivedRow = false; }
       // APP-SIDE archive (field): the owner archived the child in the DevSwarm
@@ -1215,6 +1187,69 @@ function main() {
           });
         } catch (_) { /* fail-open: leave archivedRow false */ }
       }
+
+      const row = { id, worktreePath: entry.worktreePath, sessionId: entry.sessionId };
+      // The heartbeat read itself stays UNCONDITIONAL (defect bf965e5729c5,
+      // P2-8): it is one cheap fs.readFileSync and feeds `activityTs` (the
+      // table's "last" column) and `finish` for EVERY row, archived
+      // included — skipping it would let an archived row's "last" column go
+      // silently stale forever. Only the EXPENSIVE, transcript-mtime-backed
+      // richer liveness calls below (readActivityTs/rowLivenessState) are
+      // skipped for an archived row — their result (dormant/idleAlive) is
+      // never consulted by the `archivedRow` branch of `ds` a few lines down.
+      const heartbeat = freshness.readHeartbeat(home, id);
+      // P2-b: pass the already-parsed heartbeat ts through to readActivityTs /
+      // isDormantRow below so neither re-reads heartbeats/<id>.json a second
+      // time this turn (freshness.readHeartbeat above already read it once).
+      const heartbeatTsOpt = heartbeat && Number.isFinite(heartbeat.ts) ? heartbeat.ts : undefined;
+      // Compose the widest activity signal available (companion/lib/liveness.js
+      // readActivityTs): heartbeat OR live-session transcript mtime OR the
+      // supervisor verdict. The transcript term is what keeps a child mid-long-turn
+      // observably alive — heartbeats are turn-scoped and go quiet for the whole of
+      // a long autonomous turn. Falls back to the previous two-input signal on any
+      // failure, so this can only ever widen liveness, never narrow it.
+      let activityTs = freshness.lastActivityTs(verdict, heartbeat);
+      let dormant = false;
+      let idleAlive = false;
+      if (!archivedRow) {
+        try {
+          const richer = livenessLib.readActivityTs(
+            row, home,
+            { lastOutboundTs: verdict && verdict.lastOutboundTs, heartbeatTs: heartbeatTsOpt }
+          );
+          if (richer && Number.isFinite(richer.ts) && (!Number.isFinite(activityTs) || richer.ts > activityTs)) {
+            activityTs = richer.ts;
+          }
+        } catch (_) {}
+        try {
+          // isDormantRow (companion/lib/liveness.js) — THE ONE read-side
+          // dormancy rule, shared with scripts/devswarm.js's rosterHints so the
+          // per-turn table and the roster can never classify the same row
+          // differently. Picks the tight or wide window per-row based on
+          // whether the transcript term actually resolved for it (P1 fix).
+          // rowLivenessState adds the SESSION-SOURCED axis (defect 699a236129c5)
+          // on top of the identical timestamp rule: a row whose sessionId maps to
+          // a RUNNING harness process is `idle-alive`, surfaced with its own label
+          // instead of being mislabelled `dormant` and nagged about.
+          const state = livenessLib.rowLivenessState(
+            row, home,
+            { now, lastOutboundTs: verdict && verdict.lastOutboundTs, heartbeatTs: heartbeatTsOpt }
+          );
+          dormant = state === 'dormant';
+          idleAlive = state === 'idle-alive';
+        } catch (_) {}
+      }
+      // FIELD: an ARCHIVED workspace is done and put away — it is still listed,
+      // but never as escalated/stale/dormant (see devswarm-archived.js). R15 P2
+      // FIX: this used to also blanket-suppress `not-draining` — an archived row
+      // with a REAL aging unread backlog silently lost that signal, exactly the
+      // coordination-neglect axis `not-draining` exists to name (it is a
+      // separate axis from the liveness one archiving legitimately suppresses;
+      // see displayStatus's own header comment on that distinction). `archived`
+      // now suppresses ONLY the liveness axis (escalated/stale/dormant), same
+      // shape as `idleAlive` above — `not-draining` (rank 1.5) still wins over
+      // it when present, exactly as it already wins over every other liveness
+      // label in displayStatus's own rank order.
       const notDrainingFlag = !!(verdict && verdict.notDraining);
       const ds = archivedRow
         ? (notDrainingFlag ? { label: 'not-draining', rank: 1.5 } : { label: 'archived', rank: 6 })

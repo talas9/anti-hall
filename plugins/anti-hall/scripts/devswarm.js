@@ -11767,9 +11767,29 @@ function cmdRoster(flags, ctx) {
   const s = store.openStore({ home, hash: repoKey, backend: ctx.backend, env: ctx.env });
   let sum;
   let broadcastAllForInstances = [];
+  let storeUnavailable = false;
+  let storeUnavailableReason = null;
+  let storeUnavailableScope = null;
   // #62: a READ verb must not mutate — PURE computeSummary (no summary.json write).
   try {
     sum = store.computeSummary(s, { home, env: ctx.env, now: ctx.now });
+    // defect 77d5a5bbf614: computeSummary calls s.listRegistry() internally
+    // (devswarm-store.js), which swallows a genuine registry.ndjson read
+    // error (EACCES/ENOTDIR/...) to an empty registry — pre-fix, roster read
+    // that as "0 workspaces" with no signal the registry was unreadable at
+    // all. Probe right after computeSummary, same idiom as computeDiagnosis's
+    // own probe (defect 77d5a5bbf614) and the count/read/ack read verbs
+    // elsewhere in this file. pickStoreReadErrorScope (R2 Critic P2-9)
+    // attributes the error to the registry specifically only when it is
+    // actually registry.ndjson — computeSummary reads messages.ndjson (the
+    // broadcast partition) BEFORE listRegistry(), so a naive "first error
+    // wins" probe could misattribute an unrelated messages.ndjson outage as
+    // "registry unreadable". Fail-open: a throw here must never block the
+    // roster read.
+    try {
+      const picked = pickStoreReadErrorScope(s);
+      if (picked) { storeUnavailable = true; storeUnavailableReason = picked.code; storeUnavailableScope = picked.scope; }
+    } catch (_) { storeUnavailable = false; storeUnavailableReason = null; storeUnavailableScope = null; }
     // instanceNonce CONSUMER (defect d3d571495bf6, item b): read the shared
     // broadcast partition (heartbeats + broadcasts — the SAME rows
     // computeSummary's own `working_on` derivation above already scans by
@@ -11900,7 +11920,11 @@ function cmdRoster(flags, ctx) {
       worktreePath: null, source: 'archived', meshId: null, hints: ['archived'],
     });
   }
-  return { ok: true, action: 'roster', repoKey, count: workspaces.length, workspaces, recent: sum.recent || [] };
+  return {
+    ok: true, action: 'roster', repoKey,
+    known: !storeUnavailable, storeUnavailable, storeUnavailableReason, storeUnavailableScope,
+    count: workspaces.length, workspaces, recent: sum.recent || [],
+  };
 }
 
 // cmdDiagnose(flags, ctx) — READ-ONLY mesh-health projection (#62). Uses the PURE
@@ -11913,6 +11937,39 @@ function cmdRoster(flags, ctx) {
 // git root shows up as — surfaced here, NEVER auto-merged). Project-scoped like
 // roster (no id arg, keyed off cwd's repoKey). Purity is the point: an orchestrator
 // can SEE mesh state without the read itself mutating anything.
+// pickStoreReadErrorScope(s) -> { code, scope: 'registry'|'store' } | null.
+// R2 Critic P2-9 (defect 77d5a5bbf614): `s.getReadError()` (singular) returns
+// the FIRST entry of the per-file error Map in INSERTION order — but
+// computeSummary reads the shared broadcast partition (messages.ndjson)
+// BEFORE calling listRegistry() (registry.ndjson). If messages.ndjson ALSO
+// carries an unrelated read error (any genuine fs error, not just registry
+// breakage), the singular probe returned THAT error first and every caller
+// labeled it "registry unreadable" even when registry.ndjson itself was
+// perfectly readable — a misattribution. Fixed by reading the FULL set via
+// getReadErrors() and explicitly matching the registry.ndjson path: when
+// found, scope is 'registry' (the specific, actionable claim); when the
+// store carries some OTHER read error but not one for registry.ndjson, scope
+// is the generic 'store' (still genuinely unavailable — just not provably a
+// registry-specific outage). getReadErrors() is journal-backend-only
+// (sqlite always returns null/[] — see that handle's own header); this
+// degrades to the old singular probe when getReadErrors() is unavailable or
+// empty, so a backend without the plural API loses only the finer
+// attribution, never the underlying storeUnavailable signal.
+function pickStoreReadErrorScope(s) {
+  let errors = [];
+  try { errors = (s.getReadErrors && s.getReadErrors()) || []; } catch (_) { errors = []; }
+  if (!errors.length) {
+    try {
+      const single = s.getReadError && s.getReadError();
+      if (single) errors = [single];
+    } catch (_) { errors = []; }
+  }
+  if (!errors.length) return null;
+  const registryErr = errors.find((e) => e && typeof e.path === 'string' && /registry\.ndjson$/.test(e.path));
+  if (registryErr) return { code: registryErr.code || 'EUNKNOWN', scope: 'registry' };
+  return { code: (errors[0] && errors[0].code) || 'EUNKNOWN', scope: 'store' };
+}
+
 // computeDiagnosis(s, ctx) — the ONE mesh-health computation shared by cmdDiagnose,
 // cmdHealthcheck (#71), and the doctor mesh-shape CHECK. Takes an OPEN store handle
 // `s` (pure — computeSummary NEVER writes summary.json) and returns the fully
@@ -11925,6 +11982,28 @@ function computeDiagnosis(s, ctx) {
   const c = ctx || {};
   const sum = store.computeSummary(s, { home: c.home, env: c.env, now: c.now });
   const registry = s.listRegistry();
+  // defect 77d5a5bbf614: computeSummary/listRegistry above both swallow a
+  // genuine registry.ndjson read error (EACCES/ENOTDIR/...) to an empty
+  // array (readAll's documented fail-open contract — see devswarm-store.js).
+  // Pre-fix, that made an unreadable registry indistinguishable from a
+  // genuinely empty one: roster/diagnose/healthcheck all read "0 workspaces,
+  // healthy" for a chmod-000 store. Probe HERE, right after the
+  // listRegistry() call above (the SAME probe-right-after-read idiom used
+  // throughout this file, e.g. cmdInboxRead/cmdInboxCount). pickStoreReadErrorScope
+  // (R2 Critic P2-9) attributes the error to the registry specifically only
+  // when it is actually registry.ndjson — the computeSummary call a few
+  // lines up reads messages.ndjson (the broadcast partition) BEFORE its own
+  // internal listRegistry(), so a naive "first error wins" probe could
+  // misattribute an unrelated messages.ndjson outage as "registry
+  // unreadable". Fail-open: a throw from the probe itself must never block
+  // diagnosis.
+  let storeUnavailable = false;
+  let storeUnavailableReason = null;
+  let storeUnavailableScope = null;
+  try {
+    const picked = pickStoreReadErrorScope(s);
+    if (picked) { storeUnavailable = true; storeUnavailableReason = picked.code; storeUnavailableScope = picked.scope; }
+  } catch (_) { storeUnavailable = false; storeUnavailableReason = null; storeUnavailableScope = null; }
   const byMesh = groupRegistryByMeshId(registry, c.home);
   const meshTargets = [];
   const splits = [];
@@ -12136,6 +12215,7 @@ function computeDiagnosis(s, ctx) {
     orphans: sum.orphans || [],
     staleRegistryPartitions: sum.staleRegistryPartitions || [],
     phantoms, unreadTotal, instanceSplits,
+    storeUnavailable, storeUnavailableReason, storeUnavailableScope,
   };
 }
 
@@ -12160,10 +12240,23 @@ function cmdDiagnose(flags, ctx) {
   // Reporting-only: adds two NEW fields, touches no existing key, and drives
   // no fold/retire/adopt/tombstone decision.
   const dangerCount = d.deadSplits.length + d.mixedSplits.length;
-  const degraded = dangerCount > 0 || d.splits.length > 0;
+  // defect 77d5a5bbf614: a genuinely unreadable registry (storeUnavailable)
+  // outranks every split-shape warning below — the registry-derived counts
+  // (splits/deadSplits/etc) all read as an honest-looking zero against an
+  // empty fallback array, so `degraded`/`warning` must reflect the outage
+  // FIRST, never let a clean-looking split tally paper over it.
+  const degraded = d.storeUnavailable || dangerCount > 0 || d.splits.length > 0;
   let warning = null;
+  if (d.storeUnavailable) {
+    // R2 Critic P2-9: only claim "registry" specifically when the read error
+    // was actually attributed to registry.ndjson (see pickStoreReadErrorScope);
+    // an unrelated store file breaking gets the honest generic "store" label.
+    const noun = d.storeUnavailableScope === 'registry' ? 'registry' : 'store';
+    warning = noun + ' unreadable (' + (d.storeUnavailableReason || 'EUNKNOWN') + ') — counts below are unknown, not verified-zero';
+  }
   if (d.deadSplits.length > 0) {
-    warning = d.deadSplits.length + ' dead split(s) (2+ registry rows, no live session draining either — mail can strand)';
+    const deadMsg = d.deadSplits.length + ' dead split(s) (2+ registry rows, no live session draining either — mail can strand)';
+    warning = warning ? warning + '; ' + deadMsg : deadMsg;
   }
   if (d.mixedSplits.length > 0) {
     const mixedMsg = d.mixedSplits.length + ' mixed split(s) (2+ registry rows, exactly 1 live — a send can still resolve to the dead row)';
@@ -12171,6 +12264,9 @@ function cmdDiagnose(flags, ctx) {
   }
   return {
     ok: true, action: 'diagnose', repoKey,
+    known: !d.storeUnavailable,
+    storeUnavailable: d.storeUnavailable, storeUnavailableReason: d.storeUnavailableReason,
+    storeUnavailableScope: d.storeUnavailableScope,
     count: d.registry.length, registry: d.registry,
     meshTargets: d.meshTargets, splits: d.splits, deadSplits: d.deadSplits, mixedSplits: d.mixedSplits,
     orphans: d.orphans,
@@ -12246,11 +12342,18 @@ function cmdHealthcheck(flags, ctx) {
     phantoms: d.phantoms,
     unreadTotal: d.unreadTotal,
   };
-  const degraded = counts.orphansWithUnread > 0 || counts.stale > 0 || counts.splits > 0
+  // defect 77d5a5bbf614: an unreadable registry must gate `ok`/`status`
+  // exactly like any other structural-drift signal — pre-fix, EACCES on
+  // registry.ndjson silently read back as 0 rows through every count above,
+  // so healthcheck reported `ok:true/status:'ok'` for an outage it never saw.
+  const degraded = d.storeUnavailable || counts.orphansWithUnread > 0 || counts.stale > 0 || counts.splits > 0
     || counts.deadSplits > 0 || counts.mixedSplits > 0;
   return {
     ok: !degraded, action: 'healthcheck', repoKey,
-    status: degraded ? 'degraded' : 'ok',
+    status: d.storeUnavailable ? 'store-unavailable' : (degraded ? 'degraded' : 'ok'),
+    known: !d.storeUnavailable,
+    storeUnavailable: d.storeUnavailable, storeUnavailableReason: d.storeUnavailableReason,
+    storeUnavailableScope: d.storeUnavailableScope,
     counts,
     detail: {
       orphans: d.orphans,
@@ -12289,9 +12392,17 @@ function healthcheckHumanLine(r) {
   // suffix so it never blends into the same-looking benign `splits=` count.
   // mixedSplits (exactly 1 live of 2+ rows, TRACED P0) is ALSO dangerous — a
   // second send can still resolve to the dead partition — surfaced the same way.
-  let warning = deadSplits > 0
-    ? ' — WARNING: ' + deadSplits + ' dead split(s) (2+ registry rows, no live session draining either — mail can strand)'
-    : '';
+  let warning = '';
+  if (r.storeUnavailable) {
+    // R2 Critic P2-9: "registry" only when actually attributed to
+    // registry.ndjson (see pickStoreReadErrorScope) — the generic "store"
+    // otherwise.
+    const noun = r.storeUnavailableScope === 'registry' ? 'registry' : 'store';
+    warning = ' — WARNING: ' + noun + ' unreadable (' + (r.storeUnavailableReason || 'EUNKNOWN') + ') — counts above are unknown, not verified-zero';
+  }
+  if (deadSplits > 0) {
+    warning += ' — WARNING: ' + deadSplits + ' dead split(s) (2+ registry rows, no live session draining either — mail can strand)';
+  }
   if (mixedSplits > 0) {
     warning += ' — WARNING: ' + mixedSplits + ' mixed split(s) (2+ registry rows, exactly 1 live — a send can still resolve to the dead row)';
   }
@@ -14100,8 +14211,18 @@ function run(argv, ctx0) {
 // `inbox` invocation whose result reports `known === false`. Exported
 // separately from main() so tests can assert the exact line without
 // spawning a subprocess or intercepting process.exit.
+// KNOWN_WARNING_VERBS — verbs whose `known:false` gets a stderr WARNING line.
+// R2 Reviewer P2: `roster`/`diagnose` now carry `known` (defect 77d5a5bbf614)
+// exactly like the `inbox` read verbs already did, but a plain-CLI (no
+// --json) caller of `roster`/`diagnose` had no visible signal a
+// storeUnavailable report was untrustworthy — only `inbox` was ever gated
+// into this function. `healthcheck` is deliberately NOT added: it already
+// has its own always-visible signal (`ok:false`/`status:'store-unavailable'`
+// surfaces directly in its exit code and human-line render), so a SECOND
+// stderr warning would be pure duplication.
+const KNOWN_WARNING_VERBS = new Set(['inbox', 'roster', 'diagnose']);
 function emitKnownWarning(argv, result) {
-  if (!argv || argv[0] !== 'inbox') return null;
+  if (!argv || !KNOWN_WARNING_VERBS.has(argv[0])) return null;
   if (!result || result.known !== false) return null;
   const reasons = [];
   // fl-wave6 fix (P1, item 1): the real reason must be named UNCONDITIONALLY
@@ -14175,8 +14296,13 @@ function emitKnownWarning(argv, result) {
     reasons.push(String(result.reason));
   }
   if (!reasons.length) reasons.push('unknown');
-  const line = '[devswarm] WARNING: inbox ' + String(argv[1] || result.action || '')
-    + ' ' + JSON.stringify(String(result.id != null ? result.id : ''))
+  // `roster`/`diagnose` are project-scoped (no sub-verb, no per-id argument,
+  // unlike every `inbox` sub-verb) — they get a bare `verb` label instead of
+  // `inbox`'s `verb subverb "id"` shape.
+  const label = argv[0] === 'inbox'
+    ? 'inbox ' + String(argv[1] || result.action || '') + ' ' + JSON.stringify(String(result.id != null ? result.id : ''))
+    : String(argv[0]);
+  const line = '[devswarm] WARNING: ' + label
     + ' reported known:false (' + reasons.join('; ') + ') — totals may be incomplete or stale';
   try { process.stderr.write(line + '\n'); } catch (_) {}
   return line;

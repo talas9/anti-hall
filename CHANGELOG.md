@@ -6,6 +6,45 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.98.2 (2026-09-08)
+
+- **Fixed: `roster`/`diagnose`/`healthcheck` failed open on an unreadable
+  registry** (defect 77d5a5bbf614). `computeDiagnosis` and `cmdRoster` called
+  `listRegistry()`/`computeSummary()` directly with no `getReadError()` probe
+  — devswarm-store.js's `readAll()` swallows a genuine registry.ndjson read
+  error (EACCES on a chmod-000 store dir, etc.) to an empty array, so a
+  registry.ndjson outage read back as "0 workspaces, healthy" instead of
+  surfacing the failure. All three commands now probe `getReadError()` right
+  after their own registry-read call and report `known:false`,
+  `storeUnavailable:true`, `storeUnavailableReason:<code>`; `diagnose` and
+  `healthcheck` also flip `degraded:true`/`status:'store-unavailable'` so an
+  unreadable store can never look like a clean report.
+- **Partial: `devswarm-parent-inbox.js` (the per-turn workspace table)
+  skips the expensive transcript-mtime liveness read for an already-archived
+  row** (defect bf965e5729c5, ruled `partial`). An archived row's
+  dormant/idle-alive result is never consulted by its `archived`/
+  `not-draining` display branch, so `readActivityTs`/`rowLivenessState` are
+  now skipped for it; the cheap heartbeat read itself stays unconditional so
+  the table's "last" column never goes stale for an archived row that still
+  emits heartbeats. A cross-turn disk cache was tried and then **removed**
+  on review (net cost for this hook's actual per-turn cadence, plus two
+  correctness bugs — see the defect's ruling for detail). The field-reported
+  1.07s/turn-under-load latency this defect describes was **not reproduced
+  locally** and remains open.
+- **Added: a `git-stash-guard` command-guard branch blocks a mutating `git
+  stash` (push/pop/drop/clear/apply/save, or the bare `git stash` == push
+  shorthand, including flag-only forms like `-u`/`-k`/`-m`/`-p`/`-q`/`-a`
+  and invocations using git's own global options like `-C <path>`/
+  `--git-dir=X`)** (defect b08b26566b92). The guard only fires once ARMED —
+  a `.anti-hall/protected-stashes` marker at the repo's git toplevel, or
+  `ANTIHALL_STASH_GUARD=1` — in both subagent and coordinator context (no
+  unconditional default block). `git stash list` is unaffected, and a
+  command that merely *mentions* "git stash" in a quoted argument (a grep
+  pattern, a commit message) is never misclassified as an invocation. The
+  guard's own skip name is in skip-guard.js's `DESTRUCTIVE` set (same
+  protection level as `git-guard` — a blanket `"all"` skip cannot silence
+  it).
+
 ## 0.98.1 (2026-09-08)
 
 - **Fixed: `devswarm-child-gate.js`'s Stop hook re-fired every turn even
