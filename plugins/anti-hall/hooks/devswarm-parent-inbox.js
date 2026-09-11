@@ -132,6 +132,28 @@ const MAX_LISTED = 6; // cap workspaces named inline to keep additionalContext s
 // inline lists. Rows past this cap are folded into a "+N more" note and the cap is
 // logged (never silently truncated).
 const MAX_TABLE_ROWS = 12;
+// D1 fix (archived workspaces consuming table slots): an `archived` row (rank
+// 6, the lowest — see displayStatus/the roster-build loop's label assignment)
+// used to compete for MAX_TABLE_ROWS slots on equal footing with every live
+// row, so a project with several archived workspaces could push genuinely
+// live ones past the cap and into "+N more" — an archived-but-still-visible
+// row is DONE and never needs re-surfacing every turn. DEFAULT ON: an
+// archived row (one whose label is EXACTLY 'archived' — a real coordination
+// backlog on an archived row already escapes that label via `not-draining`,
+// rank 1.5, at the label-assignment site, so this filter can never hide a
+// row that still needs attention — see "IT DEMOTES, IT DOES NOT HIDE",
+// buildWorkspaceTable's own header, above) is dropped BEFORE sort/cap rather
+// than after, so it can never consume a slot a live row needed. It is never
+// silently vanished: the caller appends a "+N archived" note (see
+// buildWorkspaceTable's `archivedHidden` param) naming exactly how many were
+// omitted, and either env var restores the pre-fix behaviour.
+function rosterHideArchived(env) {
+  return String((env && env.ANTIHALL_ROSTER_HIDE_ARCHIVED) || '') !== '0';
+}
+function rosterMaxRows(env) {
+  const n = Number(env && env.ANTIHALL_ROSTER_MAX_ROWS);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : MAX_TABLE_ROWS;
+}
 // Cap for the orphan/stale-registry mesh-issue lines below (LEAN surfacing —
 // this cap is the ONLY anti-spam; no persisted first-seen/cooldown state).
 const MAX_MESH_ISSUES = 5;
@@ -438,7 +460,7 @@ function riskMarker(r) {
 // the caller. `hiddenRows` (optional) is the EVICTED slice (dormant rows sort
 // last, so they are evicted first) — named in the overflow line so a capped-out
 // row never silently vanishes behind a bare count.
-function buildWorkspaceTable(rows, now, capped, hidden, hiddenRows) {
+function buildWorkspaceTable(rows, now, capped, hidden, hiddenRows, archivedHidden) {
   const lines = [
     'DEVSWARM WORKSPACES (refreshed every turn):',
     '| workspace | status | finish | unread | last |',
@@ -475,6 +497,14 @@ function buildWorkspaceTable(rows, now, capped, hidden, hiddenRows) {
       overflow += ': ' + ids.join(', ') + (hiddenRows.length > 8 ? ', …' : '');
     }
     lines.push(overflow);
+  }
+  // D1 (archived rows never silently vanish, "IT DEMOTES, IT DOES NOT HIDE"):
+  // named as a count, never folded into the "+N more" cap line above (that
+  // line means "past MAX_TABLE_ROWS"; this means "excluded from the roster
+  // entirely because it is archived" — two different reasons a row is absent,
+  // so they get two different notes).
+  if (Number.isFinite(archivedHidden) && archivedHidden > 0) {
+    lines.push('+' + archivedHidden + ' archived (done; set ANTIHALL_ROSTER_HIDE_ARCHIVED=0 to show)');
   }
   return lines.join('\n');
 }
@@ -867,6 +897,112 @@ function buildOwnUnreadSegment(count, id, urgencyMax, unanswered, informational)
   );
 }
 
+// D2 fix (broadcast feed inflates the injection, repeats verbatim every turn).
+// Two independent problems, both closed here:
+//
+//  (a) NO TRUNCATION. `r.summary` is the FULL message body (devswarm-store.js's
+//      computeSummary, `const summary = r.body != null ? r.body : ''`) and was
+//      rendered verbatim — the table above is bounded to ~1.3KB, but six full
+//      bodies could inflate a single turn's injection by 5-10x. Capped to
+//      MAX_BROADCAST_BODY_CHARS with an ellipsis — the single highest-value
+//      byte reduction available here.
+//  (b) NO DEDUP / NO AGE CAP. `summary.recent` (devswarm-store.js
+//      DEFAULT_RECENT_CAP, marked "O-D8 ... UNRESOLVED" in that file's own
+//      comment) is count-capped only, and this hook re-rendered
+//      `rows.slice(-MAX_LISTED)` EVERY turn with no memory of what it already
+//      showed — a broadcast sent once could repeat verbatim for the entire
+//      rest of the session. Closed with (1) an age cap (a broadcast older than
+//      BROADCAST_MAX_AGE_MS is dropped — it has had its chance to be seen) and
+//      (2) per-SESSION suppression of a broadcast already injected once this
+//      session (see broadcastSeenPath/visibleBroadcastRows below).
+const MAX_BROADCAST_BODY_CHARS = 200;
+function truncateBroadcastBody(body) {
+  const s = String(body);
+  return s.length > MAX_BROADCAST_BODY_CHARS ? s.slice(0, MAX_BROADCAST_BODY_CHARS) + '…' : s;
+}
+const DEFAULT_BROADCAST_MAX_AGE_MS = 24 * 60 * 60 * 1000; // 24h
+function broadcastMaxAgeMs(env) {
+  const n = Number(env && env.ANTIHALL_BROADCAST_MAX_AGE_MS);
+  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_BROADCAST_MAX_AGE_MS;
+}
+
+// broadcastKey(r) -> a stable dedup identity for one recent[] row: sender +
+// timestamp + body. `ts` alone is not unique (two distinct senders could
+// broadcast in the same tick) and `summary` alone is not unique (a repeated
+// phrase from a DIFFERENT sender/time is a genuinely new event) — all three
+// together match exactly what a human reading the rendered line would judge
+// "the same broadcast I already saw".
+function broadcastKey(r) {
+  return (r && r.from != null ? r.from : '?') + ' ' + (r && r.ts != null ? r.ts : '')
+    + ' ' + (r && r.summary != null ? r.summary : '');
+}
+
+// broadcastSeenPath(home, sessionId) -> per-session dedup state file:
+// ~/.anti-hall/devswarm/parent-inbox-broadcast-seen/<safe-session>.json.
+// Session-scoped file-path IDIOM borrowed from
+// companion/lib/devswarm-gate-state.js's stateFileFor (used by
+// hooks/devswarm-parent-gate.js's Stop-loop state) — same sanitize-to-
+// filename convention — but DELIBERATELY its own file/directory: a different
+// shape (a bounded key list, not gate-loop state) and a different lifecycle
+// would corrupt or be corrupted by the Stop-gate's own persisted file if the
+// two ever shared one. `session_id` is read from stdin's payload (available,
+// previously discarded by this hook).
+function broadcastSeenDir(home) {
+  return path.join(home, '.anti-hall', 'devswarm', 'parent-inbox-broadcast-seen');
+}
+function broadcastSeenPath(home, sessionId) {
+  const safe = String(sessionId || 'nosession').replace(/[^A-Za-z0-9_.-]/g, '_');
+  return path.join(broadcastSeenDir(home), safe + '.json');
+}
+// Bounded — never an unbounded per-session log; a session that outlives this
+// many distinct broadcasts simply starts re-showing the oldest ones again
+// (fail-open toward SHOWING, never a growing file).
+const MAX_BROADCAST_SEEN_KEYS = 200;
+function readBroadcastSeenKeys(home, sessionId) {
+  try {
+    const raw = fs.readFileSync(broadcastSeenPath(home, sessionId), 'utf8');
+    const j = JSON.parse(raw);
+    return (j && Array.isArray(j.keys)) ? j.keys : [];
+  } catch (_) { return []; } // absent/corrupt -> nothing seen yet (fail-open toward SHOWING)
+}
+function writeBroadcastSeenKeys(home, sessionId, keys) {
+  try {
+    const p = broadcastSeenPath(home, sessionId);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const trimmed = keys.slice(-MAX_BROADCAST_SEEN_KEYS);
+    const tmp = p + '.tmp.' + process.pid + '.' + Date.now();
+    fs.writeFileSync(tmp, JSON.stringify({ keys: trimmed }));
+    fs.renameSync(tmp, p);
+  } catch (_) { /* best-effort: a missed write just means a broadcast may repeat once more */ }
+}
+
+// visibleBroadcastRows(rows, home, sessionId, now, env) -> the rows to
+// actually render this turn: age-capped, then per-session-deduped. Any
+// failure in the DEDUP step alone falls back to the age-capped set (never a
+// hard failure of this hook, and never a silent full suppression) — a
+// missing session id or an unreadable/unwritable state file degrades to
+// "nothing remembered yet", which just means this turn may repeat a
+// broadcast rather than ever hide a genuinely new one.
+function visibleBroadcastRows(rows, home, sessionId, now, env) {
+  const maxAge = broadcastMaxAgeMs(env);
+  let fresh = rows;
+  try {
+    fresh = rows.filter((r) => (
+      !Number.isFinite(now) || !r || !Number.isFinite(r.ts) || (now - r.ts) <= maxAge
+    ));
+  } catch (_) { fresh = rows; }
+  try {
+    const seenKeys = new Set(readBroadcastSeenKeys(home, sessionId));
+    const unseen = fresh.filter((r) => !seenKeys.has(broadcastKey(r)));
+    if (unseen.length) {
+      writeBroadcastSeenKeys(home, sessionId, Array.from(seenKeys).concat(unseen.map(broadcastKey)));
+    }
+    return unseen;
+  } catch (_) {
+    return fresh; // dedup machinery failed -> fail-open to the age-capped set, never crash the hook
+  }
+}
+
 // buildBroadcastSegment(rows) -> string. v0.57 mesh (D3/D4/D22/D23/D27, Phase 8
 // step 2): the top-level `recent[]` broadcast/heartbeat feed, rendered ADVISORY
 // ONLY — this is roster/FYI context, NEVER a Stop-gate trigger and NEVER
@@ -875,12 +1011,14 @@ function buildOwnUnreadSegment(count, id, urgencyMax, unanswered, informational)
 // direct/broadcast discriminator of its own (it is ALWAYS a broadcast-axis row —
 // plain broadcast or heartbeat, D22) so every row renders identically; urgency
 // (urgent/high) only makes a row visually LOUDER via an `[URGENT]` tag — it does
-// not change the advisory framing or gate anything.
+// not change the advisory framing or gate anything. `rows` is assumed already
+// filtered (age-capped + deduped, see visibleBroadcastRows) — this function
+// only caps to MAX_LISTED and truncates each body (D2).
 function buildBroadcastSegment(rows) {
   const shown = rows.slice(-MAX_LISTED).map((r) => {
     const tag = isHighUrgency(r.urgency) ? '[URGENT] ' : '';
     const who = r.from != null ? r.from : '?';
-    const body = r.summary != null && r.summary !== '' ? r.summary : '(no summary)';
+    const body = r.summary != null && r.summary !== '' ? truncateBroadcastBody(r.summary) : '(no summary)';
     return '- ' + tag + who + ': ' + body;
   });
   return (
@@ -1550,12 +1688,24 @@ function main() {
   // unread desc, then id. Capped at MAX_TABLE_ROWS with a logged "+N more".
   if (rows.length) {
     rows.sort((a, b) => (a.rank - b.rank) || (b.unread - a.unread) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-    const capped = rows.length > MAX_TABLE_ROWS;
-    const shown = capped ? rows.slice(0, MAX_TABLE_ROWS) : rows;
-    const evicted = capped ? rows.slice(MAX_TABLE_ROWS) : [];
-    if (capped) logTableCap(home, rows.length, shown.length);
-    segments.push(buildWorkspaceTable(shown, now, capped, rows.length - shown.length, evicted));
-    segments.push(TITLE_INSTRUCTION);
+    // D1 fix: drop archived rows BEFORE sort/cap so they can never consume a
+    // MAX_TABLE_ROWS slot a live row needed (see rosterHideArchived's header).
+    let archivedHidden = 0;
+    const activeRows = rosterHideArchived(process.env)
+      ? rows.filter((r) => {
+        if (r.label === 'archived') { archivedHidden += 1; return false; }
+        return true;
+      })
+      : rows;
+    const maxRows = rosterMaxRows(process.env);
+    const capped = activeRows.length > maxRows;
+    const shown = capped ? activeRows.slice(0, maxRows) : activeRows;
+    const evicted = capped ? activeRows.slice(maxRows) : [];
+    if (capped) logTableCap(home, activeRows.length, shown.length);
+    if (shown.length || archivedHidden) {
+      segments.push(buildWorkspaceTable(shown, now, capped, activeRows.length - shown.length, evicted, archivedHidden));
+      segments.push(TITLE_INSTRUCTION);
+    }
   }
 
   // Stuck-mesh surfacing (LEAN, read-only) — orphans[]/staleRegistryPartitions[]
@@ -1608,7 +1758,12 @@ function main() {
   // trigger and NEVER mechanically dispatched — "react only if concerned" is
   // left to the model's own judgement (D27, no concerned-classifier invented).
   if (summary && Array.isArray(summary.recent) && summary.recent.length) {
-    segments.push(buildBroadcastSegment(summary.recent));
+    let toShow = summary.recent;
+    try {
+      const sessionId = payload && payload.session_id;
+      toShow = visibleBroadcastRows(summary.recent, home, sessionId, now, process.env);
+    } catch (_) { toShow = summary.recent; } // fail-open: never let this feed crash the hook
+    if (toShow.length) segments.push(buildBroadcastSegment(toShow));
   }
 
   // The Primary's OWN unread is its own top-priority item — surfaced ahead of
@@ -1673,4 +1828,11 @@ if (require.main === module) {
   process.exit(0);
 }
 
-module.exports = { displayStatus };
+module.exports = {
+  displayStatus,
+  // D1/D2 fixes — exported for direct unit testing, same convention as
+  // displayStatus above:
+  rosterHideArchived, rosterMaxRows, buildWorkspaceTable,
+  truncateBroadcastBody, broadcastMaxAgeMs, broadcastKey,
+  broadcastSeenPath, visibleBroadcastRows, buildBroadcastSegment,
+};

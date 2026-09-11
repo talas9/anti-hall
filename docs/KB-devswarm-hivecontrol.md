@@ -1848,7 +1848,15 @@ verb set dispatched by `scripts/devswarm.js` (`devswarm.js:3313`-`3454`) is exac
 `unarchive`, `archive-ignore`, `archive-unignore`, `archive-request`, `register-primary`,
 `migrate`, `migrate-owner-keys`, `send`, `roster`, `diagnose`, `healthcheck`, `mesh`,
 `reconcile`, `reap-stale`, `reconcile-active`, `spawn`, `merge` — no other
-`devswarm.js` subcommand exists; `hivecontrol workspace <cmd>` (§4.1) is a SEPARATE,
+`devswarm.js` subcommand exists (**NOTE 2026-09-11:** this hand-typed list is itself
+now known-stale — `reap-orphans`, `reconcile-registry`, `logs`, `unclaimed`, `skip`,
+`gate-intent`, and `wake-directive` are also real, dispatched verbs missing from it;
+a full re-audit of this table against the current switch statement is deferred, see
+CHANGELOG 0.100.0). **v0.100.0 (D4):** every verb above now also accepts `--help`/
+`-h` (or a bare `help [verb]`), intercepted in `run()` BEFORE dispatch — previously
+NONE of them did, so `migrate -h`/`merge -h` fell through to real execution instead
+of printing help; see the plugin READMEs' `scripts/devswarm.js` entries for detail.
+`hivecontrol workspace <cmd>` (§4.1) is a SEPARATE,
 native binary this CLI never shells out to except via the two guard-redirected code paths
 already covered in §8.5/§8.7 (the ingest daemon's `monitor` wrap and the child pull's
 bounded `message-count`/`read-messages` pair).

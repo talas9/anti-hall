@@ -94,9 +94,9 @@ function tableRow(r, id) {
   const seg = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
   return seg.split('\n').find((l) => l.startsWith('| ' + id + ' ')) || '';
 }
-function runInbox(home) {
+function runInbox(home, envOverride) {
   return testHook(HOOK, { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: REPO_CWD },
-    { home, env: PRIMARY_ENV, expectJson: true });
+    { home, env: Object.assign({}, PRIMARY_ENV, envOverride || {}), expectJson: true });
 }
 
 // --- per-turn workspace table ---------------------------------------------
@@ -120,9 +120,30 @@ test('TABLE: a row ABSENT from a FRESH active set renders `archived`, not escala
     seedDescriptorAge(h.home, 'wsA', wt);
     writeVerdict(h.home, 'wsA', { status: 'escalated' });
     writeCache(h.home, ['wsA'], 60_000);
-    const row = tableRow(runInbox(h.home), 'wsA');
+    // D1 (v0.100.0): archived rows are now HIDDEN from the table by default
+    // (ANTIHALL_ROSTER_HIDE_ARCHIVED defaults on) so they stop consuming
+    // MAX_TABLE_ROWS slots — opt back in here since this test is about the
+    // RENDERING mechanics of an archived row, not the default-visibility
+    // policy (that policy has its own dedicated test below).
+    const row = tableRow(runInbox(h.home, { ANTIHALL_ROSTER_HIDE_ARCHIVED: '0' }), 'wsA');
     assert.match(row, /archived/);
     assert.doesNotMatch(row, /escalated/);
+  } finally { h.cleanup(); }
+});
+
+test('TABLE D1 DEFAULT: an app-archived row is HIDDEN by default and named in a "+N archived" note', () => {
+  const h = makeHome();
+  try {
+    const wt = appWorktree(h.home);
+    writeSummary(h.home, { wsA: wsEntry({ worktreePath: wt }) });
+    seedDescriptorAge(h.home, 'wsA', wt);
+    writeVerdict(h.home, 'wsA', { status: 'escalated' });
+    writeCache(h.home, ['wsA'], 60_000);
+    const r = runInbox(h.home);
+    const c = (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+    const t = c.split('\n\n').find((s) => s.startsWith('DEVSWARM WORKSPACES')) || '';
+    assert.ok(!t.includes('wsA'), `an archived row must be hidden by default; t=${t}`);
+    assert.ok(t.includes('+1 archived (done; set ANTIHALL_ROSTER_HIDE_ARCHIVED=0 to show)'), t);
   } finally { h.cleanup(); }
 });
 

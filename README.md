@@ -114,7 +114,7 @@ argued with.
 | `limit-conserve-inject` | UserPromptSubmit | **Limit-conservation mode.** Injects a token-conservation nudge when context usage reaches `ANTIHALL_LIMIT_THRESHOLD` (default 85%). `ANTIHALL_LIMIT_CONSERVE`: `auto` (default) reads the OMC usage cache; `on` forces the nudge; `off` disables. Auto requires OMC; without it, manual on/off only. **Account-aware:** deactivates if the logged-in Claude account changes and the usage cache hasn't refreshed under the new account yet, rather than apply a stale cross-account reading (kill-switch `ANTIHALL_LIMIT_ACCOUNT_CHECK=off`). Skip-guard hatch: `limit-conserve` |
 | `speculation-guard` | Stop (Tier 2) | Lexical: catches 15 hedge-word speculation markers; suppressed when the message contains evidence/uncertainty acknowledgment; block-once (never wedges) |
 | `speculation-judge` | Stop (Tier 3, **OPT-IN**) | Semantic: calls an LLM to catch confident inference-as-fact with *no* hedge word — the gap Tier 2 can't close. Enable: `ANTIHALL_SEMANTIC_JUDGE=1` + `ANTHROPIC_API_KEY`. Model override: `ANTIHALL_JUDGE_MODEL=<alias-form id>` (default `claude-haiku-4-5`; use alias-form, not versioned snapshot IDs). Zero cost/latency when unset (the default). Fail-open |
-| `claim-ledger` | Stop (Tier 2.5, **ledger-only**) | Deterministic: cross-checks the last message's checkable tokens (counts with unit nouns, SHAs, `task N of`, `N days ago`, "still running" in a turn with no tool call) against the session's cumulative tool output / hook context. Records would-be flags to `~/.anti-hall/claim-ledger/<session>.jsonl` (class `hard`/`soft`) so the false-positive rate is measurable. Never blocks, never prints. ~35 ms, 2 MB transcript tail cap. Fail-open |
+| `claim-ledger` | Stop (Tier 2.5, **ledger-only**, **new in 0.100.0**) | Deterministic: cross-checks the last message's checkable tokens (counts with unit nouns, SHAs, `task N of`, `N days ago`, "still running" in a turn with no tool call) against the session's cumulative tool output / hook context. Records would-be flags to `~/.anti-hall/claim-ledger/<session>.jsonl` (class `hard`/`soft`) so the false-positive rate is measurable. Never blocks, never prints. ~35 ms, 2 MB transcript tail cap. Fail-open |
 | `ship-it-guard` | PreToolUse/Write+Edit+MultiEdit (**OPT-IN**, default OFF) | The only opt-in code-edit gate. With `ANTIHALL_SHIPIT_GATE` ∈ {1,true,yes,on}, blocks a CODE edit on a hard-risk path (migration / auth / `.github/workflows` / security) when no `PLAN.md` exists (repo root) — nudging the ship-it plan-first workflow. Also does a CONFORMANCE ADVISORY (never blocks): flags an edit outside every phase's declared `files:` list. Enforces artifact *existence* only (not plan quality), conservative (never gates ordinary edits), fail-open. Zero effect when unset (the default) |
 | `merge-gate` | PreToolUse/Bash (**OPT-IN**, default OFF) | Backstops the "false done" discipline. With `ANTIHALL_MERGE_GATE` ∈ {1,true,yes,on}, blocks an auto-merge (`gh pr merge` incl. `--auto`, `gh pr review --approve`, `git merge --no-ff/--ff` into main/master/develop, and `hivecontrol workspace merge-into-source`/`merge-from-source`) when the agent's own recent output carries an UNRESOLVED self-hedge ("pending review" / "first-pass" / "do not merge" / "needs your eyes" / …) not followed by a resolution token ("owner signed off" / "verified against" / …). Keyword-heuristic, bypassable (alt syntax / heredoc / UI / API), fail-open, cannot hard-loop. A backstop, not a guarantee. Zero effect when unset (the default) |
 | `phase-tracker` | PreToolUse/Agent+Task | Records every subagent spawn so line 2 shows live swarm activity with zero coordinator effort. It also writes a rolling `~/.anti-hall/agents/recent-spawn.json` heartbeat that `agentsRunning()` consumes, so the Stop guards know when parallel work is live. |
@@ -621,6 +621,11 @@ default): `ANTIHALL_DEVSWARM_IDLE_SEC` (900), `ANTIHALL_DEVSWARM_COOLDOWN_SEC` (
 `ANTIHALL_DEVSWARM_NUDGE_COOLDOWN_SEC` (120); the on-demand CLI resolves its own
 `ANTIHALL_DEVSWARM_MAX_RECOVERIES` (3) and `ANTIHALL_DEVSWARM_GRACE_SEC` (5). See
 [`plugins/anti-hall/README.md`](plugins/anti-hall/README.md#opt-in-companion-devswarm-layered-recovery-macos--linux-full-windows-detection-only).
+**v0.100.0** adds three more, all on the per-turn parent-inbox injection:
+`ANTIHALL_ROSTER_HIDE_ARCHIVED` (default on; `0` shows archived rows in the roster table
+again), `ANTIHALL_ROSTER_MAX_ROWS` (default 12, the roster table cap), and
+`ANTIHALL_BROADCAST_MAX_AGE_MS` (default 24h, drops a `recent[]` broadcast older than
+this from the injection).
 
 Alongside the recovery companion, anti-hall ships a generic, project-agnostic **DevSwarm
 coordination substrate** — also dormant unless DevSwarm is in use — that turns the
@@ -628,7 +633,13 @@ coordination substrate** — also dormant unless DevSwarm is in use — that tur
 feature-gated hooks are the trigger: `devswarm-parent-inbox` (surfaces each turn the real
 unread/idle state of active workspaces + recommends archiving a completed one, plus a
 live per-turn status table of every active workspace — status/finish-rate/unread/
-last-activity, attention-needing rows first) and `devswarm-parent-gate` (blocks the
+last-activity, attention-needing rows first; capped at `ANTIHALL_ROSTER_MAX_ROWS`, default
+12 — **v0.100.0:** an `archived` row is now dropped BEFORE that cap so it can never push a
+live row into overflow, reported instead as a "+N archived" note,
+`ANTIHALL_ROSTER_HIDE_ARCHIVED=0` restores the old behavior; the advisory `recent[]`
+broadcast feed is now body-truncated to 200 chars, age-capped at
+`ANTIHALL_BROADCAST_MAX_AGE_MS` (default 24h), and deduped per session so the same
+broadcast no longer repeats verbatim every turn) and `devswarm-parent-gate` (blocks the
 Primary from ending a turn while a child has REAL unread backlog — as of v0.61.1, noise
 like a mirrored `[Primary poke]` is excluded via a shared classifier, closing a
 ghost-workspace nag loop — or the supervisor judged it stale/escalated, except (v0.62.0)
@@ -655,6 +666,10 @@ dual-backend store
 journal; hooks read only its `summary.json` projection, never the DB), a structured CLI
 (`scripts/devswarm.js` — register/register-primary/heartbeat/inbox
 [pull/read/count/ack/messages/read-primary/peek-primary]/workspaces/gate/nudge/archive/archive-request/migrate;
+**v0.100.0:** every verb now recognizes `--help`/`-h` (and a bare `help [verb]`),
+intercepted BEFORE dispatch so it can no longer fall through to real execution —
+previously `migrate -h` ran the migration and `merge --help` sent a live mesh
+broadcast;
 see `docs/KB-devswarm-hivecontrol.md` §8.8 for the full reference), a PER-PROJECT ingest
 daemon (`companion/devswarm-ingest.js`, the one native consumer wrapping `hivecontrol
 workspace monitor` into the store — install ONE per repo/worktree you want covered, via

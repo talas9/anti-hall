@@ -6,6 +6,102 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.100.0 (2026-09-11)
+
+- **New (LEDGER-ONLY): `claim-ledger.js`, a Stop hook that measures confident-but-
+  unverified factual assertions the lexical `speculation-guard` cannot see** — a claim
+  with NO hedge word at all (e.g. "the spawn is still running", "you are on task 3 of
+  your queue"). It builds a cumulative evidence string from everything the session
+  actually observed (tool results, tool inputs, user prompts, hook attachments),
+  extracts checkable tokens from the final assistant message (numbers with unit
+  nouns, hex SHAs, `task N of`, `N days ago`, state words in a turn with zero tool
+  calls), and records any token with no referent in that evidence to
+  `~/.anti-hall/claim-ledger/<session>.jsonl` (class `hard`/`soft`). This release it
+  NEVER blocks, never emits a decision, never prints, and always exits 0 — the point
+  is to measure the real false-positive rate before anyone considers a blocking tier.
+  Tuning carries over from a 5-transcript/1326-message prototype: per-turn evidence
+  flagged 269 (20%, useless); cumulative evidence + a no-tool-call gate flagged 22.
+  Reads only a 2 MB transcript tail at a file offset (0.17s against a 254 MB
+  transcript). `speculation-judge.js` is untouched and remains opt-in and inert.
+- **Fixed (P0, D4): `devswarm.js` had NO subcommand that recognized `--help`/`-h` —
+  a help request fell straight through to real dispatch.** `migrate -h` genuinely ran
+  the migration; `merge --help` genuinely forwarded to hivecontrol AND sent a live,
+  unconditional mesh broadcast to other people's sessions (surfaced when a
+  read-only-fenced diagnostic agent triggered exactly this). `run()` now intercepts a
+  help request — `--help`, `-h` anywhere among the positionals, or a bare
+  `help [verb]` — BEFORE the switch statement, so it covers every verb including the
+  two raw-argv-tail pass-throughs (`spawn`/`merge`), with zero store opens, zero
+  filesystem writes, zero child processes. The verb list backing `help` output is
+  derived from `run()`'s own switch statement rather than hand-typed, closing a
+  pre-existing drift (`reconcile-registry`/`wake-directive` were real, dispatched
+  verbs missing from the old hand-typed error-message list). Each verb's usage line
+  names its concrete side effects when actually run, so a caller can tell before
+  running one whether it's safe to explore.
+- **Fixed (D1): archived DevSwarm workspaces were consuming roster table slots that
+  live workspaces needed.** An `archived`-label row competed for `MAX_TABLE_ROWS`
+  slots on equal footing with every live row, so a project with several archived
+  workspaces could push genuinely live ones into the `+N more` overflow line. An
+  archived row is now dropped BEFORE sort/cap (never after), default ON via new env
+  var `ANTIHALL_ROSTER_HIDE_ARCHIVED` (`0` restores the old behavior) — a row still
+  genuinely coordinating (`not-draining`, rank 1.5) is a different label and is never
+  caught by this filter, so nothing that still needs attention is ever hidden; the
+  hidden count is always named via a `+N archived` note, never silently dropped. The
+  table cap itself is now configurable via new env var `ANTIHALL_ROSTER_MAX_ROWS`
+  (default 12, was hardcoded).
+- **Fixed (D2): the per-turn broadcast feed was inflating the injection and
+  repeating itself verbatim every turn.** The advisory `recent[]` broadcast feed
+  rendered `r.summary` — the FULL message body — verbatim on every turn with no
+  memory of what had already been shown; a single sent broadcast could re-inject in
+  full for the rest of the session (the real cause of a reported 10-12KB per-turn
+  injection). Bodies are now capped to 200 chars with an ellipsis; a broadcast older
+  than new env var `ANTIHALL_BROADCAST_MAX_AGE_MS` (default 24h) is dropped; and each
+  row is deduped per session (by a stable `from`+`ts`+`summary` key) against a
+  bounded, 200-key state file
+  (`~/.anti-hall/devswarm/parent-inbox-broadcast-seen/<session>.json`) so a broadcast
+  injects at most once per session. Any dedup-state read/write failure fails OPEN to
+  the age-capped set — never a hard crash, never a silent full suppression.
+
+**KNOWN FOLLOW-UPS (not fixed in this release, flagged honestly):**
+- `devswarm.js` still silently ignores unknown CLI flags rather than rejecting them.
+  The design for a fix is settled — a mechanically-derived per-verb allowlist,
+  warning-first (not a hard block), with `spawn`/`merge` exempt as documented
+  pass-throughs — but deferred to a follow-up release so help support and
+  flag-rejection don't land blind together in one release.
+- `inbox messages --tail N` under truncation returns `ok:false` with no `messages`
+  key. That's unambiguous for a caller that checks `ok` first, but ambiguous for one
+  that does `(r.messages || []).length` without checking `ok` — it would read a
+  truncated response as an empty mailbox. No in-repo consumer does this today.
+- `ownReaderDelta` (`companion/lib/devswarm-own-reader.js`) has two paths that
+  silently leave the raw (phantom) count uncorrected: a `stale:true` result returns
+  `null` with no correction applied, and a missing instance file (the nonce derives
+  from `{home, cwd}`, so a drain issued from a different cwd won't find it) returns
+  `{delta: 0}` with no signal that the count is uncorrected. Not touched in 0.100.0.
+- Phantom unread in the per-turn DevSwarm injection is NOT fixed in this release.
+  The parent-inbox projection can over-report unread relative to the authoritative
+  `inbox count`/`inbox tick` — trust the CLI over the injected banner. A fix was
+  written and REVERTED before release: it used the legacy shared-pair cursor as a
+  live per-call floor in `computeSummary`, the exact pattern
+  `scripts/devswarm.js:1668-1692` documents as tried, proven live to lose mail
+  across a mixed-version fleet ("the old build received 3, and a DECLARED 0.99
+  instance then received 0"), and reverted. The defect over-reports (visible,
+  harmless); the reverted fix risked under-reporting (silently hidden mail) — not a
+  trade worth making. Investigated root cause, retained for a future safe fix:
+  `commitInstanceAck` writes the legacy cursor file BEFORE the store cursor row, so
+  the projection under-counts consumption in that window. The safe shape is to fix
+  it at the WRITE ORIGIN in `commitInstanceAck` (keep file and store in agreement
+  by construction where both were just written and provenance is known) rather
+  than re-deriving a floor later on the read side from files whose writing build
+  cannot be determined.
+- `computeSummary`'s main per-workspace loop has no exception handling around
+  `messageCount()`/`cursorValue()`. A single workspace's cursor read failure
+  crashes the whole call, taking down the live table, own-unread, and every other
+  workspace's row for that turn, propagating uncaught through `deriveSummary`.
+- The journal backend's `cursorValue()` never throws on a genuine read error —
+  `readAll()` swallows non-ENOENT errors and returns `[]`, so the cursor returns 0
+  silently, yielding `unread = total` (a false-maximum alarm). `getReadError()`
+  exists to surface this; nothing consults it. An exception-based guard cannot
+  catch this path.
+
 ## 0.99.2 (2026-09-11)
 
 - **Known issues, carried (pre-existing, shared with every other caller of

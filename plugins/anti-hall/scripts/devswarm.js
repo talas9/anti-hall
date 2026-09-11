@@ -1962,7 +1962,12 @@ const VALUE_REQUIRED_FLAGS = new Set(['message', 'message-file']);
 // somePositional --to X` would have silently swallowed `somePositional` as
 // --answers' own value instead of leaving it as a positional); extend as new
 // bare flags are added.
-const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers']);
+// 'help' is added here as part of the D4 fix (P0 — `--help` used to fall
+// through to real verb execution, including mesh broadcasts): without this,
+// a mid-argv `--help` (e.g. `inbox read --help ws1`) would swallow the
+// FOLLOWING positional as its own value via the generic heuristic below,
+// same failure class BOOLEAN_ONLY_FLAGS already exists to close.
+const BOOLEAN_ONLY_FLAGS = new Set(['force', 'peek', 'answers', 'help']);
 // parseArgs(argv) -> { positionals: string[], flags: { name: string[] } }.
 // Supports `--name value`, `--name=value`, repeatable (`--set a --set b`), and
 // bare boolean flags (`--json`). Values are collected as arrays so a caller can
@@ -15242,6 +15247,133 @@ function logVerbOutcome(op, id, r, ctx) {
   } catch (_) { /* fail-open: logging must never break the verb */ }
 }
 
+// ----- help (D4 P0 fix) -----
+// devswarm.js had NO help support at all: `--help`/`-h` fell through to real
+// verb dispatch — for `register-primary`/`migrate`/`migrate-owner-keys` that
+// meant a live mutation, and for `merge`/`spawn` (raw-argv-tail pass-through
+// verbs) it meant forwarding straight to the hivecontrol child process, with
+// `merge` additionally emitting an UNCONDITIONAL mesh broadcast on top. See
+// isHelpRequest()'s call site in run() — it is checked BEFORE the switch, so
+// this covers every verb, including the two pass-through ones, with zero
+// store opens, zero filesystem writes, and zero process spawns.
+//
+// VERB_HELP maps every verb name to { synopsis, mutates }. `mutates` is a
+// short note naming the concrete side effect(s) the verb has when ACTUALLY
+// run (never when merely asking for its help) — required so a caller reading
+// `help <verb>` knows before running it whether it is safe to explore.
+const VERB_HELP = {
+  register: { synopsis: 'register a new workspace descriptor', mutates: 'writes the descriptor file + store registry + summary' },
+  ensure: { synopsis: 'like register, but requires the workspace to be new', mutates: 'writes the descriptor file + store registry + summary' },
+  heartbeat: { synopsis: 'record a liveness heartbeat for a workspace', mutates: 'writes a heartbeat file; may emit a mesh broadcast' },
+  inbox: { synopsis: 'inbox subcommands: count | read | ack | pull | messages | read-primary | peek-primary', mutates: '`pull`/`ack` mutate cursors/receipts; the rest are read-only' },
+  workspaces: { synopsis: 'list registered workspaces', mutates: 'read-only' },
+  gate: { synopsis: 'set/clear merge gates on a workspace (--set/--clear)', mutates: 'writes gate state to the store' },
+  nudge: { synopsis: 'send a nudge command to a workspace', mutates: 'runs the configured nudge command against the workspace' },
+  archive: { synopsis: 'archive (tombstone) a workspace registry row', mutates: 'writes an archive tombstone to the store' },
+  'reap-orphans': { synopsis: 'clean up orphaned partitions across stores', mutates: 'mutates store partitions; may rehome/heal registry rows' },
+  'reconcile-registry': { synopsis: 'reconcile the workspace registry against descriptors on disk', mutates: 'writes registry rows' },
+  unarchive: { synopsis: 'restore a previously archived workspace', mutates: 'reverses an archive tombstone in the store' },
+  'archive-ignore': { synopsis: 'mark an archived workspace to be ignored by reap/heal', mutates: 'writes an ignore marker' },
+  'archive-unignore': { synopsis: 'clear the archive-ignore marker on a workspace', mutates: 'removes an ignore marker' },
+  'archive-request': { synopsis: 'request another session archive its own workspace', mutates: 'mesh-direct store write' },
+  'register-primary': { synopsis: 'register the primary session for the current project', mutates: 'MUTATES the store — writes a primary registry row derived from cwd' },
+  migrate: { synopsis: 'run the store forward-migration', mutates: 'MUTATES the store — this is a real migration run, not a dry check' },
+  logs: { synopsis: 'query the shared devswarm JSONL log', mutates: 'read-only' },
+  'migrate-owner-keys': { synopsis: 'forward-migrate descriptor owner keys', mutates: 'MUTATES descriptor files on disk' },
+  send: { synopsis: 'send a mesh message (--to/--broadcast)', mutates: 'MUTATES the store — appends a mesh message and may wake recipients' },
+  roster: { synopsis: 'show the mesh roster (--ack clears your own broadcast-unread)', mutates: 'read-only, unless --ack is passed (clears broadcastUnread)' },
+  'wake-directive': { synopsis: 'reprint the SessionStart mailbox wake directive', mutates: 'read-only' },
+  diagnose: { synopsis: 'read-only mesh-health projection', mutates: 'read-only' },
+  healthcheck: { synopsis: 'pass/fail health gate over the same data as diagnose', mutates: 'read-only' },
+  mesh: { synopsis: 'mesh subcommands: read', mutates: 'read-only' },
+  reconcile: { synopsis: 'rehome/heal descriptors across stores', mutates: 'MUTATES the store — rehomes descriptors, heals the registry, spawns `inbox pull` per descriptor' },
+  'reap-stale': { synopsis: 'reap stale workspaces past their liveness window', mutates: 'MUTATES the store — archives/tombstones stale rows' },
+  'reconcile-active': { synopsis: 'reconcile active workspaces against liveness', mutates: 'MUTATES the store' },
+  spawn: { synopsis: 'spawn a new workspace via hivecontrol (raw argv pass-through)', mutates: 'MUTATES — forwards the raw argv tail straight to the hivecontrol child process' },
+  merge: { synopsis: 'check-merge + merge-into-source via hivecontrol (raw argv pass-through)', mutates: 'MUTATES — forwards to hivecontrol AND unconditionally sends a mesh broadcast reporting the outcome' },
+  skip: { synopsis: 'skip <guard> [--ttl <minutes>] — temporarily disable an anti-hall guard', mutates: 'writes a skip-file entry' },
+  'gate-intent': { synopsis: 'record a stated-intent signal for the Stop-hook parent gate', mutates: 'writes a gate-intent record' },
+};
+// verbListFromSwitch() — the verb names actually dispatched by run()'s own
+// switch statement, extracted from run's own source text. Deliberately NOT
+// hand-typed (the pre-existing hand-typed list in the `default:` branch's
+// error message had already drifted — `reconcile-registry` and
+// `wake-directive` are real, dispatched verbs missing from it) so this list
+// can never go stale again.
+function verbListFromSwitch() {
+  const src = run.toString();
+  const seen = [];
+  const re = /case '([a-z][a-z0-9-]*)':/g;
+  let m;
+  while ((m = re.exec(src))) { if (seen.indexOf(m[1]) === -1) seen.push(m[1]); }
+  return seen;
+}
+function topLevelUsage() {
+  const verbs = verbListFromSwitch();
+  const lines = ['usage: devswarm.js <verb> [args] [--help]', '', 'verbs:'];
+  for (const v of verbs) {
+    const info = VERB_HELP[v] || { synopsis: '(no synopsis on file)', mutates: null };
+    lines.push('  ' + v + ' — ' + info.synopsis + (info.mutates && info.mutates !== 'read-only' ? '  [' + info.mutates + ']' : ''));
+  }
+  lines.push('', 'Run `devswarm.js help <verb>` or `devswarm.js <verb> --help` for detail on one verb.');
+  return lines.join('\n');
+}
+function verbUsage(verb) {
+  const verbs = verbListFromSwitch();
+  if (verbs.indexOf(verb) === -1) {
+    return 'unknown verb: ' + JSON.stringify(verb) + '\n\n' + topLevelUsage();
+  }
+  const info = VERB_HELP[verb] || { synopsis: '(no synopsis on file)', mutates: null };
+  const lines = ['usage: devswarm.js ' + verb + ' [args]', '', info.synopsis];
+  if (info.mutates) lines.push('', 'side effects: ' + info.mutates);
+  return lines.join('\n');
+}
+// buildHelpResult(verb) -> a normal { ok:true, action:'help', ... } result,
+// exactly like every other verb returns. ZERO side effects: no store open, no
+// registry read, no filesystem write, no child process.
+function buildHelpResult(verb) {
+  const verbs = verbListFromSwitch();
+  const text = verb ? verbUsage(verb) : topLevelUsage();
+  return {
+    ok: true, action: 'help', verb: verb || null,
+    known: verb ? verbs.indexOf(verb) !== -1 : true,
+    verbs,
+    usage: text,
+  };
+}
+// isHelpRequest(positionals, flags) -> true when this argv is asking for help
+// rather than dispatching a real verb. Deliberately checked in run() BEFORE
+// the switch, so it short-circuits every verb including the raw-argv-tail
+// pass-through ones (`spawn`/`merge`).
+//
+// `-h` is a SINGLE-dash token, so parseArgs' own `tok.startsWith('--')` gate
+// never routes it into `flags` — it always lands in `positionals`, at
+// whatever position it was typed. Checking only `positionals[0]` (as an
+// earlier version of this fix did) caught a BARE `-h` but missed `-h` on
+// every real subcommand (`migrate -h`, `merge -h`, `register-primary -h`,
+// `reconcile -h`, ...) — those fell through to real dispatch, so
+// `migrate -h` genuinely ran the migration and `merge -h` genuinely
+// broadcast to the mesh. Fix: scan every positional for a literal `-h`
+// token, not just position 0 — option (a) from the fix-up, chosen over
+// teaching parseArgs to treat `-h` as a flag alias (option (b)) because (b)
+// changes tokenisation for every verb (e.g. any existing caller passing a
+// literal `-h` as a VALUE — impossible here since `-h` would only ever land
+// in positionals in the first place, never consumed as a flag's value,
+// because the generic "does the next token start with --" swallow heuristic
+// only fires for `--`-prefixed flags) and is a wider blast radius than this
+// P0 needs. A bona fide workspace id literally equal to `-h` (isSafeId
+// permits it: `/^[A-Za-z0-9._-]+$/`) would be misread as a help request —
+// accepted, standard CLI ergonomics (most CLIs treat `-h` as help wherever
+// it appears), and the id would still work fine passed any other way.
+function isHelpRequest(positionals, flags) {
+  if (flags.help || flags.h) return true;
+  for (let i = 0; i < positionals.length; i++) {
+    if (positionals[i] === 'help' && i === 0) return true;
+    if (positionals[i] === '-h') return true;
+  }
+  return false;
+}
+
 // run(argv, ctx) -> { code, result }. ctx: { home, env, backend, now } (all
 // injectable for tests). NEVER throws — any internal error becomes a
 // { ok:false, error } result with exit code 2.
@@ -15249,6 +15381,13 @@ function run(argv, ctx0) {
   const ctx = Object.assign({ home: os.homedir(), env: process.env }, ctx0 || {});
   const { positionals, flags } = parseArgs(argv || []);
   const cmd = positionals[0];
+  // D4 P0 fix: help intercept runs BEFORE the switch — see isHelpRequest()'s
+  // own header for why this is the only insertion point that covers every
+  // verb, including spawn/merge's raw-argv-tail forwarding.
+  if (isHelpRequest(positionals, flags)) {
+    const verb = cmd === 'help' ? positionals[1] : (cmd === '-h' ? undefined : cmd);
+    return { code: 0, result: buildHelpResult(verb) };
+  }
   try {
     switch (cmd) {
       case 'register': {
@@ -15607,9 +15746,14 @@ function main() {
   // defect c55896250399): a raw JSON dump left a genuinely partitioned mesh's
   // `mixedSplits`/`deadSplits` easy to miss when only the benign `splits`
   // array (correctly empty for those kinds) was eyeballed.
-  const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose') && !argv.includes('--json');
+  // `help` gets the same human-line treatment as healthcheck/diagnose (D4
+  // fix): checked on `result.action` rather than `argv[0]`, since a help
+  // request can arrive as `help`, `-h`, or `<verb> --help` — the verb name in
+  // argv[0] varies, but buildHelpResult() always stamps action:'help'.
+  const isHelpResult = result && result.action === 'help';
+  const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || isHelpResult) && !argv.includes('--json');
   const out = wantHuman
-    ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : diagnoseHumanLine(result))
+    ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : (argv[0] === 'diagnose' ? diagnoseHumanLine(result) : result.usage))
     : JSON.stringify(result);
   // fs.writeSync(1, ...) per repo rule (macOS node 18/20 exit-vs-async-flush race).
   fs.writeSync(1, out + '\n');

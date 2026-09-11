@@ -140,7 +140,11 @@ test('bf965e5729c5: an archived row STILL renders correctly (label=archived) wit
   }));
   writeSharedSummary(home, { child3: {} });
 
-  const r = testHook(HOOK, payload(), { home, env: PRIMARY_ENV, expectJson: true });
+  // D1 (v0.100.0): archived rows are hidden from the table by default
+  // (ANTIHALL_ROSTER_HIDE_ARCHIVED defaults on) — opt back in since this test
+  // is about the RENDERING mechanics of an archived row (no heartbeat file),
+  // not the default-visibility policy.
+  const r = testHook(HOOK, payload(), { home, env: Object.assign({}, PRIMARY_ENV, { ANTIHALL_ROSTER_HIDE_ARCHIVED: '0' }), expectJson: true });
   assert.equal(r.status, 0);
   const row = tableRow(ctx(r), 'child3');
   assert.ok(row.includes('archived'), 'archived row must render label=archived even with no heartbeat file, got: ' + row);
@@ -162,7 +166,9 @@ test('bf965e5729c5 (R2 Critic P2-8): an archived row WITH a heartbeat still show
   // a few seconds — the exact staleness regression P2-8 called out.
   writeHeartbeat(home, 'child4', { ts: Date.now(), progress_pct: 50 });
 
-  const r = testHook(HOOK, payload(), { home, env: PRIMARY_ENV, expectJson: true });
+  // D1 (v0.100.0): opt back into showing archived rows — see the comment on
+  // the preceding test in this file for why.
+  const r = testHook(HOOK, payload(), { home, env: Object.assign({}, PRIMARY_ENV, { ANTIHALL_ROSTER_HIDE_ARCHIVED: '0' }), expectJson: true });
   const row = tableRow(ctx(r), 'child4');
   assert.ok(row.includes('archived'), 'still archived: ' + row);
   assert.ok(!/\|\s*—\s*\|\s*$/.test(row), 'the "last" column must NOT be unknown ("—") when a fresh heartbeat exists, got: ' + row);
