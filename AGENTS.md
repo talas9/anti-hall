@@ -189,6 +189,15 @@ evidence/uncertainty acknowledgments are present.
 an LLM judge to catch confident inference-as-fact with no hedge word — the gap Tier 2
 cannot cover. Off by default; requires `ANTIHALL_SEMANTIC_JUDGE=1` and `ANTHROPIC_API_KEY`.
 
+**Tier 2.5 — Claim ledger (deterministic, LEDGER-ONLY):** `claim-ledger.js` (Stop)
+cross-checks checkable tokens in the last message (counts with unit nouns, SHAs,
+`task N of`, `N days ago`, "still running" in a turn with zero tool calls) against the
+session's cumulative evidence (tool results, tool inputs, hook attachments, prompts;
+numbers matched by value at the claim's precision). It records would-be flags to
+`~/.anti-hall/claim-ledger/<session>.jsonl` with class `hard` (would block) / `soft`
+(would nudge) and NEVER blocks — one release of ledger data measures the false-positive
+rate before any blocking is enabled. Shared file, identical on Codex.
+
 ### Tier 2: speculation-guard (lexical, always-on)
 
 `speculation-guard.js` stops the session when the last assistant message contains

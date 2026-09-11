@@ -98,6 +98,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['graphify-reminder.js'], 30),
     group(null, ['speculation-guard.js'], 30),
     group(null, ['speculation-judge.js'], 30),
+    group(null, ['claim-ledger.js'], 30),
     group(null, ['devswarm-parent-gate.js'], 30),
     group(null, ['devswarm-child-gate.js'], 30),
   ],
