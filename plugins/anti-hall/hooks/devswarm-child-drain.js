@@ -160,7 +160,28 @@ function main() {
     const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: desc.worktreePath, id, home, env });
     if (storeHandle) {
       try {
-        union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle });
+        // OWN-INSTANCE PROJECTION (defect f061789267c1 / a77b85571dfa, P0 —
+        // same min-floor phantom-unread class as devswarm-parent-gate.js's
+        // own.unread, see companion/lib/devswarm-own-reader.js's header for
+        // the full proof). This is the CHILD reading its OWN mailbox (`id` is
+        // this workspace's own DEVSWARM_BUILDER_ID), a per-reader display, so
+        // it must size the store side from THIS instance's position, not the
+        // cross-instance min floor `storeHandle.cursorValue(id)` defaults to.
+        // A store handle is already open here, so this uses the EXACT
+        // precise primitive `inbox count`/`read`/`ack` already use
+        // (scripts/devswarm.js's siblingBaseCursor) rather than the
+        // cache-projection approximation devswarm-own-reader.js falls back to
+        // when no store handle is open — never a second implementation of
+        // this math. Fail-open to the default (pre-fix) behavior on any
+        // resolution failure.
+        let unionStoreBase;
+        try {
+          const devswarmCli = require('../scripts/devswarm.js'); // lazy: side-effect-free
+          const nonce = devswarmCli.deriveInstanceNonce({ home, cwd: desc.worktreePath });
+          const shortNonce = devswarmCli.shortInstanceNonce(nonce);
+          unionStoreBase = shortNonce ? devswarmCli.siblingBaseCursor(storeHandle, home, id, shortNonce) : undefined;
+        } catch (_) { unionStoreBase = undefined; }
+        union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle, storeBaseCursor: unionStoreBase });
       } finally {
         try { storeHandle.close(); } catch (_) {}
       }

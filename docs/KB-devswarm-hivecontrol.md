@@ -3905,3 +3905,69 @@ unforked files — this feature applies to Codex sessions identically; the
 `--repair-ingest-orphans [--apply]` flag is documented in both
 `plugins/anti-hall/skills/devswarm/SKILL.md` and
 `plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`.
+
+## §45 — Per-reader unread vs. the shared min-floor (defect f061789267c1 / a77b85571dfa, v0.99.2)
+
+**Symptom:** a Primary session's Stop-hook gate (`hooks/devswarm-parent-gate.js`)
+blocked turn-end on unread mail the session had already drained, live on a real
+fleet at v0.99.1.
+
+**Root cause:** §"Per-instance cursors" above (v0.99.0, defect 8b211241bbe9)
+made the shared cursor pair (`cursors/<id>.json`, `devswarm-store.js`'s
+`cursorValue(id)`) deliberately track the MIN across every live
+`<id>#inst-<nonce>` instance file — correct for the shared pair's own
+cross-instance-safety contract (no reader's mail is ever lost). But
+`computeSummary()` sizes `workspaces[id].unread` from `total - <that shared
+min>`, and several consumers read that number as if it were the CALLING
+reader's own read position:
+
+- `hooks/devswarm-parent-gate.js` (`readOwnUnread`'s `own.unread`)
+- `hooks/devswarm-parent-inbox.js` ("Primary's OWN inbound unread" segment)
+- `hooks/devswarm-child-turn.js` (per-turn mesh-direct nudge)
+- `hooks/devswarm-child-drain.js` / `hooks/devswarm-child-gate.js` (live-store
+  reads of a child's own mailbox, defaulting `unionUnread`'s `storeBaseCursor`
+  to `storeHandle.cursorValue(id)`)
+
+A sibling instance file is routinely still present — evicted only after
+`gcInstanceCursors`' 7-day window, well inside any ordinary multi-day gap — so
+a reader that had genuinely drained everything could still be shown a large
+phantom backlog borrowed from that slower/stale sibling. Live proof: a fresh
+reader's own instance file at 929, a 3-day-old sibling's at 859, `total:930`
+-> shared floor 859 -> `unread:71`, though the fresh reader's true position
+left only 1 row unread. **A cheaper GC cadence does not fix this** — the
+stale file sits inside the SAME 7-day window regardless of how often GC runs
+(`tests/companion/devswarm-own-reader.test.js`'s GC-cadence test is a standing
+proof against re-proposing that shortcut).
+
+**Fix:** `companion/lib/devswarm-own-reader.js` — a shared, fs-only helper
+(`ownReaderUnread`/`ownReaderDelta`) that subtracts a reader's own lead over
+the shared floor (`ownCursor - entry.cursor`, always >= 0 by construction)
+from the already union-computed `unread`, rather than re-deriving it. The two
+cache-projection consumers (`devswarm-parent-gate.js`, `devswarm-parent-inbox.js`,
+`devswarm-child-turn.js`) use this helper directly against the cached summary
+— no store DB open, keeping the Stop-hook's cheap-read budget intact, and
+failing open to the pre-fix number on any resolution failure (legacy summary
+shape, nonce-derivation failure). The two live-store consumers
+(`devswarm-child-drain.js`, `devswarm-child-gate.js`) already had a store
+handle open, so those instead pass `scripts/devswarm.js`'s own
+`siblingBaseCursor` — the exact primitive `inbox count`/`read`/`ack` already
+use — as `unionUnread`'s `storeBaseCursor`, the precise fix rather than an
+approximation.
+
+**No persisted-shape change.** Every field this fix reads (`entry.cursor`,
+`entry.unread`) was already part of the existing summary projection before
+this fix — no forward-migration needed in `update.js` or `doctor`.
+
+**Deliberately unchanged — monitoring surfaces.** Any consumer that shows
+OTHER workspaces' unread from a supervisory/monitoring standpoint (the child
+rows in `devswarm-parent-inbox.js`'s roster table, `roster`/`diagnose`'s CLI
+output, `doctor-runtime.js`'s stuck-ingest sweep, `liveness.js`'s
+`unionPendingFor` drain-activity check, `devswarm-liveness-select.js`'s
+cursor-evidence check) is a cross-instance safety/monitoring signal ("has ANY
+reader of this workspace drained it"), not a per-reader read position — the
+min-floor is the CORRECT, conservative answer there and was left unchanged.
+
+**Codex parity:** `hooks/`, `companion/`, and `scripts/` are shared, unforked
+files — this fix applies to Codex sessions identically; documented in both
+`plugins/anti-hall/skills/devswarm/SKILL.md` and
+`plugins/anti-hall/codex/skills/anti-hall-devswarm/SKILL.md`.

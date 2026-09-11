@@ -98,6 +98,7 @@ const freshness = require('./lib/devswarm-freshness.js');
 // fires every turn. Writers (spawn seed + reconcile backfill) live in
 // scripts/devswarm.js, off this hot path.
 const names = require('../companion/lib/devswarm-names.js');
+const { ownReaderUnread } = require('../companion/lib/devswarm-own-reader.js');
 
 // B1 self-heal hardening (H4): structured logging via the shared C0 logger
 // when present, falling back to a console.error-only shim so this hook never
@@ -1350,9 +1351,23 @@ function main() {
   try {
     if (primaryId) {
       const ownEntry = summaryEntry(summary, primaryId);
-      if (ownEntry && Number.isFinite(ownEntry.unread) && ownEntry.unread > 0) {
-        ownUnread = ownEntry.unread;
-        ownUrgencyMax = ownEntry.urgencyMax || null;
+      const ownRawUnread = ownEntry && Number.isFinite(ownEntry.unread) && ownEntry.unread > 0 ? ownEntry.unread : 0;
+      // OWN-INSTANCE PROJECTION (defect f061789267c1 / a77b85571dfa, P0) — same
+      // min-floor phantom-unread fix as hooks/devswarm-parent-gate.js's own.unread;
+      // see companion/lib/devswarm-own-reader.js for the shared implementation and
+      // proof. `primaryId` here is ALWAYS this caller's own row, never a child's.
+      if (ownRawUnread > 0) {
+        const corrected = ownReaderUnread(home, cwd || gitTop, primaryId, ownEntry, ownRawUnread);
+        // STALE-CACHE GUARD (P1, Critic NO-GO): `null` means this reader's
+        // live position has caught up to or passed what the cached summary
+        // ever knew `total` to be — the cache cannot vouch that 0 (or any
+        // computed number) is correct, since mail may have landed after the
+        // snapshot. This is a REPORT-ONLY nudge segment, not a hard gate, so
+        // its safe fallback is the RAW pre-fix number (the same
+        // conservative, never-hides-mail number this whole file showed
+        // before the P0 fix) rather than silently displaying 0.
+        ownUnread = corrected === null ? ownRawUnread : corrected;
+        if (ownUnread > 0) ownUrgencyMax = ownEntry.urgencyMax || null;
       }
       if (ownEntry && Array.isArray(ownEntry.pendingQuestions)) {
         ownPendingQuestions = ownEntry.pendingQuestions;

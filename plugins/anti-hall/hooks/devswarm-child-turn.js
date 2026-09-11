@@ -90,6 +90,7 @@ const { devswarmRoot, isSafeId } = require('../companion/lib/liveness.js');
 const { readUnread } = require('../companion/lib/devswarm-inbox-cursor.js');
 const { ARCHIVE_REQUEST_MARKER } = require('../companion/lib/devswarm-store.js');
 const gitTruth = require('../companion/lib/devswarm-git-truth.js');
+const { ownReaderUnread } = require('../companion/lib/devswarm-own-reader.js');
 
 // FULL_UUID_RE / TRUNCATED_UUID_RE (F3 defensive hardening) — narrow UUID-shape
 // detectors for ONE proven failure mode: hivecontrol's DEVSWARM_BUILDER_ID (a
@@ -901,8 +902,20 @@ function main() {
             const raw = String(fs.readFileSync(p, 'utf8')).trim();
             const summary = raw ? JSON.parse(raw) : null;
             const entry = summary && summary.workspaces && summary.workspaces[id];
-            const directUnread = entry && Number.isFinite(entry.directUnread) ? entry.directUnread
+            const rawDirectUnread = entry && Number.isFinite(entry.directUnread) ? entry.directUnread
               : (entry && Number.isFinite(entry.unread) ? entry.unread : 0);
+            // OWN-INSTANCE PROJECTION (defect f061789267c1 / a77b85571dfa, P0) —
+            // same min-floor phantom-unread fix as devswarm-parent-gate.js's
+            // own.unread: `id` here is ALWAYS this child's OWN builder id, a
+            // per-reader display, not a monitoring signal about a peer. See
+            // companion/lib/devswarm-own-reader.js's header for the proof.
+            // STALE-CACHE GUARD (P1, Critic NO-GO): `null` means this
+            // reader's live position has caught up to or passed the cached
+            // summary's own `total` — fall back to the RAW pre-fix number
+            // (never silently 0) rather than trust a computation the cache
+            // cannot vouch for. See devswarm-own-reader.js's header.
+            const correctedDirectUnread = ownReaderUnread(home, worktree, id, entry, rawDirectUnread);
+            const directUnread = correctedDirectUnread === null ? rawDirectUnread : correctedDirectUnread;
             if (directUnread > 0) {
               const oldestTs = Number.isFinite(entry.oldestDirectUnreadTs) ? entry.oldestDirectUnreadTs : null;
               meshDirectSegment = buildMeshDirectSegment(directUnread, id, entry.urgencyMax || null, oldestTs);

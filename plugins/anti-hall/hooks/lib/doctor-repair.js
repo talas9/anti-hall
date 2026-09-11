@@ -2088,9 +2088,20 @@ function checkResurrectedRows(opts) {
   const candidates = r.candidates || 0;
   const unhealable = r.unhealable || 0;
   if (candidates === 0 && unhealable === 0) return null;
+  // Reworded (0.99.2, two independent readers misread the prior phrasing as
+  // "N unhealable OF candidates", i.e. unhealable <= candidates): under the
+  // dryRun:true call above, scripts/devswarm.js's reRetireResurrectedRows
+  // (:5188 vs :5193, :5244 is UNREACHED in dry-run — the loop `continue`s
+  // right after `candidates++` at :5193-5196, before any code path that could
+  // ALSO increment `unhealable` for an already-candidate row) makes the two
+  // counters genuinely DISJOINT here: `candidates` = rows with a real forward
+  // target (repairable), `unhealable` = rows with none (no-forward-target,
+  // manual review only) — never double-counted. So the true total is their
+  // SUM, stated explicitly up front rather than left for the reader to add.
+  const total = candidates + unhealable;
   const message =
-    `(warn) resurrected registry rows: ${candidates} candidate(s)`
-    + (unhealable ? `, ${unhealable} needing manual review (no safe forward target)` : '')
+    `(warn) ${total} resurrected registry row(s): ${candidates} repairable`
+    + (unhealable ? `, ${unhealable} need manual review (no safe forward target)` : '')
     + (candidates > 0 ? ' (run doctor --repair-resurrected to preview a repair plan).' : '.');
   return { atRisk: candidates > 0, candidates, unhealable, message };
 }

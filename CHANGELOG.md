@@ -6,6 +6,111 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.99.2 (2026-09-11)
+
+- **Known issues, carried (pre-existing, shared with every other caller of
+  the same primitives — NOT fixed this release, flagged by the Critic during
+  the f061789267c1 own-reader review):**
+  - `readInstanceBaseline` can WRITE `cursors/<id>#base.json` on what is
+    conceptually a READ path (the ambiguous-branch live resolution in
+    `companion/lib/devswarm-own-reader.js` calls `siblingBaseCursor`, which
+    calls `readInstanceBaseline`, which seeds the baseline file on first
+    touch). Every other caller of `siblingBaseCursor` (`inbox count`/`read`/
+    `ack`, `devswarm-child-drain.js`, `devswarm-child-gate.js`) already has
+    this same side effect; it is not new here.
+  - `openStoreForUnread` (called from the same ambiguous branch) passes no
+    `backend`, so it inherits whatever the environment resolves to rather
+    than an explicit choice — again shared with every existing caller of
+    `openStoreForUnread`, not introduced by this fix.
+- **Resolved the ambiguous stale-cache case with one live read** (Critic
+  GO-with-fix, on the P1 fix below): a bare UNKNOWN for `ownCursor ===
+  entry.total` left the reporter's exact configuration blocked forever on a
+  healthy summary. That one branch now opens the store (never the common
+  path) and computes the real number via the live message count minus
+  `siblingBaseCursor` — a genuinely-drained reader now opens the gate, a
+  reader behind real new mail still blocks, and a live read that cannot run
+  still fails to UNKNOWN. Also fixed: `buildReason` no longer sends an
+  operator into daemon healthcheck/logs triage for this cause — it now names
+  the cache-vs-live mismatch and prescribes `inbox count`/`read-primary`.
+- **Fixed (P1): the f061789267c1 own-reader fix below could HIDE real unread
+  mail on a stale cache.** `companion/lib/devswarm-own-reader.js` compared a
+  LIVE instance cursor against a CACHED summary snapshot; once a reader's own
+  live position caught up to or passed the snapshot's own `total`, the
+  subtraction floored to 0 even though mail could have arrived after the
+  snapshot that the reader had not actually seen — worse than the phantom the
+  original fix replaced, since a Stop-gate hiding real mail fails in the
+  dangerous direction. `ownReaderUnread`/`ownReaderDelta` now return `null`/
+  `{stale:true}` in that regime; every consumer (parent-gate, parent-inbox,
+  child-turn) treats `null` as UNKNOWN — parent-gate routes it into its
+  pre-existing `unknown:true` fail-safe (blocking) path, the two report-only
+  nudge surfaces fall back to the raw pre-fix number.
+- **Fixed (P2): `doctor --repair-ingest-orphans --repair-test-stores` (a
+  combined invocation) silently ran only the first flag's section** — the
+  early-exit fix below called `emitVerdictAndExit()` unconditionally inside
+  each flag's block, so the first one to run always exited before a later
+  flag's block was reached. Each exit is now gated on no later repair flag
+  also being set; a combined invocation runs every requested section, then
+  exits once.
+- **Fixed: `doctor`'s resurrected-registry-rows warning was ambiguous about
+  the total row count.** Two independent readers misread
+  "N candidate(s), M needing manual review" as "M of N need review" (implying
+  N was the total). `candidates` and `unhealable` are disjoint under the
+  dry-run call this check always makes, so the message now states the sum up
+  front: `"44 resurrected registry row(s): 24 repairable, 20 need manual
+  review (no safe forward target)"`.
+- **Fixed: `doctor --repair-ingest-orphans` / `--repair-test-stores` /
+  `--repair-resurrected` never exited after their own section**, so their
+  verdict line was buried behind every later report section and the full
+  unconditional summary — field-observed at line 562 of 571 total output
+  lines for `--repair-resurrected`. Each of the three now calls a shared
+  `emitVerdictAndExit()` right after its own section instead of falling
+  through.
+
+- **Fixed (P0): the parent gate (and roster/reminder surfaces) could show a
+  Primary or child a phantom unread backlog it had already drained**
+  (defect f061789267c1 / a77b85571dfa). 0.99.0's per-instance-cursor fix
+  (defect 8b211241bbe9) deliberately made the SHARED cursor pair track the
+  MIN across every live `<id>#inst-<nonce>` instance file, so no reader's
+  mail is ever lost — correct for that pair's own cross-instance-safety
+  contract. But `devswarm-store.js`'s `computeSummary()` sizes
+  `workspaces[id].unread` from `total - <that shared min>`, and every
+  per-reader display (`devswarm-parent-gate.js`'s Stop-hook gate,
+  `devswarm-parent-inbox.js`'s "Primary's OWN inbound unread" segment,
+  `devswarm-child-turn.js`'s per-turn mesh-direct nudge, and the live-store
+  reads in `devswarm-child-drain.js`/`devswarm-child-gate.js`) was reading
+  that same min-floor number as if it were ITS OWN read position. A slower or
+  stale sibling instance file is routinely still present (evicted only after
+  the 7-day `gcInstanceCursors` window — well inside any ordinary multi-day
+  gap), so a reader that had genuinely drained everything could still be
+  blocked on mail it had already read. Live proof: a fresh reader's own
+  instance file at 929, a 3-day-old sibling's at 859, total 930 — the shared
+  floor gave `unread:71` though the fresh reader's true position left only 1
+  row unread. A cheaper GC cadence does NOT fix this: the stale file sits
+  inside the SAME (unchanged) 7-day window no matter how often GC runs (see
+  `tests/companion/devswarm-own-reader.test.js`'s GC-cadence test, a standing
+  proof against re-proposing that shortcut).
+  Fix: a new shared helper, `companion/lib/devswarm-own-reader.js`, computes
+  each of the five per-reader surfaces' own number by subtracting this
+  reader's own lead over the shared floor (`ownCursor - entry.cursor`, always
+  >= 0 by construction) from the already union-computed `unread`/`directUnread`
+  — never re-deriving unread from scratch, never opening the store DB on the
+  Stop-hook's cheap-read path, and failing open to the pre-fix number on any
+  resolution failure (so a legacy/older summary shape, or a nonce-derivation
+  failure, is byte-identical to before). `devswarm-child-drain.js` and
+  `devswarm-child-gate.js` already had a live store handle open, so those two
+  instead pass `scripts/devswarm.js`'s own `siblingBaseCursor` (the exact
+  primitive `inbox count`/`read`/`ack` already use) as `storeBaseCursor` —
+  the precise fix, not an approximation. No persisted-shape change: every
+  input this fix reads (`entry.cursor`, `entry.unread`) was already part of
+  the existing summary projection, so no forward-migration is needed in
+  `update.js` or `doctor`. Monitoring/roster surfaces that show OTHER
+  workspaces' unread (the child rows in `devswarm-parent-inbox.js`'s table,
+  `roster`/`diagnose`'s CLI output, `doctor-runtime.js`'s stuck-ingest sweep,
+  `liveness.js`'s drain-activity check) are deliberately UNCHANGED — those are
+  cross-instance monitoring signals ("has ANY reader of this workspace drained
+  it"), not a per-reader read position, and the min-floor is the CORRECT,
+  conservative answer there.
+
 ## 0.99.1 (2026-09-08)
 
 - **Fixed (P1): the store migration re-registered archived workspaces**

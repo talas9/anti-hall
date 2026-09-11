@@ -114,6 +114,20 @@ other's mail, and a `read-primary` returning 0 is trustworthy for THAT instance.
 advance is journaled to `cursor-log/<repoKey>.ndjson` with its from/to, delivered count,
 caller, gate and verb.
 
+**Per-reader unread vs. the shared min-floor (v0.99.2, defect f061789267c1 /
+a77b85571dfa).** The shared `cursors/<id>.json` projection above (the MIN
+across instances) is correct for the shared pair's own cross-instance-safety
+contract, but it is the WRONG number for a PER-READER display: a reader that
+has genuinely drained its own mail can still be shown a phantom backlog
+borrowed from a slower/stale sibling instance file (routinely still present —
+evicted only after the 7-day GC window). The Stop-hook gate, the Primary's
+own-unread roster segment, and the per-turn child nudge now compute their
+OWN number via `companion/lib/devswarm-own-reader.js`, which subtracts this
+reader's own lead over the shared floor rather than showing the floor
+directly. Monitoring surfaces that show OTHER workspaces' unread (the roster
+table, `roster`/`diagnose`, doctor's stuck-ingest sweep) are unchanged — for
+those, the min-floor is the correct, conservative answer.
+
 **Upgrading a live fleet (0.98.x -> 0.99.0).** Upgrade all sessions promptly. During the mixed
 window an old-version ack writes the shared pair to its own position; a DECLARED 0.99 instance
 keeps its own cursor and loses nothing. Only an UNDECLARED newcomer — one that first appears

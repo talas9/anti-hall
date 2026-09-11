@@ -577,7 +577,20 @@ function readDurableUnread(env, home) {
         const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: desc.worktreePath, id, home, env });
         if (storeHandle) {
           try {
-            const union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle });
+            // OWN-INSTANCE PROJECTION (defect f061789267c1 / a77b85571dfa, P0)
+            // — same fix as devswarm-child-drain.js's identical pattern: this
+            // is the child reading its OWN mailbox, so size the store side
+            // from THIS instance's position (scripts/devswarm.js's
+            // siblingBaseCursor), not the cross-instance min floor. Fail-open
+            // to the pre-fix default on any resolution failure.
+            let unionStoreBase;
+            try {
+              const devswarmCli = require('../scripts/devswarm.js'); // lazy: side-effect-free
+              const nonce = devswarmCli.deriveInstanceNonce({ home, cwd: desc.worktreePath });
+              const shortNonce = devswarmCli.shortInstanceNonce(nonce);
+              unionStoreBase = shortNonce ? devswarmCli.siblingBaseCursor(storeHandle, home, id, shortNonce) : undefined;
+            } catch (_) { unionStoreBase = undefined; }
+            const union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle, storeBaseCursor: unionStoreBase });
             return { known: !!union.known, count: union.known ? union.unread : 0 };
           } finally {
             try { storeHandle.close(); } catch (_) {}

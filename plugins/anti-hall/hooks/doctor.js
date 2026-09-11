@@ -94,6 +94,32 @@ function warnl(msg){ warn++; lines.push(`  ${C.y}!${C.x} ${msg}`); }
 function infol(msg){ lines.push(`  ${C.d}i${C.x} ${msg}`); }
 function head(t)   { lines.push(`\n${C.b}${t}${C.x}`); }
 
+// emitVerdictAndExit() — print the SAME verdict/summary the unconditional
+// tail (section 7) prints, then exit immediately. Factored out (0.99.2) so an
+// EXPLICIT, OPT-IN repair flag (--repair-ingest-orphans / --repair-test-stores
+// / --repair-resurrected) can end the run right after its own section instead
+// of silently falling through every later section (6j-6n) and the full
+// unconditional summary — before this fix, all three flags' own verdict line
+// was buried mid-output (observed: 562 of 571 total lines) because nothing
+// after their block ever called `process.exit`; doctor.js has no wrapping
+// function, so `process.exit()` (not `return`) is what actually stops
+// execution here. `version`/`QUIET`/`C`/`lines`/`pass`/`fail`/`warn` are all
+// already in scope by the time any repair flag's block runs (declared at
+// module top, ~line 23/76-86/120-121), so this is byte-identical output to
+// running the unconditional tail with nothing after it, restricted to
+// whatever sections actually ran before the exit.
+function emitVerdictAndExit() {
+  const verdict = fail === 0
+    ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
+    : `${C.r}${C.b}anti-hall has ${fail} FAILURE(S)${C.x} — ${pass} passed, ${warn} warning(s)`;
+  if (!QUIET) {
+    process.stdout.write(`${C.c}${C.b}anti-hall doctor${C.x} ${C.d}v${version}${C.x}\n`);
+    process.stdout.write(lines.join('\n') + '\n\n');
+  }
+  process.stdout.write(verdict + '\n');
+  process.exit(fail === 0 ? 0 : 1);
+}
+
 // --- spawn a hook with a payload + env, return {code, out} -------------------
 function runHook(file, payload, env) {
   try {
@@ -1059,6 +1085,15 @@ if (REPAIR_INGEST_ORPHANS) {
     else if (r.status === 'failed') bad('FAILED ' + label);
     else infol('skipped ' + label);
   }
+  // EARLY EXIT (0.99.2, P2 fix — Critic NO-GO 2026-09-11): this EXPLICIT,
+  // OPT-IN flag runs ONLY its own section — see emitVerdictAndExit's own
+  // header for why falling through to 6j-6n and the unconditional tail
+  // buried this section's verdict. GATED on no LATER repair flag also being
+  // set: `doctor --repair-ingest-orphans --repair-test-stores` must run
+  // BOTH sections, not silently drop the second because this block exited
+  // first. Only the LAST applicable flag (in file order) actually exits;
+  // every earlier one just falls through into the next matching block.
+  if (!REPAIR_TEST_STORES && !REPAIR_RESURRECTED) emitVerdictAndExit();
 }
 
 // --- 6j. memguard-reaper risk (REPORT-ONLY, CONDITIONAL) ---------------------
@@ -1141,6 +1176,9 @@ if (REPAIR_TEST_STORES) {
     else if (r.status === 'failed') bad('FAILED ' + label);
     else infol('skipped ' + label);
   }
+  // EARLY EXIT (0.99.2, P2 fix): see the REPAIR_INGEST_ORPHANS block's
+  // identical note — gated the same way, on no LATER flag also being set.
+  if (!REPAIR_RESURRECTED) emitVerdictAndExit();
 }
 
 // --- 6l2. resurrected registry rows (REPORT-ONLY, CONDITIONAL, check mode
@@ -1190,6 +1228,10 @@ if (REPAIR_RESURRECTED) {
     else if (r.status === 'failed') bad('FAILED ' + label);
     else infol('skipped ' + label);
   }
+  // EARLY EXIT (0.99.2): see the REPAIR_INGEST_ORPHANS block's identical note
+  // — this is the flag SkyCrew field-reported burying its own verdict at
+  // line 562 of 571 total output lines.
+  emitVerdictAndExit();
 }
 
 // --- 6m. escalated-while-session-alive (REPORT-ONLY, CONDITIONAL) -----------
@@ -1227,13 +1269,4 @@ if (REPAIR_RESURRECTED) {
 })();
 
 // --- 7. Summary --------------------------------------------------------------
-const verdict = fail === 0
-  ? `${C.g}${C.b}anti-hall ACTIVE${C.x} — ${pass} checks passed` + (warn ? `, ${warn} warning(s)` : '')
-  : `${C.r}${C.b}anti-hall has ${fail} FAILURE(S)${C.x} — ${pass} passed, ${warn} warning(s)`;
-
-if (!QUIET) {
-  process.stdout.write(`${C.c}${C.b}anti-hall doctor${C.x} ${C.d}v${version}${C.x}\n`);
-  process.stdout.write(lines.join('\n') + '\n\n');
-}
-process.stdout.write(verdict + '\n');
-process.exit(fail === 0 ? 0 : 1);
+emitVerdictAndExit();

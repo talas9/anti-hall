@@ -154,6 +154,7 @@ const { readActiveCache, isAppArchived } = require('../companion/lib/devswarm-ar
 // on an idle-but-alive child. CONTENT, not age, is the only signal that
 // distinguishes real neglect from noise).
 const { isNoiseText } = require('../companion/lib/devswarm-noise.js');
+const { ownReaderUnread } = require('../companion/lib/devswarm-own-reader.js');
 // primaryWorkspaceId/worktreeHash: the SAME per-worktree Primary-id convention
 // devswarm-parent-inbox.js and the ingest daemon already use (#34 parity — the
 // Primary's OWN unread, resolved below via readOwnUnread).
@@ -460,7 +461,30 @@ function readOwnUnread(home, cwd, repoKey) {
     }
 
     const entry = summary.workspaces[id];
-    const unread = entry && Number.isFinite(entry.unread) && entry.unread > 0 ? entry.unread : 0;
+    const rawUnread = entry && Number.isFinite(entry.unread) && entry.unread > 0 ? entry.unread : 0;
+    // OWN-INSTANCE PROJECTION (defect f061789267c1 / a77b85571dfa, P0) — this
+    // hook's `id` here is ALWAYS the caller's OWN primary-<hash> row, so
+    // `entry.unread`'s min-floor phantom-unread problem applies directly. See
+    // companion/lib/devswarm-own-reader.js's header for the full proof and why
+    // a cheaper GC cadence does not fix it; that module is the ONE place this
+    // subtraction is implemented, shared with hooks/devswarm-parent-inbox.js's
+    // "Primary's OWN inbound unread" segment so the two surfaces can never
+    // disagree on this math again.
+    // STALE-CACHE GUARD (P1, Critic NO-GO): `ownReaderUnread` returns `null`
+    // (never a number) when this reader's LIVE instance cursor has caught up
+    // to or passed the CACHED summary's own `total` — proof the cache
+    // predates this reader's real position, so the subtraction above cannot
+    // be trusted to mean "0 unread" (see devswarm-own-reader.js's own header
+    // for the full failure-direction argument: floor-to-0 on a stale cache
+    // can HIDE real unread mail, which is worse than the phantom this file
+    // fixes). `unknown: true` is this hook's PRE-EXISTING fail-safe signal —
+    // main()'s no-op early-return is gated on `!own.unknown` (~line 669) and
+    // its blocking check treats `own.unknown` as blocking regardless of
+    // `unread`'s value (~line 1813-1814), so routing here reuses an already-
+    // proven-safe path rather than inventing a new one.
+    const ownRaw = ownReaderUnread(home, top, id, entry, rawUnread);
+    const unread = ownRaw === null ? 0 : ownRaw;
+    const staleOwnCache = ownRaw === null;
     const urgencyMax = (unread > 0 && entry && entry.urgencyMax) ? entry.urgencyMax : null;
     const pendingQuestions = entry && Array.isArray(entry.pendingQuestions) ? entry.pendingQuestions : [];
     // Presence alone is the signal — trust the store's own decision to stamp
@@ -496,7 +520,7 @@ function readOwnUnread(home, cwd, repoKey) {
         registryRows.push({ id: r.id, worktreePath: r.worktreePath || null, sessionId: r.sessionId || null });
       }
     }
-    return { unread, id, urgencyMax, unknown: false, pendingQuestions, pendingQuestionsTruncated, registryRows, archivedKnown };
+    return { unread, id, urgencyMax, unknown: staleOwnCache, staleOwnCache, pendingQuestions, pendingQuestionsTruncated, registryRows, archivedKnown };
   } catch (_) {
     // Any unanticipated failure past the ENOENT-tolerant read above means a
     // summary WAS reachable enough to attempt reading/parsing and something
@@ -691,11 +715,14 @@ function main() {
       worktreePath: cwd,
       realUnread: own.unread,
       unreadUnknown: !!own.unknown,
-      // own-summary-unreadable: a DISTINCT failure mode from a descriptor's
-      // inbox/cursor read (own.unknown comes from readOwnUnread's own-summary
-      // projection, never from inboxPath/cursorPath) — labeled distinctly so
-      // a family's unknownMembers list never confuses the two.
-      unreadReason: own.unknown ? 'own-summary-unreadable' : null,
+      // own-summary-unreadable / own-cache-stale: two DISTINCT failure modes
+      // under the same `own.unknown` fail-safe signal (own.unknown comes from
+      // readOwnUnread's own-summary projection, never from inboxPath/
+      // cursorPath) — labeled distinctly so a family's unknownMembers list
+      // never confuses "the summary could not be read at all" with "the
+      // summary was read fine but this reader's live position has outrun it"
+      // (P1 stale-cache guard, companion/lib/devswarm-own-reader.js).
+      unreadReason: own.staleOwnCache ? 'own-cache-stale' : (own.unknown ? 'own-summary-unreadable' : null),
       unreadReasonPath: null,
       unreadReasonErrno: null,
       staleOrEscalated: false,
@@ -1514,7 +1541,7 @@ function main() {
       }), 'utf8');
     } catch (_) { /* fail-open: best-effort persist, notice still fires this pass */ }
     try {
-      const reason = buildReason(blocking, own.id, unanswered, null, truncated, null, hasIntent, !!own.unknown, unansweredInformational);
+      const reason = buildReason(blocking, own.id, unanswered, null, truncated, null, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache);
       fs.writeSync(2, 'anti-hall: ' + reason.split('\n')[0]
         + ' — not blocking (in-flight drain marker fresh for this session)\n');
     } catch (_) {}
@@ -1577,7 +1604,7 @@ function main() {
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
   const wakeLine = wakeReassertLine(process.env, false);
 
-  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational) + wakeLine;
+  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache) + wakeLine;
 
   // IN-FLIGHT DRAIN MARKER: evaluated ABOVE now (before this persist), not
   // here — see the "R11 Auditor A2 fix" comment at that earlier call site for
@@ -1688,6 +1715,7 @@ function reasonLabel(m) {
     case 'cursor-unreadable': return 'cursor unreadable/corrupt' + suffix;
     case 'cursor-invalid': return 'cursor value invalid' + suffix;
     case 'own-summary-unreadable': return 'own-summary unreadable/corrupt' + suffix;
+    case 'own-cache-stale': return 'own-summary cache predates this reader\'s live position (live recheck unresolved)' + suffix;
     case 'read-threw': return 'inbox read raised an error' + suffix;
     default: return 'inbox status could not be confirmed' + suffix;
   }
@@ -1737,7 +1765,7 @@ function buildInformationalSegment(informational) {
   );
 }
 
-function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, ownSelfUnknown, unansweredInformational) {
+function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, ownSelfUnknown, unansweredInformational, ownStaleCache) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
@@ -1827,7 +1855,22 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
   // paragraph now fires ONLY when the Primary's OWN summary read genuinely
   // failed, never as a side effect of another member's inbox/cursor fault
   // (that fault is still named, per-member, in the `shown` list above).
-  if (ownSelfUnknown) {
+  if (ownSelfUnknown && ownStaleCache) {
+    // P3 fix (Critic, 2026-09-11): a STALE-CACHE-AMBIGUOUS unknown is a
+    // DIFFERENT cause from a genuinely unreadable/corrupt summary — the
+    // summary read fine, but this reader's live position has caught up to
+    // or passed what it recorded, AND the live-store resolution that would
+    // have settled it (companion/lib/devswarm-own-reader.js) itself could
+    // not run or failed. Sending an operator into daemon healthcheck/logs
+    // triage for a HEALTHY summary would be wrong and wastes their time —
+    // the actual next step is simply to check the live count directly.
+    body +=
+      'YOUR OWN inbound status could not be confirmed: the cached summary predates this reader\'s ' +
+      'live read position (own cursor caught up to or past what the summary last recorded), and a ' +
+      'live recheck did not resolve it — treat this as UNKNOWN, not "no messages". Check explicitly ' +
+      'via `devswarm.js inbox count ' + ownId + '` or `devswarm.js inbox read-primary ' + ownId + '` ' +
+      'before assuming there is nothing pending. ';
+  } else if (ownSelfUnknown) {
     // C3 fix: the own-summary projection could not be conclusively read (e.g.
     // the daemon crashed mid-write) — surfaced as an explicit unknown, never
     // silently treated as "nothing pending".
