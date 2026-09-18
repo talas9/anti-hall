@@ -31,7 +31,7 @@ Codex does have multi-agent and workflow equivalents, but the names and guarante
 | Claude Dynamic Workflow JS | Codex skill + deterministic script; or OMX workflow if tmux/runtime needed | Do not run Claude Workflow JS in Codex. |
 | Claude Agent/Task fan-out | Codex subagents / agent threads | Use explicit role prompts and compact summaries. |
 | Claude OMC autonomous loops | OMX workflows (`omx`) | Integrate via `anti-hall-omx`; keep optional. |
-| Claude feature-launch / GSD | Codex feature-launch skill + `.planning/` + graphify + debate gates | Do not depend on removed GSD. |
+| Claude feature-launch / GSD | Codex feature-launch skill + `.planning/` + debate gates | Do not depend on removed GSD. |
 | Claude plan mode / ExitPlanMode | Codex Plan mode and prompt-level plan gates | Keep plan approval/gate semantics, but use Codex UI/CLI mechanisms. |
 | Claude statusline-driven phase tracking | Codex hooks + AGENTS/OMX HUD if available | Do not assume Claude statusline support exists in Codex. |
 

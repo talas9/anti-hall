@@ -9,11 +9,8 @@ HANDOVER-*.md
 !.anti-hall/skills/**
 # anti-hall task-work progress file (tasklist-guard) — local state, never ship
 .anti-hall-progress.md
-# anti-hall fix/task history ledger (cause+fix per completed task) — local, Obsidian-readable
+# anti-hall fix/task history ledger (cause+fix per completed task) — local
 .anti-hall-history.md
-
-# Generated knowledge graph (large, machine-specific paths in metadata) — never commit
-graphify-out/
 
 # Per-project Claude settings — contain machine-absolute paths, never commit
 .claude/settings.json

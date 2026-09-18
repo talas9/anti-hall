@@ -32,8 +32,8 @@ Tier-sizing is decided **twice**, because the initial prompt rarely reveals the 
 - **(b) CONFIRMED / REVISED tier — never final until a blast-radius glance.** The provisional
   tier is **always provisional** until you actually look at the touched area. The depth of the
   look scales, but the glance itself is **mandatory for every tier, including S**:
-  - **S/M:** a ~30-second **sanity glance** *before locking the tier* — one graphify query (or
-    a quick grep) on the area you're about to touch. The only question: *is this secretly
+  - **S/M:** a ~30-second **sanity glance** *before locking the tier* — one quick grep
+    on the area you're about to touch. The only question: *is this secretly
     bigger than the prompt implied?* If it fans out to extra callers, an auth path, a schema,
     or any hard-risk trigger, **upgrade** the tier. This is cheap by design — do **not** turn
     S into full Step-2 research; keep S lean. But an S is never locked sight-unseen.
@@ -41,8 +41,7 @@ Tier-sizing is decided **twice**, because the initial prompt rarely reveals the 
     locks in the rigor.** A deceptively-large "simple" ask (a one-liner touching an auth path
     or fanning out to 12 callers) gets **upgraded**; an over-estimate that turns out isolated
     gets **downgraded**.
-  Reuse anti-hall's graphify-first discipline (query the graph before broad greps) to map
-  blast radius cheaply.
+  Map blast radius cheaply with targeted greps before committing to the tier.
 
 Classify the work first. This decides how much of the protocol applies. **Do not
 over-process a one-line fix; do not under-process a schema migration.**
@@ -497,16 +496,13 @@ required gate.
   in the same breath; the caveat wins and the state is **"pending owner review — do not
   merge."** Your own doubt, written down, is a verification signal — honor it, don't override
   it with "tests pass."
-- **L (and M when release-worthy) — auto-summarize + graph index, before the final wrap-up
-  below.** Write a session-history entry via the **existing** per-session system —
+- **L (and M when release-worthy) — auto-summarize, before the final wrap-up below.**
+  Write a session-history entry via the **existing** per-session system —
   `.anti-hall/history/<date>/<session-id>.md`, already maintained by
   `hooks/tasklist-guard.js` and `hooks/session-history-index.js` — summarizing the shipped
   change (do not invent a new ledger). At **L only**, also write
   `.anti-hall/ship-it/<slug>/SUMMARY.md`, mirroring `PLAN.md`'s Progress section into a
-  terminal summary. Then, if this session is the Primary, run `graphify update .`
-  (or, if the coordinator can't invoke it inline, list it as the next owner/session
-  action). A DevSwarm child workspace must not run this — updating the graph is
-  the Primary's job; list it as the next Primary action instead.
+  terminal summary.
 - **List any owner actions** (deploys, secrets, migrations) explicitly — these never
   autonomy-bypass.
 - **L (and M when it produced a release-worthy change):** version bump / changelog per the
@@ -574,6 +570,5 @@ inherit these guards; a background agent cannot bypass a gate the main thread co
   **Required at L** (and at M only when a hard-risk trigger fires). This skill orchestrates
   it; it does not reimplement its prompts.
 - **anti-hall guards** — already active in the repo; enforce the hard safety boundaries.
-- **Optional, only if installed:** `superpowers:brainstorming` (Step 1); a graphify graph
-  (query during blast-radius mapping instead of broad greps). Nice-to-haves; the skill works
-  fully standalone without them.
+- **Optional, only if installed:** `superpowers:brainstorming` (Step 1). Nice-to-have; the
+  skill works fully standalone without it.

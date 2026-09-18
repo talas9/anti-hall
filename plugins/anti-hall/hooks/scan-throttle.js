@@ -9,17 +9,13 @@
 //   `hookSpecificOutput.updatedInput`. ADDITIVE ONLY: the prefix never
 //   changes what the command does, only its OS scheduling priority.
 //
-// SCOPE (narrow, explicit allowlist — nothing else is touched)
-//   - `graphify update ...` / `/graphify update ...`
-//   - `graphify <path>` / `/graphify <path>` (a bare target path, no `query`
-//     subcommand) — mirrors graphify-guard.js's write-shape classification
-//     (classifyGraphifyArgs), NOT the exact same code (kept standalone per
-//     repo convention that hooks are self-contained scripts), but the same
-//     semantics: `graphify query ...` is a READ and is never matched here.
-//   - Any command segment matching a user-supplied regex in the
-//     ANTI_HALL_THROTTLE_PATTERNS env var (comma-separated regex sources;
-//     an individual pattern that fails to compile is silently skipped,
-//     fail-open).
+// SCOPE (generic — NO built-in patterns; entirely user-configured)
+//   - This hook ships with zero built-in allowlist entries. It matches
+//     NOTHING unless the operator sets ANTI_HALL_THROTTLE_PATTERNS: a
+//     comma-separated list of regex sources, tested against each command
+//     segment (an individual pattern that fails to compile is silently
+//     skipped, fail-open). Configure it for whatever heavy repo-wide scan
+//     command your own workflow uses.
 //
 // SAFETY RULES
 //   1. Platform probe: the throttle tool must actually exist on PATH (a pure
@@ -31,7 +27,7 @@
 //      is left unchanged — never double-prefixed.
 //   3. Position safety: the match must be in the command's FIRST simple
 //      command (segment 0 of the quote/heredoc-aware split below). A match
-//      anywhere else in a compound command (`cd x && graphify update .`) is
+//      anywhere else in a compound command (`cd x && reindex-repo --full`) is
 //      NOT rewritten — fail-open — and only a short advisory
 //      `additionalContext` note is emitted instead. This hook does not
 //      attempt to rewrite an arbitrary mid-command segment in place: if it
@@ -62,8 +58,8 @@
 //   combined. This is a gap in the reference documentation provided."
 //   Practical consequence for THIS hook, stated as best-effort reasoning
 //   from the above (not as a separately-verified fact): this hook is
-//   registered in hooks.json AFTER git-guard/command-guard/graphify-guard/
-//   merge-gate for human readability only (deny-guards read first in the
+//   registered in hooks.json AFTER git-guard/command-guard/merge-gate for
+//   human readability only (deny-guards read first in the
 //   file); JSON-array order is not known to control actual precedence. If a
 //   block from another Bash PreToolUse hook and this hook's rewrite fire on
 //   the same call, this hook's own summarized understanding of the block
@@ -90,9 +86,9 @@ const fs = require('fs');
 const path = require('path');
 
 // ---------------------------------------------------------------------------
-// Segment splitter — quote-aware, heredoc-aware. Mirrors graphify-guard.js's
-// splitSegments byte-for-byte (kept standalone per repo convention that hooks
-// are self-contained scripts, not a shared module).
+// Segment splitter — quote-aware, heredoc-aware. Mirrors the same splitter
+// shape used elsewhere in this repo's hooks (kept standalone per repo
+// convention that hooks are self-contained scripts, not a shared module).
 // ---------------------------------------------------------------------------
 const HEREDOC_RE = /^<<(-)?\s*("([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/;
 
@@ -154,48 +150,10 @@ function splitSegments(cmd) {
 }
 
 // ---------------------------------------------------------------------------
-// graphify scan-shape classifier (read vs write, simplified from
-// graphify-guard.js's classifyGraphifyArgs — same semantics, standalone code).
+// User-configured pattern matching. This hook has NO built-in scan patterns
+// of its own — see the header comment. Everything it matches comes from
+// ANTI_HALL_THROTTLE_PATTERNS.
 // ---------------------------------------------------------------------------
-const WRAPPERS = new Set(['command', 'builtin', 'exec', 'sudo', 'env', 'nice',
-  'nohup', 'time', 'timeout', 'then', 'do', 'else']);
-
-function segmentVerbInfo(segment) {
-  const tokens = segment.trim().split(/\s+/).filter(Boolean);
-  let i = 0;
-  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])) i++;
-  while (i < tokens.length) {
-    const word = tokens[i].replace(/^.*[\\/]/, '').toLowerCase();
-    if (!WRAPPERS.has(word)) break;
-    i++;
-    while (i < tokens.length &&
-           (tokens[i].startsWith('-') ||
-            (word === 'env' && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i])))) i++;
-    if (word === 'timeout' && i < tokens.length && !tokens[i].startsWith('/')) i++;
-  }
-  return { rawVerb: tokens[i] || '', argsStart: i + 1, tokens };
-}
-
-function isGraphifyScanSegment(segment) {
-  const { rawVerb, argsStart, tokens } = segmentVerbInfo(segment);
-  if (!rawVerb) return false;
-  // Same normalization as graphify-guard.js: strip a leading slash (the
-  // /graphify slash-command form) THEN strip any path directory components
-  // (a real filesystem path to a `graphify` binary), so both `/graphify` and
-  // `/usr/local/bin/graphify` resolve to the bare verb `graphify`.
-  const baseVerb = rawVerb.replace(/^\//, '').replace(/^.*[\\/]/, '').toLowerCase();
-  if (baseVerb !== 'graphify') return false;
-  const args = tokens.slice(argsStart);
-  // A write flag wins regardless of subcommand position (matches
-  // graphify-guard.js's classifyGraphifyArgs): `graphify query --update` is a
-  // write even though `query` is the first non-flag token.
-  if (args.includes('--update') || args.includes('--obsidian')) return true;
-  const firstNonFlag = args.find((a) => !a.startsWith('-'));
-  if (!firstNonFlag) return false; // bare `graphify` / flags only -> uncertain, no match
-  if (firstNonFlag === 'query') return false; // explicit read -> never throttled
-  return true; // `update` subcommand OR a bare target path -> scan/write shape
-}
-
 function parseUserPatterns(envVal) {
   if (!envVal || typeof envVal !== 'string') return [];
   const out = [];
@@ -206,7 +164,6 @@ function parseUserPatterns(envVal) {
 }
 
 function segmentMatchesAllowlist(segment, userPatterns) {
-  if (isGraphifyScanSegment(segment)) return true;
   for (const pat of userPatterns) {
     try { if (pat.test(segment)) return true; } catch (_) { /* fail-open */ }
   }
@@ -273,10 +230,10 @@ function alreadyPrefixed(command) {
 // ---------------------------------------------------------------------------
 // Leading env-assignment handling (P1 fix).
 //
-// A naive `prefix + command` rewrite breaks `GRAPHIFY_X=1 graphify update .`:
+// A naive `prefix + command` rewrite breaks `SCANENV=1 reindex-repo --full`:
 // the assignment ends up positioned as an ARGUMENT to `nice`/`taskpolicy`
-// (`taskpolicy -c utility nice -n 19 GRAPHIFY_X=1 graphify update .`), and
-// `nice` tries to exec the literal string `GRAPHIFY_X=1` as a command ->
+// (`taskpolicy -c utility nice -n 19 SCANENV=1 reindex-repo --full`), and
+// `nice` tries to exec the literal string `SCANENV=1` as a command ->
 // `No such file or directory`, exit 127 — the real command never runs. Shell
 // assignment-prefix semantics only apply when NAME=value tokens are the
 // FIRST thing in a simple command; once something else (a wrapper program)
@@ -284,7 +241,7 @@ function alreadyPrefixed(command) {
 //
 // Fix: detect one or more leading `NAME=value` assignments (POSIX name,
 // quoted or unquoted value) and RE-ATTACH them before the prefix instead of
-// after it: `GRAPHIFY_X=1 taskpolicy -c utility nice -n 19 graphify update .`
+// after it: `SCANENV=1 taskpolicy -c utility nice -n 19 reindex-repo --full`
 // — valid, because a leading assignment on a simple command applies to
 // (exports into) that whole simple command's exec chain, including a
 // wrapper program that then execs a further program.
@@ -321,8 +278,8 @@ function stripLeadingAssignments(command) {
 // treats each of these as an immediate flush point BEFORE any text is
 // accumulated, which means the classifier's matched "first segment" can
 // silently refer to text that does NOT actually start at this insertion
-// point (P1 fix #2: `( graphify update . )` was misclassified as a safe
-// segment-0 match and rewritten to `taskpolicy ... ( graphify update . )`,
+// point (P1 fix #2: `( reindex-repo --full )` was misclassified as a safe
+// segment-0 match and rewritten to `taskpolicy ... ( reindex-repo --full )`,
 // a bash syntax error, because `(` had already triggered an empty flush).
 // Inserting a prefix directly before any of these characters would corrupt
 // or misparse the command, so treat it as unsafe and refuse to rewrite.
@@ -393,7 +350,7 @@ function main() {
   // matchIndex alone is fooled by a leading `(`/`{` (splitSegments flushes
   // an empty segment there, so the "first segment" it reports does not
   // actually start at offset 0 of the raw string); the insertion-point check
-  // alone is fooled by `FOO=1 cd app && graphify update .` (insertion point
+  // alone is fooled by `FOO=1 cd app && reindex-repo --full` (insertion point
   // right after `FOO=1 ` looks like plain text, but the real match is a
   // LATER segment, not this one).
   const restStart = stripLeadingAssignments(command);
@@ -424,10 +381,10 @@ function main() {
   // assignments BEFORE the prefix (not after it) — a leading assignment on a
   // simple command applies to that command's whole exec chain, including a
   // wrapper program inserted before the real one, so
-  // `GRAPHIFY_X=1 graphify update .` becomes
-  // `GRAPHIFY_X=1 taskpolicy -c utility nice -n 19 graphify update .`
-  // (valid), never `taskpolicy ... GRAPHIFY_X=1 graphify update .`
-  // (invalid — `nice` would try to exec the literal string `GRAPHIFY_X=1`).
+  // `SCANENV=1 reindex-repo --full` becomes
+  // `SCANENV=1 taskpolicy -c utility nice -n 19 reindex-repo --full`
+  // (valid), never `taskpolicy ... SCANENV=1 reindex-repo --full`
+  // (invalid — `nice` would try to exec the literal string `SCANENV=1`).
   const rewritten = leadingText + prefix + rest;
   emit({ updatedInput: { command: rewritten } });
 }

@@ -13,11 +13,6 @@
       },
       {
         "hooks": [
-          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/graphify-session.js\"", "timeout": 10 }
-        ]
-      },
-      {
-        "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/devswarm-child-role.js\"", "timeout": 10 }
         ]
       },
@@ -100,12 +95,6 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/graphify-guard.js\"", "timeout": 10 }
-        ]
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/merge-gate.js\"", "timeout": 10 }
         ]
       }
@@ -119,11 +108,6 @@
       {
         "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/tasklist-guard.js\"", "timeout": 30 }
-        ]
-      },
-      {
-        "hooks": [
-          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/graphify-reminder.js\"", "timeout": 30 }
         ]
       },
       {

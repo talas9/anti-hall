@@ -1316,9 +1316,9 @@ transport for DevSwarm coordination — a **REPLACE**, not an additional option.
   also carries `devswarm-child-role.js`; `UserPromptSubmit` now also carries
   `devswarm-parent-inbox.js`/`devswarm-child-turn.js`; `Stop` now also carries
   `devswarm-parent-gate.js`/`devswarm-child-gate.js` — alongside the pre-existing
-  `verify-first-full`/`graphify-session`/`version-alert`/`codex-availability`/`verify-first`/
-  `task-tracker`/`limit-conserve-inject`/`git-guard`/`command-guard`/`graphify-guard`/
-  `merge-gate`/`task-guard`/`tasklist-guard`/`graphify-reminder`/`speculation-guard`/
+  `verify-first-full`/`version-alert`/`codex-availability`/`verify-first`/
+  `task-tracker`/`limit-conserve-inject`/`git-guard`/`command-guard`/
+  `merge-gate`/`task-guard`/`tasklist-guard`/`speculation-guard`/
   `speculation-judge`. Net effect: a Codex session in an active DevSwarm workspace is
   mechanically prevented from sending a native message (guard-blocked, reactive redirect on
   attempt) AND now gets the SAME proactive per-turn "use the mesh" reminder a Claude session
@@ -2838,11 +2838,10 @@ throttle-required command. The correct behavior: keep the heredoc's OPENER line 
 command segment it belongs to, and skip everything between opener and closing delimiter when
 splitting for command classification.
 
-**`DEVSWARM_SOURCE_BRANCH` is the only child-workspace signal**, consumed by both
-`command-guard.js` and (as of this session) `graphify-guard.js`. It is a plain environment
+**`DEVSWARM_SOURCE_BRANCH` is the only child-workspace signal**, consumed by
+`command-guard.js`. It is a plain environment
 variable, which means it can in principle leak into (be inherited by) a Primary's own
-process — a pre-existing, accepted risk that is now shared by two independent hard blocks
-instead of one.
+process — a pre-existing, accepted risk.
 
 **The parent gate and the drain verb disagreed about store scope** (filed as defect
 `e586afdaa968`; **RESOLVED in v0.84.0** — see §29). The parent gate's neglect check reads

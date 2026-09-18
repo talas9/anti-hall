@@ -673,15 +673,15 @@ function extractEvalPayload(segment) {
 // Shell interpreters whose `-c "<payload>"` argument is itself a shell command.
 // A `bash -c "git push --force"` wrapper's effective verb is `bash`, not `git`,
 // so without recursing the payload the git force/self-credit rules never run and
-// the wrapper is a TOTAL guard bypass (P0-1). Mirrors command-guard.js and
-// graphify-guard.js SHELL_VERBS.
+// the wrapper is a TOTAL guard bypass (P0-1). Mirrors command-guard.js's
+// SHELL_VERBS.
 const SHELL_VERBS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'ash']);
 
 // If a segment is `bash -c '<payload>'` (or sh/zsh/dash/ksh/ash -c "...",
 // including bundled forms like `bash -lc "..."` and `--command`), return the
 // payload command string to be re-parsed, else ''. Reuses the tokenizer +
 // effectiveVerb so wrappers (`sudo bash -c ...`) resolve correctly. Mirrors the
-// proven extractShellCPayload in command-guard.js / graphify-guard.js.
+// proven extractShellCPayload in command-guard.js.
 function extractShellCPayload(segment) {
   const tokens = tokenize(segment);
   const ev = effectiveVerb(tokens);

@@ -73,7 +73,6 @@ When conservation is active:
 
 ## Context hygiene rules
 
-- Query graphify before broad repo search when `graphify-out/` exists.
 - Delegate noisy tests/builds/checks and require compact summaries.
 - Report only changed files, validation evidence, and remaining blockers.
 - Do not claim quantitative token savings without a measured benchmark.

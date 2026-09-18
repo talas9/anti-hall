@@ -4,10 +4,10 @@
 // Every `/anti-hall:<name>` string emitted anywhere in the shipped
 // hooks/scripts/companion/monitors/skills tree is a promise that a real
 // skill exists at that pointer. Two historical dead pointers slipped through
-// without a test: a graphify wiki-index path that never existed, and (until
-// this task) `/anti-hall:defects` referenced from defect-nudge.js on BOTH
-// ports before the `defects` skill itself existed. This test makes that
-// class of bug permanently mechanical, not something a human has to notice.
+// without a test: a wiki-index path that never existed, and (until this task)
+// `/anti-hall:defects` referenced from defect-nudge.js on BOTH ports before
+// the `defects` skill itself existed. This test makes that class of bug
+// permanently mechanical, not something a human has to notice.
 //
 // NO ALLOWLIST — every captured name is checked, unconditionally.
 

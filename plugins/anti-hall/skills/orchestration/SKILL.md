@@ -180,20 +180,6 @@ NEVER run them inline in the main conversation.
   clean for actual thinking and decisions. **A bloated main context degrades model
   quality and induces hallucination — the exact failure this plugin exists to prevent.**
 
-## Query the graph before searching (recommended, not enforced)
-
-When a graphify knowledge graph exists (`graphify-out/`):
-1. If this session is the Primary, keep it fresh: `graphify update .` (rebuild /
-   update) before analysis. A DevSwarm child workspace must not run this —
-   updating the graph is the Primary's job; children may only query it.
-2. Query it first: `/graphify query "..."` before dispatching any Grep/Glob/raw
-   code-nav search or before starting a ship-it analysis. This is a
-   recommendation, not a blocking gate.
-
-A graph query is O(1) for the coordinator; a raw grep sweep handed to a subagent
-is still cheaper than an inline sweep, but redundant if the graph already has the
-answer. Graph-first, search-second.
-
 ## Commit and push hygiene (enforced)
 
 - **No self-credit in commits.** Commit messages carry NO `Co-Authored-By` trailer
@@ -437,8 +423,6 @@ to be delegated.
 - **Compact early.** Once findings are externalized, prefer compacting before a long
   context rots; the statusline context gauge (green->yellow->red at ~70/90%) is the
   visual cue.
-- **Graph-first.** Query the knowledge graph before broad search (already enforced
-  above; named here for completeness).
 - **The "sweet spot" is a CADENCE, not a length.** delegate -> externalize ->
   compact early -> retrieve on demand. There is no fixed ideal context length,
   because the detail lives outside the window.

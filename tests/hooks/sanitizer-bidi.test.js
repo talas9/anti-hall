@@ -3,8 +3,7 @@
 // (U+2066–U+2069) survive the C0/C1 strip but visually reorder terminal/model
 // output, so every sanitizer must remove them. We exercise statusline-rich's
 // safeLabel (the one sanitizer that is exported) as the representative; the same
-// bidi strip is applied verbatim across phase-bar, graphify-guard,
-// graphify-session, and speculation-judge.
+// bidi strip is applied verbatim across phase-bar and speculation-judge.
 
 const { test } = require('node:test');
 const assert = require('node:assert');

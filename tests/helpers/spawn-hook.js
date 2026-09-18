@@ -91,7 +91,7 @@ function isolatedEnv(home) {
 // intermittently returns exit 0 with EMPTY/truncated stdout on slower macOS
 // runners (a known stdin/stdout pipe race in older Node; node 22/24 don't exhibit
 // it). That surfaced as `r.json === null` on hooks that reliably emit ~10KB of
-// valid JSON (verify-first-full, graphify-session inject). When the CALLER knows
+// valid JSON (verify-first-full inject). When the CALLER knows
 // the hook MUST emit JSON (expectJson:true) and we got exit 0 + empty stdout, we
 // RE-SPAWN, looping up to MAX_SPAWN_ATTEMPTS times until stdout parses as JSON.
 //

@@ -56,7 +56,7 @@ claude --plugin-dir /path/to/anti-hall
 | `output-verify-guard.js` | PostToolUse (Bash, advisory) | **v0.69.0, Harness Phase-1.** Scans a completed Bash call's own stdout/stderr for common test/build-runner signatures (jest/vitest/pytest/go test/npm run build/tsc) and flags when BOTH a passing signal ("8 passed", "PASS", "ok") and a failing signal ("2 failed", "FAIL", a confirmed non-zero exit) appear in the SAME run — the shape of a partial-pass summary easy to mis-report as a clean "tests pass". Fail-open on any shape surprise (the exact PostToolUse Bash `tool_response` field shape is undocumented); never blocks. |
 | `failure-root-cause-nudge.js` | PostToolUseFailure (Bash, advisory) | **v0.69.0, Harness Phase-1.** Fires when a Bash tool call fails (non-zero exit/tool-level error); injects one short reminder pointing at `/anti-hall:root-cause` — deliberately terse since OMC already injects its own root-cause reminders in this harness. Fail-open always; off-switch `ANTIHALL_FAILURE_ROOT_CAUSE_NUDGE=off`; skip-guard hatch `failure-root-cause-nudge`. |
 | `edit-guard.js` | PreToolUse (Write/Edit/MultiEdit/NotebookEdit) | Blocks a COORDINATOR from editing files directly — requires delegating the edit to a subagent (always allowed; DevSwarm-aware block wording when the liveness supervisor is active, topology-aware: "primary/main orchestrator" vs "sub-orchestrator"). Root-anchored allowlist (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, `.claude/**`, `.omc/**`, `.anti-hall/**`, root `PLAN.md`/`plan.md`/`STATE.json`/`CONTINUE-HERE.md`, `*.continue-here.md`, the out-of-cwd `.claude/projects/**/memory/**` store), extensible via `ANTIHALL_EDIT_GUARD_ALLOW`. Skip-guard hatch: `edit-guard` (not in the destructive set). Fail-open. **v0.64.0:** also exempts PLAN MODE for non-source targets, narrowed by an `isLikelySource` classifier so undelegated source-file writes stay blocked even in plan mode. |
-| `coordinator-detect.js` | Shared module (not a hook) | The single coordinator-vs-subagent discriminator, extracted from `command-guard.js` so `edit-guard.js` (and `graphify-guard.js`) reuse the exact same detection logic instead of duplicating it. |
+| `coordinator-detect.js` | Shared module (not a hook) | The single coordinator-vs-subagent discriminator, extracted from `command-guard.js` so `edit-guard.js` reuses the exact same detection logic instead of duplicating it. |
 | `model-routing-guard.js` | PreToolUse (Agent/Task) | Anti-waste routing — classifies spawn descriptions (mechanical vs complex) and blocks/advises toward the cheapest fitting model. Strict by default (v0.35.0+): unconditional block on omitted-model mechanical spawns. Set `ANTIHALL_MODEL_ROUTING=advisory` (**project-scoped env**) to opt out and revert to advisory-only. Debate role-words in spawn description downgrade row-1 block to advisory. Fail-open; unknown model tokens always allowed. |
 | `omc-detect.js` | Shared helper (not a hook) | Detects whether an oh-my-claudecode autonomous loop is active + fresh. Consumed by `task-guard` / `tasklist-guard` to suppress Stop-blocks to advisory when an OMC loop is running, preventing deadlock. Fail-open = NOT deferring. Kill-switches: `DISABLE_OMC=1` or `OMC_SKIP_HOOKS` including `persistent-mode`. |
 | `hooks/lib/devswarm-detect.js` | Shared helper (not a hook) | **OPTIONAL, feature-gated** — mirrors `omc-detect.js` for the opt-in DevSwarm liveness supervisor: reports whether it should be considered active for this session/environment. Dormant (zero effect, byte-for-byte identical to today) unless `DEVSWARM_REPO_ID` is set (auto mode) or `ANTIHALL_DEVSWARM_SUPERVISOR=on`. Consumed by `doctor.js`'s per-workspace DevSwarm check. Fail-open = NOT active. Kill-switch: `DISABLE_ANTIHALL_DEVSWARM=1`. |
@@ -84,10 +84,8 @@ claude --plugin-dir /path/to/anti-hall
 | `repo-self-drift.js` | SessionStart (non-blocking) | **New in v0.79.0.** Probe 3 of anti-hall's drift-probe family — deterministic, no network. Two checks: (1) parses `docs/KB.md`'s own claimed hook/skill counts and compares against the actual count on disk, advising on either mismatch; (2) tracks the date the model KBs (`docs/opus-4-8-features.md` etc.) were last audited and advises past a 60-day threshold, since model facts aren't locally discoverable and a probe that can't verify would either invent an answer or fail constantly. Cached (<24h), deduped, fail-open and silent on any error. |
 | `fable-availability.js` | SessionStart (non-blocking) | Reads `~/.claude.json`'s `modelAccessCache`/`additionalModelOptionsCache` (the same cache Claude Code's own `/model` selector renders from) once per session — no live API probe, fail-open, silent unless Fable is actually available. When available, threads `args.fableAvailable=true` into ship-it/deadly-loop Workflow invocations so the Reviewer seat's fallback chain extends to Fable → Sonnet → Opus. |
 | `codex-availability.js` | SessionStart (non-blocking) | OS-agnostic PATH probe (Windows `PATHEXT`-aware) for a real `codex` executable; writes `~/.anti-hall/codex-availability.json` (`{available, checkedAt, source}`) once per session so coordinators/skills read the cached fact instead of re-probing. Proves reachability only, NOT authentication/readiness — a runtime spawn can still fail even when `available:true`. Registered on both the Claude plugin and the Codex port. Fail-open. |
-| `graphify-session.js` | SessionStart | Primes "query the graph first" when a graphify graph exists. |
 | `handover-resume.js` | SessionStart | On a fresh session (including after `/clear` or compaction), surfaces the latest `.anti-hall/handovers/` entry (if any) and guides a structured resume from it — supersedes the lossy default compact summary. Fail-open (silent no-op if no handover exists). Registered on both the Claude plugin and the Codex port. |
 | `defect-nudge.js` | SessionStart | **New in 0.78.0.** Once-per-day, non-blocking notice of open defects filed against anti-hall via the defect channel (below) — counts and ages only, never reporter-supplied text. Registered on both the Claude plugin and the Codex port. |
-| `graphify-reminder.js` | Stop | One-time reminder to update the graph after real edits. |
 | `speculation-guard.js` | Stop | Blocks once when the last assistant message contains hedge-word speculation without an evidence/uncertainty acknowledgment. Always-on (lexical, Tier 2). |
 | `speculation-judge.js` | Stop | OPT-IN semantic judge: calls an LLM to catch confident inference-as-fact with no hedge word. Off by default; enabled by `ANTIHALL_SEMANTIC_JUDGE=1`. |
 | `claim-ledger.js` | Stop | **new in 0.100.0.** LEDGER-ONLY deterministic cross-check: records checkable tokens in the last message (counts, SHAs, `task N of`, `N days ago`, no-tool "still running") that never appeared in the session's tool output / hook context, to `~/.anti-hall/claim-ledger/<session>.jsonl`. Never blocks; measures the false-positive rate before any blocking tier is enabled. |
@@ -239,12 +237,12 @@ safety guard is never left silently disabled.
   `isSkipped` return false, so the guard stays **active**. A broken skip file must never
   silently disable protection.
 
-> **Six Stop hooks are registered** (`task-guard`, `graphify-reminder`, `speculation-guard`,
+> **Several Stop hooks are registered** (`task-guard`, `speculation-guard`,
 > `speculation-judge`, `tasklist-guard`, `codex-nudge`), all emitting the top-level `{"decision":"block","reason":...}`
 > Stop schema. Claude Code does not merge `reason` strings across Stop hooks: if multiple fire on
 > the same Stop, all block but only one reason is shown that turn. `task-guard` is registered
 > **first** because open-task discipline is higher-stakes, so its reason wins precedence.
-> Each is capped (graphify-reminder nudges once per session; task-guard caps at `MAX_BLOCKS`;
+> Each is capped (task-guard caps at `MAX_BLOCKS`;
 > speculation-guard blocks once per distinct speculative message hash; speculation-judge
 > blocks once per distinct message hash; `tasklist-guard` has its own independent block cap
 > — `MAX_BLOCKS=3` cumulative per session — so it never compounds with `task-guard`), so the
@@ -344,17 +342,6 @@ At current Haiku pricing this is roughly $0.0001-0.001 per turn; latency is roug
 1-3 s added to each Stop. For projects where confident inference-as-fact is the primary
 failure mode and the cost/latency is acceptable, Tier 3 closes the gap Tier 2 leaves open.
 
-### graphify hooks (optional)
-
-- `graphify-session.js` (SessionStart) — if the project has a graphify graph
-  (`graphify-out/`), primes the model to query the graph
-  first for any issue/feature/function/code/doc lookup, and to keep it updated.
-  Silent no-op when graphify isn't used.
-- `graphify-reminder.js` (Stop) — after a session with real edits and a graph
-  present, surfaces a one-time reminder to run `graphify update .`. A Stop hook
-  cannot inject `additionalContext`, so it nudges with a single soft `decision:block`,
-  capped via `os.tmpdir` state so it never loops — stop again to dismiss.
-
 ## Skills
 
 **Always-on vs conditional.** The **root-cause** and **orchestration** disciplines are
@@ -401,7 +388,7 @@ Invoke via slash command:
   `decisions.md`, routes build seats Codex-primary with Sonnet failover (a
   cross-model guard skips the Sonnet Reviewer when a phase's build fell back to
   Sonnet, to avoid same-model self-review), and closes out with a session-history
-  entry + `SUMMARY.md` + a `graphify update .` trigger. **v0.67.0:** the per-phase
+  entry + `SUMMARY.md`. **v0.67.0:** the per-phase
   gate previously ignored dead review seats entirely, so fewer live seats produced
   fewer findings and a silently PASSING `converged: true` — missing review coverage
   is no longer indistinguishable from a clean pass. The gate result now carries
@@ -551,7 +538,7 @@ See `statusline/STATUSLINE.md` for details and how to revert.
   payment commands, and bulk deletes at command dispatch. `ship-it` relies on these
   always-on guards for its hard safety boundaries rather than a bespoke per-project
   sentinel.
-- **Task discipline / graphify** — edit the respective `hooks/*.js`. All hooks are
+- **Task discipline** — edit the respective `hooks/*.js`. All hooks are
   fail-open: a bug in a hook must never wedge a turn.
 
 ## Troubleshooting / FAQ
@@ -561,8 +548,6 @@ See `statusline/STATUSLINE.md` for details and how to revert.
   (`node --version`). If `node` is missing, all hooks silently no-op.
 - **Statusline didn't apply?** It is opt-in — run the installer above. If it reports
   "not found", run `/plugin install` first, then re-run, or locate the dir via `/plugin`.
-- **Graphify reminder won't stop?** It is capped per session; stop again to dismiss.
-  It only fires when a graph (`graphify-out/`) is present.
 - **git-guard let a force-push through?** Check the documented fail-open scope above
   (`xargs` / aliases / `-F <file>` commits are out of scope by design; `bash -c`/`sh -c`
   wrappers are unwrapped and inspected, not a bypass).
@@ -615,18 +600,6 @@ features gain automatic behavior when OMC is installed:
 Without OMC, both features fall back gracefully (limit-conserve manual only; consolidated
 mode still works but requires `ANTIHALL_STATUSLINE_BASE` to specify the base). No errors,
 no breaking change.
-
-### Recommended companion: graphify
-
-The `graphify-guard` and `graphify-session` hooks integrate with **graphify** — a
-user-global knowledge-graph skill/CLI (not a marketplace plugin) that builds a semantic
-graph of your codebase. When a `graphify-out/` directory is
-present, the hooks recommend querying the graph before raw code searches (advisory,
-not an enforced gate) and remind the model to keep it updated after significant edits.
-Updating the graph stays the **Primary's** job — a DevSwarm child workspace may query
-the graph freely but is blocked from running `graphify update` / `--update` /
-`--obsidian`. Both hooks no-op gracefully when graphify is not present — there is no
-hard dependency, and the plugin installs and runs identically with or without it.
 
 ### Opt-in companion: mcp-reaper (macOS + Linux)
 

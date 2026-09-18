@@ -1261,7 +1261,18 @@ function main() {
     if (!wt) return null;
     if (repoKeyCache.has(wt)) return repoKeyCache.get(wt);
     let k = null;
-    try { k = repokeyMod ? repokeyMod.repoKeyForWorktree(wt) : null; } catch (_) { k = null; }
+    // Fast, zero-spawn resolution (devswarm-repokey.js's repoKeyForWorktreeFast)
+    // — this loop runs once per summary row, every prompt, so a per-row `git`
+    // spawn here is exactly the P0 defect (measured: 74% of this hook's wall
+    // time, up to ~2.6s/row under load). repoKeyForWorktreeFast reads git's
+    // own on-disk worktree metadata (.git file/dir + commondir) directly and
+    // only falls back to a git spawn for the rare shapes fs alone can't
+    // resolve (a submodule remap) or that repoKeyForWorktree already handles
+    // (a malformed .git); a worktree path that no longer exists on disk
+    // short-circuits to null with ZERO spawns. Verified byte-identical output
+    // to repoKeyForWorktree for main-checkout, linked-worktree, and submodule
+    // shapes against real repos on this machine.
+    try { k = repokeyMod ? repokeyMod.repoKeyForWorktreeFast(wt) : null; } catch (_) { k = null; }
     repoKeyCache.set(wt, k);
     return k;
   }
@@ -1555,10 +1566,46 @@ function main() {
     try { descriptors = require('../companion/devswarm-supervisor.js').readDescriptors(home) || []; }
     catch (_) { descriptors = []; }
     const meshIdCache = new Map();
+    // FAST PATH (P0 perf fix, measured 2026-09-18/19): canonicalMeshId(wt)
+    // (scripts/devswarm.js) resolves via resolveCallerWorktree(wt), which
+    // ALWAYS spawns `git rev-parse --show-toplevel` first (pure-fs
+    // findGitToplevel is only its FAILURE fallback) and THEN unconditionally
+    // spawns a SECOND `git rev-parse --show-superproject-working-tree` to
+    // check for a submodule remap — TWO spawns per distinct worktreePath,
+    // per turn, on this hot path. Profiled live against ToolFox3 (2026-09-19,
+    // --cpu-prof): this exact chain (familyAwareUnanswered -> collapseFamilies
+    // -> keyFor -> resolveMeshId -> canonicalMeshId -> resolveCallerWorktree)
+    // was 94% of this hook's sampled CPU time (8,750/9,314 hits) — dwarfing
+    // the #36-filter repoKey spawns this same perf pass already fixed.
+    // Mirrors that fix's shape: try the SAME local findGitToplevel() this file
+    // already uses for `gitTop` above (pure fs, byte-for-byte the same walk
+    // `git rev-parse --show-toplevel` performs — see its own doc comment) to
+    // find the toplevel with ZERO spawns, confirm via repoKeyForWorktreeFast's
+    // own zero-spawn submodule-shape detector that the toplevel is NOT a
+    // submodule (the one shape a spawn-free walk cannot correctly remap), then
+    // finish with installIngest.primaryWorkspaceId(top) — the SAME pure
+    // sha256-of-realpath hash canonicalMeshId itself ends on, already required
+    // at the top of this file, no spawn. Falls back to the full spawn-based
+    // canonicalMeshId ONLY when the fs walk finds no `.git` at all, or the
+    // submodule-shape detector cannot confirm a non-submodule toplevel —
+    // exactly the same fail-open-to-correctness posture as the repoKey fix.
     const resolveMeshId = (wt) => {
       if (meshIdCache.has(wt)) return meshIdCache.get(wt);
       let k = null;
-      try { k = require('../scripts/devswarm.js').canonicalMeshId(wt); } catch (_) { k = null; }
+      try {
+        const top = wt ? findGitToplevel(wt) : null;
+        if (top) {
+          const cd = repokeyMod ? repokeyMod.gitCommonDirNoSpawn(top) : null;
+          if (cd) {
+            // Confirmed non-submodule shape with zero spawns — finish with
+            // the same pure hash canonicalMeshId itself computes.
+            k = installIngest.primaryWorkspaceId(top);
+          }
+        }
+      } catch (_) { k = null; }
+      if (k === null) {
+        try { k = require('../scripts/devswarm.js').canonicalMeshId(wt); } catch (_) { k = null; }
+      }
       meshIdCache.set(wt, k);
       return k;
     };

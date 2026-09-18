@@ -1363,6 +1363,65 @@ function runRepairs(opts) {
     push('codex', 'install-codex', 'failed', 'codex repair raised: ' + errMsg(e));
   }
 
+  // --- AUTO-SAFE: codex graphify-hooks cleanup (persisted-shape migration) --
+  // Graphify retirement (2026-09-18): install-codex.js used to write
+  // graphify-session.js/graphify-guard.js/graphify-reminder.js registrations
+  // into the user's OWN Codex config. Those three files are deleted by this
+  // change, so a PRE-EXISTING install can still carry stale groups pointing
+  // at missing files. The "codex hook refresh" step above does NOT catch
+  // this: `wired` only checks that every EXPECTED EVENT has at least one
+  // anti-hall group — an event that already has a non-graphify anti-hall
+  // group (e.g. SessionStart also carries verify-first-full.js) reports
+  // `wired: true` and the installer never re-runs, so the stale graphify
+  // group survives untouched. This step runs independently of `wired` and
+  // reuses install-codex.js's own `removeGraphifyGroups` (same module the
+  // installer and update.js's migration both use) so there is one
+  // implementation, not three. Idempotent, no-delete (only stale groups are
+  // stripped, never the config file), fail-open.
+  try {
+    const { removeGraphifyGroups } = codexInstallerMod();
+    if (typeof removeGraphifyGroups !== 'function') {
+      push('codex-graphify-cleanup', 'none', 'skipped', 'removeGraphifyGroups not available on this install-codex.js build');
+    } else {
+      const scopesX = [
+        ['project', path.join(cwd, '.codex', 'hooks.json')],
+        ['global', path.join(home, '.codex', 'hooks.json')],
+      ];
+      for (const [label, hooksPath] of scopesX) {
+        let raw = null;
+        try { raw = fs.readFileSync(hooksPath, 'utf8'); } catch (_) { raw = null; }
+        if (raw === null) {
+          push('codex-graphify-cleanup-' + label, 'none', 'skipped', 'no ' + label + ' Codex hooks.json — nothing to clean');
+          continue;
+        }
+        let json;
+        try { json = JSON.parse(raw); } catch (_) {
+          push('codex-graphify-cleanup-' + label, 'none', 'skipped', label + ' Codex hooks.json is not valid JSON — left untouched, fail-open');
+          continue;
+        }
+        const { hooks, removed } = removeGraphifyGroups(json);
+        if (!removed) {
+          push('codex-graphify-cleanup-' + label, 'none', 'skipped', 'no stale graphify group(s) in ' + label + ' Codex hooks.json');
+          continue;
+        }
+        if (dryRun) {
+          push('codex-graphify-cleanup-' + label, 'remove-graphify-groups', 'skipped', '[dry-run] would remove ' + removed + ' stale graphify group(s) from ' + label + ' Codex hooks.json');
+          continue;
+        }
+        try {
+          const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+          fs.copyFileSync(hooksPath, hooksPath + '.bak-' + stamp);
+          fs.writeFileSync(hooksPath, JSON.stringify(Object.assign({}, json, { hooks }), null, 2) + '\n');
+          push('codex-graphify-cleanup-' + label, 'remove-graphify-groups', 'fixed', 'removed ' + removed + ' stale graphify group(s) from ' + label + ' Codex hooks.json');
+        } catch (e) {
+          push('codex-graphify-cleanup-' + label, 'remove-graphify-groups', 'failed', label + ' Codex hooks.json cleanup raised: ' + errMsg(e));
+        }
+      }
+    }
+  } catch (e) {
+    push('codex-graphify-cleanup', 'remove-graphify-groups', 'failed', 'codex graphify cleanup raised: ' + errMsg(e));
+  }
+
   // --- Supervisor: AUTO-SAFE relaunch if installed, else GATED first-install -
   if (platform === 'win32') {
     push('supervisor', 'install-supervisor', 'skipped', 'Windows: DevSwarm recovery is a documented no-op (no safe cwd confirm-gate)');

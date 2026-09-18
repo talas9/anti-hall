@@ -818,19 +818,17 @@ function buildDevswarmReason(kind, env) {
 }
 
 // Heredoc opener regex: <<[-]WORD, <<'WORD', <<"WORD", <<WORD. Captures the
-// dash (tab-stripping mode) and the terminator word (quoted or bare). MIRRORS
-// graphify-guard.js's HEREDOC_RE/splitSegments (P1-a fix) byte-for-byte — that
-// fix was never propagated here, which is the confirmed root cause of P2 fp
-// dd88d2a72562/b183a9f1bbd5: without heredoc awareness, a heredoc BODY's own
-// newlines are ordinary segment-split points (see the `\n` case below), so a
-// message body written as `devswarm.js send ... <<'EOF' ... EOF` gets each
-// body LINE parsed as its own command segment. A body line that happens to
-// START with a heavy word ("make progress on X") then has effectiveVerb ===
-// 'make' (a HEAVY_VERB) and is misclassified as an executed command, not
-// prose. Adopting graphify-guard's approach: keep the heredoc OPENER text
-// (e.g. `<<'EOF'`) in the invoking segment so that command's own verb is
-// still classified normally, but SKIP the heredoc BODY entirely — it is
-// DATA, never re-parsed as segments/commands.
+// dash (tab-stripping mode) and the terminator word (quoted or bare). Fixes
+// the confirmed root cause of P2 fp dd88d2a72562/b183a9f1bbd5: without
+// heredoc awareness, a heredoc BODY's own newlines are ordinary segment-split
+// points (see the `\n` case below), so a message body written as
+// `devswarm.js send ... <<'EOF' ... EOF` gets each body LINE parsed as its
+// own command segment. A body line that happens to START with a heavy word
+// ("make progress on X") then has effectiveVerb === 'make' (a HEAVY_VERB) and
+// is misclassified as an executed command, not prose. The fix: keep the
+// heredoc OPENER text (e.g. `<<'EOF'`) in the invoking segment so that
+// command's own verb is still classified normally, but SKIP the heredoc BODY
+// entirely — it is DATA, never re-parsed as segments/commands.
 const HEREDOC_RE = /^<<(-)?\s*("([^"]*)"|'([^']*)'|([A-Za-z_][A-Za-z0-9_]*))/;
 
 // Split a full command line into logical segments on the shell operators

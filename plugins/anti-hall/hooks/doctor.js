@@ -384,24 +384,7 @@ if (!fs.existsSync(slScript)) {
   }
 }
 
-// --- 5. Graphify -------------------------------------------------------------
-head('Graphify');
-function isDir(p) { try { return fs.statSync(p).isDirectory(); } catch (e) { return false; } }
-const graphOut = path.join(cwd, 'graphify-out');
-const graphPresent = isDir(graphOut);
-if (graphPresent) {
-  ok(`knowledge graph present in cwd (${graphOut})`);
-} else {
-  warnl('no knowledge graph in cwd (graphify-out/) — graph-first guards are silent no-ops here');
-}
-// Are the graphify hooks registered in hooks.json?
-for (const h of ['graphify-guard.js', 'graphify-session.js', 'graphify-reminder.js']) {
-  if (registered.includes(h)) ok(`${h} registered in hooks.json`);
-  else warnl(`${h} NOT registered in hooks.json`);
-}
-warnl('graphify staleness is NOT auto-detected — re-run `graphify update .` after significant edits to keep the graph current');
-
-// --- 6. Context footprint ----------------------------------------------------
+// --- 5. Context footprint ----------------------------------------------------
 // The plugin injects text into the model's context. Measure it so the cost of
 // the guardrail is visible (bloated context is the exact failure it warns of).
 head('Context footprint (injected text)');
@@ -417,7 +400,7 @@ function ctxBytes(file, payload, picker) {
 const tok = (b) => Math.round(b / 4);
 // SessionStart one-time cost = SUM across every hook actually registered on
 // SessionStart in hooks.json (verify-first-full is only one of several — e.g.
-// graphify-session, version-alert, and fable-availability ALSO inject
+// version-alert and fable-availability ALSO inject
 // additionalContext on the same event per hooks.json). Derive the list from
 // hooks.json itself rather than hardcoding it, so a future hooks.json edit is
 // picked up automatically instead of silently under-reporting.
@@ -477,7 +460,7 @@ ok(`SessionStart (one-time): ${ssB} B ~${tok(ssB)} tok  (${ssParts.join(' + ')})
 ok(`Per-TURN (every UserPromptSubmit): ${perTurnB} B ~${tok(perTurnB)} tok  (verify-first ${vfB} B + task-tracker ${ttB} B; task-tracker throttles to a short line after the first turn)`);
 ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
 
-// --- 6b. flutter-debug (CONDITIONAL: Flutter cwd or skill/agent in use) -------
+// --- 5b. flutter-debug (CONDITIONAL: Flutter cwd or skill/agent in use) -------
 // ONE implementation, two entry points: preflight.js EXPORTS its checks; doctor
 // require()s and CALLS them IN-PROCESS (not a subprocess spawn) as a read-only
 // section. Runs ONLY when a pubspec.yaml is in cwd or the flutter-debug skill/
@@ -509,7 +492,7 @@ ok(`Per-STOP (block reason, when it fires): ${stopB} B ~${tok(stopB)} tok`);
   }
 })();
 
-// --- 6c. DevSwarm liveness supervisor (CONDITIONAL: active session or descriptors) ---
+// --- 5c. DevSwarm liveness supervisor (CONDITIONAL: active session or descriptors) ---
 // ONE implementation, two entry points: companion/lib/doctor-devswarm.js EXPORTS
 // runChecks; doctor requires it and CALLS it IN-PROCESS. Silent unless a DevSwarm
 // session is active OR the consumer has published workspace descriptors — EXCEPT a
@@ -782,7 +765,7 @@ function devswarmHookSelfTests() {
   }
 })();
 
-// --- 6d. OMC (oh-my-claudecode) detection (CONDITIONAL) ----------------------
+// --- 5d. OMC (oh-my-claudecode) detection (CONDITIONAL) ----------------------
 // Reuses hooks/omc-detect.js's OWN gates (enabledPlugins + .omc/state/) so this
 // can never drift from what task-guard/tasklist-guard actually check to decide
 // deference. omc-detect.js's presence/syntax was already verified in section 3
@@ -802,7 +785,7 @@ function devswarmHookSelfTests() {
   else ok('no active OMC autonomous loop detected — anti-hall Stop-hook guards run normally');
 })();
 
-// --- 6e. Codex / OMX port detection (CONDITIONAL) -----------------------------
+// --- 5e. Codex / OMX port detection (CONDITIONAL) -----------------------------
 // Detects a Codex install by the same artifacts codex/install-codex.js writes:
 // <scope>/.codex/config.toml (+ [features] hooks = true) and <scope>/.codex/
 // hooks.json with anti-hall's own hook commands merged in. "Wired" is a
@@ -867,7 +850,7 @@ function devswarmHookSelfTests() {
   }
 })();
 
-// --- 6f. Saved workflow templates (deadly-loop / ship-it) --------------------
+// --- 5f. Saved workflow templates (deadly-loop / ship-it) --------------------
 // Advisory ONLY (warnl, never bad) — must NOT change doctor's exit code. Checks
 // whether the deadly-loop/ship-it Workflow templates have been saved via
 // /workflows into ~/.claude/workflows/ or <cwd>/.claude/workflows/. Without a
@@ -898,7 +881,7 @@ head('Workflow templates (deadly-loop / ship-it)');
   }
 })();
 
-// --- 6g. Foreign skill/hook conflict scan (UNCONDITIONAL) --------------------
+// --- 5g. Foreign skill/hook conflict scan (UNCONDITIONAL) --------------------
 // Cross-references OTHER ENABLED plugins' hooks.json + skill directories
 // against anti-hall's own (companion/lib/doctor-runtime.js's
 // scanForeignConflicts — check 5 of the DevSwarm runtime checks, but this scan
@@ -927,7 +910,7 @@ head('Foreign skill/hook conflict scan');
   }
 })();
 
-// --- 6g2. --logs (OPT-IN): recent central anti-hall-log errors, by component ---
+// --- 5g2. --logs (OPT-IN): recent central anti-hall-log errors, by component ---
 // Surfaces companion/lib/anti-hall-log.js's readRecent() output so a Primary
 // orchestrator can see a child project's recent failures from one `doctor --logs`
 // call instead of tailing ~/.anti-hall/logs/devswarm.jsonl by hand. Lazy require
@@ -979,7 +962,7 @@ if (LOGS) {
   })();
 }
 
-// --- 6h. Repair pass (default / --fix / --repair / --dry-run; SKIPPED on --check) ---
+// --- 5h. Repair pass (default / --fix / --repair / --dry-run; SKIPPED on --check) ---
 // doctor now DIAGNOSES then REPAIRS. runRepairs applies AUTO-SAFE fixes always
 // (honoring --dry-run) and GATED daemon fixes only under the DevSwarm gate
 // (isDevswarmActive + a git-worktree cwd); a closed gate REPORTS the exact manual
@@ -1006,7 +989,7 @@ if (DO_REPAIR) {
   }
 }
 
-// --- 6i. --reclaim-ingest-lock (EXPLICIT, OPT-IN ONLY; see the flag's own doc
+// --- 5i. --reclaim-ingest-lock (EXPLICIT, OPT-IN ONLY; see the flag's own doc
 // comment above). Independent of --check/--fix/--dry-run — this section runs
 // purely off the presence of --reclaim-ingest-lock. `failed` drives the exit
 // code exactly like the repair pass above; `fixed`/`skipped` do not.
@@ -1030,7 +1013,7 @@ if (RECLAIM_INGEST_LOCK) {
   }
 }
 
-// --- 6i-detect. Orphaned launchd/systemd ingest registrations (ALWAYS-ON
+// --- 5i-detect. Orphaned launchd/systemd ingest registrations (ALWAYS-ON
 // REPORT-ONLY, no flag needed — v0.98, ec33954162ef) --------------------------
 // install-devswarm-ingest.js's orphanReapPlan enumerates from the SCHEDULER'S
 // OWN registration list (launchctl list / systemctl --user list-units), not
@@ -1061,7 +1044,7 @@ if (RECLAIM_INGEST_LOCK) {
   }
 })();
 
-// --- 6i-repair. --repair-ingest-orphans [--apply] (EXPLICIT, OPT-IN ONLY;
+// --- 5i-repair. --repair-ingest-orphans [--apply] (EXPLICIT, OPT-IN ONLY;
 // v0.98, ec33954162ef). Default (flag present, no --apply) is DRY-RUN: prints
 // the exact unload plan, writes/unloads nothing. --apply executes it. Never
 // invoked implicitly by a plain `doctor` or `doctor --check` run — only the
@@ -1096,7 +1079,7 @@ if (REPAIR_INGEST_ORPHANS) {
   if (!REPAIR_TEST_STORES && !REPAIR_RESURRECTED) emitVerdictAndExit();
 }
 
-// --- 6j. memguard-reaper risk (REPORT-ONLY, CONDITIONAL) ---------------------
+// --- 5j. memguard-reaper risk (REPORT-ONLY, CONDITIONAL) ---------------------
 // See doctor-repair.js's checkMemguardReaperRisk for the full rationale (a
 // user-machine reaper/memguard LaunchAgent can SIGKILL an unallowlisted,
 // launchd-spawned ingest daemon whose PPID is 1 by construction on macOS).
@@ -1113,7 +1096,7 @@ if (REPAIR_INGEST_ORPHANS) {
   warnl(result.message + (result.file ? ' (' + result.file + ')' : ''));
 })();
 
-// --- 6k. orphaned MCP children under a live app-server broker (REPORT-ONLY,
+// --- 5k. orphaned MCP children under a live app-server broker (REPORT-ONLY,
 // CONDITIONAL) ----------------------------------------------------------------
 // See doctor-repair.js's checkOrphanedMcpUnderBroker for the full rationale
 // (defect bfa063ab8e3f: an app-server-style broker can leak MCP-server child
@@ -1132,7 +1115,7 @@ if (REPAIR_INGEST_ORPHANS) {
   warnl(result.message);
 })();
 
-// --- 6l. leaked test-fixture stores (REPORT-ONLY, CONDITIONAL, check mode
+// --- 5l. leaked test-fixture stores (REPORT-ONLY, CONDITIONAL, check mode
 // included) --------------------------------------------------------------------
 // See doctor-repair.js's checkLeakedTestFixtureStores for the full rationale
 // (defect f3c1bc827d89: a test suite spawning a real subprocess with
@@ -1150,7 +1133,7 @@ if (REPAIR_INGEST_ORPHANS) {
   warnl(result.message);
 })();
 
-// --- 6l-repair. --repair-test-stores [--apply] (EXPLICIT, OPT-IN ONLY;
+// --- 5l-repair. --repair-test-stores [--apply] (EXPLICIT, OPT-IN ONLY;
 // be2c6c9e81a1). Default (flag present, no --apply) is DRY-RUN: prints the
 // exact removal plan, deletes nothing. --apply executes it, re-verifying
 // each entry's eligibility immediately before deleting (see
@@ -1181,7 +1164,7 @@ if (REPAIR_TEST_STORES) {
   if (!REPAIR_RESURRECTED) emitVerdictAndExit();
 }
 
-// --- 6l2. resurrected registry rows (REPORT-ONLY, CONDITIONAL, check mode
+// --- 5l2. resurrected registry rows (REPORT-ONLY, CONDITIONAL, check mode
 // included) -- R3 fix, defect df54edf54804 --------------------------------
 // See doctor-repair.js's checkResurrectedRows for the full rationale (the
 // store migration's resurrection bug — fixed via companion/lib/
@@ -1201,7 +1184,7 @@ if (REPAIR_TEST_STORES) {
   warnl(result.message);
 })();
 
-// --- 6l2-repair. --repair-resurrected [--apply] (EXPLICIT, OPT-IN ONLY; R3
+// --- 5l2-repair. --repair-resurrected [--apply] (EXPLICIT, OPT-IN ONLY; R3
 // fix, defect df54edf54804). Default (flag present, no --apply) is DRY-RUN:
 // prints the exact re-retirement plan, writes nothing. --apply executes it
 // via devswarm.js's reRetireResurrectedRowsAllStores (candidacy/locking/
@@ -1234,7 +1217,7 @@ if (REPAIR_RESURRECTED) {
   emitVerdictAndExit();
 }
 
-// --- 6m. escalated-while-session-alive (REPORT-ONLY, CONDITIONAL) -----------
+// --- 5m. escalated-while-session-alive (REPORT-ONLY, CONDITIONAL) -----------
 // See doctor-repair.js's checkEscalatedWhileAlive for the full rationale
 // (D12 v0.96.1: a liveness file can say `escalated` for a row whose session
 // pid is provably alive right now — liveness.js's computeLiveness now
@@ -1251,7 +1234,7 @@ if (REPAIR_RESURRECTED) {
   warnl(result.message);
 })();
 
-// --- 6n. superseded archived markers (REPORT-ONLY, CONDITIONAL) -------------
+// --- 5n. superseded archived markers (REPORT-ONLY, CONDITIONAL) -------------
 // See doctor-repair.js's checkSupersededArchivedMarkers for the full rationale
 // (P0 field, 0.96.1/0.96.2: an anchor row's reused id can carry a PRIOR
 // occupant's archived/<id>.json — isArchivedWorkspace now discriminates this
@@ -1268,5 +1251,5 @@ if (REPAIR_RESURRECTED) {
   infol(result.message);
 })();
 
-// --- 7. Summary --------------------------------------------------------------
+// --- 6. Summary --------------------------------------------------------------
 emitVerdictAndExit();

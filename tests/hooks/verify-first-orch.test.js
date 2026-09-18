@@ -30,7 +30,6 @@ const ORCHESTRATION_LABELS = [
   ['  C.', 'rule C (drain the list)'],
   ['  D.', 'rule D (bias toward delegation)'],
   ['  E.', 'rule E (inline only atomic)'],
-  ['  E2. GRAPHIFY-FIRST', 'rule E2 (GRAPHIFY-FIRST)'],
   ['  F.', 'rule F (parallel agents / noisy off main thread)'],
   ['run_in_background', 'rule F keyword (DEFAULT delegated work to BACKGROUND via run_in_background)'],
   ['to the BACKGROUND', 'rule F keyword (default heavy/long/parallel work to the BACKGROUND)'],
@@ -82,6 +81,10 @@ test('SessionStart -> orchestration header + EVERY rule label A-N intact', () =>
   assert.ok(c.length > 0, 'additionalContext must be non-empty');
   assert.ok(c.includes(ORCHESTRATION_HEADER[0]), `DROPPED: ${ORCHESTRATION_HEADER[1]}`);
   assertAll(c, ORCHESTRATION_LABELS);
+  // Graphify was retired 2026-09-18 (owner directive) — rule E2 (GRAPHIFY-FIRST)
+  // must be GONE, not just unlisted above.
+  assert.ok(!c.includes('E2.'), 'rule E2 (GRAPHIFY-FIRST) must be removed, not present');
+  assert.ok(!/graphify/i.test(c), 'orchestration payload must not mention graphify anymore');
 });
 
 test('rule L is restored to ALPHABETICAL order (between K and M, no longer hoisted after A)', () => {

@@ -69,7 +69,6 @@ const ANTI_HALL_HOOKS = {
   SessionStart: [
     group(null, ['verify-first-full.js'], 10),
     group(null, ['verify-first-orch.js'], 10),
-    group(null, ['graphify-session.js'], 10),
     group(null, ['devswarm-child-role.js'], 10),
     group(null, ['version-alert.js'], 10),
     group(null, ['codex-availability.js'], 10),
@@ -89,13 +88,11 @@ const ANTI_HALL_HOOKS = {
   PreToolUse: [
     group('Bash', ['git-guard.js'], 10),
     group('Bash', ['command-guard.js'], 10),
-    group('Bash', ['graphify-guard.js'], 10),
     group('Bash', ['merge-gate.js'], 10),
   ],
   Stop: [
     group(null, ['task-guard.js'], 30),
     group(null, ['tasklist-guard.js'], 30),
-    group(null, ['graphify-reminder.js'], 30),
     group(null, ['speculation-guard.js'], 30),
     group(null, ['speculation-judge.js'], 30),
     group(null, ['claim-ledger.js'], 30),
@@ -114,6 +111,46 @@ function readJSON(file) {
   } catch (_) {
     return {};
   }
+}
+
+// Files a graphify-cleanup migration must strip from an EXISTING Codex hooks.json
+// (project or global) — these three no longer ship, so a stale registration would
+// point at a missing file. Matched on basename only (not by anti-hall path prefix
+// like isAntiHallGroup below) so this survives even if the group's command string
+// predates path normalization.
+const REMOVED_GRAPHIFY_FILES = ['graphify-session.js', 'graphify-guard.js', 'graphify-reminder.js'];
+
+function isGraphifyGroup(g) {
+  const hooks = Array.isArray(g && g.hooks) ? g.hooks : [];
+  return hooks.some((h) => h && typeof h.command === 'string'
+    && REMOVED_GRAPHIFY_FILES.some((f) => h.command.replace(/\\/g, '/').includes('/' + f)));
+}
+
+/**
+ * removeGraphifyGroups(hooksJson) → { hooks: <object>, removed: <number> }
+ *
+ * Forward migration for graphify's removal: strips ONLY groups that register
+ * graphify-session.js/graphify-guard.js/graphify-reminder.js from an existing
+ * Codex hooks.json shape, leaving every other event/group byte-identical
+ * (including group order and unrelated matchers). Never touches anything else
+ * in the file, never deletes the file, and is idempotent — a second pass over
+ * already-cleaned hooks finds nothing to remove.
+ */
+function removeGraphifyGroups(hooksJson) {
+  const src = hooksJson && typeof hooksJson === 'object' && hooksJson.hooks && typeof hooksJson.hooks === 'object'
+    ? hooksJson.hooks
+    : {};
+  const out = {};
+  let removed = 0;
+  for (const event of Object.keys(src)) {
+    const groups = Array.isArray(src[event]) ? src[event] : [];
+    const kept = groups.filter((g) => {
+      if (isGraphifyGroup(g)) { removed += 1; return false; }
+      return true;
+    });
+    out[event] = kept;
+  }
+  return { hooks: out, removed };
 }
 
 function isAntiHallGroup(g) {
@@ -182,7 +219,7 @@ function main() {
 // inventing a separate (and drift-prone) heuristic. require()-ing this module
 // must NOT run main() / write files — only direct CLI invocation
 // (`node install-codex.js`) does, hence the require.main guard below.
-module.exports = { ANTI_HALL_HOOKS, isAntiHallGroup, mergeHooks };
+module.exports = { ANTI_HALL_HOOKS, isAntiHallGroup, mergeHooks, isGraphifyGroup, removeGraphifyGroups, REMOVED_GRAPHIFY_FILES };
 
 if (require.main === module) {
   main();

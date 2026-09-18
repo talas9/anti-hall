@@ -1,8 +1,12 @@
 'use strict';
 // scan-throttle (PreToolUse Bash) — additive background-throttle prefix for
-// heavy repo-wide scan commands (graphify update / graphify <path>), via
-// `hookSpecificOutput.updatedInput`. Never blocks; never changes what a
-// command does, only its OS scheduling priority.
+// heavy repo-wide scan commands, via `hookSpecificOutput.updatedInput`. Never
+// blocks; never changes what a command does, only its OS scheduling priority.
+//
+// This hook ships with ZERO built-in scan patterns (graphify support was
+// retired) — every match in this suite is driven by ANTI_HALL_THROTTLE_PATTERNS.
+// A neutral stand-in command (`reindex-repo --full`) plays the role a
+// project-specific heavy scanner would play in a real deployment.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -12,6 +16,23 @@ const path = require('node:path');
 const { testHook, bashPayload } = require('../helpers/spawn-hook.js');
 
 const HOOK = 'scan-throttle.js';
+
+// A pattern matching the neutral stand-in command used throughout this suite,
+// anchored to the start of the segment (tolerating the leading whitespace
+// splitSegments() leaves on a non-first segment after `&&`/`(`/etc). This
+// mirrors how an operator would anchor a real pattern to avoid matching the
+// scan command's NAME showing up incidentally inside unrelated text (e.g.
+// inside an `echo "..."` argument — see the "as data" test below).
+const SCAN_PATTERN = '^\\s*reindex-repo\\b';
+
+// A looser pattern (no start anchor — the command NAME preceded by start-of-
+// string or whitespace) for fixtures where the scan command itself is
+// preceded by a wrapper word or a NAME=value assignment on the SAME segment
+// (`time reindex-repo ...`, `FOO=1 reindex-repo ...`) — the plain regex
+// matcher has no wrapper/assignment awareness (that classification lived only
+// in the retired graphify-specific classifier), so these fixtures configure a
+// pattern tolerant of a single leading token instead.
+const PREFIXED_PATTERN = '(^|\\s)reindex-repo\\b';
 
 // Build a fake bin dir on PATH containing stub files for the named tools, so
 // availability is deterministic across the ubuntu/macos CI matrix regardless
@@ -59,58 +80,36 @@ function runUnavailable(command, extraEnv) {
   }
 }
 
+// Convenience: run with the suite's standard scan pattern configured.
+function runWithPattern(command, extraEnv) {
+  return runAvailable(command, { ANTI_HALL_THROTTLE_PATTERNS: SCAN_PATTERN, ...(extraEnv || {}) });
+}
+
 // ---------------------------------------------------------------------------
-// Core rewrite: `graphify update .` at segment 0 -> prefixed, updatedInput set.
+// No built-in patterns: with NOTHING configured, the hook matches nothing —
+// not even a command that would match once a pattern IS configured.
 // ---------------------------------------------------------------------------
-test('scan-throttle: rewrites `graphify update .` with the platform throttle prefix', () => {
+test('scan-throttle: with NO ANTI_HALL_THROTTLE_PATTERNS configured, nothing is matched', () => {
+  const r = runAvailable('reindex-repo --full');
+  assert.strictEqual(r.status, 0);
+  assert.strictEqual(r.stdout.trim(), '', 'no built-in patterns ship anymore — an unconfigured hook must be a no-op');
+});
+
+// ---------------------------------------------------------------------------
+// Core rewrite: a command matching ANTI_HALL_THROTTLE_PATTERNS at segment 0
+// -> prefixed, updatedInput set.
+// ---------------------------------------------------------------------------
+test('scan-throttle: rewrites a command matching ANTI_HALL_THROTTLE_PATTERNS with the platform throttle prefix', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return; // unsupported platform for this test model — skip
-  const r = runAvailable('graphify update .');
+  const r = runWithPattern('reindex-repo --full');
   assert.strictEqual(r.status, 0);
   assert.ok(r.json, 'expected JSON output for a rewrite');
   assert.strictEqual(
     r.json.hookSpecificOutput.updatedInput.command,
-    prefix + 'graphify update .'
+    prefix + 'reindex-repo --full'
   );
   assert.strictEqual(r.json.hookSpecificOutput.hookEventName, 'PreToolUse');
-});
-
-test('scan-throttle: rewrites bare `graphify <path>` (no query subcommand)', () => {
-  const prefix = expectedFullPrefix();
-  if (!prefix) return;
-  const r = runAvailable('graphify src/');
-  assert.ok(r.json);
-  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + 'graphify src/');
-});
-
-test('scan-throttle: rewrites the /graphify slash-command write form', () => {
-  const prefix = expectedFullPrefix();
-  if (!prefix) return;
-  const r = runAvailable('/graphify update .');
-  assert.ok(r.json);
-  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + '/graphify update .');
-});
-
-test('scan-throttle: `graphify query ...` (a read) is never rewritten', () => {
-  const r = runAvailable('graphify query "where is X defined"');
-  assert.strictEqual(r.status, 0);
-  assert.strictEqual(r.stdout.trim(), '');
-});
-
-// A write flag wins regardless of subcommand position — matches
-// graphify-guard.js's classifyGraphifyArgs (`--update`/`--obsidian` win even
-// when `query` is the first non-flag token). scan-throttle.js must classify
-// this the same way so identical command strings get consistent throttle vs.
-// write-policy treatment.
-test('scan-throttle: `graphify query ... --update` (write flag wins) IS rewritten', () => {
-  const prefix = expectedFullPrefix();
-  if (!prefix) return;
-  const r = runAvailable('graphify query "x" --update');
-  assert.ok(r.json, 'expected JSON output for a rewrite');
-  assert.strictEqual(
-    r.json.hookSpecificOutput.updatedInput.command,
-    prefix + 'graphify query "x" --update'
-  );
 });
 
 // ---------------------------------------------------------------------------
@@ -118,22 +117,24 @@ test('scan-throttle: `graphify query ... --update` (write flag wins) IS rewritte
 // prefix at the very start of the trimmed command counts as "already
 // prefixed." A command that merely CONTAINS the prefix text later, or an
 // almost-but-not-exactly-matching prefix, must NOT be treated as prefixed.
+// Idempotency is checked BEFORE pattern matching, so no ANTI_HALL_THROTTLE_
+// PATTERNS is needed for these cases.
 // ---------------------------------------------------------------------------
 test('scan-throttle: idempotent — already-prefixed command is left unchanged', () => {
-  const already = 'taskpolicy -c utility nice -n 19 graphify update .';
+  const already = 'taskpolicy -c utility nice -n 19 reindex-repo --full';
   const r = runAvailable(already);
   assert.strictEqual(r.status, 0);
   assert.strictEqual(r.stdout.trim(), '', 'must not double-prefix an already-prefixed command');
 });
 
 test('scan-throttle: idempotent — bare `nice -n 19` prefix form is also recognized', () => {
-  const already = 'nice -n 19 graphify update .';
+  const already = 'nice -n 19 reindex-repo --full';
   const r = runAvailable(already);
   assert.strictEqual(r.stdout.trim(), '');
 });
 
 test('scan-throttle: idempotent — `ionice -c 3 nice -n 19` combined prefix is recognized', () => {
-  const already = 'ionice -c 3 nice -n 19 graphify update .';
+  const already = 'ionice -c 3 nice -n 19 reindex-repo --full';
   const r = runAvailable(already);
   assert.strictEqual(r.stdout.trim(), '');
 });
@@ -147,8 +148,8 @@ test('scan-throttle: idempotent — `ionice -c 3 nice -n 19` combined prefix is 
 test('scan-throttle: MUTATION-CHECK idempotency is anchored, not a substring match', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return;
-  const command = 'graphify update . # note: nice -n 19 is what this becomes';
-  const r = runAvailable(command);
+  const command = 'reindex-repo --full # note: nice -n 19 is what this becomes';
+  const r = runWithPattern(command);
   assert.ok(r.json, 'a command that only CONTAINS prefix-like text later must still be rewritten');
   assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + command);
 });
@@ -157,13 +158,13 @@ test('scan-throttle: MUTATION-CHECK idempotency is anchored, not a substring mat
 // Untouched: non-matching commands.
 // ---------------------------------------------------------------------------
 test('scan-throttle: unrelated command is left untouched', () => {
-  const r = runAvailable('git status');
+  const r = runWithPattern('git status');
   assert.strictEqual(r.status, 0);
   assert.strictEqual(r.stdout.trim(), '');
 });
 
-test('scan-throttle: a command that merely mentions graphify as data is untouched', () => {
-  const r = runAvailable('echo "run graphify update . later"');
+test('scan-throttle: a command that merely mentions the scan command as data is untouched', () => {
+  const r = runWithPattern('echo "run reindex-repo --full later"');
   assert.strictEqual(r.stdout.trim(), '');
 });
 
@@ -172,8 +173,8 @@ test('scan-throttle: a command that merely mentions graphify as data is untouche
 // DATA, never re-parsed as a command segment.
 // ---------------------------------------------------------------------------
 test('scan-throttle: heredoc body containing a scan-looking line is untouched', () => {
-  const command = "cat <<'EOF'\ngraphify update .\nEOF";
-  const r = runAvailable(command);
+  const command = "cat <<'EOF'\nreindex-repo --full\nEOF";
+  const r = runWithPattern(command);
   assert.strictEqual(r.status, 0);
   assert.strictEqual(r.stdout.trim(), '', 'heredoc BODY must never be parsed as a command');
 });
@@ -186,8 +187,8 @@ test('scan-throttle: heredoc body containing a scan-looking line is untouched', 
 // heredoc skip that fails to close the segment and merges everything into
 // segment 0.
 test('scan-throttle: MUTATION-CHECK heredoc-close boundary + mid-compound match stays untouched', () => {
-  const command = "cat <<'EOF'\nsome body text\nEOF\n && graphify update .";
-  const r = runAvailable(command);
+  const command = "cat <<'EOF'\nsome body text\nEOF\n && reindex-repo --full";
+  const r = runWithPattern(command);
   assert.strictEqual(r.status, 0);
   // Must not rewrite (mid-compound); may emit an advisory note instead.
   assert.strictEqual(r.stdout.includes('updatedInput'), false);
@@ -198,7 +199,7 @@ test('scan-throttle: MUTATION-CHECK heredoc-close boundary + mid-compound match 
 // advisory note only (fail-open — never guess a rewrite position).
 // ---------------------------------------------------------------------------
 test('scan-throttle: mid-compound match is untouched, with an advisory note', () => {
-  const r = runAvailable('cd app && graphify update .');
+  const r = runWithPattern('cd app && reindex-repo --full');
   assert.strictEqual(r.status, 0);
   assert.ok(r.json, 'expected an advisory JSON note');
   assert.strictEqual(r.json.hookSpecificOutput.updatedInput, undefined);
@@ -210,39 +211,31 @@ test('scan-throttle: mid-compound match is untouched, with an advisory note', ()
 
 // ---------------------------------------------------------------------------
 // P1 fix #1: leading NAME=value assignments must be RE-ATTACHED before the
-// prefix, not left after it (`taskpolicy ... FOO=1 graphify ...` is a shell
-// syntax/exec error — `nice` tries to exec the literal string `FOO=1`).
+// prefix, not left after it (`taskpolicy ... FOO=1 reindex-repo ...` is a
+// shell syntax/exec error — `nice` tries to exec the literal string `FOO=1`).
 // Verified end-to-end with a real `sh -c` execution using `env` as a
-// harmless stand-in for `graphify` (see the report for the raw output);
-// here we assert the exact rewritten TEXT the hook produces.
+// harmless stand-in for the scan command (see the report for the raw
+// output); here we assert the exact rewritten TEXT the hook produces.
 // ---------------------------------------------------------------------------
 test('scan-throttle: P1 — leading NAME=value assignment is re-attached BEFORE the prefix', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return;
-  const r = runAvailable('GRAPHIFY_X=1 graphify update .');
+  const r = runAvailable('SCANENV=1 reindex-repo --full', { ANTI_HALL_THROTTLE_PATTERNS: PREFIXED_PATTERN });
   assert.ok(r.json);
   assert.strictEqual(
     r.json.hookSpecificOutput.updatedInput.command,
-    'GRAPHIFY_X=1 ' + prefix + 'graphify update .'
+    'SCANENV=1 ' + prefix + 'reindex-repo --full'
   );
 });
 
-// NOTE: the underlying segment classifier (isGraphifyScanSegment, mirroring
-// graphify-guard.js's own segmentVerb) tokenizes on bare `/\s+/` and does not
-// understand quoted whitespace — a pre-existing, consistent limitation
-// across this file's sibling guards, not something this P1 fix introduces or
-// is scoped to correct. So this case uses a quoted value WITHOUT embedded
-// whitespace (still exercises the quote-stripping in ASSIGN_ONE_RE) plus a
-// second, unquoted assignment, to prove MULTIPLE leading assignments are all
-// re-attached in order.
 test('scan-throttle: P1 — multiple leading assignments (one quoted) are all re-attached, in order', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return;
-  const r = runAvailable('FOO=1 BAR="baz" graphify update .');
+  const r = runAvailable('FOO=1 BAR="baz" reindex-repo --full', { ANTI_HALL_THROTTLE_PATTERNS: PREFIXED_PATTERN });
   assert.ok(r.json);
   assert.strictEqual(
     r.json.hookSpecificOutput.updatedInput.command,
-    'FOO=1 BAR="baz" ' + prefix + 'graphify update .'
+    'FOO=1 BAR="baz" ' + prefix + 'reindex-repo --full'
   );
 });
 
@@ -254,23 +247,23 @@ test('scan-throttle: P1 — multiple leading assignments (one quoted) are all re
 // does not actually start at offset 0 of the raw string. Prefixing there
 // produces a bash syntax error (verified separately via `sh -c`).
 // ---------------------------------------------------------------------------
-test('scan-throttle: P1 — subshell-wrapped `( graphify update . )` is never rewritten', () => {
-  const r = runAvailable('( graphify update . )');
+test('scan-throttle: P1 — subshell-wrapped `( reindex-repo --full )` is never rewritten', () => {
+  const r = runWithPattern('( reindex-repo --full )');
   assert.strictEqual(r.status, 0);
   assert.ok(r.json);
   assert.strictEqual(r.json.hookSpecificOutput.updatedInput, undefined);
   assert.ok(typeof r.json.hookSpecificOutput.additionalContext === 'string');
 });
 
-test('scan-throttle: P1 — brace-group-wrapped `{ graphify update . ; }` is never rewritten', () => {
-  const r = runAvailable('{ graphify update . ; }');
+test('scan-throttle: P1 — brace-group-wrapped `{ reindex-repo --full ; }` is never rewritten', () => {
+  const r = runWithPattern('{ reindex-repo --full ; }');
   assert.strictEqual(r.status, 0);
   assert.ok(r.json);
   assert.strictEqual(r.json.hookSpecificOutput.updatedInput, undefined);
 });
 
 test('scan-throttle: P1 — subshell wrapped AFTER a leading assignment is also refused', () => {
-  const r = runAvailable('FOO=1 ( graphify update . )');
+  const r = runWithPattern('FOO=1 ( reindex-repo --full )');
   assert.strictEqual(r.status, 0);
   assert.ok(r.json);
   assert.strictEqual(r.json.hookSpecificOutput.updatedInput, undefined);
@@ -280,7 +273,7 @@ test('scan-throttle: P1 — subshell wrapped AFTER a leading assignment is also 
 // refused for the RIGHT reason (mid-compound), not accidentally accepted
 // because its rest-of-string happens to look like plain text.
 test('scan-throttle: P1 — leading assignment does not mask a mid-compound match', () => {
-  const r = runAvailable('FOO=1 cd app && graphify update .');
+  const r = runWithPattern('FOO=1 cd app && reindex-repo --full');
   assert.strictEqual(r.status, 0);
   assert.ok(r.json);
   assert.strictEqual(r.json.hookSpecificOutput.updatedInput, undefined);
@@ -293,27 +286,33 @@ test('scan-throttle: P1 — leading assignment does not mask a mid-compound matc
 // that the rewritten shape actually executes (reaches the wrapped program,
 // no syntax error / no exit 127 from the prefix itself).
 // ---------------------------------------------------------------------------
-test('scan-throttle: regression — `time graphify update .` still rewrites normally', () => {
+// NOTE: user-supplied ANTI_HALL_THROTTLE_PATTERNS is matched as a plain regex
+// against the whole segment TEXT (no wrapper-word awareness like the old
+// built-in graphify classifier had) — a pattern that only matches at segment
+// start (`^reindex-repo`) will not match `time reindex-repo ...`. These two
+// tests use PREFIXED_PATTERN, tolerant of a leading wrapper word, matching
+// how an operator would actually configure this for a wrapped scan command.
+test('scan-throttle: regression — `time reindex-repo --full` still rewrites normally', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return;
-  const r = runAvailable('time graphify update .');
+  const r = runAvailable('time reindex-repo --full', { ANTI_HALL_THROTTLE_PATTERNS: PREFIXED_PATTERN });
   assert.ok(r.json);
-  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + 'time graphify update .');
+  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + 'time reindex-repo --full');
 });
 
-test('scan-throttle: regression — `sudo graphify update .` still rewrites normally', () => {
+test('scan-throttle: regression — `sudo reindex-repo --full` still rewrites normally', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return;
-  const r = runAvailable('sudo graphify update .');
+  const r = runAvailable('sudo reindex-repo --full', { ANTI_HALL_THROTTLE_PATTERNS: PREFIXED_PATTERN });
   assert.ok(r.json);
-  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + 'sudo graphify update .');
+  assert.strictEqual(r.json.hookSpecificOutput.updatedInput.command, prefix + 'sudo reindex-repo --full');
 });
 
 // ---------------------------------------------------------------------------
 // Kill switch.
 // ---------------------------------------------------------------------------
 test('scan-throttle: ANTI_HALL_SCAN_THROTTLE=0 disables the hook entirely', () => {
-  const r = runAvailable('graphify update .', { ANTI_HALL_SCAN_THROTTLE: '0' });
+  const r = runWithPattern('reindex-repo --full', { ANTI_HALL_SCAN_THROTTLE: '0' });
   assert.strictEqual(r.status, 0);
   assert.strictEqual(r.stdout.trim(), '');
 });
@@ -322,15 +321,16 @@ test('scan-throttle: ANTI_HALL_SCAN_THROTTLE=0 disables the hook entirely', () =
 // Tool unavailable -> unchanged, silently (no output at all).
 // ---------------------------------------------------------------------------
 test('scan-throttle: no throttle tool on PATH -> command left unchanged, no output', () => {
-  const r = runUnavailable('graphify update .');
+  const r = runUnavailable('reindex-repo --full', { ANTI_HALL_THROTTLE_PATTERNS: SCAN_PATTERN });
   assert.strictEqual(r.status, 0);
   assert.strictEqual(r.stdout.trim(), '');
 });
 
 // ---------------------------------------------------------------------------
-// ANTI_HALL_THROTTLE_PATTERNS env-extendable allowlist.
+// ANTI_HALL_THROTTLE_PATTERNS env-configured allowlist — the ONLY source of
+// matches this hook has (see the "no built-in patterns" test above).
 // ---------------------------------------------------------------------------
-test('scan-throttle: ANTI_HALL_THROTTLE_PATTERNS extends the allowlist', () => {
+test('scan-throttle: ANTI_HALL_THROTTLE_PATTERNS drives the match', () => {
   const prefix = expectedFullPrefix();
   if (!prefix) return;
   const r = runAvailable('some-custom-scanner --all', {
@@ -382,7 +382,7 @@ test('scan-throttle: malformed JSON stdin fails open', () => {
 });
 
 test('scan-throttle: empty command is a no-op', () => {
-  const r = runAvailable('');
+  const r = runWithPattern('');
   assert.strictEqual(r.status, 0);
   assert.strictEqual(r.stdout.trim(), '');
 });

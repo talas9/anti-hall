@@ -836,8 +836,8 @@ test('DEVSWARM PARITY: `node scripts/devswarm.js inbox pull x` ALLOWED under act
 // dd88d2a72562: a `devswarm.js send` whose MESSAGE BODY (carried in a heredoc,
 // the realistic shape for a multi-line mesh message: `... --message-file - <<
 // 'EOF' ... EOF`) contains a heavy verb as ordinary prose ("make sure to...")
-// was blocked, because command-guard's splitSegments had NO heredoc handling
-// (unlike graphify-guard.js's HEREDOC_RE fix): each heredoc BODY LINE is an
+// was blocked, because command-guard's splitSegments had NO heredoc handling:
+// each heredoc BODY LINE is an
 // ordinary '\n'-delimited segment, and a body line that happens to START with
 // a HEAVY_VERB word ("make") gets effectiveVerb === 'make' and is
 // misclassified as an executed command instead of message text.
@@ -846,8 +846,8 @@ test('DEVSWARM PARITY: `node scripts/devswarm.js inbox pull x` ALLOWED under act
 // SEARCH PATTERN argument contains heavy-looking text (data describing what
 // to search for) was scanned as if that text were command content.
 //
-// FIX: (1) command-guard's splitSegments now adopts graphify-guard.js's
-// HEREDOC_RE approach verbatim — the heredoc BODY is skipped entirely, never
+// FIX: (1) command-guard's splitSegments now has its own HEREDOC_RE handling
+// — the heredoc BODY is skipped entirely, never
 // re-split into segments/commands (only the opener line, e.g. `<<'EOF'`,
 // stays part of the invoking segment). (2) isHeavySegment now blanks the
 // first non-flag operand of a PATTERN_FIRST_VERBS command (grep/sed/awk)

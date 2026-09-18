@@ -145,7 +145,7 @@ function main() {
     },
   };
   // Synchronous write to fd 1 (macOS node 18/20 flush-safety convention — see
-  // graphify-session.js / verify-first-full.js for the full rationale).
+  // verify-first-full.js for the full rationale).
   fs.writeSync(1, JSON.stringify(out) + '\n');
 }
 

@@ -6,6 +6,62 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.101.0 (2026-09-19)
+
+- **Fixed (P0): `UserPromptSubmit hook timed out after 10s` on every prompt in
+  repos with many DevSwarm workspace rows.** `devswarm-parent-inbox.js` spawned a
+  `git` process PER workspace row, per prompt — in two separate loops. The #36
+  repo-scope filter (`repoKeyOfWorktree`) ran `git rev-parse --git-common-dir` for
+  each row, and the unanswered-question family collapse (`resolveMeshId` ->
+  `canonicalMeshId` -> `resolveCallerWorktree`) spawned `git` twice per distinct
+  worktree. The in-process `repoKeyCache` never hit, because it is keyed per worktree
+  path and every prompt is a fresh process. CPU profile: `spawnSync` was 74% of the
+  hook's time. Under machine load the hook crossed its 10s timeout and its injection
+  was silently discarded. Both loops now derive repo identity from git's own on-disk
+  worktree metadata with no spawn (`gitCommonDirNoSpawn` / `repoKeyForWorktreeFast` in
+  `companion/lib/devswarm-repokey.js`): `.git` as a directory (main checkout) or a
+  `gitdir:` file plus `commondir` (linked worktree). A worktree path that no longer
+  exists spawns nothing. The spawn-based path remains only as a fallback for
+  submodule and malformed shapes. repoKey/meshId output verified byte-identical to the
+  git-derived values for main-checkout, linked-worktree, submodule and missing-path
+  shapes, and the #36 filtering decision is unchanged for every row. Measured on the
+  worst-affected repo: 8,935 ms before; 1.4-3.1 s after at machine load ~100.
+  This hook's own header forbids spawning on the hot path; it now honours that.
+- **Removed: graphify and Obsidian integration, entirely.** Owner decision to retire
+  both tools.
+  - Deleted hooks `graphify-session.js` (SessionStart), `graphify-guard.js`
+    (PreToolUse on Bash/Grep/Glob) and `graphify-reminder.js` (Stop), plus their tests,
+    and all their registrations in the Claude `hooks.json`, the Codex `hooks.json`,
+    and `codex/install-codex.js`.
+  - Removed the injected `E2. GRAPHIFY-FIRST` orchestration rule
+    (`verify-first-orch.js`), the graphify-first phrase in `verify-first-full.js`,
+    doctor's Graphify section (later sections renumbered), graphify steps in the
+    `orchestration`, `ship-it` and `deadly-loop` skills and both Codex skills, and
+    `.graphifyignore`.
+  - `scan-throttle.js` now ships with **no built-in patterns**. Its only built-in was
+    graphify. It remains a generic throttle driven by `ANTI_HALL_THROTTLE_PATTERNS`
+    and matches nothing unless that is set.
+  - **Migration for existing Codex installs.** `install-codex.js` writes hook
+    registrations into the user's own `~/.codex/hooks.json` (or project `.codex/`), so
+    existing installs still registered the deleted hooks. `update.js`
+    (`codexGraphifyHooksMigratePostUpdate`) and a new AUTO-SAFE doctor repair step
+    (`codex-graphify-cleanup`) remove only those stale groups. Every other
+    registration and top-level key is preserved; the file is backed up to
+    `.bak-<timestamp>` before any write; a file with nothing to migrate is left
+    byte-identical; a malformed config is left alone; the file is never deleted. The
+    doctor step exists because the existing codex-refresh check is per-EVENT and would
+    report "already wired" while a stale graphify group remained.
+  - Claude side needs no migration: Claude Code loads anti-hall's hooks from the
+    plugin's own shipped `hooks.json`, and nothing writes them into user settings.
+  - Historical CHANGELOG entries and dated plans/audits in `docs/` are left as they
+    were written.
+- **Known follow-up:** `scripts/devswarm.js` `resolveCallerWorktree` still spawns
+  `git` before its pure-fs fallback (backwards for a hot path) and always spawns a
+  second `--show-superproject-working-tree` check. It is a fixed once-per-turn cost,
+  not per-row, so it does not cause the timeout above, but it still costs the
+  own-reader, child-turn and parent-gate hooks every turn. Fix: try the fs resolver
+  first and skip the superproject spawn unless `.git` is `.git/modules/`-shaped.
+
 ## 0.100.0 (2026-09-11)
 
 - **New (LEDGER-ONLY): `claim-ledger.js`, a Stop hook that measures confident-but-

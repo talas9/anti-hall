@@ -1493,6 +1493,95 @@ function cursorHygienePostUpdate(opts) {
 }
 
 /**
+ * codexGraphifyHooksMigratePostUpdate({ paths, env, cwd, home }) →
+ *   { attempted, targets, changed, removed, errors, detail }
+ *
+ * Graphify retirement (2026-09-18) forward migration for a PERSISTED shape
+ * `codex/install-codex.js` writes into the USER'S OWN Codex config — NOT this
+ * plugin's own shipped `codex/hooks/hooks.json` template (that file ships
+ * fixed and is already cleaned in this same change). An existing Codex
+ * install (global `~/.codex/hooks.json` via `--global`, or project-local
+ * `<cwd>/.codex/hooks.json`) may have graphify-session.js/graphify-guard.js/
+ * graphify-reminder.js groups written into it by a PRIOR version of
+ * install-codex.js. Those three files are deleted by this same change, so an
+ * unmigrated install would have hook groups pointing at missing files.
+ *
+ * Reuses install-codex.js's OWN `removeGraphifyGroups` (same module this
+ * plugin's installer uses — no separate, drift-prone reimplementation): reads
+ * whichever of the two hooks.json locations exist, strips ONLY groups that
+ * register one of the three removed files, leaves every other event/group
+ * byte-identical, and writes back ONLY when something was actually removed.
+ * NEVER deletes the config file itself (a config with no graphify groups
+ * left, or one that never had any, is left untouched — `changed` stays
+ * false). Idempotent: a second run over already-cleaned config finds nothing
+ * to remove. Fully fail-open (a read/parse/write error on one target is
+ * recorded and skipped, never thrown) — unrelated to DevSwarm, so unlike the
+ * DevSwarm-session-gated migrations above this one is NOT gated on
+ * isDevswarmActive; it runs on every update because any machine could have a
+ * stale Codex install regardless of whether THIS update run is inside a
+ * DevSwarm workspace. Runs unconditionally (not gated on cache.synced either)
+ * since a stale install predates this run's version bump, not caused by it.
+ */
+function codexGraphifyHooksMigratePostUpdate(opts) {
+  const o = opts || {};
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  const targets = [
+    path.join(home, '.codex', 'hooks.json'),
+    path.join(cwd, '.codex', 'hooks.json'),
+  ];
+  let installMod;
+  try {
+    const installPath = path.join(paths.pluginSrcDir, 'codex', 'install-codex.js');
+    if (!fs.existsSync(installPath)) {
+      return { attempted: false, detail: 'codex graphify-hooks migrate skipped: install-codex.js not found under ' + paths.pluginSrcDir };
+    }
+    installMod = o.installCodex || require(installPath);
+    if (typeof installMod.removeGraphifyGroups !== 'function') {
+      return { attempted: false, detail: 'codex graphify-hooks migrate skipped: this install-codex.js build has no removeGraphifyGroups' };
+    }
+  } catch (e) {
+    return { attempted: false, detail: 'codex graphify-hooks migrate raised while loading install-codex.js: ' + (e && e.message ? e.message : String(e)) };
+  }
+
+  let changed = 0;
+  let removedTotal = 0;
+  let errors = 0;
+  const seen = new Set(); // de-dup: cwd === home in some edge setups
+  for (const target of targets) {
+    if (seen.has(target)) continue;
+    seen.add(target);
+    try {
+      if (!fs.existsSync(target)) continue;
+      const raw = fs.readFileSync(target, 'utf8');
+      let json;
+      try { json = JSON.parse(raw); } catch (_) { continue; } // malformed config: leave alone, fail-open
+      const { hooks, removed } = installMod.removeGraphifyGroups(json);
+      if (!removed) continue; // nothing to migrate — leave file byte-identical, untouched
+      const next = Object.assign({}, json, { hooks });
+      const nextStr = JSON.stringify(next, null, 2) + '\n';
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      fs.copyFileSync(target, target + '.bak-' + stamp);
+      fs.writeFileSync(target, nextStr);
+      changed += 1;
+      removedTotal += removed;
+    } catch (e) {
+      errors += 1; // fail-open: this ONE target's error never blocks the others or the update
+    }
+  }
+  return {
+    attempted: true,
+    targets: targets.length,
+    changed,
+    removed: removedTotal,
+    errors,
+    detail: 'codex graphify-hooks migrate: ' + changed + ' config(s) cleaned, ' + removedTotal
+      + ' stale group(s) removed' + (errors ? ' (' + errors + ' target error(s), fail-open)' : ''),
+  };
+}
+
+/**
  * replyStateMigratePostUpdate({ paths, env, cwd, home }) →
  *   { attempted, scanned, migrated, alreadyAppendOnly, errors, detail }
  *
@@ -2529,6 +2618,10 @@ function runUpdate(opts) {
   // claims to have armed anything. Same gate + fail-open posture; never
   // affects the update's success.
   const wakeMonitor = stageProgress(env, 'wake-monitor', () => wakeMonitorPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
+  // Graphify retirement: clean a stale Codex hooks.json (see the function's own
+  // header). Unlike the DevSwarm-gated migrations above, this one is NOT gated
+  // on isDevswarmActive — a stale Codex install can exist on any machine.
+  const codexGraphifyHooksMigrate = stageProgress(env, 'codex-graphify-hooks-migrate', () => codexGraphifyHooksMigratePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home }));
 
   // Unknown installed version → NEVER 'already up to date'; no delta computable
   // (a null `from` would dump the entire changelog, so suppress it).
@@ -2553,6 +2646,7 @@ function runUpdate(opts) {
         gateIntentsMigrate,
         healRegistryRows,
         wakeMonitor,
+        codexGraphifyHooksMigrate,
         action: UNKNOWN_INSTALLED_ACTION,
       },
       changelog: '',
@@ -2591,6 +2685,7 @@ function runUpdate(opts) {
       gateIntentsMigrate,
       healRegistryRows,
       wakeMonitor,
+      codexGraphifyHooksMigrate,
       action: updated ? 'run /reload-plugins' : 'already up to date',
     },
     changelog,
@@ -2673,6 +2768,9 @@ function renderHuman(status, changelog) {
       }
     }
   }
+  if (status.codexGraphifyHooksMigrate && status.codexGraphifyHooksMigrate.attempted) {
+    lines.push('  codex-graphify-hooks-migrate: ' + status.codexGraphifyHooksMigrate.detail);
+  }
   if (status.wakeMonitor && status.wakeMonitor.attempted) {
     lines.push('  wake-monitor: ' + status.wakeMonitor.detail);
   }
@@ -2730,6 +2828,7 @@ module.exports = {
   cursorHygienePostUpdate,
   healRegistryPostUpdate,
   wakeMonitorPostUpdate,
+  codexGraphifyHooksMigratePostUpdate,
   readLegacyHeartbeat,
   rollbackToLegacyUnits,
   runCheck,

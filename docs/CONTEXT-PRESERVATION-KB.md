@@ -326,7 +326,7 @@ The anti-hall **Delegation-First Architecture** is, in effect, technique §2 (su
 
 3. **The "ASSUME INTERRUPTION" multi-session pattern maps directly onto the compact policy.** The repo's "treat compacts as invisible, update memory files (1–2 edits max), resume immediately" rule is the §7.2 progress-file bootstrap — and the literature's discipline of *marking work complete only after end-to-end verification* and keeping the progress log current is the missing reinforcement. [mem-bootstrap, harness-progress]
 
-4. **Memory should hold reusable patterns, not case facts.** The Obsidian/graphify "FIRST RESORT" rule aligns with §7.5 — persist durable process/methodology knowledge, keep one-off case facts in reviewed artifacts (graphify graphs / git), and prune stale notes (§7.7 forgetting) so the knowledge layer stays high-signal. [oa-mempattern, oa-consol]
+4. **Memory should hold reusable patterns, not case facts.** A "durable-knowledge-first" rule aligns with §7.5 — persist durable process/methodology knowledge, keep one-off case facts in reviewed artifacts (progress files / git), and prune stale notes (§7.7 forgetting) so the knowledge layer stays high-signal. [oa-mempattern, oa-consol]
 
 5. **Output discipline for sub-agent returns.** Instruct sub-agents to return distilled, structured summaries (§8, §9.2) and route large structured outputs to files rather than back through the orchestrator (§2.3) — directly relevant to anti-hall's "subagents report findings back so the main agent persists them." [a-artifact, g5-2]
 

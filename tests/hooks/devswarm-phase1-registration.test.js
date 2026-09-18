@@ -66,8 +66,8 @@ test('coexistence: the pre-existing UserPromptSubmit + Stop hooks are untouched 
   for (const f of ['verify-first.js', 'task-tracker.js', 'limit-conserve-inject.js']) {
     assert.ok(ups.some((c) => c.includes(f)), `pre-existing UPS hook missing after wiring: ${f}`);
   }
-  // The 6 original Stop hooks still present.
-  for (const f of ['task-guard.js', 'tasklist-guard.js', 'graphify-reminder.js', 'speculation-guard.js', 'speculation-judge.js', 'codex-nudge.js']) {
+  // The 5 original Stop hooks still present.
+  for (const f of ['task-guard.js', 'tasklist-guard.js', 'speculation-guard.js', 'speculation-judge.js', 'codex-nudge.js']) {
     assert.ok(stop.some((c) => c.includes(f)), `pre-existing Stop hook missing after wiring: ${f}`);
   }
 

@@ -164,9 +164,6 @@ function contextBrief(a) {
       'ROUND 1 (initial, comprehensive): enumerate the target files with line anchors,',
       'summarize prior history from the handoff (' + (a.handoffPath || '(none)') + '),',
       'declare the exact audit scope, and include the relevant code excerpts seats need.',
-      'Run the graphify freshness check HERE ONLY (update if stale) — never per round.',
-      'Skip the update step if this is a DevSwarm child workspace: query only, the',
-      'Primary updates the graph.',
     );
   } else {
     lines.push(

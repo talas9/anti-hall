@@ -508,9 +508,7 @@ double-guarded by a round-counter arg the script refuses past 15.
 1. **CONTEXT AGENT** (`agent(contextBrief, {model:"sonnet"})`, first call) —
    builds the shared context pack so the seats don't each re-read the target. On
    round 1 it assembles a comprehensive pack (target files, prior history via the
-   handoff path passed in `args`, scope declaration, line anchors) and does the
-   graphify freshness check HERE ONLY (never per-round; skipped in a DevSwarm
-   child workspace — reads only, the Primary updates the graph). On round >1 it builds an
+   handoff path passed in `args`, scope declaration, line anchors). On round >1 it builds an
    INCREMENTAL pack (prior pack + findings + fixes applied + reinvestigation
    instructions) without re-reading targets in full. Output = a context-pack FILE
    (path in the structured output) — the seats' shared source. The prior pack is

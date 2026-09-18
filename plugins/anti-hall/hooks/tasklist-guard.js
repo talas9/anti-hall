@@ -368,7 +368,7 @@ function main() {
       'Also append each COMPLETED task to .anti-hall/history/' + progressDate + '/' +
       sessionIdForPath + '.md (append-only ' +
       'ledger, one entry per task: Cause / Fix / Verified) so the fix history ' +
-      'persists for the knowledge layer — gitignore it too.'
+      'persists across sessions — gitignore it too.'
   );
 
   // OMC-awareness: if an autonomous OMC loop (ralph, ultrawork, autopilot, etc.)

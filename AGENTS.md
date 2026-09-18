@@ -157,19 +157,6 @@ reproduce/validate/lint steps in your plan and run them before claiming success.
     the parent session's sandbox config and cannot opt out individually. Doc-only guidance
     for now — no mechanical enforcement.
 
-## Recommended companion: graphify
-
-The `graphify-guard` and `graphify-session` hooks integrate with graphify
-(a user-global knowledge-graph skill/CLI, not a marketplace plugin). If the project has
-a `graphify-out/` or `.planning/graphs/` directory, the hooks enforce querying the graph
-before raw code search and remind the model to keep it updated. The hooks no-op
-gracefully when graphify is not present — there is no hard dependency.
-
-- **GRAPHIFY-FIRST:** When a graphify graph exists, ensure it is fresh (`/graphify
-  --obsidian`) then query it (`/graphify query "..."`) BEFORE any Grep/Glob/Bash
-  code-nav search and BEFORE starting a ship-it analysis. A graph query costs
-  zero main-thread context bloat; a raw search sweep fills context and invites
-  hallucination.
 
 ## Anti-speculation enforcement: three tiers
 
