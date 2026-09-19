@@ -584,6 +584,73 @@ test('release.heartbeat refreshes the lock ts so a long-lived daemon stays fresh
   } finally { rm(home); }
 });
 
+// Codex review P1-2 fix: heartbeat's tri-state contract (true / false / 'error')
+// — a transient FS error must never be conflated with a definitive, provable
+// lock loss (see heartbeat's own contract comment in acquireIngestLock).
+test('release.heartbeat returns false (definitive loss) when the lock file is genuinely GONE (ENOENT)', () => {
+  const home = tmpHome();
+  try {
+    const rel = ingest.acquireIngestLock(home);
+    assert.ok(rel, 'acquired');
+    fs.unlinkSync(ingest.ingestLockPath(home)); // simulate the lock vanishing out from under us
+    assert.equal(rel.heartbeat(), false, 'ENOENT on read is definitive loss');
+  } finally { rm(home); }
+});
+
+test('release.heartbeat returns false (definitive loss) when the lock file parses cleanly but the token no longer matches ours', () => {
+  const home = tmpHome();
+  try {
+    const rel = ingest.acquireIngestLock(home);
+    assert.ok(rel, 'acquired');
+    const p = ingest.ingestLockPath(home);
+    fs.writeFileSync(p, JSON.stringify({ pid: 99999, ts: Date.now(), token: 'someone-elses-token' }));
+    assert.equal(rel.heartbeat(), false, 'a clean parse with a foreign token is definitive loss (reclaimed by another starter)');
+  } finally { rm(home); }
+});
+
+test('release.heartbeat returns \'error\' (NOT false) on a transient non-ENOENT read failure — never conflated with lock loss', () => {
+  const home = tmpHome();
+  try {
+    const rel = ingest.acquireIngestLock(home);
+    assert.ok(rel, 'acquired');
+    const realReadFileSync = fs.readFileSync;
+    const p = ingest.ingestLockPath(home);
+    fs.readFileSync = function (file, ...rest) {
+      if (file === p) { const e = new Error('resource busy'); e.code = 'EBUSY'; throw e; }
+      return realReadFileSync.call(fs, file, ...rest);
+    };
+    try {
+      assert.equal(rel.heartbeat(), 'error', 'a non-ENOENT read error is transient, not proof of loss');
+    } finally { fs.readFileSync = realReadFileSync; }
+  } finally { rm(home); }
+});
+
+test('release.heartbeat returns \'error\' on a torn/unparseable read (racing a concurrent tmp+rename) — never conflated with lock loss', () => {
+  const home = tmpHome();
+  try {
+    const rel = ingest.acquireIngestLock(home);
+    assert.ok(rel, 'acquired');
+    fs.writeFileSync(ingest.ingestLockPath(home), '{not valid json, caught mid-write');
+    assert.equal(rel.heartbeat(), 'error', 'a torn/unparseable read is transient, not proof of loss');
+  } finally { rm(home); }
+});
+
+test('release.heartbeat returns \'error\' when the write/rename step itself fails, leaving the still-valid lock in place — never conflated with lock loss', () => {
+  const home = tmpHome();
+  try {
+    const rel = ingest.acquireIngestLock(home);
+    assert.ok(rel, 'acquired');
+    const realWriteFileSync = fs.writeFileSync;
+    fs.writeFileSync = function (file, ...rest) {
+      if (String(file).includes('.hb.')) { const e = new Error('no space left on device'); e.code = 'ENOSPC'; throw e; }
+      return realWriteFileSync.call(fs, file, ...rest);
+    };
+    try {
+      assert.equal(rel.heartbeat(), 'error', 'a write/rename failure is transient, not proof of loss');
+    } finally { fs.writeFileSync = realWriteFileSync; }
+  } finally { rm(home); }
+});
+
 test('acquireIngestLock RECLAIMS a CORRUPT (non-empty garbage) lock file once its mtime is stale — no crash', () => {
   const home = tmpHome();
   try {
@@ -651,90 +718,35 @@ test('acquireIngestLock: TWO concurrent starters racing to steal the SAME stale 
   } finally { rm(home); }
 });
 
-// P0 FIX (signal-safe release): a normal return/throw already releases the lock via
-// runIngestLoop's `finally`, but that's ordinary JS control flow — an OS SIGTERM
-// (launchd stopping/restarting this unit) or SIGINT (Ctrl-C) bypasses it entirely
-// (Node's default disposition is immediate termination), leaking the lock and
-// forcing every OTHER starter to wait out the full stale window. SIGTERM/SIGINT are
-// trappable (unlike SIGKILL/a hard OOM-kill, which no userland code can intercept —
-// those still rely on the stale+dead reclaim path, unchanged). `io.process` is a
-// fake process-like object (mirrors the file's other io.fs/io.isAlive/io.now DI
-// seams) so this is fully deterministic — no real OS signal is sent to the test
-// worker.
+// REVERSED (was P0 "signal-safe release"): registering a JS SIGTERM/SIGINT
+// listener DISABLES Node's default terminate-on-signal disposition, making the
+// process's death depend entirely on that listener actually running. But a JS
+// signal handler can only run from the event loop, and this daemon spends its
+// entire risky window blocked in a synchronous call (spawnSync / Atomics.wait)
+// — so the listener was UNDELIVERABLE for as long as that block lasted, which
+// in production is effectively always. This was CONFIRMED LIVE: 12 duplicate
+// daemons, 7-12 days old, that ignored SIGTERM and only died to SIGKILL.
+// runIngestLoop no longer registers any SIGTERM/SIGINT listener at all, so
+// Node's default disposition (immediate termination, enforced by the runtime
+// without needing the event loop to run any JS) governs instead. A lock left
+// behind by a killed daemon self-heals via acquireIngestLock's
+// dead-holder-immediate-reclaim path (P1-B) — no graceful in-process release
+// is needed. `io.process` remains available as a DI seam for other tests, but
+// there are no listeners left for it to intercept.
 function fakeProcess() {
   const handlers = {};
-  let exitCode = null;
   return {
     on(sig, fn) { (handlers[sig] = handlers[sig] || []).push(fn); },
     removeListener(sig, fn) {
       if (!handlers[sig]) return;
       handlers[sig] = handlers[sig].filter((h) => h !== fn);
     },
-    exit(code) { exitCode = code; },
     listenerCount(sig) { return (handlers[sig] || []).length; },
     fire(sig) { for (const fn of (handlers[sig] || []).slice()) fn(); },
-    get exitCode() { return exitCode; },
   };
 }
 
-// These two tests check the lock file's state SYNCHRONOUSLY, mid-loop, in the same
-// tick the signal fires — i.e. strictly BEFORE runIngestLoop's own pre-existing
-// `finally` (which ALSO releases the lock, on ANY normal loop completion, pre-fix
-// included) ever gets a chance to run. That isolates the assertion to the NEW
-// signal-handler code path only — a test that merely checked "is the lock gone
-// after runIngestLoop returns" would pass even on pre-fix code (the ordinary
-// finally already released it once the mocked loop reached maxIterations), so it
-// would NOT be stash-proof.
-test('runIngestLoop releases the lock on SIGTERM IMMEDIATELY, mid-loop — independent of the eventual finally cleanup (was previously UNHANDLED)', () => {
-  const home = tmpHome();
-  const proc = fakeProcess();
-  const lockPath = ingest.ingestLockPath(home);
-  let releasedDuringSignal = null;
-  const run = () => {
-    const before = fs.existsSync(lockPath);
-    proc.fire('SIGTERM'); // simulate the signal arriving while the daemon is mid-poll
-    const after = fs.existsSync(lockPath);
-    releasedDuringSignal = before && !after;
-    return { ok: true, raw: '[]' };
-  };
-  try {
-    // worktree: null forces the SAME legacy global lock path `lockPath` above was
-    // computed with (ingest.ingestLockPath(home) with no worktree arg) — without
-    // this the loop resolves the test process's OWN real git worktree and locks a
-    // DIFFERENT (per-project) file, making the existsSync checks below check the
-    // wrong path entirely.
-    ingest.runIngestLoop({
-      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: null,
-      run, sleep: () => {}, io: { process: proc },
-    });
-  } finally { rm(home); }
-  assert.equal(proc.exitCode, 0, 'the signal handler called process.exit(0)');
-  assert.equal(releasedDuringSignal, true, 'the lock was gone IMMEDIATELY when the signal fired — released by the SIGTERM handler itself, not merely by the pre-existing finally afterward');
-});
-
-test('runIngestLoop releases the lock on SIGINT IMMEDIATELY, mid-loop (Ctrl-C) — independent of the eventual finally cleanup', () => {
-  const home = tmpHome();
-  const proc = fakeProcess();
-  const lockPath = ingest.ingestLockPath(home);
-  let releasedDuringSignal = null;
-  const run = () => {
-    const before = fs.existsSync(lockPath);
-    proc.fire('SIGINT');
-    const after = fs.existsSync(lockPath);
-    releasedDuringSignal = before && !after;
-    return { ok: true, raw: '[]' };
-  };
-  try {
-    ingest.runIngestLoop({
-      home, backend: 'journal', workspaceId: 'p', maxIterations: 1, worktree: null,
-      run, sleep: () => {}, io: { process: proc },
-    });
-  } finally { rm(home); }
-  assert.equal(proc.exitCode, 0, 'the SIGINT handler called process.exit(0)');
-  assert.equal(releasedDuringSignal, true, 'the lock was gone IMMEDIATELY when the signal fired — released by the SIGINT handler itself');
-});
-
-test('runIngestLoop de-registers its signal handlers on normal completion (no listener leak across daemon lifecycles)', () => {
+test('runIngestLoop registers NO SIGTERM/SIGINT listener — Node default disposition (terminate) governs instead of an event-loop-bound JS handler', () => {
   const home = tmpHome();
   try {
     const proc = fakeProcess();
@@ -743,10 +755,14 @@ test('runIngestLoop de-registers its signal handlers on normal completion (no li
       run: () => ({ ok: true, raw: '[]' }), sleep: () => {}, io: { process: proc },
     });
     assert.equal(summary.started, true);
-    assert.equal(proc.listenerCount('SIGTERM'), 0, 'SIGTERM handler removed once the loop completes normally');
-    assert.equal(proc.listenerCount('SIGINT'), 0, 'SIGINT handler removed once the loop completes normally');
+    assert.equal(proc.listenerCount('SIGTERM'), 0, 'no SIGTERM listener registered — default (terminate) disposition applies');
+    assert.equal(proc.listenerCount('SIGINT'), 0, 'no SIGINT listener registered — default (terminate) disposition applies');
   } finally { rm(home); }
 });
+
+// Real-process regression test (the actual behavior this fix restores) lives in
+// devswarm-ingest-sigterm.test.js: it spawns runIngestLoop in a genuine CHILD
+// PROCESS and asserts a real SIGTERM kills it promptly.
 
 test('normalizeMonitorPayload tolerates every plausible JSON shape', () => {
   const N = ingest.normalizeMonitorPayload;
@@ -1501,5 +1517,93 @@ test('REGRESSION: runIngestLoop FAILURE path still backs off exactly as before (
     for (const ms of sleepCalls) {
       assert.equal(ms, 250, 'failure-path backoff is unchanged by the success-path pacing fix');
     }
+  } finally { rm(home); }
+});
+
+// FIX B (lost-lock exit): release.heartbeat() returning false means the lock
+// file no longer holds OUR token — another starter has reclaimed it as a dead
+// holder (or it was deleted out from under us). Continuing to run after that
+// would put TWO consumers on the same destructive native queue. The loop must
+// stop as soon as that is detected, rather than discarding the return value
+// (the pre-fix behavior) and running to maxIterations regardless.
+test('runIngestLoop STOPS as soon as release.heartbeat() reports the lock was lost (does not keep running as a second consumer)', () => {
+  const home = tmpHome();
+  try {
+    let heartbeatCalls = 0;
+    let releaseCalled = false;
+    const fakeRelease = Object.assign(
+      () => { releaseCalled = true; },
+      {
+        heartbeat: () => {
+          heartbeatCalls++;
+          return heartbeatCalls < 2; // true on iteration 1, false starting iteration 2
+        },
+      },
+    );
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 5,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
+      io: { lock: () => fakeRelease },
+    });
+    assert.equal(summary.started, true);
+    assert.ok(summary.stats.iterations < 5, `loop must stop early once the lock is lost, got ${summary.stats.iterations} iterations`);
+    assert.equal(releaseCalled, true, 'the (now-moot) release() is still called in the finally cleanup');
+  } finally { rm(home); }
+});
+
+test('runIngestLoop logs a clear line when it stops because the lock was lost', () => {
+  const home = tmpHome();
+  try {
+    let heartbeatCalls = 0;
+    const fakeRelease = Object.assign(
+      () => {},
+      { heartbeat: () => { heartbeatCalls++; return heartbeatCalls < 1; } }, // lost on the very first check
+    );
+    ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 5,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
+      io: { lock: () => fakeRelease },
+    });
+    const log = fs.readFileSync(ingest.logFilePath(home), 'utf8');
+    assert.match(log, /lock was reclaimed by another consumer|lost heartbeat/, 'log records why the daemon stopped');
+  } finally { rm(home); }
+});
+
+// Codex review P1-2 fix at the runIngestLoop level: a heartbeat that reports
+// 'error' (transient) on EVERY call must NOT stop the loop — only a definitive
+// `false` may. This is the loop-level counterpart to the acquireIngestLock-level
+// heartbeat() contract tests above.
+test('runIngestLoop KEEPS RUNNING through persistent transient heartbeat errors (never conflates \'error\' with lock loss)', () => {
+  const home = tmpHome();
+  try {
+    let heartbeatCalls = 0;
+    const fakeRelease = Object.assign(
+      () => {},
+      { heartbeat: () => { heartbeatCalls++; return 'error'; } }, // always transient, never a definitive loss
+    );
+    const summary = ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 4,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
+      io: { lock: () => fakeRelease },
+    });
+    assert.equal(summary.started, true);
+    assert.equal(summary.stats.iterations, 4, 'ran to completion — a transient heartbeat error is never treated as lock loss');
+    assert.ok(heartbeatCalls >= 4, 'heartbeat was still consulted every cycle despite always erroring');
+  } finally { rm(home); }
+});
+
+test('runIngestLoop logs a transient heartbeat error ONCE (not per-cycle) and does not log the lock-lost line for it', () => {
+  const home = tmpHome();
+  try {
+    const fakeRelease = Object.assign(() => {}, { heartbeat: () => 'error' });
+    ingest.runIngestLoop({
+      home, backend: 'journal', workspaceId: 'p', maxIterations: 4,
+      run: () => ({ ok: true, raw: '[]' }), sleep: () => {},
+      io: { lock: () => fakeRelease },
+    });
+    const log = fs.readFileSync(ingest.logFilePath(home), 'utf8');
+    const transientLines = log.split('\n').filter((l) => l.includes('heartbeat failed transiently'));
+    assert.equal(transientLines.length, 1, 'the transient-error line is logged exactly once, not once per cycle');
+    assert.doesNotMatch(log, /lock was reclaimed by another consumer/, 'a transient error must never log the lock-lost line');
   } finally { rm(home); }
 });

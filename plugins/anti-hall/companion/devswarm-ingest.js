@@ -510,19 +510,45 @@ function acquireIngestLock(home, io, worktree) {
       // heartbeat(atMs?) — refresh OUR lock's ts (atomic tmp+rename) so a healthy
       // long-lived daemon stays fresh and is never mistaken for a stale holder.
       // No-op (and never clobbers) if the lock was reclaimed by someone else
-      // (token mismatch) or is gone. Returns true iff we refreshed our own lock.
+      // (token mismatch) or is gone.
+      //
+      // TRI-STATE RETURN (Codex review fix — a caller that treated every falsy/
+      // exception outcome as "lock lost" would exit a perfectly healthy daemon
+      // on a transient EBUSY/EMFILE/ENOSPC blip, or on a torn read racing a
+      // concurrent writer's tmp+rename — none of those prove the lock changed
+      // hands):
+      //   true   — refreshed OUR lock; still ours, still healthy.
+      //   false  — DEFINITIVE loss: the lock file is genuinely gone (ENOENT on
+      //            read), or it parsed cleanly and the token no longer matches
+      //            ours (someone else's lock is now at this path). A caller MAY
+      //            treat this as "stop, we are no longer the consumer".
+      //   'error' — anything else: a non-ENOENT read error, an unparseable/torn
+      //            read (mirrors the TORN-READ GUARD posture already used for
+      //            the initial acquire above), or a write/rename failure. NOT
+      //            proof of loss — a caller must keep running and retry later.
       release.heartbeat = function heartbeat(atMs) {
+        let raw;
         try {
-          const cur = JSON.parse(F.readFileSync(p, 'utf8'));
-          if (cur && cur.token === token) {
-            const nts = Number.isFinite(atMs) ? atMs : now();
-            const tmp = p + '.hb.' + process.pid;
-            F.writeFileSync(tmp, JSON.stringify({ pid: cur.pid, ts: nts, token }));
-            F.renameSync(tmp, p);
-            return true;
-          }
-        } catch (_) {}
-        return false;
+          raw = F.readFileSync(p, 'utf8');
+        } catch (e) {
+          return (e && e.code === 'ENOENT') ? false : 'error';
+        }
+        let cur;
+        try {
+          cur = JSON.parse(raw);
+        } catch (_) {
+          return 'error'; // torn/unparseable read — transient, not proof of loss
+        }
+        if (!cur || cur.token !== token) return false; // definitively reclaimed
+        try {
+          const nts = Number.isFinite(atMs) ? atMs : now();
+          const tmp = p + '.hb.' + process.pid;
+          F.writeFileSync(tmp, JSON.stringify({ pid: cur.pid, ts: nts, token }));
+          F.renameSync(tmp, p);
+          return true;
+        } catch (_) {
+          return 'error'; // write/rename failure — transient, not proof of loss
+        }
       };
       return release;
     } catch (e) {
@@ -560,14 +586,18 @@ function acquireIngestLock(home, io, worktree) {
       // P1-B fix: a holder with a KNOWN pid that is confirmed DEAD can never come
       // back — reclaim it IMMEDIATELY, without waiting out the staleness window.
       // (Previously a lock leaked by a killed daemon stranded ingestion for up to
-      // INGEST_LOCK_STALE_MS ~15min: Node cannot run a SIGTERM/SIGINT handler
-      // while the event loop is blocked inside spawnSync, so a daemon killed mid-
-      // spawn never got a chance to release its own lock — see runIngestLoop's
-      // signal-handler comment. hardTimeoutMs bounds how long that block can last;
-      // this dead-holder-immediate-reclaim is what actually closes the leaked-lock
-      // window for every OTHER starter once the holder is confirmed gone.) An
-      // UNKNOWN holder (unparseable/torn record, no pid to check) still needs BOTH
-      // stale AND not-alive before reclaim — unchanged from before.
+      // INGEST_LOCK_STALE_MS ~15min. This mattered even MORE before a later fix:
+      // runIngestLoop used to register a SIGTERM/SIGINT listener that could not
+      // run while the event loop was blocked inside spawnSync, so a killed daemon
+      // often never got a chance to release its own lock at all — that listener
+      // has since been REMOVED (Node's default terminate disposition now governs,
+      // which does not depend on the event loop running any JS), but a hard kill
+      // (SIGKILL, OOM) still bypasses any in-process release regardless. hardTimeoutMs
+      // bounds how long the spawnSync block itself can last; this dead-holder-
+      // immediate-reclaim is what actually closes the leaked-lock window for every
+      // OTHER starter once the holder is confirmed gone, independent of how it died.)
+      // An UNKNOWN holder (unparseable/torn record, no pid to check) still needs
+      // BOTH stale AND not-alive before reclaim — unchanged from before.
       const knownDead = reclaimReason !== null;
       const stale = holderTs === null || (now() - holderTs) > INGEST_LOCK_STALE_MS;
       if (knownDead || (stale && !alive)) {
@@ -1213,32 +1243,28 @@ function runIngestLoop(opts) {
     appendLog(home, 'ingest daemon refused to start: ' + reason, logFs);
     return { ok: false, started: false, reason };
   }
-  // SIGNAL HANDLER (kept, but NOT relied on for correctness — see below). A normal
-  // return/throw already releases the lock via the `finally` below; these handlers
-  // additionally trap SIGTERM (launchd stopping/restarting this unit) and SIGINT
-  // (Ctrl-C) so a release ALSO happens on that path, WHEN THE HANDLER ACTUALLY GETS
-  // A CHANCE TO RUN. It does not always get that chance: Node cannot execute a JS
-  // signal handler while the event loop is blocked inside a synchronous call, and
-  // this daemon spends its entire risky window blocked inside `spawnSync` (the
-  // monitor child call below). A signal that arrives during that window is simply
-  // not delivered to this handler until spawnSync returns — so this handler CANNOT
-  // close the leaked-lock window for that case (Node does not preempt a blocking
-  // syscall to dispatch a JS signal handler). What actually guarantees recovery
-  // from a lock left behind by a killed daemon is dead-holder-immediate-reclaim in
-  // acquireIngestLock (P1-B, see its STEAL RULE comment above), combined with
-  // hardTimeoutMs (below) bounding how long the spawnSync block itself can last.
-  // These handlers remain useful — and harmless — for the ordinary case where the
-  // daemon is signaled OUTSIDE the blocking spawn (e.g. between iterations), so
-  // they stay registered. `proc` is injectable via io.process (same DI seam as
-  // io.fs/io.isAlive/io.now/io.lock above) so tests can capture + invoke the handler
-  // deterministically instead of sending a real OS signal to the test worker.
-  const proc = (o.io && o.io.process) || process;
-  const onSignal = function onSignal() {
-    try { release(); } catch (_) {}
-    proc.exit(0);
-  };
-  proc.on('SIGTERM', onSignal);
-  proc.on('SIGINT', onSignal);
+  // NO SIGTERM/SIGINT LISTENER (fixed — was the root cause of duplicate daemons
+  // piling up under launchd, observed live as 12 stuck daemons that only
+  // SIGKILL could remove). Registering a JS listener for a signal DISABLES
+  // Node's own default disposition (terminate) for that signal — the process
+  // then depends ENTIRELY on the listener actually running to die. But a JS
+  // signal handler can only run from the event loop, and this daemon spends
+  // its entire risky window blocked inside a fully synchronous call
+  // (`spawnSync` below, or `sleepSync`'s `Atomics.wait`) — the event loop
+  // never turns, so a registered handler is undeliverable for as long as that
+  // block lasts, which in this loop is effectively always. Leaving the
+  // listener registered therefore made SIGTERM (launchd stop/restart) and
+  // SIGINT permanently ineffective, not merely delayed.
+  //
+  // Leaving signals UNregistered restores Node's default disposition, which
+  // the kernel/runtime enforces without needing the event loop to run any JS
+  // — SIGTERM/SIGINT now actually terminate the process. This forgoes a
+  // graceful `release()` on signal, but that is safe: a lock left behind by a
+  // killed daemon is reclaimed IMMEDIATELY by the next starter via the
+  // dead-holder-immediate-reclaim path in acquireIngestLock (P1-B — see its
+  // STEAL RULE comment above; `knownDead` at ~line 571 reclaims a lock whose
+  // recorded pid is confirmed not alive, with no staleness wait), so no
+  // starter is ever blocked by a lock this process leaves behind.
 
   // ORPHANED-LOCK SWEEP (v0.65). We hold our own lock now, so every OTHER ingest
   // lock in the directory belongs to someone else — sweep the ones whose recorded
@@ -1276,8 +1302,6 @@ function runIngestLoop(opts) {
         + probe.liveHolders.map((h) => h.worktree + ' (pid ' + h.pid + ')').join(', ');
       appendLog(home, 'ingest daemon refused to start: ' + reason, logFs);
       try { release(); } catch (_) {}
-      try { proc.removeListener('SIGTERM', onSignal); } catch (_) {}
-      try { proc.removeListener('SIGINT', onSignal); } catch (_) {}
       return { ok: false, started: false, reason, liveHolders: probe.liveHolders };
     }
   }
@@ -1387,12 +1411,51 @@ function runIngestLoop(opts) {
     // is perfectly healthy. Slicing keeps both signals honest during the backoff
     // WITHOUT shortening it. One slice always runs, so a failure's updated
     // counters reach the heartbeat immediately rather than one cycle later.
+    // LOCK-LOST EXIT (fix B): release.heartbeat() never throws (it already
+    // catches internally, see acquireIngestLock) and returns one of THREE
+    // states — true / false / 'error' (see its own contract comment). Only
+    // `false` (DEFINITIVE loss: the lock file is gone, or parsed cleanly with
+    // a token that is no longer ours) means someone else now holds the real
+    // lock — continuing to run after that means TWO consumers draining the
+    // same destructive native queue, so both the loop and any in-progress
+    // backoff must stop. `'error'` (a transient FS hiccup — EBUSY/EMFILE/
+    // ENOSPC, a torn read, a write/rename failure) is NOT proof of loss and
+    // must NOT stop a healthy daemon (Codex review P1: the original version of
+    // this fix treated every falsy/exception outcome as loss, which would
+    // have killed a perfectly healthy daemon on a single transient blip) — it
+    // is logged once (not every cycle, to avoid a log storm from a genuinely
+    // broken lock dir) and the loop keeps going; the daemon's OTHER liveness
+    // signal (writeIngestHeartbeat below) is unaffected by this failure, so no
+    // OTHER starter can misread us as dead/wedged from this alone. No
+    // consecutive-error counter/exit: a lock dir broken badly enough to keep
+    // failing heartbeat forever would also break every other fs op this loop
+    // depends on (openStore, quarantine writes, appendLog), which already
+    // surface through their own existing fail-open paths — adding a second,
+    // narrower kill-switch here would just be a second guess at the same
+    // underlying failure with no new information.
+    let lockLost = false;
+    let transientHeartbeatErrorLogged = false;
+    function checkHeartbeat() {
+      if (release && typeof release.heartbeat === 'function') {
+        const result = release.heartbeat(o.now);
+        if (result === false) {
+          lockLost = true;
+        } else if (result === 'error') {
+          if (!transientHeartbeatErrorLogged) {
+            transientHeartbeatErrorLogged = true;
+            appendLog(home, 'WARN: ingest lock heartbeat failed transiently (not lock loss) — will keep retrying, logged once', logFs);
+          }
+        } else {
+          transientHeartbeatErrorLogged = false; // healthy again — a LATER bad patch logs too
+        }
+      }
+    }
+
     function backoffWithHeartbeat(totalMs) {
       let remaining = Math.max(0, Number.isFinite(totalMs) ? totalMs : 0);
       do {
-        if (release && typeof release.heartbeat === 'function') {
-          try { release.heartbeat(o.now); } catch (_) {}
-        }
+        checkHeartbeat();
+        if (lockLost) break;
         writeIngestHeartbeat(home, hbHash, Object.assign({ workspaceId, workingDir: worktree, now: o.now }, monitorState), (o.io && o.io.storeFs));
         const slice = Math.min(remaining, BACKOFF_HEARTBEAT_SLICE_MS);
         sleep(slice);
@@ -1404,8 +1467,10 @@ function runIngestLoop(opts) {
       if (o.shouldStop && o.shouldStop()) break;
       // Heartbeat our lock each iteration so this live, long-lived consumer keeps
       // its timestamp fresh and can never be mistaken for a stale holder + stolen.
-      if (release && typeof release.heartbeat === 'function') {
-        try { release.heartbeat(o.now); } catch (_) {}
+      checkHeartbeat();
+      if (lockLost) {
+        appendLog(home, 'ingest daemon stopping: lock was reclaimed by another consumer (lost heartbeat)', logFs);
+        break;
       }
       // Per-worktree DAEMON liveness heartbeat, written EVERY sweep regardless of
       // whether anything was ingested — a live-but-quiet daemon must still read as
@@ -1574,8 +1639,6 @@ function runIngestLoop(opts) {
     // cleanup regardless of any one step's outcome.
     try { if (s) s.close(); } catch (e) { alog.logError('ingest', 'store-close-failed', e, { workspaceId }); }
     try { release(); } catch (e) { alog.logError('lock', 'release-failed', e, { workspaceId }); }
-    try { proc.removeListener('SIGTERM', onSignal); } catch (_) {}
-    try { proc.removeListener('SIGINT', onSignal); } catch (_) {}
   }
   return { ok: true, started: true, workspaceId, stats };
 }

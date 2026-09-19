@@ -786,6 +786,31 @@ function defaultSchedRunViaPlan(spec) {
 // logs "[dry-run] would remove ..." instead of unlinking under --dry-run).
 function defaultSchedRm(p) { planRm(p); }
 
+// defaultIsAlivePid(pid) — the same kill(pid,0)-based liveness probe already
+// used elsewhere in this file (unitLiveness's 'hash' branch above); duplicated
+// here (not exported/shared) so this module has no new internal coupling.
+// EPERM means the OS found a real process at that pid owned by someone else —
+// still alive, just not signalable by us; any other error (ESRCH, etc) is dead.
+function defaultIsAlivePid(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
+}
+
+// legacyLockHolderPid(entry, opts) -> pid | null. Best-effort read of the
+// LEGACY per-worktree ingest lock's recorded holder pid. null covers "no hash",
+// "file absent", and "unparseable" alike (fail-open — see stopLegacyUnitEntry's
+// caller, which treats null as "nothing to protect, safe to remove").
+function legacyLockHolderPid(entry, opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  if (!entry.hash) return null;
+  try {
+    const raw = F.readFileSync(path.join(devswarmRoot(o.home), 'locks', 'ingest-' + entry.hash + '.lock'), 'utf8');
+    const holder = JSON.parse(raw);
+    return holder && Number.isFinite(holder.pid) ? holder.pid : null;
+  } catch (_) { return null; }
+}
+
 // SAFETY (folds the build note "never run the real reap on this machine"):
 // git-worktree ENUMERATION (opts.io.run, consumed by listRepoWorktrees/
 // reapPlanForRepo above) is a distinct, non-destructive concern from the
@@ -848,7 +873,23 @@ function stopLegacyUnitEntry(entry, opts) {
       if (changed) run({ cmd: 'crontab', args: ['-'], input: next });
     }
   }
-  if (entry.hash) rm(path.join(devswarmRoot(o.home), 'locks', 'ingest-' + entry.hash + '.lock'));
+  // Delete the legacy lock file ONLY once its recorded holder is confirmed
+  // DEAD (or the record itself is absent/unparseable — nothing to protect).
+  // Deleting it unconditionally right after a best-effort `launchctl unload`
+  // (whose error is ignored — the unload may not have actually landed) used
+  // to race a still-alive legacy daemon: its lock vanishes while the process
+  // keeps running, so a NEW daemon can start beside it and split the
+  // destructive native queue between two consumers. Leaving the lock in place
+  // when the holder is still alive is safe — probeLegacyHolders correctly
+  // reads a live holder and backs off (reap-before-drain), and this same
+  // check runs again on the next reap pass once the holder actually exits.
+  if (entry.hash) {
+    const isAlive = (o.io && o.io.isAlive) || defaultIsAlivePid;
+    const holderPid = legacyLockHolderPid(entry, o);
+    if (holderPid === null || !isAlive(holderPid)) {
+      rm(path.join(devswarmRoot(o.home), 'locks', 'ingest-' + entry.hash + '.lock'));
+    }
+  }
 }
 
 // reapLegacyUnitsForRepo(mainWorktree, opts) -> { plan, stopped } — D9
@@ -870,14 +911,133 @@ function reapLegacyUnitsForRepo(mainWorktree, opts) {
   return { plan, stopped };
 }
 
-// macInstallProject(mainWorktree, repoKey) — install the PER-PROJECT LaunchAgent,
-// keyed by repoKey (not worktreeHash), baking `mainWorktree` as
-// WorkingDirectory. Mirrors macInstall's write/unload/load sequence exactly.
-function macInstallProject(mainWorktree, repoKey) {
+const LAUNCHD_UNLOAD_WAIT_MS = 10000;
+const LAUNCHD_UNLOAD_POLL_MS = 200;
+
+// readLaunchdPid(label, opts) -> pid | null. Best-effort PID of a currently
+// loaded launchd job, parsed from `launchctl list <label>`'s plist-shaped dump
+// (a line like `"PID" = 1234;`). null covers "job not loaded", "launchctl
+// failed", and DRYRUN (planRun's dry stub carries no stdout) alike — every
+// caller treats null as "nothing to wait for", never as an error.
+function readLaunchdPid(label, opts) {
+  const o = opts || {};
+  const run = (o.io && o.io.run) || planRun;
+  try {
+    const r = run('launchctl', ['list', label]);
+    const out = (r && typeof r.stdout === 'string') ? r.stdout : '';
+    const m = out.match(/"PID"\s*=\s*(\d+);/);
+    return m ? Number(m[1]) : null;
+  } catch (_) { return null; }
+}
+
+// waitForLaunchdUnitGone(pidBefore, opts) — bounded poll for the OLD daemon
+// process to actually exit after `launchctl unload`, so the following
+// `launchctl load` never starts a SECOND consumer alongside a still-running
+// one (the install-time counterpart to the daemon's own dead-holder-immediate-
+// reclaim — see devswarm-ingest.js's acquireIngestLock P1-B comment). This is
+// what closes the actual field bug (12 duplicate daemons): `launchctl unload`
+// only unregisters the job from launchd's supervision table and signals it —
+// it does NOT wait for the process to exit, so a slow-to-die (or, pre-fix,
+// SIGTERM-ignoring) old daemon was still fully running when `load` started a
+// brand-new one right beside it. Fail-open at every step: no PID to wait for
+// is a no-op; a hung old daemon is SIGKILLed once the deadline passes rather
+// than blocking the install forever.
+// defaultReadCmdline(pid) -> string | null. Best-effort command-line readback
+// for the WRONG-PROCESS-SIGKILL guard below (Codex review P1-1): `ps -p <pid>
+// -o command=` prints the running command for a live pid, empty/non-zero-exit
+// for a dead/absent one. null on any failure — the caller treats null as
+// "cannot confirm identity", never as "safe to kill".
+function defaultReadCmdline(pid) {
+  try {
+    const r = spawnSync('ps', ['-p', String(pid), '-o', 'command='], { encoding: 'utf8' });
+    if (r.error || r.status !== 0) return null;
+    const out = String(r.stdout || '').trim();
+    return out || null;
+  } catch (_) { return null; }
+}
+
+function waitForLaunchdUnitGone(pidBefore, opts) {
+  const o = opts || {};
+  if (!Number.isFinite(pidBefore) || pidBefore <= 0) return;
+  const isAlive = (o.io && o.io.isAlive) || defaultIsAlivePid;
+  const sleep = (o.io && o.io.sleep) || ((ms) => {
+    try { const sab = new Int32Array(new SharedArrayBuffer(4)); Atomics.wait(sab, 0, 0, Math.max(0, ms | 0)); } catch (_) {}
+  });
+  const now = (o.io && o.io.now) || Date.now;
+  const kill = (o.io && o.io.kill) || ((pid, sig) => { try { process.kill(pid, sig); } catch (_) {} });
+  const readCmdline = (o.io && o.io.readCmdline) || defaultReadCmdline;
+  const deadlineMs = Number.isFinite(o.deadlineMs) ? o.deadlineMs : LAUNCHD_UNLOAD_WAIT_MS;
+  const pollMs = Number.isFinite(o.pollMs) ? o.pollMs : LAUNCHD_UNLOAD_POLL_MS;
+  const deadline = now() + deadlineMs;
+  while (isAlive(pidBefore) && now() < deadline) {
+    sleep(pollMs);
+  }
+  if (!isAlive(pidBefore)) return;
+  // WRONG-PROCESS-SIGKILL GUARD (Codex review P1-1): `isAlive` is a bare
+  // kill(pid,0) — it proves SOME process holds this pid RIGHT NOW, not that it
+  // is still our old ingest daemon. Over a whole deadlineMs window the OS can
+  // recycle a pid to an unrelated process (this machine has had thousand-
+  // process spawn storms — see the memguard/mcp-reaper notes elsewhere in this
+  // repo), and unconditionally SIGKILLing whatever now sits at that pid would
+  // kill someone else's process. Re-confirm identity via the command line
+  // immediately before the kill; FAIL TOWARD NOT KILLING on any inconclusive
+  // read (probe throws, empty, or simply doesn't look like this daemon).
+  let cmdline = null;
+  try { cmdline = readCmdline(pidBefore); } catch (_) { cmdline = null; }
+  if (looksLikeIngestDaemonCmdline(cmdline)) {
+    say(`old ingest daemon (pid ${pidBefore}) did not exit within ${deadlineMs}ms of unload — SIGKILLing`);
+    kill(pidBefore, 'SIGKILL');
+  } else {
+    say(`pid ${pidBefore} is still alive past the ${deadlineMs}ms unload deadline but its command line no longer`
+      + ' matches the ingest daemon (' + (cmdline ? JSON.stringify(cmdline) : 'unreadable') + ') — NOT killing'
+      + ' (likely pid reuse by an unrelated process)');
+  }
+}
+
+// looksLikeIngestDaemonCmdline(cmdline) -> bool. Codex review round 2 on P1-1:
+// a bare `cmdline.includes('devswarm-ingest')` substring check is itself a
+// wrong-process hazard — it also matches `tail -f ~/.anti-hall/devswarm-
+// ingest.log`, `vim .../companion/devswarm-ingest.js`, or `grep devswarm-
+// ingest ...` landing on a reused pid, which is exactly the bug class this
+// guard exists to prevent.
+//
+// Also deliberately NOT `cmdline.includes(SCRIPT)` (this run's OWN resolved
+// script path): an old daemon started from a DIFFERENT install location (repo
+// checkout vs marketplace copy — this repo has shipped both) would then never
+// match and never be reclaimed, recreating the duplicate-daemon bug from the
+// other direction.
+//
+// Match the process SHAPE instead, independent of exactly which script path
+// it launched from: tokenize the `ps -o command=` output (space-split — good
+// enough for this fail-toward-not-killing identity check; ps does not shell-
+// quote its output) and require BOTH (a) the first token's basename is `node`
+// or `nodejs`, AND (b) some LATER argument ends with `/companion/devswarm-
+// ingest.js`. Anything else — a non-node command, or a node process running a
+// different script — is not a match.
+function looksLikeIngestDaemonCmdline(cmdline) {
+  if (typeof cmdline !== 'string') return false;
+  const tokens = cmdline.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return false;
+  const exeBase = path.basename(tokens[0]);
+  if (exeBase !== 'node' && exeBase !== 'nodejs') return false;
+  return tokens.slice(1).some((t) => t.endsWith('/companion/devswarm-ingest.js'));
+}
+
+// macInstallProject(mainWorktree, repoKey, opts) — install the PER-PROJECT
+// LaunchAgent, keyed by repoKey (not worktreeHash), baking `mainWorktree` as
+// WorkingDirectory. Mirrors macInstall's write/unload/load sequence, plus
+// (new) waits for the OLD daemon process to actually exit between unload and
+// load — see waitForLaunchdUnitGone. `opts.io` (run/isAlive/sleep/now/kill) is
+// a test-only DI seam; production (main(), the only real caller) omits it and
+// gets the real launchctl/process defaults above.
+function macInstallProject(mainWorktree, repoKey, opts) {
+  const o = opts || {};
   const label = labelForProject(repoKey);
   const plist = macPlistPath(label);
+  const pidBefore = readLaunchdPid(label, o);
   planWrite(plist, buildPlist({ label, workdir: mainWorktree }));
   planRun('launchctl', ['unload', plist]); // ignore err
+  waitForLaunchdUnitGone(pidBefore, o);
   planRun('launchctl', ['load', plist]);
   say(`installed LaunchAgent ${label} (continuous, KeepAlive; project ${repoKey}, worktree ${mainWorktree}). Logs: ${LOG}`);
 }
@@ -1954,4 +2114,10 @@ module.exports = {
   // and the NODE_TEST_CONTEXT guard actually protect the crontab, not just
   // the plist/service writes).
   readCrontab, installCron, uninstallCron,
+  // Duplicate-daemon fix (installer waits for the old daemon before reload;
+  // legacy lock deleted only once its holder is confirmed dead) — exported
+  // for direct test coverage.
+  defaultIsAlivePid, legacyLockHolderPid, readLaunchdPid, waitForLaunchdUnitGone,
+  defaultReadCmdline, looksLikeIngestDaemonCmdline,
+  LAUNCHD_UNLOAD_WAIT_MS, LAUNCHD_UNLOAD_POLL_MS,
 };

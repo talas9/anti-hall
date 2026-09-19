@@ -6,6 +6,36 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.101.1 (2026-09-19)
+
+- **Fixed: DevSwarm ingest daemons ignored SIGTERM, so duplicates piled up.**
+  `devswarm-ingest.js` registered SIGTERM/SIGINT listeners, which disables Node's
+  default terminate-on-signal, but its loop is fully synchronous (`spawnSync` and an
+  `Atomics.wait` sleep), so the event loop never ran the handler: SIGTERM was ignored
+  forever. `launchctl unload` therefore never stopped the old daemon, and each reload
+  started another beside it. Observed live: 12 duplicate daemons for 5 units, 7-12 days
+  old, stoppable only by SIGKILL. The listeners are removed so the default disposition
+  applies. This is safe because the lock is already reclaimed immediately from a holder
+  whose PID is confirmed dead. A regression test sends a real SIGTERM to a real child
+  process and requires it to exit; it fails against the old handler. Three older tests
+  that "proved" the handler worked by firing a simulated signal on a fake process object
+  were removed: they passed while a real signal could never reach that code.
+- **Fixed: a daemon that lost its lock kept running as a second consumer.** The loop
+  discarded `release.heartbeat()`'s result. `heartbeat()` now returns `true` (refreshed),
+  `false` (definitive loss: the lock file is gone, or it parsed cleanly with another
+  owner's token) or `'error'` (a transient read, parse, write or rename failure). The
+  loop exits only on `false`; a transient error is logged once and the daemon keeps
+  running, so a filesystem blip cannot take down a healthy daemon.
+- **Fixed: the installer reloaded a unit without waiting for the old daemon.**
+  `macInstallProject` now reads the old daemon's PID, unloads, and waits (bounded, 10s)
+  for it to exit before loading the new plist. If it outlives the deadline it is
+  SIGKILLed, but only after re-reading that PID's command line and confirming its
+  shape: the executable is `node` and an argument ends in `/companion/devswarm-ingest.js`.
+  A PID reused by any other process, including `tail -f` on `devswarm-ingest.log` or an
+  editor holding the script open, is never killed. `stopLegacyUnitEntry` now deletes a
+  legacy lock file only after confirming its holder is dead. Every step fails open and
+  none can block indefinitely.
+
 ## 0.101.0 (2026-09-19)
 
 - **Fixed (P0): `UserPromptSubmit hook timed out after 10s` on every prompt in
