@@ -984,10 +984,11 @@ function main() {
 // postPullBudgetMs doc comment: `ANTIHALL_UPDATE_POSTPULL_BUDGET_MS` (D11-C,
 // defect e7307778b614) caps every DevSwarm post-pull stage COMBINED, and a
 // machine that always exhausts it defers fold-all-stores/heal-orphan-
-// partitions/fold-archived-rows WHOLE on EVERY `update`/`doctor` run. Unlike
-// reconcile/fold (already covered above by reconcileSweepIfDue's own
-// cooldown-gated periodic re-run), nothing periodic ever picked those three
-// back up — they relied SOLELY on the next explicit update/doctor call,
+// partitions/fold-archived-rows/heal-registry-rows WHOLE on EVERY
+// `update`/`doctor` run. Unlike reconcile/fold (already covered above by
+// reconcileSweepIfDue's own cooldown-gated periodic re-run), nothing
+// periodic ever picked those four back up — they relied SOLELY on the next
+// explicit update/doctor call,
 // which never comes on a machine whose backlog is large enough to always
 // blow the budget. This gives the already-installed periodic sweep a
 // bounded per-pass slot: at most ONE deferred stage per pass, rotating in a
@@ -997,7 +998,7 @@ function main() {
 //
 // NO NEW FOLD/HEAL LOGIC HERE: this reuses update.js's own stage functions
 // (foldAllStoresPostUpdate / healOrphanPartitionsPostUpdate /
-// foldArchivedRowsPostUpdate) verbatim — this section is a scheduling slot
+// foldArchivedRowsPostUpdate / healRegistryPostUpdate) verbatim — this section is a scheduling slot
 // around them, nothing more.
 //
 // GATE-OPEN OVERRIDE (deliberate): those update.js stage functions each gate
@@ -1015,7 +1016,7 @@ function main() {
 // stage call only, never mutating the caller's real env.
 // ============================================================================
 
-const DEFERRED_SWEEP_STAGES = ['fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows'];
+const DEFERRED_SWEEP_STAGES = ['fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows', 'heal-registry-rows'];
 const DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS = 20000; // 20s per-pass slot, mirrors update.js's own DEFAULT_SWEEP_BUDGET_MS
 const DEFERRED_SWEEP_STATE_FILE = 'deferred-sweep-state.json';
 
@@ -1070,9 +1071,11 @@ function resolveSupervisorSweepBudgetMs(env) {
 function hasDeferredWork(stage, home, deps) {
   const d = deps || {};
   try {
-    if (stage === 'fold-all-stores' || stage === 'heal-orphan-partitions') {
+    if (stage === 'fold-all-stores' || stage === 'heal-orphan-partitions' || stage === 'heal-registry-rows') {
       const updateJs = d.updateJs || require('../skills/update/scripts/update.js');
-      const key = stage === 'fold-all-stores' ? 'foldAllStores' : 'healOrphanPartitions';
+      const key = stage === 'fold-all-stores' ? 'foldAllStores'
+        : stage === 'heal-orphan-partitions' ? 'healOrphanPartitions'
+        : 'healRegistry';
       const state = updateJs.readSweepState(home);
       const entry = state[key];
       return !!(entry && entry.pendingVersion && Array.isArray(entry.pendingHashes) && entry.pendingHashes.length > 0);
@@ -1119,16 +1122,20 @@ function runDeferredStage(stage, opts) {
     ANTIHALL_DEVSWARM_SUPERVISOR: 'on',
   });
   const commonOpts = { paths, env: scopedEnv, cwd: o.cwd || process.cwd(), home, devswarm: deps.devswarm, now: nowFn };
-  if (stage === 'fold-all-stores' || stage === 'heal-orphan-partitions') {
+  if (stage === 'fold-all-stores' || stage === 'heal-orphan-partitions' || stage === 'heal-registry-rows') {
     // The pending VERSION comes off the stage's OWN sweep-state entry (never
     // recomputed here) so sweepItemsFor's resume branch matches and picks up
     // exactly the pendingHashes list a prior budget-exhausted pass left —
     // never a fresh listStoreHashes() full re-enumeration.
-    const key = stage === 'fold-all-stores' ? 'foldAllStores' : 'healOrphanPartitions';
+    const key = stage === 'fold-all-stores' ? 'foldAllStores'
+      : stage === 'heal-orphan-partitions' ? 'healOrphanPartitions'
+      : 'healRegistry';
     const state = updateJs.readSweepState(home);
     const entry = state[key] || {};
     const version = entry.pendingVersion || null;
-    const fn = stage === 'fold-all-stores' ? updateJs.foldAllStoresPostUpdate : updateJs.healOrphanPartitionsPostUpdate;
+    const fn = stage === 'fold-all-stores' ? updateJs.foldAllStoresPostUpdate
+      : stage === 'heal-orphan-partitions' ? updateJs.healOrphanPartitionsPostUpdate
+      : updateJs.healRegistryPostUpdate;
     return fn(Object.assign({}, commonOpts, { version }));
   }
   if (stage === 'fold-archived-rows') {

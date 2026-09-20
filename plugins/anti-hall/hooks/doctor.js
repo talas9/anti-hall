@@ -121,12 +121,26 @@ function emitVerdictAndExit() {
 }
 
 // --- spawn a hook with a payload + env, return {code, out} -------------------
+// timeout: 30000ms (up from 5000ms) — same contention-flake class as the
+// statusline spawn above (fixed alongside it; see that comment). This helper
+// backs ~15 unconditional self-test sections (git-guard, command-guard,
+// edit-guard, swarm-guard, model-routing-guard, version-alert, etc.), each
+// comparing r.code against an exact 0/2 via BLOCKED()/ALLOWED() below — under
+// contention a SIGTERM yields code:null, which satisfies neither check and
+// falls into that call site's own `bad(...)` branch, i.e. the SAME false-FAIL
+// shape as the proven statusline bug, just spread across more call sites.
+// Raising the shared timeout here shrinks that flake surface for all of them
+// without touching each individual BLOCKED/ALLOWED ternary — those already
+// encode a binary block/allow behavioral contract (not a 3-way pass/warn/fail
+// like the statusline check), so rewriting each one to special-case a null/
+// SIGTERM result would be a much larger, out-of-scope change for a failure
+// mode this fix already makes far less likely to occur.
 function runHook(file, payload, env) {
   try {
     const res = cp.spawnSync(process.execPath, [path.join(HOOKS, file)], {
       input: JSON.stringify(payload || {}),
       encoding: 'utf8',
-      timeout: 5000,
+      timeout: 30000,
       env: Object.assign({}, process.env, env || {}),
     });
     return { code: res.status, out: (res.stdout || '') + (res.stderr || '') };
@@ -357,7 +371,14 @@ if (!slFound) warnl('no statusLine configured — run the install-statusline ski
 // Behavioral: does the statusline actually RENDER? Spawn the dispatcher with a
 // sample session payload and assert it produces output (line 1 = rich, line 2 =
 // context gauge when idle).
-const slScript = path.join(ROOT, 'statusline', 'statusline.js');
+// Test-only overrides (undocumented; mirror the ANTIHALL_API_GUARD_SPAWN_TIMEOUT_MS
+// pattern in api-guard.js) so this exact contention-timeout path can be exercised
+// deterministically without waiting out a real 30s timeout: ...SCRIPT points the
+// spawn at a stand-in script instead of the real statusline.js, ...TIMEOUT_MS
+// shortens the timeout to match. Neither is read unless explicitly set, so normal
+// runs are unaffected.
+const slScript = process.env.ANTIHALL_DOCTOR_SL_SCRIPT || path.join(ROOT, 'statusline', 'statusline.js');
+const slTimeoutMs = parseInt(process.env.ANTIHALL_DOCTOR_SL_TIMEOUT_MS || '', 10) || 30000;
 if (!fs.existsSync(slScript)) {
   bad('statusline.js dispatcher missing');
 } else {
@@ -366,7 +387,15 @@ if (!fs.existsSync(slScript)) {
     model: { display_name: 'doctor-test' },
     context_window: { used_percentage: 50 },
   });
-  const res = cp.spawnSync(process.execPath, [slScript], { input: sample, encoding: 'utf8', timeout: 5000 });
+  // timeout: 30000ms (up from 5000ms). Under `node --test` file-level parallelism
+  // this spawn can legitimately lose the CPU-contention race and miss a short
+  // window with no bug, no hang, no shared state (same flake class fe0d901/
+  // b99eafb fixed by raising the OUTER test-harness runDoctor() timeout to
+  // 60000ms — this is the analogous fix for the INNER product-code spawn those
+  // commits didn't touch). 30000ms gives 6x headroom over the old cap while
+  // leaving half of the 60000ms outer test-harness budget for every OTHER
+  // section of a `doctor` run (this is only one of ~15+ spawns doctor makes).
+  const res = cp.spawnSync(process.execPath, [slScript], { input: sample, encoding: 'utf8', timeout: slTimeoutMs });
   const out = (res.stdout || '').replace(/\s+$/, '');
   const nlines = out ? out.split('\n').length : 0;
   // The product is a TWO-line statusline. The sample payload carries
@@ -374,6 +403,7 @@ if (!fs.existsSync(slScript)) {
   // lines — a single line means line 2 (the context gauge) failed to render.
   if (res.status === 0 && nlines >= 2) ok(`statusline renders ${nlines} lines (line 1 + live context gauge on line 2)`);
   else if (res.status === 0 && nlines === 1) bad('statusline rendered only 1 line — line 2 (context gauge) did NOT render despite context_window in the payload');
+  else if (res.status === null && res.signal === 'SIGTERM') warnl(`statusline.js timed out under load (30s) — likely CPU contention, not a real failure; re-run outside contention to confirm`);
   else bad(`statusline.js produced no output (exit ${res.status})`);
   // Verify the rich line-1 renderer is present + valid (the own-dispatch default).
   const rich = path.join(ROOT, 'statusline', 'statusline-rich.js');

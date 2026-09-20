@@ -6,6 +6,45 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.102.1 (2026-09-20)
+
+Three fixes, each with a proven root cause. All were found while auditing a live install,
+not from a report.
+
+- **Fixed: the periodic supervisor never drained `heal-registry-rows`, so that stage only
+  advanced when a human happened to run `update` or `doctor`.** `DEFERRED_SWEEP_STAGES`
+  listed only `fold-all-stores`, `heal-orphan-partitions` and `fold-archived-rows`, and the
+  supervisor runs exactly one of those per tick. `heal-registry-rows` was wired into
+  `update.js`'s `healRegistryPostUpdate` but was absent from the rotation, so nothing ever
+  selected it. Observed on a live machine: 204 stores pending, with each explicit `update`
+  run rehoming ~6 before hitting its 20s budget. A deferred stage whose convergence depends
+  on someone remembering to run a command does not converge. The stage is now in the
+  rotation and is selected like the other three.
+
+- **Fixed: the central logger ignored `ctx.home`, so tests wrote into the real
+  `~/.anti-hall/logs/devswarm.jsonl`.** `anti-hall-log.js`'s `logDir()` resolved from
+  `ANTI_HALL_LOG_DIR` or fell straight back to `os.homedir()`, never consulting the home
+  passed to a verb. Any test exercising a failing CLI verb reached `logVerbOutcome` ->
+  `alog.logError` and appended a real line to the user's own log. This is the fourth
+  instance of the same class (see the HOME-isolation fixes in 6687c11). Two test files
+  proven to hit the path now set an isolated `ANTI_HALL_LOG_DIR`, and `logDir()` throws a
+  tagged error when `NODE_TEST_CONTEXT` is set without it — mirroring the existing
+  `resolveHomeGuarded` pattern in `devswarm-store.js`. Production logging stays fail-open:
+  the throw is swallowed by `writeEntry`'s own catch and surfaced on stderr only.
+
+- **Fixed: `doctor` reported a false FAIL under CPU load, and made the test suite flaky.**
+  The unconditional Statusline section spawned `statusline.js` with `timeout: 5000`. Under
+  load that spawn can lose the contention race with no bug and no hang; `spawnSync` then
+  SIGTERMs the child and returns `status: null`, which fell through to the "produced no
+  output" branch, incremented `fail`, and flipped the exit code to 1. Every `runDoctor()`
+  call reaches that section regardless of flags, which is why the failing test file moved
+  between runs. Commits fe0d901 and b99eafb fixed this same class twice by raising the
+  OUTER test-harness timeout to 60000ms; neither touched this INNER product-code spawn.
+  Both it and the shared `runHook()` helper (backing ~15 other self-test sections) now use
+  30000ms, and a SIGTERM'd spawn is reported as a load-related warning naming the real
+  cause rather than counted as a failure. A genuine "ran but produced no output" result is
+  still a failure.
+
 ## 0.102.0 (2026-09-20)
 
 Six DevSwarm mesh defects were reported by three independent sessions. Two of the six

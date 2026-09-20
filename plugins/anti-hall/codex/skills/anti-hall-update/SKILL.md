@@ -119,7 +119,8 @@ deferred WHOLE, reported as `deferred: true` on its stage result, and picked up 
 idempotent/resumable (fold/heal/fold-archived-rows persist their own resume markers; the
 one-time-per-version stages simply re-attempt next call). As of v0.96.1, the periodic
 supervisor sweep (`companion/devswarm-supervisor.js`) also picks up `fold-all-stores`,
-`heal-orphan-partitions`, and `fold-archived-rows` — one deferred stage per supervisor pass,
+`heal-orphan-partitions`, `fold-archived-rows` and (v0.102.1) `heal-registry-rows` — one
+deferred stage per supervisor pass,
 within `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` (default 20000ms) — so a machine that always
 exhausts the post-pull budget is no longer stuck waiting on the next explicit `update`/`doctor`
 call to make progress on those stages.

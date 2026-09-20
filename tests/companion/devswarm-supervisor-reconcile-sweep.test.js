@@ -19,6 +19,24 @@ const os = require('node:os');
 const path = require('node:path');
 const cp = require('node:child_process');
 
+// Point the shared central logger (companion/lib/anti-hall-log.js) at an
+// isolated dir BEFORE requiring anything that may log — same pattern as
+// tests/scripts/devswarm-v064.test.js. That logger is DELIBERATELY
+// home-independent (`${os.homedir()}/.anti-hall/logs/devswarm.jsonl` unless
+// ANTI_HALL_LOG_DIR is set), so passing an isolated `home` to every
+// register/reconcile call in this file is NOT sufficient on its own: a real
+// reconcile call that fails (e.g. hivecontrol absent, the expected CI/dev
+// outcome — see the REAL WIRING test below) reaches logVerbOutcome ->
+// alog.logError, which writes straight past `home` into the REAL
+// ~/.anti-hall/logs/devswarm.jsonl unless this env var is set (defect
+// class be2c6c9e81a1/f3c1bc827d89 — same family as the HOME/USERPROFILE
+// leak the "Wave D9 hygiene fix" comments below already cover for the
+// SEPARATE self-heal-subprocess vector; this closes the remaining
+// central-logger vector this file left open).
+const LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-reconcile-sweep-log-'));
+process.env.ANTI_HALL_LOG_DIR = LOG_DIR;
+process.on('exit', () => { try { fs.rmSync(LOG_DIR, { recursive: true, force: true }); } catch (_) {} });
+
 const M = require(path.join(
   __dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'devswarm-supervisor.js',
 ));

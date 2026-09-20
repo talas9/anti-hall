@@ -120,7 +120,7 @@ test('deferredSweepIfDue: no marker for the current rotation stage -> {ran:false
   const { home, cleanup } = makeHome();
   try {
     const seenStages = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 4; i++) {
       const res = M.deferredSweepIfDue({
         home,
         deps: { hasDeferredWork: (stage) => { seenStages.push(stage); return false; } },
@@ -128,8 +128,32 @@ test('deferredSweepIfDue: no marker for the current rotation stage -> {ran:false
       assert.strictEqual(res.ran, false);
       assert.strictEqual(res.reason, 'no-marker');
     }
-    assert.deepStrictEqual(seenStages, ['fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows'],
-      'three consecutive passes must rotate through all three stages exactly once each, in order');
+    assert.deepStrictEqual(seenStages, ['fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows', 'heal-registry-rows'],
+      'four consecutive passes must rotate through all four stages exactly once each, in order');
+  } finally { cleanup(); }
+});
+
+// VACUITY GUARD: heal-registry-rows must actually be SELECTED by the
+// rotation across successive ticks, not merely present in the
+// DEFERRED_SWEEP_STAGES array (an array-membership assertion alone would
+// pass even if the stage were listed but never dispatched/reachable). This
+// drives the rotation around a full cycle with a REAL pending marker for
+// healRegistry and asserts runDeferredStage is actually invoked for it.
+test('deferredSweepIfDue: heal-registry-rows is genuinely selected by the rotation and actually runs when its own marker is pending', () => {
+  const { home, cleanup } = makeHome();
+  try {
+    writeUpdateSweepState(home, { healRegistry: { pendingVersion: '0.102.0', pendingHashes: ['hr1'] } });
+    let ranStage = null;
+    const deps = {
+      runDeferredStage: (stage, opts) => { if (stage === 'heal-registry-rows') ranStage = stage; return { attempted: true }; },
+    };
+    let res;
+    for (let i = 0; i < 4; i++) {
+      res = M.deferredSweepIfDue({ home, deps });
+    }
+    assert.strictEqual(res.stage, 'heal-registry-rows', '4th tick must land on heal-registry-rows');
+    assert.strictEqual(res.ran, true, 'the real pending healRegistry marker must be detected as due');
+    assert.strictEqual(ranStage, 'heal-registry-rows', 'runDeferredStage must actually be invoked for heal-registry-rows');
   } finally { cleanup(); }
 });
 
@@ -156,12 +180,12 @@ test('deferredSweepIfDue: rotation position survives across calls via the persis
   const { home, cleanup } = makeHome();
   try {
     const stages = [];
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 5; i++) {
       const res = M.deferredSweepIfDue({ home, deps: { hasDeferredWork: () => false } });
       stages.push(res.stage);
     }
-    assert.deepStrictEqual(stages, ['fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows', 'fold-all-stores'],
-      'the 4th call must wrap back around to the first stage');
+    assert.deepStrictEqual(stages, ['fold-all-stores', 'heal-orphan-partitions', 'fold-archived-rows', 'heal-registry-rows', 'fold-all-stores'],
+      'the 5th call must wrap back around to the first stage');
   } finally { cleanup(); }
 });
 

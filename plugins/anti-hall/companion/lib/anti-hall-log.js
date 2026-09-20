@@ -57,9 +57,36 @@ const LEVEL_RANK = { debug: 0, info: 1, warn: 2, error: 3 };
 // the default `${os.homedir()}/.anti-hall/logs` so tests never touch the real
 // home directory. Read live (not cached) so tests can set/unset the env var
 // per-test without requiring a fresh module load.
+//
+// TEST-CONTEXT GUARD (defect class be2c6c9e81a1/f3c1bc827d89 — same class as
+// devswarm-store.js's resolveHomeGuarded). This logger is DELIBERATELY
+// central/home-independent (see the header comment), so passing an isolated
+// `home`/`ctx.home` to a devswarm CLI call does NOT isolate it — only
+// ANTI_HALL_LOG_DIR does. A test that exercises any devswarm.js verb failure
+// path (logVerbOutcome -> logError) without setting it used to silently
+// append into the REAL ~/.anti-hall/logs/devswarm.jsonl (confirmed live: 41+
+// leaked entries found in the real log — see tests/companion/
+// devswarm-supervisor-reconcile-sweep.test.js and tests/scripts/
+// devswarm-lifecycle.test.js, both fixed to set it). Node sets
+// NODE_TEST_CONTEXT in every `node --test` worker (and inherits it into any
+// spawnSync'd child — same mechanism resolveHomeGuarded relies on), so under
+// test the real-home fallback is NEVER legitimate: throw loudly instead of
+// writing into the real machine home. No opt-out, matching
+// resolveHomeGuarded's own contract.
 function logDir() {
   const override = process.env.ANTI_HALL_LOG_DIR;
   if (override) return override;
+  if (process.env.NODE_TEST_CONTEXT) {
+    const err = new Error(
+      'anti-hall-log: refusing to fall back to the real home (' + os.homedir() + ') while running under '
+      + '`node --test` (NODE_TEST_CONTEXT is set). This test never set ANTI_HALL_LOG_DIR, which would leak '
+      + 'a log entry into the real ~/.anti-hall/logs/devswarm.jsonl (defect class be2c6c9e81a1/f3c1bc827d89). '
+      + 'Set process.env.ANTI_HALL_LOG_DIR to an isolated tmp dir before requiring anything that may log '
+      + '(see tests/scripts/devswarm-v064.test.js for the established pattern).'
+    );
+    err.__antiHallLogTestGuard = true;
+    throw err;
+  }
   return path.join(os.homedir(), '.anti-hall', 'logs');
 }
 
@@ -338,8 +365,16 @@ function writeEntry(entry) {
     } finally {
       if (token) releaseRotateLock(token);
     }
-  } catch (_) {
-    // fail-open: logging must never throw into or crash the caller.
+  } catch (e) {
+    // fail-open: logging must never throw into or crash the caller. EXCEPT:
+    // the NODE_TEST_CONTEXT leak guard in logDir() above deliberately throws
+    // a distinctly-tagged error so a test never gets a genuinely SILENT leak
+    // — surface it once to stderr (visible in `node --test`/CI output, still
+    // never re-thrown) before falling through to the same fail-open no-op
+    // every other logging failure already gets.
+    if (e && e.__antiHallLogTestGuard) {
+      try { process.stderr.write('[anti-hall-log] ' + e.message + '\n'); } catch (_) { /* even this must never throw */ }
+    }
   }
 }
 

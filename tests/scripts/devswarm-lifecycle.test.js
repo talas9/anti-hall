@@ -14,6 +14,21 @@ const path = require('node:path');
 const cp = require('node:child_process');
 const crypto = require('node:crypto');
 
+// Point the shared central logger (companion/lib/anti-hall-log.js) at an
+// isolated dir BEFORE requiring anything that may log — same pattern as
+// tests/scripts/devswarm-v064.test.js. That logger is DELIBERATELY
+// home-independent (`${os.homedir()}/.anti-hall/logs/devswarm.jsonl` unless
+// ANTI_HALL_LOG_DIR is set) and consults process.env directly, never
+// ctx.env/ctx.home — so this file's own injected `{ home, env }` per call
+// does NOT isolate it. Several tests below deliberately assert
+// `r.result.ok === false` (genuine failure verbs), which reaches
+// cli.js's logVerbOutcome -> alog.logError on every such run; without this,
+// each one appends straight into the REAL ~/.anti-hall/logs/devswarm.jsonl
+// (defect class be2c6c9e81a1/f3c1bc827d89).
+const LOG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-lifecycle-log-'));
+process.env.ANTI_HALL_LOG_DIR = LOG_DIR;
+process.on('exit', () => { try { fs.rmSync(LOG_DIR, { recursive: true, force: true }); } catch (_) {} });
+
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
 const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 const inst = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');

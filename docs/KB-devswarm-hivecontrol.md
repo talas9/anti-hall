@@ -2673,7 +2673,8 @@ under the old check, when the workspace behind it was in fact live.
   v0.96.1, the periodic supervisor sweep (`companion/devswarm-supervisor.js`) closes this gap:
   alongside its own `reconcile`/single-project-fold cooldown, `deferredSweepIfDue` peeks each
   stage's own persisted marker (`hasDeferredWork`) and, when one shows real pending work, runs
-  ONE of `fold-all-stores` / `heal-orphan-partitions` / `fold-archived-rows` per supervisor pass
+  ONE of `fold-all-stores` / `heal-orphan-partitions` / `fold-archived-rows` /
+  `heal-registry-rows` (the last added v0.102.1) per supervisor pass
   — rotating forward across a persisted cursor (`<home>/.anti-hall/devswarm/deferred-sweep-
   state.json`) regardless of outcome, so a no-op tick still advances to the next stage. Each
   run is capped by `ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS` (default 20000ms), threaded into the
