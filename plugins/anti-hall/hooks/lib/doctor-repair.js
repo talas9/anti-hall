@@ -1770,6 +1770,13 @@ function runRepairs(opts) {
       ['sweep-reaped-logs', () => sweepReapedLogs({ home, mode: sweepMode, env, io: o.io })],
       ['sweep-send-receipts', () => sweepSendReceipts({ home, mode: sweepMode, env, io: o.io })],
       ['sweep-sibling-watermarks', () => sweepOrphanedSiblingWatermarks({ home, mode: sweepMode, env, io: o.io })],
+      ['reconcile-nd-cursors', () => reconcileStuckNdCursors({ home, mode: sweepMode, io: o.io })],
+      ['gc-stale-summaries', () => {
+        let storeMod;
+        try { storeMod = require(DEVSWARM_STORE); } catch (e) { return [{ file: 'summaries', status: 'failed', msg: 'devswarm-store.js unavailable: ' + errMsg(e) }]; }
+        if (typeof storeMod.gcStaleSummaries !== 'function') return [{ file: 'summaries', status: 'failed', msg: 'gcStaleSummaries not available on this devswarm-store.js build' }];
+        return storeMod.gcStaleSummaries({ home, mode: sweepMode, env, io: o.io });
+      }],
     ];
     for (const [id, fn] of sweeps) {
       let rows;
@@ -2703,6 +2710,119 @@ function sweepOrphanedSiblingWatermarks(opts) {
   return results;
 }
 
+// reconcileStuckNdCursors({home, mode, io}) — D1 forward migration for the
+// per-instance NDJSON cursor split (`cursors/<id>#nd-<short6>.json`) going
+// STUCK behind its descriptor cursor (`cursors/<id>.json`). ROOT CAUSE (being
+// fixed separately in devswarm.js): `read-primary`/`peek-primary` used to ack
+// the DESCRIPTOR cursor while `tick`/`count` read the PER-INSTANCE file, so a
+// caller that only ever used read-primary left its own instance file behind
+// forever — a permanent phantom-unread `tick` can never clear on its own.
+// That code fix does not touch files already stuck on disk; this migration
+// does. VERIFIED on a live machine: 430 `#nd-` cursor files, 267 behind their
+// descriptor, worst gap 132 lines.
+//
+// SAFETY (the whole contract):
+//   - NEVER LOWER a cursor. Lowering re-delivers already-read mail (an
+//     acceptable, self-limiting cost — see liveness.js's own fail-open-
+//     toward-alarm posture); this migration only ever RAISES, and only when
+//     the instance file is strictly BEHIND the clamp target.
+//   - NEVER RAISE PAST THE REAL LINE COUNT. Raising past the inbox's actual
+//     line count would SKIP unread mail, which is the dangerous direction —
+//     the target is `min(descriptorCursor, inboxLineCount)`, never the
+//     descriptor value alone (a descriptor that itself outran the inbox,
+//     e.g. mid-truncation-D4, must not smuggle that past this migration).
+//   - Idempotent: once raised to the clamp target, a re-run sees
+//     `instCursor >= target` and no-ops.
+//   - Fail-open per file: an unparseable/malformed cursor (readCursor already
+//     degrades unparseable content to 0) or a missing descriptor (no
+//     reconcile target — 7 observed live) is left untouched, never guessed
+//     at and never deleted.
+//   - No-delete: only the instance cursor's CONTENT is ever rewritten (via
+//     `ackTo`, the SAME atomic tmp+rename primitive `inbox read/ack` and the
+//     child-turn hook already use to advance a cursor); no cursor file is
+//     ever removed.
+//
+// Reuses `ackTo` (devswarm-inbox-cursor.js) rather than writing the cursor
+// file directly: `ackTo(cursorPath, n, fsi, inboxPath)` ALREADY clamps `n` to
+// the inbox's real line count and, absent `allowRewind`, already refuses to
+// move a cursor backward below its current value — the exact two invariants
+// this migration must never violate — so reusing it means those invariants
+// are enforced by the SAME code every other cursor-advance in this repo
+// trusts, not reimplemented a second time here.
+//
+// Mirrors the shape of the other standalone sweeps in this file (mode
+// 'check' -> read-only `pending` rows, mode 'repair' -> mutates and reports
+// `fixed`/`failed`) so it wires into the SAME sweeps loop in runRepairs.
+function reconcileStuckNdCursors(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const mode = o.mode === 'repair' ? 'repair' : 'check';
+  const F = (o.io && o.io.fs) || fs;
+  const results = [];
+
+  let cursorLib;
+  try { cursorLib = require(path.join(PLUGIN_ROOT, 'companion', 'lib', 'devswarm-inbox-cursor.js')); } catch (e) {
+    return [{ file: 'cursors', status: 'failed', msg: 'devswarm-inbox-cursor.js unavailable: ' + errMsg(e) }];
+  }
+  const { readCursor, ackTo, countMessages } = cursorLib;
+  if (typeof readCursor !== 'function' || typeof ackTo !== 'function' || typeof countMessages !== 'function') {
+    return [{ file: 'cursors', status: 'failed', msg: 'devswarm-inbox-cursor.js missing expected exports' }];
+  }
+
+  const root = devswarmRootFor(home);
+  const cursorsDir = path.join(root, 'cursors');
+  const inboxDir = path.join(root, 'inbox');
+
+  let names = [];
+  try { names = F.readdirSync(cursorsDir); } catch (e) {
+    if (e && e.code === 'ENOENT') return results; // routine: no cursors dir yet
+    return [{ file: cursorsDir, status: 'failed', msg: 'could not list ' + cursorsDir + ': ' + errMsg(e) }];
+  }
+
+  const ND_RE = /^(.+)#nd-[0-9a-f]+\.json$/;
+  for (const name of names) {
+    const m = ND_RE.exec(name);
+    if (!m) continue;
+    const id = m[1];
+    const instPath = path.join(cursorsDir, name);
+    const descPath = path.join(cursorsDir, id + '.json');
+    if (!F.existsSync(descPath)) continue; // no reconcile target — leave untouched (fail-open)
+
+    const instCursor = readCursor(instPath, F);
+    const descCursor = readCursor(descPath, F);
+    const inboxPath = path.join(inboxDir, id + '.ndjson');
+    const lineCount = countMessages(inboxPath, F);
+    const target = Math.min(descCursor, lineCount);
+
+    if (instCursor >= target) continue; // healthy, ahead, or equal — never touched
+
+    if (mode === 'check') {
+      results.push({
+        file: instPath, status: 'pending',
+        msg: instPath + ' is behind (instance=' + instCursor + ', descriptor=' + descCursor
+          + ', inbox lines=' + lineCount + ') — would raise to ' + target,
+      });
+      continue;
+    }
+    try {
+      // n=descCursor: ackTo itself clamps to the real inbox line count via
+      // `inboxPath` and (no `allowRewind`) refuses to move below `instCursor`
+      // — so the ACTUAL new value may differ from the `target` computed above
+      // for reporting purposes only if the file changed under us between the
+      // read above and this call; re-read to report what truly landed.
+      const applied = ackTo(instPath, descCursor, F, inboxPath);
+      results.push({
+        file: instPath, status: 'fixed',
+        msg: 'raised ' + id + ' nd-cursor from ' + instCursor + ' to ' + applied
+          + ' (clamped to min(descriptor=' + descCursor + ', inbox lines=' + lineCount + '))',
+      });
+    } catch (e) {
+      results.push({ file: instPath, status: 'failed', msg: 'could not raise ' + instPath + ': ' + errMsg(e) });
+    }
+  }
+  return results;
+}
+
 module.exports = {
   readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
   // Codex "is it wired" precise per-event detection (exported for direct unit
@@ -2743,5 +2863,7 @@ module.exports = {
   sweepAgedFiles, sweepReapedLogs, sweepSendReceipts,
   // R14 F3 — existence-based (never age-based) hygiene for sibling watermarks:
   sweepOrphanedSiblingWatermarks,
+  // D1 forward migration — raise a stuck per-instance ND cursor to min(descriptor, inbox lines), never lowers, never skips mail:
+  reconcileStuckNdCursors,
   REAPED_RETENTION_DAYS_DEFAULT, SEND_RECEIPT_RETENTION_DAYS_DEFAULT,
 };

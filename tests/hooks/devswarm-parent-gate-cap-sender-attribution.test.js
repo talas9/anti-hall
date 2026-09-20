@@ -1,0 +1,234 @@
+'use strict';
+// hooks/devswarm-parent-gate.js — own-outbound (D3) fix + D6 attribution.
+//
+// CAP SIGNATURE — a fix was ATTEMPTED here (drop `b.unread` from the cap/
+// bypass signature, so a raw unread-count change alone would no longer
+// re-arm the cap, only a genuine id/unknown/status change) and REVERTED per
+// owner decision: `tests/e2e/devswarm-substrate.e2e.test.js`'s "3 PARENT-GATE:
+// per-SET cap goes quiet, then a CHANGED unread set re-opens the budget"
+// encodes a DOCUMENTED requirement (§4.4 requirement D) that a genuinely
+// growing backlog on the SAME workspace must re-block. Dropping the count
+// from the signature silenced that. D3 (own outbound miscounted as neglect)
+// does not need this — its root cause is fixed structurally below (the
+// `sender` filter removes the Primary's own outbound from the COUNT itself,
+// so it never reaches the signature as phantom growth). The signature is
+// therefore UNCHANGED from before this task: `b.id + b.unread + b.unknown +
+// b.status`.
+//
+// D3 (own outbound miscounted as neglect, NDJSON path): a row this Primary
+// itself sent lands in the recipient's own NDJSON inbox awaiting THEIR read,
+// not this Primary's. The store-side UNION path already filtered
+// `row.sender === own.id` (~:1038); the NDJSON-only path (readUnreadMessages)
+// did not, because the NDJSON wire carries no `sender` field on any
+// pre-existing row (verified: 0 occurrences across the existing inbox rows).
+// Fixed DEFENSIVELY: skip a row only when `row.sender` is PRESENT and equals
+// the Primary's own id; a row with no `sender` field still counts exactly as
+// before.
+//
+// D6 RE-SCOPED — ATTRIBUTION, NOT EXCLUSION: a first attempt (exclude
+// archived / app-archived / confirmed-dead-worktree members from the
+// identity-family's `unionUnread` sum) was REVERTED after it broke 45
+// pre-existing tests in this suite that assert the OPPOSITE by design —
+// devswarm-parent-gate-app-archived.test.js "LIVENESS AXIS ONLY: app-archived
+// + REAL unread STILL blocks", and devswarm-parent-gate.test.js's "MUST NOT
+// BREAK: worktree GONE + STORE-side unread -> STILL blocks on the
+// unionUnread axis (nothing is hidden)" / "...ownerKey-ONLY descriptor STILL
+// blocks" — a prior, deliberate decision (defects 45cf1659f54f, 0ace80dff415):
+// archived/app-archived/dead-worktree suppress ONLY the liveness axis, never
+// the unread axis ("archiving does not answer mail"; a gone-worktree row's
+// mail is still real and drainable via `inbox ack <id> --ack-as-owner`).
+//
+// The REAL defect: a blocked Primary reading `primary-<id> — N unread`
+// cannot tell whether N is its OWN mail or a SUM including sibling
+// descriptors sharing its worktree (identity-family collapse, ~:690-705 +
+// the reduce at ~:1324/:1374) — it drains its own inbox, the count doesn't
+// move, and it has no way to discover why. FIX (REPORT-ONLY, changes no
+// count/decision): `contributors` (per-family, only when >1 member has real
+// unread) records each contributing id + count + archived/app-archived/
+// worktree-gone flags; buildReason() emits one compact "ATTRIBUTION for
+// <survivor> (<total>): <id>: <n> [<flags>] — clear via `inbox ack <id>
+// --ack-as-owner`; ..." line per multi-contributor family, naming the exact
+// drain command for every non-own contributor.
+//
+// MUTATION LIST (proven RED against this file):
+//   M1: drop the NDJSON `row.sender === own.id` skip
+//       -> kills "own-sent row (with sender) is skipped on the NDJSON path".
+//   M2: drop the `contributors.length > 1` entry.contributors attachment (or
+//       the ATTRIBUTION emission in buildReason)
+//       -> kills "ATTRIBUTION line names every contributing sibling...".
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const cp = require('node:child_process');
+const { testHookRaw } = require('../helpers/spawn-hook.js');
+const { makeHome } = require('../helpers/fixtures.js');
+const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+const { stateFileFor } = require('../../plugins/anti-hall/companion/lib/devswarm-gate-state.js');
+
+const HOOK = 'devswarm-parent-gate.js';
+const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' };
+
+function run(home, cwd, env) {
+  return testHookRaw(HOOK, JSON.stringify({ hook_event_name: 'Stop', session_id: 'sess-1', cwd }), {
+    home, env: { ...PRIMARY_ENV, ...(env || {}) },
+  });
+}
+
+// A REAL, standalone git repo — descriptors' worktreePath must resolve to a
+// repoKey via `git rev-parse`, same convention as the sibling app-archived
+// test file.
+function makeWorktree() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'gate-cs-'));
+  const wt = path.join(base, '.devswarm', 'repos', '1', 'aa', 'child');
+  fs.mkdirSync(wt, { recursive: true });
+  cp.spawnSync('git', ['init', '-q', wt]);
+  return {
+    wt, key: repokey.repoKeyForWorktree(wt),
+    cleanup() { try { fs.rmSync(base, { recursive: true, force: true }); } catch (_) {} },
+  };
+}
+
+function seedDescriptor(home, id, worktreePath, opts = {}) {
+  const root = path.join(home, '.anti-hall', 'devswarm');
+  const wsDir = path.join(root, 'workspaces');
+  const inboxPath = path.join(root, 'inbox', id + '.ndjson');
+  const cursorPath = path.join(root, 'cursor', id + '.json');
+  fs.mkdirSync(wsDir, { recursive: true });
+  fs.mkdirSync(path.dirname(inboxPath), { recursive: true });
+  fs.mkdirSync(path.dirname(cursorPath), { recursive: true });
+  const descPath = path.join(wsDir, id + '.json');
+  fs.writeFileSync(descPath, JSON.stringify({
+    id, worktreePath, sessionId: 'sess-' + id, inboxPath, cursorPath,
+  }));
+  const rows = opts.rows || (opts.messages ? opts.messages.map((m) => ({ message: m })) : []);
+  fs.writeFileSync(inboxPath, rows.length ? rows.map((r) => JSON.stringify(r)).join('\n') + '\n' : '');
+  fs.writeFileSync(cursorPath, String(opts.cursor != null ? opts.cursor : 0));
+  // Age the descriptor well past any grace window used elsewhere in this file.
+  const ageMs = opts.descriptorAgeMs != null ? opts.descriptorAgeMs : 3 * 60 * 60 * 1000;
+  const t = new Date(Date.now() - ageMs);
+  fs.utimesSync(descPath, t, t);
+  return { descPath, inboxPath, cursorPath };
+}
+
+function seedArchived(home, id, worktreePath) {
+  const root = path.join(home, '.anti-hall', 'devswarm');
+  const dir = path.join(root, 'archived');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, id + '.json'), JSON.stringify({ id, worktreePath }));
+}
+
+// ---------------------------------------------------------------------------
+// Cap signature: UNCHANGED contract (owner-reverted) — a changed unread
+// COUNT alone still resets the cap. See devswarm-parent-gate.test.js's own
+// "CAP RESET: a CHANGED unread set re-opens the budget after being capped"
+// for the canonical, more thorough version of this; this one just pins the
+// same contract at the raw gate-state level to protect against the fix-2
+// attempt above ever silently reappearing.
+// ---------------------------------------------------------------------------
+
+test('cap DOES reset when the unread COUNT changes (same id/status) — owner-reverted contract', () => {
+  const h = makeHome();
+  const a = makeWorktree();
+  try {
+    seedDescriptor(h.home, 'ws1', a.wt, { messages: ['first real message here'] });
+    const r1 = run(h.home, a.wt);
+    assert.strictEqual(r1.json && r1.json.decision, 'block');
+    const state1 = JSON.parse(fs.readFileSync(stateFileFor('sess-1', h.home), 'utf8'));
+    assert.strictEqual(state1.blocks, 1);
+
+    // Add a SECOND real message -> unread count changes 1 -> 2, id/status
+    // unchanged -> this IS a new signature (b.unread is back in the hash) ->
+    // the budget resets, `blocks` starts over at 1, not 2.
+    seedDescriptor(h.home, 'ws1', a.wt, { messages: ['first real message here', 'second real message here'] });
+    const r2 = run(h.home, a.wt);
+    assert.strictEqual(r2.json && r2.json.decision, 'block');
+    assert.match(r2.json.reason, /2 unread/);
+
+    const state2 = JSON.parse(fs.readFileSync(stateFileFor('sess-1', h.home), 'utf8'));
+    assert.strictEqual(state2.blocks, 1, `a changed unread COUNT must reset the budget, not accumulate; state=${JSON.stringify(state2)}`);
+    assert.notStrictEqual(state2.sig, state1.sig, 'the signature itself must differ once the count changes');
+  } finally { a.cleanup(); h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// D3: own-sent rows on the NDJSON path
+// ---------------------------------------------------------------------------
+
+test('D3 (NDJSON path): a row with sender === own id is skipped', () => {
+  const h = makeHome();
+  const a = makeWorktree();
+  try {
+    // own.id for a Primary at `a.wt` is `primary-<hash>` (installIngest);
+    // resolve it the same way the hook does.
+    const installIngest = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
+    const ownId = installIngest.primaryWorkspaceId(a.wt);
+    seedDescriptor(h.home, 'ws1', a.wt, {
+      rows: [{ message: 'outbound message this Primary itself sent', sender: ownId }],
+    });
+    const r = run(h.home, a.wt);
+    assert.strictEqual(r.json, null, `an own-sent row must not count as neglect; stdout=${r.stdout}`);
+  } finally { a.cleanup(); h.cleanup(); }
+});
+
+test('D3 NEGATIVE CONTROL: a row with NO sender field still counts (pre-existing wire shape)', () => {
+  const h = makeHome();
+  const a = makeWorktree();
+  try {
+    seedDescriptor(h.home, 'ws1', a.wt, { messages: ['a real inbound message, no sender field at all'] });
+    const r = run(h.home, a.wt);
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout}`);
+  } finally { a.cleanup(); h.cleanup(); }
+});
+
+test('D3 NEGATIVE CONTROL: a row with a DIFFERENT sender still counts', () => {
+  const h = makeHome();
+  const a = makeWorktree();
+  try {
+    seedDescriptor(h.home, 'ws1', a.wt, {
+      rows: [{ message: 'a real inbound message from someone else', sender: 'some-other-workspace' }],
+    });
+    const r = run(h.home, a.wt);
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout}`);
+  } finally { a.cleanup(); h.cleanup(); }
+});
+
+// ---------------------------------------------------------------------------
+// D6 (re-scoped): ATTRIBUTION for a multi-contributor family
+// ---------------------------------------------------------------------------
+
+test('ATTRIBUTION: a family with a LIVE sibling + an ARCHIVED sibling names every contributor, still sums the total, and names the drain command for non-own ids', () => {
+  const h = makeHome();
+  const a = makeWorktree();
+  try {
+    // Two descriptors sharing the SAME worktree as `cwd` -> collapse into ONE
+    // family with the Primary's own synthetic row (own has 0 unread here).
+    seedDescriptor(h.home, 'ws-live', a.wt, { messages: ['a real live message needing attention'] });
+    seedDescriptor(h.home, 'ws-dead', a.wt, { messages: ['another real message, archived sibling'] });
+    seedArchived(h.home, 'ws-dead', a.wt);
+    const r = run(h.home, a.wt);
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout}`);
+    // The count itself is UNCHANGED behavior — still the sum (2), never hidden.
+    assert.match(r.json.reason, /2 unread/, `stdout=${r.stdout}`);
+    // The new attribution line names BOTH contributors and their own counts.
+    assert.match(r.json.reason, /ATTRIBUTION/, `stdout=${r.stdout}`);
+    assert.match(r.json.reason, /ws-live: 1/, `stdout=${r.stdout}`);
+    assert.match(r.json.reason, /ws-dead: 1 \[archived\]/, `stdout=${r.stdout}`);
+    // A drain command is named for the non-own contributors.
+    assert.match(r.json.reason, /inbox ack ws-live --ack-as-owner/, `stdout=${r.stdout}`);
+    assert.match(r.json.reason, /inbox ack ws-dead --ack-as-owner/, `stdout=${r.stdout}`);
+  } finally { a.cleanup(); h.cleanup(); }
+});
+
+test('ATTRIBUTION: a SINGLE-contributor family gets no ATTRIBUTION line (no regression on the ordinary case)', () => {
+  const h = makeHome();
+  const a = makeWorktree();
+  try {
+    seedDescriptor(h.home, 'ws-live', a.wt, { messages: ['a real live message needing attention'] });
+    const r = run(h.home, a.wt);
+    assert.strictEqual(r.json && r.json.decision, 'block', `stdout=${r.stdout}`);
+    assert.doesNotMatch(r.json.reason, /ATTRIBUTION/, `stdout=${r.stdout}`);
+  } finally { a.cleanup(); h.cleanup(); }
+});

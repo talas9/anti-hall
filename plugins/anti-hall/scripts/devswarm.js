@@ -8037,6 +8037,23 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
   // history, no ack) is unaffected, matching its pre-fix contract exactly.
   const wantsUnion = doAck || forceUnread;
   const desc = wantsUnion ? readDescriptorFile(home, id) : null;
+  // D1 fix (namespace split): `inbox count`/`read`/`ack`/`tick` (cmdInbox,
+  // below) resolve the NDJSON cursor through resolveNdCursorPath — a
+  // PER-INSTANCE file seeded from the descriptor once, then read/written on
+  // its own from then on. This verb (read-primary/peek-primary) used to read
+  // and ack the RAW descriptor cursor (`desc.cursorPath`) directly instead,
+  // so the two verb families advanced two different files: read-primary
+  // advanced the descriptor while `tick` kept reading the untouched instance
+  // file (a permanent phantom-unread `tick` could never clear), and
+  // read-primary's own union — recomputed each call over the ALREADY-ADVANCED
+  // descriptor it just wrote — returned `count 0, messages []` on the very
+  // next call. Route through the SAME resolver `cmdInbox` uses so both verb
+  // families share one cursor; `projectNdDescriptorCursor` (called after the
+  // ack below) still projects the MIN across instances onto the descriptor,
+  // preserving the invariant that keeps a sibling instance from losing mail.
+  const ndCursorPath = (desc && desc.cursorPath)
+    ? resolveNdCursorPath(home, id, callerInstanceShort, desc.cursorPath)
+    : (desc ? desc.cursorPath : null);
   const openedForRead = resolveWorkspaceStoreForRead(id, ctx, home, { skipExistenceGuard: doAck && !ackAsOwner });
   if (!openedForRead.ok) {
     // B3 (defect 1932b53a3ace): a refusal from resolveWorkspaceStoreForRead
@@ -8441,7 +8458,7 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     // NDJSON side (union.storeOnlyUnreadRows already excludes it).
     if (wantsUnion && desc && desc.inboxPath) {
       try {
-        union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle: s, storeBaseCursor: cursor });
+        union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: ndCursorPath, id, storeHandle: s, storeBaseCursor: cursor });
       } catch (_) { union = null; } // fail-open: falls back to store-only reporting below
     }
     if (union) {
@@ -8903,7 +8920,13 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
           // like the store-side partitions above.
           const ndjsonWithheldCount = withheldBySource ? (withheldBySource.get('ndjson') || 0) : 0;
           const ndjsonAckTarget = union.cursor + union.ndjsonUnreadLines.length - ndjsonWithheldCount;
-          inboxCursor.ackTo(desc.cursorPath, ndjsonAckTarget, undefined, desc.inboxPath);
+          // D1 fix: ack the RESOLVED per-instance cursor (same file the union
+          // read above was computed against), not the raw descriptor path —
+          // then project the MIN across instances onto the descriptor so
+          // every existing consumer of desc.cursorPath (and a slower sibling
+          // instance) still sees a loss-free, monotonic value.
+          inboxCursor.ackTo(ndCursorPath, ndjsonAckTarget, undefined, desc.inboxPath);
+          projectNdDescriptorCursor(home, id, desc.cursorPath, { callerId: id, nonce: callerInstanceShort, verb: 'read-primary', cwd: (ctx && ctx.cwd) || null, repoKey: callerRepoKeyForLog });
         }
         catch (e) { cursorWriteFailures.push({ partitionId: id, channel: 'ndjson-cursor', error: String((e && e.message) || e) }); }
       }
@@ -9053,6 +9076,16 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
         fromLine: (out2.sender != null ? String(out2.sender) : '') + '@' + short,
       });
     }
+    // D4 fix (content-blind ack): the ack above (see ndCursorPath/desc.cursorPath
+    // writes and the store-side ack) fires in the SAME call that emits `messages`
+    // — nothing here truncates a body (every cap in this file is row-count, not
+    // byte-count), but a consumer DOWNSTREAM of this CLI's stdout (a tool-output
+    // limit, a hook renderer, `tail -c`) can still clip bytes after the cursor
+    // has already moved, with no way for the caller to tell. Additive per-row
+    // `bodyLength` (UTF-8 byte length, matching how a byte-based clip would cut)
+    // lets a clipped consumer self-detect a short read by comparing what it
+    // actually received against this field.
+    out2 = Object.assign({}, out2, { bodyLength: Buffer.byteLength(out2 && out2.body != null ? String(out2.body) : '', 'utf8') });
     return out2;
   }) : messages;
   // B1 (defects 902d3c5e7531/1932b53a3ace): repoKey/storePath/cwd + the
@@ -9084,6 +9117,18 @@ function cmdInboxMessagesInner(id, flags, ctx, opts) {
     total: outTotal,
     count: messages.length,
     messages,
+    // D4 fix: payload-level total (sum of every row's `bodyLength` above) so a
+    // consumer that only sees a byte-clipped tail of this JSON can compare the
+    // bytes it actually received against what this call claims to have sent,
+    // and self-detect the clip. `truncatedBodyHint` (recovery path, additive,
+    // always present) — this call already ACKED whatever it delivered (see the
+    // ndCursorPath/store acks above), so a clip does not lose mail: acked rows
+    // stay re-servable, read-only and not unread-scoped, via `inbox messages
+    // <id>` (optionally `--since`).
+    totalBodyBytes: messages.reduce((sum, m) => sum + (Number.isFinite(m && m.bodyLength) ? m.bodyLength : 0), 0),
+    truncatedBodyHint: 'if this JSON looks shorter than `totalBodyBytes`/per-row `bodyLength` implies, '
+      + 'the OUTPUT (not the ack) was clipped downstream — already-acked mail is still re-readable, '
+      + 'read-only and not unread-scoped, via: inbox messages ' + id + ' (optionally --since)',
     known: readSideKnown(true, { storeUnavailable: msgStoreUnavailable, meshGroupUnresolved, meshGroupError }),
     ...storeUnavailableOut(msgStoreUnavailable),
     meshGroupUnresolved: !!meshGroupUnresolved,
@@ -12518,17 +12563,52 @@ function cmdSend(flags, ctx) {
       // is ours: a rehome that completed while we waited has already moved it
       // to another store, and appending here regardless would just re-create
       // the same orphan one step later.
-      return withIdLock(String(targetPartition), home, () => {
-        const stillHere = (s.listRegistry() || []).some((row) => row && String(row.id) === String(targetPartition));
-        if (!stillHere) {
-          return {
-            ok: false, reason: 'unregistered-recipient',
-            error: 'send target ' + JSON.stringify(targetPartition) + ' is no longer registered in this '
-              + 'project store (likely re-homed to another project store mid-send) — retry',
-          };
+      // D5 fix: `send --to` used to take the per-id lock exactly ONCE
+      // (acquireIdLock's own 2s internal budget) and fail closed with
+      // `{ok:false, lockBusy:true}` the instant a contender (every `inbox
+      // pull`'s cmdRegister/ensure, or the child-turn hook) held it a moment
+      // longer than that — a correct client's only recourse was "retry
+      // shortly", which nothing here did FOR it. Add a bounded OUTER retry
+      // (3 attempts total, jittered exponential backoff between them, well
+      // under a single turn) around the whole locked critical section.
+      // SAFETY: `doAppend()` reuses `now`/`fields`/`hash` computed OUTSIDE
+      // this retry loop (unchanged from before this fix) — `now` is captured
+      // once, well above, so every attempt that actually RUNS `doAppend()`
+      // hashes the SAME timestamp and produces the SAME `meshMessageHash`,
+      // making a retry idempotent against `appendMeshRow`'s
+      // `INSERT OR IGNORE` on that unique hash. This loop only ever retries
+      // the LOCK ACQUISITION itself (`withIdLock` did not run `fn` at all on
+      // a `lockBusy` result), so `doAppend()` still executes at most once —
+      // recomputing `now` per attempt would have been the actual duplication
+      // risk, and this fix does not do that.
+      const SEND_LOCK_RETRY_ATTEMPTS = 3;
+      const SEND_LOCK_RETRY_BASE_MS = 150;
+      let lockBusyResult = null;
+      for (let attempt = 0; attempt < SEND_LOCK_RETRY_ATTEMPTS; attempt++) {
+        const r = withIdLock(String(targetPartition), home, () => {
+          const stillHere = (s.listRegistry() || []).some((row) => row && String(row.id) === String(targetPartition));
+          if (!stillHere) {
+            return {
+              ok: false, reason: 'unregistered-recipient',
+              error: 'send target ' + JSON.stringify(targetPartition) + ' is no longer registered in this '
+                + 'project store (likely re-homed to another project store mid-send) — retry',
+            };
+          }
+          return doAppend();
+        });
+        if (!(r && r.lockBusy)) return r;
+        lockBusyResult = r;
+        if (attempt < SEND_LOCK_RETRY_ATTEMPTS - 1) {
+          const backoffMs = SEND_LOCK_RETRY_BASE_MS * Math.pow(2, attempt) + Math.floor(Math.random() * SEND_LOCK_RETRY_BASE_MS);
+          try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoffMs); } catch (_) { /* best-effort sleep */ }
         }
-        return doAppend();
-      });
+      }
+      // Every attempt was lockBusy: surface it as-is (`ok:false, lockBusy:true`)
+      // so the CLI's exit code (`r.ok ? 0 : 2`, run()'s 'send' case) is
+      // non-zero — a caller doing `send ... && echo ok` never sees a dropped
+      // send silently treated as success.
+      lockBusyResult.retriedAttempts = SEND_LOCK_RETRY_ATTEMPTS;
+      return lockBusyResult;
     }
     return doAppend();
   } finally { s.close(); }

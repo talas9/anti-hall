@@ -43,7 +43,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const { isSafeId, devswarmRoot } = require('./liveness.js');
+const { isSafeId, devswarmRoot, resolveSelfId } = require('./liveness.js');
 // REUSE the ingest primitives verbatim (do NOT reimplement) so the child-side
 // drain hashes/normalizes messages IDENTICALLY to the daemon path — a message
 // hashed one way here and another way there would break cross-path dedupe.
@@ -296,6 +296,24 @@ function pullOnce(opts) {
   const cwd = o.cwd || process.cwd();
   let repoKey = null;
   try { repoKey = repokey.repoKeyForWorktree(cwd); } catch (_) { repoKey = null; }
+  // SENDER (D3 fix — "Primary's own outbound counted as the Primary's
+  // neglect"): this whole drain is the CHILD-SIDE reception of its OWN
+  // native parent->child queue (see file header), so EVERY row landing here
+  // was sent BY the Primary. `resolveSelfId(cwd)` (liveness.js) hashes
+  // through `resolveMainWorktree` to the shared main-worktree id — the SAME
+  // `primary-<worktreeHash>` a linked child worktree and its Primary both
+  // resolve to (git-common-dir is identical across a worktree family) — so
+  // this equals the exact `own.id` devswarm-parent-gate.js's readOwnUnread
+  // already computes for the real Primary, without this child needing to
+  // know the Primary's own cwd. `primaryWorkspaceId` is a PURE hash of
+  // whatever path it is handed — a non-git `cwd` still resolves to a
+  // deterministic (if less meaningful) id, it does NOT fail to null; only a
+  // falsy `cwd` (never happens here — `cwd` above always defaults to
+  // `process.cwd()`) or a throwing require yields null. A null sender still
+  // counts as real per every consumer's own documented fail-open-toward-
+  // counting default, so this is safe either way.
+  let senderId = null;
+  try { senderId = resolveSelfId(cwd); } catch (_) { senderId = null; }
 
   if (!isSafeId(id)) return { ok: false, locked: false, error: 'invalid or missing workspace id' };
 
@@ -351,6 +369,14 @@ function pullOnce(opts) {
         message: (m && m.message != null) ? m.message : null,
         createdAt: (m && m.createdAt != null) ? m.createdAt : null,
         status: (m && m.status != null) ? m.status : null,
+        // sender (D3, additive): appended AFTER the pre-existing fields, not
+        // interleaved — `_h` is computed from `m` above (messageHash), never
+        // from this row object, so adding a trailing key here cannot change
+        // an existing or new row's hash/dedupe key. Old rows on disk simply
+        // lack this key; every reader already treats `sender == null` as
+        // "no resolvable sender, count as real" (fail-open), so this is
+        // silently backward-compatible with every row written before it.
+        sender: senderId,
       }) + '\n');
       imported++;
     }

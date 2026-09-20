@@ -6,6 +6,89 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.102.0 (2026-09-20)
+
+Six DevSwarm mesh defects were reported by three independent sessions. Two of the six
+did not survive verification and are recorded here so they are not re-chased.
+
+- **Fixed: `inbox read-primary` and `inbox tick` used different NDJSON cursors, so a
+  child could be woken forever by unread mail that `read-primary` could never clear.**
+  `read-primary` read and acked the raw descriptor cursor, while `count`/`read`/`ack`/
+  `tick` used the per-instance cursor from `resolveNdCursorPath`
+  (`cursors/<id>#nd-<short>.json`). Nothing reconciled the two: the per-instance file is
+  seeded from the descriptor once at creation, `projectNdDescriptorCursor` only pushes
+  instance -> descriptor, and `reconcileOrphanCursor` explicitly excludes the NDJSON
+  cursor. `read-primary` now uses the same resolver as every other verb and projects the
+  MIN back to the descriptor afterwards, preserving the sibling invariant that stops one
+  reader advancing past another reader's unread mail. A doctor repair step
+  (`reconcileStuckNdCursors`) raises already-stuck per-instance cursors toward
+  `min(descriptor, real inbox line count)` via `ackTo`, which re-clamps to a freshly read
+  line count and refuses to lower — it can never skip mail.
+- **Fixed: a Primary's own outbound messages counted as the Primary's own neglect.**
+  The store path already filtered rows whose sender is the Primary itself; the NDJSON
+  path could not, because the NDJSON wire carried no sender field at all. Rows drained by
+  `devswarm-pull.js` now carry `sender`, and the gate applies the same filter. The field
+  is appended after `_h` is computed, so dedupe hashes and line positions are unchanged,
+  and rows written before this release (which have no `sender`) parse and count exactly
+  as before.
+- **Fixed: a blocked Primary could not tell whose mail it was blocked on.** The Primary's
+  own row is synthetic and keyed on its worktree; identity-family collapse then groups
+  every descriptor sharing that worktree and SUMS them under one id. So
+  `primary-<id> — N unread` could be a sum over sibling descriptors while the Primary's
+  own contribution was zero — which is exactly what two reporters hit. The gate now names
+  each contributor, its count, whether it is archived or its worktree is gone, and the
+  exact command that clears it (`inbox ack <id> --ack-as-owner`). Counting and every
+  blocking decision are unchanged.
+- **Fixed: `send` failed with `lockBusy` under ordinary concurrency.** A bounded retry
+  (3 attempts, jittered backoff) now wraps the per-workspace lock. The retry is safe
+  because the timestamp and message hash are computed once before the loop and
+  `withIdLock` never runs the append when the lock is busy, so the append happens at most
+  once. `send` already exited non-zero on `lockBusy`; that was verified, not assumed.
+- **Added: byte-length fields on `inbox read-primary`.** Nothing in this plugin truncates
+  message bodies, but the ack is content-blind: `read-primary` emits and acks in one call,
+  so if anything downstream of the CLI's stdout clips bytes, the cursor has already moved.
+  Each row now carries `bodyLength` (UTF-8 bytes) and the payload carries
+  `totalBodyBytes`, so a clipped consumer can detect a short read, plus a hint naming the
+  recovery path. The ack was deliberately NOT made conditional on a delivery receipt:
+  that would break the positional invariant the partition and sibling cursor arithmetic
+  depend on.
+- **Added: age-based GC for stale summary projections.** `summaries/*.json` accumulated
+  one file per (repo x project) ever derived with nothing pruning them. GC is keyed on
+  `generatedAt` (default 30 days, `ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS`) and never
+  removes a summary whose store directory still exists.
+
+**Reported but NOT defects** — verified against the code and recorded so they are not
+re-investigated:
+- "The gate double-counts unread across ~150 duplicate summary shards." It does not. The
+  gate opens exactly one summary file per repoKey and enumerates children from
+  descriptors, which carry no duplicate ids. The "duplicate shards" are per-repo
+  partitions of one multi-repo workspace: the same workspace id legitimately appears under
+  each repo it spans, derived at different times.
+- "Mesh messages truncate silently and a truncated message is unrecoverable once acked."
+  Nothing truncates bodies anywhere in send, store or read — every cap found is a row
+  count. Acked mail is re-servable: `inbox messages <id>` is read-only and not
+  unread-scoped, rows persist in both the NDJSON inbox and the store, and an ack is a
+  watermark, never a delete. The real gap was that the receiving agent had no way to know
+  that, which the byte-length fields and the recovery hint above address.
+
+**Deliberately not done:**
+- Excluding archived or gone-worktree descriptors from the gate's count. This was
+  attempted and reverted: 45 existing tests encode the opposite contract on purpose —
+  archiving suppresses the liveness axis only, never the unread axis, and a gone
+  worktree's mail is real and drainable. Excluding it would have hidden real mail.
+- Letting `reap-orphans --apply` run non-interactively. It deletes mesh partitions and its
+  human gate is deliberate. The attribution fix above removes the need to delete anything
+  to clear a false block.
+
+**Known, not fixed in this release:**
+- `resolveSelfId` projects through the main worktree while the gate's own id does not, so
+  if a Primary ever runs from a linked worktree the two ids diverge and the self-sent
+  filter no-ops. It fails toward counting, never toward hiding.
+- Rows written before this release carry no `sender`, so a pre-existing backlog of a
+  Primary's own outbound still counts until it drains.
+- `gcStaleSummaries` has a narrow window where deleting a summary as a store directory
+  appears could read as "no unread" for one cycle.
+
 ## 0.101.1 (2026-09-19)
 
 - **Fixed: DevSwarm ingest daemons ignored SIGTERM, so duplicates piled up.**

@@ -10,11 +10,27 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const cp = require('node:child_process');
 
 const pull = require('../../plugins/anti-hall/companion/lib/devswarm-pull.js');
 const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 const { readUnread } = require('../../plugins/anti-hall/companion/lib/devswarm-inbox-cursor.js');
+const { resolveSelfId } = require('../../plugins/anti-hall/companion/lib/liveness.js');
 const { testHook } = require('../helpers/spawn-hook.js');
+
+// makeGitRepo(tag) — a REAL, minimal git repo on disk (D3 sender tests need a
+// resolvable git root: resolveSelfId(cwd) hashes through the actual
+// `git rev-parse --git-common-dir`, which a fake/non-git path cannot satisfy).
+function makeGitRepo(tag) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-pull-repo-' + tag + '-'));
+  cp.spawnSync('git', ['init', '-q', dir]);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.email', 'a@b.c']);
+  cp.spawnSync('git', ['-C', dir, 'config', 'user.name', 'Test']);
+  fs.writeFileSync(path.join(dir, 'README.md'), tag);
+  cp.spawnSync('git', ['-C', dir, 'add', '.']);
+  cp.spawnSync('git', ['-C', dir, 'commit', '-q', '-m', 'init']);
+  return dir;
+}
 
 function tmpHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-pull-'));
@@ -202,6 +218,84 @@ test('idempotent re-append: the same batch twice -> no duplicate line or store r
     try { assert.equal(s.messageCount('child-1'), 2, 'the store parity feed is deduped by the same hash'); }
     finally { s.close(); }
   } finally { rm(home); }
+});
+
+// ---- D3: sender carried on the NDJSON wire ---------------------------------
+// This drain (devswarm-pull.js) is the CHILD-SIDE reception of its OWN native
+// parent->child queue — every row landing here was sent BY the Primary, so
+// `sender` must equal the exact `primary-<worktreeHash>` id
+// devswarm-parent-gate.js's readOwnUnread computes for the real Primary
+// (resolveSelfId hashes through git-common-dir, identical across a worktree
+// family), letting the gate-side `row.sender === own.id` filter (added
+// separately) recognize the Primary's own outbound and stop counting it as
+// its own neglect.
+test('sender: a new row carries the resolvable Primary id (matches resolveSelfId(cwd) exactly)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('sender');
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    const R = makeRun({ count: 2, batch: TWO });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: repo, io: { run: R.run } });
+    assert.equal(res.imported, 2);
+    const expected = resolveSelfId(repo);
+    assert.ok(expected, 'the test repo itself must resolve to a real primary-<hash> id');
+    const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    assert.equal(lines.length, 2);
+    for (const l of lines) {
+      const o = JSON.parse(l);
+      assert.equal(o.sender, expected, 'row.sender must equal the SAME id the parent-gate resolves as its own');
+    }
+  } finally { rm(home); rm(repo); }
+});
+
+test('sender: a non-git cwd still drains successfully; sender resolves deterministically (resolveSelfId hashes the raw path when git-common-dir is unresolvable, it does not fail closed to null)', () => {
+  const home = tmpHome();
+  try {
+    const { inboxPath } = seedDescriptor(home, 'child-1');
+    const R = makeRun({ count: 2, batch: TWO });
+    // cwd: home is a plain tmpdir, not a git repo. resolveMainWorktree(home)
+    // returns null (no git-common-dir), but resolveSelfId falls back to
+    // hashing `home` itself (primaryWorkspaceId is a pure path hash) rather
+    // than returning null — matching production, where pullOnce's cwd is
+    // always some real, non-empty path.
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: home, io: { run: R.run } });
+    assert.equal(res.ok, true);
+    assert.equal(res.imported, 2);
+    const expected = resolveSelfId(home);
+    assert.ok(expected, 'a non-git path still resolves to a deterministic hash, never null, given a real path string');
+    const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    for (const l of lines) { assert.equal(JSON.parse(l).sender, expected); }
+  } finally { rm(home); }
+});
+
+test('sender: backward compatibility — a pre-existing senderless row and a new sender-carrying row coexist, both parse and count identically, dedupe/cursor unaffected', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('sender-back-compat');
+  try {
+    const { inboxPath, cursorPath } = seedDescriptor(home, 'child-1');
+    // Simulate a row written by the OLD writer (no `sender` key at all) already
+    // sitting in the durable inbox before this fix ever ran.
+    const oldRow = { _h: 'native:pre-existing-legacy-row', fromBranch: 'parent', message: 'legacy', createdAt: '2025-01-01T00:00:00Z', status: 'unread' };
+    fs.mkdirSync(path.dirname(inboxPath), { recursive: true });
+    fs.writeFileSync(inboxPath, JSON.stringify(oldRow) + '\n');
+    // Drain ONE new message through the fixed writer, cwd resolved to a real repo.
+    const ONE = JSON.stringify([{ fromBranch: 'parent', message: 'new one', createdAt: '2026-01-01T00:00:00Z', status: 'unread' }]);
+    const R = makeRun({ count: 1, batch: ONE });
+    const res = pull.pullOnce({ home, id: 'child-1', backend: 'journal', cwd: repo, io: { run: R.run } });
+    assert.equal(res.ok, true);
+    assert.equal(res.imported, 1, 'the new message is imported; the pre-existing legacy row is untouched, not re-counted');
+    assert.equal(res.duplicate, 0, 'the legacy row (different _h) must not be mistaken for a duplicate of the new one');
+    const lines = fs.readFileSync(inboxPath, 'utf8').split('\n').filter((l) => l.trim() !== '');
+    assert.equal(lines.length, 2, 'both the legacy senderless row and the new sender-carrying row are on disk');
+    const parsed = lines.map((l) => JSON.parse(l));
+    assert.equal(parsed[0]._h, 'native:pre-existing-legacy-row', 'the legacy row is byte-preserved, still first');
+    assert.ok(!('sender' in parsed[0]) || parsed[0].sender === undefined, 'the legacy row still has no sender key');
+    assert.equal(parsed[1].sender, resolveSelfId(repo), 'the new row carries the resolved sender');
+    // The cursor/unread primitive counts BOTH rows identically regardless of the
+    // shape difference — position-based, not shape-based.
+    const u = readUnread(inboxPath, cursorPath);
+    assert.equal(u.count, 2, 'both a senderless legacy row and a sender-carrying new row count as unread identically');
+  } finally { rm(home); rm(repo); }
 });
 
 test('reconciliation: message-count=2 but read-messages returns an UNHANDLED shape -> lost:2, ok:false (no silent imported:0)', () => {

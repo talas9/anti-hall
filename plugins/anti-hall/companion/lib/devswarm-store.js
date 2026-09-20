@@ -2525,6 +2525,100 @@ function readSummaryForHash(home, hash, fsi) {
   }
 }
 
+// GC_STALE_SUMMARIES_DAYS_DEFAULT — a summary older than this (by its own
+// `generatedAt`) is a candidate for removal. 30 days: long enough that a
+// project someone touches even occasionally never loses its projection
+// between sessions, short enough to actually bound summaries/ growth (~150
+// modules-*.json files observed on one machine, one per repo x project ever
+// derived here, nothing ever pruning them). Env-overridable, matching the
+// sibling retention knobs in doctor-repair.js (ANTIHALL_DEVSWARM_*_RETENTION_DAYS).
+const GC_STALE_SUMMARIES_DAYS_DEFAULT = 30;
+
+// gcStaleSummaries({home, mode, days, env, io}) -> [{file, status, msg}].
+// AGE-BASED GC for summaries/<hash>.json, keyed on the summary's OWN
+// `generatedAt` (never mtime — a summary can be rewritten with a stale
+// `generatedAt` carried through a partial derive, and the reverse: an
+// untouched file's mtime is not itself meaningful once `generatedAt` exists).
+//
+// These are PER-(repo x project) PROJECTIONS, not duplicates — the same
+// workspace id can legitimately appear in several distinct summary files
+// (one per repoKey it was ever derived under), so this NEVER dedupes by an
+// id found inside a summary's `workspaces` map. The unit of GC is the
+// SUMMARY FILE itself, decided purely by its own age and its own hash.
+//
+// NEVER GC A repoKey CURRENTLY IN USE: "in use" is defined as
+// `store/<hash>/` still existing on disk (listStoreHashes) — the SAME hash
+// a summary's filename carries, since deriveSummary always writes
+// summaries/<hash>.json for the identical hash its store was opened under.
+// A live/recent project always has a store dir; an old summary whose store
+// dir is genuinely gone (the project was fully removed) is the only thing
+// ever removed here. This biases hard toward keeping: any store dir at all,
+// regardless of how stale, keeps its summary.
+//
+// mode 'check' (default) is read-only (`status:'pending'`); mode 'repair'
+// deletes ONLY a summary that is BOTH stale AND has no corresponding store
+// dir. Fail-open per file (an unreadable/corrupt summary, or one missing
+// `generatedAt` entirely, is left untouched rather than guessed at — no
+// `generatedAt` means this GC has no evidence of age, so it declines rather
+// than treating "unknown" as "old").
+function gcStaleSummaries(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const mode = o.mode === 'repair' ? 'repair' : 'check';
+  const F = (o.io && o.io.fs) || fs;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const days = Number.isFinite(o.days) ? o.days
+    : Number.isFinite(Number((o.env || process.env).ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS))
+      ? Number((o.env || process.env).ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS)
+      : GC_STALE_SUMMARIES_DAYS_DEFAULT;
+  const maxAgeMs = days * 24 * 60 * 60 * 1000;
+  const results = [];
+
+  const dir = summariesRootDir(home);
+  let names = [];
+  try { names = F.readdirSync(dir); } catch (e) {
+    if (e && e.code === 'ENOENT') return results; // routine: no summaries ever derived
+    return [{ file: dir, status: 'failed', msg: 'could not list ' + dir + ': ' + errMsg(e) }];
+  }
+
+  const inUse = new Set(listStoreHashes(home, F));
+
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue;
+    const hash = name.slice(0, -'.json'.length);
+    const full = path.join(dir, name);
+    if (inUse.has(hash)) continue; // NEVER GC a repoKey currently in use
+
+    let raw;
+    try { raw = String(F.readFileSync(full, 'utf8')); } catch (_) { continue; } // vanished mid-sweep
+    let obj;
+    try { obj = JSON.parse(raw); } catch (_) {
+      continue; // unreadable/corrupt — fail-open, leave it, never guess at age
+    }
+    const generatedAt = obj && Number.isFinite(obj.generatedAt) ? obj.generatedAt : null;
+    if (generatedAt === null) continue; // no age evidence — decline rather than treat unknown as old
+
+    const ageMs = now - generatedAt;
+    if (ageMs <= maxAgeMs) continue; // inside the retention window
+
+    if (mode === 'check') {
+      results.push({ file: full, status: 'pending', msg: full + ' is stale (age ' + Math.round(ageMs / 86400000) + 'd, no store/' + hash + '/ in use)' });
+      continue;
+    }
+    try {
+      F.unlinkSync(full);
+      results.push({ file: full, status: 'fixed', msg: 'removed stale summary ' + name + ' (age ' + Math.round(ageMs / 86400000) + 'd, repoKey ' + hash + ' not in use)' });
+    } catch (e) {
+      results.push({ file: full, status: 'failed', msg: 'could not remove ' + full + ': ' + errMsg(e) });
+    }
+  }
+  return results;
+}
+
+// errMsg(e) -> string. Local copy (this module has no shared error-formatting
+// import) — mirrors the one-liner every other fail-open catch in this repo uses.
+function errMsg(e) { return (e && e.message) || String(e); }
+
 module.exports = {
   DEFAULT_REQUIRED_GATES, DEFAULT_HASH,
   hashFromWorkspaceId,
@@ -2539,4 +2633,6 @@ module.exports = {
   BROADCAST_PARTITION_ID, meshMessageHash, appendMeshMessage,
   // v0.58 (archive-request store write, deriveSummary archive_requested):
   ARCHIVE_REQUEST_MARKER,
+  // GC — age-based summaries/ pruning, never touching an in-use repoKey:
+  gcStaleSummaries, GC_STALE_SUMMARIES_DAYS_DEFAULT,
 };

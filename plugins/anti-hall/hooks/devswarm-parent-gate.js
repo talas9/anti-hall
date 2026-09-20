@@ -154,7 +154,7 @@ const { readActiveCache, isAppArchived } = require('../companion/lib/devswarm-ar
 // on an idle-but-alive child. CONTENT, not age, is the only signal that
 // distinguishes real neglect from noise).
 const { isNoiseText } = require('../companion/lib/devswarm-noise.js');
-const { ownReaderUnread } = require('../companion/lib/devswarm-own-reader.js');
+const { ownReaderDelta } = require('../companion/lib/devswarm-own-reader.js');
 // primaryWorkspaceId/worktreeHash: the SAME per-worktree Primary-id convention
 // devswarm-parent-inbox.js and the ingest daemon already use (#34 parity — the
 // Primary's OWN unread, resolved below via readOwnUnread).
@@ -482,9 +482,33 @@ function readOwnUnread(home, cwd, repoKey) {
     // its blocking check treats `own.unknown` as blocking regardless of
     // `unread`'s value (~line 1813-1814), so routing here reuses an already-
     // proven-safe path rather than inventing a new one.
-    const ownRaw = ownReaderUnread(home, top, id, entry, rawUnread);
-    const unread = ownRaw === null ? 0 : ownRaw;
-    const staleOwnCache = ownRaw === null;
+    // ownSource (P4 fix — cache-vs-live provenance, buildReason): mirrors
+    // ownReaderUnread's own contract EXACTLY (raw<=0 -> 0/cache; else
+    // ownReaderDelta's `live` resolved -> that live count; `stale` -> unknown;
+    // otherwise the ordinary cache-derived delta subtraction) so this stays
+    // byte-identical to `ownReaderUnread`'s result — it is called INSTEAD of
+    // ownReaderUnread (not in addition — ownReaderDelta's live branch can open
+    // a store handle, and calling both would pay that cost twice per Stop
+    // turn) purely so this ONE caller can also capture whether the number it
+    // got came from the cached summary or a live-resolved read, for the
+    // reason-string provenance label. ownReaderDelta/ownReaderUnread remain
+    // the ONE canonical implementation of the actual subtraction/live-read
+    // math (companion/lib/devswarm-own-reader.js) — nothing here reimplements
+    // that; this only composes the two ALREADY-exported primitives.
+    let unread, staleOwnCache, ownSource;
+    if (!(rawUnread > 0)) {
+      unread = 0; staleOwnCache = false; ownSource = 'cache';
+    } else {
+      const { delta, stale, live } = ownReaderDelta(home, top, id, entry);
+      if (live !== undefined) {
+        unread = live; staleOwnCache = false; ownSource = 'live';
+      } else if (stale) {
+        unread = 0; staleOwnCache = true; ownSource = null;
+      } else {
+        unread = delta > 0 ? Math.max(0, rawUnread - delta) : rawUnread;
+        staleOwnCache = false; ownSource = 'cache';
+      }
+    }
     const urgencyMax = (unread > 0 && entry && entry.urgencyMax) ? entry.urgencyMax : null;
     const pendingQuestions = entry && Array.isArray(entry.pendingQuestions) ? entry.pendingQuestions : [];
     // Presence alone is the signal — trust the store's own decision to stamp
@@ -520,7 +544,7 @@ function readOwnUnread(home, cwd, repoKey) {
         registryRows.push({ id: r.id, worktreePath: r.worktreePath || null, sessionId: r.sessionId || null });
       }
     }
-    return { unread, id, urgencyMax, unknown: staleOwnCache, staleOwnCache, pendingQuestions, pendingQuestionsTruncated, registryRows, archivedKnown };
+    return { unread, id, urgencyMax, unknown: staleOwnCache, staleOwnCache, ownSource, pendingQuestions, pendingQuestionsTruncated, registryRows, archivedKnown };
   } catch (_) {
     // Any unanticipated failure past the ENOENT-tolerant read above means a
     // summary WAS reachable enough to attempt reading/parsing and something
@@ -979,6 +1003,16 @@ function main() {
         for (const row of u.rows) {
           if (row === null) { realUnread++; continue; } // unparseable -> fail open (real)
           if (isNoiseText(row.message)) continue; // positively-classified noise -> excluded
+          // OUTBOUND-NOT-NEGLECT on the NDJSON path (mirrors the store-side
+          // UNION filter below, ~:1038): a row this Primary itself sent lands
+          // in the recipient's own NDJSON inbox awaiting THEIR read, not this
+          // Primary's. DEFENSIVE: the NDJSON wire carries no `sender` field on
+          // any row written before this fix (verified: 0 occurrences across
+          // the existing inbox rows) — only skip when `row.sender` is PRESENT
+          // and matches this Primary's own id; a row with no resolvable
+          // sender counts as real exactly as before, so this can never turn a
+          // real neglect signal newly silent on old data.
+          if (own.id && row && row.sender != null && String(row.sender) === String(own.id)) continue;
           realUnread++;
         }
       }
@@ -1271,9 +1305,45 @@ function main() {
     // "peek-primary"/cd-in workflow is unrunnable and the block previously
     // looked unclearable.
     let worktreeGone = false;
+    // NOTE — a proposed fix here (excluding archived / app-archived /
+    // confirmed-dead-worktree members from `unionUnread`) was ATTEMPTED and
+    // REVERTED: it broke 45 pre-existing tests across this suite that assert
+    // the OPPOSITE, by design — e.g. devswarm-parent-gate-app-archived.test.js
+    // "LIVENESS AXIS ONLY: app-archived + REAL unread STILL blocks", and
+    // devswarm-parent-gate.test.js's "MUST NOT BREAK: worktree GONE +
+    // STORE-side unread -> STILL blocks on the unionUnread axis (nothing is
+    // hidden)" / "...ownerKey-ONLY descriptor STILL blocks". Those tests
+    // encode a DELIBERATE prior decision (defects 45cf1659f54f, 0ace80dff415):
+    // archived/app-archived/dead-worktree suppress ONLY the liveness
+    // (stale/escalated) axis, NEVER the unread axis — "archiving does not
+    // answer mail", and a gone-worktree row's mail is still real and
+    // drainable via `inbox ack <id> --ack-as-owner`. Summing a non-live
+    // member's unread is therefore NOT a bug by this codebase's own tested
+    // contract.
+    //
+    // RE-SCOPED FIX (attribution, not exclusion): the actual defect a
+    // blocked Primary hits is that it cannot tell a MULTI-MEMBER family's
+    // total apart from its own contribution — it reads its own id, drains
+    // ITS OWN inbox, sees the count unchanged, and has no way to discover
+    // the remainder belongs to a sibling descriptor. `contributors` records
+    // EVERY member with real unread (id, count, and whether it is archived /
+    // app-archived / worktree-gone) — pure REPORT-ONLY data, consulted only
+    // by buildReason() below; it changes no count and no blocking decision.
+    const contributors = [];
     for (const m of members) {
-      unionUnread += Number.isFinite(m.realUnread) ? m.realUnread : 0;
-      if (worktreeIsGone(m.worktreePath)) worktreeGone = true;
+      const memberRealUnread = Number.isFinite(m.realUnread) ? m.realUnread : 0;
+      unionUnread += memberRealUnread;
+      const memberWorktreeGone = worktreeIsGone(m.worktreePath);
+      if (memberWorktreeGone) worktreeGone = true;
+      if (memberRealUnread > 0) {
+        contributors.push({
+          id: m.id != null ? String(m.id) : null,
+          unread: memberRealUnread,
+          archived: !!m.archived,
+          appArchived: !!m.appArchived,
+          worktreeGone: memberWorktreeGone,
+        });
+      }
       if (m.unreadUnknown) {
         unreadUnknown = true;
         unknownMembers.push({
@@ -1326,6 +1396,10 @@ function main() {
     if (worktreeGone) entry.worktreeGone = true;
     if (urgencyMax != null) entry.urgencyMax = urgencyMax;
     if (unknownMembers.length) entry.unknownMembers = unknownMembers;
+    // Only attached when the total is genuinely a SUM over >1 member — a
+    // single-contributor family (the ordinary case) needs no attribution,
+    // its `unread` already IS that one member's count.
+    if (contributors.length > 1) entry.contributors = contributors;
     if (Array.isArray(fam.mergedTwinIds) && fam.mergedTwinIds.length) entry.mergedTwinIds = fam.mergedTwinIds;
     blocking.push(entry);
   }
@@ -1541,7 +1615,7 @@ function main() {
       }), 'utf8');
     } catch (_) { /* fail-open: best-effort persist, notice still fires this pass */ }
     try {
-      const reason = buildReason(blocking, own.id, unanswered, null, truncated, null, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache);
+      const reason = buildReason(blocking, own.id, unanswered, null, truncated, null, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache, own.ownSource || null);
       fs.writeSync(2, 'anti-hall: ' + reason.split('\n')[0]
         + ' — not blocking (in-flight drain marker fresh for this session)\n');
     } catch (_) {}
@@ -1604,7 +1678,7 @@ function main() {
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
   const wakeLine = wakeReassertLine(process.env, false);
 
-  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache) + wakeLine;
+  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache, own.ownSource || null) + wakeLine;
 
   // IN-FLIGHT DRAIN MARKER: evaluated ABOVE now (before this persist), not
   // here — see the "R11 Auditor A2 fix" comment at that earlier call site for
@@ -1765,7 +1839,7 @@ function buildInformationalSegment(informational) {
   );
 }
 
-function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, ownSelfUnknown, unansweredInformational, ownStaleCache) {
+function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, ownSelfUnknown, unansweredInformational, ownStaleCache, ownSource) {
   const shown = blocking.slice(0, 5).map((b) => {
     const bits = [];
     if (b.unread > 0) bits.push(b.unread + ' unread');
@@ -1780,6 +1854,13 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     // this) so the claim is falsifiable and correctly attributed.
     if (b.unknown) bits.push(unknownMemberLabel(b));
     if (b.status) bits.push(b.status);
+    // source provenance (P4 fix): ONLY the Primary's own row is ever
+    // cache-derived (summaries/<repoKey>.json) — every other figure here is
+    // already a live per-invocation read (readUnreadMessages/store union), so
+    // this one-token label is attached only to the `ownId` row, letting a
+    // Primary see at a glance why this number and a live `inbox tick` might
+    // momentarily differ instead of assuming one of them is wrong.
+    if (b.id === ownId && ownSource) bits.push(ownSource === 'live' ? 'live-resolved' : 'cached');
     return b.id + (b.id === ownId ? ' (you)' : '') + ' (' + bits.join(', ') + ')';
   }).join('; ');
   const more = blocking.length > 5 ? ' (and ' + (blocking.length - 5) + ' more)' : '';
@@ -1842,6 +1923,31 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     body +=
       'DEVSWARM NEGLECT: ' + blocking.length + ' workspace(s) still need attention ' +
       'before this Primary turn ends: ' + shown + more + '. ';
+  }
+  // ATTRIBUTION (re-scoped fix — a family total that is a SUM over >1
+  // member, e.g. the Primary's own synthetic row collapsed with a sibling
+  // descriptor sharing its worktree, used to be reported ONLY under one
+  // survivor id with no way to tell how much of it is the Primary's OWN
+  // mail vs a sibling's. Draining the survivor id's own inbox then leaves
+  // the count unchanged and no clue why — two reporters landed there
+  // independently. REPORT-ONLY: names each contributing member and, for any
+  // that is not the Primary's own id, the command that actually clears it
+  // (`inbox ack <id> --ack-as-owner` — the same remedy already documented at
+  // this file's worktreeGone comment above). Changes no count, no blocking
+  // decision. One compact line per multi-contributor family.
+  for (const b of blocking) {
+    if (!Array.isArray(b.contributors) || b.contributors.length <= 1) continue;
+    const parts = b.contributors.map((c) => {
+      const flags = [];
+      if (c.archived) flags.push('archived');
+      if (c.appArchived) flags.push('app-archived');
+      if (c.worktreeGone) flags.push('worktree-gone');
+      const flagStr = flags.length ? ' [' + flags.join(', ') + ']' : '';
+      const who = c.id === ownId ? (c.id + ' (you)') : c.id;
+      const drain = c.id !== ownId ? ' — clear via `devswarm.js inbox ack ' + c.id + ' --ack-as-owner`' : '';
+      return who + ': ' + c.unread + flagStr + drain;
+    });
+    body += 'ATTRIBUTION for ' + b.id + ' (' + b.unread + ' total): ' + parts.join('; ') + '. ';
   }
   // SELF-ROW GATING (regression fix, d1c8625 identity-family collapse):
   // `ownEntry.unknown` is a FAMILY-WIDE union — it goes true whenever ANY
