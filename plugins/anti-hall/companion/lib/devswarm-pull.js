@@ -100,11 +100,25 @@ function isAliveDefault(pid) {
 // io.version (string, optional): stamped into the lock JSON as `version` so a
 // refused caller can report which plugin build holds the lock (see io.onRefused).
 //
-// io.onRefused(info) (optional): called with `{ pid, ageMs, version }` (any field
-// may be null if unknown/unparseable) immediately before a refusal (`return null`)
-// on an EEXIST path — lets a caller build a diagnostic line without changing this
-// function's `release() | null` return contract that every existing call site relies
-// on.
+// io.sessionId (string, optional, v0.102.2): stamped into the lock JSON as
+// `sessionId` so a refused caller can name WHICH session's watcher holds the
+// lock (see io.onRefused) — same "who, since when" diagnostic need `version`
+// already covers for "which build". ADDITIVE ONLY: a lock file written by an
+// older version (pre-v0.102.2, no `sessionId` key at all) simply parses with
+// `holder.sessionId === undefined`, which the read-back below already treats
+// as "unavailable" — never a crash, never a behavior change for that lock.
+// Omitted (not just falsy) from the written JSON when the caller passes
+// nothing, so a lock written by an old OR new caller with no sessionId looks
+// byte-identical either way.
+//
+// io.onRefused(info) (optional): called with `{ pid, ageMs, version, sessionId, ts }`
+// (any field may be null if unknown/unparseable/absent-in-an-older-lock)
+// immediately before a refusal (`return null`) on an EEXIST path — lets a
+// caller build a diagnostic line without changing this function's
+// `release() | null` return contract that every existing call site relies
+// on. `ts` is the holder's raw acquire/restamp epoch-ms (the same value
+// `ageMs` is already computed from) so a caller can render an absolute
+// "acquired at" timestamp instead of only a relative age.
 function acquireExclLock(lockPath, io, staleMs) {
   const F = (io && io.fs) || fs;
   const isAlive = (io && io.isAlive) || isAliveDefault;
@@ -112,26 +126,28 @@ function acquireExclLock(lockPath, io, staleMs) {
   const stale = Number.isFinite(staleMs) ? staleMs : PULL_LOCK_STALE_MS;
   const allowStaleLiveSteal = !!(io && io.allowStaleLiveSteal);
   const version = (io && typeof io.version === 'string') ? io.version : null;
+  const sessionId = (io && typeof io.sessionId === 'string' && io.sessionId) ? io.sessionId : undefined;
   try { F.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch (_) {}
   for (let attempt = 0; attempt < 2; attempt++) {
     const ts = now();
     const token = process.pid + ':' + ts + ':' + Math.random().toString(36).slice(2);
     try {
       const fd = F.openSync(lockPath, 'wx');
-      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token, version })); } finally { F.closeSync(fd); }
+      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts, token, version, sessionId })); } finally { F.closeSync(fd); }
       const release = function release() {
         try { const cur = JSON.parse(F.readFileSync(lockPath, 'utf8')); if (cur && cur.token === token) F.unlinkSync(lockPath); } catch (_) {}
       };
-      // restamp() — re-write `ts` (and version) IN PLACE, same pid/token, so a
-      // healthy long-lived holder's lock never reads as stale to a steal-check
-      // even though the process itself never releases between ticks. A no-op
-      // (fails silently) once another holder owns the token — e.g. after this
-      // process's own lock was reclaimed while it was hung.
+      // restamp() — re-write `ts` (and version/sessionId) IN PLACE, same
+      // pid/token, so a healthy long-lived holder's lock never reads as
+      // stale to a steal-check even though the process itself never
+      // releases between ticks. A no-op (fails silently) once another
+      // holder owns the token — e.g. after this process's own lock was
+      // reclaimed while it was hung.
       release.restamp = function restamp() {
         try {
           const cur = JSON.parse(F.readFileSync(lockPath, 'utf8'));
           if (!cur || cur.token !== token) return false;
-          F.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: now(), token, version }));
+          F.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: now(), token, version, sessionId }));
           return true;
         } catch (_) { return false; }
       };
@@ -142,6 +158,7 @@ function acquireExclLock(lockPath, io, staleMs) {
       try { holder = JSON.parse(F.readFileSync(lockPath, 'utf8')); } catch (_) {}
       const holderPid = holder && Number.isFinite(holder.pid) ? holder.pid : null;
       const holderVersion = holder && typeof holder.version === 'string' ? holder.version : null;
+      const holderSessionId = holder && typeof holder.sessionId === 'string' && holder.sessionId ? holder.sessionId : null;
       let holderTs = holder && Number.isFinite(holder.ts) ? holder.ts : null;
       if (holderTs === null) {
         // TORN-READ GUARD: a live holder is briefly a 0-byte file between openSync('wx')
@@ -160,6 +177,8 @@ function acquireExclLock(lockPath, io, staleMs) {
             pid: holderPid,
             ageMs: holderTs === null ? null : Math.max(0, now() - holderTs),
             version: holderVersion,
+            sessionId: holderSessionId,
+            ts: holderTs,
           });
         } catch (_) {}
       }

@@ -252,6 +252,19 @@ function readInstalledPluginVersion() {
   } catch (_) { return null; }
 }
 
+// resolveOwnSessionId() -> string | undefined. Best-effort identifier for the
+// Claude Code (or Codex-companion) session that armed THIS watcher, stamped
+// into the lock file so a refused sibling can name WHICH session's watcher
+// holds the lock (v0.102.2). Same precedent env vars scripts/defect.js
+// already reads for its own session-attribution field. `undefined` (never
+// `null`/`''`) when neither is set, so acquireExclLock's `typeof ===
+// 'string'` check omits the field from the written lock JSON entirely
+// rather than writing a placeholder.
+function resolveOwnSessionId() {
+  const v = process.env.CLAUDE_SESSION_ID || process.env.ANTIHALL_SESSION_ID;
+  return (typeof v === 'string' && v) ? v : undefined;
+}
+
 // ---------------------------------------------------------------------------
 // PURE CORE
 // ---------------------------------------------------------------------------
@@ -883,6 +896,7 @@ function main() {
   const release = pull.acquireExclLock(lockPath, {
     allowStaleLiveSteal: true,
     version: readInstalledPluginVersion(),
+    sessionId: resolveOwnSessionId(),
     onRefused(info) { refusalInfo = info; },
   }, WATCH_LOCK_STALE_MS);
   if (!release) {
@@ -890,17 +904,43 @@ function main() {
     // error — exit 0. It still gets exactly one closed-vocabulary line on
     // stdout (formatRefusalLine) so the caller can distinguish "another
     // watcher already covers this" from "armed and quiet"; the detailed
-    // stderr line (with role/id, and now the holder's pid/age/version per
-    // defect 8143ced316d3) stays for humans/logs since only the fixed reason
-    // may go on stdout.
+    // stderr line (with role/id, and now the holder's pid/session/acquired-at
+    // per this fix on top of defect 8143ced316d3's pid/age/version) stays for
+    // humans/logs since only the fixed reason may go on stdout — see
+    // formatRefusalLine's own header for why the stdout line stays
+    // closed-vocabulary (injection hygiene: never runtime-derived text).
+    //
+    // WHY THIS LINE EXISTS (v0.102.2): a peer session read a bare
+    // "REFUSED TO ARM: lock-held" as a stale/stuck lock and reported it as a
+    // bug, retracting only after manually checking `ps` — the single-
+    // consumer refusal was CORRECT (the lock was live, 24h-old, healthy).
+    // Naming the holder's pid/session/acquired-at here (stderr, so it is
+    // free to carry runtime-derived text) lets that same judgment be made
+    // from THIS line alone, without a separate `ps` lookup.
     try {
       const info = refusalInfo || {};
       const ageStr = Number.isFinite(info.ageMs) ? Math.round(info.ageMs / 1000) + 's' : 'unknown';
       const pidStr = info.pid == null ? 'unknown' : String(info.pid);
       const versionStr = info.version || 'unknown';
+      const sessionStr = info.sessionId || 'unavailable';
+      // `info.ts` is only present when the CURRENT (v0.102.2+) shape wrote
+      // it — a lock left behind by an older watcher (pre-v0.102.2, no `ts`
+      // echoed through onRefused, or a session id the lock never carried at
+      // all) degrades to 'unavailable'/'unknown', never a crash or a made-up
+      // value.
+      let acquiredStr = 'unknown';
+      if (Number.isFinite(info.ts)) {
+        try { acquiredStr = new Date(info.ts).toISOString(); } catch (_) { acquiredStr = 'unknown'; }
+      }
+      // FIELD ORDER: `pid=... age=...` stays adjacent, byte-for-byte as
+      // before this fix — tests/companion/devswarm-fleet-8143ced316d3.test.js
+      // already asserts that exact substring (defect 8143ced316d3); the new
+      // session/acquired fields are appended after `age=`, before `version=`,
+      // so no existing assertion has to change.
       process.stderr.write('[wake-watch] another watcher already holds the lock for '
         + watchedRole + ' ' + id + ' (holder pid=' + pidStr + ' age=' + ageStr
-        + ' version=' + versionStr + '); exiting quietly (not double-arming).\n');
+        + ' session=' + sessionStr + ' acquired=' + acquiredStr + ' version=' + versionStr
+        + '); that watcher is live, this is expected — exiting quietly (not double-arming).\n');
     } catch (_) {}
     try { emitLine(formatRefusalLine(REFUSAL_REASONS.LOCK_HELD)); } catch (_) {}
     process.exitCode = 0;

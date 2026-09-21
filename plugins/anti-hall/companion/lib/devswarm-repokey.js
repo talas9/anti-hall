@@ -305,6 +305,75 @@ function gitCommonDirNoSpawn(worktree, opts) {
   }
 }
 
+// resolveWorktreeNoSpawn(startDir, {io}) -> absolute worktree/toplevel path |
+// null. A pure-fs, SUBMODULE-AWARE analogue of the plain `findGitToplevel`
+// walk-up (hooks/devswarm-parent-gate.js, scripts/devswarm.js) — WITHOUT
+// spawning git (v0.102.2, defect: the submodule-identity gate fix originally
+// shipped with a `resolveCallerWorktree` git-spawn call on this path; this is
+// the zero-spawn primitive that removes it for the common case).
+//
+// WHY THE PLAIN WALK-UP IS WRONG INSIDE A SUBMODULE: `findGitToplevel` stops
+// at the FIRST `.git` entry it finds — `fs.statSync`/`lstatSync` succeeds on
+// a FILE exactly as on a directory, so it cannot tell "a linked worktree's
+// own toplevel" (correct to stop here — same project) apart from "a
+// submodule's own toplevel" (WRONG to stop here — a submodule is a
+// logically DIFFERENT, nested project; the walk must continue up to the
+// ENCLOSING superproject, exactly what `git rev-parse
+// --show-superproject-working-tree` resolves via a spawn).
+//
+// THE FS-ONLY ANSWER: a submodule is ALWAYS nested inside its superproject's
+// own working tree (that is what "submodule" means on disk), so the
+// superproject's own `.git` is always some ANCESTOR directory of the
+// submodule's working tree — reachable by the SAME directory walk-up,
+// simply by not stopping at the submodule's own `.git` FILE. The one thing
+// needed to know NOT to stop is exactly what `gitCommonDirNoSpawn`'s
+// `finalizeCommonDir` already detects with zero spawns: the submodule's own
+// gitdir (`.git`'s `gitdir: <path>` target, resolved) contains a
+// `.git/modules/<name>` segment (verified live, 2026-09-20: a real `git
+// submodule add`'s `.git` file already names this path DIRECTLY — no
+// `commondir` indirection needed to see it). A plain LINKED WORKTREE's `.git`
+// file does NOT match that shape (its gitdir is `.git/worktrees/<name>`) —
+// it stops there exactly as `findGitToplevel` always has, so an ordinary
+// linked worktree's own identity is completely unchanged by this function.
+//
+// Verified against a real `git submodule add` fixture (both from the
+// submodule's own root AND a nested subdirectory inside it) and against a
+// real `git worktree add` linked worktree (proving it is NOT walked past) —
+// see tests/companion/devswarm-repokey-nospawn-submodule.test.js.
+//
+// Returns null (fail-open) when no `.git` is found walking up to the
+// filesystem root, OR when a `.git` FILE's target cannot be read/parsed at
+// all (matches `findGitToplevel`'s own fail-open contract for a malformed
+// entry) — callers fall back to the git-spawning `resolveCallerWorktree`.
+function resolveWorktreeNoSpawn(startDir, opts) {
+  const o = opts || {};
+  const F = (o.io && o.io.fs) || fs;
+  try {
+    let dir = path.resolve(String(startDir || ''));
+    if (!dir) return null;
+    for (;;) {
+      const dotGit = path.join(dir, '.git');
+      let st = null;
+      try { st = F.lstatSync(dotGit); } catch (_) { st = null; }
+      if (st) {
+        if (st.isDirectory()) return dir; // ordinary toplevel (own OR the superproject reached by a prior submodule hop)
+        let raw = null;
+        try { raw = String(F.readFileSync(dotGit, 'utf8')); } catch (_) { raw = null; }
+        const m = raw && /^\s*gitdir:\s*(.+?)\s*$/m.exec(raw);
+        const gitdirPath = (m && m[1]) ? path.resolve(dir, m[1]) : null;
+        const isSubmodule = !!(gitdirPath && /[/\\]\.git[/\\]modules[/\\]/.test(gitdirPath));
+        if (!isSubmodule) return dir; // linked worktree (or an unparseable '.git' file) -> stop here, same as findGitToplevel
+        // submodule boundary detected -> do NOT stop; keep walking up toward the superproject.
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null; // reached filesystem root, no .git found
+      dir = parent;
+    }
+  } catch (_) {
+    return null;
+  }
+}
+
 // repoKeyForWorktreeFast(worktree, {io}) -> the SAME value repoKeyForWorktree
 // would return, but tries the zero-spawn `gitCommonDirNoSpawn` resolution
 // FIRST and only falls back to the git-spawning `repoKeyForWorktree` when the
@@ -389,4 +458,4 @@ function registeredRepoKey(desc, id, opts) {
   return persisted;
 }
 
-module.exports = { sanitizeRepoName, gitCommonDir, gitCommonDirNoSpawn, repoKeyForWorktree, repoKeyForWorktreeFast, winCanonicalizeCommonDir, registeredRepoKey, defaultRun, GIT_SPAWN_TIMEOUT_MS };
+module.exports = { sanitizeRepoName, gitCommonDir, gitCommonDirNoSpawn, resolveWorktreeNoSpawn, repoKeyForWorktree, repoKeyForWorktreeFast, winCanonicalizeCommonDir, registeredRepoKey, defaultRun, GIT_SPAWN_TIMEOUT_MS };

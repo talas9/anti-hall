@@ -6,6 +6,59 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.102.2 (2026-09-21)
+
+Two fixes from a defect filed by a peer session, plus the diagnostic that would have let that
+session self-diagnose one of them.
+
+- **Fixed: the parent gate reported unread counts that contradicted the CLI, and escalated on
+  them.** Root cause was one divergence, not several: the gate derived the Primary's own id from
+  a pure-fs walk (`findGitToplevel`) while the family grouping key used `canonicalMeshId` ->
+  `resolveCallerWorktree` (git rev-parse). **Inside a git submodule those disagree**, because a
+  submodule's `.git` is a FILE — `statSync` succeeds and the fs walk stops at the submodule
+  instead of reaching the superproject. From a cwd inside a submodule the gate minted an own id
+  that was a bare path hash of that directory: no descriptor, no registry row, `known:false` to
+  the CLI. It then synthesised a self-row for that id with no store-existence check, and an
+  unconditional survivor-force transplanted the real Primary's unread count onto it — printing a
+  `read-primary <phantom-id>` command that could not run. The same wrong id defeated the
+  self-sent filter (`row.sender === own.id`), so a child's count swung between its filtered and
+  unfiltered value depending on which cwd the gate fired from. Reported as 325 unread on a
+  nonexistent id while three independent CLI reads returned 0, and a child shown as 1 that a
+  direct peek put at 82.
+  Three changes: the gate now resolves its own id through the same canonical derivation the
+  family key uses; the survivor is forced to the self-row only when that id actually appears in
+  `registryRows`; and the gate's `unionUnread` call — the only one in the repo passing neither
+  `storeBaseCursor` nor the per-instance `#nd-` cursor — was migrated onto the v0.102.0 cursor
+  namespace so gate and CLI agree by construction.
+  NOT a v0.102.0 regression: the resolver line dates to v0.73.0 and the survivor-force to
+  v0.100.0. v0.102.0 only added the `cached`/`live-resolved` label (which mislabels provenance on
+  a number that did not come from the cache) and made the child count cwd-sensitive.
+
+- **Added: `resolveWorktreeNoSpawn`, a zero-spawn submodule-aware toplevel resolver**
+  (`companion/lib/devswarm-repokey.js`). It tells the two `.git`-file shapes apart without
+  invoking git — a submodule's gitdir carries a `.git/modules/<name>` segment, a linked
+  worktree's carries `.git/worktrees/<name>` — and does not stop walking at a submodule boundary.
+  Measured cold in a fresh process, which is how a hook always runs: **3.0 ms** against **380 ms**
+  for the spawning path. So the fix removes a ~127x cost rather than adding one, and keeps the
+  15,700-line `scripts/devswarm.js` require off the common hot path. The spawning resolver
+  remains as the fallback.
+
+- **Fixed: `REFUSED TO ARM: lock-held` gave no way to tell a live holder from a stale lock.**
+  The refusal now names the holder's `sessionId` and absolute acquire time alongside the existing
+  `pid`, `age` and `version`. A peer session read a bare `lock-held` as a stale lock and filed it
+  as a defect before checking `ps`; the lock was live and correctly held, and the single-consumer
+  guarantee had worked exactly as designed. The new `sessionId`/`ts` fields are ADDITIVE to the
+  lock JSON — a lock written by a pre-0.102.2 watcher parses with them absent and degrades to
+  'unavailable' rather than crashing. That backward compatibility is load-bearing: long-lived
+  watchers pin the plugin version that armed them, and five 0.101.1 watchers were resident on the
+  author's machine at release time.
+
+**Note on deployment.** Long-lived companions (wake-watch, supervisor, ingest) run from a
+version-pinned cache path and keep running the version that armed them until their session
+restarts. Hooks re-execute from disk per event, but the entry point resolves through a cache dir
+bound at session start. So this release takes effect per session on `/reload-plugins` or a
+restart — not the moment it is tagged.
+
 ## 0.102.1 (2026-09-20)
 
 Three fixes, each with a proven root cause. All were found while auditing a live install,

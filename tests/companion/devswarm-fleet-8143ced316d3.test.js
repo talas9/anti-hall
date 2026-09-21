@@ -166,6 +166,72 @@ test('wake-watch REFUSED path: stderr reports the live holder pid/age/version, s
 });
 
 // ---------------------------------------------------------------------------
+// v0.102.2: name the lock HOLDER (pid/session/acquired-at), not just its
+// age — a peer session read a bare "REFUSED TO ARM: lock-held" as a stale
+// lock and reported it as a bug before checking `ps` (the lock was live and
+// correctly held). Additive to the lock JSON shape (`sessionId`); a lock
+// written by an OLDER watcher (no `sessionId`, or even no `ts`) must degrade
+// to 'unavailable'/'unknown', never crash.
+// ---------------------------------------------------------------------------
+
+test('wake-watch REFUSED path: stderr names the holder session + acquired-at when the lock carries them (v0.102.2)', () => {
+  const home = tmpHome();
+  try {
+    const { lockPathFor } = require(wakeWatchPath);
+    const id = 'builder-8143-session-test';
+    const lockPath = lockPathFor(home, id);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    const acquiredMs = Date.now() - 60000;
+    fs.writeFileSync(lockPath, JSON.stringify({
+      pid: process.pid, ts: acquiredMs, token: 'live-holder', version: '0.102.2', sessionId: 'sess-abcdef01',
+    }));
+
+    const env = {
+      PATH: process.env.PATH, HOME: home, USERPROFILE: home,
+      DEVSWARM_REPO_ID: 'r1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id,
+    };
+    const res = spawnSync(process.execPath, [wakeWatchPath], { env, encoding: 'utf8', timeout: 5000 });
+    assert.strictEqual(res.status, 0);
+    // stdout stays closed-vocabulary — unaffected by this fix.
+    assert.strictEqual(res.stdout, '[wake-watch] REFUSED TO ARM: lock-held\n');
+    // pid+age stay adjacent, byte-identical to the pre-existing assertion above.
+    assert.match(res.stderr, new RegExp('holder pid=' + process.pid + ' age='));
+    assert.match(res.stderr, /session=sess-abcdef01/);
+    assert.match(res.stderr, /acquired=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+  } finally { rm(home); }
+});
+
+test('wake-watch REFUSED path: an OLDER lock file (no sessionId, no ts key) degrades to unavailable/unknown, never crashes (backward compat)', () => {
+  const home = tmpHome();
+  try {
+    const { lockPathFor } = require(wakeWatchPath);
+    const id = 'builder-8143-legacy-test';
+    const lockPath = lockPathFor(home, id);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    // A pre-v0.102.2 (even pre-version-stamping) lock shape: pid + token only.
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: 'legacy-holder' }));
+
+    const env = {
+      PATH: process.env.PATH, HOME: home, USERPROFILE: home,
+      DEVSWARM_REPO_ID: 'r1', DEVSWARM_SOURCE_BRANCH: 'main', DEVSWARM_BUILDER_ID: id,
+    };
+    const res = spawnSync(process.execPath, [wakeWatchPath], { env, encoding: 'utf8', timeout: 5000 });
+    assert.strictEqual(res.status, 0, `must still exit 0 against a legacy lock shape; stderr=${res.stderr}`);
+    assert.strictEqual(res.stdout, '[wake-watch] REFUSED TO ARM: lock-held\n');
+    // No `sessionId` key at all in this legacy shape -> 'unavailable', never a crash.
+    assert.match(res.stderr, /session=unavailable/);
+    // No `ts` key either -> acquireExclLock's own TORN-READ GUARD falls back
+    // to the lock file's real mtime (a legitimate acquired-at proxy for a
+    // pre-version-stamping lock) rather than throwing or printing a bogus
+    // value — assert it renders SOME valid ISO timestamp, not the literal
+    // 'unknown' (that string is reserved for when `info.ts` itself is
+    // non-finite, e.g. the file vanished between the stat and the read).
+    assert.match(res.stderr, /acquired=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/);
+    assert.ok(fs.existsSync(lockPath), 'refusal never steals/removes the legacy lock file');
+  } finally { rm(home); }
+});
+
+// ---------------------------------------------------------------------------
 // F fix: the main loop's release.restamp() return value was previously
 // discarded entirely — a `false` (lock stolen out from under a healthy-
 // looking watcher) never stopped the loop, so two watchers could silently

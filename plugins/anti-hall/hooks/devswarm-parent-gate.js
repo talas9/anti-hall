@@ -421,8 +421,62 @@ function findGitToplevel(startDir) {
 // missing field; only the "entry resolved" success path can populate it,
 // read verbatim from the same summary entry (never re-derived here — this
 // hook must stay a pure projection of what the store already decided).
+// SUBMODULE-PARITY FIX (v0.102.2, defect: phantom own-id inside a git
+// submodule). `top` used to be derived PURELY via findGitToplevel(cwd) — a
+// fs-only `.git`-entry walk that STOPS at a submodule's own `.git` FILE
+// (fs.statSync succeeds on a file exactly as on a directory, so the walk
+// can't tell "linked worktree/submodule marker" from "real toplevel" without
+// reading it). The family-grouping key (canonicalMeshId, scripts/devswarm.js)
+// resolves through resolveCallerWorktree instead, which detects that exact
+// shape and re-resolves onto the SUPERPROJECT via
+// `git rev-parse --show-superproject-working-tree`. The two resolvers used
+// to disagree inside a submodule cwd — own.id (this function) named the
+// submodule's own phantom primary-<hash> (no registry row, CLI reports
+// known:false) while the family key correctly named the superproject's real
+// Primary — so a Stop hook firing from inside a submodule printed an
+// unrunnable `inbox read-primary primary-<phantom>` remediation command and
+// filtered self-sent rows against the wrong id (inflating the child-neglect
+// count).
+//
+// ZERO-SPAWN RESOLUTION (measured, v0.102.2 review round): a hook is a FRESH
+// process per firing — there is no warm process to amortise a git spawn
+// into. Measured cold (fresh `node -e`, this machine, load avg ~30): require
+// scripts/devswarm.js ~15ms + resolveCallerWorktree's two git spawns
+// ~30-540ms depending on OS-cache warmth (git binary/dynamic-linker cold
+// start under load can spike past 500ms for the FIRST spawn in a span with a
+// gap before it — v0.101.0 exists because exactly this class of git-spawn
+// cost blew a hook timeout under load, ToolFox3 8,935ms/10s). So this now
+// tries the ZERO-SPAWN `resolveWorktreeNoSpawn` (companion/lib/
+// devswarm-repokey.js) FIRST — a pure-fs walk-up that continues past a
+// submodule's `.git` FILE (detected via the SAME `.git/modules/<name>`
+// on-disk shape gitCommonDirNoSpawn already detects, verified live: a real
+// `git submodule add`'s `.git` file already names that path directly, no
+// spawn needed to see it) instead of stopping there — while still stopping
+// normally at a plain linked worktree's own `.git` FILE (same behavior
+// findGitToplevel always had for that shape). This is submodule-aware AND
+// zero-spawn, so it is BOTH the primary path AND already correct for the
+// bug above without paying the spawn cost the first fix landed with.
+// `resolveCallerWorktree` (git spawn, scripts/devswarm.js — the SAME
+// resolver canonicalMeshId/the family key uses) is kept as the fallback for
+// whatever the fs-only walk cannot resolve (GIT_DIR overrides, an
+// unparseable `.git` file, or any other shape outside what it models) —
+// same "fs-only first, spawn as fallback" discipline
+// repoKeyForWorktreeFast already established in the same shared lib.
+// findGitToplevel is kept ONLY as the LAST-resort fail-open fallback, for
+// when even the devswarm-repokey.js/scripts/devswarm.js requires fail.
 function readOwnUnread(home, cwd, repoKey) {
-  const top = cwd ? findGitToplevel(cwd) : null;
+  let top = null;
+  if (cwd) {
+    try {
+      top = require('../companion/lib/devswarm-repokey.js').resolveWorktreeNoSpawn(cwd) || null;
+    } catch (_) { top = null; }
+    if (!top) {
+      try {
+        top = require('../scripts/devswarm.js').resolveCallerWorktree(cwd) || null;
+      } catch (_) { top = null; }
+    }
+    if (!top) top = findGitToplevel(cwd);
+  }
   if (!top) return { unread: 0, id: null, urgencyMax: null, unknown: false, pendingQuestions: [], pendingQuestionsTruncated: null };
 
   let id = null;
@@ -1064,7 +1118,27 @@ function main() {
         const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: d.worktreePath, id: d.id, home, env: process.env, repoKey: unionKey });
         if (storeHandle) {
           try {
-            const union = devswarmUnread.unionUnread({ inboxPath: d.inboxPath, cursorPath: d.cursorPath, id: d.id, storeHandle });
+            // CURSOR-NAMESPACE PARITY (v0.102.2): every OTHER unionUnread call
+            // site (scripts/devswarm.js's read-primary/peek-primary,
+            // devswarm-child-gate.js's readDurableUnread,
+            // devswarm-child-drain.js) sizes the store side from THIS
+            // reader's own per-instance position via `storeBaseCursor`
+            // (scripts/devswarm.js's siblingBaseCursor) — this call site was
+            // the one place in the repo still letting unionUnread default to
+            // `storeHandle.cursorValue(id)`, the cross-instance MIN-floor
+            // cursor, silently disagreeing with every sibling on where this
+            // reader's own drain position actually is. Same lazy + fail-open
+            // idiom as the sibling call sites: any resolution failure leaves
+            // `unionStoreBase` undefined, which unionUnread treats exactly as
+            // before this fix (its own pre-fix default).
+            let unionStoreBase;
+            try {
+              const devswarmCli = require('../scripts/devswarm.js'); // lazy: side-effect-free
+              const nonce = devswarmCli.deriveInstanceNonce({ home, cwd: d.worktreePath });
+              const shortNonce = devswarmCli.shortInstanceNonce(nonce);
+              unionStoreBase = shortNonce ? devswarmCli.siblingBaseCursor(storeHandle, home, d.id, shortNonce) : undefined;
+            } catch (_) { unionStoreBase = undefined; }
+            const union = devswarmUnread.unionUnread({ inboxPath: d.inboxPath, cursorPath: d.cursorPath, id: d.id, storeHandle, storeBaseCursor: unionStoreBase });
             for (const row of union.storeOnlyUnreadRows) {
               if (isNoiseText(row && row.body)) continue;
               // This Primary's own outbound send, sitting in the recipient's
@@ -1261,7 +1335,25 @@ function main() {
         // Force the merged family's survivor back to the self row so it is
         // still reported under `own.id` (the "(you)" branch), regardless of
         // whichever member collapseFamilies' own sort would otherwise pick.
-        selfFamily.survivor = selfEntry;
+        //
+        // HARDENING (v0.102.2, belt-and-braces on top of the readOwnUnread
+        // submodule fix above): `selfEntry` is trivially non-null here — it is
+        // rawEntries' OWN synthetic self-row (pushed unconditionally whenever
+        // own.id is truthy, see the `rawEntries.push` above), not proof that
+        // own.id names anything the store actually knows about. Before this
+        // fix a resolver disagreement (own.id derived from one toplevel,
+        // registryRows keyed by another) forced the survivor onto an id the
+        // store had never heard of — a phantom `primary-<hash>` printed with
+        // "(you)" and an `inbox read-primary <id>` remediation command that
+        // could never resolve (known:false). Only force the survivor when
+        // own.id is a row the store's OWN registry (`own.registryRows`,
+        // already resolved above by readOwnUnread) actually confirms; when it
+        // does not, keep whichever survivor collapseFamilies already picked
+        // — future resolver drift then degrades to a wrong LABEL at worst,
+        // never an unrunnable printed id again.
+        const ownIdInRegistry = own.id && Array.isArray(own.registryRows)
+          && own.registryRows.some((r) => r && r.id === own.id);
+        if (ownIdInRegistry) selfFamily.survivor = selfEntry;
         families = keptFamilies;
       }
     }

@@ -15850,6 +15850,7 @@ module.exports = {
   buildDescriptorFromFlags, readDescriptorFile, descriptorPath,
   retireWorktreeDuplicates, isLiveSessionId, archiveLeftReason,
   foldGroupIntoSurvivor, canonicalMeshId, canonicalWorktreeRealPath, groupRegistryByMeshId, foldMeshDuplicates,
+  resolveCallerWorktree,
   fetchActiveWorkspaceRecords,
   foldMeshDuplicatesAllStores,
   healOrphanPartitions, healOrphanPartitionsAllStores,
