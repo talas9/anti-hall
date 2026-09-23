@@ -11825,6 +11825,193 @@ function migrateOwnerKeys(home, ctx0) {
   return out;
 }
 
+// ---------------------------------------------------------------------------
+// identity-rekey-candidates (mesh redesign Phase 2 B1) — READ-ONLY report.
+// B1 flipped the repoKey of the SUBMODULE kinds only (submodule in a linked
+// worktree, non-absorbed or embedded submodule, nested submodule, linked worktree
+// OF a submodule): rows an older build wrote under the OLD key sit in
+// store/<oldKey>/, which nothing reads any more. This finds those stores and
+// reports them. It NEVER writes, merges, or moves anything: store cursors are
+// positions in one partition, so merging across stores is deferred to Phase 3
+// (reader_cursors), where positions stop being per-store.
+//
+// DETECTION is forward from the git layout, never by inverting a hash. Projects
+// come from every descriptor's worktreePath (active + archived) plus ctx.cwd. For
+// each project:
+//   - every submodule gitdir under <commonDir>/modules/** and
+//     <commonDir>/worktrees/*/modules/** (absorbed submodules and the linked
+//     worktrees that share that gitdir as their common dir);
+//   - every nested `.git` DIRECTORY found by identity.findNestedCheckouts (depth
+//     REKEY_WALK_DEPTH, node_modules/.git skipped) in each worktree of the project:
+//     non-absorbed submodules and embedded gitlink repos.
+// The OLD key is the frozen legacy formula over that gitdir:
+//   sanitizeRepoName(basename(dirname(realpath(gitdir)))) + '-' + sha256(realpath(gitdir))[0:6]
+// A candidate needs store/<oldKey>/ to exist, oldKey != the key identity now gives
+// that checkout, and oldKey not being the live key of any known descriptor (an
+// untracked nested repo keeps its own key and is never reported). A store whose
+// git metadata was already pruned (deleted worktree AND its gitdir) cannot be
+// found this way.
+const REKEY_WALK_DEPTH = 5;
+
+function rekeyLegacyKeyForGitdir(realGitdir) {
+  return repokey.sanitizeRepoName(path.basename(path.dirname(realGitdir))) + '-'
+    + crypto.createHash('sha256').update(realGitdir).digest('hex').slice(0, 6);
+}
+
+// rekeyStoreCounts(home, key) -> { messages, partitions, registryRows,
+// registryWorktrees: [path], liveWal } read WITHOUT writing: journal files are
+// read directly; sqlite is opened `immutable=1` (no -wal/-shm created). A sqlite
+// store with a non-empty -wal has rows the immutable read cannot see: `liveWal`
+// is true and the counts are a lower bound. Throws on an unreadable store.
+function rekeyStoreCounts(home, key) {
+  const out = { messages: 0, partitions: 0, registryRows: 0, registryWorktrees: [], liveWal: false };
+  const parts = new Set();
+  const wts = new Set();
+  const readLines = (f) => {
+    let raw = '';
+    try { raw = fs.readFileSync(f, 'utf8'); } catch (e) { if (e && e.code === 'ENOENT') return []; throw e; }
+    const rows = [];
+    for (const line of raw.split('\n')) { if (line.trim()) { try { rows.push(JSON.parse(line)); } catch (_) { /* torn line */ } } }
+    return rows;
+  };
+  const jdir = store.journalDirForHash(home, key);
+  if (fs.existsSync(jdir)) {
+    if (!fs.statSync(jdir).isDirectory()) throw new Error('journal is not a directory');
+    for (const r of readLines(path.join(jdir, 'messages.ndjson'))) { out.messages++; parts.add(String(r.workspaceId)); }
+    const regIds = new Set();
+    for (const r of readLines(path.join(jdir, 'registry.ndjson'))) {
+      if (r && r.id != null) regIds.add(String(r.id));
+      if (r && typeof r.worktreePath === 'string' && r.worktreePath) wts.add(r.worktreePath);
+    }
+    out.registryRows += regIds.size;
+  }
+  const db = store.sqlitePathForHash(home, key);
+  if (fs.existsSync(db)) {
+    try { out.liveWal = fs.statSync(db + '-wal').size > 0; } catch (_) { out.liveWal = false; }
+    const { DatabaseSync } = require('node:sqlite');
+    const uri = 'file:' + db.split(path.sep).map(encodeURIComponent).join('/') + '?immutable=1';
+    const conn = new DatabaseSync(uri, { readOnly: true });
+    try {
+      for (const r of conn.prepare('SELECT workspace_id AS w, COUNT(*) AS c FROM messages GROUP BY workspace_id;').all()) {
+        out.messages += Number(r.c);
+        parts.add(String(r.w));
+      }
+      for (const r of conn.prepare('SELECT worktree_path AS p FROM registry;').all()) {
+        out.registryRows++;
+        if (r.p) wts.add(String(r.p));
+      }
+    } finally { conn.close(); }
+  }
+  out.partitions = parts.size;
+  out.registryWorktrees = Array.from(wts);
+  return out;
+}
+
+// identityRekeyCandidates(home, ctx) -> { candidates: [{oldKey, newKey, source, gitdir}], projects }
+function identityRekeyCandidates(home, ctx) {
+  const identity = require('../companion/lib/identity.js');
+  const wtPaths = new Set();
+  for (const dir of [workspacesDir(home), archivedDir(home)]) {
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (_) { names = []; }
+    for (const n of names) {
+      if (!/\.json$/.test(n)) continue;
+      const st = readDescriptorPathState(path.join(dir, n));
+      const d = st && st.descriptor;
+      if (d && typeof d.worktreePath === 'string' && d.worktreePath) wtPaths.add(d.worktreePath);
+    }
+  }
+  if (ctx && ctx.cwd) wtPaths.add(String(ctx.cwd));
+  const projects = new Map(); // commonDir -> { repoKey, mainWorktree }
+  const liveKeys = new Set();
+  for (const p of wtPaths) {
+    const c = identity.resolveContext(p, { memo: false, superCache: true });
+    if (!c.commonDir) continue;
+    liveKeys.add(c.repoKey);
+    if (!projects.has(c.commonDir)) projects.set(c.commonDir, { repoKey: c.repoKey, mainWorktree: c.mainWorktree });
+  }
+  const found = new Map(); // oldKey -> candidate
+  const consider = (realGitdir, newKey, source) => {
+    const oldKey = rekeyLegacyKeyForGitdir(realGitdir);
+    if (!newKey || oldKey === newKey || liveKeys.has(oldKey) || found.has(oldKey)) return;
+    try { if (!fs.statSync(store.storeDirForHash(home, oldKey)).isDirectory()) return; } catch (_) { return; }
+    found.set(oldKey, { oldKey, newKey, source, gitdir: realGitdir });
+  };
+  const walkModules = (dir, newKey, source, depth) => {
+    if (depth > 8) return;
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (_) { return; }
+    for (const e of ents) {
+      if (!e.isDirectory()) continue;
+      const d = path.join(dir, e.name);
+      let isGitdir = false;
+      try { isGitdir = fs.statSync(path.join(d, 'HEAD')).isFile(); } catch (_) { isGitdir = false; }
+      if (!isGitdir) { walkModules(d, newKey, source, depth + 1); continue; }
+      let hasCommondir = false;
+      try { hasCommondir = fs.statSync(path.join(d, 'commondir')).isFile(); } catch (_) { hasCommondir = false; }
+      if (!hasCommondir) { try { consider(fs.realpathSync(d), newKey, source); } catch (_) { /* unreadable */ } }
+      walkModules(path.join(d, 'modules'), newKey, source, depth + 1);
+    }
+  };
+  for (const [commonDir, proj] of projects) {
+    walkModules(path.join(commonDir, 'modules'), proj.repoKey, 'submodule-in-main', 0);
+    const worktreeRoots = [proj.mainWorktree];
+    let wts = [];
+    try { wts = fs.readdirSync(path.join(commonDir, 'worktrees')); } catch (_) { wts = []; }
+    for (const w of wts) {
+      const wg = path.join(commonDir, 'worktrees', w);
+      walkModules(path.join(wg, 'modules'), proj.repoKey, 'submodule-in-linked-worktree', 0);
+      try {
+        const g = String(fs.readFileSync(path.join(wg, 'gitdir'), 'utf8')).trim();
+        if (g) worktreeRoots.push(path.dirname(path.resolve(wg, g)));
+      } catch (_) { /* pruned worktree metadata */ }
+    }
+    // Nested `.git` DIRECTORIES: each one's new key comes from identity itself
+    // (one cached spawn per nested repo), so an untracked repo — which keeps its
+    // own key — is never a candidate.
+    for (const root of worktreeRoots) {
+      for (const d of identity.findNestedCheckouts(root, { maxDepth: REKEY_WALK_DEPTH })) {
+        const c = identity.resolveContext(d, { memo: false, superCache: true });
+        if (c.toplevel !== d) continue;
+        try { consider(fs.realpathSync(path.join(d, '.git')), c.repoKey, c.submoduleDepth > 0 ? 'non-absorbed-submodule' : 'nested-repo'); } catch (_) { /* unreadable */ }
+      }
+    }
+  }
+  return { candidates: Array.from(found.values()), projects: projects.size };
+}
+
+// identityRekeyReport(home, ctx0) -> { ok, action, projects, stores: [{ dir, oldKey,
+// newKey, source, messages, partitions, registryRows, registryWorktrees,
+// worktreeExists, liveWal, error? }], totals: { stores, messages, registryRows } }.
+// READ-ONLY: never writes, never throws. `worktreeExists`: true/false when the
+// store's registry names worktrees (true if any still exists), null when it names none.
+function identityRekeyReport(home, ctx0) {
+  const ctx = Object.assign({}, ctx0 || {});
+  const out = { ok: true, action: 'identity-rekey-candidates', projects: 0, stores: [],
+    totals: { stores: 0, messages: 0, registryRows: 0 } };
+  let found = { candidates: [], projects: 0 };
+  try { found = identityRekeyCandidates(home, ctx); } catch (e) { out.ok = false; out.error = String(e && e.message || e); }
+  out.projects = found.projects;
+  for (const cand of found.candidates) {
+    const row = { dir: store.storeDirForHash(home, cand.oldKey), oldKey: cand.oldKey, newKey: cand.newKey, source: cand.source };
+    try {
+      const c = rekeyStoreCounts(home, cand.oldKey);
+      Object.assign(row, c);
+      row.worktreeExists = c.registryWorktrees.length
+        ? c.registryWorktrees.some((p) => { try { return fs.existsSync(p); } catch (_) { return false; } })
+        : null;
+      out.totals.messages += c.messages;
+      out.totals.registryRows += c.registryRows;
+    } catch (e) {
+      row.error = String(e && e.message || e);
+      out.ok = false;
+    }
+    out.stores.push(row);
+  }
+  out.totals.stores = out.stores.length;
+  return out;
+}
+
 // applyRecoveryIntents(home, ctx0) — G2 doctor/next-run companion for cmdArchive's
 // crash-safe recovery-intent markers. A marker lingers only when a prior archive
 // tombstoned the registry row but its in-process rollback/clear did NOT complete
@@ -15861,7 +16048,7 @@ module.exports = {
   resolveMeshTarget, resolveSendTarget,
   workspacesDir, archivedDir, heartbeatsDir, archiveIgnoreDir, primaryCursorPath, skipFilePath,
   selfHeal, withSelfHeal, SELF_HEAL_COOLDOWN_MS, selfHealCooldownPath,
-  migrateOwnerKeys, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive, archivedTombstoneIsOrphaned,
+  migrateOwnerKeys, identityRekeyReport, rehomeCore, rehomeAcrossStores, rehomeMiskeyedRow, healRegistry, withIdLock, cmdArchive, archivedTombstoneIsOrphaned,
   resolveArchiveId,
   applyRecoveryIntents, recoveryIntentPath, rehomeStrandedProjectDescriptors,
   cmdWorkspacesList, cmdGate, cmdReconcile, cmdRegister,

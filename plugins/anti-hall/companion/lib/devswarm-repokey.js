@@ -57,58 +57,41 @@
 // `io` ({ run, fs }) so unit tests exercise sanitization/stability/collision
 // behavior without invoking a real git binary or touching the real filesystem.
 
+// B1 (mesh redesign Phase 2): every RESOLVER below is now a thin shim over
+// companion/lib/identity.js resolveContext — the ONE location resolver. Exported
+// names/signatures are unchanged, and for every non-submodule shape the output is
+// byte-identical (tests/companion/identity-equivalence.test.js vs the frozen
+// v0.103.0 copy in tests/helpers/legacy-repokey-0.103.0.js). What changes is ONLY
+// the submodule kinds, which now key to the OUTERMOST superproject: a submodule in a
+// LINKED worktree (the old `/.git/modules/` regex missed `.git/worktrees/<wt>/
+// modules/`), a non-absorbed / embedded submodule (`.git` DIR), and nested ones.
+// Persisted keys that flip are forward-migrated by identity-rekey-v1
+// (scripts/devswarm.js migrateIdentityRekey, run from update.js and doctor).
+//
+// Test seam: when a caller injects `io.run` (a fake git), gitCommonDir resolves
+// from that fake `--git-common-dir` output exactly as before (realpath + win32
+// canonicalization), so unit tests can simulate git without a real repo. No
+// production caller injects `io.run`.
+//
+// The identity calls use memo:false: this module had no cache before, and long-
+// lived daemons call it (a cached non-git answer must never go stale there).
+
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
+const identity = require('./identity.js');
 
-const MAX_NAME_LEN = 40;
-
-// GIT_SPAWN_TIMEOUT_MS — Wave D9: bounds defaultRun's git spawn so a `git`
-// stuck on a stale/unmounted worktree (or a fixture dir a test suite pollutes
-// the real registry with — the exact SkyCrew defect f3c1bc827d89 root cause)
-// can never hang this call forever. `ANTIHALL_REPOKEY_GIT_TIMEOUT_MS` is a
-// TEST-ONLY override (never documented/relied on in production) so a test can
-// prove the kill-on-timeout behavior against a deliberately-hanging fake `git`
-// without waiting out the real 10s production default.
-const GIT_SPAWN_TIMEOUT_MS = (() => {
-  const n = Number(process.env.ANTIHALL_REPOKEY_GIT_TIMEOUT_MS);
-  return Number.isFinite(n) && n > 0 ? n : 10000;
-})();
-
-// sanitizeRepoName(name) -> a launchd-label / systemd-unit / cron-marker /
-// filesystem-safe slug: lowercase, non `[a-z0-9-]` runs collapsed to a single
-// `-`, capped at 40 chars. The leading/trailing `-` strip runs AFTER the
-// 40-char slice (D28) — stripping BEFORE the cap can leave a trailing/double
-// dash when the 40th character lands mid-run-of-dashes; stripping after the cut
-// always yields a clean edge. Empty or all-dash input falls back to the literal
-// 'repo' so a repoKey is never just a bare hash suffix.
-function sanitizeRepoName(name) {
-  const raw = name == null ? '' : String(name);
-  const slug = raw
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/-+/g, '-')
-    .slice(0, MAX_NAME_LEN)
-    .replace(/^-+|-+$/g, '');
-  return slug || 'repo';
-}
+const { sanitizeRepoName, GIT_SPAWN_TIMEOUT_MS } = identity;
 
 // defaultRun(spec) -> { ok, raw }. ONE injectable git spawn (mirrors the
 // io.run pattern in devswarm-pull.js's defaultRun / devswarm-ingest.js's
-// defaultMonitorRun) so tests can simulate git output without spawning a real
-// binary.
+// defaultMonitorRun). Bounded by GIT_SPAWN_TIMEOUT_MS (Wave D9): a killed
+// (timed-out) spawn reports ok:false like any other git failure.
 function defaultRun(spec) {
   const o = spec || {};
   const args = Array.isArray(o.args) ? o.args : [];
   try {
-    // Wave D9: a `git` subprocess stuck on a stale/unmounted worktree (or a
-    // fixture dir a test suite pollutes the real registry with — the exact
-    // SkyCrew defect f3c1bc827d89 root cause) must never hang this call
-    // forever. `timeout` makes spawnSync kill it and set `r.error`/a null
-    // `r.status`, which the existing failure check below already treats
-    // identically to any other non-zero-exit git failure — no separate
-    // timeout branch needed.
     const r = spawnSync('git', args, { encoding: 'utf8', cwd: o.cwd, timeout: GIT_SPAWN_TIMEOUT_MS });
     if (r.error || r.status !== 0) return { ok: false, raw: '' };
     return { ok: true, raw: String(r.stdout || '') };
@@ -118,14 +101,11 @@ function defaultRun(spec) {
 }
 
 // winCanonicalizeCommonDir(p) -> a STABLE, worktree-independent form of a
-// win32 realpath, so any worktree of one repo hashes identically regardless
-// of which call path (short-name vs long-name, `\\?\`-prefixed native
-// realpath vs not, differing separator/case) produced the string: strips a
-// leading `\\?\UNC\` or `\\?\` extended-length-path prefix, normalizes every
-// separator to `/`, drops a trailing separator (but keeps a bare drive root's
-// slash, e.g. `c:/`), and lowercases the whole string (NTFS is
-// case-insensitive). Exported so tests can compute matching expectations
-// without duplicating this logic.
+// win32 realpath: strips a leading `\\?\UNC\` or `\\?\` extended-length-path
+// prefix, normalizes every separator to `/`, drops a trailing separator (but
+// keeps a bare drive root's slash, e.g. `c:/`), and lowercases the whole string
+// (NTFS is case-insensitive). Kept for the injected-io seam and
+// install-devswarm-ingest.js worktreeRealPath.
 function winCanonicalizeCommonDir(p) {
   let s = String(p == null ? '' : p);
   if (s.slice(0, 8).toUpperCase() === '\\\\?\\UNC\\') {
@@ -138,106 +118,72 @@ function winCanonicalizeCommonDir(p) {
   return s.toLowerCase();
 }
 
-// finalizeCommonDir(resolved, wt, opts) -> the shared realpath + win32
-// canonicalization + submodule-shape detection tail shared by BOTH the
-// git-spawn resolver (gitCommonDir) and the fs-only resolver
-// (gitCommonDirNoSpawn) below, so the two can never drift on how a raw
-// (pre-realpath) common-dir string is turned into the final comparable form.
-// `resolved` is already an absolute, non-realpath'd path (git-spawn output
-// resolved against `wt`, or the fs walk's own resolved gitdir/commondir).
-// Returns { canon } on success, or { submodule: true } when the realpath'd
-// path lands under a `.git/modules/<name>` segment — the ONE shape this
-// shared tail cannot finish alone (the submodule remap needs
-// `--show-superproject-working-tree`, a git spawn); callers that cannot spawn
-// git return null in that case and let the caller fall back to the full
-// git-spawn resolver. Never throws — any fs failure returns null.
-function finalizeCommonDir(resolved, wt, opts) {
-  const o = opts || {};
+function injectedRun(o) { return o && o.io && typeof o.io.run === 'function' ? o.io.run : null; }
+
+// contextFor(worktree, opts, extra) -> identity.resolveContext with the caller's
+// injected fs (if any), memo off (see header).
+function contextFor(worktree, o, extra) {
+  const F = o && o.io && o.io.fs;
+  // superCache: memo stays off, but the nested-repo git answer (5-min TTL) is shared
+  // so a hot hook pays at most one spawn per nested repo (identity.js superCache).
+  return identity.resolveContext(worktree, Object.assign({ memo: false, superCache: !F }, F ? { fs: F } : {}, extra || {}));
+}
+
+// noSpawnContext(worktree, opts) -> { ctx, deferred }. Resolves with a spawn stub:
+// `deferred` is true when identity would have needed its one git spawn (a nested
+// `.git` DIRECTORY — non-absorbed/embedded/untracked repo). NoSpawn callers must
+// then return null and let their caller fall back to the spawning resolver.
+function noSpawnContext(worktree, o) {
+  let deferred = false;
+  // superCache (set by contextFor): a nested-repo answer this process already paid a
+  // spawn for is reused, so only the FIRST row under an untracked/non-absorbed repo defers.
+  const ctx = contextFor(worktree, o, { spawn: () => { deferred = true; return { status: 1, stdout: '' }; } });
+  return { ctx, deferred };
+}
+
+// finalizeInjected(resolved, opts) -> realpath (+ win32 canonicalization) of a
+// fake-git common-dir, or null. Injected-io seam only.
+function finalizeInjected(resolved, o) {
   const F = (o.io && o.io.fs) || fs;
-  const platform = (o.io && o.io.platform) || process.platform;
-  const isWin = platform === 'win32';
-  if (!resolved) return null;
+  const isWin = ((o.io && o.io.platform) || process.platform) === 'win32';
   try {
-    // On win32, prefer realpathSync.native() — it expands 8.3 short names
-    // (GH Actions' %TEMP% is short-name-shaped) and queries the OS for the
-    // true canonical casing, unlike the default JS realpath (see header
-    // comment). Injected test `fs` doubles rarely carry a `.native`, so this
-    // falls back to the plain injected/real realpathSync when absent.
     const nativeRealpath = isWin && F.realpathSync && typeof F.realpathSync.native === 'function'
       ? F.realpathSync.native
       : null;
     const real = nativeRealpath ? nativeRealpath(resolved) : F.realpathSync(resolved);
     if (!real) return null;
-    const canon = isWin ? winCanonicalizeCommonDir(real) : real;
-    if (/[/\\]\.git[/\\]modules[/\\]/.test(canon)) return { submodule: true, canon };
-    return { canon };
+    return isWin ? winCanonicalizeCommonDir(real) : real;
   } catch (_) {
     return null;
   }
 }
 
-// gitCommonDir(worktree, {io}) -> the absolute, realpath'd `--git-common-dir`
-// for `worktree`, or null on ANY failure (fail-open — a non-git cwd, a missing
-// git binary, or an unstat-able path must never throw).
+// gitCommonDir(worktree, {io}) -> the absolute, realpath'd common dir of the
+// project `worktree` belongs to (for a submodule: its outermost superproject's),
+// or null on ANY failure (non-git, deleted, unreadable — fail-open, never throws).
 function gitCommonDir(worktree, opts) {
   const o = opts || {};
-  const run = (o.io && o.io.run) || defaultRun;
   const wt = worktree == null ? '' : String(worktree);
   if (!wt) return null;
+  const run = injectedRun(o);
   try {
+    if (!run) return contextFor(wt, o).commonDir || null;
     const r = run({ args: ['-C', wt, 'rev-parse', '--git-common-dir'], cwd: wt });
     if (!r || !r.ok) return null;
     const rawOut = String(r.raw || '').trim();
     if (!rawOut) return null;
-    // Resolve against `wt` BEFORE realpath — collapses git's relative form
-    // ('.git', from the main worktree) and its absolute form (from a linked
-    // worktree) to the identical string (Phase-0 probe finding).
-    const resolved = path.resolve(wt, rawOut);
-    const fin = finalizeCommonDir(resolved, wt, opts);
-    if (!fin) return null;
-    if (!fin.submodule) return fin.canon;
-    const canon = fin.canon;
-    // SUBMODULE FIX (A1a, v0.66 review): git's on-disk submodule layout ALWAYS
-    // nests a submodule's own `--git-common-dir` under
-    // `<superproject>/.git/modules/<name>` (verified live: a real `git submodule
-    // add` reproduces this exactly). `basename(dirname(canon))` then reads as the
-    // literal 'modules' — NOT a project name — so a caller running from inside a
-    // submodule derived repoKey `modules-<hash>`, silently keying every store
-    // operation to the WRONG project. Detect this SPECIFIC on-disk shape (a
-    // `/modules/` segment immediately under a `.git` segment) — never guess off
-    // the basename alone, since a repo could coincidentally be named 'modules' —
-    // then re-resolve against the SUPERPROJECT's own worktree via
-    // `--show-superproject-working-tree`, which is verified to report the
-    // superproject root from inside ANY submodule and EMPTY from a normal
-    // repo/the superproject itself (so recursion terminates: the superproject's
-    // own probe returns empty and this branch is skipped on the recursive call).
-    // Fail-open: if the probe cannot confirm a superproject, fall through to the
-    // pre-fix (submodule-local) resolution rather than losing resolution
-    // entirely — matches this function's existing null-on-any-failure contract.
-    if (/[/\\]\.git[/\\]modules[/\\]/.test(canon)) {
-      try {
-        const superR = run({ args: ['-C', wt, 'rev-parse', '--show-superproject-working-tree'], cwd: wt });
-        const superWt = superR && superR.ok ? String(superR.raw || '').trim() : '';
-        if (superWt && superWt !== wt) {
-          const superCd = gitCommonDir(superWt, opts);
-          if (superCd) return superCd;
-        }
-      } catch (_) { /* fall through to the submodule-local resolution below */ }
-    }
-    return canon;
+    // Resolve against `wt` BEFORE realpath: git prints a relative '.git' from a
+    // main worktree and an absolute path from a linked one.
+    return finalizeInjected(path.resolve(wt, rawOut), o);
   } catch (_) {
     return null;
   }
 }
 
 // repoKeyForWorktree(worktree, {io}) -> 'sanitized-repo-basename-<6hex>', or
-// null when `worktree` is not inside a resolvable git worktree (gitCommonDir
-// returned null; fail-open — callers treat this as "mesh dormant", O-D5).
-// Deterministic and stable: identical input always yields the identical key,
-// and every linked worktree of ONE project resolves to the SAME common-dir and
-// therefore the SAME key. Two different repos that happen to share a basename
-// still diverge because their common-dir realpaths differ, so the 6-hex
-// suffix disambiguates them.
+// null when `worktree` is not inside a resolvable git worktree (fail-open —
+// callers treat this as "mesh dormant", O-D5). Every worktree and every
+// submodule of ONE project resolves to the SAME key.
 function repoKeyForWorktree(worktree, opts) {
   const cd = gitCommonDir(worktree, opts);
   if (!cd) return null;
@@ -246,128 +192,49 @@ function repoKeyForWorktree(worktree, opts) {
   return `${base}-${suffix}`;
 }
 
-// gitCommonDirNoSpawn(worktree, {io}) -> the SAME absolute, realpath'd
-// `--git-common-dir` gitCommonDir() would produce, WITHOUT spawning `git` —
-// read straight off the on-disk worktree metadata git itself writes:
-//   - `<worktree>/.git` is a DIRECTORY for a main checkout — that directory
-//     itself IS the common dir.
-//   - `<worktree>/.git` is a FILE ('gitdir: <path>') for a linked worktree
-//     (or a submodule) — `<path>` (resolved against `worktree` when relative)
-//     is that worktree's PRIVATE git dir, e.g.
-//     `<main>/.git/worktrees/<name>`. If `<gitdir>/commondir` exists, its
-//     content (itself resolved against `<gitdir>`, typically the relative
-//     `../..`) IS the common dir; when it does NOT exist (the on-disk shape
-//     a submodule's own gitdir has, verified live below), `<gitdir>` itself
-//     IS the common dir (matches git's own `--git-common-dir` output for a
-//     submodule with no further linked worktrees of its own).
-// Verified live against real repos/worktrees/submodules on this machine
-// (2026-09-18, ToolFox3 linked worktrees + skycrew submodules) to produce
-// BYTE-IDENTICAL output to `git rev-parse --git-common-dir` for every shape
-// above.
-// Returns null (fail-open) for: a nonexistent worktree path (no spawn at
-// all — `fs.existsSync` short-circuits), an unreadable/malformed `.git`
-// entry, or the submodule-under-`.git/modules` shape once realpath'd — that
-// last case needs `--show-superproject-working-tree` to remap correctly,
-// which this function cannot do without a spawn, so it defers to the caller
-// to fall back to the full git-spawn `gitCommonDir`/`repoKeyForWorktree`.
+// gitCommonDirNoSpawn(worktree, {io}) -> the common dir of the checkout ROOTED at
+// `worktree` (a main checkout or a linked worktree), resolved WITHOUT spawning.
+// Returns null (the caller falls back to a spawning resolver) when `worktree` is:
+// gone, not itself a checkout root (the legacy contract: it read `<wt>/.git`
+// only), a submodule of ANY kind (callers use this null as their "not a
+// key-bearing root" signal — parent-inbox resolveMeshId), or a nested `.git`
+// directory whose superproject cannot be decided from disk.
 function gitCommonDirNoSpawn(worktree, opts) {
   const o = opts || {};
   const F = (o.io && o.io.fs) || fs;
   const wt = worktree == null ? '' : String(worktree);
   if (!wt) return null;
   try {
-    if (!F.existsSync(wt)) return null; // gone worktree: zero spawns, zero fs reads beyond this
-    const dotGit = path.join(wt, '.git');
-    let st;
-    try { st = F.lstatSync(dotGit); } catch (_) { return null; }
-    let gitdirPath;
-    if (st.isDirectory()) {
-      gitdirPath = dotGit;
-    } else {
-      let raw;
-      try { raw = String(F.readFileSync(dotGit, 'utf8')); } catch (_) { return null; }
-      const m = /^\s*gitdir:\s*(.+?)\s*$/m.exec(raw);
-      if (!m || !m[1]) return null;
-      gitdirPath = path.resolve(wt, m[1]);
-    }
-    let resolved = gitdirPath;
-    const commondirFile = path.join(gitdirPath, 'commondir');
-    if (F.existsSync(commondirFile)) {
-      let cdRaw;
-      try { cdRaw = String(F.readFileSync(commondirFile, 'utf8')).trim(); } catch (_) { cdRaw = ''; }
-      if (cdRaw) resolved = path.resolve(gitdirPath, cdRaw);
-    }
-    const fin = finalizeCommonDir(resolved, wt, opts);
-    if (!fin || fin.submodule) return null; // defer the submodule remap to the git-spawn resolver
-    return fin.canon;
+    if (!F.existsSync(wt)) return null; // gone worktree: zero spawns
+    const { ctx, deferred } = noSpawnContext(wt, o);
+    if (deferred || !ctx.commonDir || ctx.submoduleDepth > 0) return null;
+    if (ctx.toplevel !== F.realpathSync(path.resolve(wt))) return null;
+    return ctx.commonDir;
   } catch (_) {
     return null;
   }
 }
 
-// resolveWorktreeNoSpawn(startDir, {io}) -> absolute worktree/toplevel path |
-// null. A pure-fs, SUBMODULE-AWARE analogue of the plain `findGitToplevel`
-// walk-up (hooks/devswarm-parent-gate.js, scripts/devswarm.js) — WITHOUT
-// spawning git (v0.102.2, defect: the submodule-identity gate fix originally
-// shipped with a `resolveCallerWorktree` git-spawn call on this path; this is
-// the zero-spawn primitive that removes it for the common case).
-//
-// WHY THE PLAIN WALK-UP IS WRONG INSIDE A SUBMODULE: `findGitToplevel` stops
-// at the FIRST `.git` entry it finds — `fs.statSync`/`lstatSync` succeeds on
-// a FILE exactly as on a directory, so it cannot tell "a linked worktree's
-// own toplevel" (correct to stop here — same project) apart from "a
-// submodule's own toplevel" (WRONG to stop here — a submodule is a
-// logically DIFFERENT, nested project; the walk must continue up to the
-// ENCLOSING superproject, exactly what `git rev-parse
-// --show-superproject-working-tree` resolves via a spawn).
-//
-// THE FS-ONLY ANSWER: a submodule is ALWAYS nested inside its superproject's
-// own working tree (that is what "submodule" means on disk), so the
-// superproject's own `.git` is always some ANCESTOR directory of the
-// submodule's working tree — reachable by the SAME directory walk-up,
-// simply by not stopping at the submodule's own `.git` FILE. The one thing
-// needed to know NOT to stop is exactly what `gitCommonDirNoSpawn`'s
-// `finalizeCommonDir` already detects with zero spawns: the submodule's own
-// gitdir (`.git`'s `gitdir: <path>` target, resolved) contains a
-// `.git/modules/<name>` segment (verified live, 2026-09-20: a real `git
-// submodule add`'s `.git` file already names this path DIRECTLY — no
-// `commondir` indirection needed to see it). A plain LINKED WORKTREE's `.git`
-// file does NOT match that shape (its gitdir is `.git/worktrees/<name>`) —
-// it stops there exactly as `findGitToplevel` always has, so an ordinary
-// linked worktree's own identity is completely unchanged by this function.
-//
-// Verified against a real `git submodule add` fixture (both from the
-// submodule's own root AND a nested subdirectory inside it) and against a
-// real `git worktree add` linked worktree (proving it is NOT walked past) —
-// see tests/companion/devswarm-repokey-nospawn-submodule.test.js.
-//
-// Returns null (fail-open) when no `.git` is found walking up to the
-// filesystem root, OR when a `.git` FILE's target cannot be read/parsed at
-// all (matches `findGitToplevel`'s own fail-open contract for a malformed
-// entry) — callers fall back to the git-spawning `resolveCallerWorktree`.
+// resolveWorktreeNoSpawn(startDir, {io}) -> the key-bearing worktree root
+// for `startDir` (in the caller's logical spelling, as before): its own checkout, or — from inside a submodule of
+// any depth, in a main checkout or a linked worktree — the outermost
+// superproject. Zero spawns; null (fail-open, the caller falls back to the
+// spawning resolveCallerWorktree) when no checkout encloses `startDir`, the path
+// is gone, or a nested `.git` directory needs git to classify.
 function resolveWorktreeNoSpawn(startDir, opts) {
   const o = opts || {};
-  const F = (o.io && o.io.fs) || fs;
   try {
-    let dir = path.resolve(String(startDir || ''));
-    if (!dir) return null;
-    for (;;) {
-      const dotGit = path.join(dir, '.git');
-      let st = null;
-      try { st = F.lstatSync(dotGit); } catch (_) { st = null; }
-      if (st) {
-        if (st.isDirectory()) return dir; // ordinary toplevel (own OR the superproject reached by a prior submodule hop)
-        let raw = null;
-        try { raw = String(F.readFileSync(dotGit, 'utf8')); } catch (_) { raw = null; }
-        const m = raw && /^\s*gitdir:\s*(.+?)\s*$/m.exec(raw);
-        const gitdirPath = (m && m[1]) ? path.resolve(dir, m[1]) : null;
-        const isSubmodule = !!(gitdirPath && /[/\\]\.git[/\\]modules[/\\]/.test(gitdirPath));
-        if (!isSubmodule) return dir; // linked worktree (or an unparseable '.git' file) -> stop here, same as findGitToplevel
-        // submodule boundary detected -> do NOT stop; keep walking up toward the superproject.
-      }
-      const parent = path.dirname(dir);
-      if (parent === dir) return null; // reached filesystem root, no .git found
-      dir = parent;
+    const start = path.resolve(String(startDir || ''));
+    const { ctx, deferred } = noSpawnContext(start, o);
+    if (deferred || !ctx.worktreeRoot) return null;
+    // Return the caller's own (logical) spelling of that root, exactly as the
+    // pre-B1 walk did: the nearest ancestor of `start` whose realpath is the root.
+    const F = (o.io && o.io.fs) || fs;
+    for (let d = start; ; d = path.dirname(d)) {
+      let real = null;
+      try { real = F.realpathSync(d); } catch (_) { real = null; }
+      if (real === ctx.worktreeRoot) return d;
+      if (path.dirname(d) === d) return ctx.worktreeRoot;
     }
   } catch (_) {
     return null;
@@ -375,23 +242,13 @@ function resolveWorktreeNoSpawn(startDir, opts) {
 }
 
 // repoKeyForWorktreeFast(worktree, {io}) -> the SAME value repoKeyForWorktree
-// would return, but tries the zero-spawn `gitCommonDirNoSpawn` resolution
-// FIRST and only falls back to the git-spawning `repoKeyForWorktree` when the
-// fs-only path could not resolve (missing/malformed `.git` shape, or the rare
-// submodule-remap case) — see gitCommonDirNoSpawn's own doc comment for the
-// exact shapes it covers. This is the primitive hot-path callers (e.g.
-// devswarm-parent-inbox.js's per-row #36 structural filter) should call
-// instead of repoKeyForWorktree, since a hook running on every prompt must
-// not spawn one `git` process per row it needs to classify.
+// returns; tries the zero-spawn gitCommonDirNoSpawn first and falls back to
+// repoKeyForWorktree otherwise. A worktree path that no longer exists returns
+// null with ZERO spawns.
 function repoKeyForWorktreeFast(worktree, opts) {
   const o = opts || {};
   const F = (o.io && o.io.fs) || fs;
   const wt = worktree == null ? '' : String(worktree);
-  // A worktree path that no longer exists on disk must spawn NOTHING — not
-  // even the git-spawn fallback below. This check must happen HERE (not only
-  // inside gitCommonDirNoSpawn) because that function's null return is
-  // ambiguous between "gone" and "exists but unresolvable" and this caller
-  // must never conflate the two: only the latter is worth a spawn.
   if (!wt || !(function () { try { return F.existsSync(wt); } catch (_) { return false; } })()) return null;
   const cd = gitCommonDirNoSpawn(worktree, opts);
   if (cd) {

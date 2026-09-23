@@ -102,30 +102,52 @@ test('repoKeyForWorktreeFast: a worktree path that no longer exists on disk retu
   assert.equal(spawner.calls.length, 0, 'a gone worktree must never reach the git-spawn fallback');
 });
 
-test('gitCommonDirNoSpawn: a submodule shape (".git/modules/<name>") is deferred (returns null) rather than guessed', () => {
+test('gitCommonDirNoSpawn: a submodule shape (".git/modules/<name>") is deferred (returns null) rather than guessed; the full resolver keys it to the SUPERPROJECT', () => {
   const root = mkTmp('repokey-submod-super-');
   try {
+    fs.mkdirSync(path.join(root, '.git'));
     const modulesDir = path.join(root, '.git', 'modules', 'sub');
     fs.mkdirSync(modulesDir, { recursive: true });
-    const subRoot = mkTmp('repokey-submod-wt-');
-    try {
-      fs.writeFileSync(path.join(subRoot, '.git'), `gitdir: ${modulesDir}\n`);
-      // No commondir file inside modulesDir — matches the real on-disk shape
-      // a submodule's own gitdir has (verified live: skycrew/skyflutter,
-      // 2026-09-18) — modulesDir itself is what git-common-dir would report,
-      // and finalizeCommonDir's shared submodule-shape regex must catch it.
-      const cd = gitCommonDirNoSpawn(subRoot);
-      assert.equal(cd, null, 'the no-spawn resolver must defer the submodule remap, never guess "modules-<hash>"');
+    // A submodule checkout always nests inside its superproject's work tree.
+    const subRoot = path.join(root, 'libs', 'sub');
+    fs.mkdirSync(subRoot, { recursive: true });
+    fs.writeFileSync(path.join(subRoot, '.git'), `gitdir: ${modulesDir}\n`);
+    const cd = gitCommonDirNoSpawn(subRoot);
+    assert.equal(cd, null, 'the no-spawn primitive returns null for a submodule (callers use it as the "not a key-bearing root" signal)');
+    const key = repoKeyForWorktreeFast(subRoot);
+    assert.equal(key, expectedKey(fs.realpathSync(path.join(root, '.git'))), 'a submodule keys to its superproject, never "modules-<hash>"');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
-      // repoKeyForWorktreeFast must fall back to the git-spawn resolver for
-      // this ONE shape (never fabricate a key from the raw "modules" segment).
-      const spawner = spawnCountingRun(''); // superproject probe returns empty -> pre-fix submodule-local resolution
-      const key = repoKeyForWorktreeFast(subRoot, { io: { run: spawner.run } });
-      assert.ok(spawner.calls.length > 0, 'the submodule shape must fall back to a git spawn, not silently misresolve');
-      assert.ok(!/^modules-/.test(key), 'must never key off the literal "modules" segment');
-    } finally {
-      fs.rmSync(subRoot, { recursive: true, force: true });
-    }
+// B1 (phase2-identity-spec.md D1/D2): a submodule inside a LINKED worktree has its
+// gitdir under `<main>/.git/worktrees/<wt>/modules/<name>` — the pre-B1 regex
+// `/.git/modules/` missed it, so gitCommonDirNoSpawn returned the submodule's own
+// gitdir (non-null, zero spawns) and repoKeyForWorktreeFast returned a phantom
+// `libs-<hash>` key. Now: deferred (null) and the full key is the project's.
+test('gitCommonDirNoSpawn / repoKeyForWorktreeFast: submodule-in-LINKED-worktree (D1/D2) keys to the project, zero spawns', () => {
+  const root = mkTmp('repokey-d2-');
+  try {
+    const main = path.join(root, 'main');
+    const wtGit = path.join(main, '.git', 'worktrees', 'wt');
+    fs.mkdirSync(wtGit, { recursive: true });
+    fs.writeFileSync(path.join(wtGit, 'commondir'), '../..\n');
+    const wt = path.join(root, 'wt');
+    fs.mkdirSync(wt);
+    fs.writeFileSync(path.join(wt, '.git'), `gitdir: ${wtGit}\n`);
+    const subGit = path.join(wtGit, 'modules', 'libs', 'sub');
+    fs.mkdirSync(subGit, { recursive: true });
+    const sub = path.join(wt, 'libs', 'sub');
+    fs.mkdirSync(sub, { recursive: true });
+    fs.writeFileSync(path.join(sub, '.git'), `gitdir: ${subGit}\n`);
+    const spawner = spawnCountingRun(null);
+    assert.equal(gitCommonDirNoSpawn(sub), null);
+    const want = expectedKey(fs.realpathSync(path.join(main, '.git')));
+    assert.equal(repoKeyForWorktreeFast(sub), want);
+    assert.equal(repoKeyForWorktreeFast(wt), want);
+    assert.equal(resolveWorktreeNoSpawn(sub), path.resolve(wt));
+    assert.equal(spawner.calls.length, 0);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -172,8 +194,9 @@ test('resolveWorktreeNoSpawn: main checkout (".git" is a directory) resolves to 
 test('resolveWorktreeNoSpawn: a linked worktree (".git" file, non-submodule gitdir shape) resolves to ITSELF, never walked past', () => {
   const wtRoot = mkTmp('repokey-nospawn-linkwt-');
   try {
-    const privateGitDir = path.join(wtRoot, 'nonexistent-elsewhere', '.git', 'worktrees', 'my-wt');
-    fs.mkdirSync(path.dirname(privateGitDir), { recursive: true });
+    const privateGitDir = path.join(wtRoot, 'elsewhere', '.git', 'worktrees', 'my-wt');
+    fs.mkdirSync(privateGitDir, { recursive: true });
+    fs.writeFileSync(path.join(privateGitDir, 'commondir'), '../..\n');
     // gitdir target names a '.git/worktrees/<name>' shape, NOT '.git/modules/'
     // -> must be treated as an ordinary linked worktree, i.e. STOP here.
     fs.writeFileSync(path.join(wtRoot, '.git'), `gitdir: ${privateGitDir}\n`);
@@ -261,12 +284,15 @@ test('resolveWorktreeNoSpawn: no ".git" anywhere up to the filesystem root retur
   }
 });
 
-test('resolveWorktreeNoSpawn: a malformed ".git" file (no "gitdir:" line) stops there (fail-open AT that dir, matches findGitToplevel), never throws', () => {
+// B1: git itself reports "not a git repository" for a malformed `.git` file, and so
+// does identity.resolveContext — null here; the parent-gate caller's fallback chain
+// (resolveCallerWorktree, then findGitToplevel) still ends on that dir as before.
+test('resolveWorktreeNoSpawn: a malformed ".git" file (no "gitdir:" line) returns null (git-equivalent), never throws', () => {
   const root = mkTmp('repokey-nospawn-malformed-');
   try {
     fs.writeFileSync(path.join(root, '.git'), 'not a gitdir line at all\n');
     assert.doesNotThrow(() => resolveWorktreeNoSpawn(root));
-    assert.equal(resolveWorktreeNoSpawn(root), path.resolve(root));
+    assert.equal(resolveWorktreeNoSpawn(root), null);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

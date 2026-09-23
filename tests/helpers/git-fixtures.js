@@ -80,6 +80,11 @@ function buildIdentityFixtures() {
   git(['commit', '-q', '-m', 'add vend/raw + emb'], main);
   // Untracked nested repo.
   repo(path.join(main, 'untracked'));
+  // Linked worktree OF a submodule (gitdir <main>/.git/modules/libs/sub/worktrees/subwt),
+  // outside the superproject's tree: git reports no superproject for it; the decided
+  // rule still keys it to the outermost superproject (main).
+  const subwt = path.join(root, 'subwt');
+  git(['worktree', 'add', '-q', subwt, '-b', 'subwtb'], path.join(main, 'libs', 'sub'));
 
   fs.mkdirSync(path.join(main, 'src', 'deep'), { recursive: true });
   fs.symlinkSync(main, path.join(root, 'mainlink'), 'dir');
@@ -97,6 +102,7 @@ function buildIdentityFixtures() {
     'wt/libs/sub/inner': path.join(wt, 'libs', 'sub', 'inner'),
     'main/vend/raw': path.join(main, 'vend', 'raw'),
     'main/emb': path.join(main, 'emb'),
+    'subwt': subwt,
     'nongit/x': path.join(root, 'nongit', 'x'),
     'main/src/gone': path.join(main, 'src', 'gone'),
     'gone': path.join(root, 'gone'),
@@ -107,11 +113,12 @@ function buildIdentityFixtures() {
     'main/libs/sub': 'submodule-in-main', 'main/libs/sub/inner': 'submodule-in-main',
     'wt/libs/sub': 'submodule-in-linked-worktree', 'wt/libs/sub/inner': 'submodule-in-linked-worktree',
     'main/vend/raw': 'submodule-in-main', 'main/emb': 'submodule-in-main',
+    'subwt': 'submodule-in-main',
     'nongit/x': 'non-git', 'main/src/gone': 'deleted', 'gone': 'deleted',
   };
 
   function cleanup() { try { fs.rmSync(root, { recursive: true, force: true }); } catch (_) {} }
-  return { root, home, env, main, wt, cwds, expectKind, git, cleanup };
+  return { root, home, env, main, wt, subwt, cwds, expectKind, git, cleanup };
 }
 
 module.exports = { buildIdentityFixtures, gitEnv };

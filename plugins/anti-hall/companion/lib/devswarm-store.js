@@ -97,6 +97,27 @@ function resolveWorktreeReal(wt, fsi) {
   try { return path.resolve(String(wt == null ? '' : wt)); } catch (_) { return String(wt == null ? '' : wt); }
 }
 
+// sameRegistryWorktree(existingPath, incomingPath) -> true when the F2 id-collision
+// guard (upsertRegistry, both backends) must treat two worktree_path strings as the
+// SAME worktree, i.e. NOT a hash collision (mesh redesign Phase 2 B1). A raw string
+// compare refused — silently, returning false — every save whose path was merely
+// SPELLED differently: a symlinked vs physical path (D9), or a path registered from
+// a subdir/submodule of the worktree the identity resolver now keys it to (the same
+// self-correction rekeySubdirRegistryRows already performs with allowPathChange).
+// A genuine collision (two different physical worktrees) is still refused.
+function sameRegistryWorktree(existingPath, incomingPath) {
+  if (existingPath === incomingPath) return true;
+  const a = resolveWorktreeReal(existingPath);
+  const b = resolveWorktreeReal(incomingPath);
+  if (a === b) return true;
+  try {
+    const root = require('./identity.js').resolveContext(existingPath, { memo: false }).worktreeRoot;
+    return !!root && root === b;
+  } catch (_) {
+    return false;
+  }
+}
+
 const DEFAULT_REQUIRED_GATES = ['done', 'merged', 'tests_passed'];
 
 // ----- paths (PHYSICALLY PER-PROJECT) -----
@@ -652,7 +673,7 @@ function openSqlite(home, workspaceId, opts) {
           const row = db.prepare('SELECT worktree_path FROM registry WHERE id = ?;').get(String(d.id));
           existingPath = row ? row.worktree_path : null;
         } catch (_) { existingPath = null; }
-        if (existingPath != null && existingPath !== incomingPath) {
+        if (existingPath != null && !sameRegistryWorktree(existingPath, incomingPath)) {
           try {
             process.stderr.write('[devswarm-store] upsertRegistry: id ' + JSON.stringify(String(d.id))
               + ' already maps to worktree_path ' + JSON.stringify(existingPath)
@@ -1295,7 +1316,7 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
             if (row && String(row.id) === String(d.id)) { existingPath = nOrNull(row.worktreePath); break; }
           }
         } catch (_) { existingPath = null; }
-        if (existingPath != null && existingPath !== incomingPath) {
+        if (existingPath != null && !sameRegistryWorktree(existingPath, incomingPath)) {
           try {
             process.stderr.write('[devswarm-store] upsertRegistry: id ' + JSON.stringify(String(d.id))
               + ' already maps to worktreePath ' + JSON.stringify(existingPath)
@@ -2628,7 +2649,7 @@ module.exports = {
   requiredGatesFrom, selectBackend, sqliteAvailable,
   openStore, openSqlite, openJournal,
   computeSummary, deriveSummary, writeSummaryAtomic, readSummary, readSummaryForHash,
-  archivedOnlyIds,
+  archivedOnlyIds, sameRegistryWorktree,
   // mesh (v0.57, D3-D7/D22/D23):
   BROADCAST_PARTITION_ID, meshMessageHash, appendMeshMessage,
   // v0.58 (archive-request store write, deriveSummary archive_requested):

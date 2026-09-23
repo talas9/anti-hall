@@ -1163,6 +1163,21 @@ if (REPAIR_INGEST_ORPHANS) {
   warnl(result.message);
 })();
 
+// --- 5m. identity-rekey-candidates (REPORT-ONLY, CONDITIONAL, check mode
+// included) ---------------------------------------------------------------------
+// Mesh redesign Phase 2 B1: stores written under a submodule's legacy repoKey
+// that nothing reads since the re-key. Read-only (writes nothing); no automatic
+// action — cross-store cursor merging is Phase 3. Silent when none is found;
+// never touches pass/fail.
+(function identityRekeySection() {
+  let result = null;
+  try { result = require('./lib/doctor-repair.js').checkIdentityRekey({ home: os.homedir(), cwd: process.cwd() }); } catch (_) { result = null; }
+  if (!result) return;
+  head('identity-rekey-candidates (legacy submodule-key stores, read-only)');
+  warnl(result.stores + ' store(s), ' + result.messages + ' message(s), ' + result.registryRows + ' registry row(s) under a legacy submodule repoKey (not read by this build; not merged — Phase 3):');
+  for (const line of result.lines) infol(line);
+})();
+
 // --- 5l-repair. --repair-test-stores [--apply] (EXPLICIT, OPT-IN ONLY;
 // be2c6c9e81a1). Default (flag present, no --apply) is DRY-RUN: prints the
 // exact removal plan, deletes nothing. --apply executes it, re-verifying

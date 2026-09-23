@@ -208,8 +208,33 @@ test.todo('I5 all archive sources agree (registry tombstone + on-disk archived/<
 // bug). Each scenario below is built to reproduce ONE cited defect and is
 // wired as a bare todo here, with the real assertion in the STRICT block.
 
-test.todo('I4 D1 project-context-mismatch — repoKeyForWorktree(<linkedWorktree>/<submodule>) '
-  + '!= the registered repoKey (phase2-identity-spec.md D1, devswarm-repokey.js .git/modules/ regex)');
+// Phase 2 B1 flipped this from todo to a REAL test: devswarm-repokey.js now routes
+// through companion/lib/identity.js, which classifies `.git/worktrees/<wt>/modules/`.
+test('I4 D1 project-context-mismatch — submodule-in-linked-worktree resolves to the registered repoKey', () => {
+  const r = scenarios.scenarioI4SubmoduleInLinkedWorktree();
+  assert.ok(r.ok, 'I4 D1: ' + JSON.stringify(r.detail));
+});
+
+// I3 checker self-test: the checker must MEASURE unread (it read nonexistent
+// `u.count`/`u.lines` fields before and always saw 0). Known state: send 2, ack 0.
+test('I3 checker self-test: send 2 / ack 0 -> measured unread == 2 and I3 holds', () => {
+  const fixture = makeFixture(['r1', 'r2'], 'i3-self');
+  try {
+    const env = { ANTIHALL_INGEST_DRY_RUN: '1' };
+    ops.opRegister(fixture, 'r1', BASE_NOW);
+    ops.opRegister(fixture, 'r2', BASE_NOW + 1);
+    const i3 = inv.createI3Tracker();
+    for (const [k, text] of [[2, 'one'], [3, 'two']]) {
+      const r = ops.opSend(fixture, 'r1', 'r2', text, BASE_NOW + k);
+      assert.ok(r && r.result && r.result.ok, 'send must succeed: ' + JSON.stringify(r && r.result));
+      i3.onSend('r2');
+    }
+    assert.strictEqual(inv.measureUnread(fixture, 'r2', env, BASE_NOW + 4), 2);
+    assert.deepStrictEqual(i3.check(fixture, 'r2', env, BASE_NOW + 4), { ok: true });
+  } finally {
+    fixture.cleanup();
+  }
+});
 
 test.todo('I3 loss under an injected pull crash — devswarm-pull.js ~21-28 destructive native '
   + 'read succeeds, durable NDJSON append throws, recovery pull cannot recover the lost messages');
@@ -268,11 +293,6 @@ if (STRICT) {
       const failures = runOneSeed(seed, { checkTodos: true });
       assert.equal(failures.I5.length, 0, 'seed=' + seed + ' ' + JSON.stringify(failures.I5[0]));
     }
-  });
-
-  test('[STRICT] I4 D1 project-context-mismatch — submodule-in-linked-worktree', () => {
-    const r = scenarios.scenarioI4SubmoduleInLinkedWorktree();
-    assert.ok(r.ok, 'I4 D1: ' + JSON.stringify(r.detail));
   });
 
   test('[STRICT] I3 loss under an injected pull crash', () => {

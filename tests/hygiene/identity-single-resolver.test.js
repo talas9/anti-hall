@@ -30,7 +30,8 @@ const PATTERNS = {
 const ALLOWLIST = {
   'companion/devswarm-ingest.js': { 'primaryWorkspaceId-call': 1 },
   'companion/install-devswarm-ingest.js': { 'show-toplevel': 1, 'primaryWorkspaceId-call': 1 },
-  'companion/lib/devswarm-repokey.js': { 'git-common-dir': 1, 'show-superproject': 1 },
+  // B1: resolvers are identity shims; the one left is the injected-io (fake git) test seam.
+  'companion/lib/devswarm-repokey.js': { 'git-common-dir': 1 },
   'companion/lib/devswarm-store.js': { 'primaryWorkspaceId-call': 1 },
   'companion/lib/devswarm-wake-watch.js': { 'primaryWorkspaceId-call': 2 },
   'companion/lib/liveness.js': { 'primaryWorkspaceId-call': 1 },

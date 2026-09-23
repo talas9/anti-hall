@@ -1828,6 +1828,32 @@ function runRepairs(opts) {
 }
 
 // ---------------------------------------------------------------------------
+// checkIdentityRekey({home, cwd}) -> {stores, messages, registryRows, lines} | null.
+// REPORT-ONLY (doctor --check included; `identity-rekey-candidates`, mesh redesign
+// Phase 2 B1): stores written under a submodule's LEGACY repoKey that nothing
+// reads since the identity resolver re-keyed the submodule kinds. devswarm.js
+// identityRekeyReport reads them without writing (journal read directly, sqlite
+// opened immutable). No automatic action: merging position-based cursors across
+// stores is Phase 3. null when nothing is found or the build lacks the report.
+function checkIdentityRekey(opts) {
+  const o = opts || {};
+  try {
+    const dw = require(DEVSWARM_SCRIPT);
+    if (typeof dw.identityRekeyReport !== 'function') return null;
+    const r = dw.identityRekeyReport(o.home || os.homedir(), { cwd: o.cwd || process.cwd() }) || {};
+    if (!r.stores || r.stores.length === 0) return null;
+    const lines = r.stores.map((st) => st.oldKey + ' -> ' + st.newKey + ' (' + st.source + '): '
+      + (st.error ? 'unreadable: ' + st.error
+        : st.messages + ' message(s) in ' + st.partitions + ' partition(s), ' + st.registryRows + ' registry row(s), worktree '
+          + (st.worktreeExists === null ? 'unknown' : st.worktreeExists ? 'exists' : 'gone') + (st.liveWal ? ', live WAL (counts are a lower bound)' : ''))
+      + ' — ' + st.dir);
+    return { stores: r.stores.length, messages: r.totals.messages, registryRows: r.totals.registryRows, lines };
+  } catch (_) {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // checkMemguardReaperRisk({modPath, home}) -> {atRisk, message, file} | null.
 // A user-machine reaper/memguard LaunchAgent (documented in this project's own
 // operator notes, entirely OUTSIDE this repo) can SIGKILL any non-allowlisted
@@ -2836,6 +2862,8 @@ module.exports = {
   runIngestOrphanRepair,
   // v0.65.0 memguard-reaper risk surfacing (report-only, defensive):
   checkMemguardReaperRisk,
+  // identity-rekey-candidates report (mesh redesign Phase 2 B1; read-only):
+  checkIdentityRekey,
   // broker-parented MCP-orphan-leak surfacing (report-only, defensive; defect bfa063ab8e3f):
   checkOrphanedMcpUnderBroker,
   // Wave D9 — leaked test-fixture store detection (report-only, NO deletion path; defect f3c1bc827d89):

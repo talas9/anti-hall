@@ -78,25 +78,36 @@ function createI3Tracker() {
     check(fixture, readerId, env, now) {
       const total = sentTo[readerId] || 0;
       if (total === 0) return { ok: true };
-      const ip = path.join(fixture.home, '.anti-hall', 'devswarm', 'inbox', readerId + '.ndjson');
-      const cp = path.join(fixture.home, '.anti-hall', 'devswarm', 'cursor', readerId + '.json');
-      const store = storeLib.openStore({ home: fixture.home, hash: fixture.repoKey, backend: 'journal', env });
-      try {
-        const u = unreadLib.unionUnread({
-          inboxPath: ip, cursorPath: cp, fsi: fs, storeHandle: store, id: readerId, now,
-        });
-        const unreadCount = (u && Number.isFinite(u.count)) ? u.count
-          : (u && Array.isArray(u.lines)) ? u.lines.length : 0;
-        const del = delivered[readerId] || 0;
-        if (del + unreadCount !== total) {
-          return { ok: false, detail: { readerId, total, delivered: del, unread: unreadCount } };
-        }
-        return { ok: true };
-      } finally {
-        store.close();
+      const unreadCount = measureUnread(fixture, readerId, env, now);
+      const del = delivered[readerId] || 0;
+      if (del + unreadCount !== total) {
+        return { ok: false, detail: { readerId, total, delivered: del, unread: unreadCount } };
       }
+      return { ok: true };
     },
   };
+}
+
+// measureUnread(fixture, readerId, env, now) -> unionUnread(...).unread for one
+// reader against the real store. THROWS on an unexpected result shape: the pre-B1
+// checker read `u.count`/`u.lines` (fields unionUnread never returns) and silently
+// measured 0, which made I3 vacuous.
+function measureUnread(fixture, readerId, env, now) {
+  const ip = path.join(fixture.home, '.anti-hall', 'devswarm', 'inbox', readerId + '.ndjson');
+  const cp = path.join(fixture.home, '.anti-hall', 'devswarm', 'cursor', readerId + '.json');
+  const store = storeLib.openStore({ home: fixture.home, hash: fixture.repoKey, backend: 'journal', env });
+  try {
+    const u = unreadLib.unionUnread({
+      inboxPath: ip, cursorPath: cp, fsi: fs, storeHandle: store, id: readerId, now,
+    });
+    if (!u || typeof u.unread !== 'number' || !Number.isFinite(u.unread)) {
+      throw new Error('I3 checker: unionUnread returned an unexpected shape (no finite `unread`): '
+        + JSON.stringify(u && Object.keys(u)));
+    }
+    return u.unread;
+  } finally {
+    store.close();
+  }
 }
 
 // ---- I4: descriptor fields == registry fields for shared keys ---------------
@@ -235,7 +246,7 @@ function diffFsTrees(before, after) {
 }
 
 module.exports = {
-  checkI1, createI2Tracker, createI3Tracker, checkI4, checkI4RegistryRowForDescriptor,
+  checkI1, createI2Tracker, createI3Tracker, measureUnread, checkI4, checkI4RegistryRowForDescriptor,
   createI5Tracker, checkI6,
   snapshotFsTree, diffFsTrees,
 };

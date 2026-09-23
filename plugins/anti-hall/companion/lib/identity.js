@@ -1,7 +1,7 @@
 'use strict';
 // anti-hall :: identity — the ONE "where am I" (location identity) resolver.
-// Mesh redesign Phase 2 (B0): this module has NO callers yet; later batches
-// (B1..B6) migrate every legacy resolver onto it. See
+// Mesh redesign Phase 2: B0 added it; B1 routed devswarm-repokey.js through it
+// (its resolvers are thin shims now); later batches (B2..B6) migrate the rest. See
 // .anti-hall/plans/2026-09-23-mesh-redesign.md "Phase 2 decisions".
 //
 // resolveContext(cwd) answers, from the filesystem alone for every common
@@ -36,13 +36,62 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
-const { sanitizeRepoName, GIT_SPAWN_TIMEOUT_MS } = require('./devswarm-repokey.js');
+
+// B1: the key primitives live HERE and devswarm-repokey.js re-exports them, so
+// the require edge is repokey -> identity only (no identity <-> repokey cycle).
+const MAX_NAME_LEN = 40;
+
+// GIT_SPAWN_TIMEOUT_MS — bounds every identity git spawn (Wave D9: a git stuck
+// on a stale/unmounted worktree must never hang a caller). The env override is
+// TEST-ONLY (read once at load).
+const GIT_SPAWN_TIMEOUT_MS = (() => {
+  const n = Number(process.env.ANTIHALL_REPOKEY_GIT_TIMEOUT_MS);
+  return Number.isFinite(n) && n > 0 ? n : 10000;
+})();
+
+// sanitizeRepoName(name) -> launchd/systemd/cron/filesystem-safe slug: lowercase,
+// non [a-z0-9-] runs collapsed to one '-', capped at 40 chars, edge dashes stripped
+// AFTER the cap (D28); empty/all-dash -> 'repo'. Moved verbatim from devswarm-repokey.js.
+function sanitizeRepoName(name) {
+  const raw = name == null ? '' : String(name);
+  const slug = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, '-')
+    .replace(/-+/g, '-')
+    .slice(0, MAX_NAME_LEN)
+    .replace(/^-+|-+$/g, '');
+  return slug || 'repo';
+}
 
 const SCRUB_ENV = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR', 'GIT_INDEX_FILE', 'GIT_PREFIX'];
 const MAX_SUBMODULE_HOPS = 32;
 
 const memo = new Map(); // cwdReal -> { ctx, dotGitIsDir }
-function clearCache() { memo.clear(); }
+// superCache: nested-repo root realpath -> superproject realpath | null — the ONE
+// git spawn's answer, per process and per unique path (B1 risk 5: without it, a
+// hot hook resolving N rows under one untracked nested repo spawned N times).
+// Used when the caller memoizes (default) or opts in with `superCache: true`
+// (devswarm-repokey.js, which runs memo:false); memo:false alone bypasses it.
+// Written only by the real (default) spawn; a test that injects its own `spawn`
+// never sees it unless it opts in. Entries expire after SUPER_CACHE_TTL_MS so a
+// long-lived daemon picks up a nested repo that became (or stopped being) a
+// submodule. clearCache() drops it.
+const SUPER_CACHE_TTL_MS = 5 * 60 * 1000;
+const superCache = new Map(); // dir -> { ans, at }
+function clearCache() { memo.clear(); superCache.clear(); }
+
+// coreWorktreeOf(F, gitdir) -> realpath of `core.worktree` in <gitdir>/config
+// (resolved against the gitdir, as git does), or null. git writes it into an
+// absorbed submodule's gitdir (`<super>/.git/modules/<name>`), pointing at the
+// submodule's checkout inside the superproject.
+function coreWorktreeOf(F, gitdir) {
+  try {
+    const cfg = String(F.readFileSync(path.join(gitdir, 'config'), 'utf8'));
+    const core = /^\s*\[core\]\s*$([\s\S]*?)(?=^\s*\[|(?![\s\S]))/m.exec(cfg);
+    const m = core && /^\s*worktree\s*=\s*(.+?)\s*$/m.exec(core[1]);
+    return m ? F.realpathSync(path.resolve(gitdir, m[1])) : null;
+  } catch (_) { return null; }
+}
 
 function sha(s) { return crypto.createHash('sha256').update(s).digest('hex'); }
 
@@ -143,16 +192,24 @@ function resolveContext(cwd, opts) {
     } else {
       dotGitIsDir = info.dotGitIsDir;
       let spawned = 0;
+      const realSpawn = typeof o.spawn !== 'function';
+      const cacheOn = o.superCache === true || (realSpawn && useMemo);
       const gitSuperproject = (dir) => {
+        if (cacheOn) {
+          const hit = superCache.get(dir);
+          if (hit && Date.now() - hit.at < SUPER_CACHE_TTL_MS) return hit.ans;
+        }
         spawned += 1;
         const env = Object.assign({}, process.env);
         for (const k of SCRUB_ENV) delete env[k];
         try {
           const r = spawn('git', ['-C', dir, 'rev-parse', '--show-superproject-working-tree'],
             { encoding: 'utf8', env, timeout: GIT_SPAWN_TIMEOUT_MS });
-          if (!r || r.error || r.status !== 0) return null;
+          if (!r || r.error || r.status !== 0) return null; // failure: not cached, retried next call
           const s = String(r.stdout || '').trim();
-          return s ? F.realpathSync(s) : null;
+          const ans = s ? F.realpathSync(s) : null;
+          if (realSpawn && cacheOn) superCache.set(dir, { ans, at: Date.now() });
+          return ans;
         } catch (_) { return null; }
       };
       // superOf(root, rootInfo) -> realpath'd superproject toplevel, or null when `root`
@@ -174,6 +231,22 @@ function resolveContext(cwd, opts) {
       let superproject = null;
       for (; depth < MAX_SUBMODULE_HOPS; depth++) {
         const sp = superOf(root, ri);
+        if (!sp && ri.isFile && ri.hasCommondir) {
+          // A linked worktree OF a submodule (`git -C <sub> worktree add ...`): its
+          // common dir is the submodule's gitdir, whose core.worktree names the
+          // submodule checkout inside the superproject. Hop to that checkout when
+          // it really is this common dir's own checkout AND is itself a submodule;
+          // the next iteration climbs to the superproject (decided rule: every
+          // submodule kind keys to the OUTERMOST superproject). No spawn. The
+          // `superproject` field stays git-equivalent (git reports none here).
+          const co = coreWorktreeOf(F, ri.common);
+          const coInfo = co && co !== root ? gitdirOf(F, co) : null;
+          if (coInfo && coInfo.G === ri.common && superOf(co, coInfo)) {
+            root = co;
+            ri = coInfo;
+            continue;
+          }
+        }
         if (!sp) break;
         const spInfo = gitdirOf(F, sp);
         if (!spInfo) break;
@@ -204,6 +277,30 @@ function resolveContext(cwd, opts) {
   } catch (_) {
     return nullContext('non-git', null);
   }
+}
+
+// findNestedCheckouts(root, { maxDepth = 5, fs }) -> realpaths of every directory
+// below `root` (bounded depth; `.git` and node_modules skipped) holding a `.git`
+// DIRECTORY — non-absorbed / embedded / untracked nested repos. Enumeration for
+// the identity-rekey-v1 migration; lives here so `.git` probing stays in one file.
+function findNestedCheckouts(root, opts) {
+  const o = opts || {};
+  const F = o.fs || fs;
+  const maxDepth = Number.isFinite(o.maxDepth) ? o.maxDepth : 5;
+  const out = [];
+  const stack = [[root, 0]];
+  while (stack.length) {
+    const [dir, depth] = stack.pop();
+    let ents = [];
+    try { ents = F.readdirSync(dir, { withFileTypes: true }); } catch (_) { continue; }
+    for (const e of ents) {
+      if (!e.isDirectory() || e.name === '.git' || e.name === 'node_modules') continue;
+      const d = path.join(dir, e.name);
+      try { if (F.lstatSync(path.join(d, '.git')).isDirectory()) out.push(F.realpathSync(d)); } catch (_) { /* none */ }
+      if (depth + 1 < maxDepth) stack.push([d, depth + 1]);
+    }
+  }
+  return out;
 }
 
 function realOr(F, p) { try { return F.realpathSync(p); } catch (_) { return path.resolve(p); } }
@@ -247,6 +344,7 @@ function sessionWorktreeCoherent(sessionId, worktreePath, opts) {
 }
 
 module.exports = {
-  resolveContext, clearCache, sessionWorktreeCoherent,
+  resolveContext, clearCache, sessionWorktreeCoherent, findNestedCheckouts,
   repoKeyForCommonDir, meshIdForRealPath,
+  sanitizeRepoName, GIT_SPAWN_TIMEOUT_MS,
 };

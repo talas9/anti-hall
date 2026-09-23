@@ -28,6 +28,9 @@ process.env.ANTIHALL_INGEST_DRY_RUN = '1';
 const LIB = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'lib');
 const identity = require(path.join(LIB, 'identity.js'));
 const repokey = require(path.join(LIB, 'devswarm-repokey.js'));
+// B1: the live repokey resolvers are shims over identity now, so the byte-identity
+// proof compares against the FROZEN v0.103.0 implementation.
+const legacyRepokey = require('../helpers/legacy-repokey-0.103.0.js');
 const inst = require(path.join(LIB, '..', 'install-devswarm-ingest.js'));
 const devswarm = require(path.join(LIB, '..', '..', 'scripts', 'devswarm.js'));
 
@@ -69,6 +72,15 @@ for (const [name, cwd] of Object.entries(fx.cwds)) {
     const spy = countingSpawn();
     const ctx = identity.resolveContext(cwd, { memo: false, spawn: spy.fn });
     const t = truth(cwd);
+    if (name === 'subwt') {
+      // Decided rule over git: a linked worktree OF a submodule keys to the outermost
+      // superproject. git itself reports toplevel=subwt and NO superproject (kept
+      // git-equivalent above), so the key-bearing root is main, not git's answer.
+      const m = truth(fx.main);
+      t.worktreeRoot = m.worktreeRoot;
+      t.commonDir = m.commonDir;
+      assert.strictEqual(t.superproject, null, 'git reports no superproject for a submodule worktree');
+    }
     assert.strictEqual(ctx.kind, fx.expectKind[name], `kind for ${name}`);
     assert.strictEqual(ctx.toplevel, t.toplevel, `toplevel for ${name}`);
     assert.strictEqual(ctx.superproject, t.superproject, `superproject for ${name}`);
@@ -86,10 +98,12 @@ test('(b) KEY STABILITY vs shipped repokey/devswarm functions (non-submodule sha
   for (const [name, cwd] of Object.entries(fx.cwds)) {
     const ctx = identity.resolveContext(cwd, { memo: false });
     if (SUBMODULE_KINDS.has(ctx.kind)) continue;
-    const legacyRepoKey = repokey.repoKeyForWorktree(cwd);
+    const legacyRepoKey = legacyRepokey.repoKeyForWorktree(cwd);
     const legacyMeshId = devswarm.canonicalMeshId(cwd);
     rows.push(name);
     assert.strictEqual(ctx.repoKey, legacyRepoKey, `repoKey drift for ${name}`);
+    assert.strictEqual(repokey.repoKeyForWorktree(cwd), legacyRepoKey, `live shim repoKey drift for ${name}`);
+    assert.strictEqual(repokey.repoKeyForWorktreeFast(cwd), legacyRepokey.repoKeyForWorktreeFast(cwd), `live shim fast-key drift for ${name}`);
     if (ctx.kind === 'main' || ctx.kind === 'linked-worktree') {
       assert.strictEqual(ctx.meshId, legacyMeshId, `meshId drift for ${name}`);
       assert.strictEqual(ctx.primaryMeshId, inst.primaryWorkspaceId(inst.resolveMainWorktree(cwd)), `primaryMeshId for ${name}`);
@@ -114,7 +128,7 @@ test('(b) formula helpers are byte-identical to the shipped formatters', () => {
     assert.strictEqual(identity.meshIdForRealPath(inst.worktreeRealPath(p)), inst.primaryWorkspaceId(p));
   }
   const cd = fs.realpathSync(path.join(fx.main, '.git'));
-  assert.strictEqual(identity.repoKeyForCommonDir(cd), repokey.repoKeyForWorktree(fx.main));
+  assert.strictEqual(identity.repoKeyForCommonDir(cd), legacyRepokey.repoKeyForWorktree(fx.main));
 });
 
 test('(c) submodule shapes key to the OUTERMOST superproject (legacy value documented)', () => {
@@ -124,7 +138,7 @@ test('(c) submodule shapes key to the OUTERMOST superproject (legacy value docum
     const ctx = identity.resolveContext(cwd, { memo: false });
     if (!SUBMODULE_KINDS.has(ctx.kind)) continue;
     const rootCtx = name.startsWith('wt/') ? wtCtx : mainCtx;
-    const legacyRepoKey = repokey.repoKeyForWorktree(cwd);
+    const legacyRepoKey = legacyRepokey.repoKeyForWorktree(cwd);
     const legacyMeshId = devswarm.canonicalMeshId(cwd);
     const note = `${name}: identity must use the superproject key; legacy repoKey=${legacyRepoKey} `
       + `(${legacyRepoKey === rootCtx.repoKey ? 'same' : 'WRONG'}), legacy meshId=${legacyMeshId} `
@@ -132,14 +146,22 @@ test('(c) submodule shapes key to the OUTERMOST superproject (legacy value docum
     assert.strictEqual(ctx.worktreeRoot, rootCtx.worktreeRoot, note);
     assert.strictEqual(ctx.repoKey, rootCtx.repoKey, note);
     assert.strictEqual(ctx.meshId, rootCtx.meshId, note);
+    // B1: the live repokey shims now agree with identity for every submodule kind.
+    assert.strictEqual(repokey.repoKeyForWorktree(cwd), rootCtx.repoKey, note);
+    assert.strictEqual(repokey.repoKeyForWorktreeFast(cwd), rootCtx.repoKey, note);
+    // zero-spawn walk: the superproject root, or null (deferred) for a nested .git DIR (D7)
+    const nsRaw = repokey.resolveWorktreeNoSpawn(cwd);
+    const ns = nsRaw === null ? null : fs.realpathSync(nsRaw);
+    assert.ok(ns === rootCtx.worktreeRoot || (ns === null && SPAWN_ALLOWED.has(name)), note + ' noSpawn=' + ns);
     // The superproject root itself is non-submodule, so it is legacy-stable:
-    assert.strictEqual(rootCtx.repoKey, repokey.repoKeyForWorktree(rootCtx.worktreeRoot), note);
+    assert.strictEqual(rootCtx.repoKey, legacyRepokey.repoKeyForWorktree(rootCtx.worktreeRoot), note);
     assert.strictEqual(rootCtx.meshId, devswarm.canonicalMeshId(rootCtx.worktreeRoot), note);
   }
   // Known-defect evidence (the legacy values these rows flip away from):
-  assert.notStrictEqual(repokey.repoKeyForWorktree(fx.cwds['wt/libs/sub']), wtCtx.repoKey, 'D1 still present in legacy');
+  assert.notStrictEqual(legacyRepokey.repoKeyForWorktree(fx.cwds['wt/libs/sub']), wtCtx.repoKey, 'D1 present in the frozen legacy');
   assert.notStrictEqual(devswarm.canonicalMeshId(fx.cwds['main/libs/sub/inner']), mainCtx.meshId, 'D6 still present in legacy');
-  assert.notStrictEqual(repokey.repoKeyForWorktree(fx.cwds['main/vend/raw']), mainCtx.repoKey, 'D7 still present in legacy');
+  assert.notStrictEqual(legacyRepokey.repoKeyForWorktree(fx.cwds['main/vend/raw']), mainCtx.repoKey, 'D7 present in the frozen legacy');
+  assert.notStrictEqual(legacyRepokey.repoKeyForWorktree(fx.cwds.subwt), mainCtx.repoKey, 'submodule-worktree defect present in the frozen legacy');
 });
 
 test('memo: realpath-keyed hit, clearCache, deleted never cached, removed .git invalidates', () => {
@@ -195,4 +217,31 @@ test('sessionWorktreeCoherent: live match true, live mismatch false, no live rec
   assert.strictEqual(identity.sessionWorktreeCoherent('S-dead', fx.wt, { home, kill: deadKill }).coherent, null);
   assert.strictEqual(identity.sessionWorktreeCoherent('S-none', fx.wt, { home, kill: deadKill }).coherent, null);
   assert.strictEqual(identity.sessionWorktreeCoherent('S-live', fx.wt, {}).coherent, null, 'no home -> unknown');
+});
+
+// B1 risk 5: the one nested-repo git spawn is paid once per process per unique
+// path (parent-inbox resolves every summary row on every prompt).
+function spawnsInChild(code) {
+  const log = path.join(fx.root, 'spawn-' + process.hrtime.bigint() + '.ndjson');
+  const r = cp.spawnSync(process.execPath, ['--require', path.join(__dirname, '..', 'harness', 'spawn-count-preload.js'), '-e', code],
+    { env: Object.assign({}, fx.env, { ANTIHALL_SPAWN_LOG: log }), encoding: 'utf8' });
+  assert.strictEqual(r.status, 0, r.stderr);
+  let n = 0;
+  try { n = fs.readFileSync(log, 'utf8').split('\n').filter(Boolean).length; } catch (_) { n = 0; }
+  return { n, out: r.stdout.trim() };
+}
+
+test('spawn budget: 20 rows under one untracked nested repo -> <=1 git spawn; a normal repo -> 0', () => {
+  const rk = JSON.stringify(path.join(LIB, 'devswarm-repokey.js'));
+  const loop = (p) => `const r=require(${rk});const k=new Set();for(let i=0;i<20;i++)k.add(r.repoKeyForWorktreeFast(${JSON.stringify(p)}));console.log([...k].join(','));`;
+  const nested = spawnsInChild(loop(fx.cwds['main/untracked']));
+  assert.ok(nested.n <= 1, 'nested repo spawns: ' + nested.n);
+  assert.strictEqual(nested.out, identity.resolveContext(fx.cwds['main/untracked'], { memo: false }).repoKey);
+  const sub = spawnsInChild(loop(fx.cwds['main/vend/raw']));
+  assert.ok(sub.n <= 1, 'non-absorbed submodule spawns: ' + sub.n);
+  assert.strictEqual(sub.out, identity.resolveContext(fx.main, { memo: false }).repoKey);
+  for (const name of ['main/src/deep', 'wt', 'wt/libs/sub', 'subwt']) {
+    const normal = spawnsInChild(loop(fx.cwds[name]));
+    assert.strictEqual(normal.n, 0, name + ' spawns: ' + normal.n);
+  }
 });
