@@ -1100,6 +1100,44 @@ function extractSubstitutions(s) {
   while (i < n) {
     const c = s[i];
     const c2 = i + 1 < n ? s[i + 1] : '';
+    // Heredoc awareness (mirrors splitSegments's HEREDOC_RE handling). A
+    // QUOTED delimiter (<<'EOF', <<"EOF") means the body is INERT DATA in a
+    // real shell — no $(...)/backtick expansion inside it — so its body must
+    // be skipped from this substitution scan entirely, never treated as
+    // executable content. Root cause (field report): without this, a
+    // backtick-quoted span appearing as ordinary prose inside a `<<'EOF'`
+    // message body (e.g. `` `pytest tests -k <codebase>` `` inside a
+    // devswarm.js send message) was extracted as a real command substitution
+    // and recursed into isHeavyCommand, misclassifying quoted DATA as an
+    // executed command (verb: pytest). An UNQUOTED delimiter (<<EOF) DOES
+    // expand $(...)/backticks in a real shell, so its body is intentionally
+    // NOT skipped here — the scan falls through and continues over it
+    // normally, still catching substitutions inside.
+    if (!inSingle && !inDouble && c === '<' && c2 === '<') {
+      const m = HEREDOC_RE.exec(s.slice(i));
+      const word = m ? (m[3] !== undefined ? m[3] : (m[4] !== undefined ? m[4] : m[5])) : '';
+      if (m && word) {
+        const quoted = m[3] !== undefined || m[4] !== undefined;
+        const dashStrip = !!m[1];
+        i += m[0].length;
+        let lineEnd = s.indexOf('\n', i);
+        if (lineEnd === -1) lineEnd = n;
+        i = lineEnd;
+        if (i < n && s[i] === '\n') i++;
+        if (quoted) {
+          while (i < n) {
+            const nextNl = s.indexOf('\n', i);
+            const lineRaw = nextNl === -1 ? s.slice(i) : s.slice(i, nextNl);
+            const line = dashStrip ? lineRaw.replace(/^\t+/, '') : lineRaw;
+            i += (nextNl === -1 ? (n - i) : (nextNl - i + 1));
+            if (line === word) break;
+            if (nextNl === -1) break;
+          }
+        }
+        // Unquoted delimiter: body left unskipped on purpose (see comment above).
+        continue;
+      }
+    }
     // Single quotes suppress $(...) but NOT — by POSIX — they also suppress
     // backticks; inside single quotes nothing expands, so skip the whole span.
     if (inSingle) { if (c === "'") inSingle = false; i++; continue; }

@@ -56,6 +56,11 @@ const BLOCK = [
   // (c) command SUBSTITUTION still executes even from inside double quotes —
   // must stay flagged (not the same as inert quoted prose DATA).
   'echo "$(pytest)"',
+  // Negative control for the heredoc-substitution fix: an UNQUOTED heredoc
+  // delimiter (`<<EOF`, no quotes) DOES expand $(...)/backticks in a real
+  // shell, so a substitution inside that body must still be flagged.
+  "cat > f <<EOF\n`pytest`\nEOF",
+  "cat > f <<EOF\n$(pytest)\nEOF",
 ];
 
 const ALLOW = [
@@ -112,6 +117,21 @@ const ALLOW = [
   // before it (`<< "EOF"`) — both must still skip the body as DATA.
   'cat > f <<EOF\nfirebase deploy --only functions\nEOF',
   'cat > f << "EOF"\nfirebase deploy --only functions\nEOF',
+  // Field report (exact command, verbatim from a real transcript): a
+  // backtick-quoted span of ordinary prose (`` `pytest tests -k <codebase>` ``)
+  // inside a QUOTED-delimiter (`<<'EOF'`) devswarm.js message body was
+  // extracted by extractSubstitutions as a real command substitution and
+  // recursed into isHeavyCommand — misclassified as an EXECUTED `pytest`
+  // command (verb: pytest) even though a real shell never expands a
+  // backtick/$() inside a `<<'EOF'` body. Root cause: extractSubstitutions
+  // had no heredoc awareness at all, unlike splitSegments/isHeavySegment.
+  "cd /Users/talas9/Projects/skycrew && S=/private/tmp/claude-501/-Users-talas9-Projects-skycrew/901870ae-e9d0-42cd-b328-fad620732d19/scratchpad\ncat > $S/m_alert23.txt <<'EOF'\nCORRECTIONS to your filed item (i), measured by the test-isolation lane — please update FOLLOWUPS-2026-09-23.md:\n1. The failing import is python/skyinformApi/_esim_admin_router.py:79 (NOT esimOps). There are TWO _esim_admin_router.py files; skyinformApi's is the one that dies. Traceback: tests/test_esim_intent_get_mirror_projection.py:27 -> skyinformApi/_esim_admin_router.py:79.\n2. The wrapper's \"codebase-scoped\" test step (bin/deploy-skyfb.sh:452-467) is a `pytest tests -k <codebase>` NAME FILTER over the root tests/ directory, not a directory scope — which is why a skyinformApi file fails the \"esimOps\" step.\n3. The test-isolation branch does NOT fix it (identical EXIT=2 on its head and main).\nThe error I relayed to that lane said esimOps; that was my relay error.\nEOF\nnode ~/.claude/plugins/cache/anti-hall/anti-hall/0.103.0/scripts/devswarm.js send --to a7aa9263-6a85-4582-a7ff-9aed4ad18e55 --message-file $S/m_alert23.txt | head -c 20",
+  // Minimal isolate of the same root cause: a backtick command substitution
+  // inside a QUOTED heredoc delimiter's body is inert DATA (no expansion in
+  // a real shell) and must not be extracted/recursed.
+  "cat > f <<'EOF'\n`pytest`\nEOF",
+  "cat > f <<'EOF'\n$(pytest)\nEOF",
+  'cat > f << "EOF"\n`pytest`\nEOF',
 ];
 
 for (const cmd of BLOCK) {
