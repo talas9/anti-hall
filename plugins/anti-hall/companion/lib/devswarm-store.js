@@ -465,121 +465,160 @@ function openSqlite(home, workspaceId, opts) {
   // (opts.busyTimeoutMs) so tests can drive contention deterministically.
   const busyTimeoutMs = Number.isFinite(o.busyTimeoutMs) ? o.busyTimeoutMs : 3000;
   const { DatabaseSync } = require('node:sqlite');
-  // fl-wave4 fix (item 2, "silent zero on a broken store"): a chmod-000
-  // store dir or an unparseable/corrupt db header throws SYNCHRONOUSLY here
-  // (mkdirSync on an inaccessible dir, or DatabaseSync failing to read the
-  // sqlite file header) — that already propagated as a genuine exception
-  // pre-fix, but as a RAW node:fs/node:sqlite error with no consistent shape
-  // callers could key on. Wrap it into the SAME typed failure the journal
-  // backend's getReadError() surfaces (a `code`/`storeUnavailableReason`
-  // pair), so scripts/devswarm.js's resolveWorkspaceStoreForRead can map
-  // EITHER backend's genuine open failure to the identical
-  // reason:'store-unavailable' shape. ENOENT is not expected here (mkdirSync
-  // recursive creates every missing ancestor; only a genuine permission /
-  // filesystem-shape problem reaches this catch) but is passed through
-  // unwrapped defensively rather than silently miscategorized.
+  const dbPath = path.join(dir, 'devswarm.db');
+  // readOnly (Phase 4c, #12 — "213 empty store dirs on the owner's machine"):
+  // a PURE-READ caller (liveness sweeps, unread checks, parent/child gate
+  // reads, doctor enumeration) must never conjure a store into existence just
+  // by looking at it. Verified live on node 22/24: `new DatabaseSync(path,
+  // { readOnly: true })` opens an EXISTING file without touching it and
+  // THROWS (rather than creating) when the file is missing — so the guard
+  // below (fs.existsSync BEFORE construction) is what actually prevents the
+  // create-on-open behavior; DatabaseSync's own missing-file error is never
+  // reached in the normal case. `readOnly: true` ALSO makes every write
+  // statement (CREATE TABLE, PRAGMA journal_mode, an accidental
+  // upsert/setGate/etc.) throw "attempt to write a readonly database" —
+  // real defense-in-depth, not just an optimization, if a future edit ever
+  // routes a write call through a read-only-opened handle.
+  const readOnly = !!o.readOnly;
   let db;
-  try {
-    fs.mkdirSync(dir, { recursive: true });
-    db = new DatabaseSync(path.join(dir, 'devswarm.db'));
-  } catch (e) {
-    if (e && e.code === 'ENOENT') throw e;
-    const err = new Error('devswarm store unavailable (' + ((e && e.code) || 'EUNKNOWN') + ') opening ' + dir + ': ' + ((e && e.message) || e));
-    err.code = 'ESTOREUNAVAILABLE';
-    err.storeUnavailableReason = (e && e.code) || 'EUNKNOWN';
-    throw err;
+  if (readOnly) {
+    // Nothing to read if the db file itself was never written — return null
+    // (the SAME "no store yet" signal openStoreForUnread's existing
+    // null-on-any-failure contract already documents; every read-only call
+    // site below already null-checks this return before use). Never mkdir,
+    // never touch the fs at all in this branch.
+    if (!fs.existsSync(dbPath)) return null;
+    try {
+      db = new DatabaseSync(dbPath, { readOnly: true });
+    } catch (e) {
+      const err = new Error('devswarm store unavailable (' + ((e && e.code) || 'EUNKNOWN') + ') opening ' + dir + ': ' + ((e && e.message) || e));
+      err.code = 'ESTOREUNAVAILABLE';
+      err.storeUnavailableReason = (e && e.code) || 'EUNKNOWN';
+      throw err;
+    }
+    // No pragma writes, no CREATE TABLE/CREATE INDEX, no ALTER migrations
+    // below — a read-only connection cannot run any of them anyway (they'd
+    // throw "attempt to write a readonly database"), and the file already
+    // existing means a prior writer already established whatever schema it
+    // has. hasWriteSeq is still detected below via a PRAGMA (a read).
+  } else {
+    // fl-wave4 fix (item 2, "silent zero on a broken store"): a chmod-000
+    // store dir or an unparseable/corrupt db header throws SYNCHRONOUSLY here
+    // (mkdirSync on an inaccessible dir, or DatabaseSync failing to read the
+    // sqlite file header) — that already propagated as a genuine exception
+    // pre-fix, but as a RAW node:fs/node:sqlite error with no consistent shape
+    // callers could key on. Wrap it into the SAME typed failure the journal
+    // backend's getReadError() surfaces (a `code`/`storeUnavailableReason`
+    // pair), so scripts/devswarm.js's resolveWorkspaceStoreForRead can map
+    // EITHER backend's genuine open failure to the identical
+    // reason:'store-unavailable' shape. ENOENT is not expected here (mkdirSync
+    // recursive creates every missing ancestor; only a genuine permission /
+    // filesystem-shape problem reaches this catch) but is passed through
+    // unwrapped defensively rather than silently miscategorized.
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+      db = new DatabaseSync(dbPath);
+    } catch (e) {
+      if (e && e.code === 'ENOENT') throw e;
+      const err = new Error('devswarm store unavailable (' + ((e && e.code) || 'EUNKNOWN') + ') opening ' + dir + ': ' + ((e && e.message) || e));
+      err.code = 'ESTOREUNAVAILABLE';
+      err.storeUnavailableReason = (e && e.code) || 'EUNKNOWN';
+      throw err;
+    }
+    // busy_timeout MUST be the FIRST statement on this connection, BEFORE even the
+    // journal_mode/foreign_keys pragmas and the CREATE TABLE IF NOT EXISTS calls
+    // below — those can ALSO throw SQLITE_BUSY under contention (e.g. two processes
+    // opening the same file for the first time, or a concurrent writer mid-WAL-
+    // checkpoint) since busy_timeout only protects statements issued AFTER it takes
+    // effect on this connection. Verified live: setting it after journal_mode still
+    // let 'PRAGMA journal_mode = WAL' itself throw 'database is locked' under a
+    // genuine two-process race.
+    db.exec('PRAGMA busy_timeout = ' + Math.max(0, Math.floor(busyTimeoutMs)) + ';');
+    db.exec('PRAGMA journal_mode = WAL;');
+    db.exec('PRAGMA foreign_keys = ON;');
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS messages ('
+      + ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
+      + ' workspace_id TEXT NOT NULL,'
+      + ' ts INTEGER NOT NULL,'
+      + ' hash TEXT,'
+      + ' body TEXT,'
+      // mesh columns (v0.57, D3/D6/D7/D22) — ALL NULLABLE so a pre-existing table
+      // (created before this ALTER) and pre-migration rows stay valid; a legacy row
+      // simply reads back with these as null (edge_case: mtype null -> treated as a
+      // legacy direct by any mesh-aware reader).
+      + ' sender TEXT,'
+      + ' recipient TEXT,'
+      + ' mtype TEXT,'
+      + ' urgency TEXT,'
+      + ' is_heartbeat INTEGER,'
+      + ' needs_reply INTEGER,'
+      // orig_hash (defect 64861a623503) — see ensureMessagesMeshColumns. NULLABLE,
+      // never part of UNIQUE(hash): a forwarded copy keeps its OWN re-addressed
+      // hash as its identity and merely REMEMBERS the original's.
+      + ' orig_hash TEXT,'
+      + ' instance_nonce TEXT,'
+      + ' seq INTEGER,'
+      + ' UNIQUE(hash)'
+      + ');'
+    );
+    ensureMessagesMeshColumns(db); // additive migration for a table that pre-dates the mesh columns
+    // idx_messages_needs_reply — supports listNeedsReply's per-workspace needs_reply
+    // lookup (computeSummary calls it once PER REGISTRY ROW, every projection). Without
+    // it that query degrades to a full table scan of an append-only, never-pruned table.
+    // MUST run AFTER ensureMessagesMeshColumns: on a table that pre-dates the mesh
+    // columns, `needs_reply` only exists once that ALTER has run. Best-effort/fail-open
+    // in the same spirit as the migrations above — an index is a pure performance
+    // affordance, never a correctness precondition, so a read-only/locked DB that
+    // cannot create it still works (just slower). IF NOT EXISTS -> idempotent on an
+    // existing db, re-run safe on every open.
+    try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_needs_reply ON messages (workspace_id, needs_reply);'); } catch (_) { /* fail-open */ }
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS registry ('
+      + ' id TEXT PRIMARY KEY,'
+      + ' worktree_path TEXT, session_id TEXT, inbox_path TEXT,'
+      + ' cursor_path TEXT, nudge_command TEXT, updated_at INTEGER,'
+      // write_seq (v0.61.0, nullable) — a per-row monotonic write counter, bumped
+      // on EVERY upsert regardless of wall-clock ms. See removeRegistryIf below.
+      + ' write_seq INTEGER'
+      + ');'
+    );
+    ensureRegistryWriteSeqColumn(db); // additive migration for a table that pre-dates write_seq
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS cursors ('
+      + ' workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER'
+      + ');'
+    );
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS gates ('
+      + ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
+      + ' workspace_id TEXT NOT NULL, gate_name TEXT NOT NULL,'
+      + ' value INTEGER NOT NULL, set_at INTEGER, set_by TEXT'
+      + ');'
+    );
+    // broadcast_cursors (D5) — a SEPARATE additive table (NOT a change to `cursors`'
+    // PRIMARY KEY, which would be a migration hazard). Mirrors `cursors` exactly;
+    // each workspace tracks broadcasts-seen independently of its direct-inbox cursor.
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS broadcast_cursors ('
+      + ' workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER'
+      + ');'
+    );
   }
-  // busy_timeout MUST be the FIRST statement on this connection, BEFORE even the
-  // journal_mode/foreign_keys pragmas and the CREATE TABLE IF NOT EXISTS calls
-  // below — those can ALSO throw SQLITE_BUSY under contention (e.g. two processes
-  // opening the same file for the first time, or a concurrent writer mid-WAL-
-  // checkpoint) since busy_timeout only protects statements issued AFTER it takes
-  // effect on this connection. Verified live: setting it after journal_mode still
-  // let 'PRAGMA journal_mode = WAL' itself throw 'database is locked' under a
-  // genuine two-process race.
-  db.exec('PRAGMA busy_timeout = ' + Math.max(0, Math.floor(busyTimeoutMs)) + ';');
-  db.exec('PRAGMA journal_mode = WAL;');
-  db.exec('PRAGMA foreign_keys = ON;');
-  db.exec(
-    'CREATE TABLE IF NOT EXISTS messages ('
-    + ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
-    + ' workspace_id TEXT NOT NULL,'
-    + ' ts INTEGER NOT NULL,'
-    + ' hash TEXT,'
-    + ' body TEXT,'
-    // mesh columns (v0.57, D3/D6/D7/D22) — ALL NULLABLE so a pre-existing table
-    // (created before this ALTER) and pre-migration rows stay valid; a legacy row
-    // simply reads back with these as null (edge_case: mtype null -> treated as a
-    // legacy direct by any mesh-aware reader).
-    + ' sender TEXT,'
-    + ' recipient TEXT,'
-    + ' mtype TEXT,'
-    + ' urgency TEXT,'
-    + ' is_heartbeat INTEGER,'
-    + ' needs_reply INTEGER,'
-    // orig_hash (defect 64861a623503) — see ensureMessagesMeshColumns. NULLABLE,
-    // never part of UNIQUE(hash): a forwarded copy keeps its OWN re-addressed
-    // hash as its identity and merely REMEMBERS the original's.
-    + ' orig_hash TEXT,'
-    + ' instance_nonce TEXT,'
-    + ' seq INTEGER,'
-    + ' UNIQUE(hash)'
-    + ');'
-  );
-  ensureMessagesMeshColumns(db); // additive migration for a table that pre-dates the mesh columns
-  // idx_messages_needs_reply — supports listNeedsReply's per-workspace needs_reply
-  // lookup (computeSummary calls it once PER REGISTRY ROW, every projection). Without
-  // it that query degrades to a full table scan of an append-only, never-pruned table.
-  // MUST run AFTER ensureMessagesMeshColumns: on a table that pre-dates the mesh
-  // columns, `needs_reply` only exists once that ALTER has run. Best-effort/fail-open
-  // in the same spirit as the migrations above — an index is a pure performance
-  // affordance, never a correctness precondition, so a read-only/locked DB that
-  // cannot create it still works (just slower). IF NOT EXISTS -> idempotent on an
-  // existing db, re-run safe on every open.
-  try { db.exec('CREATE INDEX IF NOT EXISTS idx_messages_needs_reply ON messages (workspace_id, needs_reply);'); } catch (_) { /* fail-open */ }
-  db.exec(
-    'CREATE TABLE IF NOT EXISTS registry ('
-    + ' id TEXT PRIMARY KEY,'
-    + ' worktree_path TEXT, session_id TEXT, inbox_path TEXT,'
-    + ' cursor_path TEXT, nudge_command TEXT, updated_at INTEGER,'
-    // write_seq (v0.61.0, nullable) — a per-row monotonic write counter, bumped
-    // on EVERY upsert regardless of wall-clock ms. See removeRegistryIf below.
-    + ' write_seq INTEGER'
-    + ');'
-  );
-  ensureRegistryWriteSeqColumn(db); // additive migration for a table that pre-dates write_seq
-  // hasWriteSeq (fail-open capability probe): the ALTER above is best-effort
-  // (ensureRegistryWriteSeqColumn swallows its own errors). Re-read the ACTUAL
-  // schema via PRAGMA table_info rather than trusting the ALTER succeeded — if
+  // hasWriteSeq (fail-open capability probe): a PRAGMA is a read, safe on a
+  // read-only connection too. On the writer path, the ALTER above is
+  // best-effort (ensureRegistryWriteSeqColumn swallows its own errors) — this
+  // re-reads the ACTUAL schema rather than trusting the ALTER succeeded. If
   // it failed for a reason OTHER than "column already exists" (locked/corrupt/
   // read-only DB), `write_seq` genuinely does not exist and every write below
   // MUST avoid referencing it, or the store would throw on the next upsert/
-  // delete instead of degrading to pre-0.61.0 behavior.
+  // delete instead of degrading to pre-0.61.0 behavior. On the read-only path
+  // this simply reports whatever schema the existing file already has.
   let hasWriteSeq = false;
   try {
     hasWriteSeq = db.prepare('PRAGMA table_info(registry);').all()
       .some((r) => String(r.name) === 'write_seq');
   } catch (_) { hasWriteSeq = false; }
-  db.exec(
-    'CREATE TABLE IF NOT EXISTS cursors ('
-    + ' workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER'
-    + ');'
-  );
-  db.exec(
-    'CREATE TABLE IF NOT EXISTS gates ('
-    + ' id INTEGER PRIMARY KEY AUTOINCREMENT,'
-    + ' workspace_id TEXT NOT NULL, gate_name TEXT NOT NULL,'
-    + ' value INTEGER NOT NULL, set_at INTEGER, set_by TEXT'
-    + ');'
-  );
-  // broadcast_cursors (D5) — a SEPARATE additive table (NOT a change to `cursors`'
-  // PRIMARY KEY, which would be a migration hazard). Mirrors `cursors` exactly;
-  // each workspace tracks broadcasts-seen independently of its direct-inbox cursor.
-  db.exec(
-    'CREATE TABLE IF NOT EXISTS broadcast_cursors ('
-    + ' workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER'
-    + ');'
-  );
 
   return {
     backend: 'sqlite',
@@ -985,6 +1024,15 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
   const F = fsi || fs;
   const L = lockOpts || {};
   const dir = o.dir ? path.join(o.dir, 'journal') : journalDirForHash(home, hash);
+  // readOnly (Phase 4c, #12): the journal backend already never mkdirs at
+  // open time (append()/withMessagesLock() below create `dir` lazily, only
+  // on an actual write) — but with no store dir at all there is nothing to
+  // read, so a read-only caller gets the SAME "no store yet" null this
+  // backend's sqlite twin returns, rather than a handle whose every read
+  // silently reports empty (fail-open, but indistinguishable from "empty
+  // mailbox" to a caller that wants to tell the two apart, e.g. doctor
+  // enumeration deciding whether a hash is worth counting at all).
+  if (!!(o.readOnly) && !F.existsSync(dir)) return null;
   const files = {
     messages: path.join(dir, 'messages.ndjson'),
     registry: path.join(dir, 'registry.ndjson'),
@@ -1623,11 +1671,19 @@ function deserializeCmd(raw) {
 //   backend     : force 'sqlite' | 'journal'; else feature-detect. `fsi` only
 //                 affects the journal backend (sqlite opens a real file). `lock`
 //                 (journal only) tunes the messages-lock budget.
+//   readOnly    : (Phase 4c, #12) true for a PURE-READ caller (liveness sweeps,
+//                 unread checks, parent/child gate reads, doctor enumeration,
+//                 summary reads). Never mkdirs a store dir or runs CREATE
+//                 TABLE/schema writes — if the store doesn't exist yet, returns
+//                 null instead (callers must null-check, same contract
+//                 openStoreForUnread already documents). A WRITER call site
+//                 (ingest, mesh send/registry/gates, migration) must NOT set
+//                 this — it needs the store to actually get created.
 function openStore(opts) {
   const o = opts || {};
   const home = resolveHomeGuarded(o);
   const backend = selectBackend({ backend: o.backend, env: o.env });
-  const meta = { dir: o.dir, hash: o.hash, busyTimeoutMs: o.busyTimeoutMs };
+  const meta = { dir: o.dir, hash: o.hash, busyTimeoutMs: o.busyTimeoutMs, readOnly: !!o.readOnly };
   return backend === 'sqlite'
     ? openSqlite(home, o.workspaceId, meta)
     : openJournal(home, o.workspaceId, o.fsi, o.lock, meta);

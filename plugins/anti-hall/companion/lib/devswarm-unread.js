@@ -328,7 +328,14 @@ function openStoreForUnread(opts) {
       repoKey = o.worktreePath ? repokeyMod.repoKeyForWorktree(o.worktreePath) : null;
     }
     if (!repoKey) return null;
-    return storeMod.openStore({ home: o.home, workspaceId: o.id, hash: repoKey, env: o.env });
+    // readOnly (Phase 4c, #12): every caller of openStoreForUnread is a
+    // disposable, quick-read hot-path (hooks' unread/liveness checks) — never
+    // a mutation. Without this, EVERY such read mkdir'd + CREATE TABLE'd a
+    // store dir into existence just to check "is anything unread", which is
+    // exactly how 213 empty store dirs accumulated. null-on-missing-store is
+    // already this function's documented contract (see header comment) and
+    // every call site already null-checks the return.
+    return storeMod.openStore({ home: o.home, workspaceId: o.id, hash: repoKey, env: o.env, readOnly: true });
   } catch (_) {
     return null;
   }

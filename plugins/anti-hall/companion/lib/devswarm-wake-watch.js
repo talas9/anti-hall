@@ -255,13 +255,17 @@ function readInstalledPluginVersion() {
 // resolveOwnSessionId() -> string | undefined. Best-effort identifier for the
 // Claude Code (or Codex-companion) session that armed THIS watcher, stamped
 // into the lock file so a refused sibling can name WHICH session's watcher
-// holds the lock (v0.102.2). Same precedent env vars scripts/defect.js
-// already reads for its own session-attribution field. `undefined` (never
-// `null`/`''`) when neither is set, so acquireExclLock's `typeof ===
-// 'string'` check omits the field from the written lock JSON entirely
-// rather than writing a placeholder.
+// holds the lock (v0.102.2). `undefined` (never `null`/`''`) when none are
+// set, so acquireExclLock's `typeof === 'string'` check omits the field from
+// the written lock JSON entirely rather than writing a placeholder.
+// CLAUDE_CODE_SESSION_ID is the var Claude Code actually sets on every
+// spawned process (see scripts/devswarm.js realSessionIdFrom / gate-intent
+// session resolution) — a live Claude Code session never sets bare
+// CLAUDE_SESSION_ID, so that check alone always fell through to `undefined`.
+// CLAUDE_SESSION_ID / ANTIHALL_SESSION_ID stay as legacy fallbacks (same
+// precedent scripts/defect.js reads for its own session-attribution field).
 function resolveOwnSessionId() {
-  const v = process.env.CLAUDE_SESSION_ID || process.env.ANTIHALL_SESSION_ID;
+  const v = process.env.CLAUDE_CODE_SESSION_ID || process.env.CLAUDE_SESSION_ID || process.env.ANTIHALL_SESSION_ID;
   return (typeof v === 'string' && v) ? v : undefined;
 }
 
@@ -1079,6 +1083,7 @@ module.exports = {
   pollMsFromEnv,
   realFormsOf,
   resolveIdentity,
+  resolveOwnSessionId,
   resolvePrimaryHashes,
   resolveChildHashes,
   readPrimarySnapshot,

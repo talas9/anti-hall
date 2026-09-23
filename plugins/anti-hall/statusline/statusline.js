@@ -42,7 +42,8 @@
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
-const { execFileSync, spawnSync } = require('child_process');
+const { spawnSync } = require('child_process');
+const identity = require('../companion/lib/identity.js');
 
 // ---------------------------------------------------------------------------
 // Base-statusline config
@@ -112,14 +113,15 @@ function runBaseCommand(baseCmd, stdinBytes) {
 // Monorepo detection
 // ---------------------------------------------------------------------------
 
+// Filesystem-only resolution (companion/lib/identity.js) — no git subprocess
+// spawn for the common case (a submodule superproject check is the only path
+// that still spawns). Statusline runs on every prompt, so this must stay
+// fast; identity.resolveContext falls back to non-git/'deleted' contexts
+// (toplevel: null) the same way a failed `git rev-parse` used to, and we
+// mirror the old catch-all fallback to `cwd` for both.
 function gitToplevel(cwd) {
   try {
-    return execFileSync('git', ['rev-parse', '--show-toplevel'], {
-      encoding: 'utf8',
-      timeout: 2000,
-      stdio: ['pipe', 'pipe', 'pipe'],
-      cwd,
-    }).trim();
+    return identity.resolveContext(cwd).toplevel || cwd;
   } catch (e) {
     return cwd;
   }

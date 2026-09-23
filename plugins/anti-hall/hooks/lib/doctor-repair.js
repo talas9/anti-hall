@@ -2048,7 +2048,9 @@ function planLeakedTestFixtureStores(opts) {
     let registry = null;
     let s = null;
     try {
-      s = storeMod.openStore({ home, hash, backend: o.backend, env: o.env });
+      // readOnly (Phase 4c, #12): pure enumeration/detection read over every
+      // known store hash — must never mkdir/CREATE a store just to check it.
+      s = storeMod.openStore({ home, hash, backend: o.backend, env: o.env, readOnly: true });
       registry = s.listRegistry();
     } catch (_) { registry = null; } finally {
       if (s) { try { s.close(); } catch (_) { /* best-effort */ } }
@@ -2134,7 +2136,10 @@ function runTestStoreRepair(opts) {
     // still-gone-from-disk before rmSync.
     let stillEligible = false;
     try {
-      const s = storeMod.openStore({ home, hash: m.hash, backend: o.backend, env: o.env });
+      // readOnly (Phase 4c, #12): TOCTOU re-verify read immediately before the
+      // actual delete (fs.rmSync below, outside the store API) — never itself a
+      // store write.
+      const s = storeMod.openStore({ home, hash: m.hash, backend: o.backend, env: o.env, readOnly: true });
       let registry = null;
       try { registry = s.listRegistry(); } finally { try { s.close(); } catch (_) { /* best-effort */ } }
       if (Array.isArray(registry) && registry.length === 1 && registry[0] && registry[0].worktreePath === m.worktreePath) {
@@ -2700,7 +2705,10 @@ function sweepOrphanedSiblingWatermarks(opts) {
     // under the sqlite default yields an EMPTY registry — which this sweep
     // would otherwise read as "every sibling is gone" and act on. Observed
     // live while building this sweep, not hypothesized.
-    try { s = storeMod.openStore({ home, hash, env: o.env }); } catch (_) { enumerationComplete = false; continue; }
+    // readOnly (Phase 4c, #12): watermark-sweep enumeration is a pure read
+    // (listRegistry/messageCount below) over every known store hash.
+    try { s = storeMod.openStore({ home, hash, env: o.env, readOnly: true }); } catch (_) { enumerationComplete = false; continue; }
+    if (!s) { enumerationComplete = false; continue; }
     try {
       for (const row of s.listRegistry() || []) { if (row && row.id != null) { known.add(String(row.id)); registryRowsSeen++; } }
       for (const c of candidates) {

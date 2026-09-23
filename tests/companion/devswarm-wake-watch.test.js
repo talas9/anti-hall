@@ -18,7 +18,7 @@ const {
   tick, normalizeState, formatArmLine, formatWakeLine, formatDualWakeLine, formatErrorLine,
   formatRefusalLine, REFUSAL_REASONS,
   ERROR_TOLERANCE, ERROR_BACKOFF_MS,
-  pollMsFromEnv, realFormsOf, resolveIdentity, resolvePrimaryHashes, resolveChildHashes,
+  pollMsFromEnv, realFormsOf, resolveIdentity, resolveOwnSessionId, resolvePrimaryHashes, resolveChildHashes,
   readChildSnapshot, readPrimarySnapshot, readChildCombinedSnapshot,
   lockPathFor, POLL_ENV_VAR, DEFAULT_POLL_MS,
 } = wakeWatch;
@@ -946,3 +946,42 @@ test('T4: on-disk DevSwarm state for this repo\'s own repoKey (summaries/<repoKe
 // 'main(): a DevSwarm-active session still arms normally (gate is not
 // over-broad)', which sets DEVSWARM_REPO_ID and asserts an arm line — kept
 // green, not duplicated here.
+
+// resolveOwnSessionId() -- D10: CLAUDE_CODE_SESSION_ID is the var a live
+// Claude Code session actually sets; CLAUDE_SESSION_ID/ANTIHALL_SESSION_ID
+// are legacy fallbacks that must still work when it's the only var present.
+function withEnv(vars, fn) {
+  const keys = ['CLAUDE_CODE_SESSION_ID', 'CLAUDE_SESSION_ID', 'ANTIHALL_SESSION_ID'];
+  const saved = {};
+  for (const k of keys) saved[k] = process.env[k];
+  for (const k of keys) delete process.env[k];
+  Object.assign(process.env, vars);
+  try {
+    return fn();
+  } finally {
+    for (const k of keys) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  }
+}
+
+test('resolveOwnSessionId: prefers CLAUDE_CODE_SESSION_ID (the live Claude Code env var) over legacy CLAUDE_SESSION_ID', () => {
+  const id = withEnv({ CLAUDE_CODE_SESSION_ID: 'live-id', CLAUDE_SESSION_ID: 'legacy-id' }, resolveOwnSessionId);
+  assert.strictEqual(id, 'live-id');
+});
+
+test('resolveOwnSessionId: falls back to legacy CLAUDE_SESSION_ID when CLAUDE_CODE_SESSION_ID is unset', () => {
+  const id = withEnv({ CLAUDE_SESSION_ID: 'legacy-id' }, resolveOwnSessionId);
+  assert.strictEqual(id, 'legacy-id');
+});
+
+test('resolveOwnSessionId: falls back to ANTIHALL_SESSION_ID when neither Claude var is set', () => {
+  const id = withEnv({ ANTIHALL_SESSION_ID: 'antihall-id' }, resolveOwnSessionId);
+  assert.strictEqual(id, 'antihall-id');
+});
+
+test('resolveOwnSessionId: returns undefined (never null/empty) when no session env var is set', () => {
+  const id = withEnv({}, resolveOwnSessionId);
+  assert.strictEqual(id, undefined);
+});

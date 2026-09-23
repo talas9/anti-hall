@@ -106,9 +106,15 @@ function migrateDevswarmStore({ dryRun, markRead } = {}) {
         if (!inbox.readable || inbox.lines.length === 0) continue; // nothing this descriptor could contribute
         let stillPending = true; // store unreadable -> treat as not-yet-covered (fail toward pending)
         try {
-          const s = storeLib.openStore({ home, workspaceId: d.id });
+          // readOnly (Phase 4c, #12): this is the `--dry-run` COUNT-ONLY path
+          // (never calls migrateToStore/writes anything) — must not mkdir/CREATE
+          // a store just to report how many workspaces are still pending. A
+          // never-migrated-yet store (no store dir at all) is correctly still
+          // "pending" (stillPending stays true, its initialized default), so a
+          // null handle here needs no special case beyond the existing catch.
+          const s = storeLib.openStore({ home, workspaceId: d.id, readOnly: true });
           try { stillPending = mod.pendingLegacyLines(s, d.id, inbox.lines).length > 0; }
-          finally { s.close(); }
+          finally { try { s.close(); } catch (_) {} }
         } catch (_) { /* keep stillPending true */ }
         if (stillPending) pendingWorkspaces++;
       }

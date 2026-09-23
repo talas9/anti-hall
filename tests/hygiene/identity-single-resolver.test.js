@@ -45,7 +45,6 @@ const ALLOWLIST = {
   'hooks/lib/doctor-repair.js': { 'show-toplevel': 1 },
   'scripts/devswarm.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1, 'show-superproject': 1, 'primaryWorkspaceId-call': 17, 'show-toplevel': 1 },
   'statusline/statusline-rich.js': { 'show-toplevel': 1 },
-  'statusline/statusline.js': { 'show-toplevel': 1 },
 };
 
 function walk(dir, out) {
