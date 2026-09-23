@@ -169,7 +169,14 @@ function resolveContext(cwd, opts) {
     const raw = cwd == null || cwd === '' ? process.cwd() : String(cwd);
     const abs = path.resolve(raw);
     let cwdReal;
-    try { cwdReal = F.realpathSync(abs); } catch (_) { return nullContext('deleted', null); }
+    try { cwdReal = F.realpathSync(abs); } catch (_) {
+      // missingPath:'ancestor' (a CALLER's own cwd only): resolve from the nearest
+      // existing ancestor. Default 'null': a missing path is 'deleted' (decision 5).
+      if (o.missingPath !== 'ancestor') return nullContext('deleted', null);
+      for (let d = path.dirname(abs); !cwdReal; d = path.dirname(d)) {
+        try { cwdReal = F.realpathSync(d); } catch (_) { if (path.dirname(d) === d) return nullContext('deleted', null); }
+      }
+    }
 
     if (useMemo) {
       const hit = memo.get(cwdReal);

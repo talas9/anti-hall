@@ -5,7 +5,8 @@
 //     outermost superproject, `--git-common-dir`) for every fixture shape.
 // (b) KEY STABILITY: for every non-submodule shape, identity.repoKey/meshId are
 //     byte-identical to TODAY's shipped functions (devswarm-repokey.js
-//     repoKeyForWorktree, devswarm.js canonicalMeshId) called in-process.
+//     repoKeyForWorktree, devswarm.js canonicalMeshId — frozen pre-B1/B2 copies) and to
+//     the live devswarm.js resolvers (B2).
 // (c) submodule shapes: identity keys to the OUTERMOST superproject (decisions 1+2);
 //     the legacy (possibly wrong) key is recorded in the assertion message.
 // Isolation: HOME/USERPROFILE point at the fixture home BEFORE any production
@@ -33,6 +34,9 @@ const repokey = require(path.join(LIB, 'devswarm-repokey.js'));
 const legacyRepokey = require('../helpers/legacy-repokey-0.103.0.js');
 const inst = require(path.join(LIB, '..', 'install-devswarm-ingest.js'));
 const devswarm = require(path.join(LIB, '..', '..', 'scripts', 'devswarm.js'));
+// B2: devswarm.js canonicalMeshId/resolveCallerWorktree route through identity now;
+// the legacy values come from the FROZEN pre-B2 copy.
+const legacyDs = require('../helpers/legacy-devswarm-identity-0.103.0.js');
 
 after(() => fx.cleanup());
 
@@ -99,13 +103,15 @@ test('(b) KEY STABILITY vs shipped repokey/devswarm functions (non-submodule sha
     const ctx = identity.resolveContext(cwd, { memo: false });
     if (SUBMODULE_KINDS.has(ctx.kind)) continue;
     const legacyRepoKey = legacyRepokey.repoKeyForWorktree(cwd);
-    const legacyMeshId = devswarm.canonicalMeshId(cwd);
+    const legacyMeshId = legacyDs.canonicalMeshId(cwd);
     rows.push(name);
     assert.strictEqual(ctx.repoKey, legacyRepoKey, `repoKey drift for ${name}`);
     assert.strictEqual(repokey.repoKeyForWorktree(cwd), legacyRepoKey, `live shim repoKey drift for ${name}`);
     assert.strictEqual(repokey.repoKeyForWorktreeFast(cwd), legacyRepokey.repoKeyForWorktreeFast(cwd), `live shim fast-key drift for ${name}`);
     if (ctx.kind === 'main' || ctx.kind === 'linked-worktree') {
       assert.strictEqual(ctx.meshId, legacyMeshId, `meshId drift for ${name}`);
+      assert.strictEqual(devswarm.canonicalMeshId(cwd), legacyMeshId, `live canonicalMeshId drift for ${name}`);
+      assert.strictEqual(devswarm.resolveCallerWorktree(cwd), fs.realpathSync(legacyDs.resolveCallerWorktree(cwd)), `live resolveCallerWorktree drift for ${name}`);
       assert.strictEqual(ctx.primaryMeshId, inst.primaryWorkspaceId(inst.resolveMainWorktree(cwd)), `primaryMeshId for ${name}`);
     } else if (name === 'main/src/gone') {
       // Decision 5: a deleted path never folds onto its enclosing repo. Legacy
@@ -113,11 +119,14 @@ test('(b) KEY STABILITY vs shipped repokey/devswarm functions (non-submodule sha
       assert.strictEqual(ctx.meshId, null);
       assert.strictEqual(legacyMeshId, identity.resolveContext(fx.main).meshId,
         'documented legacy behavior: deleted subdir walks up to the enclosing repo meshId');
+      assert.strictEqual(devswarm.canonicalMeshId(cwd), null, 'B2: live canonicalMeshId of a deleted path is null (never grouped)');
     } else {
       // non-git / deleted-with-no-enclosing-repo: identity gives null; the legacy
       // value is the caller-level raw-path fallback, reproduced by the caller.
       assert.strictEqual(ctx.meshId, null);
       assert.strictEqual(inst.primaryWorkspaceId(cwd), legacyMeshId, `caller fallback for ${name}`);
+      // B2: an existing non-git dir keeps the raw-path fallback; a deleted path is null.
+      assert.strictEqual(devswarm.canonicalMeshId(cwd), ctx.kind === 'deleted' ? null : legacyMeshId, `live canonicalMeshId for ${name}`);
     }
   }
   assert.deepStrictEqual(rows.sort(), ['gone', 'main', 'main/src/deep', 'main/src/gone', 'main/untracked', 'mainlink/src', 'nongit/x', 'wt']);
@@ -139,13 +148,15 @@ test('(c) submodule shapes key to the OUTERMOST superproject (legacy value docum
     if (!SUBMODULE_KINDS.has(ctx.kind)) continue;
     const rootCtx = name.startsWith('wt/') ? wtCtx : mainCtx;
     const legacyRepoKey = legacyRepokey.repoKeyForWorktree(cwd);
-    const legacyMeshId = devswarm.canonicalMeshId(cwd);
+    const legacyMeshId = legacyDs.canonicalMeshId(cwd);
     const note = `${name}: identity must use the superproject key; legacy repoKey=${legacyRepoKey} `
       + `(${legacyRepoKey === rootCtx.repoKey ? 'same' : 'WRONG'}), legacy meshId=${legacyMeshId} `
       + `(${legacyMeshId === rootCtx.meshId ? 'same' : 'WRONG'})`;
     assert.strictEqual(ctx.worktreeRoot, rootCtx.worktreeRoot, note);
     assert.strictEqual(ctx.repoKey, rootCtx.repoKey, note);
     assert.strictEqual(ctx.meshId, rootCtx.meshId, note);
+    assert.strictEqual(devswarm.canonicalMeshId(cwd), rootCtx.meshId, note + ' (live canonicalMeshId, B2)');
+    assert.strictEqual(devswarm.resolveCallerWorktree(cwd), rootCtx.worktreeRoot, note + ' (live resolveCallerWorktree, B2)');
     // B1: the live repokey shims now agree with identity for every submodule kind.
     assert.strictEqual(repokey.repoKeyForWorktree(cwd), rootCtx.repoKey, note);
     assert.strictEqual(repokey.repoKeyForWorktreeFast(cwd), rootCtx.repoKey, note);
@@ -155,11 +166,11 @@ test('(c) submodule shapes key to the OUTERMOST superproject (legacy value docum
     assert.ok(ns === rootCtx.worktreeRoot || (ns === null && SPAWN_ALLOWED.has(name)), note + ' noSpawn=' + ns);
     // The superproject root itself is non-submodule, so it is legacy-stable:
     assert.strictEqual(rootCtx.repoKey, legacyRepokey.repoKeyForWorktree(rootCtx.worktreeRoot), note);
-    assert.strictEqual(rootCtx.meshId, devswarm.canonicalMeshId(rootCtx.worktreeRoot), note);
+    assert.strictEqual(rootCtx.meshId, legacyDs.canonicalMeshId(rootCtx.worktreeRoot), note);
   }
   // Known-defect evidence (the legacy values these rows flip away from):
   assert.notStrictEqual(legacyRepokey.repoKeyForWorktree(fx.cwds['wt/libs/sub']), wtCtx.repoKey, 'D1 present in the frozen legacy');
-  assert.notStrictEqual(devswarm.canonicalMeshId(fx.cwds['main/libs/sub/inner']), mainCtx.meshId, 'D6 still present in legacy');
+  assert.notStrictEqual(legacyDs.canonicalMeshId(fx.cwds['main/libs/sub/inner']), mainCtx.meshId, 'D6 present in the frozen legacy');
   assert.notStrictEqual(legacyRepokey.repoKeyForWorktree(fx.cwds['main/vend/raw']), mainCtx.repoKey, 'D7 present in the frozen legacy');
   assert.notStrictEqual(legacyRepokey.repoKeyForWorktree(fx.cwds.subwt), mainCtx.repoKey, 'submodule-worktree defect present in the frozen legacy');
 });

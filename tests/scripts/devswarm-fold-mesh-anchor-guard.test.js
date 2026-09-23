@@ -86,7 +86,8 @@ const ctx = (home, over) => Object.assign({ home, backend: 'journal', env: {} },
 // undelivered mail; post-fix, it is untouched (reported LEFT, no forward).
 // -----------------------------------------------------------------------
 test('REPRO + FIX: a candidate that IS the canonical meshId row for its own worktree is NEVER folded (no forward, no cursor advance) regardless of survivor', () => {
-  const WT = '/wt/live-primary-fixture';
+  // An EXISTING dir: a deleted path has no canonical meshId (mesh redesign decision 5).
+  const WT = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-fold-anchor-wt-'));
   const MESH_ID = cli.canonicalMeshId(WT); // e.g. 'primary-XXXXXXXX' — the LIVE Primary's own anchor id
   const SURVIVOR = 'builder-uuid-twin-76cf862f'; // co-located self-registrant / UUID twin
 
@@ -113,6 +114,32 @@ test('REPRO + FIX: a candidate that IS the canonical meshId row for its own work
   assert.strictEqual(appendCalls, 0, 'the meshId anchor row\'s mail must NEVER be forwarded into another survivor (it is the stable addressing target, not a duplicate to collapse)');
   assert.deepStrictEqual(setCursorCalls, [],
     'THE FIX: the meshId anchor row\'s cursor must NEVER be advanced by a fold it did not request — advancing it here would mark undelivered mail "read" on the only partition read-primary/inbox-count ever queries, with the copy sitting in a survivor id nothing standard drains');
+  rm(WT);
+});
+
+// B2 (decision 5): a DELETED worktree has no canonical meshId, but an attended
+// row whose id is that path's raw-path meshId (what it registered under) must stay
+// protected exactly as before — the guard falls back to the raw-path hash.
+test('B2: an attended meshId anchor whose worktree was DELETED is still never folded', () => {
+  const WT = path.join(os.tmpdir(), 'anti-hall-fold-anchor-deleted-' + process.pid + '-' + Date.now());
+  assert.strictEqual(cli.canonicalMeshId(WT), null, 'precondition: a deleted path has no canonical meshId');
+  const MESH_ID = inst.primaryWorkspaceId(WT);
+  const setCursorCalls = [];
+  let appendCalls = 0;
+  const rows = [{ hash: 'h1', ts: 1000, body: 'undelivered-1', sender: 'x', recipient: MESH_ID, mtype: 'direct', urgency: 'normal', needsReply: false, isHeartbeat: false }];
+  const fakeS = {
+    cursorValue() { return 0; },
+    listMessages(id) { return id === MESH_ID ? rows.slice() : []; },
+    messageCount(id) { return id === MESH_ID ? rows.length : 0; },
+    setCursor(id, val) { setCursorCalls.push({ id, val }); },
+    appendMeshRow() { appendCalls++; return { inserted: true, seq: appendCalls }; },
+    removeRegistryIf() { throw new Error('the deleted-worktree anchor must never be tombstoned'); },
+  };
+  const candidateRow = { id: MESH_ID, worktreePath: WT, sessionId: 'live-primary-session', updatedAt: 1, writeSeq: 1 };
+  const res = cli.foldGroupIntoSurvivor(fakeS, '/nonexistent-home-fixture', 'builder-uuid-twin-deleted', [candidateRow], {});
+  assert.deepStrictEqual(res.left, [MESH_ID]);
+  assert.strictEqual(appendCalls, 0);
+  assert.deepStrictEqual(setCursorCalls, []);
 });
 
 // -----------------------------------------------------------------------
@@ -208,7 +235,7 @@ test('MUTATION-KILL: removing the meshId-anchor guard reproduces the pre-fix cur
     "    if (isMeshAnchor) { left.push(d.id); leftRows.set(String(d.id), d); anchorLeft.add(String(d.id)); continue; }\n",
     '',
     (mutatedCli) => {
-      const WT = '/wt/live-primary-fixture-mutant';
+      const WT = fs.mkdtempSync(path.join(os.tmpdir(), 'anti-hall-fold-anchor-wt-mutant-'));
       const MESH_ID = mutatedCli.canonicalMeshId(WT);
       const SURVIVOR = 'builder-uuid-twin-mutant';
       const setCursorCalls = [];
@@ -226,6 +253,7 @@ test('MUTATION-KILL: removing the meshId-anchor guard reproduces the pre-fix cur
       };
       const candidateRow = { id: MESH_ID, worktreePath: WT, sessionId: 'live-primary-session', updatedAt: 1, writeSeq: 1 };
       mutatedCli.foldGroupIntoSurvivor(fakeS, '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+      rm(WT);
       assert.ok(setCursorCalls.length > 0 && appendCalls > 0,
         'RED (expected on the mutant): without the guard, the meshId anchor row IS folded — cursor advanced and mail forwarded away. If this fails, the guard removal did not actually reproduce the bug.');
     },

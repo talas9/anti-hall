@@ -218,6 +218,16 @@ const migrate = require('../companion/devswarm-migrate.js');
 const pull = require('../companion/lib/devswarm-pull.js');
 const inst = require('../companion/install-devswarm-ingest.js');
 const repokey = require('../companion/lib/devswarm-repokey.js');
+const identity = require('../companion/lib/identity.js');
+// identityContext(p) — identity.resolveContext for this module. memo:false because
+// long-lived processes (the supervisor) require this file and a cached non-git
+// answer must never go stale; superCache keeps the one nested-repo git answer
+// (5-min TTL), so a sweep pays at most one spawn per nested `.git` DIR root.
+// Registry/descriptor paths use the default missingPath 'null' (a deleted path is
+// unknown, never folded onto an enclosing repo); a CALLER's own cwd passes
+// CALLER_CWD (a deleted cwd resolves from its nearest existing ancestor).
+const CALLER_CWD = { missingPath: 'ancestor' };
+function identityContext(p, extra) { return identity.resolveContext(p, Object.assign({ memo: false, superCache: true }, extra)); }
 const ingestHealth = require('../companion/lib/ingest-health.js');
 const { isDevswarmActive } = require('../hooks/lib/devswarm-detect.js');
 const { isForwardableRow } = require('../companion/lib/devswarm-noise.js');
@@ -631,32 +641,6 @@ function siblingAckGate(storeHandle, callerId, partId, home, now, opts) {
   return false;
 }
 
-// findGitToplevel(startDir) -> absolute repo-root path | null. A PURE fs walk-up
-// looking for a `.git` entry — the same root `git rev-parse --show-toplevel`
-// would report, WITHOUT spawning git. Mirrors hooks/devswarm-parent-gate.js /
-// devswarm-parent-inbox.js / devswarm-child-turn.js byte-for-byte (kept as a
-// local copy rather than a shared require, matching their own stated precedent
-// of not adding new cross-file coupling for a few lines of pure fs walk). Used
-// as callerIdentity's git-unavailable fallback so it agrees with the parent-gate
-// hook's own cwd-derivation even when git is not on PATH.
-function findGitToplevel(startDir) {
-  try {
-    let dir = path.resolve(String(startDir || ''));
-    if (!dir) return null;
-    for (;;) {
-      try {
-        fs.statSync(path.join(dir, '.git'));
-        return dir;
-      } catch (_) { /* keep walking up */ }
-      const parent = path.dirname(dir);
-      if (parent === dir) return null; // reached filesystem root, no .git found
-      dir = parent;
-    }
-  } catch (_) {
-    return null;
-  }
-}
-
 // callerIdentity(env, cwd) -> string. Who is invoking this CLI process, for the
 // ack-ownership check (cross-workspace ack hazard, bug #2).
 //
@@ -672,21 +656,20 @@ function findGitToplevel(startDir) {
 //      cwd-derived id (redundant declaration, not an override).
 //   2. cwd does NOT resolve to any git worktree at all (no ground truth exists
 //      to contradict it) — e.g. a daemon/unit whose cwd defaults to $HOME.
-// Worktree resolution: resolveWorktree(cwd) (git spawn) first, falling back to
-// the PURE-FS findGitToplevel(cwd) above when git is unavailable/unspawnable —
-// this fallback ORDER matters: it keeps callerIdentity agreeing with the
-// parent-gate hook's OWN cwd-derivation (which is pure-fs only, no git spawn)
-// even when git cannot be spawned, instead of silently falling further back to
-// the RAW cwd (which would misidentify a subdirectory as its own worktree and
-// spuriously refuse a legitimate Primary self-ack run from a non-toplevel cwd
-// with git unavailable). Only when NEITHER resolves does cwd fail to resolve to
-// a workspace at all (case 2 above; final fallback = primaryWorkspaceId(raw
-// cwd) so callerIdentity always returns a deterministic non-empty string).
+// Worktree resolution: resolveCallerWorktree(cwd) (identity.js, pure fs — no git
+// spawn for any common layout). Only when it does not resolve does cwd fail to
+// resolve to a workspace at all (case 2 above; final fallback =
+// primaryWorkspaceId(raw cwd) so callerIdentity always returns a deterministic
+// non-empty string).
 // resolveCallerWorktree(cwd) -> the RESOLVED git worktree/toplevel for `cwd`, or
 // null when `cwd` is not inside any git worktree. This is the SINGLE primitive
-// used to canonicalize a cwd into a workspace identity: git `resolveWorktree`
-// first, then the pure-fs `findGitToplevel` fallback (same order + rationale as
-// callerIdentity's original inline resolution). Callers that must agree on a
+// used to canonicalize a cwd into a workspace identity (mesh redesign Phase 2,
+// B2): identity.resolveContext(cwd).worktreeRoot — the key-bearing root, pure fs,
+// so a registry sweep no longer pays 2 git spawns per row (#11). A submodule of
+// ANY kind (absorbed, non-absorbed, nested, in a linked worktree) resolves to its
+// OUTERMOST superproject (owner decisions 1+2). This takes a CALLER's cwd: one that
+// no longer exists resolves from its nearest existing ancestor (registry/row paths
+// never do — see identityContext). Callers that must agree on a
 // worktree's meshId — callerIdentity (identity derivation) AND cmdInboxPull (the
 // registered worktreePath that `send --to` later hashes) — MUST route through
 // this so a subdirectory cwd canonicalizes to the SAME toplevel both places
@@ -694,31 +677,7 @@ function findGitToplevel(startDir) {
 // subdir path, which hashed to a meshId no `send --to` could resolve — the child
 // became unaddressable, failing closed as `unregistered-recipient`).
 function resolveCallerWorktree(cwd) {
-  const c = cwd || process.cwd();
-  const wt = inst.resolveWorktree(c) || findGitToplevel(c) || null;
-  if (!wt) return null;
-  // SUBMODULE FIX (P1, defect d56bfaac2da0): a cwd inside a git SUBMODULE
-  // resolves `wt` to the SUBMODULE's own toplevel here (both `resolveWorktree`
-  // and `findGitToplevel` stop at the nearest `.git`), silently keying
-  // identity/repoKey to the submodule instead of the superproject — the exact
-  // mis-keying `companion/lib/devswarm-repokey.js`'s `gitCommonDir` already
-  // guards against for repoKey derivation (its `.git/modules/` detection +
-  // `--show-superproject-working-tree` re-resolution). `resolveCallerWorktree`
-  // had no equivalent, so a caller invoked from inside a submodule registered/
-  // read against the submodule toplevel while a sibling invocation from the
-  // superproject root read/wrote the superproject key, flipping
-  // `registeredRepoKey` between the two and failing closed as
-  // `project-context-mismatch`. `--show-superproject-working-tree` is verified
-  // to report the superproject root from inside ANY submodule and EMPTY from a
-  // normal repo/the superproject itself, so this is safe to run unconditionally
-  // (fail-open: any spawn failure or empty/self-referential result just keeps
-  // the submodule-resolved `wt`, matching this function's pre-fix behavior).
-  try {
-    const superR = spawnSync('git', ['-C', wt, 'rev-parse', '--show-superproject-working-tree'], { encoding: 'utf8' });
-    const superWt = (!superR.error && superR.status === 0) ? String(superR.stdout || '').trim() : '';
-    if (superWt && superWt !== wt) return superWt;
-  } catch (_) { /* fall through, keep the submodule-resolved wt */ }
-  return wt;
+  return identityContext(cwd || process.cwd(), CALLER_CWD).worktreeRoot || null;
 }
 // callerIdentityDetailed(env, cwd) -> { identity, kind }. Same resolution as
 // callerIdentity below, but ALSO names WHICH of the three legs produced the
@@ -2331,7 +2290,7 @@ function buildDescriptorFromFlags(id, flags, existing, env) {
 // is fail-open: every caller below falls back to its EXISTING pre-mesh hash
 // selection.
 function repoKeyForCwd(ctx) {
-  try { return repokey.repoKeyForWorktree((ctx && ctx.cwd) || process.cwd()); } catch (_) { return null; }
+  try { return identityContext((ctx && ctx.cwd) || process.cwd(), CALLER_CWD).repoKey || null; } catch (_) { return null; }
 }
 function storeOwnerKeyFor(id, ctx) {
   return repoKeyForCwd(ctx) || store.hashFromWorkspaceId(id);
@@ -3465,6 +3424,11 @@ function foldGroupIntoSurvivor(s, home, survivorId, candidates, opts) {
     if (meshIdCache.has(key)) return meshIdCache.get(key);
     let v = null;
     try { v = canonicalMeshId(wt); } catch (_) { v = null; }
+    // B2: a deleted worktree has no canonical meshId (decision 5). For this
+    // PROTECTIVE test only, keep the legacy raw-path hash (the id a row
+    // registered from that path carries), so an attended anchor row whose
+    // worktree vanished stays protected exactly as before — never folded.
+    if (!v) v = rawPathMeshId(wt);
     meshIdCache.set(key, v);
     return v;
   };
@@ -4155,9 +4119,9 @@ function retireArchivedWorktreeGroup(s, home, archivedId, worktreePath) {
 }
 
 // canonicalWorktreeRealPath(worktreePath) — the collision-FREE real-path pre-image
-// of canonicalMeshId's 8-hex hash: canonicalize to the GIT TOPLEVEL first
-// (resolveCallerWorktree — IDENTICAL resolution to canonicalMeshId below), then take
-// its resolved real path (inst.worktreeRealPath). By construction
+// of canonicalMeshId's 8-hex hash: canonicalize to the key-bearing git root first
+// (identity.resolveContext — IDENTICAL resolution to canonicalMeshId below; the root
+// is already a real path). By construction
 // canonicalMeshId(wt) === `primary-<first 8 hex of sha256(canonicalWorktreeRealPath(wt))>`,
 // so two rows share a canonicalMeshId BUCKET iff this real path hashes to the same
 // 8-hex — but they are the SAME physical worktree ONLY iff these real-path STRINGS
@@ -4167,27 +4131,43 @@ function retireArchivedWorktreeGroup(s, home, archivedId, worktreePath) {
 // string-for-string is the collision-proof discriminator. This is the ONE helper
 // BOTH retireWorktreeDuplicates (per-register) and foldMeshDuplicates (project-wide
 // migration) match candidates with, so the fold can never again silently merge
-// distinct worktrees the way a hash-only grouping did. Fail-open null (falsy path)
-// -> callers treat it as "cannot confirm same worktree" (never merge).
+// distinct worktrees the way a hash-only grouping did. Fail-open null (falsy path,
+// or a path that no longer exists — decision 5: never walked up onto an enclosing
+// repo) -> callers treat it as "cannot confirm same worktree" (never merge).
+// An existing non-git dir keeps its own real path (unchanged).
 function canonicalWorktreeRealPath(worktreePath) {
   if (!worktreePath) return null;
-  const top = resolveCallerWorktree(worktreePath) || worktreePath;
-  return inst.worktreeRealPath(top) || null;
+  const c = identityContext(String(worktreePath));
+  if (c.kind === 'deleted') return null;
+  return c.worktreeRoot || inst.worktreeRealPath(worktreePath) || null;
 }
 
 // canonicalMeshId(worktreePath) — the meshId a row groups under. Canonicalizes to
-// the row's GIT TOPLEVEL first (resolveCallerWorktree — git rev-parse
-// --show-toplevel, pure-fs findGitToplevel fallback), so a legacy SUBDIR-SPLIT row
+// the row's key-bearing git root first (identity.resolveContext, pure fs — the
+// same root resolveCallerWorktree returns), so a legacy SUBDIR-SPLIT row
 // (a child that registered from a git subdirectory — its raw real-path hashes to a
 // DIFFERENT meshId than the toplevel's, invisible to plain-hash grouping) folds
 // onto its toplevel. Falls back to the raw worktreePath when it does not resolve
-// (a vanished path — already surfaced by staleRegistryPartitions — or a non-git
-// dir), which reproduces the pre-existing plain-hash grouping exactly for every
-// row that is already a toplevel. Submodules resolve to their OWN toplevel -> a
-// submodule is correctly NOT merged with its parent.
+// (an existing non-git dir), which reproduces the pre-existing plain-hash grouping
+// exactly for every row that is already a toplevel. A submodule of any kind keys
+// to its OUTERMOST superproject (owner decisions 1+2). A path that no longer
+// exists returns null (decision 5: unknown — never folded onto an enclosing repo,
+// never grouped); every caller skips a null key.
 function canonicalMeshId(worktreePath) {
-  const top = resolveCallerWorktree(worktreePath) || worktreePath;
-  return inst.primaryWorkspaceId(top);
+  if (!worktreePath) return null;
+  const c = identityContext(String(worktreePath));
+  if (c.kind === 'deleted') return null;
+  // Same formula as c.meshId (identity-equivalence locks it), via the installer's
+  // primaryWorkspaceId so every meshId in this file derives from one formatter.
+  return inst.primaryWorkspaceId(c.worktreeRoot || worktreePath);
+}
+
+// rawPathMeshId(p) -> the meshId a row registered from `p` carries when `p` no
+// longer exists (the legacy raw-path hash; no walk-up), or null. Used only as an
+// exact-ADDRESS fallback (send lookup, the anchor protection) — never to group.
+function rawPathMeshId(p) {
+  if (!p) return null;
+  try { return identity.meshIdForRealPath(path.resolve(String(p))); } catch (_) { return null; }
 }
 
 // groupRegistryByMeshId(registry, home) -> Map<meshId, {meshId, ids[], rows[], liveRows}>.
@@ -4277,7 +4257,7 @@ function rekeySubdirRegistryRows(s, home, dryRun) {
   // for the outer snapshot pass and the in-lock re-read so both agree.
   const needsRekey = (row) => {
     if (!row || !row.worktreePath || row.id == null) return null;
-    const top = resolveCallerWorktree(row.worktreePath);
+    const top = identityContext(String(row.worktreePath)).worktreeRoot; // a ROW path: deleted -> null, never an enclosing repo
     if (!top) return null; // non-git / unresolvable -> raw path is already its own meshId
     const canonMesh = inst.primaryWorkspaceId(top);
     if (!canonMesh || inst.primaryWorkspaceId(row.worktreePath) === canonMesh) return null; // already canonical
@@ -5825,7 +5805,7 @@ function selfHeal(ctx) {
     const now = Number.isFinite(ctx.now) ? ctx.now : Date.now();
 
     const resolveWt = (ctx.io && ctx.io.resolveWorktree)
-      || (() => inst.resolveWorktree(cwd) || findGitToplevel(cwd));
+      || (() => identityContext(cwd, CALLER_CWD).toplevel);
     const worktree = resolveWt(cwd);
     if (!worktree) return { daemonWarning: 'no-worktree' };
 
@@ -7512,6 +7492,20 @@ function resolveReadArgToId(ctx, home, arg) {
   }
 }
 
+// cwdInsideRegisteredWorktree(cwd, worktreePath) -> true iff realpath(cwd) equals or
+// lies under realpath(worktreePath) or that path's git toplevel. Fail-closed:
+// anything unresolvable (missing path, no registered path) is false.
+function cwdInsideRegisteredWorktree(cwd, worktreePath) {
+  if (!cwd || !worktreePath) return false;
+  const cwdReal = identityContext(String(cwd), CALLER_CWD).cwdReal; // deleted cwd -> nearest existing ancestor
+  if (!cwdReal) return false;
+  const roots = [];
+  try { roots.push(fs.realpathSync(String(worktreePath))); } catch (_) { return false; }
+  const top = identityContext(String(worktreePath)).toplevel;
+  if (top) roots.push(top);
+  return roots.some((r) => cwdReal === r || cwdReal.startsWith(r + path.sep));
+}
+
 function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
   // skipExistenceGuard (FIX 5 wiring): cmdInboxMessages' OWN ownership check
   // (doAck && !ackAsOwner, below) is a MORE specific, already-fail-closed guard
@@ -7542,9 +7536,19 @@ function resolveWorkspaceStoreForRead(id, ctx, home, roOpts) {
   // this point the partition is either the id's own registered project, or the
   // id has no registered project at all (the sanctioned legacy/no-project mode,
   // where the per-id hash bucket IS id-derived).
-  const callerRepoKeyForRead = repoKeyForCwd(ctx);
+  let callerRepoKeyForRead = repoKeyForCwd(ctx);
   const descForRead = readDescriptorFile(home, id);
   const registeredRepoKeyForRead = descForRead ? descriptorRegisteredRepoKey(descForRead, id) : null;
+  // #20: an UNRESOLVED caller key (null — e.g. the worktree's git metadata is
+  // unreadable, or a resolver failure under load) is not evidence of a different
+  // project. When the caller's cwd real path lies inside the workspace's OWN
+  // registered worktree (its registered path or that path's git toplevel), read
+  // under the registered key instead of refusing. A caller key that resolved to
+  // a DIFFERENT project still refuses below.
+  if (registeredRepoKeyForRead && !callerRepoKeyForRead
+    && cwdInsideRegisteredWorktree((ctx && ctx.cwd) || process.cwd(), descForRead.worktreePath)) {
+    callerRepoKeyForRead = registeredRepoKeyForRead;
+  }
   if (registeredRepoKeyForRead && registeredRepoKeyForRead !== callerRepoKeyForRead) {
     return {
       ok: false, id,
@@ -11909,7 +11913,6 @@ function rekeyStoreCounts(home, key) {
 
 // identityRekeyCandidates(home, ctx) -> { candidates: [{oldKey, newKey, source, gitdir}], projects }
 function identityRekeyCandidates(home, ctx) {
-  const identity = require('../companion/lib/identity.js');
   const wtPaths = new Set();
   for (const dir of [workspacesDir(home), archivedDir(home)]) {
     let names = [];
@@ -12197,6 +12200,11 @@ function hasFlag(flags, name) {
 // mismatch, and it already runs independently via foldMeshDuplicates (doctor
 // repair / reconcile), which self-heals stored subdir rows over time — this
 // fix does not depend on that repair having already run.
+//
+// B2 (decision 5): a row whose worktree no longer exists has no canonical meshId;
+// it still answers to its OWN raw-path meshId (the address it registered under),
+// exactly as before — an exact-address lookup, never a walk-up onto an enclosing
+// repo, so mail to it still lands in its own partition instead of failing closed.
 function meshCandidateRows(storeHandle, meshId) {
   const candidates = [];
   if (!meshId) return candidates;
@@ -12204,6 +12212,7 @@ function meshCandidateRows(storeHandle, meshId) {
     if (!d || !d.worktreePath) continue;
     let canon = null;
     try { canon = canonicalMeshId(d.worktreePath); } catch (_) { canon = null; }
+    if (!canon) canon = rawPathMeshId(d.worktreePath);
     if (canon !== String(meshId)) continue;
     candidates.push(d);
   }
@@ -12608,7 +12617,7 @@ function cmdSend(flags, ctx) {
     let candidateCount;
     if (type === 'direct' && candidateMeshRow) {
       try {
-        const meshForCount = canonicalMeshId(candidateMeshRow.worktreePath);
+        const meshForCount = canonicalMeshId(candidateMeshRow.worktreePath) || rawPathMeshId(candidateMeshRow.worktreePath);
         candidateCount = meshCandidateRows(s, meshForCount).length;
       } catch (_) { candidateCount = undefined; }
     }

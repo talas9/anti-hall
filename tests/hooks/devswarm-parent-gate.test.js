@@ -1794,6 +1794,7 @@ test('IDENTITY-FAMILY: two descriptors sharing one worktreePath collapse to ONE 
     // exact SAME worktreePath — the builder-id-UUID-vs-slug shape the defect
     // report names.
     const sharedWt = path.join(h.home, 'shared-wt');
+    fs.mkdirSync(sharedWt, { recursive: true }); // exists: a deleted path has no family key (decision 5)
     seedWorkspace(h.home, 'builder-uuid-1', { messages: ['a', 'b'], cursor: 0, worktreePath: sharedWt });
     seedWorkspace(h.home, 'slug-one', { messages: ['c', 'd', 'e'], cursor: 0, worktreePath: sharedWt });
     const r = run(h.home, stopPayload('sess-idfam1', false, bogusCwd));
@@ -1822,13 +1823,13 @@ test('IDENTITY-FAMILY: the SELF/Primary row duplicated (live evidence: the same 
   } finally { h.cleanup(); }
 });
 
-test('IDENTITY-FAMILY: a descriptor whose worktree no longer exists still groups deterministically, never throws', () => {
+test('IDENTITY-FAMILY: descriptors whose worktree no longer exists are listed per id (never collapsed), never throws', () => {
   const h = makeHome();
   const bogusCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'parent-gate-idfam-nogit-'));
   try {
-    // A worktreePath that never existed on disk at all -> canonicalMeshId's
-    // realpath resolution degrades to path.resolve (worktreeRealPath's own
-    // documented "never throws" contract) rather than failing.
+    // A worktreePath that never existed on disk at all -> canonicalMeshId returns
+    // null (mesh redesign decision 5: a deleted path is unknown, never grouped),
+    // so each descriptor keeps its own id-keyed family — never over-collapsed.
     const vanishedWt = path.join(os.tmpdir(), 'parent-gate-idfam-vanished-' + Date.now());
     seedWorkspace(h.home, 'ghost-uuid', { messages: ['a'], cursor: 0, worktreePath: vanishedWt });
     seedWorkspace(h.home, 'ghost-slug', { messages: ['b'], cursor: 0, worktreePath: vanishedWt });
@@ -1836,7 +1837,7 @@ test('IDENTITY-FAMILY: a descriptor whose worktree no longer exists still groups
     assert.doesNotThrow(() => { r = run(h.home, stopPayload('sess-idfam2', false, bogusCwd)); });
     assert.strictEqual(r.status, 0);
     assert.strictEqual(r.json && r.json.decision, 'block');
-    assert.match(r.json.reason, /1 workspace\(s\)/, 'still groups deterministically even though the worktree never existed');
+    assert.match(r.json.reason, /2 workspace\(s\)/, 'an unresolvable worktree never collapses two descriptors');
   } finally { h.cleanup(); fs.rmSync(bogusCwd, { recursive: true, force: true }); }
 });
 

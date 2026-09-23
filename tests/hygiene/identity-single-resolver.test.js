@@ -43,7 +43,9 @@ const ALLOWLIST = {
   'hooks/devswarm-parent-inbox.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1, 'primaryWorkspaceId-call': 2 },
   'hooks/devswarm-parent-reply-tracker.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1 },
   'hooks/lib/doctor-repair.js': { 'show-toplevel': 1 },
-  'scripts/devswarm.js': { 'fn-findGitToplevel': 1, 'stat-dotgit': 1, 'show-superproject': 1, 'primaryWorkspaceId-call': 17, 'show-toplevel': 1 },
+  // B2: resolvers route through identity; left: the reconcile git-root probe (stubbed by
+  // devswarm-reconcile-budget.test.js via repokey.defaultRun) and primaryWorkspaceId calls.
+  'scripts/devswarm.js': { 'primaryWorkspaceId-call': 17, 'show-toplevel': 1 },
   'statusline/statusline-rich.js': { 'show-toplevel': 1 },
 };
 
