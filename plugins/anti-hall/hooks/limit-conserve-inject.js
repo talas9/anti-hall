@@ -24,10 +24,12 @@ const { isSkipped } = require('./skip-guard.js');
 
 const DOWNSHIFT_DIRECTIVE =
   'MAIN-MODEL DOWNSHIFT: if the main agent is on the flagship model ' +
-  '(Claude Opus or Codex gpt-5.6-sol), switch it to the cheaper 1M-context variant ' +
+  '(Claude Opus or Codex frontier category), switch it to the cheaper 1M-context variant ' +
   'to preserve the flagship weekly bucket — ' +
-  'Claude → Sonnet (1M context), Codex → gpt-5.6-terra (1M context). ' +
-  'NEVER downshift to a sub-1M model (e.g. gpt-5.4-mini has only 400k context). ' +
+  'Claude → Sonnet (1M context), Codex → the workhorse category\'s 1M-context model ' +
+  '(resolve the slug from the live catalog; never pin one). ' +
+  'NEVER downshift to a smaller-context model (e.g. a fast-category model may have well ' +
+  'under 1M context) — check the catalog\'s context window first. ' +
   'Keep the flagship for delegated hard-reasoning subagents and on-demand escalation. ' +
   'The agent cannot self-switch models (/model is a user action) — ' +
   'SURFACE this recommendation to the user; ' +

@@ -260,11 +260,63 @@ function readSummary(home, hash) {
   if (!p) return null;
   try {
     const raw = String(fs.readFileSync(p, 'utf8')).trim();
-    if (!raw) return null;
+    if (!raw) { logSegmentError(home, 'summary-read', { code: 'EMPTY', message: 'summary.json empty' }); return null; }
     const obj = JSON.parse(raw);
     return obj && typeof obj === 'object' ? obj : null;
-  } catch (_) {
+  } catch (e) {
+    // ENOENT is the normal inert state (no daemon yet) — not logged.
+    if (!(e && e.code === 'ENOENT')) logSegmentError(home, 'summary-read', e);
     return null;
+  }
+}
+
+// MAX_SEGMENT_ERROR_LOG_BYTES — bound for parent-inbox-segment-errors.ndjson.
+const MAX_SEGMENT_ERROR_LOG_BYTES = 256 * 1024;
+
+// logSegmentError(home, segment, err) — OBSERVABILITY ONLY for the fail-open
+// catches on the summary-read / segment-building path (a WORKSPACES table or
+// ORPHANED MESH banner was seen to vanish for one turn and return, cause
+// unverified). Appends one NDJSON line {ts, segment, code, message} to
+// <home>/.anti-hall/logs/parent-inbox-segment-errors.ndjson; stops appending
+// once the file reaches the byte cap. Never throws, never changes behavior.
+function logSegmentError(home, segment, err) {
+  try {
+    const p = path.join(home, '.anti-hall', 'logs', 'parent-inbox-segment-errors.ndjson');
+    try { if (fs.statSync(p).size >= MAX_SEGMENT_ERROR_LOG_BYTES) return; } catch (_) {}
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.appendFileSync(p, JSON.stringify({
+      ts: Date.now(),
+      segment,
+      code: (err && err.code) || null,
+      message: String((err && err.message) || err).slice(0, 300),
+    }) + '\n');
+  } catch (_) {}
+}
+
+// Volatile-age normalizer for the WORKSPACES table (lib/emit-dedupe.js on-change
+// hash): blanks each row's last cell (the relative-age "last" column, e.g.
+// "42s"/"3m"/"—") so a turn where only ages advanced hashes the same as the last
+// emitted table. Status/unread/finish/risk changes still change the hash.
+function normalizeTableAges(t) {
+  return String(t).split('\n').map((l) => (/^\|.*\|\s*$/.test(l) ? l.replace(/\|[^|]*\|\s*$/, '| |') : l)).join('\n');
+}
+
+// Volatile-field normalizer for the PARENT INBOX nudge (burst-collapse only, rule a):
+// drops the "oldest Xm" age and the rising/flat/falling trend (the trend flips to
+// "flat" on the 2nd copy of a burst because the 1st copy just logged its
+// snapshot). Unread counts and stuck statuses are kept, so a changed unread set
+// is never suppressed.
+function normalizeInboxVolatile(t) {
+  return String(t).replace(/, oldest (?:—|\d+[smhd])/g, '').replace(/, (?:rising|flat|falling)\)/g, ')');
+}
+
+// dedupeEmit(home, sessionId, key, content, opts) -> bool — lib/emit-dedupe.js
+// shouldEmit, lazily required, fail-open to true.
+function dedupeEmit(home, sessionId, key, content, opts) {
+  try {
+    return require('./lib/emit-dedupe.js').shouldEmit(Object.assign({ home, sessionId, key, content }, opts || {}));
+  } catch (_) {
+    return true;
   }
 }
 
@@ -347,18 +399,23 @@ function formatRelative(ts, now) {
 
 // finishingRate(summary, id, heartbeat) -> string. Required completion gates met /
 // total, from summary.requiredGates + the workspace's gate map (e.g. "2/3"). When
-// no required gates are declared (or no summary entry yet) the gate ratio is
-// unknown ("—"); a heartbeat progress_pct, when present, is appended (or shown
-// alone if it is the only signal). Decision: gates are the authoritative finishing
-// signal; progress_pct is an advisory secondary shown only when it exists.
+// no required gates are declared (or no summary entry yet), OR no gate has EVER
+// been set for this workspace (gates object empty/absent — only the manual
+// `devswarm.js gate` verb writes a gate row, so an untouched workspace has no
+// rows at all, not a row of falses), the gate ratio is unknown ("—"); a heartbeat
+// progress_pct, when present, is appended (or shown alone if it is the only
+// signal). Decision: gates are the authoritative finishing signal; progress_pct
+// is an advisory secondary shown only when it exists.
 function finishingRate(summary, id, heartbeat) {
   const entry = summaryEntry(summary, id);
   const required = summary && Array.isArray(summary.requiredGates) ? summary.requiredGates : [];
   let gatesStr = null;
   if (entry && required.length > 0) {
     const gates = entry.gates && typeof entry.gates === 'object' ? entry.gates : {};
-    const met = required.filter((g) => gates[g] === true).length;
-    gatesStr = met + '/' + required.length;
+    if (Object.keys(gates).length > 0) {
+      const met = required.filter((g) => gates[g] === true).length;
+      gatesStr = met + '/' + required.length;
+    }
   }
   const pct = heartbeat && Number.isFinite(heartbeat.progress_pct) ? heartbeat.progress_pct : null;
   if (gatesStr && pct !== null) return gatesStr + ' (' + pct + '%)';
@@ -462,7 +519,7 @@ function riskMarker(r) {
 // row never silently vanishes behind a bare count.
 function buildWorkspaceTable(rows, now, capped, hidden, hiddenRows, archivedHidden) {
   const lines = [
-    'DEVSWARM WORKSPACES (refreshed every turn):',
+    'DEVSWARM WORKSPACES (re-sent on change, else every 10 turns):',
     '| workspace | status | finish | unread | last |',
     '|---|---|---|---|---|',
   ];
@@ -1138,7 +1195,7 @@ function main() {
   let repokeyMod = null;
   try { repokeyMod = require('../companion/lib/devswarm-repokey.js'); } catch (_) { repokeyMod = null; }
   let repoKey = null;
-  try { repoKey = (repokeyMod && gitTop) ? repokeyMod.repoKeyForWorktree(gitTop) : null; } catch (_) { repoKey = null; }
+  try { repoKey = (repokeyMod && gitTop) ? repokeyMod.repoKeyForWorktree(gitTop) : null; } catch (e) { logSegmentError(home, 'repokey', e); repoKey = null; }
 
   // appArchivedCache() — the supervisor-written ACTIVE-set snapshot, read ONCE
   // per invocation and reused for every table row. Freshness is enforced inside
@@ -1230,7 +1287,7 @@ function main() {
   // descriptor (the pre-mesh code double-read/mis-keyed under mesh, since every
   // caller now shares hash=repoKey — Opus-auditor P1).
   let summary = null;
-  try { summary = repoKey ? readSummary(home, repoKey) : null; } catch (_) { summary = null; }
+  try { summary = repoKey ? readSummary(home, repoKey) : null; } catch (e) { logSegmentError(home, 'summary-read', e); summary = null; }
   const summaryWorkspaces = (summary && summary.workspaces && typeof summary.workspaces === 'object')
     ? summary.workspaces : {};
 
@@ -1482,7 +1539,7 @@ function main() {
         noUpstream: !!(entry && entry.noUpstream === true),
         mergedVerified: entry ? entry.mergedVerified : undefined,
       });
-    } catch (_) {}
+    } catch (e) { logSegmentError(home, 'table-row', e); }
   }
 
   // --- Primary's OWN inbound unread (#34) ---
@@ -1722,6 +1779,8 @@ function main() {
   // FIRST, ahead of even the staleness banner, so it survives any future segment
   // reordering/truncation as the highest-priority line.
   const segments = [OVERRIDE_REASSERT];
+  const sessionId = (payload && typeof payload.session_id === 'string' && payload.session_id) ? payload.session_id : null;
+  const transcriptPath = (payload && typeof payload.transcript_path === 'string') ? payload.transcript_path : null;
 
   // Daemon-freshness staleness banner, when present, is injected next — above
   // the table AND independent of rows.length (the legacy-fallback back-compat
@@ -1750,8 +1809,15 @@ function main() {
     const evicted = capped ? activeRows.slice(maxRows) : [];
     if (capped) logTableCap(home, activeRows.length, shown.length);
     if (shown.length || archivedHidden) {
-      segments.push(buildWorkspaceTable(shown, now, capped, activeRows.length - shown.length, evicted, archivedHidden));
-      segments.push(TITLE_INSTRUCTION);
+      // D3: on-change dedupe (lib/emit-dedupe.js rule b) — re-emitted only when
+      // the table changed beyond relative ages, or as a keepalive every
+      // 10 unchanged DELIVERED turns. Fail-open: emit.
+      const table = buildWorkspaceTable(shown, now, capped, activeRows.length - shown.length, evicted, archivedHidden);
+      if (dedupeEmit(home, sessionId, 'parent-inbox-table', table,
+        { transcriptPath, keepaliveTurns: 10, normalize: normalizeTableAges })) {
+        segments.push(table);
+        segments.push(TITLE_INSTRUCTION);
+      }
     }
   }
 
@@ -1763,9 +1829,11 @@ function main() {
   try {
     if (summary && Array.isArray(summary.orphans) && summary.orphans.length) {
       const seg = buildOrphansSegment(summary.orphans);
-      if (seg) segments.push(seg);
+      // D3: on-change dedupe (rule b) — the banner used to repeat unchanged
+      // every turn (no persisted cooldown state).
+      if (seg && dedupeEmit(home, sessionId, 'parent-inbox-orphans', seg, { transcriptPath, keepaliveTurns: 10 })) segments.push(seg);
     }
-  } catch (_) {}
+  } catch (e) { logSegmentError(home, 'orphans', e); }
   try {
     if (summary && Array.isArray(summary.staleRegistryPartitions) && summary.staleRegistryPartitions.length) {
       // FIX (defect a9ac2fc7e368): computeSummary's staleRegistryPartitions[]
@@ -1797,7 +1865,7 @@ function main() {
         if (seg) segments.push(seg);
       }
     }
-  } catch (_) {}
+  } catch (e) { logSegmentError(home, 'stale-registry', e); }
 
   // Broadcast/roster feed (D3/D4/D22/D23/D27, Phase 8 step 2) — the shared
   // summary's top-level `recent[]` (plain broadcasts + heartbeats alike, D22),
@@ -1835,7 +1903,14 @@ function main() {
     const urgentList = attention.filter((w) => tierOf(w) === 'urgent');
     const normalList = attention.filter((w) => tierOf(w) === 'normal');
     if (urgentList.length) segments.push(buildUrgentUnreadSegment(urgentList, home));
-    if (normalList.length) segments.push(buildUnreadSegment(normalList, home));
+    if (normalList.length) {
+      // Burst collapse only (rule a, no on-change): a changed unread set always
+      // hashes differently and is emitted.
+      const inboxSeg = buildUnreadSegment(normalList, home);
+      if (dedupeEmit(home, sessionId, 'parent-inbox-nudge', inboxSeg, { transcriptPath, normalize: normalizeInboxVolatile })) {
+        segments.push(inboxSeg);
+      }
+    }
     // Acceptance telemetry only when there is genuine unread backlog (not merely a
     // sticky escalated verdict with an empty inbox).
     const totalUnread = attention.reduce((s, w) => s + w.unread, 0);
@@ -1882,4 +1957,6 @@ module.exports = {
   rosterHideArchived, rosterMaxRows, buildWorkspaceTable,
   truncateBroadcastBody, broadcastMaxAgeMs, broadcastKey,
   broadcastSeenPath, visibleBroadcastRows, buildBroadcastSegment,
+  // emit-dedupe normalizers + segment builders (tests/hooks/emit-dedupe.test.js):
+  normalizeTableAges, normalizeInboxVolatile, buildUnreadSegment, buildOrphansSegment, logSegmentError,
 };

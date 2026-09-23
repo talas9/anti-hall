@@ -836,17 +836,22 @@ reminder), and `migrate`. `command-guard` carries a root-anchored `LIGHT_EXCEPTI
      the pull (nudged each turn), so a parent→child message is seen at most one child turn late,
      not instantly. There is no background child drainer (a child cannot host the blocking
      `monitor` daemon on its turn thread, and `monitor` is guard-blocked).
-- **Live active-workspace table (`devswarm-parent-inbox`).** Every Primary turn now
+- **Live active-workspace table (`devswarm-parent-inbox`).** The Primary
   gets a compact markdown table of active workspaces (not just the unread/stale
   subset): columns workspace / status (`escalated` > `stale`/`nudged` > `archive-ready`
   > `active`, attention-needing rows sorted first, ties by unread desc then id) /
   finishing rate (required completion gates met/total from `summary.json`'s
-  `requiredGates`, with an optional heartbeat `progress_pct` appended when present) /
-  unread count / last-activity (relative age, from the newer of the liveness verdict's
+  `requiredGates`, with an optional heartbeat `progress_pct` appended when present;
+  **v0.103.0:** renders `—`, not `0/N`, when no gate has EVER been set for that
+  workspace — only the manual `devswarm.js gate` verb writes a gate row, so an
+  untouched workspace has no rows at all, not a row of falses) / unread count /
+  last-activity (relative age, from the newer of the liveness verdict's
   `lastOutboundTs` and the heartbeat's `ts`). Capped at 12 rows with a logged (never
   silent) `+N more`; empty output when there are no active workspaces; read-only,
   fail-open, and — like the rest of the parent hooks — makes zero git calls or
-  `computeLiveness()` invocations on the hot UserPromptSubmit path. **v0.70.1:** the
+  `computeLiveness()` invocations on the hot UserPromptSubmit path. **v0.103.0:**
+  re-sent only on change or every 10 delivered turns (`hooks/lib/emit-dedupe.js`),
+  not on every turn — see the emit-dedupe entry in `README.md`/`llms.txt`. **v0.70.1:** the
   ladder gained a `dormant` tier that sorts last, below even `active` — a mesh/registry
   row outlives its workspace (closing one in the DevSwarm app deletes nothing), and only
   heartbeat/verdict age reliably separated a live workspace from a closed one across

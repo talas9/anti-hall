@@ -369,9 +369,10 @@ test('MULTI-WORKSPACE: two workspaces in ONE shared summary each render independ
     // marker's exact wording (covered by its own dedicated test below, "RISK
     // MARKERS").
     assert.ok(/\|\s*wsAlpha[^|]*\|\s*archive-ready\s*\|\s*1\/1\s*\|/.test(tableRow(c, 'wsAlpha')), `wsAlpha row; row=${tableRow(c, 'wsAlpha')}`);
-    // wsBeta: escalated + 0/1 gates, per ITS OWN entry — not wsAlpha's
-    // archive-ready status leaking over, and not silently null (the bug).
-    assert.ok(/\|\s*wsBeta\s*\|\s*escalated\s*\|\s*0\/1\s*\|/.test(tableRow(c, 'wsBeta')), `wsBeta row; row=${tableRow(c, 'wsBeta')}`);
+    // wsBeta: escalated + no gate ever set (gates: {}) -> "—", per ITS OWN
+    // entry — not wsAlpha's archive-ready status leaking over, and not
+    // silently null (the bug).
+    assert.ok(/\|\s*wsBeta\s*\|\s*escalated\s*\|\s*—\s*\|/.test(tableRow(c, 'wsBeta')), `wsBeta row; row=${tableRow(c, 'wsBeta')}`);
   } finally { h.cleanup(); }
 });
 
@@ -395,8 +396,8 @@ test('TABLE: renders correct rows/columns for varied status + gates + unread, so
     const t = tableSeg(c);
     assert.ok(t.includes('| workspace | status | finish | unread | last |'), `header row expected; t=${t}`);
     // Column values
-    // required gates declared but none met for wsStale -> 0/2 (not "—").
-    assert.ok(/\|\s*wsStale\s*\|\s*stale\s*\|\s*0\/2\s*\|\s*3\s*\|/.test(tableRow(c, 'wsStale')), `wsStale row; row=${tableRow(c, 'wsStale')}`);
+    // required gates declared but no gate ever set for wsStale (gates: {}) -> "—".
+    assert.ok(/\|\s*wsStale\s*\|\s*stale\s*\|\s*—\s*\|\s*3\s*\|/.test(tableRow(c, 'wsStale')), `wsStale row; row=${tableRow(c, 'wsStale')}`);
     // wsDone's `merged` gate is never set here -> "merged (unverified)" title
     // suffix (see the wsAlpha comment above); matched via [^|]*.
     assert.ok(/\|\s*wsDone[^|]*\|\s*archive-ready\s*\|\s*2\/2\s*\|\s*0\s*\|/.test(tableRow(c, 'wsDone')), `wsDone row; row=${tableRow(c, 'wsDone')}`);
@@ -408,6 +409,27 @@ test('TABLE: renders correct rows/columns for varied status + gates + unread, so
     const iDone = body.findIndex((l) => l.startsWith('| wsDone '));
     const iQuiet = body.findIndex((l) => l.startsWith('| wsQuiet '));
     assert.ok(iStale < iDone && iDone < iQuiet, `attention-first sort; order stale<done<quiet; body=${JSON.stringify(body)}`);
+  } finally { h.cleanup(); }
+});
+
+test('TABLE: finish column renders "—" (not "0/N") when no gate has ever been set, unchanged once a gate is set', () => {
+  const h = makeHome();
+  try {
+    writeSharedSummary(h.home, {
+      // gates entirely absent (only the manual `devswarm.js gate` verb ever
+      // writes a gate row, so an untouched workspace has no field at all).
+      wsNoGatesField: { total: 0, cursor: 0, unread: 0, directUnread: 0, archive_ready: false },
+      // gates present but empty — same "never touched" signal as absent.
+      wsEmptyGates: { total: 0, cursor: 0, unread: 0, directUnread: 0, gates: {}, archive_ready: false },
+      // one gate set -> ratio renders as usual, not "—".
+      wsOneGateSet: { total: 0, cursor: 0, unread: 0, directUnread: 0, gates: { tests: false }, archive_ready: false },
+    }, { requiredGates: ['tests', 'review'] });
+    const r = testHook(HOOK, withCwd(payload), { home: h.home, env: PRIMARY_ENV, expectJson: true });
+    assert.strictEqual(r.status, 0);
+    const c = ctx(r);
+    assert.ok(/\|\s*wsNoGatesField\s*\|\s*active\s*\|\s*—\s*\|/.test(tableRow(c, 'wsNoGatesField')), `wsNoGatesField row; row=${tableRow(c, 'wsNoGatesField')}`);
+    assert.ok(/\|\s*wsEmptyGates\s*\|\s*active\s*\|\s*—\s*\|/.test(tableRow(c, 'wsEmptyGates')), `wsEmptyGates row; row=${tableRow(c, 'wsEmptyGates')}`);
+    assert.ok(/\|\s*wsOneGateSet\s*\|\s*active\s*\|\s*0\/2\s*\|/.test(tableRow(c, 'wsOneGateSet')), `wsOneGateSet row (unchanged once a gate is set); row=${tableRow(c, 'wsOneGateSet')}`);
   } finally { h.cleanup(); }
 });
 
@@ -2113,7 +2135,7 @@ test('ORPHANS+STALE: clean summary (neither field present) -> BYTE-IDENTICAL to 
       OVERRIDE_REASSERT,
       // Header text changed: "live" was actively misleading once a dormant
       // (likely-closed) row can appear in this same table.
-      'DEVSWARM WORKSPACES (refreshed every turn):\n'
+      'DEVSWARM WORKSPACES (re-sent on change, else every 10 turns):\n'
         + '| workspace | status | finish | unread | last |\n'
         + '|---|---|---|---|---|\n'
         + '| wsA | active | — | 2 | — |',

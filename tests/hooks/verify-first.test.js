@@ -9,6 +9,10 @@ const { testHook, testHookRaw } = require('../helpers/spawn-hook.js');
 const { makeHome } = require('../helpers/fixtures.js');
 
 const HOOK = 'verify-first.js';
+// Back-to-back same-session runs are a queued-prompt burst that lib/emit-dedupe.js
+// deliberately collapses (covered in emit-dedupe.test.js); tests of the facet
+// selection itself disable it.
+const NO_DEDUPE = { ANTIHALL_EMIT_DEDUPE: '0' };
 
 function payload() {
   return { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'do a thing', cwd: '/tmp/x' };
@@ -34,8 +38,8 @@ test('deterministic: same full envelope -> same nudge', () => {
   try {
     // Identical raw stdin both times => identical SHA-1 => identical nudge index.
     const raw = JSON.stringify(payload());
-    const r1 = testHookRaw(HOOK, raw, { home: h.home });
-    const r2 = testHookRaw(HOOK, raw, { home: h.home });
+    const r1 = testHookRaw(HOOK, raw, { home: h.home, env: NO_DEDUPE });
+    const r2 = testHookRaw(HOOK, raw, { home: h.home, env: NO_DEDUPE });
     assert.strictEqual(ctx(r1), ctx(r2));
     assert.ok(ctx(r1).startsWith('VERIFY-FIRST:'));
   } finally {
@@ -210,9 +214,9 @@ test('DEVSWARM CHILD + NON-DEVSWARM: nudge is BYTE-FOR-BYTE unchanged (regressio
   const h = makeHome();
   try {
     const raw = JSON.stringify(payload());
-    const plain = ctx(testHookRaw(HOOK, raw, { home: h.home }));
-    const child = ctx(testHookRaw(HOOK, raw, { home: h.home, env: CHILD_ENV }));
-    const primary = ctx(testHookRaw(HOOK, raw, { home: h.home, env: PRIMARY_ENV }));
+    const plain = ctx(testHookRaw(HOOK, raw, { home: h.home, env: NO_DEDUPE }));
+    const child = ctx(testHookRaw(HOOK, raw, { home: h.home, env: { ...CHILD_ENV, ...NO_DEDUPE } }));
+    const primary = ctx(testHookRaw(HOOK, raw, { home: h.home, env: { ...PRIMARY_ENV, ...NO_DEDUPE } }));
     assert.ok(plain.length > 0);
     assert.strictEqual(child, plain, 'a DevSwarm CHILD must get the byte-identical baseline nudge');
     assert.ok(!plain.includes('devswarm.js spawn'), 'baseline nudge must not name devswarm.js spawn');

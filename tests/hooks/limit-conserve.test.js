@@ -366,7 +366,7 @@ test('INJECTOR DOWNSHIFT: conserving -> directive contains MAIN-MODEL DOWNSHIFT'
   } finally { h.cleanup(); }
 });
 
-test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet and gpt-5.6-terra', () => {
+test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet and the workhorse category', () => {
   const h = makeHome();
   try {
     writeCacheFile(h.home, makeCache({ fiveHour: 90 }));
@@ -374,18 +374,18 @@ test('INJECTOR DOWNSHIFT: conserving -> directive names Sonnet and gpt-5.6-terra
     assert.strictEqual(r.status, 0);
     const ctx = additionalContext(r);
     assert.ok(ctx.includes('Sonnet'), `Sonnet missing from downshift directive; got: ${ctx}`);
-    assert.ok(ctx.includes('gpt-5.6-terra'), `gpt-5.6-terra missing from downshift directive; got: ${ctx}`);
+    assert.ok(ctx.includes('workhorse'), `workhorse category missing from downshift directive; got: ${ctx}`);
   } finally { h.cleanup(); }
 });
 
-test('INJECTOR DOWNSHIFT: conserving -> warns against sub-1M model (gpt-5.4-mini)', () => {
+test('INJECTOR DOWNSHIFT: conserving -> warns against a smaller-context (sub-1M) model', () => {
   const h = makeHome();
   try {
     writeCacheFile(h.home, makeCache({ weekly: 90 }));
     const r = testHook(INJECT_HOOK, promptPayload(), { home: h.home, expectJson: true });
     assert.strictEqual(r.status, 0);
     const ctx = additionalContext(r);
-    assert.ok(ctx.includes('gpt-5.4-mini'), `sub-1M warning missing; got: ${ctx}`);
+    assert.ok(ctx.includes('fast'), `sub-1M / fast-category warning missing; got: ${ctx}`);
     assert.ok(/NEVER/i.test(ctx), 'NEVER guard missing from downshift directive');
   } finally { h.cleanup(); }
 });

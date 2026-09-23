@@ -933,9 +933,22 @@ function main() {
   // durable descriptor inbox actually has unread parent message(s) (empty-when-zero).
   const segments = [];
   if (staleBanner) segments.push(staleBanner);
-  segments.push(OVERRIDE_REASSERT, SELF_CONTINUE,
+  // The fixed per-turn block (COMMS OVERRIDE + SELF_CONTINUE + REMINDER +
+  // RECEIVE_NUDGE) is burst-collapsed (lib/emit-dedupe.js rule a): Claude Code
+  // runs this hook once PER queued prompt and delivers them in ONE turn, so it
+  // used to repeat N times in that turn. Dynamic segments below are untouched.
+  // Fail-open: any error -> emit.
+  const staticBlock = [OVERRIDE_REASSERT, SELF_CONTINUE,
     substituteId(REMINDER, env.DEVSWARM_BUILDER_ID),
-    substituteId(RECEIVE_NUDGE, env.DEVSWARM_BUILDER_ID));
+    substituteId(RECEIVE_NUDGE, env.DEVSWARM_BUILDER_ID)];
+  let emitStatic = true;
+  try {
+    emitStatic = require('./lib/emit-dedupe.js').shouldEmit({
+      home, sessionId: payload.session_id, transcriptPath: payload.transcript_path,
+      key: 'child-turn-static', content: staticBlock.join('\n\n'),
+    });
+  } catch (_) { emitStatic = true; }
+  if (emitStatic) segments.push(...staticBlock);
   if (meshDirectSegment) segments.push(meshDirectSegment);
   const info = unreadInfo(env, home);
   let archiveSegmentPushed = false;
@@ -953,6 +966,7 @@ function main() {
     segments.push(buildArchiveRequestSegment(archiveRequestedId));
   }
 
+  if (!segments.length) return;
   const out = {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',

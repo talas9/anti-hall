@@ -13,8 +13,12 @@ Every behavioral or shipped-content change bumps the version and follows this ch
    - [ ] relevant `docs/*.md` (and `docs/KB.md` topic map).
 4. - [ ] Verify: `node --test` (all pass) and `node plugins/anti-hall/hooks/doctor.js --check` (anti-hall ACTIVE). Never claim done without these THIS change.
 5. - [ ] Commit (NO AI-credit / Co-Authored-By trailer — git-guard blocks them).
-6. - [ ] `git push origin main`.
-7. - [ ] Wait for the main-branch CI run at the pushed sha to go green before tagging. TAG (manual, by agent) only after that: `git tag v<version>` then `git push origin v<version>`. Optionally create a GitHub Release from the tag with that version's CHANGELOG section.
+6. - [ ] **CI gate BEFORE main moves.** Pushing `main` IS a release: the marketplace clone fetches only `refs/heads/main` and fast-forwards it, and the updater copies a version into the plugin cache only when that version's directory is absent — so a red commit on `main` gets installed and cannot be replaced under the same version number (0.102.2 shipped red this way). Instead, push a candidate tag first — `test.yml` runs on every push, tags included, and the marketplace never fetches tags:
+   - `git tag rc-v<version>` then `git push origin rc-v<version>`
+   - `gh run list --commit <sha>` → wait for the run at that sha to finish; `gh run view <id> --json jobs` → all 4 matrix jobs `success`.
+   - Red → fix, amend the LOCAL commit (it was never on `main`), tag it `rc-v<version>.2`, and repeat. Never move `main` on a red run.
+   - The `rc-v*` tags stay in place (cheap audit markers; removing one is a deletion and needs the owner).
+7. - [ ] Only after the candidate run is green: `git push origin main`, then TAG (manual, by agent): `git tag v<version>` then `git push origin v<version>`. Create a GitHub Release from the tag with that version's CHANGELOG section.
 8. - [ ] Propagate to the live marketplace dir only (`~/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/`); do NOT overwrite version-pinned `cache/.../<ver>/` snapshots.
 9. - [ ] Consider publish venues (see below) for notable releases.
 

@@ -6,6 +6,52 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.103.0 (2026-09-23)
+
+- **Fixed: UserPromptSubmit context repeated up to 27× in one delivered turn.** Claude Code
+  runs the UserPromptSubmit hook once per QUEUED prompt — hooks fire at queue time, not at
+  delivery — and then delivers the queued prompts together, so every hook's identical block
+  repeated N times in one turn. Measured on a field transcript: bursts span a median 26s / max
+  137s (too wide for a fixed time window to collapse), 12.8M chars injected total, and the
+  worst single turn carried 93,220 chars with the DevSwarm workspaces table repeated 11 times.
+  Fix (`hooks/lib/emit-dedupe.js`): a block is suppressed while its previous copy is still
+  undelivered, checked against the transcript itself (a UPS `hook_additional_context`
+  attachment matching the emitted content by sha1, never by prefix) — not against a timer. State
+  resets on every SessionStart source (startup/resume/`/clear`/compaction, via the new
+  `emit-dedupe-reset.js` hook) so a genuine context loss re-sends everything the fresh context
+  no longer holds. The unchanging parts (the DevSwarm workspaces table, the orphaned-mesh
+  banner) are additionally re-sent only on change (volatile ages like "3m ago" are ignored) or
+  every 10 delivered turns, whichever comes first — heartbeat staleness alone no longer forces a
+  re-send. Fail-open: any error in the dedupe path emits, same as before. Kill switch:
+  `ANTIHALL_EMIT_DEDUPE=0`. As a side effect of instrumenting this, segment-read errors in
+  `devswarm-parent-inbox.js` are now logged to `~/.anti-hall/logs/parent-inbox-segment-errors.ndjson`
+  — the orphan banner was observed to vanish for one turn during the investigation and the cause
+  is not yet known; this gives it a place to leave evidence next time.
+
+- **Changed: Codex models are no longer pinned.** `gpt-5.4`, `gpt-5.4-mini`, and
+  `gpt-5.3-codex(-spark)` were silently removed from Codex's own model catalog and now return
+  400 on use — every anti-hall Codex routing reference to those slugs went dead at once,
+  including the default "cheap seat" named across 23 shipped and doc files. Routing is now by
+  category — **frontier** / **workhorse** / **fast** — resolved at call time from Codex's own
+  live catalog (`~/.codex/models_cache.json`, matched on description text and `priority`,
+  never a hardcoded slug map: `plugins/anti-hall/companion/lib/codex-models.js`). When a
+  category cannot be resolved (missing cache, no match), the caller omits `-m` entirely and
+  Codex falls back to its own configured default rather than failing. `deadly-loop`/`ship-it`'s
+  Critic seat also now accepts `args.codexCriticModel` to override the resolved model per call.
+
+- **Changed: the DevSwarm roster's `finish` column showed `0/3` for every workspace that had
+  never had a gate set, not just the ones genuinely at zero.** Only the manual `devswarm.js
+  gate` verb ever writes a gate row; an untouched workspace has an empty gate map, which is a
+  different state from "every required gate checked and failing." `finishingRate()`
+  (`hooks/devswarm-parent-inbox.js`) now renders `—` when the gate map is empty/absent for that
+  workspace, and the real ratio once any gate has ever been set — unchanged from before in that
+  case.
+
+- **Process:** `RELEASING.md` — a release commit must now pass CI on an `rc-v<version>` tag
+  before it moves onto `main`. The marketplace fast-forwards `main` on every push, so a red
+  main commit is installed immediately; 0.102.2 shipped exactly that way (see the 0.102.3
+  entry below).
+
 ## 0.102.3 (2026-09-23)
 
 **0.102.2 was pushed to `main` but failed CI and was never tagged.** Because the marketplace

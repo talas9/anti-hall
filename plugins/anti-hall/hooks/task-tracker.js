@@ -466,6 +466,25 @@ try {
     if (isDevswarmPrimary(process.env)) text = text + ' ' + DEVSWARM_PRIMARY;
   }
 
+  // Queued-prompt burst collapse (lib/emit-dedupe.js rule a): one copy per
+  // delivery instead of one per queued prompt. FULL subsumes SHORT for hashing, so
+  // SHORT copies after a FULL in the same burst are suppressed; a FULL itself is
+  // never suppressed (pickMessage already recorded it as delivered) — it is
+  // recorded unconditionally instead. Fail-open: any error -> emit.
+  let emit = true;
+  if (text) {
+    try {
+      const dedupe = require('./lib/emit-dedupe.js');
+      const opts = {
+        home: os.homedir(), sessionId: payload && payload.session_id,
+        transcriptPath: payload && payload.transcript_path, key: 'task-tracker',
+        content: text, normalize: (t) => t.split(FULL).join(SHORT),
+      };
+      if (text.startsWith(FULL)) dedupe.record(opts);
+      else emit = dedupe.shouldEmit(opts);
+    } catch (_) { emit = true; }
+  }
+
   // Official schema: `hookEventName` is NESTED in `hookSpecificOutput`, not a
   // top-level sibling. KB §1.4 specifies `hookSpecificOutput.additionalContext`
   // for UserPromptSubmit; nesting here is correct per the harness contract.
@@ -475,7 +494,7 @@ try {
       additionalContext: text,
     },
   };
-  process.stdout.write(JSON.stringify(out) + '\n');
+  if (emit) process.stdout.write(JSON.stringify(out) + '\n');
 } catch (_) {
   // Fail-open.
 }

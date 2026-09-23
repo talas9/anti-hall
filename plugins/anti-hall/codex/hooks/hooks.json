@@ -48,6 +48,11 @@
       },
       {
         "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/emit-dedupe-reset.js\"", "timeout": 10 }
+        ]
+      },
+      {
+        "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/defect-nudge.js\"", "timeout": 10 }
         ]
       }

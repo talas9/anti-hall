@@ -20,9 +20,9 @@ Round structure:
 1. Snapshot branch/SHA and changed files.
 2. Create or update `docs/<date>-<topic>-session-handoff.md` with current state.
 3. Run three independent review lenses:
-   - Reviewer: correctness/architecture, `gpt-5.6-sol`
-   - Auditor: regression/coupling, `gpt-5.6-sol`
-   - Critic: adversarial failure-mode hunter, `gpt-5.6-sol`
+   - Reviewer: correctness/architecture, **frontier** category
+   - Auditor: regression/coupling, **frontier** category
+   - Critic: adversarial failure-mode hunter, **frontier** category
 4. Synthesize findings by evidence, not by vote alone.
 5. Fix confirmed P0/P1 issues in scoped waves.
 6. Re-run the full three-lens round after any code change.
@@ -45,11 +45,11 @@ Each review must cite file/line evidence and distinguish:
 - `RESOLVED`: previous issue fixed with evidence
 - `REFUTED`: reported issue disproven with evidence
 
-Codex model rule: debate and validation seats use `gpt-5.6-sol`. Do not use mini models for debate roles.
+Codex model rule: debate and validation seats use the **frontier** category. Do not use the **fast** category for debate roles.
 
 ## Same-model disclosure
 
-This roster is three `gpt-5.6-sol` seats — same-model, not the canonical
+This roster is three **frontier**-category seats — same-model, not the canonical
 cross-model TRIO. `MODEL-POLICY.md`'s availability fallback matrix (Claude
 side) lists 3-of-one-family as the explicit **worst-case last-resort** row,
 with the stated reason "same-model agents share systematic blind spots":
@@ -57,9 +57,9 @@ with the stated reason "same-model agents share systematic blind spots":
 | Roster | Status |
 | --- | --- |
 | Claude-side TRIO (Fable-or-Sonnet Reviewer + Opus Auditor + Codex Critic) | intended default |
-| This Codex-native roster (3× `gpt-5.6-sol`) | degraded / last-resort — Codex has no Workflow runtime to fan a round out across model families on its own |
+| This Codex-native roster (3× **frontier** category) | degraded / last-resort — Codex has no Workflow runtime to fan a round out across model families on its own |
 
-Treat this file's all-`gpt-5.6-sol` roster as the Codex-only floor, not the goal.
+Treat this file's all-**frontier**-category roster as the Codex-only floor, not the goal.
 For L-tier hard-risk work, use the opt-in escalation below to recover one
 cross-model seat.
 
@@ -74,5 +74,5 @@ to get a genuinely different model's perspective:
 | --- | --- |
 | Requirement | `claude` CLI installed and on `PATH` (`command -v claude` / `where claude`) |
 | Invocation | `claude -p "<REVIEWER_PROMPT>"` — one-shot, non-interactive (`-p`/`--print`) |
-| Scope | ONE seat only (Reviewer recommended); Auditor and Critic stay on `gpt-5.6-sol` |
-| Requirement level | OPT-IN, not a hard requirement — if `claude` is unavailable, stay on the plain 3×`gpt-5.6-sol` roster and note the degradation |
+| Scope | ONE seat only (Reviewer recommended); Auditor and Critic stay on the **frontier** category |
+| Requirement level | OPT-IN, not a hard requirement — if `claude` is unavailable, stay on the plain 3×**frontier**-category roster and note the degradation |

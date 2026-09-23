@@ -33,7 +33,7 @@ This governs the MAIN agent's everyday model choices (distinct from the TRIO deb
 2. **Codex is the primary implementer** (conserves the Claude usage bucket). Fail over to Sonnet at effort `high` when Codex is unavailable or rate-limited — never retry-loop. Back off: wait for the reset/`retry-after` time Codex reports, or a backoff window if none is given.
 3. **NEVER run Sonnet at effort `max` inside loops.** Sonnet TTFT at `max` is ~163 s and is cost-prohibitive at loop scale. The ceiling inside any loop is `xhigh`.
 4. **The `sonnet` tier token resolves to the latest Sonnet** at runtime. Everywhere this policy says `sonnet`, it means the current Sonnet.
-5. **Watch context size before routing to Codex.** gpt-5.6-terra/gpt-5.6-sol (Codex's implementer models) incur a confirmed 2× input / 1.5× output cost premium once a request exceeds ~272K input tokens — Claude has no equivalent premium up to its 1M window. For large-context implementation tasks (roughly >200K input tokens fed to Codex — a big repo dump, a huge diff), prefer Sonnet over Codex, or scope the context down first. See `docs/KB-token-usage-models.md` §2/§7.
+5. **Watch context size before routing to Codex.** Codex's implementer models (the **workhorse**/**frontier** categories, resolved live — never a pinned slug) may incur a confirmed cost premium (verified ~2× input / 1.5× output) once a request exceeds a large input-token threshold — Claude has no equivalent premium up to its 1M window. For large-context implementation tasks (roughly >200K input tokens fed to Codex — a big repo dump, a huge diff), prefer Sonnet over Codex, or scope the context down first. See `docs/KB-token-usage-models.md` §2/§7 and `anti-hall-model-policy` for category resolution.
 
 ---
 
@@ -56,7 +56,7 @@ is Opus — never a weaker/cheaper model.
 |---|---|---|---|
 | **Reviewer** | Sonnet (`model: "sonnet"`) | `xhigh` (→ `high`; never `max` in loops) | correctness / architecture auditor |
 | **Auditor** | Opus (`model: "opus"`) | `high` | divergent: regression & coupling hunter |
-| **Critic** | Codex pinned to `gpt-5.6-sol` (`codex:codex-rescue`; model pinned via the brief prefix, not the spawn's `model:` option) — unless Codex implemented the diff, then Opus/Sonnet | `xhigh` reasoning (→ `high`) | adversarial failure-mode hunter |
+| **Critic** | Codex pinned to the **frontier** category, resolved from the live catalog (`codex:codex-rescue`; model resolved+pinned via the brief prefix, not the spawn's `model:` option) — unless Codex implemented the diff, then Opus/Sonnet | `xhigh` reasoning (→ `high`) | adversarial failure-mode hunter |
 
 *Fable routing is RE-ENABLED (2026-07-12, owner call): the earlier policy-disable
 (2026-07-02, reported over-restrictive/refusal-prone by the community) is reversed now that
@@ -111,13 +111,16 @@ All three are dispatched **in the SAME message** so they run truly in parallel.
 
 ### Critic — adversarial failure-mode hunter
 
-- **Preferred model:** OpenAI Codex **pinned to `gpt-5.6-sol`** (the flagship
-  reasoning model), at MAXIMUM reasoning effort — **when available** (see
-  availability check below). Spawn it via the canonical Codex form below (Agent
-  tool `agentType: "codex:codex-rescue"`), pinning the model through the brief
-  prefix `--fresh --model gpt-5.6-sol` — NOT through the spawn's `model:` option.
-  On codex CLI v0.143.0 the `-m` pin works but may emit "Model metadata not
-  found" (fallback metadata) per `docs/KB-gpt-5.6.md` — acceptable.
+- **Preferred model:** OpenAI Codex **pinned to the frontier category**,
+  resolved from the live model catalog (`anti-hall-model-policy`; never a
+  slug memorized in this doc), at MAXIMUM reasoning effort — **when
+  available** (see availability check below). Spawn it via the canonical
+  Codex form below (Agent tool `agentType: "codex:codex-rescue"`), pinning
+  the resolved model through the brief prefix `--fresh --model <resolved-
+  frontier-slug>` — NOT through the spawn's `model:` option. A resolved
+  model may run with fallback metadata (e.g. "Model metadata not found") on
+  an older codex CLI build — acceptable; do not fall back to a memorized
+  slug over this.
 - **Fallback model:** Opus at maximum thinking (`xhigh`),
   running a deliberately **divergent adversarial persona** — a "failure-mode
   hunter" instructed to find where the change BROKE something or HID a different
@@ -348,7 +351,7 @@ Agent({
   description: "Round N Critic (Codex, adversarial failure-mode hunter)",
   subagent_type: "codex:codex-rescue",
   run_in_background: true,
-  prompt: "--background --fresh --model gpt-5.6-sol <CRITIC_PROMPT: adversarial failure-mode hunt over the round delta>",
+  prompt: "--background --fresh --model <resolved-frontier-slug> <CRITIC_PROMPT: adversarial failure-mode hunt over the round delta>",
 })
 ```
 
@@ -356,17 +359,18 @@ Agent({
   `"codex:codex-rescue"` — this is what preserves the cross-model Codex critic;
   spawning a plain Claude agent here silently collapses the TRIO to the
   all-Claude fallback.
-- The brief is **prefixed `--background --fresh --model gpt-5.6-sol`** —
+- The brief is **prefixed `--background --fresh --model <resolved-frontier-slug>`** —
   `--fresh` avoids a Codex resume prompt (resume-avoidance per deadly-loop-multi);
-  `--background` keeps the main thread non-blocking; `--model gpt-5.6-sol` pins
-  the Critic seat to the flagship reasoning model.
+  `--background` keeps the main thread non-blocking; `--model <resolved-frontier-slug>`
+  pins the Critic seat to the flagship reasoning category, resolved from the
+  live catalog at call time (`anti-hall-model-policy` / `resolveCodexModel('frontier')`).
 - Do NOT add a `model: ...` OPTION to a `codex:codex-rescue` spawn (the Agent-tool
   `model:` field is for Claude tiers only). The Codex CRITIC seat IS deliberately
-  pinned — but to `gpt-5.6-sol` via the **brief prefix** `--fresh --model
-  gpt-5.6-sol` (which the Codex CLI reads), never via the spawn's `model:` option.
-  This is the ONE deliberately-pinned Codex seat; the Codex IMPLEMENTER seat
-  (ship-it `buildAgent`) stays UNPINNED so it picks its own backend
-  (`gpt-5.6-terra` by default).
+  pinned — but to the resolved **frontier**-category slug via the **brief prefix**
+  `--fresh --model <resolved-frontier-slug>` (which the Codex CLI reads), never
+  via the spawn's `model:` option. This is the ONE deliberately-pinned Codex
+  seat; the Codex IMPLEMENTER seat (ship-it `buildAgent`) stays UNPINNED so it
+  picks its own **workhorse**-category backend.
 
 **Inline alternative — the `codex:rescue` Skill** (handles runtime + result
 formatting; use when not fanning out via the Agent tool / Workflow):
@@ -380,16 +384,17 @@ Skill({ skill: "codex:rescue",
 reasoning:
 
 ```bash
-codex exec --model gpt-5.6-sol --config model_reasoning_effort=xhigh \
+codex exec --model <resolved-frontier-slug> --config model_reasoning_effort=xhigh \
   "<CRITIC_PROMPT: adversarial failure-mode hunt over the round delta>"
 ```
 
-(The Critic seat is pinned to `gpt-5.6-sol` (the flagship reasoning model) — the
-one deliberate Codex pin; do not swap it for a mini/compact variant for debate.
-Request the highest reasoning effort, but note `xhigh` is NOT available on every
-backend — some compact Codex variants have no `xhigh` and some Bedrock
-deployments cap at `high`. If the resolved model/backend rejects `xhigh`, fall
-back to `high`; never let an unsupported `xhigh` silently degrade the run.)
+(The Critic seat is pinned to the resolved **frontier**-category slug — the
+one deliberate Codex pin; do not swap it for a **fast**-category variant for
+debate. Request the highest reasoning effort, but note `xhigh` is NOT
+available on every backend — some compact Codex variants have no `xhigh` and
+some Bedrock deployments cap at `high`. If the resolved model/backend
+rejects `xhigh`, fall back to `high`; never let an unsupported `xhigh`
+silently degrade the run.)
 
 ---
 
@@ -489,13 +494,16 @@ fallback, not the preferred TRIO.
 "Latest" means the newest available model at runtime, not a hardcoded version:
 - Reviewer: Sonnet (`model: "sonnet"`, resolves to the latest Sonnet at runtime).
 - Auditor / Opus-fallback seats: newest Claude Opus available at runtime.
-- Codex Critic: **pinned to `gpt-5.6-sol`** (the flagship reasoning model) via the
-  brief prefix — the ONE deliberate Codex pin. The Codex IMPLEMENTER seat (ship-it
-  `buildAgent`) stays unpinned and picks its own backend (`gpt-5.6-terra`).
+- Codex Critic: **pinned to the resolved frontier-category slug** (re-resolved
+  from the live catalog at call time) via the brief prefix — the ONE
+  deliberate Codex pin. The Codex IMPLEMENTER seat (ship-it `buildAgent`)
+  stays unpinned and picks its own **workhorse**-category backend.
 
 Always prefer the newest model and treat the Claude tier tokens + version names in
 this doc as examples that will age, not as pins — with the ONE carved-out exception
-of the pinned `gpt-5.6-sol` Codex Critic seat above (a deliberate, current pin).
+of the pinned Codex Critic seat above, which is pinned to a CATEGORY
+(**frontier**) re-resolved from the live catalog each time, never to a
+hardcoded slug.
 
 ---
 

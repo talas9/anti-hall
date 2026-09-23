@@ -76,6 +76,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['claude-cli-version.js'], 10),
     group(null, ['repo-self-drift.js'], 10),
     group(null, ['handover-resume.js'], 10),
+    group(null, ['emit-dedupe-reset.js'], 10),
     group(null, ['defect-nudge.js'], 10),
   ],
   UserPromptSubmit: [

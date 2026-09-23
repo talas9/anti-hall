@@ -39,6 +39,14 @@
 //                            // PATH-only probe and this script has no filesystem access, so
 //                            // the coordinator must thread its result in here — same pattern
 //                            // as fableAvailable. Fail-open default: true (attempt Codex).
+//     codexCriticModel: "gpt-6-astra", // OPTIONAL. Resolved by the coordinator via
+//                            // companion/lib/codex-models.js's resolveCodexModel('frontier')
+//                            // (reads ~/.codex/models_cache.json — this script has no fs
+//                            // access, same threading reason as codexAvailable). Never a
+//                            // hardcoded slug — OpenAI renames/retires generations and a
+//                            // pinned name goes dead silently. If omitted/null, the -m flag
+//                            // is skipped entirely and the CLI uses its own configured
+//                            // default model (fail-open, not a fallback slug).
 //     parallelGroups: [
 //       // each group is a list of DISJOINT phases that run as one parallel barrier.
 //       // `files` is the EXACT list of paths the phase touches (used to PROVE the
@@ -287,13 +295,18 @@ async function criticAgent(p, opts) {
     });
   }
 
-  // Pin the Codex CRITIC seat to gpt-5.6-sol (verified change-spec). This is the ONLY
-  // codex critic call site — the opus-noselfreview Critic (skipCodex above), the
+  // Route the Codex CRITIC seat to plan.codexCriticModel (coordinator-resolved via
+  // resolveCodexModel('frontier') — see the args comment block above). This is the
+  // ONLY codex critic call site — the opus-noselfreview Critic (skipCodex above), the
   // opus-fallback Critic below, and the Codex implementer (buildAgent, which stays
-  // terra/unpinned) are all left untouched, so the sol pin never leaks onto an Opus or
-  // implementer seat. On codex CLI v0.143.0 the -m pin works but may emit "Model
-  // metadata not found" (fallback metadata) per docs/KB-gpt-5.6.md — acceptable.
-  const r = await agent('--fresh --model gpt-5.6-sol\n' + criticBrief(p), {
+  // unpinned) are all left untouched, so this never leaks onto an Opus or implementer
+  // seat. NEVER a hardcoded slug: if plan.codexCriticModel is missing/null, the -m
+  // flag is omitted entirely and the CLI falls back to its own configured default
+  // (fail-open — a stale pin silently 400s every renamed/retired generation).
+  const criticModel = typeof plan.codexCriticModel === 'string' && plan.codexCriticModel
+    ? '--fresh --model ' + plan.codexCriticModel + '\n'
+    : '--fresh\n';
+  const r = await agent(criticModel + criticBrief(p), {
     schema: VERDICT_SCHEMA, run_in_background: true,
     label: p.label + ':critic', agentType: 'codex:codex-rescue',
   });

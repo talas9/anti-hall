@@ -56,6 +56,14 @@
 //     respawnQuota: 1,                  // drift respawns allowed PER SEAT this round
 //     seats: [ ... ],                   // OPTIONAL formation override (verbatim); else derived
 //     codexAvailable: true,             // false => Codex critic becomes Opus adversarial persona
+//     codexCriticModel: "gpt-6-astra",  // OPTIONAL. Resolved by the coordinator via
+//                                        // companion/lib/codex-models.js's
+//                                        // resolveCodexModel('frontier') (reads
+//                                        // ~/.codex/models_cache.json — this script has
+//                                        // no fs access, same threading reason as
+//                                        // codexAvailable). Never a hardcoded slug. If
+//                                        // omitted/null, the -m flag is skipped and the
+//                                        // CLI uses its own configured default (fail-open).
 //     fableAvailable: true,             // true => Reviewer tries Fable before Sonnet
 //   }
 //   If `args` is undefined the workflow exits with a usage note (no guessing).
@@ -274,13 +282,18 @@ function investigateBrief(seat, a, packText, driftReason) {
 async function investigateAgent(seat, a, packText, driftReason, labelSuffix) {
   const label = seat.label + (labelSuffix || '');
   let brief = investigateBrief(seat, a, packText, driftReason);
-  // Pin the Codex CRITIC seat to gpt-5.6-sol (verified change-spec). ONLY the codex
-  // critic seat is pinned — the Opus-fallback seat ({model:'opus'}) is never touched,
-  // so the sol pin can never leak onto an Opus seat. On codex CLI v0.143.0 the -m pin
-  // works but may emit "Model metadata not found" (fallback metadata) per
-  // docs/KB-gpt-5.6.md — acceptable.
+  // Route the Codex CRITIC seat to a.codexCriticModel (coordinator-resolved via
+  // resolveCodexModel('frontier') — see the args comment block above). ONLY the codex
+  // critic seat is routed — the Opus-fallback seat ({model:'opus'}) is never touched,
+  // so this can never leak onto an Opus seat. NEVER a hardcoded slug: if
+  // a.codexCriticModel is missing/null, the -m flag is omitted and the CLI falls back
+  // to its own configured default (fail-open — a stale pin silently 400s every
+  // renamed/retired generation).
   if (seat.role === 'critic' && seat.opts && seat.opts.agentType === 'codex:codex-rescue') {
-    brief = '--fresh --model gpt-5.6-sol\n' + brief;
+    const criticModel = typeof a.codexCriticModel === 'string' && a.codexCriticModel
+      ? '--fresh --model ' + a.codexCriticModel + '\n'
+      : '--fresh\n';
+    brief = criticModel + brief;
   }
   const r = await agent(brief, {
     ...seat.opts, label, schema: VERDICT_SCHEMA,

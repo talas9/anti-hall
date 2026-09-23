@@ -115,10 +115,34 @@ function main() {
   // of `additionalContext`), not a top-level field. KB §1.4 documents
   // `hookSpecificOutput.additionalContext` for UserPromptSubmit context injection;
   // nesting `hookEventName` here matches the harness contract.
+  const additionalContext = 'VERIFY-FIRST: ' + nudge;
+
+  // Queued-prompt burst collapse (lib/emit-dedupe.js rule a): Claude Code runs
+  // this hook once PER queued prompt (at enqueue) and delivers them in ONE turn,
+  // so N queued prompts meant N VERIFY-FIRST lines in one turn. While the last
+  // copy is still undelivered (per the transcript) any VERIFY-FIRST counts as
+  // the same block (the rotating facet is normalized away — each queued
+  // prompt's envelope picks a different facet). Fail-open.
+  try {
+    let sessionId = null;
+    let transcriptPath = null;
+    try {
+      const pl = JSON.parse(input.toString('utf8'));
+      sessionId = pl.session_id || null;
+      transcriptPath = pl.transcript_path || null;
+    } catch (_) { sessionId = null; }
+    const isPrimary = nudge.endsWith(DEVSWARM_PRIMARY_NUDGE);
+    const emit = require('./lib/emit-dedupe.js').shouldEmit({
+      home: require('os').homedir(), sessionId, transcriptPath, key: 'verify-first', content: additionalContext,
+      normalize: () => (isPrimary ? 'VERIFY-FIRST+PRIMARY' : 'VERIFY-FIRST'),
+    });
+    if (!emit) return;
+  } catch (_) {}
+
   const out = {
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: 'VERIFY-FIRST: ' + nudge,
+      additionalContext,
     },
   };
 

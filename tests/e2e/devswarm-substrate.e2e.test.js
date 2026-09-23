@@ -682,7 +682,11 @@ test('9 ARCHIVE-READY: reminder is COOLDOWN\'d (not repeated next turn) but PERS
     // Turn 2 (immediately after): within cooldown -> the archive NUDGE banner is
     // suppressed (not every-turn spam). The live status table still lists wsA with
     // its factual archive-ready status — the cooldown gates the reminder, not the table.
-    const t2 = testHook('devswarm-parent-inbox.js', inboxPayload(), { home, env: PRIMARY_ENV, expectJson: true });
+    // (emit-dedupe disabled for this turn only: an unchanged WORKSPACES table is
+    // otherwise deliberately collapsed on the next same-session turn — covered
+    // in tests/hooks/emit-dedupe.test.js — and this test asserts the row.)
+    const t2 = testHook('devswarm-parent-inbox.js', inboxPayload(),
+      { home, env: { ...PRIMARY_ENV, ANTIHALL_EMIT_DEDUPE: '0' }, expectJson: true });
     assert.ok(!/DEVSWARM ARCHIVE-READY/.test(ctxOf(t2)), 'within cooldown the reminder is suppressed');
     // wsA's `merged` gate is set against a non-existent worktree
     // (`/wt/wsA`), so git ground-truth verification cannot resolve -> the
