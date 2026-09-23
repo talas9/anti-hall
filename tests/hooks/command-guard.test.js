@@ -44,6 +44,18 @@ const BLOCK = [
   // Look-alike prefix must NOT satisfy the anchored devswarm.js carve-out.
   'node evilscripts/devswarm.js',
   'node scripts/other.js',
+  // A heavy verb at command position must still block, including through
+  // transparent wrappers (taskpolicy, xargs-as-runner) and with the verb
+  // itself present only as prose text alongside a real invocation elsewhere.
+  'pytest -q',
+  'cd x && pytest',
+  'nice -n 19 firebase deploy --only functions',
+  'FOO=1 npm test',
+  'a | xargs pytest',
+  'taskpolicy -c utility nice -n 19 firebase deploy --only functions',
+  // (c) command SUBSTITUTION still executes even from inside double quotes —
+  // must stay flagged (not the same as inert quoted prose DATA).
+  'echo "$(pytest)"',
 ];
 
 const ALLOW = [
@@ -75,6 +87,31 @@ const ALLOW = [
   // coordinator context (its internal spawn is the non-destructive count-gate +
   // one bounded read-messages, never a blocking monitor).
   'node scripts/devswarm.js inbox pull x',
+  // Field report (seen twice): a heavy verb appearing only inside DATA (a
+  // heredoc message body, or a quoted printf/echo argument) must not be
+  // mistaken for a command at command position.
+  "cat > f <<'EOF'\nrun firebase deploy then pytest\nEOF",
+  "printf '%s\\n' 'firebase deploy' > f",
+  'echo "pytest later" > note.md',
+  'git commit -m "fix pytest flake"',
+  // (a) heavy words solely inside a quoted printf DATA argument.
+  "printf '%s' 'please run firebase deploy and pytest' > f",
+  // (b) heavy words solely inside a heredoc BODY (HEAVY_PATTERN text, not just
+  // a HEAVY_VERB) — proves the heavy-PATTERN check (npm run build, not just
+  // the verb check) also respects the heredoc-body skip, not only effectiveVerb.
+  "cat > f <<'EOF'\nnpm run build && pytest\nEOF",
+  // A real newline INSIDE a quoted string must not start a new segment — the
+  // quote tracker must stay in-quote across the line break, same as any other
+  // quoted char (verified: splitSegments handles '\n' inside inSingle/inDouble
+  // before the bare '\n' segment-split case is ever reached).
+  "printf 'Status update\nfirebase deploy is scheduled\n'",
+  'echo "notes:\npytest flaked twice" > f',
+  'git commit -m "fix\npytest isolation"',
+  // Heredoc delimiter forms other than the quoted/plain-word cases already
+  // covered above: UNQUOTED delimiter, and a quoted delimiter with a space
+  // before it (`<< "EOF"`) — both must still skip the body as DATA.
+  'cat > f <<EOF\nfirebase deploy --only functions\nEOF',
+  'cat > f << "EOF"\nfirebase deploy --only functions\nEOF',
 ];
 
 for (const cmd of BLOCK) {

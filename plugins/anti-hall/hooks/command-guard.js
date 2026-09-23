@@ -929,6 +929,7 @@ function basename(p) {
 // git-guard.js WRAPPERS, plus the shell control keywords that can lead a segment).
 const WRAPPERS = new Set([
   'command', 'builtin', 'exec', 'sudo', 'env', 'nice', 'nohup', 'time', 'timeout',
+  'taskpolicy', 'xargs',
   'then', 'do', 'else', 'if', 'while', 'until',
 ]);
 
@@ -973,6 +974,18 @@ function effectiveVerb(segment) {
         if ((f === '-n' || f === '--adjustment') &&
             idx < tokens.length && !tokens[idx].startsWith('-')) idx++;
       }
+    } else if (word === 'taskpolicy') {
+      // taskpolicy [-c class] [-b|-B] [-t class] [-p pid] ... command. Skip
+      // option flags, consuming a separated value for -c/-t (the class arg).
+      while (idx < tokens.length && tokens[idx].startsWith('-')) {
+        const f = tokens[idx]; idx++;
+        if ((f === '-c' || f === '-t' || f === '-p') &&
+            idx < tokens.length && !tokens[idx].startsWith('-')) idx++;
+      }
+    } else if (word === 'xargs') {
+      // xargs [-n N] [-I repl] [-P N] ... command. Best-effort: skip leading
+      // flag tokens so the wrapped runner (e.g. `xargs pytest`) is found.
+      while (idx < tokens.length && tokens[idx].startsWith('-')) idx++;
     }
   }
   if (idx >= tokens.length) return '';
