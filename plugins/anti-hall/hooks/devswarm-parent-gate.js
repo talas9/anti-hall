@@ -1134,7 +1134,21 @@ function main() {
             let unionStoreBase;
             try {
               const devswarmCli = require('../scripts/devswarm.js'); // lazy: side-effect-free
-              const nonce = devswarmCli.deriveInstanceNonce({ home, cwd: d.worktreePath });
+              // NONCE IS PER-READER, NOT PER-PARTITION (fix for the inert
+              // v0.102.2 edit): deriveInstanceNonce matches the CALLING
+              // process's own ancestry against the cwd it's handed — every
+              // other call site in scripts/devswarm.js passes the reader's
+              // own cwd (defaulting to process.cwd()), never a target's.
+              // Passing `d.worktreePath` (a descriptor's, possibly a CHILD's,
+              // worktree) here made the match fail for every descriptor that
+              // isn't the gate's own row, falling back to an undeclared
+              // `self:<parentPid>:<startMs>` nonce that no reader ever
+              // registers under — siblingBaseCursor then found nothing for
+              // it and dropped back to the cross-instance MIN-floor cursor,
+              // exactly the phantom-unread source this fix was meant to kill.
+              // Use the gate's OWN cwd (`cwd`, this Stop hook's reader
+              // identity, set above) for every descriptor in this loop.
+              const nonce = devswarmCli.deriveInstanceNonce({ home, cwd });
               const shortNonce = devswarmCli.shortInstanceNonce(nonce);
               unionStoreBase = shortNonce ? devswarmCli.siblingBaseCursor(storeHandle, home, d.id, shortNonce) : undefined;
             } catch (_) { unionStoreBase = undefined; }

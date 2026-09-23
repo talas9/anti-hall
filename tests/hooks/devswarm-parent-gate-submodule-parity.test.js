@@ -22,15 +22,21 @@
 // distinction IS the bug; a fixture using a plain nested dir would prove
 // nothing here) must derive the SAME own.id the superproject root would.
 //
-// VACUITY PROOF: the last test below RECONSTRUCTS the pre-fix hook from git
-// at test-run time (not a one-off scratch file that only existed on the
-// author's machine) — `git show <PRE_FIX_SHA>:plugins/.../devswarm-parent-gate.js`
-// into a tmp file inside hooks/ (so its relative `require('../scripts/
-// devswarm.js')` etc. still resolve), runs it against the SAME submodule
-// fixture, and asserts it reproduces the bug. This makes the test
-// self-contained: it runs (and proves something) in CI, on a fresh clone, and
-// for any other developer — never only during the fix author's own
-// verification run.
+// VACUITY PROOF: the last test below reconstructs the OLD naive resolver
+// (findGitToplevel's pure fs walk-up, which STOPS at the first `.git` ENTRY
+// it finds — a submodule's `.git` is a FILE, and `fs.statSync` succeeds on a
+// file exactly as on a directory, so the walk incorrectly treats the
+// submodule as its own toplevel) inline, right here in the test file. It
+// runs that naive reconstruction and the real, shipped `resolveWorktreeNoSpawn`
+// against the SAME real submodule fixture and asserts they DISAGREE — that
+// disagreement IS the bug, proven directly at the resolver boundary, with NO
+// dependency on git history/shas being reachable (a `git show <sha>` against
+// an old commit fails under CI's shallow clone — `actions/checkout@v4` with
+// no `fetch-depth` only fetches the pushed commit — so that approach was
+// dropped entirely, not kept as a conditional fallback). This makes the test
+// self-contained: it runs (and proves something) in CI, on a fresh shallow
+// clone, and for any other developer — never only during the fix author's
+// own verification run with a full local clone.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -44,13 +50,6 @@ const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.
 
 const HOOKS_DIR = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks');
 const FIXED_HOOK = path.join(HOOKS_DIR, 'devswarm-parent-gate.js');
-const REPO_ROOT = path.join(__dirname, '..', '..');
-// PRE_FIX_SHA — the v0.102.1 release commit, the LAST commit whose
-// devswarm-parent-gate.js still derives readOwnUnread's `top` via the pure-fs
-// findGitToplevel(cwd) (the bug this file's first test proves fixed). A
-// PINNED, NAMED sha — never a relative ref like HEAD~1 — because a relative
-// ref breaks the instant anything else is committed on top of this fix.
-const PRE_FIX_SHA = 'becf37e0aed549a4834a66070d8b7250a13b2e02';
 const PRIMARY_ENV = { DEVSWARM_REPO_ID: 'repo-1' };
 
 const GIT_AVAILABLE = (() => {
@@ -115,32 +114,32 @@ function stopPayloadAt(cwd) {
   return { hook_event_name: 'Stop', session_id: 'sess-submod', cwd };
 }
 
-// materializePreFixHook() -> absolute path to a tmp copy of
-// devswarm-parent-gate.js AS IT WAS at PRE_FIX_SHA, placed inside the real
-// hooks/ dir so its relative `require('../scripts/devswarm.js')` /
-// `require('../companion/...')` calls still resolve. Throws LOUDLY (never
-// skips/swallows) when the sha cannot be read — a CI checkout that cannot
-// reach a tagged release commit is a real problem this test must surface,
-// not silently pass around.
-function materializePreFixHook() {
-  let content;
+// naiveFindGitToplevel(startDir) -> absolute repo-root path | null.
+// RECONSTRUCTION of the PRE-FIX behavior — a pure fs walk-up that STOPS at
+// the first `.git` ENTRY it finds, whether that entry is a directory (a real
+// toplevel) or a FILE (a submodule's `.git` marker). This is a byte-for-byte
+// behavioral copy of `findGitToplevel` above (and of the pre-fix
+// `readOwnUnread`'s `top` derivation, which used to call it unconditionally,
+// before `resolveWorktreeNoSpawn` was added in front of it) — kept as an
+// inline reconstruction, not a shared require, specifically so this test
+// depends on nothing but this file plus the real fixture and the real
+// shipped resolver it is compared against.
+function naiveFindGitToplevel(startDir) {
   try {
-    content = execFileSync('git', ['show', PRE_FIX_SHA + ':plugins/anti-hall/hooks/devswarm-parent-gate.js'], {
-      cwd: REPO_ROOT, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024,
-    });
-  } catch (e) {
-    throw new Error(
-      `Cannot read the pre-fix devswarm-parent-gate.js from PRE_FIX_SHA=${PRE_FIX_SHA}. `
-      + 'This sha (the v0.102.1 release commit) must be reachable for the vacuity-proof test to run — '
-      + `a shallow clone or an unreachable sha is a real CI problem, not a reason to skip. Underlying error: ${e && e.message}`
-    );
+    let dir = path.resolve(String(startDir || ''));
+    if (!dir) return null;
+    for (;;) {
+      try {
+        fs.statSync(path.join(dir, '.git'));
+        return dir;
+      } catch (_) { /* keep walking up */ }
+      const parent = path.dirname(dir);
+      if (parent === dir) return null;
+      dir = parent;
+    }
+  } catch (_) {
+    return null;
   }
-  if (!content || content.indexOf('function readOwnUnread') === -1) {
-    throw new Error(`git show ${PRE_FIX_SHA}:.../devswarm-parent-gate.js returned unexpected content (missing readOwnUnread) — refusing to run the vacuity proof against it.`);
-  }
-  const dest = path.join(HOOKS_DIR, '_scratch-parent-gate-prefix-' + process.pid + '.js');
-  fs.writeFileSync(dest, content);
-  return dest;
 }
 
 test('BLOCK: gate firing from inside a git submodule derives the SAME own.id as the superproject root (v0.102.2)', (t) => {
@@ -256,31 +255,35 @@ test('EDIT 2: guard predicate matches the shipped hook source, and refuses to fo
   assert.equal(selfFamily.survivor, selfEntry, 'must still force survivor onto own.id when the registry confirms it');
 });
 
-test('VACUITY PROOF: the SAME fixture reproduces the bug against the pre-fix hook, reconstructed from git at PRE_FIX_SHA (v0.102.1)', (t) => {
+test('VACUITY PROOF: the naive pre-fix resolver and the real shipped resolver DISAGREE on the same submodule fixture, and the live hook uses the fixed one', (t) => {
   if (!GIT_AVAILABLE) { t.skip('git not available on PATH'); return; }
   const { superRepo, submodulePath, home, root } = mkSuperprojectWithSubmodule();
-  let preFixHookPath = null;
   try {
-    preFixHookPath = materializePreFixHook(); // throws loudly if PRE_FIX_SHA is unreachable — never skips
+    const { resolveWorktreeNoSpawn } = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+
+    // --- THE DEFECT, PROVEN DIRECTLY AT THE RESOLVER BOUNDARY ---
+    // naive walk-up (pre-fix behavior): stops AT the submodule's own `.git`
+    // FILE, so it reports the submodule itself as toplevel.
+    const naiveTop = naiveFindGitToplevel(submodulePath);
+    assert.strictEqual(naiveTop, submodulePath, 'sanity: the naive resolver must reproduce the bug (stop at the submodule)');
+
+    // real shipped resolver (the fix): continues past the submodule's `.git`
+    // FILE onto the superproject.
+    const fixedTop = resolveWorktreeNoSpawn(submodulePath);
+    assert.strictEqual(fixedTop, superRepo, 'sanity: resolveWorktreeNoSpawn must resolve onto the superproject');
+
+    // The two resolvers disagree — THIS divergence is the bug this whole
+    // file exists to close. If a future change makes them agree (e.g. a
+    // revert of resolveWorktreeNoSpawn back to naive-walk behavior), the
+    // sanity assertions above fail loudly, and this assertion would too.
+    assert.notEqual(naiveTop, fixedTop, 'the naive and fixed resolvers must disagree on a submodule cwd — that disagreement IS the bug');
+
+    // --- BEHAVIORAL ASSERTION: the live, shipped hook derives its own.id via
+    // the FIXED resolver, and therefore blocks naming the superproject-keyed id.
     const repoKeyFromSuperRoot = repokey.repoKeyForWorktree(superRepo);
     const correctOwnId = 'primary-' + installIngest.worktreeHash(superRepo);
     writeOwnSummaryAt(home, repoKeyFromSuperRoot, correctOwnId, 5);
 
-    // --- pre-fix: must reproduce the bug ---
-    const rUnfixed = testHook(preFixHookPath, stopPayloadAt(submodulePath), { home, env: PRIMARY_ENV });
-    // findGitToplevel(submodulePath) stops AT the submodule, so own.id never
-    // equals correctOwnId and the summary entry (keyed under correctOwnId)
-    // is never found -> no block on the Primary's own unread. Assert the
-    // BUG's actual failure shape: no block that names the correct id.
-    const blockedOnOwnUnreadUnfixed = rUnfixed.json && rUnfixed.json.decision === 'block'
-      && rUnfixed.json.reason.includes('inbox read-primary ' + correctOwnId);
-    assert.ok(
-      !blockedOnOwnUnreadUnfixed,
-      `VACUOUS TEST: the pre-fix hook (PRE_FIX_SHA=${PRE_FIX_SHA}) must reproduce the divergence (fail to name the correct id), but it didn't; `
-      + `got status=${rUnfixed.status} json=${JSON.stringify(rUnfixed.json)} stderr=${rUnfixed.stderr}`
-    );
-
-    // --- fixed (current working tree): must NOT reproduce the bug ---
     const rFixed = testHook(FIXED_HOOK, stopPayloadAt(submodulePath), { home, env: PRIMARY_ENV });
     assert.strictEqual(rFixed.status, 0, 'fixed hook must exit 0');
     assert.ok(rFixed.json, `fixed hook stdout must be JSON; stdout=${rFixed.stdout} stderr=${rFixed.stderr}`);
@@ -290,7 +293,6 @@ test('VACUITY PROOF: the SAME fixture reproduces the bug against the pre-fix hoo
       `fixed hook must name the CORRECT superproject-keyed id; got reason=${rFixed.json.reason}`
     );
   } finally {
-    if (preFixHookPath) { try { fs.unlinkSync(preFixHookPath); } catch (_) {} }
     try { fs.rmSync(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch (_) {}
     try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); } catch (_) {}
   }

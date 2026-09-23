@@ -6,6 +6,31 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.102.3 (2026-09-23)
+
+**0.102.2 was pushed to `main` but failed CI and was never tagged.** Because the marketplace
+clone fast-forwards `main`, it was installed anyway on machines that ran an update in the
+window. This release is the first green one carrying the 0.102.2 changes, plus two fixes to
+them. Installs that picked up 0.102.2 must move to a new version number to receive these — the
+updater only copies a version into the plugin cache when that version's directory is absent.
+
+- **Fixed: the 0.102.2 cursor-parity change was inert for every child descriptor.** It derived
+  the instance nonce from each descriptor's own worktree (`cwd: d.worktreePath`), but
+  `deriveInstanceNonce` matches the CALLING process's ancestry against the cwd it is given. For
+  any descriptor whose worktree is not the gate's own cwd, that match fails and it falls back to
+  `self:<parentPid>:<startMs>` — a namespace no reader declares — so the count dropped straight
+  back to the cross-instance MIN floor the change was meant to escape. Measured: one process,
+  one reader, two cwds, two different nonces. The gate now derives the nonce from its own cwd:
+  the nonce identifies the READER, not the partition. It had only ever worked for the gate's
+  own row.
+
+- **Fixed: the 0.102.2 vacuity test could not run in CI.** It rebuilt the pre-fix hook with
+  `git show <sha>:<path>`, which fails on the depth-1 clone CI uses, so all four matrix jobs
+  failed. The test now reconstructs the old naive resolver inline and asserts that it and the
+  shipped `resolveWorktreeNoSpawn` DISAGREE on the same real submodule fixture — which is the
+  defect itself, proven with no dependency on git history. Verified on a simulated shallow
+  clone before release.
+
 ## 0.102.2 (2026-09-21)
 
 Two fixes from a defect filed by a peer session, plus the diagnostic that would have let that
