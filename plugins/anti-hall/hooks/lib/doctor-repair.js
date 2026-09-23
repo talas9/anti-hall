@@ -634,7 +634,7 @@ function readInstalledIngestWorkingDir(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
   const platform = o.platform || process.platform;
-  const out = { present: false, workingDir: null, scriptPath: null, source: null, hash: null, repoKey: null, others: [] };
+  const out = { present: false, workingDir: null, scriptPath: null, source: null, hash: null, repoKey: null, label: null, unit: null, others: [] };
 
   let units = [];
   try {
@@ -667,6 +667,8 @@ function readInstalledIngestWorkingDir(opts) {
     out.source = pick.source;
     out.hash = pick.hash;
     out.repoKey = pick.repoKey != null ? pick.repoKey : null;
+    out.label = pick.label != null ? pick.label : null;
+    out.unit = pick.unit != null ? pick.unit : null;
   }
   out.others = units.filter((u) => u !== pick);
   return out;
@@ -702,6 +704,13 @@ function classifyIngestUnit(opts) {
   if (!workingDir && !scriptPath) return 'absent';
 
   // WrongPath checks first (a unit that can never resolve a workspace).
+  // NOTE: deliberately NOT a "WorkingDirectory under a tmp root" check here — a
+  // session/test/CI can legitimately run FROM a tmp checkout (this repo's own
+  // test suite does, throughout), so THIS worktree's own resolved unit being
+  // under tmp is not itself evidence of a leak. The real defect shape (a
+  // leaked unit for a DIFFERENT, unrelated, scratch-rooted worktree) is
+  // detected separately, over `read.others`, in runRepairs below — see
+  // tmpWorkdirReportMessage.
   if (!workingDir) return 'wrong-path';
   if (path.resolve(workingDir) === path.resolve(home)) return 'wrong-path';
   let isDir = false;
@@ -733,6 +742,42 @@ function classifyIngestUnit(opts) {
 // than required from it, because update.js already requires THIS file
 // (readInstalledIngestWorkingDir/classifyIngestUnit) — requiring it back would
 // be a cycle.
+// tmpWorkdirReportMessage({label, unit, workingDir, home, platform}) -> string.
+// REPORT-ONLY message for a 'tmp-workdir' classification — never auto-removed
+// (see the 'tmp-workdir' branch in runRepairs above). Gives the exact
+// copy-pasteable bootout + quarantine commands so a human can retire the unit:
+// bootout stops the loaded job immediately; quarantine renames the unit file so
+// it can never reload on the next login/boot (mirrors the mv-based "disable
+// without deleting" pattern this repo already uses for the reaper — a rename,
+// never an rm, so nothing is destroyed and the file stays inspectable).
+function tmpWorkdirReportMessage(opts) {
+  const o = opts || {};
+  const workingDir = o.workingDir || '(unknown)';
+  let fallbackLabel = 'com.anti-hall.devswarm-ingest';
+  let fallbackUnit = 'anti-hall-devswarm-ingest';
+  try {
+    const installer = ingestConst();
+    if (installer.LABEL) fallbackLabel = installer.LABEL;
+    if (installer.UNIT) fallbackUnit = installer.UNIT;
+  } catch (_) {}
+  if (o.platform === 'darwin') {
+    const label = o.label || fallbackLabel;
+    const plist = path.join(o.home || os.homedir(), 'Library', 'LaunchAgents', label + '.plist');
+    return 'ingest daemon WorkingDirectory (' + workingDir + ') is under the system temp directory — '
+      + 'this unit was installed from a scratch/tmp worktree and will crash-loop (exit 78 EX_CONFIG) once '
+      + 'that path is cleaned up. NOT auto-removed — retire it by hand: '
+      + '`launchctl bootout gui/$(id -u)/' + label + '` then '
+      + '`mv ' + plist + ' ' + plist + '.quarantined`';
+  }
+  const unit = o.unit || fallbackUnit;
+  const svc = path.join(o.home || os.homedir(), '.config', 'systemd', 'user', unit + '.service');
+  return 'ingest daemon WorkingDirectory (' + workingDir + ') is under the system temp directory — '
+    + 'this unit was installed from a scratch/tmp worktree and will crash-loop (Restart=always against a '
+    + 'gone path) once that path is cleaned up. NOT auto-removed — retire it by hand: '
+    + '`systemctl --user disable --now ' + unit + '.service` then '
+    + '`mv ' + svc + ' ' + svc + '.quarantined`';
+}
+
 function compareSemverLite(a, b) {
   const parse = (v) => {
     if (typeof v !== 'string') return [0];
@@ -1452,10 +1497,28 @@ function runRepairs(opts) {
     try {
       const read = readInstalledIngestWorkingDir({ home, platform, worktree: currentWorktree });
       // Report OTHER repos' installed ingest units (never healed here — each repo
-      // heals its own from its own worktree). Informational only.
+      // heals its own from its own worktree). Informational only — EXCEPT a unit
+      // whose WorkingDirectory is under a tmp root, which gets its own loud,
+      // report-only finding with the exact bootout + quarantine commands (the
+      // actual shape of the crash-loop-at-exit-78-EX_CONFIG defect: the offending
+      // unit belongs to a DIFFERENT, scratch-rooted "repo", never this worktree's
+      // own unit, so it only ever surfaces here, not via the `cls` check below).
       if (read.others && read.others.length) {
         const list = read.others.map((u) => (u.workingDir || '(unknown worktree)')).join(', ');
         push('ingest-others', 'none', 'skipped', read.others.length + ' other ingest unit(s) installed for other worktree(s): ' + list);
+        for (const u of read.others) {
+          let underTmp = false;
+          try {
+            const installer = ingestConst();
+            underTmp = u.workingDir && typeof installer.homeIsUnderTmpdir === 'function' && installer.homeIsUnderTmpdir(u.workingDir);
+          } catch (_) { underTmp = false; }
+          if (underTmp) {
+            const name = u.label || u.unit || '(unknown)';
+            push('ingest-others-tmp-' + name, 'ingest-others', 'failed', tmpWorkdirReportMessage({
+              label: u.label, unit: u.unit, workingDir: u.workingDir, home, platform,
+            }));
+          }
+        }
       }
       const cls = classifyIngestUnit({ workingDir: read.workingDir, scriptPath: read.scriptPath, home, env });
 
@@ -2859,6 +2922,9 @@ function reconcileStuckNdCursors(opts) {
 
 module.exports = {
   readInstalledIngestWorkingDir, classifyIngestUnit, runRepairs,
+  // tmp-worktree/WorkingDirectory report-only message (exported for direct test
+  // coverage of the exact bootout + quarantine command text):
+  tmpWorkdirReportMessage,
   // Codex "is it wired" precise per-event detection (exported for direct unit
   // testing of the fixture-hooks.json upgrade scenario):
   scanCodex,

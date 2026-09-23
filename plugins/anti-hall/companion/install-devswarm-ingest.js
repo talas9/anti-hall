@@ -163,9 +163,62 @@ function homeIsUnderTmpdir(home) {
 }
 const ALLOW_TMP_HOME = process.env.ANTIHALL_INGEST_ALLOW_TMP_HOME === '1';
 const TMP_HOME_GUARD = !EXPLICIT_DRYRUN && !ALLOW_TMP_HOME && homeIsUnderTmpdir(HOME);
-const DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD || TMP_HOME_GUARD;
+// `DRYRUN` is `let` (not `const`) because of TMP_WORKTREE_GUARD below: unlike HOME
+// (known at module load), the WorkingDirectory a real install would bake is only
+// known once main() resolves the worktree from cwd — so that guard can only trip
+// AFTER this initial assignment, and must be able to upgrade DRYRUN from false to
+// true for the rest of the run.
+let DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD || TMP_HOME_GUARD;
 
 function say(msg) { process.stdout.write(msg + '\n'); }
+
+// TMP-WORKTREE GUARD (defect: a launchd unit was installed on a REAL machine with
+// WorkingDirectory pointed at an e2e fixture repo under another session's
+// scratchpad — /tmp, /private/tmp, /var/folders — and crash-looped 34,584 times
+// at exit 78 EX_CONFIG because launchd could never even posix_spawn into a
+// WorkingDirectory that no longer existed. TMP_HOME_GUARD above only ever caught a
+// tmp $HOME; it has NO signal for a perfectly normal $HOME running the installer
+// from a cwd that happens to resolve to a scratch/tmp worktree (exactly the shape
+// an agent's scratchpad clone produces). Same tmp-root detection (homeIsUnderTmpdir
+// — already generic over any path, not just HOME), same opt-out env var
+// (ANTIHALL_INGEST_ALLOW_TMP_HOME=1) as TMP_HOME_GUARD, so one flag covers both.
+// Resolved PER-CALL (the worktree/WorkingDirectory is only known once main() runs),
+// so this trips DRYRUN dynamically rather than being a module-load-time constant.
+let TMP_WORKTREE_GUARD = false;
+let _tmpWorktreeGuardNoted = false;
+// applyTmpWorktreeGuard(p) -> bool (true iff `p` resolves under a tmp root and
+// this run is not explicitly opted out — i.e. whether the guard's condition
+// fired, INDEPENDENT of whatever else may have already forced DRYRUN, exactly
+// mirroring TMP_HOME_GUARD's own module-level-flag posture so the notice below
+// still fires when NODE_TEST_CONTEXT_GUARD already set DRYRUN=true first (the
+// common case for a subprocess test, which inherits NODE_TEST_CONTEXT from its
+// `node --test` parent either way). Idempotent: once tripped, DRYRUN stays true
+// for the rest of this process regardless of how many paths are checked
+// (workdir, mainWorktree, ...).
+function applyTmpWorktreeGuard(p) {
+  if (EXPLICIT_DRYRUN || ALLOW_TMP_HOME) return false;
+  if (!p || !homeIsUnderTmpdir(p)) return false;
+  TMP_WORKTREE_GUARD = true;
+  DRYRUN = true;
+  return true;
+}
+// noteTmpWorktreeGuardTripped(p) — the LOUD stderr notice, printed at most once
+// per process (mirrors noteTmpHomeGuardTripped's once-per-process posture), the
+// moment a real install would otherwise have baked a tmp-rooted WorkingDirectory.
+function noteTmpWorktreeGuardTripped(p) {
+  if (!TMP_WORKTREE_GUARD || _tmpWorktreeGuardNoted) return;
+  _tmpWorktreeGuardNoted = true;
+  try {
+    process.stderr.write(
+      'anti-hall: install-devswarm-ingest.js resolved a WorkingDirectory (' + p + ') under the system'
+      + ' temp directory — forcing dry-run to prevent registering a REAL launchd/systemd daemon whose'
+      + ' WorkingDirectory is a scratch/tmp worktree (the same defect class as TMP_HOME_GUARD: a review'
+      + ' agent or test fixture clone under a session scratchpad, which crash-loops launchd at exit 78'
+      + ' EX_CONFIG once the fixture is cleaned up). Set ANTIHALL_INGEST_ALLOW_TMP_HOME=1 explicitly if'
+      + ' this run genuinely needs the real, unmocked spawn path from a temp worktree.\n'
+    );
+  } catch (_) {}
+}
 
 // noteNodeTestContextGuardTripped() — prints the ONE stderr notice for the
 // NODE_TEST_CONTEXT fallback, but only at the moment it actually intercepts a
@@ -2011,6 +2064,10 @@ function main() {
         process.exit(0);
         return;
       }
+      // TMP_WORKTREE_GUARD: refuse to bake a scratch/tmp path as WorkingDirectory
+      // for a REAL launchd/systemd/cron registration — forces this run to dry-run
+      // instead (same posture as TMP_HOME_GUARD). See applyTmpWorktreeGuard above.
+      if (applyTmpWorktreeGuard(workdir)) noteTmpWorktreeGuardTripped(workdir);
     } else {
       // Uninstall targets the CURRENT worktree's per-worktree unit when cwd resolves
       // to one (best-effort); when it doesn't, the *Uninstall helpers fall back to the
@@ -2032,6 +2089,7 @@ function main() {
     // stays the install-refusal / path-safety gate; `mainWorktree`/`repoKey` are
     // project-wide and are what the NEW per-project unit bakes.
     const mainWorktree = resolveMainWorktree(process.cwd());
+    if (!UNINSTALL && mainWorktree && applyTmpWorktreeGuard(mainWorktree)) noteTmpWorktreeGuardTripped(mainWorktree);
     const repoKey = (mainWorktree && repokey) ? repokey.repoKeyForWorktree(mainWorktree) : null;
     if (mainWorktree && repoKey && pathIsEmittable(mainWorktree)) {
       if (UNINSTALL) {
@@ -2083,6 +2141,12 @@ module.exports = {
   HOME,
   // d1c57e67998f — tmp-HOME refusal guard, exported for direct test coverage.
   homeIsUnderTmpdir, TMP_HOME_GUARD, ALLOW_TMP_HOME,
+  // tmp-WORKTREE refusal guard (WorkingDirectory under a scratch/tmp root),
+  // exported for direct test coverage. `TMP_WORKTREE_GUARD` reflects whether it
+  // has ALREADY tripped in this process (mutates after main() resolves a
+  // worktree) — tests call `applyTmpWorktreeGuard` directly rather than relying
+  // on process-level state.
+  applyTmpWorktreeGuard, get TMP_WORKTREE_GUARD() { return TMP_WORKTREE_GUARD; },
   resolveStableScript,
   xmlEscape, shSingleQuote, sdQuote, pathIsEmittable, resolveWorktree,
   buildPlist, buildService, buildCronLine, buildCronEntry, mergeCrontab, removeCronEntry,
