@@ -352,3 +352,83 @@ test('JEV: credential never appears in stdout, stderr, or the log', async () => 
     }
   } finally { c.h.cleanup(); }
 });
+
+// ---------------------------------------------------------------------------
+// P1-a regression: the pre-3e72bf3 hook's collectTextFromEntry recursed into
+// node.message UNCONDITIONALLY, so the real transcript shape (top-level
+// `content` absent, text only under `message.content` — exactly what
+// assistantMessage() below produces) got collected once via
+// `node.content || node.message.content`, then AGAIN via the recursion into
+// node.message, duplicating the text. 3e72bf3 removed that duplication for
+// EVERY caller, which changes the loop-safety hash (breaking already-persisted
+// state files) and can shift a regex match at the duplicate boundary. The
+// fix restores the duplicating extraction (named collectTextFromEntryLegacy /
+// extractLastAssistantTextLegacy in speculation-guard.js) for the regex path
+// and the hash; only Jev's input may dedupe. This test proves the CURRENT
+// hook's regex verdict and stored hash are byte-identical to the actual
+// pre-3e72bf3 hook (loaded via `git show 3e72bf3^:...`), Jev off.
+// ---------------------------------------------------------------------------
+const { execFileSync } = require('node:child_process');
+const os = require('node:os');
+
+const LEGACY_BASE_REF = '3e72bf3^';
+
+// buildLegacyHookCopy() -> absolute path to a standalone copy of the
+// pre-3e72bf3 speculation-guard.js, with its own (unchanged since that
+// commit) skip-guard.js and lib/state-prune.js dependencies alongside it so
+// its relative requires resolve.
+function buildLegacyHookCopy() {
+  const repoRoot = path.join(__dirname, '..', '..');
+  const oldSrc = execFileSync(
+    'git', ['show', `${LEGACY_BASE_REF}:plugins/anti-hall/hooks/speculation-guard.js`],
+    { cwd: repoRoot, encoding: 'utf8' }
+  );
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-legacy-spec-guard-'));
+  fs.writeFileSync(path.join(dir, 'speculation-guard.js'), oldSrc, 'utf8');
+  fs.copyFileSync(path.join(HOOKS_DIR, 'skip-guard.js'), path.join(dir, 'skip-guard.js'));
+  fs.mkdirSync(path.join(dir, 'lib'));
+  fs.copyFileSync(path.join(HOOKS_DIR, 'lib', 'state-prune.js'), path.join(dir, 'lib', 'state-prune.js'));
+  return path.join(dir, 'speculation-guard.js');
+}
+
+function readState(home) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(home, '.anti-hall', STATE_FILE), 'utf8'));
+  } catch (_) {
+    return null;
+  }
+}
+
+test('P1-a: duplicate-text boundary — current hook regex verdict + stored hash match the pre-3e72bf3 hook byte-for-byte (Jev off)', () => {
+  const legacyHook = buildLegacyHookCopy();
+  // assistantMessage() emits { message: { role, content: [...] } } with no
+  // top-level `content` — the real transcript shape that triggered the
+  // pre-3e72bf3 duplication (see header comment above).
+  const text = 'This should be fine now.';
+
+  const hOld = makeHome();
+  const hNew = makeHome();
+  try {
+    const tpOld = hOld.writeTranscript([assistantMessage(text)]);
+    const tpNew = hNew.writeTranscript([assistantMessage(text)]);
+
+    const rOld = testHook(legacyHook, stopPayload(tpOld), { home: hOld.home });
+    const rNew = testHook(HOOK, stopPayload(tpNew), { home: hNew.home, env: { ANTIHALL_JEV: '0' } });
+
+    assert.ok(isBlock(rOld), `pre-3e72bf3 hook expected to block; stdout: ${rOld.stdout}`);
+    assert.strictEqual(isBlock(rNew), isBlock(rOld), 'current hook verdict must match the pre-3e72bf3 hook');
+    assert.deepStrictEqual(rNew.json, rOld.json, 'block reason must match byte-for-byte');
+
+    const stOld = readState(hOld.home);
+    const stNew = readState(hNew.home);
+    assert.ok(stOld && stNew, 'both hooks must persist loop-safety state');
+    assert.strictEqual(
+      stNew.hash, stOld.hash,
+      'loop-safety hash must match the pre-3e72bf3 hook (duplicate-text extraction preserved)'
+    );
+  } finally {
+    hOld.cleanup();
+    hNew.cleanup();
+    fs.rmSync(path.dirname(legacyHook), { recursive: true, force: true });
+  }
+});

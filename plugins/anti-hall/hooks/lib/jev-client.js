@@ -44,6 +44,12 @@ const TYPESAFE = {
 
 const DEFAULT_TIMEOUT_MS = 1500;
 const DEFAULT_CONFIDENCE_THRESHOLD = 0.85;
+// Hard ceiling on any configured/overridden timeout. The hook's own Stop
+// timeout is far larger; a Jev call that runs close to it risks the outer
+// hook timing out non-fail-open. One deadline covers request+headers+body
+// (see jevDecide below), so this ceiling bounds the whole call, not just the
+// time to first byte.
+const MAX_TIMEOUT_MS = 3000;
 
 function readJevConfigFile() {
   try {
@@ -74,7 +80,7 @@ function loadJevConfig() {
   const transport = fileCfg.transport === 'typesafe' ? 'typesafe' : 'vercel';
 
   const timeoutMs = (Number.isFinite(fileCfg.timeoutMs) && fileCfg.timeoutMs > 0)
-    ? fileCfg.timeoutMs
+    ? Math.min(fileCfg.timeoutMs, MAX_TIMEOUT_MS)
     : DEFAULT_TIMEOUT_MS;
 
   const confidenceThreshold = (Number.isFinite(fileCfg.confidenceThreshold) &&
@@ -157,7 +163,9 @@ async function jevDecide({ question, state, timeoutMs } = {}) {
   const transportInfo = cfg.transport === 'typesafe' ? TYPESAFE : GATEWAY;
   const endpoint = cfg.endpointOverride || transportInfo.endpoint;
   const model = transportInfo.model;
-  const effectiveTimeout = (Number.isFinite(timeoutMs) && timeoutMs > 0) ? timeoutMs : cfg.timeoutMs;
+  const effectiveTimeout = (Number.isFinite(timeoutMs) && timeoutMs > 0)
+    ? Math.min(timeoutMs, MAX_TIMEOUT_MS)
+    : cfg.timeoutMs;
 
   const body = JSON.stringify({
     state,
@@ -169,67 +177,79 @@ async function jevDecide({ question, state, timeoutMs } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), effectiveTimeout);
 
+  // The timer (and controller.signal) stays live across BOTH the request and
+  // the body read below — one deadline covers the whole call, not just time
+  // to first byte, so a server that sends headers then stalls the body can
+  // never run past effectiveTimeout. It is cleared exactly once, in the
+  // finally block, after the body has been fully read (or failed).
   let res;
   try {
-    res = await fetch(endpoint, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body,
-      signal: controller.signal,
-    });
-  } catch (err) {
-    clearTimeout(timer);
-    const ms = Date.now() - start;
-    if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message || '')))) {
-      return { ok: false, reason: 'timeout', ms };
+    try {
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const ms = Date.now() - start;
+      if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message || '')))) {
+        return { ok: false, reason: 'timeout', ms };
+      }
+      return { ok: false, reason: 'network-error', ms };
     }
-    return { ok: false, reason: 'network-error', ms };
-  }
-  clearTimeout(timer);
-  const ms = Date.now() - start;
 
-  if (!res.ok) {
-    return { ok: false, reason: `http-${res.status}`, ms };
-  }
+    if (!res.ok) {
+      const ms = Date.now() - start;
+      return { ok: false, reason: `http-${res.status}`, ms };
+    }
 
-  let text;
-  try {
-    text = await res.text();
-  } catch (_) {
-    return { ok: false, reason: 'parse-error', ms };
-  }
+    let text;
+    try {
+      text = await res.text();
+    } catch (err) {
+      const ms = Date.now() - start;
+      if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message || '')))) {
+        return { ok: false, reason: 'timeout', ms };
+      }
+      return { ok: false, reason: 'parse-error', ms };
+    }
+    const ms = Date.now() - start;
 
-  let json;
-  try {
-    json = JSON.parse(text);
-  } catch (_) {
-    return { ok: false, reason: 'parse-error', ms };
-  }
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (_) {
+      return { ok: false, reason: 'parse-error', ms };
+    }
 
-  const ans = json && json.answers && json.answers.decision;
-  if (!ans || typeof ans !== 'object') {
-    return { ok: false, reason: 'bad-response', ms };
-  }
-
-  if (question.type === 'choice') {
-    if (typeof ans.choice !== 'string' || !ans.choice) {
+    const ans = json && json.answers && json.answers.decision;
+    if (!ans || typeof ans !== 'object') {
       return { ok: false, reason: 'bad-response', ms };
     }
-    const confidence = Number.isFinite(ans.confidence) ? ans.confidence : 0;
-    return { ok: true, answer: ans.choice, confidence, ms };
-  }
 
-  // noul: a probability-like value in [0,1]; >=0.5 is "true".
-  if (!Number.isFinite(ans.noul)) {
-    return { ok: false, reason: 'bad-response', ms };
+    if (question.type === 'choice') {
+      if (typeof ans.choice !== 'string' || !ans.choice) {
+        return { ok: false, reason: 'bad-response', ms };
+      }
+      const confidence = Number.isFinite(ans.confidence) ? ans.confidence : 0;
+      return { ok: true, answer: ans.choice, confidence, ms };
+    }
+
+    // noul: a probability-like value in [0,1]; >=0.5 is "true".
+    if (!Number.isFinite(ans.noul)) {
+      return { ok: false, reason: 'bad-response', ms };
+    }
+    const noul = ans.noul;
+    const answer = noul >= 0.5;
+    const confidence = Math.abs(noul - 0.5) * 2;
+    return { ok: true, answer, confidence, ms };
+  } finally {
+    clearTimeout(timer);
   }
-  const noul = ans.noul;
-  const answer = noul >= 0.5;
-  const confidence = Math.abs(noul - 0.5) * 2;
-  return { ok: true, answer, confidence, ms };
 }
 
 module.exports = {
@@ -237,4 +257,5 @@ module.exports = {
   loadJevConfig,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CONFIDENCE_THRESHOLD,
+  MAX_TIMEOUT_MS,
 };

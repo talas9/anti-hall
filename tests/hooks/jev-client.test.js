@@ -341,6 +341,73 @@ test('jevDecide: timeout -> {ok:false, reason:"timeout"} (server never responds)
 });
 
 // ---------------------------------------------------------------------------
+// P1-b regression: the timer used to be cleared right after fetch() resolved
+// (i.e. after headers), BEFORE res.text() read the body — so a server that
+// sends headers then stalls the body could hang past the configured timeout,
+// all the way to the hook's own outer Stop timeout. The fix keeps ONE
+// deadline covering request+headers+body (the same AbortController/timer is
+// only cleared after res.text() settles), and clamps any configured/override
+// timeoutMs to MAX_TIMEOUT_MS (3000ms) so a misconfigured large timeout can't
+// reopen the same risk.
+// ---------------------------------------------------------------------------
+test('jevDecide: headers sent, body stalls -> returns within the timeout bound, reason:"timeout" (fail-open)', async () => {
+  const h = makeHome();
+  try {
+    await withMockServer((req, res) => {
+      // Send headers (and flush them) but never write/end the body — the
+      // pre-fix client would clear its timer right here and hang forever.
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      if (typeof res.flushHeaders === 'function') res.flushHeaders();
+      // Deliberately never call res.write()/res.end().
+    }, async (endpoint) => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { jevDecide } = freshLib();
+        const timeoutMs = 200;
+        const start = Date.now();
+        const r = await jevDecide({ question: NOUL_QUESTION, state: 'hello', timeoutMs });
+        const elapsed = Date.now() - start;
+        assert.strictEqual(r.ok, false);
+        assert.strictEqual(r.reason, 'timeout');
+        assert.ok(
+          elapsed < timeoutMs + 2000,
+          `must return within the timeout bound, not hang on the stalled body (elapsed=${elapsed}ms)`
+        );
+      });
+    });
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('loadJevConfig: timeoutMs > MAX_TIMEOUT_MS is clamped to 3000; default stays 1500', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true, timeoutMs: 30000 });
+    withEnv({ HOME: h.home }, () => {
+      const { loadJevConfig, MAX_TIMEOUT_MS, DEFAULT_TIMEOUT_MS } = freshLib();
+      assert.strictEqual(MAX_TIMEOUT_MS, 3000);
+      assert.strictEqual(DEFAULT_TIMEOUT_MS, 1500);
+      assert.strictEqual(loadJevConfig().timeoutMs, 3000);
+    });
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('loadJevConfig: no explicit timeoutMs -> default 1500 (unclamped default untouched)', () => {
+  const h = makeHome();
+  try {
+    h.writeState('jev.json', { enabled: true });
+    withEnv({ HOME: h.home }, () => {
+      const { loadJevConfig } = freshLib();
+      assert.strictEqual(loadJevConfig().timeoutMs, 1500);
+    });
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Credential resolution: keyFile, and never leaking the key
 // ---------------------------------------------------------------------------
 

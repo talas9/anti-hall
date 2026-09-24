@@ -178,8 +178,22 @@ function readTranscriptTail(transcriptPath, windowBytes) {
 // --------------------------------------------------------------------------
 // Extract the last assistant message text from a transcript JSONL file.
 // Returns null if nothing is found or any error occurs.
+//
+// Two extraction variants share the same scan/parse plumbing but differ in
+// collectTextFromEntry:
+//   - legacy (collectTextFromEntryLegacy): the pre-3e72bf3 behavior, restored
+//     BYTE-IDENTICAL. It can duplicate text when `content` was read from
+//     node.message (the real transcript shape) and the recursion into
+//     node.message re-collects the same block. This is INTENTIONALLY kept for
+//     the regex path and the loop-safety hash so both stay identical to the
+//     pre-3e72bf3 hook — the duplication can shift where a regex matches (or
+//     doesn't) at the boundary, and changing it would silently change verdicts
+//     and the stored hash for already-deployed state files.
+//   - deduplicated (collectTextFromEntryDedup): skips the duplicate re-collection.
+//     Used ONLY as the Jev input (lastText.slice(0, 8000) below), since Jev is
+//     a new code path with no pre-existing byte-identical contract to preserve.
 // --------------------------------------------------------------------------
-function extractLastAssistantText(transcriptPath) {
+function extractLastAssistantTextWith(transcriptPath, collectFn) {
   const tail = readTranscriptTail(transcriptPath);
   if (!tail) {
     return null;
@@ -208,7 +222,7 @@ function extractLastAssistantText(transcriptPath) {
     if (role !== 'assistant') continue;
 
     // Collect all text content blocks from this message
-    const text = collectTextFromEntry(entry);
+    const text = collectFn(entry);
     if (text) {
       lastText = text;
     }
@@ -217,8 +231,52 @@ function extractLastAssistantText(transcriptPath) {
   return lastText;
 }
 
+function extractLastAssistantTextLegacy(transcriptPath) {
+  return extractLastAssistantTextWith(transcriptPath, collectTextFromEntryLegacy);
+}
+
+function extractLastAssistantTextDedup(transcriptPath) {
+  return extractLastAssistantTextWith(transcriptPath, collectTextFromEntryDedup);
+}
+
 // Recursively collect concatenated text from content blocks in an entry.
-function collectTextFromEntry(node) {
+// LEGACY (pre-3e72bf3, restored as-is): always recurses into node.message
+// when present, which can duplicate text already picked up via node.content.
+function collectTextFromEntryLegacy(node) {
+  if (!node || typeof node !== 'object') return '';
+  const parts = [];
+
+  // Direct text field
+  if (typeof node.text === 'string') {
+    parts.push(node.text);
+  }
+
+  // content array (Claude message format)
+  const content = node.content || (node.message && node.message.content);
+  if (typeof content === 'string') {
+    parts.push(content);
+  } else if (Array.isArray(content)) {
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      if (block.type === 'text' && typeof block.text === 'string') {
+        parts.push(block.text);
+      } else if (typeof block.text === 'string') {
+        parts.push(block.text);
+      }
+    }
+  }
+
+  // Recurse into message field if not already handled above
+  if (node.message && typeof node.message === 'object' && node.message !== node) {
+    const sub = collectTextFromEntryLegacy(node.message);
+    if (sub) parts.push(sub);
+  }
+
+  return parts.join(' ');
+}
+
+// Deduplicated variant (Jev input only — see comment above).
+function collectTextFromEntryDedup(node) {
   if (!node || typeof node !== 'object') return '';
   const parts = [];
 
@@ -246,7 +304,7 @@ function collectTextFromEntry(node) {
   // was taken from node.message (the real transcript shape), recursing would
   // append the same text a second time — skip it.
   if (node.message && typeof node.message === 'object' && node.message !== node && node.content) {
-    const sub = collectTextFromEntry(node.message);
+    const sub = collectTextFromEntryDedup(node.message);
     if (sub) parts.push(sub);
   }
 
@@ -308,8 +366,11 @@ async function main() {
   const stateDir = path.join(os.homedir(), '.anti-hall');
   const stateFile = path.join(stateDir, 'speculation-guard-state-' + safeSession + '.json');
 
-  // Extract the last assistant message text.
-  const lastText = extractLastAssistantText(transcriptPath);
+  // Extract the last assistant message text. The LEGACY (pre-3e72bf3, possibly
+  // duplicated) text drives the regex path and the loop-safety hash so both
+  // stay byte-identical to the pre-Jev hook. The deduplicated text is computed
+  // lazily below and used ONLY as Jev's input.
+  const lastText = extractLastAssistantTextLegacy(transcriptPath);
   if (!lastText) {
     process.exit(0);
   }
@@ -354,7 +415,9 @@ async function main() {
       // Outcome is already "allow" — don't spend a Jev call on it.
       logEntry = { backend: 'none', reason: 'loop-safe', ms: null, confidence: null };
     } else if (jevCfg.enabled) {
-      const r = await jevDecide({ question: JEV_QUESTION, state: lastText.slice(0, 8000) });
+      // Dedup text only for Jev's input — see extractLastAssistantTextWith comment.
+      const jevText = extractLastAssistantTextDedup(transcriptPath) || lastText;
+      const r = await jevDecide({ question: JEV_QUESTION, state: jevText.slice(0, 8000) });
       const confident = r.ok && r.confidence >= jevCfg.confidenceThreshold;
       if (confident && r.answer === true) {
         jevBlock = true;
