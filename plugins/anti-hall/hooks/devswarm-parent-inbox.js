@@ -1034,6 +1034,55 @@ function broadcastMaxAgeMs(env) {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_BROADCAST_MAX_AGE_MS;
 }
 
+// DEFAULT_INBOX_GRACE_MS / resolveInboxGraceMs(env) — SkyCrew report fix: a
+// direct send to a LIVE child lane was flagged "need attention" as little as
+// 4s after sending, before the child's own Stop-hook loop could realistically
+// have cycled once, let alone drained it. 120s default: generous enough to
+// cover one real turn's worth of latency, tight enough that a genuinely
+// neglected message still surfaces promptly. ANTIHALL_DEVSWARM_INBOX_GRACE_SEC-
+// overridable (0 = grace disabled, flags immediately — same env-var-is-
+// seconds convention as broadcastMaxAgeMs/every *_SEC var elsewhere in this
+// codebase).
+const DEFAULT_INBOX_GRACE_MS = 120 * 1000;
+function resolveInboxGraceMs(env) {
+  const n = Number(env && env.ANTIHALL_DEVSWARM_INBOX_GRACE_SEC);
+  return Number.isFinite(n) && n >= 0 ? n * 1000 : DEFAULT_INBOX_GRACE_MS;
+}
+
+// unreadIsGraced({unread, oldestUnreadTs, id, home, now, graceMs, heartbeatTsFn}) -> bool.
+// PURE decision function (unit-testable without spawning this hook): true
+// (suppress the unread-only nag trigger) ONLY while BOTH (a) the oldest
+// still-unread message is younger than the grace window AND (b) the child has
+// recorded NO heartbeat since that message was sent — a heartbeat after the
+// send is proof the child's own loop already had a chance to notice/drain it,
+// so grace no longer applies even inside the window. Fail-open TOWARD
+// flagging: a missing/unreadable oldestUnreadTs or heartbeat never suppresses
+// (returns false) — this only ever narrows the TIMING of an already-unread
+// row, never hides a genuinely long-unread one.
+function unreadIsGraced(opts) {
+  const o = opts || {};
+  if (!(o.unread > 0) || !Number.isFinite(o.oldestUnreadTs)) return false;
+  const graceMs = Number.isFinite(o.graceMs) ? o.graceMs : DEFAULT_INBOX_GRACE_MS;
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const ageMs = now - o.oldestUnreadTs;
+  if (ageMs >= graceMs) return false;
+  // heartbeatTs (production) already fails open to null on any read error —
+  // it never throws. The try/catch here guards ONLY a pathological injected
+  // heartbeatTsFn; on a genuine throw this fails open TOWARD flagging (assume
+  // a heartbeat landed after the send), matching this codebase's consistent
+  // "when in doubt, keep blocking/flagging" posture elsewhere (e.g.
+  // devswarm-parent-gate.js's realUnread computation) — a null return (the
+  // ordinary "no heartbeat recorded yet" case, ubiquitous right after a fresh
+  // send) is NOT an error and keeps grace applying normally.
+  let heartbeatAfterSend = false;
+  try {
+    const fn = o.heartbeatTsFn || livenessLib.heartbeatTs;
+    const hbTs = fn(o.id, o.home);
+    heartbeatAfterSend = Number.isFinite(hbTs) && hbTs > o.oldestUnreadTs;
+  } catch (_) { heartbeatAfterSend = true; }
+  return !heartbeatAfterSend;
+}
+
 // broadcastKey(r) -> a stable dedup identity for one recent[] row: sender +
 // timestamp + body. `ts` alone is not unique (two distinct senders could
 // broadcast in the same tick) and `summary` alone is not unique (a repeated
@@ -1548,6 +1597,16 @@ function main() {
     // hook has no way to tell provenance beyond the caller's own judgement,
     // so this is opt-in, per-id, user-controlled.
     const nagIgnored = isNagIgnored(home, id);
+    // GRACE WINDOW (SkyCrew report fix, see unreadIsGraced's header): computed
+    // BEFORE the attention-push gate below so a just-sent message to a live
+    // child lane does not immediately count as "need attention" — stuck/
+    // notDraining are independent liveness signals and are NEVER suppressed
+    // by this, only the unread-ONLY trigger is.
+    const oldestUnreadTsForGate = Number.isFinite(entry.oldestDirectUnreadTs) ? entry.oldestDirectUnreadTs : null;
+    const unreadGraced = unreadIsGraced({
+      unread, oldestUnreadTs: oldestUnreadTsForGate, id, home, now, graceMs: resolveInboxGraceMs(process.env),
+    });
+    const unreadForNag = unread > 0 && !unreadGraced;
     // v0.107.1: row state is resolved BEFORE the attention/archive-ready pushes.
     // A workspace archived in the DevSwarm app (its builders record — or a twin
     // row sharing that archived worktree) is put away for good: nobody will
@@ -1566,13 +1625,13 @@ function main() {
     // v0.108.0: nor while the owner has this very workspace on screen in the app.
     const rowWs = appWs(id, entry.worktreePath);
     const ownerFocused = !!(focusedId && rowWs && rowWs.id === focusedId);
-    if ((unread > 0 || stuck || notDraining) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused) {
+    if ((unreadForNag || stuck || notDraining) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow && !ownerFocused) {
       // wsName/oldestUnreadTs (item 5/6): human title + age for the reworded
       // "CHILD NOT DRAINING" segment below — read-only, zero extra store
       // reads (oldestDirectUnreadTs is already a zero-extra-read projection
       // field, see companion/lib/devswarm-store.js computeSummary).
       const wsName = (rowWs && rowWs.label) || names.readName(home, id);
-      const oldestUnreadTs = Number.isFinite(entry.oldestDirectUnreadTs) ? entry.oldestDirectUnreadTs : null;
+      const oldestUnreadTs = oldestUnreadTsForGate;
       attention.push({ id, unread, cursor, total, status, urgencyMax, wsName, oldestUnreadTs, notDraining });
     }
 
@@ -2230,4 +2289,6 @@ module.exports = {
   // emit-dedupe normalizers + segment builders (tests/hooks/emit-dedupe.test.js):
   normalizeTableAges, normalizeInboxVolatile, buildUnreadSegment, buildOrphansSegment, logSegmentError,
   buildUrgentUnreadSegment, buildArchiveSegment, buildStaleRegistrySegment,
+  // inbox grace window (SkyCrew report fix) — exported for direct unit testing:
+  unreadIsGraced, resolveInboxGraceMs, DEFAULT_INBOX_GRACE_MS,
 };
