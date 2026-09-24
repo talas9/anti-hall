@@ -98,8 +98,8 @@ test('REPRODUCTION: the exact field-captured shape (fresh caught-up reader, stal
   const home = tmpHome(); const repo = makeGitRepo('deriv1');
   try {
     const id = 'uuid-like-id';
-    const FRESH_NONCE = 'anc:9001:1';
-    const STALE_NONCE = 'anc:9002:2';
+    const FRESH_NONCE = 'h:9001:1';
+    const STALE_NONCE = 'h:9002:2';
 
     // Both instances declare themselves (register) BEFORE any mail exists,
     // mirroring "present before the backlog arrived" — matches the real
@@ -167,12 +167,12 @@ test('REPRODUCTION: the exact field-captured shape (fresh caught-up reader, stal
     // tests/companion/devswarm-summary-cursor-derivation.test.js's dedicated
     // AMBIGUOUS-BRANCH LIVE RESOLUTION tests below for the "genuinely
     // drained -> 0" and "live read unavailable -> null" companions.
-    const origDerive = cli.deriveInstanceNonce;
-    cli.deriveInstanceNonce = () => FRESH_NONCE;
+    const origDerive = cli.deriveReaderNonce;
+    cli.deriveReaderNonce = () => FRESH_NONCE;
     let fixedUnread;
     try {
       fixedUnread = ownReader.ownReaderUnread(home, repo, id, entry, entry.unread);
-    } finally { cli.deriveInstanceNonce = origDerive; }
+    } finally { cli.deriveReaderNonce = origDerive; }
     assert.strictEqual(fixedUnread, 1, 'own cursor equal to the FIRST snapshot\'s own total is cache-ambiguous, but the live read settles it: exactly 1 new row genuinely exists');
 
     // Against the SECOND snapshot (`entry2`, total:931 — the cache has now
@@ -180,11 +180,11 @@ test('REPRODUCTION: the exact field-captured shape (fresh caught-up reader, stal
     // into "genuinely behind by one"), FRESH's cursor (930) is strictly
     // BELOW the cache's total -> cache-consistent -> the COMMON (non-live)
     // path computes the same real, trustworthy number: exactly 1.
-    cli.deriveInstanceNonce = () => FRESH_NONCE;
+    cli.deriveReaderNonce = () => FRESH_NONCE;
     let fixedUnread2;
     try {
       fixedUnread2 = ownReader.ownReaderUnread(home, repo, id, entry2, entry2.unread);
-    } finally { cli.deriveInstanceNonce = origDerive; }
+    } finally { cli.deriveReaderNonce = origDerive; }
     assert.strictEqual(fixedUnread2, 1, 'once the cache catches up past this reader\'s own position, the common (non-live) path independently confirms the same number');
   } finally { rm(home); rm(repo); }
 });
@@ -193,8 +193,8 @@ test('genuinely-unread case through the SAME real pipeline: FRESH reader stops s
   const home = tmpHome(); const repo = makeGitRepo('deriv2');
   try {
     const id = 'uuid-like-id-2';
-    const READER_NONCE = 'anc:9101:1';
-    const SIBLING_NONCE = 'anc:9102:2';
+    const READER_NONCE = 'h:9101:1';
+    const SIBLING_NONCE = 'h:9102:2';
     register(home, repo, id, 'sess-r', READER_NONCE);
     register(home, repo, id, 'sess-sib', SIBLING_NONCE);
     seed(home, repo, id, 250, 'batch');
@@ -222,12 +222,12 @@ test('genuinely-unread case through the SAME real pipeline: FRESH reader stops s
     assert.strictEqual(entry.cursor, 100, 'both instances at the same position -> shared floor also 100');
     assert.strictEqual(entry.unread, 150);
 
-    const origDerive = cli.deriveInstanceNonce;
-    cli.deriveInstanceNonce = () => READER_NONCE;
+    const origDerive = cli.deriveReaderNonce;
+    cli.deriveReaderNonce = () => READER_NONCE;
     let fixedUnread;
     try {
       fixedUnread = ownReader.ownReaderUnread(home, repo, id, entry, entry.unread);
-    } finally { cli.deriveInstanceNonce = origDerive; }
+    } finally { cli.deriveReaderNonce = origDerive; }
     assert.strictEqual(fixedUnread, 150, 'the reader is genuinely 150 behind -> must see the true count, nothing hidden');
   } finally { rm(home); rm(repo); }
 });
@@ -252,8 +252,8 @@ test('genuinely-unread case through the SAME real pipeline: FRESH reader stops s
 function buildReporterShape(tag) {
   const home = tmpHome(); const repo = makeGitRepo(tag);
   const id = 'reporter-shape-id';
-  const FRESH_NONCE = 'anc:9201:1';
-  const STALE_NONCE = 'anc:9202:2';
+  const FRESH_NONCE = 'h:9201:1';
+  const STALE_NONCE = 'h:9202:2';
   register(home, repo, id, 'sess-fresh', FRESH_NONCE);
   register(home, repo, id, 'sess-stale', STALE_NONCE);
   seed(home, repo, id, 859, 'batch1');
@@ -279,12 +279,12 @@ function buildReporterShape(tag) {
 test('AMBIGUOUS-BRANCH LIVE RESOLUTION: reporter\'s exact shape, NO new mail since the snapshot -> live resolves to 0, the gate would open', () => {
   const { home, repo, id, entry, FRESH_NONCE } = buildReporterShape('ambig1');
   try {
-    const origDerive = cli.deriveInstanceNonce;
-    cli.deriveInstanceNonce = () => FRESH_NONCE;
+    const origDerive = cli.deriveReaderNonce;
+    cli.deriveReaderNonce = () => FRESH_NONCE;
     let result;
     try {
       result = ownReader.ownReaderUnread(home, repo, id, entry, entry.unread);
-    } finally { cli.deriveInstanceNonce = origDerive; }
+    } finally { cli.deriveReaderNonce = origDerive; }
     assert.strictEqual(result, 0, 'the live store genuinely has nothing beyond FRESH\'s own position -> the ambiguity resolves to a real 0, not UNKNOWN — the reporter\'s gate must open');
   } finally { rm(home); rm(repo); }
 });
@@ -295,12 +295,12 @@ test('AMBIGUOUS-BRANCH LIVE RESOLUTION: reporter\'s exact shape PLUS 5 new messa
     // 5 more messages land AFTER the snapshot (`entry` is already captured;
     // this seeds directly into the live store, never touching the cache).
     seed(home, repo, id, 5, 'batch3');
-    const origDerive = cli.deriveInstanceNonce;
-    cli.deriveInstanceNonce = () => FRESH_NONCE;
+    const origDerive = cli.deriveReaderNonce;
+    cli.deriveReaderNonce = () => FRESH_NONCE;
     let result;
     try {
       result = ownReader.ownReaderUnread(home, repo, id, entry, entry.unread);
-    } finally { cli.deriveInstanceNonce = origDerive; }
+    } finally { cli.deriveReaderNonce = origDerive; }
     assert.strictEqual(result, 5, 'the live store now has 5 rows FRESH has not read -> the ambiguity resolves to the REAL count, never hidden as 0');
   } finally { rm(home); rm(repo); }
 });
@@ -312,12 +312,12 @@ test('AMBIGUOUS-BRANCH LIVE RESOLUTION: live read cannot run (repo/store gone) -
     // capturing `entry` — models "the live read itself cannot succeed",
     // distinct from "the live read succeeded and found 0/N".
     rm(repo);
-    const origDerive = cli.deriveInstanceNonce;
-    cli.deriveInstanceNonce = () => FRESH_NONCE;
+    const origDerive = cli.deriveReaderNonce;
+    cli.deriveReaderNonce = () => FRESH_NONCE;
     let result;
     try {
       result = ownReader.ownReaderUnread(home, repo, id, entry, entry.unread);
-    } finally { cli.deriveInstanceNonce = origDerive; }
+    } finally { cli.deriveReaderNonce = origDerive; }
     assert.strictEqual(result, null, 'a live read that cannot run must fail to UNKNOWN, never guess a number in either direction');
   } finally { rm(home); }
 });
@@ -351,12 +351,12 @@ test('INBOX-PATH FOLD-IN 1/3: durable inbox present, store and union genuinely A
   try {
     seed(home, repo, id, 5, 'batch3'); // 5 genuinely new store-side rows, empty NDJSON side
     const entryWithInbox = Object.assign({}, entry, { inboxPath: inbox.inboxPath, cursorPath: inbox.cursorPath });
-    const origDerive = cli.deriveInstanceNonce;
-    cli.deriveInstanceNonce = () => FRESH_NONCE;
+    const origDerive = cli.deriveReaderNonce;
+    cli.deriveReaderNonce = () => FRESH_NONCE;
     let result;
     try {
       result = ownReader.ownReaderUnread(home, repo, id, entryWithInbox, entryWithInbox.unread);
-    } finally { cli.deriveInstanceNonce = origDerive; }
+    } finally { cli.deriveReaderNonce = origDerive; }
     assert.strictEqual(result, 5, 'an empty NDJSON side contributes nothing -> the union agrees exactly with the store-only count, no double-count');
   } finally { inbox.cleanup(); rm(home); rm(repo); }
 });
@@ -375,12 +375,12 @@ test('INBOX-PATH FOLD-IN 2/3: union DEGRADES below the proven store truth (listM
     // internal exception.
     unreadLib.unionUnread = () => ({ unread: 1, total: 1, cursor: 0, storeCursor: 0, known: true, ndjsonUnreadLines: [], storeOnlyUnreadRows: [], oldestUnreadAgeMs: null });
     const entryWithInbox = Object.assign({}, entry, { inboxPath: inbox.inboxPath, cursorPath: inbox.cursorPath });
-    const origDerive = cli.deriveInstanceNonce;
-    cli.deriveInstanceNonce = () => FRESH_NONCE;
+    const origDerive = cli.deriveReaderNonce;
+    cli.deriveReaderNonce = () => FRESH_NONCE;
     let result;
     try {
       result = ownReader.ownReaderUnread(home, repo, id, entryWithInbox, entryWithInbox.unread);
-    } finally { cli.deriveInstanceNonce = origDerive; }
+    } finally { cli.deriveReaderNonce = origDerive; }
     assert.strictEqual(result, 5, 'a degraded union (1) must NOT override the proven live store count (5) — Math.max protects against hiding real mail');
   } finally { unreadLib.unionUnread = origUnion; inbox.cleanup(); rm(home); rm(repo); }
 });
@@ -396,12 +396,12 @@ test('INBOX-PATH FOLD-IN 3/3: union is LEGITIMATELY higher (real NDJSON-only mai
     // own (lower) number.
     unreadLib.unionUnread = () => ({ unread: 12, total: 17, cursor: 0, storeCursor: 0, known: true, ndjsonUnreadLines: [], storeOnlyUnreadRows: [], oldestUnreadAgeMs: null });
     const entryWithInbox = Object.assign({}, entry, { inboxPath: inbox.inboxPath, cursorPath: inbox.cursorPath });
-    const origDerive = cli.deriveInstanceNonce;
-    cli.deriveInstanceNonce = () => FRESH_NONCE;
+    const origDerive = cli.deriveReaderNonce;
+    cli.deriveReaderNonce = () => FRESH_NONCE;
     let result;
     try {
       result = ownReader.ownReaderUnread(home, repo, id, entryWithInbox, entryWithInbox.unread);
-    } finally { cli.deriveInstanceNonce = origDerive; }
+    } finally { cli.deriveReaderNonce = origDerive; }
     assert.strictEqual(result, 12, 'a legitimately higher union count must win — real NDJSON-only mail must never be clamped down to the store-only number');
   } finally { unreadLib.unionUnread = origUnion; inbox.cleanup(); rm(home); rm(repo); }
 });

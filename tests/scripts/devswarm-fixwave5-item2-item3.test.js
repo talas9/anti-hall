@@ -133,9 +133,11 @@ test('Item 2 RED/GREEN (end-to-end): a message arriving between read and ack mus
 
 test('Item 2 mutation check: reverting the ack-all target to advanceCursor() reproduces the live-recount loss', () => {
   const liveBefore = fs.readFileSync(DEVSWARM_PATH, 'utf8');
-  const oldStr = 'cursor = inboxCursor.ackTo(cursorPath, union.cursor + union.ndjsonUnreadLines.length, undefined, inboxPath); // ack-all (ndjson side) — over THIS call\'s read snapshot only';
+  // Phase 3: the ack-all target feeds commitNdAck (reader_cursors 'nd'); the
+  // mutant re-introduces the LIVE recount as that target.
+  const oldStr = 'cursor = commitNdAck(storeHandle, home, id, callerReader, union.cursor + union.ndjsonUnreadLines.length, descCursorPath, inboxPath, {';
   assert.ok(liveBefore.includes(oldStr), 'Item 2 fix line not found verbatim in cmdInbox ack-all branch');
-  const buggyStr = 'cursor = inboxCursor.advanceCursor(inboxPath, cursorPath); // ack-all (ndjson side)';
+  const buggyStr = 'cursor = commitNdAck(storeHandle, home, id, callerReader, inboxCursor.countMessages(inboxPath), descCursorPath, inboxPath, {';
   const copy = mutantKit.createCopy('anti-hall-fixwave5-item2');
   try {
     mutantKit.mutate(copy.devswarmPath, oldStr, buggyStr);

@@ -74,8 +74,8 @@ function register(home, repo, id, sessionId, nonce) {
     worktree: [repo], session: [sessionId || ('sess-' + id)],
   }, { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: nonce });
 }
-const A_NONCE = 'anc:1001:1';
-const B_NONCE = 'anc:2002:2';
+const A_NONCE = 'h:1001:1';
+const B_NONCE = 'h:2002:2';
 // One `read-primary` as a named instance. `instanceNonce` is the in-process
 // seam that stands in for "a different OS process identity".
 function readPrimary(home, repo, id, nonce) {
@@ -87,10 +87,12 @@ function cursorsDir(home) { return path.join(home, '.anti-hall', 'devswarm', 'cu
 function sharedCursor(home, id) {
   try { return inboxCursor.readCursor(path.join(cursorsDir(home), id + '.json')); } catch (_) { return 0; }
 }
-function instFiles(home, id) {
-  try {
-    return fs.readdirSync(cursorsDir(home)).filter((n) => n.startsWith(id + '#inst-'));
-  } catch (_) { return []; }
+// readerRows(home, repo, id) — Phase 3: the declared readers of `id` are rows
+// in the store's reader_cursors table (ns 'store'), not `#inst-` files.
+function readerRows(home, repo, id) {
+  const s = storeLib.openStore({ home, hash: repoKeyOf(repo), backend: backend() });
+  try { return s.readerCursorRows(id).filter((r) => r.ns === 'store' && r.reader !== '#floor'); }
+  finally { s.close(); }
 }
 
 const REAL_HOME = process.env.HOME;
@@ -152,7 +154,7 @@ test('8b211241bbe9: the floor advances once every instance has consumed through 
     seed(home, repo, id, 2, 'adv');
     readPrimary(home, repo, id, A_NONCE);
     readPrimary(home, repo, id, B_NONCE);
-    assert.strictEqual(instFiles(home, id).length, 2, 'both instances must hold their own cursor file');
+    assert.strictEqual(readerRows(home, repo, id).length, 2, 'both instances must hold their own reader_cursors row');
     assert.ok(sharedCursor(home, id) >= 2,
       'once BOTH instances have consumed through 2 the shared floor must advance (min rule is not a permanent pin)');
     // And neither instance re-reads.
@@ -176,18 +178,21 @@ test('8b211241bbe9: a cursor never advances when no rows were delivered', () => 
   } finally { rm(home); rm(repo); }
 });
 
-test('8b211241bbe9: an instance cursor file is created and is parseable', () => {
+test('8b211241bbe9 / Phase 3: registration declares ONE reader row keyed by the FULL nonce; no #inst file is written', () => {
   const home = tmpHome(); const repo = makeGitRepo('file');
   try {
     const id = 'primary-file';
     register(home, repo, id, undefined, A_NONCE);
     seed(home, repo, id, 1, 'file');
     readPrimary(home, repo, id, A_NONCE);
-    const files = instFiles(home, id);
-    assert.strictEqual(files.length, 1,
-      'exactly one instance cursor file must exist — registration DECLARED this instance and its read reused that same file');
-    assert.match(files[0], /#inst-[0-9a-f]{6}\.json$/,
-      'the instance file name must carry a six-hex short nonce');
+    const rows = readerRows(home, repo, id);
+    assert.strictEqual(rows.length, 1,
+      'exactly one reader row must exist — registration DECLARED this instance and its read reused that same row');
+    assert.strictEqual(rows[0].reader, A_NONCE, 'the key is the full h:<pid>:<startMs> nonce, never a 24-bit short6');
+    assert.strictEqual(rows[0].value, 1);
+    let names = [];
+    try { names = fs.readdirSync(cursorsDir(home)); } catch (_) { names = []; }
+    assert.deepStrictEqual(names.filter((n) => /#(inst|nd)-|#base/.test(n)), [], 'new code never writes #inst/#nd/#base');
   } finally { rm(home); rm(repo); }
 });
 
@@ -272,10 +277,10 @@ test('8b211241bbe9 R1: a NEWCOMER instance does not replay what the fleet consum
     seed(home, repo, id, 3, 'new');
     assert.strictEqual(readPrimary(home, repo, id, A_NONCE).messages.length, 3);
     assert.strictEqual(readPrimary(home, repo, id, A_NONCE).messages.length, 0, 'A does not re-read its own');
-    const c = readPrimary(home, repo, id, 'anc:3003:3');
+    const c = readPrimary(home, repo, id, 'h:3003:3');
     assert.strictEqual(c.messages.length, 0,
       'a brand-new nonce starts at the instance FLOOR, not the baseline — starting at the baseline replayed the entire backlog to every fresh instance');
-    const d = readPrimary(home, repo, id, 'anc:4004:4');
+    const d = readPrimary(home, repo, id, 'h:4004:4');
     assert.strictEqual(d.messages.length, 0, 'and so does the next one');
   } finally { rm(home); rm(repo); }
 });
@@ -291,7 +296,7 @@ test('8b211241bbe9 R1: a newcomer starts at the SLOWEST declared instance, not t
     cli.cmdInboxMessages(id, { unread: [true], limit: ['1'] }, {
       home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: B_NONCE,
     }, { ack: true });                                        // B consumes only 1
-    const c = readPrimary(home, repo, id, 'anc:5005:5');
+    const c = readPrimary(home, repo, id, 'h:5005:5');
     assert.ok(c.messages.length >= 2,
       'the newcomer inherits the FLOOR (the slowest declared reader), so nothing any live instance still needs is skipped; got ' + c.messages.length);
   } finally { rm(home); rm(repo); }
@@ -314,26 +319,24 @@ test('8b211241bbe9 R1: the two shared namespaces stay in lockstep after a siblin
   } finally { rm(home); rm(repo); }
 });
 
-test('8b211241bbe9 R1: reconcile journals its rewind — the one legal from > to', () => {
+test('Phase 3: there is no rewind path — reconcileOrphanCursor is gone and a later read never lowers any row', () => {
   const home = tmpHome(); const repo = makeGitRepo('rewind');
   try {
     const id = 'primary-rw';
+    assert.strictEqual(cli.reconcileOrphanCursor, undefined, 'the one allowRewind writer is deleted');
     register(home, repo, id, undefined, A_NONCE);
     seed(home, repo, id, 3, 'rw');
     readPrimary(home, repo, id, A_NONCE);
-    // Push ONE namespace above the others so reconcile has something to lower.
-    // `reconcileOrphanCursor` is reached from the orphan-healing path, not from
-    // `cmdReconcile`, so it is exercised directly here.
+    // Push the legacy JSON namespace ABOVE the table (an old build's own ack):
+    // nothing may rewind anything in response, in either direction.
     inboxCursor.ackTo(path.join(cursorsDir(home), id + '.json'), 99);
-    const s2 = storeLib.openStore({ home, hash: repoKeyOf(repo), backend: backend() });
-    try {
-      const desc = cli.readDescriptorFile(home, id);
-      cli.reconcileOrphanCursor(home, s2, id, desc, false);
-    } finally { s2.close(); }
-    const recs = cli.readCursorLog(home, repoKeyOf(repo), 200)
-      .concat(cli.readCursorLog(home, 'unknown', 200));
-    const rewind = recs.find((r) => r.verb === 'reconcile' && r.gate === 'allowRewind');
-    assert.ok(rewind, 'the rewind must be journaled, else it looks like a corrupt record: ' + JSON.stringify(recs.slice(-3)));
-    assert.ok(rewind.from > rewind.to, 'and it is the ONE legal from > to in the design');
+    readPrimary(home, repo, id, A_NONCE);
+    const cli2 = cli.healOrphanPartitions(home, { repoKey: repoKeyOf(repo), backend: backend() });
+    assert.ok(cli2, 'orphan heal runs');
+    assert.strictEqual(sharedCursor(home, id), 99, 'the legacy file is never lowered');
+    const rows = readerRows(home, repo, id);
+    assert.strictEqual(rows[0].value, 3, 'the reader row is never lowered or raised by a foreign file');
+    const recs = cli.readCursorLog(home, repoKeyOf(repo), 200).concat(cli.readCursorLog(home, 'unknown', 200));
+    assert.ok(!recs.some((r) => Number.isFinite(r.from) && Number.isFinite(r.to) && r.to < r.from), 'no journaled from > to: ' + JSON.stringify(recs.slice(-3)));
   } finally { rm(home); rm(repo); }
 });

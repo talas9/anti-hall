@@ -819,10 +819,14 @@ function unionPendingFor(descriptor, home, opts) {
       return { pending: p, pendingInbound: p, notDraining: false, oldestUnreadAgeMs: null };
     }
     try {
-      const union = unreadLib.unionUnread({
-        inboxPath: descriptor.inboxPath, cursorPath: descriptor.cursorPath,
-        id: descriptor.id, storeHandle, fsi, now: o.now,
+      // Phase 3: ONE countFor, floor view (reader null — liveness asks "is this
+      // mailbox being drained by anyone"). A read error is UNKNOWN: reported as
+      // pending (fail toward the alarm), never as an empty mailbox.
+      const union = require('./reader-cursors.js').countFor(storeHandle, {
+        reader: null, partition: descriptor.id, inboxPath: descriptor.inboxPath,
+        cursorPath: descriptor.cursorPath, home, fsi, now: o.now,
       });
+      if (union.unknown) return { pending: true, pendingInbound: true, notDraining: false, oldestUnreadAgeMs: null, unknown: true };
       const pending = union.unread > 0;
       const notDraining = pending && Number.isFinite(union.oldestUnreadAgeMs) && union.oldestUnreadAgeMs > NOT_DRAINING_AGE_MS;
       let pendingInboundCount = (union.ndjsonUnreadLines || []).length;

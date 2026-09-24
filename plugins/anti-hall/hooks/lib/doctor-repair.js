@@ -2323,6 +2323,12 @@ function runResurrectedRepair(opts) {
       + errors + ' error(s) during apply (fail-open, see detail)');
     return results;
   }
+  const pending = (r && r.pending) || 0;
+  if (pending > 0) {
+    push('repair-resurrected', 'failed', 're-retired ' + reRetired + '/' + candidates + ' resurrected row(s) — '
+      + pending + ' pending (a lock was busy or the forward target vanished; nothing moved for them) — re-run to finish');
+    return results;
+  }
   push('repair-resurrected', 'fixed', 're-retired ' + reRetired + ' resurrected registry row(s)'
     + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
     + (unhealable ? '; ' + unhealable + ' additional row(s) left in place (manual review, no safe forward target)' : ''));

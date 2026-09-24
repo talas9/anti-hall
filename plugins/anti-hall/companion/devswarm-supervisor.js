@@ -38,7 +38,7 @@ const {
   devswarmRoot, computeLiveness, writeVerdict, isSafeId, rowLivenessState, isSessionAliveRow,
   DEFAULT_IDLE_MS, DEFAULT_COOLDOWN_MS, DEFAULT_NUDGE_WINDOW_MS,
 } = require('./lib/liveness.js');
-const { pokeOrEscalate, notifyParentEscalation, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
+const { pokeOrEscalate, notifyParentEscalation, drainEscalationIntents, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS } = require('./lib/recovery.js');
 const alog = require('./lib/anti-hall-log.js'); // leaf module (fs/os/path only) — safe at top level, no cycle risk
 // devswarm-archived-cache: leaf-ish (fs/path + liveness.js, which this file
 // already loads). It lazy-requires THIS module for the sweep interval, so the
@@ -492,6 +492,15 @@ function sweepOnce(opts) {
     } catch (e) {
       results.push({ id: d && d.id, error: String(e && e.message) });
     }
+  }
+  // Parked escalation notices (recovery.js escalation-pending/) are retried on
+  // EVERY sweep, independent of any child's verdict: an `escalated` child is
+  // sticky and no longer reaches pokeOrEscalate, so its one-shot notice would
+  // otherwise never be re-sent. Reported on the array (additive property).
+  try {
+    results.escalationsDrained = (deps.drainEscalationIntents || drainEscalationIntents)(home, { now: o.now, env, fsi: F }, deps.openParentStore);
+  } catch (e) {
+    results.escalationsDrained = { error: String(e && e.message) };
   }
   return results;
 }

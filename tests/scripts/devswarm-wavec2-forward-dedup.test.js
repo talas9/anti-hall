@@ -218,7 +218,8 @@ test('item 5 (a): forwardArchivedOrphanUnread stamps origHash on every copy it w
       const origHash = storeLib.meshMessageHash(orig);
       storeLib.appendMeshMessage(s, Object.assign({}, orig, { hash: origHash }));
 
-      const r = cli.forwardArchivedOrphanUnread(s, 'arch-src', 'surv-dst', { now: Date.now() });
+      s.upsertRegistry({ id: 'surv-dst', worktreePath: repo, sessionId: 'sess-surv' }); // a real forward target is registered
+      const r = cli.forwardArchivedOrphanUnread(s, 'arch-src', 'surv-dst', { now: Date.now(), home });
       assert.equal(r.forwarded, 1, JSON.stringify(r));
 
       const rows = s.listMessages('surv-dst');
@@ -240,8 +241,9 @@ test('item 5 (a): a CHAINED forward keeps pointing at the ROOT original, never a
       const orig = originalFields('arch-a', 'root message', Date.now());
       const rootHash = storeLib.meshMessageHash(orig);
       storeLib.appendMeshMessage(s, Object.assign({}, orig, { hash: rootHash }));
-      cli.forwardArchivedOrphanUnread(s, 'arch-a', 'arch-b', { now: Date.now() });
-      cli.forwardArchivedOrphanUnread(s, 'arch-b', 'final-c', { now: Date.now() });
+      for (const id of ['arch-b', 'final-c']) s.upsertRegistry({ id, worktreePath: repo, sessionId: 'sess-' + id }); // real forward targets are registered
+      cli.forwardArchivedOrphanUnread(s, 'arch-a', 'arch-b', { now: Date.now(), home });
+      cli.forwardArchivedOrphanUnread(s, 'arch-b', 'final-c', { now: Date.now(), home });
       const rows = s.listMessages('final-c');
       assert.equal(rows.length, 1);
       assert.equal(rows[0].origHash, rootHash,

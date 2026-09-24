@@ -137,6 +137,20 @@ Codex code path. Its deny behavior depends on the harness supplying subagent mar
 Blocks whenever the PreToolUse payload shows subagent context (skip via `ANTIHALL_ALLOW_SUBAGENT_MAILBOX=1` or
 the `devswarm-subagent-mailbox-guard` skip name); see `docs/KB-devswarm-hivecontrol.md` §42.
 
+**One read-position table (mesh redesign Phase 3 — supersedes the per-instance files below).**
+Every read position is a row in the store's `reader_cursors` table: `'#floor'` (the stored,
+monotone floor per partition and namespace) or a reader `h:<pid>:<startMs>` — the NEAREST
+harness ancestor, so a main-thread, cron or Monitor turn of one session is one reader and two
+nested sessions are two. A headless caller (Codex, CI, no harness ancestor) reads the floor
+only. Writes are max-only; an ack writes the caller's row and the floor (max(F, MIN of live
+declared readers)) in ONE transaction; a reader is excluded from that MIN only when a process
+snapshot PROVES it ended — never because a session file is missing. `inbox count/read/ack`,
+`read-primary`, the Stop gates, liveness and the summary all count through one `countFor`; a
+store read error is UNKNOWN (a gate blocks with the reason), never 0. The legacy files named
+below are imported once (the update's `reader-cursors-import` stage, `doctor --repair`, or
+lazily on first ack), read-only after that, never deleted, and the shared pair and descriptor
+cursor are still raised (upward only) for one release so older builds stay loss-free.
+
 **Per-instance cursors (v0.99.0, defect 8b211241bbe9).** The read cursor is no longer one
 value per row id. Each INSTANCE — one OS process identity, stable across every CLI call from
 one harness session, so a main-thread turn, a cron turn and a Monitor turn are the SAME

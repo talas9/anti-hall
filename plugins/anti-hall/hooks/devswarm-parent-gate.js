@@ -738,7 +738,12 @@ function main() {
   // Primary can never hit the 200-sender backstop, so this cannot make a
   // vanilla project noisy either). `descriptors` was already resolved above
   // (moved up for the identity-family cross-check) — reused here unchanged.
-  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated) return;
+  // Escalation notices the supervisor could not deliver to this Primary (parked
+  // in recovery.js escalation-pending/) block like unread mail until delivered.
+  let parkedSegment = null;
+  try { parkedSegment = require('../companion/lib/recovery.js').parkedEscalationSegment(home, own.id, CLI); } catch (_) { parkedSegment = null; }
+
+  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated && !parkedSegment) return;
 
   // Build the blocking SET: workspaces with unread backlog past their cursor OR a
   // stale/escalated verdict, PLUS the Primary's own unread. All reads are pure fs
@@ -1098,41 +1103,18 @@ function main() {
         const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: d.worktreePath, id: d.id, home, env: process.env, repoKey: unionKey });
         if (storeHandle) {
           try {
-            // CURSOR-NAMESPACE PARITY (v0.102.2): every OTHER unionUnread call
-            // site (scripts/devswarm.js's read-primary/peek-primary,
-            // devswarm-child-gate.js's readDurableUnread,
-            // devswarm-child-drain.js) sizes the store side from THIS
-            // reader's own per-instance position via `storeBaseCursor`
-            // (scripts/devswarm.js's siblingBaseCursor) — this call site was
-            // the one place in the repo still letting unionUnread default to
-            // `storeHandle.cursorValue(id)`, the cross-instance MIN-floor
-            // cursor, silently disagreeing with every sibling on where this
-            // reader's own drain position actually is. Same lazy + fail-open
-            // idiom as the sibling call sites: any resolution failure leaves
-            // `unionStoreBase` undefined, which unionUnread treats exactly as
-            // before this fix (its own pre-fix default).
-            let unionStoreBase;
-            try {
-              const devswarmCli = require('../scripts/devswarm.js'); // lazy: side-effect-free
-              // NONCE IS PER-READER, NOT PER-PARTITION (fix for the inert
-              // v0.102.2 edit): deriveInstanceNonce matches the CALLING
-              // process's own ancestry against the cwd it's handed — every
-              // other call site in scripts/devswarm.js passes the reader's
-              // own cwd (defaulting to process.cwd()), never a target's.
-              // Passing `d.worktreePath` (a descriptor's, possibly a CHILD's,
-              // worktree) here made the match fail for every descriptor that
-              // isn't the gate's own row, falling back to an undeclared
-              // `self:<parentPid>:<startMs>` nonce that no reader ever
-              // registers under — siblingBaseCursor then found nothing for
-              // it and dropped back to the cross-instance MIN-floor cursor,
-              // exactly the phantom-unread source this fix was meant to kill.
-              // Use the gate's OWN cwd (`cwd`, this Stop hook's reader
-              // identity, set above) for every descriptor in this loop.
-              const nonce = devswarmCli.deriveInstanceNonce({ home, cwd });
-              const shortNonce = devswarmCli.shortInstanceNonce(nonce);
-              unionStoreBase = shortNonce ? devswarmCli.siblingBaseCursor(storeHandle, home, d.id, shortNonce) : undefined;
-            } catch (_) { unionStoreBase = undefined; }
-            const union = devswarmUnread.unionUnread({ inboxPath: d.inboxPath, cursorPath: d.cursorPath, id: d.id, storeHandle, storeBaseCursor: unionStoreBase });
+            // Phase 3 (reader_cursors): ONE countFor. The Primary is looking at a
+            // CHILD's partition — a monitoring view, so reader=null (the floor:
+            // "does the child have backlog", conservative). A read error is
+            // UNKNOWN and blocks with a reason — never a silent 0.
+            const readerCursors = require('../companion/lib/reader-cursors.js');
+            const union = readerCursors.countFor(storeHandle, { reader: null, partition: d.id, inboxPath: d.inboxPath, cursorPath: d.cursorPath, home });
+            if (union.unknown) {
+              unreadUnknown = true;
+              unreadReason = union.reason || 'store-read-error';
+              unreadReasonPath = null;
+              unreadReasonErrno = null;
+            }
             for (const row of union.storeOnlyUnreadRows) {
               if (isNoiseText(row && row.body)) continue;
               // This Primary's own outbound send, sitting in the recipient's
@@ -1144,7 +1126,11 @@ function main() {
             try { storeHandle.close(); } catch (_) {}
           }
         }
-      } catch (_) { /* fail-open: NDJSON-only realUnread stands */ }
+      } catch (_) {
+        // The count itself threw: UNKNOWN (block-with-reason), never a silent 0.
+        unreadUnknown = true;
+        unreadReason = 'store-read-threw';
+      }
     }
 
     const verdict = foreignProject ? null : readVerdict(d.id, home);
@@ -1503,7 +1489,7 @@ function main() {
   // of questions this Primary structurally CANNOT see, so it must never be
   // waved through just because the visible `blocking`/`unanswered` happen to
   // be empty this pass.
-  if (blocking.length === 0 && unanswered.length === 0 && !truncated) {
+  if (blocking.length === 0 && unanswered.length === 0 && !truncated && !parkedSegment) {
     try { fs.unlinkSync(stateFile); } catch (_) {}
     return;
   }
@@ -1517,6 +1503,7 @@ function main() {
       .map((b) => b.id + '\x00' + b.unread + '\x00' + (b.unknown ? '1' : '0') + '\x00' + b.status)
       .sort()
       .join('\x1f')
+    + (parkedSegment ? '\x1eparked:' + parkedSegment : '')
   ).digest('hex');
 
   // Load prior loop-state { sig, blocks, escalated }.
@@ -1764,7 +1751,10 @@ function main() {
   // this SAME forced block, bounded by the SAME per-SET cap above. Claude-only.
   const wakeLine = wakeReassertLine(process.env, false);
 
-  const reason = buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache, own.ownSource || null) + wakeLine;
+  const base = (blocking.length || unanswered.length || truncated)
+    ? buildReason(blocking, own.id, unanswered, escalateTimes, truncated, qEscalateTimes, hasIntent, !!own.unknown, unansweredInformational, !!own.staleOwnCache, own.ownSource || null)
+    : 'anti-hall: DevSwarm Stop gate.';
+  const reason = base + (parkedSegment ? '\n\n' + parkedSegment : '') + wakeLine;
 
   // IN-FLIGHT DRAIN MARKER: evaluated ABOVE now (before this persist), not
   // here — see the "R11 Auditor A2 fix" comment at that earlier call site for
@@ -1877,6 +1867,10 @@ function reasonLabel(m) {
     case 'own-summary-unreadable': return 'own-summary unreadable/corrupt' + suffix;
     case 'own-cache-stale': return 'own-summary cache predates this reader\'s live position (live recheck unresolved)' + suffix;
     case 'read-threw': return 'inbox read raised an error' + suffix;
+    // Phase 3 (reader_cursors): a store-side read error is UNKNOWN, never "0 unread".
+    case 'store-read-error': return 'mesh store unreadable (unread count UNKNOWN)' + suffix;
+    case 'reader-cursors-unreadable': return 'read positions (reader_cursors) unreadable (unread count UNKNOWN)' + suffix;
+    case 'store-read-threw': return 'mesh store read raised an error (unread count UNKNOWN)' + suffix;
     default: return 'inbox status could not be confirmed' + suffix;
   }
 }

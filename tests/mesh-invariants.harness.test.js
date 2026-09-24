@@ -97,7 +97,7 @@ function runOneSeed(seed, opts) {
       if (!r1.ok) failures.I1.push({ step: i, op, detail: r1.detail });
 
       if (opts.checkTodos) {
-        const r2 = i2.check(fixture, READER_IDS);
+        const r2 = i2.check(fixture, READER_IDS, env);
         if (!r2.ok) failures.I2.push({ step: i, op, detail: r2.detail });
         for (const id of READER_IDS) {
           const r3 = i3.check(fixture, id, env, now);
@@ -187,9 +187,49 @@ test('I7: doctor --check (in-process runChecks) writes nothing under the isolate
 // guard, not by rewriting the check.
 // ============================================================================
 
-test.todo('I2 per-reader descriptor cursor floor monotone non-decreasing across a run '
-  + '(fragmentation across 5 cursor-file kinds + 1 SQLite row predicted to disagree — '
-  + 'plan §Evidence "unread count")');
+// I2 checker self-test (vacuity guard): the checker must SEE a lowered row. A
+// real ack creates the '#floor' row; a lower record is then appended straight
+// into the journal file (bypassing every API, which are max-only) and the
+// reducer — which keeps the max — must still read the higher value, while a
+// tracker fed a genuinely lower reading must fail.
+test('I2 checker self-test: the tracker fails on a lowered reader_cursors reading', () => {
+  const fixture = makeFixture(['r1', 'sender'], 'i2-self');
+  try {
+    const env = { ANTIHALL_INGEST_DRY_RUN: '1' };
+    ops.opRegister(fixture, 'r1', BASE_NOW);
+    ops.opSend(fixture, 'sender', 'r1', 'one', BASE_NOW + 1);
+    ops.cli.run(['inbox', 'read-primary', 'r1'], ops.baseCtx(fixture, 'r1', BASE_NOW + 2));
+    const i2 = inv.createI2Tracker();
+    assert.deepStrictEqual(i2.check(fixture, ['r1'], env), { ok: true });
+    const s = ops.storeLib.openStore({ home: fixture.home, hash: fixture.repoKey, backend: 'journal', env });
+    let floorVal;
+    try { floorVal = s.readerCursorRows('r1').find((r) => r.ns === 'store' && r.reader === '#floor').value; } finally { s.close(); }
+    assert.ok(floorVal > 0, 'precondition: the ack raised the floor (got ' + floorVal + ')');
+    const rcFile = path.join(fixture.home, '.anti-hall', 'devswarm', 'store', fixture.repoKey, 'journal', 'reader_cursors.ndjson');
+    fs.appendFileSync(rcFile, JSON.stringify({ partition: 'r1', ns: 'store', reader: '#floor', value: 0, updatedAt: BASE_NOW + 3 }) + '\n');
+    assert.deepStrictEqual(i2.check(fixture, ['r1'], env), { ok: true }, 'the journal reducer is MAX per key: a stray lower record cannot lower a row');
+    // Feed the tracker a lower reading directly: it must fail.
+    const i2b = inv.createI2Tracker();
+    i2b.check(fixture, ['r1'], env);
+    const origOpen = ops.storeLib.openStore;
+    ops.storeLib.openStore = (o) => { const h = origOpen(o); const r = h.readerCursorRows.bind(h); h.readerCursorRows = (p) => r(p).map((x) => Object.assign({}, x, { value: 0 })); return h; };
+    try {
+      const res = i2b.check(fixture, ['r1'], env);
+      assert.strictEqual(res.ok, false, 'the tracker must report a decrease: ' + JSON.stringify(res));
+    } finally { ops.storeLib.openStore = origOpen; }
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+// Phase 3 flipped I2 to a REAL test: the checker reads every reader_cursors row
+// (both namespaces, '#floor' included) and every write is MAX-only.
+test('I2 every reader_cursors row is monotone non-decreasing across a seeded run', () => {
+  for (const seed of SEEDS) {
+    const failures = runOneSeed(seed, { checkTodos: true });
+    assert.equal(failures.I2.length, 0, 'seed=' + seed + ' ' + JSON.stringify(failures.I2[0]));
+  }
+});
 
 test.todo('I3 delivered+unread==total per reader, no loss — devswarm-pull.js:28 '
   + 'destructive-read-before-append loss window (plan §Evidence "Delivery")');
@@ -239,8 +279,12 @@ test('I3 checker self-test: send 2 / ack 0 -> measured unread == 2 and I3 holds'
 test.todo('I3 loss under an injected pull crash — devswarm-pull.js ~21-28 destructive native '
   + 'read succeeds, durable NDJSON append throws, recovery pull cannot recover the lost messages');
 
-test.todo('I2/I3 shared unread pinned at abandoned one-shot readers\' MIN floor — devswarm.js '
-  + 'instanceFloor never converges toward a persistent real reader\'s own progress');
+// Phase 3 flipped this from todo to a REAL test: one reader_cursors table, a
+// headless ack moves the stored floor when no live declared reader pins it.
+test('I2/I3 shared unread converges past abandoned one-shot readers (reader_cursors floor)', () => {
+  const r = scenarios.scenarioI2I3CursorConvergence();
+  assert.ok(r.ok, 'I2/I3 cursor convergence: ' + JSON.stringify(r.detail));
+});
 
 // ============================================================================
 // STRICT MODE (ANTIHALL_HARNESS_STRICT=1): the real, runnable assertion code

@@ -260,13 +260,21 @@ function findRecentDropAttempt(env, home, cwd, episodeSince, diag) {
     // Own nonce (the gate's own process/ancestor identity) — required for
     // authentication below. Fail CLOSED (return null) if it cannot be
     // derived at all; never treat "can't verify" as "verified".
+    // B5: the reader nonce (nearest harness ancestor, 'h:<pid>:<startMs>') —
+    // the SAME value the heartbeat CLI stamps on its attempt record. A HEADLESS
+    // caller (Codex, no harness ancestor) legitimately has NO nonce (null): the
+    // nonce path then simply cannot match and only SESSION authentication can
+    // accept a record. Fail CLOSED only when the derivation itself is
+    // unavailable or throws — "can't verify" is never "verified".
     let ownNonce = null;
+    let nonceDerivable = false;
     try {
-      if (cliMod && typeof cliMod.deriveInstanceNonce === 'function') {
-        ownNonce = cliMod.deriveInstanceNonce({ home, cwd });
+      if (cliMod && typeof cliMod.deriveReaderNonce === 'function') {
+        ownNonce = cliMod.deriveReaderNonce({ home, cwd });
+        nonceDerivable = true;
       }
-    } catch (_) { ownNonce = null; }
-    if (typeof ownNonce !== 'string' || !ownNonce) {
+    } catch (_) { ownNonce = null; nonceDerivable = false; }
+    if (!nonceDerivable || (ownNonce !== null && (typeof ownNonce !== 'string' || !ownNonce))) {
       if (diag && typeof diag === 'object') diag.nonceFailClosed = true;
       return null;
     }
@@ -362,7 +370,7 @@ function findRecentDropAttempt(env, home, cwd, episodeSince, diag) {
         let row;
         try { row = JSON.parse(line); } catch (_) { continue; }
         if (!row || !Number.isFinite(row.ts) || row.ts < episodeSince) continue;
-        const nonceMatch = typeof row.instanceNonce === 'string' && row.instanceNonce === ownNonce;
+        const nonceMatch = typeof ownNonce === 'string' && typeof row.instanceNonce === 'string' && row.instanceNonce === ownNonce;
         const sessionMatch = typeof row.sessionId === 'string' && row.sessionId !== ''
           && ownSessionIds.has(row.sessionId);
         if (!nonceMatch && !sessionMatch) {
@@ -375,7 +383,7 @@ function findRecentDropAttempt(env, home, cwd, episodeSince, diag) {
     if (!latest && mismatchRow && diag && typeof diag === 'object') {
       diag.mismatch = {
         rowNoncePrefix: typeof mismatchRow.instanceNonce === 'string' ? mismatchRow.instanceNonce.slice(0, 12) : null,
-        ownNoncePrefix: ownNonce.slice(0, 12),
+        ownNoncePrefix: typeof ownNonce === 'string' ? ownNonce.slice(0, 12) : null,
       };
     }
     return latest;
@@ -561,26 +569,25 @@ function readDurableUnread(env, home) {
         const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: desc.worktreePath, id, home, env });
         if (storeHandle) {
           try {
-            // OWN-INSTANCE PROJECTION (defect f061789267c1 / a77b85571dfa, P0)
-            // — same fix as devswarm-child-drain.js's identical pattern: this
-            // is the child reading its OWN mailbox, so size the store side
-            // from THIS instance's position (scripts/devswarm.js's
-            // siblingBaseCursor), not the cross-instance min floor. Fail-open
-            // to the pre-fix default on any resolution failure.
-            let unionStoreBase;
-            try {
-              const devswarmCli = require('../scripts/devswarm.js'); // lazy: side-effect-free
-              const nonce = devswarmCli.deriveInstanceNonce({ home, cwd: desc.worktreePath });
-              const shortNonce = devswarmCli.shortInstanceNonce(nonce);
-              unionStoreBase = shortNonce ? devswarmCli.siblingBaseCursor(storeHandle, home, id, shortNonce) : undefined;
-            } catch (_) { unionStoreBase = undefined; }
-            const union = devswarmUnread.unionUnread({ inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, id, storeHandle, storeBaseCursor: unionStoreBase });
+            // Phase 3 (reader_cursors): the child's OWN mailbox via ONE countFor
+            // (own reader row, or the floor when headless). A read error is
+            // UNKNOWN: reported as { unknown:true } so the gate blocks with a
+            // reason instead of reading it as "0 unread".
+            let reader = null;
+            try { reader = require('../scripts/devswarm.js').deriveReaderNonce({ home }); } catch (_) { reader = null; }
+            const union = require('../companion/lib/reader-cursors.js').countFor(storeHandle, {
+              reader, partition: id, inboxPath: desc.inboxPath, cursorPath: desc.cursorPath, home,
+            });
+            if (union.unknown) return { known: false, count: 0, unknown: true, reason: union.reason || 'store-read-error' };
             return { known: !!union.known, count: union.known ? union.unread : 0 };
           } finally {
             try { storeHandle.close(); } catch (_) {}
           }
         }
-      } catch (_) { /* fall through to NDJSON-only below */ }
+      } catch (e) {
+        // The store-side count THREW: unknown, never "0 unread".
+        return { known: false, count: 0, unknown: true, reason: 'store-read-threw' };
+      }
     }
     const u = readUnread(desc.inboxPath, desc.cursorPath);
     return { known: !!u.known, count: u.known ? u.count : 0 };
@@ -782,7 +789,9 @@ function main() {
   }
   if (reported || dropAttempt) {
     const durable = readDurableUnread(process.env, os.homedir());
-    if (!(durable.known && durable.count > 0)) return;
+    // Phase 3: an UNKNOWN unread (store read error) is NOT satisfaction — the
+    // gate blocks with the reason (bounded by the caps below).
+    if (!(durable.known && durable.count > 0) && !durable.unknown) return;
   }
 
   // D13 (v0.97.0): a fresh, zero-unread `inbox tick` marker is ITSELF a
@@ -795,7 +804,7 @@ function main() {
   // spawn cost just to re-evaluate this).
   if (tickMarkerFreshZero(process.env, os.homedir(), now)) {
     const durable = readDurableUnread(process.env, os.homedir());
-    if (!(durable.known && durable.count > 0)) return;
+    if (!(durable.known && durable.count > 0) && !durable.unknown) return;
   }
 
   // Cap reset: once RESET_MS has elapsed since the last forced block, treat this
@@ -843,10 +852,15 @@ function main() {
   // INBOUND check only now that we are actually about to block (never on the
   // cap-exhausted yield path above) — a healthy child never pays the probe cost.
   const unreadPending = hasUnreadParentMessages(process.env, os.homedir());
+  const durableNow = unreadPending ? null : readDurableUnread(process.env, os.homedir());
   const inboundPrefix = unreadPending
     ? 'DEVSWARM CHILD INBOX — you have unpulled/unread parent message(s): run ' +
       '`node ' + CLI + ' inbox pull ' + resolvedIdSafe(process.env) + '` (or `inbox read` ' +
       'if already pulled), then `inbox ack` once addressed — BEFORE you stop. '
+    : (durableNow && durableNow.unknown)
+    ? 'DEVSWARM CHILD INBOX — your unread count is UNKNOWN (' + String(durableNow.reason || 'store-read-error') +
+      '): the store could not be read, so this gate cannot prove your inbox is empty. Run `node ' + CLI +
+      ' inbox count ' + resolvedIdSafe(process.env) + '` and read any mail BEFORE you stop. '
     : '';
 
   // WAKE RE-VERIFY (v0.59, reused not re-invented — see header): rides along on

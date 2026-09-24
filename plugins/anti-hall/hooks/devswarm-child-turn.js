@@ -620,9 +620,9 @@ function registerChildDescriptor(env, sessionId, cwd, home) {
   // incident's phantom IS a real descriptor FILE (dead inbox/cursor paths but
   // otherwise well-formed), so it survives that layer untouched forever. This
   // auto-cleans it on the NEXT real registration for the same worktree.
-  try { retirePhantomWorktreeDuplicates(dir, id, worktreePath, home, env); }
-  catch (_) { /* fail-open: phantom retirement must never block a turn */ }
-
+  // Runs from the caller AFTER registerStoreDescriptor (see main): the phantom's
+  // unread is forwarded INTO this id's partition, and appendIntoPartition only
+  // forwards into a destination registered in that store.
   return desc;
 }
 
@@ -706,7 +706,9 @@ function retirePhantomWorktreeDuplicates(dir, keepId, worktreePath, home, env) {
             if (repokeyMod) { try { repoKey = repokeyMod.repoKeyForWorktree(worktreePath); } catch (_) { repoKey = null; } }
             if (!s) s = storeMod.openStore({ home, workspaceId: keepId, hash: repoKey || undefined, env });
             const result = cliMod.foldGroupIntoSurvivor(s, home, keepId, [cand]);
-            forwardOk = !(result && result.forwardFailed && result.forwardFailed.length);
+            // PENDING (lock busy / survivor not a destination) is NOT forwarded:
+            // archiving now would strand the candidate's unread. Retry next turn.
+            forwardOk = !!result && !(result.forwardFailed && result.forwardFailed.length) && !result.pending;
           } catch (_) { forwardOk = false; }
         }
       }
@@ -844,6 +846,12 @@ function main() {
     // Isolated in its OWN try (already internally fail-open) so a store-side
     // failure can never suppress the fs descriptor write above.
     try { registerStoreDescriptor(desc, home); } catch (_) {}
+    // F3 part 2 (see registerChildDescriptor): retire same-worktree phantom
+    // descriptors, forwarding their unread into THIS (now registered) id first.
+    if (desc && desc.id && desc.worktreePath) {
+      try { retirePhantomWorktreeDuplicates(path.join(devswarmRoot(home), 'workspaces'), desc.id, desc.worktreePath, home, env); }
+      catch (_) { /* fail-open: phantom retirement must never block a turn */ }
+    }
   } catch (_) { /* fail-open: never block a turn on a descriptor write */ }
 
   // Daemon-LIVENESS staleness banner (Phase 7, PLAN-v0.57-mesh.md D25) — the

@@ -63,6 +63,23 @@ const path = require('node:path');
 const cp = require('node:child_process');
 
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
+// These fixtures test the fold DECISION (cursor / anchor logic) from the production
+// caller shape: the survivor is a REGISTERED row and the caller HOLDS its lock
+// (cmdRegister -> retireWorktreeDuplicates). A fake-home fixture gets a real tmp
+// home for the lock. The lock + recheck themselves are proven in
+// devswarm-partition-append.test.js / devswarm-partition-lock-proofs.test.js.
+const FAKE_HOME = '/nonexistent-home-fixture';
+const LOCK_HOME = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'ah-fold-lockhome-'));
+function asSurvivorCaller(cliObj, s, home, survivorId, cands, opts) {
+  const h = home === FAKE_HOME ? LOCK_HOME : home;
+  if (typeof s.listRegistry !== 'function') s.listRegistry = () => [{ id: survivorId }];
+  else if (!s.listRegistry().some((r) => r && String(r.id) === String(survivorId))) {
+    s.upsertRegistry({ id: survivorId, worktreePath: '/fake/survivor/' + survivorId, sessionId: 'sess-survivor' });
+  }
+  const r = cliObj.withIdLock(String(survivorId), h, () => cliObj.foldGroupIntoSurvivor(s, h, survivorId, cands, opts));
+  if (r && r.lockBusy) throw new Error('fixture: survivor lock unavailable');
+  return r;
+}
 const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 const inst = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
@@ -89,6 +106,7 @@ function addLinkedWorktree(mainDir, tag) {
   return wt;
 }
 function topOf(dir) { return inst.resolveWorktree(dir); }
+const { withReaderCursors } = require('../helpers/fake-reader-cursors.js');
 function meshOf(dir) { return inst.primaryWorkspaceId(inst.resolveWorktree(dir)); }
 
 test('SUCCESS CONDITION: a distinct-live-child candidate that the fold LEFT (never tombstoned) has its cursor advanced to messageCount — its already-forwarded backlog stops rendering as unread forever', () => {
@@ -169,7 +187,7 @@ test('PARTIAL-FORWARD GUARD: foldGroupIntoSurvivor never advances a candidate\'s
   };
 
   const candidateRow = { id: CANDIDATE, worktreePath: '/wt/fake', sessionId: 'sess-candidate', updatedAt: 1, writeSeq: 1 };
-  const res = cli.foldGroupIntoSurvivor(fakeS, /* home */ '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+  const res = asSurvivorCaller(cli, fakeS, /* home */ '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
 
   assert.deepStrictEqual(res.forwardFailed, [CANDIDATE], 'the candidate must be reported forwardFailed');
   assert.deepStrictEqual(res.retired, [], 'nothing tombstoned on a partial forward');
@@ -270,7 +288,7 @@ test('RED: a native (non-forwardable) row sandwiched between two forwardable row
   };
   const candidateRow = { id: CANDIDATE, worktreePath: '/wt/fake', sessionId: 'sess-candidate', updatedAt: 1, writeSeq: 1 };
 
-  cli.foldGroupIntoSurvivor(fakeS, /* home */ '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+  asSurvivorCaller(cli, withReaderCursors(fakeS), /* home */ '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
 
   assert.strictEqual(appendCalls, 2, 'precondition: both forwardable rows (h1, h3) were actually forwarded — the gap does not stop forwarding, only cursor advance');
   assert.deepStrictEqual(setCursorCalls, [{ id: CANDIDATE, val: 1 }],
@@ -295,7 +313,7 @@ test('GUARD: a candidate whose ENTIRE unread range is non-forwardable native mai
   };
   const candidateRow = { id: CANDIDATE, worktreePath: '/wt/fake', sessionId: 'sess-candidate', updatedAt: 1, writeSeq: 1 };
 
-  cli.foldGroupIntoSurvivor(fakeS, '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+  asSurvivorCaller(cli, withReaderCursors(fakeS), '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
 
   assert.deepStrictEqual(setCursorCalls, [], 'a candidate with nothing forwardable in its unread range must never have its cursor touched — every unread row is real mail it still needs');
 });
@@ -319,7 +337,7 @@ test('GUARD (unaffected by this fix): a fully-forwardable candidate still advanc
   };
   const candidateRow = { id: CANDIDATE, worktreePath: '/wt/fake', sessionId: 'sess-candidate', updatedAt: 1, writeSeq: 1 };
 
-  cli.foldGroupIntoSurvivor(fakeS, '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+  asSurvivorCaller(cli, withReaderCursors(fakeS), '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
 
   assert.strictEqual(appendCalls, 2);
   assert.deepStrictEqual(setCursorCalls, [{ id: CANDIDATE, val: 2 }],

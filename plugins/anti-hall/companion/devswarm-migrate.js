@@ -64,23 +64,19 @@ const { archivedDescriptorPath, activeDescriptorPathFor, buildArchivedWorktreeIn
 
 
 
-// raiseCursorBaseline(home, id, value) — defect 8b211241bbe9. Migrate's cursor
-// writes are the one remaining LOSS-FREE advance of the shared pair that does
-// not go through devswarm.js's own fold/reap paths. Per-instance read windows
-// deliberately ignore the shared pair (a foreign or older-build ack must never
-// move them), so a migrate advance has to raise the baseline EXPLICITLY here or
-// its rows would be re-delivered to every instance forever. Fail-soft and
-// best-effort: a missing/older devswarm.js simply means no baseline to raise.
-function raiseCursorBaseline(home, id, value) {
+// raiseCursorBaseline(home, id, value, storeHandle) — migrate's cursor writes
+// are a raise that does NOT make rows reachable elsewhere (rows are copied
+// between backends; the value is a shared-pair number an older build's own-
+// position ack can have written). Phase 3: a BOUNDED floor raise in the
+// reader_cursors table — min(value, MIN(live declared readers)), never lower,
+// never past a declared reader (the same contract HEAD's bounded #base raise
+// had). The legacy #base file is no longer written. Fail-soft.
+function raiseCursorBaseline(home, id, value, storeHandle) {
   try {
-    if (!Number.isFinite(value) || value <= 0) return false;
-    const ds = require('../scripts/devswarm.js');
-    if (typeof ds.raiseInstanceBaseline !== 'function') return false;
-    // BOUNDED (see raiseInstanceBaseline's own header): migrate copies rows
-    // between backends and makes nothing reachable for a 0.99 instance, and the
-    // value it passes is a shared-pair number an older build's own-position ack
-    // can have written. Only fold/reap may raise past the declared floor.
-    return ds.raiseInstanceBaseline(home, id, value, { bounded: true });
+    if (!Number.isFinite(value) || value <= 0 || !storeHandle) return false;
+    const rc = require('./lib/reader-cursors.js');
+    rc.raiseFloorBounded(storeHandle, { partition: id, value, home });
+    return true;
   } catch (_) { return false; }
 }
 
@@ -567,7 +563,7 @@ function migrateGlobalStoreToPerProject(opts) {
           const mergedCursor = Math.max(Number(dst.cursorValue(id)) || 0, Number(src.cursorValue(id)) || 0);
           const cursorToSet = markRead ? Math.max(mergedCursor, Number(dst.messageCount(id)) || 0) : mergedCursor;
           dst.setCursor(id, cursorToSet);
-          raiseCursorBaseline(home, id, cursorToSet);
+          raiseCursorBaseline(home, id, cursorToSet, dst);
           const gates = src.currentGates(id);
           for (const name of Object.keys(gates)) dst.setGate({ workspaceId: id, name, value: gates[name] });
           store.deriveSummary(dst, { home, workspaceId: id, env: o.env, now: o.now });
@@ -652,7 +648,7 @@ function migrateLegacyInbox(opts) {
         const cur = Number(s.cursorValue(workspaceId)) || 0;
         const marked = Math.max(cur, total);
         s.setCursor(workspaceId, marked);
-        raiseCursorBaseline(home, workspaceId, marked);
+        raiseCursorBaseline(home, workspaceId, marked, s);
       }
       store.deriveSummary(s, { home, workspaceId, env: o.env, now: o.now });
       // Read-back verify: every source-line hash is now present in the store.
@@ -701,6 +697,9 @@ function synthRepoKeyMigrateHash(id, seq, body) {
 // mirroring migrateGlobalStoreToPerProject's copy model — then re-derives
 // `summaries/<repoKey>.json`. NON-DESTRUCTIVE: `store/<hash>/` and
 // `summaries/<hash>.json` are left byte-for-byte intact as a backup.
+// Bound on the post-copy delta re-reads (see copyPass in the function below).
+const MIGRATE_DELTA_PASSES = 5;
+
 function migrateHashStoresToRepoNameLocked(opts) {
   const o = opts || {};
   const home = o.home || os.homedir();
@@ -751,21 +750,33 @@ function migrateHashStoresToRepoNameLocked(opts) {
           continue;
         }
         try {
-          const rows = src.listMessages(id);
           const wantHashes = [];
+          const wantSet = new Set();
           let wsCopied = 0;
-          for (const row of rows) {
-            // FIX 1 (TRACED): see the synthGlobalHash call site above — `seq` is now
-            // the physical mesh seq; this salt needs the stable positional `index`.
-            const h = row.hash != null ? String(row.hash) : synthRepoKeyMigrateHash(id, row.index, row.body);
-            wantHashes.push(h);
-            const r = dst.appendMeshRow({
-              workspaceId: id, ts: row.ts, hash: h, body: row.body,
-              sender: row.sender, recipient: row.recipient, mtype: row.mtype,
-              urgency: row.urgency, isHeartbeat: row.isHeartbeat, needsReply: row.needsReply,
-            });
-            if (r && r.inserted) { wsCopied++; copied++; }
-          }
+          let rows = [];
+          // copyPass() — copy EVERY current source row (idempotent by hash) and
+          // return how many were NEW in the target. Legacy writers (ingest into the
+          // hash bucket) do not share the migrate lock, so a row can land in the
+          // source while we copy: the delta loop below re-reads until a pass copies
+          // nothing (bounded), and only then is the workspace `verified`.
+          const copyPass = () => {
+            rows = src.listMessages(id);
+            let n = 0;
+            for (const row of rows) {
+              // FIX 1 (TRACED): see the synthGlobalHash call site above — `seq` is now
+              // the physical mesh seq; this salt needs the stable positional `index`.
+              const h = row.hash != null ? String(row.hash) : synthRepoKeyMigrateHash(id, row.index, row.body);
+              if (!wantSet.has(h)) { wantSet.add(h); wantHashes.push(h); }
+              const r = dst.appendMeshRow({
+                workspaceId: id, ts: row.ts, hash: h, body: row.body,
+                sender: row.sender, recipient: row.recipient, mtype: row.mtype,
+                urgency: row.urgency, isHeartbeat: row.isHeartbeat, needsReply: row.needsReply,
+              });
+              if (r && r.inserted) { n++; wsCopied++; copied++; }
+            }
+            return n;
+          };
+          copyPass();
 
           // Copy the NON-message state too (Fable P1: messages-only leaves the
           // shared registry EMPTY, which fail-closed addressing then rejects
@@ -806,14 +817,27 @@ function migrateHashStoresToRepoNameLocked(opts) {
           // both routing into the SAME repoKey, each verified independently
           // for the rows IT contributed) and to an idempotent re-run (already
           // present -> still verified, imported 0 new).
+          // DELTA LOOP: re-read the source tail after the copy; any row a legacy
+          // writer appended meanwhile is copied. Stable = a full pass copied
+          // nothing. Not stable within MIGRATE_DELTA_PASSES -> verified:false
+          // (sources kept; the next migrate run retries — never reported done).
+          let stable = false;
+          let deltaCopied = 0;
+          for (let pass = 0; pass < MIGRATE_DELTA_PASSES; pass++) {
+            const n = copyPass();
+            if (n === 0) { stable = true; break; }
+            deltaCopied += n;
+          }
+          if (deltaCopied) store.deriveSummary(dst, { home, env: o.env, now: o.now });
           const have = new Set(dst.listMessages(id).map((m) => m.hash));
-          const verified = wantHashes.every((h) => have.has(h));
+          const verified = stable && wantHashes.every((h) => have.has(h));
 
           perWorkspace.push({
             id, sourceHash: hash, repoKey, worktreePath,
             imported: wsCopied, sourceCount: rows.length, targetCount: dst.messageCount(id),
             verified,
           });
+          if (!stable) perWorkspace[perWorkspace.length - 1].reason = 'source-still-growing';
         } finally { dst.close(); }
       }
     } finally { try { src.close(); } catch (_) {} }

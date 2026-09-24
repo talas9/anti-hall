@@ -1,4 +1,5 @@
 'use strict';
+const { withReaderCursors } = require('../helpers/fake-reader-cursors.js');
 // Item 1 P0 fix — downstream-Primary mail loss, field evidence: a live
 // `primary-<hash>` row's cursor advanced across two wake-watch turns with NO
 // `read-primary` issued in between (cursorStore 3139->3140->3141), while the
@@ -52,6 +53,23 @@ const path = require('node:path');
 const cp = require('node:child_process');
 
 const cli = require('../../plugins/anti-hall/scripts/devswarm.js');
+// These fixtures test the fold DECISION (cursor / anchor logic) from the production
+// caller shape: the survivor is a REGISTERED row and the caller HOLDS its lock
+// (cmdRegister -> retireWorktreeDuplicates). A fake-home fixture gets a real tmp
+// home for the lock. The lock + recheck themselves are proven in
+// devswarm-partition-append.test.js / devswarm-partition-lock-proofs.test.js.
+const FAKE_HOME = '/nonexistent-home-fixture';
+const LOCK_HOME = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'ah-fold-lockhome-'));
+function asSurvivorCaller(cliObj, s, home, survivorId, cands, opts) {
+  const h = home === FAKE_HOME ? LOCK_HOME : home;
+  if (typeof s.listRegistry !== 'function') s.listRegistry = () => [{ id: survivorId }];
+  else if (!s.listRegistry().some((r) => r && String(r.id) === String(survivorId))) {
+    s.upsertRegistry({ id: survivorId, worktreePath: '/fake/survivor/' + survivorId, sessionId: 'sess-survivor' });
+  }
+  const r = cliObj.withIdLock(String(survivorId), h, () => cliObj.foldGroupIntoSurvivor(s, h, survivorId, cands, opts));
+  if (r && r.lockBusy) throw new Error('fixture: survivor lock unavailable');
+  return r;
+}
 const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
 const inst = require('../../plugins/anti-hall/companion/install-devswarm-ingest.js');
 const repokey = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
@@ -76,6 +94,14 @@ function makeGitRepo(tag) {
 function topOf(dir) { return inst.resolveWorktree(dir); }
 function meshOf(dir) { return inst.primaryWorkspaceId(inst.resolveWorktree(dir)); }
 const ctx = (home, over) => Object.assign({ home, backend: 'journal', env: {} }, over || {});
+// retireAsRegister — retireWorktreeDuplicates as its ONLY production caller runs
+// it: cmdRegister has just upserted keepDesc's registry row (the fold forwards
+// only into a registered survivor — appendIntoPartition's recheck).
+function retireAsRegister(cliObj, home, keepDesc, c) {
+  const st = storeLib.openStore({ home, hash: repokey.repoKeyForWorktree(c.cwd), backend: c.backend || 'journal' });
+  try { st.upsertRegistry({ id: keepDesc.id, worktreePath: keepDesc.worktreePath, sessionId: keepDesc.sessionId }); } finally { st.close(); }
+  return cliObj.retireWorktreeDuplicates(home, keepDesc, c);
+}
 
 // -----------------------------------------------------------------------
 // UNIT-LEVEL REPRODUCTION: foldGroupIntoSurvivor called directly with a
@@ -107,7 +133,7 @@ test('REPRO + FIX: a candidate that IS the canonical meshId row for its own work
   };
   const candidateRow = { id: MESH_ID, worktreePath: WT, sessionId: 'live-primary-session', updatedAt: 1, writeSeq: 1 };
 
-  const res = cli.foldGroupIntoSurvivor(fakeS, '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+  const res = asSurvivorCaller(cli, withReaderCursors(fakeS), '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
 
   assert.deepStrictEqual(res.left, [MESH_ID], 'the meshId anchor row must be reported LEFT, never retired');
   assert.deepStrictEqual(res.retired, [], 'the meshId anchor row must never be tombstoned');
@@ -136,7 +162,7 @@ test('B2: an attended meshId anchor whose worktree was DELETED is still never fo
     removeRegistryIf() { throw new Error('the deleted-worktree anchor must never be tombstoned'); },
   };
   const candidateRow = { id: MESH_ID, worktreePath: WT, sessionId: 'live-primary-session', updatedAt: 1, writeSeq: 1 };
-  const res = cli.foldGroupIntoSurvivor(fakeS, '/nonexistent-home-fixture', 'builder-uuid-twin-deleted', [candidateRow], {});
+  const res = asSurvivorCaller(cli, withReaderCursors(fakeS), '/nonexistent-home-fixture', 'builder-uuid-twin-deleted', [candidateRow], {});
   assert.deepStrictEqual(res.left, [MESH_ID]);
   assert.strictEqual(appendCalls, 0);
   assert.deepStrictEqual(setCursorCalls, []);
@@ -177,7 +203,7 @@ test('FIELD-SHAPE E2E: a co-located builder-id self-register\'s per-turn retireW
     // (mirrors registerStoreDescriptor's per-turn call: keepDesc.id !==
     // keepMesh, so the early-return guard at :1624 does NOT fire).
     const builderDesc = { id: 'builder-uuid-twin-fixture', worktreePath: wt, sessionId: 'builder-session' };
-    const result = cli.retireWorktreeDuplicates(home, builderDesc, ctx(home, { cwd: wt }));
+    const result = retireAsRegister(cli, home, builderDesc, ctx(home, { cwd: wt }));
 
     // The meshId row must be reported LEFT (if reported at all) — never
     // retired/tombstoned, and critically never silently drained.
@@ -252,7 +278,7 @@ test('MUTATION-KILL: removing the meshId-anchor guard reproduces the pre-fix cur
         removeRegistryIf() { return false; },
       };
       const candidateRow = { id: MESH_ID, worktreePath: WT, sessionId: 'live-primary-session', updatedAt: 1, writeSeq: 1 };
-      mutatedCli.foldGroupIntoSurvivor(fakeS, '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
+      asSurvivorCaller(mutatedCli, withReaderCursors(fakeS), '/nonexistent-home-fixture', SURVIVOR, [candidateRow], {});
       rm(WT);
       assert.ok(setCursorCalls.length > 0 && appendCalls > 0,
         'RED (expected on the mutant): without the guard, the meshId anchor row IS folded — cursor advanced and mail forwarded away. If this fails, the guard removal did not actually reproduce the bug.');
@@ -348,7 +374,7 @@ test('FIELD CASE 1 (unclaimed: sessionId + descriptor + cursor>0): a same-worktr
     assert.strictEqual(pre.cursor, 1, 'precondition: the anchor has a real read frontier');
 
     const twin = { id: 'builder-uuid-twin-field-1', worktreePath: f.wt, sessionId: 'twin-session' };
-    const result = cli.retireWorktreeDuplicates(f.home, twin, ctx(f.home, { cwd: f.wt }));
+    const result = retireAsRegister(cli, f.home, twin, ctx(f.home, { cwd: f.wt }));
     if (result && result.retired) {
       assert.ok(!result.retired.includes(f.meshId), 'the attended field anchor must never be tombstoned');
     }
@@ -371,7 +397,7 @@ test('FIELD CASE 2 (unclaimed: sessionId, descriptor DELETED, cursor>0): reader 
       'precondition: and NO ack file — this case exercises the s.cursorValue branch specifically');
 
     const twin = { id: 'builder-uuid-twin-field-2', worktreePath: f.wt, sessionId: 'twin-session' };
-    cli.retireWorktreeDuplicates(f.home, twin, ctx(f.home, { cwd: f.wt }));
+    retireAsRegister(cli, f.home, twin, ctx(f.home, { cwd: f.wt }));
 
     const post = readState(f.home, f.repoKey, f.meshId);
     assert.strictEqual(post.cursor, 2,
@@ -396,7 +422,7 @@ test('FIELD CASE 2b (unclaimed: sessionId, no descriptor, STORE cursor 0 but an 
     assert.ok(!fs.existsSync(descriptorFileFor(f.home, f.meshId)), 'precondition: and no descriptor');
 
     const twin = { id: 'builder-uuid-twin-field-2b', worktreePath: f.wt, sessionId: 'twin-session' };
-    cli.retireWorktreeDuplicates(f.home, twin, ctx(f.home, { cwd: f.wt }));
+    retireAsRegister(cli, f.home, twin, ctx(f.home, { cwd: f.wt }));
 
     const post = readState(f.home, f.repoKey, f.meshId);
     assert.strictEqual(post.cursor, 0,
@@ -416,7 +442,7 @@ test('FIELD CASE 3 (unclaimed: sessionId, no descriptor, cursor 0): an UNATTENDE
     const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
     let res, cursorAfter;
     try {
-      res = cli.foldGroupIntoSurvivor(s, f.home, 'builder-uuid-twin-field-3',
+      res = asSurvivorCaller(cli, s, f.home, 'builder-uuid-twin-field-3',
         [{ id: f.meshId, worktreePath: f.wt, sessionId: 'unclaimed:' + f.meshId, updatedAt: 1, writeSeq: 1 }], {});
       cursorAfter = s.cursorValue(f.meshId);
     } finally { s.close(); }
@@ -443,7 +469,7 @@ test('MUTATION-KILL (Wave 10): reverting the reader-evidence clause re-exposes F
       // BOTH evidence branches are killed, so neither can be silently dead.
       const store = seedFieldFixture({ tag: 'field-2-mutant', descriptor: false, cursor: 2 });
       try {
-        mutatedCli.retireWorktreeDuplicates(store.home,
+        retireAsRegister(mutatedCli, store.home,
           { id: 'builder-uuid-twin-field-2-mutant', worktreePath: store.wt, sessionId: 'twin-session' },
           ctx(store.home, { cwd: store.wt }));
         assert.notStrictEqual(readState(store.home, store.repoKey, store.meshId).cursor, 2,
@@ -454,7 +480,7 @@ test('MUTATION-KILL (Wave 10): reverting the reader-evidence clause re-exposes F
       try {
         const pre = readState(file.home, file.repoKey, file.meshId);
         assert.strictEqual(pre.registered, true, 'precondition: the anchor row exists before the fold');
-        mutatedCli.retireWorktreeDuplicates(file.home,
+        retireAsRegister(mutatedCli, file.home,
           { id: 'builder-uuid-twin-field-2b-mutant', worktreePath: file.wt, sessionId: 'twin-session' },
           ctx(file.home, { cwd: file.wt }));
         const post = readState(file.home, file.repoKey, file.meshId);
@@ -491,7 +517,7 @@ test('REASON: an anchor left by the guard is reported as mesh-anchor-attended, n
     const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
     let res;
     try {
-      res = cli.foldGroupIntoSurvivor(s, f.home, 'builder-uuid-twin-reason',
+      res = asSurvivorCaller(cli, s, f.home, 'builder-uuid-twin-reason',
         [{ id: f.meshId, worktreePath: f.wt, sessionId: 'unclaimed:' + f.meshId, updatedAt: 1, writeSeq: 1 }], {});
     } finally { s.close(); }
     assert.deepStrictEqual((res.left || []).map(String), [String(f.meshId)], 'precondition: the anchor is LEFT by the guard');
@@ -553,7 +579,7 @@ test('WAVE 11 (a): an anchor with a STALE non-null sessionId, no descriptor and 
     const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
     let res, cursorAfter;
     try {
-      res = cli.foldGroupIntoSurvivor(s, f.home, 'builder-uuid-twin-wave11a',
+      res = asSurvivorCaller(cli, s, f.home, 'builder-uuid-twin-wave11a',
         [{ id: f.meshId, worktreePath: f.wt, sessionId: 'session-that-ended-hours-ago', updatedAt: 1, writeSeq: 1 }], {});
       cursorAfter = s.cursorValue(f.meshId);
     } finally { s.close(); }
@@ -573,7 +599,7 @@ test('WAVE 11 (a) UNCHANGED: a stale non-null sessionId does NOT strip protectio
     const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
     let res, cursorAfter, countAfter;
     try {
-      res = cli.foldGroupIntoSurvivor(s, f.home, 'builder-uuid-twin-wave11a2',
+      res = asSurvivorCaller(cli, s, f.home, 'builder-uuid-twin-wave11a2',
         [{ id: f.meshId, worktreePath: f.wt, sessionId: 'session-that-ended-hours-ago', updatedAt: 1, writeSeq: 1 }], {});
       cursorAfter = s.cursorValue(f.meshId);
       countAfter = s.messageCount(f.meshId);
@@ -600,7 +626,7 @@ test('WAVE 11 (b): a CROSS-REFERENCED anchor (sessionId IS another group member\
     const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
     let res;
     try {
-      res = cli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+      res = asSurvivorCaller(cli, s, f.home, SURVIVOR,
         [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
     } finally { s.close(); }
 
@@ -617,7 +643,7 @@ test('WAVE 11 (b) THE OTHER SIDE: a CROSS-REFERENCED anchor WITH reader evidence
     const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
     let res, cursorAfter, countAfter;
     try {
-      res = cli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+      res = asSurvivorCaller(cli, s, f.home, SURVIVOR,
         [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
       cursorAfter = s.cursorValue(f.meshId);
       countAfter = s.messageCount(f.meshId);
@@ -641,7 +667,7 @@ test('MUTATION-KILL (Wave 11 a): restoring the shape-only isLiveSessionId livene
         const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
         let res;
         try {
-          res = mutatedCli.foldGroupIntoSurvivor(s, f.home, 'builder-uuid-twin-wave11a-mutant',
+          res = asSurvivorCaller(mutatedCli, s, f.home, 'builder-uuid-twin-wave11a-mutant',
             [{ id: f.meshId, worktreePath: f.wt, sessionId: 'session-that-ended-hours-ago', updatedAt: 1, writeSeq: 1 }], {});
         } finally { s.close(); }
         assert.ok(res.anchorLeft && res.anchorLeft.has(String(f.meshId)),
@@ -670,7 +696,7 @@ test('MUTATION-KILL (Wave 11 b): protecting a cross-referenced anchor unconditio
         const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
         let res;
         try {
-          res = mutatedCli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+          res = asSurvivorCaller(mutatedCli, s, f.home, SURVIVOR,
             [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
         } finally { s.close(); }
         assert.ok(res.anchorLeft && res.anchorLeft.has(String(f.meshId)),
@@ -716,7 +742,7 @@ test('R11-A5: a cross-referenced anchor with a FRESH HEARTBEAT is PROTECTED (a h
     const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
     let res, cursorAfter, countAfter;
     try {
-      res = cli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+      res = asSurvivorCaller(cli, s, f.home, SURVIVOR,
         [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
       cursorAfter = s.cursorValue(f.meshId);
       countAfter = s.messageCount(f.meshId);
@@ -737,7 +763,7 @@ test('R11-A5 THE OTHER SIDE: the SAME shape with a STALE heartbeat still retires
     const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
     let res;
     try {
-      res = cli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+      res = asSurvivorCaller(cli, s, f.home, SURVIVOR,
         [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
     } finally { s.close(); }
     assert.ok(!(res.anchorLeft && res.anchorLeft.has(String(f.meshId))),
@@ -757,7 +783,7 @@ test('R11-A5 MUTATION-KILL: dropping the heartbeat term re-sweeps a live, heartb
         const s = meshStore.openStore({ home: f.home, hash: f.repoKey, backend: 'journal' });
         let res;
         try {
-          res = mutatedCli.foldGroupIntoSurvivor(s, f.home, SURVIVOR,
+          res = asSurvivorCaller(mutatedCli, s, f.home, SURVIVOR,
             [{ id: f.meshId, worktreePath: f.wt, sessionId: SURVIVOR, updatedAt: 1, writeSeq: 1 }], {});
         } finally { s.close(); }
         assert.ok(!(res.anchorLeft && res.anchorLeft.has(String(f.meshId))),

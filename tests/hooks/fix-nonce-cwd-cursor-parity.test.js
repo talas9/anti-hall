@@ -142,68 +142,43 @@ function run(home) {
   return testHookRaw(HOOK, JSON.stringify(stopPayload()), { home, env: PRIMARY_ENV });
 }
 
-test('FIX: union-unread nonce for a CHILD descriptor is derived from the gate\'s OWN cwd, not the descriptor\'s worktree', { skip: !GIT_AVAILABLE && 'git not available on PATH' }, () => {
+// PHASE 3 (mesh redesign, reader_cursors) SUPERSEDES the v0.102.2 approach this
+// file originally pinned: the parent gate looking at a CHILD's partition is a
+// MONITORING view ("does the child have backlog"), so it counts from the
+// partition's stored FLOOR (reader null) — never from the gate process's own
+// reader row, whatever cwd that identity resolves from. A per-reader base there
+// could only ever HIDE a slower reader's backlog.
+function seedReaderRows(home, id, rows) {
+  const s = meshStore.openStore({ home, workspaceId: id, hash: REPO_KEY });
+  try { s.readerCursorTxn((tx) => { for (const r of rows) tx.put(Object.assign({ partition: id, updatedAt: 1 }, r)); }); }
+  finally { s.close(); }
+}
+
+test('PHASE 3: the parent gate counts a CHILD partition from its stored FLOOR — the gate\'s own reader row never shrinks it', { skip: !GIT_AVAILABLE && 'git not available on PATH' }, () => {
   const h = makeHome();
   const wt = makeLinkedWorktree();
   try {
     const CHILD_ID = 'ws-nonce-cwd-fix';
     const STARTED_AT = 1700000000000;
-
-    // The gate's own cwd (REPO_CWD) has a REAL registered session; the
-    // child's worktree (wt.dir) — a REAL, different directory — has none.
     writeGateSession(h.home, REPO_CWD, STARTED_AT);
-
-    // The nonce the FIXED code must land on for every descriptor in this
-    // gate invocation: derived from the gate's own reading identity
-    // (REPO_CWD + this test process's pid/startedAt), NEVER from wt.dir.
-    const expectedNonce = 'anc:' + process.pid + ':' + STARTED_AT;
-    const expectedShortNonce = devswarmCli.shortInstanceNonce(expectedNonce);
-    assert.ok(/^[0-9a-f]{6}$/.test(expectedShortNonce), 'sanity: shortNonce must be a 6-hex digest');
-
     seedChildWorkspace(h.home, CHILD_ID, wt.dir);
-
-    // 3 store-only rows addressed to the child, from a sender that is NOT
-    // this Primary (so none is excluded as "own outbound send" — FIX 3a).
     seedStoreOnlyRow(h.home, CHILD_ID, 'some-other-sender', 'fix-nonce-cwd-1');
     seedStoreOnlyRow(h.home, CHILD_ID, 'some-other-sender', 'fix-nonce-cwd-2');
     seedStoreOnlyRow(h.home, CHILD_ID, 'some-other-sender', 'fix-nonce-cwd-3');
-
-    // Declare this reader's per-instance position at 2 (2 of the 3 rows
-    // already consumed) — ONLY under the nonce the FIXED code (gate's own
-    // cwd) resolves to. If the gate instead keys off wt.dir (the unfixed
-    // behavior), this file is never found: siblingBaseCursor falls back to
-    // the cross-instance MIN-floor cursor (0, no other instance declared),
-    // and ALL 3 rows are reported unread instead of the correct 1.
-    const instPath = devswarmCli.instanceCursorPath(h.home, CHILD_ID, expectedShortNonce);
-    assert.ok(instPath, 'sanity: instanceCursorPath must resolve for this id/nonce');
-    inboxCursor.ackTo(instPath, 2);
-
-    // A SECOND, unrelated declared instance (a genuine sibling reader,
-    // further behind) at position 0, under an ARBITRARY nonce. This is what
-    // makes the test decisive rather than vacuous: `instanceFloor` (the
-    // undeclared-newcomer path) takes the MIN across *every* declared
-    // instance file for this id, regardless of nonce — so without this
-    // second, lower sibling, an UNDECLARED reader would coincidentally land
-    // on the same value (2) the one seeded file holds, and the fixed/unfixed
-    // behaviors would be indistinguishable. With a genuine lower sibling
-    // present, the two paths diverge: the CORRECT declared nonce reads its
-    // OWN position (2, ignoring the sibling per siblingBaseCursor's own
-    // "never floored by other instances" contract), while the WRONG
-    // undeclared nonce falls to the cross-instance MIN floor (0).
-    const siblingInstPath = devswarmCli.instanceCursorPath(h.home, CHILD_ID, 'aaaaaa');
-    assert.ok(siblingInstPath, 'sanity: instanceCursorPath must resolve for the sibling nonce');
-    inboxCursor.ackTo(siblingInstPath, 0);
-
+    // Floor at 2 (every live declared reader has consumed 2); the GATE's own
+    // harness identity (this test process, the hook's parent) holds a row at 3
+    // and a lagging sibling reader sits at 2.
+    const gateReader = 'h:' + process.pid + ':' + STARTED_AT;
+    seedReaderRows(h.home, CHILD_ID, [
+      { ns: 'store', reader: '#floor', value: 2 }, { ns: 'nd', reader: '#floor', value: 0 },
+      { ns: 'store', reader: gateReader, value: 3 }, { ns: 'store', reader: 'h:1:1', value: 2 },
+    ]);
     const r = run(h.home);
     assert.strictEqual(r.status, 0, `gate must exit 0; stderr=${r.stderr}`);
     assert.ok(r.json, `stdout must be JSON; stdout=${r.stdout} stderr=${r.stderr}`);
-    assert.strictEqual(r.json.decision, 'block', `must block on the child's real unread; reason=${r.json && r.json.reason}`);
-    assert.match(
-      r.json.reason,
-      /\b1 unread\b/,
-      `FIXED behavior: realUnread must be sized from the declared per-instance cursor (2 consumed of 3 -> 1 unread), matching what an unread-scoped read reports. Got reason=${r.json.reason} (3 unread would mean the nonce fell back to the undeclared cross-instance MIN-floor cursor — the exact v0.102.2-inert bug).`
-    );
-    assert.doesNotMatch(r.json.reason, /\b3 unread\b/, `must NOT report the MIN-floor-derived phantom count; reason=${r.json.reason}`);
+    assert.strictEqual(r.json.decision, 'block', `must block on the child's floor-view unread; reason=${r.json && r.json.reason}`);
+    assert.match(r.json.reason, /\b1 unread\b/, `floor 2 of 3 -> 1 unread; got ${r.json.reason}`);
+    assert.doesNotMatch(r.json.reason, /\b0 unread\b|\b3 unread\b/, `must use the floor, neither the gate's own row (0) nor 0 (3); reason=${r.json.reason}`);
   } finally {
     try { wt.cleanup(); } catch (_) {}
     try { h.cleanup(); } catch (_) {}

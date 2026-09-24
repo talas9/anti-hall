@@ -1488,6 +1488,36 @@ gap is honest and open, not silently assumed closed.
 
 ### Per-instance cursors, the baseline, and the cursor write journal (v0.99.0, defect 8b211241bbe9)
 
+> **Superseded by the mesh redesign Phase 3 read-position model.** Every position below now
+> lives in ONE `reader_cursors(partition, ns, reader, value, retired_line, updated_at)` table
+> per store (sqlite table; journal: `reader_cursors.ndjson` + `reader_cursors.lock`), keyed by
+> `'#floor'` or the nearest harness ancestor `h:<pid>:<startMs>` (companion/lib/
+> reader-identity.js; full key — the 24-bit short6 is gone). Max-only writes, ack + floor in
+> one transaction, process-only liveness (session file never evidence), headless = floor
+> only, one `countFor` (read error = UNKNOWN). `reconcileOrphanCursor` and `allowRewind` are
+> deleted; `gcInstanceCursors` is report-only. The files in this section are imported once
+> (floor = the `instanceFloor` value this section describes, never max'ed with the shared
+> pair), then left inert on disk for rollback. Implementation: companion/lib/reader-cursors.js.
+>
+> **Pre-0.99 parity boundary.** A pre-0.99 build (e.g. 0.98.3) has no per-reader position: it
+> reads the shared pair (`cursors/<id>.json` + the store cursor row). Every reader_cursors ack
+> dual-writes that pair upward to the new `#floor`. So when a new reader acks FIRST and an old
+> build starts reading LATER, the old build starts at the advanced shared cursor and never sees
+> the rows the new reader consumed. That is the old build's own single-cursor model, not a new
+> loss path, and it closes once every session runs 0.99+. Asserted by
+> `tests/scripts/devswarm-reader-cursors-p3v2-regressions.test.js` (P2).
+>
+> **Journal transactions are one line.** On the journal backend each reader_cursors transaction
+> (import, ack + floor, raise, retire) is ONE `{"txn":[...]}` NDJSON line written by one append.
+> A crash mid-write leaves a torn line that readers skip, so the transaction is wholly present
+> or wholly absent (an interrupted import stays pending). Single-record lines still read.
+>
+> **Unreadable table = unknown floor.** No reader falls back to the legacy shared cursor when
+> reader_cursors cannot be read. Summary rows count from 0 and carry `unreadUnknown: true`,
+> `roster` shows `directUnread: null`, fold/forward/reap read the base as 0 (over-delivery,
+> never loss), and a cross-store rehome aborts before writing (`reason:
+> 'reader-cursors-unreadable'`, source untouched).
+
 **The defect.** `cursors/<id>.json` and the store's cursor row are keyed by row id ALONE, so
 every process reading under that id shared ONE read position. Whichever instance acked first
 consumed the mail for all of them: a second instance's `read-primary` returned 0 while the

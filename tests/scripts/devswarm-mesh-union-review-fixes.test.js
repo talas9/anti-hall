@@ -158,14 +158,18 @@ test('P1a: a sibling cursor-write failure still delivers the message AND names t
     register(home, repo, 'sibling-p1a', undefined, 'unclaimed:sibling-p1a');
     seedPartition(home, repo, 'sibling-p1a', [{ body: 'undeliverable-cursor mail', ts: 1000 }]);
 
-    // Force the sibling's cursor WRITE to fail: pre-create its cursor path
-    // as a DIRECTORY so writeCursorAtomic's rename(tmp, cursorPath) throws
-    // (EISDIR/ENOTDIR) — an unwritable-path failure, without touching the
-    // shared `cursors/` directory (which would also break `id`'s own ack).
-    const sibCursorPath = cli.primaryCursorPath(home, 'sibling-p1a');
-    fs.mkdirSync(sibCursorPath, { recursive: true });
-
-    const rp = cli.run(['inbox', 'read-primary', 'primary-p1a', '--ack-as-owner'], ctx(home, { cwd: repo }));
+    // Force the sibling's cursor WRITE to fail. Phase 3: the durable ack is the
+    // reader_cursors transaction (the legacy cursors/<id>.json is only a
+    // best-effort projection), so the failure is injected there — for the
+    // SIBLING partition only, leaving `id`'s own ack intact.
+    const rc = require('../../plugins/anti-hall/companion/lib/reader-cursors.js');
+    const origAck = rc.ackFor;
+    rc.ackFor = (s, o) => (o && String(o.partition) === 'sibling-p1a'
+      ? { ok: false, error: 'SIMULATED: reader_cursors write failed', own: null, floor: null, from: null, retired: [] }
+      : origAck(s, o));
+    let rp;
+    try { rp = cli.run(['inbox', 'read-primary', 'primary-p1a', '--ack-as-owner'], ctx(home, { cwd: repo })); }
+    finally { rc.ackFor = origAck; }
     assert.equal(rp.result.ok, true, JSON.stringify(rp.result));
     assert.equal(rp.result.count, 1, 'delivery still succeeds (fail-open on delivery — the safe direction)');
     assert.equal(rp.result.cursorPersisted, false, 'the result must honestly report that a cursor did not persist');

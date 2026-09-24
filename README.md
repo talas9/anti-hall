@@ -456,8 +456,19 @@ plugin depends on it.
   cheap, inline `inbox count` first and only pays for a drain/read when `unreadTotal > 0`.
 - **The durable-inbox ack cursor is monotonic by default (v0.87.0)** — `ackTo()` was
   callable unlocked from multiple sites, so two overlapping drains could race a cursor
-  backward and cause re-delivery. The one proven legitimate exception (a MIN-only
-  cross-namespace reconciliation) opts in explicitly via `{ allowRewind: true }`.
+  backward and cause re-delivery. There is no rewind path: the one former exception
+  (a MIN-only cross-namespace reconciliation, `allowRewind`) was deleted in the
+  mesh-redesign Phase 3 read-position model below.
+- **One table of read positions (mesh redesign Phase 3)** — every read position lives in
+  ONE `reader_cursors(partition, ns, reader, value, retired_line, updated_at)` table per
+  store (sqlite table, or `reader_cursors.ndjson` under a lock file on the journal
+  backend). A reader is the nearest harness ancestor (`h:<pid>:<startMs>`); a headless
+  caller (Codex, CI) reads the stored floor only. Writes are max-only, an ack and the floor
+  update share one transaction, and a reader leaves the floor's MIN only when a process
+  snapshot proves it ended (the session file is never evidence). Every unread count goes
+  through one `countFor`; a read error is UNKNOWN (gates block with the reason), never 0.
+  Legacy cursor files are imported once (`update`, `doctor --repair`, or lazily on first
+  ack), never deleted, and kept dual-written upward for one release.
 - **A fold pass now advances a folded-away candidate's own cursor (v0.87.0)** once its
   unread rows have fully forwarded to the survivor, so an already-forwarded backlog on a
   `left` candidate stops rendering as permanently "not draining"; a partial/failed

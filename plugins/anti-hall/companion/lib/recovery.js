@@ -436,39 +436,126 @@ function notifyParentEscalation(descriptor, verdict, opts, openParentStore) {
     const idleMin = staleSince !== null ? Math.max(0, Math.round((now - staleSince) / 60000)) : null;
     const body = 'child ' + descriptor.id + ' idle' + (idleMin !== null ? ' ' + idleMin + 'm' : '')
       + ' — reassign or archive';
-    const open = openParentStore || defaultOpenParentStore;
-    // PER-PROJECT: open the PARENT's own store so the escalation lands where the
-    // parent's `inbox read-primary` reads it. The store KEY must be the v0.57 mesh
-    // repoKey (devswarm-repokey.js) — the SAME per-project key every other mesh
-    // writer opens with (devswarm-ingest.js:1271 `hash: repoKey || undefined`;
-    // devswarm-migrate.js:665 `hash: repoKey`). Omitting `hash` made openStore fall
-    // back to hashFromWorkspaceId(parentId) (devswarm-store.js:84-90) — the bare
-    // 8-hex LEGACY bucket — so a supervisor escalation landed in a store that no
-    // other mesh participant reads and that nothing ever re-derives.
-    // FAIL-OPEN: an unresolvable repoKey yields null -> `undefined` -> exactly the
-    // pre-mesh legacy behavior, identical to what ingest does.
-    const repoKey = safeRepoKey(descriptor.worktreePath);
-    const s = open({
-      home, workspaceId: parentId, hash: repoKey || undefined,
-      env: opts && opts.env, fsi: opts && opts.fsi,
-    });
-    try {
-      s.appendMessage({
-        workspaceId: parentId, ts: now,
-        hash: 'escalate:' + descriptor.id + ':' + (staleSince !== null ? staleSince : 'x'),
-        body,
-      });
-      // RE-DERIVE the projection. Hooks and watchers NEVER open the store — they read
-      // summaries/<hash>.json (devswarm-store.js:15-19). An appended row with no
-      // derive is invisible to every reader, so the exact wake-the-idle-parent event
-      // this function exists to deliver would silently go stale.
-      // NO `workspaceId` in these opts: deriveSummary would then re-resolve the target
-      // via hashFromWorkspaceId(parentId) and write the LEGACY summary file instead of
-      // summaries/<repoKey>.json — the same trap documented at devswarm-migrate.js:706-716.
-      // Omitting it targets `s.hash`, the key this handle was actually opened with.
-      try { devswarmStore.deriveSummary(s, { home, env: opts && opts.env, now, fsi: opts && opts.fsi }); } catch (_) {}
-    } finally { s.close(); }
+    // PER-PROJECT: the notice lands in the PARENT's own repoKey store (the key every
+    // other mesh writer opens with — never the legacy hashFromWorkspaceId bucket),
+    // and deliverEscalation re-derives THAT store's projection (no workspaceId in
+    // the derive opts, so summaries/<repoKey>.json — see devswarm-migrate.js:706-716).
+    const intent = {
+      childId: descriptor.id, parentId, repoKey: safeRepoKey(descriptor.worktreePath) || null,
+      row: { workspaceId: parentId, ts: now, hash: 'escalate:' + descriptor.id + ':' + (staleSince !== null ? staleSince : 'x'), body },
+    };
+    deliverEscalation(intent, { home, now, env: opts && opts.env, fsi: opts && opts.fsi }, openParentStore);
   } catch (_) { /* fail-open: a store-write error must never crash the sweep */ }
+}
+
+// The escalation notice is ONE-SHOT (sent on the transition to `escalated`), so a
+// delivery that cannot land now must be RETRIED, never dropped. It goes through
+// devswarm.js appendIntoPartition (the parent's lock + "parent still registered
+// in this store" recheck, like every write into a partition we do not own). On
+// busy/gone — or any store error — the intent is persisted at
+// escalation-pending/<childId>.json and re-attempted by the next pokeOrEscalate
+// for that child; a delivered intent is overwritten with delivered:true (never
+// deleted). Returns 'ok' | 'busy' | 'gone' | 'error'.
+function escalationIntentPath(home, childId) {
+  return path.join(devswarmRoot(home), 'escalation-pending', String(childId) + '.json');
+}
+function writeEscalationIntent(home, intent, F) {
+  try {
+    const p = escalationIntentPath(home, intent.childId);
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    F.writeFileSync(p, JSON.stringify(intent));
+  } catch (_) { /* best-effort */ }
+}
+function readEscalationIntent(home, childId, F) {
+  try {
+    const it = JSON.parse((F || fs).readFileSync(escalationIntentPath(home, childId), 'utf8'));
+    return it && !it.delivered && it.row && it.parentId ? it : null;
+  } catch (_) { return null; }
+}
+function deliverEscalation(intent, o, openParentStore) {
+  const home = o.home;
+  const F = o.fsi || fs;
+  let status = 'error';
+  try {
+    const open = openParentStore || defaultOpenParentStore;
+    const s = open({ home, workspaceId: intent.parentId, hash: intent.repoKey || undefined, env: o.env, fsi: o.fsi });
+    try {
+      const dw = require('../../scripts/devswarm.js');
+      status = dw.appendIntoPartition(s, home, intent.parentId, [intent.row], { via: 'message' }).status;
+      if (status === 'ok') { try { devswarmStore.deriveSummary(s, { home, env: o.env, now: o.now, fsi: o.fsi }); } catch (_) {} }
+    } finally { s.close(); }
+  } catch (_) { status = 'error'; }
+  if (status === 'ok') {
+    if (readEscalationIntent(home, intent.childId, F)) writeEscalationIntent(home, Object.assign({}, intent, { delivered: true, deliveredAt: o.now }), F);
+  } else {
+    writeEscalationIntent(home, Object.assign({}, intent, { lastStatus: status, lastAttemptAt: o.now }), F);
+  }
+  return status;
+}
+
+// listEscalationIntents(home, F) -> [intent] — every escalation-pending/<childId>.json
+// that parses (delivered tombstones included; callers filter on `delivered`). One
+// file per child id, overwritten in place: storage is bounded by the child count
+// and NOTHING here is ever deleted automatically (audit trail).
+function listEscalationIntents(home, F) {
+  const FS = F || fs;
+  const dir = path.join(devswarmRoot(home), 'escalation-pending');
+  let names = [];
+  try { names = FS.readdirSync(dir); } catch (_) { return []; }
+  const out = [];
+  for (const n of names) {
+    if (!/\.json$/.test(n)) continue;
+    try {
+      const it = JSON.parse(FS.readFileSync(path.join(dir, n), 'utf8'));
+      if (it && it.parentId && it.row) out.push(it);
+    } catch (_) { /* unreadable intent: surfaced by doctor's count as unparsable is out of scope; skip */ }
+  }
+  return out;
+}
+// drainEscalationIntents(home, opts, openParentStore) -> { attempted, delivered, pending }.
+// Called by EVERY supervisor sweep, independent of any child's liveness status (an
+// `escalated` child is sticky and no longer reaches pokeOrEscalate).
+function drainEscalationIntents(home, opts, openParentStore) {
+  const o = opts || {};
+  const now = Number.isFinite(o.now) ? o.now : Date.now();
+  const out = { attempted: 0, delivered: 0, pending: 0 };
+  for (const it of listEscalationIntents(home, o.fsi)) {
+    if (it.delivered) continue;
+    out.attempted++;
+    const st = deliverEscalation(it, { home, now, env: o.env, fsi: o.fsi }, openParentStore);
+    if (st === 'ok') out.delivered++; else out.pending++;
+  }
+  return out;
+}
+// escalationIntentStats(home, now) -> { undelivered, delivered, oldestUndeliveredAgeMs,
+//   oldestDeliveredAgeMs, undeliveredIds } — doctor's read-only view.
+function escalationIntentStats(home, now, F) {
+  const t = Number.isFinite(now) ? now : Date.now();
+  const all = listEscalationIntents(home, F);
+  const age = (x) => (Number.isFinite(x) ? Math.max(0, t - x) : null);
+  const und = all.filter((i) => !i.delivered);
+  const del = all.filter((i) => i.delivered);
+  const oldest = (arr, at) => arr.reduce((m, i) => { const a = age(at(i)); return a != null && (m == null || a > m) ? a : m; }, null);
+  return {
+    undelivered: und.length, delivered: del.length,
+    oldestUndeliveredAgeMs: oldest(und, (i) => i.row && i.row.ts),
+    oldestDeliveredAgeMs: oldest(del, (i) => i.deliveredAt),
+    undeliveredIds: und.map((i) => ({ childId: i.childId, parentId: i.parentId, lastStatus: i.lastStatus || null })),
+  };
+}
+// parkedEscalationSegment(home, parentId, cliPath) -> string | null. The Primary's
+// per-turn injection and its Stop gate both render THIS text for the undelivered
+// intents addressed to it, so the two surfaces can never disagree.
+function parkedEscalationSegment(home, parentId, cliPath, F) {
+  if (!parentId) return null;
+  const mine = listEscalationIntents(home, F).filter((i) => !i.delivered && String(i.parentId) === String(parentId));
+  if (!mine.length) return null;
+  const kids = mine.map((i) => i.childId).sort();
+  return 'DEVSWARM ESCALATIONS NOT DELIVERED (' + mine.length + '): the supervisor escalated '
+    + kids.map((k) => JSON.stringify(k)).join(', ')
+    + ' (idle — reassign or archive), but this Primary (' + parentId + ') is not registered in the mesh store'
+    + ' (or its lock was busy), so the notice is PARKED. Run `node ' + (cliPath || 'scripts/devswarm.js')
+    + ' register-primary` — the next supervisor sweep then delivers it.';
 }
 
 // pokeOrEscalate(descriptor, verdict, opts, io) -> { action: 'nudged'|'escalate'|'error' }.
@@ -495,6 +582,10 @@ function pokeOrEscalate(descriptor, verdict, opts, io) {
   const openParentStore = IO.openParentStore;
 
   try {
+    // A previously undeliverable escalation notice is retried FIRST (one-shot
+    // transition -> it would otherwise never be re-sent).
+    const pendingIntent = readEscalationIntent(home, descriptor.id, F);
+    if (pendingIntent) deliverEscalation(pendingIntent, { home, now, env: o.env, fsi: F }, openParentStore);
     const attempts = Number.isFinite(verdict && verdict.nudgeAttempts) ? verdict.nudgeAttempts : 0;
     const nudgedAt = Number.isFinite(verdict && verdict.nudgedAt) ? verdict.nudgedAt : null;
     const cooldownElapsed = nudgedAt === null || (now - nudgedAt) >= cooldownMs;
@@ -529,4 +620,6 @@ module.exports = {
   DEFAULT_MAX_RECOVERIES, DEFAULT_GRACE_MS, DEFAULT_NUDGE_MAX_ATTEMPTS, DEFAULT_NUDGE_COOLDOWN_MS,
   RESUME_GUARDRAIL, LOCK_STALE_MS,
   lockPathFor, recoveryLogPath, acquireLock, recover, pokeOrEscalate, notifyParentEscalation,
+  escalationIntentPath, readEscalationIntent, listEscalationIntents, drainEscalationIntents,
+  escalationIntentStats, parkedEscalationSegment,
 };

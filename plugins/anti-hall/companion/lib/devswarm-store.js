@@ -604,6 +604,37 @@ function openSqlite(home, workspaceId, opts) {
       + ' workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER'
       + ');'
     );
+    // reader_cursors (mesh redesign Phase 3) — the ONE table of read positions.
+    // Additive: old builds never read it. Logic lives in reader-cursors.js; this
+    // backend only guarantees the storage rules (value is MAX-only, per key).
+    db.exec(
+      'CREATE TABLE IF NOT EXISTS reader_cursors ('
+      + ' partition TEXT NOT NULL,'
+      + " ns TEXT NOT NULL CHECK (ns IN ('store','nd')),"
+      + ' reader TEXT NOT NULL,'
+      + ' value INTEGER NOT NULL CHECK (value >= 0),'
+      + ' retired_line INTEGER,'
+      + ' updated_at INTEGER NOT NULL,'
+      + ' PRIMARY KEY (partition, ns, reader)'
+      + ') WITHOUT ROWID;'
+    );
+  }
+  // readerCursorRowsOn(partition) — every reader_cursors row for one partition.
+  // A pre-Phase-3 db opened read-only has no such table: that is "no rows yet",
+  // never an error. Any other failure throws (callers map it to UNKNOWN).
+  function readerCursorRowsOn(partition) {
+    let rows;
+    try {
+      rows = db.prepare('SELECT partition, ns, reader, value, retired_line, updated_at FROM reader_cursors WHERE partition = ?;').all(String(partition));
+    } catch (e) {
+      if (/no such table/i.test(String((e && e.message) || ''))) return [];
+      throw e;
+    }
+    return rows.map((r) => ({
+      partition: String(r.partition), ns: String(r.ns), reader: String(r.reader),
+      value: Number(r.value), retiredLine: r.retired_line == null ? null : Number(r.retired_line),
+      updatedAt: Number(r.updated_at),
+    }));
   }
   // hasWriteSeq (fail-open capability probe): a PRAGMA is a read, safe on a
   // read-only connection too. On the writer path, the ALTER above is
@@ -990,6 +1021,36 @@ function openSqlite(home, workspaceId, opts) {
     // the single-value getter to the plural one (e.g. to report every
     // broken file) gets an empty array here rather than a missing method.
     getReadErrors() { return []; },
+    // readerCursorRows(partition) -> [{partition, ns, reader, value, retiredLine, updatedAt}].
+    readerCursorRows(partition) { return readerCursorRowsOn(partition); },
+    // readerCursorTxn(fn) -> fn's result. ONE write transaction (BEGIN IMMEDIATE):
+    // fn({ rows(partition), put(rec) }). put never lowers `value` (MAX at the SQL
+    // level); `retiredLine` is replaced only when the record carries the key.
+    readerCursorTxn(fn) {
+      const put = db.prepare(
+        'INSERT INTO reader_cursors (partition, ns, reader, value, retired_line, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+        + ' ON CONFLICT(partition, ns, reader) DO UPDATE SET value = MAX(value, excluded.value),'
+        + ' retired_line = CASE WHEN ? THEN excluded.retired_line ELSE retired_line END,'
+        + ' updated_at = excluded.updated_at;'
+      );
+      const tx = {
+        rows: (partition) => readerCursorRowsOn(partition),
+        put: (rec) => {
+          const setRetired = Object.prototype.hasOwnProperty.call(rec, 'retiredLine');
+          const rl = setRetired && rec.retiredLine != null ? clampInt(rec.retiredLine) : null;
+          put.run(String(rec.partition), String(rec.ns), String(rec.reader), clampInt(rec.value), rl,
+            Number.isFinite(rec.updatedAt) ? Math.floor(rec.updatedAt) : Date.now(), setRetired ? 1 : 0);
+        },
+      };
+      return retrySqliteBusy(() => {
+        db.exec('BEGIN IMMEDIATE;');
+        let out;
+        try { out = fn(tx); }
+        catch (e) { try { db.exec('ROLLBACK;'); } catch (_) {} throw e; }
+        db.exec('COMMIT;');
+        return out;
+      });
+    },
   };
 }
 function rowToDescriptor(r) {
@@ -1042,6 +1103,9 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     // mirroring the sqlite backend's separate table. Each workspace tracks
     // broadcasts-seen independently of its direct-inbox cursor.
     broadcastCursors: path.join(dir, 'broadcast_cursors.ndjson'),
+    // reader_cursors (mesh redesign Phase 3) — append-only records, reduced with
+    // value = MAX per key; retiredLine last-write-wins. Additive: old builds ignore it.
+    readerCursors: path.join(dir, 'reader_cursors.ndjson'),
   };
   function append(file, obj) {
     F.mkdirSync(dir, { recursive: true });
@@ -1061,8 +1125,14 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
   // hash). A genuine unexpected fs error opening the lock (e.g. EPERM) throws
   // ELOCKFS — fail CLOSED, never race. appendMessage() layers a bounded retry on
   // ELOCKUNAVAIL so transient contention self-heals without corrupting the trail.
-  const messagesLock = path.join(dir, 'messages.lock');
+  const messagesLockPath = path.join(dir, 'messages.lock');
+  // reader_cursors.lock — the SAME O_EXCL shape as messages.lock, a separate file
+  // so a cursor ack never contends with a message append. Fails CLOSED.
+  const readerCursorsLockPath = path.join(dir, 'reader_cursors.lock');
   const MESSAGES_LOCK_STALE_MS = Number.isFinite(L.staleMs) ? L.staleMs : 10 * 1000;
+  // A holder whose pid is still ALIVE is stolen from only past this much larger
+  // bound (a hung process); a long live txn past staleMs keeps its lock.
+  const MESSAGES_LOCK_LIVE_STALE_MS = Number.isFinite(L.liveStaleMs) ? L.liveStaleMs : 5 * 60 * 1000;
   // Raised 500 -> 1000 + jittered backoff: slow FS (Windows NTFS + Defender) needs
   // more headroom before an append is considered genuinely un-acquirable. Tunable
   // for tests via openStore({ lock: { maxTries, appendRetries, staleMs } }).
@@ -1079,33 +1149,54 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
   // concurrent reader that catches it empty MUST NOT steal it (that lets two
   // processes both run the critical section -> a duplicate hash row). The empty
   // window is microseconds, so a fresh mtime = live holder -> back off, never steal.
-  function acquireOnce() {
+  // TOKENIZED: each acquire writes a unique token; release unlinks only while the
+  // file still carries it (a successor's lock is never removed). PID-AWARE: past
+  // staleMs a holder is stolen from only when its pid is provably dead (ESRCH) or
+  // past MESSAGES_LOCK_LIVE_STALE_MS; a lock with no parseable pid keeps the
+  // mtime + staleMs rule.
+  function acquireOnce(lockPath, token) {
+    const messagesLock = lockPath || messagesLockPath;
     try {
       const fd = F.openSync(messagesLock, 'wx');
-      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now() })); } finally { F.closeSync(fd); }
+      try { F.writeSync(fd, JSON.stringify({ pid: process.pid, ts: Date.now(), token })); } finally { F.closeSync(fd); }
       return 'held';
     } catch (e) {
       if (!e || e.code !== 'EEXIST') throw e; // unexpected fs error -> caller fails closed
       let ts = null;
-      try { ts = JSON.parse(F.readFileSync(messagesLock, 'utf8')).ts; } catch (_) {}
+      let pid = null;
+      try { const rec = JSON.parse(F.readFileSync(messagesLock, 'utf8')); ts = rec.ts; pid = rec.pid; } catch (_) {}
       if (!Number.isFinite(ts)) {
         // torn/empty/unparseable content — fall back to the file's mtime for
         // liveness; a live holder mid-write has a FRESH mtime.
         try { ts = F.statSync(messagesLock).mtimeMs; } catch (_) { ts = null; }
       }
-      if (ts === null || (Date.now() - ts) > MESSAGES_LOCK_STALE_MS) {
+      const age = ts === null ? Infinity : Date.now() - ts;
+      let stale = age > MESSAGES_LOCK_STALE_MS;
+      if (stale && Number.isInteger(pid) && pid > 0 && age <= MESSAGES_LOCK_LIVE_STALE_MS) {
+        try { process.kill(pid, 0); stale = false; } // alive (or EPERM below) -> live holder
+        catch (ke) { stale = !!(ke && ke.code === 'ESRCH'); }
+      }
+      if (stale) {
         try { F.unlinkSync(messagesLock); } catch (_) {} // steal a genuinely stale lock
         return 'stole';
       }
       return 'busy'; // live holder
     }
   }
-  function withMessagesLock(fn) {
+  function releaseLock(lockPath, token) {
+    try {
+      const rec = JSON.parse(F.readFileSync(lockPath, 'utf8'));
+      if (rec && rec.token === token) F.unlinkSync(lockPath);
+    } catch (_) { /* gone or unreadable: not ours to remove */ }
+  }
+  function withMessagesLock(fn, lockPath) {
+    const messagesLock = lockPath || messagesLockPath;
     try { F.mkdirSync(dir, { recursive: true }); } catch (_) {}
     let held = false;
+    const token = process.pid + '-' + Date.now() + '-' + crypto.randomBytes(6).toString('hex');
     for (let i = 0; i < MESSAGES_LOCK_MAX_TRIES && !held; i++) {
       let st;
-      try { st = acquireOnce(); }
+      try { st = acquireOnce(messagesLock, token); }
       catch (e) {
         // Genuine, unexpected fs error opening the lock (e.g. EPERM). Fail CLOSED —
         // NEVER run the critical section unlocked.
@@ -1121,17 +1212,17 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
       throw lockErr('ELOCKUNAVAIL', 'devswarm messages lock unavailable after ' + MESSAGES_LOCK_MAX_TRIES + ' tries');
     }
     try { return fn(); }
-    finally { try { F.unlinkSync(messagesLock); } catch (_) {} }
+    finally { releaseLock(messagesLock, token); }
   }
   // withRetriedMessagesLock(criticalFn) — bounded retry on ELOCKUNAVAIL (contention
   // exhaustion), shared by appendMessage AND appendMeshRow. The critical section
   // NEVER runs unlocked, so a retry can only ADD a row once — the dedupe hash makes
   // every re-attempt idempotent (a prior success is seen and skipped). A genuine fs
   // error (ELOCKFS) is NOT retried: fail closed, never race.
-  function withRetriedMessagesLock(criticalFn) {
+  function withRetriedMessagesLock(criticalFn, lockPath) {
     let lastErr = null;
     for (let attempt = 0; attempt < MESSAGES_APPEND_MAX_RETRIES; attempt++) {
-      try { return withMessagesLock(criticalFn); }
+      try { return withMessagesLock(criticalFn, lockPath); }
       catch (e) {
         lastErr = e;
         if (e && e.code === 'ELOCKUNAVAIL') { lockSleep(4 + Math.floor(Math.random() * 8)); continue; }
@@ -1172,6 +1263,9 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
   // error by file path in a Map — a successful read of ONE file clears only
   // THAT file's entry, never another file's still-live error.
   const lastReadErrors = new Map();
+  // tornLines — per file, how many unparsable lines the LAST read skipped. A
+  // caller that must not act on an incomplete trail (rehome) checks it.
+  const tornLines = new Map();
   function readAll(file) {
     let raw;
     try { raw = String(F.readFileSync(file, 'utf8')); }
@@ -1193,10 +1287,12 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     // rather than a permanently-latched failure flag.
     lastReadErrors.delete(file);
     const out = [];
+    let torn = 0;
     for (const line of raw.split('\n')) {
       if (line.trim() === '') continue;
-      try { out.push(JSON.parse(line)); } catch (_) { /* skip a torn line, keep the trail */ }
+      try { out.push(JSON.parse(line)); } catch (_) { torn += 1; /* skip a torn line, keep the trail */ }
     }
+    if (torn) tornLines.set(file, torn); else tornLines.delete(file);
     return out;
   }
 
@@ -1638,7 +1734,91 @@ function openJournal(home, workspaceId, fsi, lockOpts, opts) {
     getReadErrors() {
       return Array.from(lastReadErrors.values());
     },
+    // tornLineCount(name) -> unparsable lines skipped by the last read of
+    // <name>.ndjson (e.g. 'messages'). 0 when clean or never read.
+    tornLineCount(name) {
+      const f = files[name];
+      return f && tornLines.has(f) ? tornLines.get(f) : 0;
+    },
+    // readerCursorRows(partition) — reduced view. THROWS when the file exists but
+    // cannot be read (a read error must surface as UNKNOWN, never as "no rows").
+    readerCursorRows(partition) { return reduceReaderCursors(partition); },
+    // readerCursorTxn(fn) — the journal twin of the sqlite BEGIN IMMEDIATE txn:
+    // fn runs under reader_cursors.lock (fails CLOSED with ELOCKUNAVAIL/ELOCKFS —
+    // the caller then records nothing: re-delivery, never loss).
+    // ATOMIC: puts are buffered (tx.rows sees them) and the whole transaction is
+    // written as ONE line {"txn":[rec,...]} by ONE append after fn returns. A
+    // crash mid-write leaves a torn, unparsable line that readAll skips, so the
+    // transaction is either wholly present or wholly absent (an import stays
+    // needsImport; an ack never lands without its floor). A throwing fn writes
+    // nothing (ROLLBACK). The line starts with '\n' when the file does not end
+    // with one, so a torn tail can never swallow the next transaction.
+    readerCursorTxn(fn) {
+      return withRetriedMessagesLock(() => {
+        const pending = [];
+        const tx = {
+          rows: (partition) => reduceReaderCursors(partition, pending),
+          put: (rec) => {
+            const out = {
+              partition: String(rec.partition), ns: String(rec.ns), reader: String(rec.reader),
+              value: clampInt(rec.value),
+              updatedAt: Number.isFinite(rec.updatedAt) ? Math.floor(rec.updatedAt) : Date.now(),
+            };
+            if (Object.prototype.hasOwnProperty.call(rec, 'retiredLine')) {
+              out.retiredLine = rec.retiredLine == null ? null : clampInt(rec.retiredLine);
+            }
+            pending.push(out);
+          },
+        };
+        const result = fn(tx);
+        if (pending.length) {
+          let lead = '';
+          try {
+            const raw = String(F.readFileSync(files.readerCursors, 'utf8'));
+            if (raw.length && !raw.endsWith('\n')) lead = '\n';
+          } catch (_) { /* ENOENT: a fresh file needs no separator */ }
+          F.mkdirSync(dir, { recursive: true });
+          F.appendFileSync(files.readerCursors, lead + JSON.stringify({ txn: pending }) + '\n');
+        }
+        return result;
+      }, readerCursorsLockPath);
+    },
   };
+  // reduceReaderCursors(partition, pending?) — MAX per key over every record: a
+  // plain row line (single-record form) or each rec of a {"txn":[...]} line, then
+  // the in-flight transaction's buffered puts (visible to tx.rows only).
+  function reduceReaderCursors(partition, pending) {
+    const want = String(partition);
+    const byKey = new Map();
+    const lines = readAll(files.readerCursors);
+    const err = lastReadErrors.get(files.readerCursors);
+    if (err) {
+      const e = new Error('reader_cursors unreadable (' + err.code + ')');
+      e.code = err.code;
+      throw e;
+    }
+    const recs = [];
+    for (const l of lines) {
+      if (l && Array.isArray(l.txn)) { for (const r of l.txn) recs.push(r); } else recs.push(l);
+    }
+    if (pending) for (const r of pending) recs.push(r);
+    for (const r of recs) {
+      if (!r || String(r.partition) !== want || (r.ns !== 'store' && r.ns !== 'nd') || r.reader == null) continue;
+      const k = r.ns + '\u0000' + String(r.reader);
+      const v = Number.isFinite(r.value) && r.value >= 0 ? Math.floor(r.value) : 0;
+      let cur = byKey.get(k);
+      if (!cur) {
+        cur = { partition: want, ns: r.ns, reader: String(r.reader), value: v, retiredLine: null, updatedAt: 0 };
+        byKey.set(k, cur);
+      }
+      if (v > cur.value) cur.value = v;
+      if (Object.prototype.hasOwnProperty.call(r, 'retiredLine')) {
+        cur.retiredLine = Number.isFinite(r.retiredLine) ? r.retiredLine : null;
+      }
+      if (Number.isFinite(r.updatedAt)) cur.updatedAt = r.updatedAt;
+    }
+    return Array.from(byKey.values());
+  }
 }
 
 // ----- shared helpers -----
@@ -1968,27 +2148,38 @@ function archivedOnlyIds(home, F) {
 // NDJSON cursor + line count (one small file, no store reads) and skip the whole
 // union when the tail is empty. An absent/empty inbox, or a cursor already at
 // the line count, both land here — the overwhelmingly common shape.
-function ndjsonHasUnread(d, F) {
+// Phase 3: the NDJSON tail is measured from the partition's nd FLOOR
+// (reader_cursors), not the descriptor cursor file — `ndFloor` is passed in.
+function ndjsonHasUnread(d, F, ndFloor) {
   if (!d || (!d.inboxPath && !d.cursorPath)) return false;
   try {
     const { readUnread } = require('./devswarm-inbox-cursor.js');
     const u = readUnread(d.inboxPath || null, d.cursorPath || null, F);
+    if (u && u.known && Number.isFinite(ndFloor)) return u.total > ndFloor;
     return !!(u && Array.isArray(u.lines) && u.lines.length > 0);
   } catch (_) { return true; } // fail-open: unknown -> pay for the union rather than under-report
 }
 
-function unionUnreadFor(d, store, F) {
+// unionUnreadFor(d, store, F, home) — the summary is the FLOOR view by definition:
+// reader_cursors.countFor with reader null. Returns null when unknown/unavailable
+// (the caller then keeps its store-only count and reports the row unknown).
+function unionUnreadFor(d, store, F, home) {
   if (!d) return null;
-  let unreadMod;
-  try { unreadMod = require('./devswarm-unread.js'); } catch (_) { return null; }
-  if (!unreadMod || typeof unreadMod.unionUnread !== 'function') return null;
-  return unreadMod.unionUnread({
-    inboxPath: d.inboxPath || null,
-    cursorPath: d.cursorPath || null,
-    id: d.id,
-    storeHandle: store,
-    fsi: F,
-  });
+  let rc;
+  try { rc = require('./reader-cursors.js'); } catch (_) { return null; }
+  const u = rc.countFor(store, { reader: null, partition: d.id, inboxPath: d.inboxPath || null, cursorPath: d.cursorPath || null, home, fsi: F });
+  return u && !u.unknown ? u : null;
+}
+
+// floorFor(store, id, home) -> the partition's stored floor (reader_cursors
+// '#floor', ns 'store'), or the legacy effective floor before its one-time
+// import. THE summary base (replaces store.cursorValue as a reader). A table
+// read error returns null = UNKNOWN (never the legacy shared cursor, which can
+// hold an old build's own position past a live reader's unread). Callers count
+// from 0 (conservative, never a false 0) and flag the row unreadUnknown.
+function floorFor(store, id, home, ns) {
+  try { return require('./reader-cursors.js').floorOf(store, id, ns || 'store', { home }); }
+  catch (_) { return null; }
 }
 
 function summaryHashFor(store, o) {
@@ -2105,7 +2296,9 @@ function computeSummary(store, opts) {
       continue; // archived -> never projected ACTIVE
     }
     const total = store.messageCount(d.id);
-    const cursor = store.cursorValue(d.id);
+    const floor = floorFor(store, d.id, home);
+    const unreadUnknown = floor === null;
+    const cursor = unreadUnknown ? 0 : floor;
     // UNREAD UNIFICATION (defect 8f2aec40e2ff, P1). `total - cursor` counts ONLY
     // the store side. The parent Stop gate, liveness.js and the `inbox count`
     // CLI all count the LOSS-FREE UNION (durable-NDJSON unread ∪ store-only
@@ -2136,9 +2329,9 @@ function computeSummary(store, opts) {
     // PERF BOUND (Round 13 item 5): pay for the union ONLY when the NDJSON side
     // actually has unread lines to merge — see ndjsonHasUnread's header for why
     // an empty tail makes the union provably equal to `total - cursor`.
-    if ((d.inboxPath || d.cursorPath) && ndjsonHasUnread(d, F)) {
+    if ((d.inboxPath || d.cursorPath) && ndjsonHasUnread(d, F, floorFor(store, d.id, home, 'nd') || 0)) {
       try {
-        const u = unionUnreadFor(d, store, F);
+        const u = unionUnreadFor(d, store, F, home);
         if (u && Number.isFinite(u.unread)) unread = Math.max(0, u.unread);
       } catch (_) { /* fail-open: keep the store-only count rather than fail a projection */ }
     }
@@ -2294,6 +2487,9 @@ function computeSummary(store, opts) {
       archive_requested,
       pendingQuestions,
     };
+    // Additive: present only when the read position could not be read — the
+    // counts above are then the conservative total, not a measured unread.
+    if (unreadUnknown) workspaces[d.id].unreadUnknown = true;
     // PUSH-STATE (report-only unpushed/no-upstream ground truth): threaded from
     // the freshest per-workspace heartbeat (heartbeats/<id>.json — one file per
     // id, always the latest turn's write, so "freshest" needs no extra logic
@@ -2450,7 +2646,7 @@ function computeSummary(store, opts) {
     if (!isSafeId(id)) continue;            // defense-in-depth (parity with the workspaces loop)
     let total = 0; let cursor = 0;
     try { total = store.messageCount(id); } catch (_) { total = 0; }
-    try { cursor = store.cursorValue(id); } catch (_) { cursor = 0; }
+    cursor = floorFor(store, id, home) || 0; // unknown -> count from 0 (surfaces, never hides)
     const unread = Math.max(0, total - cursor);
     if (unread <= 0) continue;              // real unread only
     // fail-open by contract: each classifier returns false on ANY doubt, so an id
@@ -2482,7 +2678,7 @@ function computeSummary(store, opts) {
     if (exists) continue;
     let total = 0; let cursor = 0;
     try { total = store.messageCount(id); } catch (_) { total = 0; }
-    try { cursor = store.cursorValue(id); } catch (_) { cursor = 0; }
+    cursor = floorFor(store, id, home) || 0; // unknown -> count from 0 (surfaces, never hides)
     const unread = Math.max(0, total - cursor);
     // A DRAINED stale row (unread:0) is NOT stuck — surfacing it makes parent-inbox
     // falsely warn it "still hold[s] unread". Only surface a stale row that genuinely

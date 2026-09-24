@@ -32,6 +32,15 @@ const repokeyLib = require(path.join(
 
 const UUID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
+// The parent (Primary) is REGISTERED in its store, as `register-primary` leaves it:
+// an escalation notice goes through appendIntoPartition, which delivers only into a
+// registered destination (else it parks a retry intent — see recovery.test.js
+// 'escalation into an UNREGISTERED parent').
+function registerParent(storeMod, home, parentId, hash, extra) {
+  const s = storeMod.openStore(Object.assign({ home, workspaceId: parentId, hash: hash || undefined }, extra || {}));
+  try { s.upsertRegistry({ id: parentId, worktreePath: '/parent/' + parentId, sessionId: 'sess-parent' }); } finally { s.close(); }
+}
+
 function makeHome() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'antihall-recovery-'));
   return { home, cleanup: () => { try { fs.rmSync(home, { recursive: true, force: true }); } catch (_) {} } };
@@ -420,10 +429,11 @@ test('pokeOrEscalate: escalation appends a synthetic notice into the PARENT stor
     const now = Date.now();
     const staleSince = now - 12 * 60 * 1000; // 12 minutes stale
     const verdict = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    const parentId = inst.primaryWorkspaceId(d.worktreePath);
+    registerParent(storeLib, home, parentId);
     const r = M.pokeOrEscalate(d, verdict, { home, now }, {});
     assert.strictEqual(r.action, 'escalate');
 
-    const parentId = inst.primaryWorkspaceId(d.worktreePath);
     const s = storeLib.openStore({ home, workspaceId: parentId }); // parent's own per-project store
     let msgs;
     try { msgs = s.listMessages(parentId, {}); } finally { s.close(); }
@@ -440,6 +450,7 @@ test('pokeOrEscalate: repeated escalate on an ALREADY-escalated verdict does NOT
     const now = Date.now();
     const staleSince = now - 5 * 60 * 1000;
     const first = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
+    registerParent(storeLib, home, inst.primaryWorkspaceId(d.worktreePath));
     const r1 = M.pokeOrEscalate(d, first, { home, now }, {});
     assert.strictEqual(r1.action, 'escalate');
 
@@ -528,6 +539,7 @@ test('notifyParentEscalation: appends into the PARENT repoKey store (not the leg
       const staleSince = now - 7 * 60 * 1000;
       const verdict = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
 
+      registerParent(storeLib, home, parentId, expectedRepoKey);
       // NO openParentStore override -> exercises the REAL store.
       M.notifyParentEscalation(d, verdict, { home, now }, undefined);
 
@@ -596,6 +608,7 @@ test('notifyParentEscalation (linked worktree): addresses the notice to the PARE
     const staleSince = now - 7 * 60 * 1000;
     const verdict = { status: 'stale', lastOutboundTs: 1, staleSince, nudgeAttempts: 0, nudgedAt: null, pending: true };
 
+    registerParent(storeLib, home, expectedParentId, repokeyLib.repoKeyForWorktree(childDir));
     // NO openParentStore override -> exercises the REAL store, same as production.
     M.notifyParentEscalation(d, verdict, { home, now }, undefined);
 
@@ -614,19 +627,14 @@ test('notifyParentEscalation (linked worktree): addresses the notice to the PARE
     try { childMsgs = sChild.listMessages(childOwnId, {}); } finally { sChild.close(); }
     assert.strictEqual(childMsgs.length, 0, 'the child\'s own partition must receive NOTHING — it is not the addressee');
 
-    // 3) The projection the parent reads reflects it. computeSummary only projects a
-    //    registry.listRegistry() row into `summary.workspaces[id]`; notifyParentEscalation
-    //    never registers the parent (it only appends a message), so a real-unread
-    //    partition with no registry row surfaces via the A2 ORPHAN-DETECTION path
-    //    instead — `summary.orphans[]` entries shaped {id, messageCount, unread}
-    //    (devswarm-store.js computeSummary, A2 orphan block). Verified empirically
-    //    against this exact fixture before writing this assertion — do not assume
-    //    `workspaces[id].unread`, which does not exist here.
+    // 3) The projection the parent reads reflects it. The parent is registered
+    //    (registerParent — escalations deliver only into a registered destination),
+    //    so computeSummary projects it as `summary.workspaces[parentId]`.
     const sum = storeLib.readSummaryForHash(home, expectedRepoKey);
     assert.ok(sum, 'the repoKey summary was (re-)derived by notifyParentEscalation');
-    const orphanEntry = (sum.orphans || []).find((o) => o.id === expectedParentId);
-    assert.ok(orphanEntry, 'the projection surfaces the parent partition (as an orphan: no registry row, real unread)');
-    assert.ok(orphanEntry.unread > 0, 'the parent partition shows non-zero unread in the projection');
+    const parentEntry = sum.workspaces && sum.workspaces[expectedParentId];
+    assert.ok(parentEntry, 'the projection surfaces the registered parent partition');
+    assert.ok(parentEntry.unread > 0, 'the parent partition shows non-zero unread in the projection');
 
     // 4) ANTI-REGRESSION: the LEGACY 8-hex bucket (hashFromWorkspaceId(parentId)) gets
     //    NOTHING, guarded by a keys-differ precondition (disjoint by construction, but

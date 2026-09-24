@@ -617,10 +617,28 @@ function cursorHygieneCheck(opts) {
       return { status: PASS, message: 'per-instance cursor hygiene: not applicable (this build has no gcInstanceCursors)' };
     }
     const r = devswarm.gcInstanceCursors(null, home, {
-      env: o.env, cwd: o.cwd, now: o.now, dryRun: !o.repair,
+      env: o.env, cwd: o.cwd, now: o.now, dryRun: true,
     }) || {};
     const errCount = Array.isArray(r.errors) ? r.errors.length : (r.errors || 0);
-    const verb = o.repair ? 'removed' : 'would remove';
+    // Phase 3: legacy per-instance files are inert and NEVER removed (the GC is
+    // report-only); `verb` names what the pre-Phase-3 pass would have removed.
+    const verb = 'legacy, inert — would previously have removed';
+    // Phase 3 one-time reader_cursors import — the doctor half (update.js runs
+    // the other). Plain doctor: dry path only (zero writes, the R1 item-15
+    // lesson). --repair: imports (idempotent, no delete, fail-open).
+    let importNote = '';
+    if (typeof devswarm.importReaderCursorsAllStores === 'function') {
+      try {
+        const env = Object.assign({}, o.env || process.env);
+        const ir = devswarm.importReaderCursorsAllStores(home, { env, cwd: o.cwd, now: o.now, dryRun: !o.repair }) || {};
+        importNote = ir.dryRun
+          ? ' — reader_cursors import: ' + (ir.wouldImport || 0) + ' partition(s) not yet imported (run doctor --repair, or they import lazily on first ack)'
+          : ' — reader_cursors import: imported ' + (ir.imported || 0) + ' partition(s)';
+        if (ir.errors) importNote += ' (' + ir.errors + ' error(s), fail-open)';
+      } catch (e) {
+        importNote = ' — reader_cursors import unavailable: ' + (e && e.message);
+      }
+    }
     // Report-only: old-shape leftovers from a pre-release dev build.
     const legacyShapes = legacyCursorShapeLeftovers(home, o.fsi);
     const legacyNote = legacyShapes.length
@@ -632,7 +650,7 @@ function cursorHygieneCheck(opts) {
       return {
         status: WARN,
         message: 'per-instance cursor hygiene: ' + errCount + ' file(s) could not be swept (fail-open) — scanned '
-          + (r.scanned || 0) + ', ' + verb + ' ' + ((r.deleted || 0) + (r.evicted || 0)) + legacyNote,
+          + (r.scanned || 0) + ', ' + verb + ' ' + ((r.deleted || 0) + (r.evicted || 0)) + legacyNote + importNote,
       };
     }
     // A large number of instance files for one id means many distinct process
@@ -641,11 +659,30 @@ function cursorHygieneCheck(opts) {
     return {
       status: PASS,
       message: 'per-instance cursor hygiene: scanned ' + (r.scanned || 0) + ', ' + verb + ' '
-        + (r.deleted || 0) + ' subsumed + ' + (r.evicted || 0) + ' stale, kept ' + (r.kept || 0) + legacyNote,
+        + (r.deleted || 0) + ' subsumed + ' + (r.evicted || 0) + ' stale, kept ' + (r.kept || 0) + legacyNote + importNote,
     };
   } catch (e) {
     return { status: WARN, message: 'per-instance cursor hygiene unavailable: ' + (e && e.message) };
   }
+}
+
+// escalationIntentsCheck({home, now, fsi}) -> one result. READ-ONLY: lists the
+// supervisor escalation notices still PARKED (undelivered — WARN, with the child
+// ids and what to run) and counts the delivered records, with the oldest ages.
+// Nothing is ever removed automatically (one file per child id bounds storage).
+function escalationIntentsCheck(opts) {
+  const o = opts || {};
+  const st = require('./recovery.js').escalationIntentStats(o.home, o.now, o.fsi);
+  const age = (ms) => (ms == null ? 'n/a' : (ms < 3600000 ? Math.round(ms / 60000) + 'm' : (ms < 86400000 ? Math.round(ms / 3600000) + 'h' : Math.round(ms / 86400000) + 'd')));
+  const tail = st.delivered + ' delivered record(s) kept (oldest ' + age(st.oldestDeliveredAgeMs) + '; never removed automatically)';
+  if (!st.undelivered) return { status: PASS, message: 'escalation-pending: 0 undelivered; ' + tail };
+  const kids = st.undeliveredIds.map((x) => x.childId + ' -> ' + x.parentId + (x.lastStatus ? ' (' + x.lastStatus + ')' : '')).join(', ');
+  return {
+    status: WARN,
+    message: 'escalation-pending: ' + st.undelivered + ' undelivered supervisor escalation(s) (oldest ' + age(st.oldestUndeliveredAgeMs) + '): ' + kids
+      + ' — the Primary is not registered in the mesh store (run `devswarm.js register-primary`); the supervisor retries every sweep. ' + tail,
+    escalationIntents: st,
+  };
 }
 
 function runChecks(opts) {
@@ -673,6 +710,11 @@ function runChecks(opts) {
     results.push(cursorHygieneCheck({ home, env, cwd, now, repair: !!o.repair }));
   } catch (e) {
     results.push({ status: WARN, message: 'per-instance cursor hygiene unavailable: ' + (e && e.message) });
+  }
+  try {
+    results.push(escalationIntentsCheck({ home, now, fsi: F }));
+  } catch (e) {
+    results.push({ status: WARN, message: 'escalation-pending check unavailable: ' + (e && e.message) });
   }
 
   // Descriptor-store integrity (companion/lib/doctor-descriptors.js): a
@@ -721,6 +763,8 @@ module.exports = {
   versionMismatchCheck,
   // per-instance cursor hygiene (defect 8b211241bbe9) — exported for tests.
   cursorHygieneCheck, legacyCursorShapeLeftovers,
+  // parked supervisor escalation notices (read-only).
+  escalationIntentsCheck,
   // install-vs-source integrity (CHECK 1/CHECK 2) — exported individually for tests.
   installDivergenceCheck, monitorsJsonPresenceCheck, resolveMarketplaceDir, resolveInstallScope,
   collectShippedFiles,

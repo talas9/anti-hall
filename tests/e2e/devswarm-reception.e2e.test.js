@@ -255,6 +255,8 @@ test('3 SUPERVISOR ESCALATION: pokeOrEscalate escalates into the PARENT store, i
     // Injected openParentStore — still opens the REAL store module; the injection
     // seam is used here only to PROVE it was actually invoked, not to fake behavior.
     const openParentStore = (o) => { opens++; return store.openStore(o); };
+    // The parent is registered (register-primary): escalations deliver only into a registered destination.
+    { const ps = store.openStore({ home, backend: 'journal', workspaceId: parentId }); try { ps.upsertRegistry({ id: parentId, worktreePath: worktree, sessionId: 'sess-parent' }); } finally { ps.close(); } }
 
     // First sweep: verdict is 'stale' (not yet escalated). No nudgeCommand on the
     // descriptor -> pokeOrEscalate escalates immediately (no nudge phase).

@@ -199,7 +199,7 @@ for (const B of backends) {
     } finally { rm(W1); rm(home); }
   });
 
-  test(`[${B.name}] cursor MIN: json=5, .cursor=2 -> both end at 2, never raised`, () => {
+  test(`[${B.name}] Phase 3: orphan heal NEVER rewinds a cursor (json=5 and .cursor=2 are both left exactly as they were)`, () => {
     const home = tmpHome();
     const W1 = makeGitRepo('cursor-' + B.name);
     const repoKey = repokey.repoKeyForWorktree(W1);
@@ -224,7 +224,9 @@ for (const B of backends) {
       const r = cli.healOrphanPartitions(home, { cwd: W1, env: {}, backend: B.backend });
       assert.strictEqual(r.ok, true);
 
-      assert.strictEqual(inboxCursor.readCursor(jsonPath), 2, 'json cursor lowered to the MIN (2), never raised');
+      // Phase 3 deleted reconcileOrphanCursor (the one allowRewind writer): no
+      // cursor is ever lowered, in any namespace.
+      assert.strictEqual(inboxCursor.readCursor(jsonPath), 5, 'json cursor is never rewound');
       assert.strictEqual(inboxCursor.readCursor(fileCursorPath), 2, '.cursor file already at the MIN, unchanged');
     } finally { rm(W1); rm(home); }
   });

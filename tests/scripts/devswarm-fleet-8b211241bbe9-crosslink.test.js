@@ -139,8 +139,13 @@ test('8b211241bbe9 §2b: no cursor decision consults liveness', () => {
   const home = tmpHome(); const repo = makeGitRepo('nolive');
   try {
     const id = 'primary-nl';
-    cli.cmdRegister(id, { worktree: [repo], session: ['s-' + id] },
-      { home, cwd: repo, env: {}, backend: backend(), now: Date.now() });
+    // Phase 3: each live instance DECLARES itself at register/ensure (as every
+    // production `inbox pull` turn does); an undeclared process is a NEWCOMER
+    // and reads from the floor (§4.2). Both instances here are declared.
+    for (const n of ['h:1:1', 'h:2:2']) {
+      cli.cmdRegister(id, { worktree: [repo], session: ['s-' + id] },
+        { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: n });
+    }
     const s = openStore(home, repo);
     try {
       for (let i = 0; i < 2; i++) {
@@ -151,9 +156,9 @@ test('8b211241bbe9 §2b: no cursor decision consults liveness', () => {
     // The per-instance read/ack path must not depend on any heartbeat or
     // liveness evidence: nothing was ever marked live in this home.
     const a = cli.cmdInboxMessages(id, { unread: [true] },
-      { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'anc:1:1' }, { ack: true });
+      { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'h:1:1' }, { ack: true });
     const b = cli.cmdInboxMessages(id, { unread: [true] },
-      { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'anc:2:2' }, { ack: true });
+      { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'h:2:2' }, { ack: true });
     assert.strictEqual(a.messages.length, 2);
     assert.strictEqual(b.messages.length, 2,
       'both instances are served with no liveness oracle in play — `inbox tick` refreshes only the heartbeat file, so any such oracle would be wrong anyway');
@@ -173,11 +178,11 @@ test('8b211241bbe9 §2b: --ack-as-owner still acks a genuinely ownerless partiti
     fs.writeFileSync(inbox, JSON.stringify({ from: 'p', message: 'x', ts: 1 }) + '\n');
     cli.cmdRegister(id, {
       worktree: [repo], session: ['s-ovr'], inbox: [inbox], cursor: [path.join(repo, 'c.json')],
-    }, { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'anc:1:1' });
+    }, { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'h:1:1' });
     // Ack from a DIFFERENT worktree with the sanctioned override. The gate
     // change must not have made the override collateral damage.
     const r = cli.cmdInbox('ack', id, { 'ack-as-owner': [true] }, {
-      home, cwd: other, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'anc:2:2',
+      home, cwd: other, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'h:2:2',
     });
     assert.notStrictEqual(r.reason, 'redirect-to-live-owner',
       'a partition with no retired-redirect at all must never hit the redirect guard');
@@ -196,7 +201,7 @@ test('8b211241bbe9 §2e: --ack-as-owner on a retired id redirecting to a LIVE ow
     // The survivor is registered and LIVE (fresh heartbeat under its own id).
     cli.cmdRegister(survivor, {
       worktree: [repo], session: ['s-surv'], inbox: [sInbox], cursor: [path.join(repo, 'sc.json')],
-    }, { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'anc:1:1' });
+    }, { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'h:1:1' });
     const hbDir = path.join(home, '.anti-hall', 'devswarm', 'heartbeats');
     fs.mkdirSync(hbDir, { recursive: true });
     fs.writeFileSync(path.join(hbDir, survivor + '.json'),
@@ -208,7 +213,7 @@ test('8b211241bbe9 §2e: --ack-as-owner on a retired id redirecting to a LIVE ow
       JSON.stringify({ retiredTo: survivor, at: Date.now() }));
 
     const r = cli.cmdInbox('ack', retired, { 'ack-as-owner': [true] }, {
-      home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'anc:9:9',
+      home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'h:9:9',
     });
     assert.strictEqual(r.ok, false,
       'the override must NOT consume a live survivor\'s mail by naming its retired twin: ' + JSON.stringify(r).slice(0, 250));
@@ -254,7 +259,7 @@ test('8b211241bbe9 §2e: --ack-as-owner DOES ack a survivor whose owner is dead'
     fs.writeFileSync(sInbox, JSON.stringify({ from: 'p', message: 'orphan mail', ts: 1 }) + '\n');
     cli.cmdRegister(survivor, {
       worktree: [repo], session: ['s-surv-d'], inbox: [sInbox], cursor: [path.join(repo, 'sc-d.json')],
-    }, { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'anc:1:1' });
+    }, { home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'h:1:1' });
     // NO heartbeat is written for the survivor: its owner is not live. This is
     // the override's sanctioned purpose — a retired target with no live owner.
     const redirDir = path.join(home, '.anti-hall', 'devswarm', 'retired');
@@ -263,7 +268,7 @@ test('8b211241bbe9 §2e: --ack-as-owner DOES ack a survivor whose owner is dead'
       JSON.stringify({ retiredTo: survivor, at: Date.now() }));
 
     const r = cli.cmdInbox('ack', retired, { 'ack-as-owner': [true] }, {
-      home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'anc:9:9',
+      home, cwd: repo, env: {}, backend: backend(), now: Date.now(), instanceNonce: 'h:9:9',
     });
     assert.notStrictEqual(r.reason, 'redirect-to-live-owner',
       'a DEAD survivor must not trip the live-owner refusal — that would break the override\'s whole purpose: '

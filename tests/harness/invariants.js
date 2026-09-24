@@ -12,7 +12,7 @@ const assert = require('node:assert');
 const REPO_ROOT = path.join(__dirname, '..', '..');
 const storeLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-store.js'));
 const cursorLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-inbox-cursor.js'));
-const unreadLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-unread.js'));
+const readerCursors = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'reader-cursors.js'));
 const archivedLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-archived.js'));
 const archivedCacheLib = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-archived-cache.js'));
 const livenessSelect = require(path.join(REPO_ROOT, 'plugins', 'anti-hall', 'companion', 'lib', 'devswarm-liveness-select.js'));
@@ -42,26 +42,29 @@ function checkI1(fixture, env, now) {
   }
 }
 
-// ---- I2: per-reader cursor floor is monotone non-decreasing -----------------
-// Reads the DESCRIPTOR cursor (devswarm-inbox-cursor.js readCursor) for each
-// reader; a tracker (createI2Tracker) remembers the last-seen value per reader
-// across steps and fails the moment a read goes backward.
+// ---- I2: every reader_cursors row is monotone non-decreasing ---------------
+// Phase 3 repoint: reads the ONE read-position table (every row of every reader
+// partition, both namespaces, the '#floor' row included); a tracker remembers
+// the last-seen value per (partition, ns, reader) across steps and fails the
+// moment any row goes backward.
 function createI2Tracker() {
   const last = Object.create(null);
   return {
-    check(fixture, readerIds) {
-      for (const id of readerIds) {
-        const cp = path.join(fixture.home, '.anti-hall', 'devswarm', 'cursor', id + '.json');
-        let v;
-        try { v = cursorLib.readCursor(cp, fs); } catch (_) { continue; }
-        if (!Number.isFinite(v)) continue;
-        const prev = last[id];
-        if (prev != null && v < prev) {
-          return { ok: false, detail: { readerId: id, prev, now: v } };
+    check(fixture, readerIds, env) {
+      const store = storeLib.openStore({ home: fixture.home, hash: fixture.repoKey, backend: 'journal', env: env || { ANTIHALL_INGEST_DRY_RUN: '1' } });
+      try {
+        for (const id of readerIds) {
+          let rows = [];
+          try { rows = store.readerCursorRows(id); } catch (e) { return { ok: false, detail: { readerId: id, error: String(e && e.message) } }; }
+          for (const r of rows) {
+            const k = id + '|' + r.ns + '|' + r.reader;
+            const prev = last[k];
+            if (prev != null && r.value < prev) return { ok: false, detail: { readerId: id, ns: r.ns, reader: r.reader, prev, now: r.value } };
+            last[k] = r.value;
+          }
         }
-        last[id] = v;
-      }
-      return { ok: true };
+        return { ok: true };
+      } finally { store.close(); }
     },
   };
 }
@@ -88,21 +91,20 @@ function createI3Tracker() {
   };
 }
 
-// measureUnread(fixture, readerId, env, now) -> unionUnread(...).unread for one
-// reader against the real store. THROWS on an unexpected result shape: the pre-B1
-// checker read `u.count`/`u.lines` (fields unionUnread never returns) and silently
-// measured 0, which made I3 vacuous.
+// measureUnread(fixture, readerId, env, now) -> countFor(...).unread for one
+// reader against the real store (Phase 3: the ONE count every gate/CLI uses).
+// THROWS on an unknown/unexpected result: the pre-B1 checker read fields the
+// primitive never returned and silently measured 0, which made I3 vacuous.
 function measureUnread(fixture, readerId, env, now) {
   const ip = path.join(fixture.home, '.anti-hall', 'devswarm', 'inbox', readerId + '.ndjson');
   const cp = path.join(fixture.home, '.anti-hall', 'devswarm', 'cursor', readerId + '.json');
   const store = storeLib.openStore({ home: fixture.home, hash: fixture.repoKey, backend: 'journal', env });
   try {
-    const u = unreadLib.unionUnread({
-      inboxPath: ip, cursorPath: cp, fsi: fs, storeHandle: store, id: readerId, now,
+    const u = readerCursors.countFor(store, {
+      reader: null, partition: readerId, inboxPath: ip, cursorPath: cp, fsi: fs, home: fixture.home, now,
     });
-    if (!u || typeof u.unread !== 'number' || !Number.isFinite(u.unread)) {
-      throw new Error('I3 checker: unionUnread returned an unexpected shape (no finite `unread`): '
-        + JSON.stringify(u && Object.keys(u)));
+    if (!u || u.unknown || typeof u.unread !== 'number' || !Number.isFinite(u.unread)) {
+      throw new Error('I3 checker: countFor returned an unknown/unexpected shape: ' + JSON.stringify(u && { unknown: u.unknown, reason: u.reason, keys: Object.keys(u) }));
     }
     return u.unread;
   } finally {

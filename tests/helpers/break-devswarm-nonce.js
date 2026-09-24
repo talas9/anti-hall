@@ -25,6 +25,10 @@ Module._load = function (request, parent, isMain) { // eslint-disable-line no-un
     mod.deriveInstanceNonce = function () {
       throw new Error('SIMULATED: deriveInstanceNonce cannot be derived (home/cwd unresolvable)');
     };
+    // B5: every production nonce site now calls deriveReaderNonce.
+    mod.deriveReaderNonce = function () {
+      throw new Error('SIMULATED: deriveReaderNonce cannot be derived (home/cwd unresolvable)');
+    };
   }
   return mod;
 };

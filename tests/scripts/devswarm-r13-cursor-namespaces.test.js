@@ -179,52 +179,47 @@ test('R13 item 8: after a fold, BOTH cursor namespaces hold the same value', () 
 });
 
 // ---------------------------------------------------------------------------
-// (9) reconcileOrphanCursor must not rewind on an untouched NDJSON channel
+// (9) Phase 3: reconcileOrphanCursor (the one rewind) is DELETED — orphan
+// healing never lowers any cursor, in any namespace.
 // ---------------------------------------------------------------------------
 
-test('R13 item 9: a converged store-side pair survives reconciliation with an untouched NDJSON cursor', () => {
+test('R13 item 9 (Phase 3): orphan healing never rewinds a converged store-side pair (reconcileOrphanCursor is gone)', () => {
   const home = tmpHome();
   const repo = makeGitRepo('reconcile');
   try {
+    assert.strictEqual(cli.reconcileOrphanCursor, undefined, 'the rewind helper no longer exists');
     const repoKey = repokey.repoKeyForWorktree(repo);
     const T = '11111111-2222-3333-4444-555555555555';
     const d = register(home, repo, T, T + '-session');
     seed(home, repoKey, T, 606, 'fwd-', 100000);
-
-    // Converged store-side: both namespaces at 606. The descriptor's NDJSON
-    // channel has never had a line, so its cursor is 0 — a DIFFERENT sequence.
     const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
     try {
       s.setCursor(T, 606);
       inboxCursor.ackTo(cli.primaryCursorPath(home, T), 606);
       assert.equal(inboxCursor.readCursor(d.cursorPath), 0, 'precondition: NDJSON line cursor is 0');
-
-      const desc = { id: T, cursorPath: d.cursorPath, inboxPath: d.inboxPath };
-      cli.reconcileOrphanCursor(home, s, T, desc, false);
-
-      assert.equal(s.cursorValue(T), 606,
-        'THE FIX: the NDJSON LINE cursor is not a store cursor — pre-fix MIN(606,0,606) rewound this to 0');
-      assert.equal(inboxCursor.readCursor(cli.primaryCursorPath(home, T)), 606);
     } finally { s.close(); }
+    cli.healOrphanPartitions(home, { repoKey, backend: 'journal' });
+    const s2 = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try { assert.equal(s2.cursorValue(T), 606, 'never rewound'); } finally { s2.close(); }
+    assert.equal(inboxCursor.readCursor(cli.primaryCursorPath(home, T)), 606);
   } finally { rm(home); rm(repo); }
 });
 
-test('R13 item 9: a GENUINE store-side disagreement at a non-zero min is still reconciled', () => {
+test('R13 item 9 (Phase 3): a store-side disagreement is NOT rewound — the lower namespace only ever rises', () => {
   const home = tmpHome();
   const repo = makeGitRepo('reconcile-real');
   try {
     const repoKey = repokey.repoKeyForWorktree(repo);
     const T = '22222222-3333-4444-5555-666666666666';
-    const d = register(home, repo, T, T + '-session');
+    register(home, repo, T, T + '-session');
     seed(home, repoKey, T, 20, 'fwd-', 100000);
     const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
-    try {
-      s.setCursor(T, 20);
-      inboxCursor.ackTo(cli.primaryCursorPath(home, T), 10);
-      const r = cli.reconcileOrphanCursor(home, s, T, { id: T, cursorPath: d.cursorPath }, false);
-      assert.equal(r.min, 10, 'MIN over the two STORE-SIDE namespaces only');
-      assert.equal(s.cursorValue(T), 10, 'the store cursor is lowered to the agreed min — still a real reconcile');
-    } finally { s.close(); }
+    try { s.setCursor(T, 20); } finally { s.close(); }
+    inboxCursor.ackTo(cli.primaryCursorPath(home, T), 10);
+    cli.healOrphanPartitions(home, { repoKey, backend: 'journal' });
+    const s2 = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try { assert.equal(s2.cursorValue(T), 20, 'the store cursor is never lowered (pre-Phase-3 reconcile rewound it to 10)'); }
+    finally { s2.close(); }
   } finally { rm(home); rm(repo); }
 });
 

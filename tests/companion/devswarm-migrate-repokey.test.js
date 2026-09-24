@@ -1,4 +1,5 @@
 'use strict';
+// proves: plugins/anti-hall/companion/devswarm-migrate.js#* — same-id copy: every migration below asserts the rows land in the SAME partition id they came from (per-partition listMessages / messageCount checks).
 // devswarm-migrate — Phase 3 (v0.57 mesh, PLAN-v0.57-mesh.md D13): folding
 // today's legacy hash-keyed per-project stores (store/<8-hex>/) into the
 // shared repo-name-keyed layout (store/<repoKey>/), NON-DESTRUCTIVELY and

@@ -1853,6 +1853,13 @@ function main() {
   if ((ownUnread > 0 || ownUnanswered.length > 0 || ownUnansweredInformational.length > 0) && primaryId) {
     segments.push(buildOwnUnreadSegment(ownUnread, primaryId, ownUrgencyMax, ownUnanswered, ownUnansweredInformational));
   }
+  // Escalation notices the supervisor could NOT deliver to this Primary (not
+  // registered in the mesh store, or its lock busy) are parked — surfaced here
+  // every turn until delivered (same text as the Stop gate: recovery.js).
+  try {
+    const parked = require('../companion/lib/recovery.js').parkedEscalationSegment(home, primaryId, CLI);
+    if (parked) segments.push(parked);
+  } catch (e) { logSegmentError(home, 'parked-escalations', e); }
 
   // v0.57 mesh (D4, Phase 8 step 2): tier the child-unread attention list by
   // urgencyMax — urgent/high gets the LOUDEST buildUrgentUnreadSegment; low is

@@ -130,9 +130,20 @@ test('D1: the descriptor cursor still receives the MIN projection after a read-p
     // Naming/location must match ndInstanceCursorPath exactly: <devswarmRoot>/
     // cursors/<id>#nd-<6-hex-char nonce>.json (listNdInstanceCursors only picks
     // up files matching that shape).
+    // Phase 3: a slower OLD-BUILD instance keeps its own legacy `#nd-` file —
+    // new code never writes it, so that reader keeps its own position.
     const slowerInstancePath = path.join(liveness.devswarmRoot(home), 'cursors', id + '#nd-abcdef.json');
     fs.mkdirSync(path.dirname(slowerInstancePath), { recursive: true });
     inboxCursor.ackTo(slowerInstancePath, 0);
+    // ...and a slower LIVE DECLARED reader (a reader_cursors row at 0, ns 'nd')
+    // pins the floor: the descriptor projection may never pass it.
+    const rkLib = require('../../plugins/anti-hall/companion/lib/devswarm-repokey.js');
+    const storeLib = require('../../plugins/anti-hall/companion/lib/devswarm-store.js');
+    const readerCursors = require('../../plugins/anti-hall/companion/lib/reader-cursors.js');
+    const s0 = storeLib.openStore({ home, hash: rkLib.repoKeyForWorktree(repo), backend: 'journal' });
+    try {
+      readerCursors.declare(s0, { partition: id, reader: 'h:424242:1700000000000', home, cursorPath, procTable: new Map() });
+    } finally { s0.close(); }
 
     // This caller's read-primary acks all 5 through its OWN per-instance file.
     const rRead = cli.run(['inbox', 'read-primary', id], ctx(home, { cwd: repo })).result;
@@ -143,6 +154,7 @@ test('D1: the descriptor cursor still receives the MIN projection after a read-p
     // file holds at 0. A caller-position jump would let a DIFFERENT consumer
     // of the raw descriptor (or the slower sibling, if it were ever re-pointed
     // at the descriptor) silently skip mail it has not actually seen yet.
+    assert.equal(inboxCursor.readCursor(slowerInstancePath), 0, 'the old build\'s own #nd file is never written by new code');
     const descCursor = inboxCursor.readCursor(cursorPath);
     assert.equal(descCursor, 0,
       'THE FIX must preserve MIN semantics: the descriptor cursor stays at the slower sibling\'s '

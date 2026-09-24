@@ -1067,8 +1067,10 @@ function foldMeshPostUpdate(opts) {
     const retired = Array.isArray(r.retired) ? r.retired.length : 0;
     const left = Array.isArray(r.left) ? r.left.length : 0;
     const rekeyed = Number.isFinite(r.rekeyed) ? r.rekeyed : 0; // P1b: subdir rows re-keyed to their toplevel
+    const pendingRows = r.pending || 0;
     return {
       attempted: true,
+      pendingRows,
       retired,
       forwarded: r.forwarded || 0,
       folded: r.folded || 0,
@@ -1077,7 +1079,8 @@ function foldMeshPostUpdate(opts) {
       detail: 'folded ' + retired + ' duplicate mesh row(s) into their canonical survivor'
         + (r.forwarded ? ' (forwarded ' + r.forwarded + ' message(s))' : '')
         + (rekeyed ? ' — re-keyed ' + rekeyed + ' subdir row(s) to their toplevel' : '')
-        + (left ? ' — ' + left + ' descriptor-backed row(s) left in place' : ''),
+        + (left ? ' — ' + left + ' descriptor-backed row(s) left in place' : '')
+        + (pendingRows ? ' — ' + pendingRows + ' row(s) pending (lock busy or survivor gone), retried next run' : ''),
     };
   } catch (e) {
     return { attempted: false, detail: 'fold raised: ' + (e && e.message ? e.message : String(e)) };
@@ -1493,6 +1496,68 @@ function cursorHygienePostUpdate(opts) {
 }
 
 /**
+ * readerCursorsImportPostUpdate({ paths, env, cwd, home, devswarm, version }) ->
+ *   { attempted, stores, partitions, imported, errors, detail }
+ *
+ * Mesh redesign Phase 3 - the one-time forward migration of every legacy read
+ * position (`cursors/<id>.json`, the store cursor row, `#base`, `#inst-`, `#nd-`,
+ * the descriptor cursor) into the ONE `reader_cursors` table per store.
+ * IDEMPOTENT (gated per partition on the '#floor' row, inside the txn),
+ * FAIL-OPEN (never throws into the update; an error leaves the lazy first-touch
+ * import in reader-cursors.js to retry), NO-DELETE (legacy files are only read),
+ * covers ALL PRIOR FORMS (bare integer and `{line}` cursor files; sqlite and
+ * journal stores). The doctor half is doctor-devswarm.js cursorHygieneCheck
+ * (report by default, import under --repair). Stamped once per version; not
+ * stamped when any partition errored.
+ */
+function readerCursorsImportPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'reader-cursors import skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session - reader-cursors import skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.importReaderCursorsAllStores !== 'function') {
+      return { attempted: false, detail: 'reader-cursors import skipped: this devswarm.js build has no importReaderCursorsAllStores' };
+    }
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    if (version && sweepState.readerCursorsImport && sweepState.readerCursorsImport.completedVersion === version) {
+      return {
+        attempted: true, stores: 0, partitions: 0, imported: 0, errors: 0, skippedAlreadyDone: true,
+        detail: 'reader-cursors import: already completed for ' + version + ' - skipped (one-time per-version migration)',
+      };
+    }
+    const r = devswarm.importReaderCursorsAllStores(home, { env, cwd }) || {};
+    const errCount = r.errors || 0;
+    if (version && !errCount && !r.dryRun) {
+      writeSweepState(home, Object.assign({}, readSweepState(home), {
+        readerCursorsImport: { completedVersion: version, completedTs: Date.now() },
+      }));
+    }
+    return {
+      attempted: true, stores: r.stores || 0, partitions: r.partitions || 0,
+      imported: r.imported || 0, errors: errCount,
+      detail: 'reader-cursors import: ' + (r.dryRun ? 'dry run, would import ' + (r.wouldImport || 0) : 'imported ' + (r.imported || 0))
+        + ' of ' + (r.partitions || 0) + ' partition(s) across ' + (r.stores || 0) + ' store(s)'
+        + (errCount ? ' (' + errCount + ' error(s), fail-open - retried lazily on first touch)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'reader-cursors import raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * codexGraphifyHooksMigratePostUpdate({ paths, env, cwd, home }) →
  *   { attempted, targets, changed, removed, errors, detail }
  *
@@ -1861,7 +1926,7 @@ function foldAllStoresPostUpdate(opts) {
       };
     }
 
-    let retired = 0, forwarded = 0, folded = 0, errors = 0;
+    let retired = 0, forwarded = 0, folded = 0, errors = 0, pendingRows = 0;
     // Per-repoKey deadline for devswarm.foldMeshDuplicates' own mesh-id group
     // loop (D11-C, defect e7307778b614: that loop previously had NO budget of
     // its own and could run to full completion regardless of THIS sweep's
@@ -1886,23 +1951,27 @@ function foldAllStoresPostUpdate(opts) {
         retired += Array.isArray(r.retired) ? r.retired.length : 0;
         forwarded += r.forwarded || 0;
         folded += r.folded || 0;
+        pendingRows += r.pending || 0;
         return r;
       },
     });
     // clean:false on any per-store error — a drained-but-errored pass must NOT
     // stamp completion (the errored store's one-time migration would be skipped
     // forever at this version); next run re-enumerates in full instead.
-    recordSweepResult(home, sweepState, 'foldAllStores', version, sweep, { clean: errors === 0 });
+    // pendingRows: candidates a fold could NOT act on (lock busy / survivor
+    // gone). Not clean -> the per-version stamp is NOT written; the next run retries.
+    recordSweepResult(home, sweepState, 'foldAllStores', version, sweep, { clean: errors === 0 && pendingRows === 0 });
 
     return {
       attempted: true,
       stores: sweep.processedItems.length,
-      retired, forwarded, folded, errors,
+      retired, forwarded, folded, errors, pendingRows,
       budgetExhausted: sweep.budgetExhausted,
       pending: sweep.remaining.length,
       detail: 'fold-all-stores: folded ' + retired + ' duplicate mesh row(s) into their canonical'
         + ' survivor across ' + sweep.processedItems.length + ' store(s)'
         + (forwarded ? ' (forwarded ' + forwarded + ' message(s))' : '')
+        + (pendingRows ? ' (' + pendingRows + ' row(s) pending — lock busy or survivor gone, retried next run)' : '')
         + (errors ? ' (' + errors + ' store error(s), fail-open)' : '')
         + (sweep.budgetExhausted ? ' (budget hit — ' + sweep.remaining.length + ' store(s) pending next run)' : ''),
     };
@@ -1969,7 +2038,7 @@ function healOrphanPartitionsPostUpdate(opts) {
       };
     }
 
-    let adopted = 0, forwarded = 0, unhealable = 0, skipped = 0, errors = 0;
+    let adopted = 0, forwarded = 0, unhealable = 0, skipped = 0, pendingRows = 0, errors = 0;
     // UNHEALABLE VISIBILITY (defect fix): the count alone gives a user no way
     // to know WHICH store/id is stuck or what to do about it. Collect a
     // BOUNDED sample of {repoKey, id} pairs from each store's own r.detail
@@ -2010,6 +2079,7 @@ function healOrphanPartitionsPostUpdate(opts) {
         forwarded += r.forwarded || 0;
         unhealable += r.unhealable || 0;
         skipped += r.skipped || 0;
+        pendingRows += r.pending || 0;
         errors += r.errors || 0;
         if (unhealableSample.length < UNHEALABLE_SAMPLE_CAP && Array.isArray(r.detail)) {
           for (const d of r.detail) {
@@ -2025,12 +2095,13 @@ function healOrphanPartitionsPostUpdate(opts) {
     // clean:false on any per-store error — a drained-but-errored pass must NOT
     // stamp completion (the errored store's one-time migration would be skipped
     // forever at this version); next run re-enumerates in full instead.
-    recordSweepResult(home, sweepState, 'healOrphanPartitions', version, sweep, { clean: errors === 0 });
+    // pendingRows: rows NOT moved (lock busy / survivor gone) — not clean, retried next run.
+    recordSweepResult(home, sweepState, 'healOrphanPartitions', version, sweep, { clean: errors === 0 && pendingRows === 0 });
 
     return {
       attempted: true,
       stores: sweep.processedItems.length,
-      adopted, forwarded, unhealable, skipped, errors,
+      adopted, forwarded, unhealable, skipped, pendingRows, errors,
       unhealableSample,
       budgetExhausted: sweep.budgetExhausted,
       pending: sweep.remaining.length,
@@ -2044,6 +2115,7 @@ function healOrphanPartitionsPostUpdate(opts) {
               : '')
             + ')' : '')
         + (skipped ? ' (' + skipped + ' skipped — lock-busy or budget-deferred, retried next pass)' : '')
+        + (pendingRows ? ' (' + pendingRows + ' pending — lock busy or survivor gone, not stamped done)' : '')
         + (errors ? ' (' + errors + ' store error(s), fail-open)' : '')
         + (sweep.budgetExhausted ? ' (budget hit — ' + sweep.remaining.length + ' store(s) pending next run)' : ''),
     };
@@ -2599,6 +2671,9 @@ function runUpdate(opts) {
   // defect 8b211241bbe9: bounded hygiene for per-instance cursor files. Same
   // gate + fail-open posture; never affects the update's own success.
   const cursorHygiene = runPostPullStage('cursor-hygiene', () => cursorHygienePostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
+  // Mesh redesign Phase 3: one-time import of every legacy read position into
+  // reader_cursors. Same gate + fail-open posture; never affects the update.
+  const readerCursorsImport = runPostPullStage('reader-cursors-import', () => readerCursorsImportPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // devswarm-parent-gate.js stated-intent shape: normalize every gate-loop-
   // state file to carry intents/intentAcks. Same gate + fail-open posture;
   // never affects the update's own success.
@@ -2642,6 +2717,7 @@ function runUpdate(opts) {
         promoteUnclaimed,
         ownerKeyMigrate,
         cursorHygiene,
+        readerCursorsImport,
         replyStateMigrate,
         gateIntentsMigrate,
         healRegistryRows,
@@ -2681,6 +2757,7 @@ function runUpdate(opts) {
       promoteUnclaimed,
       ownerKeyMigrate,
       cursorHygiene,
+      readerCursorsImport,
       replyStateMigrate,
       gateIntentsMigrate,
       healRegistryRows,
@@ -2750,6 +2827,9 @@ function renderHuman(status, changelog) {
   }
   if (status.foldArchivedRows && status.foldArchivedRows.attempted) {
     lines.push('  fold-archived-rows: ' + status.foldArchivedRows.detail);
+  }
+  if (status.readerCursorsImport && status.readerCursorsImport.attempted) {
+    lines.push('  reader-cursors-import: ' + status.readerCursorsImport.detail);
   }
   if (status.cursorHygiene && status.cursorHygiene.attempted) {
     lines.push('  cursor-hygiene: ' + status.cursorHygiene.detail);
@@ -2826,6 +2906,7 @@ module.exports = {
   promoteUnclaimedPostUpdate,
   ownerKeyMigratePostUpdate,
   cursorHygienePostUpdate,
+  readerCursorsImportPostUpdate,
   healRegistryPostUpdate,
   wakeMonitorPostUpdate,
   codexGraphifyHooksMigratePostUpdate,

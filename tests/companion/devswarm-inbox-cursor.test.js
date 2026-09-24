@@ -153,9 +153,8 @@ test('ackTo: negative / non-numeric input clamps to 0 (fail-safe)', () => {
 //   1. Delete the monotonic guard entirely (revert to pre-fix ackTo) -> this
 //      exact test fails (staleResult 2 !== 4). This is also the RED baseline
 //      verified against the pre-fix source.
-//   2. Invert `if (!(opts && opts.allowRewind))` to `if (opts && opts.allowRewind))`
-//      -> "ackTo: allowRewind opt-in ..." below fails (lowered 4 !== 2, since the
-//      allowRewind call would now ALSO be monotonic-guarded).
+//   2. Re-add any opt-out of the guard (the pre-Phase-3 `allowRewind`) -> "ackTo:
+//      there is NO rewind path ..." below fails (lowered 2 !== 4).
 test('ackTo: monotonic by default — a stale/racing lower ack cannot regress the cursor (C2)', () => {
   const { d, cleanup } = tmp();
   try {
@@ -171,15 +170,18 @@ test('ackTo: monotonic by default — a stale/racing lower ack cannot regress th
   } finally { cleanup(); }
 });
 
-test('ackTo: allowRewind opt-in preserves the intentional-lower path (reconcileOrphanCursor)', () => {
+// Mesh redesign Phase 3 deleted reconcileOrphanCursor, the one caller of the old
+// `allowRewind` opt-out: every cursor write is max-only, so a legacy caller still
+// passing the flag can no longer lower a cursor.
+test('ackTo: there is NO rewind path — a legacy { allowRewind } flag is ignored (Phase 3)', () => {
   const { d, cleanup } = tmp();
   try {
     const inbox = seedInbox(d, ['{"m":1}', '{"m":2}', '{"m":3}', '{"m":4}']);
     const cur = path.join(d, 'cursor');
     C.ackTo(cur, 4, undefined, inbox);
     const lowered = C.ackTo(cur, 2, undefined, undefined, { allowRewind: true });
-    assert.strictEqual(lowered, 2);
-    assert.strictEqual(C.readCursor(cur), 2);
+    assert.strictEqual(lowered, 4);
+    assert.strictEqual(C.readCursor(cur), 4);
   } finally { cleanup(); }
 });
 

@@ -78,86 +78,59 @@
 //     live-resolved unread count (definitive, bypasses `delta` entirely).
 //   - The AMBIGUOUS branch, live read FAILS/unavailable: `stale` true,
 //     `live` undefined — caller MUST treat as UNKNOWN.
+// PHASE 3 (reader_cursors): the caller's OWN position is its reader row in the
+// store's reader_cursors table (ns 'store'), keyed by the nearest harness
+// ancestor (reader-identity.js) — no per-instance file any more. A headless
+// caller (null nonce) or a reader with no row reads the floor, which IS the
+// summary's own base, so its delta is 0 (same as the pre-fix "no instance file"
+// path). Any failure to open/read the store keeps the pre-existing contract:
+// the common path fails OPEN (delta 0), the ambiguous branch returns UNKNOWN.
 function ownReaderDelta(home, cwd, id, entry) {
   if (!entry || !Number.isFinite(entry.cursor)) return { delta: 0, stale: false };
   try {
-    // Lazy require (side-effect-free — scripts/devswarm.js is guarded by
-    // require.main === module for its CLI body; this repo already has the
-    // same lazy-self-require precedent at multiple hook call sites).
     const devswarmCli = require('../../scripts/devswarm.js');
-    const { readCursor } = require('./devswarm-inbox-cursor.js');
-    const nonce = devswarmCli.deriveInstanceNonce({ home, cwd });
-    const shortNonce = devswarmCli.shortInstanceNonce(nonce);
-    const instPath = shortNonce ? devswarmCli.instanceCursorPath(home, id, shortNonce) : null;
-    if (!instPath) return { delta: 0, stale: false };
-    const fs = require('fs');
-    if (!fs.existsSync(instPath)) return { delta: 0, stale: false }; // no instance file yet: newcomer starts AT the floor (siblingBaseCursor's own contract) -> delta 0
-    const ownCursor = readCursor(instPath);
-    if (!Number.isFinite(ownCursor) || ownCursor <= entry.cursor) return { delta: 0, stale: false };
-    // Only a FINITE entry.total can prove the cache is current; an entry
-    // missing/non-finite `total` (should not happen on a real summary, but
-    // this module never trusts shape it hasn't checked) routes into the same
-    // ambiguous-branch resolution below — "cannot prove the cache is
-    // current" is the same as "cannot trust it without checking live".
-    if (Number.isFinite(entry.total) && ownCursor < entry.total) {
-      return { delta: ownCursor - entry.cursor, stale: false };
-    }
-    // AMBIGUOUS BRANCH: resolve with one live read, confined here only.
+    const readerCursors = require('./reader-cursors.js');
+    const reader = readerCursors.readerKey(devswarmCli.deriveReaderNonce({ home, cwd }));
+    if (!reader) return { delta: 0, stale: false };
+    const devswarmUnread = require('./devswarm-unread.js');
+    const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: cwd, id, home });
+    // A summary entry with a cursor came FROM a store; if that store cannot be
+    // opened now (repo gone, unreadable), this reader's own position is
+    // unknowable — UNKNOWN, never a guessed number.
+    if (!storeHandle) return { delta: 0, stale: true };
     try {
-      const devswarmUnread = require('./devswarm-unread.js');
-      const storeHandle = devswarmUnread.openStoreForUnread({ worktreePath: cwd, id, home });
-      if (!storeHandle) return { delta: 0, stale: true };
-      try {
-        // Resolve the STORE side directly (never trust `unionUnread`'s own
-        // `known` flag as the success signal here — that flag reports
-        // whether the DURABLE NDJSON side is resolvable, which is routinely
-        // false for exactly the row this whole module exists to fix: the
-        // Primary's own store-only self-registered row has no inboxPath/
-        // cursorPath at all by design (see this module's own header and
-        // devswarm-parent-gate.js's readOwnUnread doc comment) — treating
-        // that as "the live read failed" would make this branch NEVER
-        // resolve for its primary real-world case). `liveTotal`/`liveBase`
-        // are read straight off the open handle; any throw here is caught
-        // by the outer try below and fails to UNKNOWN, never a guess.
-        const liveTotal = storeHandle.messageCount(id);
-        const liveBase = devswarmCli.siblingBaseCursor(storeHandle, home, id, shortNonce);
-        if (!Number.isFinite(liveTotal) || !Number.isFinite(liveBase)) return { delta: 0, stale: true };
-        // A durable NDJSON inbox for this row (rare for a store-only self-
-        // registered row, routine for a descriptor-backed one) is folded in
-        // for full precision — the SAME union `inbox count`/`read`/`ack`
-        // already compute, never a second implementation of that math.
-        let liveUnread = Math.max(0, liveTotal - liveBase);
-        if (entry.inboxPath || entry.cursorPath) {
-          const union = devswarmUnread.unionUnread({
-            inboxPath: entry.inboxPath || null, cursorPath: entry.cursorPath || null,
-            id, storeHandle, storeBaseCursor: liveBase,
-          });
-          // MAX, never a bare adopt (Critic P2, 2026-09-11 round 3):
-          // `unionUnread` is fail-open — if `listMessages` throws inside it
-          // (its own catch, devswarm-unread.js ~:288), it silently degrades
-          // to NDJSON-only reporting with `storeOnlyUnreadRows: []`, and its
-          // returned `union.unread` would then be LOWER than the store
-          // number we already proved live (`liveUnread` above) — adopting
-          // it unconditionally would HIDE mail on exactly this failure mode.
-          // `Math.max` is safe BY CONSTRUCTION when the store side succeeds:
-          // the union is store-only-unread ∪ NDJSON-unread, deduped — dedup
-          // only ever COLLAPSES a message already counted once on the store
-          // side with its NDJSON twin, it never REMOVES a message the store
-          // side alone did not already count. So a successful union can only
-          // be >= the store-only count, never <. Do not "simplify" this back
-          // to a bare adopt — that is precisely the regression this comment
-          // exists to prevent.
-          if (union && Number.isFinite(union.unread)) liveUnread = Math.max(liveUnread, union.unread);
-        }
-        return { delta: 0, stale: false, live: liveUnread };
-      } finally {
-        try { storeHandle.close(); } catch (_) {}
+      let rows;
+      try { rows = storeHandle.readerCursorRows(id); } catch (_) { return { delta: 0, stale: true }; }
+      const own = rows.find((r) => r.ns === 'store' && r.reader === reader);
+      if (!own) return { delta: 0, stale: false }; // undeclared: reads AT the floor -> delta 0
+      const ownCursor = own.value;
+      if (!Number.isFinite(ownCursor) || ownCursor <= entry.cursor) return { delta: 0, stale: false };
+      if (Number.isFinite(entry.total) && ownCursor < entry.total) {
+        return { delta: ownCursor - entry.cursor, stale: false };
       }
-    } catch (_) {
-      return { delta: 0, stale: true };
+      // AMBIGUOUS BRANCH (own >= cached total): settle with ONE live countFor
+      // for this reader — the SAME primitive every gate/CLI uses. Unknown stays
+      // unknown; it never becomes a guessed number.
+      const c = readerCursors.countFor(storeHandle, {
+        reader, partition: id, inboxPath: entry.inboxPath || null, cursorPath: entry.cursorPath || null, home,
+      });
+      if (c.unknown || !Number.isFinite(c.unread)) return { delta: 0, stale: true };
+      // MAX with the proven store-side count (total - own row): a union can
+      // only COLLAPSE store rows with their NDJSON twins, never remove a row the
+      // store side alone counts, so a union below it is a degraded read and
+      // must never hide mail (Critic P2, 2026-09-11 — kept through Phase 3).
+      let liveUnread = c.unread;
+      try {
+        const liveTotal = storeHandle.messageCount(id);
+        if (!Number.isFinite(liveTotal)) return { delta: 0, stale: true };
+        liveUnread = Math.max(liveUnread, Math.max(0, liveTotal - ownCursor));
+      } catch (_) { return { delta: 0, stale: true }; }
+      return { delta: 0, stale: false, live: liveUnread };
+    } finally {
+      try { storeHandle.close(); } catch (_) {}
     }
   } catch (_) {
-    return { delta: 0, stale: false }; // fail-open: never worse than the pre-fix (min-floor) number
+    return { delta: 0, stale: false }; // fail-open: never worse than the pre-fix (floor) number
   }
 }
 

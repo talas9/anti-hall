@@ -283,7 +283,11 @@ function makeForwardedDrainedTest(home, registry, store, meshMessageHashFn) {
       //    survivor — proof is an exact hash match against the hash
       //    forwardArchivedOrphanUnread would have computed for that exact row.
       let cursor = 0;
-      try { cursor = store.cursorValue(id); } catch (_) { cursor = 0; }
+      // Phase 3: the partition's stored floor (reader_cursors), not the legacy row.
+      // Unreadable -> UNKNOWN -> not proven drained (the legacy shared cursor can
+      // sit past an unforwarded row; it never classifies here).
+      try { cursor = require('./reader-cursors.js').floorOf(store, id, 'store', { home }); }
+      catch (_) { return false; }
       let unreadRows = [];
       try { unreadRows = store.listMessages(id, { sinceCursor: cursor }); } catch (_) { return false; }
       if (!unreadRows.length) return false; // nothing to prove (caller already gates unread>0; stay defensive)

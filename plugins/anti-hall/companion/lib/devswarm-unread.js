@@ -241,7 +241,19 @@ function unionUnread(opts) {
   const o = opts || {};
   const now = Number.isFinite(o.now) ? o.now : Date.now();
   const u = readUnread(o.inboxPath, o.cursorPath, o.fsi);
+  // ndBaseCursor (Phase 3, reader-cursors.js): the NDJSON read position comes
+  // from the reader_cursors table, not the descriptor cursor FILE. `known` and
+  // its reason still come from the file (an unprovisioned cursor stays a real
+  // health signal); only the slice start moves.
+  if (Number.isFinite(o.ndBaseCursor) && u.known) {
+    const base = Math.max(0, Math.floor(o.ndBaseCursor));
+    const all = ndjsonAllLines(o.inboxPath, o.fsi);
+    u.lines = all.slice(base);
+    u.count = u.lines.length;
+    u.cursor = base;
+  }
   let storeCursorVal = 0;
+  let storeError = null;
   let storeOnlyUnreadRows = [];
   let storeOnlyTotalCount = 0;
   try {
@@ -285,7 +297,14 @@ function unionUnread(opts) {
       const unreadBodyCovered = bodyCoveredRows(unreadUncovered, u.lines, storeHashes, id, unreadStartIndex);
       storeOnlyUnreadRows = unreadUncovered.filter((_r, i) => !unreadBodyCovered.has(i));
     }
-  } catch (_) { /* fail-open: NDJSON-only reporting, matches pre-fix CLI behavior */ }
+  } catch (e) {
+    // A store READ error is NOT "the store side holds 0 unread" (Codex, Phase 3):
+    // the NDJSON-only numbers below stay for legacy callers, but `storeError` is
+    // set so countFor (reader-cursors.js) reports UNKNOWN and gates block.
+    storeError = e || new Error('store read failed');
+    storeOnlyUnreadRows = [];
+    storeOnlyTotalCount = 0;
+  }
 
   const mergedTotal = u.total + storeOnlyTotalCount;
   const mergedUnreadCount = u.lines.length + storeOnlyUnreadRows.length;
@@ -299,6 +318,7 @@ function unionUnread(opts) {
     ndjsonUnreadLines: u.lines,
     storeOnlyUnreadRows,
     oldestUnreadAgeMs: oldestUnreadAgeMs(u.lines, storeOnlyUnreadRows, now),
+    storeError: storeError ? String((storeError && storeError.message) || storeError) : null,
   };
 }
 

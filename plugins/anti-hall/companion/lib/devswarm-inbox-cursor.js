@@ -116,14 +116,12 @@ function readUnreadMessages(inboxPath, cursorPath, fsi) {
 // so two overlapping drains can race — a slow writer's `ackTo(12)` landing
 // after a fast writer's `ackTo(14)` would push the cursor BACKWARD, causing
 // re-delivery (append-only + clamped means no message LOSS, but an
-// idempotency bug). Default behavior is now MONOTONIC: `target` is raised to
-// at least the cursor's current on-disk value before writing, so a stale/
-// racing lower ack can never regress it. `reconcileOrphanCursor`
-// (scripts/devswarm.js) is the ONE proven legitimate exception — a MIN-only
-// reconciliation across 3 cursor namespaces that must be able to lower a
-// namespace stuck above the others — so it opts in explicitly via
-// `opts.allowRewind: true` to keep its pre-fix behavior unchanged.
-function ackTo(cursorPath, n, fsi, inboxPath, opts) {
+// idempotency bug). Behavior is MONOTONIC: `target` is raised to at least the
+// cursor's current on-disk value before writing, so a stale/racing lower ack
+// can never regress it. There is NO rewind path (mesh redesign Phase 3 deleted
+// reconcileOrphanCursor, the one caller that used to opt out via
+// `allowRewind`; that option is gone — every cursor write is max-only).
+function ackTo(cursorPath, n, fsi, inboxPath) {
   const F = fsi || fs;
   let target = Number(n);
   if (!Number.isFinite(target) || target < 0) target = 0;
@@ -132,10 +130,8 @@ function ackTo(cursorPath, n, fsi, inboxPath, opts) {
     const total = countMessages(inboxPath, F);
     if (target > total) target = total;
   }
-  if (!(opts && opts.allowRewind)) {
-    const current = readCursor(cursorPath, F);
-    if (target < current) target = current;
-  }
+  const current = readCursor(cursorPath, F);
+  if (target < current) target = current;
   writeCursorAtomic(cursorPath, target, F);
   return target;
 }

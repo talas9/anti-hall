@@ -69,7 +69,10 @@ test('8b211241bbe9 GC: deletes a file whose removal does not raise the floor', (
     const r = cli.gcInstanceCursors(null, home, {});
     assert.strictEqual(r.deleted, 2, 'neither removal ADVANCES the floor past anyone, so both are plain deletes');
     assert.strictEqual(r.evicted, 0, 'an eviction is only when the floor moves FORWARD past an instance');
-    assert.strictEqual(listInst(home, 'w2').length, 0, 'both were stale, so both are gone');
+    // Phase 3: REPORT-ONLY — the counts say what the pre-Phase-3 pass would
+    // have removed; the files are inert import sources and are never deleted.
+    assert.strictEqual(listInst(home, 'w2').length, 2, 'report-only: nothing is deleted');
+    assert.strictEqual(r.reportOnly, true);
   } finally { rm(home); }
 });
 
@@ -80,8 +83,8 @@ test('8b211241bbe9 GC: evicts a stale file even when it pins the floor', () => {
     writeInst(home, 'w3', 'aaaaaa', 10, 8 * DAY); // older than the 7-day window
     writeInst(home, 'w3', 'bbbbbb', 20, 1000);
     const r = cli.gcInstanceCursors(null, home, {});
-    assert.strictEqual(r.evicted, 1, 'the stale floor-pinning file must be evicted');
-    assert.ok(!listInst(home, 'w3').includes('w3#inst-aaaaaa.json'));
+    assert.strictEqual(r.evicted, 1, 'the stale floor-pinning file is REPORTED as an eviction candidate');
+    assert.ok(listInst(home, 'w3').includes('w3#inst-aaaaaa.json'), 'report-only (Phase 3): never removed');
   } finally { rm(home); }
 });
 
@@ -97,19 +100,18 @@ test('8b211241bbe9 GC: a file inside the staleness window is never evicted', () 
   } finally { rm(home); }
 });
 
-test('8b211241bbe9 GC: an eviction is journaled with the floor movement', () => {
+test('8b211241bbe9 GC (Phase 3): a report-only eviction candidate is counted but never journaled', () => {
   const home = tmpHome();
   try {
     writeBaseline(home, 'w5', 0);
     writeInst(home, 'w5', 'aaaaaa', 10, 8 * DAY);
     writeInst(home, 'w5', 'bbbbbb', 20, 1000);
-    cli.gcInstanceCursors(null, home, {});
+    const r = cli.gcInstanceCursors(null, home, {});
+    assert.strictEqual(r.evicted, 1);
     const recs = cli.readCursorLog(home, 'unknown', 50);
-    const evict = recs.find((r) => r.gate === 'gc-evict');
-    assert.ok(evict, 'an eviction must leave a journal record: ' + JSON.stringify(recs));
-    assert.strictEqual(evict.verb, 'gc-evict');
-    assert.strictEqual(evict.from, 10, 'the record must show the floor before');
-    assert.strictEqual(evict.to, 20, 'and the floor after — the bounded cost is attributable');
+    // Phase 3: report-only — nothing moved, so NO journal record (a gc-evict
+    // record for a file that is still there would be a false trail).
+    assert.ok(!recs.some((x) => x.gate === 'gc-evict'), 'no journal record for a report-only pass: ' + JSON.stringify(recs));
   } finally { rm(home); }
 });
 
@@ -186,7 +188,7 @@ test('8b211241bbe9: doctor runs the SAME hygiene pass and is report-only by defa
     writeInst(home, 'w9', 'bbbbbb', 20, 1000);
     const res = doctorDevswarm.cursorHygieneCheck({ home });
     assert.match(res.message, /cursor hygiene/i);
-    assert.match(res.message, /would remove/, 'a plain doctor run must be report-only');
+    assert.match(res.message, /would previously have removed/, 'a plain doctor run must be report-only');
     assert.strictEqual(listInst(home, 'w9').length, 2, 'report-only must not delete anything');
   } finally { rm(home); }
 });
@@ -276,9 +278,8 @@ test('8b211241bbe9 R2 GC: a stale `#nd-` cursor pinning the descriptor floor is 
     writeNd(home, 'n1', 'aaaaaa', 10, 8 * DAY);
     writeNd(home, 'n1', 'bbbbbb', 20, 1000);
     const r = cli.gcInstanceCursors(null, home, {});
-    assert.strictEqual(r.evicted, 1,
-      'without this, a dead instance pins the descriptor cursor forever via projectNdDescriptorCursor');
-    assert.ok(!listNd(home, 'n1').includes('n1#nd-aaaaaa.json'));
+    assert.strictEqual(r.evicted, 1, 'reported as an eviction candidate');
+    assert.ok(listNd(home, 'n1').includes('n1#nd-aaaaaa.json'), 'report-only (Phase 3): never removed');
   } finally { rm(home); }
 });
 
@@ -293,17 +294,15 @@ test('8b211241bbe9 R2 GC: a FRESH `#nd-` cursor is never a candidate', () => {
   } finally { rm(home); }
 });
 
-test('8b211241bbe9 R2 GC: an `#nd-` eviction is journaled with its namespace', () => {
+test('8b211241bbe9 R2 GC (Phase 3): an `#nd-` candidate is counted, never journaled (report-only)', () => {
   const home = tmpHome();
   try {
     writeNd(home, 'n3', 'aaaaaa', 10, 8 * DAY);
     writeNd(home, 'n3', 'bbbbbb', 20, 1000);
-    cli.gcInstanceCursors(null, home, {});
+    const r = cli.gcInstanceCursors(null, home, {});
+    assert.strictEqual(r.evicted, 1, 'the #nd- namespace is scanned and its candidate counted');
     const rec = cli.readCursorLog(home, 'unknown', 50).find((x) => x.gate === 'gc-evict' && x.id === 'n3');
-    assert.ok(rec, 'the eviction must be journaled');
-    assert.strictEqual(rec.ns, 'nd', 'and must name WHICH namespace moved — the two count in different index spaces');
-    assert.strictEqual(rec.from, 10);
-    assert.strictEqual(rec.to, 20);
+    assert.strictEqual(rec, undefined, 'report-only (Phase 3): nothing moved, nothing journaled');
   } finally { rm(home); }
 });
 

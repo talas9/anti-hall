@@ -286,6 +286,7 @@ test('sweepOnce (real computeLiveness + pokeOrEscalate): escalation appends ONE 
     fs.writeFileSync(inboxPath, JSON.stringify({ m: 1 }) + '\n');
     fs.writeFileSync(cursorPath, '0');
     writeDescriptor(home, { id: 'w1', worktreePath, inboxPath, cursorPath }, 'w1'); // NO nudgeCommand -> escalate on first stale sweep
+    { const ps = storeLib.openStore({ home, workspaceId: inst.primaryWorkspaceId(worktreePath) }); try { ps.upsertRegistry({ id: inst.primaryWorkspaceId(worktreePath), worktreePath: '/parent', sessionId: 'sess-parent' }); } finally { ps.close(); } } // the parent is registered (register-primary) — escalations deliver only into a registered destination
 
     const runners = { gitCommitTs: () => Date.now() - ageMs };
     // Sweep 1: real computeLiveness classifies stale (no nudgeCommand) -> real
@@ -512,6 +513,7 @@ test('sweepOnce (real notifyParentEscalation + real store): urgent mesh unread o
     const worktreePath = path.join(home, 'wt');
     fs.mkdirSync(worktreePath, { recursive: true });
     writeDescriptor(home, { id: 'w1', worktreePath }, 'w1');
+    { const ps = storeLib.openStore({ home, workspaceId: inst.primaryWorkspaceId(worktreePath) }); try { ps.upsertRegistry({ id: inst.primaryWorkspaceId(worktreePath), worktreePath: '/parent', sessionId: 'sess-parent' }); } finally { ps.close(); } } // the parent is registered (register-primary) — escalations deliver only into a registered destination
 
     const res = M.sweepOnce({
       home,

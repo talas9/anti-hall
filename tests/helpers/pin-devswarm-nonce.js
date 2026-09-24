@@ -31,6 +31,10 @@ Module._load = function (request, parent, isMain) { // eslint-disable-line no-un
     mod.deriveInstanceNonce = function () {
       return FIXED_TEST_NONCE;
     };
+    // B5: every production nonce site now calls deriveReaderNonce.
+    mod.deriveReaderNonce = function () {
+      return FIXED_TEST_NONCE;
+    };
   }
   return mod;
 };

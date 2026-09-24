@@ -1,4 +1,5 @@
 'use strict';
+// proves: plugins/anti-hall/companion/devswarm-migrate.js#* — same-id copy: every migration below asserts the rows land in the SAME partition id they came from (per-partition listMessages / messageCount checks).
 // devswarm-migrate — AUTOMATIC-BUT-SAFE migration of on-disk state into the
 // store. Idempotence, non-destructiveness, count-verification, and the
 // single-consumer lock refusal, all against a forced journal backend.
