@@ -151,3 +151,54 @@ test('vulnerable call shapes (runRepairs env:{} dryRun:false; selfHeal with a pa
     assert.deepStrictEqual(realMentions(), before, 'no real-home unit/config may newly reference this checkout');
   } finally { rm(home); rm(repo); rm(bin); }
 });
+
+// Hand-built child envs: a test that spawns doctor or an installer with an env
+// it built itself (not merged onto process.env) must carry the test marker —
+// that shape (a stripped env) is exactly how the leak got through. A file that
+// deliberately runs without the marker says so with `hygiene:no-test-marker`.
+test('every hand-built env passed to a doctor/installer spawn carries ANTIHALL_TEST_ISOLATION', () => {
+  const TESTS = path.join(__dirname, '..');
+  const SCRIPT_RE = /doctor\.js|DOCTOR_JS|install-(devswarm-supervisor|devswarm-ingest|reaper)\.js|install-statusline\.js|uninstall-statusline\.js|install-codex\.js|\bINSTALLER\b|\bINSTALL\b/;
+  const SAFE_RE = /ANTIHALL_TEST_ISOLATION|NODE_TEST_CONTEXT|process\.env\s*[,)}]|\.\.\.process\.env/;
+  const balanced = (src, i, open, close) => { let d = 0; for (let j = i; j < src.length; j++) { if (src[j] === open) d++; else if (src[j] === close && --d === 0) return src.slice(i, j + 1); } return src.slice(i); };
+  const offenders = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== 'fixtures') walk(p); continue; }
+      if (!e.name.endsWith('.test.js')) continue;
+      const src = fs.readFileSync(p, 'utf8');
+      if (src.includes('hygiene:' + 'no-test-marker')) continue;
+      const re = /\b(spawnSync|execFileSync|spawn|execSync)\(/g;
+      let m;
+      while ((m = re.exec(src))) {
+        const call = balanced(src, m.index + m[0].length - 1, '(', ')');
+        if (!SCRIPT_RE.test(call)) continue;
+        const lit = call.search(/\benv:\s*\{/);
+        const asg = call.search(/\benv:\s*Object\.assign\(/);
+        let env = null;
+        if (lit >= 0) env = balanced(call, call.indexOf('{', lit), '{', '}');
+        else if (asg >= 0) env = balanced(call, call.indexOf('(', asg), '(', ')');
+        if (env && !SAFE_RE.test(env)) offenders.push(path.relative(TESTS, p) + ':' + src.slice(0, m.index).split('\n').length);
+      }
+    }
+  };
+  walk(TESTS);
+  assert.deepStrictEqual(offenders, [], 'add ANTIHALL_TEST_ISOLATION: \'1\' (or merge onto process.env) at: ' + offenders.join(', '));
+});
+
+test('install-reaper.js forces dry-run on a temp HOME with NO test marker at all (same guard as supervisor/ingest)', { skip: !POSIX }, () => {
+  const home = mkd('ah-svc-reaper-home-');
+  const record = path.join(home, 'calls.log');
+  const bin = stubBin(record);
+  try {
+    // Deliberately marker-free (no NODE_TEST_CONTEXT, no ANTIHALL_TEST_ISOLATION):
+    // only the temp-HOME guard stands between this run and a real unit. PATH
+    // stubs catch launchctl/systemctl/crontab even if that guard broke.
+    const bare = { PATH: bin + path.delimiter + process.env.PATH, HOME: home, USERPROFILE: home };
+    const r = cp.spawnSync(process.execPath, [path.join(ROOT, 'companion', 'install-reaper.js')], { cwd: home, env: bare, encoding: 'utf8', timeout: 30000 });
+    assert.match(r.stderr, /forced dry-run \(HOME .* temp directory\)/, r.stdout + r.stderr);
+    assert.strictEqual(recorded(record), '', 'no scheduler call reached even a stub');
+    assert.deepStrictEqual(fs.readdirSync(home).filter((f) => f === 'Library' || f === '.config'), []);
+  } finally { rm(home); rm(bin); }
+});

@@ -17,6 +17,9 @@ const { spawnSync } = require('node:child_process');
 
 const INSTALLER = path.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'companion', 'install-devswarm-supervisor.js');
 
+// hygiene:no-test-marker — this suite proves the installer's OWN guards (temp
+// HOME, NODE_TEST_CONTEXT) with the marker deliberately absent; PATH is an
+// empty dir, so no launchctl/systemctl can be reached even if a guard broke.
 function run(env) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-sup-guard-'));
   const emptyBin = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-sup-bin-'));

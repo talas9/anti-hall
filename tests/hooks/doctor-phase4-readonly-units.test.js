@@ -72,7 +72,7 @@ test('checkLeakedDaemonUnits (linux): same classification over systemd .service 
 function runDoctor(home, args) {
   return cp.spawnSync(process.execPath, [DOCTOR_JS].concat(args || []), {
     encoding: 'utf8', cwd: home, timeout: 120000,
-    env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, ANTIHALL_INGEST_DRY_RUN: '1' },
+    env: { PATH: process.env.PATH, HOME: home, USERPROFILE: home, ANTIHALL_INGEST_DRY_RUN: '1', ANTIHALL_TEST_ISOLATION: '1' },
   });
 }
 

@@ -390,7 +390,7 @@ test('cost budget: doctor --check spawn count + wall time, recorded as the basel
     const t0 = process.hrtime.bigint();
     const res = cp.spawnSync(process.execPath, ['--require', SPAWN_PRELOAD, DOCTOR_JS, '--check'], {
       encoding: 'utf8',
-      env: Object.assign({}, { PATH: process.env.PATH, HOME: fixture.home, ANTIHALL_SPAWN_LOG: spawnLog, ANTIHALL_INGEST_DRY_RUN: '1' }),
+      env: Object.assign({}, { PATH: process.env.PATH, HOME: fixture.home, ANTIHALL_SPAWN_LOG: spawnLog, ANTIHALL_INGEST_DRY_RUN: '1', ANTIHALL_TEST_ISOLATION: '1' }),
       timeout: 30000,
     });
     const wallMs = Number(process.hrtime.bigint() - t0) / 1e6;

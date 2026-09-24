@@ -44,7 +44,14 @@ try { TEST_GUARD = require('./lib/test-home-guard.js'); } catch (_) { TEST_GUARD
 const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && (TEST_GUARD
   ? TEST_GUARD.underTest()
   : !!(process.env.NODE_TEST_CONTEXT || process.env.ANTIHALL_TEST_ISOLATION));
-const DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD;
+// TEMP-HOME GUARD (same class as install-devswarm-supervisor.js /
+// install-devswarm-ingest.js): a HOME under a temp root is never a real
+// operator home, so a run there (a scratch experiment with no test marker) is
+// forced to dry-run instead of registering a real launchd/systemd unit.
+// Opt-out: ANTIHALL_REAPER_ALLOW_TMP_HOME=1 for a deliberate temp-HOME install.
+const TMP_HOME_GUARD = !EXPLICIT_DRYRUN && process.env.ANTIHALL_REAPER_ALLOW_TMP_HOME !== '1'
+  && !!TEST_GUARD && TEST_GUARD.pathUnderTmp(HOME);
+const DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD || TMP_HOME_GUARD;
 
 function say(msg) {
   process.stdout.write(msg + '\n');
@@ -56,8 +63,15 @@ function say(msg) {
 // `node --test` must stay silent otherwise).
 let _nodeTestContextGuardNoted = false;
 function noteNodeTestContextGuardTripped() {
-  if (!NODE_TEST_CONTEXT_GUARD || _nodeTestContextGuardNoted) return;
+  if (!(NODE_TEST_CONTEXT_GUARD || TMP_HOME_GUARD) || _nodeTestContextGuardNoted) return;
   _nodeTestContextGuardNoted = true;
+  if (!NODE_TEST_CONTEXT_GUARD) {
+    try {
+      process.stderr.write('anti-hall: install-reaper.js forced dry-run (HOME ' + HOME + ' is under the system temp directory)'
+        + ' to prevent registering a real reaper for a scratch home. Set ANTIHALL_REAPER_ALLOW_TMP_HOME=1 for a deliberate temp-HOME install.\n');
+    } catch (_) {}
+    return;
+  }
   try {
     process.stderr.write(
       'anti-hall: install-reaper.js detected NODE_TEST_CONTEXT (running under `node --test`'
@@ -296,6 +310,7 @@ if (require.main === module) {
 }
 
 module.exports = {
+  DRYRUN, NODE_TEST_CONTEXT_GUARD, TMP_HOME_GUARD,
   LABEL,
   UNIT,
   SCRIPT,

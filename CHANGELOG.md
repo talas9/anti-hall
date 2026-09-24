@@ -166,7 +166,10 @@ the update.
   `update`) now merge onto the parent env and always carry the test markers; the
   supervisor, ingest and reaper installers route `launchctl`/`systemctl`/`crontab` through
   one seam that refuses them under a test; the statusline and Codex installers refuse user
-  config outside a temp dir under a test. Test helpers set `ANTIHALL_TEST_ISOLATION=1`.
+  config outside a temp dir under a test. Test helpers set `ANTIHALL_TEST_ISOLATION=1`, and a
+  hygiene test fails any hand-built env passed to a doctor/installer spawn without it. The
+  reaper installer gained the same temp-HOME guard as supervisor/ingest
+  (`ANTIHALL_REAPER_ALLOW_TMP_HOME=1` to opt out).
 - **P0: `update.js` ran the old version's post-pull stages.** After pulling a newer
   version it now re-execs the freshly pulled `update.js --post-pull-only`, so stages that
   exist only in the new version run in the same update; any failure falls back to the
