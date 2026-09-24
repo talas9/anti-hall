@@ -119,10 +119,14 @@ function isolatedEnv(home) {
 // (deterministically non-JSON) still fails after exhausting attempts; no coverage
 // is lost — it just costs a few extra spawns before failing.
 const MAX_SPAWN_ATTEMPTS = 5;
+// Per-spawn kill timeout. 10 s was hit by heavy hooks (devswarm-parent-gate) on a
+// throttled, heavily loaded machine — a killed hook reads as empty stdout and
+// fails an unrelated assertion. A passing hook exits long before this.
+const SPAWN_TIMEOUT_MS = 60000;
 
 function spawnHook(hookAbs, input, env, expectJson) {
   let res = spawnSync(process.execPath, [hookAbs], {
-    input, encoding: 'utf8', env, timeout: 10000,
+    input, encoding: 'utf8', env, timeout: SPAWN_TIMEOUT_MS,
   });
   let json = null;
   try { json = JSON.parse(res.stdout); } catch (_) { json = null; }
@@ -139,7 +143,7 @@ function spawnHook(hookAbs, input, env, expectJson) {
   ) {
     attempts += 1;
     const next = spawnSync(process.execPath, [hookAbs], {
-      input, encoding: 'utf8', env, timeout: 10000,
+      input, encoding: 'utf8', env, timeout: SPAWN_TIMEOUT_MS,
     });
     let nextJson = null;
     try { nextJson = JSON.parse(next.stdout); } catch (_) { nextJson = null; }

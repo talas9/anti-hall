@@ -649,11 +649,21 @@ function siblingAckGate(storeHandle, callerId, partId, home, now, opts) {
   // process's two names — its declared DEVSWARM_BUILDER_ID row on its own
   // worktree (declaredSelfId) and its cwd-derived id. Not a sibling: ack it,
   // with the same delivered-prefix arithmetic as every other partition.
+  // The cwd-derived name is shared by EVERY process on the worktree, so it is
+  // this process's own only when the anchor row carries no session or this
+  // process's session (CLAUDE_CODE_SESSION_ID). A child registered on the
+  // Primary's worktree fails that test and falls through to the liveness gate —
+  // it never acks the live Primary's anchor partition.
   if (opts && callerId != null) {
     const selfId = declaredSelfId(opts.env, opts.cwd, registry);
     if (selfId) {
-      const names = new Set([selfId, String(callerIdentity(opts.env, opts.cwd))]);
-      if (names.size === 2 && names.has(String(callerId)) && names.has(String(partId))) return false;
+      const anchorId = String(callerIdentity(opts.env, opts.cwd));
+      const names = new Set([selfId, anchorId]);
+      const anchorRow = registry.find((r) => r && String(r.id) === anchorId);
+      const anchorSid = anchorRow && anchorRow.sessionId != null ? String(anchorRow.sessionId) : '';
+      const callerSid = opts.env && opts.env.CLAUDE_CODE_SESSION_ID ? String(opts.env.CLAUDE_CODE_SESSION_ID) : '';
+      const anchorIsOurs = anchorSid === '' || (callerSid !== '' && anchorSid === callerSid);
+      if (anchorIsOurs && names.size === 2 && names.has(String(callerId)) && names.has(String(partId))) return false;
     }
   }
   if (idFam && callerId != null) {
@@ -5299,36 +5309,24 @@ function repairReaderFloorsAllStores(home, ctx) {
   return out;
 }
 
-// sendContentHash(row) -> the hash of the SEND a row carries, independent of
-// which partition it was addressed to: meshMessageHash with `to` blanked and
-// the archived-forward envelope stripped. A forwarded copy and its original,
-// or one send fanned out to two addresses, share it. Never throws (null).
-function sendContentHash(row) {
-  try {
-    if (!row || typeof row !== 'object') return null;
-    return store.meshMessageHash({
-      from: row.sender, to: '', type: row.mtype, urgency: row.urgency,
-      message: stripArchivedForwardPrefix(row.body).body, timestamp: row.ts, needsReply: row.needsReply,
-    });
-  } catch (_) { return null; }
-}
-
 // reconcileDualPartitionAcks(home, ctx) — FORWARD-MIGRATION for the
 // dual-partition defect (see declaredSelfId). Before the fix, one identity's
 // two partitions — a worktree's anchor row (id === its canonical meshId,
 // `primary-<hash>`) and the DEVSWARM_BUILDER_ID row on the SAME worktree — held
-// the same sends (fold forwards, or one send addressed to both) but only the
-// partition the reader acked moved; the other kept them unread forever.
+// the same message (a fold forward: the copy's origHash names the original)
+// but only the partition the reader acked moved; the other kept it unread.
 //
 // For every such anchor/partner pair: walk a partition from its floor and
-// raise it through the CONTIGUOUS prefix of rows whose send (sendContentHash,
-// or the exact hash/origHash link of a forward) sits BELOW the other
+// raise it through the CONTIGUOUS prefix of rows whose exact message (hash,
+// or the origHash link of a forward — recipient-bound, never text) sits BELOW the other
 // partition's floor — i.e. already consumed by every reader there. Stops at
 // the first row that is not, so no row that is unacked elsewhere is ever
 // skipped. MAX-only (raiseAllLossFree, the fold's own loss-free raise), no
 // delete, idempotent (a second run finds nothing past the floor to match).
 // Pairs of two NON-anchor rows (two live children on one worktree) are never
-// touched. dryRun (or ANTIHALL_INGEST_DRY_RUN=1) counts only. Fail-open: a
+// touched, and the anchor pairs ONLY with a row carrying no session or the
+// anchor's own session — the same identity test siblingAckGate applies — so a
+// child registered on the Primary's worktree is never reconciled. dryRun (or ANTIHALL_INGEST_DRY_RUN=1) counts only. Fail-open: a
 // per-store error is counted, never thrown.
 // -> { ok, dryRun, stores, pairs, partitions, raised, wouldRaise, rows, errors, results[] }
 function reconcileDualPartitionAcks(s, home, dryRun, out) {
@@ -5342,6 +5340,7 @@ function reconcileDualPartitionAcks(s, home, dryRun, out) {
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(String(d.id));
   }
+  const sidOf = new Map(registry.filter((d) => d && d.id != null).map((d) => [String(d.id), d.sessionId != null ? String(d.sessionId) : '']));
   for (const [meshId, ids] of groups) {
     if (ids.length < 2 || ids.indexOf(meshId) === -1) continue;
     const view = new Map(); // id -> { floor, rows, consumed:Set }
@@ -5350,18 +5349,20 @@ function reconcileDualPartitionAcks(s, home, dryRun, out) {
       const floor = floorCursor(s, id, home);
       const consumed = new Set();
       for (let i = 0; i < Math.min(floor, rows.length); i++) {
-        for (const k of [rows[i].hash, forwardedOrigHashOf(rows[i]), sendContentHash(rows[i])]) if (k) consumed.add(String(k));
+        for (const k of [rows[i].hash, forwardedOrigHashOf(rows[i])]) if (k) consumed.add(String(k));
       }
       view.set(id, { floor, rows, consumed });
     }
-    const pairOf = (a, b) => a === meshId || b === meshId;
+    const anchorSid = sidOf.get(meshId) || '';
+    const sameIdentity = (id) => { const sid = sidOf.get(id) || ''; return sid === '' || sid === anchorSid; };
+    const pairOf = (a, b) => (a === meshId && sameIdentity(b)) || (b === meshId && sameIdentity(a));
     for (const id of ids) {
       const me = view.get(id);
       const others = ids.filter((o) => o !== id && pairOf(id, o)).map((o) => view.get(o));
       if (!others.length) continue;
       out.pairs++;
       const ackedElsewhere = (row) => {
-        const keys = [row.hash, forwardedOrigHashOf(row), sendContentHash(row)].filter(Boolean).map(String);
+        const keys = [row.hash, forwardedOrigHashOf(row)].filter(Boolean).map(String);
         return others.some((o) => keys.some((k) => o.consumed.has(k)));
       };
       let to = me.floor;

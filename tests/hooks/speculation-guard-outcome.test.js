@@ -114,7 +114,7 @@ test('outcome capture: Jev-added block -> next reply with evidence -> evidence-a
   const h = makeHome();
   const mock = await mockJev(noulByEvidence);
   try {
-    h.writeState('jev.json', { enabled: true });
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     const sessionId = 's1';
     const env = { AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: mock.endpoint };
 

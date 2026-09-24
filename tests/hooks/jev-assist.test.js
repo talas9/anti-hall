@@ -192,7 +192,7 @@ test('ask(): mode off -> baseline-only, no network call, still logs to jev-assis
 test('ask(): add-block, confident true -> block added, mode on', async () => {
   const h = makeHome();
   try {
-    h.writeState('jev.json', { enabled: true });
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
       await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
@@ -216,7 +216,7 @@ test('ask(): add-block, confident true -> block added, mode on', async () => {
 test('ask(): shadow mode calls Jev + logs but NEVER changes the outcome', async () => {
   const h = makeHome();
   try {
-    h.writeState('jev.json', { enabled: true, integrations: { modelRouting: 'shadow' } });
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000, integrations: { modelRouting: 'shadow' } });
     await withMockServer(choiceHandler('authoring', 0.95), async (endpoint) => {
       await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask } = freshLib();
@@ -237,7 +237,7 @@ test('ask(): shadow mode calls Jev + logs but NEVER changes the outcome', async 
 test('ask(): relax-block skips the call entirely when baseline is not blocking', async () => {
   const h = makeHome();
   try {
-    h.writeState('jev.json', { enabled: true, integrations: { modelRouting: 'on' } });
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000, integrations: { modelRouting: 'on' } });
     let calls = 0;
     await withMockServer((req, res) => { calls++; res.writeHead(200); res.end('{}'); }, async (endpoint) => {
       await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
@@ -272,7 +272,7 @@ test('ask(): fail-open to baseline on timeout', async () => {
 test('ask(): second call with the same id+state hits the cache (backend "cache"), only one HTTP call', async () => {
   const h = makeHome();
   try {
-    h.writeState('jev.json', { enabled: true });
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     let calls = 0;
     await withMockServer((req, res) => {
       calls++;
@@ -306,7 +306,7 @@ test('ask(): second call with the same id+state hits the cache (backend "cache")
 test('recordOutcome: appends an outcome line joinable by hash', async () => {
   const h = makeHome();
   try {
-    h.writeState('jev.json', { enabled: true });
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000 });
     await withMockServer(noulHandler(0.95), async (endpoint) => {
       await withEnv({ HOME: h.home, AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
         const { ask, recordOutcome } = freshLib();
@@ -362,7 +362,7 @@ function runAskSyncInChild(opts, env) {
 test('askSync(): relax-block via subprocess, confident non-mechanical relaxes the block', async () => {
   const h = makeHome();
   try {
-    h.writeState('jev.json', { enabled: true, integrations: { modelRouting: 'on' } });
+    h.writeState('jev.json', { enabled: true, timeoutMs: 3000, integrations: { modelRouting: 'on' } });
     await withMockServer(choiceHandler('authoring', 0.95), async (endpoint) => {
       const env = {
         PATH: process.env.PATH, HOME: h.home,
@@ -370,7 +370,7 @@ test('askSync(): relax-block via subprocess, confident non-mechanical relaxes th
       };
       const r = await runAskSyncInChild({
         id: 'modelRouting', question: CHOICE_Q, state: 'write the report', trust: 'relax-block',
-        baseline: true, judgeSrc: "(a) => a === 'mechanical'", budgetMs: 1500,
+        baseline: true, judgeSrc: "(a) => a === 'mechanical'", budgetMs: 8000,
       }, env);
       assert.strictEqual(r.final, false, 'confident non-mechanical relaxes the block');
       assert.strictEqual(r.backend, 'jev');

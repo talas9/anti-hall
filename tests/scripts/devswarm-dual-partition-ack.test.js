@@ -191,10 +191,11 @@ function floorOf(f, id) { return withStore(f, (s) => cli.floorCursor(s, id, f.ho
 
 function seededBadState() {
   const f = fixture();
-  // Three sends reached BOTH partitions (fold forwards stamped with origHash, and
-  // one plain double-address with the same send content). The primary partition
-  // consumed all three; the uuid partition still shows them unread — plus one
-  // uuid-only row that nobody has seen, which must STAY unread.
+  // Two messages reached BOTH partitions as fold forwards (the copy's origHash
+  // names the uuid row). The primary partition consumed them; the uuid partition
+  // still shows them unread. dup-3 is a SEPARATE delivery of the same text (no
+  // origHash link) — the reader never saw THAT message, so it stays unread and
+  // stops the prefix, as does every row after it.
   const h1 = send(f, UUID, 'dup-1', { timestamp: 1001 });
   const h2 = send(f, UUID, 'dup-2', { timestamp: 1002 });
   send(f, UUID, 'dup-3', { timestamp: 1003 });
@@ -216,15 +217,15 @@ test('migration: plain doctor reports, --repair raises the twin floor through ac
       .find((r) => r.id === 'reconcile-dual-partition-acks');
     assert.ok(report, 'the registry lists the migration');
     assert.equal(report.status, 'skipped');
-    assert.match(report.msg, /\[dry-run\] would migrate: 3 already-acked duplicate row\(s\) unread in 1 twin partition/);
+    assert.match(report.msg, /\[dry-run\] would migrate: 2 already-acked duplicate row\(s\) unread in 1 twin partition/);
     assert.equal(floorOf(f, UUID), 0, 'a dry run writes nothing');
 
     const applied = migrations.runMigrations({ home: f.home, version: '9.9.9', devswarm: cli, env: {} })
       .find((r) => r.id === 'reconcile-dual-partition-acks');
     assert.equal(applied.status, 'fixed', JSON.stringify(applied));
-    assert.equal(floorOf(f, UUID), 3, 'raised through dup-1..dup-3 and stopped at the never-seen row');
-    assert.deepEqual(bodies(cli.run(['inbox', 'peek-primary', UUID], f.ctx({ env: {} }))), ['never-seen', 'dup-after-gap'],
-      'nothing past the first unacked row is skipped — never-seen stays unread, and so does every row after it');
+    assert.equal(floorOf(f, UUID), 2, 'raised through the two forwarded copies and stopped at dup-3 (a separate, unread delivery)');
+    assert.deepEqual(bodies(cli.run(['inbox', 'peek-primary', UUID], f.ctx({ env: {} }))), ['dup-3', 'never-seen', 'dup-after-gap'],
+      'nothing past the first unacked row is skipped');
     assert.equal(floorOf(f, f.PID), 4, 'the canonical partition is untouched');
 
     const again = migrations.runMigrations({ home: f.home, version: '9.9.9', devswarm: cli, env: {} })
@@ -257,5 +258,41 @@ test('migration: ANTIHALL_INGEST_DRY_RUN=1 never writes', () => {
     assert.equal(r.dryRun, true);
     assert.equal(r.wouldRaise, 1);
     assert.equal(floorOf(f, UUID), 0);
+  } finally { rm(f.home); rm(f.repo); }
+});
+
+// ---- Opus review P1s: a CHILD registered on the Primary's worktree ---------
+const CHILD = '11111111-2222-4333-8444-555555555555';
+
+test('a live child on the Primary worktree never acks the Primary anchor partition', () => {
+  const f = fixture({ pidLive: true });
+  try {
+    withStore(f, (s) => s.upsertRegistry({ id: CHILD, worktreePath: f.repo, sessionId: 'sess-child' }));
+    markLive(f.home, CHILD);
+    send(f, f.PID, 'mail for the PRIMARY anchor');
+    const cenv = { DEVSWARM_BUILDER_ID: CHILD, CLAUDE_CODE_SESSION_ID: 'sess-child' };
+    const rd = cli.run(['inbox', 'read-primary', CHILD], f.ctx({ env: cenv }));
+    assert.equal(rd.result.ok, true, JSON.stringify(rd.result));
+    if (rd.result.readReceiptId) {
+      const a = cli.run(['inbox', 'ack-primary', CHILD, '--receipt', rd.result.readReceiptId], f.ctx({ env: cenv }));
+      assert.equal(a.result.ok, true, JSON.stringify(a.result));
+    }
+    assert.deepEqual(bodies(cli.run(['inbox', 'peek-primary', f.PID], f.ctx())), ['mail for the PRIMARY anchor'],
+      'the anchor carries the Primary session, not the child\'s: the child\'s read must leave the Primary\'s mail unread');
+  } finally { rm(f.home); rm(f.repo); }
+});
+
+test('migration: a child on the anchor worktree is never reconciled against the anchor', () => {
+  const f = fixture();
+  try {
+    withStore(f, (s) => s.upsertRegistry({ id: CHILD, worktreePath: f.repo, sessionId: 'sess-child' }));
+    // One send addressed to both, and a fold forward of the child's row into the anchor.
+    const hc = send(f, CHILD, 'to both', { timestamp: 21 });
+    send(f, f.PID, 'to both', { timestamp: 21 });
+    send(f, f.PID, 'to both', { timestamp: 21, origHash: hc, urgency: 'high' });
+    withStore(f, (s) => readerCursors.raiseAllLossFree(s, { partition: f.PID, ns: 'store', value: 2, home: f.home }));
+    const r = cli.reconcileDualPartitionAcksAllStores(f.home, { env: {} });
+    assert.equal(r.errors, 0);
+    assert.equal(floorOf(f, CHILD), 0, 'the child\'s copy stays unread — the Primary acking its own copy says nothing about the child');
   } finally { rm(f.home); rm(f.repo); }
 });
