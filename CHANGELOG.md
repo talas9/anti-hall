@@ -6,6 +6,25 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.105.1 (2026-09-24)
+
+- **Fixed: the orphaned-mesh warning no longer lists archived, closed workspaces with no
+  live identity family.** `devswarm.js` assigned `module.exports` after `main()` had
+  already run and exited, so the orphan policy's lazy self-require got an empty module
+  when devswarm.js was run as the CLI entrypoint; the archived-workspace check failed
+  open and every such partition stayed in the orphan list. Exports are now assigned
+  before `main()` runs, and the policy retries a load that came back unusable instead of
+  caching it. A regression test drives the real CLI entrypoint (the prior equivalence
+  test only exercised `require()`).
+
+- **Fixed: statusline renders its own renderers in-process instead of forking a shell
+  plus two node processes, each of which spawned git.** The 3s outer watchdog was
+  shorter than the 10s inner spawn timeouts it wrapped, so under load the output
+  silently truncated before those inner budgets were reachable. Inner work is now
+  bounded at 2.5s (git calls at 1.5s) under the unchanged 3s watchdog; a foreign base
+  command still spawns. Measured: p50 153ms to 104ms at rest, 245ms to 163ms under
+  load; output is byte-identical.
+
 ## 0.105.0 (2026-09-24)
 
 - **Added: optional Jev backend for `speculation-judge`.** An opt-in Jev (TypeSafe
