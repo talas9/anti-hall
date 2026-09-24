@@ -22,6 +22,7 @@ const inst = require(path.join(ROOT, 'companion', 'install-devswarm-ingest.js'))
 const liveness = require(path.join(ROOT, 'companion', 'lib', 'liveness.js'));
 const aliasLib = require(path.join(ROOT, 'companion', 'lib', 'devswarm-sender-alias.js'));
 const migrations = require(path.join(ROOT, 'companion', 'lib', 'migrations.js'));
+const { testHook } = require('../helpers/spawn-hook.js');
 
 const CHILD = 'c0ffee00-1111-4222-8333-444455556666';
 
@@ -250,4 +251,59 @@ test('field sequence: spawn seeds primary-<childhash>, child registers its id, P
     assert.ok(!reg.includes(f.LABEL) && reg.includes(CHILD), 'twin folded into the real child id');
     assert.equal(JSON.parse(fs.readFileSync(path.join(f.home, '.anti-hall', 'devswarm', 'retired', f.LABEL + '.json'), 'utf8')).retiredTo, CHILD);
   } finally { cleanup(f); }
+});
+
+// Field report (L8): a child's broadcast stored under sender primary-<childhash>
+// with NO registry row of that id (the child registered only its real id, from a
+// subdirectory). PROVES what is and is not hidden, then that the repair +
+// alias make every reader show it under the child's real id.
+test('legacy child sender with no registry row: broadcast body readable by another child and the Primary (mesh read + parent-inbox); its question was dropped until aliased', () => {
+  const f = fixture();
+  const wtB = path.join(f.base, 'fix-other');
+  try {
+    cp.spawnSync('git', ['-C', f.repo, 'worktree', 'add', '-q', wtB, '-b', 'fix-other']);
+    registerPrimary(f);
+    const CHILD_B = 'b0b0b0b0-1111-4222-8333-444455556666';
+    fs.mkdirSync(path.join(f.child, 'sub'), { recursive: true });
+    withStore(f, (s) => {
+      s.upsertRegistry({ id: CHILD, worktreePath: path.join(f.child, 'sub'), sessionId: 'sess-child' }); // registered from a SUBDIR (field shape)
+      s.upsertRegistry({ id: CHILD_B, worktreePath: wtB, sessionId: 'sess-b' });
+      const bc = { from: f.LABEL, to: null, type: 'broadcast', message: 'L8 LOCAL GATE PASS @abc', timestamp: Date.now() - 60000, urgency: 'normal' };
+      storeLib.appendMeshMessage(s, Object.assign({}, bc, { hash: storeLib.meshMessageHash(bc) }));
+      const q = { from: f.LABEL, to: f.PRIMARY, type: 'direct', message: 'merge now?', timestamp: 1790000000001, urgency: 'normal', needsReply: true };
+      storeLib.appendMeshMessage(s, Object.assign({}, q, { hash: storeLib.meshMessageHash(q) }));
+    });
+    const bEnv = Object.assign({ DEVSWARM_BUILDER_ID: CHILD_B }, f.env);
+    // BEFORE: the broadcast body IS visible (not hidden) — under the raw label.
+    const before = cli.run(['mesh', 'read', '--peek'], { home: f.home, env: bEnv, cwd: wtB });
+    assert.deepEqual(before.result.broadcasts.map((b) => [b.from, b.message]), [[f.LABEL, 'L8 LOCAL GATE PASS @abc']]);
+    // BEFORE: the QUESTION is dropped from the Primary's pendingQuestions (the real hidden part).
+    const sum0 = withStore(f, (s) => storeLib.computeSummary(s, { home: f.home }));
+    assert.deepEqual((sum0.workspaces[f.PRIMARY].pendingQuestions || []).map((q) => q.from), [], 'unresolvable sender -> question dropped');
+
+    const res = cli.repairChildSenderLabelsAllStores(f.home, { env: f.env });
+    assert.equal(res.errors, 0, JSON.stringify(res));
+    assert.equal(aliasLib.resolveAlias(f.home, f.LABEL), CHILD);
+
+    // AFTER: another child and the Primary both read it under the child's id.
+    const b = cli.run(['mesh', 'read', '--peek'], { home: f.home, env: bEnv, cwd: wtB });
+    assert.deepEqual(b.result.broadcasts.map((x) => [x.from, x.message, x.fromLabel]), [[CHILD, 'L8 LOCAL GATE PASS @abc', f.LABEL]]);
+    const p = cli.run(['mesh', 'read', '--peek'], { home: f.home, env: f.env, cwd: f.repo });
+    assert.equal(p.result.broadcasts[0].from, CHILD);
+    const sum1 = withStore(f, (s) => storeLib.computeSummary(s, { home: f.home }));
+    assert.equal(sum1.recent[0].from, CHILD);
+    assert.deepEqual(sum1.workspaces[f.PRIMARY].pendingQuestions.map((q) => q.from), [CHILD], 'the question now reaches the Primary\'s gate');
+    // Projection render (parent-inbox broadcast feed): body shown under the child id.
+    withStore(f, (s) => storeLib.deriveSummary(s, { home: f.home }));
+    const r = testHook('devswarm-parent-inbox.js', { hook_event_name: 'UserPromptSubmit', session_id: 't', prompt: 'hi', cwd: f.repo },
+      { home: f.home, env: { DEVSWARM_REPO_ID: 'repo-1', ANTIHALL_DEVSWARM_APP_DB: 'off' }, expectJson: true });
+    const ctxText = (r.json && r.json.hookSpecificOutput && r.json.hookSpecificOutput.additionalContext) || '';
+    assert.match(ctxText, new RegExp(CHILD + ': L8 LOCAL GATE PASS @abc'), ctxText);
+    // A NEW child broadcast is stored under the child id directly (no alias needed).
+    const n = cli.run(['send', '--broadcast', '--message', 'L8 second'], { home: f.home, env: Object.assign({ DEVSWARM_BUILDER_ID: CHILD }, f.env), cwd: f.child });
+    assert.equal(n.result.from, CHILD);
+    const b2 = cli.run(['mesh', 'read', '--peek'], { home: f.home, env: bEnv, cwd: wtB });
+    assert.deepEqual(b2.result.broadcasts.map((x) => [x.from, x.message]).slice(-1), [[CHILD, 'L8 second']]);
+    assert.equal(b2.result.broadcasts.slice(-1)[0].fromLabel, undefined);
+  } finally { rm(wtB); cleanup(f); }
 });

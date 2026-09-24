@@ -2245,6 +2245,14 @@ function maxUrgencyOf(rows) {
 // structurally-unaddressable identity that fix was about.
 function resolveSenderRegistryId(store, registry, meshId, home, recipientId) {
   if (!meshId) return null;
+  // v0.108.0: a pre-fix CHILD sender label (`primary-<childhash>`) resolves
+  // through sender-aliases.json to the child's registry id when that row
+  // exists — the raw-path hash below misses a row registered from a subdir,
+  // which dropped the question entirely.
+  try {
+    const a = home ? require('./devswarm-sender-alias.js').readAliases(home)[String(meshId)] : null;
+    if (a && String(a.to) !== String(recipientId) && (registry || []).some((d) => d && String(d.id) === String(a.to))) return a.to;
+  } catch (_) { /* no alias: fall through */ }
   if (!ingestIdentity || typeof ingestIdentity.primaryWorkspaceId !== 'function') return null;
   // Match candidates by worktree-derived meshId (store-specific — needs
   // ingestIdentity), then rank what's left with devswarm-attribution.js's

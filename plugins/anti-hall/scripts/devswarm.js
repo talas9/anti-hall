@@ -6091,7 +6091,45 @@ function repairChildSenderLabelsAllStores(home, ctx) {
           if (res.forwardFailed.length) out.errors++;
         }
       }
-      if (!dryRun && out.retired) { try { store.deriveSummary(s, { home, env }); } catch (_) { /* projection refresh is best-effort */ } }
+      // Sender labels with NO registry row (the child only ever registered its
+      // real id, e.g. field sender primary-e33f349f vs row 377cba74): alias
+      // them too, so stored broadcasts/questions render under the child.
+      try {
+        const regIds = new Set(registry.map((d) => d && String(d.id)));
+        const labels = new Set();
+        const parts = [store.BROADCAST_PARTITION_ID].concat(registry.map((d) => d && d.id != null ? String(d.id) : null).filter(Boolean));
+        for (const part of parts) {
+          let rows = [];
+          try { rows = s.listMessages(part) || []; } catch (_) { rows = []; }
+          for (const m of rows) {
+            const snd = m && m.sender != null ? String(m.sender) : '';
+            if (/^primary-[0-9a-f]{8}$/.test(snd) && !regIds.has(snd) && !(aliases[snd])) labels.add(snd);
+          }
+        }
+        if (labels.size) {
+          const byLabel = new Map();
+          for (const d of registry) {
+            if (!d || d.id == null || !d.worktreePath || /^primary-/.test(String(d.id))) continue;
+            const key = canonicalMeshId(String(d.worktreePath)) || rawPathMeshId(String(d.worktreePath));
+            if (!key || !labels.has(key)) continue;
+            if (!byLabel.has(key)) byLabel.set(key, []);
+            byLabel.get(key).push(d);
+          }
+          for (const [label, rows] of byLabel) {
+            const wt = canonicalWorktreeRealPath(String(rows[0].worktreePath));
+            if (!wt) continue; // unprovable (deleted worktree): never guessed
+            const ic = identityContext(wt);
+            if (isPrimaryCheckout(ic.worktreeRoot, ic.mainWorktree, home, env)) continue;
+            const ids = Array.from(new Set(rows.map((d) => String(d.id))));
+            if (ids.length !== 1) { out.results.push({ repoKey, id: label, action: 'skipped', reason: 'ambiguous-child-row' }); continue; }
+            out.labels++;
+            out.pending++;
+            if (dryRun) { out.results.push({ repoKey, id: label, childId: ids[0], action: 'would-alias-sender' }); continue; }
+            if (aliasLib.writeAlias(home, label, ids[0], wt)) { out.aliased++; aliases[label] = { to: ids[0] }; out.results.push({ repoKey, id: label, childId: ids[0], action: 'aliased-sender' }); }
+          }
+        }
+      } catch (e) { out.errors++; out.results.push({ repoKey, error: 'sender scan: ' + String((e && e.message) || e) }); }
+      if (!dryRun && (out.retired || out.aliased)) { try { store.deriveSummary(s, { home, env }); } catch (_) { /* projection refresh is best-effort */ } }
     } catch (e) {
       out.errors++;
       out.results.push({ repoKey, error: String((e && e.message) || e) });
@@ -15447,9 +15485,18 @@ function cmdMeshRead(flags, ctx) {
     // Filtered on the PHYSICAL mesh `seq` (storeSeq), matching broadcast_cursors'
     // own semantics (deriveSummary's broadcastUnread, D22/D23) — NOT the
     // per-workspace positional `sinceCursor` listMessages() otherwise supports.
+    // v0.108.0: a pre-fix child sender label renders as the child's real id
+    // (sender-aliases.json); `fromLabel` keeps the stored value.
+    let aliases = {};
+    try { aliases = require('../companion/lib/devswarm-sender-alias.js').readAliases(home); } catch (_) { aliases = {}; }
     const broadcasts = all
       .filter((r) => !r.isHeartbeat && Number.isFinite(r.storeSeq) && r.storeSeq > sinceSeq)
-      .map((r) => ({ from: r.sender, message: r.body, timestamp: r.ts, urgency: r.urgency, seq: r.storeSeq }));
+      .map((r) => {
+        const a = r.sender != null ? aliases[String(r.sender)] : null;
+        const b = { from: a ? a.to : r.sender, message: r.body, timestamp: r.ts, urgency: r.urgency, seq: r.storeSeq };
+        if (a) b.fromLabel = r.sender;
+        return b;
+      });
     const newCursor = peek
       ? cursor
       : (typeof s.advanceBroadcastCursor === 'function' ? s.advanceBroadcastCursor(cursorKey) : cursor);
