@@ -1843,7 +1843,12 @@ test('IDENTITY-FAMILY: the SELF/Primary row duplicated (live evidence: the same 
     assert.strictEqual(r.json && r.json.decision, 'block');
     assert.match(r.json.reason, /1 workspace\(s\)/, 'the self row duplicated across own + a same-worktree descriptor must collapse to 1, not 2');
     assert.match(r.json.reason, new RegExp(OWN_ID + ' \\(you\\)'), 'the survivor must still carry the (you) label');
-    assert.match(r.json.reason, /5 unread/, 'own\'s 2 unread UNIONED with the descriptor\'s 3 real unread');
+    // v0.106.0 regression fix: the own row IS this partition's count (the
+    // summary already unions the own descriptor's NDJSON inbox —
+    // devswarm-store.js unionUnreadFor), so the own descriptor is no longer
+    // counted a second time through the floor view. Was /5 unread/ (2 + 3).
+    assert.match(r.json.reason, /\(2 unread/, 'own\'s count only — the own descriptor is not double-counted');
+    assert.doesNotMatch(r.json.reason, /5 unread/);
   } finally { h.cleanup(); }
 });
 

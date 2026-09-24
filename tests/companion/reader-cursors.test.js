@@ -222,7 +222,10 @@ for (const backend of BACKENDS) {
         assert.strictEqual(get('store', mapped), 7, 'mapped reader = max(baseline, its own #inst)');
         assert.strictEqual(get('nd', mapped), 1, 'mapped nd reader = its own #nd');
         const unmappedLive = 'h:' + process.ppid + ':' + JSON.parse(fs.readFileSync(path.join(sess, process.ppid + '.json'), 'utf8')).startedAt;
-        assert.strictEqual(get('store', unmappedLive), 4, 'a live harness with no mapped file is seeded at F_import');
+        // v0.106.1: a live harness with no mapped file whose cwd is NOT this
+        // partition's worktree is not declared (it declares itself lazily); the
+        // v0.106.0 import seeded every such session at F_import and pinned the floor.
+        assert.strictEqual(get('store', unmappedLive), undefined, 'a non-local live harness with no mapped file is not declared');
         const once = JSON.stringify(rowsOf(s, 'w'));
         const r2 = rc.importLegacy(s, { partition: 'w', home, procTable: table });
         assert.strictEqual(r2.imported, false);

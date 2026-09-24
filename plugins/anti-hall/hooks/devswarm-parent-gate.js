@@ -860,6 +860,13 @@ function main() {
     catch (_) { return null; }
   }
   for (const d of descriptors) {
+    // The Primary's OWN descriptor (workspaces/<own.id>.json) is already
+    // accounted for by the own row above (readOwnUnread: this reader's own
+    // position). Counting it again here read the SAME partition through the
+    // floor view (countFor reader:null) and summed it into the self family —
+    // a phantom "(you) (N unread)" whenever the floor lagged this reader's
+    // own row (v0.106.0 regression).
+    if (own.id && d && String(d.id) === String(own.id)) continue;
     // ---- CROSS-PROJECT HANDLING (defect e586afdaa968, P1) ----
     // Two DIFFERENT facts, deliberately given two DIFFERENT treatments:
     //
@@ -1484,6 +1491,9 @@ function main() {
     // single-contributor family (the ordinary case) needs no attribution,
     // its `unread` already IS that one member's count.
     if (contributors.length > 1) entry.contributors = contributors;
+    // The own row's provenance label ('live-resolved' / 'cached') describes
+    // own.unread only — not a sum that includes another member's count.
+    if (contributors.some((c) => !own.id || c.id !== String(own.id))) entry.notOwnCountOnly = true;
     if (Array.isArray(fam.mergedTwinIds) && fam.mergedTwinIds.length) entry.mergedTwinIds = fam.mergedTwinIds;
     blocking.push(entry);
   }
@@ -1954,7 +1964,7 @@ function buildReason(blocking, ownId, unanswered, escalateTimes, truncated, qEsc
     // this one-token label is attached only to the `ownId` row, letting a
     // Primary see at a glance why this number and a live `inbox tick` might
     // momentarily differ instead of assuming one of them is wrong.
-    if (b.id === ownId && ownSource) bits.push(ownSource === 'live' ? 'live-resolved' : 'cached');
+    if (b.id === ownId && ownSource && !b.notOwnCountOnly) bits.push(ownSource === 'live' ? 'live-resolved' : 'cached');
     return b.id + (b.id === ownId ? ' (you)' : '') + ' (' + bits.join(', ') + ')';
   }).join('; ');
   const more = blocking.length > 5 ? ' (and ' + (blocking.length - 5) + ' more)' : '';

@@ -169,10 +169,13 @@ function legacyStoreFloor(store, home, id) {
 }
 function legacyNdFloor(cursorPath) { return cursorPath ? readCursorFile(cursorPath) : 0; }
 
-// liveHarnessReaders(home, procTable, kill) -> ['h:P:S', ...] for every harness
-// session file whose process is not PROVABLY ended (the file only names the
-// candidate; liveness comes from the process table).
+// liveHarnessSessions(home, procTable, kill) -> [{ reader:'h:P:S', cwd }] for
+// every harness session file whose process is not PROVABLY ended (the file only
+// names the candidate; liveness comes from the process table).
 function liveHarnessReaders(home, procTableIn, kill) {
+  return liveHarnessSessions(home, procTableIn, kill).map((x) => x.reader);
+}
+function liveHarnessSessions(home, procTableIn, kill) {
   const out = [];
   // procTable may be a thunk: the ps snapshot is taken only when a session file
   // actually needs a verdict (no sessions dir -> no spawn).
@@ -192,9 +195,48 @@ function liveHarnessReaders(home, procTableIn, kill) {
     if (startMs === null) { try { startMs = fs.statSync(fp).mtimeMs; } catch (_) { startMs = 0; } }
     const reader = 'h:' + rec.pid + ':' + (Number.isFinite(startMs) ? startMs : 0);
     if (!resolved) { try { procTable = procTableIn(); } catch (_) { procTable = null; } resolved = true; }
-    if (!provablyEnded(reader, procTable, kill)) out.push(reader);
+    if (!provablyEnded(reader, procTable, kill)) out.push({ reader, cwd: rec.cwd != null ? String(rec.cwd) : null });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Partition <-> session locality (v0.106.1). A live session is a reader of a
+// partition only when its session cwd resolves (identity.js resolveContext) to
+// that partition's own worktree: the partition id itself when it is a mesh id
+// ('primary-<hash8>'), or the worktree its descriptor names. Every other live
+// session on the machine is NOT a reader — the v0.106.0 import declared all of
+// them (other repos, child worktrees) and pinned every floor at the import value.
+// ---------------------------------------------------------------------------
+function descriptorOf(home, partition) {
+  if (!home) return null;
+  try {
+    const d = JSON.parse(fs.readFileSync(liveness().descriptorPathFor(String(partition), home), 'utf8'));
+    return d && typeof d === 'object' && !Array.isArray(d) ? d : null;
+  } catch (_) { return null; }
+}
+function partitionMeshIds(partition, desc) {
+  const ids = new Set();
+  if (/^primary-[0-9a-f]{8}$/.test(String(partition))) ids.add(String(partition));
+  if (desc && typeof desc.worktreePath === 'string' && desc.worktreePath) {
+    try {
+      const c = require('./identity.js').resolveContext(desc.worktreePath);
+      if (c && c.meshId) ids.add(c.meshId);
+    } catch (_) { /* unresolvable worktree: names nothing */ }
+  }
+  return ids;
+}
+function cwdInPartition(cwd, meshIds) {
+  if (!cwd || !meshIds || !meshIds.size) return false;
+  try {
+    const c = require('./identity.js').resolveContext(cwd);
+    return !!(c && c.meshId && meshIds.has(c.meshId));
+  } catch (_) { return false; }
+}
+// mappedShorts(home, partition) -> Set of the short6 ids with a legacy #inst/#nd
+// file for this partition: proof that harness read it before Phase 3.
+function mappedShorts(home, partition) {
+  return new Set(listLegacy(home, partition, '#inst-').concat(listLegacy(home, partition, '#nd-')).map((f) => f.short));
 }
 
 // ---------------------------------------------------------------------------
@@ -220,14 +262,27 @@ function liveMinRow(rows, ns) {
 // mapped legacy position (store: max(baseline, #inst) — HEAD's own read base;
 // nd: its #nd file) or, unmapped, the import floor. Dead/unmappable files are
 // not imported (their effect is already inside the floor).
+// Only a live session LOCAL to the partition (cwdInPartition) or one with its
+// own mapped legacy file is declared; the rest declare themselves lazily on
+// first declare/ack. The nd floor falls back to the descriptor's cursorPath when
+// the caller passed none (ack/fold/migrate callers do not carry it).
 function importPlan(store, o) {
   const partition = String(o.partition);
+  const desc = (!o.cursorPath || !o.harnesses) ? descriptorOf(o.home, partition) : null;
+  const cursorPath = o.cursorPath || (desc && typeof desc.cursorPath === 'string' ? desc.cursorPath : null);
   const floors = {
     store: legacyStoreFloor(store, o.home, partition),
-    nd: legacyNdFloor(o.cursorPath),
+    nd: legacyNdFloor(cursorPath),
   };
   const readers = [];
-  const harnesses = o.harnesses || liveHarnessReaders(o.home, o.procTable, o.kill);
+  let harnesses = o.harnesses;
+  if (!harnesses) {
+    const meshIds = partitionMeshIds(partition, desc);
+    const mapped = mappedShorts(o.home, partition);
+    harnesses = liveHarnessSessions(o.home, o.procTable, o.kill)
+      .filter((x) => mapped.has(legacyShortFor(x.reader)) || cwdInPartition(x.cwd, meshIds))
+      .map((x) => x.reader);
+  }
   if (harnesses.length) {
     const baseline = legacyBaseline(store, o.home, partition);
     const inst = new Map(listLegacy(o.home, partition, '#inst-').map((f) => [f.short, f.value]));
