@@ -29,7 +29,7 @@ const ROWS = 50;
 const BUCKET = 'proj-abc123';
 
 function git(args, cwd) {
-  const r = cp.spawnSync('git', args, { cwd, encoding: 'utf8', env: Object.assign({}, process.env, { GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }) });
+  const r = cp.spawnSync('git', args, { cwd, encoding: 'utf8', env: Object.assign({}, process.env, { HOME: os.tmpdir(), USERPROFILE: os.tmpdir(), GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }) });
   assert.strictEqual(r.status, 0, 'git ' + args.join(' ') + ': ' + r.stderr);
 }
 
@@ -68,7 +68,8 @@ test('doctor all-store sweeps: 0 spawns on 50 deleted-worktree rows, and no fold
     const script = [
       'const ds = require(' + JSON.stringify(DEVSWARM) + ');',
       'const home = ' + JSON.stringify(home) + ';',
-      'const ctx = { cwd: ' + JSON.stringify(repo) + ', env: process.env, dryRun: true };',
+      'const childEnv = process.env; // the child runs with HOME/USERPROFILE = the isolated tmp home (see spawn env below)',
+      'const ctx = { cwd: ' + JSON.stringify(repo) + ', env: childEnv, dryRun: true };',
       'const cut = () => require("fs").existsSync(process.env.ANTIHALL_SPAWN_LOG) ? require("fs").readFileSync(process.env.ANTIHALL_SPAWN_LOG, "utf8").split("\\n").filter(Boolean).length : 0;',
       'const base = cut();',
       'const fold = ds.foldMeshDuplicatesAllStores(home, ctx);',

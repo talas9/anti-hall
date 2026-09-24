@@ -6,6 +6,79 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.104.0 (2026-09-24)
+
+**First structural step of a mesh redesign.** Recurring project-context defects traced back to
+~16 separate "which project am I in" resolvers scattered across hooks and the CLI, each answering
+the worktree/repoKey/meshId question slightly differently. This release collapses the resolution
+path into one module (`companion/lib/identity.js`) and moves the first batch of callers onto it.
+
+- **Fixed: a lane in a submodule inside a linked worktree minted a phantom `modules-<hash>` key
+  and its inbox refused with `project-context-mismatch`.** `devswarm-repokey`'s resolvers now shim
+  over `identity.resolveContext`, which keys every submodule kind to the outermost superproject
+  instead of stopping at the submodule's `.git` file. Nested-repo git answers are cached per path
+  (5-minute TTL); the registry path guard compares realpaths.
+
+- **Fixed: inbox reads refused when git timed out under load while the caller's cwd was inside the
+  registered worktree.** The read guard no longer refuses when the caller's project key can't be
+  resolved (e.g. a git timeout) but the caller's cwd is inside the workspace's registered worktree;
+  a cwd that resolves to a genuinely different project is still refused. `resolveContext` gains
+  `missingPath:'ancestor'` for caller cwds (row paths keep `'null'`).
+
+- **Fixed: `doctor --quiet` took 745s and 41,587 git spawns on a 385-store home.** `resolveCallerWorktree`
+  spawned git twice per registry row with no memo, and doctor's three all-store sweeps called it for
+  every row of every store, including rows whose worktrees were long deleted. It now takes **27s and
+  514 spawns**, with identical resulting registry/cursor/message state. Deleted worktree paths resolve
+  to null and are never folded onto an enclosing repo.
+
+- **Fixed: reading a store created an empty store directory.** `openStore({readOnly:true})` never
+  creates a store: a missing store returns null, and an existing sqlite store opens read-only. Used
+  by the unread read path and doctor's enumeration sweeps — 213 empty store dirs had piled up before
+  this.
+
+- **Fixed: the installer would install a launchd unit for a temp working directory.** An e2e run
+  installed a real ingest unit whose `WorkingDirectory` was a scratchpad fixture repo under
+  `/private/tmp`; once the fixture was cleaned up, launchd failed to spawn it (`EX_CONFIG`) and
+  restarted it **34,584 times**. The installer already refused a temp `HOME` but not a temp worktree.
+  It now forces a dry run for a `WorkingDirectory`/main worktree under a temp root unless
+  `ANTIHALL_INGEST_ALLOW_TMP_HOME=1`, and `doctor` reports (never removes) any other worktree's
+  installed unit that points under a temp root, with the exact bootout + quarantine command.
+
+- **Changed: statusline and wake-watch identity resolution.** The statusline resolves its toplevel
+  through `identity` (no git spawn). `wake-watch` reads `CLAUDE_CODE_SESSION_ID` (the variable Claude
+  Code actually sets) before falling back to the legacy `CLAUDE_SESSION_ID`.
+
+- **Added: `task-lifecycle-log` hook (Claude-only).** Appends `TaskCreated`/`TaskCompleted` events to
+  the session history ledger. Log-only: never blocks, never injects context. Codex has no task
+  lifecycle hook events, so this is not mirrored to the Codex port.
+
+- **Added: `doctor` read-only `identity-rekey-candidates` report.** Lists stores written under the
+  old wrong project keys, with message counts. Nothing is moved automatically. On the author's
+  machine, only 2 real messages were affected.
+
+- **Added: `tests/mesh-invariants.harness.test.js`, a model-based test harness for mesh invariants.**
+  Known defects are `todo` in normal runs and fail under `ANTIHALL_HARNESS_STRICT=1`, so they stay
+  visible without breaking CI until fixed.
+
+- **Pending (landing next, B3):** the six hook-local `findGitToplevel` copies (`command-guard`,
+  `parent-gate`, `child-gate`, `child-turn`, `parent-reply-tracker`, `parent-inbox`) will resolve
+  through `identity` too. A hook whose cwd was deleted will resolve from its nearest existing
+  ancestor; nested submodules will no longer get a phantom `meshId`; child descriptors will keep
+  the literal git toplevel as `worktreePath`.
+
+**Known, not yet fixed.** The MIN-floor phantom unread count and the pull-crash message-loss
+defect are now reproduced by the harness above (`ANTIHALL_HARNESS_STRICT=1`); both will be
+addressed in the next phases of the mesh redesign.
+
+- **Fixed: a message written through a quoted heredoc was blocked as a heavy command.** The
+  command guard extracted backtick and `$(...)` substitutions from the whole raw command without
+  recognising heredocs, so prose such as a backticked `pytest tests -k x` inside a `<<'EOF'`
+  message body was treated as an executed command (field report: blocked as "verb: pytest").
+  Bodies of quoted-delimiter heredocs are now skipped, as bash does; an unquoted `<<EOF` body
+  still expands, so substitutions there are still checked. The guard also now sees heavy
+  commands behind the `taskpolicy` and `xargs` wrappers.
+
+
 ## 0.103.0 (2026-09-23)
 
 - **Fixed: UserPromptSubmit context repeated up to 27× in one delivered turn.** Claude Code

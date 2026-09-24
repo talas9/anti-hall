@@ -428,7 +428,10 @@ Invoke via slash command:
   `--reclaim-ingest-lock` sweeps orphaned locks and reclaims a contended one (positive OS
   confirmation required before any removal), then reinstalls — never runs automatically.
   Install-time also detects a memory-guard/reaper script that would kill the
-  service-managed daemon and reports the exact allowlist entry to add.
+  service-managed daemon and reports the exact allowlist entry to add. **v0.104.0:**
+  `--check`/repair mode also runs a read-only `identity-rekey-candidates` report,
+  listing stores written under a pre-0.104.0 wrong project key with their message
+  counts; nothing is moved automatically.
 - **`/anti-hall:update`** — updates anti-hall in place: `git pull --ff-only` the
   marketplace clone, syncs the version-pinned cache (semver-anchored, traversal-proof),
   prints the changelog delta between installed and latest, then instructs
