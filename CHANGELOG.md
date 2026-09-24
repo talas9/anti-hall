@@ -147,6 +147,11 @@ the update.
   read-messages --help`, `monitor -h` and `message-child --help` only print usage, so a
   segment carrying a bare `--help`/`-h` token is no longer blocked as a destructive read
   or native send; a real call chained on another segment still blocks.
+- **The supervisor installer could register a real unit for a test or scratch HOME.**
+  `install-devswarm-supervisor.js` now has the same guards as the ingest and reaper
+  installers: forced dry-run under `node --test` or with HOME under a temp root
+  (`ANTIHALL_SUPERVISOR_ALLOW_TMP_HOME=1` for a deliberate one). The shared temp-root check
+  also recognises macOS `/var/folders` when `TMPDIR` is not set.
 - **edit-guard's handover redirect** now names `.anti-hall/handovers/**` as the exempt
   place to write.
 - **`update.js` split-store summary** now states how many already-handled rows were

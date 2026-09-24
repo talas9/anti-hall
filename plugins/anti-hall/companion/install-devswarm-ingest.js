@@ -147,7 +147,10 @@ function homeIsUnderTmpdir(home) {
     // scratchpad path) previously sailed past this guard entirely. Check
     // os.tmpdir() plus the two well-known tmp roots, each realpath'd so a
     // symlinked root (macOS: /tmp -> /private/tmp) still matches once.
-    const roots = [os.tmpdir(), '/tmp', '/private/tmp'];
+    // macOS per-user temp roots live under /var/folders (-> /private/var/folders);
+    // os.tmpdir() only reports them when TMPDIR is set, and a stripped env
+    // (launchd, `env -i`, a spawned child) has none — so name them directly.
+    const roots = [os.tmpdir(), '/tmp', '/private/tmp'].concat(process.platform === 'darwin' ? ['/var/folders', '/private/var/folders'] : []);
     const realRoots = new Set();
     for (const r of roots) {
       try { realRoots.add(fs.realpathSync(r)); } catch (_) { realRoots.add(r); }

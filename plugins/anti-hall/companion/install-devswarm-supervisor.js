@@ -36,7 +36,7 @@ const { spawnSync } = require('child_process');
 // here. This require is safe: install-devswarm-ingest.js only runs its own
 // main() when it is the process entry point (`require.main === module`), which
 // is never true when it is required as a library from this file.
-const { resolveHivecontrolPath, unitEnvFor, pathIsEmittable, sdEnvValue } =
+const { resolveHivecontrolPath, unitEnvFor, pathIsEmittable, sdEnvValue, homeIsUnderTmpdir } =
   require('./install-devswarm-ingest.js');
 
 const LABEL = 'com.anti-hall.devswarm-supervisor';
@@ -55,7 +55,31 @@ let RESOLVED_HIVECONTROL = null;
 
 const args = process.argv.slice(2);
 const UNINSTALL = args.includes('--uninstall');
-const DRYRUN = args.includes('--dry-run');
+// TEST / TEMP-HOME GUARDS (same class as install-devswarm-ingest.js's
+// NODE_TEST_CONTEXT_GUARD + TMP_HOME_GUARD and install-reaper.js): a run under
+// `node --test` (or a child it spawned — e.g. repair-on-reload's detached
+// `doctor --repair` in a test fixture home), or with HOME under a temp root,
+// is forced to dry-run so it can never register a REAL launchd/systemd
+// supervisor pointing at a scratch home. The supervisor's label is a machine
+// singleton, so a leaked registration would REPLACE the operator's real one.
+// Opt-outs: ANTIHALL_SUPERVISOR_DRY_RUN=1 forces dry-run explicitly;
+// ANTIHALL_SUPERVISOR_ALLOW_TMP_HOME=1 allows a deliberate temp-HOME install.
+const EXPLICIT_DRYRUN = args.includes('--dry-run') || process.env.ANTIHALL_SUPERVISOR_DRY_RUN === '1';
+const NODE_TEST_CONTEXT_GUARD = !EXPLICIT_DRYRUN && !!process.env.NODE_TEST_CONTEXT;
+const TMP_HOME_GUARD = !EXPLICIT_DRYRUN && process.env.ANTIHALL_SUPERVISOR_ALLOW_TMP_HOME !== '1'
+  && typeof homeIsUnderTmpdir === 'function' && homeIsUnderTmpdir(HOME);
+const DRYRUN = EXPLICIT_DRYRUN || NODE_TEST_CONTEXT_GUARD || TMP_HOME_GUARD;
+let _guardNoted = false;
+function noteGuardTripped() {
+  if (_guardNoted || EXPLICIT_DRYRUN || !DRYRUN) return;
+  _guardNoted = true;
+  try {
+    process.stderr.write('anti-hall: install-devswarm-supervisor.js forced dry-run ('
+      + (NODE_TEST_CONTEXT_GUARD ? 'NODE_TEST_CONTEXT is set — running under `node --test`' : 'HOME ' + HOME + ' is under the system temp directory')
+      + ') to prevent registering a real supervisor for a test/scratch home. Set ANTIHALL_SUPERVISOR_ALLOW_TMP_HOME=1'
+      + ' for a deliberate temp-HOME install.\n');
+  } catch (_) {}
+}
 
 // clampInterval(v) -> seconds in [60, 120], default 90 for missing/garbage input.
 function clampInterval(v) {
@@ -72,17 +96,17 @@ const INTERVAL = (() => {
 function say(msg) { process.stdout.write(msg + '\n'); }
 
 function planWrite(file, contents) {
-  if (DRYRUN) { say(`[dry-run] would write ${file}`); return; }
+  if (DRYRUN) { noteGuardTripped(); say(`[dry-run] would write ${file}`); return; }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, contents);
   say(`wrote ${file}`);
 }
 function planRm(file) {
-  if (DRYRUN) { say(`[dry-run] would remove ${file}`); return; }
+  if (DRYRUN) { noteGuardTripped(); say(`[dry-run] would remove ${file}`); return; }
   try { fs.unlinkSync(file); say(`removed ${file}`); } catch (_e) { say(`(not present) ${file}`); }
 }
 function planRun(cmd, argv, opts) {
-  if (DRYRUN) { say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`); return { status: 0, dry: true }; }
+  if (DRYRUN) { noteGuardTripped(); say(`[dry-run] would run: ${cmd} ${argv.join(' ')}`); return { status: 0, dry: true }; }
   const r = spawnSync(cmd, argv, { encoding: 'utf8', ...(opts || {}) });
   if (r.error) say(`(warn) ${cmd} failed: ${r.error.message}`);
   else say(`ran: ${cmd} ${argv.join(' ')} (exit ${r.status})`);
@@ -282,4 +306,5 @@ if (require.main === module) main();
 module.exports = {
   LABEL, UNIT, clampInterval, xmlEscape, buildPlist, buildService, buildTimer, buildCronLine,
   resolveHivecontrolPath, unitEnvFor, pathIsEmittable, sdEnvValue,
+  DRYRUN, NODE_TEST_CONTEXT_GUARD, TMP_HOME_GUARD,
 };
