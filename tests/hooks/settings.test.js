@@ -301,3 +301,45 @@ test('source(): reports which precedence tier answered', () => {
     home.cleanup();
   }
 });
+
+// v0.108.0 review (MEDIUM, lost update): set()/reset() read-modify-write the
+// whole file under a lock, so concurrent writers never drop each other's keys.
+test('concurrent writers: 8 processes each set a different key at once -> every key survives', async () => {
+  const fsx = require('node:fs'); const osx = require('node:os'); const px = require('node:path');
+  const { spawn } = require('node:child_process');
+  const home = fsx.mkdtempSync(px.join(osx.tmpdir(), 'ah-settings-race-'));
+  const lib = px.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'lib', 'settings.js');
+  const writes = [
+    ['guards', 'mergeGate', 'true'], ['guards', 'shipitGate', 'true'], ['guards', 'stashGuard', 'true'],
+    ['limitConserve', 'threshold', '70'], ['autoHandover', 'pct', '80'], ['autoHandover', 'nagStepPct', '7'],
+    ['codexNudge', 'enabled', 'false'], ['statusline', 'noEmail', 'true'],
+  ];
+  try {
+    const code = 'const [s,k,v,h]=process.argv.slice(1); for (let i=0;i<20;i++){ const r=require(' + JSON.stringify(lib) + ').set(s,k,v,{home:h}); if(!r.ok){process.stderr.write(JSON.stringify(r));process.exit(1);} }';
+    const results = await Promise.all(writes.map(([s, k, v]) => new Promise((resolve) => {
+      const p = spawn(process.execPath, ['-e', code, s, k, v, home], { env: Object.assign({}, process.env, { HOME: home, USERPROFILE: home }) });
+      let err = ''; p.stderr.on('data', (d) => { err += d; });
+      p.on('close', (c) => resolve({ c, err }));
+    })));
+    for (const r of results) assert.strictEqual(r.c, 0, r.err);
+    const settings = require(lib);
+    const store = settings.load({ home });
+    for (const [s, k] of writes) assert.ok(store[s] && Object.prototype.hasOwnProperty.call(store[s], k), s + '.' + k + ' lost: ' + JSON.stringify(store));
+    assert.ok(!fsx.existsSync(settings.path({ home }) + '.lock'), 'lock released');
+  } finally { fsx.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('a lock held by a live writer past the wait budget -> {ok:false, lockBusy} (never throws); a dead holder is reclaimed', () => {
+  const fsx = require('node:fs'); const osx = require('node:os'); const px = require('node:path');
+  const settings = require(px.join(__dirname, '..', '..', 'plugins', 'anti-hall', 'hooks', 'lib', 'settings.js'));
+  const home = fsx.mkdtempSync(px.join(osx.tmpdir(), 'ah-settings-lock-'));
+  try {
+    const lock = settings.path({ home }) + '.lock';
+    fsx.mkdirSync(px.dirname(lock), { recursive: true });
+    fsx.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }));
+    const r = settings.set('guards', 'mergeGate', 'true', { home });
+    assert.strictEqual(r.ok, false); assert.strictEqual(r.lockBusy, true);
+    fsx.writeFileSync(lock, JSON.stringify({ pid: 999999, at: Date.now() }));
+    assert.strictEqual(settings.set('guards', 'mergeGate', 'true', { home }).ok, true, 'dead holder reclaimed');
+  } finally { fsx.rmSync(home, { recursive: true, force: true }); }
+});

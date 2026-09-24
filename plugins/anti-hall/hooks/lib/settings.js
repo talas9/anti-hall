@@ -345,6 +345,47 @@ function validate(entry, value) {
   return { ok: true, value: String(value) };
 }
 
+// withSettingsLock(opts, fn) -> fn()'s result, or {ok:false, lockBusy:true,
+// error} when another writer holds the lock past the wait budget. set() and
+// reset() are read-modify-write of the WHOLE file: without a lock two
+// concurrent writers (two sessions, a hook and the CLI) each read the old file
+// and the second rename drops the first one's key. Same lock shape as
+// hooks/repair-on-reload.js (atomic 'wx' create with our pid; a dead or stale
+// holder is reclaimed); bounded wait, never throws.
+const SETTINGS_LOCK_WAIT_MS = 2000;
+const SETTINGS_LOCK_STALE_MS = 30000;
+function pidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); }
+}
+function withSettingsLock(opts, fn) {
+  const lock = settingsPath(opts) + '.lock';
+  const deadline = Date.now() + SETTINGS_LOCK_WAIT_MS;
+  let held = false;
+  try { fs.mkdirSync(path.dirname(lock), { recursive: true }); } catch (_) { /* surfaced by the write */ }
+  while (!held) {
+    try {
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, at: Date.now() }), { flag: 'wx' });
+      held = true;
+      break;
+    } catch (e) {
+      if (!e || e.code !== 'EEXIST') return { ok: false, error: 'settings lock failed: ' + ((e && e.message) || String(e)) };
+    }
+    let holder = null;
+    try { holder = JSON.parse(fs.readFileSync(lock, 'utf8')); } catch (_) { holder = null; }
+    const stale = !holder || !pidAlive(holder.pid) || (Number.isFinite(holder.at) && Date.now() - holder.at > SETTINGS_LOCK_STALE_MS);
+    if (stale) {
+      try { fs.unlinkSync(lock); } catch (_) { /* another waiter reclaimed it */ }
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      return { ok: false, lockBusy: true, error: 'settings.json is being written by another process (pid ' + holder.pid + '); retry' };
+    }
+    try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); } catch (_) { /* busy-wait fallback */ }
+  }
+  try { return fn(); } finally { try { fs.unlinkSync(lock); } catch (_) { /* already gone */ } }
+}
+
 // set(section, key, value, opts?) -> {ok, error?}. Validates against the
 // schema, then does a read-modify-write of the WHOLE file (preserving every
 // other section/key untouched) with an atomic tmp+rename write.
@@ -355,6 +396,7 @@ function set(section, key, value, opts) {
   const v = validate(entry, value);
   if (!v.ok) return { ok: false, error: v.error };
 
+  return withSettingsLock(opts, () => {
   const backedUpCorruptTo = backupCorruptIfNeeded(opts);
   const store = load(opts);
   const next = Object.assign({}, store);
@@ -371,6 +413,7 @@ function set(section, key, value, opts) {
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) };
   }
+  });
 }
 
 // reset(section, key, opts?) -> {ok, error?}. Removes the settings.json
@@ -380,6 +423,7 @@ function reset(section, key, opts) {
   const entry = schema.findSetting(section, key);
   if (!entry) return { ok: false, error: 'unknown setting: ' + section + '.' + key };
 
+  return withSettingsLock(opts, () => {
   const backedUpCorruptTo = backupCorruptIfNeeded(opts);
   const store = load(opts);
   if (!store[section] || !Object.prototype.hasOwnProperty.call(store[section], key)) {
@@ -401,6 +445,7 @@ function reset(section, key, opts) {
   } catch (e) {
     return { ok: false, error: (e && e.message) || String(e) };
   }
+  });
 }
 
 // source(section, key, opts?) -> 'env' | 'file' | 'plugin-option' | 'legacy' |

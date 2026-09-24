@@ -18,7 +18,8 @@ convenience for one-shot changes from `/config`; this skill and
 change everything. If `show` reports a setting's source as `/config` and the user
 changes it here instead, the new value is stored in settings.json and WINS from
 then on (env > file > `/config` > legacy > default) — `reset` removes that override
-so `/config` takes over again.
+so `/config` takes over again. Known limitation: a `/config` value equal to the manifest default counts as unset
+(a lower tier answers); to pin a default-valued setting, set it here.
 
 ## Direct requests skip the menu
 

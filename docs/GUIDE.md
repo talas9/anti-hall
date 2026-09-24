@@ -753,6 +753,10 @@ wired resolver.
   `plugin.json`'s `userConfig` so they show up there) → a legacy per-feature config file
   (e.g. `~/.anti-hall/jev.json`) → the schema default. `show`'s Source column tells you
   which tier answered a given row.
+- **Known limitation (`/config`):** a `/config` value that equals the manifest default
+  (`plugin.json` `userConfig` default) is indistinguishable from "never set", so it counts as
+  unset and a lower tier (a legacy file, the schema default) answers. To pin a value that
+  equals the default, set it in `settings.json` (`/anti-hall:settings`) instead.
 - **Legacy config is never deleted.** `~/.anti-hall/jev.json` (and any future
   per-feature config file the schema maps) keeps working as a fallback forever;
   `doctor --repair` and `/anti-hall:update` forward-migrate its values into

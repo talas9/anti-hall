@@ -219,6 +219,12 @@ the update.
   installers: forced dry-run under `node --test` or with HOME under a temp root
   (`ANTIHALL_SUPERVISOR_ALLOW_TMP_HOME=1` for a deliberate one). The shared temp-root check
   also recognises macOS `/var/folders` when `TMPDIR` is not set.
+- **Settings writes could lose each other's keys.** `set`/`reset` read-modify-write the
+  whole `settings.json`; they now hold `settings.json.lock` (bounded wait, a dead or stale
+  holder is reclaimed, busy → `{ok:false, lockBusy}`, never throws). Known limitation,
+  documented: a `/config` value equal to its manifest default counts as unset.
+- **Jev audit snippets redact more:** AWS key ids, any `*KEY`/`*SECRET`/`*PASSWORD`/
+  `*TOKEN`= identifier, JWTs, `user:pass@` URLs and PEM blocks.
 - **edit-guard's handover redirect** now names `.anti-hall/handovers/**` as the exempt
   place to write.
 - **`update.js` split-store summary** now states how many already-handled rows were
