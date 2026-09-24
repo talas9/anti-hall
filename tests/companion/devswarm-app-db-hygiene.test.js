@@ -4,8 +4,8 @@
 // unauthenticated internal HTTP/WebSocket/MCP surface (port 47836: /api/*,
 // /ws, POST /mcp — some routes are destructive). This test greps
 // every shipped code file (and every test other than this one) for those names
-// and fails on any hit. Docs may mention them (the KB records what exists);
-// code may not.
+// and fails on any hit. Docs and comment-only lines may mention them (to say
+// "never call"); code may not.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -39,8 +39,11 @@ test('no code file names a DevSwarm credential table or browser-profile store', 
   assert.ok(files.length > 50, 'scanned the codebase (' + files.length + ' files)');
   const hits = [];
   for (const f of files) {
-    const s = fs.readFileSync(f, 'utf8');
-    for (const d of DENY) if (s.includes(d)) hits.push(path.relative(REPO, f) + ': ' + d);
+    // Comment-only lines may DOCUMENT a forbidden surface ("never call …");
+    // every other line (code, strings — including URLs) is scanned.
+    const code = fs.readFileSync(f, 'utf8').split('\n')
+      .filter((l) => !/^\s*(\/\/|\*|\/\*|#)/.test(l)).join('\n');
+    for (const d of DENY) if (code.includes(d)) hits.push(path.relative(REPO, f) + ': ' + d);
   }
   assert.deepStrictEqual(hits, []);
 });

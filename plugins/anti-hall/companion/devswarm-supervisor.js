@@ -973,6 +973,10 @@ function main() {
     // Deferred post-update sweep backstop (task #40) — rides inside this SAME
     // single-flight sweep-lock hold, one bounded stage-slot per pass.
     const deferredSweep = deferredSweepIfDue({ home });
+    // v0.108.0 DevSwarm app-DB sync — same single-flight lock hold, every tick
+    // (measured ~0.2 s incl. the 15-min-cooldown message-gap scan on a
+    // 214-builder / 82k-message app DB; far inside the per-pass budget).
+    const appSync = appDbSyncIfDue({ home });
     // v0.108.0 auto-archive (devswarm-lifecycle.js): default mode "on" archives
     // proven-done children (dormant below DevSwarm 2.5.3); "dry-run" only reports.
     let autoArchive = null;
@@ -986,7 +990,7 @@ function main() {
     // worktreePath through sweepOnce's per-result shape.
     let sweepFamilies = results.length;
     try { sweepFamilies = collapsedDescriptorFamilies(readDescriptors(home)).length; } catch (_) { /* fail-open: keep raw count */ }
-    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep, autoArchive }) + '\n');
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep, appSync, autoArchive }) + '\n');
   } catch (_) {
     // absolute fail-safe: never throw out of the sweep
   } finally {
@@ -1194,6 +1198,47 @@ function deferredSweepIfDue(opts) {
   }
 }
 
+// ============================================================================
+// v0.108.0 — DevSwarm APP-DB SYNC (runner step). Every supervisor tick reads ONE
+// fresh read-only snapshot of the desktop app's database and applies it:
+// archived / deleted-in-app markers (never a delete), the names cache, the
+// session map + drift + schema report in app-state.json, and (every 15 min) the
+// message-gap cross-check. All of it is scripts/devswarm.js's syncAppState.
+//
+// NO fs.watch: measured on a live app the DB's -wal file changes about every
+// 13 s from the app's own background writes (lastAccessed bumps, 60 s PR
+// polling, 500 ms transcript polling), so a watcher would fire on noise, and
+// this supervisor is a one-shot launchd/systemd tick with no long-lived process
+// to host one. The 60-120 s sweep is the cadence.
+//
+// appSyncEnabled(env): ANTIHALL_DEVSWARM_APP_SYNC=0 disables (default on).
+function appSyncEnabled(env) {
+  const v = String(((env || process.env) || {}).ANTIHALL_DEVSWARM_APP_SYNC || '').trim().toLowerCase();
+  return !(v === '0' || v === 'false' || v === 'off' || v === 'no');
+}
+
+// appDbSyncIfDue(opts) -> { ran, ...summary } | { ran:false, reason }. Never throws.
+// opts: { home, env, now, deps: { devswarm } }.
+function appDbSyncIfDue(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  try {
+    if (!supervisorEnabled(env)) return { ran: false, reason: 'disabled' };
+    if (!appSyncEnabled(env)) return { ran: false, reason: 'app-sync-disabled' };
+    const devswarmCli = (o.deps && o.deps.devswarm) || require('../scripts/devswarm.js');
+    const r = devswarmCli.syncAppState(home, { env, now: o.now });
+    return {
+      ran: true, ok: r.ok, appDb: r.appDb, reason: r.reason || null, elapsedMs: r.elapsedMs,
+      archived: r.archived || null, names: r.names || null, unknownToAntiHall: r.unknownToAntiHall == null ? null : r.unknownToAntiHall,
+      gapTotal: r.gapTotal == null ? null : r.gapTotal, gapsScanned: !!r.gapsScanned, schemaMissing: r.missing == null ? null : r.missing,
+      error: r.error || null,
+    };
+  } catch (e) {
+    return { ran: false, error: String((e && e.message) || e) };
+  }
+}
+
 // module.exports MUST be assigned BEFORE the require.main-gated main() call
 // below, NOT after (the pre-C4 order). Reasoning: main() (via
 // reconcileSweepIfDue's lazy require) can now load scripts/devswarm.js, which
@@ -1225,6 +1270,8 @@ module.exports = {
   deferredSweepIfDue, hasDeferredWork, runDeferredStage,
   deferredSweepStatePath, readDeferredSweepState, writeDeferredSweepState,
   resolveSupervisorSweepBudgetMs, DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS, DEFERRED_SWEEP_STAGES,
+  // v0.108.0 — DevSwarm app-DB sync runner step:
+  appDbSyncIfDue, appSyncEnabled,
 };
 
 if (require.main === module) main();

@@ -5366,6 +5366,21 @@ function repairReaderFloorsAllStores(home, ctx) {
   return out;
 }
 
+// BUILDER_UUID_RE — a DevSwarm builder id (the app's builders.id / DEVSWARM_BUILDER_ID).
+const BUILDER_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+// appDeletedBuilder(appDb, home, env, now, id, worktreePath) -> bool. True only on
+// POSITIVE evidence the app deleted builder `id`: the snapshot is readable and
+// non-empty, carries no row for `id`, and no ACTIVE builder sits on its worktree.
+function appDeletedBuilder(appDb, home, env, now, id, worktreePath) {
+  try {
+    const snap = appDb.snapshot({ home, env, now });
+    if (!snap || !snap.workspaces.length) return false;
+    if (snap.workspaces.some((w) => w.id === String(id))) return false;
+    return !appDb.workspaceFor(snap, { worktreePath });
+  } catch (_) { return false; }
+}
+
 // refreshNamesFromApp(home, env, rows, now) -> { appDb, checked, refreshed }.
 // v0.108.0: for each { id, worktreePath }, the DevSwarm app's own title for that
 // builder (by id; else the ACTIVE builder on that worktree) is written to the
@@ -5389,6 +5404,230 @@ function refreshNamesFromApp(home, env, rows, now) {
     } catch (_) { /* one bad row never stops the rest */ }
   }
   return out;
+}
+
+// appStatePath(home) -> <devswarm>/app-state.json — the supervisor's last app-DB
+// sync: summary, session map, drift and message-gap report. Counts, ids, titles
+// and timestamps only — never message bodies, brief text or credentials.
+function appStatePath(home) { return path.join(devswarmRoot(home), 'app-state.json'); }
+
+function readJsonDescriptors(dir) {
+  const out = [];
+  let ns = [];
+  try { ns = fs.readdirSync(dir); } catch (_) { return out; }
+  for (const n of ns) {
+    if (!n.endsWith('.json')) continue;
+    try {
+      const d = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'));
+      if (d && typeof d === 'object' && !Array.isArray(d)) out.push(Object.assign({ id: n.slice(0, -5) }, d));
+    } catch (_) { /* skip torn */ }
+  }
+  return out;
+}
+
+// messageGaps(home, env, snap, now) -> { repos: [...] } | null. v0.108.0
+// message-loss cross-check (REPORT-ONLY). For each app repository whose mesh
+// store exists: every app workspace_messages row (repositoryId, toBranch,
+// createdAt — never the body) is matched against the store's native-ingested
+// rows by timestamp (the ingest daemon stores the app's createdAt as `ts`;
+// verified exact on a live pair). Unmatched rows are split into: archived
+// target (excluded — nobody will ever read them), before ingest began (history),
+// and GAP (a live target, after ingest started) with per-branch + age buckets.
+const MESSAGE_SETTLE_MS = 2 * 60 * 1000;
+function messageGaps(home, env, snap, now) {
+  let appDb;
+  try { appDb = require('../companion/lib/devswarm-app-db.js'); } catch (_) { return null; }
+  if (!snap) return null;
+  const t = Number.isFinite(now) ? now : Date.now();
+  const byRepo = appDb.messageTimestamps({ home, env, sinceMs: 0, untilMs: t - MESSAGE_SETTLE_MS });
+  if (!byRepo) return null;
+  let sqlite;
+  try { sqlite = require('node:sqlite'); } catch (_) { return null; }
+  const repos = [];
+  for (const repo of snap.repositories) {
+    const rows = byRepo.get(repo.id) || [];
+    const r = { repositoryId: repo.id, name: repo.name, repoKey: null, app: rows.length, matched: 0, archivedTarget: 0, preIngest: 0, gap: 0, byBranch: {} };
+    if (!rows.length) { repos.push(r); continue; }
+    try { r.repoKey = repo.path ? repokey.repoKeyForWorktreeFast(repo.path) : null; } catch (_) { r.repoKey = null; }
+    const dbFile = r.repoKey ? store.sqlitePathForHash(home, r.repoKey) : null;
+    if (!dbFile || !fs.existsSync(dbFile)) { r.reason = 'no-store'; repos.push(r); continue; }
+    let db = null;
+    let tsSet;
+    try {
+      db = new sqlite.DatabaseSync(dbFile, { readOnly: true });
+      tsSet = new Set(db.prepare("SELECT ts FROM messages WHERE hash LIKE 'native:%'").all().map((x) => Number(x.ts)));
+    } catch (e) { r.reason = 'store-unreadable'; repos.push(r); continue; } finally { try { if (db) db.close(); } catch (_) {} }
+    let ingestStart = Infinity;
+    for (const v of tsSet) if (v < ingestStart) ingestStart = v;
+    const liveBranches = new Set(snap.workspaces.filter((w) => w.repositoryId === repo.id && !w.archived && w.branchName).map((w) => w.branchName));
+    for (const m of rows) {
+      if (m.createdAtMs != null && tsSet.has(m.createdAtMs)) { r.matched++; continue; }
+      if (!liveBranches.has(m.toBranch)) { r.archivedTarget++; continue; }
+      if (m.createdAtMs == null || m.createdAtMs < ingestStart) { r.preIngest++; continue; }
+      r.gap++;
+      const b = r.byBranch[m.toBranch] || (r.byBranch[m.toBranch] = { n: 0, oldest: null, newest: null, lt1h: 0, lt1d: 0, lt7d: 0, older: 0 });
+      b.n++;
+      b.oldest = b.oldest == null ? m.createdAtMs : Math.min(b.oldest, m.createdAtMs);
+      b.newest = b.newest == null ? m.createdAtMs : Math.max(b.newest, m.createdAtMs);
+      const age = t - m.createdAtMs;
+      if (age < 3600e3) b.lt1h++; else if (age < 864e5) b.lt1d++; else if (age < 7 * 864e5) b.lt7d++; else b.older++;
+    }
+    r.ingestStart = Number.isFinite(ingestStart) ? ingestStart : null;
+    repos.push(r);
+  }
+  return { at: t, repos };
+}
+
+// syncAppState(home, ctx) -> result. v0.108.0 RUNNER step (the supervisor sweep
+// calls this every tick; also `devswarm.js app-sync`). ONE fresh snapshot, then:
+//   (1) markAppArchivedDescriptors — archived / deleted-in-app markers (never a delete)
+//   (2) refreshNamesFromApp — names cache follows the app's title
+//   (3) app-state.json (atomic): summary, session map (active AI terminals),
+//       builders active in the app that anti-hall has no descriptor for, schema
+//       drift, pending app deletions
+//   (4) messageGaps — at most every ctx.gapCooldownMs (default 15 min)
+// ctx.dryRun / ANTIHALL_INGEST_DRY_RUN=1 -> computes, writes nothing. Never throws.
+const APP_GAP_COOLDOWN_MS = 15 * 60 * 1000;
+function syncAppState(home, ctx) {
+  const c = ctx || {};
+  const env = c.env || process.env;
+  const now = Number.isFinite(c.now) ? c.now : Date.now();
+  const started = Date.now();
+  const dryRun = !!c.dryRun || String((env && env.ANTIHALL_INGEST_DRY_RUN) || '') === '1';
+  const out = { ok: true, dryRun, appDb: false };
+  try {
+    const appDb = require('../companion/lib/devswarm-app-db.js');
+    const snap = appDb.snapshot({ home, env, now, fresh: true });
+    let prev = null;
+    try { prev = JSON.parse(fs.readFileSync(appStatePath(home), 'utf8')); } catch (_) { prev = null; }
+    if (!snap) {
+      out.reason = 'app-db-unavailable';
+      if (!dryRun) writeAtomicJson(appStatePath(home), { v: 1, at: now, ok: false, reason: out.reason });
+      out.elapsedMs = Date.now() - started;
+      return out;
+    }
+    out.appDb = true;
+    const archived = markAppArchivedDescriptors(home, { env, now, dryRun });
+    out.archived = { marked: archived.marked, pending: archived.pending, deletedInApp: archived.deletedInApp || 0, errors: archived.errors };
+    const descs = readJsonDescriptors(workspacesDir(home));
+    const archivedDescs = readJsonDescriptors(archivedDir(home));
+    const namesRes = dryRun ? { checked: 0, refreshed: 0 } : refreshNamesFromApp(home, env, descs.concat(archivedDescs), now);
+    out.names = { checked: namesRes.checked, refreshed: namesRes.refreshed };
+    const known = new Set(descs.concat(archivedDescs).map((d) => String(d.id)));
+    const archivedIds = new Set(archivedDescs.map((d) => String(d.id)));
+    const openButMarkedArchived = [];
+    const knownWt = new Set(descs.concat(archivedDescs).map((d) => (d.worktreePath ? (canonicalWorktreeRealPath(String(d.worktreePath)) || String(d.worktreePath)) : null)).filter(Boolean));
+    const focused = appDb.focusedWorkspaceId(snap, now);
+    const sessions = {};
+    const active = [];
+    const unknownToAntiHall = [];
+    for (const w of snap.workspaces) {
+      if (!w.active) continue;
+      const cur = w.terminals.filter((t) => t.terminalType === 'ai' && t.isActive === true && t.sessionId)
+        .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))[0] || null;
+      if (cur) {
+        const corroborated = appDb.transcriptCwdMatches(home, cur.sessionId, w.worktreePathRaw || w.worktreePath) === true;
+        sessions[cur.sessionId] = { builderId: w.id, worktreePath: w.worktreePath, builderType: w.builderType, corroborated };
+      }
+      const brief = appDb.briefDelivery(snap, w, now);
+      active.push({
+        id: w.id, label: w.label, builderType: w.builderType, repositoryId: w.repositoryId, rank: w.rank, isPinned: w.isPinned,
+        focused: w.id === focused, finish: appDb.finishSignal(w), brief: brief ? brief.status : null,
+        sessionId: cur ? cur.sessionId : null, panelStatus: cur ? cur.panelStatus : null,
+        scrollbackMtimeMs: w.scrollback ? w.scrollback.mtimeMs : null,
+      });
+      const wtKey = w.worktreePath ? (canonicalWorktreeRealPath(w.worktreePath) || w.worktreePath) : null;
+      if (w.builderType !== 'primary' && !known.has(w.id) && !(wtKey && knownWt.has(wtKey))) unknownToAntiHall.push({ id: w.id, label: w.label });
+      // Conflict (report only — never auto-unarchived): open in the app, but
+      // anti-hall holds an archived marker for it.
+      if (archivedIds.has(w.id)) openButMarkedArchived.push({ id: w.id, label: w.label });
+    }
+    active.sort((a, b) => (a.repositoryId || '').localeCompare(b.repositoryId || '') || ((a.rank == null ? Infinity : a.rank) - (b.rank == null ? Infinity : b.rank)));
+    const gapCooldown = Number.isFinite(c.gapCooldownMs) ? c.gapCooldownMs : APP_GAP_COOLDOWN_MS;
+    let gaps = prev && prev.gaps ? prev.gaps : null;
+    if (!gaps || !Number.isFinite(gaps.at) || now - gaps.at >= gapCooldown || now < gaps.at) {
+      gaps = messageGaps(home, env, snap, now);
+      out.gapsScanned = true;
+    }
+    const state = {
+      v: 1, at: now, ok: true, appVersion: snap.appVersion, missing: snap.missing, gated: snap.gated || [],
+      counts: { builders: snap.workspaces.length, active: active.length, archived: snap.workspaces.filter((w) => w.archived).length },
+      focused, active, sessions, unknownToAntiHall, openButMarkedArchived,
+      scheduledForDeletion: appDb.scheduledForDeletion(home, env) || [],
+      archived: out.archived, names: out.names, gaps,
+    };
+    out.unknownToAntiHall = unknownToAntiHall.length;
+    out.gapTotal = gaps ? gaps.repos.reduce((n, r) => n + r.gap, 0) : null;
+    out.missing = snap.missing.length;
+    if (!dryRun) writeAtomicJson(appStatePath(home), state);
+    out.state = state;
+  } catch (e) {
+    out.ok = false;
+    out.error = String((e && e.message) || e);
+  }
+  out.elapsedMs = Date.now() - started;
+  return out;
+}
+
+function writeAtomicJson(p, obj) {
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = p + '.' + process.pid + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(obj));
+  fs.renameSync(tmp, p);
+}
+
+// cmdAppState(flags, ctx) — `devswarm.js app-state [--json]`. READ-ONLY: a fresh
+// snapshot summary (computed, never written) plus the last supervisor sync's
+// gap report / drift from app-state.json. No bodies, no brief text, no credentials.
+function cmdAppState(flags, ctx) {
+  const home = ctx.home;
+  const r = syncAppState(home, { env: ctx.env, now: ctx.now, dryRun: true, gapCooldownMs: Infinity });
+  let last = null;
+  try { last = JSON.parse(fs.readFileSync(appStatePath(home), 'utf8')); } catch (_) { last = null; }
+  const st = r.state || null;
+  const result = {
+    ok: r.ok !== false, action: 'app-state', appDb: r.appDb, reason: r.reason || null,
+    appVersion: st ? st.appVersion : null, missing: st ? st.missing : [], gated: st ? st.gated : [],
+    counts: st ? st.counts : null, focused: st ? st.focused : null, active: st ? st.active : [],
+    sessions: st ? st.sessions : {}, unknownToAntiHall: st ? st.unknownToAntiHall : [],
+    openButMarkedArchived: st ? st.openButMarkedArchived : [],
+    gaps: (last && last.gaps) || (st && st.gaps) || null,
+    scheduledForDeletion: st ? st.scheduledForDeletion : [], wouldMark: r.archived ? r.archived.pending : 0,
+    lastSync: last ? { at: last.at, ok: last.ok, gaps: last.gaps || null, archived: last.archived || null, names: last.names || null } : null,
+  };
+  if (!(flags && flags.json && flags.json.length)) result.text = formatAppState(result);
+  return result;
+}
+
+function formatAppState(r) {
+  if (!r.appDb) return 'DevSwarm app DB: unavailable (' + (r.reason || 'no app DB') + ') — nothing to show.';
+  const L = [];
+  L.push('DevSwarm app DB ' + (r.appVersion || '(version unknown)') + ' — ' + r.counts.builders + ' builders, ' + r.counts.active + ' open, ' + r.counts.archived + ' archived');
+  if (r.missing.length) L.push('⚠ DevSwarm app schema changed: ' + r.missing.join(', '));
+  if (r.gated.length) L.push('capability-gated (dormant): ' + r.gated.join(', '));
+  L.push('| rank | workspace | type | finish | brief | session |');
+  L.push('|---|---|---|---|---|---|');
+  for (const a of r.active) {
+    const title = (a.label || a.id).replace(/\|/g, '\\|') + ' (' + String(a.id).slice(0, 8) + ')' + (a.isPinned ? ' [pinned]' : '') + (a.focused ? ' [on screen]' : '');
+    const sess = a.sessionId ? String(a.sessionId).slice(0, 8) + ((r.sessions[a.sessionId] || {}).corroborated ? '' : ' (unverified)') : '—';
+    L.push('| ' + (a.rank == null ? '—' : a.rank) + ' | ' + title + ' | ' + (a.builderType || '—') + ' | ' + (a.finish || '—') + ' | ' + (a.brief || '—') + ' | ' + sess + ' |');
+  }
+  if (r.unknownToAntiHall.length) L.push('open in the app, unknown to anti-hall: ' + r.unknownToAntiHall.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; '));
+  if (r.openButMarkedArchived.length) L.push('⚠ open in the app but archived in anti-hall (conflict, report only — `devswarm.js unarchive <id>` if it is live): ' + r.openButMarkedArchived.map((u) => (u.label || u.id) + ' (' + String(u.id).slice(0, 8) + ')').join('; '));
+  if (r.wouldMark) L.push('next sync marks ' + r.wouldMark + ' descriptor(s) archived (app-archived or deleted in the app)');
+  if (r.scheduledForDeletion.length) L.push('pending app deletion (report only): ' + r.scheduledForDeletion.join(', '));
+  const g = r.gaps;
+  if (g) {
+    for (const repo of g.repos) {
+      if (!repo.app) continue;
+      L.push('messages ' + (repo.name || repo.repositoryId) + ': app ' + repo.app + ', ingested ' + repo.matched + ', to archived targets ' + repo.archivedTarget
+        + ', before ingest ' + repo.preIngest + ', GAP ' + repo.gap + (repo.reason ? ' (' + repo.reason + ')' : ''));
+      for (const [b, v] of Object.entries(repo.byBranch || {})) L.push('  gap → ' + b + ': ' + v.n + ' (<1h ' + v.lt1h + ', <1d ' + v.lt1d + ', <7d ' + v.lt7d + ', older ' + v.older + ')');
+    }
+  } else {
+    L.push('message gap report: no supervisor sync yet');
+  }
+  return L.join('\n');
 }
 
 // markAppArchivedDescriptors(home, ctx) -> { ok, dryRun, appDb, scanned,
@@ -5425,17 +5664,23 @@ function markAppArchivedDescriptors(home, ctx) {
       try { desc = JSON.parse(fs.readFileSync(path.join(workspacesDir(home), n), 'utf8')); } catch (_) { continue; }
       if (!desc || typeof desc !== 'object' || Array.isArray(desc)) continue;
       const verdict = appDb.appArchivedVerdict({ home, env, id, worktreePath: desc.worktreePath || null, now: c.now });
-      if (verdict !== true) continue;
+      // v0.108.0: DELETED in the app — the app removes the builder row on delete
+      // (its terminals cascade). A builder-UUID descriptor with no row left and
+      // no active builder on its worktree is gone for good: tombstone it with
+      // the same archived marker (never a delete; `unarchive` reverses it).
+      const deleted = verdict === null && BUILDER_UUID_RE.test(id) && appDeletedBuilder(appDb, home, env, c.now, id, desc.worktreePath || null);
+      if (verdict !== true && !deleted) continue;
       const marker = path.join(archivedDir(home), id + '.json');
       if (fs.existsSync(marker)) continue;
       out.pending++;
       if (dryRun) { out.results.push({ id, action: 'would-mark' }); continue; }
       const dir = checkedArchivedDir(home, { create: true });
       if (!dir.ok) throw new Error(dir.error || 'archived dir unusable');
-      const body = JSON.stringify(Object.assign({}, desc, { archivedBy: 'devswarm-app', archivedAt: Number.isFinite(c.now) ? c.now : Date.now() }));
+      const body = JSON.stringify(Object.assign({}, desc, { archivedBy: deleted ? 'devswarm-app-deleted' : 'devswarm-app', archivedAt: Number.isFinite(c.now) ? c.now : Date.now() }));
       try { fs.writeFileSync(marker, body, { flag: 'wx' }); } catch (e) { if (!e || e.code !== 'EEXIST') throw e; continue; }
       out.marked++;
-      out.results.push({ id, action: 'marked' });
+      if (deleted) out.deletedInApp = (out.deletedInApp || 0) + 1;
+      out.results.push({ id, action: deleted ? 'marked-deleted-in-app' : 'marked' });
     } catch (e) {
       out.errors++;
       out.results.push({ id, error: String((e && e.message) || e) });
@@ -16278,6 +16523,8 @@ const VERB_HELP = {
   roster: { synopsis: 'show the mesh roster (--ack clears your own broadcast-unread)', mutates: 'read-only, unless --ack is passed (clears broadcastUnread)' },
   'wake-directive': { synopsis: 'reprint the SessionStart mailbox wake directive', mutates: 'read-only' },
   diagnose: { synopsis: 'read-only mesh-health projection', mutates: 'read-only' },
+  'app-state': { synopsis: 'DevSwarm app-DB summary: open workspaces by sidebar rank, PR/brief signals, session map, drift, message gaps (--json)', mutates: 'read-only' },
+  'app-sync': { synopsis: 'run the supervisor app-DB sync now (archived markers, names cache, app-state.json; --dry-run)', mutates: 'writes archived markers (never deletes), names cache, app-state.json' },
   healthcheck: { synopsis: 'pass/fail health gate over the same data as diagnose', mutates: 'read-only' },
   mesh: { synopsis: 'mesh subcommands: read', mutates: 'read-only' },
   reconcile: { synopsis: 'rehome/heal descriptors across stores', mutates: 'MUTATES the store — rehomes descriptors, heals the registry, spawns `inbox pull` per descriptor' },
@@ -16545,6 +16792,20 @@ function run(argv, ctx0) {
         const r = cmdWakeDirective(wid, ctx);
         return { code: r.ok ? 0 : 2, result: r };
       }
+      case 'app-state': {
+        // v0.108.0: READ-ONLY DevSwarm app-DB summary (fresh snapshot, computed
+        // never written) + the last supervisor sync's drift/gap report.
+        const r = cmdAppState(flags, ctx);
+        return { code: r.ok ? 0 : 2, result: r };
+      }
+      case 'app-sync': {
+        // v0.108.0: the supervisor's periodic app-DB sync step, on demand
+        // (markers + names cache + app-state.json; --dry-run writes nothing).
+        const r = syncAppState(ctx.home, { env: ctx.env, now: ctx.now, dryRun: hasFlag(flags, 'dry-run'), gapCooldownMs: 0 });
+        const res = Object.assign({ action: 'app-sync' }, r);
+        delete res.state;
+        return { code: r.ok ? 0 : 2, result: res };
+      }
       case 'diagnose': {
         // READ-ONLY mesh-health projection (#62) — pure, never writes summary.json.
         const r = cmdDiagnose(flags, ctx);
@@ -16633,7 +16894,7 @@ function run(argv, ctx0) {
       }
       default:
         return { code: 2, result: { ok: false, error: 'unknown command: ' + JSON.stringify(cmd || '') +
-          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived)' } };
+          ' (register|register-primary|ensure|heartbeat|inbox|workspaces|gate|gate-intent|nudge|archive|unarchive|archive-ignore|archive-unignore|archive-request|migrate|migrate-owner-keys|logs|send|roster|app-state|app-sync|diagnose|healthcheck|mesh|reconcile|reap-stale|reconcile-active|spawn|merge|skip|auto-archive|prune-archived)' } };
     }
   } catch (e) {
     // Csh: an internal exception used to be swallowed silently into { ok:false }.
@@ -16770,9 +17031,10 @@ function main() {
   // request can arrive as `help`, `-h`, or `<verb> --help` — the verb name in
   // argv[0] varies, but buildHelpResult() always stamps action:'help'.
   const isHelpResult = result && result.action === 'help';
-  const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || isHelpResult) && !argv.includes('--json');
+  const wantHuman = (argv[0] === 'healthcheck' || argv[0] === 'diagnose' || argv[0] === 'app-state' || isHelpResult) && !argv.includes('--json');
   const out = wantHuman
-    ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : (argv[0] === 'diagnose' ? diagnoseHumanLine(result) : result.usage))
+    ? (argv[0] === 'healthcheck' ? healthcheckHumanLine(result) : (argv[0] === 'diagnose' ? diagnoseHumanLine(result)
+      : (argv[0] === 'app-state' ? (result.text || JSON.stringify(result)) : result.usage)))
     : JSON.stringify(result);
   // fs.writeSync(1, ...) per repo rule (macOS node 18/20 exit-vs-async-flush race).
   fs.writeSync(1, out + '\n');
@@ -16830,7 +17092,7 @@ module.exports = {
   deriveInstanceNonce,
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
-  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp,
+  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors, deriveTitleFromBrief, appSessionOnWorktree, refreshNamesFromApp, syncAppState, messageGaps, appStatePath, cmdAppState,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
   mergeSplitBackendStoresAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for
