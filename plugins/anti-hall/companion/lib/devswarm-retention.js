@@ -61,7 +61,11 @@ const { devswarmRoot } = require('./liveness.js');
 function storeLib() { return require('./devswarm-store.js'); }
 function rc() { return require('./reader-cursors.js'); }
 
-const DEFAULTS = Object.freeze({ days: 30, maxStoreMB: 100, keepPerPartition: 200, archive: true, archiveMaxMB: 200 });
+// archiveMaxMB 0 = never evict archived bodies (0.108.0 owner decision): the
+// archive is the only copy of a pruned body, so eviction happens only when the
+// user sets a cap. doctor WARNs past ARCHIVE_WARN_MB either way.
+const DEFAULTS = Object.freeze({ days: 30, maxStoreMB: 100, keepPerPartition: 200, archive: true, archiveMaxMB: 0 });
+const ARCHIVE_WARN_MB = 500;
 const ENV_KEYS = Object.freeze({
   days: 'ANTIHALL_DEVSWARM_RETENTION_DAYS',
   maxStoreMB: 'ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB',
@@ -886,7 +890,7 @@ function doctorCheck(opts) {
   const stores = sqliteStores(home);
   const over = stores.filter((s) => s.bytes > maxBytes);
   if (st.phase !== 'armed') {
-    out.push({ status: 'WARN', message: 'message retention: first run is a dry-run report only — review ' + dryRunReportPath(home) + ' (sweeps start pruning once every store is reported)' });
+    out.push({ status: 'WARN', message: 'message retention: first run is a dry-run report only — review ' + dryRunReportPath(home) + '. Once every store is reported, sweeps prune AUTOMATICALLY (bodies of read messages older than ' + settings.days + ' days, archived first' + (settings.archive ? '' : ' — archive is OFF, so pruned bodies are gone') + '). To keep everything, set devswarm.retention.days to 0 now.' });
   }
   for (const s of over) {
     const e = st.stores[s.hash] || {};
@@ -898,6 +902,7 @@ function doctorCheck(opts) {
   for (const h of errs) out.push({ status: 'WARN', message: 'message retention: last run on store ' + h + ' failed: ' + st.stores[h].error });
   const arch = listArchiveFiles(home).reduce((a, f) => a + f.bytes, 0);
   if (settings.archiveMaxMB > 0 && arch > settings.archiveMaxMB * MB) out.push({ status: 'WARN', message: 'message retention: archive is ' + Math.round(arch / MB) + ' MB, over the ' + settings.archiveMaxMB + ' MB cap (next sweep evicts the oldest months)' });
+  else if (arch > ARCHIVE_WARN_MB * MB) out.push({ status: 'WARN', message: 'message retention: archive is ' + Math.round(arch / MB) + ' MB (over ' + ARCHIVE_WARN_MB + ' MB). Nothing is evicted without a cap — set devswarm.retention.archiveMaxMB to cap it, or move old month files out of ' + archiveRoot(home) });
   if (!out.length) {
     const largest = stores.reduce((m, s) => Math.max(m, s.bytes), 0);
     out.push({ status: 'PASS', message: 'message retention: ' + stores.length + ' store(s), largest ' + (Math.round((largest / MB) * 10) / 10) + ' MB (limit ' + settings.maxStoreMB + ' MB), archive ' + (Math.round((arch / MB) * 10) / 10) + ' MB' });
@@ -906,7 +911,7 @@ function doctorCheck(opts) {
 }
 
 module.exports = {
-  DEFAULTS, ENV_KEYS, BATCH_ROWS, RECENT_RUNS_PROTECTED, STORE_MIN_INTERVAL_MS,
+  DEFAULTS, ARCHIVE_WARN_MB, ENV_KEYS, BATCH_ROWS, RECENT_RUNS_PROTECTED, STORE_MIN_INTERVAL_MS,
   resolveSettings, archiveRoot, archiveDirFor, statePath, dryRunReportPath, logPath, lockPath,
   readState, writeState, acquireLock, sqliteStores, storeBytes,
   readerBound, planStore, pruneStore, maybeVacuum, appendArchive, readArchiveFile, monthOf,

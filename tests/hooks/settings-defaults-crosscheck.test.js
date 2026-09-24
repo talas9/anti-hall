@@ -143,8 +143,8 @@ test('devswarm.autoArchive.* defaults/bounds match devswarm-lifecycle.js DEFAULT
 
 test('devswarm.retention.* defaults and env names match devswarm-retention.js DEFAULTS / ENV_KEYS', () => {
   const R = require(P('companion', 'lib', 'devswarm-retention.js'));
-  // owner decision: 30 d / 100 MB / 200 per partition / archive on / 200 MB archive cap
-  assert.deepStrictEqual(Object.assign({}, R.DEFAULTS), { days: 30, maxStoreMB: 100, keepPerPartition: 200, archive: true, archiveMaxMB: 200 });
+  // owner decision: 30 d / 100 MB / 200 per partition / archive on / no archive cap (0 = never evict)
+  assert.deepStrictEqual(Object.assign({}, R.DEFAULTS), { days: 30, maxStoreMB: 100, keepPerPartition: 200, archive: true, archiveMaxMB: 0 });
   for (const k of Object.keys(R.DEFAULTS)) {
     const e = find('devswarm', 'retention.' + k);
     assert.strictEqual(e.default, R.DEFAULTS[k], k);

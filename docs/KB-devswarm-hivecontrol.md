@@ -1822,8 +1822,9 @@ a protected row.
 month to `~/.anti-hall/devswarm/archive/<store>/<yyyy-mm>.ndjson.gz` and fsync'd. The
 `UPDATE … SET body = NULL` runs after that, in its own `BEGIN IMMEDIATE` transaction. If the
 process crashes between the two steps, the next run archives the same rows again, and
-`restore` dedupes by id. `archiveMaxMB` (default 200) caps the whole archive. Past it, the
-oldest month files are removed and each removal is logged. `devswarm.retention.archive=false`
+`restore` dedupes by id. `archiveMaxMB` (default 0 = no cap) caps the whole archive when set.
+Past a set cap, the oldest month files are removed and each removal is logged. With no cap
+nothing is evicted; `doctor` warns once the archive passes 500 MB. `devswarm.retention.archive=false`
 prunes without archiving.
 
 **Reclaiming space.** Clearing inline bodies leaves pages partly empty, and the freelist does
@@ -1863,7 +1864,7 @@ An env var of the same name overrides the file.
 | `devswarm.retention.maxStoreMB` | 100 (0 = no size limit) | `ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB` |
 | `devswarm.retention.keepPerPartition` | 200 | `ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION` |
 | `devswarm.retention.archive` | true | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE` |
-| `devswarm.retention.archiveMaxMB` | 200 | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB` |
+| `devswarm.retention.archiveMaxMB` | 0 (no cap) | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB` |
 
 Journal-backend stores are skipped. Retention only counts `devswarm.db` and its WAL. It
 never touches backup files (`*.bak-*`) or other directories.

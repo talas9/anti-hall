@@ -366,6 +366,38 @@ t('archive cap evicts the oldest month files first and logs each', () => {
   } finally { rm(home); }
 });
 
+// P2c (0.108.0 owner decision): archiveMaxMB defaults to 0 — the archive is the
+// only copy of a pruned body, so nothing is evicted unless the user sets a cap;
+// doctor WARNs once the archive passes 500 MB.
+t('P2c: default archive cap is 0 = never evict (no env, no settings)', () => {
+  const home = tmpHome();
+  try {
+    assert.strictEqual(ret.DEFAULTS.archiveMaxMB, 0);
+    const dir = ret.archiveDirFor(home, HASH);
+    fs.mkdirSync(dir, { recursive: true });
+    for (const m of ['2026-01', '2026-02']) fs.writeFileSync(path.join(dir, m + '.ndjson.gz'), Buffer.alloc(400 * 1024));
+    const r = ret.enforceArchiveCap({ home, env: env() });
+    assert.deepStrictEqual((r.removed || []), []);
+    assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['2026-01.ndjson.gz', '2026-02.ndjson.gz']);
+  } finally { rm(home); }
+});
+
+t('P2c: doctor WARNs when the archive passes 500 MB with no cap set (sparse file, no real disk use)', () => {
+  const home = tmpHome();
+  try {
+    const dir = ret.archiveDirFor(home, HASH);
+    fs.mkdirSync(dir, { recursive: true });
+    const big = path.join(dir, '2026-01.ndjson.gz');
+    fs.closeSync(fs.openSync(big, 'w'));
+    fs.truncateSync(big, (ret.ARCHIVE_WARN_MB + 1) * 1024 * 1024);
+    const msgs = ret.doctorCheck({ home, env: env() }).map((x) => x.status + ' ' + x.message);
+    assert.ok(msgs.some((m) => /^WARN message retention: archive is \d+ MB \(over 500 MB\)\. Nothing is evicted without a cap/.test(m)), msgs.join('\n'));
+    fs.truncateSync(big, 1024);
+    const quiet = ret.doctorCheck({ home, env: env() }).map((x) => x.message);
+    assert.ok(!quiet.some((m) => /over 500 MB/.test(m)), 'no warning under 500 MB');
+  } finally { rm(home); }
+});
+
 t('settings: env > settings.json (devswarm.retention.*) > defaults; days=0 disables', () => {
   const home = tmpHome();
   try {

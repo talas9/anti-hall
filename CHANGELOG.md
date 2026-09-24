@@ -140,8 +140,11 @@ the update.
   read positions, hashes and seq numbers stay, so unread counts and gates do not change).
   Only bodies older than `retention.days` (30) that every reader has read, outside the
   newest `keepPerPartition` (200) rows and not an open question; a store over `maxStoreMB`
-  (100) is pruned oldest first; `VACUUM` reclaims space; the archive is capped at
-  `archiveMaxMB` (200). First run on a machine is a dry-run report. `devswarm.js retention
+  (100) is pruned oldest first; `VACUUM` reclaims space; the archive is never evicted
+  unless you set `archiveMaxMB` (default 0 = no cap; `doctor` warns past 500 MB).
+  **Pruning is automatic:** the first run on a machine only writes a dry-run report
+  (`~/.anti-hall/devswarm/retention-dry-run.json`, flagged by `doctor`); after that, sweeps
+  prune for real. To keep every body, set `devswarm.retention.days` to 0 before then. `devswarm.js retention
   status | run [--dry-run] | restore --store X --month yyyy-mm`.
 - **DevSwarm: screenshot sync.** When the app DB is unreadable or disagrees, the per-turn
   hook asks once per session for a sidebar screenshot; `devswarm.js sync-ui` plans it
@@ -292,7 +295,7 @@ the update.
 - Auto-handover is on by default at 85% or 170k tokens, whichever comes first.
 - Auto-archive (`devswarm.autoArchive.mode`) defaults to `on` (`dry-run`/`off` available).
 - Retention defaults: 30 days, 100 MB per store, 200 newest per partition kept, archive
-  on, 200 MB archive cap.
+  on, no archive cap (`archiveMaxMB` 0 — archived bodies are evicted only when you set one).
 - Spawn titles are no longer truncated (the 60-char cap is gone).
 - Deleting DevSwarm workspaces is never automated: only `prune-archived` with an
   owner-approved exact list.

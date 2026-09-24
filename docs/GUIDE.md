@@ -550,7 +550,8 @@ clears them. Rows, read positions and hashes stay, so no unread count changes.
   unread, `doctor` WARNs instead.
 - On a new machine, the first run is a dry-run report (`retention-dry-run.json`).
 - Settings: `devswarm.retention.days` (30, 0 = off), `maxStoreMB` (100),
-  `keepPerPartition` (200), `archive` (true) and `archiveMaxMB` (200). Set them in
+  `keepPerPartition` (200), `archive` (true) and `archiveMaxMB` (0 = never evict; `doctor`
+  warns past 500 MB). Pruning is automatic after the first-run dry-run report. Set them in
   `~/.anti-hall/settings.json` or with the `ANTIHALL_DEVSWARM_RETENTION_*` env vars.
 - Commands: `devswarm.js retention status | run [--dry-run] [--store X] | restore --store X
   --month yyyy-mm`.
@@ -869,7 +870,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.retention.maxStoreMB` adv | `100` [0..] | `ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB` | Store size limit (MB): above it, oldest bodies are pruned regardless of age; 0 = no limit. |
 | `devswarm.retention.keepPerPartition` adv | `200` [0..] | `ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION` | Newest messages per partition that are never pruned (age or size). |
 | `devswarm.retention.archive` adv | `true` | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE` | Write pruned bodies to the gzip archive first (restorable via `devswarm.js retention restore`). |
-| `devswarm.retention.archiveMaxMB` adv | `200` [0..] | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB` | Archive size cap (MB); oldest archive months are dropped above it; 0 = no cap. |
+| `devswarm.retention.archiveMaxMB` adv | `0` [0..] | `ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB` | Archive size cap (MB); 0 (default) = never evict; above a set cap the oldest archive months are dropped. doctor warns past 500 MB. |
 | `statusline.base` | — | `ANTIHALL_STATUSLINE_BASE` | Shell command run as the line-1 base in consolidated statusline mode. |
 | `statusline.noEmail` | `false` | `ANTIHALL_STATUSLINE_NO_EMAIL` | Suppress the email segment in the statusline. |
 | `codexNudge.enabled` | `true` | `ANTIHALL_CODEX_NUDGE` | Enable the Codex hand-off nudge hook. |

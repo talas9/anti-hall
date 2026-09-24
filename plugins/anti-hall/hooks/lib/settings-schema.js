@@ -196,7 +196,7 @@ const SECTIONS = [
       { key: 'retention.maxStoreMB', type: 'number', min: 0, default: 100, env: 'ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB', advanced: true, description: 'Store size limit (MB): above it, oldest bodies are pruned regardless of age; 0 = no limit. [verified: companion/lib/devswarm-retention.js DEFAULTS]' },
       { key: 'retention.keepPerPartition', type: 'number', min: 0, default: 200, env: 'ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION', advanced: true, description: 'Newest messages per partition that are never pruned (age or size). [verified: companion/lib/devswarm-retention.js DEFAULTS]' },
       { key: 'retention.archive', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_RETENTION_ARCHIVE', advanced: true, description: 'Write pruned bodies to the gzip archive first (restorable via `devswarm.js retention restore`). [verified: companion/lib/devswarm-retention.js DEFAULTS]' },
-      { key: 'retention.archiveMaxMB', type: 'number', min: 0, default: 200, env: 'ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB', advanced: true, description: 'Archive size cap (MB); oldest archive months are dropped above it; 0 = no cap. [verified: companion/lib/devswarm-retention.js DEFAULTS]' },
+      { key: 'retention.archiveMaxMB', type: 'number', min: 0, default: 0, env: 'ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB', advanced: true, description: 'Archive size cap (MB); 0 (default) = never evict; above a set cap the oldest archive months are dropped. doctor warns past 500 MB. [verified: companion/lib/devswarm-retention.js DEFAULTS]' },
     ],
   },
   {
