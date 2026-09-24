@@ -5194,6 +5194,58 @@ function importReaderCursorsAllStores(home, ctx) {
   return out;
 }
 
+// repairReaderFloorsAllStores(home, ctx) -> { ok, dryRun, stores, partitions,
+//   pending, repaired, retired, floorsRaised, errors, results }. v0.106.1 repair
+// of the floors the v0.106.0 import pinned (update.js stage 'reader-floor-repair'
+// + migrations.js 'repair-reader-floors' for doctor --repair; plain doctor
+// reports the dry run). Per imported partition of every store:
+// reader-cursors.js repairPinnedFloors — retires (never deletes) import-seeded
+// rows of non-local/ended sessions, recomputes the floor max-only, repairs a 0
+// nd floor from the legacy descriptor cursor. Idempotent, fail-open (an error is
+// counted and the next partition proceeds). ctx.dryRun or
+// ANTIHALL_INGEST_DRY_RUN=1 -> report only, zero writes.
+function repairReaderFloorsAllStores(home, ctx) {
+  const c = ctx || {};
+  const env = c.env || process.env;
+  const dryRun = !!c.dryRun || String((env && env.ANTIHALL_INGEST_DRY_RUN) || '') === '1';
+  const out = { ok: true, dryRun, stores: 0, partitions: 0, pending: 0, repaired: 0, retired: 0, floorsRaised: 0, errors: 0, results: [] };
+  let hashes = [];
+  try { hashes = store.listStoreHashes(home) || []; } catch (_) { hashes = []; }
+  let procTable = c.procTable;
+  const pt = () => {
+    if (procTable === undefined) { try { procTable = readerCursors.defaultProcTable(c.now); } catch (_) { procTable = null; } }
+    return procTable;
+  };
+  for (const repoKey of hashes) {
+    let s = null;
+    try {
+      s = store.openStore({ home, hash: repoKey, backend: c.backend, env, readOnly: dryRun });
+    } catch (e) { out.errors++; out.results.push({ repoKey, error: String((e && e.message) || e) }); continue; }
+    if (!s) continue;
+    out.stores++;
+    try {
+      let ids = [];
+      try { ids = s.listWorkspaceIds() || []; } catch (_) { ids = []; }
+      for (const id of ids) {
+        if (!isSafeId(id)) continue;
+        out.partitions++;
+        try {
+          const r = readerCursors.repairPinnedFloors(s, { partition: id, home, dryRun, procTable: pt(), kill: c.kill, now: c.now });
+          if (!r || !r.changed) continue;
+          out.pending++;
+          const raised = Object.keys(r.floors || {}).filter((ns) => r.floors[ns].to > r.floors[ns].from).length;
+          if (!dryRun) { out.repaired++; out.retired += r.retired.length; out.floorsRaised += raised; }
+          out.results.push({ repoKey, id, retired: r.retired, floors: r.floors });
+        } catch (e) {
+          out.errors++;
+          out.results.push({ repoKey, id, error: String((e && e.message) || e) });
+        }
+      }
+    } finally { try { s.close(); } catch (_) {} }
+  }
+  return out;
+}
+
 // reRetireResurrectedRows(home, ctx) — item 6, defect df54edf54804 field
 // aftermath: SkyCrew's `roster --json` on 0.99.0 showed ~43 legacy-slug
 // registry rows the migration had resurrected (the four lost ids' twins plus
@@ -16297,7 +16349,7 @@ module.exports = {
   deriveInstanceNonce,
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
-  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores,
+  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for
   // direct unit testing, same pattern as deriveInstanceNonce above):
   shortInstanceNonce, computeInstanceNonceCounts,

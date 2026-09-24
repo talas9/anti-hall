@@ -261,6 +261,25 @@ const MIGRATIONS = [
     },
   },
   {
+    // v0.106.1: floors pinned by the v0.106.0 reader_cursors import (every
+    // live session on the machine declared on every partition; nd floor 0).
+    // Retires (never deletes) the import-seeded rows of non-local/ended
+    // sessions and recomputes the floor max-only — never below a local live
+    // reader. Same pass as update.js's 'reader-floor-repair' stage.
+    id: 'repair-reader-floors',
+    key: 'repairReaderFloors',
+    fn: 'repairReaderFloorsAllStores',
+    detect(dw, home, ctx) {
+      const r = dw.repairReaderFloorsAllStores(home, Object.assign({}, ctx, { dryRun: true })) || {};
+      return {
+        pending: (r.pending || 0) > 0,
+        raw: r,
+        detail: (r.pending || 0) + ' partition(s) with a reader floor pinned by the v0.106.0 import across ' + (r.stores || 0) + ' store(s)'
+          + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+      };
+    },
+  },
+  {
     // DELETION-CLASS: removes registry rows (forwarding first where it can).
     // Opt-in ONLY via `doctor --repair-resurrected [--apply]`; update reports it
     // (dry-run) once per version. Never run by runMigrations().

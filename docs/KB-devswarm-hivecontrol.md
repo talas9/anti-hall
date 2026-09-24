@@ -1519,6 +1519,36 @@ gap is honest and open, not silently assumed closed. (Phase 5: `read-primary` / 
 > `roster` shows `directUnread: null`, fold/forward/reap read the base as 0 (over-delivery,
 > never loss), and a cross-store rehome aborts before writing (`reason:
 > 'reader-cursors-unreadable'`, source untouched).
+>
+> **The import declares local sessions only (v0.106.1).** The one-time import (and the lazy
+> first-touch import inside ack/fold/raise) declares a live session as a reader of a partition
+> only when its session cwd resolves (companion/lib/identity.js `resolveContext`) to that
+> partition's worktree — the partition id itself for a `primary-<hash8>` mesh id, or the
+> worktree its descriptor names — or when the session has its own mapped legacy `#inst`/`#nd`
+> file. Every other session declares itself lazily on its first declare/ack. The nd floor
+> imports from the descriptor's `cursorPath` even when the caller passed none. v0.106.0
+> declared every live Claude session on the machine (other repos, child worktrees) on every
+> partition, so the floor (MIN of live declared) never moved, and the `ack-primary`/fold callers
+> imported the nd floor as 0.
+>
+> **Repair of v0.106.0 data.** `update.js` stage `reader-floor-repair` and migration-registry
+> entry `repair-reader-floors` (`doctor --repair`; plain `doctor` reports the dry run in the
+> cursor-hygiene row) run `repairReaderFloorsAllStores` → reader-cursors.js
+> `repairPinnedFloors` per imported partition, in one transaction: a declared row is RETIRED
+> (`retired_line = value`, never deleted) when its process provably ended, its session file is
+> gone or names a different session, or its session is live but not local to the partition and
+> the row never advanced past the floor (the import seed, not a read). A local live reader, a
+> row with its own mapped legacy file, and any ambiguous session file are kept. The floor is
+> then recomputed by the ack rule (max-only, never past the remaining live MIN); with no
+> declared reader left, an nd floor of 0 is repaired from the legacy descriptor cursor. A
+> retired row still serves its own reader's view and un-retires on that reader's next
+> declare/ack. Idempotent, fail-open (errors are counted and block the `repairReaderFloors`
+> stamp), stamped only via `recordRun`.
+>
+> **Parent gate: the Primary's own descriptor is not counted twice (v0.106.1).** The descriptor
+> loop in `hooks/devswarm-parent-gate.js` skips the descriptor whose id is the Primary's own
+> id: the own row (readOwnUnread) already counts that partition, and re-reading it through the
+> floor view summed a phantom "(you) (N unread)" into the self family.
 
 **The defect.** `cursors/<id>.json` and the store's cursor row are keyed by row id ALONE, so
 every process reading under that id shared ONE read position. Whichever instance acked first

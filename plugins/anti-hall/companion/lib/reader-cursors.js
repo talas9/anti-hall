@@ -632,11 +632,129 @@ function retireEnded(store, opts) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// v0.106.1 REPAIR — floors pinned by the v0.106.0 import (update.js stage +
+// migrations.js registry entry 'repair-reader-floors'). v0.106.0 declared every
+// live session on the machine as a reader of every partition (seeded at the
+// import floor) and imported the nd floor as 0 when the caller carried no
+// cursorPath. Per partition, ONE txn:
+//   - a declared, non-retired row is RETIRED (retired_line = value; never
+//     deleted) when its process provably ended, its session file is gone or now
+//     names a different session, or its session is live but NOT local to the
+//     partition (cwd does not resolve to the partition's worktree) AND the row
+//     never advanced past the floor (value <= F: the import seed, not a read);
+//   - a row with its own mapped legacy file, a local live session, an
+//     unreadable/ambiguous session file, or no sessions dir at all is KEPT
+//     (uncertain = keep: never retire a real local reader);
+//   - the floor is recomputed by ackFor's rule: max(F, MIN(remaining live
+//     declared)) — max-only; with no declared reader left and an nd floor of 0,
+//     the nd floor is repaired from the legacy descriptor cursor (max-only).
+// A retired row still serves its own reader's view (positions() reads it) and
+// self-heals on that reader's next declare/ack. Idempotent: a second run finds
+// nothing to retire and the floor already at the pin.
+// ---------------------------------------------------------------------------
+function sessionFilesByPid(home) {
+  if (!home) return null;
+  const dir = path.join(String(home), '.claude', 'sessions');
+  let names;
+  try { names = fs.readdirSync(dir); } catch (_) { return null; }
+  const m = new Map();
+  for (const n of names) {
+    if (!/^\d+\.json$/.test(n)) continue;
+    const pid = Number(n.slice(0, -'.json'.length));
+    let rec = null;
+    try { rec = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8')); } catch (_) { rec = null; }
+    if (!rec || rec.pid !== pid) { m.set(pid, { ambiguous: true }); continue; }
+    m.set(pid, { startMs: Number.isFinite(rec.startedAt) ? rec.startedAt : null, cwd: rec.cwd != null ? String(rec.cwd) : null });
+  }
+  return m;
+}
+
+// repairPinnedFloors(store, { partition, home, cursorPath, dryRun, procTable, kill, now })
+//   -> { notImported?, retired:['ns:reader (why)'], floors:{ns:{from,to}}, changed }.
+function repairPinnedFloors(store, opts) {
+  const o = opts || {};
+  const partition = String(o.partition);
+  const now = nowOf(o);
+  const pre = store.readerCursorRows(partition);
+  if (needsImport(pre)) return { notImported: true, retired: [], floors: {}, changed: false };
+  const desc = descriptorOf(o.home, partition);
+  const cursorPath = o.cursorPath || (desc && typeof desc.cursorPath === 'string' ? desc.cursorPath : null);
+  const meshIds = partitionMeshIds(partition, desc);
+  const mapped = mappedShorts(o.home, partition);
+  const sessions = sessionFilesByPid(o.home);
+  const procTable = o.procTable !== undefined ? o.procTable : defaultProcTable(now);
+  const legacyNd = legacyNdFloor(cursorPath);
+  const verdicts = new Map();
+  const verdictOf = (reader) => {
+    if (verdicts.has(reader)) return verdicts.get(reader);
+    let v = null;
+    const p = parseReader(reader);
+    if (p && !mapped.has(legacyShortFor(reader))) {
+      if (provablyEnded(reader, procTable, o.kill)) v = 'ended';
+      else if (sessions) {
+        const rec = sessions.get(p.pid);
+        if (!rec) v = 'session-gone';
+        else if (rec.ambiguous || rec.startMs == null) v = null;
+        else if (rec.startMs !== p.startMs) v = 'session-gone';
+        else if (!cwdInPartition(rec.cwd, meshIds)) v = 'not-local';
+      }
+    }
+    verdicts.set(reader, v);
+    return v;
+  };
+  const planFor = (rows) => {
+    const retire = [];
+    for (const r of rows) {
+      if (r.reader === FLOOR || isRetired(r)) continue;
+      const v = verdictOf(r.reader);
+      if (!v) continue;
+      const f = rowOf(rows, r.ns, FLOOR);
+      if (v === 'not-local' && (!f || r.value > f.value)) continue; // advanced past the floor: a real read
+      retire.push({ row: r, why: v });
+    }
+    const gone = new Set(retire.map((x) => x.row.ns + '\u0000' + x.row.reader));
+    const remaining = rows.filter((r) => !gone.has(r.ns + '\u0000' + r.reader));
+    const floors = {};
+    for (const ns of NAMESPACES) {
+      const f = rowOf(rows, ns, FLOOR);
+      const from = f ? f.value : 0;
+      const pin = liveMinRow(remaining, ns);
+      let to = pin ? Math.max(from, pin.value) : from;
+      if (ns === 'nd' && !pin && from === 0 && legacyNd > 0) to = legacyNd;
+      floors[ns] = { from, to };
+    }
+    return { retire, floors };
+  };
+  const shape = (plan) => ({
+    retired: plan.retire.map((x) => x.row.ns + ':' + x.row.reader + ' (' + x.why + ')'),
+    floors: plan.floors,
+    changed: plan.retire.length > 0 || NAMESPACES.some((ns) => plan.floors[ns].to > plan.floors[ns].from),
+  });
+  if (o.dryRun) return shape(planFor(pre));
+  const plan = txnOf(store)((tx) => {
+    const rows = tx.rows(partition);
+    if (needsImport(rows)) return { retire: [], floors: Object.fromEntries(NAMESPACES.map((ns) => [ns, { from: 0, to: 0 }])) };
+    const p = planFor(rows);
+    for (const x of p.retire) {
+      tx.put({ partition, ns: x.row.ns, reader: x.row.reader, value: x.row.value, retiredLine: x.row.value, updatedAt: x.row.updatedAt || now });
+    }
+    for (const ns of NAMESPACES) {
+      if (p.floors[ns].to > p.floors[ns].from) tx.put({ partition, ns, reader: FLOOR, value: p.floors[ns].to, updatedAt: now });
+    }
+    return p;
+  });
+  const out = shape(plan);
+  const dw = Object.assign({}, o, { cursorPath });
+  for (const ns of NAMESPACES) if (plan.floors[ns].to > plan.floors[ns].from) dualWrite(store, dw, ns, plan.floors[ns].to);
+  return out;
+}
+
 module.exports = {
   FLOOR, NAMESPACES, RETIRE_PIN_AGE_MS, PID_REUSE_MARGIN_MS,
   readerKey, parseReader, provablyEnded, psSnapshot, defaultProcTable,
   legacyStoreFloor, legacyNdFloor, legacyShortFor, liveHarnessReaders, importPlan,
   positions, baseFor, floorOf, countFor,
-  importLegacy, declare, ackFor, raiseAllLossFree, raiseFloorBounded, retireEnded,
+  importLegacy, declare, ackFor, raiseAllLossFree, raiseFloorBounded, retireEnded, repairPinnedFloors,
   isRetired, liveMinRow,
 };

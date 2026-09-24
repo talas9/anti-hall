@@ -1592,6 +1592,61 @@ function readerCursorsImportPostUpdate(opts) {
 }
 
 /**
+ * readerFloorRepairPostUpdate({ paths, env, cwd, home, devswarm, version }) ->
+ * { attempted, stores, partitions, repaired, retired, errors, detail }.
+ * v0.106.1 repair of the reader floors the v0.106.0 import pinned (every live
+ * session on the machine declared on every partition; nd floor imported as 0).
+ * Delegates to devswarm.js repairReaderFloorsAllStores (reader-cursors.js
+ * repairPinnedFloors). IDEMPOTENT, FAIL-OPEN, NO-DELETE (rows are retired, never
+ * removed; floors only rise, never past a local live reader). Registry key
+ * 'repairReaderFloors' (migrations.js 'repair-reader-floors' — doctor --repair
+ * runs the same pass); stamped via recordRun only when no partition errored.
+ */
+function readerFloorRepairPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'reader-floor repair skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const { isDevswarmActive } = require(detectPath);
+    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
+      return { attempted: false, detail: 'not a DevSwarm session - reader-floor repair skipped (gate closed)' };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.repairReaderFloorsAllStores !== 'function') {
+      return { attempted: false, detail: 'reader-floor repair skipped: this devswarm.js build has no repairReaderFloorsAllStores' };
+    }
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    if (version && sweepState.repairReaderFloors && sweepState.repairReaderFloors.completedVersion === version) {
+      return {
+        attempted: true, stores: 0, partitions: 0, repaired: 0, retired: 0, errors: 0, skippedAlreadyDone: true,
+        detail: 'reader-floor repair: already completed for ' + version + ' - skipped (one-time per-version migration)',
+      };
+    }
+    const r = devswarm.repairReaderFloorsAllStores(home, { env, cwd }) || {};
+    const errCount = r.errors || 0;
+    try { migrationsLib().recordRun(home, 'repairReaderFloors', version, { errors: errCount, pendingRows: r.dryRun ? (r.pending || 0) : 0 }); } catch (_) { /* fail-open */ }
+    return {
+      attempted: true, stores: r.stores || 0, partitions: r.partitions || 0,
+      repaired: r.repaired || 0, retired: r.retired || 0, errors: errCount,
+      detail: 'reader-floor repair: ' + (r.dryRun ? 'dry run, would repair ' + (r.pending || 0) : 'repaired ' + (r.repaired || 0)
+        + ' partition(s) (' + (r.retired || 0) + ' pinning row(s) retired, ' + (r.floorsRaised || 0) + ' floor(s) raised)')
+        + ' of ' + (r.partitions || 0) + ' across ' + (r.stores || 0) + ' store(s)'
+        + (errCount ? ' (' + errCount + ' error(s), fail-open - retried next run)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'reader-floor repair raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
  * codexGraphifyHooksMigratePostUpdate({ paths, env, cwd, home }) →
  *   { attempted, targets, changed, removed, errors, detail }
  *
@@ -2719,6 +2774,9 @@ function runUpdate(opts) {
   // Mesh redesign Phase 3: one-time import of every legacy read position into
   // reader_cursors. Same gate + fail-open posture; never affects the update.
   const readerCursorsImport = runPostPullStage('reader-cursors-import', () => readerCursorsImportPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
+  // v0.106.1: repair the reader floors the v0.106.0 import pinned. Same gate +
+  // fail-open posture; never affects the update.
+  const readerFloorRepair = runPostPullStage('reader-floor-repair', () => readerFloorRepairPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // devswarm-parent-gate.js stated-intent shape: normalize every gate-loop-
   // state file to carry intents/intentAcks. Same gate + fail-open posture;
   // never affects the update's own success.
@@ -2763,6 +2821,7 @@ function runUpdate(opts) {
         ownerKeyMigrate,
         cursorHygiene,
         readerCursorsImport,
+        readerFloorRepair,
         replyStateMigrate,
         gateIntentsMigrate,
         healRegistryRows,
@@ -2803,6 +2862,7 @@ function runUpdate(opts) {
       ownerKeyMigrate,
       cursorHygiene,
       readerCursorsImport,
+      readerFloorRepair,
       replyStateMigrate,
       gateIntentsMigrate,
       healRegistryRows,
@@ -2875,6 +2935,9 @@ function renderHuman(status, changelog) {
   }
   if (status.readerCursorsImport && status.readerCursorsImport.attempted) {
     lines.push('  reader-cursors-import: ' + status.readerCursorsImport.detail);
+  }
+  if (status.readerFloorRepair && status.readerFloorRepair.attempted) {
+    lines.push('  reader-floor-repair: ' + status.readerFloorRepair.detail);
   }
   if (status.cursorHygiene && status.cursorHygiene.attempted) {
     lines.push('  cursor-hygiene: ' + status.cursorHygiene.detail);
@@ -2952,6 +3015,7 @@ module.exports = {
   ownerKeyMigratePostUpdate,
   cursorHygienePostUpdate,
   readerCursorsImportPostUpdate,
+  readerFloorRepairPostUpdate,
   healRegistryPostUpdate,
   wakeMonitorPostUpdate,
   codexGraphifyHooksMigratePostUpdate,

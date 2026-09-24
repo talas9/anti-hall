@@ -639,6 +639,18 @@ function cursorHygieneCheck(opts) {
         importNote = ' — reader_cursors import unavailable: ' + (e && e.message);
       }
     }
+    // v0.106.1 floors pinned by the v0.106.0 import — REPORT only here (dry run,
+    // zero writes); doctor --repair applies it through the migration registry
+    // ('repair-reader-floors'), update.js through its 'reader-floor-repair' stage.
+    if (typeof devswarm.repairReaderFloorsAllStores === 'function') {
+      try {
+        const rr = devswarm.repairReaderFloorsAllStores(home, { env: Object.assign({}, o.env || process.env), cwd: o.cwd, now: o.now, dryRun: true }) || {};
+        if (rr.pending) importNote += ' — reader floors pinned by the v0.106.0 import: ' + rr.pending + ' partition(s) (run doctor --repair or /anti-hall:update)';
+        if (rr.errors) importNote += ' (floor check: ' + rr.errors + ' error(s), fail-open)';
+      } catch (e) {
+        importNote += ' — reader floor check unavailable: ' + (e && e.message);
+      }
+    }
     // Report-only: old-shape leftovers from a pre-release dev build.
     const legacyShapes = legacyCursorShapeLeftovers(home, o.fsi);
     const legacyNote = legacyShapes.length
