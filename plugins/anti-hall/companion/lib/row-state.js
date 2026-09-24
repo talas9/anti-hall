@@ -15,9 +15,11 @@
 //   archived     anti-hall's own archive: archived/<id>.json whose worktreePath
 //                matches the row and whose sessionId is not superseded by a
 //                different live occupant (devswarm-archived.js).
-//   appArchived  archived in the DevSwarm app: absent from the supervisor's
-//                fresh active-set cache under all four absence conjuncts
-//                (devswarm-archived-cache.js). Needs the row's repoKey.
+//   appArchived  archived in the DevSwarm app: the app database's builders
+//                record (devswarm-app-db.js, v0.107.1) when it has one; else
+//                absent from the supervisor's fresh active-set cache under all
+//                four absence conjuncts (devswarm-archived-cache.js, needs the
+//                row's repoKey).
 //   present      the caller holds a registry row, or the active descriptor
 //                workspaces/<id>.json exists.
 //
@@ -44,6 +46,7 @@ const path = require('path');
 const archivedLib = require('./devswarm-archived.js');
 const { devswarmRoot, isSafeId } = archivedLib;
 const archivedCache = require('./devswarm-archived-cache.js');
+const appDbLib = require('./devswarm-app-db.js');
 
 // rowState(opts) -> { status, archived, appArchived, present }
 // opts: { home, id, worktreePath, sessionId, repoKey, registryRow, env, now,
@@ -65,7 +68,16 @@ function rowState(opts) {
     });
   } catch (_) { archived = false; }
   let appArchived = false;
-  if (o.repoKey) {
+  // v0.107.1: the DevSwarm app's own database (devswarm-app-db.js) is ground
+  // truth when it has a record for this row (by id, or by a builder on the
+  // row's worktree). Only when it has NO opinion does the older absence rule
+  // over the supervisor's active-set cache decide.
+  let appDb = null;
+  try {
+    appDb = appDbLib.appArchivedVerdict({ home: o.home, env: o.env, id, worktreePath: o.worktreePath || null, now: o.now });
+  } catch (_) { appDb = null; }
+  if (appDb === true || appDb === false) appArchived = appDb;
+  else if (o.repoKey) {
     try {
       appArchived = !!archivedCache.isAppArchived({
         home: o.home, repoKey: o.repoKey, id, worktreePath: o.worktreePath || null,

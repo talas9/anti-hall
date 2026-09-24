@@ -6,6 +6,36 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.107.1 (2026-09-24)
+
+- **Fixed: phantom "N unread" on the Primary's own mailbox.** When a store's
+  reader-position import ran without the legacy inbox cursor, it seeded the NDJSON floor
+  at 0, so a fully read legacy inbox counted as unread again. The NDJSON floor is now
+  never lower than the legacy descriptor cursor. The `repair-reader-floors` repair also
+  raises import-seeded rows and the floor to that cursor. It only raises values and
+  deletes nothing, and running it twice changes nothing.
+- **Fixed: `update` skipped the reader-floor repair outside a DevSwarm session.** It is a
+  store repair, so it now runs on every update; `doctor --repair` runs the same pass.
+- **Fixed: a resumed Primary disagreed with itself by one message.** A resumed session
+  gets a new session id, but the anchor row kept the old one. So the Primary's own builder
+  partition looked like a foreign live sibling and was never acked. The anchor now counts
+  as the caller's own when its recorded session has no running process and the caller's
+  session does, which is the same rule `register-primary` uses. Existing watermarks heal
+  on the next read, with nothing lost.
+- **Fixed: workspaces archived in the DevSwarm app kept nagging.** `hivecontrol workspace
+  list all` lists archived builders too, so detecting them by absence never fired. Archive
+  state now comes from the app's own database: a read-only query that falls back to the old
+  path if the file or schema is missing, with an `ANTIHALL_DEVSWARM_APP_DB` override
+  (`off` disables it). Archived rows and twin rows on an archived worktree no longer nag or
+  raise archive-ready prompts, and they are still listed in the table. A new
+  `mark-app-archived` repair writes the archived marker for those workspaces. It never
+  overwrites an existing marker and never touches descriptors.
+- **Safety: `reconcile-active` no longer archives a workspace just because it is missing
+  from `--active`.** A scrolled or partial list would archive live workspaces. A candidate
+  is now archived only when the DevSwarm app database confirms it is archived. Anything
+  else is kept and listed in `keptNotArchivedInApp`, and an unreadable app DB archives
+  nothing. The skill docs no longer suggest a roster screenshot as the source.
+
 ## 0.107.0 (2026-09-24)
 
 - **Fixed: phantom unread.** The v0.106.0 reader-position import had declared every live

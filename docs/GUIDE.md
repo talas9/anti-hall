@@ -658,8 +658,9 @@ plugin depends on it.
   (idempotent, fail-open, no-delete; wired into `update`/`doctor`); `reap-stale
   [--yes|--confirm]` dry-run-reaps descriptors verdicted stale/escalated, gated by a
   fresh-heartbeat/recent-git-activity safety check; `reconcile-active [--active id,...]
-  [--allow-empty] [--stdin] [--yes|--confirm]` archives every current workspace of a
-  project NOT in an explicit "still active" set.
+  [--allow-empty] [--stdin] [--yes|--confirm]` archives a current workspace of a
+  project that is NOT in an explicit "still active" set, but since v0.107.1 only when the
+  DevSwarm app's database confirms it is archived.
 - **Mesh usability + self-heal (v0.63.0).** `send --to` now accepts the roster `id` (not
   only the internal meshId), falling back from a meshId match to an exact registry-`id`
   match with an `ambiguous-recipient` fail-closed guard; `roster` surfaces each row's

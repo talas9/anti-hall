@@ -1609,14 +1609,13 @@ function readerFloorRepairPostUpdate(opts) {
   const home = o.home || os.homedir();
   const paths = o.paths;
   try {
-    const detectPath = path.join(paths.pluginSrcDir, 'hooks', 'lib', 'devswarm-detect.js');
+    // v0.107.1: NOT gated on isDevswarmActive(env). This is a STORE repair (it
+    // walks ~/.anti-hall stores that exist on disk), not a session action — an
+    // update run from a plain terminal must still repair a machine's stores. A
+    // machine with no stores walks nothing (listStoreHashes -> []).
     const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
-    if (!fs.existsSync(detectPath) || !fs.existsSync(devswarmPath)) {
+    if (!fs.existsSync(devswarmPath)) {
       return { attempted: false, detail: 'reader-floor repair skipped: expected plugin files not found under ' + paths.pluginSrcDir };
-    }
-    const { isDevswarmActive } = require(detectPath);
-    if (typeof isDevswarmActive !== 'function' || !isDevswarmActive(env)) {
-      return { attempted: false, detail: 'not a DevSwarm session - reader-floor repair skipped (gate closed)' };
     }
     const devswarm = o.devswarm || require(devswarmPath);
     if (typeof devswarm.repairReaderFloorsAllStores !== 'function') {
@@ -1643,6 +1642,51 @@ function readerFloorRepairPostUpdate(opts) {
     };
   } catch (e) {
     return { attempted: false, detail: 'reader-floor repair raised: ' + (e && e.message ? e.message : String(e)) };
+  }
+}
+
+/**
+ * markAppArchivedPostUpdate({ paths, env, cwd, home, devswarm, version }) ->
+ * { attempted, scanned, marked, errors, detail }. v0.107.1: writes the existing
+ * archived/<id>.json marker for every active descriptor the DevSwarm app's own
+ * database proves archived (devswarm.js markAppArchivedDescriptors). NOT gated
+ * on isDevswarmActive (a store/state repair, not a session action).
+ * IDEMPOTENT, FAIL-OPEN, NEVER-CLOBBER, NO-DELETE. Registry key
+ * 'markAppArchived' (migrations.js 'mark-app-archived' — doctor --repair runs
+ * the same pass); stamped via recordRun only when nothing errored.
+ */
+function markAppArchivedPostUpdate(opts) {
+  const o = opts || {};
+  const env = o.env || process.env;
+  const cwd = o.cwd || process.cwd();
+  const home = o.home || os.homedir();
+  const paths = o.paths;
+  try {
+    const devswarmPath = path.join(paths.pluginSrcDir, 'scripts', 'devswarm.js');
+    if (!fs.existsSync(devswarmPath)) {
+      return { attempted: false, detail: 'app-archived markers skipped: expected plugin files not found under ' + paths.pluginSrcDir };
+    }
+    const devswarm = o.devswarm || require(devswarmPath);
+    if (typeof devswarm.markAppArchivedDescriptors !== 'function') {
+      return { attempted: false, detail: 'app-archived markers skipped: this devswarm.js build has no markAppArchivedDescriptors' };
+    }
+    const version = o.version || null;
+    const sweepState = readSweepState(home);
+    if (version && sweepState.markAppArchived && sweepState.markAppArchived.completedVersion === version) {
+      return { attempted: true, scanned: 0, marked: 0, errors: 0, skippedAlreadyDone: true,
+        detail: 'app-archived markers: already completed for ' + version + ' - skipped (one-time per-version migration)' };
+    }
+    const r = devswarm.markAppArchivedDescriptors(home, { env, cwd }) || {};
+    const errCount = r.errors || 0;
+    try { migrationsLib().recordRun(home, 'markAppArchived', version, { errors: errCount, pendingRows: r.dryRun ? (r.pending || 0) : 0 }); } catch (_) { /* fail-open */ }
+    return {
+      attempted: true, scanned: r.scanned || 0, marked: r.marked || 0, errors: errCount,
+      detail: 'app-archived markers: ' + (!r.appDb ? 'no DevSwarm app database found - nothing to do'
+        : (r.dryRun ? 'dry run, would mark ' + (r.pending || 0) : 'marked ' + (r.marked || 0)) + ' of ' + (r.scanned || 0) + ' descriptor(s)')
+        + (errCount ? ' (' + errCount + ' error(s), fail-open - retried next run)' : ''),
+    };
+  } catch (e) {
+    return { attempted: false, detail: 'app-archived markers raised: ' + (e && e.message ? e.message : String(e)) };
   }
 }
 
@@ -2890,6 +2934,8 @@ function runUpdate(opts) {
   // v0.106.1: repair the reader floors the v0.106.0 import pinned. Same gate +
   // fail-open posture; never affects the update.
   const readerFloorRepair = runPostPullStage('reader-floor-repair', () => readerFloorRepairPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
+  // v0.107.1: mark workspaces archived in the DevSwarm app (app DB ground truth).
+  const appArchivedMarkers = runPostPullStage('app-archived-markers', () => markAppArchivedPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
   // Dual-partition defect: raise a twin partition past sends already acked in
   // its anchor/partner partition. Same gate + fail-open posture.
   const dualPartitionAcks = runPostPullStage('dual-partition-acks', () => dualPartitionAcksPostUpdate({ paths, env: opts.env, cwd: opts.cwd, home: opts.home, devswarm: opts.devswarm, version: latest }));
@@ -2939,6 +2985,7 @@ function runUpdate(opts) {
         mergeSplitBackendStores,
         readerCursorsImport,
         readerFloorRepair,
+        appArchivedMarkers,
         dualPartitionAcks,
         replyStateMigrate,
         gateIntentsMigrate,
@@ -2982,6 +3029,7 @@ function runUpdate(opts) {
       mergeSplitBackendStores,
       readerCursorsImport,
       readerFloorRepair,
+      appArchivedMarkers,
       dualPartitionAcks,
       replyStateMigrate,
       gateIntentsMigrate,
@@ -3061,6 +3109,9 @@ function renderHuman(status, changelog) {
   }
   if (status.readerFloorRepair && status.readerFloorRepair.attempted) {
     lines.push('  reader-floor-repair: ' + status.readerFloorRepair.detail);
+  }
+  if (status.appArchivedMarkers && status.appArchivedMarkers.attempted) {
+    lines.push('  app-archived-markers: ' + status.appArchivedMarkers.detail);
   }
   if (status.dualPartitionAcks && status.dualPartitionAcks.attempted) {
     lines.push('  dual-partition-acks: ' + status.dualPartitionAcks.detail);
@@ -3142,6 +3193,7 @@ module.exports = {
   cursorHygienePostUpdate,
   readerCursorsImportPostUpdate,
   readerFloorRepairPostUpdate,
+  markAppArchivedPostUpdate,
   dualPartitionAcksPostUpdate,
   mergeSplitBackendStoresPostUpdate,
   healRegistryPostUpdate,

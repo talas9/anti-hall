@@ -321,6 +321,26 @@ const MIGRATIONS = [
     },
   },
   {
+    // v0.107.1: workspaces archived in the DevSwarm APP (its builders table:
+    // isActive=0, isHidden=1) that anti-hall never learned about — writes the
+    // existing archived/<id>.json marker for each ACTIVE descriptor the app DB
+    // proves archived. Never-clobber, no-delete (descriptors untouched),
+    // idempotent; no app DB on this machine = nothing to do.
+    id: 'mark-app-archived',
+    key: 'markAppArchived',
+    fn: 'markAppArchivedDescriptors',
+    detect(dw, home, ctx) {
+      const r = dw.markAppArchivedDescriptors(home, Object.assign({}, ctx, { dryRun: true })) || {};
+      return {
+        pending: (r.pending || 0) > 0,
+        raw: Object.assign({}, r, { pending: 0 }),
+        detail: (r.pending || 0) + ' descriptor(s) of workspace(s) archived in the DevSwarm app to mark archived'
+          + (r.appDb ? '' : ' (no DevSwarm app database found)')
+          + (r.errors ? ' (' + r.errors + ' error(s), fail-open)' : ''),
+      };
+    },
+  },
+  {
     // DELETION-CLASS: removes registry rows (forwarding first where it can).
     // Opt-in ONLY via `doctor --repair-resurrected [--apply]`; update reports it
     // (dry-run) once per version. Never run by runMigrations().

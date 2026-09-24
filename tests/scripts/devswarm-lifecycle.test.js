@@ -1129,6 +1129,22 @@ test('roster archived-dir scan fails open when archived/ does not exist at all',
 // FIX 3 (Task 6): a heartbeat CLEARS the persisted stale verdict (CLI level).
 // ============================================================================
 
+// appDbEnv(home, builders) -> env pointing reconcile-active at a fixture DevSwarm
+// app database (v0.107.1: it archives only what the app proves archived).
+// builders: { id: 'archived' | 'active' }.
+let sqliteMod = null;
+try { sqliteMod = require('node:sqlite'); } catch (_) { sqliteMod = null; }
+const noSqlite = sqliteMod ? false : 'node:sqlite unavailable';
+function appDbEnv(home, builders) {
+  const file = path.join(home, 'app-devswarm.db');
+  const db = new sqliteMod.DatabaseSync(file);
+  db.exec('CREATE TABLE IF NOT EXISTS builders (id TEXT PRIMARY KEY, worktreePath TEXT, isHidden INTEGER NOT NULL DEFAULT 0, isActive INTEGER NOT NULL DEFAULT 1)');
+  const ins = db.prepare('INSERT INTO builders (id, worktreePath, isHidden, isActive) VALUES (?, ?, ?, ?)');
+  for (const id of Object.keys(builders)) ins.run(id, '/wt/' + id, builders[id] === 'archived' ? 1 : 0, builders[id] === 'archived' ? 0 : 1);
+  db.close();
+  return { ANTIHALL_DEVSWARM_APP_DB: file, ANTIHALL_DEVSWARM_APP_DB_CACHE_MS: '0' };
+}
+
 function regWs(home, repo, id, worktree) {
   return cli.run(['register', id, '--worktree', worktree, '--session', 's'], ctx(home, { cwd: repo }));
 }
@@ -1189,14 +1205,15 @@ test('FIX 2: reap-stale on a non-git cwd returns no-project (project scoped)', (
   } finally { rm(home); }
 });
 
-test('FIX 2: reconcile-active dry-run archives only ids OUTSIDE the active set, never one inside it', () => {
+test('FIX 2: reconcile-active dry-run archives only ids OUTSIDE the active set, never one inside it', { skip: noSqlite }, () => {
   const home = tmpHome();
   const repo = makeGitRepo('reconcile-active-dry');
   try {
     regWs(home, repo, 'ws-a', '/wt/a');
     regWs(home, repo, 'ws-b', '/wt/b');
     regWs(home, repo, 'ws-c', '/wt/c');
-    const r = cli.run(['reconcile-active', '--active', 'ws-a,ws-b'], ctx(home, { cwd: repo }));
+    const env = appDbEnv(home, { 'ws-a': 'active', 'ws-b': 'active', 'ws-c': 'archived' });
+    const r = cli.run(['reconcile-active', '--active', 'ws-a,ws-b'], ctx(home, { cwd: repo, env }));
     assert.equal(r.result.ok, true);
     assert.equal(r.result.dryRun, true);
     assert.deepEqual(r.result.candidates.map((c) => c.id).sort(), ['ws-c']);
@@ -1204,14 +1221,15 @@ test('FIX 2: reconcile-active dry-run archives only ids OUTSIDE the active set, 
   } finally { rm(home); rm(repo); }
 });
 
-test('FIX 2: reconcile-active --yes archives only the non-active workspace; active ones are untouched', () => {
+test('FIX 2: reconcile-active --yes archives only the non-active workspace; active ones are untouched', { skip: noSqlite }, () => {
   const home = tmpHome();
   const repo = makeGitRepo('reconcile-active-apply');
   try {
     regWs(home, repo, 'ws-a', '/wt/a');
     regWs(home, repo, 'ws-b', '/wt/b');
     regWs(home, repo, 'ws-c', '/wt/c');
-    const r = cli.run(['reconcile-active', '--active', 'ws-a', '--active', 'ws-b', '--yes'], ctx(home, { cwd: repo }));
+    const env = appDbEnv(home, { 'ws-a': 'active', 'ws-b': 'active', 'ws-c': 'archived' });
+    const r = cli.run(['reconcile-active', '--active', 'ws-a', '--active', 'ws-b', '--yes'], ctx(home, { cwd: repo, env }));
     assert.equal(r.result.ok, true);
     assert.deepEqual(r.result.archived.map((a) => a.id), ['ws-c']);
     assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-c')), false, 'the non-active workspace must be archived');
@@ -1220,14 +1238,15 @@ test('FIX 2: reconcile-active --yes archives only the non-active workspace; acti
   } finally { rm(home); rm(repo); }
 });
 
-test('FIX 2: reconcile-active matches an active id by SHORT PREFIX (spares it), never archiving a prefixed active workspace', () => {
+test('FIX 2: reconcile-active matches an active id by SHORT PREFIX (spares it), never archiving a prefixed active workspace', { skip: noSqlite }, () => {
   const home = tmpHome();
   const repo = makeGitRepo('reconcile-active-prefix');
   try {
     regWs(home, repo, 'ws-keepme', '/wt/keep');
     regWs(home, repo, 'ws-dropme', '/wt/drop');
-    // supply only a short prefix of the id we want to KEEP
-    const r = cli.run(['reconcile-active', '--active', 'ws-keep', '--yes'], ctx(home, { cwd: repo }));
+    const env = appDbEnv(home, { 'ws-keepme': 'archived', 'ws-dropme': 'archived' });
+    // supply only a short prefix of the id we want to KEEP (spared even though the app says archived)
+    const r = cli.run(['reconcile-active', '--active', 'ws-keep', '--yes'], ctx(home, { cwd: repo, env }));
     assert.equal(r.result.ok, true);
     assert.deepEqual(r.result.archived.map((a) => a.id), ['ws-dropme']);
     assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-keepme')), true, 'a prefix-matched active workspace must be spared');
@@ -1243,6 +1262,41 @@ test('FIX 2: reconcile-active REFUSES an empty active set unless --allow-empty (
     assert.equal(r.result.ok, false);
     assert.match(r.result.error, /non-empty --active/);
     assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-a')), true, 'nothing must be archived on a refused empty set');
+  } finally { rm(home); rm(repo); }
+});
+
+// v0.107.1 SAFETY: absence from --active (e.g. a scrolled/partial roster list)
+// is never archive evidence on its own.
+test('v0.107.1: reconcile-active never archives an absent workspace the app says is ACTIVE (kept + listed)', { skip: noSqlite }, () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-active-appactive');
+  try {
+    regWs(home, repo, 'ws-a', '/wt/a');
+    regWs(home, repo, 'ws-live', '/wt/live');
+    regWs(home, repo, 'ws-gone', '/wt/gone');
+    const env = appDbEnv(home, { 'ws-a': 'active', 'ws-live': 'active', 'ws-gone': 'archived' });
+    const r = cli.run(['reconcile-active', '--active', 'ws-a', '--yes'], ctx(home, { cwd: repo, env }));
+    assert.equal(r.result.ok, true, JSON.stringify(r.result));
+    assert.deepEqual(r.result.archived.map((a) => a.id), ['ws-gone']);
+    assert.ok(r.result.kept.includes('ws-live'), 'absent-but-app-active is kept');
+    assert.deepEqual(r.result.keptNotArchivedInApp, [{ id: 'ws-live', reason: 'app-active' }]);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-live')), true, 'an app-active workspace is NEVER archived');
+  } finally { rm(home); rm(repo); }
+});
+
+test('v0.107.1: reconcile-active with an unreadable app DB archives NOTHING and says why', () => {
+  const home = tmpHome();
+  const repo = makeGitRepo('reconcile-active-nodb');
+  try {
+    regWs(home, repo, 'ws-a', '/wt/a');
+    regWs(home, repo, 'ws-b', '/wt/b');
+    const env = { ANTIHALL_DEVSWARM_APP_DB: path.join(home, 'missing.db') };
+    const r = cli.run(['reconcile-active', '--active', 'ws-a', '--yes'], ctx(home, { cwd: repo, env }));
+    assert.equal(r.result.ok, false);
+    assert.equal(r.result.reason, 'app-db-unreadable');
+    assert.deepEqual(r.result.archived, []);
+    assert.deepEqual(r.result.keptNotArchivedInApp, [{ id: 'ws-b', reason: 'app-db-unreadable' }]);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'ws-b')), true, 'nothing archived without app proof');
   } finally { rm(home); rm(repo); }
 });
 

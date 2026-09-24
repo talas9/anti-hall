@@ -1414,7 +1414,22 @@ function main() {
     // hook has no way to tell provenance beyond the caller's own judgement,
     // so this is opt-in, per-id, user-controlled.
     const nagIgnored = isNagIgnored(home, id);
-    if ((unread > 0 || stuck || notDraining) && !archiveReadyQuiet && !nagIgnored) {
+    // v0.107.1: row state is resolved BEFORE the attention/archive-ready pushes.
+    // A workspace archived in the DevSwarm app (its builders record — or a twin
+    // row sharing that archived worktree) is put away for good: nobody will
+    // ever drain its mailbox, so it never nags. Previously this was only used
+    // to relabel the table row below, after both pushes had already happened.
+    let archivedRow = false;
+    let appArchivedRow = false;
+    try {
+      const st = rowState({
+        home, id, worktreePath: entry.worktreePath, repoKey, env: process.env, now, cache: appArchivedCache(),
+      });
+      archivedRow = st.archived;
+      appArchivedRow = st.appArchived;
+    } catch (_) { archivedRow = false; appArchivedRow = false; }
+    // (Still listed in the table below, labelled archived — just never nagged.)
+    if ((unread > 0 || stuck || notDraining) && !archiveReadyQuiet && !nagIgnored && !appArchivedRow) {
       // wsName/oldestUnreadTs (item 5/6): human title + age for the reworded
       // "CHILD NOT DRAINING" segment below — read-only, zero extra store
       // reads (oldestDirectUnreadTs is already a zero-extra-read projection
@@ -1425,7 +1440,7 @@ function main() {
     }
 
     try {
-      if (archiveReady && !isArchiveIgnored(home, id)
+      if (archiveReady && !appArchivedRow && !isArchiveIgnored(home, id)
           && archiveCooldownElapsed(home, id, now)) {
         archiveList.push(id);
       }
@@ -1447,15 +1462,7 @@ function main() {
       // own archived marker, then the app-side archived-set cache (see the
       // APP-SIDE note below) — the same answer the roster/diagnose/routing and
       // the parent Stop gate use.
-      let archivedRow = false;
-      let appArchivedRow = false;
-      try {
-        const st = rowState({
-          home, id, worktreePath: entry.worktreePath, repoKey, env: process.env, now, cache: appArchivedCache(),
-        });
-        archivedRow = st.archived;
-        appArchivedRow = st.appArchived;
-      } catch (_) { archivedRow = false; appArchivedRow = false; }
+      // (archivedRow / appArchivedRow resolved above, before the attention push.)
       // ARCHIVED-BUT-SUPERSEDED (defect df54edf54804 hardening): isArchivedWorkspace
       // returning false does not always mean "never archived" — a marker can exist
       // for THIS id but be superseded by a genuinely different (later) sessionId,

@@ -215,6 +215,20 @@ function descriptorOf(home, partition) {
     return d && typeof d === 'object' && !Array.isArray(d) ? d : null;
   } catch (_) { return null; }
 }
+function descriptorCursorPath(home, partition) {
+  const d = descriptorOf(home, partition);
+  return d && typeof d.cursorPath === 'string' && d.cursorPath ? d.cursorPath : null;
+}
+// distinctNdFloor(home, partition, cursorPath) -> the legacy nd cursor value,
+// but ONLY when that file is a real nd cursor: a descriptor whose cursorPath IS
+// the partition's shared store cursor (cursors/<id>.json — the primary-anchor
+// shape) holds store-namespace positions (dualWrite projects the store floor
+// into it), which say nothing about NDJSON lines. 0 (no evidence) then.
+function distinctNdFloor(home, partition, cursorPath) {
+  if (!cursorPath) return 0;
+  if (home && path.resolve(String(cursorPath)) === path.resolve(primaryCursorPath(home, partition))) return 0;
+  return legacyNdFloor(cursorPath);
+}
 function partitionMeshIds(partition, desc) {
   const ids = new Set();
   if (/^primary-[0-9a-f]{8}$/.test(String(partition))) ids.add(String(partition));
@@ -346,7 +360,15 @@ function positions(store, opts) {
   const floor = {};
   for (const ns of NAMESPACES) {
     const f = rowOf(rows, ns, FLOOR);
-    floor[ns] = f ? f.value : (ns === 'store' ? legacyStoreFloor(store, o.home, partition) : legacyNdFloor(o.cursorPath));
+    if (ns === 'store') { floor[ns] = f ? f.value : legacyStoreFloor(store, o.home, partition); continue; }
+    // v0.107.1: the nd floor never sits below the legacy descriptor cursor. That
+    // cursor is only ever written max-only (dualWrite projects the floor into it;
+    // pre-import it WAS the shared nd read position), so every line at or below
+    // it was read. An import that ran without a cursorPath seeded '#floor' nd = 0
+    // and a partition with a fully-read legacy inbox counted every line as unread.
+    // The descriptor's cursorPath is the fallback when the caller carried none.
+    const cp = o.cursorPath || descriptorCursorPath(o.home, partition);
+    floor[ns] = f ? Math.max(f.value, distinctNdFloor(o.home, partition, cp)) : legacyNdFloor(cp);
   }
   const out = { floor, rows, view: 'floor', store: floor.store, nd: floor.nd };
   if (reader) {
@@ -702,6 +724,7 @@ function repairPinnedFloors(store, opts) {
   const sessions = sessionFilesByPid(o.home);
   const procTable = o.procTable !== undefined ? o.procTable : defaultProcTable(now);
   const legacyNd = legacyNdFloor(cursorPath);
+  const distinctNd = distinctNdFloor(o.home, partition, cursorPath);
   const verdicts = new Map();
   const verdictOf = (reader) => {
     if (verdicts.has(reader)) return verdicts.get(reader);
@@ -734,7 +757,21 @@ function repairPinnedFloors(store, opts) {
       retire.push({ row: r, why: v });
     }
     const gone = new Set(retire.map((x) => x.row.ns + '\u0000' + x.row.reader));
-    const remaining = rows.filter((r) => !gone.has(r.ns + '\u0000' + r.reader));
+    // v0.107.1: a KEPT nd row still at the import seed (never advanced past the
+    // floor) with no mapped legacy #nd file of its own was seeded from the
+    // broken nd floor instead of the legacy descriptor cursor — raise it to
+    // that cursor (max-only), which is what the import should have written.
+    const ndFloorRow = rowOf(rows, 'nd', FLOOR);
+    const ndSeed = ndFloorRow ? ndFloorRow.value : 0;
+    const raise = [];
+    for (const r of rows) {
+      if (r.ns !== 'nd' || r.reader === FLOOR || isRetired(r) || gone.has('nd\u0000' + r.reader)) continue;
+      if (mapped.has(legacyShortFor(r.reader))) continue;
+      if (r.value <= ndSeed && r.value < distinctNd) raise.push({ row: r, to: distinctNd });
+    }
+    const raisedTo = new Map(raise.map((x) => [x.row.reader, x.to]));
+    const remaining = rows.filter((r) => !gone.has(r.ns + '\u0000' + r.reader))
+      .map((r) => (r.ns === 'nd' && raisedTo.has(r.reader) ? Object.assign({}, r, { value: raisedTo.get(r.reader) }) : r));
     const floors = {};
     for (const ns of NAMESPACES) {
       const f = rowOf(rows, ns, FLOOR);
@@ -742,22 +779,30 @@ function repairPinnedFloors(store, opts) {
       const pin = liveMinRow(remaining, ns);
       let to = pin ? Math.max(from, pin.value) : from;
       if (ns === 'nd' && !pin && from === 0 && legacyNd > 0) to = legacyNd;
+      // v0.107.1: a distinct legacy nd cursor raises the nd floor even when a
+      // live local row still pins it at the import seed (max-only; the same
+      // rule positions() now reads with).
+      if (ns === 'nd' && distinctNd > to) to = distinctNd;
       floors[ns] = { from, to };
     }
-    return { retire, floors };
+    return { retire, raise, floors };
   };
   const shape = (plan) => ({
     retired: plan.retire.map((x) => x.row.ns + ':' + x.row.reader + ' (' + x.why + ')'),
+    raised: (plan.raise || []).map((x) => x.row.ns + ':' + x.row.reader + ' ' + x.row.value + '->' + x.to),
     floors: plan.floors,
-    changed: plan.retire.length > 0 || NAMESPACES.some((ns) => plan.floors[ns].to > plan.floors[ns].from),
+    changed: plan.retire.length > 0 || (plan.raise || []).length > 0 || NAMESPACES.some((ns) => plan.floors[ns].to > plan.floors[ns].from),
   });
   if (o.dryRun) return shape(planFor(pre));
   const plan = txnOf(store)((tx) => {
     const rows = tx.rows(partition);
-    if (needsImport(rows)) return { retire: [], floors: Object.fromEntries(NAMESPACES.map((ns) => [ns, { from: 0, to: 0 }])) };
+    if (needsImport(rows)) return { retire: [], raise: [], floors: Object.fromEntries(NAMESPACES.map((ns) => [ns, { from: 0, to: 0 }])) };
     const p = planFor(rows);
     for (const x of p.retire) {
       tx.put({ partition, ns: x.row.ns, reader: x.row.reader, value: x.row.value, retiredLine: x.row.value, updatedAt: x.row.updatedAt || now });
+    }
+    for (const x of p.raise) {
+      tx.put({ partition, ns: 'nd', reader: x.row.reader, value: x.to, updatedAt: now });
     }
     for (const ns of NAMESPACES) {
       if (p.floors[ns].to > p.floors[ns].from) tx.put({ partition, ns, reader: FLOOR, value: p.floors[ns].to, updatedAt: now });

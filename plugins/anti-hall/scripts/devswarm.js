@@ -654,6 +654,16 @@ function siblingAckGate(storeHandle, callerId, partId, home, now, opts) {
   // process's session (CLAUDE_CODE_SESSION_ID). A child registered on the
   // Primary's worktree fails that test and falls through to the liveness gate —
   // it never acks the live Primary's anchor partition.
+  // v0.107.1 (session resume): a resumed Claude Code session gets a NEW session
+  // id, but the anchor row keeps the pre-resume one — so the Primary's own
+  // anchor read as foreign and its builder partition was never acked (only a
+  // caller-scoped `.seen-` watermark moved; tick and read-primary disagreed).
+  // The anchor is also ours when its recorded session has NO positively-alive
+  // harness process while the CALLER's own session positively is alive
+  // (isSessionAliveRow both ways — the same takeover rule cmdRegisterPrimary
+  // applies to this row, plus proof the caller is a real running session). A
+  // child on the Primary's worktree still fails whenever the Primary's session
+  // is actually running.
   if (opts && callerId != null) {
     const selfId = declaredSelfId(opts.env, opts.cwd, registry);
     if (selfId) {
@@ -662,7 +672,13 @@ function siblingAckGate(storeHandle, callerId, partId, home, now, opts) {
       const anchorRow = registry.find((r) => r && String(r.id) === anchorId);
       const anchorSid = anchorRow && anchorRow.sessionId != null ? String(anchorRow.sessionId) : '';
       const callerSid = opts.env && opts.env.CLAUDE_CODE_SESSION_ID ? String(opts.env.CLAUDE_CODE_SESSION_ID) : '';
-      const anchorIsOurs = anchorSid === '' || (callerSid !== '' && anchorSid === callerSid);
+      let anchorIsOurs = anchorSid === '' || (callerSid !== '' && anchorSid === callerSid);
+      if (!anchorIsOurs && callerSid !== '' && anchorRow) {
+        try {
+          anchorIsOurs = isSessionAliveRow({ sessionId: callerSid }, home) === true
+            && isSessionAliveRow(anchorRow, home) !== true;
+        } catch (_) { anchorIsOurs = false; } // undetermined -> never ack on a guess
+      }
       if (anchorIsOurs && names.size === 2 && names.has(String(callerId)) && names.has(String(partId))) return false;
     }
   }
@@ -5298,7 +5314,7 @@ function repairReaderFloorsAllStores(home, ctx) {
           out.pending++;
           const raised = Object.keys(r.floors || {}).filter((ns) => r.floors[ns].to > r.floors[ns].from).length;
           if (!dryRun) { out.repaired++; out.retired += r.retired.length; out.floorsRaised += raised; }
-          out.results.push({ repoKey, id, retired: r.retired, floors: r.floors });
+          out.results.push({ repoKey, id, retired: r.retired, raised: r.raised || [], floors: r.floors });
         } catch (e) {
           out.errors++;
           out.results.push({ repoKey, id, error: String((e && e.message) || e) });
@@ -5306,6 +5322,60 @@ function repairReaderFloorsAllStores(home, ctx) {
       }
     } finally { try { s.close(); } catch (_) {} }
   }
+  return out;
+}
+
+// markAppArchivedDescriptors(home, ctx) -> { ok, dryRun, appDb, scanned,
+//   pending, marked, errors, results }. v0.107.1 repair for workspaces archived
+// in the DevSwarm APP: the app's builders table (companion/lib/devswarm-app-db.js)
+// says archived, but anti-hall never learned it (app archive never writes
+// archived/<id>.json, and `hivecontrol workspace list all` still lists archived
+// builders, so the absence rule never fired). For every ACTIVE descriptor
+// (workspaces/<id>.json) the app DB proves archived — by id, or a twin row on an
+// archived worktree with no active builder — writes the existing archived
+// marker archived/<id>.json (the descriptor's own content + archivedBy /
+// archivedAt). NEVER-CLOBBER (exclusive create: an existing marker is left
+// as-is), NO-DELETE (the descriptor is never touched), idempotent, fail-open
+// (no app DB -> nothing to do; an error is counted). ctx.dryRun or
+// ANTIHALL_INGEST_DRY_RUN=1 -> report only.
+function markAppArchivedDescriptors(home, ctx) {
+  const c = ctx || {};
+  const env = c.env || process.env;
+  const dryRun = !!c.dryRun || String((env && env.ANTIHALL_INGEST_DRY_RUN) || '') === '1';
+  const out = { ok: true, dryRun, appDb: false, scanned: 0, pending: 0, marked: 0, errors: 0, results: [] };
+  let appDb;
+  try { appDb = require('../companion/lib/devswarm-app-db.js'); } catch (_) { return out; }
+  if (!appDb.builderStates({ home, env, now: c.now })) return out; // no app DB: no evidence
+  out.appDb = true;
+  let names = [];
+  try { names = fs.readdirSync(workspacesDir(home)); } catch (_) { names = []; }
+  for (const n of names) {
+    if (!n.endsWith('.json')) continue;
+    const id = n.slice(0, -'.json'.length);
+    if (!isSafeId(id)) continue;
+    out.scanned++;
+    try {
+      let desc;
+      try { desc = JSON.parse(fs.readFileSync(path.join(workspacesDir(home), n), 'utf8')); } catch (_) { continue; }
+      if (!desc || typeof desc !== 'object' || Array.isArray(desc)) continue;
+      const verdict = appDb.appArchivedVerdict({ home, env, id, worktreePath: desc.worktreePath || null, now: c.now });
+      if (verdict !== true) continue;
+      const marker = path.join(archivedDir(home), id + '.json');
+      if (fs.existsSync(marker)) continue;
+      out.pending++;
+      if (dryRun) { out.results.push({ id, action: 'would-mark' }); continue; }
+      const dir = checkedArchivedDir(home, { create: true });
+      if (!dir.ok) throw new Error(dir.error || 'archived dir unusable');
+      const body = JSON.stringify(Object.assign({}, desc, { archivedBy: 'devswarm-app', archivedAt: Number.isFinite(c.now) ? c.now : Date.now() }));
+      try { fs.writeFileSync(marker, body, { flag: 'wx' }); } catch (e) { if (!e || e.code !== 'EEXIST') throw e; continue; }
+      out.marked++;
+      out.results.push({ id, action: 'marked' });
+    } catch (e) {
+      out.errors++;
+      out.results.push({ id, error: String((e && e.message) || e) });
+    }
+  }
+  if (!dryRun) out.pending = Math.max(0, out.pending - out.marked);
   return out;
 }
 
@@ -15135,9 +15205,9 @@ function cmdReapStale(flags, ctx) {
 }
 
 // cmdReconcileActive(flags, ctx) — reconcile the live roster against an explicit
-// ACTIVE set. Archives every CURRENT (non-archived) workspace of THIS project NOT
-// in the supplied --active id set. Backs the "user says what is still active"
-// flow (e.g. from a screenshot). Ids match by FULL id OR a short prefix (how the
+// ACTIVE set. Archives a CURRENT (non-archived) workspace of THIS project NOT in
+// the supplied --active id set ONLY when the DevSwarm app's database proves it
+// archived (v0.107.1; absence alone never archives). Ids match by FULL id OR a short prefix (how the
 // roster displays them) — matching is generous on purpose (a match SPARES a
 // workspace, the safe direction: an active workspace is NEVER archived). Refuses
 // an EMPTY active set unless --allow-empty (an omitted set must not archive every
@@ -15177,18 +15247,41 @@ function cmdReconcileActive(flags, ctx) {
     return false;
   };
 
+  // v0.107.1 SAFETY: absence from --active is NOT evidence of archive (a
+  // scrolled or partial roster list would archive live workspaces). A candidate
+  // is archived ONLY when the DevSwarm app's own database proves it archived
+  // (builders.isActive = 0 AND isHidden = 1 — companion/lib/devswarm-app-db.js).
+  // Absent-but-not-proven rows are KEPT and listed; an unreadable app DB
+  // archives nothing and says why.
+  const appDbLib = require('../companion/lib/devswarm-app-db.js');
+  const appDbReadable = !!appDbLib.builderStates({ home, env: ctx.env, now: ctx.now });
   const candidates = [];
   const kept = [];
+  const keptNotArchivedInApp = [];
   for (const d of projectScopedDescriptors(home, repoKey)) {
     if (activeMatches(d.id)) { kept.push(d.id); continue; }
-    candidates.push({ id: d.id, worktreePath: d.worktreePath });
+    const verdict = appDbReadable
+      ? appDbLib.appArchivedVerdict({ home, env: ctx.env, now: ctx.now, id: d.id, worktreePath: d.worktreePath || null })
+      : null;
+    if (verdict === true) { candidates.push({ id: d.id, worktreePath: d.worktreePath }); continue; }
+    kept.push(d.id);
+    keptNotArchivedInApp.push({ id: d.id, reason: !appDbReadable ? 'app-db-unreadable' : (verdict === false ? 'app-active' : 'app-unknown') });
   }
+  const appDbNote = appDbReadable ? null
+    : 'DevSwarm app database unreadable (set ANTIHALL_DEVSWARM_APP_DB to its devswarm.db) — nothing is archived without app proof';
 
   if (!confirm) {
     return {
-      ok: true, action: 'reconcile-active', repoKey, dryRun: true,
-      active: activeTokens, kept, count: candidates.length, candidates,
-      note: 'dry-run: pass --yes (or --confirm) to archive these workspaces',
+      ok: appDbReadable || keptNotArchivedInApp.length === 0, action: 'reconcile-active', repoKey, dryRun: true,
+      active: activeTokens, kept, keptNotArchivedInApp, appDb: appDbReadable,
+      count: candidates.length, candidates,
+      note: appDbNote || 'dry-run: pass --yes (or --confirm) to archive these workspaces (only app-archived ones are candidates)',
+    };
+  }
+  if (!appDbReadable && keptNotArchivedInApp.length) {
+    return {
+      ok: false, action: 'reconcile-active', repoKey, dryRun: false, reason: 'app-db-unreadable', error: appDbNote,
+      active: activeTokens, kept, keptNotArchivedInApp, appDb: false, count: 0, archived: [],
     };
   }
   const archived = [];
@@ -15198,7 +15291,7 @@ function cmdReconcileActive(flags, ctx) {
   }
   return {
     ok: archived.every((a) => a.ok), action: 'reconcile-active', repoKey, dryRun: false,
-    active: activeTokens, kept, count: archived.length, archived,
+    active: activeTokens, kept, keptNotArchivedInApp, appDb: appDbReadable, count: archived.length, archived,
   };
 }
 
@@ -16638,7 +16731,7 @@ module.exports = {
   deriveInstanceNonce,
   // mesh redesign B5 / Phase 3 — THE nonce every production site uses, plus the
   // reader_cursors adapters:
-  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores,
+  deriveReaderNonce, callerReaderKey, commitNdAck, floorCursor, importReaderCursorsAllStores, repairReaderFloorsAllStores, markAppArchivedDescriptors,
   reconcileDualPartitionAcksAllStores, declaredSelfId,
   mergeSplitBackendStoresAllStores,
   // instanceNonce CONSUMERS (defect d3d571495bf6, items a/b/c — exported for
