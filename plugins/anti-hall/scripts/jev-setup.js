@@ -193,7 +193,7 @@ function fail(msg) {
 
 // --- verbs -----------------------------------------------------------------
 
-function cmdStatus() {
+async function cmdStatus() {
   const cfg = readJevJson();
   const enabled = cfg.enabled === true;
   const transport = resolveTransport(cfg);
@@ -218,6 +218,21 @@ function cmdStatus() {
     console.log(`  ${id}: ${modes[id]}`);
   }
   console.log(`calls (last 24h): ${callCountLast24h()}`);
+
+  // Credit balance -- vercel transport only (TypeSafe's own API documents no
+  // equivalent endpoint, see jev-client.js's getCreditBalance doc comment),
+  // served from its own 15-min cache. Fail-open: never blocks `status`.
+  try {
+    const { getCreditBalanceCached } = require('../hooks/lib/jev-client.js');
+    const credit = await getCreditBalanceCached({});
+    if (credit.ok) {
+      console.log(`credit balance: $${credit.balanceUsd.toFixed(2)}${credit.cached ? ' (cached)' : ''}`);
+    } else if (credit.reason !== 'unsupported-transport' && credit.reason !== 'disabled' && credit.reason !== 'no-key') {
+      console.log(`credit balance: n/a (${credit.reason})`);
+    }
+  } catch (_) {
+    // best-effort only -- status must never fail because of this
+  }
 }
 
 function cmdEnable(opts) {
@@ -352,6 +367,7 @@ module.exports = {
   jevConfigPath,
   logPath,
   cmdTest,
+  cmdStatus,
 };
 
 if (require.main === module) {

@@ -103,48 +103,58 @@ function loadJevConfig() {
   return { enabled, transport, timeoutMs, confidenceThreshold, keyFile, endpointOverride };
 }
 
-// extractCostAndUsage(json) -> {cost, tokensIn, tokensOut, model} — DEFENSIVE,
-// best-effort extraction of gateway-reported cost/usage from a systemone
-// response, never a guess. VERIFIED from Vercel's own docs:
-//   - https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api
-//     ("Look up a generation" response fields: total_cost, market_cost,
-//     gateway_cost, tokens_prompt, tokens_completion, model, id)
-//   - https://vercel.com/docs/ai-gateway/observability-and-spend/usage
-//     ("Every response includes its cost in providerMetadata.gateway.cost"
-//     -- true for the AI SDK's mapped result of a documented chat/
-//     completions-shaped request)
-// NEITHER page documents the `/typesafe/v1/systemone` passthrough this
-// module actually calls, and this module's own parsing above only ever
-// reads `json.answers.decision` -- there is NO evidence the systemone
-// response carries these fields today. This function checks for them
-// anyway (zero cost if absent, since `json` is already parsed) so a future
-// systemone response that DOES start including them is picked up
-// automatically; if none are present it returns nulls, and the caller must
-// never fabricate a cost from that.
+// extractCostAndUsage(json) -> {cost, tokensIn, tokensOut, model} —
+// best-effort extraction of gateway/provider-reported cost/usage from a
+// systemone response, never a guess. VERIFIED from official docs:
+//   - https://docs.typesafe.ai/api (TypeSafe's OWN documented response shape
+//     for POST /v1/systemone -- the "typesafe" direct transport this module
+//     supports): top-level `model` (string) and `usage: {input_tokens,
+//     output_tokens}` ARE part of the documented response. No cost/$ field is
+//     documented there.
+//   - https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api ("Look up a
+//     generation" response fields: total_cost, market_cost, gateway_cost,
+//     tokens_prompt, tokens_completion, model, id) -- but that is the
+//     SEPARATE `GET /v1/generation?id=...` lookup endpoint, keyed by a
+//     `gen_...` id this module never receives; it is NOT documented as part
+//     of the `/typesafe/v1/systemone` PASSTHROUGH response body itself.
+// So: for the "typesafe" transport, `usage.input_tokens`/`output_tokens` and
+// `model` are real, documented fields and are extracted below. For the
+// "vercel" passthrough transport, whether TypeSafe's `usage`/`model` fields
+// survive the passthrough unchanged is UNVERIFIED (no doc states either way)
+// -- the same field names are checked defensively there too, since doing so
+// costs nothing extra now that `json` is already parsed, but a null result
+// on that transport is the honest, expected default until proven otherwise.
+// No cost/$ field is documented on either transport's systemone response
+// itself, so `cost` checks the Vercel generation-lookup field names purely
+// as defensive forward-compatibility, not because they're expected here.
 function extractCostAndUsage(json) {
   const out = { cost: null, tokensIn: null, tokensOut: null, model: null };
   if (!json || typeof json !== 'object') return out;
 
-  // Gateway "look up a generation" cost field names (REST API doc above).
-  // total_cost is the one actually debited (gateway_cost is identical per
-  // the same doc); market_cost is a secondary fallback.
+  // Vercel "look up a generation" cost field names -- defensive only (see
+  // comment above; not documented on this endpoint's own response body).
   for (const key of ['total_cost', 'gateway_cost', 'market_cost']) {
     if (Number.isFinite(json[key])) { out.cost = json[key]; break; }
   }
 
-  // Gateway "look up a generation" token field names.
+  // Vercel "look up a generation" token field names -- defensive only.
   if (Number.isFinite(json.tokens_prompt)) out.tokensIn = json.tokens_prompt;
   if (Number.isFinite(json.tokens_completion)) out.tokensOut = json.tokens_completion;
 
-  // OpenAI-chat-completions-shaped `usage` object, in case the passthrough
-  // ever wraps one (never observed on this endpoint; defensive only).
   if (json.usage && typeof json.usage === 'object') {
+    // TypeSafe's OWN documented field names (docs.typesafe.ai/api) -- the
+    // ones actually expected on this endpoint's response.
+    if (out.tokensIn === null && Number.isFinite(json.usage.input_tokens)) out.tokensIn = json.usage.input_tokens;
+    if (out.tokensOut === null && Number.isFinite(json.usage.output_tokens)) out.tokensOut = json.usage.output_tokens;
+    // OpenAI-chat-completions-shaped fallback, in case a proxy ever remaps
+    // them; defensive only, never observed on this endpoint.
     if (out.tokensIn === null && Number.isFinite(json.usage.prompt_tokens)) out.tokensIn = json.usage.prompt_tokens;
     if (out.tokensIn === null && Number.isFinite(json.usage.promptTokens)) out.tokensIn = json.usage.promptTokens;
     if (out.tokensOut === null && Number.isFinite(json.usage.completion_tokens)) out.tokensOut = json.usage.completion_tokens;
     if (out.tokensOut === null && Number.isFinite(json.usage.completionTokens)) out.tokensOut = json.usage.completionTokens;
   }
 
+  // TypeSafe's documented top-level `model` field.
   if (typeof json.model === 'string' && json.model) out.model = json.model;
 
   return out;
@@ -429,6 +439,129 @@ async function jevDecideMulti({ questions, state, timeoutMs } = {}) {
   return { ok: true, ms, answers };
 }
 
+// CREDITS_ENDPOINT -- verified from Vercel's own docs:
+// https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#check-credit-balance
+//   GET https://ai-gateway.vercel.sh/v1/credits -> {"balance": "95.50", "total_used": "4.50"}
+//   (both USD, as strings)
+// TypeSafe's OWN direct API documents NO equivalent (checked
+// https://docs.typesafe.ai/api: "only one endpoint is documented" --
+// POST /v1/systemone; no credits/balance endpoint exists there), so
+// getCreditBalance only ever supports the "vercel" transport and returns
+// {ok:false, reason:'unsupported-transport'} for "typesafe", plainly, rather
+// than inventing an endpoint.
+const CREDITS_ENDPOINT = 'https://ai-gateway.vercel.sh/v1/credits';
+
+// getCreditBalance({timeoutMs} = {}) -> Promise<Result>
+//   {ok:true, balanceUsd, totalUsedUsd, ms}
+//   {ok:false, reason: 'unsupported-transport'|'disabled'|'no-key'|'timeout'|
+//                       'network-error'|'http-<status>'|'parse-error'|
+//                       'bad-response', ms?}
+// Fail-open like jevDecide; never throws; never logs the key. Callers (jev
+// report / jev setup status) are responsible for caching this -- it must
+// NEVER be called from the hook path (every call here is a real network
+// request with no cache of its own).
+async function getCreditBalance({ timeoutMs } = {}) {
+  const cfg = loadJevConfig();
+  if (!cfg.enabled) return { ok: false, reason: 'disabled' };
+  if (cfg.transport !== 'vercel') return { ok: false, reason: 'unsupported-transport' };
+
+  const apiKey = resolveCredential(cfg);
+  if (!apiKey) return { ok: false, reason: 'no-key' };
+
+  const effectiveTimeout = (Number.isFinite(timeoutMs) && timeoutMs > 0)
+    ? Math.min(timeoutMs, MAX_TIMEOUT_MS)
+    : cfg.timeoutMs;
+
+  const start = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), effectiveTimeout);
+  try {
+    let res;
+    try {
+      res = await fetch(cfg.endpointOverride || CREDITS_ENDPOINT, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${apiKey}` },
+        signal: controller.signal,
+      });
+    } catch (err) {
+      const ms = Date.now() - start;
+      if (err && (err.name === 'AbortError' || /aborted/i.test(String(err.message || '')))) {
+        return { ok: false, reason: 'timeout', ms };
+      }
+      return { ok: false, reason: 'network-error', ms };
+    }
+
+    if (!res.ok) return { ok: false, reason: `http-${res.status}`, ms: Date.now() - start };
+
+    let text;
+    try {
+      text = await res.text();
+    } catch (_) {
+      return { ok: false, reason: 'parse-error', ms: Date.now() - start };
+    }
+    const ms = Date.now() - start;
+
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (_) {
+      return { ok: false, reason: 'parse-error', ms };
+    }
+
+    const balanceUsd = Number(json && json.balance);
+    const totalUsedUsd = Number(json && json.total_used);
+    if (!Number.isFinite(balanceUsd)) return { ok: false, reason: 'bad-response', ms };
+
+    return { ok: true, balanceUsd, totalUsedUsd: Number.isFinite(totalUsedUsd) ? totalUsedUsd : null, ms };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const CREDITS_CACHE_TTL_MS = 15 * 60 * 1000; // 15 min, per the owner's request
+function creditsCachePath() {
+  return path.join(os.homedir(), '.anti-hall', 'cache', 'jev-credits.json');
+}
+function readCreditsCache() {
+  try {
+    const raw = fs.readFileSync(creditsCachePath(), 'utf8');
+    const parsed = JSON.parse(raw);
+    return (parsed && typeof parsed === 'object') ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+function writeCreditsCache(entry) {
+  try {
+    const p = creditsCachePath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp.' + process.pid;
+    fs.writeFileSync(tmp, JSON.stringify(entry), 'utf8');
+    fs.renameSync(tmp, p);
+  } catch (_) {
+    // best-effort only
+  }
+}
+
+// getCreditBalanceCached({timeoutMs, forceRefresh}) -> same Result shape as
+// getCreditBalance, plus `cached: true|false`. Serves a 15-minute-old cache
+// (~/.anti-hall/cache/jev-credits.json) instead of hitting the network again
+// -- callers (jev-report.js, jev-setup.js status) use this, never
+// getCreditBalance directly, so repeated report/status runs within the
+// window cost zero extra requests. This function itself must ONLY ever be
+// called from a report/status/CLI path, never a hook.
+async function getCreditBalanceCached({ timeoutMs, forceRefresh } = {}) {
+  if (!forceRefresh) {
+    const cached = readCreditsCache();
+    if (cached && Number.isFinite(cached.fetchedAt) && (Date.now() - cached.fetchedAt) < CREDITS_CACHE_TTL_MS) {
+      return Object.assign({}, cached.result, { cached: true });
+    }
+  }
+  const result = await getCreditBalance({ timeoutMs });
+  writeCreditsCache({ fetchedAt: Date.now(), result });
+  return Object.assign({}, result, { cached: false });
+}
+
 module.exports = {
   jevDecide,
   jevDecideMulti,
@@ -436,6 +569,11 @@ module.exports = {
   defaultKeyFilePath,
   expandHome,
   extractCostAndUsage,
+  getCreditBalance,
+  getCreditBalanceCached,
+  CREDITS_ENDPOINT,
+  CREDITS_CACHE_TTL_MS,
+  creditsCachePath,
   DEFAULT_TIMEOUT_MS,
   DEFAULT_CONFIDENCE_THRESHOLD,
   MAX_TIMEOUT_MS,

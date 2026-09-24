@@ -254,6 +254,55 @@ async function runCmdTestInProcess(home, envOverrides = {}) {
   }
 }
 
+async function runCmdStatusInProcess(home, envOverrides = {}) {
+  const savedHome = process.env.HOME;
+  const savedGateway = process.env.AI_GATEWAY_API_KEY;
+  const savedTypesafe = process.env.TYPESAFE_API_KEY;
+  const savedEndpoint = process.env.ANTIHALL_JEV_TEST_ENDPOINT;
+  const savedLog = console.log;
+  const lines = [];
+  console.log = (...args) => lines.push(args.join(' '));
+  process.env.HOME = home;
+  delete process.env.AI_GATEWAY_API_KEY;
+  delete process.env.TYPESAFE_API_KEY;
+  delete process.env.ANTIHALL_JEV_TEST_ENDPOINT;
+  Object.assign(process.env, envOverrides);
+  try {
+    await setupLib.cmdStatus();
+    return lines.join('\n');
+  } finally {
+    console.log = savedLog;
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedGateway === undefined) delete process.env.AI_GATEWAY_API_KEY; else process.env.AI_GATEWAY_API_KEY = savedGateway;
+    if (savedTypesafe === undefined) delete process.env.TYPESAFE_API_KEY; else process.env.TYPESAFE_API_KEY = savedTypesafe;
+    if (savedEndpoint === undefined) delete process.env.ANTIHALL_JEV_TEST_ENDPOINT; else process.env.ANTIHALL_JEV_TEST_ENDPOINT = savedEndpoint;
+  }
+}
+
+test('status: shows the credit balance against a mock /v1/credits server (vercel transport)', async () => {
+  const { home } = makeHome();
+  run(['set-key'], { home, input: 'mock-key-value\n' });
+  run(['enable'], { home });
+
+  await withMockServer(
+    (_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ balance: '42.10', total_used: '7.90' }));
+    },
+    async (endpoint) => {
+      const out = await runCmdStatusInProcess(home, { ANTIHALL_JEV_TEST_ENDPOINT: endpoint });
+      assert.match(out, /credit balance: \$42\.10/);
+      assert.doesNotMatch(out, /mock-key-value/);
+    },
+  );
+});
+
+test('status: no key configured -> no credit balance line at all (not a warning-worthy condition)', async () => {
+  const { home } = makeHome();
+  const out = await runCmdStatusInProcess(home);
+  assert.doesNotMatch(out, /credit balance/);
+});
+
 test('test: ok path against a mock server returns confidence/latency, not the key', async () => {
   const { home } = makeHome();
   run(['set-key'], { home, input: 'mock-key-value\n' });

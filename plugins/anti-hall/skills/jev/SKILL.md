@@ -78,7 +78,14 @@ else.**
 ## "jev status"
 
 Just run `status` and report enabled/transport/key-present/integration
-modes/24h call count. Never needs a key or a network call.
+modes/24h call count. Also shows the Vercel AI Gateway credit balance (`GET
+/v1/credits`, verified at
+https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#check-credit-balance)
+when the transport is `vercel` and a key is present — served from a 15-minute
+cache, so `status` itself only sometimes makes one real request. TypeSafe's
+own direct API documents no equivalent endpoint (checked
+https://docs.typesafe.ai/api), so nothing is shown for the `typesafe`
+transport — never invented.
 
 ## "disable jev"
 
@@ -113,15 +120,18 @@ pricing, or TypeSafe's own pricing for the direct transport). Two cost signals:
 Set `budget` in `~/.anti-hall/jev.json` to watch real spend against a cap:
 
 ```json
-{ "budget": { "mode": "watch", "usdPerDay": 5, "usdPerWeek": 25 } }
+{ "budget": { "mode": "watch", "usdPerDay": 5, "usdPerWeek": 25, "minCreditUsd": 10 } }
 ```
 
 `mode` defaults to `"unlimited"` (no watching, no warnings). In `"watch"` mode,
-`usdPerDay` is required and `usdPerWeek` is optional. When the day's real spend
-exceeds `usdPerDay`, the assist layer logs ONE warning per calendar day to
-`jev-assist.ndjson` (`type:"budget-warning"`) — there is no existing Jev
-user-facing notice path in this build, so the warning surfaces only through
-`jev report` (below), never injected into a hook's own output. **Jev is never
+`usdPerDay` is required and `usdPerWeek`/`minCreditUsd` are optional. When the
+day's real spend exceeds `usdPerDay`, the assist layer logs ONE warning per
+calendar day to `jev-assist.ndjson` (`type:"budget-warning"`) — there is no
+existing Jev user-facing notice path in this build, so the warning surfaces
+only through `jev report` (below), never injected into a hook's own output.
+`minCreditUsd` triggers the SAME once-per-day cadence, but for the Vercel
+credit balance (vercel transport only) instead of spend — checked at report
+time, never in the hook path (see "jev status" above). **Jev is never
 auto-disabled by a budget, in any mode** — a human decides whether to act on
 it.
 

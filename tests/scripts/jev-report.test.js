@@ -510,6 +510,65 @@ test('computeBudgetStatus: under budget -> exceeded false', () => {
   assert.strictEqual(status['24h'].exceeded, false);
 });
 
+// ---------------------------------------------------------------------------
+// Low-credit warning (opt-in: budget.mode "watch" + minCreditUsd)
+// ---------------------------------------------------------------------------
+
+test('maybeWarnLowCredit: not applicable when mode is not "watch"', () => {
+  const { maybeWarnLowCredit } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const r = maybeWarnLowCredit({
+    home: '/nonexistent', budget: { mode: 'unlimited', minCreditUsd: 10 },
+    creditResult: { ok: true, balanceUsd: 1 },
+  });
+  assert.strictEqual(r, null);
+});
+
+test('maybeWarnLowCredit: not applicable when minCreditUsd is unset', () => {
+  const { maybeWarnLowCredit } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const r = maybeWarnLowCredit({
+    home: '/nonexistent', budget: { mode: 'watch', minCreditUsd: null },
+    creditResult: { ok: true, balanceUsd: 1 },
+  });
+  assert.strictEqual(r, null);
+});
+
+test('maybeWarnLowCredit: not applicable when the balance is unknown (credit check failed)', () => {
+  const { maybeWarnLowCredit } = require('../../plugins/anti-hall/scripts/jev-report.js');
+  const r = maybeWarnLowCredit({
+    home: '/nonexistent', budget: { mode: 'watch', minCreditUsd: 10 },
+    creditResult: { ok: false, reason: 'unsupported-transport' },
+  });
+  assert.strictEqual(r, null);
+});
+
+test('maybeWarnLowCredit: above threshold -> belowThreshold false, no state write', () => {
+  const h = makeHome();
+  try {
+    const { maybeWarnLowCredit, budgetStatePath } = require('../../plugins/anti-hall/scripts/jev-report.js');
+    const r = maybeWarnLowCredit({
+      home: h.home, budget: { mode: 'watch', minCreditUsd: 10 },
+      creditResult: { ok: true, balanceUsd: 50 },
+    });
+    assert.strictEqual(r.belowThreshold, false);
+    assert.ok(!fs.existsSync(budgetStatePath(h.home)));
+  } finally { h.cleanup(); }
+});
+
+test('maybeWarnLowCredit: below threshold -> warns once per day, then belowThreshold:true/warnedNow:false on repeat', () => {
+  const h = makeHome();
+  try {
+    const { maybeWarnLowCredit } = require('../../plugins/anti-hall/scripts/jev-report.js');
+    const budget = { mode: 'watch', minCreditUsd: 10 };
+    const creditResult = { ok: true, balanceUsd: 2 };
+    const r1 = maybeWarnLowCredit({ home: h.home, budget, creditResult });
+    assert.strictEqual(r1.belowThreshold, true);
+    assert.strictEqual(r1.warnedNow, true);
+    const r2 = maybeWarnLowCredit({ home: h.home, budget, creditResult });
+    assert.strictEqual(r2.belowThreshold, true);
+    assert.strictEqual(r2.warnedNow, false, 'already warned today -- must not re-fire');
+  } finally { h.cleanup(); }
+});
+
 test('buildTriageAnswerReport: separates urgent vs non-urgent time-to-answer', () => {
   const { buildTriageAnswerReport } = require('../../plugins/anti-hall/scripts/jev-report.js');
   const triageRows = [

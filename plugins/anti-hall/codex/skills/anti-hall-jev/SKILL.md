@@ -59,7 +59,13 @@ itself.
 ## Other verbs
 
 - `status` — enabled/transport/key-present(yes/no only)/integration modes/24h
-  call count. No key or network needed.
+  call count. No key or network needed for those fields. Also shows the
+  Vercel AI Gateway credit balance (`GET /v1/credits`, verified at
+  https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#check-credit-balance)
+  when transport is `vercel` + a key is present, served from a 15-min cache.
+  TypeSafe's own API documents no equivalent (checked
+  https://docs.typesafe.ai/api) -- nothing shown for `typesafe`, never
+  invented.
 - `disable` — or `ANTIHALL_JEV=0` for a one-session-only override.
 - `mode <integration> on|shadow|off` — `on` lets Jev influence that
   integration's outcome; `shadow` consults+logs without changing anything (build
@@ -76,11 +82,13 @@ itself.
   `"default"` entry) in `jev.json` to compute real cost from token counts when
   present instead. Never an extra network call; never charges a cache hit.
 - Budget watch (opt-in): `jev.json` `"budget": {"mode": "watch", "usdPerDay": 5,
-  "usdPerWeek": 25}` (default mode `"unlimited"`, no watching). Over `usdPerDay`,
-  the assist layer logs ONE `type:"budget-warning"` row per calendar day to
-  `jev-assist.ndjson` -- no existing user-facing Jev notice path exists in this
-  build, so it surfaces only via `jev-report.js`. Jev is NEVER auto-disabled by
-  a budget.
+  "usdPerWeek": 25, "minCreditUsd": 10}` (default mode `"unlimited"`, no
+  watching). Over `usdPerDay`, the assist layer logs ONE
+  `type:"budget-warning"` row per calendar day to `jev-assist.ndjson` -- no
+  existing user-facing Jev notice path exists in this build, so it surfaces
+  only via `jev-report.js`. `minCreditUsd` triggers the SAME once-per-day
+  cadence for the Vercel credit balance instead of spend, checked at report
+  time only. Jev is NEVER auto-disabled by a budget.
 - `node "$ANTI_HALL_ROOT/scripts/jev-report.js" label <hash> [tp|fp]` -- the
   ONLY write path this script has (verdict omitted = read-only inspect);
   appends to a separate, append-only `~/.anti-hall/logs/jev-labels.ndjson`

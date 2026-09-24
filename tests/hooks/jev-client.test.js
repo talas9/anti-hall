@@ -25,13 +25,18 @@ const ENV_KEYS = [
   'ANTIHALL_JEV_TEST_ENDPOINT',
 ];
 
-function withEnv(overrides, fn) {
+// NOTE: awaits fn() INSIDE the try (matches jev-assist.test.js's sibling
+// helper) -- getCreditBalanceCached tests make TWO sequential async calls
+// per withEnv block, and restoring env before the first call's promise
+// settles would silently point the second call at the REAL (non-fixture)
+// HOME/endpoint instead of the mock.
+async function withEnv(overrides, fn) {
   const saved = {};
   for (const k of ENV_KEYS) saved[k] = process.env[k];
   try {
     for (const k of ENV_KEYS) delete process.env[k];
     Object.assign(process.env, overrides);
-    return fn();
+    return await fn();
   } finally {
     for (const k of ENV_KEYS) {
       if (saved[k] === undefined) delete process.env[k];
@@ -237,6 +242,15 @@ test('extractCostAndUsage: generation-lookup-shaped cost/token fields are picked
   assert.strictEqual(r.tokensIn, 100);
   assert.strictEqual(r.tokensOut, 50);
   assert.strictEqual(r.model, 'typesafe-ai/jev');
+});
+
+test('extractCostAndUsage: TypeSafe\'s OWN documented usage field names (input_tokens/output_tokens) are extracted', () => {
+  const { extractCostAndUsage } = freshLib();
+  const r = extractCostAndUsage({ model: 'jev-latest', usage: { input_tokens: 55, output_tokens: 12 } });
+  assert.strictEqual(r.tokensIn, 55);
+  assert.strictEqual(r.tokensOut, 12);
+  assert.strictEqual(r.model, 'jev-latest');
+  assert.strictEqual(r.cost, null, 'TypeSafe docs do not document a cost field on this response');
 });
 
 test('extractCostAndUsage: OpenAI-chat-completions-shaped usage object is a defensive fallback for tokens', () => {
@@ -516,6 +530,143 @@ test('jevDecide: credential from jev.json keyFile when env var absent', async ()
   } finally {
     h.cleanup();
   }
+});
+
+// ---------------------------------------------------------------------------
+// getCreditBalance / getCreditBalanceCached
+//
+// Vercel AI Gateway docs (verified):
+//   https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#check-credit-balance
+//   GET /v1/credits -> {"balance": "95.50", "total_used": "4.50"}
+// TypeSafe's own docs (https://docs.typesafe.ai/api) document NO equivalent
+// endpoint -- "typesafe" transport must report unsupported-transport, never
+// invent one.
+// ---------------------------------------------------------------------------
+
+function creditsHandler(balance, totalUsed) {
+  return (req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ balance, total_used: totalUsed }));
+  };
+}
+
+test('getCreditBalance: "typesafe" transport -> unsupported-transport, no HTTP call made', async () => {
+  const h = makeHome();
+  try {
+    await withMockServer(
+      (_req, res) => { assert.fail('no HTTP request should be made for the typesafe transport'); res.end(); },
+      async (endpoint) => {
+        await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', TYPESAFE_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+          h.writeState('jev.json', { enabled: true, transport: 'typesafe' });
+          const { getCreditBalance } = freshLib();
+          const r = await getCreditBalance({});
+          assert.deepStrictEqual(r, { ok: false, reason: 'unsupported-transport' });
+        });
+      }
+    );
+  } finally { h.cleanup(); }
+});
+
+test('getCreditBalance: Jev disabled -> {ok:false, reason:"disabled"}', async () => {
+  const h = makeHome();
+  try {
+    await withEnv({ HOME: h.home }, async () => {
+      const { getCreditBalance } = freshLib();
+      const r = await getCreditBalance({});
+      assert.deepStrictEqual(r, { ok: false, reason: 'disabled' });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('getCreditBalance: enabled, vercel transport, no key -> {ok:false, reason:"no-key"}', async () => {
+  const h = makeHome();
+  try {
+    await withEnv({ HOME: h.home, ANTIHALL_JEV: '1' }, async () => {
+      const { getCreditBalance } = freshLib();
+      const r = await getCreditBalance({});
+      assert.deepStrictEqual(r, { ok: false, reason: 'no-key' });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('getCreditBalance: happy path parses balance/total_used as numbers', async () => {
+  const h = makeHome();
+  try {
+    await withMockServer(creditsHandler('95.50', '4.50'), async (endpoint) => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { getCreditBalance } = freshLib();
+        const r = await getCreditBalance({});
+        assert.strictEqual(r.ok, true);
+        assert.strictEqual(r.balanceUsd, 95.50);
+        assert.strictEqual(r.totalUsedUsd, 4.50);
+        assert.ok(Number.isFinite(r.ms));
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('getCreditBalance: HTTP failure -> http-<status>', async () => {
+  const h = makeHome();
+  try {
+    await withMockServer((_req, res) => { res.writeHead(500); res.end('nope'); }, async (endpoint) => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { getCreditBalance } = freshLib();
+        const r = await getCreditBalance({});
+        assert.strictEqual(r.ok, false);
+        assert.strictEqual(r.reason, 'http-500');
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('getCreditBalance: missing balance field -> bad-response, never fabricated', async () => {
+  const h = makeHome();
+  try {
+    await withMockServer((_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ total_used: '1.00' }));
+    }, async (endpoint) => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { getCreditBalance } = freshLib();
+        const r = await getCreditBalance({});
+        assert.strictEqual(r.ok, false);
+        assert.strictEqual(r.reason, 'bad-response');
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('getCreditBalanceCached: caches the result for the TTL window -- one network call across two invocations', async () => {
+  const h = makeHome();
+  try {
+    let calls = 0;
+    await withMockServer((_req, res) => { calls++; creditsHandler('10.00', '1.00')(_req, res); }, async (endpoint) => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { getCreditBalanceCached } = freshLib();
+        const r1 = await getCreditBalanceCached({});
+        const r2 = await getCreditBalanceCached({});
+        assert.strictEqual(r1.cached, false);
+        assert.strictEqual(r2.cached, true);
+        assert.strictEqual(r2.balanceUsd, 10.00);
+        assert.strictEqual(calls, 1, 'the second call must be served from cache, not the network');
+      });
+    });
+  } finally { h.cleanup(); }
+});
+
+test('getCreditBalanceCached: forceRefresh bypasses the cache', async () => {
+  const h = makeHome();
+  try {
+    let calls = 0;
+    await withMockServer((_req, res) => { calls++; creditsHandler('10.00', '1.00')(_req, res); }, async (endpoint) => {
+      await withEnv({ HOME: h.home, ANTIHALL_JEV: '1', AI_GATEWAY_API_KEY: 'k', ANTIHALL_JEV_TEST_ENDPOINT: endpoint }, async () => {
+        const { getCreditBalanceCached } = freshLib();
+        await getCreditBalanceCached({});
+        await getCreditBalanceCached({ forceRefresh: true });
+        assert.strictEqual(calls, 2);
+      });
+    });
+  } finally { h.cleanup(); }
 });
 
 test('jevDecide: the API key never appears in a returned reason string, on any failure path', async () => {

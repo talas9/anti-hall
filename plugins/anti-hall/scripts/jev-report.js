@@ -295,11 +295,12 @@ function readCostPerCall(home) {
   }
 }
 
-// readBudgetConfig(home) -> {mode, usdPerDay, usdPerWeek}. No
+// readBudgetConfig(home) -> {mode, usdPerDay, usdPerWeek, minCreditUsd}. No
 // hooks/lib/settings.js get('jev', ...) accessor exists in this codebase
 // (checked) -- read directly from jev.json's `budget` key, mirroring
 // hooks/lib/jev-assist.js's own readBudgetConfig. mode defaults
-// "unlimited" (report shows no budget section at all).
+// "unlimited" (report shows no budget section at all). `minCreditUsd` is
+// optional and only meaningful in "watch" mode -- see maybeWarnLowCredit.
 function readBudgetConfig(home) {
   try {
     const raw = fs.readFileSync(jevConfigPath(home), 'utf8');
@@ -308,9 +309,10 @@ function readBudgetConfig(home) {
     const mode = b.mode === 'watch' ? 'watch' : 'unlimited';
     const usdPerDay = (Number.isFinite(b.usdPerDay) && b.usdPerDay > 0) ? b.usdPerDay : null;
     const usdPerWeek = (Number.isFinite(b.usdPerWeek) && b.usdPerWeek > 0) ? b.usdPerWeek : null;
-    return { mode, usdPerDay, usdPerWeek };
+    const minCreditUsd = (Number.isFinite(b.minCreditUsd) && b.minCreditUsd > 0) ? b.minCreditUsd : null;
+    return { mode, usdPerDay, usdPerWeek, minCreditUsd };
   } catch (_) {
-    return { mode: 'unlimited', usdPerDay: null, usdPerWeek: null };
+    return { mode: 'unlimited', usdPerDay: null, usdPerWeek: null, minCreditUsd: null };
   }
 }
 
@@ -347,6 +349,61 @@ function computeBudgetStatus(rows, budget) {
     status['7d'] = null;
   }
   return status;
+}
+
+// --- Low-credit warning (opt-in, needs budget.mode "watch" + minCreditUsd) -
+//
+// Reuses the SAME jev-budget.json state file hooks/lib/jev-assist.js's
+// maybeWarnBudget() writes (a different field, `creditWarnedDate`, so the
+// two "once per day" cadences never collide). The credit BALANCE itself is
+// never fetched here -- jev-client.js's getCreditBalanceCached() (report/
+// status-time only, 15-min cache, see its own doc comment) is the caller's
+// job; this function only decides whether today's warning has already fired
+// and, if not, marks it fired. Never disables Jev.
+function budgetStatePath(home) {
+  return path.join((home || os.homedir()), '.anti-hall', 'state', 'jev-budget.json');
+}
+function readBudgetState(home) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(budgetStatePath(home), 'utf8'));
+    return (parsed && typeof parsed === 'object') ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+function writeBudgetState(home, state) {
+  try {
+    const p = budgetStatePath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(state), 'utf8');
+  } catch (_) {
+    // best-effort only
+  }
+}
+
+// maybeWarnLowCredit({home, budget, creditResult}) -> null (not applicable:
+// mode isn't "watch", minCreditUsd unset, or the balance is unknown) or
+// {belowThreshold, warnedNow, balanceUsd, minCreditUsd}. `warnedNow` is true
+// only the FIRST time this is called below-threshold on a given calendar
+// day; subsequent calls the same day report belowThreshold:true,
+// warnedNow:false so a caller can distinguish "still low, already told you"
+// from "just crossed the line".
+function maybeWarnLowCredit({ home, budget, creditResult }) {
+  if (!budget || budget.mode !== 'watch' || !Number.isFinite(budget.minCreditUsd)) return null;
+  if (!creditResult || !creditResult.ok || !Number.isFinite(creditResult.balanceUsd)) return null;
+
+  const belowThreshold = creditResult.balanceUsd < budget.minCreditUsd;
+  const result = { belowThreshold, warnedNow: false, balanceUsd: creditResult.balanceUsd, minCreditUsd: budget.minCreditUsd };
+  if (!belowThreshold) return result;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const state = readBudgetState(home);
+  if (state.creditWarnedDate !== today) {
+    state.creditWarnedDate = today;
+    writeBudgetState(home, state);
+    result.warnedNow = true;
+  }
+  return result;
 }
 
 // readLines(home) -> array of parsed rows (decision rows + outcome rows),
@@ -791,13 +848,31 @@ function printBudgetStatus(status) {
   for (const line of lines) console.log(line);
 }
 
+// printCredit(credit, lowCredit) — credit is a getCreditBalanceCached()
+// result; prints nothing at all when unsupported/disabled/no-key (the
+// common, expected case for "typesafe" transport or Jev off), since that is
+// not a warning-worthy condition, just "not applicable here".
+function printCredit(credit, lowCredit) {
+  if (!credit) return;
+  if (!credit.ok) {
+    if (credit.reason === 'unsupported-transport' || credit.reason === 'disabled' || credit.reason === 'no-key') return;
+    console.log(`\ncredit balance: n/a (${credit.reason})`);
+    return;
+  }
+  const cachedNote = credit.cached ? ' (cached)' : '';
+  console.log(`\ncredit balance: $${credit.balanceUsd.toFixed(2)}${cachedNote}`);
+  if (lowCredit && lowCredit.belowThreshold) {
+    console.log(`  LOW CREDIT: below configured minCreditUsd ($${lowCredit.minCreditUsd.toFixed(2)}) -- Jev is never auto-disabled by this.`);
+  }
+}
+
 function printHeadlines(report) {
   if (report.integrations.length === 0) return;
   console.log('\nheadlines:');
   for (const r of report.integrations) console.log(`  ${r.headline}`);
 }
 
-function main() {
+async function main() {
   const argv = process.argv.slice(2);
 
   // `label <hash> [tp|fp] [--home <dir>]` — the one write path (verdict
@@ -835,13 +910,27 @@ function main() {
   const budget = readBudgetConfig(home);
   const budgetStatus = computeBudgetStatus(rows, budget);
 
+  // Credit balance: report/status-time only (never the hook path), served
+  // from jev-client.js's own 15-minute cache -- see getCreditBalanceCached's
+  // doc comment. Fail-open: a network/config problem here must never break
+  // the rest of the report.
+  let credit = null; let lowCredit = null;
+  try {
+    const { getCreditBalanceCached } = require('../hooks/lib/jev-client.js');
+    credit = await getCreditBalanceCached({});
+    lowCredit = maybeWarnLowCredit({ home, budget, creditResult: credit });
+  } catch (_) {
+    credit = { ok: false, reason: 'error' };
+  }
+
   if (opts.json) {
-    process.stdout.write(JSON.stringify(Object.assign({}, report, { costWindows, budget, budgetStatus }), null, 2) + '\n');
+    process.stdout.write(JSON.stringify(Object.assign({}, report, { costWindows, budget, budgetStatus, credit, lowCredit }), null, 2) + '\n');
   } else {
     printTable(report);
     printHeadlines(report);
     printCostWindows(costWindows);
     printBudgetStatus(budgetStatus);
+    printCredit(credit, lowCredit);
   }
 }
 
@@ -849,7 +938,7 @@ module.exports = {
   buildReport, readLines, readTriageLines, buildTriageAnswerReport, percentile,
   buildCostWindows, COST_WINDOWS, readBudgetConfig, computeBudgetStatus,
   buildHeadline, labelsLogPath, readLabels, latestHumanLabelByHash, cmdLabel,
-  auditLogPath, readAuditSnippet, cmdPruneAudit,
+  auditLogPath, readAuditSnippet, cmdPruneAudit, maybeWarnLowCredit, budgetStatePath,
 };
 
 if (require.main === module) {

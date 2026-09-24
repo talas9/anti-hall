@@ -292,6 +292,18 @@ the update.
   long base64/hex-looking runs (>=32 chars) before anything is written. `jev report label
   <hash>` prints the stored snippet if one exists. Deletion is manual-only via `jev report
   prune-audit --days N`; nothing in this codebase ever prunes it automatically.
+- **Added: Vercel AI Gateway credit balance.** Verified via
+  https://vercel.com/docs/ai-gateway/sdks-and-apis/rest-api#check-credit-balance
+  (`GET /v1/credits` -> `{balance, total_used}`); TypeSafe's own direct API documents no
+  equivalent (checked https://docs.typesafe.ai/api), so this is `vercel`-transport only, and
+  reports plainly rather than inventing one for `typesafe`. `jev-report.js` and
+  `jev-setup.js status` show the balance, fetched only at report/status time (never the hook
+  path) through a 15-minute cache (`~/.anti-hall/cache/jev-credits.json`). `jev.json`
+  `budget.minCreditUsd` (watch mode only) triggers the same once-per-day low-credit warning
+  cadence the spend budget uses, checked at report time; never auto-disables Jev. Also fixed
+  `extractCostAndUsage` to read TypeSafe's OWN documented `usage.input_tokens`/
+  `output_tokens` field names (confirmed via https://docs.typesafe.ai/api, which the earlier
+  commit had not checked) alongside the existing defensive Vercel/OpenAI-shaped fallbacks.
 
 ## 0.107.0 (2026-09-24)
 
