@@ -84,6 +84,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['handover-resume.js'], 10),
     group(null, ['emit-dedupe-reset.js'], 10),
     group(null, ['defect-nudge.js'], 10),
+    group(null, ['repair-on-reload.js'], 10),
   ],
   UserPromptSubmit: [
     group(null, ['verify-first.js'], 10),
@@ -91,6 +92,7 @@ const ANTI_HALL_HOOKS = {
     group(null, ['limit-conserve-inject.js'], 10),
     group(null, ['devswarm-parent-inbox.js'], 10),
     group(null, ['devswarm-child-turn.js'], 10),
+    group(null, ['repair-on-reload.js'], 10),
   ],
   PreToolUse: [
     group('Bash', ['git-guard.js'], 10),

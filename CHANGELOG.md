@@ -133,6 +133,16 @@ the update.
   else is kept and listed in `keptNotArchivedInApp`, and an unreadable app DB archives
   nothing. The skill docs no longer suggest a roster screenshot as the source.
 
+- **Added: repairs now also run on a plain `/reload-plugins` or a new session
+  on a new version**, not only via `update.js` or a manual `doctor --repair`.
+  A new `repair-on-reload` hook (SessionStart + a UserPromptSubmit fallback,
+  since no documented/observed evidence shows `/reload-plugins` re-fires
+  SessionStart) cheaply compares the running plugin version + migration-
+  registry state against the shared marker store and, only when a repair is
+  pending and none is already in flight (lock-protected), launches `doctor.js
+  --repair` DETACHED — idempotent, fail-open, never blocking the turn, no-op
+  path measured well under budget. Codex parity via its SessionStart/
+  UserPromptSubmit equivalent (same shared hook script).
 - **Changed: `update.js`'s split-store-merge summary now explains re-delivery.**
   The v0.107.0 split-store merge re-delivers already-handled messages as unread
   by design (cursors are never copied across the two backends' independent

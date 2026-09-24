@@ -60,6 +60,11 @@
         "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/defect-nudge.js\"", "timeout": 10 }
         ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", "timeout": 10 }
+        ]
       }
     ],
     "UserPromptSubmit": [
@@ -86,6 +91,11 @@
       {
         "hooks": [
           { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/devswarm-child-turn.js\"", "timeout": 10 }
+        ]
+      },
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${PLUGIN_ROOT}/hooks/repair-on-reload.js\"", "timeout": 10 }
         ]
       }
     ],

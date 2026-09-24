@@ -45,6 +45,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "TaskCreated": [
@@ -194,6 +203,15 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/defect-nudge.js\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/repair-on-reload.js\"",
             "timeout": 10
           }
         ]
