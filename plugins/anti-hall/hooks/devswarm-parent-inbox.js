@@ -1979,16 +1979,18 @@ function main() {
     if (totalUnread > 0) logInjection(home, attention.filter((w) => w.unread > 0));
   }
   if (archiveList.length) {
-    // The per-workspace ARCHIVE_NUDGE_COOLDOWN_MS (10 min, above) already
-    // spaces out repeats ACROSS turns; this on-change dedupe additionally
-    // collapses the SAME copy repeating within one queued-prompt burst (rule
-    // a) and across still-inside-cooldown turns whose list hasn't changed.
+    // NOT wrapped in dedupeEmit: the per-workspace ARCHIVE_NUDGE_COOLDOWN_MS
+    // (10 min, above) is this reminder's OWN cooldown/dedupe — archiveList
+    // already only contains workspaces whose cooldown has elapsed (isArchive-
+    // NudgeDue, near line 593). Adding the generic on-change dedupe on top
+    // suppressed it again for keepaliveTurns even after that cooldown legitimately
+    // elapsed, since the re-emitted text hashes identically to the prior copy —
+    // defeating the "persists once the cooldown elapses" contract this reminder
+    // is designed to keep.
     const archiveSeg = buildArchiveSegment(archiveList);
-    if (dedupeEmit(home, sessionId, 'parent-inbox-archive', archiveSeg, { transcriptPath, keepaliveTurns: 10 })) {
-      segments.push(archiveSeg);
-      // Record the nudge only once it is actually being surfaced this turn.
-      for (const id of archiveList) markArchiveNudged(home, id, now);
-    }
+    segments.push(archiveSeg);
+    // Record the nudge only once it is actually being surfaced this turn.
+    for (const id of archiveList) markArchiveNudged(home, id, now);
   }
 
   const additionalContext = segments.join('\n\n');

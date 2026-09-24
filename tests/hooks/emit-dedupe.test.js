@@ -314,20 +314,15 @@ test('URGENT INBOX segment: unchanged next delivered turn -> suppressed; changed
   } finally { rm(home); }
 });
 
-test('ARCHIVE-READY segment: unchanged next delivered turn -> suppressed; changed list -> emitted', () => {
-  const home = tmpHome();
-  try {
-    const tp = mkTranscript(home);
-    const s1 = inbox.buildArchiveSegment(['ws-a']);
-    const s2 = inbox.buildArchiveSegment(['ws-a', 'ws-b']);
-    const b = { home, sessionId: 's1', key: 'parent-inbox-archive', keepaliveTurns: 10, transcriptPath: tp, env: ON };
-    assert.strictEqual(emit({ ...b, content: s1, now: T0 }), true);
-    deliver(tp, T0 + 20, s1);
-    assert.strictEqual(emit({ ...b, content: s1, now: T0 + MIN }), false, 'unchanged -> suppressed');
-    deliver(tp, T0 + MIN + 20, 'OVERRIDE');
-    assert.strictEqual(emit({ ...b, content: s2, now: T0 + 2 * MIN }), true, 'list change -> emitted');
-  } finally { rm(home); }
-});
+// NOTE: no "ARCHIVE-READY segment" dedupe-library test here (removed alongside
+// the devswarm-parent-inbox.js fix below). The archive-ready reminder is NOT
+// wired through dedupeEmit/'parent-inbox-archive' — it keeps its OWN per-
+// workspace ARCHIVE_NUDGE_COOLDOWN_MS cooldown (archiveList only ever contains
+// workspaces whose cooldown already elapsed), so it must re-surface identical
+// text once that cooldown elapses. Wrapping it in this on-change dedupe
+// suppressed that re-surface for keepaliveTurns turns even past the elapsed
+// cooldown (see tests/e2e/devswarm-substrate.e2e.test.js, test 9 "PERSISTS
+// once the cooldown elapses").
 
 test('STALE WORKSPACE(S) segment: unchanged next delivered turn -> suppressed; changed unread -> emitted', () => {
   const home = tmpHome();
