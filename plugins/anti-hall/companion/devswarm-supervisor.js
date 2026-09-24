@@ -1014,6 +1014,152 @@ function reconcileSweepIfDue(opts) {
   }
 }
 
+// ============================================================================
+// HOUSEKEEPING SWEEP (disk-growth fix) — cooldown-gated periodic retention
+// sweep for two of the three field-measured unbounded-growth dirs (see
+// scratchpad/disk-growth.md):
+//   - <devswarmRoot>/child-gate/*.json (hooks/devswarm-child-gate.js's
+//     per-session Stop-hook cap state — measured 133MB / 34k files)
+//   - <devswarmRoot>/reaped/*.ndjson (hooks/lib/doctor-repair.js's
+//     sweepReapedLogs — already wired into `doctor --repair`, but that only
+//     runs when a human/agent explicitly invokes it; NOTHING periodic ever
+//     drained it on a machine that never runs `doctor --repair`)
+// Both reuse doctor-repair.js's EXISTING sweepChildGateFiles/sweepReapedLogs
+// (sweepAgedFiles under the hood) verbatim — no new deletion logic here, only
+// a periodic scheduling slot around them, same posture as reconcileSweepIfDue
+// above. AUTO-SAFE by the same contract doctor --repair's own R13 wiring
+// documents: NO-DELETE except files strictly older than their own configured
+// retention window, never a fresh one.
+// ============================================================================
+
+const DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS = 60 * 60 * 1000; // 1h — this is disk hygiene, not liveness; no need to run every tick
+const HOUSEKEEPING_SWEEP_STATE_FILE = 'housekeeping-sweep-state.json';
+
+function housekeepingSweepStatePath(home) {
+  return path.join(devswarmRoot(home), HOUSEKEEPING_SWEEP_STATE_FILE);
+}
+
+// housekeepingSweepEnabled(env) — off / hard-kill gates, PLUS its own
+// dedicated sub-toggle (same pattern as reconcileSweepEnabled above).
+function housekeepingSweepEnabled(env) {
+  const e = env || process.env;
+  if (!supervisorEnabled(e)) return false;
+  return String(e.ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP || 'auto').trim().toLowerCase() !== 'off';
+}
+
+// resolveHousekeepingCooldownMs(env) -> ms, floor 5min (typo-safety, same
+// convention as resolveReconcileCooldownMs).
+function resolveHousekeepingCooldownMs(env) {
+  const sec = parseEnvNum(env || process.env, 'ANTIHALL_DEVSWARM_HOUSEKEEPING_SWEEP_SEC',
+    DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS / 1000, { min: 300 });
+  return sec * 1000;
+}
+
+// readHousekeepingSweepState/writeHousekeepingSweepState — same `{lastRunAt}`
+// shape + fail-open-toward-sweeping posture as reconcileSweepStatePath's pair.
+function readHousekeepingSweepState(home, F) {
+  try {
+    const parsed = JSON.parse(F.readFileSync(housekeepingSweepStatePath(home), 'utf8'));
+    return { lastRunAt: Number.isFinite(parsed && parsed.lastRunAt) ? parsed.lastRunAt : 0 };
+  } catch (_) {
+    return { lastRunAt: 0 };
+  }
+}
+function writeHousekeepingSweepState(home, F, state) {
+  try {
+    const p = housekeepingSweepStatePath(home);
+    F.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + process.pid;
+    F.writeFileSync(tmp, JSON.stringify(state));
+    F.renameSync(tmp, p);
+  } catch (_) { /* fail-open: rate-limiting is best-effort only, never load-bearing for correctness */ }
+}
+
+// housekeepingSweepIfDue(opts) -> { ran:false, reason } | { ran:true, results:
+// {reapedLogs, childGate} }. Never throws. opts: { home, env, now, cooldownMs,
+// deps: { fs, doctorRepair, readHousekeepingSweepState, writeHousekeepingSweepState } }.
+function housekeepingSweepIfDue(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const deps = o.deps || {};
+  const F = deps.fs || fs;
+  try {
+    if (!housekeepingSweepEnabled(env)) return { ran: false, reason: 'disabled' };
+    const now = Number.isFinite(o.now) ? o.now : Date.now();
+    const cooldownMs = Number.isFinite(o.cooldownMs) ? o.cooldownMs : resolveHousekeepingCooldownMs(env);
+    const state = (deps.readHousekeepingSweepState || readHousekeepingSweepState)(home, F);
+    if (state.lastRunAt && (now - state.lastRunAt) < cooldownMs) {
+      return { ran: false, reason: 'cooldown', nextEligibleAt: state.lastRunAt + cooldownMs };
+    }
+    // Persist BEFORE running (same ordering rationale as reconcileSweepIfDue —
+    // a sweep that itself hangs/crashes must never re-arm every subsequent tick).
+    (deps.writeHousekeepingSweepState || writeHousekeepingSweepState)(home, F, { lastRunAt: now });
+
+    const doctorRepair = deps.doctorRepair || require('../hooks/lib/doctor-repair.js');
+    let reapedLogs = [];
+    let childGate = [];
+    try { reapedLogs = doctorRepair.sweepReapedLogs({ home, mode: 'repair', env, io: { fs: F, now } }) || []; }
+    catch (e) { reapedLogs = [{ status: 'failed', msg: 'sweepReapedLogs raised: ' + String(e && e.message || e) }]; }
+    try { childGate = doctorRepair.sweepChildGateFiles({ home, mode: 'repair', env, io: { fs: F, now } }) || []; }
+    catch (e) { childGate = [{ status: 'failed', msg: 'sweepChildGateFiles raised: ' + String(e && e.message || e) }]; }
+
+    return { ran: true, results: { reapedLogs, childGate } };
+  } catch (e) {
+    return { ran: false, error: String(e && e.message || e) };
+  }
+}
+
+// ----------------------------------------------------------------------------
+// Supervisor's OWN log file rotation (disk-growth fix, third measured dir:
+// ~/.anti-hall/devswarm-supervisor.log, measured 62MB unbounded). This file is
+// appended to OUT OF PROCESS — launchd's StandardOutPath / systemd journal
+// redirect / cron `>>` — so this process cannot cap it by simply writing less;
+// the only lever available to it is to periodically move the accumulated file
+// aside before the scheduler's next append. Size-checked (cheap: one statSync)
+// at the START of every sweep tick — no cooldown needed, a stat is negligible
+// next to the rest of a tick's work. 10MB threshold, keep 2 generations (the
+// active log + one rotated `.1` backup) — the SAME threshold/generation-count
+// documented in scratchpad/disk-growth.md. Best-effort: a scheduler that has
+// the file open for append may keep writing to the renamed inode until its own
+// next restart — an accepted log-rotation caveat, not a correctness issue
+// (the accumulated bytes are still capped at the next restart at the latest).
+// ============================================================================
+
+const SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT = 10 * 1024 * 1024; // 10MB
+
+function supervisorLogPath(home) {
+  return path.join(home, '.anti-hall', 'devswarm-supervisor.log');
+}
+
+function resolveSupervisorLogRotateBytes(env) {
+  const raw = (env || process.env || {}).ANTIHALL_DEVSWARM_SUPERVISOR_LOG_ROTATE_BYTES;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT;
+}
+
+// rotateSupervisorLogIfNeeded({home, env, fsi}) -> { rotated, size, reason }.
+// Never throws — a rotation failure must never block the sweep it guards.
+function rotateSupervisorLogIfNeeded(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  const env = o.env || process.env;
+  const F = o.fsi || fs;
+  const logPath = supervisorLogPath(home);
+  try {
+    let st;
+    try { st = F.statSync(logPath); } catch (_) { return { rotated: false, size: 0, reason: 'no log file yet' }; }
+    const threshold = resolveSupervisorLogRotateBytes(env);
+    if (st.size <= threshold) return { rotated: false, size: st.size, reason: 'under threshold' };
+    const backup = logPath + '.1';
+    try { F.unlinkSync(backup); } catch (_) { /* absent is fine — keep 2 generations means at most one prior backup */ }
+    F.renameSync(logPath, backup);
+    return { rotated: true, size: st.size, reason: 'rotated to ' + backup };
+  } catch (e) {
+    return { rotated: false, size: 0, reason: 'rotation failed: ' + String(e && e.message || e) };
+  }
+}
+
 function main() {
   let release = null;
   try {
@@ -1021,6 +1167,11 @@ function main() {
     // v0.108.0: mark this process as automation — devswarm-lifecycle's
     // executePrune (workspace DELETE) refuses any non-interactive caller.
     process.env.ANTIHALL_CALLER = 'supervisor';
+    // Log rotation (disk-growth fix): a cheap statSync BEFORE anything else
+    // writes another line to this process's own launchd/systemd/cron-appended
+    // log — see rotateSupervisorLogIfNeeded's header for why this is the one
+    // lever available for a file this process never opens itself.
+    const logRotate = rotateSupervisorLogIfNeeded({ home });
     release = acquireSweepLock(home, {});
     if (!release) { process.exit(0); return; } // a prior sweep is still running — do not stack
     const t = resolveThresholdsFromEnv(process.env);
@@ -1050,6 +1201,9 @@ function main() {
     try {
       if (supervisorEnabled(process.env)) retention = require('./lib/devswarm-retention.js').sweep({ home });
     } catch (e) { retention = { ran: false, error: String((e && e.message) || e) }; }
+    // Housekeeping sweep (disk-growth fix) — cooldown-gated (default 1h),
+    // rides inside this SAME single-flight sweep-lock hold.
+    const housekeeping = housekeepingSweepIfDue({ home });
     // `sweepFamilies` (identity-family collapsed) rides ALONGSIDE the existing
     // `sweep` field (raw per-descriptor count, unchanged — still what
     // sweepOnce actually iterated/wrote verdicts for) rather than replacing
@@ -1059,7 +1213,7 @@ function main() {
     // worktreePath through sweepOnce's per-result shape.
     let sweepFamilies = results.length;
     try { sweepFamilies = collapsedDescriptorFamilies(readDescriptors(home)).length; } catch (_) { /* fail-open: keep raw count */ }
-    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep, appSync, autoArchive, retention }) + '\n');
+    process.stdout.write(JSON.stringify({ ts: new Date().toISOString(), sweep: results.length, sweepFamilies, reconcile, deferredSweep, appSync, autoArchive, retention, housekeeping, logRotate }) + '\n');
   } catch (_) {
     // absolute fail-safe: never throw out of the sweep
   } finally {
@@ -1343,6 +1497,13 @@ module.exports = {
   resolveSupervisorSweepBudgetMs, DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS, DEFERRED_SWEEP_STAGES,
   // v0.108.0 — DevSwarm app-DB sync runner step:
   appDbSyncIfDue, appSyncEnabled,
+  // disk-growth fix — periodic housekeeping sweep (reaped logs + child-gate retention):
+  housekeepingSweepIfDue, housekeepingSweepEnabled, resolveHousekeepingCooldownMs,
+  housekeepingSweepStatePath, readHousekeepingSweepState, writeHousekeepingSweepState,
+  DEFAULT_HOUSEKEEPING_SWEEP_COOLDOWN_MS,
+  // disk-growth fix — supervisor's own log rotation:
+  rotateSupervisorLogIfNeeded, supervisorLogPath, resolveSupervisorLogRotateBytes,
+  SUPERVISOR_LOG_ROTATE_BYTES_DEFAULT,
 };
 
 if (require.main === module) main();

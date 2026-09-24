@@ -1807,6 +1807,7 @@ function runRepairs(opts) {
       ['sweep-send-receipts', () => sweepSendReceipts({ home, mode: sweepMode, env, io: o.io })],
       ['sweep-auto-handover-state', () => sweepAutoHandoverState({ home, mode: sweepMode, env, io: o.io })],
       ['sweep-context-pct-state', () => sweepContextPctState({ home, mode: sweepMode, env, io: o.io })],
+      ['sweep-child-gate', () => sweepChildGateFiles({ home, mode: sweepMode, env, io: o.io })],
       ['sweep-sibling-watermarks', () => sweepOrphanedSiblingWatermarks({ home, mode: sweepMode, env, io: o.io })],
       ['reconcile-nd-cursors', () => reconcileStuckNdCursors({ home, mode: sweepMode, io: o.io })],
       ['gc-stale-summaries', () => {
@@ -2735,6 +2736,27 @@ function sweepContextPctState(opts) {
   });
 }
 
+const CHILD_GATE_RETENTION_DAYS_DEFAULT = 14;
+
+// sweepChildGateFiles({home, mode, env, io}) — retention sweep for
+// <devswarmRoot>/child-gate/<sessionId>.json (hooks/devswarm-child-gate.js's
+// stateFileFor — a Stop-hook block-count/cap state file written ONCE per
+// session, read only by that same session's own later Stop calls). Measured
+// field growth: 133MB / 34k files with nothing ever removing an old session's
+// file. Window: ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS (default 14 days)
+// — a session's own state is worthless once the session itself is long gone;
+// no other reader ever consults another session's file.
+function sweepChildGateFiles(opts) {
+  const o = opts || {};
+  const home = o.home || os.homedir();
+  return sweepAgedFiles({
+    dir: path.join(devswarmRootFor(home), 'child-gate'),
+    suffix: '.json',
+    days: retentionDays(o.env, 'ANTIHALL_DEVSWARM_CHILD_GATE_RETENTION_DAYS', CHILD_GATE_RETENTION_DAYS_DEFAULT),
+    mode: o.mode, io: o.io,
+  });
+}
+
 // sweepOrphanedSiblingWatermarks({home, mode, io}) — R14 F3 (P3) hygiene for
 // the LIVE-SIBLING WATERMARK files (`cursors/<callerId>.seen-<siblingId>.json`,
 // scripts/devswarm.js).
@@ -3000,6 +3022,8 @@ module.exports = {
   // per-session state dirs (never re-read after the session ends):
   sweepAutoHandoverState, sweepContextPctState,
   AUTO_HANDOVER_STATE_RETENTION_DAYS_DEFAULT, CONTEXT_PCT_STATE_RETENTION_DAYS_DEFAULT,
+  // disk-growth fix — bounded retention for per-session child-gate state files:
+  sweepChildGateFiles, CHILD_GATE_RETENTION_DAYS_DEFAULT,
   // R14 F3 — existence-based (never age-based) hygiene for sibling watermarks:
   sweepOrphanedSiblingWatermarks,
   // D1 forward migration — raise a stuck per-instance ND cursor to min(descriptor, inbox lines), never lowers, never skips mail:
