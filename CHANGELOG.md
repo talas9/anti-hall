@@ -245,6 +245,14 @@ the update.
   merged `agree%/label%` column is split into two columns (`agree%`, `label%`). `compare`
   never affects trust math. Added a `costPerCall` quick-start pointer to `skills/jev/
   SKILL.md` (and its Codex mirror).
+- **Fixed: `jev report` was counting a decision once per log row instead of once per
+  decision.** A Stop-hook retry produces one fresh call plus N cache hits sharing the same
+  content hash; changed-decision counts, the outcome join, and the cost estimate were all
+  inflated by every cache-hit retry (a real log showed 6 rows -> 6 "changed" counted for one
+  actual decision). Changed-decision counts/rate, outcome-join, and cost are now deduped by
+  content hash and computed from fresh (non-cached) rows only -- a cache hit is never a new
+  decision and never costs anything. `jev report`'s `calls` column now shows
+  `calls (fresh/cached)`.
 
 ## 0.107.0 (2026-09-24)
 

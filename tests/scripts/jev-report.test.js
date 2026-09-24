@@ -194,6 +194,38 @@ test('buildReport: changed-decision rate high AND a real outcome signal -> KEEP 
   assert.strictEqual(r.suggestion, 'KEEP');
 });
 
+// ---------------------------------------------------------------------------
+// Dedupe by content hash: a Stop-hook retry produces one fresh call + N cache
+// hits sharing the same `h`. Real-log pattern that motivated this: 6
+// changed:"added" rows all sharing hash 23bfcd484e8e71dc -- 1 live call + 5
+// cached hits across 3 Stop-hook retry pairs.
+// ---------------------------------------------------------------------------
+
+test('buildReport: one fresh call + N cache hits sharing a hash count as ONE changed decision, excluded cost/outcome for cache rows', () => {
+  const H = '23bfcd484e8e71dc';
+  const rows = [
+    row({ id: 'speculation', h: H, backend: 'jev', changed: 'added' }), // the 1 live call
+    row({ id: 'speculation', h: H, backend: 'cache', changed: 'added' }),
+    row({ id: 'speculation', h: H, backend: 'cache', changed: 'added' }),
+    row({ id: 'speculation', h: H, backend: 'cache', changed: 'added' }),
+    row({ id: 'speculation', h: H, backend: 'cache', changed: 'added' }),
+    row({ id: 'speculation', h: H, backend: 'cache', changed: 'added' }),
+    // one outcome row for the decision (joins by hash, not per raw row)
+    { ts: new Date().toISOString(), type: 'outcome', id: 'speculation', h: H, outcome: 'evidence-added' },
+  ];
+  const report = buildReport(rows, { costPerCall: 0.01 });
+  const r = report.integrations.find((x) => x.id === 'speculation');
+  assert.strictEqual(r.calls, 6, 'raw row count unchanged');
+  assert.strictEqual(r.freshCalls, 1);
+  assert.strictEqual(r.cachedCalls, 5);
+  assert.strictEqual(r.changedUnique, 1, 'one decision, not six');
+  assert.strictEqual(r.changed.added, 1);
+  assert.strictEqual(r.changedRate, 1, 'yield computed on fresh calls only: 1 unique changed / 1 fresh call');
+  assert.strictEqual(r.knownOutcomes, 1, 'outcome counted once per decision, not once per cache-hit retry');
+  assert.strictEqual(r.goodOutcomeRate, 1);
+  assert.ok(Math.abs(r.costEstimate - 0.01) < 1e-9, 'cost charged for the 1 fresh call only, cache hits are $0');
+});
+
 test('buildTriageAnswerReport: separates urgent vs non-urgent time-to-answer', () => {
   const { buildTriageAnswerReport } = require('../../plugins/anti-hall/scripts/jev-report.js');
   const triageRows = [

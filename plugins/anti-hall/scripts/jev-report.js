@@ -35,6 +35,16 @@
 //   REVIEW otherwise (includes: p95 latency > the integration's own configured
 //     budget, or anything not meeting KEEP/REMOVE above).
 //
+// DEDUPE BY DECISION (content hash `h`): a Stop-hook retry (or any caller
+// re-asking the same content) produces MULTIPLE log rows sharing one hash --
+// one fresh call, then N cache hits. `changed`/`changedUnique`/`changedRate`,
+// the outcome join, and `costEstimate` all count/charge each UNIQUE hash
+// ONCE, from its fresh row only -- a cache hit is never a new decision and
+// never costs anything, so it is excluded from all three, not just
+// de-duplicated. `calls` stays the raw row count (fresh+cached, shown as
+// "calls (fresh/cached)"); `changedRate` and `costEstimate` are computed
+// against `freshCalls` (`calls - cachedCalls`), never `calls`.
+//
 // LABEL-ONLY INTEGRATIONS (e.g. newRequest, a `choice` classifier with no
 // boolean baseline to agree/disagree against): `agreementPct` is n/a (no
 // baseline), so the table instead reports a `label%` column — the top Jev
@@ -207,7 +217,13 @@ function buildReport(rows, opts = {}) {
       byId.set(row.id, {
         id: row.id, calls: 0, jevAnswered: 0, cacheHits: 0, agree: 0, agreeTotal: 0,
         excludedNoCompare: 0,
-        changed: { added: 0, relaxed: 0, changed: 0 }, failures: 0, latencies: [], hashes: [],
+        // changedHashByFresh: hash -> direction, populated ONLY from
+        // non-cached rows. A decision (content hash) is counted ONCE
+        // regardless of how many cache-hit retries share that hash, and a
+        // pure cache hit never enters this map at all (cost $0, and it
+        // isn't a NEW decision) -- see the dedupe fix comment above.
+        changedHashByFresh: new Map(),
+        failures: 0, latencies: [],
         labelCounts: new Map(), labeled: 0,
       });
     }
@@ -236,21 +252,38 @@ function buildReport(rows, opts = {}) {
       bucket.labeled++;
       bucket.labelCounts.set(row.jev, (bucket.labelCounts.get(row.jev) || 0) + 1);
     }
-    if (row.changed === 'added') bucket.changed.added++;
-    else if (row.changed === 'relaxed') bucket.changed.relaxed++;
-    else if (row.changed === 'changed') bucket.changed.changed++;
+    // Dedupe changed decisions by content hash, and EXCLUDE cache hits
+    // entirely: a cache hit is a retry of an already-counted decision, not a
+    // new one, and it costs $0 -- counting it would inflate both the
+    // changed-decision rate and any cost-per-decision metric. Same hash from
+    // multiple fresh calls (e.g. a cache eviction re-triggers the same
+    // content) still collapses to one entry via the Map key.
+    if (row.h && row.changed && row.backend !== 'cache') {
+      bucket.changedHashByFresh.set(row.h, row.changed);
+    }
     if (Number.isFinite(row.ms)) bucket.latencies.push(row.ms);
-    if (row.h && row.changed) bucket.hashes.push(row.h);
   }
 
   const integrations = [];
   for (const bucket of byId.values()) {
-    const totalChanged = bucket.changed.added + bucket.changed.relaxed + bucket.changed.changed;
-    const changedRate = bucket.calls > 0 ? totalChanged / bucket.calls : 0;
+    const changed = { added: 0, relaxed: 0, changed: 0 };
+    for (const direction of bucket.changedHashByFresh.values()) {
+      if (direction === 'added') changed.added++;
+      else if (direction === 'relaxed') changed.relaxed++;
+      else if (direction === 'changed') changed.changed++;
+    }
+    const totalChangedUnique = bucket.changedHashByFresh.size;
+    const freshCalls = bucket.calls - bucket.cacheHits;
+    // Yield is computed on FRESH calls only -- a cache hit never represents
+    // a new Jev decision, so it must not dilute the rate.
+    const changedRate = freshCalls > 0 ? totalChangedUnique / freshCalls : 0;
     const agreementPct = bucket.agreeTotal > 0 ? bucket.agree / bucket.agreeTotal : null;
 
+    // Outcome join is by the SAME deduped unique-hash set (fresh, changed
+    // decisions only) -- iterating raw per-row hashes would count a cache
+    // hit's outcome once per retry instead of once per decision.
     let good = 0; let known = 0;
-    for (const h of bucket.hashes) {
+    for (const h of bucket.changedHashByFresh.keys()) {
       const outcomes = outcomesByHash.get(h);
       if (!outcomes || outcomes.length === 0) continue;
       for (const o of outcomes) {
@@ -314,6 +347,8 @@ function buildReport(rows, opts = {}) {
     integrations.push({
       id: bucket.id,
       calls: bucket.calls,
+      freshCalls,
+      cachedCalls: bucket.cacheHits,
       jevAnsweredPct: bucket.calls > 0 ? bucket.jevAnswered / bucket.calls : 0,
       cacheHits: bucket.cacheHits,
       agreementPct,
@@ -321,7 +356,8 @@ function buildReport(rows, opts = {}) {
       topLabel,
       labelPct,
       labelDistribution,
-      changed: bucket.changed,
+      changed,
+      changedUnique: totalChangedUnique,
       changedRate,
       goodOutcomeRate,
       knownOutcomes: known,
@@ -329,7 +365,8 @@ function buildReport(rows, opts = {}) {
       failureRate,
       p50,
       p95,
-      costEstimate: Number.isFinite(opts.costPerCall) ? bucket.calls * opts.costPerCall : null,
+      // Cache hits cost $0 -- estimate from FRESH calls only.
+      costEstimate: Number.isFinite(opts.costPerCall) ? freshCalls * opts.costPerCall : null,
       suggestion,
     });
   }
@@ -354,9 +391,9 @@ function printTable(report) {
     console.log('No jev-assist.ndjson activity found for this window.');
     return;
   }
-  const header = ['integration', 'calls', 'jev%', 'cache', 'agree%', 'label%', 'added', 'relaxed', 'changed%', 'good-outcome%', 'outcome(jev/regex)', 'p50ms', 'p95ms', 'cost', 'suggestion'];
+  const header = ['integration', 'calls (fresh/cached)', 'jev%', 'agree%', 'label%', 'added', 'relaxed', 'changed%', 'good-outcome%', 'outcome(jev/regex)', 'p50ms', 'p95ms', 'cost', 'suggestion'];
   const rows = report.integrations.map((r) => [
-    r.id, String(r.calls), pct(r.jevAnsweredPct), String(r.cacheHits),
+    r.id, `${r.calls} (${r.freshCalls}/${r.cachedCalls})`, pct(r.jevAnsweredPct),
     r.agreementPct == null
       ? (r.excludedNoCompare > 0 ? 'n/a (no comparison signal)' : 'n/a')
       : pct(r.agreementPct),
