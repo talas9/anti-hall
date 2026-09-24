@@ -6475,7 +6475,34 @@ function cmdRegister(id, flags, ctx, { requireNew } = {}) {
     if (ensured.cursorPath === null || ensured.cursorPath === undefined || ensured.cursorPath === '') {
       ensured.cursorPath = one(flags, 'cursor') || pull.cursorDefaultPath(home, id);
     }
-    writeDescriptorAtomic(home, id, ensured);
+    // #11 ROOT CAUSE FIX: this `ensure` branch runs on EVERY `inbox pull` —
+    // every turn from a live child, AND every reconcile-sweep-spawned pull for
+    // EVERY registered row, including one the DevSwarm app already archived
+    // (reconcile enumerates all registry rows; it has no reason to skip one
+    // yet, since app-archived status is itself derived from this same file's
+    // age — see below). writeDescriptorAtomic used to run UNCONDITIONALLY
+    // here even when `ensured` is byte-identical to `existing` (the steady-
+    // state case), which rewrites the descriptor file via atomic tmp+rename —
+    // bumping its mtime. companion/lib/devswarm-archived-cache.js's
+    // isAppArchived conjunct 4 (rowFirstSeenMs) reads THIS SAME file's mtime
+    // as "when did anti-hall first learn about this row", specifically so a
+    // freshly-spawned workspace gets a grace period before being read as
+    // app-archived by absence. Because the reconcile sweep touches every
+    // row's descriptor on its own cooldown (independent of any real change),
+    // and also writes the app active-list cache's `fetchedAt` in that SAME
+    // tick, `cache.fetchedAt - firstSeen` was always ~0 — permanently
+    // failing the grace conjunct, so an app-archived row could NEVER be
+    // detected: the per-turn roster table (hooks/devswarm-parent-inbox.js)
+    // and `roster` kept showing it "active" with a fresh "last" forever.
+    // Fix: only perform the write (and therefore only bump mtime) when the
+    // ensure pass actually changed something. A genuinely no-op ensure now
+    // leaves the descriptor's mtime — and therefore rowFirstSeenMs — alone,
+    // so it accurately reflects "since when has nothing here changed",
+    // letting the archive grace elapse normally once the app-side probe
+    // confirms absence.
+    if (JSON.stringify(ensured) !== JSON.stringify(existing)) {
+      writeDescriptorAtomic(home, id, ensured);
+    }
     existing = ensured;
     precreateCursorAndInbox(existing);
     upsertStoreRegistry(home, existing, ctx);
@@ -12087,6 +12114,46 @@ function cmdArchiveRequest(id, flags, ctx) {
   const cwd = ctx.cwd || process.cwd();
   const repoKey = repokey.repoKeyForWorktree(cwd);
   if (!repoKey) return { ok: false, reason: 'no-project' };
+
+  // #16: a message posted to a target with NO live session can never be
+  // read — nothing is left running to pull its inbox — so it just feeds the
+  // parent-inbox nag forever ("archive-request sent" but never acted on).
+  // When the target ALSO already has its own descriptor (id-only/never-
+  // registered targets fall straight through to the existing message path,
+  // unchanged — archive-request has never required a registry row, see the
+  // header comment above), a dead+archive-ready target is archived directly
+  // via the existing `archive` path instead of posting an unreadable
+  // message. Fail-open toward the original message-based behavior on any
+  // read/resolution error.
+  const descForRequest = readDescriptorFile(home, id);
+  if (descForRequest) {
+    let liveTarget = true;
+    try {
+      liveTarget = computeRowLive(
+        { id, worktreePath: descForRequest.worktreePath, sessionId: descForRequest.sessionId },
+        home, { now: ctx.now }
+      );
+    } catch (_) { liveTarget = true; }
+    if (!liveTarget) {
+      let archiveReady = false;
+      try {
+        const summaryForRequest = store.readSummaryForHash(home, repoKey);
+        const entryForRequest = summaryForRequest && summaryForRequest.workspaces
+          && summaryForRequest.workspaces[id];
+        archiveReady = !!(entryForRequest && entryForRequest.archive_ready === true);
+      } catch (_) { archiveReady = false; }
+      if (archiveReady) {
+        const archiveResult = cmdArchive(id, ctx, {});
+        return Object.assign({}, archiveResult, {
+          action: 'archive-request', id, childId: id, posted: false,
+          autoArchived: !!archiveResult.ok,
+          reason: one(flags, 'reason') || null,
+          note: 'target has no live session and is archive-ready; archived directly '
+            + 'instead of posting a message it could never read',
+        });
+      }
+    }
+  }
 
   const reason = one(flags, 'reason');
   const message = buildArchiveRequestMessage(reason);

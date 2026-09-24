@@ -316,6 +316,110 @@ test('ensure is idempotent: existing descriptor untouched, store re-upserted', (
   } finally { rm(home); }
 });
 
+// ---- #11 ROOT CAUSE REGRESSION (roster staleness on an app-archived row) ---
+// companion/lib/devswarm-archived-cache.js's isAppArchived requires the
+// descriptor file's mtime (rowFirstSeenMs) to be older than the archive grace
+// (10min default) before an absent-from-hivecontrol row is read as
+// app-archived. cmdReconcile spawns `inbox pull` (this SAME `ensure` branch)
+// for EVERY registered descriptor on its own cooldown, forever, regardless of
+// archive state — so a no-op ensure rewriting the descriptor on every pass
+// permanently reset that age and an app-archived workspace could never clear
+// the grace conjunct (hooks/devswarm-parent-inbox.js's per-turn roster table
+// and `roster` kept showing it "active" with a fresh "last" forever). Proof:
+// a genuinely no-op `ensure` (same worktree/session, nothing to backfill) must
+// leave the descriptor file's mtime UNCHANGED — only a real field change may
+// bump it.
+test('#11: a no-op `ensure` pass leaves the descriptor mtime untouched (so app-archive grace can elapse)', () => {
+  const home = tmpHome();
+  try {
+    const inbox = path.join(home, 'w-inbox.ndjson');
+    const cursor = path.join(home, 'w-cursor.json');
+    // Register with an EXPLICIT inbox/cursor so the later ensure below has
+    // nothing left to backfill — a genuine steady-state no-op, matching what
+    // cmdReconcile's per-sweep `inbox pull` (this SAME `ensure` branch) does
+    // for every already-fully-registered row on every cooldown tick.
+    cli.run(['register', 'w', '--worktree', '/wt/w', '--session', 's1',
+      '--inbox', inbox, '--cursor', cursor], ctx(home));
+    const p = cli.descriptorPath(home, 'w');
+    const mtimeBefore = fs.statSync(p).mtimeMs;
+    // Back-date the file's own mtime so a real rewrite would be observable
+    // even on a filesystem with coarse mtime resolution.
+    const past = new Date(mtimeBefore - 60000);
+    fs.utimesSync(p, past, past);
+    const backdated = fs.statSync(p).mtimeMs;
+    const r = cli.run(['ensure', 'w', '--worktree', '/wt/w', '--session', 's1',
+      '--inbox', inbox, '--cursor', cursor], ctx(home));
+    assert.equal(r.result.ok, true);
+    assert.equal(fs.statSync(p).mtimeMs, backdated); // untouched: no-op ensure must not rewrite
+  } finally { rm(home); }
+});
+
+test('#11: an ensure pass that DOES change a field (e.g. inboxPath backfill) still rewrites the descriptor', () => {
+  const home = tmpHome();
+  try {
+    const p = cli.descriptorPath(home, 'primary-y');
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify({
+      id: 'primary-y', worktreePath: '/wt/primary-y', sessionId: 's1',
+      inboxPath: null, cursorPath: null, ownerKey: storeLib.hashFromWorkspaceId('primary-y'),
+    }));
+    const past = new Date(Date.now() - 60000);
+    fs.utimesSync(p, past, past);
+    const inbox = pullLib.inboxDefaultPath(home, 'primary-y');
+    const cursor = pullLib.cursorDefaultPath(home, 'primary-y');
+    cli.run(['ensure', 'primary-y', '--worktree', '/wt/primary-y', '--session', 's1',
+      '--inbox', inbox, '--cursor', cursor], ctx(home));
+    const desc = JSON.parse(fs.readFileSync(p, 'utf8'));
+    assert.equal(desc.inboxPath, inbox); // real change happened
+    assert.ok(fs.statSync(p).mtimeMs > past.getTime()); // and mtime DID advance
+  } finally { rm(home); }
+});
+
+// ---- #11 END-TO-END: repeated no-op `ensure` (simulating N cmdReconcile
+// sweeps) must let the app-archive grace elapse, so a FAKE hivecontrol
+// snapshot that stops listing the row is correctly read as app-archived. ----
+test('#11: N simulated reconcile-sweep no-op ensures do not block isAppArchived once a fake hivecontrol snapshot omits the row', () => {
+  const archivedCache = require('../../plugins/anti-hall/companion/lib/devswarm-archived-cache.js');
+  const home = tmpHome();
+  try {
+    // worktreePath must live under `.devswarm/repos/` — isAppArchived's
+    // conjunct 2 (isUnderDevswarmReposRoot) requires it.
+    const wt = path.join(os.tmpdir(), '.devswarm', 'repos', '1', 'abc', 'w');
+    fs.mkdirSync(wt, { recursive: true });
+    const inbox = path.join(home, 'w-inbox.ndjson');
+    const cursor = path.join(home, 'w-cursor.json');
+    cli.run(['register', 'w', '--worktree', wt, '--session', 's1',
+      '--inbox', inbox, '--cursor', cursor], ctx(home));
+    const p = cli.descriptorPath(home, 'w');
+    // Simulate 5 reconcile-sweep ticks, each spawning the SAME no-op
+    // `inbox pull` -> `ensure` this file already exercises above. Before the
+    // #11 fix each of these would have rewritten the descriptor (bumping its
+    // mtime); with the fix, none of them do, so the file keeps the SAME
+    // effective "first seen" age throughout.
+    for (let i = 0; i < 5; i++) {
+      cli.run(['ensure', 'w', '--worktree', wt, '--session', 's1',
+        '--inbox', inbox, '--cursor', cursor], ctx(home));
+    }
+    // Age the (untouched) descriptor past the default archive grace (10min).
+    const old = new Date(Date.now() - 20 * 60 * 1000);
+    fs.utimesSync(p, old, old);
+    // FAKE hivecontrol snapshot: fresh, but this repoKey's active list no
+    // longer contains `w` — exactly what the app reports once the owner
+    // archives it there.
+    const repoKey = 'fake-repo-key';
+    archivedCache.writeActiveCache({
+      home, now: Date.now(),
+      byRepoKey: { [repoKey]: [{ id: 'some-other-live-row', worktreePath: '/wt/other' }] },
+    });
+    const appArchived = archivedCache.isAppArchived({
+      home, repoKey, id: 'w', worktreePath: wt, now: Date.now(),
+    });
+    assert.equal(appArchived, true,
+      'a row absent from a fresh hivecontrol snapshot, aged past the grace by NOT having its descriptor '
+      + 'perpetually re-touched by reconcile, must read as app-archived');
+  } finally { rm(home); }
+});
+
 // ---- REGRESSION (primary-* inboxPath:null): cmdRegister's ensure branch used
 // to silently discard the caller's --inbox/--cursor flags (only worktree/
 // session/ownerKey/repoKey were ever backfilled), so a `primary-*` descriptor
@@ -1512,6 +1616,72 @@ test('archive-request rejects an unsafe id (never path-joins hostile input)', ()
     const r = cli.run(['archive-request', '../evil'], ctx(home, { cwd: repo }));
     assert.equal(r.code, 2);
     assert.equal(r.result.ok, false);
+  } finally { rm(home); rm(repo); }
+});
+
+// ---- #16: archive-request to a DEAD, archive-ready target archives it
+// directly instead of posting a message nothing is left running to read. ----
+test('#16: archive-request to a target with NO live session that is archive-ready archives directly, posts no message', () => {
+  const home = tmpHome();
+  const repo = makeGitRepoArchive('dead-archive-ready');
+  try {
+    // A DEAD target: registered, but with the synthetic "unclaimed:" session
+    // prefix isLiveSessionId() explicitly excludes (no heartbeat file either),
+    // so computeRowLive() reads it as not-live — the exact "no live session"
+    // shape a target abandoned mid-turn or long since exited leaves behind.
+    cli.run(['register', 'dead-1', '--worktree', repo, '--session', 'unclaimed:dead-1'], ctx(home, { cwd: repo }));
+    cli.run(['gate', 'dead-1', '--set', 'done,merged,tests_passed'], ctx(home, { cwd: repo }));
+    const r = cli.run(['archive-request', 'dead-1', '--reason', 'done'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.action, 'archive-request');
+    assert.equal(r.result.id, 'dead-1');
+    assert.equal(r.result.childId, 'dead-1');
+    assert.equal(r.result.posted, false);
+    assert.equal(r.result.autoArchived, true);
+    // archived via the real archive path: descriptor moved, never deleted
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'dead-1')), false);
+    assert.equal(fs.existsSync(path.join(cli.archivedDir(home), 'dead-1.json')), true);
+    // no unreadable mesh message was posted
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      assert.equal(s.listMessages('dead-1').length, 0);
+    } finally { s.close(); }
+  } finally { rm(home); rm(repo); }
+});
+
+test('#16: archive-request to a DEAD target that is NOT yet archive-ready still posts the message (unchanged behavior)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepoArchive('dead-not-ready');
+  try {
+    cli.run(['register', 'dead-2', '--worktree', repo, '--session', 'unclaimed:dead-2'], ctx(home, { cwd: repo }));
+    // No gates set -> archive_ready stays false.
+    const r = cli.run(['archive-request', 'dead-2'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.posted, true);
+    assert.equal(r.result.autoArchived, undefined);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'dead-2')), true); // NOT archived
+    const repoKey = repokey.repoKeyForWorktree(repo);
+    const s = storeLib.openStore({ home, hash: repoKey, backend: 'journal' });
+    try {
+      assert.equal(s.listMessages('dead-2').length, 1);
+    } finally { s.close(); }
+  } finally { rm(home); rm(repo); }
+});
+
+test('#16: archive-request to a LIVE, archive-ready target still posts the message (unchanged behavior)', () => {
+  const home = tmpHome();
+  const repo = makeGitRepoArchive('live-archive-ready');
+  try {
+    // A real, non-synthetic sessionId -> isLiveSessionId() true, and no
+    // liveness signal marks it dormant (freshly registered) -> computeRowLive() true.
+    cli.run(['register', 'live-1', '--worktree', repo, '--session', 'real-session-1'], ctx(home, { cwd: repo }));
+    cli.run(['gate', 'live-1', '--set', 'done,merged,tests_passed'], ctx(home, { cwd: repo }));
+    const r = cli.run(['archive-request', 'live-1'], ctx(home, { cwd: repo }));
+    assert.equal(r.result.ok, true);
+    assert.equal(r.result.posted, true);
+    assert.equal(r.result.autoArchived, undefined);
+    assert.equal(fs.existsSync(cli.descriptorPath(home, 'live-1')), true); // NOT archived
   } finally { rm(home); rm(repo); }
 });
 
