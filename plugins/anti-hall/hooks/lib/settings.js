@@ -120,6 +120,12 @@ function coerceBoolToken(raw) {
 // malformed settings.json shape) is rejected outright rather than coerced.
 function coerceValue(entry, raw) {
   if (raw === undefined || raw === null) return undefined;
+  // 'object' is the one type allowed to be a real object (file-only settings
+  // like jev.prices — no env override, no CLI `set`; edited directly in
+  // settings.json). Anything array-shaped or empty is rejected/falls through.
+  if (entry.type === 'object') {
+    return (typeof raw === 'object' && !Array.isArray(raw) && Object.keys(raw).length > 0) ? raw : undefined;
+  }
   if (typeof raw !== 'string' && typeof raw !== 'number' && typeof raw !== 'boolean') return undefined;
   const trimmed = typeof raw === 'string' ? raw.trim() : raw;
   if (trimmed === '') return undefined;
@@ -296,6 +302,9 @@ function get(section, key, dflt, opts) {
 // validate(entry, value) -> {ok, error?, value?} — coerces + range/enum
 // checks; used by set() so a bad write is rejected instead of stored.
 function validate(entry, value) {
+  if (entry.type === 'object') {
+    return { ok: false, error: 'this setting is file-only (edit ~/.anti-hall/settings.json directly); it cannot be changed via set()' };
+  }
   if (entry.type === 'boolean') {
     if (typeof value === 'boolean') return { ok: true, value };
     const b = coerceBoolToken(value);

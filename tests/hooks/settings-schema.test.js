@@ -8,7 +8,7 @@ const assert = require('node:assert');
 
 const SCHEMA = require('../../plugins/anti-hall/hooks/lib/settings-schema.js');
 
-const VALID_TYPES = new Set(['boolean', 'number', 'string', 'enum', 'csv']);
+const VALID_TYPES = new Set(['boolean', 'number', 'string', 'enum', 'csv', 'object']);
 
 test('every section has a unique key, label, and at least one setting', () => {
   const seen = new Set();

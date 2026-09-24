@@ -39,6 +39,9 @@
     "jev_budget_usd_per_week": { "type": "number", "title": "Jev weekly budget (USD)", "description": "Weekly USD spend threshold, used only when budget mode is \"watch\". Leave unset for no weekly threshold." },
     "devswarm_hivecontrol": { "type": "string", "title": "DevSwarm hivecontrol path", "description": "Explicit path to the hivecontrol CLI binary (default: PATH lookup).", "default": "" },
     "devswarm_supervisor_mode": { "type": "string", "title": "DevSwarm supervisor mode", "description": "Force the DevSwarm supervisor context on/off, or auto-detect (auto|on|off).", "default": "auto" },
+    "devswarm_auto_archive_mode": { "type": "string", "title": "DevSwarm auto-archive", "description": "Auto-archive finished workspaces, needs DevSwarm >= 2.5.3 (on|dry-run|off).", "default": "on" },
+    "devswarm_auto_archive_idle_min": { "type": "number", "title": "DevSwarm auto-archive idle minutes", "description": "Minutes idle before a finished workspace is eligible for auto-archive.", "default": 30, "min": 5 },
+    "devswarm_auto_archive_max_per_sweep": { "type": "number", "title": "DevSwarm auto-archive max per sweep", "description": "Max workspaces auto-archived in one sweep.", "default": 3, "min": 1, "max": 20 },
     "statusline_base": { "type": "string", "title": "Statusline base command", "description": "Shell command run as the line-1 base in consolidated statusline mode.", "default": "" },
     "statusline_no_email": { "type": "boolean", "title": "Hide statusline email", "description": "Suppress the email segment in the statusline.", "default": false }
   }

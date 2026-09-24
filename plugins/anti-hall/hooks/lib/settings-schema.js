@@ -123,6 +123,10 @@ const SECTIONS = [
       { key: 'budget.mode', type: 'enum', values: ['unlimited', 'watch'], default: 'unlimited', pluginOption: 'jev_budget_mode', description: 'Jev spend: no limit, or warn when over budget (never auto-disables). [source: jev-assist budget (0.108.0)]' },
       { key: 'budget.usdPerDay', type: 'number', exclusiveMin: 0, default: null, optional: true, pluginOption: 'jev_budget_usd_per_day', description: 'optional: daily USD spend threshold, used only when budget.mode=watch. [source: jev-assist budget (0.108.0)]' },
       { key: 'budget.usdPerWeek', type: 'number', exclusiveMin: 0, default: null, optional: true, pluginOption: 'jev_budget_usd_per_week', description: 'optional: weekly USD spend threshold, used only when budget.mode=watch. [source: jev-assist budget (0.108.0)]' },
+      // [wired at integration — jevmetrics clone] audit/pricing knobs below.
+      { key: 'audit.snippets', type: 'boolean', default: false, env: 'ANTIHALL_JEV_AUDIT_SNIPPETS', advanced: true, description: 'Include text snippets in Jev audit logs (off by default: privacy). [wired at integration: jevmetrics clone]' },
+      { key: 'budget.minCreditUsd', type: 'number', default: null, optional: true, description: 'optional: minimum remaining credit (USD) before budget.mode=watch warns. [wired at integration: jevmetrics clone]' },
+      { key: 'prices', type: 'object', default: null, computed: true, advanced: true, description: 'computed: per-model USD pricing table, file-only (no env override, no CLI set) — edit ~/.anti-hall/settings.json directly. [wired at integration: jevmetrics clone]' },
     ],
   },
   {
@@ -162,6 +166,27 @@ const SECTIONS = [
       { key: 'wakeCron', type: 'string', default: '*/30 * * * *', env: 'ANTIHALL_DEVSWARM_WAKE_CRON', advanced: true, description: 'Wake-poll cron schedule override (treated as untrusted input). [verified: hooks/lib/devswarm-wake.js:67 WAKE_CRON_DEFAULT = \'*/30 * * * *\']' },
       { key: 'wakeWatchPollMs', type: 'number', min: 250, max: 60000, default: 2000, env: 'ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS', advanced: true, description: 'Poll interval (ms) for the wake-watch loop, clamped [250,60000]. [verified: companion/lib/devswarm-wake-watch.js:215 DEFAULT_POLL_MS = 2000]' },
       { key: 'supervisorSweepBudgetMs', type: 'number', min: 0, default: 20000, env: 'ANTIHALL_SUPERVISOR_SWEEP_BUDGET_MS', advanced: true, description: 'Time budget (ms) for one supervisor sweep pass. [verified: companion/devswarm-supervisor.js:1029 DEFAULT_SUPERVISOR_SWEEP_BUDGET_MS = 20000]' },
+
+      // ---- Workspace lifecycle (auto-archive) ----
+      // [wired at integration — companion/lib/devswarm-lifecycle.js does not
+      // exist in this clone yet (built on a parallel lifecycle-clone worker).
+      // Schema-only for now: defaults/types/bounds per the integration spec,
+      // no env var confirmed against source, NOT covered by
+      // settings-defaults-crosscheck.test.js or settings-home-injection.test.js
+      // — add both once the real module lands and its env names are known.]
+      { key: 'autoArchive.mode', type: 'enum', values: ['on', 'dry-run', 'off'], default: 'on', env: 'ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MODE', pluginOption: 'devswarm_auto_archive_mode', description: 'Auto-archive finished workspaces (needs DevSwarm ≥ 2.5.3). [wired at integration: companion/lib/devswarm-lifecycle.js]' },
+      { key: 'autoArchive.idleMin', type: 'number', min: 5, default: 30, env: 'ANTIHALL_DEVSWARM_AUTO_ARCHIVE_IDLE_MIN', pluginOption: 'devswarm_auto_archive_idle_min', advanced: true, description: 'Minutes idle before a finished workspace is eligible for auto-archive. [wired at integration: companion/lib/devswarm-lifecycle.js]' },
+      { key: 'autoArchive.maxPerSweep', type: 'number', min: 1, max: 20, default: 3, env: 'ANTIHALL_DEVSWARM_AUTO_ARCHIVE_MAX_PER_SWEEP', pluginOption: 'devswarm_auto_archive_max_per_sweep', advanced: true, description: 'Max workspaces auto-archived in one sweep. [wired at integration: companion/lib/devswarm-lifecycle.js]' },
+
+      // ---- Retention ----
+      // [wired at integration — companion/lib/devswarm-retention.js does not
+      // exist in this clone yet (in progress on a parallel retention-clone
+      // worker). Schema-only for now; see note above.]
+      { key: 'retention.days', type: 'number', min: 0, default: 30, env: 'ANTIHALL_DEVSWARM_RETENTION_DAYS', advanced: true, description: 'Days to retain mesh history; 0 = off. [wired at integration: companion/lib/devswarm-retention.js]' },
+      { key: 'retention.maxStoreMB', type: 'number', min: 0, default: 100, env: 'ANTIHALL_DEVSWARM_RETENTION_MAX_STORE_MB', advanced: true, description: 'Max store size (MB) before retention trims older entries. [wired at integration: companion/lib/devswarm-retention.js]' },
+      { key: 'retention.keepPerPartition', type: 'number', min: 0, default: 200, env: 'ANTIHALL_DEVSWARM_RETENTION_KEEP_PER_PARTITION', advanced: true, description: 'Min messages kept per partition regardless of age/size limits. [wired at integration: companion/lib/devswarm-retention.js]' },
+      { key: 'retention.archive', type: 'boolean', default: true, env: 'ANTIHALL_DEVSWARM_RETENTION_ARCHIVE', advanced: true, description: 'Archive trimmed entries instead of deleting them outright. [wired at integration: companion/lib/devswarm-retention.js]' },
+      { key: 'retention.archiveMaxMB', type: 'number', min: 0, default: 200, env: 'ANTIHALL_DEVSWARM_RETENTION_ARCHIVE_MAX_MB', advanced: true, description: 'Max size (MB) of the retention archive before it is itself pruned. [wired at integration: companion/lib/devswarm-retention.js]' },
     ],
   },
   {
