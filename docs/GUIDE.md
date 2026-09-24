@@ -1338,10 +1338,10 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `jev.triage` adv | `true` | — | Message-triage labeling once Jev is enabled. |
 | `jev.triageUrgentThreshold` adv | `0.9` [0..1] | — | Confidence threshold for the urgent triage label. |
 | `jev.budget.mode` | `unlimited` (unlimited/watch) | — | Jev spend: no limit, or warn when over budget (never auto-disables). |
-| `jev.budget.usdPerDay` | — | — | optional: daily USD spend threshold, used only when budget.mode=watch. |
-| `jev.budget.usdPerWeek` | — | — | optional: weekly USD spend threshold, used only when budget.mode=watch. |
+| `jev.budget.usdPerDay` | — (>0) | — | optional: daily USD spend threshold, used only when budget.mode=watch. |
+| `jev.budget.usdPerWeek` | — (>0) | — | optional: weekly USD spend threshold, used only when budget.mode=watch. |
 | `jev.audit.snippets` adv | `false` | `ANTIHALL_JEV_AUDIT_SNIPPETS` | Store a redacted ~200-char snippet for decisions Jev changed (off by default: privacy). |
-| `jev.budget.minCreditUsd` | — | — | optional: warn (once a day, budget.mode=watch only) when the gateway credit balance drops below this USD amount. |
+| `jev.budget.minCreditUsd` | — (>0) | — | optional: warn (once a day, budget.mode=watch only) when the gateway credit balance drops below this USD amount. |
 | `jev.prices` adv | — | — | computed: per-model USD price table {model: {inPerMTok, outPerMTok}} (or a "default" entry), used only when the gateway reports tokens but no cost. File-only (no env, no CLI set) — edit ~/.anti-hall/settings.json directly. |
 | `devswarm.hivecontrol` | — | `ANTIHALL_DEVSWARM_HIVECONTROL` | Explicit path to the hivecontrol CLI binary (default: PATH lookup — no single default value; empty means "look it up"). |
 | `devswarm.supervisorMode` | `auto` (auto/on/off) | `ANTIHALL_DEVSWARM_SUPERVISOR` | Force the DevSwarm supervisor context on/off, or auto-detect. |
@@ -1354,7 +1354,7 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.archivedGraceMs` adv | `600000` [0..] | `ANTIHALL_DEVSWARM_ARCHIVED_GRACE_MS` | Grace period (ms) before a workspace is considered archived. |
 | `devswarm.cooldownSec` adv | `600` [0..] | `ANTIHALL_DEVSWARM_COOLDOWN_SEC` | Supervisor cooldown (sec) between recovery actions. |
 | `devswarm.idleSec` adv | `900` [60..] | `ANTIHALL_DEVSWARM_IDLE_SEC` | Supervisor idle threshold (sec). |
-| `devswarm.dormantMs` adv | `1800000` [0..] | `ANTIHALL_DEVSWARM_DORMANT_MS` | Dormant-workspace threshold (ms). |
+| `devswarm.dormantMs` adv | `1800000` (>0) | `ANTIHALL_DEVSWARM_DORMANT_MS` | Dormant-workspace threshold (ms). |
 | `devswarm.drainTtlMs` adv | `600000` [0..] | `ANTIHALL_DEVSWARM_DRAIN_TTL_MS` | TTL (ms) for the drain marker. |
 | `devswarm.graceSec` adv | `5` [1..60] | `ANTIHALL_DEVSWARM_GRACE_SEC` | Grace window (sec) before recovery in devswarm-recover. |
 | `devswarm.maxRecoveries` adv | `3` [1..20] | `ANTIHALL_DEVSWARM_MAX_RECOVERIES` | Max auto-recovery attempts. |
@@ -1365,12 +1365,12 @@ Generated from `hooks/lib/settings-schema.js` (a hygiene test keeps this table a
 | `devswarm.nudgeMaxAttempts` adv | `2` [1..20] | `ANTIHALL_DEVSWARM_NUDGE_MAX_ATTEMPTS` | Max nudge attempts before escalation. |
 | `devswarm.nudgeWindowSec` adv | `180` [1..] | `ANTIHALL_DEVSWARM_NUDGE_WINDOW_SEC` | Window (sec) for counting nudge attempts. |
 | `devswarm.postSpawnGraceSec` adv | `120` [0..1800] | `ANTIHALL_DEVSWARM_POST_SPAWN_GRACE_SEC` | Grace period (sec) right after spawning a child workspace, clamped [0,1800]. |
-| `devswarm.reapedRetentionDays` adv | `30` [0..] | `ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS` | Retention window (days) for reaped-workspace logs. |
+| `devswarm.reapedRetentionDays` adv | `30` (>0) | `ANTIHALL_DEVSWARM_REAPED_RETENTION_DAYS` | Retention window (days) for reaped-workspace logs. |
 | `devswarm.receiptWindowMs` adv | `300000` [0..] | `ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS` | Window (ms) for parent-reply receipt tracking. |
 | `devswarm.reconcileSweep` adv | `auto` (auto/off) | `ANTIHALL_DEVSWARM_RECONCILE_SWEEP` | Enable/disable the periodic reconcile sweep in the supervisor. |
 | `devswarm.reconcileSweepSec` adv | `900` [300..] | `ANTIHALL_DEVSWARM_RECONCILE_SWEEP_SEC` | Interval (sec) for the reconcile sweep, floor 300s. |
 | `devswarm.rowStaleMs` adv | `86400000` [0..] | `ANTIHALL_DEVSWARM_ROW_STALE_MS` | Staleness threshold (ms) for workspace row selection. |
-| `devswarm.sendReceiptRetentionDays` adv | `7` [0..] | `ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS` | Retention window (days) for send-receipt records. |
+| `devswarm.sendReceiptRetentionDays` adv | `7` (>0) | `ANTIHALL_DEVSWARM_SEND_RECEIPT_RETENTION_DAYS` | Retention window (days) for send-receipt records. |
 | `devswarm.summaryRetentionDays` adv | `30` [0..] | `ANTIHALL_DEVSWARM_SUMMARY_RETENTION_DAYS` | Retention window (days) for summary records. |
 | `devswarm.wakeCron` adv | `*/30 * * * *` | `ANTIHALL_DEVSWARM_WAKE_CRON` | Wake-poll cron schedule override (treated as untrusted input). |
 | `devswarm.wakeWatchPollMs` adv | `2000` [250..60000] | `ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS` | Poll interval (ms) for the wake-watch loop, clamped [250,60000]. |
