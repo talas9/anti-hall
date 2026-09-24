@@ -168,7 +168,7 @@ Shared libraries (not hooks): `verify-first-core.js`, `coordinator-detect.js`, `
 |---|---|
 | scripts/settings.js | `show [--all] [--section s] [--json]`, `get`, `set`, `reset` — the settings store CLI. |
 | scripts/auto-handover-config.js | `get \| set <1-99> \| off \| on \| max-tokens <n> \| nag on\|off \| nag-step <n> \| nag-quiet <n>` — alias over `autoHandover.*`. |
-| scripts/devswarm.js | The DevSwarm mesh CLI (JSON out): register/ensure, heartbeat, send, inbox, roster, mesh, gate, spawn, merge, archive, reconcile, diagnose, healthcheck, app-state, app-sync, sync-ui, auto-archive, prune-archived, retention, … (`help` lists all). |
+| scripts/devswarm.js | The DevSwarm mesh CLI (JSON out): register/ensure, register-primary, primary status/takeover, heartbeat, send, inbox, roster, mesh, gate, spawn, merge, archive, reconcile, diagnose, healthcheck, app-state, app-sync, sync-ui, auto-archive, prune-archived, retention, … (`help` lists all). |
 | scripts/devswarm-store-leak-report.js | Read-only audit of DevSwarm store growth/leaks. |
 | scripts/jev-setup.js | `status \| enable \| disable \| set-key \| test \| mode` (`--transport vercel\|typesafe`). |
 | scripts/jev-report.js | Per-integration calls, precision, cost/efficiency, budget status, credit balance; `label`, `prune-audit`. |

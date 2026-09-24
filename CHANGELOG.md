@@ -137,6 +137,27 @@ the update.
   registration even when the running one predates it; a registration done by the parent is
   never hidden by the child's no-op. `doctor` warns when `installed_plugins.json` lags the
   newest cache/marketplace version.
+- **Identity: a child's messages were labelled as a Primary.** Every sender's `from` was
+  `primary-<worktree hash>`, children included, so a resumed Primary could see another
+  "Primary" and stand down. `send`, `archive-request` and the `merge` broadcast now label a
+  child worktree with its workspace id; only the Primary checkout (the app's `primary`
+  builder, else the main worktree) sends as `primary-<hash>`. `register-primary` refuses in
+  a child worktree (`not-primary-checkout`; `--force` overrides). `heartbeat`, `register`
+  and `ensure` refuse a child worktree's label (`child-label-id`, naming the real id), so a
+  placeholder row can no longer look like a live twin. Questions and broadcasts sent under
+  an old child label are attributed to the child (`mesh read` keeps the stored
+  `fromLabel`).
+- **Identity: the Primary anchor follows the running session** after a `/clear`: `inbox
+  tick`/`heartbeat` re-point it (Primary checkout only, never while the recorded session is
+  still running), and the briefing names a newer session on the Primary's worktree
+  (read-only).
+- **New: the Primary seat survives a session change.** At SessionStart a new session in
+  the Primary checkout adopts `primary-<hash>` (same partitions and cursors) when the
+  holder has closed, and is told which handover to read. While the holder is still live
+  nothing is taken over; the conflicting session is warned and its `send`, `inbox ack`,
+  `ack-primary`, `spawn` and `merge` are refused (`primary-seat-conflict`) until
+  `devswarm.js primary takeover`; `primary status` shows the seat. Liveness: harness
+  session pid, then the app's active terminal, then heartbeat age; unknown → warn only.
 - **Stale-build children looked neglected.** `heartbeat`/`inbox tick` stamp the running
   anti-hall version; the roster, parent-inbox table and nag, and `doctor` show
   `stale anti-hall <v>: restart this session` instead of `not-draining` when a workspace
@@ -191,6 +212,12 @@ the update.
 
 ### Data repairs (update + `doctor --repair`, idempotent, never delete)
 
+- **`repair-child-sender-labels`** (update + `doctor --repair`): maps each child's old
+  `primary-<hash>` label (with or without a registry row) to its id in
+  `sender-aliases.json`; a non-live phantom `primary-<childhash>` row has its unread mail
+  forwarded to the child's partition, then is retired with a redirect and an archived
+  marker (a live one is retried next run). Stored messages are not rewritten; nothing is
+  deleted.
 - **Settings migration**: legacy config (`~/.anti-hall/jev.json`, including nested
   `budget`/`audit` keys) is forward-migrated into `settings.json` once per version; the
   legacy file is never deleted, and file-only `prices` keeps being read from it.
