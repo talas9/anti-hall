@@ -5,6 +5,10 @@
 > used to live in README.md / plugins/anti-hall/README.md is preserved below,
 > verbatim where practical.
 
+<!-- 0.108: auto-handover, settings page, version-alert v2, Jev cost/efficiency,
+     and repair-on-reload are being built elsewhere — document them here once
+     they ship (hook reference + skills reference sections below). -->
+
 ## Contents
 - [Hook reference (detailed)](#hook-reference-detailed)
 - [Skills reference (detailed)](#skills-reference-detailed)
@@ -1107,6 +1111,9 @@ into their own repo root manually.
 ## Hook reference — plugin "Features" table (detailed, per-hook)
 
 Moved from plugins/anti-hall/README.md "Features" (v0.107.0 doc sweep).
+
+<!-- 0.108: add rows for auto-handover, settings page, version-alert v2,
+     Jev cost/efficiency, and repair-on-reload once those ship. -->
 
 ## Features
 

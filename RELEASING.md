@@ -32,5 +32,3 @@ A version bump that adds/changes a hook/skill/discipline is NOT done until READM
 - Auto-crawl directories (e.g. claudemarketplaces.com) — automatic for public repos with valid `.claude-plugin/marketplace.json`.
 - Community awesome-lists (PR): awesome-claude-plugins (ComposioHQ), awesome-claude-code-plugins (ccplugins), awesome-claude-code (jqueryscript).
 - Promotion: dev.to/blog post, Show HN (strict no-hype), r/ClaudeAI, X/#ClaudeCode. Needs a demo GIF.
-
-Add a one-line pointer to RELEASING.md from AGENTS.md (in the commit/push hygiene area) if a natural spot exists.

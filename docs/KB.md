@@ -48,6 +48,24 @@ debates reference the living docs for evidence; the *current* state and the
 
 ## 1. Current plugin ground truth
 
+> [UPDATE 2026-09-24] Re-verified against the working tree on **2026-09-24**:
+> committed `plugin.json` version is `0.107.0`. Hooks: **56** `.js` files under
+> `plugins/anti-hall/hooks/` (incl. shared library modules, not all separately
+> registered in `hooks.json`). Claude skills: **17** directories under
+> `plugins/anti-hall/skills/` (+ `MODEL-POLICY.md`, not itself a skill); Codex
+> skills: **20** directories under `plugins/anti-hall/codex/skills/`.
+> `PostToolUse` wired: 3 Bash-matcher handlers (`output-verify-guard.js`,
+> `devswarm-parent-reply-tracker.js`, `devswarm-child-drain.js`).
+> `PostToolUseFailure` wired: 1 Bash-matcher handler (`failure-root-cause-nudge.js`).
+> Counts re-derived from `ls plugins/anti-hall/hooks/*.js`,
+> `ls -d plugins/anti-hall/skills/*/`, `ls -d plugins/anti-hall/codex/skills/*/`, and
+> `hooks.json` — not carried forward from the stale blocks below. The earlier
+> blocks are retained for their per-version prose history, not overwritten (per
+> this doc's own §6 recommendation for a generated ground-truth block instead of
+> hand-maintained counts — still not implemented).
+> <!-- 0.108: update version/hook/skill counts once auto-handover, settings page,
+>      version alert v2, Jev cost/efficiency, and repair-on-reload ship. -->
+>
 > [UPDATE 2026-08-22] Re-verified against the working tree on **2026-08-22**:
 > committed `plugin.json` version is `0.75.1`; the working tree carries `0.76.0`
 > (release in flight, uncommitted per release-prep convention — do not assert

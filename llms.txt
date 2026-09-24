@@ -15,6 +15,10 @@
 > CLI is the only path that ever kills). All hooks are pure Node.js (built-ins only) and run on macOS
 > and Linux; the one prerequisite is Node >= 22 on PATH. Windows is untested and not officially supported.
 
+<!-- 0.108: auto-handover, settings page, version-alert v2, Jev cost/efficiency,
+     and repair-on-reload are being built elsewhere — add them to the relevant
+     sections below (Hooks / Skills / DevSwarm coordination) once they ship. -->
+
 anti-hall targets four failure modes of coding assistants: eagerness (acting before
 investigating), hallucination (stating unverified facts as truth), fix-before-diagnosis
 (fixing before proving root cause), and fake completion (claiming done without running

@@ -11,6 +11,10 @@ Keep this file under 32 KiB (Codex per-file cap). Verify it is loaded with:
 
     codex --ask-for-approval never "Summarize current instructions"
 
+<!-- 0.108: auto-handover, settings page, version-alert v2, Jev cost/efficiency,
+     and repair-on-reload are being built elsewhere — mirror the Codex-relevant
+     parts here once they ship. -->
+
 In the Claude Code plugin, the **root-cause** and **orchestration** disciplines below
 are enforced always-on via the hook layer (they fire every session/turn). **deadly-loop**
 and **ship-it** are conditional skills invoked on match. Codex lacks that hook
