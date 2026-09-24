@@ -344,6 +344,24 @@ At current Haiku pricing this is roughly $0.0001-0.001 per turn; latency is roug
 1-3 s added to each Stop. For projects where confident inference-as-fact is the primary
 failure mode and the cost/latency is acceptable, Tier 3 closes the gap Tier 2 leaves open.
 
+### Jev classifier (opt-in, layered on top of Tier 3)
+
+`speculation-judge.js` can optionally consult **Jev** (TypeSafe's "System One" model — a
+typed choice/yes-no classifier, not a reasoning model) before Haiku, on the same rubric
+text. **Default OFF**, and requires `ANTIHALL_SEMANTIC_JUDGE=1` on top for it to matter
+at all. Enable with `~/.anti-hall/jev.json`:
+
+```json
+{ "enabled": true, "transport": "vercel", "confidenceThreshold": 0.85 }
+```
+
+or `ANTIHALL_JEV=1` (env). `ANTIHALL_JEV=0` always force-disables, overriding
+`jev.json`. When enabled, a low-confidence verdict (below `confidenceThreshold`) or any
+Jev failure (no key, timeout, HTTP error, bad response) falls back to the existing Haiku
+path unchanged. When disabled (the default), behavior is byte-identical to before Jev
+existed. Full field reference, data/privacy, observability, and benchmark evidence:
+**[docs/KB-jev-classifier.md](../../docs/KB-jev-classifier.md)**.
+
 ## Skills
 
 **Always-on vs conditional.** The **root-cause** and **orchestration** disciplines are
